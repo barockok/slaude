@@ -6,7 +6,15 @@ import {
   type SDKMessage,
   type Options,
   type CanUseTool,
+  type Query,
 } from "@anthropic-ai/claude-agent-sdk";
+
+export type PermissionMode =
+  | "default"
+  | "acceptEdits"
+  | "bypassPermissions"
+  | "plan"
+  | "dontAsk";
 import { paths } from "../config/home";
 import { env } from "../config/env";
 import { soulSystemBlock } from "../soul/loader";
@@ -21,6 +29,8 @@ type LiveSession = {
   abort: AbortController;
   /** Buffer of last user message + accumulated assistant text for memory.syncTurn. */
   turn: { user: string; assistant: string[] };
+  /** Set after the SDK query() resolves; lets us call setPermissionMode/setModel live. */
+  query?: Query;
 };
 
 export type AgentEvent =
@@ -59,6 +69,7 @@ export class AgentManager extends EventEmitter {
         model: env.model(),
         working_dir: workingDir,
         title: opts.title,
+        permission_mode: env.defaultPermissionMode(),
       });
     }
     return row;
@@ -81,6 +92,19 @@ export class AgentManager extends EventEmitter {
   /** Cancel any in-flight turn for the session. */
   abort(sessionId: string) {
     this.#live.get(sessionId)?.abort.abort();
+  }
+
+  /** Change permission mode for a session. Persists; if live, also pushed to the SDK Query. */
+  async setPermissionMode(sessionId: string, mode: PermissionMode) {
+    Sessions.setPermissionMode(sessionId, mode);
+    const live = this.#live.get(sessionId);
+    if (live?.query) {
+      try {
+        await live.query.setPermissionMode(mode);
+      } catch (e) {
+        console.error("[agent] setPermissionMode failed:", e);
+      }
+    }
   }
 
   async #startSession(sessionId: string, firstText: string) {
@@ -136,12 +160,17 @@ export class AgentManager extends EventEmitter {
       ? (toolName, input, ctx) => resolver(sessionId, toolName, input, ctx)
       : undefined;
 
+    const mode = (row.permission_mode || "default") as PermissionMode;
     const options: Options = {
       cwd: row.working_dir,
       model: row.model,
       abortController: abort,
       env: { ...process.env, ...providerEnv },
       ...(canUseTool ? { canUseTool } : {}),
+      permissionMode: mode,
+      ...(mode === "bypassPermissions"
+        ? { allowDangerouslySkipPermissions: true }
+        : {}),
       systemPrompt: {
         type: "preset",
         preset: "claude_code",
@@ -168,6 +197,7 @@ export class AgentManager extends EventEmitter {
     (async () => {
       try {
         const q = query({ prompt: promptIterable, options });
+        live.query = q;
         for await (const msg of q as AsyncIterable<SDKMessage>) {
           this.#fanout(sessionId, msg);
         }

@@ -53,4 +53,28 @@ export const env = {
     authToken: () => opt("ANTHROPIC_AUTH_TOKEN"),
   },
   model: () => opt("SLAUDE_MODEL", "claude-sonnet-4-6"),
+  /**
+   * Default permission mode for new sessions. One of:
+   *   default | acceptEdits | bypassPermissions | plan | dontAsk
+   * Aliases (ask=default, bypass=bypassPermissions, accept-edits=acceptEdits,
+   * yolo=bypassPermissions) are normalized.
+   */
+  defaultPermissionMode: () => {
+    const raw = opt("SLAUDE_DEFAULT_MODE", "default").toLowerCase();
+    const map: Record<string, string> = {
+      ask: "default",
+      default: "default",
+      "accept-edits": "acceptEdits",
+      acceptedits: "acceptEdits",
+      edits: "acceptEdits",
+      plan: "plan",
+      bypass: "bypassPermissions",
+      yolo: "bypassPermissions",
+      bypasspermissions: "bypassPermissions",
+      "dont-ask": "dontAsk",
+      dontask: "dontAsk",
+      deny: "dontAsk",
+    };
+    return map[raw] ?? "default";
+  },
 };
