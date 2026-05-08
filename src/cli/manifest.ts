@@ -34,6 +34,7 @@ const manifest = {
         "reactions:read",
         "reactions:write",
         "users:read",
+        "users.profile:write",
       ],
     },
   },
