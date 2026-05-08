@@ -9,6 +9,7 @@ import {
 import { Streamer } from "./streamer";
 import { ReactionTracker } from "./reactions";
 import { Presence } from "./presence";
+import { PermissionGate } from "./permission-gate";
 
 const REACT_RECEIVED = "eyes";
 const REACT_WORKING = "gear";
@@ -38,6 +39,8 @@ export function createSlackApp(agent: AgentManager) {
 
   const reactions = new ReactionTracker(app.client);
   const presence = new Presence(app.client);
+  const permissions = new PermissionGate(app);
+  agent.setPermissionResolver(permissions.resolver);
 
   // sessionId → routing/streamer state for active turn.
   const routes = new Map<string, SessionRoute>();
@@ -137,6 +140,7 @@ export function createSlackApp(agent: AgentManager) {
     // 👀 received
     void reactions.set(session.id, channelId, eventTs, REACT_RECEIVED);
     presence.enter(session.id, STATUS_THINKING);
+    permissions.bindSession(session.id, channelId, threadTs);
 
     // Bind a fresh streamer for this turn.
     routes.set(session.id, {
