@@ -7,6 +7,7 @@ import {
   type Options,
   type CanUseTool,
   type Query,
+  type McpServerConfig,
 } from "@anthropic-ai/claude-agent-sdk";
 
 export type PermissionMode =
@@ -49,13 +50,22 @@ export type PermissionResolver = (
   ctx: Parameters<CanUseTool>[2],
 ) => ReturnType<CanUseTool>;
 
+/** Returns transport-supplied MCP servers for a fresh session. */
+export type McpResolver = (sessionId: string) => Record<string, McpServerConfig> | undefined;
+
 export class AgentManager extends EventEmitter {
   #live = new Map<string, LiveSession>();
   #resolver: PermissionResolver | undefined;
+  #mcpResolver: McpResolver | undefined;
 
   /** Install a transport-level permission resolver (e.g. Slack approval gate). */
   setPermissionResolver(resolver: PermissionResolver | undefined) {
     this.#resolver = resolver;
+  }
+
+  /** Install a transport-level MCP server resolver. Called once per session start. */
+  setMcpResolver(resolver: McpResolver | undefined) {
+    this.#mcpResolver = resolver;
   }
 
   /** Get-or-create a session bound to a Slack thread. */
@@ -161,12 +171,14 @@ export class AgentManager extends EventEmitter {
       : undefined;
 
     const mode = (row.permission_mode || "default") as PermissionMode;
+    const mcpServers = this.#mcpResolver?.(sessionId);
     const options: Options = {
       cwd: row.working_dir,
       model: row.model,
       abortController: abort,
       env: { ...process.env, ...providerEnv },
       ...(canUseTool ? { canUseTool } : {}),
+      ...(mcpServers ? { mcpServers } : {}),
       permissionMode: mode,
       ...(mode === "bypassPermissions"
         ? { allowDangerouslySkipPermissions: true }
