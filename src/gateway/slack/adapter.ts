@@ -6,11 +6,11 @@ import {
   matchSkillInvocation,
   buildSkillInvocation,
 } from "../../skills/loader";
-import { Streamer } from "./streamer";
 import { ReactionTracker } from "./reactions";
 import { Presence } from "./presence";
 import { PermissionGate } from "./permission-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "./commands";
+import { createSlackMcp, SLACK_MCP_NAME, type SlackContext } from "./mcp-tools";
 
 const REACT_RECEIVED = "eyes";
 const REACT_WORKING = "gear";
@@ -18,14 +18,11 @@ const REACT_DONE = "white_check_mark";
 const REACT_ERROR = "x";
 
 const STATUS_THINKING = { text: "thinking", emoji: ":thought_balloon:" };
-const STATUS_WORKING = { text: "on a task", emoji: ":hammer_and_wrench:" };
 
 type SessionRoute = {
-  channel: string;
-  threadTs: string;
-  inboundTs: string;
-  streamer: Streamer;
-  hasAssistantText: boolean;
+  ctx: SlackContext;
+  /** Whether the agent has emitted any user-visible Slack output this turn (via mcp__slaude_slack__reply). */
+  spoke: boolean;
 };
 
 export function createSlackApp(agent: AgentManager) {
@@ -43,57 +40,67 @@ export function createSlackApp(agent: AgentManager) {
   const permissions = new PermissionGate(app);
   agent.setPermissionResolver(permissions.resolver);
 
-  // sessionId → routing/streamer state for active turn.
+  // Per-session route + slack context. Mutated on each new inbound user message.
   const routes = new Map<string, SessionRoute>();
   // Dedup events by (channel, ts).
   const seenEvents = new Set<string>();
+
+  // MCP resolver — first-call-per-session wires the slack MCP server bound to
+  // the session's SlackContext object. We mutate fields on the same context
+  // object across turns so the SDK MCP server stays valid for the session.
+  agent.setMcpResolver((sessionId) => {
+    const route = routes.get(sessionId);
+    if (!route) return undefined;
+    return { [SLACK_MCP_NAME]: createSlackMcp(route.ctx) };
+  });
 
   agent.on("event", (e: AgentEvent) => {
     const route = routes.get(e.sessionId);
     if (!route) return;
 
     switch (e.type) {
-      case "assistantText": {
-        if (!route.hasAssistantText) {
-          route.hasAssistantText = true;
-          // First token = swap 👀 → ⚙️ and update presence.
-          void reactions.set(e.sessionId, route.channel, route.inboundTs, REACT_WORKING);
-          presence.enter(e.sessionId, STATUS_WORKING);
-        }
-        route.streamer.append(e.text);
-        break;
-      }
       case "toolCall": {
-        // Optional inline notice; keeps users informed without spamming.
-        route.streamer.append(`\n_calling tool_ \`${e.tool}\`\n`);
-        break;
-      }
-      case "thinking": {
-        // We don't render thinking content (it's reasoning), but we ensure the
-        // 👀 → 🤔 status transition happens on first thinking event too.
-        if (!route.hasAssistantText) {
-          presence.enter(e.sessionId, STATUS_THINKING);
+        // Slack output happens when the agent calls mcp__slaude_slack__reply.
+        // Treat that as "spoke" so we know to mark the turn as answered.
+        if (e.tool === `mcp__${SLACK_MCP_NAME}__reply`) {
+          route.spoke = true;
+          void reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_WORKING);
         }
         break;
       }
       case "done": {
         void (async () => {
-          await route.streamer.flush();
-          await reactions.set(e.sessionId, route.channel, route.inboundTs, REACT_DONE);
+          if (!route.spoke) {
+            // Agent finished without surfacing anything to Slack. Nudge so
+            // the user isn't left guessing — and so SOUL.md drift is visible.
+            try {
+              await app.client.chat.postMessage({
+                channel: route.ctx.channel,
+                thread_ts: route.ctx.threadTs,
+                text: "_(no reply emitted — agent forgot `mcp__slaude_slack__reply`)_",
+                mrkdwn: true,
+              });
+            } catch {}
+          }
+          await reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_DONE);
           reactions.forget(e.sessionId);
           presence.exit(e.sessionId);
-          routes.delete(e.sessionId);
         })();
         break;
       }
       case "error": {
         void (async () => {
-          route.streamer.append(`\n:warning: error: \`${e.error}\``);
-          await route.streamer.flush();
-          await reactions.set(e.sessionId, route.channel, route.inboundTs, REACT_ERROR);
+          try {
+            await app.client.chat.postMessage({
+              channel: route.ctx.channel,
+              thread_ts: route.ctx.threadTs,
+              text: `:warning: error: \`${e.error}\``,
+              mrkdwn: true,
+            });
+          } catch {}
+          await reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_ERROR);
           reactions.forget(e.sessionId);
           presence.exit(e.sessionId);
-          routes.delete(e.sessionId);
         })();
         break;
       }
@@ -172,21 +179,41 @@ export function createSlackApp(agent: AgentManager) {
       userText = buildSkillInvocation(skillHit.skill, skillHit.args, session.id);
     }
 
+    // Wrap inbound in a channel envelope so the agent has slack context
+    // and a clear directive to reply via the MCP tool — not as plain text.
+    const envelope =
+      `<channel source="slack" channel_id="${channelId}" thread_ts="${threadTs}" ` +
+      `inbound_ts="${eventTs}" user="${userId}">\n${userText}\n</channel>\n\n` +
+      `Reply to the user by calling the \`mcp__${SLACK_MCP_NAME}__reply\` tool. ` +
+      `Plain assistant text is not delivered to Slack — only tool calls reach the user.`;
+
     // 👀 received
     void reactions.set(session.id, channelId, eventTs, REACT_RECEIVED);
     presence.enter(session.id, STATUS_THINKING);
     permissions.bindSession(session.id, channelId, threadTs);
 
-    // Bind a fresh streamer for this turn.
-    routes.set(session.id, {
-      channel: channelId,
-      threadTs,
-      inboundTs: eventTs,
-      streamer: new Streamer(client, channelId, threadTs),
-      hasAssistantText: false,
-    });
+    // First turn for this session → seed the SlackContext + route.
+    // Subsequent turns → mutate the existing context so the bound MCP tools
+    // keep targeting the right thread / inbound message.
+    const existing = routes.get(session.id);
+    if (existing) {
+      existing.ctx.channel = channelId;
+      existing.ctx.threadTs = threadTs;
+      existing.ctx.inboundTs = eventTs;
+      existing.spoke = false;
+    } else {
+      routes.set(session.id, {
+        ctx: {
+          client: app.client,
+          channel: channelId,
+          threadTs,
+          inboundTs: eventTs,
+        },
+        spoke: false,
+      });
+    }
 
-    await agent.sendMessage(session.id, userText);
+    await agent.sendMessage(session.id, envelope);
   }
 
   app.event("app_mention", handleMessage);
