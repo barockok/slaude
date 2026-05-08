@@ -11,6 +11,8 @@ import { Presence } from "./presence";
 import { PermissionGate } from "./permission-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "./commands";
 import { createSlackMcp, SLACK_MCP_NAME, type SlackContext } from "./mcp-tools";
+import { resolveUserName } from "./users";
+import { downloadAttachments, type SlackFile } from "./attachments";
 
 const REACT_RECEIVED = "eyes";
 const REACT_WORKING = "gear";
@@ -128,7 +130,8 @@ export function createSlackApp(agent: AgentManager) {
 
     const botUserId = (await client.auth.test()).user_id as string;
     const stripped = text.replace(new RegExp(`<@${botUserId}>`, "g"), "").trim();
-    if (!stripped) return;
+    const hasFiles = Array.isArray(event.files) && event.files.length > 0;
+    if (!stripped && !hasFiles) return;
 
     const isDM = channelType === "im";
     const threadTs: string = event.thread_ts || (isDM ? eventTs : eventTs);
@@ -179,11 +182,37 @@ export function createSlackApp(agent: AgentManager) {
       userText = buildSkillInvocation(skillHit.skill, skillHit.args, session.id);
     }
 
+    // Resolve username and download any file attachments into the session dir.
+    const [userName, files] = await Promise.all([
+      resolveUserName(client, userId),
+      downloadAttachments({
+        files: ((event.files ?? []) as SlackFile[]),
+        botToken: env.slack.botToken(),
+        workingDir: session.working_dir,
+        inboundTs: eventTs,
+      }),
+    ]);
+
+    const attachmentBlock = files.length
+      ? "\n" +
+        files
+          .map(
+            (f) =>
+              `<attachment name="${escapeAttr(f.name)}" mimetype="${escapeAttr(f.mimetype)}" size="${f.size}" path="${escapeAttr(f.path)}" />`,
+          )
+          .join("\n") +
+        "\n"
+      : "";
+
     // Wrap inbound in a channel envelope so the agent has slack context
     // and a clear directive to reply via the MCP tool — not as plain text.
     const envelope =
       `<channel source="slack" channel_id="${channelId}" thread_ts="${threadTs}" ` +
-      `inbound_ts="${eventTs}" user="${userId}">\n${userText}\n</channel>\n\n` +
+      `inbound_ts="${eventTs}" user_id="${userId}" user_name="${escapeAttr(userName)}">\n` +
+      `${userText}${attachmentBlock}\n</channel>\n\n` +
+      (files.length
+        ? `User attached ${files.length} file(s); paths above are local — Read them directly.\n`
+        : "") +
       `Reply to the user by calling the \`mcp__${SLACK_MCP_NAME}__reply\` tool. ` +
       `Plain assistant text is not delivered to Slack — only tool calls reach the user.`;
 
@@ -214,6 +243,10 @@ export function createSlackApp(agent: AgentManager) {
     }
 
     await agent.sendMessage(session.id, envelope);
+  }
+
+  function escapeAttr(s: string) {
+    return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
   app.event("app_mention", handleMessage);
