@@ -85,3 +85,7 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 - Folk research: AgentManager already transport-agnostic. Could fork+strip Electron, but greenfield smaller surface.
 - Hermes research: clean SOUL/SKILL/memory pattern. Slack via slack-bolt Socket Mode. `~/.hermes/` home dir.
 - Decision: greenfield Bun+TS. Mirror hermes layout, steal folk AgentManager.
+- Shipped MVP: config, db, soul, AgentManager, slack adapter (Socket Mode), skill loader, sqlite memory provider, manifest CLI, README. Typecheck green. Not yet exercised end-to-end against a real Slack workspace.
+- Mistake: first stab at slack adapter used `import bolt from "@slack/bolt"; const { App } = bolt;` — fails ESM types. Direct named import works: `import { App, LogLevel } from "@slack/bolt"`.
+- Mistake: pre-tool-use hook flagged db schema file falsely (no exec call); re-saved verbatim, accepted.
+- Note: claude-agent-sdk v0.1.77 installed; v0.2.x available. Defer upgrade until MVP is proven; check breaking changes in `Options.systemPrompt` and `query()` signature first.
