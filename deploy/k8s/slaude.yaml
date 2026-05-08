@@ -1,0 +1,112 @@
+# slaude — single-persona Kubernetes deployment.
+# One Deployment = one persona. Replicas: 1 (Slack Socket Mode is single-leader).
+#
+# Apply:
+#   kubectl apply -f deploy/k8s/slaude.yaml
+#
+# Customize: image:, namespace:, persona name in labels, secret name.
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: slaude
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: slaude-secrets
+  namespace: slaude
+type: Opaque
+stringData:
+  SLACK_BOT_TOKEN: "REPLACE_xoxb"
+  SLACK_APP_TOKEN: "REPLACE_xapp"
+  ANTHROPIC_API_KEY: "REPLACE_sk-ant"
+  # ANTHROPIC_BASE_URL: ""
+  # ANTHROPIC_AUTH_TOKEN: ""
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: slaude-config
+  namespace: slaude
+data:
+  SLAUDE_MODEL: "claude-sonnet-4-6"
+  SLACK_ALLOWED_USERS: ""
+  # Bake the persona SOUL.md here. Mounted at $SLAUDE_HOME/SOUL.md.
+  SOUL.md: |
+    # Soul
+
+    I am slaude — replace with the persona for this deploy.
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: slaude-data
+  namespace: slaude
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slaude
+  namespace: slaude
+  labels:
+    app: slaude
+    persona: default
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: slaude
+  template:
+    metadata:
+      labels:
+        app: slaude
+        persona: default
+    spec:
+      containers:
+        - name: slaude
+          image: ghcr.io/REPLACE/slaude:latest
+          imagePullPolicy: Always
+          envFrom:
+            - secretRef:
+                name: slaude-secrets
+            - configMapRef:
+                name: slaude-config
+          env:
+            - name: SLAUDE_HOME
+              value: /data
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: soul
+              mountPath: /data/SOUL.md
+              subPath: SOUL.md
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: slaude-data
+        - name: soul
+          configMap:
+            name: slaude-config
+            items:
+              - key: SOUL.md
+                path: SOUL.md

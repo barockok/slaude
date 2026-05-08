@@ -73,10 +73,12 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 - [x] **Greenfield slim core, steal patterns from folk.** I (Zidni) am folk author, license n/a.
 - [x] **Bun + TS.** Native sqlite, fast startup, native fetch.
-- [ ] Memory store: start sqlite + markdown. Add embedding provider later (honcho/mem0 plugin shape).
-- [x] Skill format: claude-code skill compat (`SKILL.md` w/ frontmatter).
-- [ ] Sandboxing: per-session git worktree vs container. Defer; trust local for MVP.
-- [ ] Multi-tenant slack workspaces: defer; single workspace MVP.
+- [x] **Memory store:** start sqlite (turns + facts). Embedding provider deferred. Hermes provider interface.
+- [x] **Skill format:** claude-code skill compat (`SKILL.md` w/ yaml frontmatter, body w/ `${SLAUDE_*}` substitution).
+- [x] **Provider:** any Anthropic-compatible API (`ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` + provider-qualified `SLAUDE_MODEL`). No claude-code OAuth path.
+- [x] **Deploy unit:** one container = one persona = one `SOUL.md`. No `/personality` switch. Multi-agent via multi-deploy.
+- [ ] Sandboxing: per-session git worktree vs container-per-session. Defer; per-thread cwd under `$SLAUDE_HOME/workspaces/` for MVP.
+- [ ] Multi-tenant slack workspaces: not needed (one deploy = one workspace). Defer indefinitely.
 
 ## Findings Log
 
@@ -89,3 +91,4 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 - Mistake: first stab at slack adapter used `import bolt from "@slack/bolt"; const { App } = bolt;` — fails ESM types. Direct named import works: `import { App, LogLevel } from "@slack/bolt"`.
 - Mistake: pre-tool-use hook flagged db schema file falsely (no exec call); re-saved verbatim, accepted.
 - Note: claude-agent-sdk v0.1.77 installed; v0.2.x available. Defer upgrade until MVP is proven; check breaking changes in `Options.systemPrompt` and `query()` signature first.
+- Owner direction (Telegram): (1) provider-agnostic via Anthropic-compatible API, no Claude Code OAuth path; (2) deploy model = one container = one persona = one `SOUL.md`. Locked both decisions; added Dockerfile + docker-compose + k8s manifest stub. Replicas pinned to 1 because Slack Socket Mode is single-leader.

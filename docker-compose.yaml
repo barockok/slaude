@@ -1,0 +1,20 @@
+# Single-persona slaude. One compose project = one deployed agent.
+# Copy .env.example -> .env, drop your SOUL.md into ./data/SOUL.md, then `docker compose up -d`.
+
+services:
+  slaude:
+    build: .
+    image: slaude:latest
+    container_name: slaude
+    restart: unless-stopped
+    environment:
+      SLAUDE_HOME: /data
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN}
+      SLACK_ALLOWED_USERS: ${SLACK_ALLOWED_USERS:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+      SLAUDE_MODEL: ${SLAUDE_MODEL:-claude-sonnet-4-6}
+    volumes:
+      - ./data:/data

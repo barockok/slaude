@@ -1,0 +1,8 @@
+.git
+.claude
+node_modules
+*.log
+.DS_Store
+.env
+.env.*
+deploy/k8s/*.local.yaml
