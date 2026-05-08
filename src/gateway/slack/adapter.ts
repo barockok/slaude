@@ -10,6 +10,7 @@ import { Streamer } from "./streamer";
 import { ReactionTracker } from "./reactions";
 import { Presence } from "./presence";
 import { PermissionGate } from "./permission-gate";
+import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "./commands";
 
 const REACT_RECEIVED = "eyes";
 const REACT_WORKING = "gear";
@@ -130,6 +131,40 @@ export function createSlackApp(agent: AgentManager) {
       channel_id: channelId,
       thread_ts: threadTs,
     });
+
+    // Slash commands: /mode, /abort, /help. Handled locally; do not forward to model.
+    const slash = parseSlashCommand(stripped);
+    if (slash) {
+      const reply = async (t: string) => {
+        await client.chat.postMessage({
+          channel: channelId,
+          thread_ts: threadTs,
+          text: t,
+          mrkdwn: true,
+        });
+      };
+      if (slash.kind === "help") {
+        await reply(helpText());
+        return;
+      }
+      if (slash.kind === "mode-help") {
+        const modes = Object.entries(MODE_LABELS)
+          .map(([k, v]) => `• \`${humanModeName(k as any)}\` — ${v}`)
+          .join("\n");
+        await reply(`*usage:* \`/mode <ask|accept-edits|bypass|plan|dont-ask>\`\n${modes}`);
+        return;
+      }
+      if (slash.kind === "mode") {
+        await agent.setPermissionMode(session.id, slash.mode);
+        await reply(`mode → \`${humanModeName(slash.mode)}\``);
+        return;
+      }
+      if (slash.kind === "abort") {
+        agent.abort(session.id);
+        await reply("aborted");
+        return;
+      }
+    }
 
     let userText = stripped;
     const skillHit = matchSkillInvocation(stripped, discoverSkills());
