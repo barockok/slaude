@@ -1,7 +1,12 @@
 import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { query, type SDKMessage, type Options } from "@anthropic-ai/claude-agent-sdk";
+import {
+  query,
+  type SDKMessage,
+  type Options,
+  type CanUseTool,
+} from "@anthropic-ai/claude-agent-sdk";
 import { paths } from "../config/home";
 import { env } from "../config/env";
 import { soulSystemBlock } from "../soul/loader";
@@ -26,8 +31,22 @@ export type AgentEvent =
   | { type: "done"; sessionId: string }
   | { type: "error"; sessionId: string; error: string };
 
+/** Permission resolver — called per tool use; given a sessionId so transports can present UI in the right thread. */
+export type PermissionResolver = (
+  sessionId: string,
+  toolName: string,
+  input: Record<string, unknown>,
+  ctx: Parameters<CanUseTool>[2],
+) => ReturnType<CanUseTool>;
+
 export class AgentManager extends EventEmitter {
   #live = new Map<string, LiveSession>();
+  #resolver: PermissionResolver | undefined;
+
+  /** Install a transport-level permission resolver (e.g. Slack approval gate). */
+  setPermissionResolver(resolver: PermissionResolver | undefined) {
+    this.#resolver = resolver;
+  }
 
   /** Get-or-create a session bound to a Slack thread. */
   ensureSession(thread: ThreadKey, opts: { title?: string } = {}) {
@@ -112,11 +131,17 @@ export class AgentManager extends EventEmitter {
       if (process.env[k]) providerEnv[k] = process.env[k];
     }
 
+    const resolver = this.#resolver;
+    const canUseTool: CanUseTool | undefined = resolver
+      ? (toolName, input, ctx) => resolver(sessionId, toolName, input, ctx)
+      : undefined;
+
     const options: Options = {
       cwd: row.working_dir,
       model: row.model,
       abortController: abort,
       env: { ...process.env, ...providerEnv },
+      ...(canUseTool ? { canUseTool } : {}),
       systemPrompt: {
         type: "preset",
         preset: "claude_code",
