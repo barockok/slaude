@@ -7,12 +7,15 @@ import { env } from "../config/env";
 import { soulSystemBlock } from "../soul/loader";
 import * as Sessions from "../db/sessions";
 import type { ThreadKey } from "../db/sessions";
+import { memory } from "../memory/sqlite-provider";
 
 type LiveSession = {
   id: string;
   pushUser: (text: string) => void;
   closeIterable: () => void;
   abort: AbortController;
+  /** Buffer of last user message + accumulated assistant text for memory.syncTurn. */
+  turn: { user: string; assistant: string[] };
 };
 
 export type AgentEvent =
@@ -46,6 +49,10 @@ export class AgentManager extends EventEmitter {
   async sendMessage(sessionId: string, text: string) {
     const live = this.#live.get(sessionId);
     if (live) {
+      // flush prior turn if any pending assistant content was buffered
+      this.#flushTurn(live);
+      live.turn.user = text;
+      live.turn.assistant = [];
       live.pushUser(text);
       return;
     }
@@ -61,6 +68,7 @@ export class AgentManager extends EventEmitter {
     const row = Sessions.findById(sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);
 
+    const memBlock = await memory.prefetch(sessionId);
     const abort = new AbortController();
     const queue: string[] = [firstText];
     let resolveNext: (() => void) | null = null;
@@ -101,12 +109,24 @@ export class AgentManager extends EventEmitter {
       systemPrompt: {
         type: "preset",
         preset: "claude_code",
-        append: soulSystemBlock(),
+        append: [
+          soulSystemBlock(),
+          memBlock ? `<memory-context>\n${memBlock}\n</memory-context>` : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
       },
       ...(row.claude_started ? { resume: row.id } : {}),
     };
 
-    this.#live.set(sessionId, { id: sessionId, pushUser, closeIterable, abort });
+    const live: LiveSession = {
+      id: sessionId,
+      pushUser,
+      closeIterable,
+      abort,
+      turn: { user: firstText, assistant: [] },
+    };
+    this.#live.set(sessionId, live);
     Sessions.setStatus(sessionId, "running");
 
     (async () => {
@@ -127,11 +147,13 @@ export class AgentManager extends EventEmitter {
   }
 
   #fanout(sessionId: string, msg: SDKMessage) {
+    const live = this.#live.get(sessionId);
     switch (msg.type) {
       case "assistant": {
         Sessions.markStarted(sessionId);
         for (const block of msg.message.content) {
           if (block.type === "text") {
+            live?.turn.assistant.push(block.text);
             this.emit("event", {
               type: "assistantText",
               sessionId,
@@ -165,8 +187,21 @@ export class AgentManager extends EventEmitter {
         }
         break;
       }
+      case "result": {
+        // End of one user→assistant turn. Persist memory.
+        if (live) this.#flushTurn(live);
+        break;
+      }
       default:
         break;
     }
+  }
+
+  #flushTurn(live: LiveSession) {
+    if (!live.turn.user || live.turn.assistant.length === 0) return;
+    const user = live.turn.user;
+    const assistant = live.turn.assistant.join("\n");
+    live.turn = { user: "", assistant: [] };
+    void memory.syncTurn({ sessionId: live.id, user, assistant });
   }
 }
