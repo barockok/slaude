@@ -2,6 +2,11 @@ import { App, LogLevel } from "@slack/bolt";
 import type { AgentManager, AgentEvent } from "../../agent/manager";
 import { env } from "../../config/env";
 import { chunkText, mdToMrkdwn } from "./format";
+import {
+  discoverSkills,
+  matchSkillInvocation,
+  buildSkillInvocation,
+} from "../../skills/loader";
 
 type Outbox = {
   postMessage: (text: string) => Promise<string | undefined>;
@@ -76,6 +81,13 @@ export function createSlackApp(agent: AgentManager) {
       thread_ts: threadTs,
     });
 
+    // Skill expansion: /skill-name args → expanded skill body
+    let userText = stripped;
+    const skillHit = matchSkillInvocation(stripped, discoverSkills());
+    if (skillHit) {
+      userText = buildSkillInvocation(skillHit.skill, skillHit.args, session.id);
+    }
+
     const outbox: Outbox = {
       postMessage: async (t) => {
         const r = await client.chat.postMessage({
@@ -97,7 +109,7 @@ export function createSlackApp(agent: AgentManager) {
     };
     sessionToOutbox.set(session.id, outbox);
 
-    await agent.sendMessage(session.id, stripped);
+    await agent.sendMessage(session.id, userText);
   }
 
   app.event("app_mention", handleMessage);
