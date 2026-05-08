@@ -70,6 +70,11 @@ export class AgentManager extends EventEmitter {
     this.#mcpResolver = resolver;
   }
 
+  /** Number of SDK Query sessions currently live in this process. */
+  liveCount() {
+    return this.#live.size;
+  }
+
   /** Get-or-create a session bound to a Slack thread. */
   ensureSession(thread: ThreadKey, opts: { title?: string } = {}) {
     let row = Sessions.findByThread(thread);

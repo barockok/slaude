@@ -87,6 +87,21 @@ spec:
           env:
             - name: SLAUDE_HOME
               value: /data
+          ports:
+            - name: health
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
           volumeMounts:
             - name: data
               mountPath: /data
