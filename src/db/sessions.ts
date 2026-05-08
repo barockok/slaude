@@ -22,14 +22,16 @@ export function createForThread(args: {
   model: string;
   working_dir: string;
   title?: string;
+  permission_mode?: string;
 }): SessionRow {
   const id = randomUUID();
   const now = Date.now();
   db.run(
     `INSERT INTO sessions
      (id, created_at, updated_at, title, model, working_dir, status,
-      claude_started, slack_team_id, slack_channel_id, slack_thread_ts)
-     VALUES (?, ?, ?, ?, ?, ?, 'idle', 0, ?, ?, ?)`,
+      claude_started, slack_team_id, slack_channel_id, slack_thread_ts,
+      permission_mode)
+     VALUES (?, ?, ?, ?, ?, ?, 'idle', 0, ?, ?, ?, ?)`,
     [
       id,
       now,
@@ -40,6 +42,7 @@ export function createForThread(args: {
       args.thread.team_id,
       args.thread.channel_id,
       args.thread.thread_ts,
+      args.permission_mode ?? "default",
     ],
   );
   return findById(id)!;
@@ -62,6 +65,14 @@ export function markStarted(id: string) {
 export function setStatus(id: string, status: string) {
   db.run(`UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?`, [
     status,
+    Date.now(),
+    id,
+  ]);
+}
+
+export function setPermissionMode(id: string, mode: string) {
+  db.run(`UPDATE sessions SET permission_mode = ?, updated_at = ? WHERE id = ?`, [
+    mode,
     Date.now(),
     id,
   ]);

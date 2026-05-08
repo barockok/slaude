@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   slack_team_id TEXT,
   slack_channel_id TEXT,
   slack_thread_ts TEXT,
+  permission_mode TEXT NOT NULL DEFAULT 'default',
   UNIQUE(slack_team_id, slack_channel_id, slack_thread_ts)
 );
 
@@ -38,6 +39,12 @@ for (const stmt of SCHEMA.split(";")) {
   if (s) db.run(s);
 }
 
+// Migration: backfill permission_mode column on existing dbs.
+const cols = db.query(`PRAGMA table_info(sessions)`).all() as Array<{ name: string }>;
+if (!cols.some((c) => c.name === "permission_mode")) {
+  db.run(`ALTER TABLE sessions ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'default'`);
+}
+
 export type SessionRow = {
   id: string;
   created_at: number;
@@ -50,4 +57,5 @@ export type SessionRow = {
   slack_team_id: string | null;
   slack_channel_id: string | null;
   slack_thread_ts: string | null;
+  permission_mode: string;
 };
