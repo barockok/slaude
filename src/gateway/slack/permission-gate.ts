@@ -103,6 +103,10 @@ export class PermissionGate {
     if (this.#autoAllow.has(toolName)) {
       return { behavior: "allow", updatedInput: input };
     }
+    // Slack MCP tools are the agent's *only* path to user output — never gate.
+    if (toolName.startsWith("mcp__slaude_slack__")) {
+      return { behavior: "allow", updatedInput: input };
+    }
     const route = this.#routes.get(sessionId);
     if (!route) {
       // No live thread — fail closed so we don't silently grant ops.
