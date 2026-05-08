@@ -38,8 +38,19 @@ export const env = {
         .map((s) => s.trim())
         .filter(Boolean),
   },
-  anthropic: {
+  /**
+   * Anthropic-compatible LLM provider. Any provider that speaks the Anthropic
+   * Messages API works (Anthropic, OpenRouter, Z.ai, self-hosted gateway, etc.).
+   *
+   *   ANTHROPIC_BASE_URL  optional; defaults to https://api.anthropic.com
+   *   ANTHROPIC_API_KEY   required
+   *   SLAUDE_MODEL        provider-qualified model id
+   *   ANTHROPIC_AUTH_TOKEN optional; used by some gateways instead of API key header
+   */
+  provider: {
     apiKey: () => opt("ANTHROPIC_API_KEY"),
+    baseUrl: () => opt("ANTHROPIC_BASE_URL"),
+    authToken: () => opt("ANTHROPIC_AUTH_TOKEN"),
   },
   model: () => opt("SLAUDE_MODEL", "claude-sonnet-4-6"),
 };

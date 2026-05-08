@@ -102,10 +102,21 @@ export class AgentManager extends EventEmitter {
       }
     })();
 
+    // Pass through Anthropic-compatible provider env so any compatible API works.
+    const providerEnv: Record<string, string | undefined> = {};
+    for (const k of [
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_BASE_URL",
+      "ANTHROPIC_AUTH_TOKEN",
+    ]) {
+      if (process.env[k]) providerEnv[k] = process.env[k];
+    }
+
     const options: Options = {
       cwd: row.working_dir,
       model: row.model,
       abortController: abort,
+      env: { ...process.env, ...providerEnv },
       systemPrompt: {
         type: "preset",
         preset: "claude_code",
