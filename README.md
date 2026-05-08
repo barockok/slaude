@@ -46,24 +46,36 @@ In Slack:
 
 ### 3. Configure env
 
-Create `~/.slaude/.env`:
+Copy `.env.example` to `~/.slaude/.env` (or to `./.env` if you're using docker compose).
+
+Any **Anthropic-compatible** provider works — point `ANTHROPIC_BASE_URL` at the gateway of your choice (Anthropic direct, OpenRouter, Z.ai, self-hosted), set `SLAUDE_MODEL` to the provider-qualified model id.
 
 ```sh
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
 ANTHROPIC_API_KEY=sk-ant-...
+# ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1   # optional
 SLAUDE_MODEL=claude-sonnet-4-6
-# Optional allow-list (comma-separated user IDs); empty = anyone in invited channels
-SLACK_ALLOWED_USERS=U01ABCD,U02EFGH
+SLACK_ALLOWED_USERS=U01ABCD,U02EFGH                 # optional allow-list
 ```
 
 ### 4. Run
+
+Local dev:
 
 ```sh
 bun run dev      # autoreload
 # or
 bun run start
 ```
+
+Or container (one container = one persona = one `SOUL.md`):
+
+```sh
+docker compose up -d --build
+```
+
+Or Kubernetes — see `deploy/k8s/slaude.yaml`. Replicas pinned to 1 because Slack Socket Mode is single-leader. Spin up additional Deployments to onboard additional agents.
 
 Invite the bot to a channel, `@slaude do something`, or DM it directly.
 
