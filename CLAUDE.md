@@ -31,16 +31,57 @@ Zidni Mubarok <zidmubarock@gmail.com>. Telegram bridge available — use for blo
   - Secret/credential required
 - Memory: write surprising/non-obvious facts to `memory/` per skill rules.
 
+## Architecture
+
+```
+slaude/
+  src/
+    agent/         # AgentManager — claude-agent-sdk wrapper, multi-session
+    gateway/       # platform adapters; slack-only for now
+      slack/       # slack-bolt Socket Mode adapter
+    soul/          # SOUL.md loader + system prompt injection
+    skills/        # skill discovery + invocation (compat w/ claude-code skills)
+    memory/        # memory provider interface; default = sqlite + markdown
+    db/            # better-sqlite3 schema (sessions, slack_thread mapping)
+    config/        # env, $SLAUDE_HOME (~/.slaude/)
+    server.ts      # headless entry
+  ~/.slaude/       # runtime home (mirrors hermes ~/.hermes/)
+    SOUL.md
+    skills/
+    config.yaml
+    .env
+    db.sqlite
+```
+
+Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bolt`, `bun:sqlite`.
+
+### Patterns stolen (folk → slaude)
+
+- `AgentManager extends EventEmitter` — `Map<sessionId, LiveSession>`, async-generator prompt iterable, SDK event fanout (`chunk|thinking|toolCall|toolResult|done`).
+- `sessions` table schema (folk db.ts) + add `slack_team_id`, `slack_channel_id`, `slack_thread_ts` w/ unique idx.
+- Permission/ask pending maps (`#pendingPermissions`, `#pendingAsks`) → render Slack Block Kit buttons.
+
+### Patterns stolen (hermes → slaude)
+
+- `~/.slaude/SOUL.md` durable identity, separate from per-project `CLAUDE.md`.
+- `/personality` runtime overlay (session-only).
+- Skill format: `~/.slaude/skills/<name>/SKILL.md` (frontmatter + body). Invocation via `/skill-name`.
+- `<memory-context>` XML block injected per-turn from MemoryProvider.
+- Slack adapter shape: Socket Mode, dedup by event ts, DM synthetic thread_ts, manifest CLI.
+
 ## Open Decisions
 
-- [ ] Fork barockok/folk vs greenfield backend (pending research)
-- [ ] Runtime lang for backend (folk's stack vs node/bun/rust)
-- [ ] Memory store (sqlite + embedding? markdown + grep? both?)
-- [ ] Skill format (claude-code skill compat? custom?)
+- [x] **Greenfield slim core, steal patterns from folk.** I (Zidni) am folk author, license n/a.
+- [x] **Bun + TS.** Native sqlite, fast startup, native fetch.
+- [ ] Memory store: start sqlite + markdown. Add embedding provider later (honcho/mem0 plugin shape).
+- [x] Skill format: claude-code skill compat (`SKILL.md` w/ frontmatter).
+- [ ] Sandboxing: per-session git worktree vs container. Defer; trust local for MVP.
+- [ ] Multi-tenant slack workspaces: defer; single workspace MVP.
 
 ## Findings Log
 
-(append-only; date entries)
-
 ### 2026-05-08
 - Repo init. Research dispatched on hermes-agent + folk.
+- Folk research: AgentManager already transport-agnostic. Could fork+strip Electron, but greenfield smaller surface.
+- Hermes research: clean SOUL/SKILL/memory pattern. Slack via slack-bolt Socket Mode. `~/.hermes/` home dir.
+- Decision: greenfield Bun+TS. Mirror hermes layout, steal folk AgentManager.
