@@ -77,4 +77,15 @@ export const env = {
     };
     return map[raw] ?? "default";
   },
+  /**
+   * Idle timeout in ms. After a session sees no new user message for this
+   * long, the SDK Query is closed; the next inbound msg in the same thread
+   * boots a fresh Query with `resume: <session-id>`. Default 15 minutes.
+   * Set to 0 to disable (sessions live forever).
+   */
+  idleMs: () => {
+    const raw = opt("SLAUDE_IDLE_MS", String(15 * 60 * 1000));
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : 15 * 60 * 1000;
+  },
 };

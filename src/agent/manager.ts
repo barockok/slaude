@@ -32,6 +32,8 @@ type LiveSession = {
   turn: { user: string; assistant: string[] };
   /** Set after the SDK query() resolves; lets us call setPermissionMode/setModel live. */
   query?: Query;
+  /** Idle TTL timer; cleared/rearmed on every user msg and turn-end. */
+  idleTimer?: ReturnType<typeof setTimeout>;
 };
 
 export type AgentEvent =
@@ -94,9 +96,26 @@ export class AgentManager extends EventEmitter {
       live.turn.user = text;
       live.turn.assistant = [];
       live.pushUser(text);
+      this.#armIdle(live);
       return;
     }
     await this.#startSession(sessionId, text);
+  }
+
+  /** (Re)arm the idle timer for a session. On expiry, close the SDK loop
+   *  silently — the next inbound user msg will boot a fresh Query w/ resume. */
+  #armIdle(live: LiveSession) {
+    const ms = env.idleMs();
+    if (live.idleTimer) clearTimeout(live.idleTimer);
+    if (ms <= 0) return;
+    live.idleTimer = setTimeout(() => {
+      // Flush any buffered assistant content; close the prompt iterable so
+      // the for-await loop in #startSession unwinds cleanly.
+      this.#flushTurn(live);
+      try {
+        live.closeIterable();
+      } catch {}
+    }, ms);
   }
 
   /** Cancel any in-flight turn for the session. */
@@ -204,6 +223,7 @@ export class AgentManager extends EventEmitter {
       turn: { user: firstText, assistant: [] },
     };
     this.#live.set(sessionId, live);
+    this.#armIdle(live);
     Sessions.setStatus(sessionId, "running");
 
     (async () => {
@@ -220,6 +240,7 @@ export class AgentManager extends EventEmitter {
         const message = err instanceof Error ? err.message : String(err);
         this.emit("event", { type: "error", sessionId, error: message } satisfies AgentEvent);
       } finally {
+        if (live.idleTimer) clearTimeout(live.idleTimer);
         Sessions.setStatus(sessionId, "idle");
         this.#live.delete(sessionId);
       }
@@ -269,7 +290,10 @@ export class AgentManager extends EventEmitter {
       }
       case "result": {
         // End of one user→assistant turn. Persist memory + signal listeners.
-        if (live) this.#flushTurn(live);
+        if (live) {
+          this.#flushTurn(live);
+          this.#armIdle(live);
+        }
         if (msg.is_error) {
           const errStr =
             "errors" in msg && Array.isArray((msg as any).errors)
