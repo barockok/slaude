@@ -146,7 +146,9 @@ export class AgentManager extends EventEmitter {
         for await (const msg of q as AsyncIterable<SDKMessage>) {
           this.#fanout(sessionId, msg);
         }
-        this.emit("event", { type: "done", sessionId } satisfies AgentEvent);
+        // for-await ends only when the prompt iterable is closed; that is
+        // session shutdown, not turn-end. We don't emit a per-turn "done"
+        // here — that's done from #fanout on `result` messages.
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.emit("event", { type: "error", sessionId, error: message } satisfies AgentEvent);
@@ -199,8 +201,21 @@ export class AgentManager extends EventEmitter {
         break;
       }
       case "result": {
-        // End of one user→assistant turn. Persist memory.
+        // End of one user→assistant turn. Persist memory + signal listeners.
         if (live) this.#flushTurn(live);
+        if (msg.is_error) {
+          const errStr =
+            "errors" in msg && Array.isArray((msg as any).errors)
+              ? (msg as any).errors.join("; ")
+              : msg.subtype;
+          this.emit("event", {
+            type: "error",
+            sessionId,
+            error: errStr,
+          } satisfies AgentEvent);
+        } else {
+          this.emit("event", { type: "done", sessionId } satisfies AgentEvent);
+        }
         break;
       }
       default:
