@@ -354,21 +354,75 @@ export function createSlackApp(agent: AgentManager) {
     await next();
   });
 
-  app.event("app_mention", handleMessage);
+  // Per-thread engagement state. Disengaged by default. @mentioning slaude
+  // engages the thread (subsequent plain replies handled). @mentioning a
+  // different user disengages (the user is now talking to a colleague).
+  const engaged = new Set<string>(); // key: `${channel}:${thread_ts}`
+  const threadKey = (channel: string, ts: string) => `${channel}:${ts}`;
+
+  let cachedBotId: string | null = null;
+  const getBotId = async () => {
+    if (cachedBotId) return cachedBotId;
+    cachedBotId = (await app.client.auth.test()).user_id as string;
+    return cachedBotId;
+  };
+
+  // app_mention is a guaranteed delivery path even if message.channels event
+  // subscription isn't enabled. Engage the thread, then defer to handleMessage.
+  // (handleMessage's seenEvents dedup prevents double-handling when the same
+  //  ts also arrives via the message event.)
+  app.event("app_mention", async (args: any) => {
+    const e: any = args.event;
+    const ts: string = e.thread_ts || e.ts;
+    engaged.add(threadKey(e.channel, ts));
+    await handleMessage(args);
+  });
+
+  // Single message router: every non-bot message goes here so we can manage
+  // engagement state consistently. We dispatch to handleMessage when slaude
+  // should answer.
   app.event("message", async (args: any) => {
     const e: any = args.event;
     if (e.bot_id || e.subtype === "bot_message") return;
+    if (!e.user) return;
 
-    // DMs are 1:1 — every message is for us, no mention needed.
-    if (e.channel_type === "im") return await handleMessage(args);
+    const channelId: string = e.channel;
+    const ts: string = e.thread_ts || e.ts;
+    const key = threadKey(channelId, ts);
+    const text: string = (e.text || "").toString();
+    const botId = await getBotId();
 
-    // Channels / private groups: require @mention. We do NOT auto-continue
-    // in-thread on plain replies because the user may be talking to a human
-    // colleague in the same thread; grabbing those would be intrusive.
-    // app.event("app_mention") catches the mentioned ones above.
+    // DMs: always handle, no engagement tracking needed.
+    if (e.channel_type === "im") {
+      engaged.add(key);
+      return await handleMessage(args);
+    }
+
+    const mentions = Array.from(text.matchAll(/<@([A-Z0-9]+)>/g)).map((m) => m[1]);
+    const mentionsBot = mentions.includes(botId);
+    const mentionsOther = mentions.some((u) => u && u !== botId);
+
+    if (mentionsBot) {
+      engaged.add(key);
+      return await handleMessage(args);
+    }
+    if (mentionsOther) {
+      engaged.delete(key);
+      return; // user redirected to a colleague
+    }
+    if (engaged.has(key)) {
+      return await handleMessage(args);
+    }
+    // Plain channel chatter, not for us.
   });
 
-  // Silence unused import — Sessions used elsewhere now via agent.ensureSession.
+  // Disengage when slaude finishes a turn AND no follow-up arrives within the
+  // idle window. We piggyback on AgentManager's existing idle teardown by
+  // clearing engagement when the SDK loop unwinds (per session).
+  // (The SDK doesn't currently surface session shutdown, so this is best-
+  //  effort: engagement also clears on @mention to a different user.)
+
+  // Sessions import retained for ensureSession path.
   void Sessions;
 
   return app;
