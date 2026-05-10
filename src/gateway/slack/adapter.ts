@@ -44,7 +44,7 @@ export function createSlackApp(agent: AgentManager) {
   const presence = new Presence(app.client);
   const status = new Status(app.client);
   const permissions = new PermissionGate(app);
-  const approvals = new ApprovalGate(app);
+  const approvals = new ApprovalGate(app, env.slack.approvers());
   agent.setPermissionResolver(permissions.resolver);
 
   // Diag: dump bot identity + granted scopes once at startup.
