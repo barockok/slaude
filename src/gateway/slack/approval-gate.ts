@@ -1,5 +1,6 @@
 import type { App } from "@slack/bolt";
 import type { WebClient } from "@slack/web-api";
+import { loadApprovers } from "../../soul/loader";
 
 export type ApprovalRequest = {
   channel: string;
@@ -8,6 +9,10 @@ export type ApprovalRequest = {
   tools?: string[];
   files?: string[];
   risks?: string;
+  /** Optional area key (e.g. 'database', 'deploy', 'code'). Looked up against
+   *  the persona's <approvers> JSON block; falls back to 'default', then to
+   *  the env-derived list. */
+  category?: string;
 };
 
 export type ApprovalDecision = {
@@ -25,15 +30,22 @@ export type ApprovalDecision = {
  * agent-driven — typical use: agent runs in YOLO/bypass mode but soul forces
  * a high-level approval checkpoint before destructive batches.
  */
+type Pending = {
+  resolve: (d: ApprovalDecision) => void;
+  approvers: Set<string>;
+};
+
 export class ApprovalGate {
   #client: WebClient;
-  #pending = new Map<string, (d: ApprovalDecision) => void>();
+  #pending = new Map<string, Pending>();
   #counter = 0;
-  #approvers: Set<string>;
+  /** Env-derived fallback allowlist. Used when persona has no approvers block
+   *  or no matching category and no 'default' key either. */
+  #envApprovers: Set<string>;
 
-  constructor(app: App, approvers: string[]) {
+  constructor(app: App, envApprovers: string[]) {
     this.#client = app.client;
-    this.#approvers = new Set(approvers);
+    this.#envApprovers = new Set(envApprovers);
     app.action(
       /^slaude_appr:(approve|deny):.+$/,
       async ({ ack, action, body, respond }) => {
@@ -43,9 +55,9 @@ export class ApprovalGate {
         if (!m) return;
         const decision = m[1] as "approve" | "deny";
         const id = m[2]!;
-        const resolve = this.#pending.get(id);
+        const pending = this.#pending.get(id);
         const userId = (body as any).user?.id ?? "unknown";
-        if (!resolve) {
+        if (!pending) {
           try {
             await respond({
               replace_original: true,
@@ -56,14 +68,13 @@ export class ApprovalGate {
           return;
         }
 
-        // Authorize the clicker. Empty allowlist = anyone may approve
-        // (single-user / DM use). Non-empty allowlist enforced strictly.
-        if (this.#approvers.size > 0 && !this.#approvers.has(userId)) {
+        // Authorize the clicker against this request's allowlist.
+        if (pending.approvers.size > 0 && !pending.approvers.has(userId)) {
           try {
             await respond({
               response_type: "ephemeral",
               replace_original: false,
-              text: `:no_entry: <@${userId}>, you are not on the approver allowlist for this agent. The plan stays pending.`,
+              text: `:no_entry: <@${userId}>, you are not on the approver allowlist for this plan. The plan stays pending.`,
             });
           } catch {}
           return; // do NOT consume the pending entry
@@ -78,17 +89,36 @@ export class ApprovalGate {
             blocks: [],
           });
         } catch {}
-        resolve({ approved: decision === "approve", by: userId });
+        pending.resolve({ approved: decision === "approve", by: userId });
       },
     );
   }
 
+  /** Resolve which Slack user IDs may approve a request in this category.
+   *  Lookup order: persona[category] → persona.default → env fallback. */
+  #resolveApprovers(category?: string): Set<string> {
+    const persona = loadApprovers();
+    if (persona) {
+      if (category && persona[category.toLowerCase()]?.length) {
+        return new Set(persona[category.toLowerCase()]);
+      }
+      if (persona.default?.length) {
+        return new Set(persona.default);
+      }
+    }
+    return new Set(this.#envApprovers);
+  }
+
   async request(req: ApprovalRequest, abortSignal?: AbortSignal): Promise<ApprovalDecision> {
     const id = `${Date.now().toString(36)}_${(++this.#counter).toString(36)}`;
+    const approvers = this.#resolveApprovers(req.category);
+    const heading = req.category
+      ? `:bell: *Approval needed* — \`${req.category}\``
+      : `:bell: *Approval needed*`;
     const sections: any[] = [
       {
         type: "section",
-        text: { type: "mrkdwn", text: `:bell: *Approval needed*` },
+        text: { type: "mrkdwn", text: heading },
       },
       {
         type: "section",
@@ -117,8 +147,8 @@ export class ApprovalGate {
         elements: [{ type: "mrkdwn", text: `:warning: ${req.risks}` }],
       });
     }
-    if (this.#approvers.size > 0) {
-      const list = Array.from(this.#approvers)
+    if (approvers.size > 0) {
+      const list = Array.from(approvers)
         .map((u) => `<@${u}>`)
         .join(" ");
       sections.push({
@@ -152,13 +182,14 @@ export class ApprovalGate {
     });
 
     return new Promise<ApprovalDecision>((resolve) => {
-      this.#pending.set(id, resolve);
+      this.#pending.set(id, { resolve, approvers });
       abortSignal?.addEventListener(
         "abort",
         () => {
-          if (!this.#pending.has(id)) return;
+          const p = this.#pending.get(id);
+          if (!p) return;
           this.#pending.delete(id);
-          resolve({ approved: false, by: "system", note: "aborted" });
+          p.resolve({ approved: false, by: "system", note: "aborted" });
         },
         { once: true },
       );
