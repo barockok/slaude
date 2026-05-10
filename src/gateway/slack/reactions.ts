@@ -7,12 +7,14 @@ import type { WebClient } from "@slack/web-api";
 export class ReactionTracker {
   #client: WebClient;
   #current = new Map<string, { channel: string; ts: string; emoji: string }>();
+  #disabled = false;
 
   constructor(client: WebClient) {
     this.#client = client;
   }
 
   async set(sessionId: string, channel: string, ts: string, emoji: string) {
+    if (this.#disabled) return;
     const prev = this.#current.get(sessionId);
     if (prev?.emoji === emoji) return;
     if (prev) {
@@ -30,11 +32,17 @@ export class ReactionTracker {
       await this.#client.reactions.add({ channel, timestamp: ts, name: emoji });
       this.#current.set(sessionId, { channel, ts, emoji });
     } catch (e: any) {
-      // Tolerate already_reacted (e.g., on re-entry after restart).
-      if (e?.data?.error !== "already_reacted") {
-        console.error("[reactions] add failed:", e?.data?.error ?? e);
-      } else {
+      const code = e?.data?.error ?? e?.message;
+      if (code === "already_reacted") {
         this.#current.set(sessionId, { channel, ts, emoji });
+        return;
+      }
+      const needed = e?.data?.needed;
+      const provided = e?.data?.provided;
+      console.error("[reactions] add failed:", code, { needed, provided });
+      if (code === "missing_scope" || code === "not_allowed_token_type") {
+        this.#disabled = true;
+        console.log("[reactions] auto-disabled — reinstall app w/ reactions:write scope");
       }
     }
   }
