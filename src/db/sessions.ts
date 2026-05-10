@@ -70,6 +70,13 @@ export function setStatus(id: string, status: string) {
   ]);
 }
 
+export function clearStarted(id: string) {
+  db.run(`UPDATE sessions SET claude_started = 0, updated_at = ? WHERE id = ?`, [
+    Date.now(),
+    id,
+  ]);
+}
+
 export function setPermissionMode(id: string, mode: string) {
   db.run(`UPDATE sessions SET permission_mode = ?, updated_at = ? WHERE id = ?`, [
     mode,

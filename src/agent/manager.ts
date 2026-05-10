@@ -188,6 +188,14 @@ export class AgentManager extends EventEmitter {
     ]) {
       if (process.env[k]) providerEnv[k] = process.env[k];
     }
+    // Kill telemetry / autoupdater / bug-reporter / error-reporter — they
+    // hit Anthropic-owned endpoints and crash the CLI when ANTHROPIC_BASE_URL
+    // points at a non-Anthropic gateway (e.g. DeepSeek, OpenRouter).
+    providerEnv.DISABLE_TELEMETRY = "1";
+    providerEnv.DISABLE_AUTOUPDATER = "1";
+    providerEnv.DISABLE_BUG_COMMAND = "1";
+    providerEnv.DISABLE_ERROR_REPORTING = "1";
+    providerEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
 
     const resolver = this.#resolver;
     const canUseTool: CanUseTool | undefined = resolver
@@ -231,20 +239,46 @@ export class AgentManager extends EventEmitter {
     this.#armIdle(live);
     Sessions.setStatus(sessionId, "running");
 
+    let stderrBuf = "";
+    (options as any).stderr = (chunk: string) => {
+      stderrBuf += chunk;
+      process.stderr.write(`[claude-cli] ${chunk}`);
+    };
+    let retried = false;
+
     (async () => {
       try {
+        console.log(`[mgr] query() boot session=${sessionId} model=${row.model} cwd=${row.working_dir} resume=${!!row.claude_started}`);
         const q = query({ prompt: promptIterable, options });
         live.query = q;
         for await (const msg of q as AsyncIterable<SDKMessage>) {
+          console.log(`[mgr] sdk msg type=${(msg as any).type} subtype=${(msg as any).subtype ?? "-"}`);
           this.#fanout(sessionId, msg);
         }
+        console.log(`[mgr] query() exited session=${sessionId}`);
         // for-await ends only when the prompt iterable is closed; that is
         // session shutdown, not turn-end. We don't emit a per-turn "done"
         // here — that's done from #fanout on `result` messages.
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        console.error(`[mgr] query() threw session=${sessionId}:`, err);
+        // Resume failure: provider has no record of this session id (e.g.
+        // after swapping ANTHROPIC_BASE_URL across providers). Clear the
+        // started flag and reboot the session w/o `resume` so the user
+        // doesn't have to retry manually.
+        if (/No conversation found with session ID/i.test(stderrBuf)) {
+          retried = true;
+          console.log(`[mgr] clearing stale claude_started + retrying session=${sessionId}`);
+          Sessions.clearStarted(sessionId);
+          if (live.idleTimer) clearTimeout(live.idleTimer);
+          this.#live.delete(sessionId);
+          // Fire and forget — restart with the same first prompt.
+          void this.#startSession(sessionId, firstText);
+          return;
+        }
         this.emit("event", { type: "error", sessionId, error: message } satisfies AgentEvent);
       } finally {
+        if (retried) return;
         if (live.idleTimer) clearTimeout(live.idleTimer);
         Sessions.setStatus(sessionId, "idle");
         this.#live.delete(sessionId);
