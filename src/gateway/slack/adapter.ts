@@ -8,11 +8,13 @@ import {
 } from "../../skills/loader";
 import { ReactionTracker } from "./reactions";
 import { Presence } from "./presence";
+import { Status } from "./status";
 import { PermissionGate } from "./permission-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "./commands";
 import { createSlackMcp, SLACK_MCP_NAME, type SlackContext } from "./mcp-tools";
 import { resolveUserName } from "./users";
 import { downloadAttachments, type SlackFile } from "./attachments";
+import * as Sessions from "../../db/sessions";
 
 const REACT_RECEIVED = "eyes";
 const REACT_WORKING = "gear";
@@ -39,8 +41,21 @@ export function createSlackApp(agent: AgentManager) {
 
   const reactions = new ReactionTracker(app.client);
   const presence = new Presence(app.client);
+  const status = new Status(app.client);
   const permissions = new PermissionGate(app);
   agent.setPermissionResolver(permissions.resolver);
+
+  // Diag: dump bot identity + granted scopes once at startup.
+  void (async () => {
+    try {
+      const t = await app.client.auth.test();
+      const scopesHeader = (t as any).response_metadata?.scopes ?? (t as any).headers?.["x-oauth-scopes"];
+      console.log(`[slack-auth] team=${(t as any).team} user=${(t as any).user} bot_id=${(t as any).bot_id} url=${(t as any).url}`);
+      console.log(`[slack-auth] scopes=${scopesHeader ?? "(unknown — check app OAuth page)"}`);
+    } catch (e: any) {
+      console.error("[slack-auth] auth.test failed:", e?.data?.error ?? e?.message);
+    }
+  })();
 
   // Per-session route + slack context. Mutated on each new inbound user message.
   const routes = new Map<string, SessionRoute>();
@@ -57,6 +72,7 @@ export function createSlackApp(agent: AgentManager) {
   });
 
   agent.on("event", (e: AgentEvent) => {
+    console.log(`[agent-evt] ${e.type} session=${e.sessionId}${"tool" in e ? ` tool=${e.tool}` : ""}${"error" in e ? ` err=${e.error}` : ""}`);
     const route = routes.get(e.sessionId);
     if (!route) return;
 
@@ -67,6 +83,10 @@ export function createSlackApp(agent: AgentManager) {
         if (e.tool === `mcp__${SLACK_MCP_NAME}__reply`) {
           route.spoke = true;
           void reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_WORKING);
+        } else {
+          // Animated "running <tool>…" status next to bot name.
+          const short = e.tool.replace(/^mcp__[^_]+__/, "").slice(0, 40);
+          void status.set(e.sessionId, route.ctx.channel, route.ctx.threadTs, `running ${short}…`);
         }
         break;
       }
@@ -87,6 +107,7 @@ export function createSlackApp(agent: AgentManager) {
           await reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_DONE);
           reactions.forget(e.sessionId);
           presence.exit(e.sessionId);
+          await status.clear(e.sessionId);
         })();
         break;
       }
@@ -103,6 +124,7 @@ export function createSlackApp(agent: AgentManager) {
           await reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_ERROR);
           reactions.forget(e.sessionId);
           presence.exit(e.sessionId);
+          await status.clear(e.sessionId);
         })();
         break;
       }
@@ -117,6 +139,10 @@ export function createSlackApp(agent: AgentManager) {
     const eventTs: string = event.ts;
     const text: string = (event.text || "").trim();
     const channelType: string = event.channel_type ?? "";
+
+    console.log(
+      `[slack-rx] type=${event.type} subtype=${event.subtype ?? "-"} ch=${channelId} ts=${eventTs} thread=${event.thread_ts ?? "-"} user=${userId} txt=${JSON.stringify(text.slice(0, 80))}`,
+    );
 
     if (!teamId || !userId) return;
     if (event.bot_id || event.subtype === "bot_message") return;
@@ -219,6 +245,7 @@ export function createSlackApp(agent: AgentManager) {
     // 👀 received
     void reactions.set(session.id, channelId, eventTs, REACT_RECEIVED);
     presence.enter(session.id, STATUS_THINKING);
+    void status.set(session.id, channelId, threadTs, "thinking…");
     permissions.bindSession(session.id, channelId, threadTs);
 
     // First turn for this session → seed the SlackContext + route.
@@ -242,18 +269,49 @@ export function createSlackApp(agent: AgentManager) {
       });
     }
 
-    await agent.sendMessage(session.id, envelope);
+    console.log(`[slaude] sendMessage session=${session.id} cwd=${session.working_dir} model=${session.model}`);
+    try {
+      await agent.sendMessage(session.id, envelope);
+    } catch (e: any) {
+      console.error("[slaude] sendMessage threw:", e?.message ?? e, e?.stack);
+    }
   }
 
   function escapeAttr(s: string) {
     return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
+  // Generic diagnostic — log every event Bolt receives so we can see what's
+  // arriving (or *not*) over the Socket Mode WebSocket.
+  app.use(async ({ payload, next }) => {
+    const t = (payload as any)?.type ?? "?";
+    const st = (payload as any)?.subtype ?? "-";
+    const ch = (payload as any)?.channel ?? "-";
+    const ts = (payload as any)?.ts ?? "-";
+    console.log(`[slack-evt] ${t}/${st} ch=${ch} ts=${ts}`);
+    await next();
+  });
+
   app.event("app_mention", handleMessage);
   app.event("message", async (args: any) => {
     const e: any = args.event;
-    if (e.channel_type !== "im") return;
-    await handleMessage(args);
+    if (e.bot_id || e.subtype === "bot_message") return;
+
+    // DM — always handle.
+    if (e.channel_type === "im") return await handleMessage(args);
+
+    // In-thread continuation — handle if we already have a session for the
+    // thread (no need to re-mention the bot on every reply).
+    const teamId: string | undefined = args.context?.teamId ?? e.team;
+    if (e.thread_ts && teamId) {
+      const known = Sessions.findByThread({
+        team_id: teamId,
+        channel_id: e.channel,
+        thread_ts: e.thread_ts,
+      });
+      if (known) return await handleMessage(args);
+    }
+    // Else ignore — top-level channel chatter is not for us.
   });
 
   return app;
