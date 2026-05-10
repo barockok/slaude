@@ -159,6 +159,7 @@ See `CLAUDE.md` for the full architecture overview and decision/findings log.
 - **Session control tools** — MCP tool to restart / reset / fork the current Slack-thread session (clear `claude_started`, drop working dir, re-boot with a fresh resume id).
 - **Manager session** — a dedicated "manager" thread/persona where the operator can ask the agent to install a new MCP server, add/remove tools, swap models, edit SOUL.md, or reconfigure approvers — instead of editing files on the host. Changes propagate to live sessions.
 - **Live monitor web view** — read-only browser UI to peek inside any active session. Shows the live SDK event stream (thinking, tool calls + args, tool results, MCP traffic, permission prompts, current cwd) for a chosen Slack-thread session. Pure observability, no interaction — like attaching a read-only Claude Code window to a running agent.
+- **Static web server for generated dashboards** — serve agent-produced HTML/JS/CSS artifacts (reports, dashboards, one-off visualizations written to a known dir) over HTTP so the operator can link to them from Slack. Configurable auth mode: `none` (open, dev/internal only) or `authn` (Slack OAuth / shared-token / basic-auth gate) so dashboards posted to a public URL aren't world-readable by default.
 
 ## License
 
