@@ -41,47 +41,81 @@ export class PermissionGate {
         .filter(Boolean),
     );
 
-    app.action(/^slaude_perm:(allow|always|deny):.+$/, async ({ ack, action, body }) => {
-      await ack();
-      const a = action as { action_id: string };
-      const m = a.action_id.match(/^slaude_perm:(allow|always|deny):(.+)$/);
-      if (!m) return;
-      const decision = m[1] as "allow" | "always" | "deny";
-      const toolUseId = m[2]!;
-      const pend = this.#pending.get(toolUseId);
-      if (!pend) return;
-      this.#pending.delete(toolUseId);
+    app.action(
+      /^slaude_perm:(allow|always|deny):.+$/,
+      async ({ ack, action, body, respond }) => {
+        await ack();
+        const a = action as { action_id: string };
+        const m = a.action_id.match(/^slaude_perm:(allow|always|deny):(.+)$/);
+        if (!m) return;
+        const decision = m[1] as "allow" | "always" | "deny";
+        const toolUseId = m[2]!;
+        const pend = this.#pending.get(toolUseId);
+        if (!pend) {
+          // Already decided (e.g. duplicate click). Make sure the buttons go
+          // away by replacing the message via the click's response_url.
+          try {
+            await respond({
+              replace_original: true,
+              text: `:lock: \`${a.action_id.split(":")[2]}\` already decided`,
+              blocks: [],
+            });
+          } catch {}
+          return;
+        }
+        this.#pending.delete(toolUseId);
 
-      const userId = (body as any).user?.id ?? "unknown";
-      const decided =
-        decision === "allow"
-          ? "*Allowed* once"
-          : decision === "always"
-            ? "*Always-allowed* for this session"
-            : "*Denied*";
-      try {
-        await this.#client.chat.update({
-          channel: pend.channel,
-          ts: pend.messageTs,
-          text: `${pend.toolName} → ${decided} by <@${userId}>`,
-          blocks: [],
-        });
-      } catch (e) {
-        console.error("[permission-gate] update failed", e);
-      }
+        const userId = (body as any).user?.id ?? "unknown";
+        const decided =
+          decision === "allow"
+            ? "*Allowed* once"
+            : decision === "always"
+              ? "*Always-allowed* for this session"
+              : "*Denied*";
+        // Use respond() — fires against the click's response_url and is much
+        // faster than chat.update, so the buttons disappear before the user
+        // has a chance to double-click.
+        try {
+          await respond({
+            replace_original: true,
+            text: `${pend.toolName} → ${decided} by <@${userId}>`,
+            blocks: [],
+          });
+        } catch (e) {
+          console.error("[permission-gate] respond failed", e);
+        }
 
-      if (decision === "deny") {
-        pend.resolve({ behavior: "deny", message: `Denied by <@${userId}>` });
-      } else {
+        if (decision === "deny") {
+          pend.resolve({ behavior: "deny", message: `Denied by <@${userId}>` });
+          return;
+        }
+
+        // Build the permission updates for "always allow":
+        //   - If the SDK supplied suggestions, honor them (they encode the
+        //     specific pattern, e.g. Bash(ls:*)).
+        //   - Else fall back to a tool-wide allow rule for the session so we
+        //     don't keep asking on every Bash call.
+        const permissions: PermissionUpdate[] = [];
+        if (decision === "always") {
+          if (pend.suggestions && pend.suggestions.length > 0) {
+            permissions.push(...pend.suggestions);
+          } else {
+            permissions.push({
+              type: "addRules",
+              rules: [{ toolName: pend.toolName }],
+              behavior: "allow",
+              destination: "session",
+            });
+          }
+        }
+
         pend.resolve({
           behavior: "allow",
           updatedInput: pend.input,
-          ...(decision === "always" && pend.suggestions
-            ? { updatedPermissions: pend.suggestions }
-            : {}),
+          ...(permissions.length ? { updatedPermissions: permissions } : {}),
         });
-      }
-    });
+      },
+    );
   }
 
   /** Adapter calls this when it knows where a session lives in Slack. */
