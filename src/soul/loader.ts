@@ -45,6 +45,11 @@ behave — non-negotiable rules that apply regardless of persona.
     - \`tools\`: tool names you intend to call
     - \`files\`: files you'll create/modify/delete
     - \`risks\`: what's irreversible / what could go wrong
+    - \`category\` (optional): area key matching the persona's
+      \`<approvers>\` block — common values: \`code\`, \`database\`,
+      \`deploy\`, \`infra\`, \`secrets\`, \`comms\`. The runtime gates
+      who's authorized to approve based on this. If unset, the persona's
+      \`default\` approvers apply.
   Wait for the result. If \`approved=false\`, do NOT proceed — \`reply\`
   with a different plan or ask for clarification.
 - After approval, execute. If scope changes mid-task, request approval
@@ -89,6 +94,25 @@ const STARTER_PERSONA = `# Persona
 
 ## Mandate
 - <what this agent is meant to accomplish in this workspace>
+
+## Approvers (per-area)
+
+Who may click Approve / Deny on \`mcp__slaude_slack__request_approval\`.
+The runtime parses the JSON below and looks up \`category\` (case-
+insensitive). Falls back to \`default\` when no category matches. When
+this block is absent, the env \`SLAUDE_APPROVERS\` (or
+\`SLACK_ALLOWED_USERS\`) is used.
+
+\`\`\`approvers
+{
+  "default":  ["<manager Slack user id>"],
+  "code":     ["<reviewer ids>"],
+  "database": ["<dba ids>"],
+  "deploy":   ["<sre ids>"],
+  "secrets":  ["<security ids>"],
+  "comms":    ["<comms-lead ids>"]
+}
+\`\`\`
 `;
 
 export function loadSoul(): string {
@@ -110,4 +134,39 @@ export function loadSoul(): string {
 export function soulSystemBlock(overlay?: string): string {
   const persona = (overlay ?? loadSoul()).trim();
   return `${RUNTIME_BASELINE}\n\n<persona>\n${persona}\n</persona>`;
+}
+
+/**
+ * Parse the persona's approver allowlists. Looks for a fenced JSON block
+ * tagged \`approvers\` in SOUL.md, e.g.:
+ *
+ *     \`\`\`approvers
+ *     {
+ *       "default":  ["U0XXXXXXXXX"],
+ *       "database": ["U999"],
+ *       "deploy":   ["U0XXXXXXXXX", "U777"]
+ *     }
+ *     \`\`\`
+ *
+ * Re-read on every call so edits to SOUL.md take effect without a restart.
+ * Returns null when no block is present (fallback to env allowlist).
+ */
+export function loadApprovers(): Record<string, string[]> | null {
+  const soul = loadSoul();
+  const m = soul.match(/```\s*approvers\s*\n([\s\S]*?)```/);
+  if (!m) return null;
+  try {
+    const parsed = JSON.parse(m[1]!.trim());
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const out: Record<string, string[]> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (Array.isArray(v)) {
+        out[k.toLowerCase()] = v.filter((x) => typeof x === "string");
+      }
+    }
+    return out;
+  } catch (e) {
+    console.error("[soul] approvers JSON parse failed:", e);
+    return null;
+  }
 }

@@ -26,6 +26,7 @@ export type SlackContext = {
     tools?: string[];
     files?: string[];
     risks?: string;
+    category?: string;
   }) => Promise<{ approved: boolean; by: string; note?: string }>;
 };
 
@@ -113,7 +114,7 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
 
       tool(
         "request_approval",
-        "Ask the user to approve a high-level plan before executing destructive or far-reaching work (file writes, mutating Bash, deploys, deletions, migrations, external POSTs, etc.). Posts a Block Kit message with the plan summary and Approve/Deny buttons; blocks until the user clicks. Returns {approved: bool, by: <user_id>, note?}. If approved=false, do NOT proceed — reply explaining you need a different plan. Read-only ops (Read/Grep/Glob/LS/git status) do not need approval.",
+        "Ask the user to approve a high-level plan before executing destructive or far-reaching work (file writes, mutating Bash, deploys, deletions, migrations, external POSTs, etc.). Posts a Block Kit message with the plan summary and Approve/Deny buttons; blocks until an authorized user clicks. Returns {approved: bool, by: <user_id>, note?}. If approved=false, do NOT proceed — reply explaining you need a different plan. Read-only ops (Read/Grep/Glob/LS/git status) do not need approval. Provide `category` when the persona's <approvers> block defines per-area allowlists (e.g. 'database', 'deploy', 'code') so the right people are gated; otherwise the default approvers apply.",
         {
           summary: z
             .string()
@@ -130,13 +131,17 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
             .string()
             .optional()
             .describe("What could go wrong / what's irreversible. Brief."),
+          category: z
+            .string()
+            .optional()
+            .describe("Area key for per-area approver allowlists (e.g. 'database', 'deploy', 'code'). Persona's <approvers> JSON block decides who's authorized for this category."),
         },
-        async ({ summary, tools, files, risks }) => {
+        async ({ summary, tools, files, risks, category }) => {
           if (!ctx.requestApproval) {
             return err("approval gate not wired (transport bug)");
           }
           try {
-            const r = await ctx.requestApproval({ summary, tools, files, risks });
+            const r = await ctx.requestApproval({ summary, tools, files, risks, category });
             if (r.approved) {
               return ok(`approved by <@${r.by}>`);
             }
