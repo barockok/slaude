@@ -134,7 +134,7 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
           category: z
             .string()
             .optional()
-            .describe("Area key for per-area approver allowlists (e.g. 'database', 'deploy', 'code'). Persona's <approvers> JSON block decides who's authorized for this category."),
+            .describe("Optional short area hint to help the runtime route the plan to the right approver(s) — e.g. 'database', 'deploy', 'code', 'comms'. The runtime keyword-matches `summary` (and this hint when given) against the persona's <approvers> scope descriptions; you do NOT decide who approves. If you have no idea, omit it."),
         },
         async ({ summary, tools, files, risks, category }) => {
           if (!ctx.requestApproval) {
