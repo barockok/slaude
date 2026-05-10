@@ -11,7 +11,9 @@
     "dev": "bun --watch src/server.ts",
     "start": "bun src/server.ts",
     "typecheck": "tsc --noEmit",
-    "manifest": "bun src/cli/manifest.ts"
+    "manifest": "bun src/cli/manifest.ts",
+    "test": "bun test",
+    "test:coverage": "bun test --coverage"
   },
   "devDependencies": {
     "@types/bun": "latest",
