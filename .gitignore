@@ -12,4 +12,4 @@ __pycache__/
 target/
 .idea/
 .vscode/
-.env
+.env*.swp

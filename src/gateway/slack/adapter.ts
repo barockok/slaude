@@ -78,9 +78,14 @@ export function createSlackApp(agent: AgentManager) {
 
     switch (e.type) {
       case "toolCall": {
-        // Slack output happens when the agent calls mcp__slaude_slack__reply.
-        // Treat that as "spoke" so we know to mark the turn as answered.
-        if (e.tool === `mcp__${SLACK_MCP_NAME}__reply`) {
+        // Any user-visible Slack tool counts as "spoke" — reply, edit, upload
+        // all surface content. (react alone doesn't satisfy: an emoji isn't
+        // a real answer.)
+        const userVisible =
+          e.tool === `mcp__${SLACK_MCP_NAME}__reply` ||
+          e.tool === `mcp__${SLACK_MCP_NAME}__edit` ||
+          e.tool === `mcp__${SLACK_MCP_NAME}__upload`;
+        if (userVisible) {
           route.spoke = true;
           void reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_WORKING);
         } else {
