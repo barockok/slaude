@@ -1,6 +1,6 @@
 import type { App } from "@slack/bolt";
 import type { WebClient } from "@slack/web-api";
-import { loadApprovers } from "../../soul/loader";
+import { loadApprovers, selectApprovers } from "../../soul/loader";
 
 export type ApprovalRequest = {
   channel: string;
@@ -9,9 +9,9 @@ export type ApprovalRequest = {
   tools?: string[];
   files?: string[];
   risks?: string;
-  /** Optional area key (e.g. 'database', 'deploy', 'code'). Looked up against
-   *  the persona's <approvers> JSON block; falls back to 'default', then to
-   *  the env-derived list. */
+  /** Optional category — kept for backward compat with the old "category:
+   *  ids" SOUL format. Modern persona uses scope-described approvers, where
+   *  the runtime keyword-matches the summary against each approver's scope. */
   category?: string;
 };
 
@@ -94,16 +94,23 @@ export class ApprovalGate {
     );
   }
 
-  /** Resolve which Slack user IDs may approve a request in this category.
-   *  Lookup order: persona[category] → persona.default → env fallback. */
-  #resolveApprovers(category?: string): Set<string> {
-    const persona = loadApprovers();
-    if (persona) {
-      if (category && persona[category.toLowerCase()]?.length) {
-        return new Set(persona[category.toLowerCase()]);
+  /** Resolve who may approve. Order:
+   *   1. Scope-described persona (preferred): keyword-match summary/category
+   *      against each approver's scope; catchall entries always included.
+   *   2. Legacy "category: ids" persona: persona[category] → persona.default.
+   *   3. env SLAUDE_APPROVERS / SLACK_ALLOWED_USERS.
+   *   4. Empty (anyone may click). */
+  #resolveApprovers(req: ApprovalRequest): Set<string> {
+    const scoped = selectApprovers(req.summary, req.category);
+    if (scoped.length) return new Set(scoped);
+
+    const legacy = loadApprovers();
+    if (legacy) {
+      if (req.category && legacy[req.category.toLowerCase()]?.length) {
+        return new Set(legacy[req.category.toLowerCase()]);
       }
-      if (persona.default?.length) {
-        return new Set(persona.default);
+      if (legacy.default?.length) {
+        return new Set(legacy.default);
       }
     }
     return new Set(this.#envApprovers);
@@ -111,7 +118,7 @@ export class ApprovalGate {
 
   async request(req: ApprovalRequest, abortSignal?: AbortSignal): Promise<ApprovalDecision> {
     const id = `${Date.now().toString(36)}_${(++this.#counter).toString(36)}`;
-    const approvers = this.#resolveApprovers(req.category);
+    const approvers = this.#resolveApprovers(req);
     const heading = req.category
       ? `:bell: *Approval needed* — \`${req.category}\``
       : `:bell: *Approval needed*`;

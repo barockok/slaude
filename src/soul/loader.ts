@@ -98,19 +98,24 @@ const STARTER_PERSONA = `# Persona
 ## Approvers
 
 Who may click Approve / Deny on \`mcp__slaude_slack__request_approval\`.
-One \`category: <slack user ids…>\` line per area. IDs accepted as raw
-(\`U0XXXXXXXXX\`) or mention syntax (\`<@U0XXXXXXXXX>\`); separators may
-be commas, whitespace, or 'and'; trailing \`;\` starts a comment. Lookup
-is case-insensitive; falls back to \`default\` when no category matches.
+One \`<id-or-mention>: <scope description>\` line per person. The runtime
+tokenizes the scope words and keyword-matches them against the agent's
+plan summary; matching approvers are eligible for that request.
+
+- "anything" / "any" / "all" / "default" / "*" / "catchall" / "everything"
+  marks a catchall — always eligible regardless of summary content.
+- Use plain English. Comma, dash, "and" all work as separators in scope.
+- Trailing \`;\` starts an inline comment.
+
 When this section is absent, env \`SLAUDE_APPROVERS\` (or
 \`SLACK_ALLOWED_USERS\`) is used.
 
-- default:  <manager Slack user id>
-- code:     <reviewer ids>
-- database: <dba ids>
-- deploy:   <sre ids>
-- secrets:  <security ids>
-- comms:    <comms-lead ids>
+- <@manager-id>:    anything                ; catchall, always eligible
+- <@reviewer-id>:   code changes, repo writes, refactors, dependency bumps
+- <@dba-id>:        database migrations, schema changes, prod data, SQL
+- <@sre-id>:        deploys, infra, kubernetes, rollbacks, ingress, CI/CD
+- <@security-id>:   secrets, credentials, IAM, env vars, OAuth scopes
+- <@comms-id>:      external comms, customer messages, emails, social
 `;
 
 export function loadSoul(): string {
@@ -135,29 +140,128 @@ export function soulSystemBlock(overlay?: string): string {
 }
 
 /**
- * Parse the persona's approver allowlists. Two supported formats — both
- * re-read on every call so edits take effect without a restart.
+ * One approver entry: a Slack user id paired with a free-text scope
+ * description that the runtime tokenizes for keyword matching against the
+ * agent's plan summary.
+ */
+export type ApproverEntry = {
+  userId: string;
+  scope: string;
+  /** True when scope is "anything" / "*" / "default" — always eligible. */
+  catchall: boolean;
+};
+
+const STOPWORDS = new Set([
+  "and", "or", "the", "a", "an", "to", "of", "in", "on", "for", "with",
+  "any", "all", "etc", "via", "into", "from", "by", "as", "at", "is",
+  "are", "be", "this", "that", "these", "those", "it", "its",
+]);
+
+function tokenize(s: string): Set<string> {
+  const out = new Set<string>();
+  for (const raw of s.toLowerCase().split(/[^a-z0-9]+/)) {
+    const t = raw.replace(/(?:s|es|ing|ed)$/, ""); // crude stem
+    if (t.length >= 3 && !STOPWORDS.has(raw) && !STOPWORDS.has(t)) {
+      out.add(t);
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse the persona's approver section. Two supported formats — both re-read
+ * on every call so edits take effect without a restart.
  *
- * 1. Natural markdown under an "## Approvers" heading:
+ * 1. Free-form scope (preferred):
  *
  *        ## Approvers
- *        - default:  <@U0XXXXXXXXX>
- *        - database: <@U999>, U888
- *        - deploy:   U0XXXXXXXXX U777
- *        - code:     barock => U0XXXXXXXXX   ; comments after ; ignored
+ *        - <@U0XXXXXXXXX>: anything                  ; catchall
+ *        - <@U999>:        database migrations, schema changes, SQL
+ *        - <@U777>:        production deploys, infra, kubernetes
+ *        - <@U888>:        external comms — emails, customer messages
  *
- *    The line "<category>: <ids…>" form. IDs may be raw Slack user IDs
- *    (e.g. U0XXXXXXXXX) or mention syntax (<@U0XXXXXXXXX>). Comma,
- *    whitespace, and 'and' are all accepted as separators. A trailing
- *    ';' starts an inline comment.
+ *    Each line: "<id-or-mention>: <scope description>". Runtime tokenizes
+ *    scope words and matches against the agent's plan summary. Matching
+ *    approvers + any catchall entries are eligible to click.
  *
- * 2. Legacy fenced JSON block tagged 'approvers' (still supported):
- *
- *        \`\`\`approvers
- *        { "default": ["U0XXXXXXXXX"], "database": ["U999"] }
- *        \`\`\`
- *
- * Returns null when neither is present.
+ * 2. Legacy "category: ids" / fenced JSON — still parsed, exposed via
+ *    \`loadApprovers\` for backward compat.
+ */
+export function loadApproverEntries(): ApproverEntry[] | null {
+  const soul = loadSoul();
+  const lines = soul.split("\n");
+  const headIdx = lines.findIndex((l) => /^#{1,6}\s+Approvers\b/i.test(l));
+  if (headIdx < 0) return null;
+  let endIdx = lines.length;
+  for (let i = headIdx + 1; i < lines.length; i++) {
+    if (/^#{1,6}\s/.test(lines[i]!)) {
+      endIdx = i;
+      break;
+    }
+  }
+  const out: ApproverEntry[] = [];
+  for (const raw of lines.slice(headIdx + 1, endIdx)) {
+    const line = raw.replace(/^\s*[-*]\s*/, "").split(";")[0]!.trim();
+    if (!line) continue;
+    // Find the user id(s) and the scope description after ':'.
+    const colonIdx = line.indexOf(":");
+    if (colonIdx < 0) continue;
+    const left = line.slice(0, colonIdx);
+    const right = line.slice(colonIdx + 1).trim();
+    const ids = extractSlackUserIds(left);
+    if (!ids.length) continue;
+    const scope = right;
+    const catchall = /^(anything|any|all|\*|default|catchall|everything)\b/i.test(scope);
+    for (const id of ids) {
+      out.push({ userId: id, scope, catchall });
+    }
+  }
+  return out.length ? out : null;
+}
+
+/**
+ * Pick approvers eligible for a given plan summary. Catchall entries are
+ * always included; others are included when scope tokens overlap with
+ * summary tokens. If nothing matches, falls back to catchall(s) only; if
+ * still empty, returns all entries (so the request isn't undeliverable).
+ */
+export function selectApprovers(summary: string, hint?: string): string[] {
+  const entries = loadApproverEntries();
+  if (!entries) return [];
+  const promptTokens = tokenize(`${summary} ${hint ?? ""}`);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const e of entries) {
+    let eligible = e.catchall;
+    if (!eligible) {
+      const scopeTokens = tokenize(e.scope);
+      for (const t of scopeTokens) {
+        if (promptTokens.has(t)) {
+          eligible = true;
+          break;
+        }
+      }
+    }
+    if (eligible && !seen.has(e.userId)) {
+      seen.add(e.userId);
+      out.push(e.userId);
+    }
+  }
+  if (out.length) return out;
+  // No match + no catchall — fall back to every listed approver so the user
+  // can still authorize (better than blocking forever).
+  for (const e of entries) {
+    if (!seen.has(e.userId)) {
+      seen.add(e.userId);
+      out.push(e.userId);
+    }
+  }
+  return out;
+}
+
+/**
+ * Legacy "category: ids" / JSON parser. Kept for backward compat — current
+ * runtime path uses {@link selectApprovers}.
  */
 export function loadApprovers(): Record<string, string[]> | null {
   const soul = loadSoul();
