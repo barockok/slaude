@@ -29,9 +29,11 @@ export class ApprovalGate {
   #client: WebClient;
   #pending = new Map<string, (d: ApprovalDecision) => void>();
   #counter = 0;
+  #approvers: Set<string>;
 
-  constructor(app: App) {
+  constructor(app: App, approvers: string[]) {
     this.#client = app.client;
+    this.#approvers = new Set(approvers);
     app.action(
       /^slaude_appr:(approve|deny):.+$/,
       async ({ ack, action, body, respond }) => {
@@ -53,6 +55,20 @@ export class ApprovalGate {
           } catch {}
           return;
         }
+
+        // Authorize the clicker. Empty allowlist = anyone may approve
+        // (single-user / DM use). Non-empty allowlist enforced strictly.
+        if (this.#approvers.size > 0 && !this.#approvers.has(userId)) {
+          try {
+            await respond({
+              response_type: "ephemeral",
+              replace_original: false,
+              text: `:no_entry: <@${userId}>, you are not on the approver allowlist for this agent. The plan stays pending.`,
+            });
+          } catch {}
+          return; // do NOT consume the pending entry
+        }
+
         this.#pending.delete(id);
         const verb = decision === "approve" ? "*Approved*" : "*Denied*";
         try {
@@ -99,6 +115,15 @@ export class ApprovalGate {
       sections.push({
         type: "context",
         elements: [{ type: "mrkdwn", text: `:warning: ${req.risks}` }],
+      });
+    }
+    if (this.#approvers.size > 0) {
+      const list = Array.from(this.#approvers)
+        .map((u) => `<@${u}>`)
+        .join(" ");
+      sections.push({
+        type: "context",
+        elements: [{ type: "mrkdwn", text: `Approver(s): ${list}` }],
       });
     }
     sections.push({
