@@ -95,24 +95,22 @@ const STARTER_PERSONA = `# Persona
 ## Mandate
 - <what this agent is meant to accomplish in this workspace>
 
-## Approvers (per-area)
+## Approvers
 
 Who may click Approve / Deny on \`mcp__slaude_slack__request_approval\`.
-The runtime parses the JSON below and looks up \`category\` (case-
-insensitive). Falls back to \`default\` when no category matches. When
-this block is absent, the env \`SLAUDE_APPROVERS\` (or
+One \`category: <slack user ids…>\` line per area. IDs accepted as raw
+(\`U0XXXXXXXXX\`) or mention syntax (\`<@U0XXXXXXXXX>\`); separators may
+be commas, whitespace, or 'and'; trailing \`;\` starts a comment. Lookup
+is case-insensitive; falls back to \`default\` when no category matches.
+When this section is absent, env \`SLAUDE_APPROVERS\` (or
 \`SLACK_ALLOWED_USERS\`) is used.
 
-\`\`\`approvers
-{
-  "default":  ["<manager Slack user id>"],
-  "code":     ["<reviewer ids>"],
-  "database": ["<dba ids>"],
-  "deploy":   ["<sre ids>"],
-  "secrets":  ["<security ids>"],
-  "comms":    ["<comms-lead ids>"]
-}
-\`\`\`
+- default:  <manager Slack user id>
+- code:     <reviewer ids>
+- database: <dba ids>
+- deploy:   <sre ids>
+- secrets:  <security ids>
+- comms:    <comms-lead ids>
 `;
 
 export function loadSoul(): string {
@@ -137,36 +135,94 @@ export function soulSystemBlock(overlay?: string): string {
 }
 
 /**
- * Parse the persona's approver allowlists. Looks for a fenced JSON block
- * tagged \`approvers\` in SOUL.md, e.g.:
+ * Parse the persona's approver allowlists. Two supported formats — both
+ * re-read on every call so edits take effect without a restart.
  *
- *     \`\`\`approvers
- *     {
- *       "default":  ["U0XXXXXXXXX"],
- *       "database": ["U999"],
- *       "deploy":   ["U0XXXXXXXXX", "U777"]
- *     }
- *     \`\`\`
+ * 1. Natural markdown under an "## Approvers" heading:
  *
- * Re-read on every call so edits to SOUL.md take effect without a restart.
- * Returns null when no block is present (fallback to env allowlist).
+ *        ## Approvers
+ *        - default:  <@U0XXXXXXXXX>
+ *        - database: <@U999>, U888
+ *        - deploy:   U0XXXXXXXXX U777
+ *        - code:     barock => U0XXXXXXXXX   ; comments after ; ignored
+ *
+ *    The line "<category>: <ids…>" form. IDs may be raw Slack user IDs
+ *    (e.g. U0XXXXXXXXX) or mention syntax (<@U0XXXXXXXXX>). Comma,
+ *    whitespace, and 'and' are all accepted as separators. A trailing
+ *    ';' starts an inline comment.
+ *
+ * 2. Legacy fenced JSON block tagged 'approvers' (still supported):
+ *
+ *        \`\`\`approvers
+ *        { "default": ["U0XXXXXXXXX"], "database": ["U999"] }
+ *        \`\`\`
+ *
+ * Returns null when neither is present.
  */
 export function loadApprovers(): Record<string, string[]> | null {
   const soul = loadSoul();
-  const m = soul.match(/```\s*approvers\s*\n([\s\S]*?)```/);
-  if (!m) return null;
-  try {
-    const parsed = JSON.parse(m[1]!.trim());
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const out: Record<string, string[]> = {};
-    for (const [k, v] of Object.entries(parsed)) {
-      if (Array.isArray(v)) {
-        out[k.toLowerCase()] = v.filter((x) => typeof x === "string");
+
+  // Format 2 (JSON) — keep working for existing personas.
+  const json = soul.match(/\`\`\`\s*approvers\s*\n([\s\S]*?)\`\`\`/);
+  if (json) {
+    try {
+      const parsed = JSON.parse(json[1]!.trim());
+      if (parsed && typeof parsed === "object") {
+        const out: Record<string, string[]> = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          if (Array.isArray(v)) {
+            out[k.toLowerCase()] = (v as unknown[])
+              .filter((x): x is string => typeof x === "string")
+              .map((s) => s.trim())
+              .filter(Boolean);
+          }
+        }
+        if (Object.keys(out).length) return out;
       }
+    } catch (e) {
+      console.error("[soul] approvers JSON parse failed:", e);
     }
-    return out;
-  } catch (e) {
-    console.error("[soul] approvers JSON parse failed:", e);
-    return null;
   }
+
+  // Format 1 (markdown). Find the "## Approvers" section and parse list items.
+  const lines = soul.split("\n");
+  const headIdx = lines.findIndex((l) => /^#{1,6}\s+Approvers\b/i.test(l));
+  if (headIdx < 0) return null;
+  let endIdx = lines.length;
+  for (let i = headIdx + 1; i < lines.length; i++) {
+    if (/^#{1,6}\s/.test(lines[i]!)) {
+      endIdx = i;
+      break;
+    }
+  }
+  const body = lines.slice(headIdx + 1, endIdx).join("\n");
+  const out: Record<string, string[]> = {};
+  for (const raw of body.split("\n")) {
+    // strip leading bullet, drop inline ';' comment
+    const line = raw.replace(/^\s*[-*]\s*/, "").split(";")[0]!.trim();
+    if (!line) continue;
+    const m = line.match(/^([A-Za-z][A-Za-z0-9_-]*)\s*[:=]\s*(.+)$/);
+    if (!m) continue;
+    const category = m[1]!.toLowerCase();
+    const ids = extractSlackUserIds(m[2]!);
+    if (ids.length) out[category] = ids;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/** Pull Slack user IDs out of a free-form string. Accepts:
+ *    - raw IDs: U0XXXXXXXXX
+ *    - mention syntax: <@U0XXXXXXXXX>
+ *  Separator agnostic (comma, whitespace, 'and'). Dedupes. */
+function extractSlackUserIds(s: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of s.matchAll(/<@([UW][A-Z0-9]+)>|\b([UW][A-Z0-9]{6,})\b/g)) {
+    const id = m[1] ?? m[2];
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
 }
