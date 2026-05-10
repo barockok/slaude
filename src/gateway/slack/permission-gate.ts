@@ -141,6 +141,14 @@ export class PermissionGate {
     if (toolName.startsWith("mcp__slaude_slack__")) {
       return { behavior: "allow", updatedInput: input };
     }
+    // Skill introspection is read-only — auto-allow so evolution checks
+    // don't spam the user. Write/delete still flow through approval.
+    if (
+      toolName === "mcp__slaude_skills__list_skills" ||
+      toolName === "mcp__slaude_skills__read_skill"
+    ) {
+      return { behavior: "allow", updatedInput: input };
+    }
     const route = this.#routes.get(sessionId);
     if (!route) {
       // No live thread — fail closed so we don't silently grant ops.
