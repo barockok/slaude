@@ -89,9 +89,13 @@ export function createSlackApp(agent: AgentManager) {
           route.spoke = true;
           void reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_WORKING);
         } else {
-          // Animated "running <tool>…" status next to bot name.
-          const short = e.tool.replace(/^mcp__[^_]+__/, "").slice(0, 40);
-          void status.set(e.sessionId, route.ctx.channel, route.ctx.threadTs, `running ${short}…`);
+          // Animated humanized status next to the bot name.
+          void status.set(
+            e.sessionId,
+            route.ctx.channel,
+            route.ctx.threadTs,
+            humanizeToolStatus(e.tool, e.input as any),
+          );
         }
         break;
       }
@@ -284,6 +288,59 @@ export function createSlackApp(agent: AgentManager) {
 
   function escapeAttr(s: string) {
     return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function shortPath(p: string | undefined): string {
+    if (!p) return "";
+    const parts = p.split("/").filter(Boolean);
+    return parts.slice(-2).join("/") || p;
+  }
+
+  function humanizeToolStatus(tool: string, input: any): string {
+    const inp = input ?? {};
+    switch (tool) {
+      case "Read":
+        return `reading ${shortPath(inp.file_path) || "file"}`;
+      case "Write":
+        return `writing ${shortPath(inp.file_path) || "file"}`;
+      case "Edit":
+      case "MultiEdit":
+        return `editing ${shortPath(inp.file_path) || "file"}`;
+      case "NotebookEdit":
+        return `editing notebook`;
+      case "Bash": {
+        const cmd: string = (inp.command ?? "").toString().split("\n")[0]!.slice(0, 50);
+        return cmd ? `running \`${cmd}\`` : "running command";
+      }
+      case "Grep":
+        return `searching for "${(inp.pattern ?? "").toString().slice(0, 40)}"`;
+      case "Glob":
+        return `finding files (${(inp.pattern ?? "").toString().slice(0, 40)})`;
+      case "LS":
+        return `listing ${shortPath(inp.path) || "directory"}`;
+      case "TodoWrite":
+        return "updating todos";
+      case "WebFetch":
+        return `fetching ${(inp.url ?? "").toString().slice(0, 50)}`;
+      case "WebSearch":
+        return `searching web: "${(inp.query ?? "").toString().slice(0, 40)}"`;
+      case "Task":
+        return `delegating to subagent`;
+      case `mcp__${SLACK_MCP_NAME}__reply`:
+        return "replying";
+      case `mcp__${SLACK_MCP_NAME}__edit`:
+        return "editing reply";
+      case `mcp__${SLACK_MCP_NAME}__upload`:
+        return `uploading ${shortPath(inp.path) || "file"}`;
+      case `mcp__${SLACK_MCP_NAME}__react`:
+        return `reacting :${inp.name ?? "?"}:`;
+      default: {
+        // Generic mcp tool: mcp__<server>__<tool> → "tool (server)"
+        const m = tool.match(/^mcp__([^_]+(?:_[^_]+)*)__(.+)$/);
+        if (m) return `running ${m[2]} (${m[1]})`;
+        return `running ${tool}`;
+      }
+    }
   }
 
   // Generic diagnostic — log every event Bolt receives so we can see what's
