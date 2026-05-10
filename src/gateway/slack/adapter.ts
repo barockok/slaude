@@ -10,6 +10,7 @@ import { ReactionTracker } from "./reactions";
 import { Presence } from "./presence";
 import { Status } from "./status";
 import { PermissionGate } from "./permission-gate";
+import { ApprovalGate } from "./approval-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "./commands";
 import { createSlackMcp, SLACK_MCP_NAME, type SlackContext } from "./mcp-tools";
 import { resolveUserName } from "./users";
@@ -43,6 +44,7 @@ export function createSlackApp(agent: AgentManager) {
   const presence = new Presence(app.client);
   const status = new Status(app.client);
   const permissions = new PermissionGate(app);
+  const approvals = new ApprovalGate(app);
   agent.setPermissionResolver(permissions.resolver);
 
   // Diag: dump bot identity + granted scopes once at startup.
@@ -267,15 +269,19 @@ export function createSlackApp(agent: AgentManager) {
       existing.ctx.inboundTs = eventTs;
       existing.spoke = false;
     } else {
-      routes.set(session.id, {
-        ctx: {
-          client: app.client,
-          channel: channelId,
-          threadTs,
-          inboundTs: eventTs,
-        },
-        spoke: false,
-      });
+      const ctx: SlackContext = {
+        client: app.client,
+        channel: channelId,
+        threadTs,
+        inboundTs: eventTs,
+      };
+      ctx.requestApproval = (req) =>
+        approvals.request({
+          channel: ctx.channel,
+          threadTs: ctx.threadTs,
+          ...req,
+        });
+      routes.set(session.id, { ctx, spoke: false });
     }
 
     console.log(`[slaude] sendMessage session=${session.id} cwd=${session.working_dir} model=${session.model}`);
@@ -334,6 +340,8 @@ export function createSlackApp(agent: AgentManager) {
         return `uploading ${shortPath(inp.path) || "file"}`;
       case `mcp__${SLACK_MCP_NAME}__react`:
         return `reacting :${inp.name ?? "?"}:`;
+      case `mcp__${SLACK_MCP_NAME}__request_approval`:
+        return "requesting approval";
       default: {
         // Generic mcp tool: mcp__<server>__<tool> → "tool (server)"
         const m = tool.match(/^mcp__([^_]+(?:_[^_]+)*)__(.+)$/);

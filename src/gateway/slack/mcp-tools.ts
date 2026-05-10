@@ -20,6 +20,13 @@ export type SlackContext = {
   threadTs: string;
   /** ts of the latest inbound user message in this thread. */
   inboundTs: string;
+  /** Optional approval gate — set by the adapter so request_approval works. */
+  requestApproval?: (req: {
+    summary: string;
+    tools?: string[];
+    files?: string[];
+    risks?: string;
+  }) => Promise<{ approved: boolean; by: string; note?: string }>;
 };
 
 export const SLACK_MCP_NAME = "slaude_slack";
@@ -100,6 +107,42 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
             const msg = e?.data?.error ?? e?.message ?? String(e);
             if (msg === "already_reacted") return ok("already reacted");
             return err(`slack react failed: ${msg}`);
+          }
+        },
+      ),
+
+      tool(
+        "request_approval",
+        "Ask the user to approve a high-level plan before executing destructive or far-reaching work (file writes, mutating Bash, deploys, deletions, migrations, external POSTs, etc.). Posts a Block Kit message with the plan summary and Approve/Deny buttons; blocks until the user clicks. Returns {approved: bool, by: <user_id>, note?}. If approved=false, do NOT proceed — reply explaining you need a different plan. Read-only ops (Read/Grep/Glob/LS/git status) do not need approval.",
+        {
+          summary: z
+            .string()
+            .describe("One-paragraph plain-language summary of what you're about to do and why."),
+          tools: z
+            .array(z.string())
+            .optional()
+            .describe("List of tool names you intend to call (e.g. ['Bash','Edit','mcp__slaude_slack__upload'])."),
+          files: z
+            .array(z.string())
+            .optional()
+            .describe("Files you intend to create / modify / delete."),
+          risks: z
+            .string()
+            .optional()
+            .describe("What could go wrong / what's irreversible. Brief."),
+        },
+        async ({ summary, tools, files, risks }) => {
+          if (!ctx.requestApproval) {
+            return err("approval gate not wired (transport bug)");
+          }
+          try {
+            const r = await ctx.requestApproval({ summary, tools, files, risks });
+            if (r.approved) {
+              return ok(`approved by <@${r.by}>`);
+            }
+            return ok(`denied by <@${r.by}>${r.note ? ` (${r.note})` : ""}`);
+          } catch (e: any) {
+            return err(`approval request failed: ${e?.message ?? String(e)}`);
           }
         },
       ),
