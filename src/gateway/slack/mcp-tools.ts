@@ -5,6 +5,8 @@ import {
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { WebClient } from "@slack/web-api";
+import { createReadStream, statSync } from "node:fs";
+import { basename } from "node:path";
 import { mdToMrkdwn } from "./format";
 
 /**
@@ -98,6 +100,45 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
             const msg = e?.data?.error ?? e?.message ?? String(e);
             if (msg === "already_reacted") return ok("already reacted");
             return err(`slack react failed: ${msg}`);
+          }
+        },
+      ),
+
+      tool(
+        "upload",
+        "Upload a local file to the current Slack thread. Use absolute paths under the session working dir (e.g. files you've Written or downloaded). Optional initial_comment posts above the file as the bot's text; omit to upload silently. Requires the bot's `files:write` scope.",
+        {
+          path: z.string().describe("Absolute local path to the file to upload."),
+          title: z.string().optional().describe("Display title (defaults to filename)."),
+          initial_comment: z
+            .string()
+            .optional()
+            .describe("Optional message body posted with the file. Markdown supported (converted to Slack mrkdwn)."),
+          alt_text: z
+            .string()
+            .optional()
+            .describe("Accessibility alt text for images."),
+        },
+        async ({ path, title, initial_comment, alt_text }) => {
+          try {
+            statSync(path); // throws if missing
+            const filename = basename(path);
+            const r = await ctx.client.files.uploadV2({
+              channel_id: ctx.channel,
+              thread_ts: ctx.threadTs,
+              file: createReadStream(path),
+              filename,
+              title: title ?? filename,
+              ...(initial_comment ? { initial_comment: mdToMrkdwn(initial_comment) } : {}),
+              ...(alt_text ? { alt_text } : {}),
+            } as any);
+            const ids = ((r as any).files ?? [])
+              .map((f: any) => f?.files?.[0]?.id ?? f?.id)
+              .filter(Boolean);
+            return ok(`uploaded${ids.length ? ` file_id=${ids.join(",")}` : ""}`);
+          } catch (e: any) {
+            const msg = e?.data?.error ?? e?.message ?? String(e);
+            return err(`slack upload failed: ${msg}`);
           }
         },
       ),
