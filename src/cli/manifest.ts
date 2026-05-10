@@ -12,6 +12,13 @@ const manifest = {
       display_name: "slaude",
       always_online: true,
     },
+    // Enable Slack Agent/Assistant — unlocks assistant.threads.setStatus
+    // for animated "thinking…" / "running <tool>…" indicators next to the
+    // bot name in threads.
+    assistant_view: {
+      assistant_description: "AI teammate powered by Claude Code",
+      suggested_prompts: [],
+    },
   },
   oauth_config: {
     scopes: {
@@ -35,6 +42,7 @@ const manifest = {
         "reactions:write",
         "users:read",
         "users.profile:write",
+        "assistant:write",
       ],
     },
   },
