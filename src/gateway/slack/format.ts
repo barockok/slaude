@@ -1,12 +1,112 @@
-// Minimal markdown -> slack mrkdwn conversion. Best-effort.
+// Convert common Markdown (what LLMs emit) to Slack mrkdwn.
+//
+// Slack mrkdwn differs from CommonMark:
+//   bold      *X*       (md: **X**)
+//   italic    _X_       (md: *X* or _X_)
+//   strike    ~X~       (md: ~~X~~)
+//   link      <url|txt> (md: [txt](url))
+//   heading   *X*       (md: #/##/### X)
+//   codespan  `X`       (same)
+//   codeblock ```X```   (same; language hint ignored)
+
+const C1 = ""; // code block ref
+const C2 = ""; // code span ref
+const C3 = ""; // bold open
+const C4 = ""; // bold close
+
 export function mdToMrkdwn(md: string): string {
-  return md
-    // **bold** -> *bold*
-    .replace(/\*\*([^*\n]+)\*\*/g, "*$1*")
-    // [text](url) -> <url|text>
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "<$2|$1>")
-    // headers -> bold line
-    .replace(/^#{1,6}\s+(.+)$/gm, "*$1*");
+  // 0. Markdown tables → fixed-width code block (Slack has no native tables).
+  let pre = md.replace(
+    /(^\|.+\|[ \t]*\n\|[ \t]*[-:| \t]+\|[ \t]*\n(?:\|.*\|[ \t]*\n?)+)/gm,
+    (block) => renderTable(block),
+  );
+
+  // 1. Carve fenced code blocks.
+  const blocks: string[] = [];
+  let work = pre.replace(/```[a-zA-Z0-9_+-]*\n?([\s\S]*?)```/g, (_m, body) => {
+    blocks.push("```" + body.replace(/\n+$/, "") + "```");
+    return `${C1}${blocks.length - 1}${C1}`;
+  });
+
+  // 2. Carve inline code spans.
+  const spans: string[] = [];
+  work = work.replace(/`([^`\n]+)`/g, (_m, body) => {
+    spans.push("`" + body + "`");
+    return `${C2}${spans.length - 1}${C2}`;
+  });
+
+  // 3. Links: [text](url) → <url|text>.
+  work = work.replace(
+    /\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
+    "<$2|$1>",
+  );
+
+  // 4. Headings → bold line.
+  work = work.replace(/^#{1,6}\s+(.+?)\s*#*\s*$/gm, `${C3}$1${C4}`);
+
+  // 5. Italic FIRST while bold markers are still **. Single-star italic
+  //    requires non-* on both sides so we don't munch bold.
+  work = work.replace(/(^|[^*])\*([^*\n]+?)\*(?!\*)/g, "$1_$2_");
+
+  // 6. Bold: **X** or __X__ → sentinel; restored to single * at the end so
+  //    nothing else mistakes them for emphasis.
+  work = work.replace(/\*\*([\s\S]+?)\*\*/g, `${C3}$1${C4}`);
+  work = work.replace(/__([^_\n]+?)__/g, `${C3}$1${C4}`);
+
+  // 7. Strike: ~~X~~ → ~X~.
+  work = work.replace(/~~([^~\n]+?)~~/g, "~$1~");
+
+  // 8. Bullet markers: "* foo" or "- foo" at line start → "• foo".
+  work = work.replace(/^[ \t]*[*\-][ \t]+/gm, "• ");
+
+  // 9. Restore bold sentinels + carved code.
+  work = work
+    .replaceAll(C3, "*")
+    .replaceAll(C4, "*")
+    .replace(new RegExp(`${C2}(\\d+)${C2}`, "g"), (_m, i) => spans[+i] ?? "")
+    .replace(new RegExp(`${C1}(\\d+)${C1}`, "g"), (_m, i) => blocks[+i] ?? "");
+
+  return work;
+}
+
+/** Render a markdown table as a monospace code block w/ column padding. */
+function renderTable(block: string): string {
+  const lines = block.trim().split("\n");
+  const rows = lines
+    .map((l) => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim()));
+  if (rows.length < 2) return block;
+  const sep = rows[1] ?? [];
+  const isSep = sep.every((c) => /^:?-+:?$/.test(c));
+  const header = rows[0] ?? [];
+  const body = isSep ? rows.slice(2) : rows.slice(1);
+  const cols = header.length;
+  const widths = new Array(cols).fill(0);
+  for (const r of [header, ...body]) {
+    for (let i = 0; i < cols; i++) {
+      widths[i] = Math.max(widths[i], (r[i] ?? "").length);
+    }
+  }
+  // Slack's thread panel is narrow (~70 chars). If the table is wider,
+  // render as a definition list so long cells don't wrap mid-row.
+  const totalWidth = widths.reduce((a, b) => a + b, 0) + (cols - 1) * 2;
+  if (totalWidth > 60 && cols >= 2) {
+    const lines: string[] = [];
+    for (const r of body) {
+      lines.push(`**${r[0] ?? "—"}**`);
+      for (let i = 1; i < cols; i++) {
+        const k = header[i] ?? `col${i}`;
+        const v = r[i] ?? "";
+        lines.push(`  • ${k}: ${v}`);
+      }
+    }
+    return "\n" + lines.join("\n") + "\n";
+  }
+  const fmt = (r: string[]) =>
+    r.map((c, i) => (c ?? "").padEnd(widths[i] ?? 0)).join("  ").trimEnd();
+  const out: string[] = [fmt(header)];
+  out.push(widths.map((w) => "-".repeat(w)).join("  "));
+  for (const r of body) out.push(fmt(r));
+  return "\n```\n" + out.join("\n") + "\n```\n";
 }
 
 export const SLACK_MAX_TEXT = 39000;

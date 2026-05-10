@@ -5,6 +5,7 @@ import {
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { WebClient } from "@slack/web-api";
+import { mdToMrkdwn } from "./format";
 
 /**
  * Per-session Slack output context. The slack MCP tools close over this
@@ -44,7 +45,7 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
             const r = await ctx.client.chat.postMessage({
               channel: ctx.channel,
               thread_ts: ctx.threadTs,
-              text,
+              text: mdToMrkdwn(text),
               mrkdwn: true,
             });
             return ok(`posted ts=${r.ts}`);
@@ -66,7 +67,7 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
             await ctx.client.chat.update({
               channel: ctx.channel,
               ts,
-              text,
+              text: mdToMrkdwn(text),
             });
             return ok("edited");
           } catch (e: any) {
