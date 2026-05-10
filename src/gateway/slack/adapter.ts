@@ -359,22 +359,17 @@ export function createSlackApp(agent: AgentManager) {
     const e: any = args.event;
     if (e.bot_id || e.subtype === "bot_message") return;
 
-    // DM — always handle.
+    // DMs are 1:1 — every message is for us, no mention needed.
     if (e.channel_type === "im") return await handleMessage(args);
 
-    // In-thread continuation — handle if we already have a session for the
-    // thread (no need to re-mention the bot on every reply).
-    const teamId: string | undefined = args.context?.teamId ?? e.team;
-    if (e.thread_ts && teamId) {
-      const known = Sessions.findByThread({
-        team_id: teamId,
-        channel_id: e.channel,
-        thread_ts: e.thread_ts,
-      });
-      if (known) return await handleMessage(args);
-    }
-    // Else ignore — top-level channel chatter is not for us.
+    // Channels / private groups: require @mention. We do NOT auto-continue
+    // in-thread on plain replies because the user may be talking to a human
+    // colleague in the same thread; grabbing those would be intrusive.
+    // app.event("app_mention") catches the mentioned ones above.
   });
+
+  // Silence unused import — Sessions used elsewhere now via agent.ensureSession.
+  void Sessions;
 
   return app;
 }
