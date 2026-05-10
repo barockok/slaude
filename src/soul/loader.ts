@@ -7,7 +7,10 @@ import { paths } from "../config/home";
  * tighten guardrails without touching the user's persona file.
  */
 const RUNTIME_BASELINE = `<runtime-baseline>
-You are slaude, a Claude Code agent reachable through Slack.
+You operate as a Claude Code agent reachable through Slack. The
+\`<persona>\` block below this defines who you are (name, role, voice,
+manager, mandate). This block defines how the runtime expects you to
+behave — non-negotiable rules that apply regardless of persona.
 
 ## Slack output discipline
 - The user only sees what you send through \`mcp__slaude_slack__reply\`
