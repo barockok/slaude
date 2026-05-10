@@ -13,6 +13,7 @@ import { PermissionGate } from "./permission-gate";
 import { ApprovalGate } from "./approval-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "./commands";
 import { createSlackMcp, SLACK_MCP_NAME, type SlackContext } from "./mcp-tools";
+import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { resolveUserName } from "./users";
 import { downloadAttachments, type SlackFile } from "./attachments";
 import * as Sessions from "../../db/sessions";
@@ -70,7 +71,10 @@ export function createSlackApp(agent: AgentManager) {
   agent.setMcpResolver((sessionId) => {
     const route = routes.get(sessionId);
     if (!route) return undefined;
-    return { [SLACK_MCP_NAME]: createSlackMcp(route.ctx) };
+    return {
+      [SLACK_MCP_NAME]: createSlackMcp(route.ctx),
+      [SKILLS_MCP_NAME]: createSkillsMcp(),
+    };
   });
 
   agent.on("event", (e: AgentEvent) => {
