@@ -38,25 +38,19 @@ jobs:
             echo "## What changed"
             echo
             if [ -n "$PREV" ]; then
-              git log --pretty=format:'- %s (%h)' "${PREV}..${REF_NAME}"
-              echo
+              git log --pretty=tformat:'- %s (%h)' "${PREV}..${REF_NAME}"
               echo
               echo "**Full diff:** https://github.com/${{ github.repository }}/compare/${PREV}...${REF_NAME}"
             else
-              git log --pretty=format:'- %s (%h)' "${REF_NAME}"
+              git log --pretty=tformat:'- %s (%h)' "${REF_NAME}"
             fi
           } > CHANGELOG.md
-          {
-            echo 'changelog<<__END__'
-            cat CHANGELOG.md
-            echo '__END__'
-          } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          body: ${{ steps.changelog.outputs.changelog }}
+          body_path: CHANGELOG.md
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
