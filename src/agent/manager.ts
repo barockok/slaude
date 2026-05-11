@@ -8,7 +8,9 @@ import {
   type CanUseTool,
   type Query,
   type McpServerConfig,
+  type HookCallback,
 } from "@anthropic-ai/claude-agent-sdk";
+import { TokenBudget, type UsageSnapshot } from "./token-budget";
 
 export type PermissionMode =
   | "default"
@@ -47,7 +49,15 @@ export type AgentEvent =
   | { type: "toolResult"; sessionId: string; tool: string; result: unknown }
   | { type: "thinking"; sessionId: string; text: string }
   | { type: "done"; sessionId: string; autoEvolve?: boolean }
-  | { type: "error"; sessionId: string; error: string };
+  | { type: "error"; sessionId: string; error: string }
+  | { type: "tokenUsage"; sessionId: string; snapshot: UsageSnapshot }
+  | {
+      type: "tokenWarning";
+      sessionId: string;
+      level: "warn" | "critical";
+      snapshot: UsageSnapshot;
+    }
+  | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" };
 
 /** Permission resolver — called per tool use; given a sessionId so transports can present UI in the right thread. */
 export type PermissionResolver = (
@@ -64,6 +74,12 @@ export class AgentManager extends EventEmitter {
   #live = new Map<string, LiveSession>();
   #resolver: PermissionResolver | undefined;
   #mcpResolver: McpResolver | undefined;
+  #budget = new TokenBudget();
+
+  /** Current context-usage snapshot for a session, or null if no turn has completed. */
+  getTokenSnapshot(sessionId: string): UsageSnapshot | null {
+    return this.#budget.snapshot(sessionId);
+  }
 
   /** Install a transport-level permission resolver (e.g. Slack approval gate). */
   setPermissionResolver(resolver: PermissionResolver | undefined) {
@@ -212,6 +228,15 @@ export class AgentManager extends EventEmitter {
 
     const mode = (row.permission_mode || "default") as PermissionMode;
     const mcpServers = this.#mcpResolver?.(sessionId);
+    const preCompact: HookCallback = async (input) => {
+      if (input.hook_event_name !== "PreCompact") return { continue: true };
+      this.emit("event", {
+        type: "compacting",
+        sessionId,
+        trigger: input.trigger,
+      } satisfies AgentEvent);
+      return { continue: true };
+    };
     const options: Options = {
       cwd: row.working_dir,
       // Pass `model` only when explicitly set. Empty = let the SDK / CLI use
@@ -227,6 +252,7 @@ export class AgentManager extends EventEmitter {
       ...(mode === "bypassPermissions"
         ? { allowDangerouslySkipPermissions: true }
         : {}),
+      hooks: { PreCompact: [{ hooks: [preCompact] }] },
       systemPrompt: {
         type: "preset",
         preset: "claude_code",
@@ -296,6 +322,7 @@ export class AgentManager extends EventEmitter {
         if (live.idleTimer) clearTimeout(live.idleTimer);
         Sessions.setStatus(sessionId, "idle");
         this.#live.delete(sessionId);
+        this.#budget.forget(sessionId);
       }
     })();
   }
@@ -347,6 +374,33 @@ export class AgentManager extends EventEmitter {
         if (live) {
           this.#flushTurn(live);
           this.#armIdle(live);
+        }
+        // Record token usage from the SDK's result message and surface
+        // crossings of the warn / critical thresholds (edge-triggered).
+        if ((msg as any).usage && (msg as any).modelUsage) {
+          this.#budget.record(sessionId, {
+            usage: (msg as any).usage,
+            modelUsage: (msg as any).modelUsage,
+          });
+          const snapshot = this.#budget.snapshot(sessionId)!;
+          this.emit("event", {
+            type: "tokenUsage",
+            sessionId,
+            snapshot,
+          } satisfies AgentEvent);
+          const level = this.#budget.evaluateThreshold(
+            sessionId,
+            env.tokenWarnPct(),
+            env.tokenCriticalPct(),
+          );
+          if (level) {
+            this.emit("event", {
+              type: "tokenWarning",
+              sessionId,
+              level,
+              snapshot,
+            } satisfies AgentEvent);
+          }
         }
         if (msg.is_error) {
           const errStr =
