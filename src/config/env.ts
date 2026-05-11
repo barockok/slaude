@@ -107,4 +107,11 @@ export const env = {
     const min = Number.isFinite(n) && n >= 0 ? n : 15;
     return min * 60 * 1000;
   },
+  /**
+   * Auto-evolve after each substantial user turn. When enabled, the manager
+   * injects an internal `<auto-evolve>` prompt to make the agent decide
+   * whether to save/refine a skill — independent of whether the persona
+   * obeys the baseline directive. Set to "0" to disable.
+   */
+  autoEvolve: () => opt("SLAUDE_AUTO_EVOLVE", "1") !== "0",
 };
