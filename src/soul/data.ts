@@ -9,7 +9,7 @@ import { z } from "zod";
  * incomplete. Callers fall back to regex parsing for fields they require.
  */
 export const ApproverEntrySchema = z.object({
-  userId: z.string().regex(/^[UW][A-Z0-9]{6,}$/),
+  userId: z.string().regex(/^[UW][A-Z0-9]+$/),
   scope: z.string().min(1),
   catchall: z.boolean(),
 });
@@ -25,7 +25,7 @@ export const SoulDataSchema = z.object({
     .default({}),
   manager: z
     .object({
-      userId: z.string().regex(/^[UW][A-Z0-9]{6,}$/).optional(),
+      userId: z.string().regex(/^[UW][A-Z0-9]+$/).optional(),
       handle: z.string().optional(),
     })
     .partial()
@@ -34,7 +34,7 @@ export const SoulDataSchema = z.object({
    *  in the channel can address slaude. In any channel NOT on this list
    *  (and in DMs) only the manager may engage; approvers can still click
    *  Approve / Deny on `request_approval` blocks but can't chat. */
-  allowedChannels: z.array(z.string().regex(/^[CGD][A-Z0-9]{6,}$/)).default([]),
+  allowedChannels: z.array(z.string().regex(/^[CGD][A-Z0-9]+$/)).default([]),
   approvers: z.array(ApproverEntrySchema).default([]),
   mandate: z.string().optional(),
   values: z.array(z.string()).default([]),
