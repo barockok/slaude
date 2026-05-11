@@ -33,7 +33,6 @@ type SessionRoute = {
 };
 
 export function createSlackApp(agent: AgentManager) {
-  const allowed = new Set(env.slack.allowedUsers());
 
   const app = new App({
     token: env.slack.botToken(),
@@ -172,14 +171,25 @@ export function createSlackApp(agent: AgentManager) {
     if (seenEvents.has(dedupKey)) return;
     seenEvents.add(dedupKey);
 
-    if (allowed.size > 0 && !allowed.has(userId)) return;
-
-    // Channel whitelist from SOUL.md (extracted at boot). DMs always pass.
-    const isDM_ = channelType === "im";
-    const allowedChannels = soulData().allowedChannels;
-    if (!isDM_ && allowedChannels.length && !allowedChannels.includes(channelId)) {
-      console.log(`[slack-rx] drop ch=${channelId} — not in SOUL.md allowedChannels`);
-      return;
+    // Channel-mode gate, driven entirely by SOUL.md:
+    //   - whitelisted channel → public zone, anyone can address slaude
+    //   - non-whitelisted channel OR DM → manager-only (approvers can still
+    //     click Approve / Deny on request_approval blocks but cannot chat)
+    {
+      const soul = soulData();
+      const isDM_ = channelType === "im";
+      const whitelisted =
+        !isDM_ && soul.allowedChannels.length > 0 && soul.allowedChannels.includes(channelId);
+      if (!whitelisted) {
+        const managerId = soul.manager.userId;
+        if (!managerId || userId !== managerId) {
+          console.log(
+            `[slack-rx] drop ch=${channelId} user=${userId} — non-whitelist/DM accepts manager only` +
+              (managerId ? "" : " (no manager set in SOUL.md)"),
+          );
+          return;
+        }
+      }
     }
 
     const botUserId = (await client.auth.test()).user_id as string;

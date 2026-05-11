@@ -55,7 +55,6 @@ describe("loadSoulData — extraction + cache", () => {
       return okResponse(JSON.stringify({
         identity: { name: "test-bot" },
         manager: { userId: "U0XXXXXXXXX" },
-        allowedUsers: [],
         approvers: [{ userId: "U0XXXXXXXXX", scope: "anything", catchall: true }],
         values: [],
       }));
@@ -89,21 +88,17 @@ describe("loadSoulData — extraction + cache", () => {
   test("extracts allowedChannels and grounded ids pass through", async () => {
     seedPersona([
       "# P",
-      "## Audience",
-      "- Allowed users: U0XXXXXXXXX",
       "## Allowed channels",
       "- <#C0123456789|eng>",
       "## Approvers",
       "- <@U0XXXXXXXXX>: anything",
     ].join("\n"));
     mockFetch(async () => okResponse(JSON.stringify({
-      allowedUsers: ["U0XXXXXXXXX"],
       allowedChannels: ["C0123456789"],
       approvers: [{ userId: "U0XXXXXXXXX", scope: "anything", catchall: true }],
     })));
     const d = await loadSoulData();
     expect(d.allowedChannels).toEqual(["C0123456789"]);
-    expect(d.allowedUsers).toEqual(["U0XXXXXXXXX"]);
   });
 
   test("rejects ungrounded id (not present in persona) → fallback", async () => {
