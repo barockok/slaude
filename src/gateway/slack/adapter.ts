@@ -15,6 +15,7 @@ import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "./comma
 import { soulData } from "../../soul/extract";
 import { createSlackMcp, SLACK_MCP_NAME, type SlackContext } from "./mcp-tools";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
+import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { loadExternalMcp } from "../../config/mcp";
 import { resolveUserName } from "./users";
 import { downloadAttachments, type SlackFile } from "./attachments";
@@ -86,6 +87,9 @@ export function createSlackApp(agent: AgentManager) {
       ...externalMcp,
       [SLACK_MCP_NAME]: createSlackMcp(route.ctx),
       [SKILLS_MCP_NAME]: createSkillsMcp(),
+      [SESSION_MCP_NAME]: createSessionMcp({
+        getSnapshot: () => agent.getTokenSnapshot(sessionId),
+      }),
     };
   });
 
@@ -157,6 +161,35 @@ export function createSlackApp(agent: AgentManager) {
           presence.exit(e.sessionId);
           await status.clear(e.sessionId);
         })();
+        break;
+      }
+      case "tokenWarning": {
+        void (async () => {
+          const pct = (e.snapshot.pctUsed * 100).toFixed(1);
+          const used = e.snapshot.totalInput.toLocaleString();
+          const cap = e.snapshot.contextWindow.toLocaleString();
+          const head =
+            e.level === "critical"
+              ? ":rotating_light: *context critical*"
+              : ":warning: *context filling up*";
+          try {
+            await app.client.chat.postMessage({
+              channel: route.ctx.channel,
+              thread_ts: route.ctx.threadTs,
+              text: `${head}: ${pct}% used (${used} / ${cap}). Auto-compaction will kick in soon — consider \`/abort\` or asking me to summarize and reset.`,
+              mrkdwn: true,
+            });
+          } catch {}
+        })();
+        break;
+      }
+      case "compacting": {
+        void status.set(
+          e.sessionId,
+          route.ctx.channel,
+          route.ctx.threadTs,
+          e.trigger === "manual" ? "compacting context (manual)…" : "compacting context…",
+        );
         break;
       }
     }
