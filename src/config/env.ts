@@ -47,17 +47,32 @@ export const env = {
    * Anthropic-compatible LLM provider. Any provider that speaks the Anthropic
    * Messages API works (Anthropic, OpenRouter, Z.ai, self-hosted gateway, etc.).
    *
-   *   ANTHROPIC_BASE_URL  optional; defaults to https://api.anthropic.com
-   *   ANTHROPIC_API_KEY   required
-   *   SLAUDE_MODEL        provider-qualified model id
-   *   ANTHROPIC_AUTH_TOKEN optional; used by some gateways instead of API key header
+   *   ANTHROPIC_BASE_URL      optional; defaults to https://api.anthropic.com
+   *   ANTHROPIC_API_KEY       required when not using OAuth
+   *   SLAUDE_MODEL            provider-qualified model id
+   *   ANTHROPIC_AUTH_TOKEN    optional; used by some gateways instead of API key header
+   *   CLAUDE_CODE_OAUTH_TOKEN optional; Claude Pro/Max subscription OAuth token
+   *                            (produced by `claude setup-token`). When set, the
+   *                            extractor uses Authorization: Bearer + the
+   *                            anthropic-beta: oauth-2025-04-20 header, and the
+   *                            SDK child inherits the token for subscription auth.
    */
   provider: {
     apiKey: () => opt("ANTHROPIC_API_KEY"),
     baseUrl: () => opt("ANTHROPIC_BASE_URL"),
     authToken: () => opt("ANTHROPIC_AUTH_TOKEN"),
+    oauthToken: () => opt("CLAUDE_CODE_OAUTH_TOKEN"),
   },
-  model: () => opt("SLAUDE_MODEL", "claude-sonnet-4-6"),
+  /**
+   * Optional model override. Empty = let the Claude Code SDK / CLI pick its
+   * own default model for the current auth mode. Required when pointing at
+   * a non-Anthropic gateway (OpenRouter, Z.ai, self-hosted) — those endpoints
+   * don't honour Anthropic's default model id, so you MUST set a
+   * provider-qualified model id here. When using CLAUDE_CODE_OAUTH_TOKEN, you
+   * usually want to leave this unset and inherit Claude Code's subscription
+   * default; set it only to pin a specific tier-allowed model.
+   */
+  model: () => opt("SLAUDE_MODEL"),
   /**
    * Default permission mode for new sessions. One of:
    *   default | acceptEdits | bypassPermissions | plan | dontAsk

@@ -31,6 +31,7 @@ describe("config/env getters", () => {
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_BASE_URL;
     delete process.env.ANTHROPIC_AUTH_TOKEN;
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
     delete process.env.SLAUDE_APPROVERS;
     delete process.env.SLACK_ALLOWED_USERS;
     delete process.env.SLAUDE_DEFAULT_MODE;
@@ -49,7 +50,8 @@ describe("config/env getters", () => {
     expect(env.provider.apiKey()).toBe("");
     expect(env.provider.baseUrl()).toBe("");
     expect(env.provider.authToken()).toBe("");
-    expect(env.model()).toBe("claude-sonnet-4-6");
+    expect(env.provider.oauthToken()).toBe("");
+    expect(env.model()).toBe("");
   });
 
   test("populated getters", () => {
@@ -59,6 +61,7 @@ describe("config/env getters", () => {
     process.env.ANTHROPIC_API_KEY = "k";
     process.env.ANTHROPIC_BASE_URL = "u";
     process.env.ANTHROPIC_AUTH_TOKEN = "t";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-oat01-abc";
     process.env.SLAUDE_MODEL = "x";
     expect(env.slack.botToken()).toBe("xoxb-T");
     expect(env.slack.appToken()).toBe("xapp-T");
@@ -66,6 +69,7 @@ describe("config/env getters", () => {
     expect(env.provider.apiKey()).toBe("k");
     expect(env.provider.baseUrl()).toBe("u");
     expect(env.provider.authToken()).toBe("t");
+    expect(env.provider.oauthToken()).toBe("sk-ant-oat01-abc");
     expect(env.model()).toBe("x");
   });
 
