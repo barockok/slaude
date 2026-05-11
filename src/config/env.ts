@@ -116,4 +116,25 @@ export const env = {
    * obeys the baseline directive. Set to "0" to disable.
    */
   autoEvolve: () => opt("SLAUDE_AUTO_EVOLVE", "1") !== "0",
+  /**
+   * Context-window thresholds (fraction 0..1). On each turn's result the
+   * manager compares `total_input_tokens / contextWindow` against these:
+   *   - `warnPct`  (default 0.8): emit a one-shot warning event so the
+   *      transport can surface "context filling up" to the user.
+   *   - `criticalPct` (default 0.92): emit a higher-severity event. Set to 0
+   *      to disable the critical tier.
+   * Each crossing fires once per session; resets only on session teardown.
+   */
+  tokenWarnPct: () => {
+    const n = Number(opt("SLAUDE_TOKEN_WARN_PCT", "0.8"));
+    return Number.isFinite(n) && n > 0 && n < 1 ? n : 0.8;
+  },
+  tokenCriticalPct: () => {
+    const raw = opt("SLAUDE_TOKEN_CRITICAL_PCT", "0.92");
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return 0.92;
+    if (n <= 0) return 0;
+    if (n >= 1) return 0.92;
+    return n;
+  },
 };

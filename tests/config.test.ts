@@ -111,4 +111,32 @@ describe("config/env getters", () => {
   test("empty approvers → []", () => {
     expect(env.slack.approvers()).toEqual([]);
   });
+
+  test("tokenWarnPct default + valid + invalid + out-of-range", () => {
+    delete process.env.SLAUDE_TOKEN_WARN_PCT;
+    expect(env.tokenWarnPct()).toBe(0.8);
+    process.env.SLAUDE_TOKEN_WARN_PCT = "0.5";
+    expect(env.tokenWarnPct()).toBe(0.5);
+    process.env.SLAUDE_TOKEN_WARN_PCT = "abc";
+    expect(env.tokenWarnPct()).toBe(0.8);
+    process.env.SLAUDE_TOKEN_WARN_PCT = "0";
+    expect(env.tokenWarnPct()).toBe(0.8);
+    process.env.SLAUDE_TOKEN_WARN_PCT = "1";
+    expect(env.tokenWarnPct()).toBe(0.8);
+    delete process.env.SLAUDE_TOKEN_WARN_PCT;
+  });
+
+  test("tokenCriticalPct default + 0 disables + invalid + range clamp", () => {
+    delete process.env.SLAUDE_TOKEN_CRITICAL_PCT;
+    expect(env.tokenCriticalPct()).toBe(0.92);
+    process.env.SLAUDE_TOKEN_CRITICAL_PCT = "0";
+    expect(env.tokenCriticalPct()).toBe(0);
+    process.env.SLAUDE_TOKEN_CRITICAL_PCT = "0.95";
+    expect(env.tokenCriticalPct()).toBe(0.95);
+    process.env.SLAUDE_TOKEN_CRITICAL_PCT = "abc";
+    expect(env.tokenCriticalPct()).toBe(0.92);
+    process.env.SLAUDE_TOKEN_CRITICAL_PCT = "1.5";
+    expect(env.tokenCriticalPct()).toBe(0.92);
+    delete process.env.SLAUDE_TOKEN_CRITICAL_PCT;
+  });
 });
