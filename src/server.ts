@@ -2,9 +2,19 @@ import { ensureHome } from "./config/home";
 import { AgentManager } from "./agent/manager";
 import { createSlackApp } from "./gateway/slack/adapter";
 import { startHealthServer } from "./health";
+import { loadSoulData, setSoulData } from "./soul/extract";
 
 async function main() {
   ensureHome();
+
+  // Warm the structured-soul cache before sessions start. Best-effort: the
+  // extractor falls back to regex parsing internally on any failure, so
+  // boot never blocks on LLM availability.
+  try {
+    setSoulData(await loadSoulData());
+  } catch (e) {
+    console.warn("[slaude] soul prewarm failed (continuing with regex fallback):", e);
+  }
 
   const agent = new AgentManager();
   const slack = createSlackApp(agent);

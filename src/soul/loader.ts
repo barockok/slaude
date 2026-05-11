@@ -252,6 +252,20 @@ export function loadApproverEntries(): ApproverEntry[] | null {
 export function selectApprovers(summary: string, hint?: string): string[] {
   const entries = loadApproverEntries();
   if (!entries) return [];
+  return selectApproversFrom(entries, summary, hint);
+}
+
+/**
+ * Pure variant of {@link selectApprovers} that works on an already-parsed
+ * approver list. Lets callers (e.g. the LLM-extracted SoulData path) skip the
+ * regex scrape and reuse the same token-overlap logic.
+ */
+export function selectApproversFrom(
+  entries: readonly ApproverEntry[],
+  summary: string,
+  hint?: string,
+): string[] {
+  if (!entries.length) return [];
   const promptTokens = tokenize(`${summary} ${hint ?? ""}`);
   const seen = new Set<string>();
   const out: string[] = [];
