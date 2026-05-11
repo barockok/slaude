@@ -1,5 +1,12 @@
 # slaude
 
+[![CI](https://github.com/barockok/slaude/actions/workflows/ci.yml/badge.svg)](https://github.com/barockok/slaude/actions/workflows/ci.yml)
+[![Docker](https://github.com/barockok/slaude/actions/workflows/docker.yml/badge.svg)](https://github.com/barockok/slaude/actions/workflows/docker.yml)
+[![Release](https://github.com/barockok/slaude/actions/workflows/release.yml/badge.svg)](https://github.com/barockok/slaude/actions/workflows/release.yml)
+[![Coverage](https://img.shields.io/badge/coverage-%E2%89%A597%25-brightgreen)](./bunfig.toml)
+[![Latest release](https://img.shields.io/github/v/release/barockok/slaude?sort=semver)](https://github.com/barockok/slaude/releases/latest)
+[![Bun](https://img.shields.io/badge/runtime-bun-black)](https://bun.sh)
+
 Slack-native Claude Code runtime. Onboard an AI agent as a teammate in your Slack workspace.
 
 > Inspired by [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent), but Slack-only and powered by the official `@anthropic-ai/claude-agent-sdk`.
