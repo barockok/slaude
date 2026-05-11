@@ -21,7 +21,6 @@ writeFileSync(
   ].join("\n"),
 );
 
-process.env.SLACK_ALLOWED_USERS = "";
 process.env.SLAUDE_APPROVERS = "";
 process.env.SLAUDE_HEALTH_PORT = "0";
 process.env.SLAUDE_DEFAULT_MODE = "default";

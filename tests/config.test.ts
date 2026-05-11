@@ -55,7 +55,6 @@ describe("config/env getters", () => {
   test("populated getters", () => {
     process.env.SLACK_BOT_TOKEN = "xoxb-T";
     process.env.SLACK_APP_TOKEN = "xapp-T";
-    process.env.SLACK_ALLOWED_USERS = "U1, U2 ,U3";
     process.env.SLAUDE_APPROVERS = "U9, U10";
     process.env.ANTHROPIC_API_KEY = "k";
     process.env.ANTHROPIC_BASE_URL = "u";
@@ -63,17 +62,11 @@ describe("config/env getters", () => {
     process.env.SLAUDE_MODEL = "x";
     expect(env.slack.botToken()).toBe("xoxb-T");
     expect(env.slack.appToken()).toBe("xapp-T");
-    expect(env.slack.allowedUsers()).toEqual(["U1", "U2", "U3"]);
     expect(env.slack.approvers()).toEqual(["U9", "U10"]);
     expect(env.provider.apiKey()).toBe("k");
     expect(env.provider.baseUrl()).toBe("u");
     expect(env.provider.authToken()).toBe("t");
     expect(env.model()).toBe("x");
-  });
-
-  test("approvers falls back to allowed users", () => {
-    process.env.SLACK_ALLOWED_USERS = "U1,U2";
-    expect(env.slack.approvers()).toEqual(["U1", "U2"]);
   });
 
   test("idleMs valid + invalid + zero", () => {
@@ -111,8 +104,7 @@ describe("config/env getters", () => {
     expect(env.defaultPermissionMode()).toBe("default");
   });
 
-  test("empty approvers + empty allowed → []", () => {
+  test("empty approvers → []", () => {
     expect(env.slack.approvers()).toEqual([]);
-    expect(env.slack.allowedUsers()).toEqual([]);
   });
 });

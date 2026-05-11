@@ -30,9 +30,10 @@ export const SoulDataSchema = z.object({
     })
     .partial()
     .default({}),
-  allowedUsers: z.array(z.string().regex(/^[UW][A-Z0-9]{6,}$/)).default([]),
-  /** Slack channel/group/DM ids the agent will respond in. Empty = no
-   *  channel restriction (engagement model + allowedUsers still apply). */
+  /** Slack channel/group ids treated as public-interaction zones — anyone
+   *  in the channel can address slaude. In any channel NOT on this list
+   *  (and in DMs) only the manager may engage; approvers can still click
+   *  Approve / Deny on `request_approval` blocks but can't chat. */
   allowedChannels: z.array(z.string().regex(/^[CGD][A-Z0-9]{6,}$/)).default([]),
   approvers: z.array(ApproverEntrySchema).default([]),
   mandate: z.string().optional(),
@@ -47,7 +48,6 @@ export const EXTRACTION_PROMPT = `You are a structured-data extractor. Read the 
 {
   "identity":        { "name"?: string, "role"?: string, "voice"?: string },
   "manager":         { "userId"?: string, "handle"?: string },
-  "allowedUsers":    string[],
   "allowedChannels": string[],
   "approvers":       Array<{ "userId": string, "scope": string, "catchall": boolean }>,
   "mandate"?:        string,

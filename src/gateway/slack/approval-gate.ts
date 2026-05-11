@@ -99,7 +99,7 @@ export class ApprovalGate {
    *   1. LLM-extracted SoulData approvers (preferred when available).
    *   2. Scope-described persona via regex parser.
    *   3. Legacy "category: ids" persona: persona[category] → persona.default.
-   *   4. env SLAUDE_APPROVERS / SLACK_ALLOWED_USERS.
+   *   4. env SLAUDE_APPROVERS.
    *   5. Empty (anyone may click). */
   #resolveApprovers(req: ApprovalRequest): Set<string> {
     const structured = soulData().approvers;

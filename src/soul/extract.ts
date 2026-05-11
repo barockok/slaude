@@ -65,14 +65,13 @@ function parseJsonLoose(text: string): unknown {
 }
 
 /**
- * Reject any extracted Slack id (user, manager, allowedUsers, allowedChannels,
- * approvers) that does not appear verbatim in the source persona. Stops the
- * extractor from inventing ids that would silently widen the allowlist.
+ * Reject any extracted Slack id (manager, allowedChannels, approvers) that
+ * does not appear verbatim in the source persona. Stops the extractor from
+ * inventing ids that would silently widen the allowlist.
  */
 function assertIdsGroundedInPersona(data: SoulData, persona: string): void {
   const ids = new Set<string>();
   if (data.manager.userId) ids.add(data.manager.userId);
-  for (const u of data.allowedUsers) ids.add(u);
   for (const c of data.allowedChannels) ids.add(c);
   for (const a of data.approvers) ids.add(a.userId);
   const missing = [...ids].filter((id) => !persona.includes(id));

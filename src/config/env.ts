@@ -32,29 +32,16 @@ export const env = {
   slack: {
     botToken: () => req("SLACK_BOT_TOKEN"),
     appToken: () => req("SLACK_APP_TOKEN"),
-    allowedUsers: () =>
-      opt("SLACK_ALLOWED_USERS")
+    /**
+     * Env-level fallback approver allowlist. Used only when SOUL.md has no
+     * `## Approvers` section. Empty list = approval gate accepts any user —
+     * useful only for solo / DM workspaces.
+     */
+    approvers: () =>
+      opt("SLAUDE_APPROVERS")
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean),
-    /**
-     * Slack user IDs allowed to approve / deny `request_approval` plans.
-     * Falls back to `SLACK_ALLOWED_USERS` (everyone the bot can talk to)
-     * when unset. Empty list = approval gate accepts any user — useful
-     * only for solo / DM workspaces.
-     */
-    approvers: () => {
-      const raw = opt("SLAUDE_APPROVERS");
-      const list = raw
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      if (list.length) return list;
-      return opt("SLACK_ALLOWED_USERS")
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-    },
   },
   /**
    * Anthropic-compatible LLM provider. Any provider that speaks the Anthropic

@@ -109,15 +109,14 @@ const STARTER_PERSONA = `# Persona
 - Manager: <Slack user id of the person you report to, e.g. U06ENBS6PV0>
 - Manager handle: <e.g. @barock>
 
-## Audience
-- Allowed users: <Slack user ids who can address you; also enforce via
-  SLACK_ALLOWED_USERS env>
-
 ## Allowed channels
 
-Channel ids the gateway will accept inbound messages from. One per line
-(\`<#Cxxx|name>\` or raw \`Cxxx\`). DMs always allowed regardless of this
-list. Omit the whole section to disable channel filtering.
+Channels listed here are *public-interaction zones*: anyone in the
+channel can address slaude. In any channel NOT on this list (and in DMs)
+only the manager may engage; approvers can still click Approve / Deny on
+\`request_approval\` blocks but cannot chat. One id per line — either
+\`<#Cxxx|name>\` or raw \`Cxxx\`. Omit the section to disable public
+channels entirely (manager-only everywhere).
 
 - <#C0123456789|engineering>
 - <#G0123456789|private-ops>
@@ -140,8 +139,7 @@ plan summary; matching approvers are eligible for that request.
 - Use plain English. Comma, dash, "and" all work as separators in scope.
 - Trailing \`;\` starts an inline comment.
 
-When this section is absent, env \`SLAUDE_APPROVERS\` (or
-\`SLACK_ALLOWED_USERS\`) is used.
+When this section is absent, env \`SLAUDE_APPROVERS\` is used.
 
 - <@manager-id>:    anything                ; catchall, always eligible
 - <@reviewer-id>:   code changes, repo writes, refactors, dependency bumps

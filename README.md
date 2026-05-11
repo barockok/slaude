@@ -65,9 +65,9 @@ ANTHROPIC_API_KEY=sk-ant-...
 # ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1   # optional
 SLAUDE_MODEL=claude-sonnet-4-6
 
-# Optional: lock who can talk to the bot / approve plans.
-SLACK_ALLOWED_USERS=U01ABCD,U02EFGH
-SLAUDE_APPROVERS=U01ABCD                              # falls back to SLACK_ALLOWED_USERS
+# Optional: env-level fallback approver allowlist when SOUL.md has no
+# `## Approvers` section. Manager/channel rules live in SOUL.md, not env.
+SLAUDE_APPROVERS=U01ABCD
 
 # Defaults — see .env.example for the full list.
 SLAUDE_DEFAULT_MODE=bypass                            # YOLO; rely on approval-gate + soul mandate
@@ -81,9 +81,8 @@ SLAUDE_HEALTH_PORT=8080
 `~/.slaude/SOUL.md` is auto-seeded with a starter scaffold on first run. Fill in:
 
 - **Identity** — Name, Role, Voice
-- **Reporting** — Manager Slack user id + handle
-- **Audience** — who can address the agent (also enforced via `SLACK_ALLOWED_USERS`)
-- **Allowed channels** — channel ids the gateway will accept inbound from. DMs always pass; omit the section to disable channel filtering.
+- **Reporting** — Manager Slack user id + handle. This id is the **sole** user who can DM slaude or address it in non-whitelisted channels.
+- **Allowed channels** — public-interaction zones. Inside a listed channel, *anyone* can address slaude. Outside (private channels the manager adds the bot to ad-hoc, plus all DMs), only the manager engages. Approvers don't get chat privileges — they only authorize `request_approval` blocks.
 - **Values / Mandate** — operating principles + what this deploy is for
 - **Approvers** — one `<id-or-mention>: <free-text scope>` per line. The runtime keyword-matches plan summaries against each scope. Catchall keywords (`anything` / `*` / `default`) make an entry always eligible.
 
@@ -105,17 +104,18 @@ The hardcoded runtime baseline (Slack output discipline, formatting rules, appro
 
 ### Trust boundary: where the LLM ends and the gateway begins
 
-The persona is free-form prose. To safely turn that into security-sensitive state (who can DM the bot, which channels it answers in, who can click Approve), slaude separates *parsing* from *enforcement*:
+The persona is free-form prose. To safely turn that into security-sensitive state (which channels slaude answers in, who can DM it, who can click Approve), slaude separates *parsing* from *enforcement*:
 
-- **Parsing** — at boot, an ephemeral Claude turn projects SOUL.md into a typed `SoulData` JSON (`identity`, `manager`, `allowedUsers`, `allowedChannels`, `approvers`, `mandate`, `values`). The result is validated with zod, then **every Slack id it returns is checked against the raw SOUL.md text** — any id the extractor invented is rejected and the loader falls back to the regex parser. The validated JSON is sha-cached at `$SLAUDE_HOME/cache/soul.<sha>.json`; subsequent boots skip the LLM call entirely until SOUL.md changes.
-- **Enforcement is fully deterministic and runs in the gateway, never delegated to the model**:
-  - `allowedUsers` / `SLACK_ALLOWED_USERS` — inbound message dropped in `adapter.ts` before any session sees it.
-  - `allowedChannels` — inbound message dropped in `adapter.ts` (DMs always pass).
-  - **Engagement model** — `@mention` / disengage rules in `adapter.ts`.
-  - **Approver authorization** — when a user clicks Approve / Deny on an `mcp__slaude_slack__request_approval` block, the action handler verifies the clicker's user id is in the resolved approver Set (computed server-side from the structured `approvers` list + token-overlap match against the agent's plan summary). The agent **never passes user ids** — it only writes the summary text.
+- **Parsing** — at boot, an ephemeral Claude turn projects SOUL.md into a typed `SoulData` JSON (`identity`, `manager`, `allowedChannels`, `approvers`, `mandate`, `values`). The result is validated with zod, then **every Slack id it returns is checked against the raw SOUL.md text** — any id the extractor invented is rejected and the loader falls back to the regex parser. The validated JSON is sha-cached at `$SLAUDE_HOME/cache/soul.<sha>.json`; subsequent boots skip the LLM call entirely until SOUL.md changes.
+- **Enforcement is fully deterministic and runs in the gateway, never delegated to the model:**
+  - **Channel-mode gate (`adapter.ts`)** — for each inbound message:
+    - If the channel id is in `allowedChannels` → public zone: any user is accepted.
+    - Otherwise (any non-whitelisted channel **and** all DMs) → only `manager.userId` is accepted. Other users are dropped before any session sees the message.
+  - **Engagement model** — `@mention` engages a thread; `@mention` of someone else disengages. Plain replies in a disengaged thread are dropped.
+  - **Approver authorization** — when a user clicks Approve / Deny on an `mcp__slaude_slack__request_approval` block, the action handler verifies the clicker's user id is in the resolved approver Set (computed server-side from the structured `approvers` list + token-overlap match against the agent's plan summary). Approvers can authorize but **cannot chat** from non-whitelisted channels or DMs — the chat-gate above still applies. The agent **never passes user ids** — it only writes the summary text.
   - **Per-tool permissions** — `permission-gate.ts` `canUseTool` callback decides Allow / Ask / Deny; mutating tools require explicit user click on a Block Kit prompt.
 
-What this buys: a jailbroken or buggy persona can produce a misleading approval summary, but it cannot redirect approval to a friendlier user, widen the allowlist, or self-approve. The worst case is a real authorised approver reads a misleading summary and clicks Approve anyway — which is the same risk any human-in-the-loop system carries.
+What this buys: a jailbroken or buggy persona can produce a misleading approval summary, but it cannot redirect approval to a friendlier user, smuggle a new user into the DM gate, or self-approve. The worst case is a real authorised approver reads a misleading summary and clicks Approve anyway — which is the same risk any human-in-the-loop system carries.
 
 ### 5. Run
 
