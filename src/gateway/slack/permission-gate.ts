@@ -149,6 +149,11 @@ export class PermissionGate {
     ) {
       return { behavior: "allow", updatedInput: input };
     }
+    // Session introspection (token budget) is pure read — agent uses it to
+    // decide whether to summarize and reset. Never gate.
+    if (toolName.startsWith("mcp__slaude_session__")) {
+      return { behavior: "allow", updatedInput: input };
+    }
     const route = this.#routes.get(sessionId);
     if (!route) {
       // No live thread — fail closed so we don't silently grant ops.
