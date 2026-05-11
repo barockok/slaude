@@ -28,6 +28,7 @@ Slack-native Claude Code runtime. Onboard an AI agent as a teammate in your Slac
 - **File attachments both ways** — Slack files attached by users are downloaded to the session working dir and surfaced as `<attachment>` blocks; agent uploads files via `mcp__slaude_slack__upload`.
 - **Approval gate** — `mcp__slaude_slack__request_approval(summary, …)` posts Block Kit Approve/Deny. Approver allowlist parsed from SOUL.md scope-described entries; runtime keyword-matches the agent's plan summary against each approver's scope; the agent never picks user IDs.
 - **LLM-extracted SoulData** — at boot, an ephemeral Claude turn projects SOUL.md into a typed JSON (approvers, identity, manager, allowedUsers, mandate, values), sha-cached at `$SLAUDE_HOME/cache/soul.<sha>.json`. The approval gate consumes the structured approvers as the preferred tier; regex parser is the fallback. Persona prose can drift from rigid bullet format without breaking allowlist resolution.
+- **External MCP servers** — declare stdio / SSE / streamable-HTTP MCP servers in `~/.slaude/mcp.json` (same shape as Claude Code's mcp.json). Tools surface as `mcp__<server>__<tool>` and route through the standard approval gate on first call. See [External MCP servers (`mcp.json`)](#external-mcp-servers-mcpjson).
 - **Slash commands in thread** — `/mode <ask|accept-edits|bypass|plan|dont-ask>`, `/abort`, `/help`. Per-session `permission_mode` persists.
 - **Idle TTL with resume** — `SLAUDE_IDLE_MINUTES` (default 15). On expiry the SDK Query closes silently; next inbound message re-boots with `resume: row.id`.
 - **Provider-agnostic** — any Anthropic-compatible API (Anthropic direct, OpenRouter, DeepSeek, Z.ai, self-hosted gateway, …). Telemetry / autoupdater / bug-reporter disabled in the SDK child so non-Anthropic gateways don't crash the CLI.
@@ -140,6 +141,38 @@ The persona is free-form prose. To safely turn that into security-sensitive stat
 
 What this buys: a jailbroken or buggy persona can produce a misleading approval summary, but it cannot redirect approval to a friendlier user, smuggle a new user into the DM gate, or self-approve. The worst case is a real authorised approver reads a misleading summary and clicks Approve anyway — which is the same risk any human-in-the-loop system carries.
 
+### External MCP servers (`mcp.json`)
+
+Drop a Claude-Code-style `mcp.json` at `~/.slaude/mcp.json` (override path via `SLAUDE_MCP_CONFIG`). Loaded once at boot — restart slaude after edits.
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "${MCP_FS_ROOT}"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" }
+    },
+    "remote": {
+      "type": "http",
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ${MCP_AUTH}" }
+    }
+  }
+}
+```
+
+- **Types** — implicit stdio when `command` is set; explicit `"type": "http"` or `"type": "sse"` for remote servers (`url` required).
+- **`${VAR}` substitution** — applied to `command`, every entry of `args[]`, every value of `env`, `url`, every value of `headers`. Missing vars expand to `""` (POSIX shell semantics).
+- **Tool surface** — each server's tools appear as `mcp__<server>__<tool>` (e.g. `mcp__filesystem__read_file`).
+- **Approval posture** — external tools are **not** auto-allowed. First call posts a Block Kit Approve / Deny prompt; click *Always allow* to grant session-scoped auto-approval.
+- **Reserved names** — `slaude_slack` and `slaude_skills` in `mcp.json` are dropped with a warning so user config can't shadow the in-process Slack output server (would deadlock the agent).
+- **Secret isolation** — stdio child processes inherit `process.env` by default. To restrict what a server sees, set an explicit `env: { … }` on its entry; the loader only passes through what's listed there.
+
 ### 5. Run
 
 Local dev:
@@ -182,12 +215,13 @@ src/
     data.ts                 # zod schema for SoulData
     extract.ts              # ephemeral-LLM SOUL.md → SoulData JSON, sha-cached
   db/                       # sqlite (sessions keyed by slack thread)
-  config/                   # $SLAUDE_HOME paths + env
+  config/                   # $SLAUDE_HOME paths + env + mcp.json loader
   cli/manifest.ts           # slack manifest emitter
   health.ts                 # /healthz + /readyz
   server.ts                 # headless entry
 ~/.slaude/                  # runtime home
   SOUL.md                   # persona (operator-defined)
+  mcp.json                  # external MCP servers (optional)
   cache/soul.<sha>.json     # LLM-extracted SoulData, keyed by sha256(SOUL.md)
   db.sqlite
   workspaces/<thread>/      # per-session cwd
