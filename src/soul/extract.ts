@@ -139,14 +139,14 @@ export function __resetSoulDataMemo() { memo = null; }
 export function soulData(): SoulData {
   if (memo) return memo;
   // Best-effort sync read of the freshest cache file for current SOUL.md.
+  // NOT memoized into `memo` — operator can edit SOUL.md and a subsequent
+  // call should pick that up without a restart (and tests rely on it).
   try {
     const sha = sha256(loadSoul());
     const cp = cachePath(sha);
     if (existsSync(cp)) {
-      memo = SoulDataSchema.parse(JSON.parse(readFileSync(cp, "utf8")));
-      return memo;
+      return SoulDataSchema.parse(JSON.parse(readFileSync(cp, "utf8")));
     }
   } catch { /* fall through */ }
-  memo = regexFallback();
-  return memo;
+  return regexFallback();
 }
