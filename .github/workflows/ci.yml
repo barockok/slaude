@@ -29,10 +29,19 @@ jobs:
       - name: Run tests with coverage (97% threshold enforced via bunfig.toml)
         run: bun test --coverage
 
-      - name: Upload coverage report
+      - name: Upload coverage report (artifact)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-lcov
           path: coverage/
           if-no-files-found: ignore
+
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage/lcov.info
+          flags: unittests
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}

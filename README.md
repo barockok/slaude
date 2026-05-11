@@ -3,7 +3,7 @@
 [![CI](https://github.com/barockok/slaude/actions/workflows/ci.yml/badge.svg)](https://github.com/barockok/slaude/actions/workflows/ci.yml)
 [![Docker](https://github.com/barockok/slaude/actions/workflows/docker.yml/badge.svg)](https://github.com/barockok/slaude/actions/workflows/docker.yml)
 [![Release](https://github.com/barockok/slaude/actions/workflows/release.yml/badge.svg)](https://github.com/barockok/slaude/actions/workflows/release.yml)
-[![Coverage](https://img.shields.io/badge/coverage-%E2%89%A597%25-brightgreen)](./bunfig.toml)
+[![codecov](https://codecov.io/gh/barockok/slaude/branch/main/graph/badge.svg)](https://codecov.io/gh/barockok/slaude)
 [![Latest release](https://img.shields.io/github/v/release/barockok/slaude?sort=semver)](https://github.com/barockok/slaude/releases/latest)
 [![Bun](https://img.shields.io/badge/runtime-bun-black)](https://bun.sh)
 
