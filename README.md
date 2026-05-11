@@ -20,6 +20,7 @@ Slack-native Claude Code runtime. Onboard an AI agent as a teammate in your Slac
 - **Engagement model** — `@mention` engages a thread, `@mention` someone else disengages, plain replies in an engaged thread are handled. DMs always engaged.
 - **File attachments both ways** — Slack files attached by users are downloaded to the session working dir and surfaced as `<attachment>` blocks; agent uploads files via `mcp__slaude_slack__upload`.
 - **Approval gate** — `mcp__slaude_slack__request_approval(summary, …)` posts Block Kit Approve/Deny. Approver allowlist parsed from SOUL.md scope-described entries; runtime keyword-matches the agent's plan summary against each approver's scope; the agent never picks user IDs.
+- **LLM-extracted SoulData** — at boot, an ephemeral Claude turn projects SOUL.md into a typed JSON (approvers, identity, manager, allowedUsers, mandate, values), sha-cached at `$SLAUDE_HOME/cache/soul.<sha>.json`. The approval gate consumes the structured approvers as the preferred tier; regex parser is the fallback. Persona prose can drift from rigid bullet format without breaking allowlist resolution.
 - **Slash commands in thread** — `/mode <ask|accept-edits|bypass|plan|dont-ask>`, `/abort`, `/help`. Per-session `permission_mode` persists.
 - **Idle TTL with resume** — `SLAUDE_IDLE_MINUTES` (default 15). On expiry the SDK Query closes silently; next inbound message re-boots with `resume: row.id`.
 - **Provider-agnostic** — any Anthropic-compatible API (Anthropic direct, OpenRouter, DeepSeek, Z.ai, self-hosted gateway, …). Telemetry / autoupdater / bug-reporter disabled in the SDK child so non-Anthropic gateways don't crash the CLI.
@@ -133,7 +134,10 @@ src/
     attachments.ts          # download Slack files into session dir
     users.ts                # users.info name resolution (TTL cache)
     commands.ts             # /mode /abort /help
-  soul/loader.ts            # runtime baseline + SOUL.md persona, approver parsing
+  soul/
+    loader.ts               # runtime baseline + SOUL.md persona, regex approver parser
+    data.ts                 # zod schema for SoulData
+    extract.ts              # ephemeral-LLM SOUL.md → SoulData JSON, sha-cached
   db/                       # sqlite (sessions keyed by slack thread)
   config/                   # $SLAUDE_HOME paths + env
   cli/manifest.ts           # slack manifest emitter
@@ -141,6 +145,7 @@ src/
   server.ts                 # headless entry
 ~/.slaude/                  # runtime home
   SOUL.md                   # persona (operator-defined)
+  cache/soul.<sha>.json     # LLM-extracted SoulData, keyed by sha256(SOUL.md)
   db.sqlite
   workspaces/<thread>/      # per-session cwd
     attachments/<ts>/       # downloaded Slack files
