@@ -1,6 +1,7 @@
 import type { App } from "@slack/bolt";
 import type { WebClient } from "@slack/web-api";
-import { loadApprovers, selectApprovers } from "../../soul/loader";
+import { loadApprovers, selectApprovers, selectApproversFrom } from "../../soul/loader";
+import { soulData } from "../../soul/extract";
 
 export type ApprovalRequest = {
   channel: string;
@@ -95,12 +96,18 @@ export class ApprovalGate {
   }
 
   /** Resolve who may approve. Order:
-   *   1. Scope-described persona (preferred): keyword-match summary/category
-   *      against each approver's scope; catchall entries always included.
-   *   2. Legacy "category: ids" persona: persona[category] → persona.default.
-   *   3. env SLAUDE_APPROVERS / SLACK_ALLOWED_USERS.
-   *   4. Empty (anyone may click). */
+   *   1. LLM-extracted SoulData approvers (preferred when available).
+   *   2. Scope-described persona via regex parser.
+   *   3. Legacy "category: ids" persona: persona[category] → persona.default.
+   *   4. env SLAUDE_APPROVERS / SLACK_ALLOWED_USERS.
+   *   5. Empty (anyone may click). */
   #resolveApprovers(req: ApprovalRequest): Set<string> {
+    const structured = soulData().approvers;
+    if (structured.length) {
+      const ids = selectApproversFrom(structured, req.summary, req.category);
+      if (ids.length) return new Set(ids);
+    }
+
     const scoped = selectApprovers(req.summary, req.category);
     if (scoped.length) return new Set(scoped);
 
