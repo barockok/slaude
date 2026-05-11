@@ -107,6 +107,10 @@ export function createSlackApp(agent: AgentManager) {
       }
       case "done": {
         void (async () => {
+          // Auto-evolve turns are internal — silent NO is valid, so skip the
+          // "no reply emitted" nudge and don't reset reactions/presence
+          // (they were already finalized on the user-visible turn's done).
+          if (e.autoEvolve) return;
           if (!route.spoke) {
             // Agent finished without surfacing anything to Slack. Nudge so
             // the user isn't left guessing — and so SOUL.md drift is visible.

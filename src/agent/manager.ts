@@ -30,6 +30,11 @@ type LiveSession = {
   abort: AbortController;
   /** Buffer of last user message + accumulated assistant text for memory.syncTurn. */
   turn: { user: string; assistant: string[] };
+  /** Tool names invoked during the current turn (cleared on result). */
+  turnTools: string[];
+  /** Set after we inject an auto-evolve synthetic prompt — the next result
+   *  is the evolution turn itself; don't recurse into another auto-evolve. */
+  inAutoEvolve: boolean;
   /** Set after the SDK query() resolves; lets us call setPermissionMode/setModel live. */
   query?: Query;
   /** Idle TTL timer; cleared/rearmed on every user msg and turn-end. */
@@ -41,7 +46,7 @@ export type AgentEvent =
   | { type: "toolCall"; sessionId: string; tool: string; input: unknown }
   | { type: "toolResult"; sessionId: string; tool: string; result: unknown }
   | { type: "thinking"; sessionId: string; text: string }
-  | { type: "done"; sessionId: string }
+  | { type: "done"; sessionId: string; autoEvolve?: boolean }
   | { type: "error"; sessionId: string; error: string };
 
 /** Permission resolver — called per tool use; given a sessionId so transports can present UI in the right thread. */
@@ -234,6 +239,8 @@ export class AgentManager extends EventEmitter {
       closeIterable,
       abort,
       turn: { user: firstText, assistant: [] },
+      turnTools: [],
+      inAutoEvolve: false,
     };
     this.#live.set(sessionId, live);
     this.#armIdle(live);
@@ -306,6 +313,7 @@ export class AgentManager extends EventEmitter {
               text: block.thinking,
             } satisfies AgentEvent);
           } else if (block.type === "tool_use") {
+            if (live) live.turnTools.push(block.name);
             this.emit("event", {
               type: "toolCall",
               sessionId,
@@ -343,8 +351,22 @@ export class AgentManager extends EventEmitter {
             sessionId,
             error: errStr,
           } satisfies AgentEvent);
+          if (live) live.turnTools = [];
         } else {
-          this.emit("event", { type: "done", sessionId } satisfies AgentEvent);
+          const wasAutoEvolve = live?.inAutoEvolve === true;
+          if (live) live.inAutoEvolve = false;
+          this.emit("event", {
+            type: "done",
+            sessionId,
+            ...(wasAutoEvolve ? { autoEvolve: true } : {}),
+          } satisfies AgentEvent);
+          if (live && !wasAutoEvolve && this.#shouldAutoEvolve(live)) {
+            live.inAutoEvolve = true;
+            live.turnTools = [];
+            live.pushUser(AUTO_EVOLVE_PROMPT);
+          } else if (live) {
+            live.turnTools = [];
+          }
         }
         break;
       }
@@ -360,4 +382,61 @@ export class AgentManager extends EventEmitter {
     live.turn = { user: "", assistant: [] };
     void memory.syncTurn({ sessionId: live.id, user, assistant });
   }
+
+  /**
+   * Decide whether the just-finished turn should be followed by an
+   * auto-evolve check. Triggers when the turn used ≥2 "substantive" tools
+   * (anything that mutated state or did real work — excludes pure Slack
+   * surface ops, skill introspection, and trivial reads). Skips when the
+   * turn already wrote/deleted a skill (no need to re-prompt).
+   */
+  #shouldAutoEvolve(live: LiveSession): boolean {
+    if (!env.autoEvolve()) return false;
+    const tools = live.turnTools;
+    if (tools.some((t) =>
+      t === "mcp__slaude_skills__write_skill" ||
+      t === "mcp__slaude_skills__delete_skill"
+    )) return false;
+    let substantive = 0;
+    for (const t of tools) {
+      if (AUTO_EVOLVE_IGNORE.has(t)) continue;
+      if (t.startsWith("mcp__slaude_slack__")) continue;
+      if (t.startsWith("mcp__slaude_skills__")) continue;
+      substantive++;
+    }
+    return substantive >= 2;
+  }
 }
+
+/** Tools that don't count toward the auto-evolve trigger threshold. */
+const AUTO_EVOLVE_IGNORE = new Set([
+  "Read",
+  "Grep",
+  "Glob",
+  "LS",
+  "TodoWrite",
+]);
+
+/**
+ * Injected as a synthetic user message after substantial turns. The agent
+ * must either save/refine a skill OR end the turn without any tool call.
+ * The adapter recognizes the `autoEvolve` flag on the resulting `done`
+ * event and suppresses the "no reply emitted" warning so silent NO is fine.
+ */
+const AUTO_EVOLVE_PROMPT = [
+  "<auto-evolve>",
+  "The previous turn used multiple tools. Evaluate: did it perform a procedure worth saving as a reusable skill, or refine an existing one?",
+  "",
+  "If YES:",
+  "  1. Call `mcp__slaude_skills__list_skills` (skip if you've already listed this session).",
+  "  2. Decide: create-new vs refine-existing. If refining, call `mcp__slaude_skills__read_skill` first.",
+  "  3. Call `mcp__slaude_slack__request_approval` with `category: 'skills'` and a one-line summary.",
+  "  4. On approval, call `mcp__slaude_skills__write_skill` with slug/name/description/body. Parameterize body via `${SLAUDE_SKILL_ARGS}` so it generalizes.",
+  "  5. Call `mcp__slaude_slack__reply` with a brief confirmation (e.g. `saved /<slug>`).",
+  "",
+  "If NO:",
+  "  End the turn immediately. Do not call any tool. Do not reply. Do not narrate. The runtime knows to stay quiet on no-op evolution turns.",
+  "",
+  "Do NOT redo the original task. Do NOT save one-off facts (those belong in memory). Skills are for repeatable multi-step procedures.",
+  "</auto-evolve>",
+].join("\n");
