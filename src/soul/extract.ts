@@ -23,18 +23,31 @@ function sha256(s: string): string {
 async function callExtractor(system: string, prompt: string): Promise<string> {
   const base = process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com";
   const key = process.env.ANTHROPIC_API_KEY;
+  const oauth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
   const model = process.env.SLAUDE_SOUL_PARSE_MODEL
     || process.env.SLAUDE_MODEL
     || "claude-haiku-4-5-20251001";
-  if (!key) throw new Error("ANTHROPIC_API_KEY not set");
+  if (!key && !oauth) {
+    throw new Error("missing auth: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN");
+  }
+
+  // API-key auth wins when both are present (explicit > subscription). OAuth
+  // requires the anthropic-beta: oauth-2025-04-20 header — without it the API
+  // rejects bearer tokens with 401.
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    "anthropic-version": "2023-06-01",
+  };
+  if (key) {
+    headers["x-api-key"] = key;
+  } else {
+    headers["authorization"] = `Bearer ${oauth}`;
+    headers["anthropic-beta"] = "oauth-2025-04-20";
+  }
 
   const res = await fetch(`${base.replace(/\/$/, "")}/v1/messages`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-    },
+    headers,
     body: JSON.stringify({
       model,
       max_tokens: 2048,
