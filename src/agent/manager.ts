@@ -190,6 +190,9 @@ export class AgentManager extends EventEmitter {
       "ANTHROPIC_API_KEY",
       "ANTHROPIC_BASE_URL",
       "ANTHROPIC_AUTH_TOKEN",
+      // Claude subscription OAuth token (from `claude setup-token`). When
+      // set, the SDK child authenticates via OAuth — no API key needed.
+      "CLAUDE_CODE_OAUTH_TOKEN",
     ]) {
       if (process.env[k]) providerEnv[k] = process.env[k];
     }
@@ -211,7 +214,11 @@ export class AgentManager extends EventEmitter {
     const mcpServers = this.#mcpResolver?.(sessionId);
     const options: Options = {
       cwd: row.working_dir,
-      model: row.model,
+      // Pass `model` only when explicitly set. Empty = let the SDK / CLI use
+      // its own default (e.g. Claude Code subscription default under
+      // CLAUDE_CODE_OAUTH_TOKEN). When pointing at a non-Anthropic gateway,
+      // SLAUDE_MODEL MUST be set to a provider-qualified id.
+      ...(row.model ? { model: row.model } : {}),
       abortController: abort,
       env: { ...process.env, ...providerEnv },
       ...(canUseTool ? { canUseTool } : {}),

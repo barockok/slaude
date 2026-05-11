@@ -63,14 +63,30 @@ In Slack:
 
 Copy `.env.example` to `~/.slaude/.env` (or to `./.env` if you're using docker compose / running with `bun src/server.ts` from the repo root — Bun auto-loads `./.env`).
 
-Any **Anthropic-compatible** provider works — point `ANTHROPIC_BASE_URL` at your gateway and set `SLAUDE_MODEL` to its model id.
+Any **Anthropic-compatible** provider works — point `ANTHROPIC_BASE_URL` at your gateway and set `SLAUDE_MODEL` to its provider-qualified model id. Two auth modes:
+
+- **API key** — `ANTHROPIC_API_KEY=sk-ant-…` (metered, works with any compatible gateway).
+- **Claude Pro / Max subscription** — `CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-…`. Generate the token on a machine logged into Claude Code via `claude setup-token`, then paste it into slaude's env. The SDK child + soul extractor auto-detect and authenticate against `api.anthropic.com` via OAuth Bearer.
+
+**`SLAUDE_MODEL` is an override, not a default.** When unset, slaude doesn't pass `--model` to the SDK child and the Claude Code CLI picks its own default — which is what you usually want with `CLAUDE_CODE_OAUTH_TOKEN` (you inherit the subscription's default model). Set `SLAUDE_MODEL` only when you need to pin a specific tier-allowed model, or when pointing `ANTHROPIC_BASE_URL` at a non-Anthropic gateway (OpenRouter, Z.ai, self-hosted) — those endpoints don't recognise Anthropic's default model id, so a provider-qualified id is **required**.
+
+Beyond `SLAUDE_MODEL`, the Claude Code CLI also honours two of its own model env vars. slaude forwards all parent env to the SDK child, so they flow through transparently:
+
+| Env var                      | Purpose                                                                                   |
+|------------------------------|-------------------------------------------------------------------------------------------|
+| `SLAUDE_MODEL`               | slaude-side override. Wins over `ANTHROPIC_MODEL` when both set.                          |
+| `ANTHROPIC_MODEL`            | CLI-native fallback for the main-session model when `SLAUDE_MODEL` is unset.              |
+| `ANTHROPIC_SMALL_FAST_MODEL` | Haiku-class model for compaction, tool routing, and sub-tasks. Orthogonal to main model. |
+
+Precedence in the SDK child: `options.model` (= `SLAUDE_MODEL`) → `ANTHROPIC_MODEL` → CLI's built-in default for the active auth mode (subscription default under OAuth). There is **no** per-tier env var like `ANTHROPIC_OPUS_MODEL` / `ANTHROPIC_SONNET_MODEL` — only the two above.
 
 ```sh
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
 ANTHROPIC_API_KEY=sk-ant-...
-# ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1   # optional
-SLAUDE_MODEL=claude-sonnet-4-6
+# OR: CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...   # run on your Claude subscription; leave SLAUDE_MODEL unset
+# ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1   # optional; if set, SLAUDE_MODEL becomes required
+# SLAUDE_MODEL=claude-sonnet-4-6                  # override only
 
 # Optional: env-level fallback approver allowlist when SOUL.md has no
 # `## Approvers` section. Manager/channel rules live in SOUL.md, not env.

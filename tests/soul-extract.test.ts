@@ -31,6 +31,7 @@ beforeEach(() => {
   if (existsSync(CACHE_DIR)) rmSync(CACHE_DIR, { recursive: true, force: true });
   process.env.ANTHROPIC_API_KEY = "test-key";
   process.env.ANTHROPIC_BASE_URL = "https://api.test.local";
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
   delete process.env.SLAUDE_SOUL_PARSE_MODEL;
 });
 
@@ -146,14 +147,49 @@ describe("loadSoulData — extraction + cache", () => {
     expect(d.approvers[0]!.userId).toBe("U0XXXXXXXXX");
   });
 
-  test("missing ANTHROPIC_API_KEY → regex fallback, no fetch", async () => {
+  test("missing ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN → regex fallback, no fetch", async () => {
     delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
     seedPersona("# P\n## Approvers\n- <@U0XXXXXXXXX>: anything\n");
     let called = false;
     mockFetch(async () => { called = true; return okResponse("{}"); });
     const d = await loadSoulData();
     expect(called).toBe(false);
     expect(d.approvers).toHaveLength(1);
+  });
+
+  test("CLAUDE_CODE_OAUTH_TOKEN sets Bearer + anthropic-beta header", async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-oat01-abc";
+    seedPersona("# P\n## Approvers\n- <@U0XXXXXXXXX>: anything\n");
+    let captured: Record<string, string> = {};
+    mockFetch(async (_input: any, init: any) => {
+      captured = init.headers as Record<string, string>;
+      return okResponse(JSON.stringify({
+        approvers: [{ userId: "U0XXXXXXXXX", scope: "anything", catchall: true }],
+      }));
+    });
+    await loadSoulData();
+    expect(captured["authorization"]).toBe("Bearer sk-ant-oat01-abc");
+    expect(captured["anthropic-beta"]).toBe("oauth-2025-04-20");
+    expect(captured["x-api-key"]).toBeUndefined();
+  });
+
+  test("ANTHROPIC_API_KEY wins over CLAUDE_CODE_OAUTH_TOKEN when both set", async () => {
+    process.env.ANTHROPIC_API_KEY = "kkk";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-oat01-abc";
+    seedPersona("# P\n## Approvers\n- <@U0XXXXXXXXX>: anything\n");
+    let captured: Record<string, string> = {};
+    mockFetch(async (_input: any, init: any) => {
+      captured = init.headers as Record<string, string>;
+      return okResponse(JSON.stringify({
+        approvers: [{ userId: "U0XXXXXXXXX", scope: "anything", catchall: true }],
+      }));
+    });
+    await loadSoulData();
+    expect(captured["x-api-key"]).toBe("kkk");
+    expect(captured["authorization"]).toBeUndefined();
+    expect(captured["anthropic-beta"]).toBeUndefined();
   });
 
   test("empty extractor text → fallback", async () => {
