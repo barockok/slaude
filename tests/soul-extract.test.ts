@@ -86,6 +86,50 @@ describe("loadSoulData — extraction + cache", () => {
     expect(d.approvers).toHaveLength(1);
   });
 
+  test("extracts allowedChannels and grounded ids pass through", async () => {
+    seedPersona([
+      "# P",
+      "## Audience",
+      "- Allowed users: U06ENBS6PV0",
+      "## Allowed channels",
+      "- <#C0123456789|eng>",
+      "## Approvers",
+      "- <@U06ENBS6PV0>: anything",
+    ].join("\n"));
+    mockFetch(async () => okResponse(JSON.stringify({
+      allowedUsers: ["U06ENBS6PV0"],
+      allowedChannels: ["C0123456789"],
+      approvers: [{ userId: "U06ENBS6PV0", scope: "anything", catchall: true }],
+    })));
+    const d = await loadSoulData();
+    expect(d.allowedChannels).toEqual(["C0123456789"]);
+    expect(d.allowedUsers).toEqual(["U06ENBS6PV0"]);
+  });
+
+  test("rejects ungrounded id (not present in persona) → fallback", async () => {
+    seedPersona("# P\n## Approvers\n- <@U06ENBS6PV0>: anything\n");
+    mockFetch(async () => okResponse(JSON.stringify({
+      approvers: [
+        { userId: "U06ENBS6PV0", scope: "anything", catchall: true },
+        { userId: "U999HACKER1", scope: "secrets", catchall: false },
+      ],
+    })));
+    const d = await loadSoulData();
+    // Grounding check rejected the hallucinated id → regex fallback wins.
+    expect(d.approvers.map((a) => a.userId)).toEqual(["U06ENBS6PV0"]);
+  });
+
+  test("rejects ungrounded channel id → fallback", async () => {
+    seedPersona("# P\n## Approvers\n- <@U06ENBS6PV0>: anything\n");
+    mockFetch(async () => okResponse(JSON.stringify({
+      approvers: [{ userId: "U06ENBS6PV0", scope: "anything", catchall: true }],
+      allowedChannels: ["C0999999999"], // never appeared in persona
+    })));
+    const d = await loadSoulData();
+    // Regex fallback never fills allowedChannels.
+    expect(d.allowedChannels).toEqual([]);
+  });
+
   test("zod rejects malformed userId → regex fallback", async () => {
     seedPersona("# P\n## Approvers\n- <@U06ENBS6PV0>: db, schema ; dba\n");
     mockFetch(async () => okResponse(JSON.stringify({

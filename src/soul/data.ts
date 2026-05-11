@@ -31,6 +31,9 @@ export const SoulDataSchema = z.object({
     .partial()
     .default({}),
   allowedUsers: z.array(z.string().regex(/^[UW][A-Z0-9]{6,}$/)).default([]),
+  /** Slack channel/group/DM ids the agent will respond in. Empty = no
+   *  channel restriction (engagement model + allowedUsers still apply). */
+  allowedChannels: z.array(z.string().regex(/^[CGD][A-Z0-9]{6,}$/)).default([]),
   approvers: z.array(ApproverEntrySchema).default([]),
   mandate: z.string().optional(),
   values: z.array(z.string()).default([]),
@@ -42,18 +45,20 @@ export type SoulData = z.infer<typeof SoulDataSchema>;
 export const EXTRACTION_PROMPT = `You are a structured-data extractor. Read the persona block above and return a single JSON object matching this TypeScript shape — no prose, no fences, just JSON:
 
 {
-  "identity":     { "name"?: string, "role"?: string, "voice"?: string },
-  "manager":      { "userId"?: string, "handle"?: string },
-  "allowedUsers": string[],
-  "approvers":    Array<{ "userId": string, "scope": string, "catchall": boolean }>,
-  "mandate"?:     string,
-  "values":       string[]
+  "identity":        { "name"?: string, "role"?: string, "voice"?: string },
+  "manager":         { "userId"?: string, "handle"?: string },
+  "allowedUsers":    string[],
+  "allowedChannels": string[],
+  "approvers":       Array<{ "userId": string, "scope": string, "catchall": boolean }>,
+  "mandate"?:        string,
+  "values":          string[]
 }
 
 Rules:
 - userId is the raw Slack id (U… or W…), strip <@…> wrappers.
+- Channel ids start with C (public), G (private group), or D (DM). Strip <#…|name> wrappers — keep only the id.
 - scope is the free-text description after the colon, verbatim minus trailing comments.
 - catchall=true when scope is "anything" / "any" / "all" / "default" / "*" / "catchall" / "everything".
-- Skip placeholder rows (e.g. "<@manager-id>", "<agent display name>") — those are template stubs, not real values.
-- Omit fields you cannot determine. Do not invent ids.
+- Skip placeholder rows (e.g. "<@manager-id>", "<agent display name>", "<C-channel-id>") — those are template stubs, not real values.
+- Omit fields you cannot determine. Do not invent ids — every id you return MUST appear verbatim somewhere in the persona text.
 - Return ONLY the JSON object. No \`\`\` fence. No explanation.`;

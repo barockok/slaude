@@ -113,6 +113,15 @@ const STARTER_PERSONA = `# Persona
 - Allowed users: <Slack user ids who can address you; also enforce via
   SLACK_ALLOWED_USERS env>
 
+## Allowed channels
+
+Channel ids the gateway will accept inbound messages from. One per line
+(\`<#Cxxx|name>\` or raw \`Cxxx\`). DMs always allowed regardless of this
+list. Omit the whole section to disable channel filtering.
+
+- <#C0123456789|engineering>
+- <#G0123456789|private-ops>
+
 ## Values
 - <one or two lines of operating principles unique to this persona>
 

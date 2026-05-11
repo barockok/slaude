@@ -64,6 +64,23 @@ function parseJsonLoose(text: string): unknown {
   return JSON.parse(cleaned);
 }
 
+/**
+ * Reject any extracted Slack id (user, manager, allowedUsers, allowedChannels,
+ * approvers) that does not appear verbatim in the source persona. Stops the
+ * extractor from inventing ids that would silently widen the allowlist.
+ */
+function assertIdsGroundedInPersona(data: SoulData, persona: string): void {
+  const ids = new Set<string>();
+  if (data.manager.userId) ids.add(data.manager.userId);
+  for (const u of data.allowedUsers) ids.add(u);
+  for (const c of data.allowedChannels) ids.add(c);
+  for (const a of data.approvers) ids.add(a.userId);
+  const missing = [...ids].filter((id) => !persona.includes(id));
+  if (missing.length) {
+    throw new Error(`extractor produced ungrounded ids: ${missing.join(", ")}`);
+  }
+}
+
 /** Regex-derived fallback. Only fills `approvers` — other fields stay empty. */
 function regexFallback(): SoulData {
   const entries = loadApproverEntries() ?? [];
@@ -96,6 +113,10 @@ export async function loadSoulData(): Promise<SoulData> {
     const text = await callExtractor(soulSystemBlock(persona), EXTRACTION_PROMPT);
     const raw = parseJsonLoose(text);
     const data = SoulDataSchema.parse(raw);
+    // Defense in depth: every extracted Slack id MUST appear verbatim in
+    // SOUL.md. Blocks the LLM from inventing approvers or whitelisted
+    // channels the operator never authorised.
+    assertIdsGroundedInPersona(data, persona);
     mkdirSync(CACHE_DIR, { recursive: true });
     writeFileSync(cp, JSON.stringify(data, null, 2), "utf8");
     console.log(`[soul] extracted ${data.approvers.length} approver(s), cached at ${cp}`);
