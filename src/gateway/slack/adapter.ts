@@ -12,6 +12,7 @@ import { Status } from "./status";
 import { PermissionGate } from "./permission-gate";
 import { ApprovalGate } from "./approval-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "./commands";
+import { soulData } from "../../soul/extract";
 import { createSlackMcp, SLACK_MCP_NAME, type SlackContext } from "./mcp-tools";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { resolveUserName } from "./users";
@@ -172,6 +173,14 @@ export function createSlackApp(agent: AgentManager) {
     seenEvents.add(dedupKey);
 
     if (allowed.size > 0 && !allowed.has(userId)) return;
+
+    // Channel whitelist from SOUL.md (extracted at boot). DMs always pass.
+    const isDM_ = channelType === "im";
+    const allowedChannels = soulData().allowedChannels;
+    if (!isDM_ && allowedChannels.length && !allowedChannels.includes(channelId)) {
+      console.log(`[slack-rx] drop ch=${channelId} — not in SOUL.md allowedChannels`);
+      return;
+    }
 
     const botUserId = (await client.auth.test()).user_id as string;
     const stripped = text.replace(new RegExp(`<@${botUserId}>`, "g"), "").trim();
