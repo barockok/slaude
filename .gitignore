@@ -14,3 +14,4 @@ target/
 .vscode/
 .env*.swp
 coverage/
+data/
