@@ -16,7 +16,6 @@ import { soulData } from "../../soul/extract";
 import { createSlackMcp, SLACK_MCP_NAME, type SlackContext } from "./mcp-tools";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
-import { loadExternalMcp } from "../../config/mcp";
 import { resolveUserName } from "./users";
 import { downloadAttachments, type SlackFile } from "./attachments";
 import * as Sessions from "../../db/sessions";
@@ -67,24 +66,15 @@ export function createSlackApp(agent: AgentManager) {
   // Dedup events by (channel, ts).
   const seenEvents = new Set<string>();
 
-  // External MCP servers (stdio/sse/http) declared in $SLAUDE_HOME/mcp.json.
-  // Loaded once at boot — restart slaude after editing mcp.json. Reserved
-  // server names (slaude_slack, slaude_skills) are dropped at load time so
-  // user config cannot shadow the in-process Slack output server.
-  const externalMcp = loadExternalMcp();
-  const externalNames = Object.keys(externalMcp);
-  if (externalNames.length) {
-    console.log(`[mcp] external servers: ${externalNames.join(", ")}`);
-  }
-
   // MCP resolver — first-call-per-session wires the slack MCP server bound to
   // the session's SlackContext object. We mutate fields on the same context
   // object across turns so the SDK MCP server stays valid for the session.
+  // External MCPs are configured via ~/.claude/mcp.json or .mcp.json in the
+  // working dir — claude-code picks them up natively and merges them.
   agent.setMcpResolver((sessionId) => {
     const route = routes.get(sessionId);
     if (!route) return undefined;
     return {
-      ...externalMcp,
       [SLACK_MCP_NAME]: createSlackMcp(route.ctx),
       [SKILLS_MCP_NAME]: createSkillsMcp(),
       [SESSION_MCP_NAME]: createSessionMcp({
