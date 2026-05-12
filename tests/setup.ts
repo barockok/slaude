@@ -24,3 +24,5 @@ writeFileSync(
 process.env.SLAUDE_APPROVERS = "";
 process.env.SLAUDE_HEALTH_PORT = "0";
 process.env.SLAUDE_DEFAULT_MODE = "default";
+// Prevent leaked CLAUDE_CODE_OAUTH_TOKEN from operator shell affecting tests.
+delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
