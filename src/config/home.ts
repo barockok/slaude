@@ -12,7 +12,6 @@ export const paths = {
   env: join(SLAUDE_HOME, ".env"),
   db: join(SLAUDE_HOME, "db.sqlite"),
   workspaces: join(SLAUDE_HOME, "workspaces"),
-  mcp: join(SLAUDE_HOME, "mcp.json"),
 } as const;
 
 export function ensureHome() {
