@@ -19,6 +19,33 @@ import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { resolveUserName } from "./users";
 import { downloadAttachments, type SlackFile } from "./attachments";
 import * as Sessions from "../../db/sessions";
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { paths } from "../../config/home";
+import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
+
+function loadExternalMcp(): Record<string, McpServerConfig> {
+  const f = join(paths.home, ".mcp.json");
+  if (!existsSync(f)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(f, "utf8"));
+    const servers = parsed?.mcpServers ?? {};
+    // Expand ${VAR} placeholders in env values from process.env.
+    for (const cfg of Object.values<any>(servers)) {
+      if (cfg?.env && typeof cfg.env === "object") {
+        for (const [k, v] of Object.entries<any>(cfg.env)) {
+          if (typeof v === "string") {
+            cfg.env[k] = v.replace(/\$\{([A-Z0-9_]+)\}/g, (_, name) => process.env[name] ?? "");
+          }
+        }
+      }
+    }
+    return servers;
+  } catch (err) {
+    console.error(`[mcp] failed to load ${f}:`, err);
+    return {};
+  }
+}
 
 const REACT_RECEIVED = "eyes";
 const REACT_WORKING = "gear";
@@ -71,6 +98,10 @@ export function createSlackApp(agent: AgentManager) {
   // object across turns so the SDK MCP server stays valid for the session.
   // External MCPs are configured via ~/.claude/mcp.json or .mcp.json in the
   // working dir — claude-code picks them up natively and merges them.
+  const externalMcp = loadExternalMcp();
+  if (Object.keys(externalMcp).length) {
+    console.log(`[mcp] loaded external servers: ${Object.keys(externalMcp).join(", ")}`);
+  }
   agent.setMcpResolver((sessionId) => {
     const route = routes.get(sessionId);
     if (!route) return undefined;
@@ -80,6 +111,7 @@ export function createSlackApp(agent: AgentManager) {
       [SESSION_MCP_NAME]: createSessionMcp({
         getSnapshot: () => agent.getTokenSnapshot(sessionId),
       }),
+      ...externalMcp,
     };
   });
 
