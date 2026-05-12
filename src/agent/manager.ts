@@ -258,6 +258,13 @@ export class AgentManager extends EventEmitter {
         preset: "claude_code",
         append: [
           soulSystemBlock(),
+          mcpServers
+            ? `<mcp-servers>\nMCP server namespaces mounted this session. Call tools as \`mcp__<server>__<tool>\`.\n${Object.keys(mcpServers)
+                .map((n) => `- ${n}`)
+                .join(
+                  "\n",
+                )}\nAdditional servers may be available if configured in ~/.claude/mcp.json or .mcp.json in the working directory.\n</mcp-servers>`
+            : "<mcp-servers>none</mcp-servers>",
           memBlock ? `<memory-context>\n${memBlock}\n</memory-context>` : "",
         ]
           .filter(Boolean)
