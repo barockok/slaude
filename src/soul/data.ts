@@ -35,6 +35,14 @@ export const SoulDataSchema = z.object({
    *  (and in DMs) only the manager may engage; approvers can still click
    *  Approve / Deny on `request_approval` blocks but can't chat. */
   allowedChannels: z.array(z.string().regex(/^[CGD][A-Z0-9]+$/)).default([]),
+  /** Slack user ids whose inbound messages are dropped before Claude is
+   *  invoked. Hard-blocks at the adapter gate (no logs leaked to the agent,
+   *  no token spend). Useful for banning a noisy user or spam-bot operator. */
+  blockedUsers: z.array(z.string().regex(/^[UW][A-Z0-9]+$/)).default([]),
+  /** Slack channel/group/DM ids whose inbound messages are dropped before
+   *  Claude is invoked. Hard-blocks at the adapter gate regardless of
+   *  `allowedChannels`. */
+  blockedChannels: z.array(z.string().regex(/^[CGD][A-Z0-9]+$/)).default([]),
   approvers: z.array(ApproverEntrySchema).default([]),
   mandate: z.string().optional(),
   values: z.array(z.string()).default([]),
@@ -49,6 +57,8 @@ export const EXTRACTION_PROMPT = `You are a structured-data extractor. Read the 
   "identity":        { "name"?: string, "role"?: string, "voice"?: string },
   "manager":         { "userId"?: string, "handle"?: string },
   "allowedChannels": string[],
+  "blockedUsers":    string[],
+  "blockedChannels": string[],
   "approvers":       Array<{ "userId": string, "scope": string, "catchall": boolean }>,
   "mandate"?:        string,
   "values":          string[]
@@ -60,5 +70,6 @@ Rules:
 - scope is the free-text description after the colon, verbatim minus trailing comments.
 - catchall=true when scope is "anything" / "any" / "all" / "default" / "*" / "catchall" / "everything".
 - Skip placeholder rows (e.g. "<@manager-id>", "<agent display name>", "<C-channel-id>") — those are template stubs, not real values.
+- blockedUsers / blockedChannels: ids the persona explicitly marks as banned, blocked, ignored, blacklisted, or "do not respond". Look for sections titled "Blocked", "Blacklist", "Ignore", "Banned". Empty array if no such section.
 - Omit fields you cannot determine. Do not invent ids — every id you return MUST appear verbatim somewhere in the persona text.
 - Return ONLY the JSON object. No \`\`\` fence. No explanation.`;
