@@ -1,4 +1,5 @@
 import { db } from "./db/schema";
+import { metrics } from "./metrics";
 
 export type HealthDeps = {
   /** Number of currently live SDK sessions. */
@@ -32,6 +33,12 @@ export function startHealthServer(deps: HealthDeps) {
           status: "ok",
           uptime_ms: Date.now() - startedAt,
           sessions_live: deps.liveSessions(),
+        });
+      }
+      if (url.pathname === "/metrics") {
+        return new Response(metrics.render(), {
+          status: 200,
+          headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" },
         });
       }
       if (url.pathname === "/readyz") {
