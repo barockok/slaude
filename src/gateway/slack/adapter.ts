@@ -235,7 +235,10 @@ export function createSlackApp(agent: AgentManager) {
 
     // Dedup
     const dedupKey = `${channelId}:${eventTs}`;
-    if (seenEvents.has(dedupKey)) return;
+    if (seenEvents.has(dedupKey)) {
+      console.log(`[slack-rx] drop ch=${channelId} ts=${eventTs} — dedup (already seen)`);
+      return;
+    }
     seenEvents.add(dedupKey);
 
     // Channel-mode gate, driven entirely by SOUL.md:
@@ -510,12 +513,17 @@ export function createSlackApp(agent: AgentManager) {
     }
     if (mentionsOther) {
       engaged.delete(key);
-      return; // user redirected to a colleague
+      console.log(
+        `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — mention to other user, disengaging thread`,
+      );
+      return;
     }
     if (engaged.has(key)) {
       return await handleMessage(args);
     }
-    // Plain channel chatter, not for us.
+    console.log(
+      `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — channel msg, thread not engaged (no @mention)`,
+    );
   });
 
   // Disengage when slaude finishes a turn AND no follow-up arrives within the
