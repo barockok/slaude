@@ -12,6 +12,7 @@
     "start": "bun src/server.ts",
     "typecheck": "tsc --noEmit",
     "manifest": "bun src/cli/manifest.ts",
+    "validate-soul": "bun src/cli/validate.ts",
     "test": "bun test",
     "test:coverage": "bun test --coverage"
   },
