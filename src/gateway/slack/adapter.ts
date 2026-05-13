@@ -1,6 +1,7 @@
 import { App, LogLevel } from "@slack/bolt";
 import type { AgentManager, AgentEvent } from "../../agent/manager";
 import { env } from "../../config/env";
+import { m as metric } from "../../metrics";
 import {
   discoverSkills,
   matchSkillInvocation,
@@ -237,6 +238,7 @@ export function createSlackApp(agent: AgentManager) {
     const dedupKey = `${channelId}:${eventTs}`;
     if (seenEvents.has(dedupKey)) {
       console.log(`[slack-rx] drop ch=${channelId} ts=${eventTs} — dedup (already seen)`);
+      metric.slackDropsTotal.inc({ reason: "dedup" });
       return;
     }
     seenEvents.add(dedupKey);
@@ -257,6 +259,7 @@ export function createSlackApp(agent: AgentManager) {
             `[slack-rx] drop ch=${channelId} user=${userId} — non-whitelist/DM accepts manager only` +
               (managerId ? "" : " (no manager set in SOUL.md)"),
           );
+          metric.slackDropsTotal.inc({ reason: "whitelist" });
           return;
         }
       }
@@ -326,6 +329,9 @@ export function createSlackApp(agent: AgentManager) {
         inboundTs: eventTs,
       }),
     ]);
+    if (env.metricsPerUser()) {
+      metric.userTurnsTotal.inc({ user_id: userId, user_name: userName });
+    }
 
     const attachmentBlock = files.length
       ? "\n" +
@@ -516,6 +522,7 @@ export function createSlackApp(agent: AgentManager) {
       console.log(
         `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — mention to other user, disengaging thread`,
       );
+      metric.slackDropsTotal.inc({ reason: "mention_other" });
       return;
     }
     if (engaged.has(key)) {
@@ -524,6 +531,7 @@ export function createSlackApp(agent: AgentManager) {
     console.log(
       `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — channel msg, thread not engaged (no @mention)`,
     );
+    metric.slackDropsTotal.inc({ reason: "engagement" });
   });
 
   // Disengage when slaude finishes a turn AND no follow-up arrives within the
