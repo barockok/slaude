@@ -80,8 +80,13 @@ function renderTable(block: string): string {
   const header = rows[0] ?? [];
   const body = isSep ? rows.slice(2) : rows.slice(1);
   const cols = header.length;
+  // Code-block branch renders verbatim — markdown emphasis (**bold**, *italic*,
+  // _x_, ~~strike~~) would show literal. Strip before width calc + render.
+  const stripCells = (r: string[]) => r.map((c) => stripEmphasis(c ?? ""));
+  const headerStripped = stripCells(header);
+  const bodyStripped = body.map(stripCells);
   const widths = new Array(cols).fill(0);
-  for (const r of [header, ...body]) {
+  for (const r of [headerStripped, ...bodyStripped]) {
     for (let i = 0; i < cols; i++) {
       widths[i] = Math.max(widths[i], (r[i] ?? "").length);
     }
@@ -103,10 +108,21 @@ function renderTable(block: string): string {
   }
   const fmt = (r: string[]) =>
     r.map((c, i) => (c ?? "").padEnd(widths[i] ?? 0)).join("  ").trimEnd();
-  const out: string[] = [fmt(header)];
+  const out: string[] = [fmt(headerStripped)];
   out.push(widths.map((w) => "-".repeat(w)).join("  "));
-  for (const r of body) out.push(fmt(r));
+  for (const r of bodyStripped) out.push(fmt(r));
   return "\n```\n" + out.join("\n") + "\n```\n";
+}
+
+/** Strip markdown emphasis markers (bold/italic/strike) — for code-block contexts
+ *  where mrkdwn doesn't render and markers would show literal. */
+function stripEmphasis(s: string): string {
+  return s
+    .replace(/\*\*([\s\S]+?)\*\*/g, "$1")
+    .replace(/__([^_\n]+?)__/g, "$1")
+    .replace(/~~([^~\n]+?)~~/g, "$1")
+    .replace(/(^|[^*])\*([^*\n]+?)\*(?!\*)/g, "$1$2")
+    .replace(/(^|[^_])_([^_\n]+?)_(?!_)/g, "$1$2");
 }
 
 export const SLACK_MAX_TEXT = 39000;

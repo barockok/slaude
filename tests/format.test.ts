@@ -54,6 +54,24 @@ describe("mdToMrkdwn", () => {
     expect(out).toContain("*alpha*");
     expect(out).toContain("• description");
   });
+  test("narrow table strips emphasis inside code block cells", () => {
+    const md = [
+      "| key | value |",
+      "| - | - |",
+      "| **a** | *b* |",
+      "| _c_ | ~~d~~ |",
+    ].join("\n");
+    const out = mdToMrkdwn(md);
+    expect(out).toContain("```");
+    expect(out).not.toContain("**a**");
+    expect(out).not.toContain("*b*");
+    expect(out).not.toContain("_c_");
+    expect(out).not.toContain("~~d~~");
+    expect(out).toContain("a");
+    expect(out).toContain("b");
+    expect(out).toContain("c");
+    expect(out).toContain("d");
+  });
   test("table with no separator returns block unchanged-ish", () => {
     // single row only — function bails (rows.length < 2 path)
     const md = "| a | b |";
