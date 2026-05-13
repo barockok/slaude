@@ -139,4 +139,18 @@ describe("config/env getters", () => {
     expect(env.tokenCriticalPct()).toBe(0.92);
     delete process.env.SLAUDE_TOKEN_CRITICAL_PCT;
   });
+
+  test("tokenFallbackContextWindow default + override + invalid", () => {
+    delete process.env.SLAUDE_FALLBACK_CONTEXT_WINDOW;
+    expect(env.tokenFallbackContextWindow()).toBe(200_000);
+    process.env.SLAUDE_FALLBACK_CONTEXT_WINDOW = "1000000";
+    expect(env.tokenFallbackContextWindow()).toBe(1_000_000);
+    process.env.SLAUDE_FALLBACK_CONTEXT_WINDOW = "abc";
+    expect(env.tokenFallbackContextWindow()).toBe(200_000);
+    process.env.SLAUDE_FALLBACK_CONTEXT_WINDOW = "0";
+    expect(env.tokenFallbackContextWindow()).toBe(200_000);
+    process.env.SLAUDE_FALLBACK_CONTEXT_WINDOW = "-5";
+    expect(env.tokenFallbackContextWindow()).toBe(200_000);
+    delete process.env.SLAUDE_FALLBACK_CONTEXT_WINDOW;
+  });
 });

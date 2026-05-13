@@ -47,6 +47,24 @@ describe("TokenBudget", () => {
     expect(b.snapshot("s1")!.contextWindow).toBe(200_000);
   });
 
+  test("constructor fallbackContextWindow overrides default", () => {
+    const b = new TokenBudget({ fallbackContextWindow: 1_000_000 });
+    b.record("s1", { usage: usage(), modelUsage: {} });
+    expect(b.snapshot("s1")!.contextWindow).toBe(1_000_000);
+  });
+
+  test("invalid fallbackContextWindow falls back to 200000", () => {
+    const b1 = new TokenBudget({ fallbackContextWindow: 0 });
+    b1.record("s1", { usage: usage(), modelUsage: {} });
+    expect(b1.snapshot("s1")!.contextWindow).toBe(200_000);
+    const b2 = new TokenBudget({ fallbackContextWindow: NaN });
+    b2.record("s1", { usage: usage(), modelUsage: {} });
+    expect(b2.snapshot("s1")!.contextWindow).toBe(200_000);
+    const b3 = new TokenBudget({ fallbackContextWindow: -5 });
+    b3.record("s1", { usage: usage(), modelUsage: {} });
+    expect(b3.snapshot("s1")!.contextWindow).toBe(200_000);
+  });
+
   test("contextWindow picks max across multiple model entries", () => {
     const b = new TokenBudget();
     b.record("s1", {
