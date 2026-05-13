@@ -28,17 +28,26 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 function loadExternalMcp(): Record<string, McpServerConfig> {
   const f = join(paths.home, ".mcp.json");
   if (!existsSync(f)) return {};
+  const expand = (s: string) =>
+    s.replace(/\$\{([A-Z0-9_]+)\}/g, (_, name) => process.env[name] ?? "");
   try {
     const parsed = JSON.parse(readFileSync(f, "utf8"));
     const servers = parsed?.mcpServers ?? {};
-    // Expand ${VAR} placeholders in env values from process.env.
+    // Expand ${VAR} placeholders from process.env across stdio + http/sse fields.
     for (const cfg of Object.values<any>(servers)) {
       if (cfg?.env && typeof cfg.env === "object") {
         for (const [k, v] of Object.entries<any>(cfg.env)) {
-          if (typeof v === "string") {
-            cfg.env[k] = v.replace(/\$\{([A-Z0-9_]+)\}/g, (_, name) => process.env[name] ?? "");
-          }
+          if (typeof v === "string") cfg.env[k] = expand(v);
         }
+      }
+      if (cfg?.headers && typeof cfg.headers === "object") {
+        for (const [k, v] of Object.entries<any>(cfg.headers)) {
+          if (typeof v === "string") cfg.headers[k] = expand(v);
+        }
+      }
+      if (typeof cfg?.url === "string") cfg.url = expand(cfg.url);
+      if (Array.isArray(cfg?.args)) {
+        cfg.args = cfg.args.map((a: unknown) => (typeof a === "string" ? expand(a) : a));
       }
     }
     return servers;
