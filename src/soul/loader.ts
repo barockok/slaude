@@ -140,6 +140,27 @@ const STARTER_PERSONA = `# Persona
 ## Reporting
 - Manager: <Slack user id of the person you report to, e.g. U0XXXXXXXXX>
 - Manager handle: <e.g. @barock>
+- Backup manager: <optional fallback user id, e.g. U0DEPUTY123 — leave blank for none>
+- Backup manager handle: <e.g. @deputy>
+
+## Redaction
+
+Outbound replies are scrubbed for substrings matching the regex patterns
+listed here before posting to Slack. Each line is a regex source (no
+\`/.../\` wrappers, no flags — patterns run global + case-insensitive).
+Use for credential / PII shapes you never want leaked. Omit the section
+to disable redaction.
+
+- AKIA[0-9A-Z]{16}                  ; AWS access keys
+- ghp_[0-9A-Za-z]{36}               ; GitHub personal tokens
+- xox[baprs]-[0-9A-Za-z-]{10,}      ; Slack tokens
+
+## Approval timeout
+
+Auto-deny \`request_approval\` blocks after this many seconds with no
+human click. 0 (or omit the section) = wait forever.
+
+- 600
 
 ## Allowed channels
 

@@ -31,8 +31,22 @@ export function validateSoul(data: SoulData): ValidationResult {
   if (data.approvers.length === 0) {
     warnings.push("approvers is empty — `request_approval` blocks will fall back to env or accept anyone");
   }
-  if (data.allowedChannels.length === 0) {
-    warnings.push("allowedChannels is empty — only manager can chat outside DMs");
+  if (data.allowedChannels.length === 0 && data.trustedChannels.length === 0) {
+    warnings.push("allowedChannels + trustedChannels both empty — only manager/backup can chat outside DMs");
+  }
+  if (
+    data.backupManager?.userId &&
+    data.manager?.userId &&
+    data.backupManager.userId === data.manager.userId
+  ) {
+    warnings.push("backupManager.userId equals manager.userId — backup is redundant");
+  }
+  for (const p of data.redactPatterns) {
+    try {
+      new RegExp(p, "gi");
+    } catch (e: any) {
+      warnings.push(`redactPatterns entry rejected as invalid regex: ${p}`);
+    }
   }
 
   return { ok: missing.length === 0, missing, warnings };

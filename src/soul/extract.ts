@@ -85,6 +85,7 @@ function parseJsonLoose(text: string): unknown {
 function assertIdsGroundedInPersona(data: SoulData, persona: string): void {
   const ids = new Set<string>();
   if (data.manager.userId) ids.add(data.manager.userId);
+  if (data.backupManager.userId) ids.add(data.backupManager.userId);
   for (const c of data.allowedChannels) ids.add(c);
   for (const c of data.trustedChannels) ids.add(c);
   for (const u of data.blockedUsers) ids.add(u);
