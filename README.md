@@ -102,39 +102,78 @@ SLAUDE_HEALTH_PORT=8080
 
 ### 4. Edit the persona
 
-`~/.slaude/SOUL.md` is auto-seeded with a starter scaffold on first run. Fill in:
+`~/.slaude/SOUL.md` is auto-seeded with a starter scaffold on first run. Validate at any time with `bun run validate-soul` (exit 0 = ok, 1 = missing required fields, 2 = extraction failure).
 
-- **Identity** — Name, Role, Voice
-- **Reporting** — Manager Slack user id + handle. This id is the **sole** user who can DM slaude or address it in non-whitelisted channels.
-- **Allowed channels** — public-interaction zones. Inside a listed channel, *anyone* can address slaude. Outside (private channels the manager adds the bot to ad-hoc, plus all DMs), only the manager engages. Approvers don't get chat privileges — they only authorize `request_approval` blocks.
-- **Values / Mandate** — operating principles + what this deploy is for
-- **Approvers** — one `<id-or-mention>: <free-text scope>` per line. The runtime keyword-matches plan summaries against each scope. Catchall keywords (`anything` / `*` / `default`) make an entry always eligible.
+#### Supported SOUL.md schema
+
+Parsed at boot by an ephemeral Claude pass into typed JSON. Required fields block `validate-soul`; the rest are optional with warnings when notable defaults kick in.
+
+| Section | Field | Required | Notes |
+|---|---|---|---|
+| `## Identity` | `identity.name` / `role` / `voice` | **name** | Agent display name + free-text role + voice guidance |
+| `## Reporting` | `manager.userId` / `manager.handle` | **manager.userId** | Sole user accepted in DMs and non-public channels |
+| `## Reporting` | `backupManager.userId` / `backupManager.handle` | optional | Fallback manager — same engagement authority as primary |
+| `## Allowed channels` | `allowedChannels: Cxxx/Gxxx[]` | optional | Public zones — anyone in channel chats; agent guards info exposure |
+| `## Trusted channels` | `trustedChannels: Cxxx/Gxxx[]` | optional | Team zones — anyone in channel chats; agent free to show MCP/skills/internals. Per-turn `trust="trusted"` hint in inbound envelope |
+| `## Blocked` | `blockedUsers: Uxxx[]` | optional | Hard drop at gateway — never reaches Claude |
+| `## Approvers` | `approvers: [{userId, scope, catchall}]` | optional | Click Approve/Deny on `request_approval` blocks. Scope is keyword-matched against plan summary |
+| `## Redaction` | `redactPatterns: string[]` | optional | Regex sources (no flags); applied global+case-insensitive after md→mrkdwn on every outbound Slack reply |
+| `## Approval timeout` | `approvalTimeoutSeconds: number` | optional | Auto-deny `request_approval` after N seconds with no click. `0` = wait forever |
+| `## Values` | `values: string[]` | optional | Operating principles, one per line |
+| `## Mandate` | `mandate: string` | **yes** | What this deploy is for, drives every turn |
+
+Channel-trust tiers in priority order: `trusted` > `allowed` > `restricted` (DM / unlisted; manager + backup only). The agent receives a `<channel … trust="…">` envelope every turn and calibrates info exposure accordingly.
 
 ```md
-## Allowed channels
+## Identity
+- Name: hermes
+- Role: senior platform engineer
+- Voice: terse, fragments OK
 
+## Reporting
+- Manager: U06ENBS6PV0
+- Manager handle: @barock
+- Backup manager: U0DEPUTY123
+
+## Allowed channels
 - <#C0123456789|engineering>
-- <#G0123456789|private-ops>
+
+## Trusted channels
+- <#C0AAATEAM00|squadron-team>
+
+## Blocked
+- <@U0SPAMUSR00>
 
 ## Approvers
-
 - <@U06ENBS6PV0>: anything                ; manager, catchall
 - <@U999>:        database migrations, schema, prod data, SQL
 - <@U777>:        deploys, infra, kubernetes, rollbacks
 - <@U888>:        external comms, customer messages, emails
+
+## Redaction
+- AKIA[0-9A-Z]{16}                  ; AWS keys
+- ghp_[0-9A-Za-z]{36}               ; GitHub tokens
+- xox[baprs]-[0-9A-Za-z-]{10,}      ; Slack tokens
+
+## Approval timeout
+- 600
+
+## Mandate
+- Help the team ship; refuse destructive ops without explicit approval.
 ```
 
-The hardcoded runtime baseline (Slack output discipline, formatting rules, approval discipline, engagement model) is composed in front of your persona automatically — don't re-state those in SOUL.md.
+The hardcoded runtime baseline (Slack output discipline, formatting rules, approval discipline, engagement model, channel-trust tiers, context-budget guidance, skill evolution) is composed in front of your persona automatically — don't re-state those in SOUL.md.
 
 ### Trust boundary: where the LLM ends and the gateway begins
 
 The persona is free-form prose. To safely turn that into security-sensitive state (which channels slaude answers in, who can DM it, who can click Approve), slaude separates *parsing* from *enforcement*:
 
-- **Parsing** — at boot, an ephemeral Claude turn projects SOUL.md into a typed `SoulData` JSON (`identity`, `manager`, `allowedChannels`, `approvers`, `mandate`, `values`). The result is validated with zod, then **every Slack id it returns is checked against the raw SOUL.md text** — any id the extractor invented is rejected and the loader falls back to the regex parser. The validated JSON is sha-cached at `$SLAUDE_HOME/cache/soul.<sha>.json`; subsequent boots skip the LLM call entirely until SOUL.md changes.
+- **Parsing** — at boot, an ephemeral Claude turn projects SOUL.md into a typed `SoulData` JSON (`identity`, `manager`, `backupManager`, `allowedChannels`, `trustedChannels`, `blockedUsers`, `approvers`, `redactPatterns`, `approvalTimeoutSeconds`, `mandate`, `values`). The result is validated with zod, then **every Slack id it returns is checked against the raw SOUL.md text** — any id the extractor invented is rejected and the loader falls back to the regex parser. The validated JSON is sha-cached at `$SLAUDE_HOME/cache/soul.<sha>.json`; subsequent boots skip the LLM call entirely until SOUL.md changes.
 - **Enforcement is fully deterministic and runs in the gateway, never delegated to the model:**
   - **Channel-mode gate (`adapter.ts`)** — for each inbound message:
-    - If the channel id is in `allowedChannels` → public zone: any user is accepted.
-    - Otherwise (any non-whitelisted channel **and** all DMs) → only `manager.userId` is accepted. Other users are dropped before any session sees the message.
+    - If the channel id is in `trustedChannels` or `allowedChannels` → public zone: any user accepted.
+    - Otherwise (DM or unlisted channel) → only `manager.userId` and `backupManager.userId` accepted. Other users dropped before any session sees the message.
+    - `blockedUsers` is a hard drop before any other gate — works inside trusted/allowed channels too.
   - **Engagement model** — `@mention` engages a thread; `@mention` of someone else disengages. Plain replies in a disengaged thread are dropped.
   - **Approver authorization** — when a user clicks Approve / Deny on an `mcp__slaude_slack__request_approval` block, the action handler verifies the clicker's user id is in the resolved approver Set (computed server-side from the structured `approvers` list + token-overlap match against the agent's plan summary). Approvers can authorize but **cannot chat** from non-whitelisted channels or DMs — the chat-gate above still applies. The agent **never passes user ids** — it only writes the summary text.
   - **Per-tool permissions** — `permission-gate.ts` `canUseTool` callback decides Allow / Ask / Deny; mutating tools require explicit user click on a Block Kit prompt.
@@ -192,6 +231,27 @@ docker compose up -d --build
 Kubernetes — see `deploy/k8s/slaude.yaml`. Replicas pinned to 1 because Slack Socket Mode is single-leader. Onboard additional agents via additional Deployments.
 
 Invite the bot to a channel, `@slaude do something`, or DM it directly.
+
+### Metrics (Prometheus)
+
+Slaude exposes `/metrics` on the health-server port (default `:8080`, same process as `/healthz` + `/readyz`) in Prometheus text format. Scrape with Prometheus or Grafana Agent.
+
+Metric surface:
+
+| Metric | Type | Labels |
+|---|---|---|
+| `slaude_sessions_live` | gauge | — |
+| `slaude_turns_total` | counter | `result=success\|error` |
+| `slaude_tool_calls_total` | counter | `tool` |
+| `slaude_tokens_total` | counter | `kind=input\|output\|cache_read\|cache_creation` |
+| `slaude_context_window_pct` | gauge | — |
+| `slaude_stop_guard_blocked_total` | counter | — |
+| `slaude_stop_guard_failed_total` | counter | — |
+| `slaude_errors_total` | counter | `kind=sdk\|turn\|stop_guard_failed` |
+| `slaude_slack_drops_total` | counter | `reason=dedup\|whitelist\|engagement\|mention_other\|blocked_user` |
+| `slaude_user_turns_total` | counter | `user_id`, `user_name` (opt-in) |
+
+Static labels applied to every series via `SLAUDE_METRICS_LABELS="agent=hermes,env=prod,team=ai"`. Per-user counter is opt-in (`SLAUDE_METRICS_PER_USER=1`) — leaving it off keeps Prometheus cardinality bounded in public channels.
 
 ## Layout
 
