@@ -252,6 +252,22 @@ export function createSlackApp(agent: AgentManager) {
     }
     seenEvents.add(dedupKey);
 
+    // Hard blocklist: blocked user or blocked channel → drop before any
+    // further processing. Never reaches Claude — no token spend, no logs.
+    {
+      const soul = soulData();
+      if (soul.blockedUsers.includes(userId)) {
+        console.log(`[slack-rx] drop ch=${channelId} user=${userId} — blocked user`);
+        metric.slackDropsTotal.inc({ reason: "blocked_user" });
+        return;
+      }
+      if (soul.blockedChannels.includes(channelId)) {
+        console.log(`[slack-rx] drop ch=${channelId} user=${userId} — blocked channel`);
+        metric.slackDropsTotal.inc({ reason: "blocked_channel" });
+        return;
+      }
+    }
+
     // Channel-mode gate, driven entirely by SOUL.md:
     //   - whitelisted channel → public zone, anyone can address slaude
     //   - non-whitelisted channel OR DM → manager-only (approvers can still
