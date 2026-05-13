@@ -50,6 +50,7 @@ const manifest = {
     event_subscriptions: {
       bot_events: [
         "app_mention",
+        "assistant_thread_started",
         "message.channels",
         "message.groups",
         "message.im",
