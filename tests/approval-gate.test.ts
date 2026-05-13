@@ -8,6 +8,7 @@ type Handler = (a: any) => Promise<void>;
 function fakeApp() {
   const handlers: { matcher: RegExp; fn: Handler }[] = [];
   const posts: any[] = [];
+  const updates: any[] = [];
   const app: any = {
     action: (matcher: RegExp, fn: Handler) => handlers.push({ matcher, fn }),
     client: {
@@ -16,12 +17,17 @@ function fakeApp() {
           posts.push(m);
           return { ok: true, ts: "1234.5678" };
         },
+        update: async (m: any) => {
+          updates.push(m);
+          return { ok: true };
+        },
       },
     },
   };
   return {
     app,
     posts,
+    updates,
     fire: async (action_id: string, userId: string) => {
       const respond: any = (() => {
         const calls: any[] = [];
@@ -209,5 +215,50 @@ describe("ApprovalGate", () => {
     const gate = new ApprovalGate(f.app, []);
     void gate.request({ channel: "C", threadTs: "T", summary: "" });
     expect(JSON.stringify(f.posts[0].blocks)).toContain("(no summary)");
+  });
+
+  test("timeout auto-denies + posts update", async () => {
+    writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
+    const f = fakeApp();
+    // 0.05s timeout — fast enough for the test, large enough for setTimeout precision.
+    const gate = new ApprovalGate(f.app, [], { timeoutSeconds: () => 0.05 as any });
+    const d = await gate.request({ channel: "C", threadTs: "T", summary: "stuck" });
+    expect(d.approved).toBe(false);
+    expect(d.by).toBe("system");
+    expect(d.note).toMatch(/^timeout-/);
+    // chat.update fired with the hourglass copy.
+    expect(f.updates.length).toBe(1);
+    expect(f.updates[0].text).toMatch(/Auto-denied/);
+  });
+
+  test("approve before timeout clears timer (no auto-deny)", async () => {
+    writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
+    const f = fakeApp();
+    const gate = new ApprovalGate(f.app, [], { timeoutSeconds: () => 0.1 as any });
+    const p = gate.request({ channel: "C", threadTs: "T", summary: "x" });
+    const id = f.posts[0].blocks
+      .find((b: any) => b.type === "actions")
+      .elements.find((e: any) => e.action_id.includes("approve")).action_id;
+    await f.fire(id, "U001");
+    const d = await p;
+    expect(d.approved).toBe(true);
+    // Wait past the timeout window — no extra chat.update should have fired.
+    await new Promise((r) => setTimeout(r, 150));
+    expect(f.updates.length).toBe(0);
+  });
+
+  test("abort clears timer", async () => {
+    writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
+    const f = fakeApp();
+    const gate = new ApprovalGate(f.app, [], { timeoutSeconds: () => 0.1 as any });
+    const ac = new AbortController();
+    const p = gate.request({ channel: "C", threadTs: "T", summary: "x" }, ac.signal);
+    await new Promise((r) => setTimeout(r, 5));
+    ac.abort();
+    const d = await p;
+    expect(d.note).toBe("aborted");
+    await new Promise((r) => setTimeout(r, 150));
+    // Timer was cleared on abort — no timeout update.
+    expect(f.updates.length).toBe(0);
   });
 });
