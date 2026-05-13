@@ -34,6 +34,9 @@ export type ApprovalDecision = {
 type Pending = {
   resolve: (d: ApprovalDecision) => void;
   approvers: Set<string>;
+  timer?: ReturnType<typeof setTimeout>;
+  channel: string;
+  ts?: string;
 };
 
 export class ApprovalGate {
@@ -43,10 +46,17 @@ export class ApprovalGate {
   /** Env-derived fallback allowlist. Used when persona has no approvers block
    *  or no matching category and no 'default' key either. */
   #envApprovers: Set<string>;
+  /** Source for the per-request timeout. Injected so tests can override. */
+  #timeoutSeconds: () => number;
 
-  constructor(app: App, envApprovers: string[]) {
+  constructor(
+    app: App,
+    envApprovers: string[],
+    opts: { timeoutSeconds?: () => number } = {},
+  ) {
     this.#client = app.client;
     this.#envApprovers = new Set(envApprovers);
+    this.#timeoutSeconds = opts.timeoutSeconds ?? (() => 0);
     app.action(
       /^slaude_appr:(approve|deny):.+$/,
       async ({ ack, action, body, respond }) => {
@@ -81,6 +91,7 @@ export class ApprovalGate {
           return; // do NOT consume the pending entry
         }
 
+        if (pending.timer) clearTimeout(pending.timer);
         this.#pending.delete(id);
         const verb = decision === "approve" ? "*Approved*" : "*Denied*";
         try {
@@ -188,20 +199,47 @@ export class ApprovalGate {
       ],
     });
 
-    await this.#client.chat.postMessage({
+    const posted = await this.#client.chat.postMessage({
       channel: req.channel,
       thread_ts: req.threadTs,
       text: `:bell: Approval needed: ${truncate(req.summary, 80)}`,
       blocks: sections,
     });
 
+    const timeoutSec = this.#timeoutSeconds();
     return new Promise<ApprovalDecision>((resolve) => {
-      this.#pending.set(id, { resolve, approvers });
+      const pending: Pending = {
+        resolve,
+        approvers,
+        channel: req.channel,
+        ts: posted.ts as string | undefined,
+      };
+      if (timeoutSec > 0) {
+        pending.timer = setTimeout(() => {
+          const p = this.#pending.get(id);
+          if (!p) return;
+          this.#pending.delete(id);
+          // Best-effort UI update so the block doesn't look pending forever.
+          if (p.ts) {
+            void this.#client.chat
+              .update({
+                channel: p.channel,
+                ts: p.ts,
+                text: `:hourglass: Auto-denied after ${timeoutSec}s — no approver clicked.`,
+                blocks: [],
+              })
+              .catch(() => {});
+          }
+          p.resolve({ approved: false, by: "system", note: `timeout-${timeoutSec}s` });
+        }, timeoutSec * 1000);
+      }
+      this.#pending.set(id, pending);
       abortSignal?.addEventListener(
         "abort",
         () => {
           const p = this.#pending.get(id);
           if (!p) return;
+          if (p.timer) clearTimeout(p.timer);
           this.#pending.delete(id);
           p.resolve({ approved: false, by: "system", note: "aborted" });
         },

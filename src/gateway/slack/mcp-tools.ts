@@ -8,6 +8,12 @@ import type { WebClient } from "@slack/web-api";
 import { createReadStream, statSync } from "node:fs";
 import { basename } from "node:path";
 import { mdToMrkdwn } from "./format";
+import { redactSlack } from "./redact";
+import { soulData } from "../../soul/extract";
+
+function format(text: string): string {
+  return redactSlack(mdToMrkdwn(text), soulData().redactPatterns);
+}
 
 /**
  * Per-session Slack output context. The slack MCP tools close over this
@@ -55,7 +61,7 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
             const r = await ctx.client.chat.postMessage({
               channel: ctx.channel,
               thread_ts: ctx.threadTs,
-              text: mdToMrkdwn(text),
+              text: format(text),
               mrkdwn: true,
             });
             return ok(`posted ts=${r.ts}`);
@@ -77,7 +83,7 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
             await ctx.client.chat.update({
               channel: ctx.channel,
               ts,
-              text: mdToMrkdwn(text),
+              text: format(text),
             });
             return ok("edited");
           } catch (e: any) {
@@ -177,7 +183,7 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
               file: createReadStream(path),
               filename,
               title: title ?? filename,
-              ...(initial_comment ? { initial_comment: mdToMrkdwn(initial_comment) } : {}),
+              ...(initial_comment ? { initial_comment: format(initial_comment) } : {}),
               ...(alt_text ? { alt_text } : {}),
             } as any);
             const ids = ((r as any).files ?? [])

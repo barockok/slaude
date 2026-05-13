@@ -83,7 +83,9 @@ export function createSlackApp(agent: AgentManager) {
   const presence = new Presence(app.client);
   const status = new Status(app.client);
   const permissions = new PermissionGate(app);
-  const approvals = new ApprovalGate(app, env.slack.approvers());
+  const approvals = new ApprovalGate(app, env.slack.approvers(), {
+    timeoutSeconds: () => soulData().approvalTimeoutSeconds,
+  });
   agent.setPermissionResolver(permissions.resolver);
 
   // Diag: dump bot identity + granted scopes once at startup.
@@ -277,9 +279,11 @@ export function createSlackApp(agent: AgentManager) {
       const publicZone = isTrusted || isAllowed;
       if (!publicZone) {
         const managerId = soul.manager.userId;
-        if (!managerId || userId !== managerId) {
+        const backupId = soul.backupManager.userId;
+        const allowed = (managerId && userId === managerId) || (backupId && userId === backupId);
+        if (!allowed) {
           console.log(
-            `[slack-rx] drop ch=${channelId} user=${userId} — non-whitelist/DM accepts manager only` +
+            `[slack-rx] drop ch=${channelId} user=${userId} — non-whitelist/DM accepts manager/backup only` +
               (managerId ? "" : " (no manager set in SOUL.md)"),
           );
           metric.slackDropsTotal.inc({ reason: "whitelist" });
