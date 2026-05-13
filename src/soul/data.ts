@@ -34,15 +34,22 @@ export const SoulDataSchema = z.object({
    *  in the channel can address slaude. In any channel NOT on this list
    *  (and in DMs) only the manager may engage; approvers can still click
    *  Approve / Deny on `request_approval` blocks but can't chat. */
+  /** Public-zone channels — anyone in the channel can address slaude.
+   *  Slaude should mind info exposure here (no unsolicited dumps of MCP
+   *  servers, skills, internal config — public eyes). */
   allowedChannels: z.array(z.string().regex(/^[CGD][A-Z0-9]+$/)).default([]),
+  /** Trusted team channels — slaude operates as part of the team here.
+   *  Engagement gate identical to `allowedChannels` (anyone in channel can
+   *  chat), but the agent gets a `<channel-trust>trusted</channel-trust>`
+   *  hint in the inbound envelope, signaling it can be more open: show MCP
+   *  server lists, skills, debug info, internal context. Use for the BU /
+   *  team channel where slaude is a member, not a guest. */
+  trustedChannels: z.array(z.string().regex(/^[CGD][A-Z0-9]+$/)).default([]),
   /** Slack user ids whose inbound messages are dropped before Claude is
    *  invoked. Hard-blocks at the adapter gate (no logs leaked to the agent,
-   *  no token spend). Useful for banning a noisy user or spam-bot operator. */
+   *  no token spend). Useful for banning a noisy user inside an otherwise-
+   *  trusted/allowed channel without un-trusting the whole channel. */
   blockedUsers: z.array(z.string().regex(/^[UW][A-Z0-9]+$/)).default([]),
-  /** Slack channel/group/DM ids whose inbound messages are dropped before
-   *  Claude is invoked. Hard-blocks at the adapter gate regardless of
-   *  `allowedChannels`. */
-  blockedChannels: z.array(z.string().regex(/^[CGD][A-Z0-9]+$/)).default([]),
   approvers: z.array(ApproverEntrySchema).default([]),
   mandate: z.string().optional(),
   values: z.array(z.string()).default([]),
@@ -57,8 +64,8 @@ export const EXTRACTION_PROMPT = `You are a structured-data extractor. Read the 
   "identity":        { "name"?: string, "role"?: string, "voice"?: string },
   "manager":         { "userId"?: string, "handle"?: string },
   "allowedChannels": string[],
+  "trustedChannels": string[],
   "blockedUsers":    string[],
-  "blockedChannels": string[],
   "approvers":       Array<{ "userId": string, "scope": string, "catchall": boolean }>,
   "mandate"?:        string,
   "values":          string[]
@@ -70,6 +77,8 @@ Rules:
 - scope is the free-text description after the colon, verbatim minus trailing comments.
 - catchall=true when scope is "anything" / "any" / "all" / "default" / "*" / "catchall" / "everything".
 - Skip placeholder rows (e.g. "<@manager-id>", "<agent display name>", "<C-channel-id>") — those are template stubs, not real values.
-- blockedUsers / blockedChannels: ids the persona explicitly marks as banned, blocked, ignored, blacklisted, or "do not respond". Look for sections titled "Blocked", "Blacklist", "Ignore", "Banned". Empty array if no such section.
+- allowedChannels: public-zone channels where slaude may interact but must mind info exposure. Look for sections titled "Allowed channels", "Public channels".
+- trustedChannels: internal team channels where slaude operates as a member (can show MCP servers, skills, internals). Look for sections titled "Trusted channels", "Team channel", "Home channel", "BU channel".
+- blockedUsers: ids the persona explicitly marks as banned, blocked, ignored, blacklisted, or "do not respond". Look for sections titled "Blocked", "Blacklist", "Ignore", "Banned". Empty array if no such section.
 - Omit fields you cannot determine. Do not invent ids — every id you return MUST appear verbatim somewhere in the persona text.
 - Return ONLY the JSON object. No \`\`\` fence. No explanation.`;
