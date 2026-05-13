@@ -11,6 +11,7 @@ import {
   type HookCallback,
 } from "@anthropic-ai/claude-agent-sdk";
 import { TokenBudget, type UsageSnapshot } from "./token-budget";
+import { m as metric } from "../metrics";
 
 export type PermissionMode =
   | "default"
@@ -267,9 +268,12 @@ export class AgentManager extends EventEmitter {
         process.stderr.write(
           `[stop-guard] session=${sessionId} blocked once but agent still stopping: ${reason}\n`,
         );
+        metric.stopGuardFailedTotal.inc();
+        metric.errorsTotal.inc({ kind: "stop_guard_failed" });
         return { continue: true };
       }
       this.#stopBlocked.add(sessionId);
+      metric.stopGuardBlockedTotal.inc();
       return { decision: "block", reason };
     };
     const options: Options = {
@@ -321,6 +325,7 @@ export class AgentManager extends EventEmitter {
       inAutoEvolve: false,
     };
     this.#live.set(sessionId, live);
+    metric.sessionsLive.set(this.#live.size);
     this.#armIdle(live);
     Sessions.setStatus(sessionId, "running");
 
@@ -361,6 +366,7 @@ export class AgentManager extends EventEmitter {
           void this.#startSession(sessionId, firstText);
           return;
         }
+        metric.errorsTotal.inc({ kind: "sdk" });
         this.emit("event", { type: "error", sessionId, error: message } satisfies AgentEvent);
       } finally {
         if (retried) return;
@@ -369,6 +375,7 @@ export class AgentManager extends EventEmitter {
         this.#live.delete(sessionId);
         this.#budget.forget(sessionId);
         this.#stopBlocked.delete(sessionId);
+        metric.sessionsLive.set(this.#live.size);
       }
     })();
   }
@@ -394,6 +401,7 @@ export class AgentManager extends EventEmitter {
             } satisfies AgentEvent);
           } else if (block.type === "tool_use") {
             if (live) live.turnTools.push(block.name);
+            metric.toolCallsTotal.inc({ tool: block.name });
             this.emit("event", {
               type: "toolCall",
               sessionId,
@@ -429,6 +437,11 @@ export class AgentManager extends EventEmitter {
             modelUsage: (msg as any).modelUsage,
           });
           const snapshot = this.#budget.snapshot(sessionId)!;
+          metric.tokensTotal.inc({ kind: "input" }, (msg as any).usage.input_tokens ?? 0);
+          metric.tokensTotal.inc({ kind: "output" }, (msg as any).usage.output_tokens ?? 0);
+          metric.tokensTotal.inc({ kind: "cache_read" }, (msg as any).usage.cache_read_input_tokens ?? 0);
+          metric.tokensTotal.inc({ kind: "cache_creation" }, (msg as any).usage.cache_creation_input_tokens ?? 0);
+          metric.contextWindowPct.set(snapshot.pctUsed);
           this.emit("event", {
             type: "tokenUsage",
             sessionId,
@@ -453,6 +466,8 @@ export class AgentManager extends EventEmitter {
             "errors" in msg && Array.isArray((msg as any).errors)
               ? (msg as any).errors.join("; ")
               : msg.subtype;
+          metric.turnsTotal.inc({ result: "error" });
+          metric.errorsTotal.inc({ kind: "turn" });
           this.emit("event", {
             type: "error",
             sessionId,
@@ -462,6 +477,7 @@ export class AgentManager extends EventEmitter {
         } else {
           const wasAutoEvolve = live?.inAutoEvolve === true;
           if (live) live.inAutoEvolve = false;
+          metric.turnsTotal.inc({ result: "success" });
           this.emit("event", {
             type: "done",
             sessionId,

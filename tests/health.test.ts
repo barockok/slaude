@@ -66,5 +66,11 @@ describe("startHealthServer", () => {
 
     const nf = await fetch(`http://127.0.0.1:${port}/whatever`);
     expect(nf.status).toBe(404);
+
+    const mr = await fetch(`http://127.0.0.1:${port}/metrics`);
+    expect(mr.status).toBe(200);
+    expect(mr.headers.get("content-type")).toContain("text/plain");
+    const metricsBody = await mr.text();
+    expect(typeof metricsBody).toBe("string");
   });
 });

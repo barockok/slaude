@@ -140,6 +140,26 @@ describe("config/env getters", () => {
     delete process.env.SLAUDE_TOKEN_CRITICAL_PCT;
   });
 
+  test("metricsLabels passthrough", () => {
+    delete process.env.SLAUDE_METRICS_LABELS;
+    expect(env.metricsLabels()).toBe("");
+    process.env.SLAUDE_METRICS_LABELS = "a=1,b=2";
+    expect(env.metricsLabels()).toBe("a=1,b=2");
+    delete process.env.SLAUDE_METRICS_LABELS;
+  });
+  test("metricsPerUser parses truthy/falsy", () => {
+    delete process.env.SLAUDE_METRICS_PER_USER;
+    expect(env.metricsPerUser()).toBe(false);
+    for (const v of ["1", "true", "yes", "TRUE", "Yes"]) {
+      process.env.SLAUDE_METRICS_PER_USER = v;
+      expect(env.metricsPerUser()).toBe(true);
+    }
+    process.env.SLAUDE_METRICS_PER_USER = "0";
+    expect(env.metricsPerUser()).toBe(false);
+    process.env.SLAUDE_METRICS_PER_USER = "no";
+    expect(env.metricsPerUser()).toBe(false);
+    delete process.env.SLAUDE_METRICS_PER_USER;
+  });
   test("tokenFallbackContextWindow default + override + invalid", () => {
     delete process.env.SLAUDE_FALLBACK_CONTEXT_WINDOW;
     expect(env.tokenFallbackContextWindow()).toBe(200_000);

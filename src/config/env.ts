@@ -149,4 +149,14 @@ export const env = {
     const n = Number(raw);
     return Number.isFinite(n) && n > 0 ? n : 200_000;
   },
+  /** Static Prometheus labels applied to every metric, e.g.
+   *  `SLAUDE_METRICS_LABELS="agent=hermes,env=prod"`. Malformed entries are
+   *  silently dropped by the metrics registry. */
+  metricsLabels: () => opt("SLAUDE_METRICS_LABELS", ""),
+  /** Opt in to per-user turn counters (`slaude_user_turns_total`). Off by
+   *  default to avoid high-cardinality blow-up in public channels. */
+  metricsPerUser: () => {
+    const raw = opt("SLAUDE_METRICS_PER_USER", "0").toLowerCase();
+    return raw === "1" || raw === "true" || raw === "yes";
+  },
 };
