@@ -115,6 +115,35 @@ describe("loadSoulData — extraction + cache", () => {
     expect(d.approvers.map((a) => a.userId)).toEqual(["U0XXXXXXXXX"]);
   });
 
+  test("extracts blockedUsers + blockedChannels when grounded", async () => {
+    seedPersona([
+      "# P",
+      "## Blocked",
+      "- <@U0BADUSER0>",
+      "- <#C0BADCHAN0|spam>",
+      "## Approvers",
+      "- <@U0XXXXXXXXX>: anything",
+    ].join("\n"));
+    mockFetch(async () => okResponse(JSON.stringify({
+      blockedUsers: ["U0BADUSER0"],
+      blockedChannels: ["C0BADCHAN0"],
+      approvers: [{ userId: "U0XXXXXXXXX", scope: "anything", catchall: true }],
+    })));
+    const d = await loadSoulData();
+    expect(d.blockedUsers).toEqual(["U0BADUSER0"]);
+    expect(d.blockedChannels).toEqual(["C0BADCHAN0"]);
+  });
+
+  test("rejects ungrounded blockedUser → fallback", async () => {
+    seedPersona("# P\n## Approvers\n- <@U0XXXXXXXXX>: anything\n");
+    mockFetch(async () => okResponse(JSON.stringify({
+      approvers: [{ userId: "U0XXXXXXXXX", scope: "anything", catchall: true }],
+      blockedUsers: ["U999PHANTOM"],
+    })));
+    const d = await loadSoulData();
+    expect(d.blockedUsers).toEqual([]);
+  });
+
   test("rejects ungrounded channel id → fallback", async () => {
     seedPersona("# P\n## Approvers\n- <@U0XXXXXXXXX>: anything\n");
     mockFetch(async () => okResponse(JSON.stringify({
