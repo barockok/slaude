@@ -528,20 +528,19 @@ export function createSlackApp(agent: AgentManager) {
     if (engaged.has(key)) {
       return await handleMessage(args);
     }
+    // Restore engagement across restarts: if a session row exists for this
+    // thread, the bot was engaged here historically — keep handling plain
+    // replies without forcing a re-@mention.
+    const teamId: string | undefined = args.context?.teamId ?? e.team;
+    if (teamId && Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts })) {
+      engaged.add(key);
+      return await handleMessage(args);
+    }
     console.log(
       `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — channel msg, thread not engaged (no @mention)`,
     );
     metric.slackDropsTotal.inc({ reason: "engagement" });
   });
-
-  // Disengage when slaude finishes a turn AND no follow-up arrives within the
-  // idle window. We piggyback on AgentManager's existing idle teardown by
-  // clearing engagement when the SDK loop unwinds (per session).
-  // (The SDK doesn't currently surface session shutdown, so this is best-
-  //  effort: engagement also clears on @mention to a different user.)
-
-  // Sessions import retained for ensureSession path.
-  void Sessions;
 
   return app;
 }
