@@ -137,4 +137,16 @@ export const env = {
     if (n >= 1) return 0.92;
     return n;
   },
+  /**
+   * Fallback context-window size (tokens) used when the SDK `result` message
+   * has no `modelUsage` entries to source the model's advertised cap from.
+   * Override via `SLAUDE_FALLBACK_CONTEXT_WINDOW` (e.g. `1000000` for 1M-ctx
+   * models). Defaults to 200000. Non-positive / non-finite values fall back
+   * to the default.
+   */
+  tokenFallbackContextWindow: () => {
+    const raw = opt("SLAUDE_FALLBACK_CONTEXT_WINDOW", "200000");
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : 200_000;
+  },
 };

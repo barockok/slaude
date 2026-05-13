@@ -74,7 +74,9 @@ export class AgentManager extends EventEmitter {
   #live = new Map<string, LiveSession>();
   #resolver: PermissionResolver | undefined;
   #mcpResolver: McpResolver | undefined;
-  #budget = new TokenBudget();
+  #budget = new TokenBudget({
+    fallbackContextWindow: env.tokenFallbackContextWindow(),
+  });
 
   /** Current context-usage snapshot for a session, or null if no turn has completed. */
   getTokenSnapshot(sessionId: string): UsageSnapshot | null {
