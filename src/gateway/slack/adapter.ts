@@ -252,8 +252,9 @@ export function createSlackApp(agent: AgentManager) {
     }
     seenEvents.add(dedupKey);
 
-    // Hard blocklist: blocked user or blocked channel → drop before any
-    // further processing. Never reaches Claude — no token spend, no logs.
+    // Hard blocklist: blocked user → drop before any further processing.
+    // Never reaches Claude (no token spend, no logs). Channel blocking is
+    // unnecessary — default posture already denies anywhere not allowed/trusted.
     {
       const soul = soulData();
       if (soul.blockedUsers.includes(userId)) {
@@ -261,23 +262,20 @@ export function createSlackApp(agent: AgentManager) {
         metric.slackDropsTotal.inc({ reason: "blocked_user" });
         return;
       }
-      if (soul.blockedChannels.includes(channelId)) {
-        console.log(`[slack-rx] drop ch=${channelId} user=${userId} — blocked channel`);
-        metric.slackDropsTotal.inc({ reason: "blocked_channel" });
-        return;
-      }
     }
 
     // Channel-mode gate, driven entirely by SOUL.md:
-    //   - whitelisted channel → public zone, anyone can address slaude
-    //   - non-whitelisted channel OR DM → manager-only (approvers can still
-    //     click Approve / Deny on request_approval blocks but cannot chat)
+    //   - trusted channel → team zone, anyone can address slaude (most open)
+    //   - allowed channel  → public zone, anyone can address slaude (mind exposure)
+    //   - DM or unlisted   → manager-only (approvers can still click Approve /
+    //     Deny on request_approval blocks but cannot chat)
     {
       const soul = soulData();
       const isDM_ = channelType === "im";
-      const whitelisted =
-        !isDM_ && soul.allowedChannels.length > 0 && soul.allowedChannels.includes(channelId);
-      if (!whitelisted) {
+      const isTrusted = !isDM_ && soul.trustedChannels.includes(channelId);
+      const isAllowed = !isDM_ && soul.allowedChannels.includes(channelId);
+      const publicZone = isTrusted || isAllowed;
+      if (!publicZone) {
         const managerId = soul.manager.userId;
         if (!managerId || userId !== managerId) {
           console.log(
@@ -369,11 +367,23 @@ export function createSlackApp(agent: AgentManager) {
         "\n"
       : "";
 
+    // Per-turn channel trust hint so the agent calibrates info exposure:
+    //   trusted    — internal team channel, free to show MCP/skills/internals
+    //   allowed    — public channel, answer but mind exposure
+    //   restricted — DM or unlisted (manager-only by the gate above)
+    const trust = (() => {
+      const soul = soulData();
+      if (channelType !== "im" && soul.trustedChannels.includes(channelId)) return "trusted";
+      if (channelType !== "im" && soul.allowedChannels.includes(channelId)) return "allowed";
+      return "restricted";
+    })();
+
     // Wrap inbound in a channel envelope so the agent has slack context
     // and a clear directive to reply via the MCP tool — not as plain text.
     const envelope =
       `<channel source="slack" channel_id="${channelId}" thread_ts="${threadTs}" ` +
-      `inbound_ts="${eventTs}" user_id="${userId}" user_name="${escapeAttr(userName)}">\n` +
+      `inbound_ts="${eventTs}" user_id="${userId}" user_name="${escapeAttr(userName)}" ` +
+      `trust="${trust}">\n` +
       `${userText}${attachmentBlock}\n</channel>\n\n` +
       (files.length
         ? `User attached ${files.length} file(s); paths above are local — Read them directly.\n`

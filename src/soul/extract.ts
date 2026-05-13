@@ -86,7 +86,7 @@ function assertIdsGroundedInPersona(data: SoulData, persona: string): void {
   const ids = new Set<string>();
   if (data.manager.userId) ids.add(data.manager.userId);
   for (const c of data.allowedChannels) ids.add(c);
-  for (const c of data.blockedChannels) ids.add(c);
+  for (const c of data.trustedChannels) ids.add(c);
   for (const u of data.blockedUsers) ids.add(u);
   for (const a of data.approvers) ids.add(a.userId);
   const missing = [...ids].filter((id) => !persona.includes(id));
