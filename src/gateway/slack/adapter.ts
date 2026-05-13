@@ -102,6 +102,16 @@ export function createSlackApp(agent: AgentManager) {
   if (Object.keys(externalMcp).length) {
     console.log(`[mcp] loaded external servers: ${Object.keys(externalMcp).join(", ")}`);
   }
+  // Stop-hook enforcement: if a turn ends without any user-visible Slack tool
+  // (reply / edit / upload), block the stop once with an instruction that
+  // forces the agent to call `mcp__slaude_slack__reply` before exiting.
+  agent.setStopGuard((sessionId) => {
+    const route = routes.get(sessionId);
+    if (!route) return null;
+    if (route.spoke) return null;
+    return "You have not delivered a reply to the user. Call `mcp__slaude_slack__reply` now with your answer to the inbound Slack message, then stop. Do not stop without replying.";
+  });
+
   agent.setMcpResolver((sessionId) => {
     const route = routes.get(sessionId);
     if (!route) return undefined;
@@ -145,22 +155,12 @@ export function createSlackApp(agent: AgentManager) {
       }
       case "done": {
         void (async () => {
-          // Auto-evolve turns are internal — silent NO is valid, so skip the
-          // "no reply emitted" nudge and don't reset reactions/presence
+          // Auto-evolve turns are internal — don't reset reactions/presence
           // (they were already finalized on the user-visible turn's done).
           if (e.autoEvolve) return;
-          if (!route.spoke) {
-            // Agent finished without surfacing anything to Slack. Nudge so
-            // the user isn't left guessing — and so SOUL.md drift is visible.
-            try {
-              await app.client.chat.postMessage({
-                channel: route.ctx.channel,
-                thread_ts: route.ctx.threadTs,
-                text: "_(no reply emitted — agent forgot `mcp__slaude_slack__reply`)_",
-                mrkdwn: true,
-              });
-            } catch {}
-          }
+          // No fallback notice: setStopGuard above forces a reply via the SDK
+          // Stop hook. If the agent still stops without spoke, manager logs
+          // to stderr — surfacing a Slack message here would be redundant.
           await reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_DONE);
           reactions.forget(e.sessionId);
           presence.exit(e.sessionId);

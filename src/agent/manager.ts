@@ -70,10 +70,19 @@ export type PermissionResolver = (
 /** Returns transport-supplied MCP servers for a fresh session. */
 export type McpResolver = (sessionId: string) => Record<string, McpServerConfig> | undefined;
 
+/** Stop-hook guard. Return an instruction string to block the agent from
+ *  stopping (SDK feeds reason back, agent continues). Return null to allow stop.
+ *  Guard fires at most once per turn — if it returns non-null twice, second
+ *  call is ignored (agent stops) and manager logs to stderr. */
+export type StopGuard = (sessionId: string) => string | null;
+
 export class AgentManager extends EventEmitter {
   #live = new Map<string, LiveSession>();
   #resolver: PermissionResolver | undefined;
   #mcpResolver: McpResolver | undefined;
+  #stopGuard: StopGuard | undefined;
+  /** Sessions whose Stop hook already blocked once this turn — cleared on user msg. */
+  #stopBlocked = new Set<string>();
   #budget = new TokenBudget({
     fallbackContextWindow: env.tokenFallbackContextWindow(),
   });
@@ -91,6 +100,11 @@ export class AgentManager extends EventEmitter {
   /** Install a transport-level MCP server resolver. Called once per session start. */
   setMcpResolver(resolver: McpResolver | undefined) {
     this.#mcpResolver = resolver;
+  }
+
+  /** Install a transport-level Stop hook guard (e.g. Slack "must reply" enforcement). */
+  setStopGuard(guard: StopGuard | undefined) {
+    this.#stopGuard = guard;
   }
 
   /** Number of SDK Query sessions currently live in this process. */
@@ -123,10 +137,12 @@ export class AgentManager extends EventEmitter {
       this.#flushTurn(live);
       live.turn.user = text;
       live.turn.assistant = [];
+      this.#stopBlocked.delete(sessionId);
       live.pushUser(text);
       this.#armIdle(live);
       return;
     }
+    this.#stopBlocked.delete(sessionId);
     await this.#startSession(sessionId, text);
   }
 
@@ -239,6 +255,23 @@ export class AgentManager extends EventEmitter {
       } satisfies AgentEvent);
       return { continue: true };
     };
+    const stopHook: HookCallback = async (input) => {
+      if (input.hook_event_name !== "Stop") return { continue: true };
+      const guard = this.#stopGuard;
+      if (!guard) return { continue: true };
+      const reason = guard(sessionId);
+      if (!reason) return { continue: true };
+      if (this.#stopBlocked.has(sessionId)) {
+        // Already blocked once this turn and the agent still wants to stop —
+        // let it. Surfaces as a stderr line so drift is visible in logs.
+        process.stderr.write(
+          `[stop-guard] session=${sessionId} blocked once but agent still stopping: ${reason}\n`,
+        );
+        return { continue: true };
+      }
+      this.#stopBlocked.add(sessionId);
+      return { decision: "block", reason };
+    };
     const options: Options = {
       cwd: row.working_dir,
       // Pass `model` only when explicitly set. Empty = let the SDK / CLI use
@@ -254,7 +287,10 @@ export class AgentManager extends EventEmitter {
       ...(mode === "bypassPermissions"
         ? { allowDangerouslySkipPermissions: true }
         : {}),
-      hooks: { PreCompact: [{ hooks: [preCompact] }] },
+      hooks: {
+        PreCompact: [{ hooks: [preCompact] }],
+        Stop: [{ hooks: [stopHook] }],
+      },
       systemPrompt: {
         type: "preset",
         preset: "claude_code",
@@ -332,6 +368,7 @@ export class AgentManager extends EventEmitter {
         Sessions.setStatus(sessionId, "idle");
         this.#live.delete(sessionId);
         this.#budget.forget(sessionId);
+        this.#stopBlocked.delete(sessionId);
       }
     })();
   }
