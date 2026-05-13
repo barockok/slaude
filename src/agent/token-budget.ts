@@ -43,16 +43,25 @@ type State = {
   critical: boolean;
 };
 
-const FALLBACK_CONTEXT_WINDOW = 200_000;
+const DEFAULT_FALLBACK_CONTEXT_WINDOW = 200_000;
 
 export class TokenBudget {
   #state = new Map<string, State>();
+  #fallbackContextWindow: number;
+
+  constructor(opts: { fallbackContextWindow?: number } = {}) {
+    const f = opts.fallbackContextWindow;
+    this.#fallbackContextWindow =
+      typeof f === "number" && Number.isFinite(f) && f > 0
+        ? f
+        : DEFAULT_FALLBACK_CONTEXT_WINDOW;
+  }
 
   record(sessionId: string, input: RecordInput): void {
     const u = input.usage;
     const totalInput =
       u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens;
-    let contextWindow = FALLBACK_CONTEXT_WINDOW;
+    let contextWindow = this.#fallbackContextWindow;
     for (const m of Object.values(input.modelUsage)) {
       if (m.contextWindow > contextWindow) contextWindow = m.contextWindow;
     }
