@@ -45,7 +45,6 @@ export function pushToRepo(
       execSync("git -c init.defaultBranch=main init", { cwd: tempDir, stdio: "pipe" });
       execSync(`git remote add origin "${resolvedUrl}"`, { cwd: tempDir, stdio: "pipe" });
     }
-    execSync("git config init.defaultBranch main", { cwd: tempDir, stdio: "pipe" });
     for (const { slug, dir } of skills) {
       const destDir = join(tempDir, slug);
       mkdirSync(destDir, { recursive: true });
@@ -78,7 +77,7 @@ export function pushToRepo(
     const parts: string[] = [];
     if (skills.length > 0) parts.push(`skills ${skills.map((s) => s.slug).join(", ")}`);
     if (kbs.length > 0) parts.push(`kbs ${kbs.map((k) => k.label).join(", ")}`);
-    execSync(`git -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: sync ${parts.join("; ")}"`, { cwd: tempDir, stdio: "pipe" });
+    execSync(`git -c init.defaultBranch=main -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: sync ${parts.join("; ")}"`, { cwd: tempDir, stdio: "pipe" });
     execSync("git push origin HEAD", { cwd: tempDir, stdio: "pipe" });
     return { sha: execSync("git rev-parse HEAD", { cwd: tempDir, encoding: "utf8" }).trim() };
   } finally {
@@ -134,14 +133,13 @@ function pushKbRaw(
       execSync(`git -c init.defaultBranch="${ref}" init`, { cwd: tmp, stdio: "pipe" });
       execSync(`git remote add origin "${resolved}"`, { cwd: tmp, stdio: "pipe" });
     }
-    execSync(`git config init.defaultBranch "${ref}"`, { cwd: tmp, stdio: "pipe" });
     const destRaw = join(tmp, "raw");
     if (existsSync(destRaw)) rmSync(destRaw, { recursive: true, force: true });
     const srcRaw = join(kbDir, "raw");
     if (existsSync(srcRaw)) execSync(`cp -r "${srcRaw}" "${destRaw}"`, { stdio: "pipe" });
     execSync("git add -A raw", { cwd: tmp, stdio: "pipe" });
     try {
-      execSync(`git -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: sync raw"`, { cwd: tmp, stdio: "pipe" });
+      execSync(`git -c init.defaultBranch="${ref}" -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: sync raw"`, { cwd: tmp, stdio: "pipe" });
       execSync("git push origin HEAD", { cwd: tmp, stdio: "pipe" });
     } catch {
       // nothing to commit — that's fine
