@@ -184,6 +184,29 @@ describe("manifestSchema", () => {
   });
 });
 
+describe("manifestSchema slaude_skills", () => {
+  test("accepts manifest without slaude_skills (optional)", () => {
+    const r = manifestSchema.parse({});
+    expect(r.slaude_skills).toBeUndefined();
+  });
+
+  test("accepts manifest with slaude_skills", () => {
+    const r = manifestSchema.parse({
+      slaude_skills: { git: "github:owner/my-skills", ref: "main" },
+    });
+    expect(r.slaude_skills?.git).toBe("github:owner/my-skills");
+    expect(r.slaude_skills?.ref).toBe("main");
+  });
+
+  test("rejects slaude_skills with missing git", () => {
+    expect(() => manifestSchema.parse({ slaude_skills: { ref: "main" } })).toThrow();
+  });
+
+  test("rejects slaude_skills with missing ref", () => {
+    expect(() => manifestSchema.parse({ slaude_skills: { git: "github:owner/repo" } })).toThrow();
+  });
+});
+
 describe("lockfileSchema", () => {
   const validLock = {
     version: 1,
