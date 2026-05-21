@@ -271,6 +271,53 @@ describe("syncManifest", () => {
     expect(lock.knowledge["ext-wiki"].sha).toBe(newSha);
   });
 
+  test("sync_manifest pulls only `path:` subdir when set, rooted to kb dir", async () => {
+    if (!hasGit()) return;
+    // Seed a remote that has a `wiki/` subdir + non-wiki garbage at the root.
+    const bareDir = mkdtempSync(join(tmpdir(), "slaude-test-bare-"));
+    execSync(`git init --bare -b main "${bareDir}"`, { stdio: "pipe" });
+    const cloneDir = mkdtempSync(join(tmpdir(), "slaude-test-clone-"));
+    try {
+      execSync(`git clone "${bareDir}" "${cloneDir}"`, { stdio: "pipe" });
+      execSync("git checkout --orphan main 2>/dev/null; git branch -M main 2>/dev/null || true", { cwd: cloneDir, stdio: "pipe" });
+      mkdirSync(join(cloneDir, "wiki"), { recursive: true });
+      writeFileSync(join(cloneDir, "wiki", "README.md"), "# wiki home\n");
+      writeFileSync(join(cloneDir, "wiki", "page-1.md"), "# page 1\n");
+      writeFileSync(join(cloneDir, "src.go"), "package main\n"); // outside path; must NOT land
+      writeFileSync(join(cloneDir, "README.md"), "# repo root\n");
+      execSync("git add -A", { cwd: cloneDir, stdio: "pipe" });
+      execSync("git -c user.name=test -c user.email=test@test commit -m init", { cwd: cloneDir, stdio: "pipe" });
+      execSync("git push origin HEAD", { cwd: cloneDir, stdio: "pipe" });
+    } finally {
+      rmSync(cloneDir, { recursive: true, force: true });
+    }
+    const manifest = {
+      plugins: [], skills: [],
+      knowledge: [{ label: "loan-wiki", git: bareDir, ref: "main", path: "wiki" }],
+    };
+    writeFileSync(join(SLAUDE_HOME, "slaude.json"), JSON.stringify(manifest));
+
+    const r = await syncManifest();
+    expect(r.isError).toBeUndefined();
+    const out = JSON.parse(r.content[0]!.text);
+    expect(out.pulled_kbs).toEqual(["loan-wiki"]);
+
+    // wiki/ contents land directly at kbDir root.
+    const kbDir = join(paths.knowledge, "loan-wiki");
+    expect(existsSync(join(kbDir, "README.md"))).toBe(true);
+    expect(readFileSync(join(kbDir, "README.md"), "utf8")).toBe("# wiki home\n");
+    expect(existsSync(join(kbDir, "page-1.md"))).toBe(true);
+    // Out-of-path files must NOT appear.
+    expect(existsSync(join(kbDir, "src.go"))).toBe(false);
+    // Repo's root README must NOT clobber the wiki README.
+    expect(readFileSync(join(kbDir, "README.md"), "utf8")).not.toContain("repo root");
+
+    const lock = JSON.parse(readFileSync(join(SLAUDE_HOME, "slaude.lock"), "utf8"));
+    expect(lock.knowledge["loan-wiki"].path).toBe("wiki");
+
+    rmSync(bareDir, { recursive: true, force: true });
+  });
+
   test("sync_manifest surfaces KB pull error as warning", async () => {
     writeManifest({
       plugins: [], skills: [],
