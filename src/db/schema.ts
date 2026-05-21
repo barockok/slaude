@@ -32,6 +32,18 @@ CREATE TABLE IF NOT EXISTS skill_usage (
   uses INTEGER NOT NULL DEFAULT 0,
   last_used_at INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS kb_ingest_jobs (
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  status TEXT NOT NULL,
+  triggered_by TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  heartbeat_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_kb_ingest_running
+  ON kb_ingest_jobs (status) WHERE status = 'running';
 `;
 
 for (const stmt of SCHEMA.split(";")) {
