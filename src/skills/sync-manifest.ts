@@ -45,7 +45,7 @@ export function pushToRepo(
       execSync("git -c init.defaultBranch=main init", { cwd: tempDir, stdio: "pipe" });
       execSync(`git remote add origin "${resolvedUrl}"`, { cwd: tempDir, stdio: "pipe" });
     }
-
+    execSync("git config init.defaultBranch main", { cwd: tempDir, stdio: "pipe" });
     for (const { slug, dir } of skills) {
       const destDir = join(tempDir, slug);
       mkdirSync(destDir, { recursive: true });
@@ -134,6 +134,7 @@ function pushKbRaw(
       execSync(`git -c init.defaultBranch="${ref}" init`, { cwd: tmp, stdio: "pipe" });
       execSync(`git remote add origin "${resolved}"`, { cwd: tmp, stdio: "pipe" });
     }
+    execSync(`git config init.defaultBranch "${ref}"`, { cwd: tmp, stdio: "pipe" });
     const destRaw = join(tmp, "raw");
     if (existsSync(destRaw)) rmSync(destRaw, { recursive: true, force: true });
     const srcRaw = join(kbDir, "raw");
