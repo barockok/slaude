@@ -96,11 +96,33 @@ function resolveSkillsPushTarget(manifest: Manifest): { git: string; ref: string
   return null;
 }
 
-function pullKb(label: string, git: string, ref: string): { sha: string } {
+function pullKb(label: string, git: string, ref: string, subpath?: string): { sha: string } {
   const dir = join(paths.knowledge, label);
   const resolved = resolveGitUrl(git);
   if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
+  if (subpath) {
+    // Sparse-checkout: clone w/o blobs, fetch only the requested subdir,
+    // then promote its contents to the KB dir root so the loader (which
+    // expects README.md at the top) sees the wiki as the KB.
+    const stage = mkdtempSync(join(tmpdir(), "slaude-kbsparse-"));
+    try {
+      execSync(`git clone --depth 1 --branch "${ref}" --filter=blob:none --no-checkout "${resolved}" "${stage}"`, { stdio: "pipe" });
+      execSync(`git sparse-checkout set --no-cone "${subpath}"`, { cwd: stage, stdio: "pipe" });
+      execSync(`git checkout "${ref}"`, { cwd: stage, stdio: "pipe" });
+      const src = join(stage, subpath);
+      if (!existsSync(src)) {
+        throw new Error(`path "${subpath}" not found in ${resolved}@${ref}`);
+      }
+      for (const entry of readdirSync(src)) {
+        execSync(`cp -r "${join(src, entry)}" "${join(dir, entry)}"`, { stdio: "pipe" });
+      }
+      const sha = execSync("git rev-parse HEAD", { cwd: stage, encoding: "utf8" }).trim();
+      return { sha };
+    } finally {
+      rmSync(stage, { recursive: true, force: true });
+    }
+  }
   execSync(`git clone --depth 1 --branch "${ref}" "${resolved}" "${dir}"`, { stdio: "pipe" });
   const sha = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8" }).trim();
   return { sha };
@@ -193,7 +215,7 @@ export async function syncManifest(): Promise<ToolResult> {
   for (const kb of manifest.knowledge) {
     if (!kb.git || !kb.ref) continue;
     try {
-      const { sha } = pullKb(kb.label, kb.git, kb.ref);
+      const { sha } = pullKb(kb.label, kb.git, kb.ref, kb.path);
       lock.knowledge[kb.label] = { git: kb.git, ref: kb.ref, sha, ...(kb.path ? { path: kb.path } : {}) };
       pulledKbs.push(kb.label);
     } catch (e: any) {
