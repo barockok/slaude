@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { SLAUDE_HOME, paths, ensureHome } from "../src/config/home";
 import { syncManifest, pushSkillsToRepo, pushToRepo } from "../src/skills/sync-manifest";
@@ -35,13 +35,13 @@ function hasGit(): boolean {
 
 function fakeBareRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "slaude-test-bare-"));
-  execSync(`git init --bare "${dir}"`, { stdio: "pipe" });
+  execSync(`git init --bare -b main "${dir}"`, { stdio: "pipe" });
   return dir;
 }
 
 async function fakeBareRepoWithCommit(_label: string, filepath: string, content: string): Promise<string> {
   const bareDir = mkdtempSync(join(tmpdir(), "slaude-test-bare-"));
-  execSync(`git init --bare "${bareDir}"`, { stdio: "pipe" });
+  execSync(`git init --bare -b main "${bareDir}"`, { stdio: "pipe" });
   const cloneDir = mkdtempSync(join(tmpdir(), "slaude-test-clone-"));
   try {
     execSync(`git clone "${bareDir}" "${cloneDir}"`, { stdio: "pipe" });
@@ -264,9 +264,6 @@ describe("syncManifest", () => {
 
     const r = await syncManifest();
     const out = JSON.parse(r.content[0]!.text);
-    console.error("[DEBUG pull test] out:", JSON.stringify(out));
-    console.error("[DEBUG pull test] remote:", remote);
-    console.error("[DEBUG pull test] newSha:", newSha);
     expect(out.pulled_kbs).toEqual(["ext-wiki"]);
     expect(readFileSync(join(kbDir, "README.md"), "utf8")).toBe("# fresh\n");
 
@@ -311,14 +308,11 @@ describe("syncManifest", () => {
 
     const r = await syncManifest();
     const out = JSON.parse(r.content[0]!.text);
-    console.error("[DEBUG raw test] out:", JSON.stringify(out));
-    console.error("[DEBUG raw test] remote:", remote);
     expect(out.synced_raw).toBe(true);
 
     // verify remote got raw/ but not wiki/
     const probeDir = mkdtempSync(join(tmpdir(), "probe-"));
     execSync(`git clone --depth 1 "${remote}" "${probeDir}"`, { stdio: "pipe" });
-    console.error("[DEBUG raw test] probeDir contents:", JSON.stringify(readdirSync(probeDir)));
     expect(existsSync(join(probeDir, "raw", "note-1.md"))).toBe(true);
     expect(existsSync(join(probeDir, "wiki", "con-foo.md"))).toBe(false);
 
@@ -333,7 +327,7 @@ describe("git push", () => {
     if (!hasGit()) return;
     const bareDir = mkdtempSync(join(tmpdir(), "slaude-test-bare-"));
     try {
-      execSync(`git init --bare "${bareDir}"`, { stdio: "pipe" });
+      execSync(`git init --bare -b main "${bareDir}"`, { stdio: "pipe" });
       skillOps.write("test-skill", "Test", "d", "body");
       const skillDir = join(paths.skills, "test-skill");
       const result = pushSkillsToRepo(bareDir, [{ slug: "test-skill", dir: skillDir }]);
@@ -347,7 +341,7 @@ describe("git push", () => {
     if (!hasGit()) return;
     const bareDir = mkdtempSync(join(tmpdir(), "slaude-test-bare-"));
     try {
-      execSync(`git init --bare "${bareDir}"`, { stdio: "pipe" });
+      execSync(`git init --bare -b main "${bareDir}"`, { stdio: "pipe" });
       process.env.SLAUDE_SKILLS_REPO = bareDir;
       writeManifest({ plugins: [], skills: [], knowledge: [] });
       skillOps.write("pushed", "Pushed", "desc", "body");
@@ -394,7 +388,7 @@ describe("git push", () => {
     if (!hasGit()) return;
     const bareDir = mkdtempSync(join(tmpdir(), "slaude-test-bare-"));
     try {
-      execSync(`git init --bare "${bareDir}"`, { stdio: "pipe" });
+      execSync(`git init --bare -b main "${bareDir}"`, { stdio: "pipe" });
       seedKb("runbooks", "# Runbooks\n\nOps procedures.");
       const kbDir = join(paths.knowledge, "runbooks");
       const result = pushToRepo(bareDir, [], [{ label: "runbooks", dir: kbDir }]);
@@ -419,7 +413,7 @@ describe("git push", () => {
     if (!hasGit()) return;
     const bareDir = mkdtempSync(join(tmpdir(), "slaude-test-bare-"));
     try {
-      execSync(`git init --bare "${bareDir}"`, { stdio: "pipe" });
+      execSync(`git init --bare -b main "${bareDir}"`, { stdio: "pipe" });
       process.env.SLAUDE_SKILLS_REPO = bareDir;
       writeManifest({ plugins: [], skills: [], knowledge: [] });
       seedKb("runbooks", "# Runbooks");
@@ -449,7 +443,7 @@ describe("git push", () => {
     if (!hasGit()) return;
     const bareDir = mkdtempSync(join(tmpdir(), "slaude-test-bare-"));
     try {
-      execSync(`git init --bare "${bareDir}"`, { stdio: "pipe" });
+      execSync(`git init --bare -b main "${bareDir}"`, { stdio: "pipe" });
       process.env.SLAUDE_SKILLS_REPO = bareDir;
       writeManifest({ plugins: [], skills: [], knowledge: [] });
       skillOps.write("s1", "S1", "d", "b");
