@@ -50,7 +50,7 @@ export function runningJob(): IngestJob | null {
 
 export function reapStale(): string[] {
   const cutoff = nowMs() - STALE_AFTER_MS;
-  const stale = db.query("SELECT id FROM kb_ingest_jobs WHERE status = 'running' AND heartbeat_at < ?").all([cutoff]) as Array<{ id: string }>;
+  const stale = db.query("SELECT id FROM kb_ingest_jobs WHERE status = 'running' AND heartbeat_at < ?").all(cutoff as any) as Array<{ id: string }>;
   for (const r of stale) {
     db.run("UPDATE kb_ingest_jobs SET status = 'crashed' WHERE id = ?", [r.id]);
   }
