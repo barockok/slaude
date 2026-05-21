@@ -148,6 +148,13 @@ describe("loadApproverEntries + selectApprovers", () => {
     expect(out).toEqual(["U0XXXXXXXXX"]);
   });
 
+  test("baseline mentions raw/ during normal sessions and wiki/ during ingest", () => {
+    const block = soulSystemBlock();
+    expect(block).toMatch(/raw\//);
+    expect(block).toMatch(/wiki\//);
+    expect(block).toMatch(/\/ingest/i);
+  });
+
   test("line without colon skipped", () => {
     writeFileSync(
       paths.soul,
