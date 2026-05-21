@@ -6,6 +6,20 @@ WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 
+# Builder stage: install agent dependencies declared in slaude.json,
+# then copy the artifacts into the runtime image.
+FROM oven/bun:1.3-debian AS builder
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates git \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json bun.lock tsconfig.json ./
+COPY src ./src
+ENV SLAUDE_HOME=/app/.slaude
+RUN mkdir -p $SLAUDE_HOME
+RUN bun run install-deps --frozen
+
 FROM oven/bun:1.3-debian
 WORKDIR /app
 
@@ -23,6 +37,13 @@ RUN apt-get update \
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json bun.lock tsconfig.json ./
 COPY src ./src
+
+# Baked-in dependency artifacts (plugins, skills, knowledge bases).
+# Operator-authored files (slaude.json, slaude.lock, mcp.json, SOUL.md)
+# are mounted from the PVC at runtime.
+COPY --from=builder /app/.slaude/skills    /data/.slaude/skills
+COPY --from=builder /app/.slaude/knowledge /data/.slaude/knowledge
+COPY --from=builder /app/.slaude/.claude   /data/.slaude/.claude
 
 ENV SLAUDE_HOME=/data
 VOLUME ["/data"]

@@ -17,6 +17,7 @@ import { soulData } from "../../soul/extract";
 import { createSlackMcp, SLACK_MCP_NAME, type SlackContext } from "./mcp-tools";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
+import { createKbMcp, KB_MCP_NAME } from "../../knowledge/mcp-tools";
 import { resolveUserName } from "./users";
 import { downloadAttachments, type SlackFile } from "./attachments";
 import * as Sessions from "../../db/sessions";
@@ -133,6 +134,7 @@ export function createSlackApp(agent: AgentManager) {
       [SESSION_MCP_NAME]: createSessionMcp({
         getSnapshot: () => agent.getTokenSnapshot(sessionId),
       }),
+      [KB_MCP_NAME]: createKbMcp(),
       ...externalMcp,
     };
   });

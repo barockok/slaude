@@ -12,10 +12,12 @@ export const paths = {
   env: join(SLAUDE_HOME, ".env"),
   db: join(SLAUDE_HOME, "db.sqlite"),
   workspaces: join(SLAUDE_HOME, "workspaces"),
+  knowledge: join(SLAUDE_HOME, "knowledge"),
+  claudeConfig: join(SLAUDE_HOME, ".claude"),
 } as const;
 
 export function ensureHome() {
-  for (const dir of [paths.home, paths.skills, paths.workspaces]) {
+  for (const dir of [paths.home, paths.skills, paths.workspaces, paths.knowledge]) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   }
 }
