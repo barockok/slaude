@@ -125,6 +125,7 @@ async function defaultPushWiki(args: { repoUrl: string; ref: string; kbDir: stri
       execSync(`git -c init.defaultBranch="${args.ref}" init`, { cwd: tmp, stdio: "pipe" });
       execSync(`git remote add origin "${resolved}"`, { cwd: tmp, stdio: "pipe" });
     }
+    execSync(`git checkout --orphan "${args.ref}" 2>/dev/null; git branch -M "${args.ref}" 2>/dev/null || true`, { cwd: tmp, stdio: "pipe" });
     for (const sub of ["raw", "wiki"]) {
       const dest = join(tmp, sub);
       if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
@@ -133,7 +134,7 @@ async function defaultPushWiki(args: { repoUrl: string; ref: string; kbDir: stri
     }
     execSync("git add -A", { cwd: tmp, stdio: "pipe" });
     try {
-      execSync(`git -c init.defaultBranch="${args.ref}" -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: ingest"`, { cwd: tmp, stdio: "pipe" });
+      execSync(`git -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: ingest"`, { cwd: tmp, stdio: "pipe" });
       execSync("git push origin HEAD", { cwd: tmp, stdio: "pipe" });
     } catch {
       // nothing to commit
