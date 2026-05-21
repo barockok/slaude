@@ -25,6 +25,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../../config/home";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
+import { canTriggerIngest } from "./ingest-auth";
+import * as kbIngest from "../../knowledge/ingest";
 
 function loadExternalMcp(): Record<string, McpServerConfig> {
   const f = join(paths.home, ".mcp.json");
@@ -338,6 +340,21 @@ export function createSlackApp(agent: AgentManager) {
       if (slash.kind === "abort") {
         agent.abort(session.id);
         await reply("aborted");
+        return;
+      }
+      if (slash.kind === "ingest") {
+        const soul = soulData();
+        if (!canTriggerIngest(userId, soul)) {
+          await reply("not authorized to trigger /ingest — manager or approver only");
+          return;
+        }
+        await reply(":hourglass_flowing_sand: ingest started…");
+        const result = await kbIngest.run({ triggeredBy: userId });
+        if (result.ok) {
+          await reply(`:white_check_mark: ingest done — ${result.summary}`);
+        } else {
+          await reply(`:x: ingest failed: ${result.reason}`);
+        }
         return;
       }
     }
