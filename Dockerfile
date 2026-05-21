@@ -17,7 +17,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json bun.lock tsconfig.json ./
 COPY src ./src
 ENV SLAUDE_HOME=/app/.slaude
-RUN mkdir -p $SLAUDE_HOME
+RUN mkdir -p $SLAUDE_HOME/skills $SLAUDE_HOME/knowledge $SLAUDE_HOME/.claude
 RUN bun run install-deps --frozen
 
 FROM oven/bun:1.3-debian
