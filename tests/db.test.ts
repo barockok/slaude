@@ -8,6 +8,7 @@ import {
   clearStarted,
   setPermissionMode,
 } from "../src/db/sessions";
+import { db } from "../src/db/schema";
 
 const baseThread = (suffix: string) => ({
   team_id: "T" + suffix,
@@ -57,4 +58,10 @@ describe("db/sessions", () => {
     });
     expect(row.permission_mode).toBe("plan");
   });
+});
+
+test("kb_ingest_jobs table exists with expected columns", () => {
+  const cols = db.query("PRAGMA table_info(kb_ingest_jobs)").all() as Array<{ name: string }>;
+  const names = cols.map((c) => c.name).sort();
+  expect(names).toEqual(["heartbeat_at", "id", "label", "started_at", "status", "triggered_by"].sort());
 });
