@@ -49,49 +49,89 @@ describe("pluginEntry", () => {
 });
 
 describe("skillEntry", () => {
-  test("accepts valid skill entry without slug", () => {
+  test("accepts git-backed skill entry without slug", () => {
     const r = skillEntry.parse({ git: "github:foo/skill", ref: "v1.0.0" });
+    expect(r.git).toBe("github:foo/skill");
+    expect(r.ref).toBe("v1.0.0");
     expect(r.slug).toBeUndefined();
   });
 
-  test("accepts valid skill entry with slug", () => {
+  test("accepts git-backed skill entry with slug", () => {
     const r = skillEntry.parse({ git: "github:foo/skill", ref: "main", slug: "my-skill" });
     expect(r.slug).toBe("my-skill");
   });
 
-  test("rejects missing git", () => {
-    expect(() => skillEntry.parse({ ref: "v1" })).toThrow();
+  test("accepts local skill entry with only slug", () => {
+    const r = skillEntry.parse({ slug: "my-local-skill" });
+    expect(r.slug).toBe("my-local-skill");
+    expect(r.git).toBeUndefined();
+    expect(r.ref).toBeUndefined();
   });
 
-  test("rejects missing ref", () => {
+  test("rejects skill with git but no ref (mixed)", () => {
     expect(() => skillEntry.parse({ git: "github:foo/skill" })).toThrow();
   });
 
-  test("rejects empty slug", () => {
-    expect(() => skillEntry.parse({ git: "github:foo/skill", ref: "v1", slug: "" })).toThrow();
+  test("rejects skill with ref but no git (mixed)", () => {
+    expect(() => skillEntry.parse({ ref: "v1" })).toThrow();
+  });
+
+  test("rejects local skill without slug", () => {
+    expect(() => skillEntry.parse({})).toThrow();
+  });
+
+  test("rejects empty slug on local entry", () => {
+    expect(() => skillEntry.parse({ slug: "" })).toThrow();
+  });
+
+  test("accepts git-backed skill with path", () => {
+    const r = skillEntry.parse({ git: "github:foo/repo", ref: "main", slug: "my-skill", path: "skills/my-skill" });
+    expect(r.path).toBe("skills/my-skill");
+  });
+
+  test("accepts git-backed skill without path (backward compat)", () => {
+    const r = skillEntry.parse({ git: "github:foo/skill", ref: "v1.0.0", slug: "old-skill" });
+    expect(r.path).toBeUndefined();
   });
 });
 
 describe("knowledgeEntry", () => {
-  test("accepts valid knowledge entry", () => {
+  test("accepts git-backed knowledge entry", () => {
     const r = knowledgeEntry.parse({ label: "runbooks", git: "github:foo/wiki", ref: "v3.0.0" });
     expect(r.label).toBe("runbooks");
+    expect(r.git).toBe("github:foo/wiki");
   });
 
-  test("rejects missing label", () => {
+  test("accepts local knowledge entry with only label", () => {
+    const r = knowledgeEntry.parse({ label: "local-kb" });
+    expect(r.label).toBe("local-kb");
+    expect(r.git).toBeUndefined();
+    expect(r.ref).toBeUndefined();
+  });
+
+  test("rejects missing label on git entry", () => {
     expect(() => knowledgeEntry.parse({ git: "github:foo/wiki", ref: "v1" })).toThrow();
   });
 
-  test("rejects missing git", () => {
-    expect(() => knowledgeEntry.parse({ label: "x", ref: "v1" })).toThrow();
+  test("rejects missing label on local entry", () => {
+    expect(() => knowledgeEntry.parse({})).toThrow();
   });
 
-  test("rejects missing ref", () => {
+  test("rejects knowledge with git but no ref (mixed)", () => {
     expect(() => knowledgeEntry.parse({ label: "x", git: "github:foo/wiki" })).toThrow();
+  });
+
+  test("rejects knowledge with ref but no git (mixed)", () => {
+    expect(() => knowledgeEntry.parse({ label: "x", ref: "v1" })).toThrow();
   });
 
   test("rejects empty label", () => {
     expect(() => knowledgeEntry.parse({ label: "", git: "github:foo/wiki", ref: "v1" })).toThrow();
+  });
+
+  test("accepts git-backed knowledge with path", () => {
+    const r = knowledgeEntry.parse({ label: "runbooks", git: "github:foo/repo", ref: "main", path: "knowledge/runbooks" });
+    expect(r.path).toBe("knowledge/runbooks");
   });
 });
 
@@ -116,6 +156,25 @@ describe("manifestSchema", () => {
 
   test("rejects non-array sections", () => {
     expect(() => manifestSchema.parse({ plugins: "nope" })).toThrow();
+  });
+
+  test("accepts manifest with mix of git-backed and local entries", () => {
+    const r = manifestSchema.parse({
+      skills: [
+        { git: "github:foo/git-skill", ref: "v1" },
+        { slug: "local-skill" },
+      ],
+      knowledge: [
+        { label: "git-kb", git: "github:foo/wiki", ref: "main" },
+        { label: "local-kb" },
+      ],
+    });
+    expect(r.skills.length).toBe(2);
+    expect(r.skills[0]!.git).toBe("github:foo/git-skill");
+    expect(r.skills[1]!.slug).toBe("local-skill");
+    expect(r.knowledge.length).toBe(2);
+    expect(r.knowledge[0]!.git).toBe("github:foo/wiki");
+    expect(r.knowledge[1]!.label).toBe("local-kb");
   });
 
   test("unknown keys are stripped by zod by default", () => {

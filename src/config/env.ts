@@ -117,6 +117,13 @@ export const env = {
    */
   autoEvolve: () => opt("SLAUDE_AUTO_EVOLVE", "1") !== "0",
   /**
+   * Git repo URL where runtime-created skills are pushed by the
+   * mcp__slaude_skills__sync_manifest tool. Accepts "github:owner/repo"
+   * shorthand or full https/ssh URL. If unset, sync_manifest records
+   * skills as local-only entries (survive on PVC only).
+   */
+  skillsRepo: () => opt("SLAUDE_SKILLS_REPO"),
+  /**
    * Context-window thresholds (fraction 0..1). On each turn's result the
    * manager compares `total_input_tokens / contextWindow` against these:
    *   - `warnPct`  (default 0.8): emit a one-shot warning event so the

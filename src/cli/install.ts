@@ -6,6 +6,7 @@ import { execSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -14,19 +15,16 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { SLAUDE_HOME, paths } from "../config/home";
 import {
   manifestSchema,
   lockfileSchema,
+  resolveGitUrl,
+  resolveSkillSlug,
   type Manifest,
   type Lockfile,
 } from "../config/manifest-schema";
-
-function resolveGitUrl(raw: string): string {
-  const m = raw.match(/^github:(.+)$/);
-  if (m) return `https://github.com/${m[1]}.git`;
-  return raw;
-}
 
 function isSha(ref: string): boolean {
   return /^[0-9a-f]{40}$/.test(ref);
@@ -57,12 +55,6 @@ function gitClone(url: string, ref: string, targetDir: string): string {
 
 function currentSha(dir: string): string {
   return execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8" }).trim();
-}
-
-function resolveSlug(entry: { git: string; slug?: string }): string {
-  if (entry.slug) return entry.slug;
-  const last = entry.git.split("/").pop() ?? "";
-  return last.replace(/\.git$/, "").toLowerCase();
 }
 
 async function main() {
@@ -111,10 +103,12 @@ async function main() {
       if (!lock.marketplaces[key]?.plugins[e.plugin]) unsatisfied.push(`plugin ${e.plugin} from ${key}`);
     }
     for (const e of manifest.skills) {
-      const slug = resolveSlug(e);
+      if (!e.git) continue;
+      const slug = resolveSkillSlug(e);
       if (!lock.skills[slug]) unsatisfied.push(`skill ${slug}`);
     }
     for (const e of manifest.knowledge) {
+      if (!e.git) continue;
       if (!lock.knowledge[e.label]) unsatisfied.push(`knowledge ${e.label}`);
     }
     if (unsatisfied.length) {
@@ -134,10 +128,12 @@ async function main() {
       if (!lock.marketplaces[key]?.plugins[e.plugin]) missing.push(`plugin ${e.plugin} from ${key}`);
     }
     for (const e of manifest.skills) {
-      const slug = resolveSlug(e);
+      if (!e.git) continue;
+      const slug = resolveSkillSlug(e);
       if (!lock.skills[slug]) missing.push(`skill ${slug}`);
     }
     for (const e of manifest.knowledge) {
+      if (!e.git) continue;
       if (!lock.knowledge[e.label]) missing.push(`knowledge ${e.label}`);
     }
     if (missing.length) {
@@ -237,51 +233,108 @@ async function main() {
     lock.marketplaces[key] = { sha, plugins: mpPlugins };
   }
 
-  // --- Skills ---
+  // --- Skills + Knowledge ---
+  // Dedupe by (git, ref) so one clone serves many entries from the same repo.
+  type GitEntry = { git: string; ref: string; path?: string };
+  const skillGitEntries = new Map<string, { resolvedUrl: string; ref: string; skills: { entry: typeof manifest.skills[number]; slug: string; entryPath: string }[] }>();
   for (const e of manifest.skills) {
-    const slug = resolveSlug(e);
-    const lockEntry = lock.skills[slug];
-    const targetDir = join(paths.skills, slug);
-    const resolvedUrl = resolveGitUrl(e.git);
+    if (!e.git) { skipped++; continue; }
+    const slug = resolveSkillSlug(e);
+    const key = `${e.git}@${e.ref}`;
+    if (!skillGitEntries.has(key)) {
+      skillGitEntries.set(key, { resolvedUrl: resolveGitUrl(e.git), ref: e.ref!, skills: [] });
+    }
+    skillGitEntries.get(key)!.skills.push({ entry: e, slug, entryPath: e.path ?? slug });
+  }
 
-    const needsClone = !lockEntry || !existsSync(targetDir) || (() => {
-      try { return currentSha(targetDir) !== lockEntry.sha; } catch { return true; }
-    })();
+  const kbGitEntries = new Map<string, { resolvedUrl: string; ref: string; kbs: { entry: typeof manifest.knowledge[number]; label: string; entryPath: string }[] }>();
+  for (const e of manifest.knowledge) {
+    if (!e.git) { skipped++; continue; }
+    const key = `${e.git}@${e.ref}`;
+    if (!kbGitEntries.has(key)) {
+      kbGitEntries.set(key, { resolvedUrl: resolveGitUrl(e.git), ref: e.ref!, kbs: [] });
+    }
+    kbGitEntries.get(key)!.kbs.push({ entry: e, label: e.label, entryPath: e.path ?? e.label });
+  }
 
-    if (needsClone || update) {
-      if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
-      const sha = gitClone(resolvedUrl, e.ref, targetDir);
-      lock.skills[slug] = { git: e.git, ref: e.ref, sha };
-      installed++;
-      if (!existsSync(join(targetDir, "SKILL.md"))) {
-        console.warn(`[install] skill "${slug}" has no SKILL.md at root — will be skipped at runtime`);
+  // Clone each skill repo once, fan out entries by path
+  for (const [, group] of skillGitEntries) {
+    const lockEntry = group.skills[0] ? lock.skills[resolveSkillSlug(group.skills[0].entry)] : undefined;
+    const cloneDir = mkdtempSync(join(tmpdir(), "slaude-install-"));
+    try {
+      const sha = gitClone(group.resolvedUrl, group.ref, cloneDir);
+      for (const { entry, slug, entryPath } of group.skills) {
+        const targetDir = join(paths.skills, slug);
+        const srcDir = join(cloneDir, entryPath);
+        if (!existsSync(srcDir)) {
+          console.warn(`[install] skill "${slug}" path "${entryPath}" not found in repo — skipping`);
+          skipped++;
+          continue;
+        }
+        const alreadyOk = !update && existsSync(targetDir) && (() => {
+          try { return lockEntry?.sha === sha; } catch { return false; }
+        })();
+        if (alreadyOk) { skipped++; continue; }
+        if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
+        mkdirSync(targetDir, { recursive: true });
+        for (const file of readdirSync(srcDir)) {
+          const s = join(srcDir, file);
+          const d = join(targetDir, file);
+          if (statSync(s).isDirectory()) {
+            execSync(`cp -r "${s}" "${d}"`, { stdio: "pipe" });
+          } else {
+            writeFileSync(d, readFileSync(s));
+          }
+        }
+        lock.skills[slug] = { git: entry.git!, ref: entry.ref!, sha, path: entryPath };
+        installed++;
+        if (!existsSync(join(targetDir, "SKILL.md"))) {
+          console.warn(`[install] skill "${slug}" has no SKILL.md at path "${entryPath}" — will be skipped at runtime`);
+        }
       }
-    } else {
-      skipped++;
+    } finally {
+      rmSync(cloneDir, { recursive: true, force: true });
     }
   }
 
-  // --- Knowledge ---
-  for (const e of manifest.knowledge) {
-    const lockEntry = lock.knowledge[e.label];
-    const targetDir = join(paths.knowledge, e.label);
-    const resolvedUrl = resolveGitUrl(e.git);
-
-    const needsClone = !lockEntry || !existsSync(targetDir) || (() => {
-      try { return currentSha(targetDir) !== lockEntry.sha; } catch { return true; }
-    })();
-
-    if (needsClone || update) {
-      if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
-      const sha = gitClone(resolvedUrl, e.ref, targetDir);
-      lock.knowledge[e.label] = { git: e.git, ref: e.ref, sha };
-      installed++;
-      const hasIndex = existsSync(join(targetDir, "README.md")) || existsSync(join(targetDir, "index.md"));
-      if (!hasIndex) {
-        console.warn(`[install] knowledge "${e.label}" has no README.md or index.md — will be skipped at runtime`);
+  // Clone each KB repo once, fan out entries by path
+  for (const [, group] of kbGitEntries) {
+    const lockEntry = group.kbs[0] ? lock.knowledge[group.kbs[0].label] : undefined;
+    const cloneDir = mkdtempSync(join(tmpdir(), "slaude-install-"));
+    try {
+      const sha = gitClone(group.resolvedUrl, group.ref, cloneDir);
+      for (const { entry, label, entryPath } of group.kbs) {
+        const targetDir = join(paths.knowledge, label);
+        const srcDir = join(cloneDir, entryPath);
+        if (!existsSync(srcDir)) {
+          console.warn(`[install] knowledge "${label}" path "${entryPath}" not found in repo — skipping`);
+          skipped++;
+          continue;
+        }
+        const alreadyOk = !update && existsSync(targetDir) && (() => {
+          try { return lockEntry?.sha === sha; } catch { return false; }
+        })();
+        if (alreadyOk) { skipped++; continue; }
+        if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
+        mkdirSync(targetDir, { recursive: true });
+        for (const file of readdirSync(srcDir)) {
+          const s = join(srcDir, file);
+          const d = join(targetDir, file);
+          if (statSync(s).isDirectory()) {
+            execSync(`cp -r "${s}" "${d}"`, { stdio: "pipe" });
+          } else {
+            writeFileSync(d, readFileSync(s));
+          }
+        }
+        lock.knowledge[label] = { git: entry.git!, ref: entry.ref!, sha, path: entryPath };
+        installed++;
+        const hasIndex = existsSync(join(targetDir, "README.md")) || existsSync(join(targetDir, "index.md"));
+        if (!hasIndex) {
+          console.warn(`[install] knowledge "${label}" has no README.md or index.md at path "${entryPath}" — will be skipped at runtime`);
+        }
       }
-    } else {
-      skipped++;
+    } finally {
+      rmSync(cloneDir, { recursive: true, force: true });
     }
   }
 

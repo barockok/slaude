@@ -39,6 +39,7 @@ describe("config/env getters", () => {
     delete process.env.SLAUDE_MODEL;
     delete process.env.SLACK_BOT_TOKEN;
     delete process.env.SLACK_APP_TOKEN;
+    delete process.env.SLAUDE_SKILLS_REPO;
   });
 
   test("req() throws when env missing", () => {
@@ -110,6 +111,14 @@ describe("config/env getters", () => {
 
   test("empty approvers → []", () => {
     expect(env.slack.approvers()).toEqual([]);
+  });
+
+  test("skillsRepo returns empty when unset, value when set", () => {
+    expect(env.skillsRepo()).toBe("");
+    process.env.SLAUDE_SKILLS_REPO = "github:owner/skills-repo";
+    expect(env.skillsRepo()).toBe("github:owner/skills-repo");
+    delete process.env.SLAUDE_SKILLS_REPO;
+    expect(env.skillsRepo()).toBe("");
   });
 
   test("tokenWarnPct default + valid + invalid + out-of-range", () => {
