@@ -267,6 +267,27 @@ describe("syncManifest", () => {
     const lock = JSON.parse(readFileSync(join(SLAUDE_HOME, "slaude.lock"), "utf8"));
     expect(lock.knowledge["ext-wiki"].sha).toBe(newSha);
   });
+
+  test("sync_manifest surfaces KB pull error as warning", async () => {
+    writeManifest({
+      plugins: [], skills: [],
+      knowledge: [{ label: "broken-kb", git: "/nonexistent/kb/repo", ref: "main" }],
+    });
+    const kbDir = join(paths.knowledge, "broken-kb");
+    mkdirSync(kbDir, { recursive: true });
+    writeFileSync(join(kbDir, "README.md"), "# old\n");
+
+    const r = await syncManifest();
+    expect(r.isError).toBeUndefined();
+    const out = JSON.parse(r.content[0]!.text);
+    expect(out.warnings.length).toBeGreaterThan(0);
+    expect(out.warnings[0]).toContain("pull broken-kb");
+    expect(out.warnings[0]).toContain("nonexistent");
+
+    // Lock should NOT contain the failed KB entry
+    const lock = JSON.parse(readFileSync(join(SLAUDE_HOME, "slaude.lock"), "utf8"));
+    expect(lock.knowledge["broken-kb"]).toBeUndefined();
+  });
 });
 
 describe("git push", () => {

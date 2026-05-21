@@ -143,6 +143,7 @@ export async function syncManifest(): Promise<ToolResult> {
   const newKbs = kbs.filter((kb) => !registeredKbLabels.has(kb.label));
 
   const pulledKbs: string[] = [];
+  const warnings: string[] = [];
   for (const kb of manifest.knowledge) {
     if (!kb.git || !kb.ref) continue;
     try {
@@ -150,7 +151,7 @@ export async function syncManifest(): Promise<ToolResult> {
       lock.knowledge[kb.label] = { git: kb.git, ref: kb.ref, sha, ...(kb.path ? { path: kb.path } : {}) };
       pulledKbs.push(kb.label);
     } catch (e: any) {
-      // Log but don't fail sync_manifest — warnings are collected for the output
+      warnings.push(`pull ${kb.label}: ${e?.message ?? e}`);
     }
   }
 
@@ -159,10 +160,8 @@ export async function syncManifest(): Promise<ToolResult> {
     const lockTmp = lockPath + ".tmp";
     writeFileSync(lockTmp, JSON.stringify(lock, null, 2) + "\n", "utf8");
     renameSync(lockTmp, lockPath);
-    return ok(JSON.stringify({ synced_skills: [], synced_kbs: [], pulled_kbs: pulledKbs, warnings: [], skills_in_git: false }));
+    return ok(JSON.stringify({ synced_skills: [], synced_kbs: [], pulled_kbs: pulledKbs, warnings, skills_in_git: false }));
   }
-
-  const warnings: string[] = [];
   let skillsInGit = false;
 
   const target = resolveSkillsPushTarget(manifest);
