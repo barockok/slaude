@@ -33,6 +33,7 @@ beforeEach(() => {
   process.env.ANTHROPIC_BASE_URL = "https://api.test.local";
   delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
   delete process.env.SLAUDE_SOUL_PARSE_MODEL;
+  delete process.env.SLAUDE_SOUL_PARSE_MAX_TOKENS;
 });
 
 afterEach(() => {
@@ -230,6 +231,47 @@ describe("loadSoulData — extraction + cache", () => {
     expect(captured["x-api-key"]).toBe("kkk");
     expect(captured["authorization"]).toBeUndefined();
     expect(captured["anthropic-beta"]).toBeUndefined();
+  });
+
+  test("max_tokens defaults to 8192", async () => {
+    seedPersona("# P\n## Approvers\n- <@U06ENBS6PV0>: anything\n");
+    let captured: any = null;
+    mockFetch(async (_input: any, init: any) => {
+      captured = JSON.parse(init.body as string);
+      return okResponse(JSON.stringify({
+        approvers: [{ userId: "U06ENBS6PV0", scope: "anything", catchall: true }],
+      }));
+    });
+    await loadSoulData();
+    expect(captured.max_tokens).toBe(8192);
+  });
+
+  test("SLAUDE_SOUL_PARSE_MAX_TOKENS overrides default", async () => {
+    process.env.SLAUDE_SOUL_PARSE_MAX_TOKENS = "16384";
+    seedPersona("# P\n## Approvers\n- <@U06ENBS6PV0>: anything\n");
+    let captured: any = null;
+    mockFetch(async (_input: any, init: any) => {
+      captured = JSON.parse(init.body as string);
+      return okResponse(JSON.stringify({
+        approvers: [{ userId: "U06ENBS6PV0", scope: "anything", catchall: true }],
+      }));
+    });
+    await loadSoulData();
+    expect(captured.max_tokens).toBe(16384);
+  });
+
+  test("SLAUDE_SOUL_PARSE_MAX_TOKENS invalid value falls back to default", async () => {
+    process.env.SLAUDE_SOUL_PARSE_MAX_TOKENS = "not-a-number";
+    seedPersona("# P\n## Approvers\n- <@U06ENBS6PV0>: anything\n");
+    let captured: any = null;
+    mockFetch(async (_input: any, init: any) => {
+      captured = JSON.parse(init.body as string);
+      return okResponse(JSON.stringify({
+        approvers: [{ userId: "U06ENBS6PV0", scope: "anything", catchall: true }],
+      }));
+    });
+    await loadSoulData();
+    expect(captured.max_tokens).toBe(8192);
   });
 
   test("empty extractor text → fallback", async () => {
