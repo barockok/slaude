@@ -30,8 +30,9 @@ Slack-native Claude Code runtime. Onboard an AI agent as a teammate in your Slac
 - **LLM-extracted SoulData** — at boot, an ephemeral Claude turn projects SOUL.md into a typed JSON (approvers, identity, manager, allowedUsers, mandate, values), sha-cached at `$SLAUDE_HOME/cache/soul.<sha>.json`. The approval gate consumes the structured approvers as the preferred tier; regex parser is the fallback. Persona prose can drift from rigid bullet format without breaking allowlist resolution.
 - **External MCP servers** — declare stdio / SSE / streamable-HTTP MCP servers in `~/.slaude/mcp.json` (same shape as Claude Code's mcp.json). Tools surface as `mcp__<server>__<tool>` and route through the standard approval gate on first call. See [External MCP servers (`mcp.json`)](#external-mcp-servers-mcpjson).
 - **Dependency manifest** — declarative `slaude.json` + `slaude.lock` for three surfaces: Claude Code plugins (marketplace git), skills (git repo per skill), knowledge bases (Karpathy-style markdown wikis). Install runs at image build (`slaude install --frozen`), runtime ships self-contained. See [Dependency manifest (`slaude.json`)](#dependency-manifest-slaudejson).
-- **Runtime manifest sync** — `mcp__slaude_skills__sync_manifest` syncs runtime-created skills and knowledge bases back to `slaude.json` + `slaude.lock`. Skills pushed to a git repo (`SLAUDE_SKILLS_REPO`); KBs recorded as local entries (PVC-surviving). Redeploy-safe.
-- **Slash commands in thread** — `/mode <ask|accept-edits|bypass|plan|dont-ask>`, `/abort`, `/help`. Per-session `permission_mode` persists.
+- **Runtime manifest sync** — `mcp__slaude_skills__sync_manifest` syncs runtime-created skills and knowledge bases back to `slaude.json` + `slaude.lock`. Push target resolved via `slaude_skills` manifest field, env var `SLAUDE_SKILLS_REPO` as fallback. `slaude_knowledge` writable KB pushes `raw/` on each sync; read-only `knowledge[]` entries are pulled fresh. See [Dependency manifest (`slaude.json`)](#dependency-manifest-slaudejson).
+- **Writable KB + /ingest** — the agent captures material into `raw/` during normal Slack turns; `sync_manifest` pushes it to git. Manager/approver runs `/ingest` to synthesise `raw/` → `wiki/` via a dedicated SDK sub-query. Sqlite mutex ensures at most one ingest at a time.
+- **Slash commands in thread** — `/mode <ask|accept-edits|bypass|plan|dont-ask>`, `/abort`, `/ingest`, `/help`. Per-session `permission_mode` persists.
 - **Idle TTL with resume** — `SLAUDE_IDLE_MINUTES` (default 15). On expiry the SDK Query closes silently; next inbound message re-boots with `resume: row.id`.
 - **Provider-agnostic** — any Anthropic-compatible API (Anthropic direct, OpenRouter, DeepSeek, Z.ai, self-hosted gateway, …). Telemetry / autoupdater / bug-reporter disabled in the SDK child so non-Anthropic gateways don't crash the CLI.
 - **Health endpoints** — `/healthz` (liveness) + `/readyz` (sqlite ping) on `SLAUDE_HEALTH_PORT` (default 8080). K8s probes wired in `deploy/k8s/slaude.yaml`.
@@ -216,7 +217,7 @@ Drop a Claude-Code-style `mcp.json` at `~/.slaude/mcp.json` (override path via `
 
 ### Dependency manifest (`slaude.json`)
 
-Declare the agent's third-party dependencies in a single manifest at `~/.slaude/slaude.json`. Three surfaces:
+Declare the agent's third-party dependencies in a single manifest at `~/.slaude/slaude.json`. Five surfaces (three read-only, two writable):
 
 ```json
 {
@@ -239,7 +240,16 @@ Declare the agent's third-party dependencies in a single manifest at `~/.slaude/
       "git": "github:amartha/runbooks-wiki",
       "ref": "v3.0.0"
     }
-  ]
+  ],
+  "slaude_skills": {
+    "git": "github:barockok/my-slaude-skills",
+    "ref": "main"
+  },
+  "slaude_knowledge": {
+    "label": "ops-wiki",
+    "git": "github:barockok/ops-wiki",
+    "ref": "main"
+  }
 }
 ```
 
@@ -249,7 +259,11 @@ Declare the agent's third-party dependencies in a single manifest at `~/.slaude/
 |---|---|---|---|
 | `plugins` | Marketplace git (`marketplace` + `plugin` + `ref`) | `$CLAUDE_CONFIG_DIR/plugins/cache/…` | Claude Code native loader |
 | `skills` | Git repo per skill | `~/.slaude/skills/<slug>/` | `discoverSkills()` per inbound message |
-| `knowledge` | Git wiki (Karpathy-style, README.md at root) | `~/.slaude/knowledge/<label>/` | `mcp__slaude_kb__list_kbs` / `open_kb` |
+| `knowledge` | Git wiki (Karpathy-style, read-only) | `~/.slaude/knowledge/<label>/` | `mcp__slaude_kb__list_kbs` / `open_kb` (pulled on sync) |
+| `slaude_skills` | Push target for runtime-authored skills | `~/.slaude/skills/` | `sync_manifest` push |
+| `slaude_knowledge` | Single writable KB (label + git + ref) | `~/.slaude/knowledge/<label>/` | `sync_manifest` (raw/) + `/ingest` (wiki/) |
+
+**Writable surfaces.** `slaude_skills` is the git repo where the agent pushes runtime-authored skills via `sync_manifest`. `slaude_knowledge` is the *single* writable knowledge base — the agent writes captured material into `raw/` from normal Slack turns; the manager or an approver runs `/ingest` to synthesise `raw/` into `wiki/` and push. Everything in `skills[]` and `knowledge[]` is strictly read-only (pulled on `sync_manifest`).
 
 **MCP servers are NOT in the manifest.** `~/.slaude/mcp.json` stays the single source of truth for MCP.
 
