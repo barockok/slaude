@@ -55,6 +55,18 @@ describe("helpText", () => {
   });
 });
 
+  test("parses /ingest with no args", () => {
+    expect(parseSlashCommand("/ingest")).toEqual({ kind: "ingest" });
+  });
+
+  test("parses /ingest with whitespace, ignores junk args", () => {
+    expect(parseSlashCommand("/ingest  whatever")).toEqual({ kind: "ingest" });
+  });
+
+  test("/help mentions /ingest", () => {
+    expect(helpText()).toContain("/ingest");
+  });
+
 describe("humanModeName", () => {
   test("round-trips through aliases", () => {
     for (const m of Object.values(MODE_LABELS).map((_, i) => Object.keys(MODE_LABELS)[i] as any)) {
