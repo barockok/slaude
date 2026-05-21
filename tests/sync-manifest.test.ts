@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { SLAUDE_HOME, paths, ensureHome } from "../src/config/home";
 import { syncManifest, pushSkillsToRepo, pushToRepo } from "../src/skills/sync-manifest";
@@ -264,6 +264,9 @@ describe("syncManifest", () => {
 
     const r = await syncManifest();
     const out = JSON.parse(r.content[0]!.text);
+    console.error("[DEBUG pull test] out:", JSON.stringify(out));
+    console.error("[DEBUG pull test] remote:", remote);
+    console.error("[DEBUG pull test] newSha:", newSha);
     expect(out.pulled_kbs).toEqual(["ext-wiki"]);
     expect(readFileSync(join(kbDir, "README.md"), "utf8")).toBe("# fresh\n");
 
@@ -308,11 +311,14 @@ describe("syncManifest", () => {
 
     const r = await syncManifest();
     const out = JSON.parse(r.content[0]!.text);
+    console.error("[DEBUG raw test] out:", JSON.stringify(out));
+    console.error("[DEBUG raw test] remote:", remote);
     expect(out.synced_raw).toBe(true);
 
     // verify remote got raw/ but not wiki/
     const probeDir = mkdtempSync(join(tmpdir(), "probe-"));
     execSync(`git clone --depth 1 "${remote}" "${probeDir}"`, { stdio: "pipe" });
+    console.error("[DEBUG raw test] probeDir contents:", JSON.stringify(readdirSync(probeDir)));
     expect(existsSync(join(probeDir, "raw", "note-1.md"))).toBe(true);
     expect(existsSync(join(probeDir, "wiki", "con-foo.md"))).toBe(false);
 
