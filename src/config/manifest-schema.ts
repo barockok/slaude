@@ -65,11 +65,19 @@ export const slaudeSkillsTarget = z.object({
 });
 export type SlaudeSkillsTarget = z.infer<typeof slaudeSkillsTarget>;
 
+export const slaudeKnowledgeTarget = z.object({
+  label: z.string().min(1),
+  git: gitUrl,
+  ref: z.string().min(1),
+});
+export type SlaudeKnowledgeTarget = z.infer<typeof slaudeKnowledgeTarget>;
+
 export const manifestSchema = z.object({
   plugins: z.array(pluginEntry).default([]),
   skills: z.array(skillEntry).default([]),
   knowledge: z.array(knowledgeEntry).default([]),
   slaude_skills: slaudeSkillsTarget.optional(),
+  slaude_knowledge: slaudeKnowledgeTarget.optional(),
 });
 export type Manifest = z.infer<typeof manifestSchema>;
 
@@ -96,11 +104,27 @@ const knowledgeLock = z.object({
   path: z.string().optional(),
 });
 
+const slaudeSkillsLock = z.object({
+  git: z.string(),
+  ref: z.string(),
+  sha: z.string().length(40),
+});
+
+const slaudeKnowledgeLock = z.object({
+  label: z.string().min(1),
+  git: z.string(),
+  ref: z.string(),
+  raw_sha: z.string().length(40).optional(),
+  wiki_sha: z.string().length(40).optional(),
+});
+
 export const lockfileSchema = z.object({
   version: z.literal(1),
   generated_at: z.string().datetime(),
   marketplaces: z.record(z.string(), marketplaceEntryLock).default({}),
   skills: z.record(z.string(), skillLock).default({}),
   knowledge: z.record(z.string(), knowledgeLock).default({}),
+  slaude_skills: slaudeSkillsLock.optional(),
+  slaude_knowledge: slaudeKnowledgeLock.optional(),
 });
 export type Lockfile = z.infer<typeof lockfileSchema>;

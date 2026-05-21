@@ -251,3 +251,65 @@ describe("lockfileSchema", () => {
     expect(r.knowledge).toEqual({});
   });
 });
+
+describe("manifestSchema slaude_knowledge", () => {
+  test("accepts manifest without slaude_knowledge (optional)", () => {
+    const r = manifestSchema.parse({});
+    expect(r.slaude_knowledge).toBeUndefined();
+  });
+
+  test("accepts manifest with slaude_knowledge", () => {
+    const r = manifestSchema.parse({
+      slaude_knowledge: { label: "ops-wiki", git: "github:owner/wiki", ref: "main" },
+    });
+    expect(r.slaude_knowledge?.label).toBe("ops-wiki");
+    expect(r.slaude_knowledge?.git).toBe("github:owner/wiki");
+  });
+
+  test("rejects slaude_knowledge with missing label", () => {
+    expect(() => manifestSchema.parse({
+      slaude_knowledge: { git: "github:owner/wiki", ref: "main" },
+    })).toThrow();
+  });
+
+  test("rejects slaude_knowledge with missing git/ref", () => {
+    expect(() => manifestSchema.parse({
+      slaude_knowledge: { label: "wiki" },
+    })).toThrow();
+  });
+});
+
+describe("lockfileSchema slaude_knowledge", () => {
+  test("accepts lockfile without slaude_knowledge", () => {
+    const r = lockfileSchema.parse({
+      version: 1,
+      generated_at: "2026-05-21T00:00:00.000Z",
+    });
+    expect(r.slaude_knowledge).toBeUndefined();
+  });
+
+  test("accepts lockfile with slaude_knowledge raw_sha + wiki_sha", () => {
+    const r = lockfileSchema.parse({
+      version: 1,
+      generated_at: "2026-05-21T00:00:00.000Z",
+      slaude_knowledge: {
+        label: "ops-wiki",
+        git: "github:owner/wiki",
+        ref: "main",
+        raw_sha: "a".repeat(40),
+        wiki_sha: "b".repeat(40),
+      },
+    });
+    expect(r.slaude_knowledge?.raw_sha).toBe("a".repeat(40));
+    expect(r.slaude_knowledge?.wiki_sha).toBe("b".repeat(40));
+  });
+
+  test("accepts slaude_skills lock with single sha", () => {
+    const r = lockfileSchema.parse({
+      version: 1,
+      generated_at: "2026-05-21T00:00:00.000Z",
+      slaude_skills: { git: "github:owner/sk", ref: "main", sha: "c".repeat(40) },
+    });
+    expect(r.slaude_skills?.sha).toBe("c".repeat(40));
+  });
+});
