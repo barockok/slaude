@@ -49,7 +49,7 @@ async function fakeBareRepoWithCommit(_label: string, filepath: string, content:
     writeFileSync(join(cloneDir, filepath), content);
     execSync("git add -A", { cwd: cloneDir, stdio: "pipe" });
     execSync("git -c user.name=test -c user.email=test@test commit -m init", { cwd: cloneDir, stdio: "pipe" });
-    execSync("git push origin main", { cwd: cloneDir, stdio: "pipe" });
+    execSync("git push origin HEAD", { cwd: cloneDir, stdio: "pipe" });
   } finally {
     rmSync(cloneDir, { recursive: true, force: true });
   }
@@ -63,7 +63,7 @@ async function commitToRemote(repoPath: string, filepath: string, content: strin
     writeFileSync(join(cloneDir, filepath), content);
     execSync("git add -A", { cwd: cloneDir, stdio: "pipe" });
     execSync("git -c user.name=test -c user.email=test@test commit -m update", { cwd: cloneDir, stdio: "pipe" });
-    execSync("git push origin main", { cwd: cloneDir, stdio: "pipe" });
+    execSync("git push origin HEAD", { cwd: cloneDir, stdio: "pipe" });
     return execSync("git rev-parse HEAD", { cwd: cloneDir, encoding: "utf8" }).trim();
   } finally {
     rmSync(cloneDir, { recursive: true, force: true });
