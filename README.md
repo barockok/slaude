@@ -30,6 +30,7 @@ Slack-native Claude Code runtime. Onboard an AI agent as a teammate in your Slac
 - **LLM-extracted SoulData** — at boot, an ephemeral Claude turn projects SOUL.md into a typed JSON (approvers, identity, manager, allowedUsers, mandate, values), sha-cached at `$SLAUDE_HOME/cache/soul.<sha>.json`. The approval gate consumes the structured approvers as the preferred tier; regex parser is the fallback. Persona prose can drift from rigid bullet format without breaking allowlist resolution.
 - **External MCP servers** — declare stdio / SSE / streamable-HTTP MCP servers in `~/.slaude/mcp.json` (same shape as Claude Code's mcp.json). Tools surface as `mcp__<server>__<tool>` and route through the standard approval gate on first call. See [External MCP servers (`mcp.json`)](#external-mcp-servers-mcpjson).
 - **Dependency manifest** — declarative `slaude.json` + `slaude.lock` for three surfaces: Claude Code plugins (marketplace git), skills (git repo per skill), knowledge bases (Karpathy-style markdown wikis). Install runs at image build (`slaude install --frozen`), runtime ships self-contained. See [Dependency manifest (`slaude.json`)](#dependency-manifest-slaudejson).
+- **Runtime manifest sync** — `mcp__slaude_skills__sync_manifest` syncs runtime-created skills and knowledge bases back to `slaude.json` + `slaude.lock`. Skills pushed to a git repo (`SLAUDE_SKILLS_REPO`); KBs recorded as local entries (PVC-surviving). Redeploy-safe.
 - **Slash commands in thread** — `/mode <ask|accept-edits|bypass|plan|dont-ask>`, `/abort`, `/help`. Per-session `permission_mode` persists.
 - **Idle TTL with resume** — `SLAUDE_IDLE_MINUTES` (default 15). On expiry the SDK Query closes silently; next inbound message re-boots with `resume: row.id`.
 - **Provider-agnostic** — any Anthropic-compatible API (Anthropic direct, OpenRouter, DeepSeek, Z.ai, self-hosted gateway, …). Telemetry / autoupdater / bug-reporter disabled in the SDK child so non-Anthropic gateways don't crash the CLI.
@@ -281,6 +282,17 @@ The default (no flags) honours the lockfile; only resolves entries the lock does
 
 **Docker build integration** — the Dockerfile has a builder stage that runs `slaude install --frozen` and copies the artifacts into the runtime image. Operator-authored files (`slaude.json`, `slaude.lock`, `mcp.json`, `SOUL.md`) live on the PVC. Full design spec at `docs/superpowers/specs/2026-05-21-dependency-manifest-design.md`.
 
+**Runtime sync (`sync_manifest`):** The `mcp__slaude_skills__sync_manifest` tool syncs skills and knowledge bases the agent creates at runtime back to the manifest so they survive container redeploys. The baseline soul instructs the agent to call it after batching related changes (not after every single write). The tool is **not** auto-allowed — it falls through to Block Kit approval like `write_skill` / `delete_skill`.
+
+Behavior by resource type:
+
+| Resource | `SLAUDE_SKILLS_REPO` set | `SLAUDE_SKILLS_REPO` unset |
+|---|---|---|
+| Skills | Pushed to git repo, recorded as `{git, ref: "main", slug}` in manifest + sha in lockfile | Recorded as local-only `{slug}` entry (PVC-surviving) |
+| Knowledge bases | Recorded as local `{label}` entry (no git — wiki content lives on PVC) | Same — KBs are always local entries |
+
+Git push failure falls back to local entries with a warning. Calling `sync_manifest` when nothing has changed is a safe no-op (idempotent).
+
 ### 5. Run
 
 Local dev:
@@ -345,6 +357,10 @@ src/
     extract.ts              # ephemeral-LLM SOUL.md → SoulData JSON, sha-cached
   db/                       # sqlite (sessions keyed by slack thread)
   config/                   # $SLAUDE_HOME paths + env + mcp.json loader
+  skills/
+    loader.ts               # skill discovery from ~/.slaude/skills/
+    mcp-tools.ts            # slaude_skills MCP server (list/read/write/delete/sync)
+    sync-manifest.ts        # runtime → manifest sync (git push + atomic writes)
   cli/manifest.ts           # slack manifest emitter
   cli/install.ts            # slaude install (dependency manifest)
   health.ts                 # /healthz + /readyz
@@ -370,7 +386,7 @@ See `CLAUDE.md` for the full architecture overview and decision/findings log.
   - Git-collaborative → multiple slaude runtimes (different personas / different machines) commit, pull, merge. Memory compounds across the fleet over time.
   - Per-runtime contributions → each runtime can write back what it learned; another runtime picks it up on next pull.
   - Two scopes side-by-side: **shared wiki** (cross-persona knowledge) + **persona-private** (this agent's own episodic + semantic memory, never shared).
-- ~~**Skill evolution**~~ ✅ shipped — `mcp__slaude_skills__{list_skills,read_skill,write_skill,delete_skill}` lets the agent author / refine its own `~/.slaude/skills/<slug>/SKILL.md`. Discovery runs per inbound message, so writes are hot-reloaded next turn without restart. Baseline soul mandates per-turn self-reflection ("did this turn show a repeatable workflow? → write/refine a skill"). Write/delete go through the existing `request_approval` flow (`category: 'skills'`).
+- ~~**Skill evolution**~~ ✅ shipped — `mcp__slaude_skills__{list_skills,read_skill,write_skill,delete_skill,sync_manifest}` lets the agent author / refine its own `~/.slaude/skills/<slug>/SKILL.md`. Discovery runs per inbound message, so writes are hot-reloaded next turn without restart. Baseline soul mandates per-turn self-reflection ("did this turn show a repeatable workflow? → write/refine a skill"). Write/delete go through the existing `request_approval` flow (`category: 'skills'`). `sync_manifest` persists runtime-created skills and KBs to `slaude.json` + `slaude.lock` so they survive redeploys.
 - **Session control tools** — MCP tool to restart / reset / fork the current Slack-thread session (clear `claude_started`, drop working dir, re-boot with a fresh resume id).
 - ~~**Manager session via DM**~~ ✅ shipped — the manager's DM thread doubles as the runtime-config console. The channel-mode gate locks DMs to `manager.userId` + `backupManager.userId` only and serves them as `trust="restricted"`, so the agent can be candid + privileged there. Operators ask the agent to install MCP servers, edit SOUL.md, swap models, reconfigure approvers from DM — no separate persona / thread / dashboard needed. (Tools that mutate persistent state still go through `request_approval`.)
 - **Live monitor web view** — read-only browser UI to peek inside any active session. Shows the live SDK event stream (thinking, tool calls + args, tool results, MCP traffic, permission prompts, current cwd) for a chosen Slack-thread session. Pure observability, no interaction — like attaching a read-only Claude Code window to a running agent.
