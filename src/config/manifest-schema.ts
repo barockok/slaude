@@ -59,10 +59,17 @@ export function resolveSkillSlug(entry: { git?: string; slug?: string }): string
   throw new Error("cannot resolve slug: entry has neither git nor slug");
 }
 
+export const slaudeSkillsTarget = z.object({
+  git: gitUrl,
+  ref: z.string().min(1),
+});
+export type SlaudeSkillsTarget = z.infer<typeof slaudeSkillsTarget>;
+
 export const manifestSchema = z.object({
   plugins: z.array(pluginEntry).default([]),
   skills: z.array(skillEntry).default([]),
   knowledge: z.array(knowledgeEntry).default([]),
+  slaude_skills: slaudeSkillsTarget.optional(),
 });
 export type Manifest = z.infer<typeof manifestSchema>;
 
