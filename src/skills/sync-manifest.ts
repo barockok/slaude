@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { SLAUDE_HOME } from "../config/home";
+import { SLAUDE_HOME, paths } from "../config/home";
 import {
   manifestSchema,
   lockfileSchema,
@@ -96,6 +96,16 @@ function resolveSkillsPushTarget(manifest: Manifest): { git: string; ref: string
   return null;
 }
 
+function pullKb(label: string, git: string, ref: string): { sha: string } {
+  const dir = join(paths.knowledge, label);
+  const resolved = resolveGitUrl(git);
+  if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  execSync(`git clone --depth 1 --branch "${ref}" "${resolved}" "${dir}"`, { stdio: "pipe" });
+  const sha = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8" }).trim();
+  return { sha };
+}
+
 export async function syncManifest(): Promise<ToolResult> {
   const manifestPath = join(SLAUDE_HOME, "slaude.json");
   const lockPath = join(SLAUDE_HOME, "slaude.lock");
@@ -132,8 +142,24 @@ export async function syncManifest(): Promise<ToolResult> {
   const newSkills = skills.filter((s) => !registeredSlugs.has(s.slug));
   const newKbs = kbs.filter((kb) => !registeredKbLabels.has(kb.label));
 
+  const pulledKbs: string[] = [];
+  for (const kb of manifest.knowledge) {
+    if (!kb.git || !kb.ref) continue;
+    try {
+      const { sha } = pullKb(kb.label, kb.git, kb.ref);
+      lock.knowledge[kb.label] = { git: kb.git, ref: kb.ref, sha, ...(kb.path ? { path: kb.path } : {}) };
+      pulledKbs.push(kb.label);
+    } catch (e: any) {
+      // Log but don't fail sync_manifest — warnings are collected for the output
+    }
+  }
+
   if (newSkills.length === 0 && newKbs.length === 0) {
-    return ok(JSON.stringify({ synced_skills: [], synced_kbs: [], warnings: [], skills_in_git: false }));
+    lock.generated_at = new Date().toISOString();
+    const lockTmp = lockPath + ".tmp";
+    writeFileSync(lockTmp, JSON.stringify(lock, null, 2) + "\n", "utf8");
+    renameSync(lockTmp, lockPath);
+    return ok(JSON.stringify({ synced_skills: [], synced_kbs: [], pulled_kbs: pulledKbs, warnings: [], skills_in_git: false }));
   }
 
   const warnings: string[] = [];
@@ -194,6 +220,7 @@ export async function syncManifest(): Promise<ToolResult> {
   return ok(JSON.stringify({
     synced_skills: newSkills.map((s) => s.slug),
     synced_kbs: newKbs.map((kb) => kb.label),
+    pulled_kbs: pulledKbs,
     warnings,
     skills_in_git: skillsInGit,
   }));
