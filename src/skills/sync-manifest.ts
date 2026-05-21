@@ -106,6 +106,51 @@ function pullKb(label: string, git: string, ref: string): { sha: string } {
   return { sha };
 }
 
+function rawDirSha(kbDir: string): string {
+  const rawDir = join(kbDir, "raw");
+  if (!existsSync(rawDir)) return "0".repeat(40);
+  const tmp = mkdtempSync(join(tmpdir(), "slaude-rawhash-"));
+  try {
+    execSync("git init", { cwd: tmp, stdio: "pipe" });
+    execSync(`cp -r "${rawDir}" "${join(tmp, "raw")}"`, { stdio: "pipe" });
+    execSync("git add -A", { cwd: tmp, stdio: "pipe" });
+    return execSync("git write-tree", { cwd: tmp, encoding: "utf8" }).trim()
+      .padEnd(40, "0").slice(0, 40);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+function pushKbRaw(
+  repoUrl: string, ref: string, kbDir: string,
+): { sha: string } {
+  const resolved = resolveGitUrl(repoUrl);
+  const tmp = mkdtempSync(join(tmpdir(), "slaude-kbpush-"));
+  try {
+    try {
+      execSync(`git clone --branch "${ref}" --depth 1 "${resolved}" "${tmp}"`, { stdio: "pipe" });
+    } catch {
+      mkdirSync(tmp, { recursive: true });
+      execSync(`git -c init.defaultBranch="${ref}" init`, { cwd: tmp, stdio: "pipe" });
+      execSync(`git remote add origin "${resolved}"`, { cwd: tmp, stdio: "pipe" });
+    }
+    const destRaw = join(tmp, "raw");
+    if (existsSync(destRaw)) rmSync(destRaw, { recursive: true, force: true });
+    const srcRaw = join(kbDir, "raw");
+    if (existsSync(srcRaw)) execSync(`cp -r "${srcRaw}" "${destRaw}"`, { stdio: "pipe" });
+    execSync("git add -A raw", { cwd: tmp, stdio: "pipe" });
+    try {
+      execSync(`git -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: sync raw"`, { cwd: tmp, stdio: "pipe" });
+      execSync(`git push origin "${ref}"`, { cwd: tmp, stdio: "pipe" });
+    } catch {
+      // nothing to commit — that's fine
+    }
+    return { sha: execSync("git rev-parse HEAD", { cwd: tmp, encoding: "utf8" }).trim() };
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 export async function syncManifest(): Promise<ToolResult> {
   const manifestPath = join(SLAUDE_HOME, "slaude.json");
   const lockPath = join(SLAUDE_HOME, "slaude.lock");
@@ -155,12 +200,37 @@ export async function syncManifest(): Promise<ToolResult> {
     }
   }
 
+  let syncedRaw = false;
+  if (manifest.slaude_knowledge) {
+    const skn = manifest.slaude_knowledge;
+    const kbDir = join(paths.knowledge, skn.label);
+    if (existsSync(kbDir)) {
+      const currentRawSha = rawDirSha(kbDir);
+      const prior = lock.slaude_knowledge?.raw_sha;
+      if (prior !== currentRawSha) {
+        try {
+          const { sha } = pushKbRaw(skn.git, skn.ref, kbDir);
+          lock.slaude_knowledge = {
+            label: skn.label,
+            git: skn.git,
+            ref: skn.ref,
+            raw_sha: currentRawSha,
+            wiki_sha: lock.slaude_knowledge?.wiki_sha,
+          };
+          syncedRaw = true;
+        } catch (e: any) {
+          warnings.push(`push slaude_knowledge raw: ${e?.message ?? e}`);
+        }
+      }
+    }
+  }
+
   if (newSkills.length === 0 && newKbs.length === 0) {
     lock.generated_at = new Date().toISOString();
     const lockTmp = lockPath + ".tmp";
     writeFileSync(lockTmp, JSON.stringify(lock, null, 2) + "\n", "utf8");
     renameSync(lockTmp, lockPath);
-    return ok(JSON.stringify({ synced_skills: [], synced_kbs: [], pulled_kbs: pulledKbs, warnings, skills_in_git: false }));
+    return ok(JSON.stringify({ synced_skills: [], synced_kbs: [], pulled_kbs: pulledKbs, synced_raw: syncedRaw, warnings, skills_in_git: false }));
   }
   let skillsInGit = false;
 
@@ -220,6 +290,7 @@ export async function syncManifest(): Promise<ToolResult> {
     synced_skills: newSkills.map((s) => s.slug),
     synced_kbs: newKbs.map((kb) => kb.label),
     pulled_kbs: pulledKbs,
+    synced_raw: syncedRaw,
     warnings,
     skills_in_git: skillsInGit,
   }));
