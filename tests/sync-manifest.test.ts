@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { SLAUDE_HOME, paths, ensureHome } from "../src/config/home";
 import { syncManifest, pushSkillsToRepo, pushToRepo } from "../src/skills/sync-manifest";
 import { skillOps } from "../src/skills/mcp-tools";
@@ -37,6 +37,37 @@ function fakeBareRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "slaude-test-bare-"));
   execSync(`git init --bare "${dir}"`, { stdio: "pipe" });
   return dir;
+}
+
+async function fakeBareRepoWithCommit(_label: string, filepath: string, content: string): Promise<string> {
+  const bareDir = mkdtempSync(join(tmpdir(), "slaude-test-bare-"));
+  execSync(`git init --bare "${bareDir}"`, { stdio: "pipe" });
+  const cloneDir = mkdtempSync(join(tmpdir(), "slaude-test-clone-"));
+  try {
+    execSync(`git clone "${bareDir}" "${cloneDir}"`, { stdio: "pipe" });
+    mkdirSync(join(cloneDir, dirname(filepath)), { recursive: true });
+    writeFileSync(join(cloneDir, filepath), content);
+    execSync("git add -A", { cwd: cloneDir, stdio: "pipe" });
+    execSync("git -c user.name=test -c user.email=test@test commit -m init", { cwd: cloneDir, stdio: "pipe" });
+    execSync("git push origin main", { cwd: cloneDir, stdio: "pipe" });
+  } finally {
+    rmSync(cloneDir, { recursive: true, force: true });
+  }
+  return bareDir;
+}
+
+async function commitToRemote(repoPath: string, filepath: string, content: string): Promise<string> {
+  const cloneDir = mkdtempSync(join(tmpdir(), "slaude-test-clone-"));
+  try {
+    execSync(`git clone "${repoPath}" "${cloneDir}"`, { stdio: "pipe" });
+    writeFileSync(join(cloneDir, filepath), content);
+    execSync("git add -A", { cwd: cloneDir, stdio: "pipe" });
+    execSync("git -c user.name=test -c user.email=test@test commit -m update", { cwd: cloneDir, stdio: "pipe" });
+    execSync("git push origin main", { cwd: cloneDir, stdio: "pipe" });
+    return execSync("git rev-parse HEAD", { cwd: cloneDir, encoding: "utf8" }).trim();
+  } finally {
+    rmSync(cloneDir, { recursive: true, force: true });
+  }
 }
 
 beforeEach(() => {
@@ -212,6 +243,29 @@ describe("syncManifest", () => {
     const mf = readParsedManifest();
     expect(mf.plugins.length).toBe(1);
     expect(mf.plugins[0].plugin).toBe("x");
+  });
+
+  test("sync_manifest pulls read-only KBs to declared ref", async () => {
+    if (!hasGit()) return;
+    const remote = await fakeBareRepoWithCommit("seed", "README.md", "# seed\n");
+    const manifest = {
+      plugins: [], skills: [],
+      knowledge: [{ label: "ext-wiki", git: remote, ref: "main" }],
+    };
+    writeFileSync(join(SLAUDE_HOME, "slaude.json"), JSON.stringify(manifest));
+    const kbDir = join(paths.knowledge, "ext-wiki");
+    mkdirSync(kbDir, { recursive: true });
+    writeFileSync(join(kbDir, "README.md"), "# STALE\n");
+
+    const newSha = await commitToRemote(remote, "README.md", "# fresh\n");
+
+    const r = await syncManifest();
+    const out = JSON.parse(r.content[0]!.text);
+    expect(out.pulled_kbs).toEqual(["ext-wiki"]);
+    expect(readFileSync(join(kbDir, "README.md"), "utf8")).toBe("# fresh\n");
+
+    const lock = JSON.parse(readFileSync(join(SLAUDE_HOME, "slaude.lock"), "utf8"));
+    expect(lock.knowledge["ext-wiki"].sha).toBe(newSha);
   });
 });
 
