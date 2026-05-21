@@ -14,6 +14,7 @@ import {
 import { join, resolve, relative } from "node:path";
 import { paths } from "../config/home";
 import { discoverSkills, type Skill } from "./loader";
+import { syncManifest } from "./sync-manifest";
 
 export const SKILLS_MCP_NAME = "slaude_skills";
 
@@ -149,6 +150,9 @@ export const skillHandlers = {
       return err(e?.message ?? String(e));
     }
   },
+  async sync_manifest(): Promise<ToolResult> {
+    return syncManifest();
+  },
 };
 
 export function createSkillsMcp(): McpSdkServerConfigWithInstance {
@@ -192,6 +196,12 @@ export function createSkillsMcp(): McpSdkServerConfigWithInstance {
         "Delete a skill dir. REQUIRES prior approval (category='skills'). Irreversible.",
         { slug: z.string() },
         skillHandlers.delete_skill,
+      ),
+      tool(
+        "sync_manifest",
+        "Sync runtime-created skills and knowledge bases back to slaude.json + slaude.lock. If SLAUDE_SKILLS_REPO is configured, pushes new skills to git; otherwise records them as local entries. Call sparingly — only after creating or evolving multiple skills or KBs. Returns JSON summary with synced_skills, synced_kbs, warnings, and skills_in_git.",
+        {},
+        skillHandlers.sync_manifest,
       ),
     ],
   });
