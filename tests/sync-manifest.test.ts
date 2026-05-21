@@ -45,10 +45,13 @@ async function fakeBareRepoWithCommit(_label: string, filepath: string, content:
   const cloneDir = mkdtempSync(join(tmpdir(), "slaude-test-clone-"));
   try {
     execSync(`git clone "${bareDir}" "${cloneDir}"`, { stdio: "pipe" });
+    // Empty bare repo inherits remote HEAD (CI may default to "master").
+    // Force the local branch to "main" so pushes and subsequent clones work.
+    execSync("git checkout --orphan main 2>/dev/null; git branch -M main 2>/dev/null || true", { cwd: cloneDir, stdio: "pipe" });
     mkdirSync(join(cloneDir, dirname(filepath)), { recursive: true });
     writeFileSync(join(cloneDir, filepath), content);
     execSync("git add -A", { cwd: cloneDir, stdio: "pipe" });
-    execSync("git -c init.defaultBranch=main -c user.name=test -c user.email=test@test commit -m init", { cwd: cloneDir, stdio: "pipe" });
+    execSync("git -c user.name=test -c user.email=test@test commit -m init", { cwd: cloneDir, stdio: "pipe" });
     execSync("git push origin HEAD", { cwd: cloneDir, stdio: "pipe" });
   } finally {
     rmSync(cloneDir, { recursive: true, force: true });
@@ -62,7 +65,7 @@ async function commitToRemote(repoPath: string, filepath: string, content: strin
     execSync(`git clone "${repoPath}" "${cloneDir}"`, { stdio: "pipe" });
     writeFileSync(join(cloneDir, filepath), content);
     execSync("git add -A", { cwd: cloneDir, stdio: "pipe" });
-    execSync("git -c init.defaultBranch=main -c user.name=test -c user.email=test@test commit -m update", { cwd: cloneDir, stdio: "pipe" });
+    execSync("git -c user.name=test -c user.email=test@test commit -m update", { cwd: cloneDir, stdio: "pipe" });
     execSync("git push origin HEAD", { cwd: cloneDir, stdio: "pipe" });
     return execSync("git rev-parse HEAD", { cwd: cloneDir, encoding: "utf8" }).trim();
   } finally {
