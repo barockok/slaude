@@ -279,6 +279,49 @@ describe("manifestSchema slaude_knowledge", () => {
   });
 });
 
+describe("lockfileSchema slaude_skills", () => {
+  test("accepts lockfile without slaude_skills", () => {
+    const r = lockfileSchema.parse({
+      version: 1,
+      generated_at: "2026-05-21T00:00:00.000Z",
+    });
+    expect(r.slaude_skills).toBeUndefined();
+  });
+
+  test("accepts slaude_skills lock with single sha", () => {
+    const r = lockfileSchema.parse({
+      version: 1,
+      generated_at: "2026-05-21T00:00:00.000Z",
+      slaude_skills: { git: "github:owner/sk", ref: "main", sha: "c".repeat(40) },
+    });
+    expect(r.slaude_skills?.sha).toBe("c".repeat(40));
+  });
+
+  test("rejects slaude_skills missing git", () => {
+    expect(() => lockfileSchema.parse({
+      version: 1,
+      generated_at: "2026-05-21T00:00:00.000Z",
+      slaude_skills: { ref: "main", sha: "c".repeat(40) },
+    })).toThrow();
+  });
+
+  test("rejects slaude_skills missing ref", () => {
+    expect(() => lockfileSchema.parse({
+      version: 1,
+      generated_at: "2026-05-21T00:00:00.000Z",
+      slaude_skills: { git: "github:owner/sk", sha: "c".repeat(40) },
+    })).toThrow();
+  });
+
+  test("rejects slaude_skills invalid sha length", () => {
+    expect(() => lockfileSchema.parse({
+      version: 1,
+      generated_at: "2026-05-21T00:00:00.000Z",
+      slaude_skills: { git: "github:owner/sk", ref: "main", sha: "short" },
+    })).toThrow();
+  });
+});
+
 describe("lockfileSchema slaude_knowledge", () => {
   test("accepts lockfile without slaude_knowledge", () => {
     const r = lockfileSchema.parse({
@@ -304,12 +347,11 @@ describe("lockfileSchema slaude_knowledge", () => {
     expect(r.slaude_knowledge?.wiki_sha).toBe("b".repeat(40));
   });
 
-  test("accepts slaude_skills lock with single sha", () => {
-    const r = lockfileSchema.parse({
+  test("rejects slaude_knowledge missing label", () => {
+    expect(() => lockfileSchema.parse({
       version: 1,
       generated_at: "2026-05-21T00:00:00.000Z",
-      slaude_skills: { git: "github:owner/sk", ref: "main", sha: "c".repeat(40) },
-    });
-    expect(r.slaude_skills?.sha).toBe("c".repeat(40));
+      slaude_knowledge: { git: "github:owner/wiki", ref: "main" },
+    })).toThrow();
   });
 });
