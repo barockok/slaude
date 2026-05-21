@@ -33,6 +33,12 @@ function hasGit(): boolean {
   try { execSync("git --version", { stdio: "pipe" }); return true; } catch { return false; }
 }
 
+function fakeBareRepo(): string {
+  const dir = mkdtempSync(join(tmpdir(), "slaude-test-bare-"));
+  execSync(`git init --bare "${dir}"`, { stdio: "pipe" });
+  return dir;
+}
+
 beforeEach(() => {
   ensureHome();
   if (existsSync(paths.skills)) rmSync(paths.skills, { recursive: true, force: true });
@@ -71,7 +77,7 @@ describe("syncManifest", () => {
     expect(parsed.synced_kbs).toEqual([]);
     expect(parsed.skills_in_git).toBe(false);
     expect(parsed.warnings.length).toBeGreaterThan(0);
-    expect(parsed.warnings[0]).toContain("SLAUDE_SKILLS_REPO not set");
+    expect(parsed.warnings[0]).toContain("skills push target not set");
 
     const mf = readParsedManifest();
     expect(mf.skills.length).toBe(1);
@@ -373,5 +379,27 @@ describe("git push", () => {
     expect(mf.skills[0].slug).toBe("fs");
     expect(mf.knowledge[0].git).toBeUndefined();
     expect(mf.knowledge[0].label).toBe("fkb");
+  });
+
+  test("sync_manifest pushes to manifest.slaude_skills.git when set, ignoring env", async () => {
+    if (!hasGit()) return;
+    process.env.SLAUDE_SKILLS_REPO = "https://wrong.example.com/repo.git";
+    const repoRemote = fakeBareRepo();
+    try {
+      writeManifest({ plugins: [], skills: [], knowledge: [], slaude_skills: { git: repoRemote, ref: "main" } });
+      mkdirSync(join(paths.skills, "demo"), { recursive: true });
+      writeFileSync(join(paths.skills, "demo", "SKILL.md"), "---\nname: demo\ndescription: x\n---\nbody\n");
+
+      const r = await syncManifest();
+      const out = JSON.parse(r.content[0]!.text);
+      expect(r.isError).toBeUndefined();
+      expect(out.synced_skills).toEqual(["demo"]);
+      expect(out.skills_in_git).toBe(true);
+
+      const lock = JSON.parse(readFileSync(join(SLAUDE_HOME, "slaude.lock"), "utf8"));
+      expect(lock.skills.demo.git).toBe(repoRemote);
+    } finally {
+      rmSync(repoRemote, { recursive: true, force: true });
+    }
   });
 });

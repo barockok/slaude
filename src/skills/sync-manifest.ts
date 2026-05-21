@@ -89,6 +89,13 @@ export function pushToRepo(
 // Keep old name for backward compat in tests
 export const pushSkillsToRepo = pushToRepo;
 
+function resolveSkillsPushTarget(manifest: Manifest): { git: string; ref: string } | null {
+  if (manifest.slaude_skills) return manifest.slaude_skills;
+  const envUrl = env.skillsRepo();
+  if (envUrl) return { git: envUrl, ref: "main" };
+  return null;
+}
+
 export async function syncManifest(): Promise<ToolResult> {
   const manifestPath = join(SLAUDE_HOME, "slaude.json");
   const lockPath = join(SLAUDE_HOME, "slaude.lock");
@@ -132,24 +139,24 @@ export async function syncManifest(): Promise<ToolResult> {
   const warnings: string[] = [];
   let skillsInGit = false;
 
-  const skillsRepo = env.skillsRepo();
+  const target = resolveSkillsPushTarget(manifest);
   const hasNewContent = newSkills.length > 0 || newKbs.length > 0;
 
-  if (hasNewContent && skillsRepo) {
+  if (hasNewContent && target) {
     try {
       const { sha } = pushToRepo(
-        skillsRepo,
+        target.git,
         newSkills.map((s) => ({ slug: s.slug, dir: s.dir })),
         newKbs.map((kb) => ({ label: kb.label, dir: kb.path })),
       );
       for (const s of newSkills) {
-        manifest.skills.push({ git: skillsRepo, ref: "main", slug: s.slug, path: s.slug });
-        lock.skills[s.slug] = { git: skillsRepo, ref: "main", sha, path: s.slug };
+        manifest.skills.push({ git: target.git, ref: target.ref, slug: s.slug, path: s.slug });
+        lock.skills[s.slug] = { git: target.git, ref: target.ref, sha, path: s.slug };
       }
       for (const kb of newKbs) {
         const kbPath = `knowledge/${kb.label}`;
-        manifest.knowledge.push({ label: kb.label, git: skillsRepo, ref: "main", path: kbPath });
-        lock.knowledge[kb.label] = { git: skillsRepo, ref: "main", sha, path: kbPath };
+        manifest.knowledge.push({ label: kb.label, git: target.git, ref: target.ref, path: kbPath });
+        lock.knowledge[kb.label] = { git: target.git, ref: target.ref, sha, path: kbPath };
       }
       skillsInGit = true;
     } catch (e: any) {
@@ -162,11 +169,11 @@ export async function syncManifest(): Promise<ToolResult> {
       }
     }
   } else {
-    if (newSkills.length > 0 && !skillsRepo) {
-      warnings.push("SLAUDE_SKILLS_REPO not set — skills recorded as local-only entries (survive on PVC only)");
+    if (newSkills.length > 0 && !target) {
+      warnings.push("skills push target not set — skills recorded as local-only entries (survive on PVC only)");
     }
-    if (newKbs.length > 0 && !skillsRepo) {
-      warnings.push("SLAUDE_SKILLS_REPO not set — KBs recorded as local-only entries (survive on PVC only)");
+    if (newKbs.length > 0 && !target) {
+      warnings.push("skills push target not set — KBs recorded as local-only entries (survive on PVC only)");
     }
     for (const s of newSkills) {
       manifest.skills.push({ slug: s.slug });
