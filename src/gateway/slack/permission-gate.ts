@@ -154,6 +154,11 @@ export class PermissionGate {
     if (toolName.startsWith("mcp__slaude_session__")) {
       return { behavior: "allow", updatedInput: input };
     }
+    // KB introspection is read-only — agent uses it to discover and read
+    // knowledge bases without spamming the user.
+    if (toolName.startsWith("mcp__slaude_kb__")) {
+      return { behavior: "allow", updatedInput: input };
+    }
     const route = this.#routes.get(sessionId);
     if (!route) {
       // No live thread — fail closed so we don't silently grant ops.
