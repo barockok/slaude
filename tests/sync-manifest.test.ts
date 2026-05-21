@@ -45,6 +45,7 @@ async function fakeBareRepoWithCommit(_label: string, filepath: string, content:
   const cloneDir = mkdtempSync(join(tmpdir(), "slaude-test-clone-"));
   try {
     execSync(`git clone "${bareDir}" "${cloneDir}"`, { stdio: "pipe" });
+    execSync("git config init.defaultBranch main", { cwd: cloneDir, stdio: "pipe" });
     mkdirSync(join(cloneDir, dirname(filepath)), { recursive: true });
     writeFileSync(join(cloneDir, filepath), content);
     execSync("git add -A", { cwd: cloneDir, stdio: "pipe" });
