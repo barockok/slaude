@@ -27,7 +27,8 @@ export type SlashHit =
   | { kind: "mode"; mode: PermissionMode }
   | { kind: "mode-help" }
   | { kind: "abort" }
-  | { kind: "help" };
+  | { kind: "help" }
+  | { kind: "ingest" };
 
 const HELP_NAMES = new Set(["help", "h", "?"]);
 
@@ -46,6 +47,9 @@ export function parseSlashCommand(text: string): SlashHit | null {
   if (cmd === "abort" || cmd === "stop" || cmd === "cancel") {
     return { kind: "abort" };
   }
+  if (cmd === "ingest") {
+    return { kind: "ingest" };
+  }
   if (HELP_NAMES.has(cmd)) {
     return { kind: "help" };
   }
@@ -63,6 +67,7 @@ export function helpText(): string {
     modes,
     "`/abort` — cancel the current turn",
     "`/help` — this message",
+    "`/ingest` — synthesize raw/ → wiki/ in the writable KB (manager/approver only)",
   ].join("\n");
 }
 
