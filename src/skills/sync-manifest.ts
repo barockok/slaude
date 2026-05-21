@@ -79,7 +79,7 @@ export function pushToRepo(
     if (skills.length > 0) parts.push(`skills ${skills.map((s) => s.slug).join(", ")}`);
     if (kbs.length > 0) parts.push(`kbs ${kbs.map((k) => k.label).join(", ")}`);
     execSync(`git -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: sync ${parts.join("; ")}"`, { cwd: tempDir, stdio: "pipe" });
-    execSync("git push origin main", { cwd: tempDir, stdio: "pipe" });
+    execSync("git push origin HEAD", { cwd: tempDir, stdio: "pipe" });
     return { sha: execSync("git rev-parse HEAD", { cwd: tempDir, encoding: "utf8" }).trim() };
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
@@ -141,7 +141,7 @@ function pushKbRaw(
     execSync("git add -A raw", { cwd: tmp, stdio: "pipe" });
     try {
       execSync(`git -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: sync raw"`, { cwd: tmp, stdio: "pipe" });
-      execSync(`git push origin "${ref}"`, { cwd: tmp, stdio: "pipe" });
+      execSync("git push origin HEAD", { cwd: tmp, stdio: "pipe" });
     } catch {
       // nothing to commit — that's fine
     }
