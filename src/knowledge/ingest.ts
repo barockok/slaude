@@ -134,7 +134,7 @@ async function defaultPushWiki(args: { repoUrl: string; ref: string; kbDir: stri
     execSync("git add -A", { cwd: tmp, stdio: "pipe" });
     try {
       execSync(`git -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: ingest"`, { cwd: tmp, stdio: "pipe" });
-      execSync(`git push origin "${args.ref}"`, { cwd: tmp, stdio: "pipe" });
+      execSync("git push origin HEAD", { cwd: tmp, stdio: "pipe" });
     } catch {
       // nothing to commit
     }
