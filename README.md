@@ -29,6 +29,7 @@ Slack-native Claude Code runtime. Onboard an AI agent as a teammate in your Slac
 - **Approval gate** — `mcp__slaude_slack__request_approval(summary, …)` posts Block Kit Approve/Deny. Approver allowlist parsed from SOUL.md scope-described entries; runtime keyword-matches the agent's plan summary against each approver's scope; the agent never picks user IDs.
 - **LLM-extracted SoulData** — at boot, an ephemeral Claude turn projects SOUL.md into a typed JSON (approvers, identity, manager, allowedUsers, mandate, values), sha-cached at `$SLAUDE_HOME/cache/soul.<sha>.json`. The approval gate consumes the structured approvers as the preferred tier; regex parser is the fallback. Persona prose can drift from rigid bullet format without breaking allowlist resolution.
 - **External MCP servers** — declare stdio / SSE / streamable-HTTP MCP servers in `~/.slaude/mcp.json` (same shape as Claude Code's mcp.json). Tools surface as `mcp__<server>__<tool>` and route through the standard approval gate on first call. See [External MCP servers (`mcp.json`)](#external-mcp-servers-mcpjson).
+- **Dependency manifest** — declarative `slaude.json` + `slaude.lock` for three surfaces: Claude Code plugins (marketplace git), skills (git repo per skill), knowledge bases (Karpathy-style markdown wikis). Install runs at image build (`slaude install --frozen`), runtime ships self-contained. See [Dependency manifest (`slaude.json`)](#dependency-manifest-slaudejson).
 - **Slash commands in thread** — `/mode <ask|accept-edits|bypass|plan|dont-ask>`, `/abort`, `/help`. Per-session `permission_mode` persists.
 - **Idle TTL with resume** — `SLAUDE_IDLE_MINUTES` (default 15). On expiry the SDK Query closes silently; next inbound message re-boots with `resume: row.id`.
 - **Provider-agnostic** — any Anthropic-compatible API (Anthropic direct, OpenRouter, DeepSeek, Z.ai, self-hosted gateway, …). Telemetry / autoupdater / bug-reporter disabled in the SDK child so non-Anthropic gateways don't crash the CLI.
@@ -212,6 +213,74 @@ Drop a Claude-Code-style `mcp.json` at `~/.slaude/mcp.json` (override path via `
 - **Reserved names** — `slaude_slack` and `slaude_skills` in `mcp.json` are dropped with a warning so user config can't shadow the in-process Slack output server (would deadlock the agent).
 - **Secret isolation** — stdio child processes inherit `process.env` by default. To restrict what a server sees, set an explicit `env: { … }` on its entry; the loader only passes through what's listed there.
 
+### Dependency manifest (`slaude.json`)
+
+Declare the agent's third-party dependencies in a single manifest at `~/.slaude/slaude.json`. Three surfaces:
+
+```json
+{
+  "plugins": [
+    {
+      "marketplace": "github:anthropics/claude-plugins-official",
+      "plugin": "superpowers",
+      "ref": "5.1.0"
+    }
+  ],
+  "skills": [
+    {
+      "git": "github:barockok/skill-release-notes",
+      "ref": "v1.2.0"
+    }
+  ],
+  "knowledge": [
+    {
+      "label": "org-runbooks",
+      "git": "github:org/runbooks-wiki",
+      "ref": "v3.0.0"
+    }
+  ]
+}
+```
+
+**Surfaces:**
+
+| Section | Source | Install target | Runtime pickup |
+|---|---|---|---|
+| `plugins` | Marketplace git (`marketplace` + `plugin` + `ref`) | `$CLAUDE_CONFIG_DIR/plugins/cache/…` | Claude Code native loader |
+| `skills` | Git repo per skill | `~/.slaude/skills/<slug>/` | `discoverSkills()` per inbound message |
+| `knowledge` | Git wiki (Karpathy-style, README.md at root) | `~/.slaude/knowledge/<label>/` | `mcp__slaude_kb__list_kbs` / `open_kb` |
+
+**MCP servers are NOT in the manifest.** `~/.slaude/mcp.json` stays the single source of truth for MCP.
+
+**Installer (`slaude install`):**
+
+```
+bun run install-deps --frozen   # CI / Docker build: fail if lockfile doesn't cover manifest
+bun run install-deps --update   # resolve fresh from declared refs, rewrite lockfile
+bun run install-deps --check    # exit 0 if lock satisfies manifest, 1 otherwise
+```
+
+The default (no flags) honours the lockfile; only resolves entries the lock doesn't cover.
+
+**Lockfile (`slaude.lock`)** — auto-generated, sha-pinned. Commit to the repo so image builds are reproducible.
+
+**Plugins:** Slaude does not reimplement plugin loading. The installer clones marketplace repos and copies plugins into Claude Code's native cache layout (`$CLAUDE_CONFIG_DIR/plugins/cache/<marketplace>/<plugin>/<version>/`). Claude Code's built-in loader picks them up. Full CC plugin compat — `plugin.json` at root, slaude fans out skills / commands / agents / hooks. MCP servers bundled inside plugins (`plugin.json` → `mcpServers`) work through CC's native loader.
+
+**Knowledge bases:** Karpathy's LLM-wiki framework — plain markdown wikis the agent navigates by reading. Each KB is a cloned git repo; the agent discovers what's available via `mcp__slaude_kb__list_kbs`, opens the entry page (README.md / index.md) via `mcp__slaude_kb__open_kb`, then navigates with native `Read` / `Grep` / `Glob`. No embeddings, no chunking — the wiki author owns structure; the LLM is the search engine.
+
+**Skills** are the same flat `SKILL.md` format slaude already supports — the installer just sources them from git instead of the operator dropping them in by hand.
+
+**Install layout** (baked into the image, not PVC-mounted):
+
+```
+~/.slaude/
+  .claude/plugins/cache/<marketplace>/<plugin>/<version>/   ← CC native cache
+  skills/<slug>/SKILL.md                                    ← hot-reloaded each turn
+  knowledge/<label>/README.md                               ← navigated via Read/Grep
+```
+
+**Docker build integration** — the Dockerfile has a builder stage that runs `slaude install --frozen` and copies the artifacts into the runtime image. Operator-authored files (`slaude.json`, `slaude.lock`, `mcp.json`, `SOUL.md`) live on the PVC. Full design spec at `docs/superpowers/specs/2026-05-21-dependency-manifest-design.md`.
+
 ### 5. Run
 
 Local dev:
@@ -277,16 +346,20 @@ src/
   db/                       # sqlite (sessions keyed by slack thread)
   config/                   # $SLAUDE_HOME paths + env + mcp.json loader
   cli/manifest.ts           # slack manifest emitter
+  cli/install.ts            # slaude install (dependency manifest)
   health.ts                 # /healthz + /readyz
   server.ts                 # headless entry
 ~/.slaude/                  # runtime home
   SOUL.md                   # persona (operator-defined)
   mcp.json                  # external MCP servers (optional)
+  slaude.json               # dependency manifest (operator-authored)
+  slaude.lock               # pinned dependency shas (auto-generated, committed)
   cache/soul.<sha>.json     # LLM-extracted SoulData, keyed by sha256(SOUL.md)
   db.sqlite
+  skills/<slug>/SKILL.md    # installed skills (baked into image)
+  knowledge/<label>/        # installed KB wikis (baked into image)
   workspaces/<thread>/      # per-session cwd
     attachments/<ts>/       # downloaded Slack files
-```
 
 See `CLAUDE.md` for the full architecture overview and decision/findings log.
 
