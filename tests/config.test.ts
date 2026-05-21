@@ -18,6 +18,38 @@ describe("config/home", () => {
   });
 });
 
+describe("SLAUDE_DB_PATH override", () => {
+  // paths is a module-level const evaluated once at import time. Test the
+  // resolution logic in a subprocess so each invocation reads a fresh env.
+  test("default db path is SLAUDE_HOME/db.sqlite", async () => {
+    const out = await Bun.spawn({
+      cmd: ["bun", "-e", "import {paths} from './src/config/home'; console.log(paths.db)"],
+      env: { ...process.env, SLAUDE_HOME: "/tmp/slaude-cfg-test-default", SLAUDE_DB_PATH: "" },
+      stdout: "pipe",
+    }).stdout;
+    const text = (await new Response(out).text()).trim();
+    expect(text).toBe("/tmp/slaude-cfg-test-default/db.sqlite");
+  });
+
+  test("SLAUDE_DB_PATH absolute path used verbatim", async () => {
+    const out = await Bun.spawn({
+      cmd: ["bun", "-e", "import {paths} from './src/config/home'; console.log(paths.db)"],
+      env: { ...process.env, SLAUDE_HOME: "/tmp/slaude-cfg-test-abs", SLAUDE_DB_PATH: "/var/lib/slaude/db.sqlite" },
+      stdout: "pipe",
+    }).stdout;
+    expect((await new Response(out).text()).trim()).toBe("/var/lib/slaude/db.sqlite");
+  });
+
+  test("SLAUDE_DB_PATH relative path joined under SLAUDE_HOME", async () => {
+    const out = await Bun.spawn({
+      cmd: ["bun", "-e", "import {paths} from './src/config/home'; console.log(paths.db)"],
+      env: { ...process.env, SLAUDE_HOME: "/tmp/slaude-cfg-test-rel", SLAUDE_DB_PATH: "state/db.sqlite" },
+      stdout: "pipe",
+    }).stdout;
+    expect((await new Response(out).text()).trim()).toBe("/tmp/slaude-cfg-test-rel/state/db.sqlite");
+  });
+});
+
 describe("config/env dotenv loader", () => {
   test("seeded .env values reachable on process.env", () => {
     expect(process.env.SLAUDE_TEST_QUOTED).toBe("hello");
