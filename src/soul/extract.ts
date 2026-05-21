@@ -15,6 +15,23 @@ function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex").slice(0, 16);
 }
 
+const DEFAULT_MAX_TOKENS = 8192;
+
+/**
+ * Resolve the `max_tokens` budget for the extractor call. Defaults to 8192
+ * so thinking-mode providers (e.g. Deepseek's anthropic-compat endpoint
+ * that emits `thinking` blocks alongside `text`, both counting against the
+ * budget) leave enough headroom for the JSON payload. Operators can raise
+ * the cap via `SLAUDE_SOUL_PARSE_MAX_TOKENS` when a slower model needs
+ * more breathing room.
+ */
+function resolveMaxTokens(): number {
+  const raw = process.env.SLAUDE_SOUL_PARSE_MAX_TOKENS;
+  if (!raw) return DEFAULT_MAX_TOKENS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_MAX_TOKENS;
+}
+
 /**
  * Run a single non-streaming Claude turn against the configured
  * Anthropic-compatible endpoint. No tools, no MCP, no resume. Returns the
@@ -50,7 +67,7 @@ async function callExtractor(system: string, prompt: string): Promise<string> {
     headers,
     body: JSON.stringify({
       model,
-      max_tokens: 2048,
+      max_tokens: resolveMaxTokens(),
       system,
       messages: [{ role: "user", content: prompt }],
     }),
