@@ -288,6 +288,35 @@ describe("syncManifest", () => {
     const lock = JSON.parse(readFileSync(join(SLAUDE_HOME, "slaude.lock"), "utf8"));
     expect(lock.knowledge["broken-kb"]).toBeUndefined();
   });
+
+  test("sync_manifest pushes writable KB raw/ but not wiki/", async () => {
+    if (!hasGit()) return;
+    const remote = fakeBareRepo();
+    const manifest = {
+      plugins: [], skills: [], knowledge: [],
+      slaude_knowledge: { label: "ops-wiki", git: remote, ref: "main" },
+    };
+    writeFileSync(join(SLAUDE_HOME, "slaude.json"), JSON.stringify(manifest));
+    const kbDir = join(paths.knowledge, "ops-wiki");
+    mkdirSync(join(kbDir, "raw"), { recursive: true });
+    writeFileSync(join(kbDir, "raw", "note-1.md"), "raw note\n");
+    mkdirSync(join(kbDir, "wiki"), { recursive: true });
+    writeFileSync(join(kbDir, "wiki", "con-foo.md"), "wiki page — should NOT be pushed\n");
+
+    const r = await syncManifest();
+    const out = JSON.parse(r.content[0]!.text);
+    expect(out.synced_raw).toBe(true);
+
+    // verify remote got raw/ but not wiki/
+    const probeDir = mkdtempSync(join(tmpdir(), "probe-"));
+    execSync(`git clone --depth 1 "${remote}" "${probeDir}"`, { stdio: "pipe" });
+    expect(existsSync(join(probeDir, "raw", "note-1.md"))).toBe(true);
+    expect(existsSync(join(probeDir, "wiki", "con-foo.md"))).toBe(false);
+
+    const lock = JSON.parse(readFileSync(join(SLAUDE_HOME, "slaude.lock"), "utf8"));
+    expect(lock.slaude_knowledge.raw_sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(lock.slaude_knowledge.wiki_sha).toBeUndefined();
+  });
 });
 
 describe("git push", () => {
