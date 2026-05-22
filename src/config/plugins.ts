@@ -58,6 +58,15 @@ export function loadInstalledPluginPaths(): SdkPluginPath[] {
 
 type RawMcpEntry = Record<string, unknown>;
 
+// `npx` ships with the Node toolchain; the bun runtime image only has `bunx`.
+// Plugin .mcp.json files frequently assume Node and use `npx <pkg>` to launch a
+// stdio server. Transparently rewrite to `bunx` so plugins authored for the
+// generic Claude Code runtime still work under slaude's bun-only base image.
+function shimStdioCommand(command: string): string {
+  if (command === "npx") return "bunx";
+  return command;
+}
+
 function coerceMcpServer(name: string, raw: unknown): McpServerConfig | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as RawMcpEntry;
@@ -69,7 +78,7 @@ function coerceMcpServer(name: string, raw: unknown): McpServerConfig | null {
   if (typeof r.command === "string") {
     return {
       type: "stdio",
-      command: r.command,
+      command: shimStdioCommand(r.command),
       ...(Array.isArray(r.args) ? { args: r.args.map(String) } : {}),
       ...(r.env && typeof r.env === "object" ? { env: r.env as Record<string, string> } : {}),
     } as McpServerConfig;
