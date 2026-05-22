@@ -19,6 +19,52 @@ Slack-native Claude Code runtime. Onboard an AI agent as a teammate in your Slac
 - Manager-style approvals: agent runs in YOLO and self-organizes a high-level approval checkpoint before mutating ops; SOUL.md defines who's authorized to approve which kind of work.
 - Headless. Run on a server, point Slack at it via Socket Mode.
 
+## Architecture at a glance
+
+```
+        Slack (Socket Mode)
+              ▲ ▼
+┌────────────────────────────────────────────────────────────┐
+│                    slaude container                         │
+│                                                             │
+│  ┌──────────────────── gateway/slack ─────────────────────┐ │
+│  │ adapter ─ engagement / channel-mode / blocked-user gate│ │
+│  │ permission-gate ─ canUseTool → Block Kit prompt        │ │
+│  │ approval-gate   ─ request_approval → Block Kit Approve │ │
+│  │ format / redact / attachments / status / reactions     │ │
+│  └────────────────────────┬───────────────────────────────┘ │
+│                           │ envelope <channel trust=…>      │
+│                           ▼                                 │
+│  ┌──────────── agent/manager.ts (per Slack thread) ───────┐ │
+│  │  AgentManager extends EventEmitter                     │ │
+│  │  Map<sessionId, LiveSession>  ──► @anthropic-ai/        │ │
+│  │  async-gen prompt iterable     ──►   claude-agent-sdk   │ │
+│  │  token-budget.ts (ctx-window warn / critical)          │ │
+│  │  session-mcp.ts  (token_budget introspection MCP)      │ │
+│  └──┬────────┬────────┬────────┬────────┬────────┬────────┘ │
+│     │        │        │        │        │        │          │
+│  ┌──▼──┐ ┌───▼──┐ ┌───▼──┐ ┌───▼──┐ ┌───▼──┐ ┌───▼─────┐   │
+│  │soul │ │skills│ │knowl-│ │memory│ │  db  │ │external │   │
+│  │     │ │      │ │ edge │ │      │ │      │ │  MCPs   │   │
+│  │SOUL │ │SKILL │ │ wiki │ │facts │ │bun:  │ │mcp.json │   │
+│  │ +   │ │+ MCP │ │+ MCP │ │+ turn│ │sqlite│ │stdio /  │   │
+│  │ex-  │ │+sync │ │+ /in-│ │store │ │      │ │ http /  │   │
+│  │tract│ │mani- │ │ gest │ │      │ │      │ │  sse    │   │
+│  │     │ │ fest │ │      │ │      │ │      │ │         │   │
+│  └─────┘ └──────┘ └──────┘ └──────┘ └──────┘ └─────────┘   │
+│                                                             │
+│  health.ts  /healthz  /readyz  /metrics  (port 8080)        │
+└─────────────────────────────────────────────────────────────┘
+              ▲ ▼
+       ~/.slaude/  (PVC)
+       SOUL.md · mcp.json · slaude.json · slaude.lock
+       db.sqlite · cache/ · skills/ · knowledge/ · workspaces/
+```
+
+**Trust boundary:** the LLM extracts SOUL.md into typed JSON; every Slack id it returns is checked against the raw SOUL.md text before any gate uses it. Enforcement (channel-mode, blocked-user, engagement, approver authorization, per-tool permission) lives in the gateway, never the model. A jailbroken persona can mislead an approver but cannot redirect or self-approve. See [Trust boundary](#trust-boundary-where-the-llm-ends-and-the-gateway-begins).
+
+**Persistence:** sqlite holds per-thread session state (resume ids, slack thread mapping, permission mode); markdown lives on the PVC under `~/.slaude/` (SOUL.md, manifest, lockfile, skills, KB wikis, per-thread workspaces, soul-extraction cache).
+
 ## Features
 
 - **Channel-style output** — agent replies via `mcp__slaude_slack__reply` / `edit` / `upload` / `react` / `unreact` / `request_approval`. Plain assistant text never reaches Slack.
@@ -129,7 +175,7 @@ Channel-trust tiers in priority order: `trusted` > `allowed` > `restricted` (DM 
 
 ```md
 ## Identity
-- Name: hermes
+- Name: aria
 - Role: senior platform engineer
 - Voice: terse, fragments OK
 
@@ -346,52 +392,76 @@ Metric surface:
 | `slaude_slack_drops_total` | counter | `reason=dedup\|whitelist\|engagement\|mention_other\|blocked_user` |
 | `slaude_user_turns_total` | counter | `user_id`, `user_name` (opt-in) |
 
-Static labels applied to every series via `SLAUDE_METRICS_LABELS="agent=hermes,env=prod,team=ai"`. Per-user counter is opt-in (`SLAUDE_METRICS_PER_USER=1`) — leaving it off keeps Prometheus cardinality bounded in public channels.
+Static labels applied to every series via `SLAUDE_METRICS_LABELS="agent=aria,env=prod,team=ai"`. Per-user counter is opt-in (`SLAUDE_METRICS_PER_USER=1`) — leaving it off keeps Prometheus cardinality bounded in public channels.
 
 ## Layout
 
 ```
 src/
-  agent/manager.ts          # claude-agent-sdk runtime, multi-session, idle TTL
+  agent/
+    manager.ts              # claude-agent-sdk runtime, multi-session, idle TTL
+    session-mcp.ts          # in-process MCP — token_budget introspection
+    token-budget.ts         # ctx-window tracking + warn/critical threshold events
   gateway/slack/
-    adapter.ts              # bolt Socket Mode wiring + engagement state
-    mcp-tools.ts            # slaude_slack MCP server (reply/edit/upload/react/request_approval)
-    permission-gate.ts      # SDK canUseTool → Block Kit prompt
-    approval-gate.ts        # agent-driven request_approval gate
+    adapter.ts              # bolt Socket Mode wiring + channel-mode / engagement gate
+    mcp-tools.ts            # slaude_slack MCP (reply/edit/upload/react/request_approval)
+    permission-gate.ts      # SDK canUseTool → Block Kit Allow/Always/Deny
+    approval-gate.ts        # agent-driven request_approval Block Kit Approve/Deny
+    ingest-auth.ts          # /ingest authorization — manager + approvers only
     status.ts               # assistant.threads.setStatus indicator
     reactions.ts            # 👀/⚙️/✅/❌ status reactions
     presence.ts             # users.profile.set (xoxp only)
     format.ts               # markdown → Slack mrkdwn (incl. tables)
+    redact.ts               # regex redaction from soul.redactPatterns
     attachments.ts          # download Slack files into session dir
     users.ts                # users.info name resolution (TTL cache)
-    commands.ts             # /mode /abort /help
+    commands.ts             # /mode /abort /ingest /help
   soul/
     loader.ts               # runtime baseline + SOUL.md persona, regex approver parser
     data.ts                 # zod schema for SoulData
     extract.ts              # ephemeral-LLM SOUL.md → SoulData JSON, sha-cached
-  db/                       # sqlite (sessions keyed by slack thread)
-  config/                   # $SLAUDE_HOME paths + env + mcp.json loader
+    validate.ts             # boot-time SoulData validation helpers
   skills/
-    loader.ts               # skill discovery from ~/.slaude/skills/
-    mcp-tools.ts            # slaude_skills MCP server (list/read/write/delete/sync)
+    loader.ts               # discoverSkills() per inbound message (hot reload)
+    mcp-tools.ts            # slaude_skills MCP (list/read/write/delete/sync_manifest)
     sync-manifest.ts        # runtime → manifest sync (git push + atomic writes)
-  cli/manifest.ts           # slack manifest emitter
-  cli/install.ts            # slaude install (dependency manifest)
-  health.ts                 # /healthz + /readyz
+  knowledge/
+    loader.ts               # KB discovery — installed + writable wiki
+    mcp-tools.ts            # slaude_kb MCP (list_kbs / open_kb / capture)
+    ingest.ts               # /ingest engine — raw/ → wiki/ synthesis sub-query
+  memory/
+    provider.ts             # MemoryProvider interface
+    sqlite-provider.ts      # default impl — sqlite turns + facts table
+  db/                       # bun:sqlite schema (sessions, kb_ingest_jobs)
+  config/
+    env.ts                  # env getters (+ ~/.slaude/.env auto-load)
+    home.ts                 # $SLAUDE_HOME paths
+    manifest-schema.ts      # zod schema for slaude.json / slaude.lock
+    plugins.ts              # mcp.json loader + installed-plugin discovery
+  cli/
+    manifest.ts             # slack app manifest emitter
+    install.ts              # slaude install (dependency manifest --frozen/--update/--check)
+    validate.ts             # validate-soul entry — exit 0/1/2
+    cc-plugin-metadata.ts   # CC plugin manifest helpers
+  metrics.ts                # hand-rendered Prometheus text registry
+  health.ts                 # /healthz + /readyz + /metrics
   server.ts                 # headless entry
-~/.slaude/                  # runtime home
+~/.slaude/                  # runtime home (PVC)
   SOUL.md                   # persona (operator-defined)
   mcp.json                  # external MCP servers (optional)
   slaude.json               # dependency manifest (operator-authored)
   slaude.lock               # pinned dependency shas (auto-generated, committed)
+  .env                      # operator secrets (optional, auto-loaded)
   cache/soul.<sha>.json     # LLM-extracted SoulData, keyed by sha256(SOUL.md)
-  db.sqlite
-  skills/<slug>/SKILL.md    # installed skills (baked into image)
-  knowledge/<label>/        # installed KB wikis (baked into image)
+  db.sqlite                 # bun:sqlite — sessions, ingest jobs
+  skills/<slug>/SKILL.md    # installed skills (baked at image build)
+  knowledge/<label>/        # installed KB wikis + writable KB (raw/ + wiki/)
+  .claude/plugins/cache/    # CC native plugin cache (CLAUDE_CONFIG_DIR)
   workspaces/<thread>/      # per-session cwd
     attachments/<ts>/       # downloaded Slack files
+```
 
-See `CLAUDE.md` for the full architecture overview and decision/findings log.
+See `CLAUDE.md` for the project mandate and the [Findings Log](CLAUDE.md#findings-log) for date-stamped decision notes.
 
 ## Roadmap / TODO
 
