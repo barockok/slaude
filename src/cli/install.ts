@@ -187,13 +187,20 @@ async function main() {
       skipped++;
     }
 
-    // Read marketplace.json
-    const mpJsonPath = join(mpCloneDir, "marketplace.json");
-    if (!existsSync(mpJsonPath)) {
-      console.error(`[install] marketplace.json missing in ${key}`);
+    // Read marketplace.json — prefer Claude Code's .claude-plugin/marketplace.json,
+    // fall back to root-level marketplace.json (slaude design doc shape).
+    const mpJsonCandidates = [
+      join(mpCloneDir, ".claude-plugin", "marketplace.json"),
+      join(mpCloneDir, "marketplace.json"),
+    ];
+    const mpJsonPath = mpJsonCandidates.find((p) => existsSync(p));
+    if (!mpJsonPath) {
+      console.error(`[install] marketplace.json missing in ${key} (looked at .claude-plugin/marketplace.json and marketplace.json)`);
       process.exit(4);
     }
-    let mpJson: { plugins: Array<{ name: string; version: string; path?: string }> };
+    // Accept either { path, version } (slaude shape) or { source } (CC shape).
+    // version is optional; falls back to the marketplace ref so cache layout stays deterministic.
+    let mpJson: { plugins: Array<{ name: string; version?: string; path?: string; source?: string }> };
     try {
       mpJson = JSON.parse(readFileSync(mpJsonPath, "utf8"));
     } catch (e: any) {
@@ -209,9 +216,13 @@ async function main() {
         console.error(`[install] plugin "${pn}" not found in ${key}. Available: ${available}`);
         process.exit(4);
       }
-      const versionDir = sanitizePathSegment(mpPlugin.version);
+      const subdir =
+        mpPlugin.path ??
+        (typeof mpPlugin.source === "string" ? mpPlugin.source.replace(/^\.\//, "") : undefined);
+      const version = mpPlugin.version ?? entry.ref;
+      const versionDir = sanitizePathSegment(version);
       const targetDir = join(mpDir, sanitizePathSegment(pn), versionDir);
-      const srcDir = mpPlugin.path ? join(mpCloneDir, mpPlugin.path) : mpCloneDir;
+      const srcDir = subdir ? join(mpCloneDir, subdir) : mpCloneDir;
 
       if (!existsSync(targetDir) || update) {
         if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
@@ -228,7 +239,7 @@ async function main() {
         }
         if (!needsClone) installed++;
       }
-      mpPlugins[pn] = { version: mpPlugin.version, subdir: mpPlugin.path ?? "." };
+      mpPlugins[pn] = { version, subdir: subdir ?? "." };
     }
     lock.marketplaces[key] = { sha, plugins: mpPlugins };
   }
