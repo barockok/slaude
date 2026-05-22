@@ -21,45 +21,9 @@ Slack-native Claude Code runtime. Onboard an AI agent as a teammate in your Slac
 
 ## Architecture at a glance
 
-```
-        Slack (Socket Mode)
-              ▲ ▼
-┌────────────────────────────────────────────────────────────┐
-│                    slaude container                         │
-│                                                             │
-│  ┌──────────────────── gateway/slack ─────────────────────┐ │
-│  │ adapter ─ engagement / channel-mode / blocked-user gate│ │
-│  │ permission-gate ─ canUseTool → Block Kit prompt        │ │
-│  │ approval-gate   ─ request_approval → Block Kit Approve │ │
-│  │ format / redact / attachments / status / reactions     │ │
-│  └────────────────────────┬───────────────────────────────┘ │
-│                           │ envelope <channel trust=…>      │
-│                           ▼                                 │
-│  ┌──────────── agent/manager.ts (per Slack thread) ───────┐ │
-│  │  AgentManager extends EventEmitter                     │ │
-│  │  Map<sessionId, LiveSession>  ──► @anthropic-ai/        │ │
-│  │  async-gen prompt iterable     ──►   claude-agent-sdk   │ │
-│  │  token-budget.ts (ctx-window warn / critical)          │ │
-│  │  session-mcp.ts  (token_budget introspection MCP)      │ │
-│  └──┬────────┬────────┬────────┬────────┬────────┬────────┘ │
-│     │        │        │        │        │        │          │
-│  ┌──▼──┐ ┌───▼──┐ ┌───▼──┐ ┌───▼──┐ ┌───▼──┐ ┌───▼─────┐   │
-│  │soul │ │skills│ │knowl-│ │memory│ │  db  │ │external │   │
-│  │     │ │      │ │ edge │ │      │ │      │ │  MCPs   │   │
-│  │SOUL │ │SKILL │ │ wiki │ │facts │ │bun:  │ │mcp.json │   │
-│  │ +   │ │+ MCP │ │+ MCP │ │+ turn│ │sqlite│ │stdio /  │   │
-│  │ex-  │ │+sync │ │+ /in-│ │store │ │      │ │ http /  │   │
-│  │tract│ │mani- │ │ gest │ │      │ │      │ │  sse    │   │
-│  │     │ │ fest │ │      │ │      │ │      │ │         │   │
-│  └─────┘ └──────┘ └──────┘ └──────┘ └──────┘ └─────────┘   │
-│                                                             │
-│  health.ts  /healthz  /readyz  /metrics  (port 8080)        │
-└─────────────────────────────────────────────────────────────┘
-              ▲ ▼
-       ~/.slaude/  (PVC)
-       SOUL.md · mcp.json · slaude.json · slaude.lock
-       db.sqlite · cache/ · skills/ · knowledge/ · workspaces/
-```
+![slaude architecture](docs/architecture.png)
+
+<sub>Source: [`docs/architecture.html`](docs/architecture.html) (regenerate the PNG via headless Chrome — see file header).</sub>
 
 **Trust boundary:** the LLM extracts SOUL.md into typed JSON; every Slack id it returns is checked against the raw SOUL.md text before any gate uses it. Enforcement (channel-mode, blocked-user, engagement, approver authorization, per-tool permission) lives in the gateway, never the model. A jailbroken persona can mislead an approver but cannot redirect or self-approve. See [Trust boundary](#trust-boundary-where-the-llm-ends-and-the-gateway-begins).
 
