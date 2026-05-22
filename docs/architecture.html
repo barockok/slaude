@@ -1,0 +1,276 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  html,body{margin:0;padding:0;background:#fff;font-family:'Inter',system-ui,-apple-system,sans-serif;}
+  svg{display:block;}
+</style></head><body>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1640 1180" width="1640" height="1180">
+  <defs>
+    <marker id="ar-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="ar-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#16a34a"/>
+    </marker>
+    <marker id="ar-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/>
+    </marker>
+    <marker id="ar-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d97706"/>
+    </marker>
+    <marker id="ar-lime" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#65a30d"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="820" y="32" text-anchor="middle" font-size="22" font-weight="700" fill="#0f172a">slaude — architecture</text>
+  <text x="820" y="55" text-anchor="middle" font-size="13" fill="#64748b">one Slack thread = one persistent claude-agent-sdk session · one container = one persona</text>
+
+  <!-- LAYER ZONES -->
+  <rect x="40"   y="80"   width="1560" height="100" fill="#dbeafe" opacity="0.4" rx="10"/>
+  <rect x="40"   y="200"  width="1560" height="160" fill="#fce7f3" opacity="0.35" rx="10"/>
+  <rect x="40"   y="380"  width="1560" height="170" fill="#ede9fe" opacity="0.45" rx="10"/>
+  <rect x="40"   y="570"  width="1560" height="170" fill="#fef3c7" opacity="0.4" rx="10"/>
+  <rect x="40"   y="760"  width="1560" height="140" fill="#dcfce7" opacity="0.45" rx="10"/>
+  <rect x="40"   y="920"  width="1560" height="120" fill="#fef9c3" opacity="0.55" rx="10"/>
+
+  <text x="1590" y="100" text-anchor="end" font-size="11" font-weight="600" fill="#1e40af">Slack surface</text>
+  <text x="1590" y="220" text-anchor="end" font-size="11" font-weight="600" fill="#9d174d">gateway/slack — trust boundary</text>
+  <text x="1590" y="400" text-anchor="end" font-size="11" font-weight="600" fill="#6d28d9">agent — claude-agent-sdk runtime</text>
+  <text x="1590" y="590" text-anchor="end" font-size="11" font-weight="600" fill="#a16207">modules</text>
+  <text x="1590" y="780" text-anchor="end" font-size="11" font-weight="600" fill="#166534">persistence + observability</text>
+  <text x="1590" y="940" text-anchor="end" font-size="11" font-weight="600" fill="#854d0e">runtime home (PVC)</text>
+
+  <!-- LAYER 0: SLACK -->
+  <g>
+    <rect x="660" y="100" width="320" height="60" rx="10" fill="#bfdbfe" stroke="#2563eb" stroke-width="2"/>
+    <text x="820" y="125" text-anchor="middle" font-size="15" font-weight="700" fill="#1e3a8a">Slack</text>
+    <text x="820" y="146" text-anchor="middle" font-size="12" fill="#1e40af">Socket Mode · DMs · channels · threads</text>
+  </g>
+
+  <!-- LAYER 1: GATEWAY (4 cols) -->
+  <!-- col centers: 250, 590, 900, 1315 -->
+  <g>
+    <rect x="80"   y="230" width="340" height="110" rx="8" fill="#fbcfe8" stroke="#be185d" stroke-width="2"/>
+    <text x="250" y="252" text-anchor="middle" font-size="14" font-weight="700" fill="#831843">adapter.ts</text>
+    <text x="250" y="272" text-anchor="middle" font-size="11" fill="#9d174d">engagement · @mention · channel-mode</text>
+    <text x="250" y="289" text-anchor="middle" font-size="11" fill="#9d174d">blocked-user · dedup · attachments</text>
+    <text x="250" y="306" text-anchor="middle" font-size="11" fill="#9d174d">format · redact · status · reactions</text>
+    <text x="250" y="323" text-anchor="middle" font-size="11" fill="#9d174d">commands · users · ingest-auth</text>
+
+    <rect x="450"  y="230" width="280" height="110" rx="8" fill="#fbcfe8" stroke="#be185d" stroke-width="2"/>
+    <text x="590" y="252" text-anchor="middle" font-size="14" font-weight="700" fill="#831843">permission-gate.ts</text>
+    <text x="590" y="272" text-anchor="middle" font-size="11" fill="#9d174d">SDK canUseTool callback</text>
+    <text x="590" y="289" text-anchor="middle" font-size="11" fill="#9d174d">Block Kit Allow / Always / Deny</text>
+    <text x="590" y="306" text-anchor="middle" font-size="11" fill="#9d174d">SLAUDE_AUTO_ALLOW_TOOLS</text>
+    <text x="590" y="323" text-anchor="middle" font-size="11" fill="#9d174d">per-thread permission_mode</text>
+
+    <rect x="760"  y="230" width="280" height="110" rx="8" fill="#fbcfe8" stroke="#be185d" stroke-width="2"/>
+    <text x="900" y="252" text-anchor="middle" font-size="14" font-weight="700" fill="#831843">approval-gate.ts</text>
+    <text x="900" y="272" text-anchor="middle" font-size="11" fill="#9d174d">request_approval → Block Kit</text>
+    <text x="900" y="289" text-anchor="middle" font-size="11" fill="#9d174d">approver allowlist (SOUL.md)</text>
+    <text x="900" y="306" text-anchor="middle" font-size="11" fill="#9d174d">scope keyword-match vs summary</text>
+    <text x="900" y="323" text-anchor="middle" font-size="11" fill="#9d174d">timeout auto-deny</text>
+
+    <rect x="1070" y="230" width="490" height="110" rx="8" fill="#fbcfe8" stroke="#be185d" stroke-width="2"/>
+    <text x="1315" y="252" text-anchor="middle" font-size="14" font-weight="700" fill="#831843">slaude_slack — in-process MCP (mcp-tools.ts)</text>
+    <text x="1315" y="272" text-anchor="middle" font-size="11" fill="#9d174d">reply · edit · upload · react · unreact · request_approval</text>
+    <text x="1315" y="291" text-anchor="middle" font-size="11" fill="#9d174d">only path Slack text leaves the agent —</text>
+    <text x="1315" y="308" text-anchor="middle" font-size="11" fill="#9d174d">no auto-streaming, no plain-text leakage</text>
+    <text x="1315" y="326" text-anchor="middle" font-size="11" fill="#9d174d">markdown → mrkdwn at post time</text>
+  </g>
+
+  <!-- LAYER 2: AGENT -->
+  <g>
+    <rect x="80"   y="410" width="320" height="130" rx="8" fill="#ddd6fe" stroke="#7c3aed" stroke-width="2"/>
+    <text x="240" y="432" text-anchor="middle" font-size="14" font-weight="700" fill="#4c1d95">token-budget.ts</text>
+    <text x="240" y="452" text-anchor="middle" font-size="11" fill="#5b21b6">ctx-window pct tracking</text>
+    <text x="240" y="469" text-anchor="middle" font-size="11" fill="#5b21b6">warn @ 0.80 · critical @ 0.92</text>
+    <text x="240" y="486" text-anchor="middle" font-size="11" fill="#5b21b6">live ModelUsage.contextWindow</text>
+    <text x="240" y="503" text-anchor="middle" font-size="11" fill="#5b21b6">fires one-shot per session</text>
+    <text x="240" y="520" text-anchor="middle" font-size="11" fill="#5b21b6">fallback 200k · override env</text>
+
+    <rect x="430"  y="410" width="780" height="130" rx="8" fill="#c4b5fd" stroke="#6d28d9" stroke-width="2.5"/>
+    <text x="820" y="432" text-anchor="middle" font-size="15" font-weight="800" fill="#4c1d95">agent/manager.ts — AgentManager</text>
+    <text x="820" y="453" text-anchor="middle" font-size="12" fill="#4c1d95">@anthropic-ai/claude-agent-sdk · Map&lt;sessionId, LiveSession&gt; · EventEmitter</text>
+    <text x="820" y="471" text-anchor="middle" font-size="12" fill="#4c1d95">async-generator prompt iterable · resume on idle restart · per-thread cwd</text>
+    <text x="820" y="489" text-anchor="middle" font-size="12" fill="#4c1d95">SDK events: chunk · thinking · toolCall · toolResult · done</text>
+    <text x="820" y="507" text-anchor="middle" font-size="12" fill="#4c1d95">composes runtime baseline + SOUL.md persona system prompt</text>
+    <text x="820" y="525" text-anchor="middle" font-size="12" fill="#4c1d95">idle TTL (15m default) · auto-evolve · stop-guard</text>
+
+    <rect x="1240" y="410" width="320" height="130" rx="8" fill="#ddd6fe" stroke="#7c3aed" stroke-width="2"/>
+    <text x="1400" y="432" text-anchor="middle" font-size="14" font-weight="700" fill="#4c1d95">session-mcp.ts</text>
+    <text x="1400" y="452" text-anchor="middle" font-size="11" fill="#5b21b6">in-process MCP server</text>
+    <text x="1400" y="469" text-anchor="middle" font-size="11" fill="#5b21b6">mcp__token_budget__*</text>
+    <text x="1400" y="486" text-anchor="middle" font-size="11" fill="#5b21b6">agent introspects own usage</text>
+    <text x="1400" y="503" text-anchor="middle" font-size="11" fill="#5b21b6">no cross-session leakage —</text>
+    <text x="1400" y="520" text-anchor="middle" font-size="11" fill="#5b21b6">scoped per LiveSession</text>
+  </g>
+
+  <!-- LAYER 3: MODULES — reordered cols: memory | skills | knowledge | soul -->
+  <g>
+    <rect x="80"   y="600" width="340" height="130" rx="8" fill="#fef08a" stroke="#a16207" stroke-width="2"/>
+    <text x="250" y="622" text-anchor="middle" font-size="14" font-weight="700" fill="#713f12">memory/</text>
+    <text x="250" y="642" text-anchor="middle" font-size="11" fill="#854d0e">provider.ts — interface</text>
+    <text x="250" y="659" text-anchor="middle" font-size="11" fill="#854d0e">sqlite-provider.ts — default impl</text>
+    <text x="250" y="676" text-anchor="middle" font-size="11" fill="#854d0e">episodic + semantic facts</text>
+    <text x="250" y="693" text-anchor="middle" font-size="11" fill="#854d0e">&lt;memory-context&gt; injection</text>
+    <text x="250" y="710" text-anchor="middle" font-size="11" fill="#854d0e">embedding provider deferred</text>
+
+    <rect x="450"  y="600" width="340" height="130" rx="8" fill="#fef08a" stroke="#a16207" stroke-width="2"/>
+    <text x="620" y="622" text-anchor="middle" font-size="14" font-weight="700" fill="#713f12">skills/</text>
+    <text x="620" y="642" text-anchor="middle" font-size="11" fill="#854d0e">loader.ts — discoverSkills per turn</text>
+    <text x="620" y="659" text-anchor="middle" font-size="11" fill="#854d0e">hot reload from ~/.slaude/skills/</text>
+    <text x="620" y="676" text-anchor="middle" font-size="11" fill="#854d0e">mcp-tools.ts — slaude_skills MCP</text>
+    <text x="620" y="693" text-anchor="middle" font-size="11" fill="#854d0e">list · read · write · delete · sync</text>
+    <text x="620" y="710" text-anchor="middle" font-size="11" fill="#854d0e">sync-manifest — git push runtime skills</text>
+
+    <rect x="820"  y="600" width="340" height="130" rx="8" fill="#fef08a" stroke="#a16207" stroke-width="2"/>
+    <text x="990" y="622" text-anchor="middle" font-size="14" font-weight="700" fill="#713f12">knowledge/</text>
+    <text x="990" y="642" text-anchor="middle" font-size="11" fill="#854d0e">loader.ts — KB discovery</text>
+    <text x="990" y="659" text-anchor="middle" font-size="11" fill="#854d0e">mcp-tools.ts — slaude_kb MCP</text>
+    <text x="990" y="676" text-anchor="middle" font-size="11" fill="#854d0e">list_kbs · open_kb · capture</text>
+    <text x="990" y="693" text-anchor="middle" font-size="11" fill="#854d0e">ingest.ts — raw/ → wiki/ sub-query</text>
+    <text x="990" y="710" text-anchor="middle" font-size="11" fill="#854d0e">sqlite mutex (one ingest at a time)</text>
+
+    <rect x="1190" y="600" width="370" height="130" rx="8" fill="#fef08a" stroke="#a16207" stroke-width="2"/>
+    <text x="1375" y="622" text-anchor="middle" font-size="14" font-weight="700" fill="#713f12">soul/</text>
+    <text x="1375" y="642" text-anchor="middle" font-size="11" fill="#854d0e">loader.ts — baseline + persona</text>
+    <text x="1375" y="659" text-anchor="middle" font-size="11" fill="#854d0e">data.ts — zod schema for SoulData</text>
+    <text x="1375" y="676" text-anchor="middle" font-size="11" fill="#854d0e">extract.ts — ephemeral LLM →</text>
+    <text x="1375" y="693" text-anchor="middle" font-size="11" fill="#854d0e">typed JSON, sha-cached</text>
+    <text x="1375" y="710" text-anchor="middle" font-size="11" fill="#854d0e">validate.ts — every Slack id re-checked</text>
+  </g>
+
+  <!-- LAYER 4: PERSISTENCE -->
+  <g>
+    <rect x="80"   y="780" width="340" height="100" rx="8" fill="#bbf7d0" stroke="#15803d" stroke-width="2"/>
+    <text x="250" y="802" text-anchor="middle" font-size="14" font-weight="700" fill="#14532d">db/ — bun:sqlite</text>
+    <text x="250" y="822" text-anchor="middle" font-size="11" fill="#166534">sessions (slack thread → resume id)</text>
+    <text x="250" y="839" text-anchor="middle" font-size="11" fill="#166534">slack_team / channel / thread_ts unique idx</text>
+    <text x="250" y="856" text-anchor="middle" font-size="11" fill="#166534">kb_ingest_jobs (mutex + state)</text>
+    <text x="250" y="873" text-anchor="middle" font-size="11" fill="#166534">readyz probes via ping</text>
+
+    <rect x="450"  y="780" width="340" height="100" rx="8" fill="#bbf7d0" stroke="#15803d" stroke-width="2"/>
+    <text x="620" y="802" text-anchor="middle" font-size="14" font-weight="700" fill="#14532d">external MCP servers (mcp.json)</text>
+    <text x="620" y="822" text-anchor="middle" font-size="11" fill="#166534">stdio · http · sse</text>
+    <text x="620" y="839" text-anchor="middle" font-size="11" fill="#166534">${VAR} substitution in args/env/url</text>
+    <text x="620" y="856" text-anchor="middle" font-size="11" fill="#166534">tools surface as mcp__&lt;srv&gt;__&lt;tool&gt;</text>
+    <text x="620" y="873" text-anchor="middle" font-size="11" fill="#166534">first call → Block Kit Approve / Deny</text>
+
+    <rect x="820"  y="780" width="340" height="100" rx="8" fill="#bbf7d0" stroke="#15803d" stroke-width="2"/>
+    <text x="990" y="802" text-anchor="middle" font-size="14" font-weight="700" fill="#14532d">CC plugins (slaude install)</text>
+    <text x="990" y="822" text-anchor="middle" font-size="11" fill="#166534">$CLAUDE_CONFIG_DIR/plugins/cache</text>
+    <text x="990" y="839" text-anchor="middle" font-size="11" fill="#166534">marketplace git → pinned sha</text>
+    <text x="990" y="856" text-anchor="middle" font-size="11" fill="#166534">native CC loader — skills + cmds + hooks</text>
+    <text x="990" y="873" text-anchor="middle" font-size="11" fill="#166534">slaude install --frozen (CI / Docker)</text>
+
+    <rect x="1190" y="780" width="370" height="100" rx="8" fill="#bbf7d0" stroke="#15803d" stroke-width="2"/>
+    <text x="1375" y="802" text-anchor="middle" font-size="14" font-weight="700" fill="#14532d">health.ts — port 8080</text>
+    <text x="1375" y="822" text-anchor="middle" font-size="11" fill="#166534">/healthz — liveness</text>
+    <text x="1375" y="839" text-anchor="middle" font-size="11" fill="#166534">/readyz — sqlite ping</text>
+    <text x="1375" y="856" text-anchor="middle" font-size="11" fill="#166534">/metrics — Prometheus text</text>
+    <text x="1375" y="873" text-anchor="middle" font-size="11" fill="#166534">k8s probes wired</text>
+  </g>
+
+  <!-- LAYER 5: PVC -->
+  <g>
+    <rect x="80"   y="940" width="1480" height="80" rx="10" fill="#fde68a" stroke="#92400e" stroke-width="2"/>
+    <text x="820" y="966" text-anchor="middle" font-size="14" font-weight="700" fill="#78350f">~/.slaude/ — runtime home (PersistentVolume)</text>
+    <text x="820" y="988" text-anchor="middle" font-size="12" fill="#92400e">SOUL.md · mcp.json · slaude.json · slaude.lock · .env · cache/soul.&lt;sha&gt;.json · db.sqlite</text>
+    <text x="820" y="1006" text-anchor="middle" font-size="12" fill="#92400e">skills/&lt;slug&gt;/SKILL.md · knowledge/&lt;label&gt;/{raw,wiki}/ · workspaces/&lt;thread&gt;/ · .claude/plugins/cache</text>
+  </g>
+
+  <!-- ============== ARROWS (Manhattan, gutter-routed) ============== -->
+
+  <!-- Slack → adapter (events). Slack bottom @ (750,160). Down to gutter (y=200), left to adapter top (250,230). -->
+  <path d="M 750 160 L 750 200 L 250 200 L 250 230" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#ar-blue)"/>
+  <text x="500" y="194" font-size="11" fill="#1e40af" font-weight="600">events</text>
+
+  <!-- slaude_slack → Slack (reply). slaude top @ (1315,230). Up to gutter (y=200), left to slack bottom (890,160). -->
+  <path d="M 1315 230 L 1315 200 L 890 200 L 890 160" stroke="#16a34a" stroke-width="2" fill="none" marker-end="url(#ar-green)"/>
+  <text x="1100" y="194" font-size="11" fill="#15803d" font-weight="600">reply · edit · upload · react</text>
+
+  <!-- adapter → manager. adapter bottom (250,340) → gutter (y=375) → manager top (550,410). -->
+  <path d="M 250 340 L 250 375 L 550 375 L 550 410" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#ar-blue)"/>
+  <text x="395" y="369" font-size="11" fill="#1e40af" font-weight="600">envelope &lt;channel trust=…&gt;</text>
+
+  <!-- manager → permission-gate. manager top (650,410) → gutter (y=375) → permission-gate bottom (590,340). -->
+  <path d="M 650 410 L 650 375 L 590 375 L 590 340" stroke="#7c3aed" stroke-width="2" stroke-dasharray="6,4" fill="none" marker-end="url(#ar-purple)"/>
+  <text x="610" y="369" font-size="11" fill="#5b21b6" font-weight="600">canUseTool</text>
+
+  <!-- manager → approval-gate. manager top (900,410) → gutter (y=375) → approval-gate bottom (900,340). Straight up. -->
+  <path d="M 900 410 L 900 340" stroke="#7c3aed" stroke-width="2" stroke-dasharray="6,4" fill="none" marker-end="url(#ar-purple)"/>
+  <text x="920" y="378" font-size="11" fill="#5b21b6" font-weight="600">request_approval</text>
+
+  <!-- manager → slaude_slack. manager top-right (1100,410) → gutter (y=375) → slaude_slack bottom (1315,340). -->
+  <path d="M 1100 410 L 1100 375 L 1315 375 L 1315 340" stroke="#7c3aed" stroke-width="2" fill="none" marker-end="url(#ar-purple)"/>
+  <text x="1150" y="369" font-size="11" fill="#5b21b6" font-weight="600">tool calls</text>
+
+  <!-- token-budget ↔ manager (lateral, both directions, y=475) -->
+  <path d="M 400 475 L 430 475" stroke="#d97706" stroke-width="2" fill="none" marker-end="url(#ar-amber)"/>
+  <text x="403" y="465" font-size="10" fill="#92400e">usage</text>
+
+  <!-- manager → session-mcp (lateral, y=475) -->
+  <path d="M 1210 475 L 1240 475" stroke="#d97706" stroke-width="2" fill="none" marker-end="url(#ar-amber)"/>
+  <text x="1215" y="465" font-size="10" fill="#92400e">introspect</text>
+
+  <!-- manager → memory. manager bottom-left (550,540) → gutter (y=580) → memory top (250,600). -->
+  <path d="M 550 540 L 550 580 L 250 580 L 250 600" stroke="#7c3aed" stroke-width="2" stroke-dasharray="6,4" fill="none" marker-end="url(#ar-purple)"/>
+  <text x="320" y="572" font-size="11" fill="#5b21b6" font-weight="600">facts + turns</text>
+
+  <!-- manager → skills. manager bottom (700,540) → gutter (y=580) → skills top (620,600). -->
+  <path d="M 700 540 L 700 580 L 620 580 L 620 600" stroke="#7c3aed" stroke-width="2" stroke-dasharray="6,4" fill="none" marker-end="url(#ar-purple)"/>
+  <text x="640" y="572" font-size="11" fill="#5b21b6" font-weight="600">discover/sync</text>
+
+  <!-- manager → knowledge. manager bottom (940,540) → gutter (y=580) → knowledge top (990,600). -->
+  <path d="M 940 540 L 940 580 L 990 580 L 990 600" stroke="#7c3aed" stroke-width="2" stroke-dasharray="6,4" fill="none" marker-end="url(#ar-purple)"/>
+  <text x="900" y="572" font-size="11" fill="#5b21b6" font-weight="600">list/open</text>
+
+  <!-- manager → soul. manager bottom-right (1090,540) → gutter (y=580) → soul top (1375,600). -->
+  <path d="M 1090 540 L 1090 580 L 1375 580 L 1375 600" stroke="#7c3aed" stroke-width="2" stroke-dasharray="6,4" fill="none" marker-end="url(#ar-purple)"/>
+  <text x="1180" y="572" font-size="11" fill="#5b21b6" font-weight="600">load persona</text>
+
+  <!-- memory → db (straight down, same column) -->
+  <path d="M 250 730 L 250 780" stroke="#65a30d" stroke-width="2" fill="none" marker-end="url(#ar-lime)"/>
+  <text x="265" y="757" font-size="10" fill="#3f6212">writes</text>
+
+  <!-- db → PVC -->
+  <path d="M 250 880 L 250 940" stroke="#65a30d" stroke-width="2" fill="none" marker-end="url(#ar-lime)"/>
+
+  <!-- skills → PVC (write skills/<slug>/) -->
+  <path d="M 620 730 L 620 750 L 620 925 L 620 940" stroke="#65a30d" stroke-width="2" stroke-dasharray="3,3" fill="none" marker-end="url(#ar-lime)"/>
+  <text x="635" y="847" font-size="10" fill="#3f6212">skills/</text>
+
+  <!-- knowledge → PVC (write knowledge/<label>/) -->
+  <path d="M 990 730 L 990 940" stroke="#65a30d" stroke-width="2" stroke-dasharray="3,3" fill="none" marker-end="url(#ar-lime)"/>
+  <text x="1005" y="847" font-size="10" fill="#3f6212">knowledge/</text>
+
+  <!-- soul → PVC (write cache/soul.sha.json) -->
+  <path d="M 1375 730 L 1375 940" stroke="#65a30d" stroke-width="2" stroke-dasharray="3,3" fill="none" marker-end="url(#ar-lime)"/>
+  <text x="1390" y="847" font-size="10" fill="#3f6212">cache/soul.&lt;sha&gt;.json</text>
+
+  <!-- LEGEND -->
+  <g transform="translate(80, 1070)">
+    <rect x="0" y="0" width="1480" height="90" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1"/>
+    <text x="20" y="22" font-size="12" font-weight="700" fill="#0f172a">Legend</text>
+
+    <line x1="20" y1="42" x2="60" y2="42" stroke="#2563eb" stroke-width="2.5" marker-end="url(#ar-blue)"/>
+    <text x="70" y="46" font-size="11" fill="#1e293b">inbound Slack events</text>
+
+    <line x1="240" y1="42" x2="280" y2="42" stroke="#16a34a" stroke-width="2.5" marker-end="url(#ar-green)"/>
+    <text x="290" y="46" font-size="11" fill="#1e293b">outbound Slack writes</text>
+
+    <line x1="460" y1="42" x2="500" y2="42" stroke="#7c3aed" stroke-width="2.5" stroke-dasharray="6,4" marker-end="url(#ar-purple)"/>
+    <text x="510" y="46" font-size="11" fill="#1e293b">SDK tool / gate plumbing</text>
+
+    <line x1="720" y1="42" x2="760" y2="42" stroke="#d97706" stroke-width="2.5" marker-end="url(#ar-amber)"/>
+    <text x="770" y="46" font-size="11" fill="#1e293b">token-budget signals</text>
+
+    <line x1="940" y1="42" x2="980" y2="42" stroke="#65a30d" stroke-width="2.5" marker-end="url(#ar-lime)"/>
+    <text x="990" y="46" font-size="11" fill="#1e293b">PVC writes (persistence)</text>
+
+    <text x="20" y="72" font-size="11" fill="#475569"><tspan font-weight="600">Trust boundary</tspan>: SOUL.md → typed SoulData JSON (sha-cached, every Slack id re-checked vs raw text). Enforcement (channel-mode · blocked-user · engagement · approver authz · per-tool permission) lives in the gateway, never delegated to the model. External MCPs + CC plugins route through the same canUseTool / tool-call path as in-process MCPs.</text>
+  </g>
+</svg>
+</body></html>
