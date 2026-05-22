@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../src/config/home";
-import { loadInstalledPluginPaths } from "../src/config/plugins";
+import { loadInstalledPluginMcps, loadInstalledPluginPaths } from "../src/config/plugins";
 
 const pluginsDir = join(paths.claudeConfig, "plugins");
 const pluginsFile = join(pluginsDir, "installed_plugins.json");
@@ -77,5 +77,94 @@ describe("loadInstalledPluginPaths", () => {
       },
     });
     expect(loadInstalledPluginPaths()).toEqual([]);
+  });
+});
+
+function installPlugin(name: string, mcpJson?: unknown): string {
+  const path = mkdirSync(join(paths.claudeConfig, "plugins", "cache", "mp", name, "v"), { recursive: true })!;
+  writeInstalled({
+    version: 2,
+    plugins: {
+      [`${name}@mp`]: [{ scope: "user", installPath: path }],
+    },
+  });
+  if (mcpJson !== undefined) {
+    writeFileSync(join(path, ".mcp.json"), JSON.stringify(mcpJson));
+  }
+  return path;
+}
+
+describe("loadInstalledPluginMcps", () => {
+  test("no plugins → empty", () => {
+    expect(loadInstalledPluginMcps()).toEqual({});
+  });
+
+  test("plugin without .mcp.json → empty", () => {
+    installPlugin("plain");
+    expect(loadInstalledPluginMcps()).toEqual({});
+  });
+
+  test("stdio shape under mcpServers key", () => {
+    installPlugin("exc", {
+      mcpServers: {
+        excalidraw: { command: "npx", args: ["drawmode", "--stdio"] },
+      },
+    });
+    expect(loadInstalledPluginMcps()).toEqual({
+      excalidraw: { type: "stdio", command: "npx", args: ["drawmode", "--stdio"] },
+    });
+  });
+
+  test("http shape", () => {
+    installPlugin("h", {
+      mcpServers: {
+        api: { type: "http", url: "https://example/mcp", headers: { Authorization: "x" } },
+      },
+    });
+    expect(loadInstalledPluginMcps()).toEqual({
+      api: { type: "http", url: "https://example/mcp", headers: { Authorization: "x" } },
+    });
+  });
+
+  test("sse shape", () => {
+    installPlugin("s", {
+      mcpServers: { live: { type: "sse", url: "https://example/sse" } },
+    });
+    expect(loadInstalledPluginMcps()).toEqual({
+      live: { type: "sse", url: "https://example/sse" },
+    });
+  });
+
+  test("flat shape (no mcpServers wrapper) accepted", () => {
+    installPlugin("flat", {
+      excalidraw: { command: "npx", args: ["drawmode"] },
+    });
+    expect(loadInstalledPluginMcps()).toEqual({
+      excalidraw: { type: "stdio", command: "npx", args: ["drawmode"] },
+    });
+  });
+
+  test("malformed JSON → skip", () => {
+    const p = installPlugin("bad");
+    writeFileSync(join(p, ".mcp.json"), "{not json");
+    expect(loadInstalledPluginMcps()).toEqual({});
+  });
+
+  test("entries missing command/url → skipped", () => {
+    installPlugin("invalid", {
+      mcpServers: { broken: { foo: "bar" } },
+    });
+    expect(loadInstalledPluginMcps()).toEqual({});
+  });
+
+  test("env is preserved on stdio entries", () => {
+    installPlugin("envy", {
+      mcpServers: {
+        srv: { command: "x", args: ["y"], env: { A: "1" } },
+      },
+    });
+    expect(loadInstalledPluginMcps()).toEqual({
+      srv: { type: "stdio", command: "x", args: ["y"], env: { A: "1" } },
+    });
   });
 });
