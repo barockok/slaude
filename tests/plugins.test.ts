@@ -107,11 +107,11 @@ describe("loadInstalledPluginMcps", () => {
   test("stdio shape under mcpServers key", () => {
     installPlugin("exc", {
       mcpServers: {
-        excalidraw: { command: "npx", args: ["drawmode", "--stdio"] },
+        excalidraw: { command: "uvx", args: ["drawmode", "--stdio"] },
       },
     });
     expect(loadInstalledPluginMcps()).toEqual({
-      excalidraw: { type: "stdio", command: "npx", args: ["drawmode", "--stdio"] },
+      excalidraw: { type: "stdio", command: "uvx", args: ["drawmode", "--stdio"] },
     });
   });
 
@@ -137,10 +137,10 @@ describe("loadInstalledPluginMcps", () => {
 
   test("flat shape (no mcpServers wrapper) accepted", () => {
     installPlugin("flat", {
-      excalidraw: { command: "npx", args: ["drawmode"] },
+      excalidraw: { command: "uvx", args: ["drawmode"] },
     });
     expect(loadInstalledPluginMcps()).toEqual({
-      excalidraw: { type: "stdio", command: "npx", args: ["drawmode"] },
+      excalidraw: { type: "stdio", command: "uvx", args: ["drawmode"] },
     });
   });
 
@@ -165,6 +165,17 @@ describe("loadInstalledPluginMcps", () => {
     });
     expect(loadInstalledPluginMcps()).toEqual({
       srv: { type: "stdio", command: "x", args: ["y"], env: { A: "1" } },
+    });
+  });
+
+  test("npx command is rewritten to bunx (no node toolchain in bun image)", () => {
+    installPlugin("npxy", {
+      mcpServers: {
+        drawmode: { command: "npx", args: ["drawmode", "--stdio"] },
+      },
+    });
+    expect(loadInstalledPluginMcps()).toEqual({
+      drawmode: { type: "stdio", command: "bunx", args: ["drawmode", "--stdio"] },
     });
   });
 });
