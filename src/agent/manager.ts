@@ -21,6 +21,7 @@ export type PermissionMode =
   | "dontAsk";
 import { paths } from "../config/home";
 import { env } from "../config/env";
+import { loadInstalledPluginPaths } from "../config/plugins";
 import { soulSystemBlock } from "../soul/loader";
 import * as Sessions from "../db/sessions";
 import type { ThreadKey } from "../db/sessions";
@@ -276,6 +277,11 @@ export class AgentManager extends EventEmitter {
       metric.stopGuardBlockedTotal.inc();
       return { decision: "block", reason };
     };
+    // CC plugins installed via `bun run install-deps`. Without this, the SDK
+    // ignores the enabledPlugins entry in settings.json (it only reads
+    // settings when settingSources is set). Explicit Options.plugins surfaces
+    // each plugin's skills/commands/.mcp.json for this session.
+    const pluginPaths = loadInstalledPluginPaths();
     const options: Options = {
       cwd: row.working_dir,
       // Pass `model` only when explicitly set. Empty = let the SDK / CLI use
@@ -287,6 +293,7 @@ export class AgentManager extends EventEmitter {
       env: { ...process.env, ...providerEnv },
       ...(canUseTool ? { canUseTool } : {}),
       ...(mcpServers ? { mcpServers } : {}),
+      ...(pluginPaths.length > 0 ? { plugins: pluginPaths } : {}),
       permissionMode: mode,
       ...(mode === "bypassPermissions"
         ? { allowDangerouslySkipPermissions: true }
