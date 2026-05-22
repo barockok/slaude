@@ -25,6 +25,19 @@ import {
   type Manifest,
   type Lockfile,
 } from "../config/manifest-schema";
+import {
+  detectMarketplaceSource,
+  deriveMarketplaceSlug,
+  emptyInstalledPlugins,
+  mergeInstalledPlugin,
+  mergeKnownMarketplace,
+  mergeSettings,
+  pluginKey,
+  type InstalledPluginsFile,
+  type KnownMarketplacesEntry,
+  type McSource,
+  type SettingsPatch,
+} from "./cc-plugin-metadata";
 
 function isSha(ref: string): boolean {
   return /^[0-9a-f]{40}$/.test(ref);
@@ -167,46 +180,71 @@ async function main() {
     mpEntries.get(key)!.plugins.push(e.plugin);
   }
 
+  // Aggregate metadata across all marketplaces this run so we write the
+  // CC plugin config files exactly once at the end.
+  const ccEnabledKeys: string[] = [];
+  const ccMarketplaces: Record<string, { source: McSource }> = {};
+  const ccKnownMarketplacesUpdates: Array<[string, KnownMarketplacesEntry]> = [];
+  const ccInstalledPluginUpdates: Array<{
+    pluginKey: string;
+    installPath: string;
+    version: string;
+    sha: string;
+  }> = [];
+
   for (const [key, entry] of mpEntries) {
     const lockEntry = lock.marketplaces[key];
-    const mpDir = join(paths.claudeConfig, "plugins", "cache", sanitizePathSegment(entry.marketplace));
     const resolvedUrl = resolveGitUrl(entry.marketplace);
 
-    // Clone marketplace if needed
-    const mpCloneDir = join(mpDir, "_repo");
-    let sha = lockEntry?.sha ?? "";
-    const needsClone = !lockEntry || !existsSync(mpCloneDir) || (() => {
-      try { return currentSha(mpCloneDir) !== sha; } catch { return true; }
-    })();
-
-    if (needsClone || update) {
-      if (existsSync(mpCloneDir)) rmSync(mpCloneDir, { recursive: true, force: true });
-      sha = gitClone(resolvedUrl, entry.ref, mpCloneDir);
-      installed++;
-    } else {
-      skipped++;
+    // Always clone into a tmp dir first — we don't know the canonical marketplace
+    // slug (from marketplace.json `name`) until we've read the index.
+    const stagingClone = mkdtempSync(join(tmpdir(), "slaude-mp-"));
+    let sha: string;
+    try {
+      sha = gitClone(resolvedUrl, entry.ref, stagingClone);
+    } catch (e: any) {
+      rmSync(stagingClone, { recursive: true, force: true });
+      console.error(`[install] git clone failed for ${key}:`, e?.message ?? e);
+      process.exit(3);
     }
 
     // Read marketplace.json — prefer Claude Code's .claude-plugin/marketplace.json,
     // fall back to root-level marketplace.json (slaude design doc shape).
     const mpJsonCandidates = [
-      join(mpCloneDir, ".claude-plugin", "marketplace.json"),
-      join(mpCloneDir, "marketplace.json"),
+      join(stagingClone, ".claude-plugin", "marketplace.json"),
+      join(stagingClone, "marketplace.json"),
     ];
     const mpJsonPath = mpJsonCandidates.find((p) => existsSync(p));
     if (!mpJsonPath) {
+      rmSync(stagingClone, { recursive: true, force: true });
       console.error(`[install] marketplace.json missing in ${key} (looked at .claude-plugin/marketplace.json and marketplace.json)`);
       process.exit(4);
     }
     // Accept either { path, version } (slaude shape) or { source } (CC shape).
     // version is optional; falls back to the marketplace ref so cache layout stays deterministic.
-    let mpJson: { plugins: Array<{ name: string; version?: string; path?: string; source?: string }> };
+    let mpJson: {
+      name?: string;
+      plugins: Array<{ name: string; version?: string; path?: string; source?: string }>;
+    };
     try {
       mpJson = JSON.parse(readFileSync(mpJsonPath, "utf8"));
     } catch (e: any) {
+      rmSync(stagingClone, { recursive: true, force: true });
       console.error(`[install] unreadable marketplace.json in ${key}:`, e?.message ?? e);
       process.exit(4);
     }
+
+    // Canonical marketplace slug — used in cache paths AND the CC plugin key
+    // (`<plugin>@<slug>`). Prefer marketplace.json `name`; fall back to URL.
+    const mpSlug = mpJson.name?.trim() || deriveMarketplaceSlug(entry.marketplace);
+    const mpInstallLocation = join(paths.claudeConfig, "plugins", "marketplaces", mpSlug);
+    const mpCacheDir = join(paths.claudeConfig, "plugins", "cache", mpSlug);
+
+    // Move staging clone to its final marketplaces/ location.
+    mkdirSync(join(paths.claudeConfig, "plugins", "marketplaces"), { recursive: true });
+    if (existsSync(mpInstallLocation)) rmSync(mpInstallLocation, { recursive: true, force: true });
+    renameSync(stagingClone, mpInstallLocation);
+    installed++;
 
     const mpPlugins: Record<string, { version: string; subdir: string }> = {};
     for (const pn of entry.plugins) {
@@ -221,28 +259,46 @@ async function main() {
         (typeof mpPlugin.source === "string" ? mpPlugin.source.replace(/^\.\//, "") : undefined);
       const version = mpPlugin.version ?? entry.ref;
       const versionDir = sanitizePathSegment(version);
-      const targetDir = join(mpDir, sanitizePathSegment(pn), versionDir);
-      const srcDir = subdir ? join(mpCloneDir, subdir) : mpCloneDir;
+      const targetDir = join(mpCacheDir, sanitizePathSegment(pn), versionDir);
+      const srcDir = subdir ? join(mpInstallLocation, subdir) : mpInstallLocation;
 
-      if (!existsSync(targetDir) || update) {
-        if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
-        mkdirSync(targetDir, { recursive: true });
-        // Copy plugin files
-        for (const file of readdirSync(srcDir)) {
-          const s = join(srcDir, file);
-          const d = join(targetDir, file);
-          if (statSync(s).isDirectory()) {
-            execSync(`cp -r ${s} ${d}`);
-          } else {
-            writeFileSync(d, readFileSync(s));
-          }
+      if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
+      mkdirSync(targetDir, { recursive: true });
+      for (const file of readdirSync(srcDir)) {
+        const s = join(srcDir, file);
+        const d = join(targetDir, file);
+        if (statSync(s).isDirectory()) {
+          execSync(`cp -r "${s}" "${d}"`, { stdio: "pipe" });
+        } else {
+          writeFileSync(d, readFileSync(s));
         }
-        if (!needsClone) installed++;
       }
       mpPlugins[pn] = { version, subdir: subdir ?? "." };
+
+      const pKey = pluginKey(pn, mpSlug);
+      ccEnabledKeys.push(pKey);
+      ccInstalledPluginUpdates.push({
+        pluginKey: pKey,
+        installPath: targetDir,
+        version,
+        sha,
+      });
     }
     lock.marketplaces[key] = { sha, plugins: mpPlugins };
+
+    const source = detectMarketplaceSource(entry.marketplace, entry.ref);
+    ccMarketplaces[mpSlug] = { source };
+    ccKnownMarketplacesUpdates.push([mpSlug, { source, installLocation: mpInstallLocation, lastUpdated: new Date().toISOString() }]);
   }
+
+  // Write the three CC plugin metadata files (merge with whatever the operator
+  // or a previous run wrote so we don't clobber unrelated plugins / settings).
+  if (mpEntries.size > 0) writeCcPluginMetadata({
+    knownMarketplacesUpdates: ccKnownMarketplacesUpdates,
+    installedPluginUpdates: ccInstalledPluginUpdates,
+    settingsEnabledKeys: ccEnabledKeys,
+    settingsMarketplaces: ccMarketplaces,
+  });
 
   // --- Skills + Knowledge ---
   // Dedupe by (git, ref) so one clone serves many entries from the same repo.
@@ -357,6 +413,55 @@ async function main() {
 
   const total = manifest.plugins.length + manifest.skills.length + manifest.knowledge.length;
   console.log(`[install] ${total} entries: ${installed} installed, ${skipped} skipped (${manifest.plugins.length} plugins / ${manifest.skills.length} skills / ${manifest.knowledge.length} KBs)`);
+}
+
+interface CcMetadataInput {
+  knownMarketplacesUpdates: Array<[string, KnownMarketplacesEntry]>;
+  installedPluginUpdates: Array<{ pluginKey: string; installPath: string; version: string; sha: string }>;
+  settingsEnabledKeys: string[];
+  settingsMarketplaces: Record<string, { source: McSource }>;
+}
+
+function writeJsonAtomic(path: string, value: unknown): void {
+  mkdirSync(join(path, ".."), { recursive: true });
+  const tmp = path + ".tmp";
+  writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", "utf8");
+  renameSync(tmp, path);
+}
+
+function readJsonOr<T>(path: string, fallback: T): T {
+  if (!existsSync(path)) return fallback;
+  try { return JSON.parse(readFileSync(path, "utf8")) as T; }
+  catch { return fallback; }
+}
+
+function writeCcPluginMetadata(input: CcMetadataInput): void {
+  const pluginsDir = join(paths.claudeConfig, "plugins");
+  mkdirSync(pluginsDir, { recursive: true });
+
+  // known_marketplaces.json
+  const kmPath = join(pluginsDir, "known_marketplaces.json");
+  let known = readJsonOr<Record<string, KnownMarketplacesEntry>>(kmPath, {});
+  for (const [slug, entry] of input.knownMarketplacesUpdates) {
+    known = mergeKnownMarketplace(known, slug, entry.source, entry.installLocation, entry.lastUpdated);
+  }
+  writeJsonAtomic(kmPath, known);
+
+  // installed_plugins.json
+  const ipPath = join(pluginsDir, "installed_plugins.json");
+  let installedPlugins = readJsonOr<InstalledPluginsFile>(ipPath, emptyInstalledPlugins());
+  if (installedPlugins.version !== 2 || !installedPlugins.plugins) installedPlugins = emptyInstalledPlugins();
+  for (const u of input.installedPluginUpdates) {
+    installedPlugins = mergeInstalledPlugin(installedPlugins, u.pluginKey, u.installPath, u.version, u.sha);
+  }
+  writeJsonAtomic(ipPath, installedPlugins);
+
+  // settings.json — merge enabledPlugins + extraKnownMarketplaces. Preserve all
+  // other keys the operator may have written (permissions, model, hooks, etc.).
+  const settingsPath = join(paths.claudeConfig, "settings.json");
+  const settings = readJsonOr<SettingsPatch>(settingsPath, {});
+  const merged = mergeSettings(settings, input.settingsEnabledKeys, input.settingsMarketplaces);
+  writeJsonAtomic(settingsPath, merged);
 }
 
 void main();
