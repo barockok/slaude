@@ -17,12 +17,15 @@ import {
 import { join } from "node:path";
 import { SLAUDE_HOME, paths } from "../config/home";
 
-// Stage clones inside SLAUDE_HOME so `renameSync` to paths.claudeConfig /
-// paths.skills / paths.knowledge stays on the same filesystem. Using the
-// OS tmpdir breaks on container deploys where SLAUDE_HOME is a PVC mount
-// (EXDEV: cross-device link not permitted).
-function slaudeTmpdir(): string {
-  const d = join(SLAUDE_HOME, ".tmp");
+// Stage clones inside a sibling of the eventual destination so `renameSync`
+// stays on the same filesystem. Container deploys often subPath-mount
+// $SLAUDE_HOME/{.claude,skills,knowledge} as separate PVC volumes, so a
+// single $SLAUDE_HOME/.tmp lives on the container overlay fs and renaming
+// from there to any subPath crosses devices (EXDEV: cross-device link not
+// permitted).
+function siblingTmpdir(destParent: string): string {
+  mkdirSync(destParent, { recursive: true });
+  const d = join(destParent, ".tmp");
   mkdirSync(d, { recursive: true });
   return d;
 }
@@ -206,8 +209,10 @@ async function main() {
     const resolvedUrl = resolveGitUrl(entry.marketplace);
 
     // Always clone into a tmp dir first — we don't know the canonical marketplace
-    // slug (from marketplace.json `name`) until we've read the index.
-    const stagingClone = mkdtempSync(join(slaudeTmpdir(), "slaude-mp-"));
+    // slug (from marketplace.json `name`) until we've read the index. Stage
+    // inside paths.claudeConfig/plugins so the later renameSync to
+    // marketplaces/<slug> stays on the same filesystem.
+    const stagingClone = mkdtempSync(join(siblingTmpdir(join(paths.claudeConfig, "plugins")), "slaude-mp-"));
     let sha: string;
     try {
       sha = gitClone(resolvedUrl, entry.ref, stagingClone);
@@ -336,7 +341,7 @@ async function main() {
   // Clone each skill repo once, fan out entries by path
   for (const [, group] of skillGitEntries) {
     const lockEntry = group.skills[0] ? lock.skills[resolveSkillSlug(group.skills[0].entry)] : undefined;
-    const cloneDir = mkdtempSync(join(slaudeTmpdir(), "slaude-install-"));
+    const cloneDir = mkdtempSync(join(siblingTmpdir(paths.skills), "slaude-install-"));
     try {
       const sha = gitClone(group.resolvedUrl, group.ref, cloneDir);
       for (const { entry, slug, entryPath } of group.skills) {
@@ -376,7 +381,7 @@ async function main() {
   // Clone each KB repo once, fan out entries by path
   for (const [, group] of kbGitEntries) {
     const lockEntry = group.kbs[0] ? lock.knowledge[group.kbs[0].label] : undefined;
-    const cloneDir = mkdtempSync(join(slaudeTmpdir(), "slaude-install-"));
+    const cloneDir = mkdtempSync(join(siblingTmpdir(paths.knowledge), "slaude-install-"));
     try {
       const sha = gitClone(group.resolvedUrl, group.ref, cloneDir);
       for (const { entry, label, entryPath } of group.kbs) {
