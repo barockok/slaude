@@ -247,7 +247,14 @@ export function createSlackApp(agent: AgentManager) {
     );
 
     if (!teamId || !userId) return;
-    if (event.bot_id || event.subtype === "bot_message") return;
+    // Drop only self-echoes; other bots' messages flow through so slaude can
+    // see CI alerts, summarizer bots, etc. in shared threads.
+    const selfBotId = await getSelfBotId();
+    if (event.bot_id && selfBotId && event.bot_id === selfBotId) {
+      console.log(`[slack-rx] drop ch=${channelId} ts=${eventTs} — self bot echo`);
+      metric.slackDropsTotal.inc({ reason: "self_bot" });
+      return;
+    }
 
     // Dedup
     const dedupKey = `${channelId}:${eventTs}`;
@@ -530,10 +537,18 @@ export function createSlackApp(agent: AgentManager) {
   const threadKey = (channel: string, ts: string) => `${channel}:${ts}`;
 
   let cachedBotId: string | null = null;
+  let cachedSelfBotId: string | null = null;
   const getBotId = async () => {
     if (cachedBotId) return cachedBotId;
-    cachedBotId = (await app.client.auth.test()).user_id as string;
+    const t = await app.client.auth.test();
+    cachedBotId = t.user_id as string;
+    cachedSelfBotId = (t as any).bot_id as string;
     return cachedBotId;
+  };
+  const getSelfBotId = async () => {
+    if (cachedSelfBotId) return cachedSelfBotId;
+    await getBotId();
+    return cachedSelfBotId;
   };
 
   // app_mention is a guaranteed delivery path even if message.channels event
@@ -552,7 +567,9 @@ export function createSlackApp(agent: AgentManager) {
   // should answer.
   app.event("message", async (args: any) => {
     const e: any = args.event;
-    if (e.bot_id || e.subtype === "bot_message") return;
+    // Drop only self bot-echoes; other bots flow through.
+    const selfBotId = await getSelfBotId();
+    if (e.bot_id && selfBotId && e.bot_id === selfBotId) return;
     if (!e.user) return;
 
     const channelId: string = e.channel;
