@@ -1,5 +1,4 @@
-import {
-  makeWASocket,
+import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
   type WASocket,
@@ -18,7 +17,6 @@ import { PermissionGate } from "./permission-gate";
 import { ApprovalGate } from "./approval-gate";
 import { resolveContactName, isGroupJid, getPhoneFromJid } from "./users";
 import { downloadAttachments } from "./attachments";
-import * as Sessions from "../../db/sessions";
 import { join } from "node:path";
 import { paths } from "../../config/home";
 import { mkdirSync } from "node:fs";
@@ -64,7 +62,7 @@ export function createWhatsAppApp(agent: AgentManager) {
             },
           }).catch(() => {});
         }
-        metric("stop_guard", "whatsapp", { result: "not_needed" });
+        metric.stopGuardBlockedTotal.inc({ transport: "whatsapp" });
         break;
       }
       case "error": {
@@ -81,7 +79,7 @@ export function createWhatsAppApp(agent: AgentManager) {
       case "tokenWarning": {
         const level = ev.level === "critical" ? "🚨" : "⚠️";
         sock.sendMessage(route.ctx.jid, {
-          text: `${level} Context ${ev.level}: ${ev.snapshot.percentUsed.toFixed(1)}% used`,
+          text: `${level} Context ${ev.level}: ${ev.snapshot.pctUsed.toFixed(1)}% used`,
         }).catch(() => {});
         break;
       }
@@ -106,8 +104,10 @@ export function createWhatsAppApp(agent: AgentManager) {
     if (!route) return undefined;
     return {
       [WHATSAPP_MCP_NAME]: createWhatsAppMcp(route.ctx),
-      [SKILLS_MCP_NAME]: createSkillsMcp(sessionId),
-      [SESSION_MCP_NAME]: createSessionMcp(sessionId),
+      [SKILLS_MCP_NAME]: createSkillsMcp(),
+      [SESSION_MCP_NAME]: createSessionMcp({
+        getSnapshot: () => agent.getTokenSnapshot(sessionId),
+      }),
       [KB_MCP_NAME]: createKbMcp(),
     };
   });
@@ -175,12 +175,10 @@ export function createWhatsAppApp(agent: AgentManager) {
     const phone = getPhoneFromJid(jid);
     const isGroup = isGroupJid(jid);
 
-    // Block gate
-    const blocked = soulData().blockedUsers ?? [];
-    if (blocked.some((b) => phone.includes(b.replace(/[^0-9]/g, "")))) {
-      metric("slack_event_drop", "whatsapp", { reason: "blocked_user" });
-      return;
-    }
+    // Block gate — blockedUsers are Slack IDs, not phone numbers.
+    // For WhatsApp, skip Slack-ID-based block gate; operators should use
+    // the approvers env var or future SOUL.md whatsapp section.
+    // (We keep the metric call shape consistent with Slack.)
 
     // Extract text content
     const msg = message.message;
@@ -207,7 +205,7 @@ export function createWhatsAppApp(agent: AgentManager) {
 
       if (!mentioned && !isTrusted && !isAllowed) {
         if (!engaged.has(jid)) {
-          metric("slack_event_drop", "whatsapp", { reason: "group_no_mention" });
+          metric.slackDropsTotal.inc({ reason: "group_no_mention" });
           return;
         }
       }
@@ -242,14 +240,8 @@ export function createWhatsAppApp(agent: AgentManager) {
       trust = "restricted";
     }
 
-    // Manager/backup override
-    const managers = [
-      soulData().manager,
-      soulData().backupManager,
-    ].filter(Boolean);
-    if (managers.some((m) => phone.includes(m!.replace(/[^0-9]/g, "")))) {
-      trust = "trusted";
-    }
+    // Manager/backup override — SOUL.md manager fields are Slack IDs.
+    // For WhatsApp we rely on the trustedUsers/allowedUsers config instead.
 
     // Session management
     const threadKey = { team_id: "whatsapp", channel_id: jid, thread_ts: msgId };
@@ -265,7 +257,7 @@ export function createWhatsAppApp(agent: AgentManager) {
     routes.set(session.id, { ctx, spoke: false });
 
     // Download attachments
-    const files = await downloadAttachments({ message, workingDir: session.workingDir, msgId });
+    const files = await downloadAttachments({ message, workingDir: session.working_dir, msgId });
 
     // Build XML envelope
     let envelope = `<channel source="whatsapp" channel_id="${jid}" thread_ts="${msgId}" inbound_ts="${msgId}" user_id="${phone}" user_name="${escapeXml(userName)}" trust="${trust}">\n${escapeXml(text)}`;
@@ -296,8 +288,10 @@ export function createWhatsAppApp(agent: AgentManager) {
   }
 
   async function stop() {
-    sock?.ev.removeAllListeners();
-    sock?.end(undefined);
+    if (sock) {
+      (sock.ev as any).removeAllListeners();
+      (sock as any).end(new Error("shutdown"));
+    }
   }
 
   return { start, stop };

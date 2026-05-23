@@ -55,7 +55,7 @@ describe("chunkText", () => {
     const long = "a".repeat(WA_MAX_TEXT + 10);
     const chunks = chunkText(long);
     expect(chunks.length).toBe(2);
-    expect(chunks[0].length).toBe(WA_MAX_TEXT);
-    expect(chunks[1].length).toBe(10);
+    expect(chunks[0]!.length).toBe(WA_MAX_TEXT);
+    expect(chunks[1]!.length).toBe(10);
   });
 });
