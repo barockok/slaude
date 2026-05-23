@@ -2,6 +2,7 @@ import { ensureHome } from "./config/home";
 import { seedBundledSkills } from "./skills/seed";
 import { AgentManager } from "./agent/manager";
 import { createSlackApp } from "./gateway/slack/adapter";
+import { createWhatsAppApp } from "./gateway/whatsapp/adapter";
 import { startHealthServer } from "./health";
 import { loadSoulData, setSoulData } from "./soul/extract";
 import { assertOAuthKeyCanary } from "./agent/mcp-oauth/store";
@@ -52,17 +53,33 @@ async function main() {
   }
 
   const agent = new AgentManager();
-  const slack = createSlackApp(agent, { mcpConnectEnabled: mcpOAuthHealthy });
   const health = startHealthServer({ liveSessions: () => agent.liveCount() });
 
-  await slack.start();
-  console.log("[slaude] slack socket mode started");
+  const shutdowns: Array<() => Promise<void>> = [];
+
+  // Slack gateway
+  if (env.slack.botToken() && env.slack.appToken()) {
+    const slack = createSlackApp(agent, { mcpConnectEnabled: mcpOAuthHealthy });
+    await slack.start();
+    console.log("[slaude] slack socket mode started");
+    shutdowns.push(async () => { await slack.stop(); });
+  }
+
+  // WhatsApp gateway
+  if (env.whatsapp.enabled()) {
+    const whatsapp = createWhatsAppApp(agent);
+    await whatsapp.start();
+    console.log("[slaude] whatsapp started");
+    shutdowns.push(async () => { await whatsapp.stop(); });
+  }
 
   const shutdown = async () => {
     console.log("[slaude] shutting down");
     health?.stop();
     await loopback?.stop();
-    await slack.stop();
+    for (const fn of shutdowns) {
+      try { await fn(); } catch (e) { console.error("[slaude] shutdown error:", e); }
+    }
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
