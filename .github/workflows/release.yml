@@ -31,20 +31,27 @@ jobs:
         id: changelog
         env:
           REF_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          PREV=$(git tag --sort=-v:refname | grep -v "^${REF_NAME}$" | head -n1 || true)
-          {
-            echo "## What changed"
-            echo
-            if [ -n "$PREV" ]; then
-              git log --pretty=tformat:'- %s (%h)' "${PREV}..${REF_NAME}"
+          NOTES_FILE="docs/releases/${REF_NAME}.md"
+          if [ -f "$NOTES_FILE" ]; then
+            echo "Using hand-written notes from $NOTES_FILE"
+            cp "$NOTES_FILE" CHANGELOG.md
+          else
+            PREV=$(git tag --sort=-v:refname | grep -v "^${REF_NAME}$" | head -n1 || true)
+            {
+              echo "## What changed"
               echo
-              echo "**Full diff:** https://github.com/${{ github.repository }}/compare/${PREV}...${REF_NAME}"
-            else
-              git log --pretty=tformat:'- %s (%h)' "${REF_NAME}"
-            fi
-          } > CHANGELOG.md
+              if [ -n "$PREV" ]; then
+                git log --pretty=tformat:'- %s (%h)' "${PREV}..${REF_NAME}"
+                echo
+                echo "**Full diff:** https://github.com/${REPO}/compare/${PREV}...${REF_NAME}"
+              else
+                git log --pretty=tformat:'- %s (%h)' "${REF_NAME}"
+              fi
+            } > CHANGELOG.md
+          fi
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
