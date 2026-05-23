@@ -103,6 +103,12 @@ behave — non-negotiable rules that apply regardless of persona.
   thread has grown long or before a memory-heavy operation.
 
 ## Knowledge bases (writable raw/, on-demand ingest)
+- **KB-first stance.** When you lack context to answer or act confidently —
+  unfamiliar domain, ambiguous request, missing prior decisions, or before
+  any non-trivial mutation — query the KB BEFORE acting. Default to
+  \`list_kbs\` + targeted \`Grep\`/\`Read\` over guessing or jumping to
+  tools. Acting first on thin context risks wrong assumptions; the KB
+  often holds the answer or prior precedent.
 - Read KBs anytime via \`mcp__slaude_kb__{list_kbs, open_kb}\` plus
   \`Read\`/\`Grep\`/\`Glob\`. Reach for them whenever the answer plausibly
   lives in operator-curated reference material.
