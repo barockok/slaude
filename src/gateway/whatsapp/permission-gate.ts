@@ -1,9 +1,13 @@
 import type { WASocket } from "@whiskeysockets/baileys";
-import type { CanUseTool } from "../../agent/manager";
+import type {
+  CanUseTool,
+  PermissionUpdate,
+} from "@anthropic-ai/claude-agent-sdk";
 
 type Pending = {
-  resolve: (value: ReturnType<CanUseTool>) => void;
+  resolve: (value: Awaited<ReturnType<CanUseTool>>) => void;
   toolName: string;
+  input: Record<string, unknown>;
   timer: Timer;
 };
 
@@ -31,19 +35,29 @@ export class PermissionGate {
     if (reply === "allow") {
       clearTimeout(pending.timer);
       this.#pending.delete(sessionId);
-      pending.resolve({ allowed: true });
+      pending.resolve({ behavior: "allow", updatedInput: pending.input });
       return true;
     }
     if (reply === "always") {
       clearTimeout(pending.timer);
       this.#pending.delete(sessionId);
-      pending.resolve({ allowed: true, alwaysAllow: true });
+      const permissions: PermissionUpdate[] = [{
+        type: "addRules",
+        rules: [{ toolName: pending.toolName }],
+        behavior: "allow",
+        destination: "session",
+      }];
+      pending.resolve({
+        behavior: "allow",
+        updatedInput: pending.input,
+        updatedPermissions: permissions,
+      });
       return true;
     }
     if (reply === "deny") {
       clearTimeout(pending.timer);
       this.#pending.delete(sessionId);
-      pending.resolve({ allowed: false });
+      pending.resolve({ behavior: "deny", message: "Denied by user" });
       return true;
     }
     return false;
@@ -61,15 +75,15 @@ export class PermissionGate {
     const isReadOnly = readOnly.includes(toolName) || safePrefix.some((p) => toolName.startsWith(p));
     const isSafe = isReadOnly || (toolName === "Bash" && !(input?.command as string)?.match(/rm\s+-rf|>|sudo/));
 
-    if (isSafe) return { allowed: true };
+    if (isSafe) return { behavior: "allow", updatedInput: input };
 
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.#pending.delete(sessionId);
-        resolve({ allowed: false, message: "Permission request timed out (no response)." });
+        resolve({ behavior: "deny", message: "Permission request timed out (no response)." });
       }, this.#timeoutMs);
 
-      this.#pending.set(sessionId, { resolve, toolName, timer });
+      this.#pending.set(sessionId, { resolve, toolName, input, timer });
 
       // Send permission prompt to the chat
       const jid = ctx as unknown as string; // adapter passes jid as ctx
