@@ -30,6 +30,7 @@ Zidni Mubarok <zidmubarock@gmail.com>. Telegram bridge available — use for blo
   - Architecture fork-in-the-road
   - Secret/credential required
 - Memory: write surprising/non-obvious facts to `memory/` per skill rules.
+- Releases: every release ships a hand-written `docs/releases/<tag>.md` with decent markdown notes — group by category (Features / Fixes / Docs / Internal), explain the *why* not just the commit subject, link findings docs when relevant. The release workflow prefers this file over auto-generated git-log dumps.
 
 ## Architecture
 
