@@ -277,6 +277,9 @@ export function createSlackApp(agent: AgentManager) {
     }
     seenEvents.add(dedupKey);
 
+    const isDM = channelType === "im";
+    const threadTs: string = event.thread_ts || (isDM ? eventTs : eventTs);
+
     // Ignore gate: temp/permanent ignores for users or threads
     {
       const ignored = ignoreGate.shouldDrop(userId, channelId, threadTs);
@@ -329,9 +332,6 @@ export function createSlackApp(agent: AgentManager) {
     const stripped = text.replace(new RegExp(`<@${botUserId}>`, "g"), "").trim();
     const hasFiles = Array.isArray(event.files) && event.files.length > 0;
     if (!stripped && !hasFiles) return;
-
-    const isDM = channelType === "im";
-    const threadTs: string = event.thread_ts || (isDM ? eventTs : eventTs);
 
     const session = agent.ensureSession({
       team_id: teamId,
