@@ -10,6 +10,7 @@ import { basename } from "node:path";
 import { mdToMrkdwn } from "./format";
 import { redactSlack } from "./redact";
 import { soulData } from "../../soul/extract";
+import * as Ignores from "../../db/ignores";
 
 function format(text: string): string {
   return redactSlack(mdToMrkdwn(text), soulData().redactPatterns);
@@ -215,6 +216,41 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
           } catch (e: any) {
             return err(`slack unreact failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
           }
+        },
+      ),
+
+      tool(
+        "ignore_thread",
+        "Temporarily ignore this Slack thread when the conversation drifts out of mandate. Use to prevent infinite loops or unproductive back-and-forth. The thread will be silently dropped until the ignore expires or a manager removes it.",
+        {
+          duration: z
+            .string()
+            .describe("Duration like '5m', '10m', '1h'. Use 'permanent' only as absolute last resort."),
+          reason: z.string().describe("Brief reason why the thread is being ignored."),
+        },
+        async ({ duration, reason }) => {
+          let expiresAt: number | undefined;
+          if (duration === "permanent") {
+            expiresAt = undefined;
+          } else {
+            const num = parseInt(duration, 10);
+            if (isNaN(num) || num <= 0) {
+              return err("duration must be like '5m', '10m', '1h', or 'permanent'");
+            }
+            const multiplier = duration.endsWith("h") ? 60 : 1;
+            expiresAt = Date.now() + num * multiplier * 60 * 1000;
+          }
+          // Remove any existing thread ignore first
+          Ignores.remove({ targetType: "thread", channelId: ctx.channel, threadTs: ctx.threadTs });
+          Ignores.create({
+            targetType: "thread",
+            channelId: ctx.channel,
+            threadTs: ctx.threadTs,
+            createdBy: "agent",
+            expiresAt,
+            reason,
+          });
+          return ok(`thread ignored ${duration === "permanent" ? "permanently" : `for ${duration}`}`);
         },
       ),
     ],
