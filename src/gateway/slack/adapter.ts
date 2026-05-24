@@ -12,6 +12,7 @@ import { Presence } from "./presence";
 import { Status } from "./status";
 import { PermissionGate } from "./permission-gate";
 import { ApprovalGate } from "./approval-gate";
+import { IgnoreGate } from "./ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "./commands";
 import { soulData } from "../../soul/extract";
 import { createSlackMcp, SLACK_MCP_NAME, type SlackContext } from "./mcp-tools";
@@ -89,6 +90,11 @@ export function createSlackApp(agent: AgentManager) {
   const approvals = new ApprovalGate(app, env.slack.approvers(), {
     timeoutSeconds: () => soulData().approvalTimeoutSeconds,
   });
+  const ignoreGate = new IgnoreGate();
+  // Clean up expired ignores every 5 minutes
+  setInterval(() => {
+    import("../../db/ignores").then((m) => m.cleanupExpired());
+  }, 5 * 60 * 1000);
   agent.setPermissionResolver(permissions.resolver);
 
   // Diag: dump bot identity + granted scopes once at startup.
@@ -264,6 +270,16 @@ export function createSlackApp(agent: AgentManager) {
       return;
     }
     seenEvents.add(dedupKey);
+
+    // Ignore gate: temp/permanent ignores for users or threads
+    {
+      const ignored = ignoreGate.shouldDrop(userId, channelId, threadTs);
+      if (ignored) {
+        console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — ignored`);
+        metric.slackDropsTotal.inc({ reason: "ignored" });
+        return;
+      }
+    }
 
     // Hard blocklist: blocked user → drop before any further processing.
     // Never reaches Claude (no token spend, no logs). Channel blocking is
