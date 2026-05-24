@@ -201,26 +201,6 @@ export function createSlackApp(agent: AgentManager) {
         })();
         break;
       }
-      case "tokenWarning": {
-        void (async () => {
-          const pct = (e.snapshot.pctUsed * 100).toFixed(1);
-          const used = e.snapshot.totalInput.toLocaleString();
-          const cap = e.snapshot.contextWindow.toLocaleString();
-          const head =
-            e.level === "critical"
-              ? ":rotating_light: *context critical*"
-              : ":warning: *context filling up*";
-          try {
-            await app.client.chat.postMessage({
-              channel: route.ctx.channel,
-              thread_ts: route.ctx.threadTs,
-              text: `${head}: ${pct}% used (${used} / ${cap}). Auto-compaction will kick in soon — consider \`/abort\` or asking me to summarize and reset.`,
-              mrkdwn: true,
-            });
-          } catch {}
-        })();
-        break;
-      }
       case "compacting": {
         void status.set(
           e.sessionId,
