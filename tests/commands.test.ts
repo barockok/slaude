@@ -75,3 +75,54 @@ describe("humanModeName", () => {
     }
   });
 });
+
+describe("ignore commands", () => {
+  test("/ignore @U123 10m", () => {
+    expect(parseSlashCommand("/ignore <@U123> 10m")).toEqual({
+      kind: "ignore",
+      target: "user",
+      userId: "U123",
+      duration: "10m",
+    });
+  });
+
+  test("/ignore @U123 (permanent)", () => {
+    expect(parseSlashCommand("/ignore <@U123>")).toEqual({
+      kind: "ignore",
+      target: "user",
+      userId: "U123",
+      duration: null,
+    });
+  });
+
+  test("/ignore-thread 5m", () => {
+    expect(parseSlashCommand("/ignore-thread 5m")).toEqual({
+      kind: "ignore",
+      target: "thread",
+      duration: "5m",
+    });
+  });
+
+  test("/ignore-thread (permanent)", () => {
+    expect(parseSlashCommand("/ignore-thread")).toEqual({
+      kind: "ignore",
+      target: "thread",
+      duration: null,
+    });
+  });
+
+  test("/unignore @U123", () => {
+    expect(parseSlashCommand("/unignore <@U123>")).toEqual({
+      kind: "unignore",
+      target: "user",
+      userId: "U123",
+    });
+  });
+
+  test("/unignore-thread", () => {
+    expect(parseSlashCommand("/unignore-thread")).toEqual({
+      kind: "unignore",
+      target: "thread",
+    });
+  });
+});
