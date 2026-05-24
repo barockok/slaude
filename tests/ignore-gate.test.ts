@@ -1,6 +1,7 @@
 import { describe, expect, test, beforeEach } from "bun:test";
 import { db } from "../src/db/schema";
 import * as Ignores from "../src/db/ignores";
+import { IgnoreGate } from "../src/gateway/slack/ignore-gate";
 
 describe("ignores DB", () => {
   beforeEach(() => {
@@ -71,5 +72,34 @@ describe("ignores DB", () => {
     Ignores.cleanupExpired();
     expect(Ignores.findActiveForUser("U1")).toBeNull();
     expect(Ignores.findActiveForUser("U2")).not.toBeNull();
+  });
+});
+
+describe("IgnoreGate", () => {
+  beforeEach(() => {
+    db.run("DELETE FROM ignores");
+  });
+
+  test("drops message from ignored user", () => {
+    Ignores.create({ targetType: "user", userId: "U123", createdBy: "U999", reason: "x" });
+    const gate = new IgnoreGate();
+    expect(gate.shouldDrop("U123", "C1", "123.456")).toBe(true);
+  });
+
+  test("drops message in ignored thread", () => {
+    Ignores.create({ targetType: "thread", channelId: "C1", threadTs: "123.456", createdBy: "U999", reason: "x" });
+    const gate = new IgnoreGate();
+    expect(gate.shouldDrop("U123", "C1", "123.456")).toBe(true);
+  });
+
+  test("does not drop normal message", () => {
+    const gate = new IgnoreGate();
+    expect(gate.shouldDrop("U123", "C1", "123.456")).toBe(false);
+  });
+
+  test("does not drop after user ignore expires", () => {
+    Ignores.create({ targetType: "user", userId: "U123", createdBy: "U999", expiresAt: Date.now() - 1000, reason: "x" });
+    const gate = new IgnoreGate();
+    expect(gate.shouldDrop("U123", "C1", "123.456")).toBe(false);
   });
 });
