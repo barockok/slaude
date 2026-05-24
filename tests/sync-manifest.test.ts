@@ -556,4 +556,29 @@ describe("git push", () => {
       rmSync(repoRemote, { recursive: true, force: true });
     }
   });
+
+  test("pushToRepo copies skill subdirectories", () => {
+    if (!hasGit()) return;
+    const bareDir = mkdtempSync(join(tmpdir(), "slaude-test-bare-"));
+    try {
+      execSync(`git init --bare -b main "${bareDir}"`, { stdio: "pipe" });
+      skillOps.write("nested", "Nested", "d", "b");
+      const skillDir = join(paths.skills, "nested");
+      mkdirSync(join(skillDir, "subdir"), { recursive: true });
+      writeFileSync(join(skillDir, "subdir", "extra.md"), "extra content\n");
+
+      const result = pushToRepo(bareDir, [{ slug: "nested", dir: skillDir }]);
+      expect(result.sha).toMatch(/^[0-9a-f]{40}$/);
+
+      const checkDir = mkdtempSync(join(tmpdir(), "slaude-check-"));
+      try {
+        execSync(`git clone "${bareDir}" "${checkDir}"`, { stdio: "pipe" });
+        expect(existsSync(join(checkDir, "nested", "subdir", "extra.md"))).toBe(true);
+      } finally {
+        rmSync(checkDir, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(bareDir, { recursive: true, force: true });
+    }
+  });
 });

@@ -126,3 +126,33 @@ describe("ignore commands", () => {
     });
   });
 });
+
+describe("cron commands", () => {
+  test("/cron-list", () => {
+    expect(parseSlashCommand("/cron-list")).toEqual({ kind: "cron-list" });
+  });
+
+  test("/cron-add with bad format → null", () => {
+    expect(parseSlashCommand("/cron-add expr prompt")).toBeNull();
+    expect(parseSlashCommand('/cron-add "expr"')).toBeNull();
+  });
+
+  test("/cron-add with quoted args", () => {
+    expect(parseSlashCommand('/cron-add "0 9 * * *" "daily summary"')).toEqual({
+      kind: "cron-add",
+      cronExpr: "0 9 * * *",
+      prompt: "daily summary",
+    });
+  });
+
+  test("/cron-remove without id → null", () => {
+    expect(parseSlashCommand("/cron-remove")).toBeNull();
+  });
+
+  test("/cron-remove with id", () => {
+    expect(parseSlashCommand("/cron-remove job-123")).toEqual({
+      kind: "cron-remove",
+      id: "job-123",
+    });
+  });
+});

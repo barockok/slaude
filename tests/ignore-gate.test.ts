@@ -102,4 +102,19 @@ describe("IgnoreGate", () => {
     const gate = new IgnoreGate();
     expect(gate.shouldDrop("U123", "C1", "123.456")).toBe(false);
   });
+
+  test("removes thread ignore", () => {
+    Ignores.create({ targetType: "thread", channelId: "C1", threadTs: "123.456", createdBy: "U999", reason: "x" });
+    expect(Ignores.findActiveForThread("C1", "123.456")).not.toBeNull();
+    Ignores.remove({ targetType: "thread", channelId: "C1", threadTs: "123.456" });
+    expect(Ignores.findActiveForThread("C1", "123.456")).toBeNull();
+  });
+});
+
+describe("IgnoreGate edge cases", () => {
+  test("class instantiation and method call", () => {
+    const gate = new IgnoreGate();
+    expect(gate.shouldDrop("U1", "C1", "1.2")).toBe(false);
+    expect(typeof IgnoreGate).toBe("function");
+  });
 });
