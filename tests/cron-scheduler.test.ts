@@ -197,7 +197,7 @@ describe("CronScheduler", () => {
     });
     await scheduler.postResult(job.id, "done!");
     expect(postMessage).toHaveBeenCalledTimes(1);
-    expect(postMessage.mock.calls[0][0].channel).toBe("C123");
+    expect((postMessage.mock.calls as any)[0][0].channel).toBe("C123");
     const updated = CronJobs.findById(job.id);
     expect(updated!.lastResult).toBe("completed");
   });
