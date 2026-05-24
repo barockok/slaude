@@ -15,7 +15,7 @@ type ToolResult = {
   content: { type: "text"; text: string }[];
   isError?: boolean;
 };
-const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
+export const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
 
 export const sessionHandlers = {
   async token_budget(ctx: SessionContext): Promise<ToolResult> {
