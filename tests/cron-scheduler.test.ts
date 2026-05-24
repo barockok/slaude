@@ -2,6 +2,7 @@ import { describe, expect, test, beforeEach } from "bun:test";
 import { db } from "../src/db/schema";
 import * as CronJobs from "../src/db/cron-jobs";
 import { parseCron, getNextRun } from "../src/gateway/slack/cron-parser";
+import { CronScheduler } from "../src/gateway/slack/cron-scheduler";
 
 describe("cron-jobs DB", () => {
   beforeEach(() => {
@@ -67,6 +68,18 @@ describe("cron-jobs DB", () => {
     CronJobs.create({ channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now() });
     CronJobs.create({ channelId: "C2", createdBy: "U2", cronExpr: "0 * * * *", prompt: "b", nextRunAt: Date.now() });
     expect(CronJobs.listActive().length).toBe(2);
+  });
+});
+
+describe("CronScheduler", () => {
+  test("starts and stops without error", () => {
+    const scheduler = new CronScheduler({
+      agent: { ensureSession: () => ({ id: "test" }), sendMessage: async () => {} } as any,
+      client: { chat: { postMessage: async () => ({}) } } as any,
+    });
+    scheduler.start();
+    scheduler.stop();
+    expect(true).toBe(true);
   });
 });
 
