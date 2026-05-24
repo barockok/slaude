@@ -28,6 +28,7 @@ import { paths } from "../../config/home";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { canTriggerIngest } from "./ingest-auth";
 import * as kbIngest from "../../knowledge/ingest";
+import * as Ignores from "../../db/ignores";
 
 function loadExternalMcp(): Record<string, McpServerConfig> {
   const f = join(paths.home, ".mcp.json");
@@ -379,6 +380,66 @@ export function createSlackApp(agent: AgentManager) {
           await reply(`:x: ingest failed: ${result.reason}`);
         }
         return;
+      }
+      if (slash.kind === "ignore" || slash.kind === "unignore") {
+        // Authorization: manager or approver only
+        const soul = soulData();
+        const managerId = soul.manager.userId;
+        const backupId = soul.backupManager.userId;
+        const isManager = (managerId && userId === managerId) || (backupId && userId === backupId);
+        const isApprover = soul.approvers.some((a) => a.userId === userId);
+        if (!isManager && !isApprover) {
+          await reply(":no_entry: only manager or approver can manage ignores");
+          return;
+        }
+
+        if (slash.kind === "ignore") {
+          if (slash.target === "user") {
+            const duration = slash.duration;
+            let expiresAt: number | undefined;
+            if (duration) {
+              const mins = parseInt(duration, 10);
+              if (isNaN(mins) || mins <= 0) {
+                await reply(":warning: duration must be like `5m`, `10m`, `1h` (number + m/h)");
+                return;
+              }
+              const multiplier = duration.endsWith("h") ? 60 : 1;
+              expiresAt = Date.now() + mins * multiplier * 60 * 1000;
+            }
+            Ignores.remove({ targetType: "user", userId: slash.userId });
+            Ignores.create({ targetType: "user", userId: slash.userId, createdBy: userId, expiresAt, reason: "manual" });
+            const durText = duration ? `for ${duration}` : "permanently";
+            await reply(`:mute: ignoring <@${slash.userId}> ${durText}`);
+          } else {
+            const duration = slash.duration;
+            let expiresAt: number | undefined;
+            if (duration) {
+              const mins = parseInt(duration, 10);
+              if (isNaN(mins) || mins <= 0) {
+                await reply(":warning: duration must be like `5m`, `10m`, `1h`");
+                return;
+              }
+              const multiplier = duration.endsWith("h") ? 60 : 1;
+              expiresAt = Date.now() + mins * multiplier * 60 * 1000;
+            }
+            Ignores.remove({ targetType: "thread", channelId, threadTs });
+            Ignores.create({ targetType: "thread", channelId, threadTs, createdBy: userId, expiresAt, reason: "manual" });
+            const durText = duration ? `for ${duration}` : "permanently";
+            await reply(`:mute: ignoring this thread ${durText}`);
+          }
+          return;
+        }
+
+        if (slash.kind === "unignore") {
+          if (slash.target === "user") {
+            Ignores.remove({ targetType: "user", userId: slash.userId });
+            await reply(`:speaker: stopped ignoring <@${slash.userId}>`);
+          } else {
+            Ignores.remove({ targetType: "thread", channelId, threadTs });
+            await reply(":speaker: stopped ignoring this thread");
+          }
+          return;
+        }
       }
     }
 
