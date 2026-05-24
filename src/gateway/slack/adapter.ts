@@ -646,6 +646,16 @@ export function createSlackApp(agent: AgentManager) {
         return `reacting :${inp.name ?? "?"}:`;
       case `mcp__${SLACK_MCP_NAME}__request_approval`:
         return "requesting approval";
+      case `mcp__${SLACK_MCP_NAME}__get_user_profile`:
+        return `fetching user profile`;
+      case `mcp__${SLACK_MCP_NAME}__get_channel_info`:
+        return `fetching channel info`;
+      case `mcp__${SLACK_MCP_NAME}__get_thread_history`:
+        return `reading thread history`;
+      case `mcp__${SLACK_MCP_NAME}__list_users_in_channel`:
+        return `listing channel members`;
+      case `mcp__${SLACK_MCP_NAME}__search_messages`:
+        return `searching messages`;
       default: {
         // Generic mcp tool: mcp__<server>__<tool> → "tool (server)"
         const m = tool.match(/^mcp__([^_]+(?:_[^_]+)*)__(.+)$/);
