@@ -18,7 +18,10 @@ function parseField(field: string, min: number, max: number): number[] {
     return vals;
   }
   if (field.includes("-")) {
-    const [start, end] = field.split("-").map((s) => parseInt(s, 10));
+    const parts = field.split("-");
+    if (parts.length !== 2) throw new Error(`invalid range: ${field}`);
+    const start = parseInt(parts[0]!, 10);
+    const end = parseInt(parts[1]!, 10);
     if (isNaN(start) || isNaN(end)) throw new Error(`invalid range: ${field}`);
     const vals: number[] = [];
     for (let i = start; i <= end; i++) vals.push(i);
