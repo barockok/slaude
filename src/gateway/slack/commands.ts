@@ -28,7 +28,14 @@ export type SlashHit =
   | { kind: "mode-help" }
   | { kind: "abort" }
   | { kind: "help" }
-  | { kind: "ingest" };
+  | { kind: "ingest" }
+  | { kind: "ignore"; target: "user"; userId: string; duration: string | null }
+  | { kind: "ignore"; target: "thread"; duration: string | null }
+  | { kind: "unignore"; target: "user"; userId: string }
+  | { kind: "unignore"; target: "thread" }
+  | { kind: "cron-add"; cronExpr: string; prompt: string }
+  | { kind: "cron-list" }
+  | { kind: "cron-remove"; id: string };
 
 const HELP_NAMES = new Set(["help", "h", "?"]);
 
@@ -49,6 +56,40 @@ export function parseSlashCommand(text: string): SlashHit | null {
   }
   if (cmd === "ingest") {
     return { kind: "ingest" };
+  }
+  if (cmd === "ignore") {
+    const mentionMatch = t.match(/<@([UW][A-Z0-9]+)>/);
+    const userId = mentionMatch?.[1];
+    if (!userId) return null;
+    const dur = rest.filter((r) => !r.startsWith("<@"))[0] ?? null;
+    return { kind: "ignore", target: "user", userId, duration: dur };
+  }
+  if (cmd === "ignore-thread") {
+    const dur = rest[0] ?? null;
+    return { kind: "ignore", target: "thread", duration: dur };
+  }
+  if (cmd === "unignore") {
+    const mentionMatch = t.match(/<@([UW][A-Z0-9]+)>/);
+    const userId = mentionMatch?.[1];
+    if (!userId) return null;
+    return { kind: "unignore", target: "user", userId };
+  }
+  if (cmd === "unignore-thread") {
+    return { kind: "unignore", target: "thread" };
+  }
+  if (cmd === "cron-add") {
+    // Match quoted strings: "expr" "prompt"
+    const quoteMatch = t.match(/^\/cron-add\s+"([^"]+)"\s+"([^"]+)"$/);
+    if (!quoteMatch) return null;
+    return { kind: "cron-add", cronExpr: quoteMatch[1]!, prompt: quoteMatch[2]! };
+  }
+  if (cmd === "cron-list") {
+    return { kind: "cron-list" };
+  }
+  if (cmd === "cron-remove") {
+    const id = rest[0];
+    if (!id) return null;
+    return { kind: "cron-remove", id };
   }
   if (HELP_NAMES.has(cmd)) {
     return { kind: "help" };
