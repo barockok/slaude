@@ -75,14 +75,14 @@ export function findActiveForThread(channelId: string, threadTs: string): Ignore
   return row ? mapRow(row) : null;
 }
 
-export function remove(args: { targetType: "user"; userId: string } | { targetType: "thread"; channelId: string; threadTs: string }): void {
+export function remove(args: { targetType: "user"; userId: string } | { targetType: "thread"; channelId: string; threadTs: string }): number {
   if (args.targetType === "user") {
-    db.run("DELETE FROM ignores WHERE target_type = 'user' AND user_id = ?", [args.userId]);
+    return db.run("DELETE FROM ignores WHERE target_type = 'user' AND user_id = ?", [args.userId]).changes;
   } else {
-    db.run("DELETE FROM ignores WHERE target_type = 'thread' AND channel_id = ? AND thread_ts = ?", [
+    return db.run("DELETE FROM ignores WHERE target_type = 'thread' AND channel_id = ? AND thread_ts = ?", [
       args.channelId,
       args.threadTs,
-    ]);
+    ]).changes;
   }
 }
 
