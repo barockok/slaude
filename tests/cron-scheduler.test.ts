@@ -200,8 +200,8 @@ describe("CronScheduler", () => {
     // next_run not yet updated — waiting for done event
     const mid = CronJobs.findById(job.id);
     expect(mid!.lastResult).not.toBe("completed");
-    // Simulate done event
-    for (const fn of eventHandlers.get("done") ?? []) fn({ sessionId: "sess-1" });
+    // Simulate done event (AgentManager emits "event" payloads)
+    for (const fn of eventHandlers.get("event") ?? []) fn({ type: "done", sessionId: "sess-1" });
     const updated = CronJobs.findById(job.id);
     expect(updated!.lastResult).toBe("completed");
     expect(updated!.nextRunAt).toBeGreaterThan(now);
@@ -263,8 +263,8 @@ describe("CronScheduler", () => {
     scheduler.start();
     await new Promise((r) => setTimeout(r, 20));
     scheduler.stop();
-    // Simulate error event for this session
-    for (const fn of eventHandlers.get("error") ?? []) fn({ sessionId: "sess-1", error: "agent crashed" });
+    // Simulate error event for this session (AgentManager emits "event" payloads)
+    for (const fn of eventHandlers.get("event") ?? []) fn({ type: "error", sessionId: "sess-1", error: "agent crashed" });
     const updated = CronJobs.findById(job.id);
     expect(updated!.lastResult).toMatch(/^error: agent crashed/);
   });
