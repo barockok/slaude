@@ -79,31 +79,32 @@ export class CronScheduler {
     const envelope = `[scheduled] ${job.prompt}\n\nReply with the result. This is a cron job.`;
 
     // Wait for completion before clearing #running and updating next_run.
-    const onDone = () => {
-      this.#agent.off("done", onDone);
-      this.#agent.off("error", onError);
+    // AgentManager emits "event" payloads — never raw "done"/"error" events.
+    const onDone = (e: any) => {
+      if (e.sessionId !== session.id) return;
+      this.#agent.off("event", onEvent);
       const nextRun = getNextRun(job.cronExpr);
       CronJobs.updateNextRun(job.id, nextRun, "completed");
       this.#running.delete(job.id);
     };
     const onError = (e: any) => {
-      // Only handle errors for this specific session
       if (e.sessionId !== session.id) return;
-      this.#agent.off("done", onDone);
-      this.#agent.off("error", onError);
+      this.#agent.off("event", onEvent);
       const nextRun = getNextRun(job.cronExpr);
       CronJobs.updateNextRun(job.id, nextRun, `error: ${e.error ?? "unknown"}`);
       this.#running.delete(job.id);
     };
-    this.#agent.on("done", onDone);
-    this.#agent.on("error", onError);
+    const onEvent = (e: any) => {
+      if (e.type === "done") onDone(e);
+      else if (e.type === "error") onError(e);
+    };
+    this.#agent.on("event", onEvent);
 
     try {
       await this.#agent.sendMessage(session.id, envelope);
     } catch (e: any) {
       console.error(`[cron] job ${job.id} failed to send:`, e?.message ?? e);
-      this.#agent.off("done", onDone);
-      this.#agent.off("error", onError);
+      this.#agent.off("event", onEvent);
       CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), `error: ${e?.message ?? "unknown"}`);
       this.#running.delete(job.id);
     }
