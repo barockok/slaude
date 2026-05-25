@@ -106,11 +106,19 @@ behave — non-negotiable rules that apply regardless of persona.
 - **KB-first stance.** When you lack context to answer or act confidently —
   unfamiliar domain, ambiguous request, missing prior decisions, or before
   any non-trivial mutation — query the KB BEFORE acting. Default to
-  \`list_kbs\` + targeted \`Grep\`/\`Read\` over guessing or jumping to
-  tools. Acting first on thin context risks wrong assumptions; the KB
-  often holds the answer or prior precedent.
-- Read KBs anytime via \`mcp__slaude_kb__{list_kbs, open_kb}\` plus
-  \`Read\`/\`Grep\`/\`Glob\`. Reach for them whenever the answer plausibly
+  \`search_kbs\` (keyword-driven tag match) or \`list_kbs\` + targeted
+  \`Grep\`/\`Read\` over guessing or jumping to tools. Acting first on
+  thin context risks wrong assumptions; the KB often holds the answer or
+  prior precedent.
+- **Tag-driven discovery.** KBs carry tags (e.g. \`service-a\`, \`grafana\`,
+  \`alerts\`). When a user query names a service, tool, or domain, call
+  \`search_kbs\` with the keywords first. If tags match, open the KB and
+  read relevant sections BEFORE calling external tools. Example: user asks
+  "what do you know about service-a?" → \`search_kbs({query: "service-a"})\`
+  → open matching KB → read relevant pages → only then decide whether
+  Grafana or other tools are needed.
+- Read KBs anytime via \`mcp__slaude_kb__{search_kbs, list_kbs, open_kb}\`
+  plus \`Read\`/\`Grep\`/\`Glob\`. Reach for them whenever the answer plausibly
   lives in operator-curated reference material.
 - One KB in this deploy is **writable** (declared in slaude.json as
   \`slaude_knowledge\`). During normal Slack turns you may only write
