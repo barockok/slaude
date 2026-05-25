@@ -12,6 +12,7 @@ import { Presence } from "./presence";
 import { Status } from "./status";
 import { PermissionGate } from "./permission-gate";
 import { ApprovalGate } from "./approval-gate";
+import { IgnoreGate } from "./ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "./commands";
 import { soulData } from "../../soul/extract";
 import { createSlackMcp, SLACK_MCP_NAME, type SlackContext } from "./mcp-tools";
@@ -27,6 +28,10 @@ import { paths } from "../../config/home";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { canTriggerIngest } from "./ingest-auth";
 import * as kbIngest from "../../knowledge/ingest";
+import * as Ignores from "../../db/ignores";
+import * as CronJobs from "../../db/cron-jobs";
+import { CronScheduler } from "./cron-scheduler";
+import { getNextRun } from "./cron-parser";
 
 function loadExternalMcp(): Record<string, McpServerConfig> {
   const f = join(paths.home, ".mcp.json");
@@ -89,6 +94,13 @@ export function createSlackApp(agent: AgentManager) {
   const approvals = new ApprovalGate(app, env.slack.approvers(), {
     timeoutSeconds: () => soulData().approvalTimeoutSeconds,
   });
+  const ignoreGate = new IgnoreGate();
+  // Clean up expired ignores every 5 minutes
+  setInterval(() => {
+    import("../../db/ignores").then((m) => m.cleanupExpired());
+  }, 5 * 60 * 1000);
+  const cronScheduler = new CronScheduler({ agent, client: app.client });
+  cronScheduler.start();
   agent.setPermissionResolver(permissions.resolver);
 
   // Diag: dump bot identity + granted scopes once at startup.
@@ -201,26 +213,6 @@ export function createSlackApp(agent: AgentManager) {
         })();
         break;
       }
-      case "tokenWarning": {
-        void (async () => {
-          const pct = (e.snapshot.pctUsed * 100).toFixed(1);
-          const used = e.snapshot.totalInput.toLocaleString();
-          const cap = e.snapshot.contextWindow.toLocaleString();
-          const head =
-            e.level === "critical"
-              ? ":rotating_light: *context critical*"
-              : ":warning: *context filling up*";
-          try {
-            await app.client.chat.postMessage({
-              channel: route.ctx.channel,
-              thread_ts: route.ctx.threadTs,
-              text: `${head}: ${pct}% used (${used} / ${cap}). Auto-compaction will kick in soon — consider \`/abort\` or asking me to summarize and reset.`,
-              mrkdwn: true,
-            });
-          } catch {}
-        })();
-        break;
-      }
       case "compacting": {
         void status.set(
           e.sessionId,
@@ -265,6 +257,19 @@ export function createSlackApp(agent: AgentManager) {
     }
     seenEvents.add(dedupKey);
 
+    const isDM = channelType === "im";
+    const threadTs: string = event.thread_ts || (isDM ? eventTs : eventTs);
+
+    // Ignore gate: temp/permanent ignores for users or threads
+    {
+      const ignored = ignoreGate.shouldDrop(userId, channelId, threadTs);
+      if (ignored) {
+        console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — ignored`);
+        metric.slackDropsTotal.inc({ reason: "ignored" });
+        return;
+      }
+    }
+
     // Hard blocklist: blocked user → drop before any further processing.
     // Never reaches Claude (no token spend, no logs). Channel blocking is
     // unnecessary — default posture already denies anywhere not allowed/trusted.
@@ -307,9 +312,6 @@ export function createSlackApp(agent: AgentManager) {
     const stripped = text.replace(new RegExp(`<@${botUserId}>`, "g"), "").trim();
     const hasFiles = Array.isArray(event.files) && event.files.length > 0;
     if (!stripped && !hasFiles) return;
-
-    const isDM = channelType === "im";
-    const threadTs: string = event.thread_ts || (isDM ? eventTs : eventTs);
 
     const session = agent.ensureSession({
       team_id: teamId,
@@ -363,6 +365,140 @@ export function createSlackApp(agent: AgentManager) {
           await reply(`:x: ingest failed: ${result.reason}`);
         }
         return;
+      }
+      if (slash.kind === "ignore" || slash.kind === "unignore") {
+        // Authorization: manager or approver only
+        const soul = soulData();
+        const managerId = soul.manager.userId;
+        const backupId = soul.backupManager.userId;
+        const isManager = (managerId && userId === managerId) || (backupId && userId === backupId);
+        const isApprover = soul.approvers.some((a) => a.userId === userId);
+        if (!isManager && !isApprover) {
+          await reply(":no_entry: only manager or approver can manage ignores");
+          return;
+        }
+
+        if (slash.kind === "ignore") {
+          if (slash.target === "user") {
+            const duration = slash.duration;
+            let expiresAt: number | undefined;
+            if (duration) {
+              const mins = parseInt(duration, 10);
+              if (isNaN(mins) || mins <= 0) {
+                await reply(":warning: duration must be like `5m`, `10m`, `1h` (number + m/h)");
+                return;
+              }
+              const multiplier = duration.endsWith("h") ? 60 : 1;
+              expiresAt = Date.now() + mins * multiplier * 60 * 1000;
+            }
+            Ignores.remove({ targetType: "user", userId: slash.userId });
+            Ignores.create({ targetType: "user", userId: slash.userId, createdBy: userId, expiresAt, reason: "manual" });
+            const durText = duration ? `for ${duration}` : "permanently";
+            await reply(`:mute: ignoring <@${slash.userId}> ${durText}`);
+          } else {
+            const duration = slash.duration;
+            let expiresAt: number | undefined;
+            if (duration) {
+              const mins = parseInt(duration, 10);
+              if (isNaN(mins) || mins <= 0) {
+                await reply(":warning: duration must be like `5m`, `10m`, `1h`");
+                return;
+              }
+              const multiplier = duration.endsWith("h") ? 60 : 1;
+              expiresAt = Date.now() + mins * multiplier * 60 * 1000;
+            }
+            Ignores.remove({ targetType: "thread", channelId, threadTs });
+            Ignores.create({ targetType: "thread", channelId, threadTs, createdBy: userId, expiresAt, reason: "manual" });
+            const durText = duration ? `for ${duration}` : "permanently";
+            await reply(`:mute: ignoring this thread ${durText}`);
+          }
+          return;
+        }
+
+        if (slash.kind === "unignore") {
+          if (slash.target === "user") {
+            Ignores.remove({ targetType: "user", userId: slash.userId });
+            await reply(`:speaker: stopped ignoring <@${slash.userId}>`);
+          } else {
+            Ignores.remove({ targetType: "thread", channelId, threadTs });
+            await reply(":speaker: stopped ignoring this thread");
+          }
+          return;
+        }
+      }
+
+      if (slash.kind === "cron-add" || slash.kind === "cron-list" || slash.kind === "cron-remove") {
+        const soul = soulData();
+        const managerId = soul.manager.userId;
+        const backupId = soul.backupManager.userId;
+        const isManager = (managerId && userId === managerId) || (backupId && userId === backupId);
+        const isApprover = soul.approvers.some((a) => a.userId === userId);
+
+        if (slash.kind === "cron-list") {
+          if (!isManager && !isApprover) {
+            await reply(":no_entry: only manager or approver can list cron jobs");
+            return;
+          }
+          const jobs = CronJobs.listActive();
+          if (!jobs.length) {
+            await reply("No active cron jobs.");
+            return;
+          }
+          const lines = jobs.map((j) => `• \`${j.id.slice(0, 8)}\` \`${j.cronExpr}\` → ${j.prompt}`);
+          await reply("*Active cron jobs*\n" + lines.join("\n"));
+          return;
+        }
+
+        if (slash.kind === "cron-remove") {
+          if (!isManager && !isApprover) {
+            await reply(":no_entry: only manager or approver can remove cron jobs");
+            return;
+          }
+          CronJobs.deactivate(slash.id);
+          await reply(`:wastebasket: cron job \`${slash.id.slice(0, 8)}\` removed`);
+          return;
+        }
+
+        if (slash.kind === "cron-add") {
+          if (!isManager && !isApprover) {
+            await reply(":no_entry: only manager or approver can add cron jobs");
+            return;
+          }
+
+          let nextRun: number;
+          try {
+            nextRun = getNextRun(slash.cronExpr);
+          } catch (e: any) {
+            await reply(`:warning: invalid cron expression: ${e.message}`);
+            return;
+          }
+
+          if (isApprover && !isManager) {
+            // Approver-initiated: require manager approval
+            const approval = await approvals.request({
+              channel: channelId,
+              threadTs: threadTs,
+              summary: `Cron job: "${slash.prompt}" at "${slash.cronExpr}"`,
+              category: "cron",
+              risks: "Scheduled agent execution — runs unattended.",
+            });
+            if (!approval.approved) {
+              await reply(":x: cron job denied by manager");
+              return;
+            }
+          }
+
+          const job = CronJobs.create({
+            channelId,
+            threadTs: isDM ? undefined : threadTs,
+            createdBy: userId,
+            cronExpr: slash.cronExpr,
+            prompt: slash.prompt,
+            nextRunAt: nextRun,
+          });
+          await reply(`:calendar: cron job created (\`${job.id.slice(0, 8)}\`) — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
+          return;
+        }
       }
     }
 

@@ -53,12 +53,6 @@ export type AgentEvent =
   | { type: "done"; sessionId: string; autoEvolve?: boolean }
   | { type: "error"; sessionId: string; error: string }
   | { type: "tokenUsage"; sessionId: string; snapshot: UsageSnapshot }
-  | {
-      type: "tokenWarning";
-      sessionId: string;
-      level: "warn" | "critical";
-      snapshot: UsageSnapshot;
-    }
   | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" };
 
 /** Permission resolver — called per tool use; given a sessionId so transports can present UI in the right thread. */
@@ -462,19 +456,6 @@ export class AgentManager extends EventEmitter {
             sessionId,
             snapshot,
           } satisfies AgentEvent);
-          const level = this.#budget.evaluateThreshold(
-            sessionId,
-            env.tokenWarnPct(),
-            env.tokenCriticalPct(),
-          );
-          if (level) {
-            this.emit("event", {
-              type: "tokenWarning",
-              sessionId,
-              level,
-              snapshot,
-            } satisfies AgentEvent);
-          }
         }
         if (msg.is_error) {
           const errStr =

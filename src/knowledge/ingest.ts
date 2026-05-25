@@ -79,7 +79,10 @@ export async function run(opts: IngestOptions): Promise<IngestResult> {
   }
 }
 
-async function defaultRunSubQuery(args: { kbDir: string; readme: string; rawFiles: string[] }): Promise<{ turns: number; pages_changed: number }> {
+export async function defaultRunSubQuery(
+  args: { kbDir: string; readme: string; rawFiles: string[] },
+  _query = sdkQuery,
+): Promise<{ turns: number; pages_changed: number }> {
   const systemPrompt = [
     soulSystemBlock(),
     "\n\n<ingest-mode>",
@@ -95,7 +98,7 @@ async function defaultRunSubQuery(args: { kbDir: string; readme: string; rawFile
 
   let turns = 0;
   let pagesChanged = 0;
-  const sdk = sdkQuery({
+  const sdk = _query({
     prompt: (async function* () { yield { type: "user" as const, message: { role: "user" as const, content: initialPrompt }, parent_tool_use_id: null }; })() as any,
     options: {
       systemPrompt,

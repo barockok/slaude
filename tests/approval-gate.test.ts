@@ -261,4 +261,49 @@ describe("ApprovalGate", () => {
     // Timer was cleared on abort — no timeout update.
     expect(f.updates.length).toBe(0);
   });
+
+  test("structured approvers from soul data", async () => {
+    writeFileSync(
+      paths.soul,
+      ["# Persona", "## Approvers", "- `code`: <@U100> anything"].join("\n"),
+    );
+    const f = fakeApp();
+    const gate = new ApprovalGate(f.app, []);
+    const p = gate.request({ channel: "C", threadTs: "T", summary: "deploy code", category: "code" });
+    const id = f.posts[0].blocks
+      .find((b: any) => b.type === "actions")
+      .elements.find((e: any) => e.action_id.includes("approve")).action_id;
+    await f.fire(id, "U100");
+    expect((await p).approved).toBe(true);
+  });
+
+  test("scoped approvers matched by summary keyword", async () => {
+    writeFileSync(
+      paths.soul,
+      ["# Persona", "## Approvers", "- `deploy`: <@U200> production deploys"].join("\n"),
+    );
+    const f = fakeApp();
+    const gate = new ApprovalGate(f.app, []);
+    const p = gate.request({ channel: "C", threadTs: "T", summary: "deploy to production" });
+    const id = f.posts[0].blocks
+      .find((b: any) => b.type === "actions")
+      .elements.find((e: any) => e.action_id.includes("approve")).action_id;
+    await f.fire(id, "U200");
+    expect((await p).approved).toBe(true);
+  });
+
+  test("structured approvers with no match falls through to env", async () => {
+    writeFileSync(
+      paths.soul,
+      ["# Persona", "## Approvers", "- `database`: <@U300> schema changes only"].join("\n"),
+    );
+    const f = fakeApp();
+    const gate = new ApprovalGate(f.app, ["U400"]);
+    const p = gate.request({ channel: "C", threadTs: "T", summary: "deploy frontend", category: "deploy" });
+    const id = f.posts[0].blocks
+      .find((b: any) => b.type === "actions")
+      .elements.find((e: any) => e.action_id.includes("approve")).action_id;
+    await f.fire(id, "U400");
+    expect((await p).approved).toBe(true);
+  });
 });
