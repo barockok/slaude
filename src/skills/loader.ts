@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -39,47 +38,24 @@ function parseSkillFile(absPath: string): Pick<Skill, "name" | "description" | "
   };
 }
 
-/** Detect if cwd is inside a git worktree. Returns worktree root path or null. */
-export function detectWorktree(): string | null {
-  try {
-    const gitDir = execFileSync("git", ["rev-parse", "--git-dir"], { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }).trim();
-    const gitCommonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }).trim();
-    if (gitDir === gitCommonDir) return null; // not a worktree
-    const worktreeRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }).trim();
-    return worktreeRoot || null;
-  } catch {
-    return null;
-  }
-}
-
-/** Discover skills from $SLAUDE_HOME/skills/<slug>/SKILL.md and optionally from <worktree>/.claude/skills/<slug>/SKILL.md */
+/** Discover skills from $SLAUDE_HOME/skills/<slug>/SKILL.md */
 export function discoverSkills(): Skill[] {
-  const roots = [paths.skills];
-  const worktreeRoot = detectWorktree();
-  if (worktreeRoot) {
-    roots.push(join(worktreeRoot, ".claude", "skills"));
-  }
-
-  const seen = new Set<string>();
+  const root = paths.skills;
+  if (!existsSync(root)) return [];
   const out: Skill[] = [];
-  for (const root of roots) {
-    if (!existsSync(root)) continue;
-    for (const entry of readdirSync(root)) {
-      if (seen.has(entry)) continue;
-      const dir = join(root, entry);
-      if (!statSync(dir).isDirectory()) continue;
-      const skillPath = join(dir, "SKILL.md");
-      const parsed = parseSkillFile(skillPath);
-      if (!parsed) continue;
-      seen.add(entry);
-      out.push({
-        slug: entry,
-        name: parsed.name || entry,
-        description: parsed.description,
-        body: parsed.body,
-        dir,
-      });
-    }
+  for (const entry of readdirSync(root)) {
+    const dir = join(root, entry);
+    if (!statSync(dir).isDirectory()) continue;
+    const skillPath = join(dir, "SKILL.md");
+    const parsed = parseSkillFile(skillPath);
+    if (!parsed) continue;
+    out.push({
+      slug: entry,
+      name: parsed.name || entry,
+      description: parsed.description,
+      body: parsed.body,
+      dir,
+    });
   }
   return out;
 }
@@ -96,15 +72,11 @@ export function matchSkillInvocation(text: string, skills: Skill[]): { skill: Sk
 
 /** Build the user message that invokes a skill. Mirrors hermes pattern. */
 export function buildSkillInvocation(skill: Skill, args: string, sessionId: string): string {
-  const env: Record<string, string> = {
+  const env = {
     SLAUDE_SKILL_DIR: skill.dir,
     SLAUDE_SESSION_ID: sessionId,
     SLAUDE_SKILL_ARGS: args,
   };
-  const worktreeRoot = detectWorktree();
-  if (worktreeRoot) {
-    env.SLAUDE_WORKTREE_DIR = worktreeRoot;
-  }
   let body = skill.body;
   for (const [k, v] of Object.entries(env)) {
     body = body.replaceAll(`\${${k}}`, v);
