@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { SqliteMemoryProvider } from "../src/memory/sqlite-provider";
+import { SqliteMemoryProvider, truncate } from "../src/memory/sqlite-provider";
 import { NULL_PROVIDER } from "../src/memory/provider";
 
 describe("SqliteMemoryProvider", () => {
@@ -40,11 +40,39 @@ describe("SqliteMemoryProvider", () => {
     m.recordFact("baseline");
     // no throw = pass; round-trip via prefetch w/ unrelated session
   });
+
+  test("recordFact explicit session scope", async () => {
+    const m = new SqliteMemoryProvider();
+    m.recordFact("scoped fact", { sessionId: "S4", scope: "session" });
+    const out = await m.prefetch("S4");
+    expect(out).toContain("scoped fact");
+  });
 });
 
 describe("NULL_PROVIDER", () => {
   test("returns null + no-op", async () => {
     expect(await NULL_PROVIDER.prefetch("x")).toBeNull();
     await NULL_PROVIDER.syncTurn({ sessionId: "x", user: "u", assistant: "a" });
+  });
+});
+
+describe("truncate", () => {
+  test("returns original when under max", () => {
+    expect(truncate("hello", 10)).toBe("hello");
+  });
+  test("truncates with ellipsis when over max", () => {
+    expect(truncate("hello world", 5)).toBe("hello…");
+  });
+  test("edge case: exactly max", () => {
+    expect(truncate("hello", 5)).toBe("hello");
+  });
+});
+
+describe("memory singleton", () => {
+  test("exported memory instance works", async () => {
+    const { memory } = await import("../src/memory/sqlite-provider");
+    memory.recordFact("singleton fact", { sessionId: "sing", scope: "session" });
+    const out = await memory.prefetch("sing");
+    expect(out).toContain("singleton fact");
   });
 });

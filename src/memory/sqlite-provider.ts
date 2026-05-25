@@ -85,7 +85,7 @@ export class SqliteMemoryProvider implements MemoryProvider {
   }
 }
 
-function truncate(s: string, max: number) {
+export function truncate(s: string, max: number) {
   if (s.length <= max) return s;
   return s.slice(0, max) + "…";
 }
