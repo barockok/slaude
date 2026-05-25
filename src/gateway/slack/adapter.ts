@@ -571,6 +571,7 @@ export function createSlackApp(agent: AgentManager) {
       existing.ctx.channel = channelId;
       existing.ctx.threadTs = threadTs;
       existing.ctx.inboundTs = eventTs;
+      existing.ctx.userId = userId;
       existing.spoke = false;
     } else {
       const ctx: SlackContext = {
@@ -578,6 +579,7 @@ export function createSlackApp(agent: AgentManager) {
         channel: channelId,
         threadTs,
         inboundTs: eventTs,
+        userId,
       };
       ctx.requestApproval = (req) =>
         approvals.request({
