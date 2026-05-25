@@ -158,6 +158,22 @@ describe("syncManifest", () => {
     expect(parsed.synced_skills).toEqual([]);
   });
 
+  test("source skill in manifest is not re-synced", async () => {
+    writeManifest({ plugins: [], skills: [{ source: "vercel-labs/skills/react" }], knowledge: [] });
+    skillOps.write("react", "React", "d", "b");
+    const r = await syncManifest();
+    const parsed = JSON.parse(r.content[0]!.text);
+    expect(parsed.synced_skills).toEqual([]);
+  });
+
+  test("source skill with path in manifest is not re-synced", async () => {
+    writeManifest({ plugins: [], skills: [{ source: "vercel-labs/skills/deep/nested" }], knowledge: [] });
+    skillOps.write("nested", "Nested", "d", "b");
+    const r = await syncManifest();
+    const parsed = JSON.parse(r.content[0]!.text);
+    expect(parsed.synced_skills).toEqual([]);
+  });
+
   test("manifest read error returns error", async () => {
     writeFileSync(join(SLAUDE_HOME, "slaude.json"), "{not-json");
     const r = await syncManifest();
