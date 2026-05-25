@@ -1,4 +1,5 @@
-.claude/
+.claude/*
+!.claude/skills/
 node_modules/
 .env
 .env.local
