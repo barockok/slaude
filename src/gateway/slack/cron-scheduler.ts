@@ -6,17 +6,22 @@ import { getNextRun } from "./cron-parser";
 export type CronSchedulerDeps = {
   agent: AgentManager;
   client: WebClient;
+  /** Called before sendMessage so the adapter can register a route + SlackContext
+   *  for this cron session. Without a route, agent events are silently dropped. */
+  onExecute?: (job: CronJobs.CronJob, sessionId: string) => void;
 };
 
 export class CronScheduler {
   #agent: AgentManager;
   #client: WebClient;
+  #onExecute?: (job: CronJobs.CronJob, sessionId: string) => void;
   #timer: ReturnType<typeof setInterval> | null = null;
   #running = new Set<string>(); // job ids currently executing
 
   constructor(deps: CronSchedulerDeps) {
     this.#agent = deps.agent;
     this.#client = deps.client;
+    this.#onExecute = deps.onExecute;
   }
 
   start(): void {
@@ -44,43 +49,63 @@ export class CronScheduler {
   }
 
   async #execute(job: CronJobs.CronJob): Promise<void> {
-    try {
-      const session = this.#agent.ensureSession({
-        team_id: "cron",
-        channel_id: `cron:${job.id}`,
-        thread_ts: `cron:${job.id}`,
-      });
-
-      const envelope = `[scheduled] ${job.prompt}\n\nReply with the result. This is a cron job.`;
-      await this.#agent.sendMessage(session.id, envelope);
-
-      // Note: we don't wait for agent completion here — the agent fires async.
-      // Instead we update lastResult on the next tick or via event listener.
-      // For simplicity, mark as done and compute next run.
-      const nextRun = getNextRun(job.cronExpr);
-      CronJobs.updateNextRun(job.id, nextRun, "dispatched");
-    } catch (e: any) {
-      console.error(`[cron] job ${job.id} failed:`, e?.message ?? e);
-      CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), `error: ${e?.message ?? "unknown"}`);
-    } finally {
+    // Legacy jobs without real Slack keys can't post — skip and mark error.
+    if (!job.slackTeamId || !job.slackChannelId) {
+      console.error(`[cron] job ${job.id} missing Slack keys (legacy job) — skipping`);
+      CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), "error: missing Slack keys");
       this.#running.delete(job.id);
+      return;
     }
-  }
 
-  /** Post a result message to the job's channel. Called by adapter when agent completes. */
-  async postResult(jobId: string, text: string): Promise<void> {
-    const job = CronJobs.findById(jobId);
-    if (!job) return;
+    const threadKey = {
+      team_id: job.slackTeamId,
+      channel_id: job.slackChannelId,
+      thread_ts: job.slackThreadTs ?? `cron:${job.id}`,
+    };
+
+    const session = this.#agent.ensureSession(threadKey);
+
+    // Skip if humans are actively chatting in this thread — they get priority.
+    if (this.#agent.isLive(session.id)) {
+      console.log(`[cron] job ${job.id} skipped — session ${session.id} is live (human active)`);
+      CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), "skipped: session live");
+      this.#running.delete(job.id);
+      return;
+    }
+
+    // Let the adapter register a route so this session gets Slack MCP tools.
+    this.#onExecute?.(job, session.id);
+
+    const envelope = `[scheduled] ${job.prompt}\n\nReply with the result. This is a cron job.`;
+
+    // Wait for completion before clearing #running and updating next_run.
+    const onDone = () => {
+      this.#agent.off("done", onDone);
+      this.#agent.off("error", onError);
+      const nextRun = getNextRun(job.cronExpr);
+      CronJobs.updateNextRun(job.id, nextRun, "completed");
+      this.#running.delete(job.id);
+    };
+    const onError = (e: any) => {
+      // Only handle errors for this specific session
+      if (e.sessionId !== session.id) return;
+      this.#agent.off("done", onDone);
+      this.#agent.off("error", onError);
+      const nextRun = getNextRun(job.cronExpr);
+      CronJobs.updateNextRun(job.id, nextRun, `error: ${e.error ?? "unknown"}`);
+      this.#running.delete(job.id);
+    };
+    this.#agent.on("done", onDone);
+    this.#agent.on("error", onError);
+
     try {
-      await this.#client.chat.postMessage({
-        channel: job.channelId,
-        thread_ts: job.threadTs ?? undefined,
-        text,
-        mrkdwn: true,
-      });
-      CronJobs.updateNextRun(jobId, getNextRun(job.cronExpr), "completed");
+      await this.#agent.sendMessage(session.id, envelope);
     } catch (e: any) {
-      console.error(`[cron] failed to post result for ${jobId}:`, e?.message ?? e);
+      console.error(`[cron] job ${job.id} failed to send:`, e?.message ?? e);
+      this.#agent.off("done", onDone);
+      this.#agent.off("error", onError);
+      CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), `error: ${e?.message ?? "unknown"}`);
+      this.#running.delete(job.id);
     }
   }
 }

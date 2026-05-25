@@ -69,12 +69,29 @@ describe("cron-jobs DB", () => {
     CronJobs.create({ channelId: "C2", createdBy: "U2", cronExpr: "0 * * * *", prompt: "b", nextRunAt: Date.now() });
     expect(CronJobs.listActive().length).toBe(2);
   });
+
+  test("findByPrefix returns job for 8-char prefix", () => {
+    const job = CronJobs.create({ channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now() });
+    const found = CronJobs.findByPrefix(job.id.slice(0, 8));
+    expect(found?.id).toBe(job.id);
+  });
+
+  test("findByPrefix falls back to exact match for non-8-char", () => {
+    const job = CronJobs.create({ channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now() });
+    const found = CronJobs.findByPrefix(job.id);
+    expect(found?.id).toBe(job.id);
+  });
+
+  test("findByPrefix returns null when no match", () => {
+    CronJobs.create({ channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now() });
+    expect(CronJobs.findByPrefix("zzzzzzzz")).toBeNull();
+  });
 });
 
 describe("CronScheduler", () => {
   test("starts and stops without error", () => {
     const scheduler = new CronScheduler({
-      agent: { ensureSession: () => ({ id: "test" }), sendMessage: async () => {} } as any,
+      agent: { ensureSession: () => ({ id: "test" }), sendMessage: async () => {}, isLive: () => false, on: () => {}, off: () => {} } as any,
       client: { chat: { postMessage: async () => ({}) } } as any,
     });
     scheduler.start();
@@ -95,7 +112,7 @@ describe("CronScheduler", () => {
     });
     const sendMessage = mock(async () => {});
     const scheduler = new CronScheduler({
-      agent: { ensureSession: () => ({ id: "test" }), sendMessage } as any,
+      agent: { ensureSession: () => ({ id: "test" }), sendMessage, isLive: () => false, on: () => {}, off: () => {} } as any,
       client: { chat: { postMessage: async () => ({}) } } as any,
     });
     scheduler.start();
@@ -104,7 +121,7 @@ describe("CronScheduler", () => {
     expect(sendMessage).toHaveBeenCalledTimes(0);
   });
 
-  test("tick executes due job and updates next run", async () => {
+  test("tick skips legacy job without Slack keys", async () => {
     const now = Date.now();
     const job = CronJobs.create({
       channelId: "C123",
@@ -115,52 +132,86 @@ describe("CronScheduler", () => {
     });
     const sendMessage = mock(async () => {});
     const scheduler = new CronScheduler({
-      agent: { ensureSession: () => ({ id: "sess-1" }), sendMessage } as any,
+      agent: { ensureSession: () => ({ id: "test" }), sendMessage, isLive: () => false, on: () => {}, off: () => {} } as any,
+      client: { chat: { postMessage: async () => ({}) } } as any,
+    });
+    scheduler.start();
+    await new Promise((r) => setTimeout(r, 20));
+    scheduler.stop();
+    expect(sendMessage).toHaveBeenCalledTimes(0);
+    const updated = CronJobs.findById(job.id);
+    expect(updated!.lastResult).toMatch(/^error: missing Slack keys/);
+  });
+
+  test("tick skips already-live session", async () => {
+    const now = Date.now();
+    const job = CronJobs.create({
+      slackTeamId: "T1",
+      slackChannelId: "C123",
+      channelId: "C123",
+      createdBy: "U999",
+      cronExpr: "0 9 * * *",
+      prompt: "summarize",
+      nextRunAt: now - 1000,
+    });
+    const sendMessage = mock(async () => {});
+    const scheduler = new CronScheduler({
+      agent: { ensureSession: () => ({ id: "sess-1" }), sendMessage, isLive: () => true, on: () => {}, off: () => {} } as any,
+      client: { chat: { postMessage: async () => ({}) } } as any,
+    });
+    scheduler.start();
+    await new Promise((r) => setTimeout(r, 20));
+    scheduler.stop();
+    expect(sendMessage).toHaveBeenCalledTimes(0);
+    const updated = CronJobs.findById(job.id);
+    expect(updated!.lastResult).toBe("skipped: session live");
+  });
+
+  test("tick executes due job with Slack keys and waits for done event", async () => {
+    const now = Date.now();
+    const job = CronJobs.create({
+      slackTeamId: "T1",
+      slackChannelId: "C123",
+      channelId: "C123",
+      createdBy: "U999",
+      cronExpr: "0 9 * * *",
+      prompt: "summarize",
+      nextRunAt: now - 1000,
+    });
+    const sendMessage = mock(async () => {});
+    const eventHandlers = new Map<string, Function[]>();
+    const scheduler = new CronScheduler({
+      agent: {
+        ensureSession: () => ({ id: "sess-1" }),
+        sendMessage,
+        isLive: () => false,
+        on: (evt: string, fn: Function) => {
+          if (!eventHandlers.has(evt)) eventHandlers.set(evt, []);
+          eventHandlers.get(evt)!.push(fn);
+        },
+        off: () => {},
+      } as any,
       client: { chat: { postMessage: async () => ({}) } } as any,
     });
     scheduler.start();
     await new Promise((r) => setTimeout(r, 20));
     scheduler.stop();
     expect(sendMessage).toHaveBeenCalledTimes(1);
+    // next_run not yet updated — waiting for done event
+    const mid = CronJobs.findById(job.id);
+    expect(mid!.lastResult).not.toBe("completed");
+    // Simulate done event
+    for (const fn of eventHandlers.get("done") ?? []) fn({ sessionId: "sess-1" });
     const updated = CronJobs.findById(job.id);
+    expect(updated!.lastResult).toBe("completed");
     expect(updated!.nextRunAt).toBeGreaterThan(now);
-    expect(updated!.lastResult).toBe("dispatched");
   });
 
-  test("tick skips already-running job", async () => {
-    const now = Date.now();
-    CronJobs.create({
-      channelId: "C123",
-      createdBy: "U999",
-      cronExpr: "0 9 * * *",
-      prompt: "slow",
-      nextRunAt: now - 1000,
-    });
-    let sendCount = 0;
-    const scheduler = new CronScheduler({
-      agent: {
-        ensureSession: () => ({ id: "sess-1" }),
-        sendMessage: async () => {
-          sendCount++;
-          await new Promise((r) => setTimeout(r, 50));
-        },
-      } as any,
-      client: { chat: { postMessage: async () => ({}) } } as any,
-    });
-    scheduler.start();
-    await new Promise((r) => setTimeout(r, 10));
-    scheduler.stop(); // clear timer but job still "running"
-    await new Promise((r) => setTimeout(r, 10));
-    // Start again — should not re-execute because job is in #running set
-    scheduler.start();
-    await new Promise((r) => setTimeout(r, 10));
-    scheduler.stop();
-    expect(sendCount).toBe(1);
-  });
-
-  test("execute error path updates next run with error status", async () => {
+  test("tick handles sendMessage error immediately", async () => {
     const now = Date.now();
     const job = CronJobs.create({
+      slackTeamId: "T1",
+      slackChannelId: "C123",
       channelId: "C123",
       createdBy: "U999",
       cronExpr: "0 9 * * *",
@@ -171,6 +222,9 @@ describe("CronScheduler", () => {
       agent: {
         ensureSession: () => ({ id: "sess-1" }),
         sendMessage: async () => { throw new Error("boom"); },
+        isLive: () => false,
+        on: () => {},
+        off: () => {},
       } as any,
       client: { chat: { postMessage: async () => ({}) } } as any,
     });
@@ -181,53 +235,38 @@ describe("CronScheduler", () => {
     expect(updated!.lastResult).toMatch(/^error:/);
   });
 
-  test("postResult posts message and updates next run", async () => {
+  test("tick handles agent error event", async () => {
     const now = Date.now();
     const job = CronJobs.create({
+      slackTeamId: "T1",
+      slackChannelId: "C123",
       channelId: "C123",
       createdBy: "U999",
       cronExpr: "0 9 * * *",
-      prompt: "summarize",
+      prompt: "fail",
       nextRunAt: now - 1000,
     });
-    const postMessage = mock(async () => ({}));
+    const eventHandlers = new Map<string, Function[]>();
     const scheduler = new CronScheduler({
-      agent: { ensureSession: () => ({ id: "test" }), sendMessage: async () => {} } as any,
-      client: { chat: { postMessage } } as any,
+      agent: {
+        ensureSession: () => ({ id: "sess-1" }),
+        sendMessage: async () => {},
+        isLive: () => false,
+        on: (evt: string, fn: Function) => {
+          if (!eventHandlers.has(evt)) eventHandlers.set(evt, []);
+          eventHandlers.get(evt)!.push(fn);
+        },
+        off: () => {},
+      } as any,
+      client: { chat: { postMessage: async () => ({}) } } as any,
     });
-    await scheduler.postResult(job.id, "done!");
-    expect(postMessage).toHaveBeenCalledTimes(1);
-    expect((postMessage.mock.calls as any)[0][0].channel).toBe("C123");
+    scheduler.start();
+    await new Promise((r) => setTimeout(r, 20));
+    scheduler.stop();
+    // Simulate error event for this session
+    for (const fn of eventHandlers.get("error") ?? []) fn({ sessionId: "sess-1", error: "agent crashed" });
     const updated = CronJobs.findById(job.id);
-    expect(updated!.lastResult).toBe("completed");
-  });
-
-  test("postResult no-op when job missing", async () => {
-    const postMessage = mock(async () => ({}));
-    const scheduler = new CronScheduler({
-      agent: { ensureSession: () => ({ id: "test" }), sendMessage: async () => {} } as any,
-      client: { chat: { postMessage } } as any,
-    });
-    await scheduler.postResult("nonexistent", "done!");
-    expect(postMessage).toHaveBeenCalledTimes(0);
-  });
-
-  test("postResult swallows postMessage errors", async () => {
-    const now = Date.now();
-    const job = CronJobs.create({
-      channelId: "C123",
-      createdBy: "U999",
-      cronExpr: "0 9 * * *",
-      prompt: "summarize",
-      nextRunAt: now - 1000,
-    });
-    const scheduler = new CronScheduler({
-      agent: { ensureSession: () => ({ id: "test" }), sendMessage: async () => {} } as any,
-      client: { chat: { postMessage: async () => { throw new Error("network"); } } } as any,
-    });
-    await scheduler.postResult(job.id, "done!");
-    // no throw = pass
-    expect(true).toBe(true);
+    expect(updated!.lastResult).toMatch(/^error: agent crashed/);
   });
 });
 

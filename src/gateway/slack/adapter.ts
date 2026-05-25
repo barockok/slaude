@@ -15,7 +15,7 @@ import { ApprovalGate } from "./approval-gate";
 import { IgnoreGate } from "./ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "./commands";
 import { soulData } from "../../soul/extract";
-import { createSlackMcp, SLACK_MCP_NAME, type SlackContext } from "./mcp-tools";
+import { createSlackMcp, SLACK_MCP_NAME, type SlackContext, parseDuration } from "./mcp-tools";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME } from "../../knowledge/mcp-tools";
@@ -99,7 +99,28 @@ export function createSlackApp(agent: AgentManager) {
   setInterval(() => {
     import("../../db/ignores").then((m) => m.cleanupExpired());
   }, 5 * 60 * 1000);
-  const cronScheduler = new CronScheduler({ agent, client: app.client });
+  const cronScheduler = new CronScheduler({
+    agent,
+    client: app.client,
+    onExecute: (job, sessionId) => {
+      // Register a route so cron sessions get Slack MCP tools + event handling.
+      const ctx: SlackContext = {
+        client: app.client,
+        channel: job.slackChannelId!,
+        threadTs: job.slackThreadTs ?? job.channelId,
+        inboundTs: String(Date.now()), // synthetic — no real inbound msg for cron
+        userId: job.createdBy,
+        teamId: job.slackTeamId ?? undefined,
+      };
+      ctx.requestApproval = (req) =>
+        approvals.request({
+          channel: ctx.channel,
+          threadTs: ctx.threadTs,
+          ...req,
+        });
+      routes.set(sessionId, { ctx, spoke: false });
+    },
+  });
   cronScheduler.start();
   agent.setPermissionResolver(permissions.resolver);
 
@@ -383,13 +404,12 @@ export function createSlackApp(agent: AgentManager) {
             const duration = slash.duration;
             let expiresAt: number | undefined;
             if (duration) {
-              const mins = parseInt(duration, 10);
-              if (isNaN(mins) || mins <= 0) {
-                await reply(":warning: duration must be like `5m`, `10m`, `1h` (number + m/h)");
+              const parsed = parseDuration(duration);
+              if (!parsed.ok) {
+                await reply(`:warning: ${parsed.error}`);
                 return;
               }
-              const multiplier = duration.endsWith("h") ? 60 : 1;
-              expiresAt = Date.now() + mins * multiplier * 60 * 1000;
+              expiresAt = parsed.permanent ? undefined : Date.now() + parsed.minutes * 60 * 1000;
             }
             Ignores.remove({ targetType: "user", userId: slash.userId });
             Ignores.create({ targetType: "user", userId: slash.userId, createdBy: userId, expiresAt, reason: "manual" });
@@ -399,13 +419,12 @@ export function createSlackApp(agent: AgentManager) {
             const duration = slash.duration;
             let expiresAt: number | undefined;
             if (duration) {
-              const mins = parseInt(duration, 10);
-              if (isNaN(mins) || mins <= 0) {
-                await reply(":warning: duration must be like `5m`, `10m`, `1h`");
+              const parsed = parseDuration(duration);
+              if (!parsed.ok) {
+                await reply(`:warning: ${parsed.error}`);
                 return;
               }
-              const multiplier = duration.endsWith("h") ? 60 : 1;
-              expiresAt = Date.now() + mins * multiplier * 60 * 1000;
+              expiresAt = parsed.permanent ? undefined : Date.now() + parsed.minutes * 60 * 1000;
             }
             Ignores.remove({ targetType: "thread", channelId, threadTs });
             Ignores.create({ targetType: "thread", channelId, threadTs, createdBy: userId, expiresAt, reason: "manual" });
@@ -489,6 +508,9 @@ export function createSlackApp(agent: AgentManager) {
           }
 
           const job = CronJobs.create({
+            slackTeamId: teamId,
+            slackChannelId: channelId,
+            slackThreadTs: isDM ? undefined : threadTs,
             channelId,
             threadTs: isDM ? undefined : threadTs,
             createdBy: userId,
@@ -580,6 +602,7 @@ export function createSlackApp(agent: AgentManager) {
         threadTs,
         inboundTs: eventTs,
         userId,
+        teamId,
       };
       ctx.requestApproval = (req) =>
         approvals.request({

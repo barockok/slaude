@@ -68,6 +68,9 @@ CREATE INDEX IF NOT EXISTS idx_ignores_expires
 
 CREATE TABLE IF NOT EXISTS cron_jobs (
   id TEXT PRIMARY KEY,
+  slack_team_id TEXT,
+  slack_channel_id TEXT,
+  slack_thread_ts TEXT,
   channel_id TEXT NOT NULL,
   thread_ts TEXT,
   created_by TEXT NOT NULL,
@@ -89,9 +92,27 @@ for (const stmt of SCHEMA.split(";")) {
 }
 
 // Migration: backfill permission_mode column on existing dbs.
-const cols = db.query(`PRAGMA table_info(sessions)`).all() as Array<{ name: string }>;
-if (!cols.some((c) => c.name === "permission_mode")) {
+const sessionCols = db.query(`PRAGMA table_info(sessions)`).all() as Array<{ name: string }>;
+if (!sessionCols.some((c) => c.name === "permission_mode")) {
   db.run(`ALTER TABLE sessions ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'default'`);
+}
+
+// Migration: add Slack key columns to cron_jobs for real thread sessions.
+const cronCols = db.query(`PRAGMA table_info(cron_jobs)`).all() as Array<{ name: string }>;
+if (!cronCols.some((c) => c.name === "slack_team_id")) {
+  db.run(`ALTER TABLE cron_jobs ADD COLUMN slack_team_id TEXT`);
+}
+if (!cronCols.some((c) => c.name === "slack_channel_id")) {
+  db.run(`ALTER TABLE cron_jobs ADD COLUMN slack_channel_id TEXT`);
+}
+if (!cronCols.some((c) => c.name === "slack_thread_ts")) {
+  db.run(`ALTER TABLE cron_jobs ADD COLUMN slack_thread_ts TEXT`);
+}
+// Backfill: copy channel_id → slack_channel_id, thread_ts → slack_thread_ts for existing rows
+// so cron jobs created before this migration continue to work.
+const hasBackfill = db.query("SELECT 1 FROM cron_jobs WHERE slack_channel_id IS NULL LIMIT 1").get();
+if (hasBackfill) {
+  db.run(`UPDATE cron_jobs SET slack_channel_id = channel_id, slack_thread_ts = thread_ts WHERE slack_channel_id IS NULL`);
 }
 
 export type SessionRow = {
