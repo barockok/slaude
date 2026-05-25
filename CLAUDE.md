@@ -93,6 +93,7 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 Entries live in `docs/findings/<date>-<slug>.md`. Add a new file per significant finding/decision/mistake; index it below. Newest first.
 
+- [2026-05-25 — Cron & Ignore system audit](docs/findings/2026-05-25-cron-ignore-audit.md)
 - [2026-05-22 — Plugin loader chain (install → SDK → MCP)](docs/findings/2026-05-22-plugin-loader-chain.md)
 - [2026-05-21 — Writable KB + /ingest](docs/findings/2026-05-21-writable-kb-ingest.md)
 - [2026-05-21 — Dependency Manifest Design](docs/findings/2026-05-21-dependency-manifest.md)
