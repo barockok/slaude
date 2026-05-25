@@ -169,4 +169,11 @@ describe("skillHandlers", () => {
     const r = await skillHandlers.delete_skill({ slug: "ghost" });
     expect(r.isError).toBe(true);
   });
+  test("sync_manifest returns result", async () => {
+    const r = await skillHandlers.sync_manifest();
+    expect(r.isError).toBeUndefined();
+    const parsed = JSON.parse(r.content[0]?.text ?? "{}");
+    expect(parsed.synced_skills).toBeDefined();
+    expect(parsed.synced_kbs).toBeDefined();
+  });
 });
