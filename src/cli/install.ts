@@ -34,6 +34,7 @@ import {
   lockfileSchema,
   resolveGitUrl,
   resolveSkillSlug,
+  resolveSkillSource,
   type Manifest,
   type Lockfile,
 } from "../config/manifest-schema";
@@ -182,6 +183,16 @@ async function main() {
 
   let installed = 0;
   let skipped = 0;
+
+  // Normalize Vercel-style "source" entries to git+ref+path before processing.
+  for (const e of manifest.skills) {
+    if (e.source) {
+      const resolved = resolveSkillSource(e.source);
+      (e as any).git = resolved.git;
+      (e as any).ref = resolved.ref;
+      if (resolved.path) (e as any).path = resolved.path;
+    }
+  }
 
   // --- Plugins ---
   // Dedupe by (marketplace, ref) so one clone serves many plugins from the same marketplace
