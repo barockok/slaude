@@ -51,7 +51,76 @@ describe("kbHandlers.list_kbs", () => {
     seedKb("x", "# X");
     const r = await kbHandlers.list_kbs();
     const parsed = JSON.parse(r.content[0]!.text);
-    expect(Object.keys(parsed[0]).sort()).toEqual(["description", "index_file", "label", "path"]);
+    expect(Object.keys(parsed[0]).sort()).toEqual(["description", "index_file", "label", "path", "tags"]);
+  });
+});
+
+describe("kbHandlers.search_kbs", () => {
+  test("returns no-KB message when empty", async () => {
+    const r = await kbHandlers.search_kbs({ query: "service-a" });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0]!.text).toBe("(no knowledge bases installed)");
+  });
+
+  test("matches by tag", async () => {
+    seedKb("runbooks", ["---", "description: ops runbooks", "tags:", "  - service-a", "  - grafana", "---", "# Runbooks"].join("\n"));
+    seedKb("cookbook", "# Cookbook\n\nRecipes.");
+    const r = await kbHandlers.search_kbs({ query: "service-a" });
+    expect(r.isError).toBeUndefined();
+    const parsed = JSON.parse(r.content[0]!.text);
+    expect(parsed.length).toBe(1);
+    expect(parsed[0]!.label).toBe("runbooks");
+  });
+
+  test("matches by label keyword", async () => {
+    seedKb("grafana-dashboards", "# Grafana\n\nDashboard docs.");
+    seedKb("cookbook", "# Cookbook\n\nRecipes.");
+    const r = await kbHandlers.search_kbs({ query: "grafana" });
+    expect(r.isError).toBeUndefined();
+    const parsed = JSON.parse(r.content[0]!.text);
+    expect(parsed.length).toBe(1);
+    expect(parsed[0]!.label).toBe("grafana-dashboards");
+  });
+
+  test("matches by description keyword", async () => {
+    seedKb("runbooks", ["---", "description: Grafana alerting rules", "---", "# Runbooks"].join("\n"));
+    seedKb("cookbook", "# Cookbook\n\nRecipes.");
+    const r = await kbHandlers.search_kbs({ query: "alerting" });
+    expect(r.isError).toBeUndefined();
+    const parsed = JSON.parse(r.content[0]!.text);
+    expect(parsed.length).toBe(1);
+    expect(parsed[0]!.label).toBe("runbooks");
+  });
+
+  test("ranks tag match above label match", async () => {
+    seedKb("service-a-docs", ["---", "description: docs", "tags:", "  - service-a", "---", "# Docs"].join("\n"));
+    seedKb("service-b-docs", "# Service B\n\nDocs for service b.");
+    const r = await kbHandlers.search_kbs({ query: "service-a" });
+    const parsed = JSON.parse(r.content[0]!.text);
+    expect(parsed[0]!.label).toBe("service-a-docs");
+  });
+
+  test("respects limit", async () => {
+    seedKb("kb-a", "# A");
+    seedKb("kb-b", "# B");
+    seedKb("kb-c", "# C");
+    const r = await kbHandlers.search_kbs({ query: "kb", limit: 2 });
+    const parsed = JSON.parse(r.content[0]!.text);
+    expect(parsed.length).toBe(2);
+  });
+
+  test("returns no-match message when nothing scores", async () => {
+    seedKb("runbooks", "# Runbooks");
+    const r = await kbHandlers.search_kbs({ query: "xyz-nonexistent" });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0]!.text).toBe("(no matching knowledge bases)");
+  });
+
+  test("returns error for empty query after tokenization", async () => {
+    seedKb("runbooks", "# Runbooks");
+    const r = await kbHandlers.search_kbs({ query: "a" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toContain("query too short");
   });
 });
 
