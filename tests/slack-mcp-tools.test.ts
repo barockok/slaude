@@ -2,14 +2,29 @@ import { describe, expect, test } from "bun:test";
 import { slackHandlers, type SlackContext } from "../src/gateway/slack/mcp-tools";
 
 function fakeCtx(impl: {
+  postMessage?: () => any;
+  chatUpdate?: () => any;
+  reactionsAdd?: () => any;
+  reactionsRemove?: () => any;
+  filesUploadV2?: () => any;
   usersInfo?: (uid: string) => any;
   convInfo?: () => any;
   convReplies?: () => any;
   convMembers?: () => any;
   searchMessages?: () => any;
+  requestApproval?: (req: any) => Promise<any>;
 }): SlackContext {
   return {
     client: {
+      chat: {
+        postMessage: async () => impl.postMessage?.() ?? { ts: "100.0" },
+        update: async () => impl.chatUpdate?.() ?? {},
+      },
+      reactions: {
+        add: async () => impl.reactionsAdd?.() ?? {},
+        remove: async () => impl.reactionsRemove?.() ?? {},
+      },
+      files: { uploadV2: async () => impl.filesUploadV2?.() ?? { files: [{ id: "F1" }] } },
       users: { info: async ({ user }: any) => impl.usersInfo?.(user) ?? { user: {} } },
       conversations: {
         info: async () => impl.convInfo?.() ?? { channel: {} },
@@ -21,10 +36,167 @@ function fakeCtx(impl: {
     channel: "C1",
     threadTs: "123.456",
     inboundTs: "789.012",
+    requestApproval: impl.requestApproval,
   };
 }
 
 describe("slackHandlers", () => {
+  test("reply posts message and returns ts", async () => {
+    const ctx = fakeCtx({ postMessage: () => ({ ts: "999.0" }) });
+    const res = await slackHandlers.reply(ctx, { text: "hello" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toContain("posted ts=999.0");
+  });
+
+  test("reply surfaces error", async () => {
+    const ctx = fakeCtx({
+      postMessage: () => {
+        throw new Error("network down");
+      },
+    });
+    const res = await slackHandlers.reply(ctx, { text: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("network down");
+  });
+
+  test("edit updates message", async () => {
+    const ctx = fakeCtx({});
+    const res = await slackHandlers.edit(ctx, { ts: "100.0", text: "updated" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toBe("edited");
+  });
+
+  test("edit surfaces error", async () => {
+    const ctx = fakeCtx({
+      chatUpdate: () => {
+        throw new Error("cant_edit");
+      },
+    });
+    const res = await slackHandlers.edit(ctx, { ts: "100.0", text: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("cant_edit");
+  });
+
+  test("react adds emoji", async () => {
+    const ctx = fakeCtx({});
+    const res = await slackHandlers.react(ctx, { name: "eyes" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toBe("reacted :eyes:");
+  });
+
+  test("react on already_reacted returns ok", async () => {
+    const ctx = fakeCtx({
+      reactionsAdd: () => {
+        const e: any = new Error("already reacted");
+        e.data = { error: "already_reacted" };
+        throw e;
+      },
+    });
+    const res = await slackHandlers.react(ctx, { name: "eyes" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toBe("already reacted");
+  });
+
+  test("react surfaces other errors", async () => {
+    const ctx = fakeCtx({
+      reactionsAdd: () => {
+        const e: any = new Error("fail");
+        e.data = { error: "missing_scope" };
+        throw e;
+      },
+    });
+    const res = await slackHandlers.react(ctx, { name: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("missing_scope");
+  });
+
+  test("unreact removes emoji", async () => {
+    const ctx = fakeCtx({});
+    const res = await slackHandlers.unreact(ctx, { name: "eyes" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toBe("unreacted :eyes:");
+  });
+
+  test("unreact surfaces error", async () => {
+    const ctx = fakeCtx({
+      reactionsRemove: () => {
+        const e: any = new Error("fail");
+        e.data = { error: "no_reaction" };
+        throw e;
+      },
+    });
+    const res = await slackHandlers.unreact(ctx, { name: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("no_reaction");
+  });
+
+  test("request_approval approved", async () => {
+    const ctx = fakeCtx({
+      requestApproval: async () => ({ approved: true, by: "U1" }),
+    });
+    const res = await slackHandlers.request_approval(ctx, { summary: "do thing" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toContain("approved by <@U1>");
+  });
+
+  test("request_approval denied with note", async () => {
+    const ctx = fakeCtx({
+      requestApproval: async () => ({ approved: false, by: "U1", note: "too risky" }),
+    });
+    const res = await slackHandlers.request_approval(ctx, { summary: "do thing" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toContain("denied by <@U1> (too risky)");
+  });
+
+  test("request_approval not wired returns error", async () => {
+    const ctx = fakeCtx({});
+    delete (ctx as any).requestApproval;
+    const res = await slackHandlers.request_approval(ctx, { summary: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("approval gate not wired");
+  });
+
+  test("request_approval surfaces error", async () => {
+    const ctx = fakeCtx({
+      requestApproval: async () => {
+        throw new Error("timeout");
+      },
+    });
+    const res = await slackHandlers.request_approval(ctx, { summary: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("timeout");
+  });
+
+  test("upload succeeds", async () => {
+    const ctx = fakeCtx({
+      filesUploadV2: () => ({ files: [{ files: [{ id: "F99" }] }] }),
+    });
+    const res = await slackHandlers.upload(ctx, { path: import.meta.path });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toContain("F99");
+  });
+
+  test("upload missing file returns error", async () => {
+    const ctx = fakeCtx({});
+    const res = await slackHandlers.upload(ctx, { path: "/tmp/does-not-exist-12345.txt" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("upload failed");
+  });
+
+  test("upload surfaces slack error", async () => {
+    const ctx = fakeCtx({
+      filesUploadV2: () => {
+        const e: any = new Error("fail");
+        e.data = { error: "invalid_file" };
+        throw e;
+      },
+    });
+    // Use a path that exists (the test file itself) so statSync passes
+    const res = await slackHandlers.upload(ctx, { path: import.meta.path });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("invalid_file");
+  });
+
   test("get_user_profile returns structured profile", async () => {
     const ctx = fakeCtx({
       usersInfo: (uid) => ({
