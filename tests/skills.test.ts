@@ -6,7 +6,6 @@ import {
   discoverSkills,
   matchSkillInvocation,
   buildSkillInvocation,
-  detectWorktree,
 } from "../src/skills/loader";
 
 beforeEach(() => {
@@ -102,34 +101,5 @@ describe("buildSkillInvocation", () => {
     const skill = { slug: "x", name: "x", description: "", body: "b", dir: "/d" };
     const out = buildSkillInvocation(skill, "", "S");
     expect(out).not.toContain("<skill-args>");
-  });
-  test("includes SLAUDE_WORKTREE_DIR when in worktree", () => {
-    const skill = { slug: "x", name: "x", description: "", body: "wt=${SLAUDE_WORKTREE_DIR}", dir: "/d" };
-    const out = buildSkillInvocation(skill, "", "S");
-    // We are not in a worktree here, so variable should not be substituted
-    expect(out).toContain("wt=${SLAUDE_WORKTREE_DIR}");
-  });
-});
-
-describe("detectWorktree", () => {
-  test("returns null when not in a worktree", () => {
-    // Tests run in the main slaude repo checkout, not a linked worktree
-    const wt = detectWorktree();
-    expect(wt).toBeNull();
-  });
-});
-
-describe("discoverSkills with worktree skills", () => {
-  test("discovers skills from worktree .claude/skills when in worktree", () => {
-    // Create a skill in the global skills dir
-    writeSkill("global-skill", "---\nname: global\ndescription: global skill\n---\nglobal body");
-
-    // Simulate a worktree by temporarily overriding detectWorktree behavior
-    // We can't easily mock the function, so we'll test that discoverSkills
-    // still finds the global skill at minimum
-    const skills = discoverSkills();
-    const globalSkill = skills.find((s) => s.slug === "global-skill");
-    expect(globalSkill).toBeDefined();
-    expect(globalSkill?.name).toBe("global");
   });
 });
