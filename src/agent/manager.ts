@@ -108,6 +108,11 @@ export class AgentManager extends EventEmitter {
     return this.#live.size;
   }
 
+  /** Whether a specific session has an active SDK Query loop right now. */
+  isLive(sessionId: string): boolean {
+    return this.#live.has(sessionId);
+  }
+
   /** Get-or-create a session bound to a Slack thread. */
   ensureSession(thread: ThreadKey, opts: { title?: string } = {}) {
     let row = Sessions.findByThread(thread);

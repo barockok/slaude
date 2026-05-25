@@ -42,6 +42,8 @@ export type SlackContext = {
   inboundTs: string;
   /** Slack user id of the current turn's author. */
   userId?: string;
+  /** Slack team id of the current workspace. */
+  teamId?: string;
   /** Optional approval gate — set by the adapter so request_approval works. */
   requestApproval?: (req: {
     summary: string;
@@ -315,6 +317,20 @@ function isManagerOrApprover(userId?: string): boolean {
   return false;
 }
 
+/** Parse a duration string like '5m', '1h', or 'permanent'.
+ *  Returns minutes or permanent flag. Rejects invalid suffixes, decimals, and >24h. */
+export function parseDuration(raw: string): { ok: true; minutes: number; permanent: boolean } | { ok: false; error: string } {
+  if (raw === "permanent") return { ok: true, permanent: true, minutes: 0 };
+  const match = raw.match(/^(\d+)(m|h)$/);
+  if (!match) return { ok: false, error: "duration must be like '5m', '10m', '1h', or 'permanent'" };
+  const num = parseInt(match[1]!, 10);
+  const unit = match[2] as "m" | "h";
+  const minutes = unit === "h" ? num * 60 : num;
+  const MAX_MINUTES = 24 * 60; // 24 hours
+  if (minutes > MAX_MINUTES) return { ok: false, error: "duration cannot exceed 24h" };
+  return { ok: true, permanent: false, minutes };
+}
+
 /** Cron / ingest handlers — exposed as MCP tools so the agent can manage
  *  scheduled work and knowledge base directly. */
 const adminHandlers = {
@@ -342,6 +358,9 @@ const adminHandlers = {
       return err(`Invalid cron expression: ${e.message}`);
     }
     const job = CronJobs.create({
+      slackTeamId: ctx.teamId,
+      slackChannelId: ctx.channel,
+      slackThreadTs: ctx.threadTs,
       channelId: ctx.channel,
       threadTs: ctx.threadTs,
       createdBy: ctx.userId ?? "agent",
@@ -358,10 +377,15 @@ const adminHandlers = {
     if (!isManagerOrApprover(_ctx.userId)) {
       return err("Only manager or approver can remove cron jobs.");
     }
-    const job = CronJobs.findById(jobId);
+    let job: CronJobs.CronJob | null;
+    try {
+      job = CronJobs.findByPrefix(jobId);
+    } catch (e: any) {
+      return err(e.message);
+    }
     if (!job) return err(`Job \`${jobId}\` not found.`);
-    CronJobs.deactivate(jobId);
-    return ok(`Cron job \`${jobId.slice(0, 8)}\` deactivated.`);
+    CronJobs.deactivate(job.id);
+    return ok(`Cron job \`${job.id.slice(0, 8)}\` deactivated.`);
   },
 
   async triggerIngest(ctx: SlackContext): Promise<ToolResult> {
@@ -375,9 +399,65 @@ const adminHandlers = {
     return err(`Ingest failed: ${result.reason}`);
   },
 
-  async unignoreThread(ctx: SlackContext): Promise<ToolResult> {
+  async ignoreThread(
+    ctx: SlackContext,
+    { duration, reason }: { duration: string; reason: string },
+  ): Promise<ToolResult> {
+    if (!isManagerOrApprover(ctx.userId)) {
+      return err("Only manager or approver can ignore threads.");
+    }
+    const parsed = parseDuration(duration);
+    if (!parsed.ok) return err(parsed.error);
+    const expiresAt = parsed.permanent ? undefined : Date.now() + parsed.minutes * 60 * 1000;
     Ignores.remove({ targetType: "thread", channelId: ctx.channel, threadTs: ctx.threadTs });
+    Ignores.create({
+      targetType: "thread",
+      channelId: ctx.channel,
+      threadTs: ctx.threadTs,
+      createdBy: ctx.userId ?? "agent",
+      expiresAt,
+      reason,
+    });
+    return ok(`thread ignored ${parsed.permanent ? "permanently" : `for ${duration}`}`);
+  },
+
+  async unignoreThread(ctx: SlackContext): Promise<ToolResult> {
+    if (!isManagerOrApprover(ctx.userId)) {
+      return err("Only manager or approver can unignore threads.");
+    }
+    const removed = Ignores.remove({ targetType: "thread", channelId: ctx.channel, threadTs: ctx.threadTs });
+    if (removed === 0) return ok("no active ignore for this thread");
     return ok("Thread ignore removed. Normal processing resumed.");
+  },
+
+  async ignoreUser(
+    ctx: SlackContext,
+    { userId, duration, reason }: { userId: string; duration: string; reason: string },
+  ): Promise<ToolResult> {
+    if (!isManagerOrApprover(ctx.userId)) {
+      return err("Only manager or approver can ignore users.");
+    }
+    const parsed = parseDuration(duration);
+    if (!parsed.ok) return err(parsed.error);
+    const expiresAt = parsed.permanent ? undefined : Date.now() + parsed.minutes * 60 * 1000;
+    Ignores.remove({ targetType: "user", userId });
+    Ignores.create({
+      targetType: "user",
+      userId,
+      createdBy: ctx.userId ?? "agent",
+      expiresAt,
+      reason,
+    });
+    return ok(`user <@${userId}> ignored ${parsed.permanent ? "permanently" : `for ${duration}`}`);
+  },
+
+  async unignoreUser(ctx: SlackContext, { userId }: { userId: string }): Promise<ToolResult> {
+    if (!isManagerOrApprover(ctx.userId)) {
+      return err("Only manager or approver can unignore users.");
+    }
+    const removed = Ignores.remove({ targetType: "user", userId });
+    if (removed === 0) return ok(`no active ignore for user <@${userId}>`);
+    return ok(`stopped ignoring <@${userId}>`);
   },
 };
 
@@ -498,44 +578,41 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
 
       tool(
         "ignore_thread",
-        "Temporarily ignore this Slack thread when the conversation drifts out of mandate. Use to prevent infinite loops or unproductive back-and-forth. The thread will be silently dropped until the ignore expires or a manager removes it.",
+        "Temporarily ignore this Slack thread when the conversation drifts out of mandate. Use to prevent infinite loops or unproductive back-and-forth. The thread will be silently dropped until the ignore expires or a manager removes it. Requires manager or approver authorization.",
         {
           duration: z
             .string()
-            .describe("Duration like '5m', '10m', '1h'. Use 'permanent' only as absolute last resort."),
+            .describe("Duration like '5m', '10m', '1h'. Use 'permanent' only as absolute last resort. Max 24h."),
           reason: z.string().describe("Brief reason why the thread is being ignored."),
         },
-        async ({ duration, reason }) => {
-          let expiresAt: number | undefined;
-          if (duration === "permanent") {
-            expiresAt = undefined;
-          } else {
-            const num = parseInt(duration, 10);
-            if (isNaN(num) || num <= 0) {
-              return err("duration must be like '5m', '10m', '1h', or 'permanent'");
-            }
-            const multiplier = duration.endsWith("h") ? 60 : 1;
-            expiresAt = Date.now() + num * multiplier * 60 * 1000;
-          }
-          // Remove any existing thread ignore first
-          Ignores.remove({ targetType: "thread", channelId: ctx.channel, threadTs: ctx.threadTs });
-          Ignores.create({
-            targetType: "thread",
-            channelId: ctx.channel,
-            threadTs: ctx.threadTs,
-            createdBy: "agent",
-            expiresAt,
-            reason,
-          });
-          return ok(`thread ignored ${duration === "permanent" ? "permanently" : `for ${duration}`}`);
-        },
+        (args) => adminHandlers.ignoreThread(ctx, args),
       ),
 
       tool(
         "unignore_thread",
-        "Resume normal processing in this Slack thread after a previous ignore_thread call. Use when the conversation has returned to your mandate, the user explicitly asks to un-ignore, or you previously ignored by mistake.",
+        "Resume normal processing in this Slack thread after a previous ignore_thread call. Use when the conversation has returned to your mandate, the user explicitly asks to un-ignore, or you previously ignored by mistake. Requires manager or approver authorization.",
         {},
         () => adminHandlers.unignoreThread(ctx),
+      ),
+
+      tool(
+        "ignore_user",
+        "Temporarily ignore a specific Slack user across all threads. Use when a user is repeatedly sending off-topic or disruptive messages. The user will be silently dropped until the ignore expires or a manager removes it. Requires manager or approver authorization.",
+        {
+          user_id: z.string().describe("Slack user ID to ignore (e.g. U123ABC)."),
+          duration: z.string().describe("Duration like '5m', '10m', '1h', or 'permanent'. Max 24h."),
+          reason: z.string().describe("Brief reason why the user is being ignored."),
+        },
+        (args) => adminHandlers.ignoreUser(ctx, { userId: args.user_id, duration: args.duration, reason: args.reason }),
+      ),
+
+      tool(
+        "unignore_user",
+        "Stop ignoring a previously ignored Slack user. Requires manager or approver authorization.",
+        {
+          user_id: z.string().describe("Slack user ID to unignore (e.g. U123ABC)."),
+        },
+        (args) => adminHandlers.unignoreUser(ctx, { userId: args.user_id }),
       ),
 
       tool(
@@ -557,7 +634,7 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
 
       tool(
         "remove_cron_job",
-        "Deactivate a scheduled cron job by its full ID or 8-char prefix. Use when a recurring task is no longer needed, the user asks to cancel something scheduled, or a job was created by mistake. Call list_cron_jobs first to find the ID. Requires manager or approver authorization.",
+        "Deactivate a scheduled cron job by its full ID or 8-char prefix. The job is soft-deleted (set inactive) — historical runs remain in the database. Use when a recurring task is no longer needed, the user asks to cancel something scheduled, or a job was created by mistake. Call list_cron_jobs first to find the ID. Requires manager or approver authorization.",
         {
           job_id: z.string().describe("Full job ID or 8-character prefix from list_cron_jobs."),
         },
