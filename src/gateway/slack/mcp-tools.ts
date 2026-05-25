@@ -11,6 +11,9 @@ import { mdToMrkdwn } from "./format";
 import { redactSlack } from "./redact";
 import { soulData } from "../../soul/extract";
 import * as Ignores from "../../db/ignores";
+import * as CronJobs from "../../db/cron-jobs";
+import { getNextRun } from "./cron-parser";
+import { run as runIngest } from "../../knowledge/ingest";
 
 function format(text: string): string {
   return redactSlack(mdToMrkdwn(text), soulData().redactPatterns);
@@ -37,6 +40,8 @@ export type SlackContext = {
   threadTs: string;
   /** ts of the latest inbound user message in this thread. */
   inboundTs: string;
+  /** Slack user id of the current turn's author. */
+  userId?: string;
   /** Optional approval gate — set by the adapter so request_approval works. */
   requestApproval?: (req: {
     summary: string;
@@ -300,6 +305,82 @@ export const slackHandlers = {
   },
 };
 
+/** Check whether the current turn's user is manager or approver. */
+function isManagerOrApprover(userId?: string): boolean {
+  if (!userId) return false;
+  const soul = soulData();
+  if (soul.manager?.userId === userId) return true;
+  if (soul.backupManager?.userId === userId) return true;
+  if (soul.approvers?.some((a) => a.userId === userId)) return true;
+  return false;
+}
+
+/** Cron / ingest handlers — exposed as MCP tools so the agent can manage
+ *  scheduled work and knowledge base directly. */
+const adminHandlers = {
+  async listCronJobs(): Promise<ToolResult> {
+    const jobs = CronJobs.listActive();
+    if (!jobs.length) return ok("No active cron jobs.");
+    const lines = jobs.map(
+      (j) =>
+        `• \`${j.id.slice(0, 8)}\` \`${j.cronExpr}\` → ${j.prompt} (next: ${new Date(j.nextRunAt).toISOString()})`,
+    );
+    return ok("*Active cron jobs*\n" + lines.join("\n"));
+  },
+
+  async addCronJob(
+    ctx: SlackContext,
+    { cronExpr, prompt }: { cronExpr: string; prompt: string },
+  ): Promise<ToolResult> {
+    if (!isManagerOrApprover(ctx.userId)) {
+      return err("Only manager or approver can add cron jobs.");
+    }
+    let nextRun: number;
+    try {
+      nextRun = getNextRun(cronExpr);
+    } catch (e: any) {
+      return err(`Invalid cron expression: ${e.message}`);
+    }
+    const job = CronJobs.create({
+      channelId: ctx.channel,
+      threadTs: ctx.threadTs,
+      createdBy: ctx.userId ?? "agent",
+      cronExpr,
+      prompt,
+      nextRunAt: nextRun,
+    });
+    return ok(
+      `Cron job created (\`${job.id.slice(0, 8)}\`). Next run: ${new Date(nextRun).toISOString()}`,
+    );
+  },
+
+  async removeCronJob(_ctx: SlackContext, { jobId }: { jobId: string }): Promise<ToolResult> {
+    if (!isManagerOrApprover(_ctx.userId)) {
+      return err("Only manager or approver can remove cron jobs.");
+    }
+    const job = CronJobs.findById(jobId);
+    if (!job) return err(`Job \`${jobId}\` not found.`);
+    CronJobs.deactivate(jobId);
+    return ok(`Cron job \`${jobId.slice(0, 8)}\` deactivated.`);
+  },
+
+  async triggerIngest(ctx: SlackContext): Promise<ToolResult> {
+    if (!isManagerOrApprover(ctx.userId)) {
+      return err("Only manager or approver can trigger ingest.");
+    }
+    const result = await runIngest({ triggeredBy: ctx.userId ?? "agent" });
+    if (result.ok) {
+      return ok(`Ingest complete — ${result.summary}`);
+    }
+    return err(`Ingest failed: ${result.reason}`);
+  },
+
+  async unignoreThread(ctx: SlackContext): Promise<ToolResult> {
+    Ignores.remove({ targetType: "thread", channelId: ctx.channel, threadTs: ctx.threadTs });
+    return ok("Thread ignore removed. Normal processing resumed.");
+  },
+};
+
 /** Build an SDK MCP server bound to a session's SlackContext. */
 export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
@@ -448,6 +529,46 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
           });
           return ok(`thread ignored ${duration === "permanent" ? "permanently" : `for ${duration}`}`);
         },
+      ),
+
+      tool(
+        "unignore_thread",
+        "Resume normal processing in this Slack thread after a previous ignore_thread call. Use when the conversation has returned to your mandate, the user explicitly asks to un-ignore, or you previously ignored by mistake.",
+        {},
+        () => adminHandlers.unignoreThread(ctx),
+      ),
+
+      tool(
+        "list_cron_jobs",
+        "List all active scheduled cron jobs. Use when the user asks what recurring tasks are set up, wants to audit scheduled work, or needs a job ID before calling remove_cron_job. Returns job IDs, cron expressions, prompts, and next run times.",
+        {},
+        () => adminHandlers.listCronJobs(),
+      ),
+
+      tool(
+        "add_cron_job",
+        "Schedule a recurring prompt that fires on a cron expression and posts results to this thread. Use when the user asks for regular check-ins (e.g. 'daily summary'), weekly reports, recurring reminders, or periodic tasks. Requires manager or approver authorization. Use 5-field cron format: minute hour day-of-month month day-of-week (UTC). Examples: '0 9 * * 1-5' = weekdays at 9am UTC; '0 0 * * *' = daily midnight; '*/30 * * * *' = every 30 minutes.",
+        {
+          cron_expr: z.string().describe("5-field cron expression in UTC. e.g. '0 9 * * 1-5' for weekdays at 9am."),
+          prompt: z.string().describe("The prompt sent to you each time the job fires. Be specific so future you knows what to do."),
+        },
+        (args) => adminHandlers.addCronJob(ctx, { cronExpr: args.cron_expr, prompt: args.prompt }),
+      ),
+
+      tool(
+        "remove_cron_job",
+        "Deactivate a scheduled cron job by its full ID or 8-char prefix. Use when a recurring task is no longer needed, the user asks to cancel something scheduled, or a job was created by mistake. Call list_cron_jobs first to find the ID. Requires manager or approver authorization.",
+        {
+          job_id: z.string().describe("Full job ID or 8-character prefix from list_cron_jobs."),
+        },
+        (args) => adminHandlers.removeCronJob(ctx, { jobId: args.job_id }),
+      ),
+
+      tool(
+        "trigger_ingest",
+        "Synchronize raw knowledge-base content into the processed wiki format. Use when new raw files have been added to the KB and the user asks to refresh, rebuild, or update the knowledge base. This can be slow — only trigger when actually needed. Requires manager or approver authorization.",
+        {},
+        () => adminHandlers.triggerIngest(ctx),
       ),
     ],
   });
