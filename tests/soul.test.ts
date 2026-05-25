@@ -75,6 +75,20 @@ describe("loadApprovers (legacy)", () => {
     );
     expect(loadApprovers()).toBeNull();
   });
+  test("markdown section terminated by next heading", () => {
+    writeFileSync(
+      paths.soul,
+      [
+        "# Persona",
+        "## Approvers",
+        "- code: U06ENBS6PV0",
+        "## Notes",
+        "- default: U06ENBS6PV9",
+      ].join("\n"),
+    );
+    const out = loadApprovers();
+    expect(out).toEqual({ code: ["U06ENBS6PV0"] });
+  });
 });
 
 describe("loadApproverEntries + selectApprovers", () => {

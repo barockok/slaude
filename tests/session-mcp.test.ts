@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   createSessionMcp,
+  ok,
   sessionHandlers,
   SESSION_MCP_NAME,
 } from "../src/agent/session-mcp";
@@ -59,5 +60,21 @@ describe("createSessionMcp", () => {
     expect(cfg.name).toBe(SESSION_MCP_NAME);
     expect((cfg as any).type).toBe("sdk");
     expect((cfg as any).instance).toBeDefined();
+  });
+
+  test("tool handler invokes token_budget", async () => {
+    const cfg = createSessionMcp({ getSnapshot: () => snap() });
+    const tool = (cfg as any).instance._registeredTools["token_budget"];
+    expect(tool).toBeDefined();
+    const result = await tool.handler({});
+    expect(result.content[0].text).toContain("input_tokens");
+  });
+});
+
+describe("ok helper", () => {
+  test("returns text tool result", () => {
+    const r = ok("hello");
+    expect(r.content[0]).toEqual({ type: "text", text: "hello" });
+    expect(r.isError).toBeUndefined();
   });
 });
