@@ -163,4 +163,59 @@ describe("loadKbs", () => {
     const kbs = loadKbs();
     expect(kbs[0]!.description).toBe("just some body text here");
   });
+
+  test("tags extracted from frontmatter", () => {
+    seedKb("test-kb", (dir) => {
+      writeFileSync(join(dir, "README.md"), [
+        "---",
+        "description: Service A runbooks",
+        "tags:",
+        "  - service-a",
+        "  - grafana",
+        "  - alerts",
+        "---",
+        "# Runbooks",
+      ].join("\n"));
+    });
+    const kbs = loadKbs();
+    expect(kbs[0]!.tags).toEqual(["service-a", "grafana", "alerts"]);
+  });
+
+  test("tags empty array when no frontmatter", () => {
+    seedKb("test-kb", (dir) => {
+      writeFileSync(join(dir, "README.md"), "# Runbooks\n\nSome text.");
+    });
+    const kbs = loadKbs();
+    expect(kbs[0]!.tags).toEqual([]);
+  });
+
+  test("tags empty array when frontmatter lacks tags", () => {
+    seedKb("test-kb", (dir) => {
+      writeFileSync(join(dir, "README.md"), [
+        "---",
+        "description: no tags here",
+        "---",
+        "# Runbooks",
+      ].join("\n"));
+    });
+    const kbs = loadKbs();
+    expect(kbs[0]!.tags).toEqual([]);
+  });
+
+  test("tags normalized to lowercase and trimmed", () => {
+    seedKb("test-kb", (dir) => {
+      writeFileSync(join(dir, "README.md"), [
+        "---",
+        "description: tagged",
+        "tags:",
+        "  - Service-A",
+        "  -  GRAFANA ",
+        "  - alerts",
+        "---",
+        "# Runbooks",
+      ].join("\n"));
+    });
+    const kbs = loadKbs();
+    expect(kbs[0]!.tags).toEqual(["service-a", "grafana", "alerts"]);
+  });
 });
