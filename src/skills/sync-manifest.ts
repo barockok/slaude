@@ -19,6 +19,7 @@ import {
   lockfileSchema,
   resolveGitUrl,
   resolveSkillSlug,
+  resolveSkillSource,
   type Manifest,
   type Lockfile,
 } from "../config/manifest-schema";
@@ -198,6 +199,16 @@ export async function syncManifest(): Promise<ToolResult> {
     }
   } catch {
     lock = { version: 1, generated_at: new Date().toISOString(), marketplaces: {}, skills: {}, knowledge: {} };
+  }
+
+  // Normalize Vercel-style "source" entries to git+ref+path for consistent processing.
+  for (const e of manifest.skills) {
+    if (e.source) {
+      const resolved = resolveSkillSource(e.source);
+      (e as any).git = resolved.git;
+      (e as any).ref = resolved.ref;
+      if (resolved.path) (e as any).path = resolved.path;
+    }
   }
 
   const registeredSlugs = new Set(manifest.skills.map((s) => resolveSkillSlug(s)).filter(Boolean));

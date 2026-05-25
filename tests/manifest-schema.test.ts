@@ -5,6 +5,8 @@ import {
   pluginEntry,
   skillEntry,
   knowledgeEntry,
+  resolveSkillSource,
+  resolveSkillSlug,
 } from "../src/config/manifest-schema";
 
 describe("pluginEntry", () => {
@@ -92,6 +94,41 @@ describe("skillEntry", () => {
   test("accepts git-backed skill without path (backward compat)", () => {
     const r = skillEntry.parse({ git: "github:foo/skill", ref: "v1.0.0", slug: "old-skill" });
     expect(r.path).toBeUndefined();
+  });
+
+  test("accepts vercel-style source (owner/repo)", () => {
+    const r = skillEntry.parse({ source: "vercel-labs/skills" });
+    expect(r.source).toBe("vercel-labs/skills");
+    expect(r.git).toBeUndefined();
+    expect(r.ref).toBeUndefined();
+    expect(r.slug).toBeUndefined();
+  });
+
+  test("accepts vercel-style source with path (owner/repo/skill-path)", () => {
+    const r = skillEntry.parse({ source: "vercel-labs/skills/react-best-practices" });
+    expect(r.source).toBe("vercel-labs/skills/react-best-practices");
+  });
+
+  test("accepts vercel-style source with ref (owner/repo@ref)", () => {
+    const r = skillEntry.parse({ source: "vercel-labs/skills@v1.0.0" });
+    expect(r.source).toBe("vercel-labs/skills@v1.0.0");
+  });
+
+  test("accepts vercel-style source with path and ref", () => {
+    const r = skillEntry.parse({ source: "vercel-labs/skills/react@main" });
+    expect(r.source).toBe("vercel-labs/skills/react@main");
+  });
+
+  test("rejects source mixed with git", () => {
+    expect(() => skillEntry.parse({ source: "vercel-labs/skills", git: "github:foo/bar" })).toThrow();
+  });
+
+  test("rejects source mixed with ref", () => {
+    expect(() => skillEntry.parse({ source: "vercel-labs/skills", ref: "main" })).toThrow();
+  });
+
+  test("rejects invalid source format", () => {
+    expect(() => skillEntry.parse({ source: "just-owner" })).toThrow();
   });
 });
 
@@ -353,5 +390,75 @@ describe("lockfileSchema slaude_knowledge", () => {
       generated_at: "2026-05-21T00:00:00.000Z",
       slaude_knowledge: { git: "github:owner/wiki", ref: "main" },
     })).toThrow();
+  });
+});
+
+describe("resolveSkillSource", () => {
+  test("parses owner/repo to github:owner/repo with main ref", () => {
+    const r = resolveSkillSource("vercel-labs/skills");
+    expect(r.git).toBe("github:vercel-labs/skills");
+    expect(r.ref).toBe("main");
+    expect(r.path).toBeUndefined();
+  });
+
+  test("parses owner/repo/path with default ref", () => {
+    const r = resolveSkillSource("vercel-labs/skills/react-best-practices");
+    expect(r.git).toBe("github:vercel-labs/skills");
+    expect(r.ref).toBe("main");
+    expect(r.path).toBe("react-best-practices");
+  });
+
+  test("parses owner/repo@ref", () => {
+    const r = resolveSkillSource("vercel-labs/skills@v1.2.3");
+    expect(r.git).toBe("github:vercel-labs/skills");
+    expect(r.ref).toBe("v1.2.3");
+    expect(r.path).toBeUndefined();
+  });
+
+  test("parses owner/repo/path@ref", () => {
+    const r = resolveSkillSource("vercel-labs/skills/react@v2.0.0");
+    expect(r.git).toBe("github:vercel-labs/skills");
+    expect(r.ref).toBe("v2.0.0");
+    expect(r.path).toBe("react");
+  });
+
+  test("parses nested path", () => {
+    const r = resolveSkillSource("org/repo/skills/deep/nested");
+    expect(r.git).toBe("github:org/repo");
+    expect(r.path).toBe("skills/deep/nested");
+  });
+
+  test("throws on invalid source", () => {
+    expect(() => resolveSkillSource("just-owner")).toThrow();
+  });
+});
+
+describe("resolveSkillSlug", () => {
+  test("uses explicit slug when provided", () => {
+    expect(resolveSkillSlug({ slug: "my-skill" })).toBe("my-skill");
+  });
+
+  test("derives slug from git URL", () => {
+    expect(resolveSkillSlug({ git: "github:foo/bar" })).toBe("bar");
+  });
+
+  test("derives slug from git URL stripping .git", () => {
+    expect(resolveSkillSlug({ git: "github:foo/bar.git" })).toBe("bar");
+  });
+
+  test("derives slug from source (repo only)", () => {
+    expect(resolveSkillSlug({ source: "vercel-labs/skills" })).toBe("skills");
+  });
+
+  test("derives slug from source (with path)", () => {
+    expect(resolveSkillSlug({ source: "vercel-labs/skills/react-best-practices" })).toBe("react-best-practices");
+  });
+
+  test("derives slug from source (nested path)", () => {
+    expect(resolveSkillSlug({ source: "org/repo/skills/deep/nested" })).toBe("nested");
+  });
+
+  test("throws when nothing to resolve from", () => {
+    expect(() => resolveSkillSlug({})).toThrow();
   });
 });
