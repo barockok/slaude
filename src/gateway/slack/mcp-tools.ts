@@ -16,6 +16,16 @@ function format(text: string): string {
   return redactSlack(mdToMrkdwn(text), soulData().redactPatterns);
 }
 
+type ToolResult = {
+  content: { type: "text"; text: string }[];
+  isError?: boolean;
+};
+const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
+const err = (text: string): ToolResult => ({
+  content: [{ type: "text", text }],
+  isError: true,
+});
+
 /**
  * Per-session Slack output context. The slack MCP tools close over this
  * object. The adapter mutates `inboundTs` when a new user message arrives so
@@ -39,14 +49,259 @@ export type SlackContext = {
 
 export const SLACK_MCP_NAME = "slaude_slack";
 
+export const slackHandlers = {
+  async reply(ctx: SlackContext, { text }: { text: string }): Promise<ToolResult> {
+    try {
+      const r = await ctx.client.chat.postMessage({
+        channel: ctx.channel,
+        thread_ts: ctx.threadTs,
+        text: format(text),
+        mrkdwn: true,
+      });
+      return ok(`posted ts=${r.ts}`);
+    } catch (e: any) {
+      return err(`slack reply failed: ${e?.message ?? String(e)}`);
+    }
+  },
+
+  async edit(ctx: SlackContext, { ts, text }: { ts: string; text: string }): Promise<ToolResult> {
+    try {
+      await ctx.client.chat.update({
+        channel: ctx.channel,
+        ts,
+        text: format(text),
+      });
+      return ok("edited");
+    } catch (e: any) {
+      return err(`slack edit failed: ${e?.message ?? String(e)}`);
+    }
+  },
+
+  async react(ctx: SlackContext, { name, ts }: { name: string; ts?: string }): Promise<ToolResult> {
+    try {
+      await ctx.client.reactions.add({
+        channel: ctx.channel,
+        timestamp: ts ?? ctx.inboundTs,
+        name,
+      });
+      return ok(`reacted :${name}:`);
+    } catch (e: any) {
+      const msg = e?.data?.error ?? e?.message ?? String(e);
+      if (msg === "already_reacted") return ok("already reacted");
+      return err(`slack react failed: ${msg}`);
+    }
+  },
+
+  async unreact(ctx: SlackContext, { name, ts }: { name: string; ts?: string }): Promise<ToolResult> {
+    try {
+      await ctx.client.reactions.remove({
+        channel: ctx.channel,
+        timestamp: ts ?? ctx.inboundTs,
+        name,
+      });
+      return ok(`unreacted :${name}:`);
+    } catch (e: any) {
+      return err(`slack unreact failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
+    }
+  },
+
+  async request_approval(
+    ctx: SlackContext,
+    {
+      summary,
+      tools,
+      files,
+      risks,
+      category,
+    }: {
+      summary: string;
+      tools?: string[];
+      files?: string[];
+      risks?: string;
+      category?: string;
+    },
+  ): Promise<ToolResult> {
+    if (!ctx.requestApproval) {
+      return err("approval gate not wired (transport bug)");
+    }
+    try {
+      const r = await ctx.requestApproval({ summary, tools, files, risks, category });
+      if (r.approved) {
+        return ok(`approved by <@${r.by}>`);
+      }
+      return ok(`denied by <@${r.by}>${r.note ? ` (${r.note})` : ""}`);
+    } catch (e: any) {
+      return err(`approval request failed: ${e?.message ?? String(e)}`);
+    }
+  },
+
+  async upload(
+    ctx: SlackContext,
+    {
+      path,
+      title,
+      initial_comment,
+      alt_text,
+    }: {
+      path: string;
+      title?: string;
+      initial_comment?: string;
+      alt_text?: string;
+    },
+  ): Promise<ToolResult> {
+    try {
+      statSync(path); // throws if missing
+      const filename = basename(path);
+      const r = await ctx.client.files.uploadV2({
+        channel_id: ctx.channel,
+        thread_ts: ctx.threadTs,
+        file: createReadStream(path),
+        filename,
+        title: title ?? filename,
+        ...(initial_comment ? { initial_comment: format(initial_comment) } : {}),
+        ...(alt_text ? { alt_text } : {}),
+      } as any);
+      const ids = ((r as any).files ?? [])
+        .map((f: any) => f?.files?.[0]?.id ?? f?.id)
+        .filter(Boolean);
+      return ok(`uploaded${ids.length ? ` file_id=${ids.join(",")}` : ""}`);
+    } catch (e: any) {
+      const msg = e?.data?.error ?? e?.message ?? String(e);
+      return err(`slack upload failed: ${msg}`);
+    }
+  },
+
+  async get_user_profile(ctx: SlackContext, { user_id }: { user_id?: string }): Promise<ToolResult> {
+    try {
+      if (!user_id) {
+        return err("user_id required — pass the user_id from the channel envelope (e.g. U123ABC)");
+      }
+      const r = await ctx.client.users.info({ user: user_id });
+      const u = (r.user ?? {}) as any;
+      const p = (u.profile ?? {}) as any;
+      const payload = {
+        id: u.id,
+        name: u.name,
+        real_name: p.real_name,
+        display_name: p.display_name,
+        title: p.title,
+        email: p.email,
+        phone: p.phone,
+        status_text: p.status_text,
+        status_emoji: p.status_emoji,
+        timezone: u.tz,
+        timezone_label: u.tz_label,
+        pronouns: p.pronouns,
+        first_name: p.first_name,
+        last_name: p.last_name,
+        is_admin: u.is_admin,
+        is_owner: u.is_owner,
+        is_bot: u.is_bot,
+        updated: u.updated,
+      };
+      return ok(JSON.stringify(payload, null, 2));
+    } catch (e: any) {
+      return err(`slack users.info failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
+    }
+  },
+
+  async get_channel_info(ctx: SlackContext): Promise<ToolResult> {
+    try {
+      const r = await ctx.client.conversations.info({ channel: ctx.channel });
+      const c = (r.channel ?? {}) as any;
+      const payload = {
+        id: c.id,
+        name: c.name,
+        is_channel: c.is_channel,
+        is_group: c.is_group,
+        is_im: c.is_im,
+        is_private: c.is_private,
+        is_archived: c.is_archived,
+        created: c.created,
+        creator: c.creator,
+        topic: c.topic?.value,
+        purpose: c.purpose?.value,
+        num_members: c.num_members,
+      };
+      return ok(JSON.stringify(payload, null, 2));
+    } catch (e: any) {
+      return err(`slack conversations.info failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
+    }
+  },
+
+  async get_thread_history(
+    ctx: SlackContext,
+    { limit, include_replies }: { limit?: number; include_replies?: boolean },
+  ): Promise<ToolResult> {
+    try {
+      const r = await ctx.client.conversations.replies({
+        channel: ctx.channel,
+        ts: ctx.threadTs,
+        limit: limit ?? 20,
+      });
+      const msgs = ((r.messages ?? []) as any[]).map((m) => ({
+        ts: m.ts,
+        user: m.user,
+        text: m.text,
+        thread_ts: m.thread_ts,
+        reply_count: m.reply_count,
+        ...(include_replies !== false && m.replies
+          ? { replies: m.replies.map((r: any) => ({ ts: r.ts, user: r.user })) }
+          : {}),
+      }));
+      return ok(JSON.stringify({ messages: msgs, has_more: r.has_more }, null, 2));
+    } catch (e: any) {
+      return err(`slack conversations.replies failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
+    }
+  },
+
+  async list_users_in_channel(ctx: SlackContext, { limit }: { limit?: number }): Promise<ToolResult> {
+    try {
+      const r = await ctx.client.conversations.members({
+        channel: ctx.channel,
+        limit: limit ?? 200,
+      });
+      return ok(
+        JSON.stringify(
+          { members: r.members ?? [], has_more: r.response_metadata?.next_cursor ? true : false },
+          null,
+          2,
+        ),
+      );
+    } catch (e: any) {
+      return err(`slack conversations.members failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
+    }
+  },
+
+  async search_messages(
+    ctx: SlackContext,
+    { query, count }: { query: string; count?: number },
+  ): Promise<ToolResult> {
+    try {
+      const r = await ctx.client.search.messages({
+        query,
+        count: count ?? 10,
+        sort: "score",
+        sort_dir: "desc",
+      });
+      const matches = ((r.messages?.matches ?? []) as any[]).map((m) => ({
+        ts: m.ts,
+        channel: { id: m.channel?.id, name: m.channel?.name },
+        user: m.user,
+        username: m.username,
+        text: m.text,
+        permalink: m.permalink,
+        score: m.score,
+      }));
+      return ok(JSON.stringify({ total: r.messages?.total, matches }, null, 2));
+    } catch (e: any) {
+      return err(`slack search.messages failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
+    }
+  },
+};
+
 /** Build an SDK MCP server bound to a session's SlackContext. */
 export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstance {
-  const ok = (text: string) => ({ content: [{ type: "text" as const, text }] });
-  const err = (text: string) => ({
-    content: [{ type: "text" as const, text }],
-    isError: true,
-  });
-
   return createSdkMcpServer({
     name: SLACK_MCP_NAME,
     version: "0.1.0",
@@ -57,19 +312,7 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
         {
           text: z.string().describe("Message body. Slack mrkdwn supported (*bold*, _ital_, `code`, ```block```, <@U…>)."),
         },
-        async ({ text }) => {
-          try {
-            const r = await ctx.client.chat.postMessage({
-              channel: ctx.channel,
-              thread_ts: ctx.threadTs,
-              text: format(text),
-              mrkdwn: true,
-            });
-            return ok(`posted ts=${r.ts}`);
-          } catch (e: any) {
-            return err(`slack reply failed: ${e?.message ?? String(e)}`);
-          }
-        },
+        (args) => slackHandlers.reply(ctx, args),
       ),
 
       tool(
@@ -79,18 +322,7 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
           ts: z.string().describe("Slack message ts to edit."),
           text: z.string().describe("Replacement body."),
         },
-        async ({ ts, text }) => {
-          try {
-            await ctx.client.chat.update({
-              channel: ctx.channel,
-              ts,
-              text: format(text),
-            });
-            return ok("edited");
-          } catch (e: any) {
-            return err(`slack edit failed: ${e?.message ?? String(e)}`);
-          }
-        },
+        (args) => slackHandlers.edit(ctx, args),
       ),
 
       tool(
@@ -98,104 +330,9 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
         "Add an emoji reaction to a Slack message. Defaults to the user's latest inbound message in this thread.",
         {
           name: z.string().describe("Emoji name without colons (e.g. 'eyes', 'white_check_mark')."),
-          ts: z
-            .string()
-            .optional()
-            .describe("Optional message ts; defaults to the user's latest inbound message."),
+          ts: z.string().optional().describe("Optional message ts; defaults to the user's latest inbound message."),
         },
-        async ({ name, ts }) => {
-          try {
-            await ctx.client.reactions.add({
-              channel: ctx.channel,
-              timestamp: ts ?? ctx.inboundTs,
-              name,
-            });
-            return ok(`reacted :${name}:`);
-          } catch (e: any) {
-            const msg = e?.data?.error ?? e?.message ?? String(e);
-            if (msg === "already_reacted") return ok("already reacted");
-            return err(`slack react failed: ${msg}`);
-          }
-        },
-      ),
-
-      tool(
-        "request_approval",
-        "Ask the user to approve a high-level plan before executing destructive or far-reaching work (file writes, mutating Bash, deploys, deletions, migrations, external POSTs, etc.). Posts a Block Kit message with the plan summary and Approve/Deny buttons; blocks until an authorized user clicks. Returns {approved: bool, by: <user_id>, note?}. If approved=false, do NOT proceed — reply explaining you need a different plan. Read-only ops (Read/Grep/Glob/LS/git status) do not need approval. Provide `category` when the persona's <approvers> block defines per-area allowlists (e.g. 'database', 'deploy', 'code') so the right people are gated; otherwise the default approvers apply.",
-        {
-          summary: z
-            .string()
-            .describe("One-paragraph plain-language summary of what you're about to do and why."),
-          tools: z
-            .array(z.string())
-            .optional()
-            .describe("List of tool names you intend to call (e.g. ['Bash','Edit','mcp__slaude_slack__upload'])."),
-          files: z
-            .array(z.string())
-            .optional()
-            .describe("Files you intend to create / modify / delete."),
-          risks: z
-            .string()
-            .optional()
-            .describe("What could go wrong / what's irreversible. Brief."),
-          category: z
-            .string()
-            .optional()
-            .describe("Optional short area hint to help the runtime route the plan to the right approver(s) — e.g. 'database', 'deploy', 'code', 'comms'. The runtime keyword-matches `summary` (and this hint when given) against the persona's <approvers> scope descriptions; you do NOT decide who approves. If you have no idea, omit it."),
-        },
-        async ({ summary, tools, files, risks, category }) => {
-          if (!ctx.requestApproval) {
-            return err("approval gate not wired (transport bug)");
-          }
-          try {
-            const r = await ctx.requestApproval({ summary, tools, files, risks, category });
-            if (r.approved) {
-              return ok(`approved by <@${r.by}>`);
-            }
-            return ok(`denied by <@${r.by}>${r.note ? ` (${r.note})` : ""}`);
-          } catch (e: any) {
-            return err(`approval request failed: ${e?.message ?? String(e)}`);
-          }
-        },
-      ),
-
-      tool(
-        "upload",
-        "Upload a local file to the current Slack thread. Use absolute paths under the session working dir (e.g. files you've Written or downloaded). Optional initial_comment posts above the file as the bot's text; omit to upload silently. Requires the bot's `files:write` scope.",
-        {
-          path: z.string().describe("Absolute local path to the file to upload."),
-          title: z.string().optional().describe("Display title (defaults to filename)."),
-          initial_comment: z
-            .string()
-            .optional()
-            .describe("Optional message body posted with the file. Markdown supported (converted to Slack mrkdwn)."),
-          alt_text: z
-            .string()
-            .optional()
-            .describe("Accessibility alt text for images."),
-        },
-        async ({ path, title, initial_comment, alt_text }) => {
-          try {
-            statSync(path); // throws if missing
-            const filename = basename(path);
-            const r = await ctx.client.files.uploadV2({
-              channel_id: ctx.channel,
-              thread_ts: ctx.threadTs,
-              file: createReadStream(path),
-              filename,
-              title: title ?? filename,
-              ...(initial_comment ? { initial_comment: format(initial_comment) } : {}),
-              ...(alt_text ? { alt_text } : {}),
-            } as any);
-            const ids = ((r as any).files ?? [])
-              .map((f: any) => f?.files?.[0]?.id ?? f?.id)
-              .filter(Boolean);
-            return ok(`uploaded${ids.length ? ` file_id=${ids.join(",")}` : ""}`);
-          } catch (e: any) {
-            const msg = e?.data?.error ?? e?.message ?? String(e);
-            return err(`slack upload failed: ${msg}`);
-          }
-        },
+        (args) => slackHandlers.react(ctx, args),
       ),
 
       tool(
@@ -205,18 +342,77 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
           name: z.string(),
           ts: z.string().optional(),
         },
-        async ({ name, ts }) => {
-          try {
-            await ctx.client.reactions.remove({
-              channel: ctx.channel,
-              timestamp: ts ?? ctx.inboundTs,
-              name,
-            });
-            return ok(`unreacted :${name}:`);
-          } catch (e: any) {
-            return err(`slack unreact failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
-          }
+        (args) => slackHandlers.unreact(ctx, args),
+      ),
+
+      tool(
+        "request_approval",
+        "Ask the user to approve a high-level plan before executing destructive or far-reaching work (file writes, mutating Bash, deploys, deletions, migrations, external POSTs, etc.). Posts a Block Kit message with the plan summary and Approve/Deny buttons; blocks until an authorized user clicks. Returns {approved: bool, by: <user_id>, note?}. If approved=false, do NOT proceed — reply explaining you need a different plan. Read-only ops (Read/Grep/Glob/LS/git status) do not need approval. Provide `category` when the persona's <approvers> block defines per-area allowlists (e.g. 'database', 'deploy', 'code') so the right people are gated; otherwise the default approvers apply.",
+        {
+          summary: z.string().describe("One-paragraph plain-language summary of what you're about to do and why."),
+          tools: z.array(z.string()).optional().describe("List of tool names you intend to call (e.g. ['Bash','Edit','mcp__slaude_slack__upload'])."),
+          files: z.array(z.string()).optional().describe("Files you intend to create / modify / delete."),
+          risks: z.string().optional().describe("What could go wrong / what's irreversible. Brief."),
+          category: z.string().optional().describe("Optional short area hint to help the runtime route the plan to the right approver(s) — e.g. 'database', 'deploy', 'code', 'comms'. The runtime keyword-matches `summary` (and this hint when given) against the persona's <approvers> scope descriptions; you do NOT decide who approves. If you have no idea, omit it."),
         },
+        (args) => slackHandlers.request_approval(ctx, args),
+      ),
+
+      tool(
+        "upload",
+        "Upload a local file to the current Slack thread. Use absolute paths under the session working dir (e.g. files you've Written or downloaded). Optional initial_comment posts above the file as the bot's text; omit to upload silently. Requires the bot's `files:write` scope.",
+        {
+          path: z.string().describe("Absolute local path to the file to upload."),
+          title: z.string().optional().describe("Display title (defaults to filename)."),
+          initial_comment: z.string().optional().describe("Optional message body posted with the file. Markdown supported (converted to Slack mrkdwn)."),
+          alt_text: z.string().optional().describe("Accessibility alt text for images."),
+        },
+        (args) => slackHandlers.upload(ctx, args),
+      ),
+
+      tool(
+        "get_user_profile",
+        "Fetch a Slack user's profile. Use this to learn who you're talking to — their name, title, timezone, status, pronouns, etc. Pass a user ID (e.g. U123ABC). This helps you personalize responses and avoid asking info the profile already contains.",
+        {
+          user_id: z.string().describe("Slack user ID (e.g. U123ABC)."),
+        },
+        (args) => slackHandlers.get_user_profile(ctx, args),
+      ),
+
+      tool(
+        "get_channel_info",
+        "Get info about the current Slack channel or DM — name, topic, purpose, member count, creation date, and whether it's archived. Helps you understand the conversational context (e.g. is this #general, a private team channel, or a 1:1 DM?).",
+        {},
+        () => slackHandlers.get_channel_info(ctx),
+      ),
+
+      tool(
+        "get_thread_history",
+        "Fetch earlier messages in the current Slack thread. Use this when the user refers to something said earlier (e.g. 'as I mentioned before') or when you need more context than the current inbound message provides. Returns messages in chronological order (oldest first).",
+        {
+          limit: z.number().min(1).max(100).optional().describe("Max messages to fetch (1-100). Default 20."),
+          include_replies: z.boolean().optional().describe("Whether to include threaded replies (default true)."),
+        },
+        (args) => slackHandlers.get_thread_history(ctx, args),
+      ),
+
+      tool(
+        "list_users_in_channel",
+        "List the members of the current Slack channel. Use this to understand who's in the room, find user IDs to look up profiles, or check if a specific person is present. Returns user IDs — call get_user_profile to resolve names/details.",
+        {
+          limit: z.number().min(1).max(1000).optional().describe("Max members to fetch (1-1000). Default 200."),
+        },
+        (args) => slackHandlers.list_users_in_channel(ctx, args),
+      ),
+
+      tool(
+        "search_messages",
+        "Search Slack messages in the workspace. Use this to find prior discussions, decisions, or context the user is referencing. Supports Slack search syntax (e.g. 'from:@alice deploy', 'in:#engineering outage', 'after:2024-01-01'). Results are ordered by relevance.",
+        {
+          query: z.string().describe("Search query. Slack search syntax supported: from:@user, in:#channel, after:YYYY-MM-DD, before:YYYY-MM-DD, has:link, etc."),
+          count: z.number().min(1).max(20).optional().describe("Max results (1-20). Default 10."),
+        },
+        (args) => slackHandlers.search_messages(ctx, args),
       ),
 
       tool(
