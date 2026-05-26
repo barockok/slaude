@@ -52,6 +52,8 @@ export type SlackContext = {
     risks?: string;
     category?: string;
   }) => Promise<{ approved: boolean; by: string; note?: string }>;
+  /** Optional session reload — set by the adapter so reload_session works. */
+  reloadSession?: () => boolean;
 };
 
 export const SLACK_MCP_NAME = "slaude_slack";
@@ -459,6 +461,18 @@ const adminHandlers = {
     if (removed === 0) return ok(`no active ignore for user <@${userId}>`);
     return ok(`stopped ignoring <@${userId}>`);
   },
+
+  async reloadSession(ctx: SlackContext): Promise<ToolResult> {
+    if (!isManagerOrApprover(ctx.userId)) {
+      return err("Only manager or approver can reload session.");
+    }
+    if (!ctx.reloadSession) {
+      return err("reload not wired (transport bug)");
+    }
+    const ok_ = ctx.reloadSession();
+    if (!ok_) return err("session not live — nothing to reload");
+    return ok("Session reloaded. Next message will start fresh with newly-resolved MCPs, plugins, and skills.");
+  },
 };
 
 /** Build an SDK MCP server bound to a session's SlackContext. */
@@ -646,6 +660,13 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
         "Synchronize raw knowledge-base content into the processed wiki format. Use when new raw files have been added to the KB and the user asks to refresh, rebuild, or update the knowledge base. This can be slow — only trigger when actually needed. Requires manager or approver authorization.",
         {},
         () => adminHandlers.triggerIngest(ctx),
+      ),
+
+      tool(
+        "reload_session",
+        "Gracefully reload the current session so newly installed MCP servers, plugins, or skills are picked up on the next turn. Closes the SDK loop cleanly (no scary error messages) and marks the session idle. The next inbound message starts a fresh Query with freshly-resolved MCPs, plugins, and skills. Requires manager or approver authorization.",
+        {},
+        () => adminHandlers.reloadSession(ctx),
       ),
     ],
   });
