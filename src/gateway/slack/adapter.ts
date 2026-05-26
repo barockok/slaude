@@ -118,6 +118,7 @@ export function createSlackApp(agent: AgentManager) {
           threadTs: ctx.threadTs,
           ...req,
         });
+      ctx.reloadSession = () => agent.reload(sessionId);
       routes.set(sessionId, { ctx, spoke: false });
     },
   });
@@ -594,6 +595,7 @@ export function createSlackApp(agent: AgentManager) {
       existing.ctx.threadTs = threadTs;
       existing.ctx.inboundTs = eventTs;
       existing.ctx.userId = userId;
+      existing.ctx.reloadSession = () => agent.reload(session.id);
       existing.spoke = false;
     } else {
       const ctx: SlackContext = {
@@ -610,6 +612,7 @@ export function createSlackApp(agent: AgentManager) {
           threadTs: ctx.threadTs,
           ...req,
         });
+      ctx.reloadSession = () => agent.reload(session.id);
       routes.set(session.id, { ctx, spoke: false });
     }
 

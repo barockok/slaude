@@ -43,6 +43,8 @@ type LiveSession = {
   query?: Query;
   /** Idle TTL timer; cleared/rearmed on every user msg and turn-end. */
   idleTimer?: ReturnType<typeof setTimeout>;
+  /** Set when reload_session is called so expected exit errors are suppressed. */
+  reloading?: boolean;
 };
 
 export type AgentEvent =
@@ -166,6 +168,16 @@ export class AgentManager extends EventEmitter {
   /** Cancel any in-flight turn for the session. */
   abort(sessionId: string) {
     this.#live.get(sessionId)?.abort.abort();
+  }
+
+  /** Gracefully close a live session so the next inbound message boots a
+   *  fresh Query with newly-resolved MCPs, plugins, and skills. */
+  reload(sessionId: string) {
+    const live = this.#live.get(sessionId);
+    if (!live) return false;
+    live.reloading = true;
+    live.closeIterable();
+    return true;
   }
 
   /** Change permission mode for a session. Persists; if live, also pushed to the SDK Query. */
@@ -380,8 +392,12 @@ export class AgentManager extends EventEmitter {
           void this.#startSession(sessionId, firstText);
           return;
         }
-        metric.errorsTotal.inc({ kind: "sdk" });
-        this.emit("event", { type: "error", sessionId, error: message } satisfies AgentEvent);
+        if (live?.reloading) {
+          console.log(`[mgr] reload session=${sessionId} — suppressing expected exit error`);
+        } else {
+          metric.errorsTotal.inc({ kind: "sdk" });
+          this.emit("event", { type: "error", sessionId, error: message } satisfies AgentEvent);
+        }
       } finally {
         if (retried) return;
         if (live.idleTimer) clearTimeout(live.idleTimer);
