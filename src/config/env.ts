@@ -57,6 +57,19 @@ export const env = {
    *                            anthropic-beta: oauth-2025-04-20 header, and the
    *                            SDK child inherits the token for subscription auth.
    */
+  whatsapp: {
+    enabled: () => opt("WHATSAPP_ENABLED", "false") === "true",
+    approvers: () =>
+      opt("WHATSAPP_APPROVERS")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    approvalTimeoutSeconds: () => {
+      const raw = opt("WHATSAPP_APPROVAL_TIMEOUT_SECONDS", "300");
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : 300;
+    },
+  },
   provider: {
     apiKey: () => opt("ANTHROPIC_API_KEY"),
     baseUrl: () => opt("ANTHROPIC_BASE_URL"),
