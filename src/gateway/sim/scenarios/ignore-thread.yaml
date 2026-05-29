@@ -1,0 +1,15 @@
+soul:
+  manager: U0MGR
+  approvers: [U0APP]
+  trusted: [C0IGNORE]
+  allowed: []
+agent_behavior: reply
+steps:
+  - send: { as: U0MGR, channel: C0IGNORE, text: "/ignore-thread badvalue" }
+  - expect_reply: { contains: "duration must be" }
+  - send: { as: U0MGR, channel: C0IGNORE, text: "/ignore-thread 1h" }
+  - expect_reply: { contains: "ignoring this thread" }
+  - send: { as: U0MGR, channel: C0IGNORE, text: "/ignore-thread" }
+  - expect_reply: { contains: "ignoring this thread" }
+  - send: { as: U0MGR, channel: C0IGNORE, text: "/unignore-thread" }
+  - expect_reply: { contains: "stopped ignoring this thread" }
