@@ -1,0 +1,4 @@
+preset: restricted-blocked
+steps:
+  - send: { text: "hello" }
+  - expect_drop: { reason: whitelist }
