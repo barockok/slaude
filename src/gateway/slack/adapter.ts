@@ -19,6 +19,10 @@ import { createSlackMcp, SLACK_MCP_NAME, type SlackContext, parseDuration } from
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME } from "../../knowledge/mcp-tools";
+import { loadEncryptionKey } from "../../config/env";
+import { createBroker } from "../../agent/connect-broker/index";
+import { createConnectMcp, CONNECT_MCP_NAME } from "../../agent/connect-broker/broker-mcp";
+import { buildApprovalRequester } from "./connect-wiring";
 import { resolveUserName } from "./users";
 import { downloadAttachments, type SlackFile } from "./attachments";
 import * as Sessions from "../../db/sessions";
@@ -99,6 +103,30 @@ export function createSlackApp(agent: AgentManager) {
   setInterval(() => {
     import("../../db/ignores").then((m) => m.cleanupExpired());
   }, 5 * 60 * 1000);
+
+  // Contextual MCP connections broker. Requires SLAUDE_ENCRYPTION_KEY; if it's
+  // absent we skip mounting the broker so existing deployments keep working.
+  // spawnChild / postConnectUrl are deploy-time seams (CDP login host); the
+  // pure broker logic is fully covered by unit tests.
+  const connectBroker = (() => {
+    let key: Buffer;
+    try {
+      key = loadEncryptionKey();
+    } catch (e) {
+      console.log(`[connect-broker] disabled: ${(e as Error).message}`);
+      return null;
+    }
+    const requestApproval = buildApprovalRequester(approvals);
+    return createBroker({
+      key,
+      idleMs: 5 * 60_000,
+      spawnChild: () => {
+        throw new Error("connect-broker: vendor MCP child spawn is wired at deploy time (CDP login host)");
+      },
+      requestApproval,
+      isMember: () => true, // MVP: Slack delivered the event => caller is in the channel.
+    });
+  })();
   const cronScheduler = new CronScheduler({
     agent,
     client: app.client,
@@ -164,7 +192,7 @@ export function createSlackApp(agent: AgentManager) {
   agent.setMcpResolver((sessionId) => {
     const route = routes.get(sessionId);
     if (!route) return undefined;
-    return {
+    const servers: Record<string, McpServerConfig> = {
       [SLACK_MCP_NAME]: createSlackMcp(route.ctx),
       [SKILLS_MCP_NAME]: createSkillsMcp(),
       [SESSION_MCP_NAME]: createSessionMcp({
@@ -173,6 +201,23 @@ export function createSlackApp(agent: AgentManager) {
       [KB_MCP_NAME]: createKbMcp(),
       ...externalMcp,
     };
+    // Mount the per-user connections broker when enabled and the thread is
+    // fully keyed (team + channel + thread). Caller identity is bound in-band
+    // via on_behalf_of (B1) — the agent must pass route.ctx.userId.
+    if (connectBroker && route.ctx.teamId && route.ctx.userId) {
+      servers[CONNECT_MCP_NAME] = createConnectMcp(
+        connectBroker.buildCtx({
+          callerUserId: route.ctx.userId,
+          thread: { team_id: route.ctx.teamId, channel_id: route.ctx.channel, thread_ts: route.ctx.threadTs },
+          postConnectUrl: async (_service) => ({
+            // Deploy-time seam: the CDP login host returns a one-time live-view URL.
+            url: "(login host not configured in this build)",
+            expiresInMs: 0,
+          }),
+        }),
+      );
+    }
+    return servers;
   });
 
   agent.on("event", (e: AgentEvent) => {

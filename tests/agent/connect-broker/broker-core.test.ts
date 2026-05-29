@@ -14,11 +14,11 @@ function deps(over: Partial<BrokerCoreDeps> = {}): BrokerCoreDeps & { _audit: an
   return {
     resolve: () => ({ kind: "own", connection: conn("U1") }),
     decrypt: () => "PLAINTEXT",
-    acquireChild: async () => ({ callTool: async (t, a) => ({ echoed: { t, a } }), deliverCred() {}, kill() {} }),
+    acquireChild: async () => ({ callTool: async (t: string, a: unknown) => ({ echoed: { t, a } }), deliverCred() {}, kill() {} }),
     releaseChild: () => {},
     requestApproval: async () => ({ approved: true, by: "U1", scope: "thread" }),
     insertGrant: () => {},
-    appendAudit: (a) => audit.push(a),
+    appendAudit: (a: unknown) => audit.push(a),
     touchLastUsed: () => {},
     isMember: () => true,
     now: () => 123,
