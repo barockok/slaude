@@ -1,0 +1,8 @@
+preset: manager-dm
+steps:
+  - send: { text: "/mode bypass" }
+  - expect_reply: { contains: "bypass" }
+  - send: { text: "/abort" }
+  - expect_reply: { contains: "aborted" }
+  - send: { text: "/help" }
+  - expect_reply: { contains: "mode" }
