@@ -34,7 +34,7 @@ slaude needs per-user, contextual MCP connections inside a Slack thread.
 | Cross-user grant | **Per-thread, revocable.** First borrow → one rich approval to the owner; subsequent borrows in that thread run silently but each use is audited. Owner revokes anytime via `/connections`. (Revised from per-request — see "Grant model" below.) |
 | Approval binding | Each approval/borrow is bound to a **canonical hash of `(service, tool, normalized args)`** for write tools; the Block Kit message renders the real tool + key args, never an LLM summary. |
 | Borrowable surface | Registry classifies each vendor tool `borrowable` vs `owner-only`. Owner-only tools never run under a borrow, regardless of approval. |
-| Browser infra | **Ephemeral remote Chrome over CDP** behind a server-mediated live-view (no raw CDP port), one-time token, capture-then-teardown. |
+| Browser infra | **Ephemeral remote Chrome, web-CDP screencast live-view** (`Page.startScreencast` + `Input.*`), server-mediated (no raw CDP port), one-time token, capture-then-teardown. Page-scoped by construction = confined (user can't reach OS/terminal/browser chrome). Multi-target popup handling included (auto-attach OAuth `window.open` windows, switch the stream). No noVNC. Trade-off: OS-native dialogs (basic-auth/client-cert) are unreachable — out of scope; target cloud SSO (redirect + popup), which CDP covers. |
 | Credential storage | **Encrypted-at-rest in sqlite with TTL** (single store, reaper). AES-256-GCM, per-row nonce, AAD-bound to row. |
 | Initiation UX | **Both** — auto-prompt "Connect" card on first need (also the teaching moment), plus explicit `/connect <service>` and `/connections`. |
 | Consent | Explicit consent card before any credential capture: what is captured, where stored, TTL, thread-only scope. |
@@ -101,7 +101,12 @@ New: `src/agent/connect-broker/`
   during a call (ref-count to avoid reap-mid-call), idle reaper, MCP-client wiring to each child.
 - `registry.ts` — per-service definitions: `auth_strategy`, spawn command, cred-injection shape,
   capture rules, and per-**tool** flags: `borrowable`, `personal`, `write`.
-- `login.ts` — ephemeral CDP browser lifecycle + server-mediated live-view + one-time token + capture.
+- `login.ts` — ephemeral CDP browser lifecycle + server-mediated web-CDP screencast live-view +
+  one-time token + capture. Handles: frame ack loop (`Page.screencastFrameAck`), browser-side input
+  capture → `Input.dispatchMouse/Key/TouchEvent`, screencast coordinate/scale mapping, and
+  **multi-target popups** (`Target.setAutoAttach` → on `targetCreated` attach + stream the popup +
+  route input → on `targetDestroyed` switch back). Navigation NOT exposed (user can't leave the auth
+  flow). Confined to page targets — no OS/desktop reach.
 - `crypto.ts` — AES-256-GCM encrypt/decrypt of credential blobs (per-row nonce + AAD).
 - `resolver.ts` — caller → connection resolution + borrow/grant decision (fail-closed).
 
@@ -281,7 +286,7 @@ it in the reply (*"(using slaude's GitHub — `/connect github` to see your priv
 ## Open questions (defer)
 
 - Encryption key rotation mechanics (schema carries `key_id`; rotation job TBD).
-- Browser infra host: in-container headful Chrome vs sidecar; web-CDP vs noVNC for the live-view proxy.
+- Browser infra host: in-container headful Chrome vs sidecar process (transport is settled — web-CDP).
 - Hard cap on simultaneous live-view browsers (treat as a v1 limit, not deferred — each holds a
   credential capture).
 - Soft "connection about to expire — reconnect?" nudge on active threads vs silent reap.
@@ -291,3 +296,5 @@ it in the reply (*"(using slaude's GitHub — `/connect github` to see your priv
 - Header-swap proxy and pure service-adapter approaches (chose subprocess pool).
 - Cross-thread connection reuse.
 - External vault for *ephemeral* creds (sqlite-at-rest; revisit only for slaude-scope long-lived).
+- noVNC / full-desktop live-view (chose confined web-CDP; accept the OS-native-dialog blind spot).
+- Services that require OS-native auth dialogs (basic-auth / client-cert) — unreachable via web-CDP.
