@@ -120,20 +120,7 @@ function regexFallback(): SoulData {
 }
 
 /**
- * Test/simulation fixture override. When set, `loadSoulData()` returns this
- * value immediately without hitting disk or the LLM extractor. Intended for
- * unit tests and the simulation gateway — NOT for production use.
- * Clear with `__setLoadSoulDataFixture(null)` between tests.
- */
-let _fixture: SoulData | null = null;
-/** @internal Test/sim seam — set a fixture that `loadSoulData()` returns immediately. */
-export function __setLoadSoulDataFixture(d: SoulData | null): void {
-  _fixture = d;
-}
-
-/**
  * Resolve structured SoulData. Order:
- *   0. fixture override (test/sim seam) → return immediately
  *   1. cache hit on sha256(SOUL.md) → return cached
  *   2. LLM extraction → validate via zod → cache → return
  *   3. on any failure → regex fallback (approvers only)
@@ -141,7 +128,6 @@ export function __setLoadSoulDataFixture(d: SoulData | null): void {
  * Safe to call repeatedly; cheap after first call.
  */
 export async function loadSoulData(): Promise<SoulData> {
-  if (_fixture) return _fixture;
   const persona = loadSoul();
   const sha = sha256(persona);
   const cp = cachePath(sha);
