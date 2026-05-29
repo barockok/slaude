@@ -33,6 +33,7 @@ import { canTriggerIngest } from "../slack/ingest-auth";
 import * as kbIngest from "../../knowledge/ingest";
 import * as Ignores from "../../db/ignores";
 import * as CronJobs from "../../db/cron-jobs";
+import * as OneOnOne from "../../db/one-on-one";
 import { CronScheduler } from "../slack/cron-scheduler";
 import { getNextRun } from "../slack/cron-parser";
 import type { Transport } from "./transport";
@@ -382,6 +383,24 @@ export function createGateway(agent: AgentManager, t: Transport): GatewayHandle 
       }
     }
 
+    // 1on1 lock: while active, only the locked user + manager/backup are heard in
+    // this thread. After channel-mode (overrides "anyone can chat" in trusted/allowed
+    // channels) and before slash parsing (a non-allowed user can't /1on1 off to hijack
+    // someone else's lock). Approval buttons are unaffected — they go through
+    // ApprovalGate's action handler, not this path.
+    {
+      const lock = OneOnOne.find(channelId, threadTs);
+      if (lock) {
+        const soul = soulData();
+        const isMgr = userId === soul.manager.userId || userId === soul.backupManager.userId;
+        if (userId !== lock.locked_user && !isMgr) {
+          console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — 1on1 locked to ${lock.locked_user}`);
+          metric.slackDropsTotal.inc({ reason: "one_on_one" });
+          return;
+        }
+      }
+    }
+
     const botUserId = (await client.auth.test()).user_id as string;
     const stripped = text.replace(new RegExp(`<@${botUserId}>`, "g"), "").trim();
     const hasFiles = Array.isArray(event.files) && event.files.length > 0;
@@ -438,6 +457,21 @@ export function createGateway(agent: AgentManager, t: Transport): GatewayHandle 
         } else {
           await reply(`:x: ingest failed: ${result.reason}`);
         }
+        return;
+      }
+      if (slash.kind === "one-on-one") {
+        if (slash.action === "on") {
+          OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId });
+          await reply(`:lock: *1on1 mode* — only <@${userId}> and the manager will be heard in this thread. \`/1on1 off\` to release.`);
+          return;
+        }
+        const existing = OneOnOne.find(channelId, threadTs);
+        if (!existing) {
+          await reply("No active 1on1 in this thread.");
+          return;
+        }
+        OneOnOne.unlock(channelId, threadTs);
+        await reply(":unlock: 1on1 released — the thread is open again.");
         return;
       }
       if (slash.kind === "ignore" || slash.kind === "unignore") {
