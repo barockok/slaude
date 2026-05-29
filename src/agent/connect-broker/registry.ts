@@ -36,6 +36,9 @@ const SERVICES: Record<string, ServiceDef> = {
     tools: {
       jira_search:         { personal: true, borrowable: true, write: false },
       jira_get_issue:      { personal: true, borrowable: true, write: false },
+      // shared-ok: team-level read that may run under slaude's own identity when
+      // no user connection applies (not personal — see resolver slaude fallback).
+      jira_list_projects:  { personal: false, borrowable: true, write: false },
       jira_list_my_issues: { personal: true, borrowable: false, write: false },
       jira_create_issue:   { personal: true, borrowable: false, write: true },
       jira_update_issue:   { personal: true, borrowable: false, write: true },
