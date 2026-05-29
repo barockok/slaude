@@ -22,7 +22,7 @@ describe("cred crypto", () => {
   it("rejects a tampered ciphertext", () => {
     const ct = encryptCred(KEY, "c", "secret");
     const buf = Buffer.from(ct, "base64");
-    buf[buf.length - 1] ^= 0xff; // flip a tag bit
+    buf[buf.length - 1] = (buf[buf.length - 1] ?? 0) ^ 0xff; // flip a tag bit
     expect(() => decryptCred(KEY, "c", buf.toString("base64"))).toThrow();
   });
 
