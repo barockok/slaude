@@ -71,14 +71,17 @@ export class SimSession {
     if (this.agent instanceof StubAgent) this.agent.setBehavior(this.behavior);
   }
 
-  async send(step: { as?: string; channel?: string; text: string; dm?: boolean }): Promise<void> {
+  async send(step: { as?: string; channel?: string; text: string; dm?: boolean; thread?: string }): Promise<void> {
     const as = step.as ?? this.actor;
     const channel = step.channel ?? this.channel;
     const dm = step.dm ?? (step.channel ? false : this.dm);
     if (this.agent instanceof StubAgent) this.agent.setBehavior(this.behavior);
     // Non-DM channels require an @mention to engage the thread (real engagement gate).
     const text = dm ? step.text : `<@${SIM_BOT}> ${step.text}`;
-    await this.transport.feedMessage({ channel, user: as, text, channel_type: dm ? "im" : "channel", team: TEAM });
+    // `thread` pins messages to a shared thread_ts so multi-message, thread-scoped
+    // behaviors (e.g. /1on1 locks) model one real Slack thread. Omitted → each send
+    // is its own thread (handleMessage falls back to the message ts).
+    await this.transport.feedMessage({ channel, user: as, text, channel_type: dm ? "im" : "channel", team: TEAM, thread_ts: step.thread });
     await this.#drain();
   }
 
