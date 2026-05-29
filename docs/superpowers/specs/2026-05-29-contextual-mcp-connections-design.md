@@ -119,7 +119,7 @@ Touched:
   (`[Allow for thread] [Just once] [Deny]`) extending the action regex + adding `scope:"thread"|"once"`
   to `ApprovalDecision`. Hash binding (H2) stays in the broker, not the gate. Reuse its timeout
   (`approvalTimeoutSeconds`).
-- `src/agent/manager.ts` — **scrub `SLAUDE_CRED_KEY` from the SDK child env** (currently
+- `src/agent/manager.ts` — **scrub `SLAUDE_ENCRYPTION_KEY` from the SDK child env** (currently
   `env:{...process.env}` at line 312 would propagate it). Broker decrypts; children never see the key.
 
 ### Broker tool surface (fixed)
@@ -150,7 +150,7 @@ CREATE TABLE connections (
   thread_ts           TEXT,
   auth_strategy       TEXT NOT NULL,           -- "token" | "cookie"
   cred_ciphertext     BLOB NOT NULL,           -- AES-256-GCM: nonce(96-bit) || ciphertext || tag
-  key_id              TEXT NOT NULL,           -- which SLAUDE_CRED_KEY encrypted this (rotation)
+  key_id              TEXT NOT NULL,           -- which SLAUDE_ENCRYPTION_KEY encrypted this (rotation)
   created_at          INTEGER NOT NULL,
   last_used_at        INTEGER,
   expires_at          INTEGER,                 -- TTL; NULL/long for slaude scope
@@ -255,7 +255,7 @@ it in the reply (*"(using slaude's GitHub — `/connect github` to see your priv
   member (avoid existence-leak of who-uses-what).
 - **M1 — cred injection.** Via stdin/handshake, never env or argv (same-uid `/proc` leak across
   children). Cookie `storageState` temp files non-world-readable + unlinked after child reads.
-- **M2 — key handling.** `SLAUDE_CRED_KEY` excluded from spawned child env (broker-only decrypt;
+- **M2 — key handling.** `SLAUDE_ENCRYPTION_KEY` excluded from spawned child env (broker-only decrypt;
   scrub at `manager.ts:312`); `key_id` per row for rotation; slaude-scope long-lived creds are the
   largest blast radius — consider a separate key / external KMS even in v1.
 - **M3 — AES-GCM.** 96-bit nonce from CSPRNG per encryption (never counter/derived); AAD = connection
