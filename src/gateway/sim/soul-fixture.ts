@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { paths } from "../../config/home";
-import { __setLoadSoulDataFixture } from "../../soul/extract";
-import type { SoulData } from "../../soul/data";
+import { setSoulData } from "../../soul/extract";
+import { SoulDataSchema } from "../../soul/data";
 
 export interface SoulFixture {
   manager: string;
@@ -11,20 +11,12 @@ export interface SoulFixture {
   allowed: string[];
 }
 
-/**
- * Write a minimal SOUL.md fixture into $SLAUDE_HOME that the real soul loader
- * parses into manager/backup/approvers/trusted/allowed.
- *
- * Because the simulation and unit tests use arbitrary placeholder IDs (e.g.
- * "U_MGR") that don't satisfy the production Slack-id regex, this function
- * also primes the `loadSoulData()` fixture override so callers get the full
- * structured SoulData immediately — no LLM call, no Zod id validation.
- *
- * The written SOUL.md follows the canonical format used by the real loader
- * so downstream code that reads SOUL.md directly (e.g. `loadApproverEntries`)
- * also works correctly for IDs that DO satisfy the Slack-id regex.
- */
+/** Write a SOUL.md fixture into $SLAUDE_HOME AND inject the matching structured
+ *  SoulData via the production setSoulData() accessor — because the regex
+ *  fallback only fills approvers, the sim must populate manager/channels directly.
+ *  The data is validated through the real SoulDataSchema (so it stays honest). */
 export function writeSoulFixture(f: SoulFixture): void {
+  // SOUL.md still written for any code path that reads the file (system prompt, etc.)
   const lines = [
     "# SOUL",
     "",
@@ -47,19 +39,14 @@ export function writeSoulFixture(f: SoulFixture): void {
   ];
   writeFileSync(paths.soul, lines.join("\n"), "utf8");
 
-  // Prime the fixture override so loadSoulData() returns full structured data
-  // without requiring a valid API key or production-format Slack IDs.
-  const data: SoulData = {
-    identity: { name: "Sim agent" },
+  // Inject structured data the gates read. Validated through the real schema so
+  // any shape mismatch surfaces immediately rather than silently at gate time.
+  const data = SoulDataSchema.parse({
     manager: { userId: f.manager },
-    backupManager: f.backup ? { userId: f.backup } : {},
-    allowedChannels: f.allowed,
+    backupManager: f.backup !== undefined ? { userId: f.backup } : {},
+    approvers: f.approvers.map((userId) => ({ userId, scope: "anything", catchall: true })),
     trustedChannels: f.trusted,
-    blockedUsers: [],
-    approvers: f.approvers.map((id) => ({ userId: id, scope: "anything", catchall: true })),
-    redactPatterns: [],
-    approvalTimeoutSeconds: 0,
-    values: [],
-  };
-  __setLoadSoulDataFixture(data);
+    allowedChannels: f.allowed,
+  });
+  setSoulData(data);
 }
