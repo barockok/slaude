@@ -1,0 +1,14 @@
+preset: member-trusted
+steps:
+  - send: { as: U0ALICE, channel: C0TEAM, thread: T1, text: "/1on1" }
+  - expect_reply: { contains: "1on1 mode" }
+  - send: { as: U0BOB,   channel: C0TEAM, thread: T1, text: "hi slaude" }
+  - expect_drop: { reason: one_on_one }
+  - send: { as: U0ALICE, channel: C0TEAM, thread: T1, text: "still here" }
+  - expect_reply: { contains: "ack" }
+  - send: { as: U0MGR,   channel: C0TEAM, thread: T1, text: "manager check" }
+  - expect_reply: { contains: "ack" }
+  - send: { as: U0ALICE, channel: C0TEAM, thread: T1, text: "/1on1 off" }
+  - expect_reply: { contains: "released" }
+  - send: { as: U0BOB,   channel: C0TEAM, thread: T1, text: "back?" }
+  - expect_reply: { contains: "ack" }
