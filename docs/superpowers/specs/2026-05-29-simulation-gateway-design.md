@@ -221,31 +221,77 @@ env so the real loaders read the fixture. Mapping:
 This drives the real channel-mode gate (`adapter.ts:355-379`) and slash-command authz
 without any sim-specific gate logic.
 
-### 6. Driver — shared engine, two faces
+### 6. Scenario presets (one-pick, overridable)
+
+The common cases ("be the manager in a DM", "be anyone in a public channel", "trigger an
+approval", "borrow another user's connection") are pre-bundled so the operator picks one by
+name/number instead of assembling soul + actor + channel + behavior by hand. Presets ship
+built-in; every field stays overridable afterward.
+
+```ts
+// src/gateway/sim/presets.ts
+export interface ScenarioPreset {
+  name: string;            // "manager-dm", "member-public", ...
+  title: string;           // human label for the menu
+  soul: SoulFixture;       // manager/backup/approvers/trusted/allowed
+  actor: string;           // default acting user id
+  channel: string;         // default channel id
+  dm?: boolean;            // default DM flag
+  behavior: string;        // default stub-agent behavior
+}
+
+export const PRESETS: ScenarioPreset[];   // built-in list, ordered
+export function getPreset(nameOrIndex: string): ScenarioPreset | undefined;
+```
+
+Built-in presets (v1):
+
+| name | actor | channel | behavior | proves |
+|------|-------|---------|----------|--------|
+| `manager-dm` | `U_MGR` | DM | `reply` | manager admitted in restricted/DM zone |
+| `member-public` | `U_ALICE` | `C_PUB` (allowed) | `reply` | anyone admitted in allowed channel |
+| `member-trusted` | `U_ALICE` | `C_TEAM` (trusted) | `reply` | anyone admitted in trusted channel |
+| `restricted-blocked` | `U_BOB` | `C_RANDOM` (unlisted) | `reply` | non-manager dropped (`whitelist`) |
+| `approval-flow` | `U_ALICE` | `C_TEAM` | `request_approval` | approval card → approver authz → resolve |
+| `borrow-grant` | `U_BOB` | `C_TEAM` | `connect_borrow` | owner-approval grant (`grant_thread`/`once`/`deny`) |
+
+All presets share one `SoulFixture` (`U_MGR` manager, `U_BACKUP` backup, `U_APP` approver,
+`C_TEAM` trusted, `C_PUB` allowed) so switching preset mid-REPL only changes actor/channel/
+behavior, not the world. A preset that needs a different world carries its own `soul`.
+
+### 7. Driver — shared engine, two faces
 
 ```ts
 // src/gateway/sim/engine.ts
 export class SimSession {
   transport: SimTransport;
   agent: StubAgent | AgentManager;
+  // current selection — mutated by loadPreset / overrides, read by send() defaults:
+  actor: string; channel: string; dm: boolean; behavior: string;
   // boots a temp $SLAUDE_HOME + soul fixture + db, calls createGateway(agent, transport)
-  static async create(opts: { soul: SoulFixture; agent: "stub" | "real" }): Promise<SimSession>;
-  send(step: { as: string; channel: string; text: string; dm?: boolean }): Promise<void>;
-  click(step: { as: string; action: string }): Promise<void>;   // matches an outbound card's actionId
+  static async create(opts: { preset?: string; soul?: SoulFixture; agent: "stub" | "real" }): Promise<SimSession>;
+  loadPreset(nameOrIndex: string): void;   // set actor/channel/dm/behavior; reboot soul if the preset carries one
+  send(step?: { as?: string; channel?: string; text: string; dm?: boolean }): Promise<void>;  // omitted fields fall back to current selection
+  click(step: { as?: string; action: string }): Promise<void>;  // `as` defaults to current actor
   cards(): OutboundCard[];                                       // current capture bus
   drops(): { reason: string }[];                                // captured slackDropsTotal increments
   dispose(): Promise<void>;
 }
 ```
 
-- **Transcript** — `src/gateway/sim/transcript.ts`. YAML schema:
+`loadPreset` sets the current actor/channel/dm/behavior (and reboots the soul fixture only
+if the preset carries a different `soul`). Subsequent explicit overrides (`/as`, `/channel`,
+`/dm`, `/behavior`, or per-step fields) replace individual selection fields without touching
+the rest.
+
+- **Transcript** — `src/gateway/sim/transcript.ts`. YAML schema. A transcript may start
+  from a `preset:` (inherits its soul/actor/channel/behavior) and override any field, or
+  define `soul:`/`agent_behavior:` explicitly. Per-step `as`/`channel` still win:
 
   ```yaml
-  soul:
-    manager: U_MGR
+  preset: approval-flow          # optional shorthand; sets soul + defaults
+  soul:                          # optional — overrides preset fields it names
     approvers: [U_APP]
-    trusted: [C_TEAM]
-    allowed: [C_PUB]
   agent_behavior: request_approval
   steps:
     - send:   { as: U_ALICE, channel: C_TEAM, text: "deploy prod" }
@@ -263,14 +309,31 @@ export class SimSession {
   already call). A failed assertion throws with a diff. `bun sim run <glob>` runs all,
   prints pass/fail per transcript, exits non-zero on any failure (CI gate).
 
-- **REPL** — `src/gateway/sim/repl.ts`. Commands: `/as <user>`, `/channel <id>`, `/dm`,
-  `/behavior <name>`, bare text = `send`, `/cards` (pretty-print the bus), `/click <n>`
-  (click the nth card's primary action) or `/click <n> <action>`. Same `SimSession` engine.
+- **REPL** — `src/gateway/sim/repl.ts`. Scenario-first: on launch it prints the preset menu;
+  pick one to load the whole scenario, then poke. Commands:
+  - `/scenarios` — list presets (number + title); `/scenario <n|name>` — load one.
+  - `/state` — show current actor / channel / dm / behavior / soul.
+  - `/as <user>`, `/channel <id>`, `/dm`, `/behavior <name>` — override one selection field.
+  - bare text = `send` (uses current selection); `/cards` — pretty-print the bus;
+    `/click <n>` (nth card's primary action) or `/click <n> <action>`.
+
+  ```
+  $ bun sim repl
+  Scenarios:  1) manager-dm  2) member-public  3) member-trusted
+              4) restricted-blocked  5) approval-flow  6) borrow-grant
+  > /scenario 5
+  loaded approval-flow — as U_ALICE in C_TEAM, behavior=request_approval
+  > deploy prod
+  [card 1] approval → @U_MGR   [approve | deny]
+  > /as U_MGR
+  > /click 1 approve
+  [card 2] Plan → *Approved* by <@U_MGR>
+  ```
 
 - **CLI** — `src/gateway/sim/cli.ts`: `bun sim run <glob>` | `bun sim repl`. Wired as a
   `sim` script in `package.json`.
 
-### 7. Error handling
+### 8. Error handling
 
 - Transcript parse error → fail that file with line context, continue to next file, exit non-zero.
 - `expect_card`/`expect_reply` with no match → throw with the actual bus dumped.
@@ -282,8 +345,9 @@ export class SimSession {
 
 - **Unit:** `SimTransport` (records outbound, replays handlers, respond/replace + resolved
   semantics, drop capture); `StubAgent` (behavior dispatch, MCP handler invocation);
-  transcript parser + each assertion type; `createSlackTransport` shape (structural — `App`
-  satisfies `Transport`).
+  transcript parser + each assertion type (incl. `preset:` resolution + field override
+  precedence); `getPreset` by name and index; `createSlackTransport` shape (structural —
+  `App` satisfies `Transport`).
 - **Integration (the consistency proof):** transcripts covering — engagement
   (mention engages, mention-other disengages), channel-mode (DM/restricted blocks
   non-manager, trusted/allowed admits anyone), blocklist, ignore, approval (authz: wrong
@@ -318,6 +382,7 @@ src/gateway/core/gateway.ts          # createGateway(agent, transport)  ← move
 src/gateway/slack/transport.ts       # createSlackTransport() (bolt binding)
 src/gateway/sim/transport.ts         # SimTransport + OutboundCard bus
 src/gateway/sim/stub-agent.ts        # StubAgent + built-in behaviors
+src/gateway/sim/presets.ts           # built-in ScenarioPreset list + getPreset
 src/gateway/sim/engine.ts            # SimSession (boots soul fixture + gateway + transport)
 src/gateway/sim/transcript.ts        # YAML runner + assertions
 src/gateway/sim/repl.ts              # interactive terminal
