@@ -49,6 +49,11 @@ export class SimSession {
     // used to hit Slack — seed a dummy so the accessor doesn't throw.
     process.env.SLACK_BOT_TOKEN ??= "xoxb-sim";
 
+    // Enable the connect-broker so connect_borrow scenarios can exercise the
+    // broker MCP (mcp_call returns a needs-connect hint when no connection
+    // exists). Uses ??= so an already-set key is never overwritten.
+    process.env.SLAUDE_ENCRYPTION_KEY ??= Buffer.alloc(32).toString("base64");
+
     const transport = new SimTransport({ users: { U0MGR: "Manager", U0APP: "Approver", U0ALICE: "Alice", U0BOB: "Bob", U0BACKUP: "Backup" } });
     const agent: StubAgent | AgentManager = opts.agent === "real" ? new AgentManager() : new StubAgent();
     const handle = createGateway(agent, transport);
