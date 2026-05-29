@@ -25,4 +25,16 @@ describe("login token", () => {
     const tok = mintLoginToken(SECRET, { loginId: "L1", slackUserId: "U1", exp: 1000 });
     expect(verifyLoginToken(Buffer.alloc(32, 9), tok, { now: 500 })).toBeNull();
   });
+
+  it("rejects a token with no separator", () => {
+    expect(verifyLoginToken(SECRET, "no-dot-here", { now: 500 })).toBeNull();
+  });
+
+  it("rejects a token whose body is not valid JSON (but signature matches)", () => {
+    // Forge a token: body = base64url of non-JSON, signed with the real secret.
+    const { createHmac } = require("node:crypto");
+    const body = Buffer.from("not-json", "utf8").toString("base64url");
+    const sig = createHmac("sha256", SECRET).update(body).digest("base64url");
+    expect(verifyLoginToken(SECRET, `${body}.${sig}`, { now: 500 })).toBeNull();
+  });
 });

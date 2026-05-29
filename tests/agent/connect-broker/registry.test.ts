@@ -26,6 +26,13 @@ describe("registry", () => {
     expect(f).toEqual({ personal: true, borrowable: false, write: true });
   });
 
+  it("exposes a shared-ok (non-personal) read tool", () => {
+    const f = toolFlags("jira", "jira_list_projects");
+    expect(f.personal).toBe(false);
+    expect(f.borrowable).toBe(true);
+    expect(f.write).toBe(false);
+  });
+
   it("returns null for an unknown service", () => {
     expect(getService("nope")).toBeNull();
     expect(listServices()).toContain("jira");
