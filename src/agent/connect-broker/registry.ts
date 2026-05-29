@@ -3,7 +3,14 @@ export type ToolFlags = {
   personal: boolean;
   /** May be invoked under another user's connection (with a grant). */
   borrowable: boolean;
-  /** Mutating call — always routed through PermissionGate + hash-bound approval. */
+  /**
+   * Mutating call. Today this only contributes to the fail-closed default
+   * (unclassified tools are treated as write). It is NOT yet an enforcement
+   * point: write tools are kept off the borrow path via `borrowable: false`,
+   * and PermissionGate routing + per-call hash-bound approval are NOT wired in
+   * broker-core. Do not flip a `write: true` tool to `borrowable: true` until
+   * that enforcement exists, or it could be borrowed without per-call binding.
+   */
   write: boolean;
 };
 
