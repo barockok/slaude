@@ -39,7 +39,7 @@ Slack-native Claude Code runtime. Onboard an AI agent as a teammate in your Slac
 - **Approval gate** — `mcp__slaude_slack__request_approval(summary, …)` posts Block Kit Approve/Deny. Approver allowlist parsed from SOUL.md scope-described entries; runtime keyword-matches the agent's plan summary against each approver's scope; the agent never picks user IDs.
 - **LLM-extracted SoulData** — at boot, an ephemeral Claude turn projects SOUL.md into a typed JSON (approvers, identity, manager, allowedUsers, mandate, values), sha-cached at `$SLAUDE_HOME/cache/soul.<sha>.json`. The approval gate consumes the structured approvers as the preferred tier; regex parser is the fallback. Persona prose can drift from rigid bullet format without breaking allowlist resolution.
 - **External MCP servers** — declare stdio / SSE / streamable-HTTP MCP servers in `~/.slaude/mcp.json` (same shape as Claude Code's mcp.json). Tools surface as `mcp__<server>__<tool>` and route through the standard approval gate on first call. See [External MCP servers (`mcp.json`)](#external-mcp-servers-mcpjson).
-- **Contextual per-user connections** — ephemeral, thread-scoped service connections (e.g. Jira) owned by the requesting Slack user, not a shared bot identity. A user logs in via a confined web-CDP browser; credentials are AES-256-GCM-encrypted at rest with a TTL. Another thread member can borrow a connection only with the owner's per-thread, revocable approval. Requires `SLAUDE_ENCRYPTION_KEY`. See [Contextual connections (`slaude_connect`)](#contextual-connections-slaude_connect).
+- **Contextual per-user connections** — ephemeral, thread-scoped service connections (e.g. Jira) owned by the requesting Slack user, not a shared bot identity. A user logs in via a confined web-CDP browser; credentials are AES-256-GCM-encrypted at rest with a TTL. Another thread member can borrow a connection only with the owner's per-thread, revocable approval. **Off by default** — enable with `SLAUDE_ENABLE_CONNECT_BROKER` + `SLAUDE_ENCRYPTION_KEY`. See [Contextual connections (`slaude_connect`)](#contextual-connections-slaude_connect).
 - **Dependency manifest** — declarative `slaude.json` + `slaude.lock` for three surfaces: Claude Code plugins (marketplace git), skills (git repo per skill), knowledge bases (Karpathy-style markdown wikis). Install runs at image build (`slaude install --frozen`), runtime ships self-contained. See [Dependency manifest (`slaude.json`)](#dependency-manifest-slaudejson).
 - **Runtime manifest sync** — `mcp__slaude_skills__sync_manifest` syncs runtime-created skills and knowledge bases back to `slaude.json` + `slaude.lock`. Push target resolved via `slaude_skills` manifest field, env var `SLAUDE_SKILLS_REPO` as fallback. `slaude_knowledge` writable KB pushes `raw/` on each sync; read-only `knowledge[]` entries are pulled fresh. See [Dependency manifest (`slaude.json`)](#dependency-manifest-slaudejson).
 - **Writable KB + /ingest** — the agent captures material into `raw/` during normal Slack turns; `sync_manifest` pushes it to git. Manager/approver runs `/ingest` to synthesise `raw/` → `wiki/` via a dedicated SDK sub-query. Sqlite mutex ensures at most one ingest at a time.
@@ -109,10 +109,11 @@ ANTHROPIC_API_KEY=sk-ant-...
 # `## Approvers` section. Manager/channel rules live in SOUL.md, not env.
 SLAUDE_APPROVERS=U01ABCD
 
-# Optional: enables contextual per-user connections (the slaude_connect broker).
-# 32-byte base64 master key encrypting connection credentials at rest. Generate
-# once, keep stable: `openssl rand -base64 32`. Absent => broker stays disabled
-# (logged), rest of slaude runs normally. See docs/connect-broker-login.md.
+# Contextual per-user connections (slaude_connect broker) — OFF by default.
+# Mounts only when BOTH are set: SLAUDE_ENABLE_CONNECT_BROKER (truthy) AND
+# SLAUDE_ENCRYPTION_KEY (32-byte base64, `openssl rand -base64 32`). Default
+# deploy exposes no connection tools; /1on1 mode is the shipped per-thread feature.
+SLAUDE_ENABLE_CONNECT_BROKER=
 SLAUDE_ENCRYPTION_KEY=
 
 # Defaults — see .env.example for the full list.
@@ -238,7 +239,7 @@ Drop a Claude-Code-style `mcp.json` at `~/.slaude/mcp.json` (override path via `
 
 External MCP servers above run as **one shared identity** for the whole deploy. Contextual connections are the opposite: **per-Slack-user**, **thread-scoped**, **ephemeral**. When Alice asks "list my Jira issues", slaude acts through *Alice's* connection — not a shared bot token.
 
-Enable by setting `SLAUDE_ENCRYPTION_KEY` (see env above). Without it the broker stays disabled and the rest of slaude is unaffected. Operator/deploy details — the web-CDP login host and the deploy-time seams — live in [`docs/connect-broker-login.md`](docs/connect-broker-login.md).
+**Off by default.** Enable by setting BOTH `SLAUDE_ENABLE_CONNECT_BROKER` (truthy) and `SLAUDE_ENCRYPTION_KEY` (see env above) — the flag is an explicit switch decoupled from the key, so a default deployment exposes no connection tools and `/1on1` mode is the shipped per-thread feature. Without the flag the broker stays disabled and the rest of slaude is unaffected. Operator/deploy details — the web-CDP login host and the deploy-time seams — live in [`docs/connect-broker-login.md`](docs/connect-broker-login.md).
 
 **How a user experiences it (in a Slack thread):**
 
