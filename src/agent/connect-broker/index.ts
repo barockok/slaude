@@ -18,7 +18,13 @@ export type BrokerConfig = {
 };
 
 export type BuildCtxArgs = {
-  callerUserId: string;
+  /**
+   * Reads the CURRENT turn's slack user id at call time. MUST be live, not a
+   * snapshot — the per-session MCP resolver runs once at session boot, but a
+   * thread session serves many users across turns. Snapshotting here would
+   * freeze authorization to the booting user (cross-user identity confusion).
+   */
+  getCallerUserId: () => string;
   thread: ThreadKey;
   /** Starts the connect/login flow for a service; returns the live-view URL + TTL. */
   postConnectUrl: (service: string) => Promise<{ url: string; expiresInMs: number }>;
@@ -52,21 +58,25 @@ export function createBroker(cfg: BrokerConfig) {
       now: () => Date.now(),
     };
     return {
-      callerUserId: args.callerUserId,
+      // Live getter — re-read on every access so the acting user reflects the
+      // current turn, never the user who happened to boot the session.
+      get callerUserId() { return args.getCallerUserId(); },
       runCall: (input) => coreRunCall({ ...input, thread }, deps),
       listConnections: () => {
+        const caller = args.getCallerUserId();
         const rows = Conn.listForThread(thread);
         return rows.map((r) => ({
           service: r.service,
           owner: r.owner_slack_user_id,
-          mine: r.owner_slack_user_id === args.callerUserId,
+          mine: r.owner_slack_user_id === caller,
           expiresInMs: r.expires_at == null ? null : r.expires_at - Date.now(),
         }));
       },
       startConnect: async (service: string) => args.postConnectUrl(service),
       revoke: (service?: string) => {
+        const caller = args.getCallerUserId();
         const rows = Conn.listForThread(thread).filter(
-          (r) => r.owner_slack_user_id === args.callerUserId && (!service || r.service === service),
+          (r) => r.owner_slack_user_id === caller && (!service || r.service === service),
         );
         for (const r of rows) {
           Conn.setStatus(r.id, "revoked");

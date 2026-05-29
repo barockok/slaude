@@ -30,7 +30,7 @@ describe("createBroker", () => {
       requestApproval: async () => ({ approved: true, by: "U1", scope: "thread" }),
       isMember: () => true,
     });
-    const ctx = broker.buildCtx({ callerUserId: "U1", thread: T, postConnectUrl: async () => ({ url: "u", expiresInMs: 0 }) });
+    const ctx = broker.buildCtx({ getCallerUserId: () => "U1", thread: T, postConnectUrl: async () => ({ url: "u", expiresInMs: 0 }) });
     const res = await ctx.runCall({ caller: "U1", service: "jira", tool: "jira_search", args: { jql: "x" } });
     expect(res.kind).toBe("ok");
     expect(JSON.parse(deliveredCred!)).toEqual({ token: "T0p" });
@@ -40,9 +40,36 @@ describe("createBroker", () => {
   it("revoke marks the caller's connection revoked and evicts the child", async () => {
     seedConnection("U1", "jira", { token: "x" });
     const broker = createBroker({ key: KEY, idleMs: 10_000, spawnChild: () => ({ callTool: async () => ({}), deliverCred() {}, kill() {} }), requestApproval: async () => ({ approved: false, by: "" }), isMember: () => true });
-    const ctx = broker.buildCtx({ callerUserId: "U1", thread: T, postConnectUrl: async () => ({ url: "u", expiresInMs: 0 }) });
+    const ctx = broker.buildCtx({ getCallerUserId: () => "U1", thread: T, postConnectUrl: async () => ({ url: "u", expiresInMs: 0 }) });
     expect(ctx.revoke("jira").revoked).toBe(1);
     expect(Conn.listForThread(T).length).toBe(0); // revoked rows excluded from active list
+    broker.stop();
+  });
+
+  it("uses the LIVE caller id, not a boot-time snapshot (Vuln 1 regression)", async () => {
+    seedConnection("U1", "jira", { token: "alice" }); // only Alice has a connection in this thread
+    let current = "U1";
+    const broker = createBroker({
+      key: KEY, idleMs: 10_000,
+      spawnChild: () => ({ callTool: async () => ({ ok: true }), deliverCred() {}, kill() {} }),
+      requestApproval: async () => ({ approved: false, by: "" }),
+      isMember: () => true,
+    });
+    const ctx = broker.buildCtx({ getCallerUserId: () => current, thread: T, postConnectUrl: async () => ({ url: "u", expiresInMs: 0 }) });
+
+    // Turn 1: Alice acts -> her own connection resolves.
+    expect(ctx.callerUserId).toBe("U1");
+    expect((await ctx.runCall({ caller: ctx.callerUserId, service: "jira", tool: "jira_search", args: {} })).kind).toBe("ok");
+
+    // Turn 2: Bob now acts in the same session. The broker must NOT keep using Alice.
+    // Pre-fix (frozen callerUserId=U1) this would resolve Alice's OWN connection => "ok".
+    // Post-fix Bob is correctly treated as a borrower: jira_list_my_issues is owner-only
+    // (borrowable:false), so borrowing Alice's connection is denied.
+    current = "U2";
+    expect(ctx.callerUserId).toBe("U2");
+    const bob = await ctx.runCall({ caller: ctx.callerUserId, service: "jira", tool: "jira_list_my_issues", args: {} });
+    expect(bob.kind).toBe("denied");
+    expect(bob.kind).not.toBe("ok"); // the Vuln 1 silent-cross-user-success must not happen
     broker.stop();
   });
 

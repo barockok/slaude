@@ -207,7 +207,10 @@ export function createSlackApp(agent: AgentManager) {
     if (connectBroker && route.ctx.teamId && route.ctx.userId) {
       servers[CONNECT_MCP_NAME] = createConnectMcp(
         connectBroker.buildCtx({
-          callerUserId: route.ctx.userId,
+          // Live read: route.ctx.userId is mutated per inbound turn (see the
+          // per-message update below). The resolver runs once at session boot,
+          // so a snapshot here would freeze auth to the booting user.
+          getCallerUserId: () => route.ctx.userId ?? "unknown",
           thread: { team_id: route.ctx.teamId, channel_id: route.ctx.channel, thread_ts: route.ctx.threadTs },
           postConnectUrl: async (_service) => ({
             // Deploy-time seam: the CDP login host returns a one-time live-view URL.

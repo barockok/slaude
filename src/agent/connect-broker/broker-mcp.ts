@@ -20,8 +20,10 @@ export type BrokerToolCtx = {
 
 export const brokerHandlers = {
   async mcp_call(ctx: BrokerToolCtx, input: { service: string; tool: string; args?: unknown; on_behalf_of: string }): Promise<ToolResult> {
-    // B1: the agent must pass the identity of the user it is acting for. We
-    // validate it equals the turn's caller; we never read mutable session ctx.
+    // B1: the authorization principal is the SERVER-side live caller
+    // (ctx.callerUserId reads the current turn's slack user). The agent-supplied
+    // on_behalf_of is only a cross-check that it is acting for the right user —
+    // it never becomes the principal. Reject on mismatch.
     if (input.on_behalf_of !== ctx.callerUserId) {
       return err(`on_behalf_of (${input.on_behalf_of}) must equal the requesting user (${ctx.callerUserId}). Pass the user id of the person whose message you are answering.`);
     }
