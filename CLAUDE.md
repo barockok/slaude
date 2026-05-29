@@ -93,6 +93,7 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 Entries live in `docs/findings/<date>-<slug>.md`. Add a new file per significant finding/decision/mistake; index it below. Newest first.
 
+- [2026-05-29 — /1on1 mode (per-thread engagement lock)](docs/findings/2026-05-29-one-on-one-mode.md)
 - [2026-05-29 — Simulation gateway (Slack-free verification)](docs/findings/2026-05-29-simulation-gateway.md)
 - [2026-05-29 — Contextual per-user MCP connections](docs/findings/2026-05-29-contextual-mcp-connections.md)
 - [2026-05-25 — Cron & Ignore system audit](docs/findings/2026-05-25-cron-ignore-audit.md)
