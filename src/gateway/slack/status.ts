@@ -1,4 +1,4 @@
-import type { WebClient } from "@slack/web-api";
+import type { WebClientLike } from "../core/transport";
 
 /**
  * Slack Assistant thread status indicator (the animated "is thinking…" text
@@ -10,12 +10,12 @@ import type { WebClient } from "@slack/web-api";
  * on turn end / error. Auto-disables on missing_scope so we don't spam logs.
  */
 export class Status {
-  #client: WebClient;
+  #client: WebClientLike;
   #disabled = false;
   /** sessionId → {channel, threadTs} so we know what to clear. */
   #active = new Map<string, { channel: string; threadTs: string }>();
 
-  constructor(client: WebClient) {
+  constructor(client: WebClientLike) {
     this.#client = client;
   }
 

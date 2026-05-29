@@ -1,15 +1,15 @@
-import type { WebClient } from "@slack/web-api";
+import type { WebClientLike } from "../core/transport";
 
 /**
  * Track one "status reaction" per inbound message so we can transition the
  * emoji as the session progresses (👀 received → ⚙️ working → ✅ done / ❌ error).
  */
 export class ReactionTracker {
-  #client: WebClient;
+  #client: WebClientLike;
   #current = new Map<string, { channel: string; ts: string; emoji: string }>();
   #disabled = false;
 
-  constructor(client: WebClient) {
+  constructor(client: WebClientLike) {
     this.#client = client;
   }
 
