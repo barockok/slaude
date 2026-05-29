@@ -35,7 +35,8 @@ export type SlashHit =
   | { kind: "unignore"; target: "thread" }
   | { kind: "cron-add"; cronExpr: string; prompt: string }
   | { kind: "cron-list" }
-  | { kind: "cron-remove"; id: string };
+  | { kind: "cron-remove"; id: string }
+  | { kind: "one-on-one"; action: "on" | "off" };
 
 const HELP_NAMES = new Set(["help", "h", "?"]);
 
@@ -91,6 +92,9 @@ export function parseSlashCommand(text: string): SlashHit | null {
     if (!id) return null;
     return { kind: "cron-remove", id };
   }
+  if (cmd === "1on1") {
+    return { kind: "one-on-one", action: arg === "off" ? "off" : "on" };
+  }
   if (HELP_NAMES.has(cmd)) {
     return { kind: "help" };
   }
@@ -109,6 +113,7 @@ export function helpText(): string {
     "`/abort` — cancel the current turn",
     "`/help` — this message",
     "`/ingest` — synthesize raw/ → wiki/ in the writable KB (manager/approver only)",
+    "`/1on1` / `/1on1 off` — lock this thread to you + the manager (others ignored); release",
   ].join("\n");
 }
 
