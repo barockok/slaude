@@ -68,8 +68,12 @@ export class StubAgent extends AgentManager {
     })();
   }
 
+  /** Let a detached behavior post its initial card(s), then return. Deliberately
+   *  does NOT await #running: request_approval / connect_borrow behaviors park on
+   *  an approval decision that only resolves on a later feedAction, so awaiting
+   *  here would deadlock send(). Errors thrown before the first await are captured
+   *  synchronously into #errors; post-await errors surface on the next drain. */
   async drain(): Promise<void> {
-    await this.#running;
     await new Promise((r) => setTimeout(r, 0));
   }
 }
