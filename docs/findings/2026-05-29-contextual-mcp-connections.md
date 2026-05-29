@@ -18,12 +18,19 @@ web-CDP login browser and stored AES-256-GCM-encrypted in sqlite with a TTL.
 
 ## Two review-driven reversals from the brainstorm
 
-1. **Caller identity is in-band, not from session context (B1).** `adapter.ts`
-   mutates `SlackContext.userId` per inbound message; under concurrent thread
-   users it races, so a borrow could resolve the wrong user's connection. Fix:
-   the agent passes `on_behalf_of` to `mcp_call`, validated server-side against
-   the turn's caller. (Full per-user turn isolation remains a deeper manager-level
-   change, out of scope here; the equality check is the MVP guard.)
+1. **Caller identity is read live server-side, never snapshotted (B1).** The
+   per-session MCP resolver runs once at session boot, but a thread session
+   serves many users across turns. An early implementation snapshotted
+   `callerUserId` into the broker ctx at boot — a post-merge security review
+   caught that this froze the authorization principal to the *booting* user, so
+   every later user's `mcp_call` ran against the booting user's connection
+   (cross-user identity confusion). Fix: `buildCtx` takes a `getCallerUserId`
+   thunk that reads the live `route.ctx.userId` (mutated per inbound turn) on
+   every call; the authorization principal is that server-side value. The
+   agent-supplied `on_behalf_of` is only a cross-check (reject on mismatch),
+   never the principal. Residual, documented: a narrow concurrent-mid-turn race
+   (user B posts while A's turn is still executing a tool call) — full per-user
+   turn isolation is a deeper manager-level change, still out of scope.
 
 2. **Per-thread revocable grant, not per-request approval.** The brainstorm chose
    per-request; all three review angles flagged it as rubber-stamp theater. Now
