@@ -1,0 +1,6 @@
+preset: manager-dm
+steps:
+  - send: { text: "/ignore <@U0BOB>" }
+  - expect_reply: { contains: "ignoring" }
+  - send: { text: "/unignore <@U0BOB>" }
+  - expect_reply: { contains: "stopped ignoring" }
