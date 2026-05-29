@@ -73,6 +73,27 @@ describe("createBroker", () => {
     broker.stop();
   });
 
+  it("ctx exposes listConnections (mine flag + expiry), startConnect, describe", async () => {
+    seedConnection("U1", "jira", { token: "x" }); // owned by U1, no expiry
+    const broker = createBroker({ key: KEY, idleMs: 10_000, spawnChild: () => ({ callTool: async () => ({}), deliverCred() {}, kill() {} }), requestApproval: async () => ({ approved: false, by: "" }), isMember: () => true });
+
+    // Caller U1 sees the connection as "mine".
+    const asU1 = broker.buildCtx({ getCallerUserId: () => "U1", thread: T, postConnectUrl: async () => ({ url: "https://login/x", expiresInMs: 600_000 }) });
+    const listMine = asU1.listConnections();
+    expect(listMine).toHaveLength(1);
+    expect(listMine[0]!.mine).toBe(true);
+    expect(listMine[0]!.expiresInMs).toBeNull();
+
+    // Caller U2 sees the same connection as not-mine.
+    const asU2 = broker.buildCtx({ getCallerUserId: () => "U2", thread: T, postConnectUrl: async () => ({ url: "u", expiresInMs: 0 }) });
+    expect(asU2.listConnections()[0]!.mine).toBe(false);
+
+    // startConnect delegates to postConnectUrl; describe returns a payload.
+    expect(await asU1.startConnect("jira")).toEqual({ url: "https://login/x", expiresInMs: 600_000 });
+    expect(await asU1.describe("jira")).toMatchObject({ service: "jira" });
+    broker.stop();
+  });
+
   it("reapExpiredConnections marks past-TTL rows expired", async () => {
     const row = Conn.insertConnection({ owner_slack_user_id: "U1", service: "jira", scope: "thread", thread: T, auth_strategy: "token", cred_ciphertext: "x", key_id: "k", now: 1, expires_at: 100 });
     const broker = createBroker({ key: KEY, idleMs: 10_000, spawnChild: () => ({ callTool: async () => ({}), deliverCred() {}, kill() {} }), requestApproval: async () => ({ approved: false, by: "" }), isMember: () => true });
