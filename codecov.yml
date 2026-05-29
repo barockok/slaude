@@ -1,0 +1,20 @@
+# Codecov config.
+#
+# `project` (whole-repo coverage %) is INFORMATIONAL — it posts the number but
+# never fails the PR. Rationale: the simulation gateway loads the real
+# AgentManager (SDK loop) and the bolt transport into the test process, so those
+# integration-only files now sit in the coverage denominator even though they
+# can't be exercised without a live Claude/Slack connection. That drags the
+# global % down without reflecting feature-code quality.
+#
+# `patch` (coverage of the lines changed in the PR) stays ENFORCED — new code is
+# expected to be tested.
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        target: auto
+        threshold: 1%
