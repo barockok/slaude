@@ -1,0 +1,6 @@
+preset: manager-dm
+steps:
+  - send: { text: "/mode" }
+  - expect_reply: { contains: "usage" }
+  - send: { text: "/mode unknown-mode" }
+  - expect_reply: { contains: "usage" }
