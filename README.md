@@ -48,6 +48,7 @@ Slack-native Claude Code runtime. Onboard an AI agent as a teammate in your Slac
 - **Provider-agnostic** — any Anthropic-compatible API (Anthropic direct, OpenRouter, DeepSeek, Z.ai, self-hosted gateway, …). Telemetry / autoupdater / bug-reporter disabled in the SDK child so non-Anthropic gateways don't crash the CLI.
 - **Health endpoints** — `/healthz` (liveness) + `/readyz` (sqlite ping) on `SLAUDE_HEALTH_PORT` (default 8080). K8s probes wired in `deploy/k8s/slaude.yaml`.
 - **One container = one persona** — multi-agent via multi-deploy.
+- **Simulation gateway** — Slack-free verification of engagement, channel-mode, approval + connect-grant buttons, and slash-command authz. Runs the same `createGateway` code as production against an in-memory transport. See [Simulation gateway](#simulation-gateway).
 
 ## Setup
 
@@ -458,6 +459,31 @@ src/
 ```
 
 See `CLAUDE.md` for the project mandate and the [Findings Log](CLAUDE.md#findings-log) for date-stamped decision notes.
+
+## Simulation gateway
+
+Verify Slack-dependent behavior (engagement, channel-mode, approval + connect-grant
+buttons, slash-command authz) with no Slack workspace. The simulation runs the *same*
+`createGateway` code as production against an in-memory transport, so behavior cannot drift.
+
+```bash
+bun sim run                 # run every scenario transcript (CI gate), exit non-zero on failure
+bun sim run path/to/*.yaml  # run specific transcripts
+bun sim                     # interactive REPL
+```
+
+REPL is scenario-first:
+
+```
+> /scenario 5          # load approval-flow (U0ALICE in C0TEAM, request_approval behavior)
+> deploy prod          # send as the current actor
+> /as U0APP            # become the approver
+> /click 1 approve     # click the approval card
+```
+
+Built-in scenarios: `manager-dm`, `member-public`, `member-trusted`, `restricted-blocked`,
+`approval-flow`, `borrow-grant`. Override any field with `/as`, `/channel`, `/dm`,
+`/behavior`. Transcripts (`src/gateway/sim/scenarios/`) drive the same engine and gate CI.
 
 ## Roadmap / TODO
 
