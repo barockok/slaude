@@ -28,6 +28,6 @@ export interface Transport {
   action(idOrRegex: string | RegExp, h: ActionHandler): void;
   event(name: string, h: EventHandler): void;
   use(mw: Middleware): void;
-  start(): Promise<void>;
-  stop(): Promise<void>;
+  start(): Promise<any>;
+  stop(): Promise<any>;
 }
