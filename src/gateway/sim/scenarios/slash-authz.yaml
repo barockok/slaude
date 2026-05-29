@@ -1,0 +1,4 @@
+preset: member-trusted
+steps:
+  - send: { as: U0ALICE, channel: C0TEAM, text: "/ingest" }
+  - expect_reply: { contains: "not authorized" }
