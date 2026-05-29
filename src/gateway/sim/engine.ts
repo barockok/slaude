@@ -51,7 +51,10 @@ export class SimSession {
 
     // Enable the connect-broker so connect_borrow scenarios can exercise the
     // broker MCP (mcp_call returns a needs-connect hint when no connection
-    // exists). Uses ??= so an already-set key is never overwritten.
+    // exists). The broker is OFF by default in production (gated behind
+    // SLAUDE_ENABLE_CONNECT_BROKER + the key); the sim opts in so the borrow
+    // path stays covered. Uses ??= so already-set values are never overwritten.
+    process.env.SLAUDE_ENABLE_CONNECT_BROKER ??= "1";
     process.env.SLAUDE_ENCRYPTION_KEY ??= Buffer.alloc(32).toString("base64");
 
     const transport = new SimTransport({ users: { U0MGR: "Manager", U0APP: "Approver", U0ALICE: "Alice", U0BOB: "Bob", U0BACKUP: "Backup" } });

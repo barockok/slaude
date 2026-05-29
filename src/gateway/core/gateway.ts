@@ -107,11 +107,16 @@ export function createGateway(agent: AgentManager, t: Transport): GatewayHandle 
     import("../../db/ignores").then((m) => m.cleanupExpired());
   }, 5 * 60 * 1000);
 
-  // Contextual MCP connections broker. Requires SLAUDE_ENCRYPTION_KEY; if it's
-  // absent we skip mounting the broker so existing deployments keep working.
-  // spawnChild / postConnectUrl are deploy-time seams (CDP login host); the
-  // pure broker logic is fully covered by unit tests.
+  // Contextual MCP connections broker (`slaude_connect`). OFF by default — gated
+  // behind SLAUDE_ENABLE_CONNECT_BROKER (explicit switch, decoupled from the
+  // encryption key) so a default deployment exposes no connection tools; `/1on1`
+  // mode is the shipped per-thread feature. Enabling requires BOTH the flag AND
+  // SLAUDE_ENCRYPTION_KEY. spawnChild / postConnectUrl are deploy-time seams.
   const connectBroker = (() => {
+    if (!env.enableConnectBroker()) {
+      console.log("[connect-broker] disabled (set SLAUDE_ENABLE_CONNECT_BROKER=1 to enable)");
+      return null;
+    }
     let key: Buffer;
     try {
       key = loadEncryptionKey();

@@ -168,4 +168,13 @@ export const env = {
     const raw = opt("SLAUDE_METRICS_PER_USER", "0").toLowerCase();
     return raw === "1" || raw === "true" || raw === "yes";
   },
+  /** Opt in to the contextual MCP connections broker (`slaude_connect`: connect /
+   *  connections_list / mcp_call …). Off by default — the broker is an explicit
+   *  switch, decoupled from `SLAUDE_ENCRYPTION_KEY`, so a default deployment
+   *  exposes no connection tools. `/1on1` mode is the shipped per-thread feature.
+   *  Re-enable by setting this AND providing `SLAUDE_ENCRYPTION_KEY`. */
+  enableConnectBroker: () => {
+    const raw = opt("SLAUDE_ENABLE_CONNECT_BROKER", "0").toLowerCase();
+    return raw === "1" || raw === "true" || raw === "yes";
+  },
 };
