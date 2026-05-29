@@ -141,6 +141,15 @@ CREATE TABLE IF NOT EXISTS connection_audit (
   decision               TEXT NOT NULL,
   created_at             INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS one_on_one_locks (
+  channel_id  TEXT    NOT NULL,
+  thread_ts   TEXT    NOT NULL,
+  locked_user TEXT    NOT NULL,
+  created_by  TEXT    NOT NULL,
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (channel_id, thread_ts)
+);
 `;
 
 for (const stmt of SCHEMA.split(";")) {
