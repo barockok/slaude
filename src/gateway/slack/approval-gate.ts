@@ -1,5 +1,4 @@
-import type { App } from "@slack/bolt";
-import type { WebClient } from "@slack/web-api";
+import type { Transport, WebClientLike } from "../core/transport";
 import { loadApprovers, selectApprovers, selectApproversFrom } from "../../soul/loader";
 import { soulData } from "../../soul/extract";
 
@@ -47,7 +46,7 @@ type Pending = {
 };
 
 export class ApprovalGate {
-  #client: WebClient;
+  #client: WebClientLike;
   #pending = new Map<string, Pending>();
   #counter = 0;
   /** Env-derived fallback allowlist. Used when persona has no approvers block
@@ -57,14 +56,14 @@ export class ApprovalGate {
   #timeoutSeconds: () => number;
 
   constructor(
-    app: App,
+    transport: Transport,
     envApprovers: string[],
     opts: { timeoutSeconds?: () => number } = {},
   ) {
-    this.#client = app.client;
+    this.#client = transport.client;
     this.#envApprovers = new Set(envApprovers);
     this.#timeoutSeconds = opts.timeoutSeconds ?? (() => 0);
-    app.action(
+    transport.action(
       /^slaude_appr:(approve|deny|grant_thread|grant_once):.+$/,
       async ({ ack, action, body, respond }) => {
         await ack();
