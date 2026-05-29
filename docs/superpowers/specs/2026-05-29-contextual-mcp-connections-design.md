@@ -110,10 +110,15 @@ Touched:
 - `src/gateway/slack/adapter.ts` — add broker MCP to the resolver record; Connect/consent/approval
   Block Kit handlers; render borrow/timeout/expiry as human guidance (not raw `:warning: error:`);
   `/connect`, `/connections` delegating to broker logic; add both to `helpText()`.
-- `src/gateway/slack/approval-gate.ts` — **add `approvers?: string[]` override** to
-  `ApprovalRequest`/`request()` so the broker can target the connection owner. (Today approvers
-  come only from SOUL/`SLAUDE_APPROVERS`; an arbitrary owner can never approve — see B2.) Reuse its
-  timeout (`approvalTimeoutSeconds`).
+- `src/gateway/slack/approval-gate.ts` — **near-total reuse.** The pending map, Block Kit buttons,
+  clicker authz (`approval-gate.ts:83` `pending.approvers.has(userId)` already enforces "only the
+  owner may approve" once approvers = `{ownerId}`), timeout, and abort all apply unchanged. Two small
+  additions: (a) an optional `req.approvers?: string[]` that short-circuits `#resolveApprovers`
+  (`115-135`) so the broker targets the connection owner directly — today approvers come only from
+  SOUL/`SLAUDE_APPROVERS`, so an arbitrary owner can never approve (B2); (b) a 3-button variant
+  (`[Allow for thread] [Just once] [Deny]`) extending the action regex + adding `scope:"thread"|"once"`
+  to `ApprovalDecision`. Hash binding (H2) stays in the broker, not the gate. Reuse its timeout
+  (`approvalTimeoutSeconds`).
 - `src/agent/manager.ts` — **scrub `SLAUDE_CRED_KEY` from the SDK child env** (currently
   `env:{...process.env}` at line 312 would propagate it). Broker decrypts; children never see the key.
 
