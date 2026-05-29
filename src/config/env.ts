@@ -28,6 +28,29 @@ function opt(name: string, fallback = ""): string {
   return process.env[name] ?? fallback;
 }
 
+/**
+ * Decode and validate the master credential-encryption key.
+ * Generated once by the operator: `openssl rand -base64 32`.
+ * Source defaults to process.env; injectable for tests.
+ */
+export function loadEncryptionKey(
+  source: Record<string, string | undefined> = process.env,
+): Buffer {
+  const raw = source.SLAUDE_ENCRYPTION_KEY;
+  if (!raw) {
+    throw new Error(
+      "SLAUDE_ENCRYPTION_KEY is required to store connection credentials. Generate one with `openssl rand -base64 32`.",
+    );
+  }
+  const key = Buffer.from(raw, "base64");
+  if (key.length !== 32) {
+    throw new Error(
+      `SLAUDE_ENCRYPTION_KEY must decode to 32 bytes (got ${key.length}). Use \`openssl rand -base64 32\`.`,
+    );
+  }
+  return key;
+}
+
 export const env = {
   slack: {
     botToken: () => req("SLACK_BOT_TOKEN"),
