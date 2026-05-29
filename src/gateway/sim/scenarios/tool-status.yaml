@@ -1,0 +1,5 @@
+preset: manager-dm
+agent_behavior: events
+steps:
+  - send: { text: "work please" }
+  - expect_reply: { contains: "events done" }
