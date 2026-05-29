@@ -59,4 +59,15 @@ describe("resolveConnection", () => {
     const r = resolveConnection({ caller: "U1", service: "jira", tool: "unknown_tool", thread: T }, deps({ findSlaude: () => conn("slaude") }));
     expect(r.kind).toBe("needs_connect");
   });
+
+  it("shared-ok tool with no own connection falls back to slaude's connection", () => {
+    const r = resolveConnection({ caller: "U1", service: "jira", tool: "jira_list_projects", thread: T }, deps({ findSlaude: () => conn("slaude") }));
+    expect(r.kind).toBe("slaude");
+    if (r.kind === "slaude") expect(r.connection.owner_slack_user_id).toBe("slaude");
+  });
+
+  it("shared-ok tool with no own connection and no slaude conn => needs_connect", () => {
+    const r = resolveConnection({ caller: "U1", service: "jira", tool: "jira_list_projects", thread: T }, deps());
+    expect(r.kind).toBe("needs_connect");
+  });
 });

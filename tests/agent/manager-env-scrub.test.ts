@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { scrubChildEnv } from "../../src/agent/manager";
+import { scrubChildEnv } from "../../src/agent/child-env";
 
 describe("scrubChildEnv", () => {
   it("removes SLAUDE_ENCRYPTION_KEY from the env passed to the SDK child", () => {

@@ -19,12 +19,6 @@ export type PermissionMode =
   | "bypassPermissions"
   | "plan"
   | "dontAsk";
-
-/** Strip secrets that must never reach the SDK child or any subprocess it spawns. */
-export function scrubChildEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
-  const { SLAUDE_ENCRYPTION_KEY, ...rest } = env;
-  return rest;
-}
 import { paths } from "../config/home";
 import { env } from "../config/env";
 import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plugins";
@@ -32,6 +26,7 @@ import { soulSystemBlock } from "../soul/loader";
 import * as Sessions from "../db/sessions";
 import type { ThreadKey } from "../db/sessions";
 import { memory } from "../memory/sqlite-provider";
+import { scrubChildEnv } from "./child-env";
 
 type LiveSession = {
   id: string;

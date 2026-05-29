@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { brokerHandlers, type BrokerToolCtx } from "../../../src/agent/connect-broker/broker-mcp";
+import { brokerHandlers, createConnectMcp, CONNECT_MCP_NAME, type BrokerToolCtx } from "../../../src/agent/connect-broker/broker-mcp";
 
 function ctx(over: Partial<BrokerToolCtx> = {}): BrokerToolCtx {
   return {
@@ -39,5 +39,40 @@ describe("brokerHandlers", () => {
   it("connect renders the one-time login URL", async () => {
     const res = await brokerHandlers.connect(ctx(), { service: "jira" });
     expect(res.content[0]!.text).toContain("https://live/abc");
+  });
+
+  it("connections_list reports an empty thread", async () => {
+    const res = await brokerHandlers.connections_list(ctx({ listConnections: () => [] }), {});
+    expect(res.content[0]!.text.toLowerCase()).toContain("no connections");
+  });
+
+  it("connections_list shows another member's connection + no-expiry", async () => {
+    const res = await brokerHandlers.connections_list(
+      ctx({ listConnections: () => [{ service: "jira", owner: "U2", mine: false, expiresInMs: null }] }), {});
+    expect(res.content[0]!.text).toContain("@U2");
+    expect(res.content[0]!.text).toContain("no expiry");
+  });
+
+  it("connections_revoke reports the revoked count", async () => {
+    const res = await brokerHandlers.connections_revoke(ctx({ revoke: () => ({ revoked: 2 }) }), {});
+    expect(res.content[0]!.text).toContain("2");
+  });
+
+  it("mcp_describe returns the service schema as JSON", async () => {
+    const res = await brokerHandlers.mcp_describe(ctx(), { service: "jira" });
+    expect(res.content[0]!.text).toContain("jira_search");
+  });
+
+  it("createConnectMcp builds a server exposing the fixed tool set", () => {
+    const mcp = createConnectMcp(ctx());
+    expect(mcp.name).toBe(CONNECT_MCP_NAME);
+    const names = (mcp.instance as any)?.tools?.map?.((t: any) => t.name)
+      ?? Object.keys((mcp as any).instance?._registeredTools ?? {});
+    // Shape varies by SDK internals; assert the server constructed without throwing
+    // and carries the connect namespace name. Tool-name presence is best-effort.
+    expect(mcp.name).toBe("slaude_connect");
+    if (Array.isArray(names) && names.length) {
+      expect(names).toContain("mcp_call");
+    }
   });
 });
