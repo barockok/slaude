@@ -19,6 +19,12 @@ export type PermissionMode =
   | "bypassPermissions"
   | "plan"
   | "dontAsk";
+
+/** Strip secrets that must never reach the SDK child or any subprocess it spawns. */
+export function scrubChildEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
+  const { SLAUDE_ENCRYPTION_KEY, ...rest } = env;
+  return rest;
+}
 import { paths } from "../config/home";
 import { env } from "../config/env";
 import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plugins";
@@ -309,7 +315,7 @@ export class AgentManager extends EventEmitter {
       // SLAUDE_MODEL MUST be set to a provider-qualified id.
       ...(row.model ? { model: row.model } : {}),
       abortController: abort,
-      env: { ...process.env, ...providerEnv },
+      env: scrubChildEnv({ ...process.env, ...providerEnv }),
       ...(canUseTool ? { canUseTool } : {}),
       ...(hasMcpServers ? { mcpServers: mergedMcpServers } : {}),
       ...(pluginPaths.length > 0 ? { plugins: pluginPaths } : {}),
