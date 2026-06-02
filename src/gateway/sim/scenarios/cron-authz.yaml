@@ -1,0 +1,8 @@
+preset: member-trusted
+steps:
+  - send: { as: U0ALICE, text: "/cron-list" }
+  - expect_reply: { contains: "only manager or approver" }
+  - send: { as: U0ALICE, text: '/cron-add "0 9 * * 1" "test"' }
+  - expect_reply: { contains: "only manager or approver" }
+  - send: { as: U0ALICE, text: "/cron-remove fake-id" }
+  - expect_reply: { contains: "only manager or approver" }

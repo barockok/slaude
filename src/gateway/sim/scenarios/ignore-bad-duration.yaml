@@ -1,0 +1,6 @@
+preset: manager-dm
+steps:
+  - send: { text: "/ignore <@U0ALICE> badvalue" }
+  - expect_reply: { contains: "duration must be" }
+  - send: { text: "/ignore <@U0ALICE> 999h" }
+  - expect_reply: { contains: "cannot exceed" }

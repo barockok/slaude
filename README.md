@@ -39,14 +39,17 @@ Slack-native Claude Code runtime. Onboard an AI agent as a teammate in your Slac
 - **Approval gate** — `mcp__slaude_slack__request_approval(summary, …)` posts Block Kit Approve/Deny. Approver allowlist parsed from SOUL.md scope-described entries; runtime keyword-matches the agent's plan summary against each approver's scope; the agent never picks user IDs.
 - **LLM-extracted SoulData** — at boot, an ephemeral Claude turn projects SOUL.md into a typed JSON (approvers, identity, manager, allowedUsers, mandate, values), sha-cached at `$SLAUDE_HOME/cache/soul.<sha>.json`. The approval gate consumes the structured approvers as the preferred tier; regex parser is the fallback. Persona prose can drift from rigid bullet format without breaking allowlist resolution.
 - **External MCP servers** — declare stdio / SSE / streamable-HTTP MCP servers in `~/.slaude/mcp.json` (same shape as Claude Code's mcp.json). Tools surface as `mcp__<server>__<tool>` and route through the standard approval gate on first call. See [External MCP servers (`mcp.json`)](#external-mcp-servers-mcpjson).
+- **Contextual per-user connections** — ephemeral, thread-scoped service connections (e.g. Jira) owned by the requesting Slack user, not a shared bot identity. A user logs in via a confined web-CDP browser; credentials are AES-256-GCM-encrypted at rest with a TTL. Another thread member can borrow a connection only with the owner's per-thread, revocable approval. **Off by default** — enable with `SLAUDE_ENABLE_CONNECT_BROKER` + `SLAUDE_ENCRYPTION_KEY`. See [Contextual connections (`slaude_connect`)](#contextual-connections-slaude_connect).
 - **Dependency manifest** — declarative `slaude.json` + `slaude.lock` for three surfaces: Claude Code plugins (marketplace git), skills (git repo per skill), knowledge bases (Karpathy-style markdown wikis). Install runs at image build (`slaude install --frozen`), runtime ships self-contained. See [Dependency manifest (`slaude.json`)](#dependency-manifest-slaudejson).
 - **Runtime manifest sync** — `mcp__slaude_skills__sync_manifest` syncs runtime-created skills and knowledge bases back to `slaude.json` + `slaude.lock`. Push target resolved via `slaude_skills` manifest field, env var `SLAUDE_SKILLS_REPO` as fallback. `slaude_knowledge` writable KB pushes `raw/` on each sync; read-only `knowledge[]` entries are pulled fresh. See [Dependency manifest (`slaude.json`)](#dependency-manifest-slaudejson).
 - **Writable KB + /ingest** — the agent captures material into `raw/` during normal Slack turns; `sync_manifest` pushes it to git. Manager/approver runs `/ingest` to synthesise `raw/` → `wiki/` via a dedicated SDK sub-query. Sqlite mutex ensures at most one ingest at a time.
 - **Slash commands in thread** — `/mode <ask|accept-edits|bypass|plan|dont-ask>`, `/abort`, `/ingest`, `/help`. Per-session `permission_mode` persists.
+- `/1on1` (and `/1on1 off`) — lock the current thread to you + the manager; everyone else is ignored until released. Approvers can still approve.
 - **Idle TTL with resume** — `SLAUDE_IDLE_MINUTES` (default 15). On expiry the SDK Query closes silently; next inbound message re-boots with `resume: row.id`.
 - **Provider-agnostic** — any Anthropic-compatible API (Anthropic direct, OpenRouter, DeepSeek, Z.ai, self-hosted gateway, …). Telemetry / autoupdater / bug-reporter disabled in the SDK child so non-Anthropic gateways don't crash the CLI.
 - **Health endpoints** — `/healthz` (liveness) + `/readyz` (sqlite ping) on `SLAUDE_HEALTH_PORT` (default 8080). K8s probes wired in `deploy/k8s/slaude.yaml`.
 - **One container = one persona** — multi-agent via multi-deploy.
+- **Simulation gateway** — Slack-free verification of engagement, channel-mode, approval + connect-grant buttons, and slash-command authz. Runs the same `createGateway` code as production against an in-memory transport. See [Simulation gateway](#simulation-gateway).
 
 ## Setup
 
@@ -105,6 +108,13 @@ ANTHROPIC_API_KEY=sk-ant-...
 # Optional: env-level fallback approver allowlist when SOUL.md has no
 # `## Approvers` section. Manager/channel rules live in SOUL.md, not env.
 SLAUDE_APPROVERS=U01ABCD
+
+# Contextual per-user connections (slaude_connect broker) — OFF by default.
+# Mounts only when BOTH are set: SLAUDE_ENABLE_CONNECT_BROKER (truthy) AND
+# SLAUDE_ENCRYPTION_KEY (32-byte base64, `openssl rand -base64 32`). Default
+# deploy exposes no connection tools; /1on1 mode is the shipped per-thread feature.
+SLAUDE_ENABLE_CONNECT_BROKER=
+SLAUDE_ENCRYPTION_KEY=
 
 # Defaults — see .env.example for the full list.
 SLAUDE_DEFAULT_MODE=bypass                            # YOLO; rely on approval-gate + soul mandate
@@ -224,6 +234,31 @@ Drop a Claude-Code-style `mcp.json` at `~/.slaude/mcp.json` (override path via `
 - **Approval posture** — external tools are **not** auto-allowed. First call posts a Block Kit Approve / Deny prompt; click *Always allow* to grant session-scoped auto-approval.
 - **Reserved names** — `slaude_slack` and `slaude_skills` in `mcp.json` are dropped with a warning so user config can't shadow the in-process Slack output server (would deadlock the agent).
 - **Secret isolation** — stdio child processes inherit `process.env` by default. To restrict what a server sees, set an explicit `env: { … }` on its entry; the loader only passes through what's listed there.
+
+### Contextual connections (`slaude_connect`)
+
+External MCP servers above run as **one shared identity** for the whole deploy. Contextual connections are the opposite: **per-Slack-user**, **thread-scoped**, **ephemeral**. When Alice asks "list my Jira issues", slaude acts through *Alice's* connection — not a shared bot token.
+
+**Off by default.** Enable by setting BOTH `SLAUDE_ENABLE_CONNECT_BROKER` (truthy) and `SLAUDE_ENCRYPTION_KEY` (see env above) — the flag is an explicit switch decoupled from the key, so a default deployment exposes no connection tools and `/1on1` mode is the shipped per-thread feature. Without the flag the broker stays disabled and the rest of slaude is unaffected. Operator/deploy details — the web-CDP login host and the deploy-time seams — live in [`docs/connect-broker-login.md`](docs/connect-broker-login.md).
+
+**How a user experiences it (in a Slack thread):**
+
+1. Ask for something needing a service (e.g. Jira). If you have no connection, slaude posts a **Connect** link.
+2. Open the one-time link, log in interactively in a confined remote browser. slaude captures the credential (OAuth token preferred, cookies as fallback), encrypts it (AES-256-GCM) and stores it with a TTL. The browser is torn down.
+3. slaude answers as you. The connection lives only in **this thread** and expires on idle / TTL — re-connect in a new thread.
+4. Another member borrowing your connection triggers a **one-time approval** DM to you: *Allow for thread / Just once / Deny*. "Allow for thread" lets later calls run silently; every use is still audited. Revoke anytime with `/connections`.
+
+**Broker tools** (namespace `mcp__slaude_connect__*`; fixed set — vendor tools are reached *through* `mcp_call`, so the agent's tool list never changes):
+
+| Tool | Purpose |
+|------|---------|
+| `mcp_call(service, tool, args, on_behalf_of)` | Invoke a vendor tool on the caller's connection. `on_behalf_of` = the Slack user id being answered (server cross-checks it against the live turn caller; it is **not** the authorization principal). Gated, not auto-allowed. |
+| `mcp_describe(service)` | Return the vendor service's tool schemas so the agent can build a correct `mcp_call`. |
+| `connect(service)` | Start the login flow; returns a one-time, single-user, short-TTL live-view URL to post back. |
+| `connections_list()` | List connections visible in this thread (yours + members'), with expiry. |
+| `connections_revoke(service?)` | Revoke your own connection(s) and any borrow grants; omit `service` for all. |
+
+**Security posture** (full threat model in the [design spec](docs/superpowers/specs/2026-05-29-contextual-mcp-connections-design.md)): credentials AES-256-GCM-encrypted at rest (per-row nonce, AAD-bound to the connection id); `SLAUDE_ENCRYPTION_KEY` scrubbed from the SDK child env; per-tool `borrowable` vs `owner-only` flags (owner-only tools never run under a borrow); `personal` tools never silently fall back to slaude's own identity (fail-closed for unclassified tools); borrow approval reuses the Slack approval gate targeted at the connection owner.
 
 ### Dependency manifest (`slaude.json`)
 
@@ -426,6 +461,31 @@ src/
 ```
 
 See `CLAUDE.md` for the project mandate and the [Findings Log](CLAUDE.md#findings-log) for date-stamped decision notes.
+
+## Simulation gateway
+
+Verify Slack-dependent behavior (engagement, channel-mode, approval + connect-grant
+buttons, slash-command authz) with no Slack workspace. The simulation runs the *same*
+`createGateway` code as production against an in-memory transport, so behavior cannot drift.
+
+```bash
+bun sim run                 # run every scenario transcript (CI gate), exit non-zero on failure
+bun sim run path/to/*.yaml  # run specific transcripts
+bun sim                     # interactive REPL
+```
+
+REPL is scenario-first:
+
+```
+> /scenario 5          # load approval-flow (U0ALICE in C0TEAM, request_approval behavior)
+> deploy prod          # send as the current actor
+> /as U0APP            # become the approver
+> /click 1 approve     # click the approval card
+```
+
+Built-in scenarios: `manager-dm`, `member-public`, `member-trusted`, `restricted-blocked`,
+`approval-flow`, `borrow-grant`. Override any field with `/as`, `/channel`, `/dm`,
+`/behavior`. Transcripts (`src/gateway/sim/scenarios/`) drive the same engine and gate CI.
 
 ## Roadmap / TODO
 
