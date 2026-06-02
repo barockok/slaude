@@ -1,0 +1,4 @@
+preset: member-trusted
+steps:
+  - send: { text: "status?" }
+  - expect_reply: { contains: "ack" }

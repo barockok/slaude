@@ -1,0 +1,4 @@
+preset: manager-dm
+steps:
+  - send: { text: "/ingest" }
+  - expect_reply: { contains: "ingest" }

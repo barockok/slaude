@@ -1,0 +1,6 @@
+preset: manager-dm
+steps:
+  - send: { text: "first message" }
+  - expect_reply: { contains: "ack" }
+  - send: { text: "second message same session" }
+  - expect_reply: { contains: "ack" }
