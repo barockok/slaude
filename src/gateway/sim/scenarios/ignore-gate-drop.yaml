@@ -1,0 +1,13 @@
+soul:
+  manager: U0MGR
+  approvers: [U0APP]
+  trusted: [C0IGNORE]
+  allowed: []
+agent_behavior: reply
+steps:
+  - send: { as: U0MGR, channel: C0IGNORE, text: "/ignore <@U0BOB>" }
+  - expect_reply: { contains: "ignoring" }
+  - send: { as: U0BOB, channel: C0IGNORE, text: "hello there" }
+  - expect_drop: { reason: ignored }
+  - send: { as: U0MGR, channel: C0IGNORE, text: "/unignore <@U0BOB>" }
+  - expect_reply: { contains: "stopped ignoring" }

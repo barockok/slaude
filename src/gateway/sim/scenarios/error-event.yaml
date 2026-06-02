@@ -1,0 +1,5 @@
+preset: manager-dm
+agent_behavior: boom
+steps:
+  - send: { text: "do a thing" }
+  - expect_reply: { contains: "error" }

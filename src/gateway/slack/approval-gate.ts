@@ -1,5 +1,4 @@
-import type { App } from "@slack/bolt";
-import type { WebClient } from "@slack/web-api";
+import type { Transport, WebClientLike } from "../core/transport";
 import { loadApprovers, selectApprovers, selectApproversFrom } from "../../soul/loader";
 import { soulData } from "../../soul/extract";
 
@@ -14,12 +13,19 @@ export type ApprovalRequest = {
    *  ids" SOUL format. Modern persona uses scope-described approvers, where
    *  the runtime keyword-matches the summary against each approver's scope. */
   category?: string;
+  /** Explicit approver allowlist. When set, bypasses #resolveApprovers entirely
+   *  (used by the connect-broker to target a connection owner). */
+  approvers?: string[];
+  /** Render 3 buttons: Allow for thread / Just once / Deny (borrow grant flow). */
+  grantButtons?: boolean;
 };
 
 export type ApprovalDecision = {
   approved: boolean;
   by: string;
   note?: string;
+  /** For grantButtons flows: how wide the approval is. */
+  scope?: "thread" | "once";
 };
 
 /**
@@ -40,7 +46,7 @@ type Pending = {
 };
 
 export class ApprovalGate {
-  #client: WebClient;
+  #client: WebClientLike;
   #pending = new Map<string, Pending>();
   #counter = 0;
   /** Env-derived fallback allowlist. Used when persona has no approvers block
@@ -50,21 +56,24 @@ export class ApprovalGate {
   #timeoutSeconds: () => number;
 
   constructor(
-    app: App,
+    transport: Transport,
     envApprovers: string[],
     opts: { timeoutSeconds?: () => number } = {},
   ) {
-    this.#client = app.client;
+    this.#client = transport.client;
     this.#envApprovers = new Set(envApprovers);
     this.#timeoutSeconds = opts.timeoutSeconds ?? (() => 0);
-    app.action(
-      /^slaude_appr:(approve|deny):.+$/,
+    transport.action(
+      /^slaude_appr:(approve|deny|grant_thread|grant_once):.+$/,
       async ({ ack, action, body, respond }) => {
         await ack();
         const a = action as { action_id: string };
-        const m = a.action_id.match(/^slaude_appr:(approve|deny):(.+)$/);
+        const m = a.action_id.match(/^slaude_appr:(approve|deny|grant_thread|grant_once):(.+)$/);
         if (!m) return;
-        const decision = m[1] as "approve" | "deny";
+        const verb = m[1] as "approve" | "deny" | "grant_thread" | "grant_once";
+        const approved = verb === "approve" || verb === "grant_thread" || verb === "grant_once";
+        const grantScope: "thread" | "once" | undefined =
+          verb === "grant_thread" ? "thread" : verb === "grant_once" ? "once" : undefined;
         const id = m[2]!;
         const pending = this.#pending.get(id);
         const userId = (body as any).user?.id ?? "unknown";
@@ -93,15 +102,15 @@ export class ApprovalGate {
 
         if (pending.timer) clearTimeout(pending.timer);
         this.#pending.delete(id);
-        const verb = decision === "approve" ? "*Approved*" : "*Denied*";
+        const label = approved ? "*Approved*" : "*Denied*";
         try {
           await respond({
             replace_original: true,
-            text: `Plan → ${verb} by <@${userId}>`,
+            text: `Plan → ${label} by <@${userId}>`,
             blocks: [],
           });
         } catch {}
-        pending.resolve({ approved: decision === "approve", by: userId });
+        pending.resolve({ approved, by: userId, scope: grantScope });
       },
     );
   }
@@ -136,7 +145,9 @@ export class ApprovalGate {
 
   async request(req: ApprovalRequest, abortSignal?: AbortSignal): Promise<ApprovalDecision> {
     const id = `${Date.now().toString(36)}_${(++this.#counter).toString(36)}`;
-    const approvers = this.#resolveApprovers(req);
+    const approvers = req.approvers && req.approvers.length
+      ? new Set(req.approvers)
+      : this.#resolveApprovers(req);
     const heading = req.category
       ? `:bell: *Approval needed* — \`${req.category}\``
       : `:bell: *Approval needed*`;
@@ -181,23 +192,17 @@ export class ApprovalGate {
         elements: [{ type: "mrkdwn", text: `Approver(s): ${list}` }],
       });
     }
-    sections.push({
-      type: "actions",
-      elements: [
-        {
-          type: "button",
-          style: "primary",
-          text: { type: "plain_text", text: "Approve" },
-          action_id: `slaude_appr:approve:${id}`,
-        },
-        {
-          type: "button",
-          style: "danger",
-          text: { type: "plain_text", text: "Deny" },
-          action_id: `slaude_appr:deny:${id}`,
-        },
-      ],
-    });
+    const actionElements = req.grantButtons
+      ? [
+          { type: "button", style: "primary", text: { type: "plain_text", text: "Allow for thread" }, action_id: `slaude_appr:grant_thread:${id}` },
+          { type: "button", text: { type: "plain_text", text: "Just once" }, action_id: `slaude_appr:grant_once:${id}` },
+          { type: "button", style: "danger", text: { type: "plain_text", text: "Deny" }, action_id: `slaude_appr:deny:${id}` },
+        ]
+      : [
+          { type: "button", style: "primary", text: { type: "plain_text", text: "Approve" }, action_id: `slaude_appr:approve:${id}` },
+          { type: "button", style: "danger", text: { type: "plain_text", text: "Deny" }, action_id: `slaude_appr:deny:${id}` },
+        ];
+    sections.push({ type: "actions", elements: actionElements });
 
     const posted = await this.#client.chat.postMessage({
       channel: req.channel,

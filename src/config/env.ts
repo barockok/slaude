@@ -28,6 +28,29 @@ function opt(name: string, fallback = ""): string {
   return process.env[name] ?? fallback;
 }
 
+/**
+ * Decode and validate the master credential-encryption key.
+ * Generated once by the operator: `openssl rand -base64 32`.
+ * Source defaults to process.env; injectable for tests.
+ */
+export function loadEncryptionKey(
+  source: Record<string, string | undefined> = process.env,
+): Buffer {
+  const raw = source.SLAUDE_ENCRYPTION_KEY;
+  if (!raw) {
+    throw new Error(
+      "SLAUDE_ENCRYPTION_KEY is required to store connection credentials. Generate one with `openssl rand -base64 32`.",
+    );
+  }
+  const key = Buffer.from(raw, "base64");
+  if (key.length !== 32) {
+    throw new Error(
+      `SLAUDE_ENCRYPTION_KEY must decode to 32 bytes (got ${key.length}). Use \`openssl rand -base64 32\`.`,
+    );
+  }
+  return key;
+}
+
 export const env = {
   slack: {
     botToken: () => req("SLACK_BOT_TOKEN"),
@@ -143,6 +166,15 @@ export const env = {
    *  default to avoid high-cardinality blow-up in public channels. */
   metricsPerUser: () => {
     const raw = opt("SLAUDE_METRICS_PER_USER", "0").toLowerCase();
+    return raw === "1" || raw === "true" || raw === "yes";
+  },
+  /** Opt in to the contextual MCP connections broker (`slaude_connect`: connect /
+   *  connections_list / mcp_call …). Off by default — the broker is an explicit
+   *  switch, decoupled from `SLAUDE_ENCRYPTION_KEY`, so a default deployment
+   *  exposes no connection tools. `/1on1` mode is the shipped per-thread feature.
+   *  Re-enable by setting this AND providing `SLAUDE_ENCRYPTION_KEY`. */
+  enableConnectBroker: () => {
+    const raw = opt("SLAUDE_ENABLE_CONNECT_BROKER", "0").toLowerCase();
     return raw === "1" || raw === "true" || raw === "yes";
   },
 };

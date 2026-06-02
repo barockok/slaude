@@ -1,0 +1,8 @@
+preset: approval-flow
+steps:
+  - send: { text: "deploy prod" }
+  - expect_card: { kind: approval }
+  - click: { as: U0BOB, action: approve }
+  - expect_pending: {}
+  - click: { as: U0APP, action: approve }
+  - expect_reply: { contains: "approved by" }
