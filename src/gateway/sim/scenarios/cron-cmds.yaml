@@ -1,0 +1,8 @@
+preset: manager-dm
+steps:
+  - send: { text: "/cron-list" }
+  - expect_reply: { contains: "cron" }
+  - send: { text: '/cron-add "0 9 * * 1" "good morning standup summary"' }
+  - expect_reply: { contains: "cron job created" }
+  - send: { text: "/cron-list" }
+  - expect_reply: { contains: "Active cron jobs" }

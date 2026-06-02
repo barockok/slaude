@@ -1,5 +1,4 @@
-import type { App } from "@slack/bolt";
-import type { WebClient } from "@slack/web-api";
+import type { Transport, WebClientLike } from "../core/transport";
 import type {
   CanUseTool,
   PermissionUpdate,
@@ -26,14 +25,14 @@ type Pending = {
  * allow without prompting — useful for safe read-only ops like Read/Grep/Glob.
  */
 export class PermissionGate {
-  #client: WebClient;
+  #client: WebClientLike;
   #autoAllow: Set<string>;
   /** sessionId → channel/thread for routing the prompt. */
   #routes = new Map<string, { channel: string; threadTs: string }>();
   #pending = new Map<PendingKey, Pending>();
 
-  constructor(app: App) {
-    this.#client = app.client;
+  constructor(transport: Transport) {
+    this.#client = transport.client;
     this.#autoAllow = new Set(
       (process.env.SLAUDE_AUTO_ALLOW_TOOLS ?? "")
         .split(",")
@@ -41,7 +40,7 @@ export class PermissionGate {
         .filter(Boolean),
     );
 
-    app.action(
+    transport.action(
       /^slaude_perm:(allow|always|deny):.+$/,
       async ({ ack, action, body, respond }) => {
         await ack();

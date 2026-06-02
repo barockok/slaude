@@ -1,0 +1,4 @@
+preset: borrow-grant
+steps:
+  - send: { text: "list my jira" }
+  - expect_reply: { contains: "jira" }

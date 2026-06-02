@@ -1,0 +1,5 @@
+preset: manager-dm
+agent_behavior: events2
+steps:
+  - send: { text: "do lots of tools" }
+  - expect_reply: { contains: "events2 done" }

@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "bun --watch src/server.ts",
     "start": "bun src/server.ts",
+    "sim": "bun src/gateway/sim/cli.ts",
     "typecheck": "tsc --noEmit",
     "manifest": "bun src/cli/manifest.ts",
     "validate-soul": "bun src/cli/validate.ts",

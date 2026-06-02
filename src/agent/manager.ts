@@ -26,6 +26,7 @@ import { soulSystemBlock } from "../soul/loader";
 import * as Sessions from "../db/sessions";
 import type { ThreadKey } from "../db/sessions";
 import { memory } from "../memory/sqlite-provider";
+import { scrubChildEnv } from "./child-env";
 
 type LiveSession = {
   id: string;
@@ -309,7 +310,7 @@ export class AgentManager extends EventEmitter {
       // SLAUDE_MODEL MUST be set to a provider-qualified id.
       ...(row.model ? { model: row.model } : {}),
       abortController: abort,
-      env: { ...process.env, ...providerEnv },
+      env: scrubChildEnv({ ...process.env, ...providerEnv }),
       ...(canUseTool ? { canUseTool } : {}),
       ...(hasMcpServers ? { mcpServers: mergedMcpServers } : {}),
       ...(pluginPaths.length > 0 ? { plugins: pluginPaths } : {}),
