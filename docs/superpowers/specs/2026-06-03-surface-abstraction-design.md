@@ -8,6 +8,15 @@ later adds one Surface implementation and changes nothing the agent sees. The si
 the *real* Surface implementation over a fake transport, so the agent cannot tell sim from
 prod.
 
+**Scope boundary (descoped after review).** This effort extracts the **interaction-tool
+seam** only: the Surface port, the `slaude_surface`/`slaude_runtime` MCP split, the Surface
+factory, and sim parity. `core/gateway.ts` **remains the Slack adapter** — it keeps its
+Slack-specific machinery (reactions, presence, status, `handleMessage`
+app_mention/message/engagement routing, error `postMessage`, cron/connect context). It still
+imports Slack. Making `gateway.ts` a truly platform-neutral event loop (moving
+`handleMessage`/reactions/status into the Slack adapter) is a **separate, larger effort** and
+is explicitly out of scope here. We do not claim a neutral core.
+
 ## Background
 
 Today the agent calls `mcp__slaude_slack__{reply,edit,react,upload,request_approval,
@@ -37,7 +46,16 @@ this, not on Slack.
 ```ts
 export type SurfaceCapability = "edit" | "react" | "upload" | "typing";
 
-export interface HistoryItem { author: string; text: string; ref: string }
+// Rich enough to preserve today's get_thread_history output verbatim (blocker 7).
+// Non-Slack surfaces populate the core fields and omit the optional ones.
+export interface HistoryItem {
+  author: string;
+  text: string;
+  ref: string;            // slack: ts
+  threadRef?: string;     // slack: thread_ts
+  replyCount?: number;    // slack: reply_count
+  replies?: unknown[];    // slack: nested replies when includeReplies
+}
 export interface ApprovalRequest { summary: string; tools?: string[]; files?: string[]; risks?: string; category?: string }
 export interface ApprovalResult { approved: boolean; by: string; note?: string }
 
@@ -47,20 +65,21 @@ export interface Surface {
 
   // core — every surface MUST implement:
   reply(i: { text: string }): Promise<{ ref: string }>;       // `ref` replaces Slack `ts`
-  getHistory(i: { limit?: number }): Promise<HistoryItem[]>;
+  getHistory(i: { limit?: number; includeReplies?: boolean }): Promise<{ messages: HistoryItem[]; hasMore: boolean }>;
   requestApproval(r: ApprovalRequest): Promise<ApprovalResult>;
 
   // optional — present iff listed in `capabilities`:
-  edit?(i: { ref: string; text: string }): Promise<void>;
-  react?(i: { name: string; ref?: string }): Promise<void>;
-  unreact?(i: { name: string; ref?: string }): Promise<void>;
-  upload?(i: { path: string; comment?: string }): Promise<void>;
-  typing?(i: { on: boolean }): Promise<void>;
+  edit?(i: { ref: string; text: string }): Promise<void>;       // cap: "edit"
+  react?(i: { name: string; ref?: string }): Promise<void>;     // cap: "react"
+  unreact?(i: { name: string; ref?: string }): Promise<void>;   // cap: "react" (rides with react)
+  upload?(i: { path: string; comment?: string }): Promise<void>; // cap: "upload"
+  typing?(i: { on: boolean }): Promise<void>;                   // cap: "typing"
 }
 
 /** Neutral per-session binding the gateway builds from the inbound turn. The factory
- *  (provided by the adapter) closes over the transport client, so the gateway core never
- *  imports a platform SDK. */
+ *  closes over the transport client. (In this descoped effort the gateway still imports
+ *  Slack and provides a default Slack factory; the factory is the extension seam for a
+ *  future surface, not a full decoupling of gateway.ts.) */
 export interface SessionBinding {
   conversationId: string;     // slack: channel
   threadRef?: string;         // slack: threadTs (thread-less surfaces ignore)
@@ -100,22 +119,37 @@ The single `slaude_slack` server splits by concern:
 ## 3. Gateway seam — `core/gateway.ts`
 
 ```ts
-createGateway(agent, transport, { surfaceFactory, directoryMcpFactory? })
+createGateway(agent, transport, { surfaceFactory?, directoryMcpFactory? })
 ```
 
-Per session the gateway builds a neutral `SessionBinding` from the inbound event, then
-`const surface = surfaceFactory(binding)`. The MCP resolver mounts
-`createSurfaceMcp(surface)` + `createRuntimeMcp(binding)` + `directoryMcpFactory?.(binding)`
-when provided. The core never names a platform. Generalize the Slack-specific bits:
+The gateway stores a `Surface` on each route alongside today's context. `surfaceFactory`
+defaults to `makeSlackSurfaceFactory(transport.client)` — neither the Slack adapter nor the
+sim must pass it; it exists as the extension point for a future surface. The per-session MCP
+resolver mounts `createSurfaceMcp(surface)` + `createRuntimeMcp(binding)` +
+`directoryMcpFactory?.(binding)`.
 
-- `spoke` reply-tracking keys off a `surface.reply` call (the Surface notifies the gateway it
-  replied), not a `mcp__slaude_slack__reply` string match.
-- The stop-guard nudge string becomes `mcp__slaude_surface__reply`.
-- `core/gateway.ts` drops its `import … from "../slack/mcp-tools"`.
+**Functional touchpoints that MUST change (verified against code, blockers 1-5):**
 
-The slack adapter (`slack/adapter.ts`) builds the factory bound to the real `WebClient`:
-`const surfaceFactory = makeSlackSurfaceFactory(transport.client)` and passes it to
-`createGateway`.
+- **`spoke` tracking (`gateway.ts:243-251`).** Keep the existing `toolCall`-event mechanism —
+  it already counts reply **+ edit + upload**. Just widen the name-match to
+  `mcp__slaude_surface__{reply,edit,upload}` (plus the deprecated `slaude_slack` names during
+  the transition). **No new "notify" seam** — the earlier draft was wrong here.
+- **Stop-guard nudge string (`gateway.ts:198`)** → `mcp__slaude_surface__reply`.
+- **`humanizeToolStatus` (`gateway.ts:728+`)** hardcodes ~10 Slack tool names for status text;
+  update them to the surface namespace or status falls through to the uglier generic case.
+- **cron `onExecute` (`gateway.ts:141-158`)** builds a `SlackContext` + `routes.set` directly;
+  it must build the binding + surface the same way the inbound path does, or cron sessions
+  break.
+- **connect-broker wiring (`gateway.ts:216-231`)** reads `route.ctx.{teamId,userId,channel,
+  threadTs}`; repoint to the binding fields the route now holds.
+- **Permission gate (`slack/permission-gate.ts:140`)** auto-allows `mcp__slaude_slack__*`
+  ("agent output is never gated"). After the rename, surface tools no longer match and would
+  be **gated on every reply** — CRITICAL. Add `mcp__slaude_surface__` and
+  `mcp__slaude_runtime__` to the allow-prefix list.
+
+`core/gateway.ts` continues to import Slack for its adapter responsibilities (descoped — see
+Scope boundary). The Slack adapter does not need to pass a factory; the gateway's default
+covers it.
 
 ## 4. SlackSurface — `src/gateway/slack/surface.ts`
 
@@ -144,13 +178,31 @@ No `--surface` flag and no WhatsApp code in this effort (see Deferred). The rend
 `--real`/`--verbose` work from the previous change are unaffected — they key off generic
 agent events.
 
+**`StubAgent` rewrite (blocker 6).** `sim/stub-agent.ts` currently calls
+`slackHandlers.reply(ctx.slack, …)` / `slackHandlers.request_approval(ctx.slack, …)` through
+the `__sessionCtx().slack` seam. Since the per-session ctx changes shape (it now carries a
+`Surface` + binding, not a raw `SlackContext`), the stub must call the same Surface the real
+agent would — `surface.reply({text})`, `surface.requestApproval({summary,risks})`. The "25
+sim transcripts stay green" guarantee **depends on this rewrite**, so it is a planned task,
+not incidental.
+
 ## 6. Migration & tests
 
 - **Deprecated alias, one release.** Keep `mcp__slaude_slack__reply` mounted as a thin alias
   delegating to `surface.reply`, so an in-flight session or a persona/skill referencing the
   old name doesn't break. Mark deprecated; remove next release.
-- **Prompt/doc sweep.** Update agent system-prompt / soul references and docs from
-  `slaude_slack__reply` → `slaude_surface__reply`.
+- **Tool-name sweep (wider than first stated).** `mcp__slaude_slack__*` strings appear in
+  more than the system prompt. Every site, repoint to the right new namespace
+  (`slaude_surface__*` for interaction, `slaude_runtime__*` for control plane):
+  - `agent/manager.ts:574,576` — skill-evolution prompt (`request_approval`, `reply`).
+  - `agent/manager.ts:544` — **auto-evolve work-counting (blocker 8):** `if
+    (t.startsWith("mcp__slaude_slack__")) continue;` skips surface output when deciding if the
+    turn did substantive work. Add `mcp__slaude_surface__` (and `mcp__slaude_runtime__`) or the
+    evolve threshold drifts.
+  - `soul/loader.ts` (4×), `soul/data.ts` — persona/system-prompt references.
+  - `skills/mcp-tools.ts:177`, `knowledge/ingest.ts:91` ("Do NOT call mcp__slaude_slack__*"),
+    `gateway/slack/approval-gate.ts:33`.
+  - Each must move to the namespace matching where the tool actually landed.
 - **Tests.** The full existing suite (594) + sim transcripts (25) must stay green —
   consistency-by-construction means Slack-as-Surface behaves identically. Add a focused test:
   given a `SlackSurface`, `createSurfaceMcp` mounts exactly `reply`/`get_history`/
@@ -164,6 +216,13 @@ agent events.
   change, faithful real==sim parity. Not in this effort.
 - **Directory/search generalization** (`getUserProfile`/`searchMessages` as an optional
   `directory` capability) — stays Slack-specific for now.
+- **Gateway neutralization** — moving `handleMessage`/reactions/presence/status/error-post out
+  of `gateway.ts` into the Slack adapter so the core is a generic event loop. Own effort.
+- **Approval-rendering abstraction (tension, flagged).** `binding.requestApproval` is today a
+  gateway-provided Slack `ApprovalGate` (Block Kit buttons). A real non-Slack surface that must
+  render approval *itself* (e.g. a text yes/no) cannot simply delegate to a Slack-bound hook —
+  the approval seam will need rethinking when the first such surface lands. Out of scope now;
+  Slack delegation stands.
 - **Token-level streaming** in the sim renderer — events remain per-block.
 
 ## File-by-file
@@ -173,9 +232,15 @@ agent events.
 | `core/surface.ts` | **new** — `Surface`, `SurfaceCapability`, `SessionBinding`, `SurfaceFactory`, DTOs |
 | `core/surface-mcp.ts` | **new** — `createSurfaceMcp(surface)`, capability-gated tool mounting |
 | `core/runtime-mcp.ts` | **new** — `createRuntimeMcp(binding)`; ignore/cron/ingest/reload tools |
-| `core/gateway.ts` | accept `surfaceFactory`; build binding; mount surface+runtime MCPs; generalize `spoke` + stop-guard; drop slack import |
+| `core/gateway.ts` | default+accept `surfaceFactory`; build binding; mount surface+runtime MCPs; widen `spoke` name-match; stop-guard string; `humanizeToolStatus` names; **cron `onExecute`** binding/surface; **connect-broker** ctx repoint. Keeps slack import (descoped) |
 | `slack/surface.ts` | **new** — `SlackSurface`, `makeSlackSurfaceFactory(client)` |
-| `slack/mcp-tools.ts` | shrink to directory/search; move runtime tools out; reply logic moves into `SlackSurface`; keep deprecated `reply` alias for one release |
-| `slack/adapter.ts` | build + pass `surfaceFactory`; pass slack-directory mcp |
-| `gateway/sim/engine.ts` | inject `makeSlackSurfaceFactory(transport.client)` into `createGateway` |
-| tests | surface-mcp capability-gating test; keep suite + sim transcripts green; update any `slaude_slack__reply` assertions |
+| `slack/mcp-tools.ts` | shrink to directory/search; reply/edit/react/upload/history logic moves into `SlackSurface`; keep deprecated `reply` alias for one release |
+| `slack/permission-gate.ts` | **add `mcp__slaude_surface__` + `mcp__slaude_runtime__` to the auto-allow prefixes (blocker 1)** |
+| `slack/approval-gate.ts` | tool-name string (`:33`) → surface namespace |
+| `slack/adapter.ts` | optionally pass `directoryMcpFactory` (factory itself defaults in gateway) |
+| `gateway/sim/engine.ts` | uses gateway default factory over `SimTransport.client` (parity); pass directory mcp |
+| `gateway/sim/stub-agent.ts` | **rewrite to call `surface.reply` / `surface.requestApproval`** instead of `slackHandlers.*` via `ctx.slack` (blocker 6) |
+| `agent/manager.ts` | `:544` auto-evolve prefix (blocker 8); `:574,576` skill-evolution prompt strings |
+| `soul/loader.ts`, `soul/data.ts` | persona/system-prompt tool-name references → new namespaces |
+| `skills/mcp-tools.ts`, `knowledge/ingest.ts` | tool-name strings → new namespaces |
+| tests | surface-mcp capability-gating test; keep suite (594) + sim transcripts (25) green; update `slaude_slack__*` assertions |
