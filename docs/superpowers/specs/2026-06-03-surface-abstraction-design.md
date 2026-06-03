@@ -1,7 +1,7 @@
 # Surface abstraction — design
 
 **Date:** 2026-06-03
-**Status:** approved (pending spec review)
+**Status:** implemented — see [findings](../../findings/2026-06-03-surface-abstraction.md)
 **Goal:** Decouple the agent's interaction tooling from Slack so the agent talks to a
 single, platform-neutral **Surface** contract. Onboarding a new surface (WhatsApp, …)
 later adds one Surface implementation and changes nothing the agent sees. The sim drives
