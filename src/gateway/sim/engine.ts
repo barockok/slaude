@@ -22,6 +22,9 @@ export class SimSession {
   channel = "C0TEAM";
   dm = false;
   behavior = "reply";
+  /** Pin sends to one thread_ts so thread-scoped commands (/1on1, /ignore-thread) persist
+   *  across turns. Unset → each send is its own thread (handleMessage falls back to its ts). */
+  thread?: string;
   /** Shared mode runs against the operator's REAL $SLAUDE_HOME — dispose must NOT touch
    *  the real SOUL.md. Set true only by #createShared. */
   #shared = false;
@@ -123,7 +126,7 @@ export class SimSession {
     // behaviors (e.g. /1on1 locks) model one real Slack thread. Omitted → each send
     // is its own thread (handleMessage falls back to the message ts).
     const turn = this.#armTurn();
-    await this.transport.feedMessage({ channel, user: as, text, channel_type: dm ? "im" : "channel", team: TEAM, thread_ts: step.thread });
+    await this.transport.feedMessage({ channel, user: as, text, channel_type: dm ? "im" : "channel", team: TEAM, thread_ts: step.thread ?? this.thread });
     await this.#drain();
     await turn;
   }
