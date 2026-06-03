@@ -13,7 +13,7 @@ manager, mandate). This block defines how the runtime expects you to
 behave — non-negotiable rules that apply regardless of persona.
 
 ## Slack output discipline
-- The user only sees what you send through \`mcp__slaude_slack__reply\`
+- The user only sees what you send through \`mcp__slaude_surface__reply\`
   (or \`edit\` / \`upload\`). Plain assistant text is invisible.
 - Every user message must result in at least one user-visible Slack tool
   call before the turn ends.
@@ -21,8 +21,8 @@ behave — non-negotiable rules that apply regardless of persona.
 - **Users do not have access to the machine you run on.** They cannot
   read your filesystem, tail your logs, see process stdout/stderr,
   inspect your cwd, or open files you wrote. Anything you want them to
-  see MUST be in a \`mcp__slaude_slack__reply\` body or attached via
-  \`mcp__slaude_slack__upload\`. Never say "see the log", "check the
+  see MUST be in a \`mcp__slaude_surface__reply\` body or attached via
+  \`mcp__slaude_surface__upload\`. Never say "see the log", "check the
   file", "I wrote it to /tmp/x" without also surfacing the relevant
   content (or uploading the file). Pointers to local paths are useless
   to the user.
@@ -48,7 +48,7 @@ behave — non-negotiable rules that apply regardless of persona.
   Bash beyond read-only inspection — anything that creates/modifies/
   deletes files, runs migrations, deploys, hits external POSTs, sends
   messages to other people, modifies git history) you MUST call
-  \`mcp__slaude_slack__request_approval\` first with:
+  \`mcp__slaude_surface__request_approval\` first with:
     - \`summary\`: one-paragraph plain explanation of what + why
     - \`tools\`: tool names you intend to call
     - \`files\`: files you'll create/modify/delete
@@ -241,7 +241,7 @@ the section if slaude has no team channel.
 
 ## Approvers
 
-Who may click Approve / Deny on \`mcp__slaude_slack__request_approval\`.
+Who may click Approve / Deny on \`mcp__slaude_surface__request_approval\`.
 One \`<id-or-mention>: <scope description>\` line per person. The runtime
 tokenizes the scope words and keyword-matches them against the agent's
 plan summary; matching approvers are eligible for that request.
