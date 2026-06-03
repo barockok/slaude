@@ -41,6 +41,16 @@ Input only happens while the spinner is stopped (prompt → run+spin → gate?(s
 input) and matches how a turn actually flows. The spinner interval runs always but `tick()` is
 a no-op when no status is active, so it's safe to leave running during the input read.
 
+## Input editing: node:readline, not the bare console iterator
+
+Bun's `for await (const line of console)` is a dumb line reader — no cursor movement, no
+history, arrow keys land as literal `\x1b[D` in the text. Switched the interactive seam to
+`node:readline` (`terminal: true`): arrow keys move the cursor, ↑/↓ recall history, Home/End/
+Ctrl-A/E and backspace work. The turn-based flow makes coordination trivial — `rl.pause()`
+while a turn runs (so input echo never fights the spinner), then `rl.prompt()` again. The
+spinner interval is harmless at the prompt because `tick()` is a no-op when idle. Verified
+under a real PTY: typing `helo`, Left, `l` submits `hello`.
+
 ## Gotchas
 
 - The gate appearing "twice" in a quick smoke is correct authz: a non-approver (U0ALICE)
