@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { createGateway, type GatewayHandle } from "../core/gateway";
 import { SimTransport, type OutboundCard } from "./transport";
 import { StubAgent } from "./stub-agent";
@@ -33,7 +33,7 @@ export class SimSession {
     this.#restoreDropInc = () => { counter.inc = orig; };
   }
 
-  static async create(opts: { preset?: string; soul?: SoulFixture; agent: "stub" | "real"; behavior?: string }): Promise<SimSession> {
+  static async create(opts: { preset?: string; soul?: SoulFixture; agent: "stub" | "real"; behavior?: string; soulMd?: string }): Promise<SimSession> {
     let soul: SoulFixture | undefined = opts.soul;
     let actor = "U0MGR", channel = "C0TEAM", dm = false, behavior = opts.behavior ?? "reply";
     if (opts.preset) {
@@ -42,7 +42,12 @@ export class SimSession {
       soul = p.soul; actor = p.actor; channel = p.channel; dm = p.dm ?? false; behavior = opts.behavior ?? p.behavior;
     }
     if (!soul) soul = { manager: "U0MGR", approvers: ["U0APP"], trusted: ["C0TEAM"], allowed: ["C0PUB"] };
-    writeSoulFixture(soul);   // also injects SoulData via setSoulData
+    writeSoulFixture(soul);   // also injects SoulData (gates) via setSoulData
+    // Optional: drive the agent's persona/voice from a real SOUL.md. The system prompt
+    // reads paths.soul live (loadSoul()), so overwriting the synthetic fixture file makes
+    // the agent adopt that persona. Gates stay from the preset (setSoulData memo) — the
+    // custom file's approvers/channels are NOT re-extracted in the sim.
+    if (opts.soulMd) writeFileSync(paths.soul, opts.soulMd, "utf8");
 
     // The real gateway eagerly reads env.slack.botToken() per inbound turn (for
     // attachment downloads). The sim never has real files, so the token is never
