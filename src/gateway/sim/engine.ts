@@ -1,10 +1,10 @@
 import { rmSync } from "node:fs";
 import { createGateway, type GatewayHandle } from "../core/gateway";
-import { SimTransport } from "./transport";
+import { SimTransport, type OutboundCard } from "./transport";
 import { StubAgent } from "./stub-agent";
 import { writeSoulFixture, type SoulFixture } from "./soul-fixture";
 import { getPreset } from "./presets";
-import { AgentManager } from "../../agent/manager";
+import { AgentManager, type AgentEvent } from "../../agent/manager";
 import { __resetSoulDataMemo } from "../../soul/extract";
 import { paths } from "../../config/home";
 import { m as metric } from "../../metrics";
@@ -84,8 +84,10 @@ export class SimSession {
     // `thread` pins messages to a shared thread_ts so multi-message, thread-scoped
     // behaviors (e.g. /1on1 locks) model one real Slack thread. Omitted → each send
     // is its own thread (handleMessage falls back to the message ts).
+    const turn = this.#armTurn();
     await this.transport.feedMessage({ channel, user: as, text, channel_type: dm ? "im" : "channel", team: TEAM, thread_ts: step.thread });
     await this.#drain();
+    await turn;
   }
 
   async click(step: { as?: string; action: string }): Promise<void> {
@@ -93,16 +95,69 @@ export class SimSession {
     const card = [...this.transport.outbound].reverse().find((c) => !c.resolved && c.actionIds.some((id) => id.split(":")[1] === step.action));
     if (!card) throw new Error(`no live card with action ${step.action}`);
     const actionId = card.actionIds.find((id) => id.split(":")[1] === step.action)!;
+    const turn = this.#armTurn();
     await this.transport.feedAction(actionId, as);
     await this.#drain();
+    await turn;
   }
 
   cards() { return this.transport.outbound; }
   drops() { return this.#drops; }
 
+  /** Live agent-event stream (real agent only) — for claude-code-style rendering.
+   *  Returns an unsubscribe fn; no-op for the stub. */
+  onAgentEvent(cb: (e: AgentEvent) => void): () => void {
+    if (this.agent instanceof StubAgent) return () => {};
+    const mgr = this.agent;
+    mgr.on("event", cb);
+    return () => mgr.off("event", cb);
+  }
+
+  /** Live outbound-card stream — for rendering replies + gate prompts. */
+  onCard(cb: (c: OutboundCard) => void): () => void { return this.transport.onCard(cb); }
+
+  /** The currently-open permission/approval gate awaiting a human click, if any. */
+  pendingGate(): OutboundCard | undefined {
+    return [...this.transport.outbound].reverse().find(
+      (c) => (c.kind === "permission" || c.kind === "approval") && !c.resolved && c.actionIds.length > 0,
+    );
+  }
+
+  /** Resolve the open gate with a verb (allow|always|deny|approve|reject…), then
+   *  await the turn's continuation (which may stop at the next gate or finish). */
+  async resolveGate(verb: string): Promise<void> {
+    const gate = this.pendingGate();
+    if (!gate) throw new Error("no pending gate");
+    const actionId = gate.actionIds.find((id) => id.split(":")[1] === verb) ?? gate.actionIds[0]!;
+    const turn = this.#armTurn();
+    await this.transport.feedAction(actionId, this.actor);
+    await turn;
+  }
+
   async #drain(): Promise<void> {
     if (this.agent instanceof StubAgent) await this.agent.drain();
     else await new Promise((r) => setTimeout(r, 0));
+  }
+
+  // Real AgentManager runs the LLM turn async — feedMessage returns before the
+  // reply lands. Arm this BEFORE feeding so we don't miss the event, then await
+  // it after. Resolves on done/error, OR when a permission/approval gate opens —
+  // a gate pauses the SDK turn awaiting a human click, so we hand control back to
+  // the REPL to prompt inline; resolveGate() re-arms for the continuation.
+  #armTurn(): Promise<void> {
+    if (this.agent instanceof StubAgent) return Promise.resolve();
+    const mgr = this.agent;
+    return new Promise<void>((resolve) => {
+      const onEvent = (e: AgentEvent) => {
+        if (e.type === "done" || e.type === "error") { cleanup(); resolve(); }
+      };
+      const offCard = this.transport.onCard((c) => {
+        if ((c.kind === "permission" || c.kind === "approval") && !c.resolved && c.actionIds.length > 0) { cleanup(); resolve(); }
+      });
+      const timer = setTimeout(() => { cleanup(); resolve(); }, 180_000);
+      const cleanup = () => { clearTimeout(timer); mgr.off("event", onEvent); offCard(); };
+      mgr.on("event", onEvent);
+    });
   }
 
   async dispose(): Promise<void> {
