@@ -529,9 +529,24 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
         (args) => slackHandlers.search_messages(ctx, args),
       ),
 
+    ],
+  });
+}
+
+export const RUNTIME_MCP_NAME = "slaude_runtime";
+
+/** Build the surface-agnostic control-plane MCP server (`slaude_runtime`): ignore gates,
+ *  cron jobs, KB ingest, session reload. These never produce user-visible output; they're
+ *  housekeeping. Still ctx-bound today (cron/ignore use the conversation) — fuller
+ *  neutralization is deferred with the gateway. */
+export function createRuntimeMcp(ctx: SlackContext): McpSdkServerConfigWithInstance {
+  return createSdkMcpServer({
+    name: RUNTIME_MCP_NAME,
+    version: "0.1.0",
+    tools: [
       tool(
         "ignore_thread",
-        "Temporarily ignore this Slack thread when the conversation drifts out of mandate. Use to prevent infinite loops or unproductive back-and-forth. The thread will be silently dropped until the ignore expires or a manager removes it. Requires manager or approver authorization.",
+        "Temporarily ignore this thread when the conversation drifts out of mandate. Use to prevent infinite loops or unproductive back-and-forth. The thread will be silently dropped until the ignore expires or a manager removes it. Requires manager or approver authorization.",
         {
           duration: z
             .string()
@@ -543,16 +558,16 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
 
       tool(
         "unignore_thread",
-        "Resume normal processing in this Slack thread after a previous ignore_thread call. Use when the conversation has returned to your mandate, the user explicitly asks to un-ignore, or you previously ignored by mistake. Requires manager or approver authorization.",
+        "Resume normal processing in this thread after a previous ignore_thread call. Use when the conversation has returned to your mandate, the user explicitly asks to un-ignore, or you previously ignored by mistake. Requires manager or approver authorization.",
         {},
         () => adminHandlers.unignoreThread(ctx),
       ),
 
       tool(
         "ignore_user",
-        "Temporarily ignore a specific Slack user across all threads. Use when a user is repeatedly sending off-topic or disruptive messages. The user will be silently dropped until the ignore expires or a manager removes it. Requires manager or approver authorization.",
+        "Temporarily ignore a specific user across all threads. Use when a user is repeatedly sending off-topic or disruptive messages. The user will be silently dropped until the ignore expires or a manager removes it. Requires manager or approver authorization.",
         {
-          user_id: z.string().describe("Slack user ID to ignore (e.g. U123ABC)."),
+          user_id: z.string().describe("User ID to ignore (e.g. U123ABC)."),
           duration: z.string().describe("Duration like '5m', '10m', '1h', or 'permanent'. Max 24h."),
           reason: z.string().describe("Brief reason why the user is being ignored."),
         },
@@ -561,9 +576,9 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
 
       tool(
         "unignore_user",
-        "Stop ignoring a previously ignored Slack user. Requires manager or approver authorization.",
+        "Stop ignoring a previously ignored user. Requires manager or approver authorization.",
         {
-          user_id: z.string().describe("Slack user ID to unignore (e.g. U123ABC)."),
+          user_id: z.string().describe("User ID to unignore (e.g. U123ABC)."),
         },
         (args) => adminHandlers.unignoreUser(ctx, { userId: args.user_id }),
       ),
