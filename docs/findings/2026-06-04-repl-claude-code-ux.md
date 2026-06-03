@@ -1,0 +1,50 @@
+# Sim REPL — claude-code-grade UX
+
+Date: 2026-06-04
+Spec: [docs/superpowers/specs/2026-06-04-repl-claude-code-ux.md](../superpowers/specs/2026-06-04-repl-claude-code-ux.md)
+
+## What changed
+
+`bun run sim` now feels like the claude-code REPL:
+
+- **Live bottom-pinned status line** — one line repaints in place (spinner + activity +
+  elapsed): `✻ Thinking… (3s)`, `Bash… (1s)`, `Writing…`. No new line per tick. Tracks
+  *what the agent is doing right now* from the event stream.
+- **claude-code framing** — `✻ slaude sim` banner, dim `›` prompt, tool tree
+  (`⏺ Tool(args)` / `  ⎿ result`), `⏺` reply bullets.
+- **Approval as a bordered box** — `╭─ Approval needed: deploy prod ─╮` with numbered
+  options; answer `a/d/A` or `1/2/3`. Same box in stub and real paths.
+- **Group activity** — `/as <U> <text>` injects one message as another user without
+  switching the actor, so you can stage a busy channel. `/as <U>` (no text) still switches
+  permanently. `/as /channel /dm` work mid-session, incl. shared mode (they never touch
+  SOUL.md — only `/scenario` does, which stays blocked in shared).
+
+## How it's built (testable core, thin TTY seam)
+
+- `render.ts` (pure) — formatters: `toolLine`/`resultLine`/`replyLine`/`errorLine`/
+  `statusLabel(event)`/`gateBox(card)`/`SPINNER_FRAMES`. 13 unit tests.
+- `term.ts` — `LiveTerminal(write, {frames, now})` owns the status region: `print` commits
+  scrollback above, `status(label|null)` sets/clears the live line, `tick` advances the
+  spinner. I/O injected (write sink + clock) → 7 unit tests assert the `\r\x1b[2K`
+  clear/repaint sequences and `frame label (Ns)` composition, no real TTY needed.
+- `repl.ts` — orchestrates: keeps `onOutput(line)` (committed scrollback; existing tests +
+  transcripts unchanged) and adds `onStatus(label|null)`. Drives the status from events;
+  renders only *new* cards per stub turn (a render cursor) so each turn shows just its output
+  — `/cards` still dumps the full listing for inspection.
+- `cli.ts` — TTY seam: `LiveTerminal(process.stdout.write)`, a 120ms `setInterval` spinner
+  tick (no-op while idle, so it never clobbers typed input), banner + `›` prompt.
+
+## Key decision: turn-based, no simultaneous spinner+typing
+
+Input only happens while the spinner is stopped (prompt → run+spin → gate?(stop/answer/resume)
+→ done → prompt). This sidesteps the hardest terminal problem (live region competing with line
+input) and matches how a turn actually flows. The spinner interval runs always but `tick()` is
+a no-op when no status is active, so it's safe to leave running during the input read.
+
+## Gotchas
+
+- The gate appearing "twice" in a quick smoke is correct authz: a non-approver (U0ALICE)
+  answering `a` is rejected and the gate stays open. Approve as the approver (`/as U0APP`).
+- When eyeballing raw sim output, strip `\r`/`\x1b[2K` *and apply* them — the spinner line is
+  overwritten in a real terminal, so naive `sed` makes reply text look concatenated onto a
+  `Thinking…` line when it isn't.
