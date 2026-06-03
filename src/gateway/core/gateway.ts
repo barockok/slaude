@@ -15,6 +15,9 @@ import { IgnoreGate } from "../slack/ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slack/commands";
 import { soulData } from "../../soul/extract";
 import { createSlackMcp, SLACK_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
+import { makeSlackSurfaceFactory } from "../slack/surface";
+import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
+import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME } from "../../knowledge/mcp-tools";
@@ -88,11 +91,35 @@ const STATUS_THINKING = { text: "thinking", emoji: ":thought_balloon:" };
 
 type SessionRoute = {
   ctx: SlackContext;
-  /** Whether the agent has emitted any user-visible Slack output this turn (via mcp__slaude_slack__reply). */
+  /** The interaction Surface for this session. Built once; reads ctx live (getters). */
+  surface: Surface;
+  /** Whether the agent has emitted user-visible output this turn (surface reply/edit/upload). */
   spoke: boolean;
 };
 
-export function createGateway(agent: AgentManager, t: Transport): GatewayHandle {
+export interface GatewayOptions {
+  /** Override how a Surface is built per session. Defaults to a SlackSurface over the
+   *  transport client — the extension seam for future surfaces. */
+  surfaceFactory?: SurfaceFactory;
+}
+
+/** A live SessionBinding view over the mutated-in-place SlackContext, so the Surface always
+ *  reads the current turn's conversation/inbound/user (the gateway mutates ctx across turns). */
+function bindingFor(ctx: SlackContext): SessionBinding {
+  return {
+    get conversationId() { return ctx.channel; },
+    get threadRef() { return ctx.threadTs; },
+    get inboundRef() { return ctx.inboundTs; },
+    get userId() { return ctx.userId; },
+    get teamId() { return ctx.teamId; },
+    requestApproval: (r) => ctx.requestApproval!(r),
+    reloadSession: () => ctx.reloadSession?.() ?? false,
+  };
+}
+
+export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOptions = {}): GatewayHandle {
+
+  const surfaceFactory: SurfaceFactory = opts.surfaceFactory ?? makeSlackSurfaceFactory(t.client as any);
 
   const reactions = new ReactionTracker(t.client);
   const presence = new Presence(t.client as any);
@@ -155,7 +182,7 @@ export function createGateway(agent: AgentManager, t: Transport): GatewayHandle 
           ...req,
         });
       ctx.reloadSession = () => agent.reload(sessionId);
-      routes.set(sessionId, { ctx, spoke: false });
+      routes.set(sessionId, { ctx, surface: surfaceFactory(bindingFor(ctx)), spoke: false });
     },
   });
   cronScheduler.start();
@@ -195,13 +222,14 @@ export function createGateway(agent: AgentManager, t: Transport): GatewayHandle 
     const route = routes.get(sessionId);
     if (!route) return null;
     if (route.spoke) return null;
-    return "You have not delivered a reply to the user. Call `mcp__slaude_slack__reply` now with your answer to the inbound Slack message, then stop. Do not stop without replying.";
+    return "You have not delivered a reply to the user. Call `mcp__slaude_surface__reply` now with your answer to the inbound message, then stop. Do not stop without replying.";
   });
 
   agent.setMcpResolver((sessionId) => {
     const route = routes.get(sessionId);
     if (!route) return undefined;
     const servers: Record<string, McpServerConfig> = {
+      [SURFACE_MCP_NAME]: createSurfaceMcp(route.surface),
       [SLACK_MCP_NAME]: createSlackMcp(route.ctx),
       [SKILLS_MCP_NAME]: createSkillsMcp(),
       [SESSION_MCP_NAME]: createSessionMcp({
@@ -240,10 +268,14 @@ export function createGateway(agent: AgentManager, t: Transport): GatewayHandle 
 
     switch (e.type) {
       case "toolCall": {
-        // Any user-visible Slack tool counts as "spoke" — reply, edit, upload
-        // all surface content. (react alone doesn't satisfy: an emoji isn't
-        // a real answer.)
+        // Any user-visible tool counts as "spoke" — reply, edit, upload all
+        // surface content. (react alone doesn't satisfy: an emoji isn't a real
+        // answer.) Matches the canonical surface namespace + the deprecated
+        // slack namespace during the transition.
         const userVisible =
+          e.tool === `mcp__${SURFACE_MCP_NAME}__reply` ||
+          e.tool === `mcp__${SURFACE_MCP_NAME}__edit` ||
+          e.tool === `mcp__${SURFACE_MCP_NAME}__upload` ||
           e.tool === `mcp__${SLACK_MCP_NAME}__reply` ||
           e.tool === `mcp__${SLACK_MCP_NAME}__edit` ||
           e.tool === `mcp__${SLACK_MCP_NAME}__upload`;
@@ -704,7 +736,7 @@ export function createGateway(agent: AgentManager, t: Transport): GatewayHandle 
           ...req,
         });
       ctx.reloadSession = () => agent.reload(session.id);
-      routes.set(session.id, { ctx, spoke: false });
+      routes.set(session.id, { ctx, surface: surfaceFactory(bindingFor(ctx)), spoke: false });
     }
 
     console.log(`[slaude] sendMessage session=${session.id} cwd=${session.working_dir} model=${session.model}`);
@@ -755,16 +787,24 @@ export function createGateway(agent: AgentManager, t: Transport): GatewayHandle 
         return `searching web: "${(inp.query ?? "").toString().slice(0, 40)}"`;
       case "Task":
         return `delegating to subagent`;
+      case `mcp__${SURFACE_MCP_NAME}__reply`:
       case `mcp__${SLACK_MCP_NAME}__reply`:
         return "replying";
+      case `mcp__${SURFACE_MCP_NAME}__edit`:
       case `mcp__${SLACK_MCP_NAME}__edit`:
         return "editing reply";
+      case `mcp__${SURFACE_MCP_NAME}__upload`:
       case `mcp__${SLACK_MCP_NAME}__upload`:
         return `uploading ${shortPath(inp.path) || "file"}`;
+      case `mcp__${SURFACE_MCP_NAME}__react`:
+      case `mcp__${SURFACE_MCP_NAME}__unreact`:
       case `mcp__${SLACK_MCP_NAME}__react`:
         return `reacting :${inp.name ?? "?"}:`;
+      case `mcp__${SURFACE_MCP_NAME}__request_approval`:
       case `mcp__${SLACK_MCP_NAME}__request_approval`:
         return "requesting approval";
+      case `mcp__${SURFACE_MCP_NAME}__get_history`:
+        return `reading conversation history`;
       case `mcp__${SLACK_MCP_NAME}__get_user_profile`:
         return `fetching user profile`;
       case `mcp__${SLACK_MCP_NAME}__get_channel_info`:
