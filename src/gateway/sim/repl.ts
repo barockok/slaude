@@ -15,7 +15,8 @@ export class ReplController {
   #agent: "stub" | "real";
   #unsub: Array<() => void> = [];
   #lastText = "";            // dedup: assistant text vs reply-tool text
-  constructor(agent: "stub" | "real" = "stub") { this.#agent = agent; }
+  #soulMd?: string;
+  constructor(agent: "stub" | "real" = "stub", soulMd?: string) { this.#agent = agent; this.#soulMd = soulMd; }
   onOutput(fn: (line: string) => void) { this.#out = fn; }
 
   async handle(line: string): Promise<void> {
@@ -60,7 +61,7 @@ export class ReplController {
   async #loadScenario(sel: string) {
     await this.dispose();
     const effectiveSel = sel || "1";
-    this.#session = await SimSession.create({ preset: effectiveSel, agent: this.#agent });
+    this.#session = await SimSession.create({ preset: effectiveSel, agent: this.#agent, soulMd: this.#soulMd });
     const s = this.#session;
     if (this.#agent === "real") {
       this.#unsub.push(s.onAgentEvent((e) => this.#renderEvent(e)));
