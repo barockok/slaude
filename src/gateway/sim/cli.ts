@@ -92,20 +92,38 @@ if (isRun) {
   process.exit(failures ? 1 : 0);
 } else {
   const { ReplController } = await import("./repl");
+  const { LiveTerminal } = await import("./term");
   const r = new ReplController(agentMode, soulMd, shared);
-  r.onOutput((l) => realLog(l));
-  const tail = `a/d/A answers gates · /help · Ctrl-D quits.${verbose ? "" : "  (--verbose for infra logs)"}`;
+
+  // The live terminal owns a bottom-pinned status line (spinner + activity) and lets
+  // committed lines scroll above it — the claude-code feel. A ~120ms interval advances the
+  // spinner; tick() is a no-op whenever no status is active (e.g. while awaiting input), so
+  // it never clobbers what the user is typing.
+  const term = new LiveTerminal((s) => process.stdout.write(s));
+  r.onOutput((l) => term.print(l));
+  r.onStatus((l) => term.status(l));
+  const spin = setInterval(() => term.tick(), 120);
+  const PROMPT = "\x1b[2m›\x1b[0m ";
+  const prompt = () => process.stdout.write(`\n${PROMPT}`);
+
+  const mode = agentMode === "real" ? "live agent" : "stub";
+  const tail = `a/d/A (or 1/2/3) answers gates · /help · Ctrl-D quits.${verbose ? "" : "  (--verbose for infra logs)"}`;
+  term.print(`\x1b[1m✻ slaude sim\x1b[0m  \x1b[2m${mode}\x1b[0m`);
   if (shared) {
     await r.startShared();
-    realLog(`\n${agentMode === "real" ? "live agent" : "stub"} · shared config (real ~/.slaude, state under sim/) — ${tail}\n`);
+    term.print(`\x1b[2mshared config (real ~/.slaude, state under sim/) — ${tail}\x1b[0m`);
   } else {
     await r.handle("/scenarios");
-    realLog(`\n${agentMode === "real" ? "live agent" : "stub"}${soulPath ? ` · soul=${soulPath}` : ""} · fixture — /scenario <n> to start, then chat. ${tail}\n`);
+    term.print(`\x1b[2m${soulPath ? `soul=${soulPath} · ` : ""}fixture — /scenario <n> to start, then chat. ${tail}\x1b[0m`);
   }
+
+  prompt();
   for await (const line of (console as any)) {
-    if (!line.trim()) continue;
-    try { await r.handle(line); } catch (e) { realLog(`! ${(e as Error).message}`); }
+    if (!line.trim()) { prompt(); continue; }
+    try { await r.handle(line); } catch (e) { term.print(`! ${(e as Error).message}`); }
+    prompt();
   }
+  clearInterval(spin);
   await r.dispose();
   process.exit(0);
 }
