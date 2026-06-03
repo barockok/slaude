@@ -2,6 +2,7 @@ import { SimSession } from "./engine";
 import { PRESETS, getPreset } from "./presets";
 import type { OutboundCard } from "./transport";
 import type { AgentEvent } from "../../agent/manager";
+import { soulData } from "../../soul/extract";
 
 /** Transport-agnostic REPL logic: feed it command lines, it emits output lines.
  *  cli.ts wires this to stdin/stdout.
@@ -16,12 +17,19 @@ export class ReplController {
   #unsub: Array<() => void> = [];
   #lastText = "";            // dedup: assistant text vs reply-tool text
   #soulMd?: string;
-  constructor(agent: "stub" | "real" = "stub", soulMd?: string) { this.#agent = agent; this.#soulMd = soulMd; }
+  #shared: boolean;
+  constructor(agent: "stub" | "real" = "stub", soulMd?: string, shared = false) { this.#agent = agent; this.#soulMd = soulMd; this.#shared = shared; }
   onOutput(fn: (line: string) => void) { this.#out = fn; }
 
   async handle(line: string): Promise<void> {
     const trimmed = line.trim();
     const [cmd, ...rest] = trimmed.split(/\s+/);
+    // Fixture scenarios write a synthetic SOUL.md — forbidden in shared mode (it runs
+    // against the operator's REAL $SLAUDE_HOME).
+    if ((cmd === "/scenarios" || cmd === "/scenario") && this.#shared) {
+      this.#out("scenarios are disabled in shared mode (would overwrite your real SOUL.md). Run `bun run sim --fixture` for preset scenarios.");
+      return;
+    }
     if (cmd === "/scenarios") return this.#listScenarios();
     if (cmd === "/scenario") return this.#loadScenario(rest[0] ?? "");
     if (cmd === "/state") return this.#state();
@@ -58,15 +66,32 @@ export class ReplController {
     ].join("\n"));
   }
 
+  #subscribe(s: SimSession) {
+    if (this.#agent !== "real") return;
+    this.#unsub.push(s.onAgentEvent((e) => this.#renderEvent(e)));
+    this.#unsub.push(s.onCard((c) => this.#renderCard(c)));
+  }
+
+  /** Shared mode (default for `bun run sim`): boot like `bun run start` against the real
+   *  $SLAUDE_HOME (real config + soul/gates), bind a SimTransport, and start chatting in a
+   *  DM as the real manager — no /scenario needed. */
+  async startShared() {
+    await this.dispose();
+    this.#session = await SimSession.create({ agent: this.#agent, soulMd: this.#soulMd, mode: "shared" });
+    const s = this.#session;
+    this.#subscribe(s);
+    this.#out(`ready — chatting as ${s.actor} in a DM (shared config: real SOUL.md + gates). Just type. /help for commands.`);
+    if (!soulData().manager?.userId) {
+      this.#out("⚠️  no manager resolved from SOUL.md — the DM gate will drop your messages (real gate behavior, same as prod). Manager extraction needs the LLM; set working creds in ~/.slaude/.env (or run with --real). The regex fallback alone can't resolve a manager.");
+    }
+  }
+
   async #loadScenario(sel: string) {
     await this.dispose();
     const effectiveSel = sel || "1";
     this.#session = await SimSession.create({ preset: effectiveSel, agent: this.#agent, soulMd: this.#soulMd });
     const s = this.#session;
-    if (this.#agent === "real") {
-      this.#unsub.push(s.onAgentEvent((e) => this.#renderEvent(e)));
-      this.#unsub.push(s.onCard((c) => this.#renderCard(c)));
-    }
+    this.#subscribe(s);
     const preset = getPreset(effectiveSel);
     const name = preset?.name ?? effectiveSel;
     this.#out(`loaded ${name} — as ${s.actor} in ${s.channel}${s.dm ? " (dm)" : ""}, behavior=${s.behavior}`);
