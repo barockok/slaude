@@ -541,7 +541,9 @@ export class AgentManager extends EventEmitter {
     let substantive = 0;
     for (const t of tools) {
       if (AUTO_EVOLVE_IGNORE.has(t)) continue;
-      if (t.startsWith("mcp__slaude_slack__")) continue;
+      if (t.startsWith("mcp__slaude_surface__")) continue;   // interaction output ≠ substantive work
+      if (t.startsWith("mcp__slaude_runtime__")) continue;   // housekeeping ≠ substantive work
+      if (t.startsWith("mcp__slaude_slack__")) continue;     // deprecated namespace (transition)
       if (t.startsWith("mcp__slaude_skills__")) continue;
       substantive++;
     }
