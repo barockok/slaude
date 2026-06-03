@@ -88,7 +88,7 @@ export async function defaultRunSubQuery(
     "\n\n<ingest-mode>",
     `You are running an ingest pass against the writable knowledge base mounted at ${args.kbDir}.`,
     "The KB's schema is below. Follow it. Read raw/ entries that are not yet reflected in wiki/, update wiki/ pages, append to wiki/log.md, and stop when done.",
-    "Do NOT call mcp__slaude_slack__*. Do NOT call mcp__slaude_skills__write_skill or sync_manifest. Use Read/Write/Edit/Bash directly.",
+    "Do NOT call mcp__slaude_surface__* or mcp__slaude_slack__*. Do NOT call mcp__slaude_skills__write_skill or sync_manifest. Use Read/Write/Edit/Bash directly.",
     "</ingest-mode>",
     "\n\n<kb-schema source=\"README.md\">",
     args.readme,
