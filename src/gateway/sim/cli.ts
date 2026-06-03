@@ -15,7 +15,12 @@ const agentMode: "stub" | "real" = rawArgs.includes("--real") ? "real" : "stub";
 // --verbose: keep the raw infra logs ([mgr]/[agent-evt]/[slack-rx]…). Default hides
 // them so the REPL reads like a clean claude-code chat.
 const verbose = rawArgs.includes("--verbose") || rawArgs.includes("-v");
-const positional = rawArgs.filter((a) => !a.startsWith("--") && a !== "-v");
+// --soul <path>: drive the agent's persona from a real SOUL.md (gates stay from the preset).
+let soulPath: string | undefined;
+const soulIdx = rawArgs.indexOf("--soul");
+if (soulIdx !== -1) soulPath = rawArgs[soulIdx + 1];
+const consumed = new Set(soulPath ? ["--soul", soulPath] : []);
+const positional = rawArgs.filter((a) => !a.startsWith("--") && a !== "-v" && !consumed.has(a));
 const mode = positional[0];
 const args = positional.slice(1);
 
@@ -24,6 +29,14 @@ const args = positional.slice(1);
 if (agentMode === "real") {
   const { loadDotenv } = await import("../../config/env");
   loadDotenv(join(process.cwd(), ".env"));
+}
+
+// Read the custom SOUL.md once (resolved against cwd), fail fast if missing.
+let soulMd: string | undefined;
+if (soulPath) {
+  const { readFileSync } = await import("node:fs");
+  const { resolve } = await import("node:path");
+  soulMd = readFileSync(resolve(process.cwd(), soulPath), "utf8");
 }
 
 // Capture the real console.log BEFORE muting, so REPL output always prints.
@@ -50,7 +63,7 @@ if (mode === "run") {
   for (const pat of patterns) {
     for await (const file of new Glob(pat).scan(".")) {
       ran++;
-      try { await runTranscript(parseTranscript(readFileSync(file, "utf8")), agentMode); console.log(`✓ ${file}`); }
+      try { await runTranscript(parseTranscript(readFileSync(file, "utf8")), agentMode, soulMd); console.log(`✓ ${file}`); }
       catch (e) { failures++; console.error(`✗ ${file}\n  ${(e as Error).message}`); }
     }
   }
@@ -58,11 +71,11 @@ if (mode === "run") {
   process.exit(failures ? 1 : 0);
 } else {
   const { ReplController } = await import("./repl");
-  const r = new ReplController(agentMode);
+  const r = new ReplController(agentMode, soulMd);
   r.onOutput((l) => realLog(l));   // REPL feed bypasses the noise filter
   await r.handle("/scenarios");
   realLog(
-    `\n${agentMode === "real" ? "live agent" : "stub"} — /scenario <n> to start, then chat. ` +
+    `\n${agentMode === "real" ? "live agent" : "stub"}${soulPath ? ` · soul=${soulPath}` : ""} — /scenario <n> to start, then chat. ` +
     `a/d/A answers gates · /help · Ctrl-D quits.${verbose ? "" : "  (--verbose for infra logs)"}\n`,
   );
   for await (const line of (console as any)) {
