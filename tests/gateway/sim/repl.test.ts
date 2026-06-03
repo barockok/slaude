@@ -58,6 +58,37 @@ describe("REPL controller", () => {
     expect(out.join("\n")).toContain("U0BOB");
   });
 
+  it("forwards an agent slash command (/1on1) to the gateway as a message", async () => {
+    r = new ReplController();
+    const out: string[] = [];
+    r.onOutput((l) => out.push(l));
+    await r.handle("/scenario 3");      // member-trusted channel (C0TEAM)
+    await r.handle("/thread T1");
+    await r.handle("/1on1");
+    expect(out.join("\n")).toContain("1on1 mode");
+  });
+
+  it("/thread pins a thread so a thread-scoped lock survives across turns", async () => {
+    r = new ReplController();
+    const out: string[] = [];
+    r.onOutput((l) => out.push(l));
+    await r.handle("/scenario 3");
+    await r.handle("/thread T1");
+    await r.handle("/1on1");            // U0ALICE locks thread T1
+    out.length = 0;
+    await r.handle("/1on1 off");        // same actor + same thread → release
+    expect(out.join("\n").toLowerCase()).toContain("released");
+  });
+
+  it("rejects a genuine unknown slash (not an agent command)", async () => {
+    r = new ReplController();
+    const out: string[] = [];
+    r.onOutput((l) => out.push(l));
+    await r.handle("/scenario 1");
+    await r.handle("/notacommand");
+    expect(out.join("\n")).toContain("unknown command");
+  });
+
   it("onStatus hook is wired and clears (null) after a turn", async () => {
     r = new ReplController();
     const labels: Array<string | null> = [];
