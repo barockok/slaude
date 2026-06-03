@@ -103,8 +103,6 @@ if (isRun) {
   r.onOutput((l) => term.print(l));
   r.onStatus((l) => term.status(l));
   const spin = setInterval(() => term.tick(), 120);
-  const PROMPT = "\x1b[2m›\x1b[0m ";
-  const prompt = () => process.stdout.write(`\n${PROMPT}`);
 
   const mode = agentMode === "real" ? "live agent" : "stub";
   const tail = `a/d/A (or 1/2/3) answers gates · /help · Ctrl-D quits.${verbose ? "" : "  (--verbose for infra logs)"}`;
@@ -117,13 +115,30 @@ if (isRun) {
     term.print(`\x1b[2m${soulPath ? `soul=${soulPath} · ` : ""}fixture — /scenario <n> to start, then chat. ${tail}\x1b[0m`);
   }
 
-  prompt();
-  for await (const line of (console as any)) {
-    if (!line.trim()) { prompt(); continue; }
-    try { await r.handle(line); } catch (e) { term.print(`! ${(e as Error).message}`); }
-    prompt();
-  }
-  clearInterval(spin);
-  await r.dispose();
-  process.exit(0);
+  // node:readline gives real line editing — arrow keys move the cursor, ↑/↓ recall history,
+  // Home/End/Ctrl-A/E, backspace — which the bare `for await (console)` line reader lacks.
+  // Turn-based flow keeps it simple: we pause readline while a turn runs so its input echo
+  // never fights the live spinner, then re-prompt. Type-ahead is buffered by the TTY.
+  const { createInterface } = await import("node:readline");
+  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true, prompt: "\x1b[2m›\x1b[0m " });
+  const showPrompt = () => { process.stdout.write("\n"); rl.prompt(); };
+
+  let chain: Promise<void> = Promise.resolve();
+  rl.on("line", (line) => {
+    chain = chain.then(async () => {
+      rl.pause();
+      if (line.trim()) {
+        try { await r.handle(line); } catch (e) { term.print(`! ${(e as Error).message}`); }
+      }
+      rl.resume();
+      showPrompt();
+    });
+  });
+  rl.on("SIGINT", () => rl.close());          // Ctrl-C
+  rl.on("close", async () => {                // Ctrl-D / EOF
+    clearInterval(spin);
+    await r.dispose();
+    process.exit(0);
+  });
+  showPrompt();
 }
