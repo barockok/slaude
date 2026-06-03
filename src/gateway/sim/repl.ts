@@ -4,6 +4,7 @@ import type { OutboundCard } from "./transport";
 import type { AgentEvent } from "../../agent/manager";
 import { soulData } from "../../soul/extract";
 import { toolLine, resultLine, replyLine, errorLine, statusLabel, gateBox, isReplyTool } from "./render";
+import { parseSlashCommand } from "../slack/commands";
 
 /** Transport-agnostic REPL logic: feed it command lines, it emits two streams —
  *   - onOutput(line): committed scrollback (tool tree, replies, gate boxes)
@@ -44,11 +45,18 @@ export class ReplController {
     if (cmd === "/as") return this.#as(rest);
     if (cmd === "/channel") { const s = this.#requireSession(); s.channel = rest[0] ?? s.channel; s.dm = false; return; }
     if (cmd === "/dm") { this.#requireSession().dm = true; return; }
+    if (cmd === "/thread") { const s = this.#requireSession(); s.thread = rest[0] && rest[0] !== "off" ? rest[0] : undefined; return; }
     if (cmd === "/behavior") { const s = this.#requireSession(); s.behavior = rest[0] ?? s.behavior; return; }
     if (cmd === "/cards") return this.#dumpCards();
     if (cmd === "/click") return this.#click(rest);
     if (cmd === "/help") return this.#help();
-    if (cmd?.startsWith("/")) { this.#out(`unknown command: ${cmd}`); return; }
+    // Agent-side slash commands (/1on1, /ignore-thread, /mode, /abort, /cron-*, …) are parsed
+    // by the gateway from message TEXT — forward them as a message, not a REPL command. Real
+    // typos (parse returns null) still get the unknown-command error.
+    if (cmd?.startsWith("/")) {
+      if (parseSlashCommand(trimmed)) return this.#send({ text: trimmed });
+      this.#out(`unknown command: ${cmd}`); return;
+    }
 
     // A gate is open and waiting on a human — interpret bare input as the verb.
     const gate = this.#session?.pendingGate();
@@ -106,9 +114,12 @@ export class ReplController {
       "  a / d / A         answer an open permission gate (allow / deny / always)",
       "  /as <U> [text]    switch actor, or send one message as <U> (group activity)",
       "  /channel <C>      move to a channel      /dm   move to a DM",
+      "  /thread <ts|off>  pin a thread (needed for /1on1, /ignore-thread to persist)",
       "  /scenario <n>     load scenario n        /scenarios  list them",
       "  /behavior <b>     set stub behavior      /state  show actor/channel",
       "  /click <n> <vb>   click card n           /cards  /help",
+      "  agent slash cmds  /1on1 /ignore-thread /unignore-thread /mode /abort — typed",
+      "                    as-is, forwarded to the agent like a real Slack message",
     ].join("\n"));
   }
 
@@ -185,7 +196,7 @@ export class ReplController {
 
   #state() {
     const s = this.#requireSession();
-    this.#out(`actor=${s.actor} channel=${s.channel} dm=${s.dm} behavior=${s.behavior}`);
+    this.#out(`actor=${s.actor} channel=${s.channel} dm=${s.dm}${s.thread ? ` thread=${s.thread}` : ""} behavior=${s.behavior}`);
   }
 
   async #click(rest: string[]) {
