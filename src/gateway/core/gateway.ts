@@ -14,7 +14,7 @@ import { ApprovalGate } from "../slack/approval-gate";
 import { IgnoreGate } from "../slack/ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slack/commands";
 import { soulData } from "../../soul/extract";
-import { createSlackMcp, SLACK_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
+import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
 import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
 import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
@@ -230,6 +230,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (!route) return undefined;
     const servers: Record<string, McpServerConfig> = {
       [SURFACE_MCP_NAME]: createSurfaceMcp(route.surface),
+      [RUNTIME_MCP_NAME]: createRuntimeMcp(route.ctx),
       [SLACK_MCP_NAME]: createSlackMcp(route.ctx),
       [SKILLS_MCP_NAME]: createSkillsMcp(),
       [SESSION_MCP_NAME]: createSessionMcp({
