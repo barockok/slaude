@@ -5,7 +5,7 @@ import { StubAgent } from "./stub-agent";
 import { writeSoulFixture, type SoulFixture } from "./soul-fixture";
 import { getPreset } from "./presets";
 import { AgentManager, type AgentEvent } from "../../agent/manager";
-import { __resetSoulDataMemo } from "../../soul/extract";
+import { __resetSoulDataMemo, loadSoulData, setSoulData, soulData } from "../../soul/extract";
 import { paths } from "../../config/home";
 import { m as metric } from "../../metrics";
 
@@ -22,6 +22,9 @@ export class SimSession {
   channel = "C0TEAM";
   dm = false;
   behavior = "reply";
+  /** Shared mode runs against the operator's REAL $SLAUDE_HOME — dispose must NOT touch
+   *  the real SOUL.md. Set true only by #createShared. */
+  #shared = false;
   #drops: { reason: string }[] = [];
   #restoreDropInc: () => void;
 
@@ -33,7 +36,9 @@ export class SimSession {
     this.#restoreDropInc = () => { counter.inc = orig; };
   }
 
-  static async create(opts: { preset?: string; soul?: SoulFixture; agent: "stub" | "real"; behavior?: string; soulMd?: string }): Promise<SimSession> {
+  static async create(opts: { preset?: string; soul?: SoulFixture; agent: "stub" | "real"; behavior?: string; soulMd?: string; mode?: "fixture" | "shared" }): Promise<SimSession> {
+    if (opts.mode === "shared") return SimSession.#createShared(opts);
+
     let soul: SoulFixture | undefined = opts.soul;
     let actor = "U0MGR", channel = "C0TEAM", dm = false, behavior = opts.behavior ?? "reply";
     if (opts.preset) {
@@ -69,6 +74,34 @@ export class SimSession {
 
     const s = new SimSession(transport, agent, handle);
     s.actor = actor; s.channel = channel; s.dm = dm; s.behavior = behavior;
+    return s;
+  }
+
+  /** Shared mode: boot exactly like `server.ts` (real $SLAUDE_HOME config, real soul
+   *  extraction → real gates) but bind a SimTransport instead of Slack. No fixtures, no
+   *  forced env — the only gap vs prod is the absence of the real Slack wire. The default
+   *  actor is the real SOUL.md manager so approval/authz behaves as in prod; chat happens in
+   *  a synthetic DM thread. cli.ts has already pointed db + workspaces at $SLAUDE_HOME/sim/. */
+  static async #createShared(opts: { agent: "stub" | "real"; behavior?: string }): Promise<SimSession> {
+    // Same prewarm as server.ts main(): warm the structured-soul cache from the real
+    // SOUL.md. Best-effort — falls back to regex internally if the LLM is unavailable.
+    try { setSoulData(await loadSoulData()); }
+    catch (e) { console.warn("[sim] soul prewarm failed (regex fallback):", e); }
+
+    // Attachment-download accessor reads the bot token even though the sim never hits Slack.
+    process.env.SLACK_BOT_TOKEN ??= "xoxb-sim";
+
+    const manager = soulData().manager?.userId;
+    const actor = manager ?? "U0MGR";
+    const transport = new SimTransport({ users: manager ? { [manager]: "You (manager)" } : {} });
+    const agent: StubAgent | AgentManager = opts.agent === "real" ? new AgentManager() : new StubAgent();
+    const handle = createGateway(agent, transport);
+    const behavior = opts.behavior ?? "reply";
+    if (agent instanceof StubAgent) { agent.attachGateway(handle); agent.setBehavior(behavior); }
+
+    const s = new SimSession(transport, agent, handle);
+    s.#shared = true;
+    s.actor = actor; s.channel = "D0SIM"; s.dm = true; s.behavior = behavior;
     return s;
   }
 
@@ -169,6 +202,8 @@ export class SimSession {
     this.#restoreDropInc();
     await this.handle.stop();
     __resetSoulDataMemo();
-    try { rmSync(paths.soul, { force: true }); } catch {}
+    // Fixture mode wrote a synthetic SOUL.md to clean up. Shared mode runs against the
+    // operator's REAL $SLAUDE_HOME — NEVER delete their SOUL.md.
+    if (!this.#shared) { try { rmSync(paths.soul, { force: true }); } catch {} }
   }
 }

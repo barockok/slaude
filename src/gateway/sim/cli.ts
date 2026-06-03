@@ -1,21 +1,22 @@
-// Force an isolated $SLAUDE_HOME BEFORE importing anything that reads config/home,
-// so the sim never touches the operator's real ~/.slaude.
+// Sim entrypoint. Three shapes:
+//   bun run sim              → SHARED: boot like `bun run start` (real $SLAUDE_HOME config,
+//                              real SOUL.md + gates, real agent) but bind an in-memory
+//                              transport. State (db + workspaces) is redirected under
+//                              $SLAUDE_HOME/sim/ so prod is never mutated. --stub for offline.
+//   bun run sim --fixture    → legacy isolated preset REPL (temp $SLAUDE_HOME, /scenario).
+//   bun run sim run [glob]   → transcripts/CI: isolated temp home + fixtures + stub.
 import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
-process.env.SLAUDE_HOME = mkdtempSync(join(tmpdir(), "slaude-sim-"));
-process.env.SLAUDE_HEALTH_PORT = "0";
-
-const { ensureHome } = await import("../../config/home");
-ensureHome();
 
 const rawArgs = process.argv.slice(2);
-// --real: drive turns with the live AgentManager (real LLM) instead of StubAgent.
-const agentMode: "stub" | "real" = rawArgs.includes("--real") ? "real" : "stub";
-// --verbose: keep the raw infra logs ([mgr]/[agent-evt]/[slack-rx]…). Default hides
-// them so the REPL reads like a clean claude-code chat.
 const verbose = rawArgs.includes("--verbose") || rawArgs.includes("-v");
-// --soul <path>: drive the agent's persona from a real SOUL.md (gates stay from the preset).
+const wantStub = rawArgs.includes("--stub");
+const wantReal = rawArgs.includes("--real");
+const fixtureRepl = rawArgs.includes("--fixture");
+
+// --soul <path>: in fixture/run, drive the agent persona from a real SOUL.md. Ignored in
+// shared mode (which uses the operator's real SOUL.md and must never overwrite it).
 let soulPath: string | undefined;
 const soulIdx = rawArgs.indexOf("--soul");
 if (soulIdx !== -1) soulPath = rawArgs[soulIdx + 1];
@@ -24,16 +25,39 @@ const positional = rawArgs.filter((a) => !a.startsWith("--") && a !== "-v" && !c
 const mode = positional[0];
 const args = positional.slice(1);
 
-// Real agent needs creds. The isolated temp $SLAUDE_HOME has no .env, so pull
-// ANTHROPIC_*/SLAUDE_MODEL from the project-cwd .env if present (no override).
+const isRun = mode === "run";
+const isolated = isRun || fixtureRepl;   // isolated temp home + fixtures
+const shared = !isolated;
+
+// Agent default: isolated paths stay deterministic (stub unless --real); shared mode mirrors
+// `start` with the real agent (unless --stub).
+const agentMode: "stub" | "real" = isolated ? (wantReal ? "real" : "stub") : (wantStub ? "stub" : "real");
+
+// Home + state strategy — MUST run before importing config/home (it reads these at load).
+if (isolated) {
+  process.env.SLAUDE_HOME = mkdtempSync(join(tmpdir(), "slaude-sim-"));
+  process.env.SLAUDE_HEALTH_PORT = "0";
+} else {
+  // Share the real $SLAUDE_HOME config; redirect mutable state under $SLAUDE_HOME/sim/.
+  const home = process.env.SLAUDE_HOME || join(homedir(), ".slaude");
+  process.env.SLAUDE_DB_PATH ??= join(home, "sim", "db.sqlite");
+  process.env.SLAUDE_WORKSPACES ??= join(home, "sim", "workspaces");
+  process.env.SLAUDE_HEALTH_PORT ??= "0";
+}
+
+const { ensureHome } = await import("../../config/home");
+ensureHome();
+
+// config/env auto-loads $SLAUDE_HOME/.env at import. For a real agent also pull the project
+// ./.env as a dev fallback (no override of already-set vars).
 if (agentMode === "real") {
   const { loadDotenv } = await import("../../config/env");
   loadDotenv(join(process.cwd(), ".env"));
 }
 
-// Read the custom SOUL.md once (resolved against cwd), fail fast if missing.
+// Custom persona file — only meaningful for isolated (fixture/run) modes.
 let soulMd: string | undefined;
-if (soulPath) {
+if (soulPath && isolated) {
   const { readFileSync } = await import("node:fs");
   const { resolve } = await import("node:path");
   soulMd = readFileSync(resolve(process.cwd(), soulPath), "utf8");
@@ -41,19 +65,16 @@ if (soulPath) {
 
 // Capture the real console.log BEFORE muting, so REPL output always prints.
 const realLog = console.log.bind(console);
-if (!verbose && mode !== "run") {
-  // Infra chatter is tagged like "[mgr] …", "[agent-evt] …". Drop those lines;
-  // let everything else (the REPL feed) through.
+if (!verbose && !isRun) {
   const NOISE = /^\[(mgr|agent-evt|slack-rx|slaude|slack-auth|presence|stop-guard|reactions|cron|permission-gate|metrics|ingest|skills|connect|broker)\]/;
   const mute = (orig: (...a: any[]) => void) => (...a: any[]) => { if (NOISE.test(String(a[0] ?? ""))) return; orig(...a); };
   console.log = mute(realLog);
   console.error = mute(console.error.bind(console));
-  // Some infra (stop-guard) writes straight to stderr, bypassing console.
   const realErrWrite = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: any, ...rest: any[]) => NOISE.test(String(chunk)) ? true : realErrWrite(chunk, ...rest)) as typeof process.stderr.write;
 }
 
-if (mode === "run") {
+if (isRun) {
   const { parseTranscript, runTranscript } = await import("./transcript");
   const { readFileSync } = await import("node:fs");
   const { Glob } = await import("bun");
@@ -71,13 +92,16 @@ if (mode === "run") {
   process.exit(failures ? 1 : 0);
 } else {
   const { ReplController } = await import("./repl");
-  const r = new ReplController(agentMode, soulMd);
-  r.onOutput((l) => realLog(l));   // REPL feed bypasses the noise filter
-  await r.handle("/scenarios");
-  realLog(
-    `\n${agentMode === "real" ? "live agent" : "stub"}${soulPath ? ` · soul=${soulPath}` : ""} — /scenario <n> to start, then chat. ` +
-    `a/d/A answers gates · /help · Ctrl-D quits.${verbose ? "" : "  (--verbose for infra logs)"}\n`,
-  );
+  const r = new ReplController(agentMode, soulMd, shared);
+  r.onOutput((l) => realLog(l));
+  const tail = `a/d/A answers gates · /help · Ctrl-D quits.${verbose ? "" : "  (--verbose for infra logs)"}`;
+  if (shared) {
+    await r.startShared();
+    realLog(`\n${agentMode === "real" ? "live agent" : "stub"} · shared config (real ~/.slaude, state under sim/) — ${tail}\n`);
+  } else {
+    await r.handle("/scenarios");
+    realLog(`\n${agentMode === "real" ? "live agent" : "stub"}${soulPath ? ` · soul=${soulPath}` : ""} · fixture — /scenario <n> to start, then chat. ${tail}\n`);
+  }
   for await (const line of (console as any)) {
     if (!line.trim()) continue;
     try { await r.handle(line); } catch (e) { realLog(`! ${(e as Error).message}`); }

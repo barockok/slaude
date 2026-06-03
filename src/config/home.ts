@@ -11,11 +11,14 @@ export const SLAUDE_HOME = process.env.SLAUDE_HOME || join(homedir(), ".slaude")
  * (e.g. k8s PVC subPath). The override accepts either an absolute path or
  * a path resolved against SLAUDE_HOME.
  */
-const dbPath = process.env.SLAUDE_DB_PATH
-  ? (process.env.SLAUDE_DB_PATH.startsWith("/")
-      ? process.env.SLAUDE_DB_PATH
-      : join(SLAUDE_HOME, process.env.SLAUDE_DB_PATH))
-  : join(SLAUDE_HOME, "db.sqlite");
+// Resolve an env override that may be absolute or relative-to-SLAUDE_HOME.
+const underHome = (v: string | undefined, fallback: string) =>
+  v ? (v.startsWith("/") ? v : join(SLAUDE_HOME, v)) : fallback;
+
+const dbPath = underHome(process.env.SLAUDE_DB_PATH, join(SLAUDE_HOME, "db.sqlite"));
+// Per-session cwd root, overridable via SLAUDE_WORKSPACES. The sim redirects db +
+// workspaces under $SLAUDE_HOME/sim/ so it shares config but never mutates prod state.
+const workspacesPath = underHome(process.env.SLAUDE_WORKSPACES, join(SLAUDE_HOME, "workspaces"));
 
 export const paths = {
   home: SLAUDE_HOME,
@@ -24,7 +27,7 @@ export const paths = {
   config: join(SLAUDE_HOME, "config.yaml"),
   env: join(SLAUDE_HOME, ".env"),
   db: dbPath,
-  workspaces: join(SLAUDE_HOME, "workspaces"),
+  workspaces: workspacesPath,
   knowledge: join(SLAUDE_HOME, "knowledge"),
   claudeConfig: join(SLAUDE_HOME, ".claude"),
 } as const;
