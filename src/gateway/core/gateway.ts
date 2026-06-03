@@ -41,7 +41,7 @@ import { CronScheduler } from "../slack/cron-scheduler";
 import { getNextRun } from "../slack/cron-parser";
 import type { Transport } from "./transport";
 
-export interface SessionMcpCtx { slack: SlackContext; connect?: BrokerToolCtx }
+export interface SessionMcpCtx { slack: SlackContext; surface: Surface; connect?: BrokerToolCtx }
 export interface GatewayHandle {
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -257,7 +257,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       });
       servers[CONNECT_MCP_NAME] = createConnectMcp(connectCtx);
     }
-    sessionCtx.set(sessionId, { slack: route.ctx, connect: connectCtx });
+    sessionCtx.set(sessionId, { slack: route.ctx, surface: route.surface, connect: connectCtx });
     return servers;
   });
 
