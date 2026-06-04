@@ -151,6 +151,26 @@ describe("REPL controller", () => {
     expect(out.join("\n")).toContain("dm=true");
   });
 
+  it("/budget on a stub session reports no usage (real-agent only)", async () => {
+    r = new ReplController();
+    const out: string[] = [];
+    r.onOutput((l) => out.push(l));
+    await r.handle("/scenario 1");
+    out.length = 0;
+    await r.handle("/budget");
+    expect(out.join("\n").toLowerCase()).toMatch(/no .*usage|real.agent|stub/);
+  });
+
+  it("/sessions reports the live session count", async () => {
+    r = new ReplController();
+    const out: string[] = [];
+    r.onOutput((l) => out.push(l));
+    await r.handle("/scenario 1");
+    out.length = 0;
+    await r.handle("/sessions");
+    expect(out.join("\n").toLowerCase()).toContain("session");
+  });
+
   it("onStatus hook is wired and clears (null) after a turn", async () => {
     r = new ReplController();
     const labels: Array<string | null> = [];

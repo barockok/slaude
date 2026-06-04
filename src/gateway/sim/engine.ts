@@ -163,6 +163,9 @@ export class SimSession {
   /** Context/token usage snapshot for a session (real agent only; null otherwise). */
   usage(sessionId: string) { return this.agent instanceof AgentManager ? this.agent.getTokenSnapshot(sessionId) : null; }
 
+  /** Number of live agent sessions (real agent only; 0 for the stub). */
+  liveCount(): number { return this.agent instanceof AgentManager ? this.agent.liveCount() : 0; }
+
   /** The currently-open permission/approval gate awaiting a human click, if any. */
   pendingGate(): OutboundCard | undefined {
     return [...this.transport.outbound].reverse().find(
