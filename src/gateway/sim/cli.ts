@@ -51,8 +51,17 @@ ensureHome();
 // config/env auto-loads $SLAUDE_HOME/.env at import. For a real agent also pull the project
 // ./.env as a dev fallback (no override of already-set vars).
 if (agentMode === "real") {
-  const { loadDotenv } = await import("../../config/env");
+  const { loadDotenv, env } = await import("../../config/env");
   loadDotenv(join(process.cwd(), ".env"));
+  // Preflight: a real turn needs a provider credential. Warn early + actionably (the SDK
+  // would otherwise just 401 mid-turn). The classifier import is cheap and side-effect-free.
+  const { missingCredsWarning } = await import("./preflight");
+  const warn = missingCredsWarning({
+    apiKey: env.provider.apiKey(),
+    authToken: env.provider.authToken(),
+    oauthToken: env.provider.oauthToken(),
+  });
+  if (warn) console.error(warn);
 }
 
 // Custom persona file — only meaningful for isolated (fixture/run) modes.
