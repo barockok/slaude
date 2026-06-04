@@ -3,7 +3,8 @@ import { SimSession, type SoulFixture } from "./engine";
 import type { OutboundCard } from "./transport";
 
 export interface Transcript {
-  preset?: string;
+  layer?: string;
+  as?: string;
   soul?: Partial<SoulFixture>;
   agent_behavior?: string;
   steps: any[];
@@ -12,7 +13,7 @@ export interface Transcript {
 export function parseTranscript(yamlText: string): Transcript {
   const doc = parseYaml(yamlText);
   if (!doc || !Array.isArray(doc.steps)) throw new Error("transcript: missing `steps` array");
-  return { preset: doc.preset, soul: doc.soul, agent_behavior: doc.agent_behavior, steps: doc.steps };
+  return { layer: doc.layer, as: doc.as, soul: doc.soul, agent_behavior: doc.agent_behavior, steps: doc.steps };
 }
 
 function liveCards(cards: OutboundCard[]): OutboundCard[] { return cards.filter((c) => !c.resolved); }
@@ -23,8 +24,9 @@ function dump(cards: OutboundCard[]): string {
 
 export async function runTranscript(t: Transcript, agent: "stub" | "real" = "stub", soulMd?: string): Promise<void> {
   const s = await SimSession.create({
-    preset: t.preset,
-    soul: t.preset ? undefined : (t.soul as SoulFixture | undefined),
+    layer: t.layer,
+    as: t.as,
+    soul: t.soul as SoulFixture | undefined,
     behavior: t.agent_behavior,
     agent,
     soulMd,

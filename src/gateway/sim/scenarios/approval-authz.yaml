@@ -1,4 +1,6 @@
-preset: approval-flow
+layer: trusted
+as: member
+agent_behavior: request_approval
 steps:
   - send: { text: "deploy prod" }
   - expect_card: { kind: approval }
