@@ -97,7 +97,7 @@ export class ReplController {
     const id = (ROLE_NAMES as readonly string[]).includes(who) ? resolveRole(who, soulData()) : who;
     if (!id) { this.#out(`role "${who}" doesn't resolve in the current soul (try a raw user id)`); return; }
     const text = rest.slice(1).join(" ");
-    if (!text) { s.actor = id; return; }        // no text → permanent switch
+    if (!text) { s.actor = id; this.#out(`acting as ${who}${id !== who ? ` (${id})` : ""}`); return; }   // permanent switch
     await this.#send({ as: id, text });          // text → one-shot, actor preserved
   }
 
@@ -108,6 +108,7 @@ export class ReplController {
     const l = findLayer(name);
     if (!l) { this.#out(`unknown layer "${name}" — try: ${LAYERS.map((x) => x.name).join(", ")}`); return; }
     s.channel = l.channel; s.dm = l.dm;
+    this.#out(`layer → ${l.name} (${l.dm ? "dm" : l.channel})`);
   }
 
   /** Render only the cards produced since the last turn, the claude-code way: a reply as an
