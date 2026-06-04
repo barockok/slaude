@@ -5,10 +5,11 @@ import type { AgentEvent } from "../../agent/manager";
 import { soulData } from "../../soul/extract";
 import { toolLine, resultLine, replyLine, errorLine, statusLabel, gateBox, isReplyTool, thinkingLine, usageLine } from "./render";
 import { parseSlashCommand, AGENT_COMMANDS } from "../slack/commands";
+import { LAYERS, ROLE_NAMES, findLayer, resolveRole } from "./roles";
 
 /** REPL-native command heads (sim-only; not parsed by the gateway). */
 export const SIM_COMMANDS = [
-  "/scenario", "/scenarios", "/state", "/as", "/channel", "/dm", "/thread", "/behavior", "/cards", "/click", "/help",
+  "/scenario", "/scenarios", "/state", "/as", "/layer", "/channel", "/dm", "/thread", "/behavior", "/cards", "/click", "/help",
 ];
 /** Every command name the REPL accepts — sim-native + the agent slash heads — for Tab-completion. */
 export function replCommandNames(): string[] {
@@ -53,6 +54,7 @@ export class ReplController {
     if (cmd === "/scenario") return this.#loadScenario(rest[0] ?? "");
     if (cmd === "/state") return this.#state();
     if (cmd === "/as") return this.#as(rest);
+    if (cmd === "/layer") return this.#layer(rest[0]);
     if (cmd === "/channel") { const s = this.#requireSession(); s.channel = rest[0] ?? s.channel; s.dm = false; return; }
     if (cmd === "/dm") { this.#requireSession().dm = true; return; }
     if (cmd === "/thread") { const s = this.#requireSession(); s.thread = rest[0] && rest[0] !== "off" ? rest[0] : undefined; return; }
@@ -90,15 +92,27 @@ export class ReplController {
     }
   }
 
-  /** `/as U0BOB` switches the actor; `/as U0BOB hey team` sends one message as Bob without
-   *  changing the actor — the way you stage group/multi-user activity in a channel. */
+  /** `/as <role|U>` switches the actor; `/as <role|U> hey team` sends one message as them
+   *  without changing the actor — staging group/multi-user activity. A role name
+   *  (manager/approver/backup/member/outsider) resolves to a user id via the active soul. */
   async #as(rest: string[]) {
     const s = this.#requireSession();
     const who = rest[0];
-    if (!who) { this.#out(`actor=${s.actor} — usage: /as <U> [text to send as them]`); return; }
+    if (!who) { this.#out(`actor=${s.actor} — usage: /as <role|U> [text]  (roles: ${ROLE_NAMES.join(", ")})`); return; }
+    const id = (ROLE_NAMES as readonly string[]).includes(who) ? resolveRole(who, soulData()) : who;
+    if (!id) { this.#out(`role "${who}" doesn't resolve in the current soul (try a raw user id)`); return; }
     const text = rest.slice(1).join(" ");
-    if (!text) { s.actor = who; return; }      // no text → permanent switch
-    await this.#send({ as: who, text });        // text → one-shot, actor preserved
+    if (!text) { s.actor = id; return; }        // no text → permanent switch
+    await this.#send({ as: id, text });          // text → one-shot, actor preserved
+  }
+
+  /** `/layer <dm|trusted|allowed|restricted>` moves the conversation to that engagement zone. */
+  #layer(name?: string) {
+    const s = this.#requireSession();
+    if (!name) { this.#out(`current: ${s.dm ? "dm" : s.channel} — layers: ${LAYERS.map((l) => l.name).join(", ")}`); return; }
+    const l = findLayer(name);
+    if (!l) { this.#out(`unknown layer "${name}" — try: ${LAYERS.map((x) => x.name).join(", ")}`); return; }
+    s.channel = l.channel; s.dm = l.dm;
   }
 
   /** Render only the cards produced since the last turn, the claude-code way: a reply as an
@@ -125,8 +139,9 @@ export class ReplController {
       "sim commands:",
       "  <text>            send a message as the current actor",
       "  a / d / A         answer an open permission gate (allow / deny / always)",
-      "  /as <U> [text]    switch actor, or send one message as <U> (group activity)",
-      "  /channel <C>      move to a channel      /dm   move to a DM",
+      "  /as <role|U> [txt] switch/send-as a role (manager·approver·backup·member·outsider) or id",
+      "  /layer <zone>     move to dm · trusted · allowed · restricted",
+      "  /channel <C>      move to a raw channel  /dm   move to a DM",
       "  /thread <ts|off>  pin a thread (needed for /1on1, /ignore-thread to persist)",
       "  /scenario <n>     load scenario n        /scenarios  list them",
       "  /behavior <b>     set stub behavior      /state  show actor/channel",
