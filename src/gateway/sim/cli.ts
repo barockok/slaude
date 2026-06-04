@@ -3,7 +3,8 @@
 //                              real SOUL.md + gates, real agent) but bind an in-memory
 //                              transport. State (db + workspaces) is redirected under
 //                              $SLAUDE_HOME/sim/ so prod is never mutated. --stub for offline.
-//   bun run sim --fixture    → legacy isolated preset REPL (temp $SLAUDE_HOME, /scenario).
+//   bun run sim --fixture    → isolated WORLD-soul REPL (temp $SLAUDE_HOME); compose with
+//                              /layer · /as · /behavior.
 //   bun run sim run [glob]   → transcripts/CI: isolated temp home + fixtures + stub.
 import { mkdtempSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
@@ -104,7 +105,7 @@ if (isRun) {
   const { LiveTerminal } = await import("./term");
   const { completeLine } = await import("./complete");
   const { sigintAction } = await import("./interrupt");
-  const r = new ReplController(agentMode, soulMd, shared);
+  const r = new ReplController(agentMode, soulMd);
 
   // The live terminal owns a bottom-pinned status line (spinner + activity) and lets
   // committed lines scroll above it — the claude-code feel. A ~120ms interval advances the
@@ -122,8 +123,8 @@ if (isRun) {
     await r.startShared();
     term.print(`\x1b[2mshared config (real ~/.slaude, state under sim/) — ${tail}\x1b[0m`);
   } else {
-    await r.handle("/scenarios");
-    term.print(`\x1b[2m${soulPath ? `soul=${soulPath} · ` : ""}fixture — /scenario for a picker (or /scenario <n>), then chat. ${tail}\x1b[0m`);
+    await r.startDefault();
+    term.print(`\x1b[2m${soulPath ? `soul=${soulPath} · ` : ""}fixture — compose with /layer · /as · /behavior, then chat. ${tail}\x1b[0m`);
   }
 
   // node:readline gives real line editing — arrow keys move the cursor, ↑/↓ recall history,
@@ -131,17 +132,16 @@ if (isRun) {
   // Turn-based flow keeps it simple: we pause readline while a turn runs so its input echo
   // never fights the live spinner, then re-prompt. Type-ahead is buffered by the TTY.
   const { createInterface } = await import("node:readline");
-  const { PRESETS } = await import("./presets");
   const { LAYERS, ROLE_NAMES } = await import("./roles");
+  const { BEHAVIORS } = await import("./stub-agent");
   const { completeArg } = await import("./complete");
   // Tab-completion: command head from the single command source, plus first-argument values
-  // for the commands that have a fixed choice set (layers, roles, scenario names, behaviors).
+  // for the commands that have a fixed choice set (layers, roles, behaviors).
   const cmdNames = replCommandNames();
   const argMap: Record<string, string[]> = {
     "/layer": LAYERS.map((l) => l.name),
     "/as": [...ROLE_NAMES],
-    "/scenario": PRESETS.map((p) => p.name),
-    "/behavior": [...new Set(PRESETS.map((p) => p.behavior))],
+    "/behavior": Object.keys(BEHAVIORS),
   };
   const completer = (line: string): [string[], string] => {
     const hits = line.includes(" ") ? completeArg(line, argMap) : completeLine(line, cmdNames);
@@ -168,7 +168,7 @@ if (isRun) {
   };
 
   // claude-code-style picker (like /mcp, /plugin): a bottom panel you arrow through. Bare
-  // `/scenario`, `/layer`, `/as` on a TTY open one; the pure render/decode/reduce live in
+  // `/layer`, `/as` on a TTY open one; the pure render/decode/reduce live in
   // menu.ts, this is just the raw-mode stdin loop. Returns the chosen index, or null on Esc.
   const { renderMenu, decodeKey, menuReduce } = await import("./menu");
   const pickFrom = (title: string, items: { label: string; hint?: string }[]): Promise<number | null> => {
@@ -199,7 +199,6 @@ if (isRun) {
     });
   };
   const isTTY = () => !!process.stdin.isTTY;
-  const pickScenario = () => pickFrom("Pick a scenario:", PRESETS.map((p, i) => ({ label: `${i + 1}. ${p.name}`, hint: p.title })));
   const pickLayer = () => pickFrom("Pick a channel layer:", LAYERS.map((l) => ({ label: l.name, hint: l.desc })));
   const pickRole = () => pickFrom("Act as which role:", ROLE_NAMES.map((rname) => ({ label: rname })));
 
@@ -221,10 +220,7 @@ if (isRun) {
       rl.pause();
       const t = full.trim();
       try {
-        if (t === "/scenario" && !shared && isTTY()) {
-          const pick = await pickScenario();
-          if (pick !== null) await runHandle(`/scenario ${pick + 1}`);
-        } else if (t === "/layer" && isTTY()) {
+        if (t === "/layer" && isTTY()) {
           const pick = await pickLayer();
           if (pick !== null) await runHandle(`/layer ${LAYERS[pick]!.name}`);
         } else if (t === "/as" && isTTY()) {

@@ -2,8 +2,8 @@ import { rmSync, writeFileSync } from "node:fs";
 import { createGateway, type GatewayHandle } from "../core/gateway";
 import { SimTransport, type OutboundCard } from "./transport";
 import { StubAgent } from "./stub-agent";
-import { writeSoulFixture, type SoulFixture } from "./soul-fixture";
-import { getPreset } from "./presets";
+import { writeSoulFixture, WORLD, type SoulFixture } from "./soul-fixture";
+import { findLayer, resolveRole, ROLE_NAMES } from "./roles";
 import { AgentManager, type AgentEvent } from "../../agent/manager";
 import { __resetSoulDataMemo, loadSoulData, setSoulData, soulData } from "../../soul/extract";
 import { paths } from "../../config/home";
@@ -39,23 +39,24 @@ export class SimSession {
     this.#restoreDropInc = () => { counter.inc = orig; };
   }
 
-  static async create(opts: { preset?: string; soul?: SoulFixture; agent: "stub" | "real"; behavior?: string; soulMd?: string; mode?: "fixture" | "shared" }): Promise<SimSession> {
+  static async create(opts: { soul?: SoulFixture; agent: "stub" | "real"; behavior?: string; layer?: string; as?: string; soulMd?: string; mode?: "fixture" | "shared" }): Promise<SimSession> {
     if (opts.mode === "shared") return SimSession.#createShared(opts);
 
-    let soul: SoulFixture | undefined = opts.soul;
-    let actor = "U0MGR", channel = "C0TEAM", dm = false, behavior = opts.behavior ?? "reply";
-    if (opts.preset) {
-      const p = getPreset(opts.preset);
-      if (!p) throw new Error(`unknown preset: ${opts.preset}`);
-      soul = p.soul; actor = p.actor; channel = p.channel; dm = p.dm ?? false; behavior = opts.behavior ?? p.behavior;
-    }
-    if (!soul) soul = { manager: "U0MGR", approvers: ["U0APP"], trusted: ["C0TEAM"], allowed: ["C0PUB"] };
+    // A fixture session is the default WORLD soul (or an override) at a chosen layer/role.
+    // The three axes — layer (channel zone), role (actor), behavior (stub) — replace the old
+    // named presets and compose freely.
+    const soul: SoulFixture = opts.soul ?? WORLD;
     writeSoulFixture(soul);   // also injects SoulData (gates) via setSoulData
     // Optional: drive the agent's persona/voice from a real SOUL.md. The system prompt
     // reads paths.soul live (loadSoul()), so overwriting the synthetic fixture file makes
-    // the agent adopt that persona. Gates stay from the preset (setSoulData memo) — the
+    // the agent adopt that persona. Gates stay from the fixture (setSoulData memo) — the
     // custom file's approvers/channels are NOT re-extracted in the sim.
     if (opts.soulMd) writeFileSync(paths.soul, opts.soulMd, "utf8");
+
+    const layer = findLayer(opts.layer ?? "dm") ?? findLayer("dm")!;
+    const asName = opts.as ?? "manager";
+    const actor = (ROLE_NAMES as readonly string[]).includes(asName) ? (resolveRole(asName, soulData()) ?? asName) : asName;
+    const behavior = opts.behavior ?? "reply";
 
     // The real gateway eagerly reads env.slack.botToken() per inbound turn (for
     // attachment downloads). The sim never has real files, so the token is never
@@ -76,7 +77,7 @@ export class SimSession {
     if (agent instanceof StubAgent) { agent.attachGateway(handle); agent.setBehavior(behavior); }
 
     const s = new SimSession(transport, agent, handle);
-    s.actor = actor; s.channel = channel; s.dm = dm; s.behavior = behavior;
+    s.actor = actor; s.channel = layer.channel; s.dm = layer.dm; s.behavior = behavior;
     return s;
   }
 
@@ -106,13 +107,6 @@ export class SimSession {
     s.#shared = true;
     s.actor = actor; s.channel = "D0SIM"; s.dm = true; s.behavior = behavior;
     return s;
-  }
-
-  loadPreset(nameOrIndex: string): void {
-    const p = getPreset(nameOrIndex);
-    if (!p) throw new Error(`unknown preset: ${nameOrIndex}`);
-    this.actor = p.actor; this.channel = p.channel; this.dm = p.dm ?? false; this.behavior = p.behavior;
-    if (this.agent instanceof StubAgent) this.agent.setBehavior(this.behavior);
   }
 
   async send(step: { as?: string; channel?: string; text: string; dm?: boolean; thread?: string }): Promise<void> {
