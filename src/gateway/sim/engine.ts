@@ -157,6 +157,12 @@ export class SimSession {
   /** Live outbound-card stream — for rendering replies + gate prompts. */
   onCard(cb: (c: OutboundCard) => void): () => void { return this.transport.onCard(cb); }
 
+  /** Mid-turn interrupt — abort the running SDK turn (real agent only; no-op for the stub). */
+  abort(sessionId: string): void { if (this.agent instanceof AgentManager) this.agent.abort(sessionId); }
+
+  /** Context/token usage snapshot for a session (real agent only; null otherwise). */
+  usage(sessionId: string) { return this.agent instanceof AgentManager ? this.agent.getTokenSnapshot(sessionId) : null; }
+
   /** The currently-open permission/approval gate awaiting a human click, if any. */
   pendingGate(): OutboundCard | undefined {
     return [...this.transport.outbound].reverse().find(
