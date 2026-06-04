@@ -94,6 +94,7 @@ if (isRun) {
   const { ReplController, replCommandNames } = await import("./repl");
   const { LiveTerminal } = await import("./term");
   const { completeLine } = await import("./complete");
+  const { sigintAction } = await import("./interrupt");
   const r = new ReplController(agentMode, soulMd, shared);
 
   // The live terminal owns a bottom-pinned status line (spinner + activity) and lets
@@ -179,8 +180,10 @@ if (isRun) {
   // Multi-line input: a trailing backslash continues onto a `…` line; the joined text is sent
   // as one message once a line lands without a trailing backslash.
   let buffer = "";
+  let sigintPending = false;
   let chain: Promise<void> = Promise.resolve();
   rl.on("line", (line) => {
+    sigintPending = false;          // any submitted line disarms the Ctrl-C-again-to-exit prompt
     if (line.endsWith("\\")) { buffer += line.slice(0, -1) + "\n"; rl.setPrompt(CONT); rl.prompt(); return; }
     const full = buffer + line;
     buffer = "";
@@ -199,7 +202,15 @@ if (isRun) {
       showPrompt();
     });
   });
-  rl.on("SIGINT", () => rl.close());          // Ctrl-C
+  // Ctrl-C at the prompt: clear the typed line, or (empty line) warn then exit on a second
+  // press — shell/claude-code style. Mid-turn Ctrl-C is caught in raw mode by armAbort instead.
+  rl.on("SIGINT", () => {
+    const { action, pending } = sigintAction(sigintPending, rl.line.length);
+    sigintPending = pending;
+    if (action === "clear") { (rl as any).line = ""; (rl as any).cursor = 0; process.stdout.write("\r\x1b[2K"); rl.prompt(); }
+    else if (action === "warn") { process.stdout.write("\n\x1b[2m(press Ctrl-C again to exit)\x1b[0m\n"); rl.prompt(); }
+    else rl.close();
+  });
   rl.on("close", async () => {                // Ctrl-D / EOF
     clearInterval(spin);
     await r.dispose();
