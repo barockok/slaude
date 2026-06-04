@@ -194,16 +194,20 @@ if (isRun) {
   const pickLayer = () => pickFrom("Pick a channel layer:", LAYERS.map((l) => ({ label: l.name, hint: l.desc })));
   const pickRole = () => pickFrom("Act as which role:", ROLE_NAMES.map((rname) => ({ label: rname })));
 
-  // Multi-line input: a trailing backslash continues onto a `…` line; the joined text is sent
-  // as one message once a line lands without a trailing backslash.
+  // Multi-line input two ways:
+  //  - explicit: a trailing backslash continues onto a `…` line.
+  //  - paste: a multi-line paste arrives as several `line` events back-to-back (Bun's readline
+  //    strips the bracketed-paste markers but doesn't coalesce). We debounce: lines landing
+  //    within BURST_MS of each other are joined into one message. A human can't press Enter
+  //    twice that fast, so typed lines submit individually; a paste burst becomes one message.
+  const BURST_MS = 8;
   let buffer = "";
   let sigintPending = false;
+  let burst: string[] = [];
+  let flushTimer: ReturnType<typeof setTimeout> | undefined;
   let chain: Promise<void> = Promise.resolve();
-  rl.on("line", (line) => {
-    sigintPending = false;          // any submitted line disarms the Ctrl-C-again-to-exit prompt
-    if (line.endsWith("\\")) { buffer += line.slice(0, -1) + "\n"; rl.setPrompt(CONT); rl.prompt(); return; }
-    const full = buffer + line;
-    buffer = "";
+
+  const submit = (full: string) => {
     chain = chain.then(async () => {
       rl.pause();
       const t = full.trim();
@@ -224,6 +228,18 @@ if (isRun) {
       rl.resume();
       showPrompt();
     });
+  };
+
+  rl.on("line", (line) => {
+    sigintPending = false;          // any submitted line disarms the Ctrl-C-again-to-exit prompt
+    if (line.endsWith("\\")) { buffer += line.slice(0, -1) + "\n"; rl.setPrompt(CONT); rl.prompt(); return; }
+    burst.push(line);
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = setTimeout(() => {
+      const full = buffer + burst.join("\n");
+      buffer = ""; burst = []; flushTimer = undefined;
+      submit(full);
+    }, BURST_MS);
   });
   // Ctrl-C at the prompt: clear the typed line, or (empty line) warn then exit on a second
   // press — shell/claude-code style. Mid-turn Ctrl-C is caught in raw mode by armAbort instead.
