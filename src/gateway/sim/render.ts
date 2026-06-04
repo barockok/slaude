@@ -28,13 +28,15 @@ export function toolLine(tool: string, input: unknown): string {
   return `⏺ ${shortTool(tool)}(${summarizeInput(input)})`;
 }
 
-/** `  ⎿ first line…` — the tool result, indented under its call, first line only. */
-export function resultLine(result: unknown): string {
+/** `  ⎿ first line…  (1.2s)` — the tool result, indented under its call, first line only,
+ *  with an optional per-tool elapsed suffix. */
+export function resultLine(result: unknown, elapsedMs?: number): string {
+  const took = elapsedMs !== undefined ? `  \x1b[2m(${(elapsedMs / 1000).toFixed(1)}s)\x1b[0m` : "";
   let s = typeof result === "string" ? result : JSON.stringify(result);
-  if (!s) return "  ⎿ (empty)";
+  if (!s) return `  ⎿ (empty)${took}`;
   s = s.split("\n")[0]!.trim();
-  if (!s) return "  ⎿ (empty)";
-  return `  ⎿ ${s.length > 100 ? s.slice(0, 97) + "…" : s}`;
+  if (!s) return `  ⎿ (empty)${took}`;
+  return `  ⎿ ${s.length > 100 ? s.slice(0, 97) + "…" : s}${took}`;
 }
 
 /** `⏺ <reply text>` — assistant reply, claude-code bullet. */
