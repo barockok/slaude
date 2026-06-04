@@ -35,6 +35,7 @@ export class ReplController {
   #unsub: Array<() => void> = [];
   #lastText = "";            // dedup: assistant text vs reply-tool text
   #sessionId?: string;       // latest agent sessionId seen — target for abort/usage
+  #toolStarts: number[] = []; // FIFO start-times to time each tool call → result
   #shown = 0;                // stub render cursor: cards already shown this session
   #soulMd?: string;
   #shared: boolean;
@@ -194,11 +195,18 @@ export class ReplController {
   /** Abort the running turn (mid-turn interrupt) — Esc in the TTY routes here. */
   abort() { if (this.#sessionId) this.#session?.abort(this.#sessionId); }
 
+  /** Append the last-known context % to a status label (the SDK only reports tokens at
+   *  turn-end, so this reflects the previous completed turn — there's no live mid-turn count). */
+  #decorate(label: string): string {
+    const snap = this.#sessionId ? this.#session?.usage(this.#sessionId) : null;
+    return snap ? `${label} · ${Math.round(snap.pctUsed * 100)}% ctx` : label;
+  }
+
   // ── live render (real agent) ───────────────────────────────────────────────
   #renderEvent(e: AgentEvent) {
     this.#sessionId = e.sessionId;
     const label = statusLabel(e);
-    if (label) this.#status(label);
+    if (label) this.#status(this.#decorate(label));
     if (e.type === "assistantText") {
       const t = e.text.trim();
       if (t) { this.#lastText = t; this.#out(replyLine(t)); }
@@ -210,10 +218,14 @@ export class ReplController {
         const t = String((e.input as any)?.text ?? "").trim();
         if (t && t !== this.#lastText) { this.#lastText = t; this.#out(replyLine(t)); }
       } else {
+        this.#toolStarts.push(Date.now());
         this.#out(toolLine(e.tool, e.input));
       }
     } else if (e.type === "toolResult") {
-      if (!isReplyTool(e.tool)) this.#out(resultLine(e.result));
+      if (!isReplyTool(e.tool)) {
+        const start = this.#toolStarts.shift();
+        this.#out(resultLine(e.result, start !== undefined ? Date.now() - start : undefined));
+      }
     } else if (e.type === "done") {
       const snap = this.#session?.usage(e.sessionId);
       if (snap) this.#out(usageLine(snap));
