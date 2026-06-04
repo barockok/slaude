@@ -73,6 +73,9 @@ A follow-up sweep closed the bucket-A REPL-UX gaps:
 - **Mid-turn interrupt** — while a turn runs the TTY goes raw and Esc / Ctrl-C call
   `ReplController.abort()` → `SimSession.abort` → `AgentManager.abort(sessionId)`. The sim
   captures the live sessionId from the event stream.
+- **Ctrl-C at the prompt** (shell-style, `interrupt.sigintAction`) — a non-empty line is
+  cleared; an empty line warns `(press Ctrl-C again to exit)` and a second consecutive press
+  exits. Any submitted line disarms the warn. Distinct from mid-turn Ctrl-C (raw-mode abort).
 - **Tab autocomplete** — readline `completer` over `replCommandNames()` (sim-native commands +
   `AGENT_COMMANDS` heads — same single source as `/help`). Pure `completeLine` (complete.ts).
 - **Multi-line input** — a trailing `\` continues onto a `…` line; the joined text sends as one
