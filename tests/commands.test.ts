@@ -5,6 +5,7 @@ import {
   humanModeName,
   MODE_ALIASES,
   MODE_LABELS,
+  AGENT_COMMANDS,
 } from "../src/gateway/slack/commands";
 
 describe("parseSlashCommand", () => {
@@ -51,6 +52,19 @@ describe("helpText", () => {
     expect(t).toContain("/abort");
     for (const label of Object.values(MODE_LABELS)) {
       expect(t).toContain(label);
+    }
+  });
+
+  test("AGENT_COMMANDS is the single source — every usage appears in helpText", () => {
+    const t = helpText();
+    expect(AGENT_COMMANDS.length).toBeGreaterThan(5);
+    for (const c of AGENT_COMMANDS) expect(t).toContain(c.usage);
+  });
+
+  test("AGENT_COMMANDS covers the thread/ignore gate commands", () => {
+    const usages = AGENT_COMMANDS.map((c) => c.usage).join(" ");
+    for (const name of ["/1on1", "/ignore-thread", "/unignore-thread", "/mode", "/abort"]) {
+      expect(usages).toContain(name);
     }
   });
 });

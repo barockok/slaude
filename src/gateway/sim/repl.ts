@@ -4,7 +4,7 @@ import type { OutboundCard } from "./transport";
 import type { AgentEvent } from "../../agent/manager";
 import { soulData } from "../../soul/extract";
 import { toolLine, resultLine, replyLine, errorLine, statusLabel, gateBox, isReplyTool } from "./render";
-import { parseSlashCommand } from "../slack/commands";
+import { parseSlashCommand, AGENT_COMMANDS } from "../slack/commands";
 
 /** Transport-agnostic REPL logic: feed it command lines, it emits two streams —
  *   - onOutput(line): committed scrollback (tool tree, replies, gate boxes)
@@ -108,8 +108,11 @@ export class ReplController {
   #listScenarios() { this.#out("Scenarios:\n" + PRESETS.map((p, i) => `  ${i + 1}) ${p.name} — ${p.title}`).join("\n")); }
 
   #help() {
+    // Agent commands are derived from AGENT_COMMANDS (commands.ts) — add one there and it
+    // shows here automatically. The sim-native commands above are REPL-only, so they stay local.
+    const agent = AGENT_COMMANDS.map((c) => `  ${c.usage.padEnd(30)}${c.summary}`).join("\n");
     this.#out([
-      "commands:",
+      "sim commands:",
       "  <text>            send a message as the current actor",
       "  a / d / A         answer an open permission gate (allow / deny / always)",
       "  /as <U> [text]    switch actor, or send one message as <U> (group activity)",
@@ -118,8 +121,9 @@ export class ReplController {
       "  /scenario <n>     load scenario n        /scenarios  list them",
       "  /behavior <b>     set stub behavior      /state  show actor/channel",
       "  /click <n> <vb>   click card n           /cards  /help",
-      "  agent slash cmds  /1on1 /ignore-thread /unignore-thread /mode /abort — typed",
-      "                    as-is, forwarded to the agent like a real Slack message",
+      "",
+      "agent commands (forwarded to the agent like a real Slack message):",
+      agent,
     ].join("\n"));
   }
 
