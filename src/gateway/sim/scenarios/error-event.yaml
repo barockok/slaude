@@ -1,4 +1,5 @@
-preset: manager-dm
+layer: dm
+as: manager
 agent_behavior: boom
 steps:
   - send: { text: "do a thing" }

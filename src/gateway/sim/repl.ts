@@ -1,5 +1,4 @@
 import { SimSession } from "./engine";
-import { PRESETS, getPreset } from "./presets";
 import type { OutboundCard } from "./transport";
 import type { AgentEvent } from "../../agent/manager";
 import { soulData } from "../../soul/extract";
@@ -10,7 +9,7 @@ import { memory } from "../../memory/sqlite-provider";
 
 /** REPL-native command heads (sim-only; not parsed by the gateway). */
 export const SIM_COMMANDS = [
-  "/scenario", "/scenarios", "/state", "/as", "/layer", "/channel", "/dm", "/thread", "/behavior",
+  "/state", "/as", "/layer", "/channel", "/dm", "/thread", "/behavior",
   "/cards", "/click", "/budget", "/memory", "/sessions", "/help",
 ];
 /** Every command name the REPL accepts — sim-native + the agent slash heads — for Tab-completion. */
@@ -38,23 +37,13 @@ export class ReplController {
   #toolStarts: number[] = []; // FIFO start-times to time each tool call → result
   #shown = 0;                // stub render cursor: cards already shown this session
   #soulMd?: string;
-  #shared: boolean;
-  constructor(agent: "stub" | "real" = "stub", soulMd?: string, shared = false) { this.#agent = agent; this.#soulMd = soulMd; this.#shared = shared; }
+  constructor(agent: "stub" | "real" = "stub", soulMd?: string) { this.#agent = agent; this.#soulMd = soulMd; }
   onOutput(fn: (line: string) => void) { this.#out = fn; }
   onStatus(fn: (label: string | null) => void) { this.#status = fn; }
 
   async handle(line: string): Promise<void> {
     const trimmed = line.trim();
     const [cmd, ...rest] = trimmed.split(/\s+/);
-    // Fixture scenarios write a synthetic SOUL.md — forbidden in shared mode (it runs
-    // against the operator's REAL $SLAUDE_HOME). Actor/surface switches never touch SOUL.md,
-    // so /as /channel /dm stay allowed in shared mode (that's how you simulate group activity).
-    if ((cmd === "/scenarios" || cmd === "/scenario") && this.#shared) {
-      this.#out("scenarios are disabled in shared mode (would overwrite your real SOUL.md). Run `bun run sim --fixture` for preset scenarios.");
-      return;
-    }
-    if (cmd === "/scenarios") return this.#listScenarios();
-    if (cmd === "/scenario") return this.#loadScenario(rest[0] ?? "");
     if (cmd === "/state") return this.#state();
     if (cmd === "/as") return this.#as(rest);
     if (cmd === "/layer") return this.#layer(rest[0]);
@@ -135,8 +124,6 @@ export class ReplController {
     this.#shown = cards.length;
   }
 
-  #listScenarios() { this.#out("Scenarios:\n" + PRESETS.map((p, i) => `  ${i + 1}) ${p.name} — ${p.title}`).join("\n")); }
-
   #help() {
     // Agent commands are derived from AGENT_COMMANDS (commands.ts) — add one there and it
     // shows here automatically. The sim-native commands above are REPL-only, so they stay local.
@@ -149,7 +136,6 @@ export class ReplController {
       "  /layer <zone>     move to dm · trusted · allowed · restricted",
       "  /channel <C>      move to a raw channel  /dm   move to a DM",
       "  /thread <ts|off>  pin a thread (needed for /1on1, /ignore-thread to persist)",
-      "  /scenario <n>     load scenario n        /scenarios  list them",
       "  /behavior <b>     set stub behavior      /state  show actor/channel",
       "  /click <n> <vb>   click card n           /cards  /help",
       "  /budget /memory /sessions   inspect token usage · stored memory · live sessions",
@@ -180,16 +166,15 @@ export class ReplController {
     }
   }
 
-  async #loadScenario(sel: string) {
+  /** Fixture mode (default for `bun run sim --fixture`): boot a default WORLD session — DM,
+   *  acting as the manager — then compose with /layer, /as, /behavior. No scenario to pick. */
+  async startDefault() {
     await this.dispose();
     this.#shown = 0;
-    const effectiveSel = sel || "1";
-    this.#session = await SimSession.create({ preset: effectiveSel, agent: this.#agent, soulMd: this.#soulMd });
+    this.#session = await SimSession.create({ agent: this.#agent, soulMd: this.#soulMd });
     const s = this.#session;
     this.#subscribe(s);
-    const preset = getPreset(effectiveSel);
-    const name = preset?.name ?? effectiveSel;
-    this.#out(`loaded ${name} — as ${s.actor} in ${s.channel}${s.dm ? " (dm)" : ""}, behavior=${s.behavior}`);
+    this.#out(`ready — WORLD soul · ${s.dm ? "dm" : s.channel} · as ${s.actor}. /layer · /as · /behavior to compose. /help for more.`);
   }
 
   /** Abort the running turn (mid-turn interrupt) — Esc in the TTY routes here. */
@@ -296,7 +281,7 @@ export class ReplController {
     });
   }
 
-  #requireSession(): SimSession { if (!this.#session) throw new Error("no scenario loaded — use /scenario <n>"); return this.#session; }
+  #requireSession(): SimSession { if (!this.#session) throw new Error("no session — start one first (startDefault/startShared)"); return this.#session; }
 
   async dispose() {
     for (const u of this.#unsub) u();

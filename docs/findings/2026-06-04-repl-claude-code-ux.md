@@ -119,6 +119,26 @@ Two requested-but-not-built items, with reasons: **token streaming** (SDK emits 
 content-block, not per token) and a **fake LLM server** (would reimplement Anthropic's API for
 the real CLI — large/brittle).
 
+## Named scenarios removed — layer × role × behavior only
+
+A "scenario" bundled three now-independent axes, so the named presets were deleted entirely:
+
+- `presets.ts` + `presets.test.ts` gone. The default world is `soul-fixture.WORLD`.
+- A fixture session is `SimSession.create({ layer?, as?, behavior?, soul? })` — defaults to
+  WORLD soul, `dm` layer, `manager` role, `reply` behavior. `bun run sim --fixture` now
+  **auto-starts** that session (`ReplController.startDefault`) — no `/scenario` step; compose
+  with `/layer · /as · /behavior`.
+- `/scenario` / `/scenarios` / the scenario picker are gone; `pickScenario` removed (the
+  generalized `pickFrom` still backs the layer/role pickers).
+- The 23 preset-based transcripts + 2 fixtures migrated to top-level `layer:` / `as:` /
+  `agent_behavior:` (mechanical map: manager-dm→dm/manager, member-trusted→trusted/member,
+  restricted-blocked→restricted/outsider, approval-flow→trusted/member+request_approval,
+  borrow-grant→trusted/outsider+connect_borrow). Transcript schema dropped `preset`.
+- `/behavior` autocompletes from `stub-agent.BEHAVIORS`; the DM layer channel is `D0SIM`
+  (was the preset's `D0MGR` — no transcript asserts on channel ids, so it's transparent).
+
+742 tests + 25/25 transcripts stay green.
+
 ## Gotchas
 
 - The gate appearing "twice" in a quick smoke is correct authz: a non-approver (U0ALICE)
