@@ -101,6 +101,56 @@ describe("REPL controller", () => {
     expect(out.join("\n")).toContain("unknown command");
   });
 
+  it("/as <role> resolves a role name to the soul's user id", async () => {
+    r = new ReplController();
+    const out: string[] = [];
+    r.onOutput((l) => out.push(l));
+    await r.handle("/scenario 3");      // WORLD soul: manager U0MGR, approver U0APP
+    await r.handle("/as manager");
+    out.length = 0;
+    await r.handle("/state");
+    expect(out.join("\n")).toContain("U0MGR");
+    await r.handle("/as approver");
+    out.length = 0;
+    await r.handle("/state");
+    expect(out.join("\n")).toContain("U0APP");
+  });
+
+  it("/as <role> <text> sends one message as that role, preserving the actor", async () => {
+    r = new ReplController();
+    const out: string[] = [];
+    r.onOutput((l) => out.push(l));
+    await r.handle("/scenario 3");      // actor U0ALICE
+    await r.handle("/as outsider barging in");
+    out.length = 0;
+    await r.handle("/state");
+    expect(out.join("\n")).toContain("U0ALICE");   // actor unchanged
+  });
+
+  it("/layer switches the channel zone", async () => {
+    r = new ReplController();
+    const out: string[] = [];
+    r.onOutput((l) => out.push(l));
+    await r.handle("/scenario 3");
+    await r.handle("/layer allowed");
+    out.length = 0;
+    await r.handle("/state");
+    const o = out.join("\n");
+    expect(o).toContain("C0PUB");
+    expect(o).toContain("dm=false");
+  });
+
+  it("/layer dm flips to a DM", async () => {
+    r = new ReplController();
+    const out: string[] = [];
+    r.onOutput((l) => out.push(l));
+    await r.handle("/scenario 3");
+    await r.handle("/layer dm");
+    out.length = 0;
+    await r.handle("/state");
+    expect(out.join("\n")).toContain("dm=true");
+  });
+
   it("onStatus hook is wired and clears (null) after a turn", async () => {
     r = new ReplController();
     const labels: Array<string | null> = [];
