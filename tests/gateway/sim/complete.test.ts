@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { completeLine } from "../../../src/gateway/sim/complete";
+import { completeLine, completeArg } from "../../../src/gateway/sim/complete";
 
 const cands = ["/scenario", "/scenarios", "/state", "/as", "/1on1", "/ignore-thread", "/mode"];
 
@@ -21,5 +21,24 @@ describe("completeLine", () => {
   });
   it("is empty when nothing matches", () => {
     expect(completeLine("/zzz", cands)).toEqual([]);
+  });
+});
+
+describe("completeArg", () => {
+  const argMap = { "/layer": ["dm", "trusted", "allowed", "restricted"], "/as": ["manager", "approver"] };
+  it("completes the first argument as a full line", () => {
+    expect(completeArg("/layer al", argMap)).toEqual(["/layer allowed"]);
+  });
+  it("lists all args for that command on a bare space", () => {
+    expect(completeArg("/as ", argMap)).toEqual(["/as manager", "/as approver"]);
+  });
+  it("returns nothing for a command with no arg candidates", () => {
+    expect(completeArg("/state foo", argMap)).toEqual([]);
+  });
+  it("returns nothing once a second argument starts", () => {
+    expect(completeArg("/as manager hello", argMap)).toEqual([]);
+  });
+  it("returns nothing without a space", () => {
+    expect(completeArg("/layer", argMap)).toEqual([]);
   });
 });
