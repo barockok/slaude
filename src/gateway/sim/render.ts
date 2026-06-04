@@ -52,12 +52,24 @@ export function thinkingLine(text: string): string {
   return `\x1b[2m✻ ${t}\x1b[0m`;
 }
 
-const k = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
+const k = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k` : `${n}`);
 
 /** A dim end-of-turn usage line: `1.2k in · 340 out · 8% ctx`. */
 export function usageLine(s: { inputTokens: number; outputTokens: number; pctUsed: number }): string {
   const pct = Math.round((s.pctUsed ?? 0) * 100);
   return `\x1b[2m  ${k(s.inputTokens)} in · ${k(s.outputTokens)} out · ${pct}% ctx\x1b[0m`;
+}
+
+/** Fuller `/budget` view: context-window usage + a token breakdown. */
+export function budgetView(s: {
+  inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number;
+  totalInput: number; contextWindow: number; pctUsed: number; remaining: number;
+}): string {
+  const pct = Math.round((s.pctUsed ?? 0) * 100);
+  return [
+    `context: ${k(s.totalInput)} / ${k(s.contextWindow)} (${pct}%) · ${k(s.remaining)} left`,
+    `tokens:  ${k(s.inputTokens)} in · ${k(s.outputTokens)} out · cache ${k(s.cacheReadInputTokens)}r/${k(s.cacheCreationInputTokens)}w`,
+  ].join("\n");
 }
 
 /** Live status label for the bottom spinner region, or null when an event needs no label. */

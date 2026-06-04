@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import {
   toolLine, resultLine, replyLine, errorLine, statusLabel, gateBox, SPINNER_FRAMES,
-  thinkingLine, usageLine,
+  thinkingLine, usageLine, budgetView,
 } from "../../../src/gateway/sim/render";
 import type { AgentEvent } from "../../../src/agent/manager";
 import type { OutboundCard } from "../../../src/gateway/sim/transport";
@@ -101,6 +101,22 @@ describe("render formatters", () => {
       const out = usageLine({ ...snap, inputTokens: 900, outputTokens: 12 } as any);
       expect(out).toContain("900");
       expect(out).toContain("12");
+    });
+  });
+
+  describe("budgetView", () => {
+    const snap = { inputTokens: 1200, outputTokens: 340, cacheReadInputTokens: 50, cacheCreationInputTokens: 10, totalInput: 1260, contextWindow: 200000, pctUsed: 0.08, remaining: 184000 };
+    it("shows context window usage, percent, and remaining", () => {
+      const out = budgetView(snap as any);
+      expect(out).toContain("200k");      // context window
+      expect(out).toContain("8%");        // pct
+      expect(out).toContain("184k");      // remaining
+    });
+    it("breaks down input/output/cache tokens", () => {
+      const out = budgetView(snap as any);
+      expect(out).toContain("in");
+      expect(out).toContain("out");
+      expect(out.toLowerCase()).toContain("cache");
     });
   });
 });
