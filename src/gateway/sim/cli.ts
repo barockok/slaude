@@ -222,10 +222,10 @@ if (isRun) {
       try {
         if (t === "/layer" && isTTY()) {
           const pick = await pickLayer();
-          if (pick !== null) await runHandle(`/layer ${LAYERS[pick]!.name}`);
+          if (pick !== null) { const cmd = `/layer ${LAYERS[pick]!.name}`; term.print(`${PROMPT}${cmd}`); await runHandle(cmd); }
         } else if (t === "/as" && isTTY()) {
           const pick = await pickRole();
-          if (pick !== null) await runHandle(`/as ${ROLE_NAMES[pick]}`);
+          if (pick !== null) { const cmd = `/as ${ROLE_NAMES[pick]}`; term.print(`${PROMPT}${cmd}`); await runHandle(cmd); }
         } else if (t) {
           await runHandle(full);
         }
