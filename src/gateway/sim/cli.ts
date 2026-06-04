@@ -134,10 +134,11 @@ if (isRun) {
   const armAbort = (): (() => void) => {
     const stdin = process.stdin;
     if (!stdin.isTTY) return () => {};
-    stdin.setRawMode?.(true); stdin.resume();
+    const wasRaw = stdin.isRaw ?? false;     // readline keeps raw on in terminal mode — restore it,
+    stdin.setRawMode?.(true); stdin.resume(); // don't force cooked, or Tab/arrows die after this turn
     const onData = (b: Buffer) => { const s = b.toString(); if (s === "\x1b" || s === "\x03") r.abort(); };
     stdin.on("data", onData);
-    return () => { stdin.off("data", onData); stdin.setRawMode?.(false); };
+    return () => { stdin.off("data", onData); stdin.setRawMode?.(wasRaw); };
   };
   const runHandle = async (input: string) => {
     const disarm = armAbort();
@@ -161,6 +162,7 @@ if (isRun) {
     };
     process.stdout.write("\n");
     draw(true);
+    const wasRaw = stdin.isRaw ?? false;     // restore readline's prior raw mode (don't force cooked)
     stdin.setRawMode?.(true);
     stdin.resume();
     return new Promise<number | null>((resolve) => {
@@ -169,7 +171,7 @@ if (isRun) {
         cursor = res.cursor;
         if (!res.done) { draw(false); return; }
         stdin.off("data", onData);
-        stdin.setRawMode?.(false);
+        stdin.setRawMode?.(wasRaw);
         process.stdout.write(`\x1b[${count}A\r\x1b[0J`);                  // erase the panel
         resolve(res.done === "select" ? cursor : null);
       };
