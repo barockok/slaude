@@ -112,7 +112,7 @@ if (isRun) {
     term.print(`\x1b[2mshared config (real ~/.slaude, state under sim/) — ${tail}\x1b[0m`);
   } else {
     await r.handle("/scenarios");
-    term.print(`\x1b[2m${soulPath ? `soul=${soulPath} · ` : ""}fixture — /scenario <n> to start, then chat. ${tail}\x1b[0m`);
+    term.print(`\x1b[2m${soulPath ? `soul=${soulPath} · ` : ""}fixture — /scenario for a picker (or /scenario <n>), then chat. ${tail}\x1b[0m`);
   }
 
   // node:readline gives real line editing — arrow keys move the cursor, ↑/↓ recall history,
@@ -123,13 +123,52 @@ if (isRun) {
   const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true, prompt: "\x1b[2m›\x1b[0m " });
   const showPrompt = () => { process.stdout.write("\n"); rl.prompt(); };
 
+  // claude-code-style picker (like /mcp, /plugin): a bottom panel you arrow through. Bare
+  // `/scenario` on a TTY opens it; the pure render/decode/reduce live in menu.ts, this is just
+  // the raw-mode stdin loop. Returns the chosen index, or null on Esc.
+  const { PRESETS } = await import("./presets");
+  const { renderMenu, decodeKey, menuReduce } = await import("./menu");
+  const pickScenario = (): Promise<number | null> => {
+    const stdin = process.stdin;
+    const items = PRESETS.map((p, i) => ({ label: `${i + 1}. ${p.name}`, hint: p.title }));
+    let cursor = 0, count = 0;
+    const draw = (first: boolean) => {
+      const lines = renderMenu("Pick a scenario:", items, cursor);
+      if (!first) process.stdout.write(`\x1b[${count}A`);                 // move up to panel top
+      process.stdout.write("\r" + lines.map((l) => `\x1b[2K${l}`).join("\n"));
+      count = lines.length - 1;
+    };
+    process.stdout.write("\n");
+    draw(true);
+    stdin.setRawMode?.(true);
+    stdin.resume();
+    return new Promise<number | null>((resolve) => {
+      const onData = (buf: Buffer) => {
+        const res = menuReduce(cursor, items.length, decodeKey(buf.toString()));
+        cursor = res.cursor;
+        if (!res.done) { draw(false); return; }
+        stdin.off("data", onData);
+        stdin.setRawMode?.(false);
+        process.stdout.write(`\x1b[${count}A\r\x1b[0J`);                  // erase the panel
+        resolve(res.done === "select" ? cursor : null);
+      };
+      stdin.on("data", onData);
+    });
+  };
+
   let chain: Promise<void> = Promise.resolve();
   rl.on("line", (line) => {
     chain = chain.then(async () => {
       rl.pause();
-      if (line.trim()) {
-        try { await r.handle(line); } catch (e) { term.print(`! ${(e as Error).message}`); }
-      }
+      const t = line.trim();
+      try {
+        if (t === "/scenario" && !shared && process.stdin.isTTY) {
+          const pick = await pickScenario();
+          if (pick !== null) await r.handle(`/scenario ${pick + 1}`);
+        } else if (t) {
+          await r.handle(line);
+        }
+      } catch (e) { term.print(`! ${(e as Error).message}`); }
       rl.resume();
       showPrompt();
     });
