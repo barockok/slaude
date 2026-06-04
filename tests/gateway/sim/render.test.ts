@@ -28,6 +28,15 @@ describe("render formatters", () => {
     expect(resultLine("")).toBe("  ⎿ (empty)");
   });
 
+  it("resultLine appends per-tool elapsed when given", () => {
+    expect(resultLine("ok", 1234)).toContain("(1.2s)");
+    expect(resultLine("ok", 1234)).toContain("ok");
+  });
+
+  it("resultLine omits elapsed when not given", () => {
+    expect(resultLine("ok")).not.toContain("s)");
+  });
+
   it("replyLine prefixes the assistant bullet", () => {
     expect(replyLine("hi there")).toBe("⏺ hi there");
   });
