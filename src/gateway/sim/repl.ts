@@ -3,8 +3,17 @@ import { PRESETS, getPreset } from "./presets";
 import type { OutboundCard } from "./transport";
 import type { AgentEvent } from "../../agent/manager";
 import { soulData } from "../../soul/extract";
-import { toolLine, resultLine, replyLine, errorLine, statusLabel, gateBox, isReplyTool } from "./render";
+import { toolLine, resultLine, replyLine, errorLine, statusLabel, gateBox, isReplyTool, thinkingLine, usageLine } from "./render";
 import { parseSlashCommand, AGENT_COMMANDS } from "../slack/commands";
+
+/** REPL-native command heads (sim-only; not parsed by the gateway). */
+export const SIM_COMMANDS = [
+  "/scenario", "/scenarios", "/state", "/as", "/channel", "/dm", "/thread", "/behavior", "/cards", "/click", "/help",
+];
+/** Every command name the REPL accepts — sim-native + the agent slash heads — for Tab-completion. */
+export function replCommandNames(): string[] {
+  return [...SIM_COMMANDS, ...AGENT_COMMANDS.map((c) => c.usage.split(" ")[0]!)];
+}
 
 /** Transport-agnostic REPL logic: feed it command lines, it emits two streams —
  *   - onOutput(line): committed scrollback (tool tree, replies, gate boxes)
@@ -22,6 +31,7 @@ export class ReplController {
   #agent: "stub" | "real";
   #unsub: Array<() => void> = [];
   #lastText = "";            // dedup: assistant text vs reply-tool text
+  #sessionId?: string;       // latest agent sessionId seen — target for abort/usage
   #shown = 0;                // stub render cursor: cards already shown this session
   #soulMd?: string;
   #shared: boolean;
@@ -160,13 +170,20 @@ export class ReplController {
     this.#out(`loaded ${name} — as ${s.actor} in ${s.channel}${s.dm ? " (dm)" : ""}, behavior=${s.behavior}`);
   }
 
+  /** Abort the running turn (mid-turn interrupt) — Esc in the TTY routes here. */
+  abort() { if (this.#sessionId) this.#session?.abort(this.#sessionId); }
+
   // ── live render (real agent) ───────────────────────────────────────────────
   #renderEvent(e: AgentEvent) {
+    this.#sessionId = e.sessionId;
     const label = statusLabel(e);
     if (label) this.#status(label);
     if (e.type === "assistantText") {
       const t = e.text.trim();
       if (t) { this.#lastText = t; this.#out(replyLine(t)); }
+    } else if (e.type === "thinking") {
+      const t = e.text.trim();
+      if (t) this.#out(thinkingLine(t));
     } else if (e.type === "toolCall") {
       if (isReplyTool(e.tool)) {
         const t = String((e.input as any)?.text ?? "").trim();
@@ -176,6 +193,9 @@ export class ReplController {
       }
     } else if (e.type === "toolResult") {
       if (!isReplyTool(e.tool)) this.#out(resultLine(e.result));
+    } else if (e.type === "done") {
+      const snap = this.#session?.usage(e.sessionId);
+      if (snap) this.#out(usageLine(snap));
     } else if (e.type === "error") {
       this.#out(errorLine(String((e as any).error ?? "error")));
     }

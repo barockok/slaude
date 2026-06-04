@@ -62,6 +62,31 @@ up `lines-1` rows, and erases the panel with `\x1b[<n>A\r\x1b[0J` on exit. Non-T
 and shared mode fall through to the old text list — picker is TTY+fixture only. Verified under
 a PTY: `/scenario` → ↓↓ → Enter loads scenario 3; Esc loads nothing.
 
+## Closing the claude-code-parity gaps
+
+A follow-up sweep closed the bucket-A REPL-UX gaps:
+
+- **Thinking text** — `thinking` events now print as a dim `✻ …` line (`render.thinkingLine`),
+  not just a spinner label.
+- **Token/context usage** — on `done`, a dim `1.2k in · 340 out · 8% ctx` line from
+  `AgentManager.getTokenSnapshot` (`render.usageLine`, surfaced via `SimSession.usage`).
+- **Mid-turn interrupt** — while a turn runs the TTY goes raw and Esc / Ctrl-C call
+  `ReplController.abort()` → `SimSession.abort` → `AgentManager.abort(sessionId)`. The sim
+  captures the live sessionId from the event stream.
+- **Tab autocomplete** — readline `completer` over `replCommandNames()` (sim-native commands +
+  `AGENT_COMMANDS` heads — same single source as `/help`). Pure `completeLine` (complete.ts).
+- **Multi-line input** — a trailing `\` continues onto a `…` line; the joined text sends as one
+  message.
+
+Left open on purpose:
+- **Token streaming** (type-in token-by-token) — the agent SDK path emits one `assistantText`
+  per *content block*, not per token (`manager.#fanout`). True streaming needs SDK partial
+  deltas; faking it would lie about timing. Documented, not implemented.
+- **Reverse-search / queued-message panel** — low value for a chat-agent sim; skipped.
+
+Live end-to-end for thinking/usage/abort needs working LLM creds (same gap as manager
+extraction); the pure formatters + reducers are unit-tested and the wiring is typecheck-clean.
+
 ## Gotchas
 
 - The gate appearing "twice" in a quick smoke is correct authz: a non-approver (U0ALICE)
