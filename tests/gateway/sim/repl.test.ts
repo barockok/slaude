@@ -6,20 +6,26 @@ let r: ReplController | undefined;
 afterEach(async () => { await r?.dispose(); r = undefined; });
 
 describe("REPL controller", () => {
-  it("loads a scenario and reports state", async () => {
+  it("starts a default WORLD session and composes layer/role into state", async () => {
     r = new ReplController();
     const out: string[] = [];
     r.onOutput((l) => out.push(l));
-    await r.handle("/scenario 5");
-    expect(out.join("\n")).toContain("approval-flow");
+    await r.startDefault();
     await r.handle("/state");
-    expect(out.join("\n")).toContain("U0ALICE");
+    expect(out.join("\n")).toContain("U0MGR");   // default: dm, as manager
+    out.length = 0;
+    await r.handle("/layer trusted");
+    await r.handle("/as member");
+    await r.handle("/state");
+    const o = out.join("\n");
+    expect(o).toContain("U0ALICE");
+    expect(o).toContain("C0TEAM");
   });
   it("bare text sends and shows a card", async () => {
     r = new ReplController();
     const out: string[] = [];
     r.onOutput((l) => out.push(l));
-    await r.handle("/scenario 1");      // manager-dm (DM, reply behavior)
+    await r.startDefault();
     await r.handle("hello");
     await r.handle("/cards");
     expect(out.join("\n")).toContain("ack");
@@ -29,7 +35,7 @@ describe("REPL controller", () => {
     r = new ReplController();
     const out: string[] = [];
     r.onOutput((l) => out.push(l));
-    await r.handle("/scenario 5");      // approval-flow (request_approval)
+    await r.startDefault(); await r.handle("/layer trusted"); await r.handle("/as member"); await r.handle("/behavior request_approval");
     await r.handle("please ship it");
     const o = out.join("\n");
     expect(o).toContain("╭");           // box border
@@ -41,7 +47,7 @@ describe("REPL controller", () => {
     r = new ReplController();
     const out: string[] = [];
     r.onOutput((l) => out.push(l));
-    await r.handle("/scenario 3");      // member-trusted, actor U0ALICE in C0TEAM
+    await r.startDefault(); await r.handle("/layer trusted"); await r.handle("/as member");
     await r.handle("/as U0BOB hey team");   // one-shot as Bob — actor must stay U0ALICE
     out.length = 0;
     await r.handle("/state");
@@ -52,7 +58,7 @@ describe("REPL controller", () => {
     r = new ReplController();
     const out: string[] = [];
     r.onOutput((l) => out.push(l));
-    await r.handle("/scenario 3");
+    await r.startDefault(); await r.handle("/layer trusted"); await r.handle("/as member");
     await r.handle("/as U0BOB");
     out.length = 0;
     await r.handle("/state");
@@ -63,7 +69,7 @@ describe("REPL controller", () => {
     r = new ReplController();
     const out: string[] = [];
     r.onOutput((l) => out.push(l));
-    await r.handle("/scenario 3");      // member-trusted channel (C0TEAM)
+    await r.startDefault(); await r.handle("/layer trusted"); await r.handle("/as member");
     await r.handle("/thread T1");
     await r.handle("/1on1");
     expect(out.join("\n")).toContain("1on1 mode");
@@ -73,7 +79,7 @@ describe("REPL controller", () => {
     r = new ReplController();
     const out: string[] = [];
     r.onOutput((l) => out.push(l));
-    await r.handle("/scenario 3");
+    await r.startDefault(); await r.handle("/layer trusted"); await r.handle("/as member");
     await r.handle("/thread T1");
     await r.handle("/1on1");            // U0ALICE locks thread T1
     out.length = 0;
@@ -85,7 +91,7 @@ describe("REPL controller", () => {
     r = new ReplController();
     const out: string[] = [];
     r.onOutput((l) => out.push(l));
-    await r.handle("/scenario 1");
+    await r.startDefault();
     out.length = 0;
     await r.handle("/help");
     const o = out.join("\n");
@@ -96,7 +102,7 @@ describe("REPL controller", () => {
     r = new ReplController();
     const out: string[] = [];
     r.onOutput((l) => out.push(l));
-    await r.handle("/scenario 1");
+    await r.startDefault();
     await r.handle("/notacommand");
     expect(out.join("\n")).toContain("unknown command");
   });
@@ -105,7 +111,7 @@ describe("REPL controller", () => {
     r = new ReplController();
     const out: string[] = [];
     r.onOutput((l) => out.push(l));
-    await r.handle("/scenario 3");      // WORLD soul: manager U0MGR, approver U0APP
+    await r.startDefault(); await r.handle("/layer trusted"); await r.handle("/as member");
     await r.handle("/as manager");
     out.length = 0;
     await r.handle("/state");
@@ -120,7 +126,7 @@ describe("REPL controller", () => {
     r = new ReplController();
     const out: string[] = [];
     r.onOutput((l) => out.push(l));
-    await r.handle("/scenario 3");      // actor U0ALICE
+    await r.startDefault(); await r.handle("/layer trusted"); await r.handle("/as member");
     await r.handle("/as outsider barging in");
     out.length = 0;
     await r.handle("/state");
@@ -131,7 +137,7 @@ describe("REPL controller", () => {
     r = new ReplController();
     const out: string[] = [];
     r.onOutput((l) => out.push(l));
-    await r.handle("/scenario 3");
+    await r.startDefault(); await r.handle("/layer trusted"); await r.handle("/as member");
     await r.handle("/layer allowed");
     out.length = 0;
     await r.handle("/state");
@@ -144,7 +150,7 @@ describe("REPL controller", () => {
     r = new ReplController();
     const out: string[] = [];
     r.onOutput((l) => out.push(l));
-    await r.handle("/scenario 3");
+    await r.startDefault(); await r.handle("/layer trusted"); await r.handle("/as member");
     await r.handle("/layer dm");
     out.length = 0;
     await r.handle("/state");
@@ -155,7 +161,7 @@ describe("REPL controller", () => {
     r = new ReplController();
     const out: string[] = [];
     r.onOutput((l) => out.push(l));
-    await r.handle("/scenario 1");
+    await r.startDefault();
     out.length = 0;
     await r.handle("/budget");
     expect(out.join("\n").toLowerCase()).toMatch(/no .*usage|real.agent|stub/);
@@ -165,7 +171,7 @@ describe("REPL controller", () => {
     r = new ReplController();
     const out: string[] = [];
     r.onOutput((l) => out.push(l));
-    await r.handle("/scenario 1");
+    await r.startDefault();
     out.length = 0;
     await r.handle("/sessions");
     expect(out.join("\n").toLowerCase()).toContain("session");
@@ -176,7 +182,7 @@ describe("REPL controller", () => {
     const labels: Array<string | null> = [];
     r.onOutput(() => {});
     r.onStatus((l) => labels.push(l));
-    await r.handle("/scenario 1");
+    await r.startDefault();
     await r.handle("hello");
     // stub turns are synchronous; the last status must be a clear so the prompt returns clean.
     expect(labels[labels.length - 1] ?? null).toBeNull();
