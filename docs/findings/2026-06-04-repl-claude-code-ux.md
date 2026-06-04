@@ -90,6 +90,35 @@ Left open on purpose:
 Live end-to-end for thinking/usage/abort needs working LLM creds (same gap as manager
 extraction); the pure formatters + reducers are unit-tested and the wiring is typecheck-clean.
 
+## Scenario = layer × role, inspection, and the verification path
+
+A second batch reworked the sim model + tooling:
+
+- **Layer × role** (`roles.ts`) — instead of fixed presets, compose the authz matrix:
+  `/layer <dm|trusted|allowed|restricted>` picks the engagement zone; `/as
+  <manager|approver|backup|member|outsider>` resolves a role to a user id via the active soul
+  (works in shared mode — never writes SOUL.md). Bare `/layer` / `/as` open arrow pickers
+  (the `pickFrom` generalization of the scenario picker).
+- **Autocomplete** — Tab now completes first-argument values (layers, roles, scenario names,
+  behaviors) via `complete.completeArg`, not just command heads.
+- **Inspection** — `/budget` (context + token breakdown, `render.budgetView`), `/memory`
+  (`memory.prefetch(sessionId)` — what the agent actually sees), `/sessions` (live count).
+- **Per-tool elapsed + ctx%** — `⎿ … (1.2s)` timing per tool (FIFO start-time queue) and the
+  last-known context % in the spinner label. The SDK only reports tokens at turn-end, so there
+  is no live mid-turn token delta — ctx% reflects the previous completed turn.
+- **Paste coalescing** — Bun's readline strips bracketed-paste markers but emits one `line`
+  event per pasted line; an 8ms debounce joins a burst into one message (a human can't Enter
+  twice that fast). Coexists with `\`-continuation.
+- **`--real` creds preflight** (`preflight.missingCredsWarning`) — a real turn drives the
+  claude CLI subprocess, which needs a provider credential; we warn early + actionably instead
+  of letting it 401 mid-turn. A fake-LLM at `ANTHROPIC_BASE_URL` was rejected as a path — it
+  would have to satisfy the real CLI's full protocol. True live `--real` verification is
+  gated on a provider key in `~/.slaude/.env`.
+
+Two requested-but-not-built items, with reasons: **token streaming** (SDK emits per
+content-block, not per token) and a **fake LLM server** (would reimplement Anthropic's API for
+the real CLI — large/brittle).
+
 ## Gotchas
 
 - The gate appearing "twice" in a quick smoke is correct authz: a non-approver (U0ALICE)
