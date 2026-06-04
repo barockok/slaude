@@ -3,13 +3,15 @@ import { PRESETS, getPreset } from "./presets";
 import type { OutboundCard } from "./transport";
 import type { AgentEvent } from "../../agent/manager";
 import { soulData } from "../../soul/extract";
-import { toolLine, resultLine, replyLine, errorLine, statusLabel, gateBox, isReplyTool, thinkingLine, usageLine } from "./render";
+import { toolLine, resultLine, replyLine, errorLine, statusLabel, gateBox, isReplyTool, thinkingLine, usageLine, budgetView } from "./render";
 import { parseSlashCommand, AGENT_COMMANDS } from "../slack/commands";
 import { LAYERS, ROLE_NAMES, findLayer, resolveRole } from "./roles";
+import { memory } from "../../memory/sqlite-provider";
 
 /** REPL-native command heads (sim-only; not parsed by the gateway). */
 export const SIM_COMMANDS = [
-  "/scenario", "/scenarios", "/state", "/as", "/layer", "/channel", "/dm", "/thread", "/behavior", "/cards", "/click", "/help",
+  "/scenario", "/scenarios", "/state", "/as", "/layer", "/channel", "/dm", "/thread", "/behavior",
+  "/cards", "/click", "/budget", "/memory", "/sessions", "/help",
 ];
 /** Every command name the REPL accepts — sim-native + the agent slash heads — for Tab-completion. */
 export function replCommandNames(): string[] {
@@ -61,6 +63,9 @@ export class ReplController {
     if (cmd === "/behavior") { const s = this.#requireSession(); s.behavior = rest[0] ?? s.behavior; return; }
     if (cmd === "/cards") return this.#dumpCards();
     if (cmd === "/click") return this.#click(rest);
+    if (cmd === "/budget") return this.#budget();
+    if (cmd === "/memory") return this.#memory();
+    if (cmd === "/sessions") return this.#sessions();
     if (cmd === "/help") return this.#help();
     // Agent-side slash commands (/1on1, /ignore-thread, /mode, /abort, /cron-*, …) are parsed
     // by the gateway from message TEXT — forward them as a message, not a REPL command. Real
@@ -146,6 +151,7 @@ export class ReplController {
       "  /scenario <n>     load scenario n        /scenarios  list them",
       "  /behavior <b>     set stub behavior      /state  show actor/channel",
       "  /click <n> <vb>   click card n           /cards  /help",
+      "  /budget /memory /sessions   inspect token usage · stored memory · live sessions",
       "",
       "agent commands (forwarded to the agent like a real Slack message):",
       agent,
@@ -236,6 +242,24 @@ export class ReplController {
   #state() {
     const s = this.#requireSession();
     this.#out(`actor=${s.actor} channel=${s.channel} dm=${s.dm}${s.thread ? ` thread=${s.thread}` : ""} behavior=${s.behavior}`);
+  }
+
+  // ── inspection (real agent) ────────────────────────────────────────────────
+  #budget() {
+    const snap = this.#sessionId ? this.#session?.usage(this.#sessionId) : null;
+    if (!snap) { this.#out("no token usage yet — needs a completed real-agent turn (the stub has none)"); return; }
+    this.#out(budgetView(snap));
+  }
+
+  async #memory() {
+    if (!this.#sessionId) { this.#out("no active real-agent session — memory is empty (the stub stores none)"); return; }
+    const block = await memory.prefetch(this.#sessionId);
+    this.#out(block?.trim() ? block : "(no memory stored this session)");
+  }
+
+  #sessions() {
+    const n = this.#session?.liveCount() ?? 0;
+    this.#out(`live sessions: ${n}${this.#sessionId ? ` · current ${this.#sessionId}` : ""}`);
   }
 
   async #click(rest: string[]) {
