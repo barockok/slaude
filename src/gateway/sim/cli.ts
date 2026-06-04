@@ -91,8 +91,9 @@ if (isRun) {
   console.log(`\n${ran - failures}/${ran} transcripts passed`);
   process.exit(failures ? 1 : 0);
 } else {
-  const { ReplController } = await import("./repl");
+  const { ReplController, replCommandNames } = await import("./repl");
   const { LiveTerminal } = await import("./term");
+  const { completeLine } = await import("./complete");
   const r = new ReplController(agentMode, soulMd, shared);
 
   // The live terminal owns a bottom-pinned status line (spinner + activity) and lets
@@ -120,8 +121,27 @@ if (isRun) {
   // Turn-based flow keeps it simple: we pause readline while a turn runs so its input echo
   // never fights the live spinner, then re-prompt. Type-ahead is buffered by the TTY.
   const { createInterface } = await import("node:readline");
-  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true, prompt: "\x1b[2m›\x1b[0m " });
-  const showPrompt = () => { process.stdout.write("\n"); rl.prompt(); };
+  // Tab-completion: complete the slash-command head from the single command source.
+  const cmdNames = replCommandNames();
+  const completer = (line: string): [string[], string] => [completeLine(line, cmdNames), line];
+  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true, prompt: "\x1b[2m›\x1b[0m ", completer });
+  const PROMPT = "\x1b[2m›\x1b[0m ", CONT = "\x1b[2m…\x1b[0m ";
+  const showPrompt = () => { process.stdout.write("\n"); rl.setPrompt(PROMPT); rl.prompt(); };
+
+  // Mid-turn interrupt: while a turn runs we put stdin in raw mode and treat Esc / Ctrl-C as
+  // "abort this turn" (claude-code's Esc). Returns a disarm fn that restores cooked mode.
+  const armAbort = (): (() => void) => {
+    const stdin = process.stdin;
+    if (!stdin.isTTY) return () => {};
+    stdin.setRawMode?.(true); stdin.resume();
+    const onData = (b: Buffer) => { const s = b.toString(); if (s === "\x1b" || s === "\x03") r.abort(); };
+    stdin.on("data", onData);
+    return () => { stdin.off("data", onData); stdin.setRawMode?.(false); };
+  };
+  const runHandle = async (input: string) => {
+    const disarm = armAbort();
+    try { await r.handle(input); } finally { disarm(); }
+  };
 
   // claude-code-style picker (like /mcp, /plugin): a bottom panel you arrow through. Bare
   // `/scenario` on a TTY opens it; the pure render/decode/reduce live in menu.ts, this is just
@@ -156,17 +176,23 @@ if (isRun) {
     });
   };
 
+  // Multi-line input: a trailing backslash continues onto a `…` line; the joined text is sent
+  // as one message once a line lands without a trailing backslash.
+  let buffer = "";
   let chain: Promise<void> = Promise.resolve();
   rl.on("line", (line) => {
+    if (line.endsWith("\\")) { buffer += line.slice(0, -1) + "\n"; rl.setPrompt(CONT); rl.prompt(); return; }
+    const full = buffer + line;
+    buffer = "";
     chain = chain.then(async () => {
       rl.pause();
-      const t = line.trim();
+      const t = full.trim();
       try {
         if (t === "/scenario" && !shared && process.stdin.isTTY) {
           const pick = await pickScenario();
-          if (pick !== null) await r.handle(`/scenario ${pick + 1}`);
+          if (pick !== null) await runHandle(`/scenario ${pick + 1}`);
         } else if (t) {
-          await r.handle(line);
+          await runHandle(full);
         }
       } catch (e) { term.print(`! ${(e as Error).message}`); }
       rl.resume();

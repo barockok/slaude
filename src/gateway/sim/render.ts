@@ -46,6 +46,20 @@ export function errorLine(err: string): string {
   return `⚠ ${err}`;
 }
 
+/** Dim extended-thinking text, claude-code-style. Whitespace collapsed to one flowing line. */
+export function thinkingLine(text: string): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  return `\x1b[2m✻ ${t}\x1b[0m`;
+}
+
+const k = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
+
+/** A dim end-of-turn usage line: `1.2k in · 340 out · 8% ctx`. */
+export function usageLine(s: { inputTokens: number; outputTokens: number; pctUsed: number }): string {
+  const pct = Math.round((s.pctUsed ?? 0) * 100);
+  return `\x1b[2m  ${k(s.inputTokens)} in · ${k(s.outputTokens)} out · ${pct}% ctx\x1b[0m`;
+}
+
 /** Live status label for the bottom spinner region, or null when an event needs no label. */
 export function statusLabel(e: AgentEvent): string | null {
   switch (e.type) {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import {
   toolLine, resultLine, replyLine, errorLine, statusLabel, gateBox, SPINNER_FRAMES,
+  thinkingLine, usageLine,
 } from "../../../src/gateway/sim/render";
 import type { AgentEvent } from "../../../src/agent/manager";
 import type { OutboundCard } from "../../../src/gateway/sim/transport";
@@ -75,5 +76,31 @@ describe("render formatters", () => {
 
   it("SPINNER_FRAMES is a non-empty frame list", () => {
     expect(SPINNER_FRAMES.length).toBeGreaterThan(1);
+  });
+
+  describe("thinkingLine", () => {
+    it("prefixes a thinking glyph and keeps the text", () => {
+      const out = thinkingLine("let me reason about this");
+      expect(out).toContain("let me reason about this");
+      expect(out).toContain("✻");
+    });
+    it("collapses whitespace and trims", () => {
+      expect(thinkingLine("  a\n\n  b  ")).toContain("a b");
+    });
+  });
+
+  describe("usageLine", () => {
+    const snap = { inputTokens: 1200, outputTokens: 340, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, totalInput: 1200, contextWindow: 200000, pctUsed: 0.08, remaining: 184000 };
+    it("formats tokens with k-suffix and a context percentage", () => {
+      const out = usageLine(snap as any);
+      expect(out).toContain("1.2k");      // input tokens
+      expect(out).toContain("340");       // output tokens
+      expect(out).toContain("8%");        // ctx pct
+    });
+    it("renders small counts without a k-suffix", () => {
+      const out = usageLine({ ...snap, inputTokens: 900, outputTokens: 12 } as any);
+      expect(out).toContain("900");
+      expect(out).toContain("12");
+    });
   });
 });
