@@ -122,9 +122,22 @@ if (isRun) {
   // Turn-based flow keeps it simple: we pause readline while a turn runs so its input echo
   // never fights the live spinner, then re-prompt. Type-ahead is buffered by the TTY.
   const { createInterface } = await import("node:readline");
-  // Tab-completion: complete the slash-command head from the single command source.
+  const { PRESETS } = await import("./presets");
+  const { LAYERS, ROLE_NAMES } = await import("./roles");
+  const { completeArg } = await import("./complete");
+  // Tab-completion: command head from the single command source, plus first-argument values
+  // for the commands that have a fixed choice set (layers, roles, scenario names, behaviors).
   const cmdNames = replCommandNames();
-  const completer = (line: string): [string[], string] => [completeLine(line, cmdNames), line];
+  const argMap: Record<string, string[]> = {
+    "/layer": LAYERS.map((l) => l.name),
+    "/as": [...ROLE_NAMES],
+    "/scenario": PRESETS.map((p) => p.name),
+    "/behavior": [...new Set(PRESETS.map((p) => p.behavior))],
+  };
+  const completer = (line: string): [string[], string] => {
+    const hits = line.includes(" ") ? completeArg(line, argMap) : completeLine(line, cmdNames);
+    return [hits, line];
+  };
   const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true, prompt: "\x1b[2m›\x1b[0m ", completer });
   const PROMPT = "\x1b[2m›\x1b[0m ", CONT = "\x1b[2m…\x1b[0m ";
   const showPrompt = () => { process.stdout.write("\n"); rl.setPrompt(PROMPT); rl.prompt(); };
@@ -146,16 +159,14 @@ if (isRun) {
   };
 
   // claude-code-style picker (like /mcp, /plugin): a bottom panel you arrow through. Bare
-  // `/scenario` on a TTY opens it; the pure render/decode/reduce live in menu.ts, this is just
-  // the raw-mode stdin loop. Returns the chosen index, or null on Esc.
-  const { PRESETS } = await import("./presets");
+  // `/scenario`, `/layer`, `/as` on a TTY open one; the pure render/decode/reduce live in
+  // menu.ts, this is just the raw-mode stdin loop. Returns the chosen index, or null on Esc.
   const { renderMenu, decodeKey, menuReduce } = await import("./menu");
-  const pickScenario = (): Promise<number | null> => {
+  const pickFrom = (title: string, items: { label: string; hint?: string }[]): Promise<number | null> => {
     const stdin = process.stdin;
-    const items = PRESETS.map((p, i) => ({ label: `${i + 1}. ${p.name}`, hint: p.title }));
     let cursor = 0, count = 0;
     const draw = (first: boolean) => {
-      const lines = renderMenu("Pick a scenario:", items, cursor);
+      const lines = renderMenu(title, items, cursor);
       if (!first) process.stdout.write(`\x1b[${count}A`);                 // move up to panel top
       process.stdout.write("\r" + lines.map((l) => `\x1b[2K${l}`).join("\n"));
       count = lines.length - 1;
@@ -178,6 +189,10 @@ if (isRun) {
       stdin.on("data", onData);
     });
   };
+  const isTTY = () => !!process.stdin.isTTY;
+  const pickScenario = () => pickFrom("Pick a scenario:", PRESETS.map((p, i) => ({ label: `${i + 1}. ${p.name}`, hint: p.title })));
+  const pickLayer = () => pickFrom("Pick a channel layer:", LAYERS.map((l) => ({ label: l.name, hint: l.desc })));
+  const pickRole = () => pickFrom("Act as which role:", ROLE_NAMES.map((rname) => ({ label: rname })));
 
   // Multi-line input: a trailing backslash continues onto a `…` line; the joined text is sent
   // as one message once a line lands without a trailing backslash.
@@ -193,9 +208,15 @@ if (isRun) {
       rl.pause();
       const t = full.trim();
       try {
-        if (t === "/scenario" && !shared && process.stdin.isTTY) {
+        if (t === "/scenario" && !shared && isTTY()) {
           const pick = await pickScenario();
           if (pick !== null) await runHandle(`/scenario ${pick + 1}`);
+        } else if (t === "/layer" && isTTY()) {
+          const pick = await pickLayer();
+          if (pick !== null) await runHandle(`/layer ${LAYERS[pick]!.name}`);
+        } else if (t === "/as" && isTTY()) {
+          const pick = await pickRole();
+          if (pick !== null) await runHandle(`/as ${ROLE_NAMES[pick]}`);
         } else if (t) {
           await runHandle(full);
         }
