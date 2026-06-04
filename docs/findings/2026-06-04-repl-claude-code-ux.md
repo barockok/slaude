@@ -51,6 +51,17 @@ while a turn runs (so input echo never fights the spinner), then `rl.prompt()` a
 spinner interval is harmless at the prompt because `tick()` is a no-op when idle. Verified
 under a real PTY: typing `helo`, Left, `l` submits `hello`.
 
+## Scenario picker (claude-code `/mcp`-style panel)
+
+Bare `/scenario` on a TTY opens an arrow-select panel below the prompt (↑/↓ or j/k, Enter
+loads, Esc cancels) instead of needing `/scenario <n>`. Built as `menu.ts` (pure
+`renderMenu`/`decodeKey`/`menuReduce`, 9 unit tests) + a raw-mode stdin loop in cli.ts's TTY
+seam. The loop sets `stdin.setRawMode(true)` + `resume()` while readline is paused (we're
+mid-line-handler, between prompts, so they don't fight), redraws in place by moving the cursor
+up `lines-1` rows, and erases the panel with `\x1b[<n>A\r\x1b[0J` on exit. Non-TTY (piped)
+and shared mode fall through to the old text list — picker is TTY+fixture only. Verified under
+a PTY: `/scenario` → ↓↓ → Enter loads scenario 3; Esc loads nothing.
+
 ## Gotchas
 
 - The gate appearing "twice" in a quick smoke is correct authz: a non-approver (U0ALICE)
