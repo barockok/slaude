@@ -116,3 +116,13 @@ test("tab requests completion", () => {
   e.applyCompletion("/layer ");
   expect(e.view()).toEqual({ text: "/layer ", cursor: 7 });
 });
+
+test("applyCompletion('') (Ctrl-C clear) resets history navigation", () => {
+  const e = new LineEditor();
+  feed(e, [txt("one")]); e.handle({ type: "enter" });
+  e.handle({ type: "up" });                  // recall "one" — #hist now points into history
+  expect(e.view().text).toBe("one");
+  e.applyCompletion("");                      // Ctrl-C clears the line
+  e.handle({ type: "up" });                   // Up should start fresh from the newest entry
+  expect(e.view().text).toBe("one");
+});
