@@ -108,8 +108,9 @@ if (isRun) {
   const modeLabel = agentMode === "real" ? "live agent" : "stub";
   const tail = `${modeLabel} · a/d/A (or pick) answers gates · /help · Ctrl-D quits.${verbose ? "" : "  (--verbose for infra logs)"}`;
 
-  // startShared/startDefault emit their intro lines through onOutput, so they land in the
-  // scrollbox once the app mounts and subscribes.
+  // startShared/startDefault run before the app subscribes (onOutput is registered in a mount
+  // effect). ReplController buffers output until then, so the intro line + any "no manager"
+  // warning replay into the scrollbox once useRepl attaches its sink.
   if (shared) await r.startShared();
   else await r.startDefault();
 
