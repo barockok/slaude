@@ -28,7 +28,11 @@ export function replCommandNames(): string[] {
  *  box but is otherwise card-dump simple. */
 export class ReplController {
   #session?: SimSession;
-  #out: (line: string) => void = () => {};
+  // Until a sink is attached, buffer output so lines emitted before the view subscribes
+  // (e.g. the startShared/startDefault intro + the "no manager" warning) aren't lost — the
+  // OpenTUI app registers onOutput in a mount effect, after startShared/startDefault run.
+  #outBuffer: string[] = [];
+  #out: (line: string) => void = (line) => { this.#outBuffer.push(line); };
   #status: (label: string | null) => void = () => {};
   #agent: "stub" | "real";
   #unsub: Array<() => void> = [];
@@ -38,7 +42,10 @@ export class ReplController {
   #shown = 0;                // stub render cursor: cards already shown this session
   #soulMd?: string;
   constructor(agent: "stub" | "real" = "stub", soulMd?: string) { this.#agent = agent; this.#soulMd = soulMd; }
-  onOutput(fn: (line: string) => void) { this.#out = fn; }
+  onOutput(fn: (line: string) => void) {
+    this.#out = fn;
+    if (this.#outBuffer.length) { const buf = this.#outBuffer; this.#outBuffer = []; for (const l of buf) fn(l); }
+  }
   onStatus(fn: (label: string | null) => void) { this.#status = fn; }
 
   async handle(line: string): Promise<void> {
