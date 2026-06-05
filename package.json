@@ -7,7 +7,11 @@
   "author": "Zidni Mubarok <zidmubarock@gmail.com>",
   "license": "UNLICENSED",
   "main": "src/server.ts",
+  "bin": {
+    "slaude": "bin/slaude.ts"
+  },
   "scripts": {
+    "link": "chmod +x bin/slaude.ts && ln -sf \"$PWD/bin/slaude.ts\" \"$HOME/.bun/bin/slaude\" && echo linked: $HOME/.bun/bin/slaude",
     "dev": "bun --watch src/server.ts",
     "start": "bun src/server.ts",
     "sim": "bun src/gateway/sim/cli.ts",
