@@ -213,7 +213,9 @@ if (isRun) {
     new Promise((resolve) => {
       modal = true;
       let off = 0;
-      const cap = () => Math.max(3, (process.stdout.rows ?? 24) - 5);   // rows for the panel body
+      // Body rows the panel can show = terminal minus box(3) + hint(1) + 1 reserved scroll row
+      // + 1 for our own header line. Matches layoutFooter's panelBudget so nothing is clipped.
+      const cap = () => Math.max(3, (process.stdout.rows ?? 24) - 6);
       const maxOff = () => Math.max(0, lines.length - cap());
       const draw = () => {
         const more = lines.length > cap();
