@@ -73,15 +73,22 @@ if (soulPath && isolated) {
   soulMd = readFileSync(resolve(process.cwd(), soulPath), "utf8");
 }
 
-// Capture the real console.log BEFORE muting, so REPL output always prints.
-const realLog = console.log.bind(console);
+// The interactive REPL is an OpenTUI app that owns the whole screen — ANY stray console/stderr
+// write corrupts the managed render and overlaps the input (e.g. the agent SDK's "[claude-cli] …"
+// stderr passthrough). So in the interactive path, drop all infra logging entirely; the REPL
+// surfaces agent output through onOutput → scrollback, not console. `--verbose` keeps logs (which
+// will visibly corrupt the TUI — that's the debugging tradeoff). `isRun` (CI) keeps its ✓/✗ output.
 if (!verbose && !isRun) {
-  const NOISE = /^\[(mgr|agent-evt|slack-rx|slaude|slack-auth|presence|stop-guard|reactions|cron|permission-gate|metrics|ingest|skills|connect|broker)\]/;
-  const mute = (orig: (...a: any[]) => void) => (...a: any[]) => { if (NOISE.test(String(a[0] ?? ""))) return; orig(...a); };
-  console.log = mute(realLog);
-  console.error = mute(console.error.bind(console));
-  const realErrWrite = process.stderr.write.bind(process.stderr);
-  process.stderr.write = ((chunk: any, ...rest: any[]) => NOISE.test(String(chunk)) ? true : realErrWrite(chunk, ...rest)) as typeof process.stderr.write;
+  const orig = { log: console.log, error: console.error, warn: console.warn, errWrite: process.stderr.write };
+  console.log = () => {};
+  console.error = () => {};
+  console.warn = () => {};
+  process.stderr.write = (() => true) as typeof process.stderr.write;
+  // Restore on exit so a final uncaught error can still print after the TUI tears down.
+  process.once("exit", () => {
+    console.log = orig.log; console.error = orig.error; console.warn = orig.warn;
+    process.stderr.write = orig.errWrite;
+  });
 }
 
 if (isRun) {
