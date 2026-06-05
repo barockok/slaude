@@ -125,11 +125,11 @@ export class ReplController {
     this.#shown = cards.length;
   }
 
-  #help() {
-    // Agent commands are derived from AGENT_COMMANDS (commands.ts) — add one there and it
-    // shows here automatically. The sim-native commands above are REPL-only, so they stay local.
-    const agent = AGENT_COMMANDS.map((c) => `  ${c.usage.padEnd(30)}${c.summary}`).join("\n");
-    this.#out([
+  /** The /help content as lines — shared by the scrollback dump (#help) and the cli's
+   *  bottom-sheet panel. Agent commands derive from AGENT_COMMANDS (add one there and it
+   *  shows here automatically); the sim-native commands are REPL-only, so they stay local. */
+  helpLines(): string[] {
+    return [
       "sim commands:",
       "  <text>            send a message as the current actor",
       "  a / d / A         answer an open permission gate (allow / deny / always)",
@@ -142,9 +142,11 @@ export class ReplController {
       "  /budget /memory /sessions   inspect token usage · stored memory · live sessions",
       "",
       "agent commands (forwarded to the agent like a real Slack message):",
-      agent,
-    ].join("\n"));
+      ...AGENT_COMMANDS.map((c) => `  ${c.usage.padEnd(30)}${c.summary}`),
+    ];
   }
+
+  #help() { this.#out(this.helpLines().join("\n")); }
 
   #subscribe(s: SimSession) {
     if (this.#agent !== "real") return;
