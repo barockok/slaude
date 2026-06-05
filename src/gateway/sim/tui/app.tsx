@@ -33,7 +33,7 @@ const ARG_MAP: Record<string, string[]> = {
 /** Root view. Lays out a scrollback of REPL output, an optional live status line, and an input
  *  row — or, when an overlay is active, the help sheet / picker in place of the input. */
 export function App({ repl, hint, helpLines }: AppProps) {
-  const { messages, status } = useRepl(repl);
+  const { messages, status, echo } = useRepl(repl);
   const [value, setValue] = useState("");
   const [overlay, setOverlay] = useState<Overlay>({ kind: "none" });
 
@@ -69,6 +69,7 @@ export function App({ repl, hint, helpLines }: AppProps) {
         setOverlay({ kind: "picker", which: action.which });
         return;
       case "send":
+        echo(`› ${action.text}`);   // echo the user's line into the timeline
         void repl.handle(action.text);
         return;
     }
@@ -91,6 +92,7 @@ export function App({ repl, hint, helpLines }: AppProps) {
           onPick={(v) => {
             const which = overlay.which; // capture before clearing the overlay
             setOverlay({ kind: "none" });
+            echo(`› /${which} ${v}`);
             void repl.handle(`/${which} ${v}`);
           }}
         />
