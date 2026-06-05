@@ -95,9 +95,17 @@ export function App({ repl, hint, helpLines }: AppProps) {
 
   return (
     <box flexDirection="column" height="100%">
-      {/* Amartha logo banner, pinned at the top (flexShrink so it keeps full height). */}
-      <box flexShrink={0} alignItems="center">
-        <text content={banner} />
+      {/* Top banner: Amartha logo on the left, "A-Claw" wordmark beside it in the logo's
+          purple→blue theme. Row is left-aligned; children vertically centered. */}
+      <box flexShrink={0} flexDirection="row" alignItems="center" gap={3}>
+        {/* flexShrink={0} so neither is squeezed in the row — the wide logo would otherwise wrap
+            to ~2× its height. On a narrow terminal the wordmark clips rather than wrapping. */}
+        <box flexShrink={0}>
+          <text content={banner} />
+        </box>
+        <box flexShrink={0}>
+          <ascii-font text="A-Claw" font="slick" color={["#7e3f97", "#0087ba"]} />
+        </box>
       </box>
       <scrollbox flexGrow={1} stickyScroll stickyStart="bottom">
         {messages.map((m, i) => (
