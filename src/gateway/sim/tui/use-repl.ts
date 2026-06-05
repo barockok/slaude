@@ -11,6 +11,9 @@ export function useRepl(r: ReplController) {
   useEffect(() => {
     r.onOutput((line) => setMessages((m) => [...m, forText(line)]));
     r.onStatus((label) => setStatus(label));
+    // onOutput/onStatus replace (not append) the single sink, so on unmount detach by resetting
+    // to no-ops — avoids a stale closure writing into an unmounted tree.
+    return () => { r.onOutput(() => {}); r.onStatus(() => {}); };
   }, [r]);
   return { messages, status };
 }
