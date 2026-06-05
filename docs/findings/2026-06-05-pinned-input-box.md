@@ -41,6 +41,13 @@ A pinned box needs absolute-positioned redraws on every keystroke, so the line e
   terminals fall back to literal char insertion.
 - **Picker is modal:** while a `/layer`·`/as` picker is open, a `modal` flag stops the main editor
   handler from also consuming the arrow keys (they would otherwise drive menu *and* buffer at once).
+- **In-place bottom-sheet panels:** `Screen.setPanel(lines|null)` renders a modal block in the footer
+  *above* the input box, redrawn in place on each keystroke — no scrollback writes. Pickers (`/layer`·
+  `/as`) and `/help` (scrollable, ↑/↓) use it, matching claude-code's `/mcp` feel. `layoutFooter` clips
+  a tall panel to fit and reserves one scroll row so the box stays pinned (bottom-anchor preserved).
+  Closing a panel shrinks the footer; the band-clear wipes the freed rows (no ghost), though the
+  bottom-most scrollback lines the panel covered are left blank until the next output (no scrollback
+  model to redraw them).
 - **Terminal restore on any exit:** `process.on("exit")` runs an idempotent `cleanup()` so a crash
   never leaves the user in raw mode with a stuck scroll region.
 
@@ -59,7 +66,8 @@ boot smoke and the interactive checklist below.
 - Trailing `\` + Enter → second line (box grows, capped at 10); Enter submits the multi-line.
 - Multi-line paste arrives as one message (not N submits).
 - Resize the window → box redraws at the new width, stays pinned, scrollback intact.
-- Open a gate → `a`/`d`/`A` answers it. `/layer` (no arg) → picker; arrows + Enter select, Esc cancels.
+- Open a gate → `a`/`d`/`A` answers it. `/layer` (no arg) → in-place picker panel; arrows + Enter
+  select, Esc cancels (no scrollback spam). `/help` → scrollable bottom-sheet (↑/↓, Esc/Enter/q close).
 - Ctrl-C clears a typed line; Ctrl-C twice on empty → exit; Ctrl-D on empty → clean exit (cursor
   restored, no stuck scroll region).
 
