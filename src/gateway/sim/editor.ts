@@ -22,7 +22,9 @@ export class LineEditor {
   #draft = "";      // live line stashed while browsing history
 
   view(): { text: string; cursor: number } { return { text: this.#text, cursor: this.#cursor }; }
-  applyCompletion(line: string) { this.#text = line; this.#cursor = line.length; }
+  // Replace the whole line (Tab-completion result, or a clear via ""). Resets history
+  // navigation so a subsequent Up starts from the newest entry, not wherever we'd browsed to.
+  applyCompletion(line: string) { this.#text = line; this.#cursor = line.length; this.#hist = -1; this.#draft = ""; }
 
   handle(k: Key): EditorAction {
     if (this.#pasting) return this.#paste(k);
