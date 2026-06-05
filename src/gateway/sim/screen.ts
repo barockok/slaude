@@ -62,12 +62,15 @@ export function layoutFooter(m: FooterModel): FooterLayout {
   // The footer is bottom-anchored: it occupies the last `height` rows, so the box stays
   // pinned to the bottom and the status line (when present) slots in *above* the box —
   // the cursor's absolute row is unchanged by toggling status. Scrollback scrolls in 1..regionBottom.
+  // Assumes rows >= height (max footer height is MAX_ROWS+3 ≈ 13 — fine for any real terminal).
+  // On a terminal shorter than the footer the clamp keeps regionBottom >= 1 and the cursor row
+  // on-screen rather than computing a position below the last row.
   const regionBottom = Math.max(1, m.rows - height);
 
   // Absolute cursor position. Footer rows run regionBottom+1 .. rows; status (if any) is the
   // first of those, so the box top sits one row lower when status is shown.
   const boxTopRow = regionBottom + 1 + (m.status ? 1 : 0);
-  const cursorRow = boxTopRow + 1 + (cLine - start);
+  const cursorRow = Math.min(m.rows, boxTopRow + 1 + (cLine - start));
   const prefixLen = cLine === 0 ? PROMPT.length : 2;
   const cxRaw = prefixLen + cCol;
   const cxClipped = Math.min(cxRaw, innerW);
