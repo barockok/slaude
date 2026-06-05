@@ -31,8 +31,16 @@ test("status line slots in above the box; box stays bottom-pinned", () => {
 
 test("footer never renders below the last terminal row", () => {
   // Bottom-anchored: regionBottom + height === rows, so lines[height-1] lands exactly on `rows`.
-  const b = layoutFooter({ ...base, status: "⠋ Thinking… (2s)", text: "x", cursor: 1 });
-  expect(b.regionBottom + b.height).toBe(24);
+  const withStatus = layoutFooter({ ...base, status: "⠋ Thinking… (2s)", text: "x", cursor: 1 });
+  expect(withStatus.regionBottom + withStatus.height).toBe(24);
+  const noStatus = layoutFooter({ ...base, status: null, text: "x", cursor: 1 });
+  expect(noStatus.regionBottom + noStatus.height).toBe(24);
+});
+
+test("long line clips horizontally, keeping the cursor on-screen", () => {
+  const L = layoutFooter({ ...base, cols: 20, status: null, text: "x".repeat(50), cursor: 50 });
+  expect(L.cursorCol).toBeLessThanOrEqual(20);
+  expect(L.lines[1]!.length).toBe(20);            // box row still exactly cols wide
 });
 
 test("cursor maps to the right row/col on the first line", () => {
