@@ -67,6 +67,25 @@ test("continuation lines have no prompt; first line does", () => {
   expect(L.lines[2]).not.toContain("›");
 });
 
+test("panel renders above the box and stays bottom-anchored", () => {
+  const noPanel = layoutFooter({ ...base, status: null, text: "x", cursor: 1 });
+  const L = layoutFooter({ ...base, status: null, text: "x", cursor: 1, panel: ["menu a", "menu b"] });
+  expect(L.height).toBe(noPanel.height + 2);          // two panel rows added
+  expect(L.lines[0]).toBe("menu a");                  // panel is the topmost footer row(s)
+  expect(L.lines[1]).toBe("menu b");
+  expect(L.lines[2]!.startsWith("╭")).toBe(true);     // box top follows the panel
+  expect(L.regionBottom + L.height).toBe(24);         // still bottom-anchored
+  expect(L.cursorRow).toBe(noPanel.cursorRow);        // box stays pinned at bottom; panel grows upward
+});
+
+test("a panel taller than the available rows is clipped to keep the box on-screen", () => {
+  const tall = Array.from({ length: 40 }, (_, i) => `row${i}`);
+  const L = layoutFooter({ ...base, rows: 24, status: null, text: "", cursor: 0, panel: tall });
+  expect(L.regionBottom).toBeGreaterThanOrEqual(1);
+  expect(L.regionBottom + L.height).toBe(24);         // never overflows the terminal
+  expect(L.lines.some((l) => l.startsWith("╭"))).toBe(true);  // box still present
+});
+
 // ── Screen class tests ────────────────────────────────────────────────────────
 
 import { Screen } from "../../../src/gateway/sim/screen";
@@ -131,6 +150,24 @@ test("print on a fresh Screen sets the region before scrolling", () => {
   // The DECSTBM set must appear before the scroll-park write.
   expect(o.indexOf("\x1b[1;")).toBeGreaterThanOrEqual(0);
   expect(o.indexOf("\x1b[1;")).toBeLessThan(o.indexOf("hi"));
+});
+
+test("setPanel draws in place (no scrollback writes) and clears on close", () => {
+  const { s, out } = mkScreen();
+  s.setInput("", 0);
+  const before = out().length;
+  s.setPanel(["❯ dm", "  trusted"]);
+  const opened = out().slice(before);
+  expect(opened).toContain("❯ dm");
+  expect(s.panelOpen).toBe(true);
+  // navigating = setPanel again with a new highlight; must not emit a scroll (\n at regionBottom)
+  const mid = out().length;
+  s.setPanel(["  dm", "❯ trusted"]);
+  const moved = out().slice(mid);
+  expect(moved).toContain("❯ trusted");
+  expect(moved).not.toContain("\x1b[2K  trusted\n");   // no park-and-scroll → no scrollback commit
+  s.setPanel(null);
+  expect(s.panelOpen).toBe(false);
 });
 
 test("clearing status wipes the freed status row (no ghost)", () => {

@@ -187,20 +187,50 @@ if (isRun) {
     finally { stdin.off("data", onAbortKey); busy = false; paint(); }
   };
 
-  // Bare `/layer` / `/as` open a picker (claude-code-style), drawn through screen.print.
+  // Bare `/layer` / `/as` open a picker (claude-code /mcp-style): an in-place bottom-sheet
+  // drawn in the footer above the box via screen.setPanel — arrow keys redraw it in place,
+  // no scrollback spam. Esc cancels, Enter selects.
   const pickFrom = (title: string, items: { label: string; hint?: string }[]): Promise<number | null> =>
     new Promise((resolve) => {
       modal = true;             // gate the main handler while the picker owns keys
       let cursor = 0;
-      const draw = () => screen.print(renderMenu(title, items, cursor).join("\n"));
+      const draw = () => screen.setPanel(renderMenu(title, items, cursor));
       draw();
       const onKey = (b: Buffer) => {
         const res = menuReduce(cursor, items.length, decodeKey(b.toString()));
         cursor = res.cursor;
         if (!res.done) { draw(); return; }
         stdin.off("data", onKey);
+        screen.setPanel(null);  // close the sheet
         modal = false;
         resolve(res.done === "select" ? cursor : null);
+      };
+      stdin.on("data", onKey);
+    });
+
+  // `/help` opens a scrollable bottom-sheet (↑/↓ scroll, any of Esc/Enter/q close).
+  const showHelp = (lines: string[]): Promise<void> =>
+    new Promise((resolve) => {
+      modal = true;
+      let off = 0;
+      const cap = () => Math.max(3, (process.stdout.rows ?? 24) - 5);   // rows for the panel body
+      const maxOff = () => Math.max(0, lines.length - cap());
+      const draw = () => {
+        const more = lines.length > cap();
+        const head = `\x1b[1mhelp\x1b[0m${more ? `  \x1b[2m↑/↓ scroll · Esc to close (${off + 1}-${Math.min(off + cap(), lines.length)}/${lines.length})\x1b[0m` : "  \x1b[2mEsc to close\x1b[0m"}`;
+        screen.setPanel([head, ...lines.slice(off, off + cap())]);
+      };
+      draw();
+      const onKey = (b: Buffer) => {
+        const k = decodeKey(b.toString());
+        if (k === "up") { off = Math.max(0, off - 1); draw(); return; }
+        if (k === "down") { off = Math.min(maxOff(), off + 1); draw(); return; }
+        if (k === "enter" || k === "esc" || k === "other") { // 'other' covers q/space/any
+          stdin.off("data", onKey);
+          screen.setPanel(null);
+          modal = false;
+          resolve();
+        }
       };
       stdin.on("data", onKey);
     });
@@ -215,6 +245,9 @@ if (isRun) {
       const pick = await pickFrom("Act as which role:", ROLE_NAMES.map((n) => ({ label: n })));
       if (pick !== null) await runTurn(`/as ${ROLE_NAMES[pick]}`);
       else paint();
+    } else if (t === "/help") {
+      await showHelp(r.helpLines());
+      paint();
     } else if (t) {
       await runTurn(full);
     } else { paint(); }
