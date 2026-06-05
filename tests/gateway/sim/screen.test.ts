@@ -111,3 +111,36 @@ test("restore resets the region and shows the cursor", () => {
   expect(out()).toContain("\x1b[?25h");         // cursor shown
   expect(out()).toContain("\x1b[?2004l");       // bracketed paste off
 });
+
+test("resize re-sets the scroll region even when footer height is unchanged", () => {
+  const w: string[] = [];
+  let rows = 24;
+  const s = new Screen((x) => w.push(x), () => ({ rows, cols: 40 }), { now: () => 0 });
+  s.setInput("x", 1);                           // region set for rows=24 → 1;20r
+  expect(w.join("")).toContain("\x1b[1;20r");
+  w.length = 0;
+  rows = 30;                                    // terminal grew; height unchanged
+  s.resize();
+  expect(w.join("")).toContain("\x1b[1;26r");   // region tracks the new rows (30-4)
+});
+
+test("print on a fresh Screen sets the region before scrolling", () => {
+  const { s, out } = mkScreen();
+  s.print("hi");                                // no setInput first
+  const o = out();
+  // The DECSTBM set must appear before the scroll-park write.
+  expect(o.indexOf("\x1b[1;")).toBeGreaterThanOrEqual(0);
+  expect(o.indexOf("\x1b[1;")).toBeLessThan(o.indexOf("hi"));
+});
+
+test("clearing status wipes the freed status row (no ghost)", () => {
+  const { s, out } = mkScreen();
+  s.setInput("x", 1);
+  s.setStatus("Thinking…");                     // height 4→5, regionBottom 20→19
+  out();
+  // clearing: height 5→4, regionBottom 19→20; row 20 (old status) must be cleared.
+  const before = out().length;
+  s.setStatus(null);
+  const after = out().slice(before);
+  expect(after).toContain("\x1b[20;1H\x1b[2K");  // explicit clear of the freed row
+});

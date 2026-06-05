@@ -103,7 +103,8 @@ export class Screen {
   #label: string | null = null;
   #frame = 0;
   #startedAt = 0;
-  #height = 0;          // current footer height (for region-change detection)
+  #height = 0;          // last footer height (for footer-band sizing)
+  #regionBottom = 0;    // last scroll-region bottom (0 = region not yet set)
 
   constructor(write: (s: string) => void, size: SizeFn, opts: { frames?: string[]; now?: () => number } = {}) {
     this.#write = write;
@@ -126,6 +127,9 @@ export class Screen {
   print(line: string) {
     const { rows, cols } = this.#size();
     const L = this.#layout(rows, cols);
+    // The scroll trick below only works once the DECSTBM region is set. If it's stale (fresh
+    // Screen, or a resize since the last paint), render first so the region matches `L`.
+    if (L.regionBottom !== this.#regionBottom || L.height !== this.#height) this.#render();
     for (const seg of line.split("\n")) {
       // Park at the region's last row and newline so the region scrolls up by one.
       this.#write(`\x1b[${L.regionBottom};1H\x1b[2K${seg}\n`);
@@ -157,11 +161,20 @@ export class Screen {
     const { rows, cols } = this.#size();
     const L = this.#layout(rows, cols);
     let buf = "\x1b[?25l";                                  // hide cursor during repaint
-    if (L.height !== this.#height) {
+    // Re-set the scroll region whenever its bottom moves — height change (status/multi-line)
+    // OR a terminal resize (rows changed → regionBottom changed even at constant height).
+    if (L.regionBottom !== this.#regionBottom || L.height !== this.#height) {
       buf += `\x1b[1;${L.regionBottom}r`;                   // (re)set scroll region
-      // Clear the whole footer band so a shrunk footer leaves no stragglers.
-      for (let r = L.regionBottom + 1; r <= rows; r++) buf += `\x1b[${r};1H\x1b[2K`;
+      // Clear from the smaller of the old/new region bottom down to the last row, so a shrunk
+      // footer leaves no stragglers and a freed footer row (e.g. old status line) isn't left
+      // as a ghost in the scroll region. On the very first paint (regionBottom 0) clear only
+      // the footer band, not the whole screen.
+      const clearFrom = this.#regionBottom === 0
+        ? L.regionBottom + 1
+        : Math.min(this.#regionBottom, L.regionBottom) + 1;
+      for (let r = clearFrom; r <= rows; r++) buf += `\x1b[${r};1H\x1b[2K`;
       this.#height = L.height;
+      this.#regionBottom = L.regionBottom;
     }
     L.lines.forEach((ln, i) => { buf += `\x1b[${L.regionBottom + 1 + i};1H\x1b[2K${ln}`; });
     buf += `\x1b[${L.cursorRow};${L.cursorCol}H\x1b[?25h`;  // park + show cursor
