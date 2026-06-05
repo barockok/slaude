@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/react */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useKeyboard, useRenderer } from "@opentui/react";
 import type { ReplController } from "../repl";
 import { replCommandNames } from "../repl";
@@ -31,6 +31,9 @@ const ARG_MAP: Record<string, string[]> = {
   "/behavior": Object.keys(BEHAVIORS),
 };
 
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]; // braille loader, animated while thinking
+const THEME_PURPLE = "#a878d6"; // logo purple, brightened for readability on the dark bg
+
 /** Root view. Lays out a scrollback of REPL output, an optional live status line, and an input
  *  row — or, when an overlay is active, the help sheet / picker in place of the input. */
 export function App({ repl, hint, helpLines }: AppProps) {
@@ -38,7 +41,15 @@ export function App({ repl, hint, helpLines }: AppProps) {
   const [value, setValue] = useState("");
   const [overlay, setOverlay] = useState<Overlay>({ kind: "none" });
   const [exitArmed, setExitArmed] = useState(false); // Ctrl-C pressed once on an empty line
+  const [spin, setSpin] = useState(0);
   const renderer = useRenderer();
+
+  // Animate the loader only while a status (e.g. "Thinking…") is active; stop when it clears.
+  useEffect(() => {
+    if (!status) return;
+    const id = setInterval(() => setSpin((s) => (s + 1) % SPINNER.length), 100);
+    return () => clearInterval(id);
+  }, [status]);
 
   useKeyboard((e) => {
     // Ctrl-C — shell/claude-code style: close an overlay, else clear a typed line, else (empty)
@@ -114,7 +125,9 @@ export function App({ repl, hint, helpLines }: AppProps) {
         {/* The live status (spinner/"Thinking…") sits as the last timeline entry, below the
             last message; when the agent replies, onStatus(null) clears it and the reply is
             already appended in its place. */}
-        {status ? <text key="status" fg="#888888">{status}</text> : null}
+        {status ? (
+          <text key="status" fg={THEME_PURPLE}>{`${SPINNER[spin]} ${status}`}</text>
+        ) : null}
       </scrollbox>
       {overlay.kind === "help" ? (
         <Help lines={helpLines} />
