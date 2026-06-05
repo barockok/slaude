@@ -20,7 +20,7 @@ export function replCommandNames(): string[] {
 /** Transport-agnostic REPL logic: feed it command lines, it emits two streams —
  *   - onOutput(line): committed scrollback (tool tree, replies, gate boxes)
  *   - onStatus(label|null): the live bottom spinner label ("Thinking…", "Bash…"), or null to clear.
- *  cli.ts paints these onto a real TTY (via Screen); tests capture them directly.
+ *  the cli renders these through the OpenTUI React view (tui/); tests capture them directly.
  *
  *  With a real agent it renders a claude-code-style live feed: the spinner tracks the current
  *  activity while tool calls/results/replies scroll above, and permission/approval gates print
