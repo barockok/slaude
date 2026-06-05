@@ -87,6 +87,28 @@ test("bracketed paste inserts newlines literally without submitting", () => {
   expect(e.view().text).toBe("a\nb");
 });
 
+test("insert mid-string at cursor", () => {
+  const e = new LineEditor();
+  feed(e, [txt("ac")]);
+  e.handle({ type: "left" });
+  feed(e, [txt("b")]);
+  expect(e.view()).toEqual({ text: "abc", cursor: 2 });
+});
+
+test("ctrl-d at end of non-empty buffer is a no-op (not eof)", () => {
+  const e = new LineEditor();
+  feed(e, [txt("x")]);   // cursor at end
+  expect(e.handle({ type: "ctrl-d" })).toEqual({ type: "none" });
+  expect(e.view().text).toBe("x");
+});
+
+test("empty enter submits empty text without recording history", () => {
+  const e = new LineEditor();
+  expect(e.handle({ type: "enter" })).toEqual({ type: "submit", text: "" });
+  e.handle({ type: "up" });                  // nothing in history → no change
+  expect(e.view().text).toBe("");
+});
+
 test("tab requests completion", () => {
   const e = new LineEditor();
   feed(e, [txt("/lay")]);
