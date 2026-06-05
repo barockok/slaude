@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/react */
 import { test, expect } from "bun:test";
+import { act } from "react";
 import { testRender } from "@opentui/react/test-utils";
 import type { ReplController } from "../../../../src/gateway/sim/repl";
 import { App } from "../../../../src/gateway/sim/tui/app";
@@ -80,10 +81,15 @@ test("typing a line and pressing Enter routes through to repl.handle (mockInput)
   const t = await testRender(<App repl={f.repl} hint="hint" helpLines={[]} />, { width: 80, height: 24 });
   try {
     await new Promise((r) => setTimeout(r, 100)); // let the input focus + mount settle
-    await t.mockInput.typeText("hello world");
-    t.mockInput.pressEnter();
+    await act(async () => {
+      await t.mockInput.typeText("hello world");
+      t.mockInput.pressEnter();
+    });
     await t.waitFor(() => f.handled.includes("hello world"), { maxPasses: 40 });
     expect(f.handled).toContain("hello world");
+    // the submitted line is echoed into the timeline
+    const frame = await t.waitForFrame((fr) => fr.includes("› hello world"), { maxPasses: 40 });
+    expect(frame).toContain("› hello world");
   } finally {
     t.renderer.destroy();
   }

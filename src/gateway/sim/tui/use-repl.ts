@@ -15,5 +15,8 @@ export function useRepl(r: ReplController) {
     // to no-ops — avoids a stale closure writing into an unmounted tree.
     return () => { r.onOutput(() => {}); r.onStatus(() => {}); };
   }, [r]);
-  return { messages, status };
+  // Append a local line to the same scrollback — used to echo the user's own submitted input
+  // into the timeline (the controller only emits agent-side output).
+  const echo = (line: string) => setMessages((m) => [...m, line]);
+  return { messages, status, echo };
 }
