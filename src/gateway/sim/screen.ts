@@ -8,6 +8,7 @@ export interface FooterModel {
   hint: string;
   cols: number;
   rows: number;
+  panel?: string[] | null; // modal block (picker / help) drawn above the box, in-place; null = none
 }
 
 export interface FooterLayout {
@@ -59,7 +60,14 @@ export function layoutFooter(m: FooterModel): FooterLayout {
   const bottom = "╰" + "─".repeat(cols - 2) + "╯";
   const hint = clip(m.hint, cols);
 
-  const lines = [...(m.status ? [clip(m.status, cols)] : []), top, ...content, bottom, hint];
+  // Modal panel (picker/help) sits above the box, in-place. Clip it to the rows left after the
+  // status, box, and hint — and reserve at least one scroll row — so it never pushes the box
+  // off-screen and keeps the bottom-anchor invariant. The caller windows tall panels.
+  const statusRows = m.status ? 1 : 0;
+  const panelBudget = Math.max(0, m.rows - statusRows - (boxRows + 2) - 1 - 1);
+  const panelLines = (m.panel ?? []).slice(0, panelBudget).map((l) => clip(l, cols));
+
+  const lines = [...(m.status ? [clip(m.status, cols)] : []), ...panelLines, top, ...content, bottom, hint];
   const height = lines.length;
   // The footer is bottom-anchored: it occupies the last `height` rows, so the box stays
   // pinned to the bottom and the status line (when present) slots in *above* the box —
@@ -69,9 +77,9 @@ export function layoutFooter(m: FooterModel): FooterLayout {
   // on-screen rather than computing a position below the last row.
   const regionBottom = Math.max(1, m.rows - height);
 
-  // Absolute cursor position. Footer rows run regionBottom+1 .. rows; status (if any) is the
-  // first of those, so the box top sits one row lower when status is shown.
-  const boxTopRow = regionBottom + 1 + (m.status ? 1 : 0);
+  // Absolute cursor position. Footer rows run regionBottom+1 .. rows; the status line (if any)
+  // then the panel (if any) sit above the box, so the box top is offset past both.
+  const boxTopRow = regionBottom + 1 + statusRows + panelLines.length;
   const cursorRow = Math.min(m.rows, boxTopRow + 1 + (cLine - start));
   const prefixLen = cLine === 0 ? PROMPT.length : 2;
   const cxRaw = prefixLen + cCol;
@@ -105,6 +113,7 @@ export class Screen {
   #startedAt = 0;
   #height = 0;          // last footer height (for footer-band sizing)
   #regionBottom = 0;    // last scroll-region bottom (0 = region not yet set)
+  #panel: string[] | null = null;  // active modal panel (picker / help), or null
 
   constructor(write: (s: string) => void, size: SizeFn, opts: { frames?: string[]; now?: () => number } = {}) {
     this.#write = write;
@@ -115,6 +124,11 @@ export class Screen {
 
   setHint(hint: string) { this.#hint = hint; this.#render(); }
   setInput(text: string, cursor: number) { this.#text = text; this.#cursor = cursor; this.#render(); }
+
+  /** Show a modal panel (picker/help) in the footer above the box, redrawn in place — no
+   *  scrollback writes. `null` closes it. Tall panels are windowed by the caller. */
+  setPanel(lines: string[] | null) { this.#panel = lines && lines.length ? lines : null; this.#render(); }
+  get panelOpen(): boolean { return this.#panel !== null; }
 
   setStatus(label: string | null) {
     if (label === null) { this.#label = null; this.#render(); return; }
@@ -154,7 +168,7 @@ export class Screen {
   }
 
   #layout(rows: number, cols: number): FooterLayout {
-    return layoutFooter({ status: this.#composeStatus(), text: this.#text, cursor: this.#cursor, hint: this.#hint, cols, rows });
+    return layoutFooter({ status: this.#composeStatus(), text: this.#text, cursor: this.#cursor, hint: this.#hint, cols, rows, panel: this.#panel });
   }
 
   #render() {
