@@ -7,6 +7,7 @@ import { LAYERS, ROLE_NAMES } from "../roles";
 import { BEHAVIORS } from "../stub-agent";
 import { completeLine, completeArg } from "../complete";
 import { routeSubmit } from "./route";
+import { banner } from "./banner";
 import { useRepl } from "./use-repl";
 import { Help } from "./help";
 import { Picker } from "./picker";
@@ -94,6 +95,10 @@ export function App({ repl, hint, helpLines }: AppProps) {
 
   return (
     <box flexDirection="column" height="100%">
+      {/* Amartha logo banner, pinned at the top (flexShrink so it keeps full height). */}
+      <box flexShrink={0} alignItems="center">
+        <text content={banner} />
+      </box>
       <scrollbox flexGrow={1} stickyScroll stickyStart="bottom">
         {messages.map((m, i) => (
           <text key={i}>{m}</text>
