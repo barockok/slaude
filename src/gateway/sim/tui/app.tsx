@@ -31,7 +31,8 @@ const ARG_MAP: Record<string, string[]> = {
   "/behavior": Object.keys(BEHAVIORS),
 };
 
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]; // braille loader, animated while thinking
+// "Jumping beans": three dots bouncing as a phase-shifted wave (baseline . → mid · → high ˙).
+const SPINNER = [".·˙", "·˙·", "˙·.", "·.·"];
 const THEME_PURPLE = "#a878d6"; // logo purple, brightened for readability on the dark bg
 
 /** Root view. Lays out a scrollback of REPL output, an optional live status line, and an input
