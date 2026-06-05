@@ -65,11 +65,13 @@ export function decodeKeys(s: string): Key[] {
       for (const [seq, key] of SEQ) {
         if (s.startsWith(seq, i)) { flush(); out.push(key); i += seq.length; continue outer; }
       }
-      // Unrecognized CSI/SS3 (e.g. "\x1b[1;5C"): consume the sequence, drop it.
+      // Unrecognized CSI/SS3 (e.g. "\x1b[1;5C"): consume the sequence, drop it. If the
+      // terminator never arrives (sequence split across stdin chunks), consume to end —
+      // don't advance past it, so no following byte is phantom-skipped.
       if (s[i + 1] === "[" || s[i + 1] === "O") {
         let j = i + 2;
         while (j < s.length && !/[A-Za-z~]/.test(s[j]!)) j++;
-        flush(); i = j + 1; continue;
+        flush(); i = j < s.length ? j + 1 : j; continue;
       }
       flush(); out.push({ type: "esc" }); i += 1; continue;
     }

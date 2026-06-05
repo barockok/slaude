@@ -51,3 +51,13 @@ test("paste payload decodes inner content as normal tokens (editor applies paste
     { type: "paste-end" },
   ]);
 });
+
+test("unrecognized CSI sequences are dropped, surrounding text preserved", () => {
+  // Ctrl-Right ("\x1b[1;5C") isn't in the table → consumed and dropped.
+  expect(decodeKeys("a\x1b[1;5Cb")).toEqual([
+    { type: "text", value: "a" },
+    { type: "text", value: "b" },
+  ]);
+  // A CSI with no terminator in this chunk consumes to end without skipping a phantom byte.
+  expect(decodeKeys("x\x1b[1;5")).toEqual([{ type: "text", value: "x" }]);
+});
