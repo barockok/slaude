@@ -10,9 +10,17 @@
 
 ---
 
-## CRITICAL: Spike gates everything
+## CRITICAL: Spike gates everything — DONE, PASSED (2026-06-05)
 
-Task 1 is a **throwaway spike**. If it fails on the OpenTUI/Bun toolchain or the native lib won't load, **STOP and report** — do not start the migration. Tasks 2+ depend on the spike's confirmed API notes.
+Task 1 ran and **passed**: native lib loads, the React reconciler renders under Bun, and the view is
+**headlessly unit-testable** via `@opentui/react/test-utils` `testRender` + `waitForFrame`. Verdicts
+recorded in `src/gateway/sim/tui/API-NOTES.md`:
+- **ANSI:** `<text>` does NOT parse raw ANSI → **strip** via core `stripAnsiSequences` (Task 3 uses this).
+- **Render:** `createRoot(await createCliRenderer(cfg)).render(<App/>)`.
+- **Components ARE testable** — Tasks 5–7 add `testRender`-based tests (mount, feed `mockInput`, assert frame),
+  not just manual smoke. Treat the manual smoke as a final check, not the only safety net.
+
+Task 1 (install + tsconfig + API notes) is already committed; skip it during execution.
 
 OpenTUI is pre-1.0; the exact element/prop/hook names below are from its docs and may differ slightly from the installed version. **The spike records the real API in `tui/API-NOTES.md`; later tasks adapt the skeleton code to it.** Where this plan's code and the installed types disagree, the installed types win — adjust and note it.
 
@@ -176,7 +184,8 @@ git commit -m "feat(sim): pure submit-routing for the TUI"
 
 ## Task 3: ANSI handling for `<text>` (`ansi.ts`)
 
-Implement per the spike's ANSI verdict. Both branches are covered below; keep the one matching `API-NOTES.md` and delete the other before committing.
+Spike verdict: `<text>` does NOT parse raw ANSI → **strip**, using core's `stripAnsiSequences` (don't
+hand-roll a regex — the core stripper handles the full escape grammar, not just SGR `…m`).
 
 **Files:**
 - Create: `src/gateway/sim/tui/ansi.ts`
@@ -193,11 +202,9 @@ test("plain text is unchanged", () => {
   expect(forText("hello")).toBe("hello");
 });
 
-test("ANSI is handled per the chosen strategy", () => {
-  // PASSTHROUGH build: keeps the codes. STRIP build: removes them. Pick the assertion that
-  // matches API-NOTES.md and delete the other line.
-  // expect(forText("\x1b[1mhi\x1b[0m")).toBe("\x1b[1mhi\x1b[0m"); // passthrough
-  expect(forText("\x1b[1mhi\x1b[0m")).toBe("hi");                  // strip
+test("ANSI escape sequences are stripped for <text>", () => {
+  expect(forText("\x1b[1mhi\x1b[0m")).toBe("hi");
+  expect(forText("\x1b[32m⏺\x1b[0m reply")).toBe("⏺ reply");
 });
 ```
 
@@ -206,22 +213,22 @@ test("ANSI is handled per the chosen strategy", () => {
 Run: `bun test tests/gateway/sim/tui/ansi.test.ts`
 Expected: FAIL (module not found).
 
-- [ ] **Step 3: Implement `ansi.ts` (keep the branch matching the spike)**
+- [ ] **Step 3: Implement `ansi.ts`**
 
 ```ts
 // src/gateway/sim/tui/ansi.ts
-// Adapt a render.ts line for an OpenTUI <text>. The strategy is fixed by the spike
-// (API-NOTES.md): passthrough if <text> renders ANSI, else strip to plain text.
+import { stripAnsiSequences } from "@opentui/core";
 
-// --- STRIP build (use if <text> does NOT render ANSI) ---
-const ANSI = /\x1b\[[0-9;]*m/g;
+// Adapt a render.ts line for an OpenTUI <text>: <text> renders raw ANSI as literal characters
+// (spike verdict, API-NOTES.md), so strip the escape codes. Color is dropped in MVP; a future
+// enhancement can convert ANSI → StyledText (core: StyledText/fg/bold) to restore it.
 export function forText(line: string): string {
-  return line.replace(ANSI, "");
+  return stripAnsiSequences(line);
 }
-
-// --- PASSTHROUGH build (use if <text> DOES render ANSI) — replace the body above with: ---
-// export function forText(line: string): string { return line; }
 ```
+
+> If `stripAnsiSequences` isn't importable from `@opentui/core` at runtime (verify), fall back to
+> the regex `line.replace(/\x1b\[[0-9;]*m/g, "")` and note it — but prefer the core export.
 
 - [ ] **Step 4: Run test, verify it passes**
 
