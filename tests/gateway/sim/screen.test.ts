@@ -66,3 +66,48 @@ test("continuation lines have no prompt; first line does", () => {
   expect(L.lines[2]).toContain(" b");
   expect(L.lines[2]).not.toContain("›");
 });
+
+// ── Screen class tests ────────────────────────────────────────────────────────
+
+import { Screen } from "../../../src/gateway/sim/screen";
+
+const mkScreen = () => {
+  const w: string[] = [];
+  const s = new Screen((x) => w.push(x), () => ({ rows: 24, cols: 40 }), { now: () => 0 });
+  return { s, out: () => w.join("") };
+};
+
+test("setInput renders a bordered box with the text", () => {
+  const { s, out } = mkScreen();
+  s.setInput("hello", 5);
+  expect(out()).toContain("╭");
+  expect(out()).toContain("› hello");
+  expect(out()).toContain("╰");
+});
+
+test("setStatus shows a spinner line; clearing removes it", () => {
+  const { s, out } = mkScreen();
+  s.setInput("x", 1);
+  s.setStatus("Thinking…");
+  expect(out()).toContain("Thinking…");
+  s.setStatus(null);
+  // last full render should no longer carry the label on the status row
+  expect(out().split("Thinking…").length - 1).toBe(1); // appeared once, not re-emitted after clear
+});
+
+test("print emits a scrollback line and sets the scroll region", () => {
+  const { s, out } = mkScreen();
+  s.setInput("", 0);
+  s.print("scrollback line");
+  expect(out()).toContain("scrollback line");
+  expect(out()).toContain("\x1b[1;");          // DECSTBM region set
+});
+
+test("restore resets the region and shows the cursor", () => {
+  const { s, out } = mkScreen();
+  s.setInput("", 0);
+  s.restore();
+  expect(out()).toContain("\x1b[r");            // region reset
+  expect(out()).toContain("\x1b[?25h");         // cursor shown
+  expect(out()).toContain("\x1b[?2004l");       // bracketed paste off
+});

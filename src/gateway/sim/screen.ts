@@ -1,4 +1,6 @@
 // src/gateway/sim/screen.ts
+import { SPINNER_FRAMES } from "./render";
+
 export interface FooterModel {
   status: string | null;   // pre-composed status (spinner+label+elapsed), or null when idle
   text: string;            // editor buffer, may contain "\n"
@@ -82,4 +84,87 @@ export function layoutFooter(m: FooterModel): FooterLayout {
 function clip(s: string, width: number): string {
   // Clip on visible length; ANSI is rare in status/hint here and kept short by callers.
   return s.length > width ? s.slice(0, width) : s;
+}
+
+type SizeFn = () => { rows: number; cols: number };
+
+/** Owns the bottom-pinned footer (status spinner + bordered input box + hint) and the
+ *  scroll region above it. I/O is injected (write sink + size getter) so layout is testable
+ *  without a TTY. Mutators re-render immediately; tick() advances the spinner. */
+export class Screen {
+  #write: (s: string) => void;
+  #size: SizeFn;
+  #frames: string[];
+  #now: () => number;
+
+  #text = "";
+  #cursor = 0;
+  #hint = "";
+  #label: string | null = null;
+  #frame = 0;
+  #startedAt = 0;
+  #height = 0;          // current footer height (for region-change detection)
+
+  constructor(write: (s: string) => void, size: SizeFn, opts: { frames?: string[]; now?: () => number } = {}) {
+    this.#write = write;
+    this.#size = size;
+    this.#frames = opts.frames ?? SPINNER_FRAMES;
+    this.#now = opts.now ?? (() => Date.now());
+  }
+
+  setHint(hint: string) { this.#hint = hint; this.#render(); }
+  setInput(text: string, cursor: number) { this.#text = text; this.#cursor = cursor; this.#render(); }
+
+  setStatus(label: string | null) {
+    if (label === null) { this.#label = null; this.#render(); return; }
+    if (this.#label === null) { this.#frame = 0; this.#startedAt = this.#now(); }
+    this.#label = label; this.#render();
+  }
+  tick() { if (this.#label === null) return; this.#frame = (this.#frame + 1) % this.#frames.length; this.#render(); }
+
+  /** Commit a scrollback line into the scrolling region above the footer. */
+  print(line: string) {
+    const { rows, cols } = this.#size();
+    const L = this.#layout(rows, cols);
+    for (const seg of line.split("\n")) {
+      // Park at the region's last row and newline so the region scrolls up by one.
+      this.#write(`\x1b[${L.regionBottom};1H\x1b[2K${seg}\n`);
+    }
+    this.#render();   // repaint footer + reposition cursor
+  }
+
+  resize() { this.#render(); }
+
+  restore() {
+    const { rows } = this.#size();
+    this.#write("\x1b[r");                 // reset scroll region
+    this.#write(`\x1b[${rows};1H`);        // park at the bottom
+    this.#write("\x1b[?2004l");            // bracketed paste off
+    this.#write("\x1b[?25h\n");            // show cursor + newline
+  }
+
+  #composeStatus(): string | null {
+    if (this.#label === null) return null;
+    const secs = Math.floor((this.#now() - this.#startedAt) / 1000);
+    return `${this.#frames[this.#frame]} ${this.#label} (${secs}s)`;
+  }
+
+  #layout(rows: number, cols: number): FooterLayout {
+    return layoutFooter({ status: this.#composeStatus(), text: this.#text, cursor: this.#cursor, hint: this.#hint, cols, rows });
+  }
+
+  #render() {
+    const { rows, cols } = this.#size();
+    const L = this.#layout(rows, cols);
+    let buf = "\x1b[?25l";                                  // hide cursor during repaint
+    if (L.height !== this.#height) {
+      buf += `\x1b[1;${L.regionBottom}r`;                   // (re)set scroll region
+      // Clear the whole footer band so a shrunk footer leaves no stragglers.
+      for (let r = L.regionBottom + 1; r <= rows; r++) buf += `\x1b[${r};1H\x1b[2K`;
+      this.#height = L.height;
+    }
+    L.lines.forEach((ln, i) => { buf += `\x1b[${L.regionBottom + 1 + i};1H\x1b[2K${ln}`; });
+    buf += `\x1b[${L.cursorRow};${L.cursorCol}H\x1b[?25h`;  // park + show cursor
+    this.#write(buf);
+  }
 }
