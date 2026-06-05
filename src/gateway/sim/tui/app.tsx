@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/react */
 import { useState } from "react";
-import { useKeyboard } from "@opentui/react";
+import { useKeyboard, useRenderer } from "@opentui/react";
 import type { ReplController } from "../repl";
 import { replCommandNames } from "../repl";
 import { LAYERS, ROLE_NAMES } from "../roles";
@@ -36,8 +36,25 @@ export function App({ repl, hint, helpLines }: AppProps) {
   const { messages, status, echo } = useRepl(repl);
   const [value, setValue] = useState("");
   const [overlay, setOverlay] = useState<Overlay>({ kind: "none" });
+  const [exitArmed, setExitArmed] = useState(false); // Ctrl-C pressed once on an empty line
+  const renderer = useRenderer();
 
   useKeyboard((e) => {
+    // Ctrl-C — shell/claude-code style: close an overlay, else clear a typed line, else (empty)
+    // warn once and exit on a second press. exitOnCtrlC is off so we own this.
+    if (e.ctrl && e.name === "c") {
+      if (overlay.kind !== "none") { setOverlay({ kind: "none" }); return; }
+      if (value.length > 0) { setValue(""); setExitArmed(false); return; }
+      if (!exitArmed) { setExitArmed(true); echo("(press Ctrl-C again to exit)"); return; }
+      renderer.destroy();
+      return;
+    }
+    // Ctrl-D on an empty line quits outright (matches the hint).
+    if (e.ctrl && e.name === "d" && overlay.kind === "none" && value.length === 0) {
+      renderer.destroy();
+      return;
+    }
+    if (exitArmed) setExitArmed(false); // any other key disarms the exit prompt
     if (e.name === "escape") {
       if (overlay.kind !== "none") setOverlay({ kind: "none" });
       else repl.abort();
