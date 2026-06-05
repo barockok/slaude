@@ -132,7 +132,10 @@ export function App({ repl, hint, helpLines }: AppProps) {
       ) : (
         // Top+bottom rules frame the input area; the hint rides on the bottom rule as its title
         // (bottomTitle) so it shares that row instead of colliding with a separate text line.
+        // flexShrink={0} is essential: without it, height pressure from the banner + scrollback
+        // collapses the input row and the cursor falls onto the bottom rule (overlap).
         <box
+          flexShrink={0}
           border={["top", "bottom"]}
           flexDirection="column"
           bottomTitle={hint}
