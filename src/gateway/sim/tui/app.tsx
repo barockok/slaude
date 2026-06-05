@@ -100,21 +100,24 @@ export function App({ repl, hint, helpLines }: AppProps) {
           }}
         />
       ) : (
-        <box flexDirection="column">
-          {/* Top+bottom rules frame the input area so it's clearly distinct from the timeline. */}
-          <box border={["top", "bottom"]} flexDirection="column">
-            <input
-              focused
-              value={value}
-              onInput={setValue}
-              // InputProps.onSubmit is typed as the intersection of the core (SubmitEvent) and the
-              // React (value:string) signatures — not satisfiable by one signature, so cast. The
-              // runtime fires it with the entered string (API-NOTES); we route that string.
-              onSubmit={onSubmit}
-              placeholder=""
-            />
-          </box>
-          <text fg="#888888">{hint}</text>
+        // Top+bottom rules frame the input area; the hint rides on the bottom rule as its title
+        // (bottomTitle) so it shares that row instead of colliding with a separate text line.
+        <box
+          border={["top", "bottom"]}
+          flexDirection="column"
+          bottomTitle={hint}
+          bottomTitleAlignment="left"
+        >
+          <input
+            focused
+            value={value}
+            onInput={setValue}
+            // InputProps.onSubmit is typed as the intersection of the core (SubmitEvent) and the
+            // React (value:string) signatures — not satisfiable by one signature, so cast. The
+            // runtime fires it with the entered string (API-NOTES); we route that string.
+            onSubmit={onSubmit}
+            placeholder=""
+          />
         </box>
       )}
     </box>
