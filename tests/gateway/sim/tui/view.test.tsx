@@ -6,6 +6,7 @@ import type { ReplController } from "../../../../src/gateway/sim/repl";
 import { App } from "../../../../src/gateway/sim/tui/app";
 import { Help } from "../../../../src/gateway/sim/tui/help";
 import { Picker } from "../../../../src/gateway/sim/tui/picker";
+import { banner } from "../../../../src/gateway/sim/tui/banner";
 
 /** Minimal stand-in for ReplController exposing only what App touches. Captures the onOutput /
  *  onStatus callbacks so the test can drive scrollback + status, and records handle() calls. */
@@ -98,6 +99,16 @@ test("typing a line and pressing Enter routes through to repl.handle (mockInput)
 // NOTE: the Ctrl-C arm/clear/exit flow can't be unit-tested — driving Ctrl-C through the test
 // harness (mockInput.pressCtrlC / pressKey "c"+ctrl) segfaults OpenTUI's native lib under Bun.
 // The handler logic in app.tsx is small + typechecked; verified by manual TTY smoke.
+
+test("the logo banner renders its half-block glyphs to the frame", async () => {
+  const t = await testRender(<box><text content={banner} /></box>, { width: 60, height: 14 });
+  try {
+    const frame = await t.waitForFrame((f) => f.includes("▀") || f.includes("▄"), { maxPasses: 40 });
+    expect(frame.includes("▀") || frame.includes("▄")).toBe(true);
+  } finally {
+    t.renderer.destroy();
+  }
+}, 15000);
 
 test("the picker renders the layer options", async () => {
   const t = await testRender(
