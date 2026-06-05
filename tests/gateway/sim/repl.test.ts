@@ -6,6 +6,14 @@ let r: ReplController | undefined;
 afterEach(async () => { await r?.dispose(); r = undefined; });
 
 describe("REPL controller", () => {
+  it("buffers output emitted before a sink attaches, then replays on onOutput", async () => {
+    r = new ReplController();
+    await r.startDefault();          // emits the intro line before any onOutput sink
+    const out: string[] = [];
+    r.onOutput((l) => out.push(l));  // attach late — the OpenTUI view subscribes after start
+    expect(out.join("\n")).toContain("WORLD soul");   // the buffered intro replayed
+  });
+
   it("starts a default WORLD session and composes layer/role into state", async () => {
     r = new ReplController();
     const out: string[] = [];

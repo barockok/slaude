@@ -20,13 +20,13 @@ export async function mountTui(repl: ReplController, opts: MountOpts): Promise<v
 
   // Dispose the controller exactly once, whichever teardown path fires first. `exitOnCtrlC`
   // may call process.exit before DESTROY resolves the await below, so register a synchronous
-  // `exit` fallback too — otherwise session cleanup could be skipped on Ctrl-C.
+  // `exit` fallback too (it can't await — best-effort, runs up to the first await of dispose).
   let disposed = false;
-  const dispose = () => { if (!disposed) { disposed = true; void repl.dispose(); } };
-  process.once("exit", dispose);
+  process.once("exit", () => { if (!disposed) { disposed = true; void repl.dispose().catch(() => {}); } });
 
   await new Promise<void>((resolve) => {
     renderer.once(CliRenderEvents.DESTROY, () => resolve());
   });
-  dispose();
+  // Normal teardown path can await full async cleanup (session stop, fixture SOUL.md removal).
+  if (!disposed) { disposed = true; await repl.dispose().catch(() => {}); }
 }
