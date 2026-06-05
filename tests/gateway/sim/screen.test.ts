@@ -20,12 +20,19 @@ test("box width tracks cols (responsive)", () => {
   expect(L.lines[1]!.length).toBe(20);
 });
 
-test("status line present adds a row above the box and shifts cursor", () => {
+test("status line slots in above the box; box stays bottom-pinned", () => {
   const a = layoutFooter({ ...base, status: null, text: "x", cursor: 1 });
   const b = layoutFooter({ ...base, status: "⠋ Thinking… (2s)", text: "x", cursor: 1 });
-  expect(b.height).toBe(a.height + 1);
-  expect(b.lines[0]).toContain("Thinking");
-  expect(b.cursorRow).toBe(a.cursorRow + 1);
+  expect(b.height).toBe(a.height + 1);              // taller footer
+  expect(b.lines[0]).toContain("Thinking");         // status is the topmost footer row
+  expect(b.regionBottom).toBe(a.regionBottom - 1);  // borrows one row from the scroll region
+  expect(b.cursorRow).toBe(a.cursorRow);            // …but the box (and cursor) don't move
+});
+
+test("footer never renders below the last terminal row", () => {
+  // Bottom-anchored: regionBottom + height === rows, so lines[height-1] lands exactly on `rows`.
+  const b = layoutFooter({ ...base, status: "⠋ Thinking… (2s)", text: "x", cursor: 1 });
+  expect(b.regionBottom + b.height).toBe(24);
 });
 
 test("cursor maps to the right row/col on the first line", () => {

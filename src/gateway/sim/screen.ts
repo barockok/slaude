@@ -59,14 +59,13 @@ export function layoutFooter(m: FooterModel): FooterLayout {
 
   const lines = [...(m.status ? [clip(m.status, cols)] : []), top, ...content, bottom, hint];
   const height = lines.length;
-  // regionBottom is the scroll-region boundary, anchored to the core footer
-  // (box + hint) regardless of whether a status line is present.  The status
-  // line is drawn at regionBottom so the box position is stable.
-  const coreHeight = boxRows + 2 + 1;     // borders (2) + hint (1), no status
-  const regionBottom = Math.max(1, m.rows - coreHeight);
+  // The footer is bottom-anchored: it occupies the last `height` rows, so the box stays
+  // pinned to the bottom and the status line (when present) slots in *above* the box —
+  // the cursor's absolute row is unchanged by toggling status. Scrollback scrolls in 1..regionBottom.
+  const regionBottom = Math.max(1, m.rows - height);
 
-  // Absolute cursor position.
-  // boxTopRow = regionBottom + 1 (status occupies regionBottom when present).
+  // Absolute cursor position. Footer rows run regionBottom+1 .. rows; status (if any) is the
+  // first of those, so the box top sits one row lower when status is shown.
   const boxTopRow = regionBottom + 1 + (m.status ? 1 : 0);
   const cursorRow = boxTopRow + 1 + (cLine - start);
   const prefixLen = cLine === 0 ? PROMPT.length : 2;
