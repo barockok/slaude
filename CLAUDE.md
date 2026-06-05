@@ -93,6 +93,7 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 Entries live in `docs/findings/<date>-<slug>.md`. Add a new file per significant finding/decision/mistake; index it below. Newest first.
 
+- [2026-06-05 — Pinned bordered input box (sim REPL)](docs/findings/2026-06-05-pinned-input-box.md)
 - [2026-06-04 — Sim REPL: claude-code-grade UX (live status, gate box, group activity)](docs/findings/2026-06-04-repl-claude-code-ux.md)
 - [2026-06-03 — Surface abstraction (agent interaction decoupled from Slack)](docs/findings/2026-06-03-surface-abstraction.md)
 - [2026-06-03 — Interactive sim against the live agent (--real)](docs/findings/2026-06-03-sim-interactive-real-agent.md)
