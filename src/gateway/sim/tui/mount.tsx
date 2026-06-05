@@ -13,7 +13,8 @@ export interface MountOpts {
  *  (Ctrl-C / Ctrl-D — exitOnCtrlC tears the renderer down and emits CliRenderEvents.DESTROY).
  *  CliRenderer extends EventEmitter, so we listen for that event and then dispose the controller. */
 export async function mountTui(repl: ReplController, opts: MountOpts): Promise<void> {
-  const renderer = await createCliRenderer({ exitOnCtrlC: true });
+  // exitOnCtrlC off — App owns Ctrl-C (clear line / warn / second-press exit via renderer.destroy).
+  const renderer = await createCliRenderer({ exitOnCtrlC: false });
   createRoot(renderer).render(
     <App repl={repl} hint={opts.hint} helpLines={opts.helpLines} />,
   );

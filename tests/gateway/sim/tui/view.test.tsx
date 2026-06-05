@@ -95,6 +95,10 @@ test("typing a line and pressing Enter routes through to repl.handle (mockInput)
   }
 }, 15000);
 
+// NOTE: the Ctrl-C arm/clear/exit flow can't be unit-tested — driving Ctrl-C through the test
+// harness (mockInput.pressCtrlC / pressKey "c"+ctrl) segfaults OpenTUI's native lib under Bun.
+// The handler logic in app.tsx is small + typechecked; verified by manual TTY smoke.
+
 test("the picker renders the layer options", async () => {
   const t = await testRender(
     <Picker which="layer" onPick={() => {}} onCancel={() => {}} />,
