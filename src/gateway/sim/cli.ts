@@ -154,18 +154,28 @@ if (isRun) {
   stdin.resume();
   process.stdout.write("\x1b[?2004h");   // enable bracketed paste
 
+  const onResize = () => screen.resize();
+  let cleanedUp = false;
   const cleanup = () => {
+    if (cleanedUp) return;        // idempotent: may run via quit() AND the exit hook
+    cleanedUp = true;
     clearInterval(spin);
+    process.stdout.off("resize", onResize);
     process.stdout.write("\x1b[?2004l");
     screen.restore();
     stdin.setRawMode?.(false);
   };
   const quit = async () => { cleanup(); await r.dispose(); process.exit(0); };
+  // Safety net: any exit (incl. an uncaught crash) restores the terminal so the user is never
+  // left in raw mode with a stuck scroll region. `process.on("exit")` must be synchronous —
+  // cleanup() only does sync writes + setRawMode, which is fine here.
+  process.on("exit", cleanup);
 
-  process.stdout.on("resize", () => screen.resize());
+  process.stdout.on("resize", onResize);
 
   // Turn execution: a running turn owns the keyboard for mid-turn abort (Esc / Ctrl-C).
   let busy = false;
+  let modal = false;          // a picker owns the keyboard — main handler stands down
   let sigintPending = false;
 
   const runTurn = async (input: string) => {
@@ -180,6 +190,7 @@ if (isRun) {
   // Bare `/layer` / `/as` open a picker (claude-code-style), drawn through screen.print.
   const pickFrom = (title: string, items: { label: string; hint?: string }[]): Promise<number | null> =>
     new Promise((resolve) => {
+      modal = true;             // gate the main handler while the picker owns keys
       let cursor = 0;
       const draw = () => screen.print(renderMenu(title, items, cursor).join("\n"));
       draw();
@@ -188,6 +199,7 @@ if (isRun) {
         cursor = res.cursor;
         if (!res.done) { draw(); return; }
         stdin.off("data", onKey);
+        modal = false;
         resolve(res.done === "select" ? cursor : null);
       };
       stdin.on("data", onKey);
@@ -209,13 +221,15 @@ if (isRun) {
   };
 
   stdin.on("data", (buf: Buffer) => {
-    if (busy) return;                                   // abort handler owns keys mid-turn
+    if (busy || modal) return;                          // a turn or picker owns the keyboard
     for (const k of decodeKeys(buf.toString())) {
       const a = editor.handle(k);
       if (a.type === "render" || a.type === "none") { sigintPending = false; paint(); }
-      else if (a.type === "submit") { sigintPending = false; paint(); void submit(a.text); }
+      // submit/eof hand control to an async path; stop draining this chunk so trailing keys
+      // aren't processed before `busy`/`modal` latch (e.g. a paste burst ending in Enter).
+      else if (a.type === "submit") { sigintPending = false; paint(); void submit(a.text); break; }
       else if (a.type === "complete") { const c = complete(a.line); if (c) editor.applyCompletion(c); paint(); }
-      else if (a.type === "eof") { void quit(); }
+      else if (a.type === "eof") { void quit(); break; }
       else if (a.type === "sigint") {
         const { action, pending } = sigintAction(sigintPending, editor.view().text.length);
         sigintPending = pending;
