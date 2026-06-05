@@ -102,163 +102,127 @@ if (isRun) {
   process.exit(failures ? 1 : 0);
 } else {
   const { ReplController, replCommandNames } = await import("./repl");
-  const { LiveTerminal } = await import("./term");
-  const { completeLine } = await import("./complete");
+  const { Screen } = await import("./screen");
+  const { decodeKeys } = await import("./keys");
+  const { LineEditor } = await import("./editor");
+  const { completeLine, completeArg } = await import("./complete");
   const { sigintAction } = await import("./interrupt");
-  const r = new ReplController(agentMode, soulMd);
-
-  // The live terminal owns a bottom-pinned status line (spinner + activity) and lets
-  // committed lines scroll above it — the claude-code feel. A ~120ms interval advances the
-  // spinner; tick() is a no-op whenever no status is active (e.g. while awaiting input), so
-  // it never clobbers what the user is typing.
-  const term = new LiveTerminal((s) => process.stdout.write(s));
-  r.onOutput((l) => term.print(l));
-  r.onStatus((l) => term.status(l));
-  const spin = setInterval(() => term.tick(), 120);
-
-  const mode = agentMode === "real" ? "live agent" : "stub";
-  const tail = `a/d/A (or 1/2/3) answers gates · /help · Ctrl-D quits.${verbose ? "" : "  (--verbose for infra logs)"}`;
-  term.print(`\x1b[1m✻ slaude sim\x1b[0m  \x1b[2m${mode}\x1b[0m`);
-  if (shared) {
-    await r.startShared();
-    term.print(`\x1b[2mshared config (real ~/.slaude, state under sim/) — ${tail}\x1b[0m`);
-  } else {
-    await r.startDefault();
-    term.print(`\x1b[2m${soulPath ? `soul=${soulPath} · ` : ""}fixture — compose with /layer · /as · /behavior, then chat. ${tail}\x1b[0m`);
-  }
-
-  // node:readline gives real line editing — arrow keys move the cursor, ↑/↓ recall history,
-  // Home/End/Ctrl-A/E, backspace — which the bare `for await (console)` line reader lacks.
-  // Turn-based flow keeps it simple: we pause readline while a turn runs so its input echo
-  // never fights the live spinner, then re-prompt. Type-ahead is buffered by the TTY.
-  const { createInterface } = await import("node:readline");
   const { LAYERS, ROLE_NAMES } = await import("./roles");
   const { BEHAVIORS } = await import("./stub-agent");
-  const { completeArg } = await import("./complete");
-  // Tab-completion: command head from the single command source, plus first-argument values
-  // for the commands that have a fixed choice set (layers, roles, behaviors).
+  const { renderMenu, decodeKey, menuReduce } = await import("./menu");
+
+  const r = new ReplController(agentMode, soulMd);
+  const screen = new Screen((s) => process.stdout.write(s), () => ({
+    rows: process.stdout.rows ?? 24,
+    cols: process.stdout.columns ?? 80,
+  }));
+  const editor = new LineEditor();
+  const paint = () => { const v = editor.view(); screen.setInput(v.text, v.cursor); };
+
+  r.onOutput((l) => screen.print(l));
+  r.onStatus((l) => screen.setStatus(l));
+  const spin = setInterval(() => screen.tick(), 120);
+
+  // Tab-completion sources.
   const cmdNames = replCommandNames();
   const argMap: Record<string, string[]> = {
     "/layer": LAYERS.map((l) => l.name),
     "/as": [...ROLE_NAMES],
     "/behavior": Object.keys(BEHAVIORS),
   };
-  const completer = (line: string): [string[], string] => {
+  const complete = (line: string): string | null => {
     const hits = line.includes(" ") ? completeArg(line, argMap) : completeLine(line, cmdNames);
-    return [hits, line];
-  };
-  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true, prompt: "\x1b[2m›\x1b[0m ", completer });
-  const PROMPT = "\x1b[2m›\x1b[0m ", CONT = "\x1b[2m…\x1b[0m ";
-  const showPrompt = () => { process.stdout.write("\n"); rl.setPrompt(PROMPT); rl.prompt(); };
-
-  // Mid-turn interrupt: while a turn runs we put stdin in raw mode and treat Esc / Ctrl-C as
-  // "abort this turn" (claude-code's Esc). Returns a disarm fn that restores cooked mode.
-  const armAbort = (): (() => void) => {
-    const stdin = process.stdin;
-    if (!stdin.isTTY) return () => {};
-    const wasRaw = stdin.isRaw ?? false;     // readline keeps raw on in terminal mode — restore it,
-    stdin.setRawMode?.(true); stdin.resume(); // don't force cooked, or Tab/arrows die after this turn
-    const onData = (b: Buffer) => { const s = b.toString(); if (s === "\x1b" || s === "\x03") r.abort(); };
-    stdin.on("data", onData);
-    return () => { stdin.off("data", onData); stdin.setRawMode?.(wasRaw); };
-  };
-  const runHandle = async (input: string) => {
-    const disarm = armAbort();
-    try { await r.handle(input); } finally { disarm(); }
+    return hits.length === 1 ? hits[0]! : null;   // single hit → apply; ambiguous → leave as-is
   };
 
-  // claude-code-style picker (like /mcp, /plugin): a bottom panel you arrow through. Bare
-  // `/layer`, `/as` on a TTY open one; the pure render/decode/reduce live in
-  // menu.ts, this is just the raw-mode stdin loop. Returns the chosen index, or null on Esc.
-  const { renderMenu, decodeKey, menuReduce } = await import("./menu");
-  const pickFrom = (title: string, items: { label: string; hint?: string }[]): Promise<number | null> => {
-    const stdin = process.stdin;
-    let cursor = 0, count = 0;
-    const draw = (first: boolean) => {
-      const lines = renderMenu(title, items, cursor);
-      if (!first) process.stdout.write(`\x1b[${count}A`);                 // move up to panel top
-      process.stdout.write("\r" + lines.map((l) => `\x1b[2K${l}`).join("\n"));
-      count = lines.length - 1;
-    };
-    process.stdout.write("\n");
-    draw(true);
-    const wasRaw = stdin.isRaw ?? false;     // restore readline's prior raw mode (don't force cooked)
-    stdin.setRawMode?.(true);
-    stdin.resume();
-    return new Promise<number | null>((resolve) => {
-      const onData = (buf: Buffer) => {
-        const res = menuReduce(cursor, items.length, decodeKey(buf.toString()));
+  // Intro.
+  const modeLabel = agentMode === "real" ? "live agent" : "stub";
+  const tail = `a/d/A (or 1/2/3) answers gates · /help · Ctrl-D quits.${verbose ? "" : "  (--verbose for infra logs)"}`;
+  screen.setHint(tail);
+  screen.print(`\x1b[1m✻ slaude sim\x1b[0m  \x1b[2m${modeLabel}\x1b[0m`);
+  if (shared) {
+    await r.startShared();
+    screen.print(`\x1b[2mshared config (real ~/.slaude, state under sim/)\x1b[0m`);
+  } else {
+    await r.startDefault();
+    screen.print(`\x1b[2m${soulPath ? `soul=${soulPath} · ` : ""}fixture — /layer · /as · /behavior, then chat.\x1b[0m`);
+  }
+  paint();
+
+  const stdin = process.stdin;
+  stdin.setRawMode?.(true);
+  stdin.resume();
+  process.stdout.write("\x1b[?2004h");   // enable bracketed paste
+
+  const cleanup = () => {
+    clearInterval(spin);
+    process.stdout.write("\x1b[?2004l");
+    screen.restore();
+    stdin.setRawMode?.(false);
+  };
+  const quit = async () => { cleanup(); await r.dispose(); process.exit(0); };
+
+  process.stdout.on("resize", () => screen.resize());
+
+  // Turn execution: a running turn owns the keyboard for mid-turn abort (Esc / Ctrl-C).
+  let busy = false;
+  let sigintPending = false;
+
+  const runTurn = async (input: string) => {
+    busy = true;
+    const onAbortKey = (b: Buffer) => { const s = b.toString(); if (s === "\x1b" || s === "\x03") r.abort(); };
+    stdin.on("data", onAbortKey);
+    try { await r.handle(input); }
+    catch (e) { screen.print(`! ${(e as Error).message}`); }
+    finally { stdin.off("data", onAbortKey); busy = false; paint(); }
+  };
+
+  // Bare `/layer` / `/as` open a picker (claude-code-style), drawn through screen.print.
+  const pickFrom = (title: string, items: { label: string; hint?: string }[]): Promise<number | null> =>
+    new Promise((resolve) => {
+      let cursor = 0;
+      const draw = () => screen.print(renderMenu(title, items, cursor).join("\n"));
+      draw();
+      const onKey = (b: Buffer) => {
+        const res = menuReduce(cursor, items.length, decodeKey(b.toString()));
         cursor = res.cursor;
-        if (!res.done) { draw(false); return; }
-        stdin.off("data", onData);
-        stdin.setRawMode?.(wasRaw);
-        process.stdout.write(`\x1b[${count}A\r\x1b[0J`);                  // erase the panel
+        if (!res.done) { draw(); return; }
+        stdin.off("data", onKey);
         resolve(res.done === "select" ? cursor : null);
       };
-      stdin.on("data", onData);
+      stdin.on("data", onKey);
     });
-  };
-  const isTTY = () => !!process.stdin.isTTY;
-  const pickLayer = () => pickFrom("Pick a channel layer:", LAYERS.map((l) => ({ label: l.name, hint: l.desc })));
-  const pickRole = () => pickFrom("Act as which role:", ROLE_NAMES.map((rname) => ({ label: rname })));
 
-  // Multi-line input two ways:
-  //  - explicit: a trailing backslash continues onto a `…` line.
-  //  - paste: a multi-line paste arrives as several `line` events back-to-back (Bun's readline
-  //    strips the bracketed-paste markers but doesn't coalesce). We debounce: lines landing
-  //    within BURST_MS of each other are joined into one message. A human can't press Enter
-  //    twice that fast, so typed lines submit individually; a paste burst becomes one message.
-  const BURST_MS = 8;
-  let buffer = "";
-  let sigintPending = false;
-  let burst: string[] = [];
-  let flushTimer: ReturnType<typeof setTimeout> | undefined;
-  let chain: Promise<void> = Promise.resolve();
-
-  const submit = (full: string) => {
-    chain = chain.then(async () => {
-      rl.pause();
-      const t = full.trim();
-      try {
-        if (t === "/layer" && isTTY()) {
-          const pick = await pickLayer();
-          if (pick !== null) { const cmd = `/layer ${LAYERS[pick]!.name}`; term.print(`${PROMPT}${cmd}`); await runHandle(cmd); }
-        } else if (t === "/as" && isTTY()) {
-          const pick = await pickRole();
-          if (pick !== null) { const cmd = `/as ${ROLE_NAMES[pick]}`; term.print(`${PROMPT}${cmd}`); await runHandle(cmd); }
-        } else if (t) {
-          await runHandle(full);
-        }
-      } catch (e) { term.print(`! ${(e as Error).message}`); }
-      rl.resume();
-      showPrompt();
-    });
+  const submit = async (full: string) => {
+    const t = full.trim();
+    if (t === "/layer") {
+      const pick = await pickFrom("Pick a channel layer:", LAYERS.map((l) => ({ label: l.name, hint: l.desc })));
+      if (pick !== null) await runTurn(`/layer ${LAYERS[pick]!.name}`);
+      else paint();
+    } else if (t === "/as") {
+      const pick = await pickFrom("Act as which role:", ROLE_NAMES.map((n) => ({ label: n })));
+      if (pick !== null) await runTurn(`/as ${ROLE_NAMES[pick]}`);
+      else paint();
+    } else if (t) {
+      await runTurn(full);
+    } else { paint(); }
   };
 
-  rl.on("line", (line) => {
-    sigintPending = false;          // any submitted line disarms the Ctrl-C-again-to-exit prompt
-    if (line.endsWith("\\")) { buffer += line.slice(0, -1) + "\n"; rl.setPrompt(CONT); rl.prompt(); return; }
-    burst.push(line);
-    if (flushTimer) clearTimeout(flushTimer);
-    flushTimer = setTimeout(() => {
-      const full = buffer + burst.join("\n");
-      buffer = ""; burst = []; flushTimer = undefined;
-      submit(full);
-    }, BURST_MS);
+  stdin.on("data", (buf: Buffer) => {
+    if (busy) return;                                   // abort handler owns keys mid-turn
+    for (const k of decodeKeys(buf.toString())) {
+      const a = editor.handle(k);
+      if (a.type === "render" || a.type === "none") { sigintPending = false; paint(); }
+      else if (a.type === "submit") { sigintPending = false; paint(); void submit(a.text); }
+      else if (a.type === "complete") { const c = complete(a.line); if (c) editor.applyCompletion(c); paint(); }
+      else if (a.type === "eof") { void quit(); }
+      else if (a.type === "sigint") {
+        const { action, pending } = sigintAction(sigintPending, editor.view().text.length);
+        sigintPending = pending;
+        if (action === "clear") { editor.applyCompletion(""); paint(); }
+        else if (action === "warn") { screen.print("\x1b[2m(press Ctrl-C again to exit)\x1b[0m"); paint(); }
+        else void quit();
+      }
+    }
   });
-  // Ctrl-C at the prompt: clear the typed line, or (empty line) warn then exit on a second
-  // press — shell/claude-code style. Mid-turn Ctrl-C is caught in raw mode by armAbort instead.
-  rl.on("SIGINT", () => {
-    const { action, pending } = sigintAction(sigintPending, rl.line.length);
-    sigintPending = pending;
-    if (action === "clear") { (rl as any).line = ""; (rl as any).cursor = 0; process.stdout.write("\r\x1b[2K"); rl.prompt(); }
-    else if (action === "warn") { process.stdout.write("\n\x1b[2m(press Ctrl-C again to exit)\x1b[0m\n"); rl.prompt(); }
-    else rl.close();
-  });
-  rl.on("close", async () => {                // Ctrl-D / EOF
-    clearInterval(spin);
-    await r.dispose();
-    process.exit(0);
-  });
-  showPrompt();
 }
