@@ -81,8 +81,11 @@ export function App({ repl, hint, helpLines }: AppProps) {
         {messages.map((m, i) => (
           <text key={i}>{m}</text>
         ))}
+        {/* The live status (spinner/"Thinking…") sits as the last timeline entry, below the
+            last message; when the agent replies, onStatus(null) clears it and the reply is
+            already appended in its place. */}
+        {status ? <text key="status" fg="#888888">{status}</text> : null}
       </scrollbox>
-      {status ? <text>{status}</text> : null}
       {overlay.kind === "help" ? (
         <Help lines={helpLines} />
       ) : overlay.kind === "picker" ? (
@@ -98,17 +101,20 @@ export function App({ repl, hint, helpLines }: AppProps) {
         />
       ) : (
         <box flexDirection="column">
-          <input
-            focused
-            value={value}
-            onInput={setValue}
-            // InputProps.onSubmit is typed as the intersection of the core (SubmitEvent) and the
-            // React (value:string) signatures — not satisfiable by one signature, so cast. The
-            // runtime fires it with the entered string (API-NOTES); we route that string.
-            onSubmit={onSubmit}
-            placeholder=""
-          />
-          <text>{hint}</text>
+          {/* Top+bottom rules frame the input area so it's clearly distinct from the timeline. */}
+          <box border={["top", "bottom"]} flexDirection="column">
+            <input
+              focused
+              value={value}
+              onInput={setValue}
+              // InputProps.onSubmit is typed as the intersection of the core (SubmitEvent) and the
+              // React (value:string) signatures — not satisfiable by one signature, so cast. The
+              // runtime fires it with the entered string (API-NOTES); we route that string.
+              onSubmit={onSubmit}
+              placeholder=""
+            />
+          </box>
+          <text fg="#888888">{hint}</text>
         </box>
       )}
     </box>
