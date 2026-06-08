@@ -40,6 +40,8 @@ export type SlackContext = {
   threadTs: string;
   /** ts of the latest inbound user message in this thread. */
   inboundTs: string;
+  /** When "channel", `reply` posts at channel root (omits thread_ts). Default: thread. */
+  postTarget?: "thread" | "channel";
   /** Slack user id of the current turn's author. */
   userId?: string;
   /** Slack team id of the current workspace. */
@@ -63,7 +65,7 @@ export const slackHandlers = {
     try {
       const r = await ctx.client.chat.postMessage({
         channel: ctx.channel,
-        thread_ts: ctx.threadTs,
+        thread_ts: ctx.postTarget === "channel" ? undefined : ctx.threadTs,
         text: format(text),
         mrkdwn: true,
       });
