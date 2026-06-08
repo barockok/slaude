@@ -86,6 +86,22 @@ describe("cron-jobs DB", () => {
     CronJobs.create({ channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now() });
     expect(CronJobs.findByPrefix("zzzzzzzz")).toBeNull();
   });
+
+  test("defaults target to thread", () => {
+    const job = CronJobs.create({
+      channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now(),
+    });
+    expect(job.target).toBe("thread");
+  });
+
+  test("persists channel target", () => {
+    const job = CronJobs.create({
+      channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now(),
+      target: "channel",
+    });
+    expect(job.target).toBe("channel");
+    expect(CronJobs.findById(job.id)!.target).toBe("channel");
+  });
 });
 
 describe("CronScheduler", () => {
