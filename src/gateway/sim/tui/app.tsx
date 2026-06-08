@@ -12,10 +12,17 @@ import { useRepl } from "./use-repl";
 import { Help } from "./help";
 import { Picker } from "./picker";
 
+export interface HeaderInfo {
+  name: string;
+  version: string;
+  meta: string[];
+}
+
 export interface AppProps {
   repl: ReplController;
   hint: string;
   helpLines: string[];
+  header: HeaderInfo;
 }
 
 type Overlay =
@@ -37,7 +44,7 @@ const THEME_PURPLE = "#a878d6"; // logo purple, brightened for readability on th
 
 /** Root view. Lays out a scrollback of REPL output, an optional live status line, and an input
  *  row — or, when an overlay is active, the help sheet / picker in place of the input. */
-export function App({ repl, hint, helpLines }: AppProps) {
+export function App({ repl, hint, helpLines, header }: AppProps) {
   const { messages, status, echo } = useRepl(repl);
   const [value, setValue] = useState("");
   const [overlay, setOverlay] = useState<Overlay>({ kind: "none" });
@@ -107,19 +114,20 @@ export function App({ repl, hint, helpLines }: AppProps) {
 
   return (
     <box flexDirection="column" height="100%">
-      {/* Top banner: Amartha logo on the left, "A-Claw" wordmark beside it in the logo's
-          purple→blue theme. Row is left-aligned; children vertically centered. */}
-      <box flexShrink={0} flexDirection="row" alignItems="center" gap={3}>
-        {/* flexShrink={0} so neither is squeezed in the row — the wide logo would otherwise wrap
-            to ~2× its height. On a narrow terminal the wordmark clips rather than wrapping. */}
-        <box flexShrink={0}>
-          <text content={banner} />
-        </box>
-        <box flexShrink={0}>
-          <ascii-font text="A-Claw" font="slick" color={["#7e3f97", "#0087ba"]} />
-        </box>
-      </box>
       <scrollbox flexGrow={1} stickyScroll stickyStart="bottom">
+        {/* Header lives INSIDE the scroll body (scrolls away as the conversation grows): the
+            Amartha logo + a plain-text wordmark with name · version · sim meta. */}
+        <box flexDirection="row" alignItems="center" gap={2}>
+          <box flexShrink={0}>
+            <text content={banner} />
+          </box>
+          <box flexShrink={0} flexDirection="column">
+            <text fg={THEME_PURPLE}><b>{header.name}</b>{`  v${header.version}`}</text>
+            {header.meta.map((m, i) => (
+              <text key={i} fg="#888888">{m}</text>
+            ))}
+          </box>
+        </box>
         {messages.map((m, i) => (
           <text key={i}>{m}</text>
         ))}
