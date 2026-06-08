@@ -63,7 +63,7 @@ export const SoulDataSchema = z.object({
   approvers: z.array(ApproverEntrySchema).default([]),
   /** Reply-redaction patterns. Each entry is a JS regex (no flags — applied
    *  as global+case-insensitive). Matched substrings replaced with `[REDACTED]`
-   *  in `mcp__slaude_slack__reply` / `edit` / upload `initial_comment` after
+   *  in `mcp__slaude_surface__reply` / `edit` / upload `initial_comment` after
    *  markdown→mrkdwn conversion. Defense against accidentally leaking
    *  secrets / PII patterns into Slack. */
   redactPatterns: z.array(z.string()).default([]),

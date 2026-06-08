@@ -1,17 +1,97 @@
-// Force an isolated $SLAUDE_HOME BEFORE importing anything that reads config/home,
-// so the sim never touches the operator's real ~/.slaude.
+// Sim entrypoint. Three shapes:
+//   bun run sim              → SHARED: boot like `bun run start` (real $SLAUDE_HOME config,
+//                              real SOUL.md + gates, real agent) but bind an in-memory
+//                              transport. State (db + workspaces) is redirected under
+//                              $SLAUDE_HOME/sim/ so prod is never mutated. --stub for offline.
+//   bun run sim --fixture    → isolated WORLD-soul REPL (temp $SLAUDE_HOME); compose with
+//                              /layer · /as · /behavior.
+//   bun run sim run [glob]   → transcripts/CI: isolated temp home + fixtures + stub.
 import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
-process.env.SLAUDE_HOME = mkdtempSync(join(tmpdir(), "slaude-sim-"));
-process.env.SLAUDE_HEALTH_PORT = "0";
+
+const rawArgs = process.argv.slice(2);
+const verbose = rawArgs.includes("--verbose") || rawArgs.includes("-v");
+const wantStub = rawArgs.includes("--stub");
+const wantReal = rawArgs.includes("--real");
+const fixtureRepl = rawArgs.includes("--fixture");
+
+// --soul <path>: in fixture/run, drive the agent persona from a real SOUL.md. Ignored in
+// shared mode (which uses the operator's real SOUL.md and must never overwrite it).
+let soulPath: string | undefined;
+const soulIdx = rawArgs.indexOf("--soul");
+if (soulIdx !== -1) soulPath = rawArgs[soulIdx + 1];
+const consumed = new Set(soulPath ? ["--soul", soulPath] : []);
+const positional = rawArgs.filter((a) => !a.startsWith("--") && a !== "-v" && !consumed.has(a));
+const mode = positional[0];
+const args = positional.slice(1);
+
+const isRun = mode === "run";
+const isolated = isRun || fixtureRepl;   // isolated temp home + fixtures
+const shared = !isolated;
+
+// Agent default: isolated paths stay deterministic (stub unless --real); shared mode mirrors
+// `start` with the real agent (unless --stub).
+const agentMode: "stub" | "real" = isolated ? (wantReal ? "real" : "stub") : (wantStub ? "stub" : "real");
+
+// Home + state strategy — MUST run before importing config/home (it reads these at load).
+if (isolated) {
+  process.env.SLAUDE_HOME = mkdtempSync(join(tmpdir(), "slaude-sim-"));
+  process.env.SLAUDE_HEALTH_PORT = "0";
+} else {
+  // Share the real $SLAUDE_HOME config; redirect mutable state under $SLAUDE_HOME/sim/.
+  const home = process.env.SLAUDE_HOME || join(homedir(), ".slaude");
+  process.env.SLAUDE_DB_PATH ??= join(home, "sim", "db.sqlite");
+  process.env.SLAUDE_WORKSPACES ??= join(home, "sim", "workspaces");
+  process.env.SLAUDE_HEALTH_PORT ??= "0";
+}
 
 const { ensureHome } = await import("../../config/home");
 ensureHome();
 
-const [, , mode, ...args] = process.argv;
+// config/env auto-loads $SLAUDE_HOME/.env at import. For a real agent also pull the project
+// ./.env as a dev fallback (no override of already-set vars).
+if (agentMode === "real") {
+  const { loadDotenv, env } = await import("../../config/env");
+  loadDotenv(join(process.cwd(), ".env"));
+  // Preflight: a real turn needs a provider credential. Warn early + actionably (the SDK
+  // would otherwise just 401 mid-turn). The classifier import is cheap and side-effect-free.
+  const { missingCredsWarning } = await import("./preflight");
+  const warn = missingCredsWarning({
+    apiKey: env.provider.apiKey(),
+    authToken: env.provider.authToken(),
+    oauthToken: env.provider.oauthToken(),
+  });
+  if (warn) console.error(warn);
+}
 
-if (mode === "run") {
+// Custom persona file — only meaningful for isolated (fixture/run) modes.
+let soulMd: string | undefined;
+if (soulPath && isolated) {
+  const { readFileSync } = await import("node:fs");
+  const { resolve } = await import("node:path");
+  soulMd = readFileSync(resolve(process.cwd(), soulPath), "utf8");
+}
+
+// The interactive REPL is an OpenTUI app that owns the whole screen — ANY stray console/stderr
+// write corrupts the managed render and overlaps the input (e.g. the agent SDK's "[claude-cli] …"
+// stderr passthrough). So in the interactive path, drop all infra logging entirely; the REPL
+// surfaces agent output through onOutput → scrollback, not console. `--verbose` keeps logs (which
+// will visibly corrupt the TUI — that's the debugging tradeoff). `isRun` (CI) keeps its ✓/✗ output.
+if (!verbose && !isRun) {
+  const orig = { log: console.log, error: console.error, warn: console.warn, errWrite: process.stderr.write };
+  console.log = () => {};
+  console.error = () => {};
+  console.warn = () => {};
+  process.stderr.write = (() => true) as typeof process.stderr.write;
+  // Restore on exit so a final uncaught error can still print after the TUI tears down.
+  process.once("exit", () => {
+    console.log = orig.log; console.error = orig.error; console.warn = orig.warn;
+    process.stderr.write = orig.errWrite;
+  });
+}
+
+if (isRun) {
   const { parseTranscript, runTranscript } = await import("./transcript");
   const { readFileSync } = await import("node:fs");
   const { Glob } = await import("bun");
@@ -21,7 +101,7 @@ if (mode === "run") {
   for (const pat of patterns) {
     for await (const file of new Glob(pat).scan(".")) {
       ran++;
-      try { await runTranscript(parseTranscript(readFileSync(file, "utf8"))); console.log(`✓ ${file}`); }
+      try { await runTranscript(parseTranscript(readFileSync(file, "utf8")), agentMode, soulMd); console.log(`✓ ${file}`); }
       catch (e) { failures++; console.error(`✗ ${file}\n  ${(e as Error).message}`); }
     }
   }
@@ -29,13 +109,34 @@ if (mode === "run") {
   process.exit(failures ? 1 : 0);
 } else {
   const { ReplController } = await import("./repl");
-  const r = new ReplController();
-  r.onOutput((l) => console.log(l));
-  await r.handle("/scenarios");
-  console.log("\nPick a scenario: /scenario <n>. Then type a message. /cards, /click <n> <verb>, /state, Ctrl-D to quit.\n");
-  for await (const line of (console as any)) {
-    if (!line.trim()) continue;
-    try { await r.handle(line); } catch (e) { console.error((e as Error).message); }
-  }
-  await r.dispose();
+  const { mountTui } = await import("./tui/mount");
+  const r = new ReplController(agentMode, soulMd);
+
+  const modeLabel = agentMode === "real" ? "live agent" : "stub";
+  const tail = `${modeLabel} · a/d/A (or pick) answers gates · /help · Ctrl-D quits.${verbose ? "" : "  (--verbose for infra logs)"}`;
+
+  // Header meta (shown once at the top of the scroll body, scrolls away with the conversation).
+  const { readFileSync: readPkg } = await import("node:fs");
+  let version = "?";
+  try { version = JSON.parse(readPkg(new URL("../../../package.json", import.meta.url), "utf8")).version; } catch {}
+  const model = process.env.SLAUDE_MODEL;
+  const header = {
+    name: "A-Claw",
+    version,
+    meta: [
+      `${modeLabel} agent · ${shared ? "shared config — real ~/.slaude (state under sim/)" : "fixture — WORLD soul"}`,
+      ...(soulPath ? [`soul: ${soulPath}`] : []),
+      ...(model ? [`model: ${model}`] : []),
+    ],
+  };
+
+  // startShared/startDefault run before the app subscribes (onOutput is registered in a mount
+  // effect). ReplController buffers output until then, so the intro line + any "no manager"
+  // warning replay into the scrollbox once useRepl attaches its sink.
+  if (shared) await r.startShared();
+  else await r.startDefault();
+
+  // mountTui owns the screen until the user exits (Ctrl-C/Ctrl-D); it disposes the controller.
+  await mountTui(r, { hint: tail, helpLines: r.helpLines(), header });
+  process.exit(0);
 }

@@ -7,7 +7,11 @@
   "author": "Zidni Mubarok <zidmubarock@gmail.com>",
   "license": "UNLICENSED",
   "main": "src/server.ts",
+  "bin": {
+    "slaude": "bin/slaude.ts"
+  },
   "scripts": {
+    "link": "chmod +x bin/slaude.ts && ln -sf \"$PWD/bin/slaude.ts\" \"$HOME/.bun/bin/slaude\" && echo linked: $HOME/.bun/bin/slaude",
     "dev": "bun --watch src/server.ts",
     "start": "bun src/server.ts",
     "sim": "bun src/gateway/sim/cli.ts",
@@ -20,11 +24,15 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/react": "^19",
     "typescript": "^5"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.0",
+    "@opentui/core": "^0.3.2",
+    "@opentui/react": "^0.3.2",
     "@slack/bolt": "^4.1.0",
+    "react": "^19.2.7",
     "yaml": "^2.6.0",
     "zod": "^3.23.8"
   }

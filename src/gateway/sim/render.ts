@@ -1,0 +1,103 @@
+import type { AgentEvent } from "../../agent/manager";
+import type { OutboundCard } from "./transport";
+
+/** Pure string formatters for the claude-code-style sim REPL. No I/O, no state — given an
+ *  event/card/text, return the line(s) to show. term.ts owns where they land on screen. */
+
+// claude-code-ish pulsing spinner frames.
+export const SPINNER_FRAMES = ["·", "✢", "✳", "∗", "✻", "✽"];
+
+export function shortTool(tool: string): string {
+  const i = tool.lastIndexOf("__");
+  return i >= 0 ? tool.slice(i + 2) : tool;
+}
+
+export function isReplyTool(tool: string): boolean {
+  return tool.endsWith("__reply") || tool === "reply";
+}
+
+function summarizeInput(input: unknown): string {
+  const o = (input ?? {}) as Record<string, any>;
+  const pick = o.command ?? o.file_path ?? o.path ?? o.pattern ?? o.query ?? o.url ?? o.prompt ?? o.text;
+  const s = pick !== undefined ? String(pick) : JSON.stringify(o);
+  return s.length > 80 ? s.slice(0, 77) + "…" : s;
+}
+
+/** `⏺ Bash(ls -la)` — tool call with a one-glance arg summary. */
+export function toolLine(tool: string, input: unknown): string {
+  return `⏺ ${shortTool(tool)}(${summarizeInput(input)})`;
+}
+
+/** `  ⎿ first line…  (1.2s)` — the tool result, indented under its call, first line only,
+ *  with an optional per-tool elapsed suffix. */
+export function resultLine(result: unknown, elapsedMs?: number): string {
+  const took = elapsedMs !== undefined ? `  \x1b[2m(${(elapsedMs / 1000).toFixed(1)}s)\x1b[0m` : "";
+  let s = typeof result === "string" ? result : JSON.stringify(result);
+  if (!s) return `  ⎿ (empty)${took}`;
+  s = s.split("\n")[0]!.trim();
+  if (!s) return `  ⎿ (empty)${took}`;
+  return `  ⎿ ${s.length > 100 ? s.slice(0, 97) + "…" : s}${took}`;
+}
+
+/** `⏺ <reply text>` — assistant reply, claude-code bullet. */
+export function replyLine(text: string): string {
+  return `⏺ ${text.trim()}`;
+}
+
+export function errorLine(err: string): string {
+  return `⚠ ${err}`;
+}
+
+/** Dim extended-thinking text, claude-code-style. Whitespace collapsed to one flowing line. */
+export function thinkingLine(text: string): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  return `\x1b[2m✻ ${t}\x1b[0m`;
+}
+
+const k = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k` : `${n}`);
+
+/** A dim end-of-turn usage line: `1.2k in · 340 out · 8% ctx`. */
+export function usageLine(s: { inputTokens: number; outputTokens: number; pctUsed: number }): string {
+  const pct = Math.round((s.pctUsed ?? 0) * 100);
+  return `\x1b[2m  ${k(s.inputTokens)} in · ${k(s.outputTokens)} out · ${pct}% ctx\x1b[0m`;
+}
+
+/** Fuller `/budget` view: context-window usage + a token breakdown. */
+export function budgetView(s: {
+  inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number;
+  totalInput: number; contextWindow: number; pctUsed: number; remaining: number;
+}): string {
+  const pct = Math.round((s.pctUsed ?? 0) * 100);
+  return [
+    `context: ${k(s.totalInput)} / ${k(s.contextWindow)} (${pct}%) · ${k(s.remaining)} left`,
+    `tokens:  ${k(s.inputTokens)} in · ${k(s.outputTokens)} out · cache ${k(s.cacheReadInputTokens)}r/${k(s.cacheCreationInputTokens)}w`,
+  ].join("\n");
+}
+
+/** Live status label for the bottom spinner region, or null when an event needs no label. */
+export function statusLabel(e: AgentEvent): string | null {
+  switch (e.type) {
+    case "thinking": return "Thinking…";
+    case "assistantText": return "Writing…";
+    case "toolCall": return isReplyTool(e.tool) ? "Writing…" : `${shortTool(e.tool)}…`;
+    default: return null;   // toolResult / done / error
+  }
+}
+
+/** A bordered, numbered approval/permission box — claude-code-style gate prompt. */
+export function gateBox(card: OutboundCard): string {
+  const verbs = card.actionIds.map((a) => a.split(":")[1]).filter(Boolean) as string[];
+  const title = card.kind === "approval" ? "Approval needed" : "Permission needed";
+  // Permission cards name the tool in backticks; approval cards carry a plan/ask in their
+  // text — strip Slack emoji + the redundant "Approval needed:" prefix to get the subject.
+  const subject = card.text?.match(/`([^`]+)`/)?.[1]
+    ?? card.text?.replace(/:[a-z_]+:/g, "").replace(/^\s*\**(approval|permission)\s+needed:?\**\s*/i, "").trim();
+  const tool = subject && subject.length ? subject : (card.kind === "approval" ? "this action" : "tool");
+  const keyFor = (v: string) => (/always/.test(v) ? "A" : /allow|approve|yes/.test(v) ? "a" : /deny|reject|no/.test(v) ? "d" : v[0] ?? "?");
+  const opts = verbs.map((v, i) => `   ${i + 1}. ${v}  (${keyFor(v)})`);
+  const head = `${title}: ${shortTool(tool)}`;
+  const width = Math.max(head.length, ...opts.map((o) => o.length)) + 2;
+  const bar = "─".repeat(width);
+  const pad = (s: string) => `│ ${s}${" ".repeat(Math.max(0, width - s.length - 1))}│`;
+  return [`╭${bar}╮`, pad(head), pad(""), ...opts.map(pad), `╰${bar}╯`].join("\n");
+}

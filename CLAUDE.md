@@ -93,6 +93,11 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 Entries live in `docs/findings/<date>-<slug>.md`. Add a new file per significant finding/decision/mistake; index it below. Newest first.
 
+- [2026-06-05 — Sim REPL on OpenTUI (React) — supersedes the raw-mode TUI below](docs/findings/2026-06-05-sim-tui-opentui.md)
+- [2026-06-05 — Pinned bordered input box (sim REPL) — superseded by OpenTUI](docs/findings/2026-06-05-pinned-input-box.md)
+- [2026-06-04 — Sim REPL: claude-code-grade UX (live status, gate box, group activity)](docs/findings/2026-06-04-repl-claude-code-ux.md)
+- [2026-06-03 — Surface abstraction (agent interaction decoupled from Slack)](docs/findings/2026-06-03-surface-abstraction.md)
+- [2026-06-03 — Interactive sim against the live agent (--real)](docs/findings/2026-06-03-sim-interactive-real-agent.md)
 - [2026-05-29 — /1on1 mode (per-thread engagement lock)](docs/findings/2026-05-29-one-on-one-mode.md)
 - [2026-05-29 — Simulation gateway (Slack-free verification)](docs/findings/2026-05-29-simulation-gateway.md)
 - [2026-05-29 — Contextual per-user MCP connections](docs/findings/2026-05-29-contextual-mcp-connections.md)
