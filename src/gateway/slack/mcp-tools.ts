@@ -337,13 +337,13 @@ export function parseDuration(raw: string): { ok: true; minutes: number; permane
 
 /** Cron / ingest handlers — exposed as MCP tools so the agent can manage
  *  scheduled work and knowledge base directly. */
-const adminHandlers = {
+export const adminHandlers = {
   async listCronJobs(): Promise<ToolResult> {
     const jobs = CronJobs.listActive();
     if (!jobs.length) return ok("No active cron jobs.");
     const lines = jobs.map(
       (j) =>
-        `• \`${j.id.slice(0, 8)}\` \`${j.cronExpr}\` → ${j.prompt} (next: ${new Date(j.nextRunAt).toISOString()})`,
+        `• \`${j.id.slice(0, 8)}\` \`${j.cronExpr}\` [${j.target}] → ${j.prompt} (next: ${new Date(j.nextRunAt).toISOString()})`,
     );
     return ok("*Active cron jobs*\n" + lines.join("\n"));
   },

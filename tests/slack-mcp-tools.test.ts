@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { slackHandlers, type SlackContext } from "../src/gateway/slack/mcp-tools";
+import { slackHandlers, adminHandlers, type SlackContext } from "../src/gateway/slack/mcp-tools";
+import * as CronJobs from "../src/db/cron-jobs";
+import { db } from "../src/db/schema";
 
 function fakeCtx(impl: {
   postMessage?: () => any;
@@ -347,5 +349,18 @@ describe("slackHandlers", () => {
     } as unknown as SlackContext;
     await slackHandlers.reply(ctx, { text: "hi" });
     expect(captured.thread_ts).toBe("123.456");
+  });
+});
+
+describe("listCronJobs target tag", () => {
+  test("renders [channel] tag", async () => {
+    db.run("DELETE FROM cron_jobs");
+    CronJobs.create({
+      channelId: "C1", createdBy: "U1", cronExpr: "0 9 * * *",
+      prompt: "digest", nextRunAt: Date.now(), target: "channel",
+    });
+    const res = await adminHandlers.listCronJobs();
+    expect(res.content[0]!.text).toContain("[channel]");
+    db.run("DELETE FROM cron_jobs");
   });
 });
