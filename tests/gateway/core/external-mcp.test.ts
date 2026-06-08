@@ -11,13 +11,14 @@ describe("clearCredentials", () => {
   });
 
   it("empties headers + strips url userinfo/query on an http server, preserving host/path", () => {
-    const cfg = { type: "http", url: "https://user:pass@api.example.com/mcp?token=x", headers: { Authorization: "Bearer s" } };
+    const cfg = { type: "http", url: "https://user:pass@api.example.com/mcp?token=x#access_token=abc", headers: { Authorization: "Bearer s" } };
     const out = clearCredentials(cfg as any) as any;
     expect(out.headers).toEqual({});
     const u = new URL(out.url);
     expect(u.username).toBe("");
     expect(u.password).toBe("");
     expect(u.search).toBe("");
+    expect(u.hash).toBe("");
     expect(u.host).toBe("api.example.com");
     expect(u.pathname).toBe("/mcp");
   });

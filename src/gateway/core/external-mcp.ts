@@ -17,6 +17,7 @@ export function clearCredentials(cfg: McpServerConfig): McpServerConfig {
       u.username = "";
       u.password = "";
       u.search = "";
+      u.hash = "";
       c.url = u.toString();
     } catch {
       // Non-absolute URL: leave as-is (can't carry userinfo/query meaningfully).
