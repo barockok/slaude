@@ -32,7 +32,7 @@ function makeFake() {
 
 test("output lines render into the scrollback", async () => {
   const f = makeFake();
-  const t = await testRender(<App repl={f.repl} hint="hint" helpLines={[]} />, { width: 80, height: 24 });
+  const t = await testRender(<App repl={f.repl} hint="hint" helpLines={[]} header={{ name: "A-Claw", version: "0.0.0", meta: [] }} />, { width: 80, height: 24 });
   try {
     f.pushOutput("agent says hi");
     const frame = await t.waitForFrame((fr) => fr.includes("agent says hi"), { maxPasses: 40 });
@@ -44,7 +44,7 @@ test("output lines render into the scrollback", async () => {
 
 test("a status label renders below the scrollback", async () => {
   const f = makeFake();
-  const t = await testRender(<App repl={f.repl} hint="hint" helpLines={[]} />, { width: 80, height: 24 });
+  const t = await testRender(<App repl={f.repl} hint="hint" helpLines={[]} header={{ name: "A-Claw", version: "0.0.0", meta: [] }} />, { width: 80, height: 24 });
   try {
     f.pushStatus("Thinking…");
     const frame = await t.waitForFrame((fr) => fr.includes("Thinking"), { maxPasses: 40 });
@@ -56,10 +56,26 @@ test("a status label renders below the scrollback", async () => {
 
 test("the hint shows in the default (no-overlay) frame", async () => {
   const f = makeFake();
-  const t = await testRender(<App repl={f.repl} hint="enter to send" helpLines={[]} />, { width: 80, height: 24 });
+  const t = await testRender(<App repl={f.repl} hint="enter to send" helpLines={[]} header={{ name: "A-Claw", version: "0.0.0", meta: [] }} />, { width: 80, height: 24 });
   try {
     const frame = await t.waitForFrame((fr) => fr.includes("enter to send"), { maxPasses: 40 });
     expect(frame).toContain("enter to send");
+  } finally {
+    t.renderer.destroy();
+  }
+}, 15000);
+
+test("the header shows name, version and meta in the scroll body", async () => {
+  const f = makeFake();
+  const t = await testRender(
+    <App repl={f.repl} hint="hint" helpLines={[]} header={{ name: "A-Claw", version: "9.9.9", meta: ["stub agent · fixture"] }} />,
+    { width: 80, height: 24 },
+  );
+  try {
+    const frame = await t.waitForFrame((fr) => fr.includes("A-Claw") && fr.includes("v9.9.9"), { maxPasses: 40 });
+    expect(frame).toContain("A-Claw");
+    expect(frame).toContain("v9.9.9");
+    expect(frame).toContain("stub agent · fixture");
   } finally {
     t.renderer.destroy();
   }
@@ -79,7 +95,7 @@ test("the help overlay shows its lines and the close hint", async () => {
 
 test("typing a line and pressing Enter routes through to repl.handle (mockInput)", async () => {
   const f = makeFake();
-  const t = await testRender(<App repl={f.repl} hint="hint" helpLines={[]} />, { width: 80, height: 24 });
+  const t = await testRender(<App repl={f.repl} hint="hint" helpLines={[]} header={{ name: "A-Claw", version: "0.0.0", meta: [] }} />, { width: 80, height: 24 });
   try {
     await new Promise((r) => setTimeout(r, 100)); // let the input focus + mount settle
     await act(async () => {
