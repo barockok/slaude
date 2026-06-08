@@ -28,10 +28,8 @@ import { buildApprovalRequester } from "../slack/connect-wiring";
 import { resolveUserName } from "../slack/users";
 import { downloadAttachments, type SlackFile } from "../slack/attachments";
 import * as Sessions from "../../db/sessions";
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { paths } from "../../config/home";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
+import { loadExternalMcp, privateOverrides } from "./external-mcp";
 import { canTriggerIngest } from "../slack/ingest-auth";
 import * as kbIngest from "../../knowledge/ingest";
 import * as Ignores from "../../db/ignores";
@@ -48,38 +46,6 @@ export interface GatewayHandle {
   /** TEST/SIM SEAM ONLY. Live per-session MCP contexts built by the resolver.
    *  Undefined until the session's resolver has run. Production never calls this. */
   __sessionCtx(sessionId: string): SessionMcpCtx | undefined;
-}
-
-function loadExternalMcp(): Record<string, McpServerConfig> {
-  const f = join(paths.home, ".mcp.json");
-  if (!existsSync(f)) return {};
-  const expand = (s: string) =>
-    s.replace(/\$\{([A-Z0-9_]+)\}/g, (_, name) => process.env[name] ?? "");
-  try {
-    const parsed = JSON.parse(readFileSync(f, "utf8"));
-    const servers = parsed?.mcpServers ?? {};
-    // Expand ${VAR} placeholders from process.env across stdio + http/sse fields.
-    for (const cfg of Object.values<any>(servers)) {
-      if (cfg?.env && typeof cfg.env === "object") {
-        for (const [k, v] of Object.entries<any>(cfg.env)) {
-          if (typeof v === "string") cfg.env[k] = expand(v);
-        }
-      }
-      if (cfg?.headers && typeof cfg.headers === "object") {
-        for (const [k, v] of Object.entries<any>(cfg.headers)) {
-          if (typeof v === "string") cfg.headers[k] = expand(v);
-        }
-      }
-      if (typeof cfg?.url === "string") cfg.url = expand(cfg.url);
-      if (Array.isArray(cfg?.args)) {
-        cfg.args = cfg.args.map((a: unknown) => (typeof a === "string" ? expand(a) : a));
-      }
-    }
-    return servers;
-  } catch (err) {
-    console.error(`[mcp] failed to load ${f}:`, err);
-    return {};
-  }
 }
 
 const REACT_RECEIVED = "eyes";
@@ -212,8 +178,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // External MCPs are configured via ~/.claude/mcp.json or .mcp.json in the
   // working dir — claude-code picks them up natively and merges them.
   const externalMcp = loadExternalMcp();
-  if (Object.keys(externalMcp).length) {
-    console.log(`[mcp] loaded external servers: ${Object.keys(externalMcp).join(", ")}`);
+  const privateServiceSet = new Set(externalMcp.privateServices);
+  if (Object.keys(externalMcp.servers).length) {
+    console.log(`[mcp] loaded external servers: ${Object.keys(externalMcp.servers).join(", ")}`);
+  }
+  if (externalMcp.privateServices.length) {
+    console.log(`[mcp] private (1on1-scoped) services: ${externalMcp.privateServices.join(", ")}`);
   }
   // Stop-hook enforcement: if a turn ends without any user-visible Slack tool
   // (reply / edit / upload), block the stop once with an instruction that
@@ -237,8 +207,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         getSnapshot: () => agent.getTokenSnapshot(sessionId),
       }),
       [KB_MCP_NAME]: createKbMcp(),
-      ...externalMcp,
+      ...externalMcp.servers,
     };
+    // 1on1 privacy: when this thread is locked, whitelisted external services mount
+    // with the agent's credentials stripped so they run as the initiator (self-prompt
+    // auth). Other sessions/threads keep the agent identity (source map untouched).
+    const oneOnOneLock = OneOnOne.find(route.ctx.channel, route.ctx.threadTs);
+    Object.assign(servers, privateOverrides(externalMcp.servers, privateServiceSet, !!oneOnOneLock));
     // Mount the per-user connections broker when enabled and the thread is
     // fully keyed (team + channel + thread). Caller identity is bound in-band
     // via on_behalf_of (B1) — the agent must pass route.ctx.userId.
