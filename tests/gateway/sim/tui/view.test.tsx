@@ -42,6 +42,20 @@ test("output lines render into the scrollback", async () => {
   }
 }, 15000);
 
+test("agent bullet + subtle result lines render their full text", async () => {
+  const f = makeFake();
+  const t = await testRender(<App repl={f.repl} hint="hint" helpLines={[]} header={{ name: "A-Claw", version: "0.0.0", meta: [] }} />, { width: 80, height: 24 });
+  try {
+    f.pushOutput("⏺ agent reply here");          // ⏺ rendered as a purple span + rest
+    f.pushOutput("  ⎿ {\"ok\":true}");            // subtle JSON result
+    const frame = await t.waitForFrame((fr) => fr.includes("agent reply here") && fr.includes("ok"), { maxPasses: 40 });
+    expect(frame).toContain("⏺ agent reply here"); // span split doesn't drop the dot or text
+    expect(frame).toContain("{\"ok\":true}");
+  } finally {
+    t.renderer.destroy();
+  }
+}, 15000);
+
 test("a status label renders below the scrollback", async () => {
   const f = makeFake();
   const t = await testRender(<App repl={f.repl} hint="hint" helpLines={[]} header={{ name: "A-Claw", version: "0.0.0", meta: [] }} />, { width: 80, height: 24 });
