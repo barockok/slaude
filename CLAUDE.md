@@ -93,6 +93,7 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 Entries live in `docs/findings/<date>-<slug>.md`. Add a new file per significant finding/decision/mistake; index it below. Newest first.
 
+- [2026-06-08 — Private services in /1on1 (run as the initiator)](docs/findings/2026-06-08-private-services-1on1.md)
 - [2026-06-05 — Sim REPL on OpenTUI (React) — supersedes the raw-mode TUI below](docs/findings/2026-06-05-sim-tui-opentui.md)
 - [2026-06-05 — Pinned bordered input box (sim REPL) — superseded by OpenTUI](docs/findings/2026-06-05-pinned-input-box.md)
 - [2026-06-04 — Sim REPL: claude-code-grade UX (live status, gate box, group activity)](docs/findings/2026-06-04-repl-claude-code-ux.md)
