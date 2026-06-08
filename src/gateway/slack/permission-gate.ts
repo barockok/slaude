@@ -136,8 +136,14 @@ export class PermissionGate {
     if (this.#autoAllow.has(toolName)) {
       return { behavior: "allow", updatedInput: input };
     }
-    // Slack MCP tools are the agent's *only* path to user output — never gate.
-    if (toolName.startsWith("mcp__slaude_slack__")) {
+    // Surface (interaction) + runtime (control-plane) + the legacy slack namespace are
+    // the agent's path to user output / housekeeping — never gate. Surface reply/edit/
+    // upload especially MUST stay un-gated or every message would prompt for approval.
+    if (
+      toolName.startsWith("mcp__slaude_surface__") ||
+      toolName.startsWith("mcp__slaude_runtime__") ||
+      toolName.startsWith("mcp__slaude_slack__")
+    ) {
       return { behavior: "allow", updatedInput: input };
     }
     // Skill introspection is read-only — auto-allow so evolution checks

@@ -1,4 +1,5 @@
-preset: manager-dm
+layer: dm
+as: manager
 steps:
   - send: { text: '/cron-add "not-a-cron" "test prompt"' }
   - expect_reply: { contains: "invalid cron expression" }

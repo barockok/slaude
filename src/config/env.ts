@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { paths } from "./home";
 
-// Load ~/.slaude/.env if present (does not override existing process.env)
-function loadDotenv(path: string) {
+// Load a .env file if present (does not override existing process.env)
+export function loadDotenv(path: string) {
   if (!existsSync(path)) return;
   const raw = readFileSync(path, "utf8");
   for (const line of raw.split("\n")) {

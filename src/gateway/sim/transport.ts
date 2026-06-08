@@ -36,6 +36,14 @@ export class SimTransport implements Transport {
   #users: Record<string, string>;
   #botUserId: string;
   #seq = 0;
+  #cardCbs: Array<(c: OutboundCard) => void> = [];
+
+  /** Subscribe to every outbound card as it is pushed (live render / gate detection).
+   *  Returns an unsubscribe fn. */
+  onCard(cb: (c: OutboundCard) => void): () => void {
+    this.#cardCbs.push(cb);
+    return () => { this.#cardCbs = this.#cardCbs.filter((f) => f !== cb); };
+  }
 
   constructor(opts: { users?: Record<string, string>; botUserId?: string } = {}) {
     this.#users = opts.users ?? {};
@@ -44,6 +52,7 @@ export class SimTransport implements Transport {
       const actionIds = extractActionIds(blocks);
       const card: OutboundCard = { kind, channel, threadTs, text, blocks, actionIds, resolved: false, raw };
       this.outbound.push(card);
+      for (const cb of this.#cardCbs) cb(card);
       return { ok: true, ts: `${++this.#seq}.0` };
     };
     this.client = {

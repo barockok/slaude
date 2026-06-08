@@ -73,6 +73,24 @@ describe("PermissionGate", () => {
     expect(r.behavior).toBe("allow");
   });
 
+  test("mcp__slaude_surface__* always allowed (agent output path — never gate)", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app);
+    const ac = new AbortController();
+    for (const t of ["mcp__slaude_surface__reply", "mcp__slaude_surface__edit", "mcp__slaude_surface__upload"]) {
+      const r = await gate.resolver("S", t, {}, ctx("T2", ac.signal));
+      expect(r.behavior).toBe("allow");
+    }
+  });
+
+  test("mcp__slaude_runtime__* always allowed", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app);
+    const ac = new AbortController();
+    const r = await gate.resolver("S", "mcp__slaude_runtime__reload_session", {}, ctx("T2", ac.signal));
+    expect(r.behavior).toBe("allow");
+  });
+
   test("no route bound → deny", async () => {
     const f = fakeApp();
     const gate = new PermissionGate(f.app);

@@ -1,13 +1,18 @@
 import { describe, it, expect } from "bun:test";
 import { StubAgent } from "../../../src/gateway/sim/stub-agent";
 import type { SessionMcpCtx } from "../../../src/gateway/core/gateway";
+import { SlackSurface } from "../../../src/gateway/slack/surface";
 
 describe("StubAgent", () => {
-  it("runs the 'reply' behavior, calling the real slack reply handler via ctx", async () => {
+  it("runs the 'reply' behavior, posting through the real Surface (parity path)", async () => {
     const posted: any[] = [];
-    const ctx: SessionMcpCtx = {
-      slack: { client: { chat: { postMessage: async (a: any) => { posted.push(a); return { ts: "1.1" }; } } } as any, channel: "C1", threadTs: "1.0", inboundTs: "1.0", userId: "U1", teamId: "T1" },
-    };
+    const client = { chat: { postMessage: async (a: any) => { posted.push(a); return { ts: "1.1" }; } } } as any;
+    const slack = { client, channel: "C1", threadTs: "1.0", inboundTs: "1.0", userId: "U1", teamId: "T1" } as any;
+    const surface = new SlackSurface(client, {
+      conversationId: "C1", threadRef: "1.0", inboundRef: "1.0", userId: "U1", teamId: "T1",
+      requestApproval: async () => ({ approved: true, by: "U1" }), reloadSession: () => true,
+    });
+    const ctx: SessionMcpCtx = { slack, surface };
     const agent = new StubAgent();
     agent.attachGateway({ start: async () => {}, stop: async () => {}, __sessionCtx: () => ctx });
     agent.setMcpResolver(() => ({}));
