@@ -1,0 +1,7 @@
+layer: dm
+as: manager
+steps:
+  - send: { text: '/cron-add "0 9 * * 1" "weekly digest" channel' }
+  - expect_reply: { contains: "channel root" }
+  - send: { text: "/cron-list" }
+  - expect_reply: { contains: "[channel]" }
