@@ -41,6 +41,28 @@ const ARG_MAP: Record<string, string[]> = {
 // "Jumping beans": three dots bouncing as a phase-shifted wave (baseline . → mid · → high ˙).
 const SPINNER = [".·˙", "·˙·", "˙·.", "·.·"];
 const THEME_PURPLE = "#a878d6"; // logo purple, brightened for readability on the dark bg
+const SUBTLE = "#6a6a6a"; // dim gray for secondary output (tool/JSON results, token stats)
+
+/** Is this a secondary/diagnostic line that should render subtly? Tool results (`  ⎿ …`),
+ *  extended-thinking (`✻ …`), and token/budget stats. */
+function isSubtle(m: string): boolean {
+  return m.startsWith("  ⎿") || m.startsWith("✻ ") || /\bctx$/.test(m) || m.startsWith("context:") || m.startsWith("tokens:");
+}
+
+/** Render one scrollback line with theme styling: purple `⏺` agent bullet, subtle secondary
+ *  lines, and a blank row above each new user turn (`› …`) so turns breathe. */
+function renderLine(m: string, i: number) {
+  const marginTop = i > 0 && m.startsWith("› ") ? 1 : 0;
+  if (m.startsWith("⏺ ")) {
+    return (
+      <text key={i} marginTop={marginTop}>
+        <span fg={THEME_PURPLE}>⏺</span>{m.slice(1)}
+      </text>
+    );
+  }
+  if (isSubtle(m)) return <text key={i} fg={SUBTLE} marginTop={marginTop}>{m}</text>;
+  return <text key={i} marginTop={marginTop}>{m}</text>;
+}
 
 /** Root view. Lays out a scrollback of REPL output, an optional live status line, and an input
  *  row — or, when an overlay is active, the help sheet / picker in place of the input. */
@@ -128,9 +150,7 @@ export function App({ repl, hint, helpLines, header }: AppProps) {
             ))}
           </box>
         </box>
-        {messages.map((m, i) => (
-          <text key={i}>{m}</text>
-        ))}
+        {messages.map(renderLine)}
         {/* The live status (spinner/"Thinking…") sits as the last timeline entry, below the
             last message; when the agent replies, onStatus(null) clears it and the reply is
             already appended in its place. */}
