@@ -57,10 +57,14 @@ export class CronScheduler {
       return;
     }
 
+    // Channel-target jobs broadcast to channel root — never bind a real thread, so
+    // the session key is always the internal cron id (persistent across runs).
+    const threadTs =
+      job.target === "channel" ? `cron:${job.id}` : job.slackThreadTs ?? `cron:${job.id}`;
     const threadKey = {
       team_id: job.slackTeamId,
       channel_id: job.slackChannelId,
-      thread_ts: job.slackThreadTs ?? `cron:${job.id}`,
+      thread_ts: threadTs,
     };
 
     const session = this.#agent.ensureSession(threadKey);
