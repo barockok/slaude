@@ -151,12 +151,35 @@ describe("cron commands", () => {
     expect(parseSlashCommand('/cron-add "expr"')).toBeNull();
   });
 
-  test("/cron-add with quoted args", () => {
+  test("/cron-add with quoted args defaults to thread", () => {
     expect(parseSlashCommand('/cron-add "0 9 * * *" "daily summary"')).toEqual({
       kind: "cron-add",
       cronExpr: "0 9 * * *",
       prompt: "daily summary",
+      target: "thread",
     });
+  });
+
+  test("/cron-add with channel target", () => {
+    expect(parseSlashCommand('/cron-add "0 9 * * *" "digest" channel')).toEqual({
+      kind: "cron-add",
+      cronExpr: "0 9 * * *",
+      prompt: "digest",
+      target: "channel",
+    });
+  });
+
+  test("/cron-add with explicit thread target", () => {
+    expect(parseSlashCommand('/cron-add "0 9 * * *" "digest" thread')).toEqual({
+      kind: "cron-add",
+      cronExpr: "0 9 * * *",
+      prompt: "digest",
+      target: "thread",
+    });
+  });
+
+  test("/cron-add with garbage trailing token → null", () => {
+    expect(parseSlashCommand('/cron-add "0 9 * * *" "digest" bogus')).toBeNull();
   });
 
   test("/cron-remove without id → null", () => {
