@@ -29,5 +29,10 @@ env/headers block (it can't know which key is the secret) — per-key clearing d
 test spies `agent.reload` while driving `/1on1` + `/1on1 off`. No other reload path fires
 during slash-only sends (the agent never runs), so the assertion is exact (`toBe(2)`).
 
+**Test boundary:** the resolver's overlay semantics (a locked thread → cleared mount actually
+replaces the agent-cred mount) is covered by the `privateOverrides` unit test, not an
+end-to-end resolver assertion — the resolver closure doesn't expose its server map. The sim
+test covers only the reload plumbing. Closing that gap would mean a new gateway seam; deferred.
+
 Spec: `docs/superpowers/specs/2026-06-08-private-services-1on1-design.md`.
 Plan: `docs/superpowers/plans/2026-06-08-private-services-1on1.md`.

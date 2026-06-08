@@ -4,9 +4,12 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { paths } from "../../config/home";
 
 /** Return a copy of a server config with all injected secrets removed.
- *  stdio → env emptied; sse/http → headers emptied + url userinfo/query stripped.
+ *  stdio → env emptied; sse/http → headers emptied + url userinfo/query/hash stripped.
  *  command/args and url host/path are preserved so the server still launches/reaches
- *  its endpoint — just anonymous. The input is never mutated. */
+ *  its endpoint — just anonymous. The input is never mutated.
+ *  An `sdk`-type (in-process) config carries no env/headers/url, so it passes through
+ *  unchanged — those servers come from code, never `.mcp.json`, so they can't be
+ *  named in `privateServices` anyway. */
 export function clearCredentials(cfg: McpServerConfig): McpServerConfig {
   const c: any = { ...(cfg as any) };
   if ("env" in c) c.env = {};
