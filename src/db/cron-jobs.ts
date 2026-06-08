@@ -15,6 +15,7 @@ export type CronJob = {
   lastRunAt: number | null;
   lastResult: string | null;
   active: number;
+  target: "thread" | "channel";
 };
 
 export function create(args: {
@@ -27,11 +28,12 @@ export function create(args: {
   cronExpr: string;
   prompt: string;
   nextRunAt: number;
+  target?: "thread" | "channel";
 }): CronJob {
   const id = randomUUID();
   db.run(
-    `INSERT INTO cron_jobs (id, slack_team_id, slack_channel_id, slack_thread_ts, channel_id, thread_ts, created_by, cron_expr, prompt, next_run_at, active)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    `INSERT INTO cron_jobs (id, slack_team_id, slack_channel_id, slack_thread_ts, channel_id, thread_ts, created_by, cron_expr, prompt, next_run_at, target, active)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
     [
       id,
       args.slackTeamId ?? null,
@@ -43,6 +45,7 @@ export function create(args: {
       args.cronExpr,
       args.prompt,
       args.nextRunAt,
+      args.target ?? "thread",
     ],
   );
   return findById(id)!;
@@ -105,5 +108,6 @@ function mapRow(row: any): CronJob {
     lastRunAt: row.last_run_at,
     lastResult: row.last_result,
     active: row.active,
+    target: (row.target ?? "thread") as "thread" | "channel",
   };
 }
