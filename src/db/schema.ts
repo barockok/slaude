@@ -181,6 +181,11 @@ if (hasBackfill) {
   db.run(`UPDATE cron_jobs SET slack_channel_id = channel_id, slack_thread_ts = thread_ts WHERE slack_channel_id IS NULL`);
 }
 
+// Migration: add channel-vs-thread posting target to cron_jobs.
+if (!cronCols.some((c) => c.name === "target")) {
+  db.run(`ALTER TABLE cron_jobs ADD COLUMN target TEXT NOT NULL DEFAULT 'thread'`);
+}
+
 export type SessionRow = {
   id: string;
   created_at: number;
