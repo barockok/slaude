@@ -475,6 +475,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (slash.kind === "one-on-one") {
         if (slash.action === "on") {
           OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId });
+          agent.reload(session.id);   // reboot so the resolver clears private services next turn
           await reply(`:lock: *1on1 mode* — only <@${userId}> and the manager will be heard in this thread. \`/1on1 off\` to release.`);
           return;
         }
@@ -484,6 +485,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           return;
         }
         OneOnOne.unlock(channelId, threadTs);
+        agent.reload(session.id);     // reboot so the resolver restores agent-cred mounts next turn
         await reply(":unlock: 1on1 released — the thread is open again.");
         return;
       }
