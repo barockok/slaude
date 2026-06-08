@@ -33,7 +33,7 @@ export type SlashHit =
   | { kind: "ignore"; target: "thread"; duration: string | null }
   | { kind: "unignore"; target: "user"; userId: string }
   | { kind: "unignore"; target: "thread" }
-  | { kind: "cron-add"; cronExpr: string; prompt: string }
+  | { kind: "cron-add"; cronExpr: string; prompt: string; target: "thread" | "channel" }
   | { kind: "cron-list" }
   | { kind: "cron-remove"; id: string }
   | { kind: "one-on-one"; action: "on" | "off" };
@@ -98,10 +98,11 @@ export function parseSlashCommand(text: string): SlashHit | null {
     return { kind: "unignore", target: "thread" };
   }
   if (cmd === "cron-add") {
-    // Match quoted strings: "expr" "prompt"
-    const quoteMatch = t.match(/^\/cron-add\s+"([^"]+)"\s+"([^"]+)"$/);
+    // Match: "expr" "prompt" [channel|thread]   (target optional, defaults to thread)
+    const quoteMatch = t.match(/^\/cron-add\s+"([^"]+)"\s+"([^"]+)"(?:\s+(channel|thread))?$/);
     if (!quoteMatch) return null;
-    return { kind: "cron-add", cronExpr: quoteMatch[1]!, prompt: quoteMatch[2]! };
+    const target = quoteMatch[3] === "channel" ? "channel" : "thread";
+    return { kind: "cron-add", cronExpr: quoteMatch[1]!, prompt: quoteMatch[2]!, target };
   }
   if (cmd === "cron-list") {
     return { kind: "cron-list" };
