@@ -15,6 +15,8 @@ describe("/1on1 reloads the session so the resolver re-evaluates privacy", () =>
     await s.send({ text: "/1on1" });        // lock
     await s.send({ as: "U0MGR", text: "/1on1 off", thread: "T1" }); // manager releases
 
-    expect(calls.length).toBeGreaterThanOrEqual(2);
+    // Exactly two: one reboot on lock, one on release. No other reload path fires
+    // during these slash-only sends (the agent never runs), so this is precise.
+    expect(calls.length).toBe(2);
   });
 });
