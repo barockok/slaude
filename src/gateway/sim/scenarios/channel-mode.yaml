@@ -1,4 +1,5 @@
-preset: restricted-blocked
+layer: restricted
+as: outsider
 steps:
   - send: { text: "hi" }
   - expect_drop: { reason: whitelist }

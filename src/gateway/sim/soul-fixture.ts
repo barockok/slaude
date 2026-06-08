@@ -11,6 +11,13 @@ export interface SoulFixture {
   allowed: string[];
 }
 
+/** The default sim world: a manager, a backup, one approver, one trusted + one allowed
+ *  channel. Every layer (dm/trusted/allowed/restricted) and role (manager/approver/backup/
+ *  member/outsider) is expressible against it — no per-scenario soul needed. */
+export const WORLD: SoulFixture = {
+  manager: "U0MGR", backup: "U0BACKUP", approvers: ["U0APP"], trusted: ["C0TEAM"], allowed: ["C0PUB"],
+};
+
 /** Write a SOUL.md fixture into $SLAUDE_HOME AND inject the matching structured
  *  SoulData via the production setSoulData() accessor — because the regex
  *  fallback only fills approvers, the sim must populate manager/channels directly.

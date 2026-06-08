@@ -38,6 +38,25 @@ export type SlashHit =
   | { kind: "cron-remove"; id: string }
   | { kind: "one-on-one"; action: "on" | "off" };
 
+/** One descriptor per agent slash command — the single source of truth for every help
+ *  surface (Slack `/help`, the sim REPL `/help`). Add a command here and it shows up
+ *  everywhere; the parser branch below is the only other place to touch. */
+export interface SlashSpec { usage: string; summary: string }
+export const AGENT_COMMANDS: SlashSpec[] = [
+  { usage: "/mode <name>", summary: "set the tool-permission mode (per session/thread)" },
+  { usage: "/abort", summary: "cancel the current turn" },
+  { usage: "/1on1 [off]", summary: "lock this thread to you + the manager; `off` releases" },
+  { usage: "/ignore @user [dur]", summary: "ignore a user (optional duration, e.g. 1h, 30m)" },
+  { usage: "/ignore-thread [dur]", summary: "ignore this thread (optional duration)" },
+  { usage: "/unignore @user", summary: "stop ignoring a user" },
+  { usage: "/unignore-thread", summary: "stop ignoring this thread" },
+  { usage: `/cron-add "<expr>" "<prompt>"`, summary: "schedule a prompt on a cron expression" },
+  { usage: "/cron-list", summary: "list scheduled crons" },
+  { usage: "/cron-remove <id>", summary: "remove a scheduled cron" },
+  { usage: "/ingest", summary: "synthesize raw/ → wiki/ in the writable KB (manager/approver)" },
+  { usage: "/help", summary: "show this help" },
+];
+
 const HELP_NAMES = new Set(["help", "h", "?"]);
 
 export function parseSlashCommand(text: string): SlashHit | null {
@@ -106,15 +125,8 @@ export function helpText(): string {
     .filter((v, i, a) => a.indexOf(v) === i)
     .map((m) => `  • \`/mode ${humanModeName(m)}\` — ${MODE_LABELS[m]}`)
     .join("\n");
-  return [
-    "*slaude commands*",
-    "`/mode <name>` — set tool-permission mode (per session/thread)",
-    modes,
-    "`/abort` — cancel the current turn",
-    "`/help` — this message",
-    "`/ingest` — synthesize raw/ → wiki/ in the writable KB (manager/approver only)",
-    "`/1on1` / `/1on1 off` — lock this thread to you + the manager (others ignored); release",
-  ].join("\n");
+  const cmds = AGENT_COMMANDS.map((c) => `\`${c.usage}\` — ${c.summary}`).join("\n");
+  return ["*slaude commands*", cmds, "", "tool-permission modes:", modes].join("\n");
 }
 
 export function humanModeName(m: PermissionMode): string {

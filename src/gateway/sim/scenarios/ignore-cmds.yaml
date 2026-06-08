@@ -1,4 +1,5 @@
-preset: manager-dm
+layer: dm
+as: manager
 steps:
   - send: { text: "/ignore <@U0BOB>" }
   - expect_reply: { contains: "ignoring" }

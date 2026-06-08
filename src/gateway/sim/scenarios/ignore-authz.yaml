@@ -1,4 +1,5 @@
-preset: member-trusted
+layer: trusted
+as: member
 steps:
   - send: { as: U0ALICE, text: "/ignore <@U0BOB>" }
   - expect_reply: { contains: "only manager or approver" }
