@@ -33,7 +33,8 @@ export interface ExternalMcp {
 
 /** Parse a `.mcp.json`-shaped object: expand ${VAR} placeholders across stdio/http
  *  fields and read the `privateServices` whitelist. Names not present in `mcpServers`
- *  are warned-about and dropped. `env` is injectable for testing. */
+ *  are warned-about and dropped. `env` is injectable for testing. Note: mutates the
+ *  parsed input in place (placeholders are expanded on the server configs). */
 export function parseExternalMcp(
   parsed: any,
   env: Record<string, string | undefined> = process.env,
@@ -58,4 +59,33 @@ export function parseExternalMcp(
     return ok;
   });
   return { servers, privateServices };
+}
+
+/** Per-session overrides: when the thread is /1on1-locked, return cleared copies of
+ *  each whitelisted server so they mount anonymous. Empty when unlocked. Source map
+ *  is never mutated (clearCredentials copies). */
+export function privateOverrides(
+  servers: Record<string, McpServerConfig>,
+  privateServices: ReadonlySet<string>,
+  isLocked: boolean,
+): Record<string, McpServerConfig> {
+  if (!isLocked) return {};
+  const out: Record<string, McpServerConfig> = {};
+  for (const name of privateServices) {
+    const cfg = servers[name];
+    if (cfg) out[name] = clearCredentials(cfg);
+  }
+  return out;
+}
+
+/** Load + parse `~/.slaude/.mcp.json`. Missing file → empty result. */
+export function loadExternalMcp(): ExternalMcp {
+  const f = join(paths.home, ".mcp.json");
+  if (!existsSync(f)) return { servers: {}, privateServices: [] };
+  try {
+    return parseExternalMcp(JSON.parse(readFileSync(f, "utf8")));
+  } catch (err) {
+    console.error(`[mcp] failed to load ${f}:`, err);
+    return { servers: {}, privateServices: [] };
+  }
 }

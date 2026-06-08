@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { clearCredentials } from "../../../src/gateway/core/external-mcp";
 import { parseExternalMcp } from "../../../src/gateway/core/external-mcp";
+import { privateOverrides } from "../../../src/gateway/core/external-mcp";
 
 describe("clearCredentials", () => {
   it("empties env on a stdio server, preserving command + args", () => {
@@ -56,5 +57,33 @@ describe("parseExternalMcp", () => {
     const out = parseExternalMcp({}, {});
     expect(out.servers).toEqual({});
     expect(out.privateServices).toEqual([]);
+  });
+
+  it("expands ${VAR} inside a stdio server's args array", () => {
+    const out = parseExternalMcp({ mcpServers: { a: { command: "x", args: ["--token", "${TOK}"] } } }, { TOK: "t1" });
+    expect((out.servers.a as any).args).toEqual(["--token", "t1"]);
+  });
+});
+
+describe("privateOverrides", () => {
+  const servers = {
+    composio: { type: "http", url: "https://x", headers: { Authorization: "Bearer s" } },
+    jira: { command: "npx", env: { T: "secret" } },
+  } as any;
+
+  it("returns cleared copies of whitelisted servers when locked", () => {
+    const out = privateOverrides(servers, new Set(["composio"]), true) as any;
+    expect(Object.keys(out)).toEqual(["composio"]);
+    expect(out.composio.headers).toEqual({});
+    expect(servers.composio.headers).toEqual({ Authorization: "Bearer s" }); // source untouched
+  });
+
+  it("returns {} when not locked", () => {
+    expect(privateOverrides(servers, new Set(["composio"]), false)).toEqual({});
+  });
+
+  it("ignores whitelist names with no matching server", () => {
+    const out = privateOverrides(servers, new Set(["ghost"]), true);
+    expect(out).toEqual({});
   });
 });
