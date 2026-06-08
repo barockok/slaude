@@ -185,7 +185,7 @@ export function App({ repl, hint, helpLines, header }: AppProps) {
         // directly below the bottom rule. flexShrink={0} keeps the whole block (rules + input +
         // hint) from collapsing under height pressure from the banner/scrollback.
         <box flexShrink={0} flexDirection="column">
-          <box border={["top", "bottom"]} flexDirection="column">
+          <box border={["top", "bottom"]} borderColor="#3a3a3a" flexDirection="column">
             <input
               focused
               value={value}
