@@ -115,6 +115,21 @@ if (isRun) {
   const modeLabel = agentMode === "real" ? "live agent" : "stub";
   const tail = `${modeLabel} · a/d/A (or pick) answers gates · /help · Ctrl-D quits.${verbose ? "" : "  (--verbose for infra logs)"}`;
 
+  // Header meta (shown once at the top of the scroll body, scrolls away with the conversation).
+  const { readFileSync: readPkg } = await import("node:fs");
+  let version = "?";
+  try { version = JSON.parse(readPkg(new URL("../../../package.json", import.meta.url), "utf8")).version; } catch {}
+  const model = process.env.SLAUDE_MODEL;
+  const header = {
+    name: "A-Claw",
+    version,
+    meta: [
+      `${modeLabel} agent · ${shared ? "shared config — real ~/.slaude (state under sim/)" : "fixture — WORLD soul"}`,
+      ...(soulPath ? [`soul: ${soulPath}`] : []),
+      ...(model ? [`model: ${model}`] : []),
+    ],
+  };
+
   // startShared/startDefault run before the app subscribes (onOutput is registered in a mount
   // effect). ReplController buffers output until then, so the intro line + any "no manager"
   // warning replay into the scrollbox once useRepl attaches its sink.
@@ -122,6 +137,6 @@ if (isRun) {
   else await r.startDefault();
 
   // mountTui owns the screen until the user exits (Ctrl-C/Ctrl-D); it disposes the controller.
-  await mountTui(r, { hint: tail, helpLines: r.helpLines() });
+  await mountTui(r, { hint: tail, helpLines: r.helpLines(), header });
   process.exit(0);
 }

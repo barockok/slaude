@@ -2,11 +2,12 @@
 import { createCliRenderer, CliRenderEvents } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import type { ReplController } from "../repl";
-import { App } from "./app";
+import { App, type HeaderInfo } from "./app";
 
 export interface MountOpts {
   hint: string;
   helpLines: string[];
+  header: HeaderInfo;
 }
 
 /** Mount the OpenTUI React view over a ReplController and resolve once the renderer is destroyed
@@ -16,7 +17,7 @@ export async function mountTui(repl: ReplController, opts: MountOpts): Promise<v
   // exitOnCtrlC off — App owns Ctrl-C (clear line / warn / second-press exit via renderer.destroy).
   const renderer = await createCliRenderer({ exitOnCtrlC: false });
   createRoot(renderer).render(
-    <App repl={repl} hint={opts.hint} helpLines={opts.helpLines} />,
+    <App repl={repl} hint={opts.hint} helpLines={opts.helpLines} header={opts.header} />,
   );
 
   // Dispose the controller exactly once, whichever teardown path fires first. `exitOnCtrlC`
