@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach, mock } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach, mock } from "bun:test";
 import { db } from "../src/db/schema";
 import * as CronJobs from "../src/db/cron-jobs";
 import { parseCron, getNextRun } from "../src/gateway/slack/cron-parser";
@@ -105,6 +105,11 @@ describe("cron-jobs DB", () => {
 });
 
 describe("CronScheduler", () => {
+  // Isolate from other test files: a due job left in the shared DB would be picked up
+  // by any later gateway construction and fire a stray cron run. Clean before & after.
+  beforeEach(() => db.run("DELETE FROM cron_jobs"));
+  afterEach(() => db.run("DELETE FROM cron_jobs"));
+
   test("starts and stops without error", () => {
     const scheduler = new CronScheduler({
       agent: { ensureSession: () => ({ id: "test" }), sendMessage: async () => {}, isLive: () => false, on: () => {}, off: () => {} } as any,
