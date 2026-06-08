@@ -157,7 +157,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       routes.set(sessionId, { ctx, surface: surfaceFactory(bindingFor(ctx)), spoke: false });
     },
   });
-  cronScheduler.start();
   agent.setPermissionResolver(permissions.resolver);
 
   // Diag: dump bot identity + granted scopes once at startup.
@@ -175,6 +174,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // Per-session route + slack context. Mutated on each new inbound user message.
   const routes = new Map<string, SessionRoute>();
   const sessionCtx = new Map<string, SessionMcpCtx>();
+  // Start the cron scheduler only after `routes` exists: start() synchronously runs any
+  // due job through onExecute, which registers into `routes`. Starting earlier would hit
+  // a temporal-dead-zone ReferenceError when a cron job is already due at boot.
+  cronScheduler.start();
   // Dedup events by (channel, ts).
   const seenEvents = new Set<string>();
 
