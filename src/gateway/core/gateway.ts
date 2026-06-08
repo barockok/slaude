@@ -145,6 +145,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         inboundTs: String(Date.now()), // synthetic — no real inbound msg for cron
         userId: job.createdBy,
         teamId: job.slackTeamId ?? undefined,
+        postTarget: job.target,
       };
       ctx.requestApproval = (req) =>
         approvals.request({
@@ -571,7 +572,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await reply("No active cron jobs.");
             return;
           }
-          const lines = jobs.map((j) => `• \`${j.id.slice(0, 8)}\` \`${j.cronExpr}\` → ${j.prompt}`);
+          const lines = jobs.map((j) => `• \`${j.id.slice(0, 8)}\` \`${j.cronExpr}\` [${j.target}] → ${j.prompt}`);
           await reply("*Active cron jobs*\n" + lines.join("\n"));
           return;
         }
@@ -618,15 +619,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           const job = CronJobs.create({
             slackTeamId: teamId,
             slackChannelId: channelId,
-            slackThreadTs: isDM ? undefined : threadTs,
+            slackThreadTs: slash.target === "channel" ? undefined : (isDM ? undefined : threadTs),
             channelId,
             threadTs: isDM ? undefined : threadTs,
             createdBy: userId,
             cronExpr: slash.cronExpr,
             prompt: slash.prompt,
             nextRunAt: nextRun,
+            target: slash.target,
           });
-          await reply(`:calendar: cron job created (\`${job.id.slice(0, 8)}\`) — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
+          const where = slash.target === "channel" ? "channel root" : "this thread";
+          await reply(`:calendar: cron job created (\`${job.id.slice(0, 8)}\`, posts to ${where}) — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
           return;
         }
       }
