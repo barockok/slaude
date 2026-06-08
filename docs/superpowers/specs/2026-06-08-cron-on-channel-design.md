@@ -59,24 +59,43 @@ Extend the `/cron-add` parser to accept an optional trailing target keyword:
 /cron-add "0 9 * * 1" "standup digest"            # → thread (unchanged)
 ```
 
-The `cron-add` parsed command gains a `target: "thread" | "channel"` field. The regex
-grows an optional `\s+(channel|thread)?` group after the second quoted arg; absent →
-`"thread"`. An unrecognized trailing token is a parse error (so typos don't silently
-fall back).
+The `cron-add` parsed command gains a `target: "thread" | "channel"` field. Exact regex:
+
+```
+/^\/cron-add\s+"([^"]+)"\s+"([^"]+)"(?:\s+(channel|thread))?$/
+```
+
+Verified against: two args → `target` group `undefined` → defaults `"thread"`;
+`channel`; `thread`; trailing garbage → no match. Note on the no-match case: per current
+control flow (`commands.ts` returns `null` on no-match → `gateway.ts` forwards the text
+to the agent as a normal message), `/cron-add "x" "y" garbage` is **not** surfaced as a
+parse error — it falls through to the model. This is pre-existing behavior for every
+malformed slash command; we accept it rather than add a two-stage validator.
 
 ## Posting target
 
-**channel jobs:**
+We add a dedicated `postTarget` flag to `SlackContext` rather than overloading
+`ctx.threadTs`. Blanking `ctx.threadTs` would have channel-wide blast radius —
+`get_thread_history` (`conversations.replies({ ts })`), `upload`, `approvals.request`,
+`status.set`, and the error/compacting post-back paths all read `ctx.threadTs`. Only
+`reply` should change. So:
 
-- `cron-scheduler.ts` `#execute`: always use the internal session key
-  `thread_ts: "cron:${job.id}"` (never a real Slack thread_ts) so the session is
-  persistent and decoupled from any posted message.
-- `gateway.ts` `onExecute`: for a channel job, set `ctx.threadTs = ""` so replies post
-  at channel root. For a thread job, behavior is unchanged
-  (`ctx.threadTs = job.slackThreadTs ?? job.channelId`).
-- `mcp-tools.ts` `reply`: change `thread_ts: ctx.threadTs` →
-  `thread_ts: ctx.threadTs || undefined`. Empty string posts to channel root; real ts
-  is unaffected. Safe for all existing callers (thread sessions always carry a real ts).
+- `mcp-tools.ts` `SlackContext`: add `postTarget?: "thread" | "channel"` (absent =
+  thread).
+- `mcp-tools.ts` `reply`: branch this one tool only —
+  `thread_ts: ctx.postTarget === "channel" ? undefined : ctx.threadTs`. Every other tool
+  keeps reading `ctx.threadTs` unchanged.
+- `gateway.ts` `onExecute`: for a channel job set `ctx.postTarget = "channel"`. Leave
+  `ctx.threadTs` as-is (`job.slackThreadTs ?? job.channelId`) so approval/status/error
+  paths behave identically to a thread cron job. (A channel cron session has no real
+  thread; `get_thread_history` is no more meaningful than it already is for cron sessions
+  today — pre-existing, not introduced here.)
+- `cron-scheduler.ts` `#execute`: **branch explicitly on `job.target`.** Channel jobs
+  always key the session `thread_ts: "cron:${job.id}"`; do not rely on the
+  `slackThreadTs ?? "cron:${job.id}"` null-fallback (which would silently bind a real
+  thread if `slackThreadTs` were populated). Thread jobs keep current behavior.
+- `gateway.ts` `create()` for a channel job also stores `slackThreadTs: null`
+  (belt-and-suspenders; the scheduler no longer depends on it).
 
 **thread jobs:** entirely unchanged.
 
@@ -98,23 +117,40 @@ Show a per-job target tag so managers can tell broadcasts from thread jobs:
 • `ef567890` `*/30 * * * *` [thread] → watch deploys
 ```
 
+There are **two** job-listing renderers — keep them consistent:
+- `gateway.ts` `/cron-list` slash handler.
+- `mcp-tools.ts` `listCronJobs` (the `list_cron_jobs` MCP tool the agent can call).
+
+Both get the `[target]` tag.
+
 ## Surface area
 
 - `src/db/schema.ts` — migration + `target` column.
 - `src/db/cron-jobs.ts` — `CronJob.target`, `create()` arg, `mapRow`.
-- `src/gateway/slack/commands.ts` — parse optional target keyword on `cron-add`.
-- `src/gateway/core/gateway.ts` — pass `target` to `create()`; channel-aware
-  `ctx.threadTs` in `onExecute`; `[target]` tag in `cron-list` output.
-- `src/gateway/slack/cron-scheduler.ts` — channel jobs use `cron:${job.id}` session key.
-- `src/gateway/slack/mcp-tools.ts` — `reply` `thread_ts` conditional.
+- `src/gateway/slack/commands.ts` — parse optional target keyword on `cron-add`
+  (corrected regex above).
+- `src/gateway/core/gateway.ts` — pass `target` (+ `slackThreadTs: null` for channel) to
+  `create()`; set `ctx.postTarget` in `onExecute`; `[target]` tag in `cron-list` output.
+- `src/gateway/slack/cron-scheduler.ts` — branch on `job.target` for the session key.
+- `src/gateway/slack/mcp-tools.ts` — add `SlackContext.postTarget`; `reply` branches on
+  it; `listCronJobs` renderer gets `[target]` tag.
 - `src/gateway/sim/scenarios/cron-channel.yaml` — new sim scenario.
+
+### Second creation entry point
+
+The agent can also create cron jobs via the `add_cron_job` MCP tool
+(`mcp-tools.ts` `addCronJob`). It stays **thread-only** for now: `create()`'s `target`
+defaults to `"thread"`, so `addCronJob` keeps compiling unchanged and the agent cannot
+self-create channel broadcasts. Extending the MCP tool is out of scope (noted below).
 
 ## Testing
 
 - **Unit (parser):** `/cron-add` with `channel` / `thread` / absent → correct `target`;
-  unknown trailing token → parse error.
-- **Unit (reply):** `reply` omits `thread_ts` when `ctx.threadTs` is empty; includes it
-  when set.
+  trailing garbage → no match (falls through, no `cron-add` hit).
+- **Update existing test:** `tests/commands.test.ts` asserts an **exact** `.toEqual`
+  for `/cron-add "..." "..."`. That assertion must add `target: "thread"` or it breaks.
+- **Unit (reply):** `reply` omits `thread_ts` when `ctx.postTarget === "channel"`;
+  includes `ctx.threadTs` otherwise.
 - **Sim scenario `cron-channel.yaml`:** `/cron-add "<expr>" "<prompt>" channel` →
   job stored with `target=channel`; `/cron-list` shows `[channel]` tag.
 
@@ -125,3 +161,5 @@ Show a per-job target tag so managers can tell broadcasts from thread jobs:
 - Editing an existing job's target (remove + re-add).
 - Channel-targeting a *different* channel than where `/cron-add` ran (still binds to the
   current channel; only the posting style changes).
+- Agent self-creating channel broadcasts via the `add_cron_job` MCP tool (stays
+  thread-only).
