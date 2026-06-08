@@ -49,19 +49,28 @@ function isSubtle(m: string): boolean {
   return m.startsWith("  ⎿") || m.startsWith("✻ ") || /\bctx$/.test(m) || m.startsWith("context:") || m.startsWith("tokens:");
 }
 
-/** Render one scrollback line with theme styling: purple `⏺` agent bullet, subtle secondary
- *  lines, and a blank row above each new user turn (`› …`) so turns breathe. */
+/** Render one scrollback line with theme styling: purple `⏺` agent bullet, subtle secondary lines. */
 function renderLine(m: string, i: number) {
-  const marginTop = i > 0 && m.startsWith("› ") ? 1 : 0;
   if (m.startsWith("⏺ ")) {
     return (
-      <text key={i} marginTop={marginTop}>
+      <text key={i}>
         <span fg={THEME_PURPLE}>⏺</span>{m.slice(1)}
       </text>
     );
   }
-  if (isSubtle(m)) return <text key={i} fg={SUBTLE} marginTop={marginTop}>{m}</text>;
-  return <text key={i} marginTop={marginTop}>{m}</text>;
+  if (isSubtle(m)) return <text key={i} fg={SUBTLE}>{m}</text>;
+  return <text key={i}>{m}</text>;
+}
+
+/** Render the scrollback, inserting a blank spacer row before each new user turn (`› …`) so
+ *  agent↔user loops visibly breathe. A plain marginTop on <text> doesn't render reliably here,
+ *  so the gap is an explicit empty line. */
+function renderMessages(messages: string[]) {
+  return messages.flatMap((m, i) =>
+    i > 0 && m.startsWith("› ")
+      ? [<text key={`gap-${i}`}> </text>, renderLine(m, i)]
+      : [renderLine(m, i)],
+  );
 }
 
 /** Root view. Lays out a scrollback of REPL output, an optional live status line, and an input
@@ -150,7 +159,7 @@ export function App({ repl, hint, helpLines, header }: AppProps) {
             ))}
           </box>
         </box>
-        {messages.map(renderLine)}
+        {renderMessages(messages)}
         {/* The live status (spinner/"Thinking…") sits as the last timeline entry, below the
             last message; when the agent replies, onStatus(null) clears it and the reply is
             already appended in its place. */}
@@ -172,27 +181,23 @@ export function App({ repl, hint, helpLines, header }: AppProps) {
           }}
         />
       ) : (
-        // Top+bottom rules frame the input area; the hint rides on the bottom rule as its title
-        // (bottomTitle) so it shares that row instead of colliding with a separate text line.
-        // flexShrink={0} is essential: without it, height pressure from the banner + scrollback
-        // collapses the input row and the cursor falls onto the bottom rule (overlap).
-        <box
-          flexShrink={0}
-          border={["top", "bottom"]}
-          flexDirection="column"
-          bottomTitle={hint}
-          bottomTitleAlignment="left"
-        >
-          <input
-            focused
-            value={value}
-            onInput={setValue}
-            // InputProps.onSubmit is typed as the intersection of the core (SubmitEvent) and the
-            // React (value:string) signatures — not satisfiable by one signature, so cast. The
-            // runtime fires it with the entered string (API-NOTES); we route that string.
-            onSubmit={onSubmit}
-            placeholder=""
-          />
+        // Input area: clean top+bottom rules around the input, then the hint on its own line
+        // directly below the bottom rule. flexShrink={0} keeps the whole block (rules + input +
+        // hint) from collapsing under height pressure from the banner/scrollback.
+        <box flexShrink={0} flexDirection="column">
+          <box border={["top", "bottom"]} flexDirection="column">
+            <input
+              focused
+              value={value}
+              onInput={setValue}
+              // InputProps.onSubmit is typed as the intersection of the core (SubmitEvent) and the
+              // React (value:string) signatures — not satisfiable by one signature, so cast. The
+              // runtime fires it with the entered string (API-NOTES); we route that string.
+              onSubmit={onSubmit}
+              placeholder=""
+            />
+          </box>
+          <text fg={SUBTLE}>{hint}</text>
         </box>
       )}
     </box>
