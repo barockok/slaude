@@ -1,4 +1,5 @@
-preset: manager-dm
+layer: dm
+as: manager
 steps:
   - send: { text: "/mode bypass" }
   - expect_reply: { contains: "bypass" }

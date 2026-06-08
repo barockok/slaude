@@ -6,9 +6,10 @@ import { join } from "node:path";
 const fx = (n: string) => readFileSync(join(import.meta.dir, "fixtures", n), "utf8");
 
 describe("transcript", () => {
-  it("parses preset + steps", () => {
+  it("parses layer/role + steps", () => {
     const t = parseTranscript(fx("restricted.yaml"));
-    expect(t.preset).toBe("restricted-blocked");
+    expect(t.layer).toBe("restricted");
+    expect(t.as).toBe("outsider");
     expect(t.steps.length).toBe(2);
   });
   it("runs the restricted transcript green", async () => {
@@ -18,7 +19,7 @@ describe("transcript", () => {
     await runTranscript(parseTranscript(fx("approval.yaml")));
   });
   it("fails a transcript whose assertion does not hold", async () => {
-    const bad = parseTranscript("preset: manager-dm\nsteps:\n  - send: { text: hi }\n  - expect_drop: { reason: whitelist }\n");
+    const bad = parseTranscript("layer: dm\nas: manager\nsteps:\n  - send: { text: hi }\n  - expect_drop: { reason: whitelist }\n");
     await expect(runTranscript(bad)).rejects.toThrow(/expect_drop/);
   });
 });

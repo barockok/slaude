@@ -1,4 +1,6 @@
-preset: borrow-grant
+layer: trusted
+as: outsider
+agent_behavior: connect_borrow
 steps:
   - send: { text: "list my jira" }
   - expect_reply: { contains: "jira" }

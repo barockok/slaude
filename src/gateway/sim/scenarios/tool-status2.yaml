@@ -1,4 +1,5 @@
-preset: manager-dm
+layer: dm
+as: manager
 agent_behavior: events2
 steps:
   - send: { text: "do lots of tools" }

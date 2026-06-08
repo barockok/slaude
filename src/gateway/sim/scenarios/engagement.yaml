@@ -1,4 +1,5 @@
-preset: member-trusted
+layer: trusted
+as: member
 steps:
   - send: { text: "status?" }
   - expect_reply: { contains: "ack" }

@@ -1,4 +1,5 @@
-preset: manager-dm
+layer: dm
+as: manager
 agent_behavior: events
 steps:
   - send: { text: "work please" }

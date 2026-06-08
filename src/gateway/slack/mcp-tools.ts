@@ -481,68 +481,17 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
     name: SLACK_MCP_NAME,
     version: "0.1.0",
     tools: [
+      // DEPRECATED — interaction tools (reply/edit/react/unreact/request_approval/upload/
+      // get_thread_history) moved to the platform-neutral `mcp__slaude_surface__*` server.
+      // This `reply` alias remains for one release so in-flight sessions / personas that
+      // reference the old name keep working. Remove next release.
       tool(
         "reply",
-        "Send a message to the user in the current Slack thread. This is the primary way to communicate with the user — plain assistant text is NOT shown to them. Returns the ts of the posted message so you can edit it later.",
+        "DEPRECATED — use mcp__slaude_surface__reply. Send a message to the user in the current conversation.",
         {
-          text: z.string().describe("Message body. Slack mrkdwn supported (*bold*, _ital_, `code`, ```block```, <@U…>)."),
+          text: z.string().describe("Message body. Markdown supported."),
         },
         (args) => slackHandlers.reply(ctx, args),
-      ),
-
-      tool(
-        "edit",
-        "Edit a previous reply you posted in this thread. Pass the ts returned by reply.",
-        {
-          ts: z.string().describe("Slack message ts to edit."),
-          text: z.string().describe("Replacement body."),
-        },
-        (args) => slackHandlers.edit(ctx, args),
-      ),
-
-      tool(
-        "react",
-        "Add an emoji reaction to a Slack message. Defaults to the user's latest inbound message in this thread.",
-        {
-          name: z.string().describe("Emoji name without colons (e.g. 'eyes', 'white_check_mark')."),
-          ts: z.string().optional().describe("Optional message ts; defaults to the user's latest inbound message."),
-        },
-        (args) => slackHandlers.react(ctx, args),
-      ),
-
-      tool(
-        "unreact",
-        "Remove an emoji reaction you previously added.",
-        {
-          name: z.string(),
-          ts: z.string().optional(),
-        },
-        (args) => slackHandlers.unreact(ctx, args),
-      ),
-
-      tool(
-        "request_approval",
-        "Ask the user to approve a high-level plan before executing destructive or far-reaching work (file writes, mutating Bash, deploys, deletions, migrations, external POSTs, etc.). Posts a Block Kit message with the plan summary and Approve/Deny buttons; blocks until an authorized user clicks. Returns {approved: bool, by: <user_id>, note?}. If approved=false, do NOT proceed — reply explaining you need a different plan. Read-only ops (Read/Grep/Glob/LS/git status) do not need approval. Provide `category` when the persona's <approvers> block defines per-area allowlists (e.g. 'database', 'deploy', 'code') so the right people are gated; otherwise the default approvers apply.",
-        {
-          summary: z.string().describe("One-paragraph plain-language summary of what you're about to do and why."),
-          tools: z.array(z.string()).optional().describe("List of tool names you intend to call (e.g. ['Bash','Edit','mcp__slaude_slack__upload'])."),
-          files: z.array(z.string()).optional().describe("Files you intend to create / modify / delete."),
-          risks: z.string().optional().describe("What could go wrong / what's irreversible. Brief."),
-          category: z.string().optional().describe("Optional short area hint to help the runtime route the plan to the right approver(s) — e.g. 'database', 'deploy', 'code', 'comms'. The runtime keyword-matches `summary` (and this hint when given) against the persona's <approvers> scope descriptions; you do NOT decide who approves. If you have no idea, omit it."),
-        },
-        (args) => slackHandlers.request_approval(ctx, args),
-      ),
-
-      tool(
-        "upload",
-        "Upload a local file to the current Slack thread. Use absolute paths under the session working dir (e.g. files you've Written or downloaded). Optional initial_comment posts above the file as the bot's text; omit to upload silently. Requires the bot's `files:write` scope.",
-        {
-          path: z.string().describe("Absolute local path to the file to upload."),
-          title: z.string().optional().describe("Display title (defaults to filename)."),
-          initial_comment: z.string().optional().describe("Optional message body posted with the file. Markdown supported (converted to Slack mrkdwn)."),
-          alt_text: z.string().optional().describe("Accessibility alt text for images."),
-        },
-        (args) => slackHandlers.upload(ctx, args),
       ),
 
       tool(
@@ -559,16 +508,6 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
         "Get info about the current Slack channel or DM — name, topic, purpose, member count, creation date, and whether it's archived. Helps you understand the conversational context (e.g. is this #general, a private team channel, or a 1:1 DM?).",
         {},
         () => slackHandlers.get_channel_info(ctx),
-      ),
-
-      tool(
-        "get_thread_history",
-        "Fetch earlier messages in the current Slack thread. Use this when the user refers to something said earlier (e.g. 'as I mentioned before') or when you need more context than the current inbound message provides. Returns messages in chronological order (oldest first).",
-        {
-          limit: z.number().min(1).max(100).optional().describe("Max messages to fetch (1-100). Default 20."),
-          include_replies: z.boolean().optional().describe("Whether to include threaded replies (default true)."),
-        },
-        (args) => slackHandlers.get_thread_history(ctx, args),
       ),
 
       tool(
@@ -590,9 +529,24 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
         (args) => slackHandlers.search_messages(ctx, args),
       ),
 
+    ],
+  });
+}
+
+export const RUNTIME_MCP_NAME = "slaude_runtime";
+
+/** Build the surface-agnostic control-plane MCP server (`slaude_runtime`): ignore gates,
+ *  cron jobs, KB ingest, session reload. These never produce user-visible output; they're
+ *  housekeeping. Still ctx-bound today (cron/ignore use the conversation) — fuller
+ *  neutralization is deferred with the gateway. */
+export function createRuntimeMcp(ctx: SlackContext): McpSdkServerConfigWithInstance {
+  return createSdkMcpServer({
+    name: RUNTIME_MCP_NAME,
+    version: "0.1.0",
+    tools: [
       tool(
         "ignore_thread",
-        "Temporarily ignore this Slack thread when the conversation drifts out of mandate. Use to prevent infinite loops or unproductive back-and-forth. The thread will be silently dropped until the ignore expires or a manager removes it. Requires manager or approver authorization.",
+        "Temporarily ignore this thread when the conversation drifts out of mandate. Use to prevent infinite loops or unproductive back-and-forth. The thread will be silently dropped until the ignore expires or a manager removes it. Requires manager or approver authorization.",
         {
           duration: z
             .string()
@@ -604,16 +558,16 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
 
       tool(
         "unignore_thread",
-        "Resume normal processing in this Slack thread after a previous ignore_thread call. Use when the conversation has returned to your mandate, the user explicitly asks to un-ignore, or you previously ignored by mistake. Requires manager or approver authorization.",
+        "Resume normal processing in this thread after a previous ignore_thread call. Use when the conversation has returned to your mandate, the user explicitly asks to un-ignore, or you previously ignored by mistake. Requires manager or approver authorization.",
         {},
         () => adminHandlers.unignoreThread(ctx),
       ),
 
       tool(
         "ignore_user",
-        "Temporarily ignore a specific Slack user across all threads. Use when a user is repeatedly sending off-topic or disruptive messages. The user will be silently dropped until the ignore expires or a manager removes it. Requires manager or approver authorization.",
+        "Temporarily ignore a specific user across all threads. Use when a user is repeatedly sending off-topic or disruptive messages. The user will be silently dropped until the ignore expires or a manager removes it. Requires manager or approver authorization.",
         {
-          user_id: z.string().describe("Slack user ID to ignore (e.g. U123ABC)."),
+          user_id: z.string().describe("User ID to ignore (e.g. U123ABC)."),
           duration: z.string().describe("Duration like '5m', '10m', '1h', or 'permanent'. Max 24h."),
           reason: z.string().describe("Brief reason why the user is being ignored."),
         },
@@ -622,9 +576,9 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
 
       tool(
         "unignore_user",
-        "Stop ignoring a previously ignored Slack user. Requires manager or approver authorization.",
+        "Stop ignoring a previously ignored user. Requires manager or approver authorization.",
         {
-          user_id: z.string().describe("Slack user ID to unignore (e.g. U123ABC)."),
+          user_id: z.string().describe("User ID to unignore (e.g. U123ABC)."),
         },
         (args) => adminHandlers.unignoreUser(ctx, { userId: args.user_id }),
       ),

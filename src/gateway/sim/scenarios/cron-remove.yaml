@@ -1,4 +1,5 @@
-preset: manager-dm
+layer: dm
+as: manager
 steps:
   - send: { text: '/cron-add "0 9 * * 1" "standup summary"' }
   - expect_reply: { contains: "cron job created" }

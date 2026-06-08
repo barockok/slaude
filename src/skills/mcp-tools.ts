@@ -174,7 +174,7 @@ export function createSkillsMcp(): McpSdkServerConfigWithInstance {
       ),
       tool(
         "write_skill",
-        "Create or overwrite ~/.slaude/skills/<slug>/SKILL.md. Use to evolve yourself: when a turn demonstrates a repeatable procedure, capture it. REQUIRES prior approval via `mcp__slaude_slack__request_approval` (category='skills'). Body supports ${SLAUDE_SKILL_DIR}, ${SLAUDE_SESSION_ID}, ${SLAUDE_SKILL_ARGS}.",
+        "Create or overwrite ~/.slaude/skills/<slug>/SKILL.md. Use to evolve yourself: when a turn demonstrates a repeatable procedure, capture it. REQUIRES prior approval via `mcp__slaude_surface__request_approval` (category='skills'). Body supports ${SLAUDE_SKILL_DIR}, ${SLAUDE_SESSION_ID}, ${SLAUDE_SKILL_ARGS}.",
         {
           slug: z
             .string()
