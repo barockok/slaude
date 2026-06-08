@@ -327,4 +327,25 @@ describe("slackHandlers", () => {
     expect(res.isError).toBe(true);
     expect(res.content[0]!.text).toContain("missing_scope");
   });
+
+  test("reply omits thread_ts when postTarget is channel", async () => {
+    let captured: any = null;
+    const ctx = {
+      client: { chat: { postMessage: async (a: any) => { captured = a; return { ts: "1.0" }; } } },
+      channel: "C1", threadTs: "123.456", inboundTs: "789.0", postTarget: "channel",
+    } as unknown as SlackContext;
+    await slackHandlers.reply(ctx, { text: "hi" });
+    expect(captured.thread_ts).toBeUndefined();
+    expect(captured.channel).toBe("C1");
+  });
+
+  test("reply keeps thread_ts when postTarget is thread/absent", async () => {
+    let captured: any = null;
+    const ctx = {
+      client: { chat: { postMessage: async (a: any) => { captured = a; return { ts: "1.0" }; } } },
+      channel: "C1", threadTs: "123.456", inboundTs: "789.0",
+    } as unknown as SlackContext;
+    await slackHandlers.reply(ctx, { text: "hi" });
+    expect(captured.thread_ts).toBe("123.456");
+  });
 });
