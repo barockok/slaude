@@ -284,6 +284,51 @@ describe("CronScheduler", () => {
     const updated = CronJobs.findById(job.id);
     expect(updated!.lastResult).toMatch(/^error: agent crashed/);
   });
+
+  test("channel-target job keys session on cron:id even with slackThreadTs set", async () => {
+    db.run("DELETE FROM cron_jobs");
+    const now = Date.now();
+    const job = CronJobs.create({
+      slackTeamId: "T1", slackChannelId: "C123", slackThreadTs: "999.999",
+      channelId: "C123", createdBy: "U999", cronExpr: "0 9 * * *",
+      prompt: "digest", nextRunAt: now - 1000, target: "channel",
+    });
+    let capturedKey: any = null;
+    const scheduler = new CronScheduler({
+      agent: {
+        ensureSession: (key: any) => { capturedKey = key; return { id: "sess-1" }; },
+        sendMessage: async () => {}, isLive: () => false, on: () => {}, off: () => {},
+      } as any,
+      client: { chat: { postMessage: async () => ({}) } } as any,
+    });
+    scheduler.start();
+    await new Promise((r) => setTimeout(r, 20));
+    scheduler.stop();
+    expect(capturedKey.thread_ts).toBe(`cron:${job.id}`);
+  });
+
+  test("thread-target job keys session on slackThreadTs", async () => {
+    db.run("DELETE FROM cron_jobs");
+    const now = Date.now();
+    const job = CronJobs.create({
+      slackTeamId: "T1", slackChannelId: "C123", slackThreadTs: "888.888",
+      channelId: "C123", createdBy: "U999", cronExpr: "0 9 * * *",
+      prompt: "watch", nextRunAt: now - 1000, target: "thread",
+    });
+    let capturedKey: any = null;
+    const scheduler = new CronScheduler({
+      agent: {
+        ensureSession: (key: any) => { capturedKey = key; return { id: "sess-2" }; },
+        sendMessage: async () => {}, isLive: () => false, on: () => {}, off: () => {},
+      } as any,
+      client: { chat: { postMessage: async () => ({}) } } as any,
+    });
+    scheduler.start();
+    await new Promise((r) => setTimeout(r, 20));
+    scheduler.stop();
+    expect(capturedKey.thread_ts).toBe("888.888");
+    void job;
+  });
 });
 
 describe("cron-parser", () => {
