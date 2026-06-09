@@ -85,63 +85,6 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
 CREATE INDEX IF NOT EXISTS idx_cron_jobs_next_run
   ON cron_jobs (next_run_at) WHERE active = 1;
 
-CREATE TABLE IF NOT EXISTS connections (
-  id                  TEXT PRIMARY KEY,
-  owner_slack_user_id TEXT NOT NULL,
-  service             TEXT NOT NULL,
-  scope               TEXT NOT NULL,
-  team_id             TEXT,
-  channel_id          TEXT,
-  thread_ts           TEXT,
-  auth_strategy       TEXT NOT NULL,
-  cred_ciphertext     TEXT NOT NULL,
-  key_id              TEXT NOT NULL,
-  created_at          INTEGER NOT NULL,
-  last_used_at        INTEGER,
-  expires_at          INTEGER,
-  status              TEXT NOT NULL DEFAULT 'active'
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_conn_thread
-  ON connections (owner_slack_user_id, service, team_id, channel_id, thread_ts)
-  WHERE scope = 'thread';
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_conn_slaude
-  ON connections (owner_slack_user_id, service)
-  WHERE scope = 'slaude';
-
-CREATE INDEX IF NOT EXISTS idx_conn_thread_lookup
-  ON connections (service, team_id, channel_id, thread_ts) WHERE status = 'active';
-
-CREATE INDEX IF NOT EXISTS idx_conn_expires
-  ON connections (expires_at) WHERE expires_at IS NOT NULL;
-
-CREATE TABLE IF NOT EXISTS connection_grants (
-  id                     TEXT PRIMARY KEY,
-  connection_id          TEXT NOT NULL,
-  borrower_slack_user_id TEXT NOT NULL,
-  team_id                TEXT NOT NULL,
-  channel_id             TEXT NOT NULL,
-  thread_ts              TEXT NOT NULL,
-  created_at             INTEGER NOT NULL,
-  revoked_at             INTEGER
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_grant_unique
-  ON connection_grants (connection_id, borrower_slack_user_id);
-
-CREATE TABLE IF NOT EXISTS connection_audit (
-  id                     TEXT PRIMARY KEY,
-  connection_id          TEXT NOT NULL,
-  borrower_slack_user_id TEXT NOT NULL,
-  approver_id            TEXT,
-  service                TEXT,
-  tool                   TEXT,
-  args_hash              TEXT,
-  decision               TEXT NOT NULL,
-  created_at             INTEGER NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS one_on_one_locks (
   channel_id  TEXT    NOT NULL,
   thread_ts   TEXT    NOT NULL,
@@ -199,32 +142,4 @@ export type SessionRow = {
   slack_channel_id: string | null;
   slack_thread_ts: string | null;
   permission_mode: string;
-};
-
-export type ConnectionRow = {
-  id: string;
-  owner_slack_user_id: string;
-  service: string;
-  scope: "thread" | "slaude";
-  team_id: string | null;
-  channel_id: string | null;
-  thread_ts: string | null;
-  auth_strategy: "token" | "cookie";
-  cred_ciphertext: string;
-  key_id: string;
-  created_at: number;
-  last_used_at: number | null;
-  expires_at: number | null;
-  status: "active" | "expired" | "revoked";
-};
-
-export type ConnectionGrantRow = {
-  id: string;
-  connection_id: string;
-  borrower_slack_user_id: string;
-  team_id: string;
-  channel_id: string;
-  thread_ts: string;
-  created_at: number;
-  revoked_at: number | null;
 };
