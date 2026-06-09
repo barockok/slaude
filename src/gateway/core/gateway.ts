@@ -26,6 +26,7 @@ import { downloadAttachments, type SlackFile } from "../slack/attachments";
 import * as Sessions from "../../db/sessions";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { loadExternalMcp, privateOverrides } from "./external-mcp";
+import { randomBytes } from "node:crypto";
 import { ensureInitiatorConfigDir } from "../../agent/oauth-home";
 import { writeEntry, type OAuthServerConfig } from "../../agent/mcp-oauth/store";
 import { discover } from "../../agent/mcp-oauth/discovery";
@@ -254,11 +255,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
   }
 
-  t.action(/^slaude_mcp:connect:.+$/, async ({ ack, action }) => {
+  t.action(/^slaude_mcp:connect:.+$/, async ({ ack, action, body }) => {
     await ack();
     const token = (action as { action_id: string }).action_id.replace(/^slaude_mcp:connect:/, "");
     const ctx = pendingMcp.get(token);
     if (!ctx) return;
+    // Slack shows the button to everyone in the thread. Only the user who owns the
+    // /1on1 lock (and who originally requested the card) may trigger the connect —
+    // otherwise a bystander could drive the initiator's OAuth grant.
+    const clicker = (body as any).user?.id;
+    const lock = OneOnOne.find(ctx.channelId, ctx.threadTs);
+    if (clicker !== ctx.userId || !lock || lock.locked_user !== ctx.userId) return;
     pendingMcp.delete(token);
     const cfg = httpExternalServers()[ctx.serverName];
     if (!cfg) return;
@@ -550,7 +557,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         const connectable = statuses.filter((s) => s.status !== "connected" && httpServers[s.name]);
         if (connectable.length) {
           const elements = connectable.map((s) => {
-            const token = `${Date.now().toString(36)}_${s.name}`;
+            const token = randomBytes(8).toString("hex");
             pendingMcp.set(token, { sessionId: session.id, channelId, threadTs, userId, serverName: s.name });
             return {
               type: "button",
