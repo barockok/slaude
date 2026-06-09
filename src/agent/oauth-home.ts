@@ -14,7 +14,7 @@
  * initiator's tokens instead of the agent's. Unlocked sessions inherit the
  * agent's config dir unchanged.
  */
-import { mkdirSync, existsSync, copyFileSync, symlinkSync, rmSync } from "node:fs";
+import { mkdirSync, existsSync, copyFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
 
@@ -29,32 +29,29 @@ export function initiatorConfigDir(userId: string): string {
   return join(paths.home, "oauth", userId);
 }
 
-// Credential stores in the agent config dir — never seeded into an initiator
-// home (the whole point is the initiator's identity, not the agent's).
-const CRED_FILES = [".credentials.json", "mcp-needs-auth-cache.json"];
-
 /** Ensure the initiator's config home exists, seeded with the agent's non-secret
- *  settings + plugins (so the locked session keeps skills/plugins) but NOT its
- *  credentials. Idempotent; also scrubs any pre-existing leaked cred files. */
+ *  settings + plugins (so the locked session keeps skills/plugins). Idempotent.
+ *  The initiator's own .credentials.json (written by the /mcp connect flow) is
+ *  intentionally preserved — scrubbing it would wipe their OAuth tokens. */
 export function ensureInitiatorConfigDir(userId: string): string {
   const dir = initiatorConfigDir(userId);
   mkdirSync(dir, { recursive: true });
 
   const src = agentConfigDir();
-  // settings.json — copy once (non-secret: enabledPlugins, marketplaces).
-  const srcSettings = join(src, "settings.json");
-  const dstSettings = join(dir, "settings.json");
-  if (existsSync(srcSettings) && !existsSync(dstSettings)) copyFileSync(srcSettings, dstSettings);
+  // settings.json + settings.local.json — copy once (non-secret: enabledPlugins,
+  // marketplaces, local overrides). Never copy credential stores: the whole point
+  // is the initiator's own identity, and this dir now HOLDS the initiator's own
+  // .credentials.json (written by the /mcp connect flow) — so we must not scrub it.
+  for (const name of ["settings.json", "settings.local.json"]) {
+    const s = join(src, name);
+    const d = join(dir, name);
+    if (existsSync(s) && !existsSync(d)) copyFileSync(s, d);
+  }
   // plugins/ — symlink (read-only share; plugin code lives in the agent home).
   const srcPlugins = join(src, "plugins");
   const dstPlugins = join(dir, "plugins");
   if (existsSync(srcPlugins) && !existsSync(dstPlugins)) {
     try { symlinkSync(srcPlugins, dstPlugins, "dir"); } catch { /* best-effort */ }
-  }
-  // Defensive: a credential file must never live in the initiator home.
-  for (const f of CRED_FILES) {
-    const p = join(dir, f);
-    if (existsSync(p)) rmSync(p, { force: true });
   }
   return dir;
 }
