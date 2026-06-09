@@ -80,6 +80,8 @@ export interface GatewayOptions {
     serverConfig: import("../../agent/mcp-oauth/store").OAuthServerConfig;
     postAuthorizeUrl: (url: string) => Promise<void>;
   }) => Promise<import("../../agent/mcp-oauth/store").OAuthTokens>;
+  /** Disable `/mcp connect` when the boot-time store-format canary fails. Defaults to enabled. */
+  mcpConnectEnabled?: boolean;
 }
 
 /** A live SessionBinding view over the mutated-in-place SlackContext, so the Surface always
@@ -530,6 +532,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         const lock = OneOnOne.find(channelId, threadTs);
         if (!lock || lock.locked_user !== userId) {
           await reply(":lock: `/mcp` requires a 1on1 lock you own — run `/1on1` first, then connect your own MCP servers.");
+          return;
+        }
+        if (opts.mcpConnectEnabled === false) {
+          await reply(":warning: `/mcp` connect is temporarily disabled (store-format canary failed) — see server logs.");
           return;
         }
         const httpServers = httpExternalServers();
