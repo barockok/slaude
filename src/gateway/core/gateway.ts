@@ -28,9 +28,10 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { loadExternalMcp, privateOverrides } from "./external-mcp";
 import { randomBytes } from "node:crypto";
 import { ensureInitiatorConfigDir } from "../../agent/oauth-home";
-import { writeEntry, type OAuthServerConfig } from "../../agent/mcp-oauth/store";
+import { writeEntry, type OAuthServerConfig, type OAuthTokens } from "../../agent/mcp-oauth/store";
 import { discover } from "../../agent/mcp-oauth/discovery";
-import { beginConnect } from "../../agent/mcp-oauth/client";
+import { beginConnect, prepareConnect } from "../../agent/mcp-oauth/client";
+import { parseOAuthCallback } from "../../agent/mcp-oauth/callback";
 import { canTriggerIngest } from "../slack/ingest-auth";
 import * as kbIngest from "../../knowledge/ingest";
 import * as Ignores from "../../db/ignores";
@@ -80,6 +81,14 @@ export interface GatewayOptions {
     serverConfig: import("../../agent/mcp-oauth/store").OAuthServerConfig;
     postAuthorizeUrl: (url: string) => Promise<void>;
   }) => Promise<import("../../agent/mcp-oauth/store").OAuthTokens>;
+  /** Override the paste-back prepare step so a sim can stub discovery/registration.
+   *  Defaults to the real discover → prepareConnect round-trip. Used only in
+   *  paste-back mode (SLAUDE_OAUTH_REDIRECT_URL set). */
+  oauthPrepare?: (args: {
+    serverName: string;
+    serverConfig: import("../../agent/mcp-oauth/store").OAuthServerConfig;
+    redirectUri: string;
+  }) => Promise<{ authorizeUrl: string; state: string; exchange: (code: string) => Promise<import("../../agent/mcp-oauth/store").OAuthTokens> }>;
   /** Disable `/mcp connect` when the boot-time store-format canary fails. Defaults to enabled. */
   mcpConnectEnabled?: boolean;
 }
@@ -225,8 +234,29 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return handle.exchange(code);
   });
 
+  // Paste-back prepare step (k8s / remote): register + build the authorize URL
+  // against the operator's fixed redirect page, no loopback. Injectable for sims.
+  const runPrepare = opts.oauthPrepare ?? (async ({ serverName, serverConfig, redirectUri }) => {
+    const meta = await discover(serverConfig.url);
+    return prepareConnect({ serverName, serverConfig, meta, redirectUri });
+  });
+
   // Pending /mcp connect buttons: token → the context needed to run the connect.
   const pendingMcp = new Map<string, { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string }>();
+
+  // Paste-back: a started-but-not-completed OAuth flow, keyed by channel:thread:user
+  // (one in-flight connect per initiator per thread). The initiator completes it by
+  // pasting the callback URL/code into the locked thread.
+  type PendingPaste = {
+    state: string;
+    exchange: (code: string) => Promise<OAuthTokens>;
+    serverName: string;
+    serverConfig: OAuthServerConfig;
+    sessionId: string; channelId: string; threadTs: string; userId: string;
+    expiresAt: number;
+  };
+  const pendingPaste = new Map<string, PendingPaste>();
+  const pasteKey = (channelId: string, threadTs: string, userId: string) => `${channelId}:${threadTs}:${userId}`;
 
   // Only HTTP servers participate in the OAuth connect flow.
   const httpExternalServers = (): Record<string, { url: string; headers?: Record<string, string> }> => {
@@ -237,23 +267,73 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return out;
   };
 
+  /** Persist freshly-exchanged tokens into the initiator's CLI store and reboot the
+   *  locked session so the CLI picks them up. Shared by loopback + paste paths. */
+  async function persistTokens(a: { sessionId: string; userId: string; serverName: string; serverConfig: OAuthServerConfig }, tokens: OAuthTokens) {
+    // ensureInitiatorConfigDir seeds + creates the dir; writeEntry does not mkdir,
+    // and the connect flow may run before any locked session has booted.
+    const configDir = ensureInitiatorConfigDir(a.userId);
+    writeEntry(configDir, a.serverName, a.serverConfig, tokens);
+    agent.reload(a.sessionId);
+  }
+
   async function connectServer(a: { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string; serverCfg: any }) {
     const post = (text: string) => t.client.chat.postMessage({ channel: a.channelId, thread_ts: a.threadTs, text });
     const serverConfig: OAuthServerConfig = { type: "http", url: a.serverCfg.url, headers: a.serverCfg.headers };
+    const redirectUrl = env.oauthRedirectUrl();
+
+    // Paste-back mode (k8s / remote): the loopback isn't reachable, so register the
+    // operator's fixed redirect page, post the authorize URL, and park a pending
+    // flow the initiator completes by pasting the callback back into the thread.
+    // The injectable `oauthConnect` stub forces loopback semantics, so paste mode
+    // is gated on the redirect URL being set AND no loopback stub being supplied.
+    if (redirectUrl && !opts.oauthConnect) {
+      try {
+        const prepared = await runPrepare({ serverName: a.serverName, serverConfig, redirectUri: redirectUrl });
+        pendingPaste.set(pasteKey(a.channelId, a.threadTs, a.userId), {
+          state: prepared.state,
+          exchange: prepared.exchange,
+          serverName: a.serverName,
+          serverConfig,
+          sessionId: a.sessionId, channelId: a.channelId, threadTs: a.threadTs, userId: a.userId,
+          expiresAt: Date.now() + 10 * 60_000,
+        });
+        await post(
+          `:link: Authorize \`${a.serverName}\`:\n${prepared.authorizeUrl}\n\n` +
+            `After you approve, the page will show a code. *Paste the full redirect URL (or just the code) back here in this thread* to finish.`,
+        );
+      } catch (e) {
+        await post(`:x: \`${a.serverName}\` connect failed: ${(e as Error).message}`);
+      }
+      return;
+    }
+
+    // Loopback mode (local / same-host container): block on the listener.
     try {
       const tokens = await runConnect({
         serverName: a.serverName, serverConfig,
         postAuthorizeUrl: async (url) => { await post(`:link: Authorize \`${a.serverName}\`: ${url}\n(opens a browser; the loopback captures the result)`); },
       });
-      // Make sure the initiator's config home exists (seeded with non-secret settings)
-      // before writing — writeEntry does not mkdir, and the connect flow may run before
-      // any locked session has booted (which is what normally creates the dir).
-      const configDir = ensureInitiatorConfigDir(a.userId);
-      writeEntry(configDir, a.serverName, serverConfig, tokens);
-      agent.reload(a.sessionId);
+      await persistTokens({ sessionId: a.sessionId, userId: a.userId, serverName: a.serverName, serverConfig }, tokens);
       await post(`:white_check_mark: \`${a.serverName}\` connected. Next message will use it.`);
     } catch (e) {
       await post(`:x: \`${a.serverName}\` connect failed: ${(e as Error).message}`);
+    }
+  }
+
+  /** Complete a parked paste-back flow once the initiator pastes the callback. */
+  async function completePaste(pend: PendingPaste, code: string, state?: string): Promise<void> {
+    const post = (text: string) => t.client.chat.postMessage({ channel: pend.channelId, thread_ts: pend.threadTs, text });
+    if (state && state !== pend.state) {
+      await post(":x: OAuth `state` mismatch — paste the URL from the same authorize step, or rerun `/mcp connect`.");
+      return;
+    }
+    try {
+      const tokens = await pend.exchange(code);
+      await persistTokens(pend, tokens);
+      await post(`:white_check_mark: \`${pend.serverName}\` connected. Next message will use it.`);
+    } catch (e) {
+      await post(`:x: \`${pend.serverName}\` connect failed: ${(e as Error).message}`);
     }
   }
 
@@ -461,6 +541,27 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       channel_id: channelId,
       thread_ts: threadTs,
     });
+
+    // Paste-back OAuth completion: if this initiator has a parked /mcp connect in
+    // this thread and the message carries the callback (URL or bare code), finish
+    // the flow here and do NOT forward to the model. The 1on1 lock check above
+    // guarantees only the initiator reaches this point in a locked thread.
+    {
+      const pkey = pasteKey(channelId, threadTs, userId);
+      const pend = pendingPaste.get(pkey);
+      if (pend) {
+        if (Date.now() > pend.expiresAt) {
+          pendingPaste.delete(pkey);
+        } else {
+          const parsed = parseOAuthCallback(stripped);
+          if (parsed.code) {
+            pendingPaste.delete(pkey);
+            await completePaste(pend, parsed.code, parsed.state);
+            return;
+          }
+        }
+      }
+    }
 
     // Slash commands: /mode, /abort, /help. Handled locally; do not forward to model.
     const slash = parseSlashCommand(stripped);
