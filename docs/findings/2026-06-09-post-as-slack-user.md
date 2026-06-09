@@ -64,3 +64,15 @@ loop guard is unit-tested without a live xoxp
   as the user but permission/approval prompts as the app. Acceptable hybrid;
   user-token buttons can't carry interactivity.
 - Real accounts consume paid Slack seats (bots are free). Identity vs cost.
+
+## Security caveat (operator)
+
+In this mode the agent's **read reach equals the human account's**, not the
+bot's. The xoxp can `search.messages` and read every private channel / DM the
+real user belongs to — wider than the bot's invited-channel view. A
+prompt-injection in a public channel the agent watches could drive it to search
+and leak that private corpus back into a public thread. This is inherent to
+posting as a real user; only enable `SLACK_POST_AS_USER` for accounts whose full
+read scope you're comfortable exposing to the agent's tool use. The self-echo
+guard, by contrast, is not an auth boundary — `event.user` is server-set by
+Slack and unspoofable, so it cannot be used to impersonate or bypass.
