@@ -3,6 +3,7 @@ import { AgentManager } from "./agent/manager";
 import { createSlackApp } from "./gateway/slack/adapter";
 import { startHealthServer } from "./health";
 import { loadSoulData, setSoulData } from "./soul/extract";
+import { assertOAuthKeyCanary } from "./agent/mcp-oauth/store";
 
 async function main() {
   ensureHome();
@@ -16,8 +17,13 @@ async function main() {
     console.warn("[slaude] soul prewarm failed (continuing with regex fallback):", e);
   }
 
+  const mcpOAuthHealthy = assertOAuthKeyCanary();
+  if (!mcpOAuthHealthy) {
+    console.error("[mcp-oauth] CANARY FAILED — oauthKey no longer matches the CLI store format. /mcp connect is DISABLED. Update src/agent/mcp-oauth/store.ts against the current cli.js.");
+  }
+
   const agent = new AgentManager();
-  const slack = createSlackApp(agent);
+  const slack = createSlackApp(agent, { mcpConnectEnabled: mcpOAuthHealthy });
   const health = startHealthServer({ liveSessions: () => agent.liveCount() });
 
   await slack.start();

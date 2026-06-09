@@ -21,15 +21,17 @@ import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME } from "../../knowledge/mcp-tools";
-import { loadEncryptionKey } from "../../config/env";
-import { createBroker } from "../../agent/connect-broker/index";
-import { createConnectMcp, CONNECT_MCP_NAME, type BrokerToolCtx } from "../../agent/connect-broker/broker-mcp";
-import { buildApprovalRequester } from "../slack/connect-wiring";
 import { resolveUserName } from "../slack/users";
 import { downloadAttachments, type SlackFile } from "../slack/attachments";
 import * as Sessions from "../../db/sessions";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { loadExternalMcp, privateOverrides } from "./external-mcp";
+import { randomBytes } from "node:crypto";
+import { ensureInitiatorConfigDir } from "../../agent/oauth-home";
+import { writeEntry, type OAuthServerConfig, type OAuthTokens } from "../../agent/mcp-oauth/store";
+import { discover } from "../../agent/mcp-oauth/discovery";
+import { beginConnect, prepareConnect } from "../../agent/mcp-oauth/client";
+import { parseOAuthCallback } from "../../agent/mcp-oauth/callback";
 import { canTriggerIngest } from "../slack/ingest-auth";
 import * as kbIngest from "../../knowledge/ingest";
 import * as Ignores from "../../db/ignores";
@@ -39,7 +41,7 @@ import { CronScheduler } from "../slack/cron-scheduler";
 import { getNextRun } from "../slack/cron-parser";
 import type { Transport } from "./transport";
 
-export interface SessionMcpCtx { slack: SlackContext; surface: Surface; connect?: BrokerToolCtx }
+export interface SessionMcpCtx { slack: SlackContext; surface: Surface }
 export interface GatewayHandle {
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -72,6 +74,23 @@ export interface GatewayOptions {
   /** Override how a Surface is built per session. Defaults to a SlackSurface over the
    *  transport client — the extension seam for future surfaces. */
   surfaceFactory?: SurfaceFactory;
+  /** Override the OAuth connect runner so a sim can stub the network/browser flow.
+   *  Defaults to the real discover → beginConnect → exchange round-trip. */
+  oauthConnect?: (args: {
+    serverName: string;
+    serverConfig: import("../../agent/mcp-oauth/store").OAuthServerConfig;
+    postAuthorizeUrl: (url: string) => Promise<void>;
+  }) => Promise<import("../../agent/mcp-oauth/store").OAuthTokens>;
+  /** Override the paste-back prepare step so a sim can stub discovery/registration.
+   *  Defaults to the real discover → prepareConnect round-trip. Used only in
+   *  paste-back mode (SLAUDE_OAUTH_REDIRECT_URL set). */
+  oauthPrepare?: (args: {
+    serverName: string;
+    serverConfig: import("../../agent/mcp-oauth/store").OAuthServerConfig;
+    redirectUri: string;
+  }) => Promise<{ authorizeUrl: string; state: string; exchange: (code: string) => Promise<import("../../agent/mcp-oauth/store").OAuthTokens> }>;
+  /** Disable `/mcp connect` when the boot-time store-format canary fails. Defaults to enabled. */
+  mcpConnectEnabled?: boolean;
 }
 
 /** A live SessionBinding view over the mutated-in-place SlackContext, so the Surface always
@@ -100,39 +119,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     timeoutSeconds: () => soulData().approvalTimeoutSeconds,
   });
   const ignoreGate = new IgnoreGate();
-  // Clean up expired ignores every 5 minutes
+  // Clean up expired ignores + abandoned paste-back OAuth flows every 5 minutes.
+  // Each pendingPaste entry closes over live client creds + the PKCE verifier, so
+  // an abandoned flow must not linger in memory until the initiator happens to
+  // message again (the lazy check in the inbound path).
   setInterval(() => {
     import("../../db/ignores").then((m) => m.cleanupExpired());
+    const now = Date.now();
+    for (const [k, p] of pendingPaste) if (now > p.expiresAt) pendingPaste.delete(k);
   }, 5 * 60 * 1000);
 
-  // Contextual MCP connections broker (`slaude_connect`). OFF by default — gated
-  // behind SLAUDE_ENABLE_CONNECT_BROKER (explicit switch, decoupled from the
-  // encryption key) so a default deployment exposes no connection tools; `/1on1`
-  // mode is the shipped per-thread feature. Enabling requires BOTH the flag AND
-  // SLAUDE_ENCRYPTION_KEY. spawnChild / postConnectUrl are deploy-time seams.
-  const connectBroker = (() => {
-    if (!env.enableConnectBroker()) {
-      console.log("[connect-broker] disabled (set SLAUDE_ENABLE_CONNECT_BROKER=1 to enable)");
-      return null;
-    }
-    let key: Buffer;
-    try {
-      key = loadEncryptionKey();
-    } catch (e) {
-      console.log(`[connect-broker] disabled: ${(e as Error).message}`);
-      return null;
-    }
-    const requestApproval = buildApprovalRequester(approvals);
-    return createBroker({
-      key,
-      idleMs: 5 * 60_000,
-      spawnChild: () => {
-        throw new Error("connect-broker: vendor MCP child spawn is wired at deploy time (CDP login host)");
-      },
-      requestApproval,
-      isMember: () => true, // MVP: Slack delivered the event => caller is in the channel.
-    });
-  })();
   const cronScheduler = new CronScheduler({
     agent,
     client: t.client as any,
@@ -223,29 +219,145 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // auth). Other sessions/threads keep the agent identity (source map untouched).
     const oneOnOneLock = OneOnOne.find(route.ctx.channel, route.ctx.threadTs);
     Object.assign(servers, privateOverrides(externalMcp.servers, privateServiceSet, !!oneOnOneLock));
-    // Mount the per-user connections broker when enabled and the thread is
-    // fully keyed (team + channel + thread). Caller identity is bound in-band
-    // via on_behalf_of (B1) — the agent must pass route.ctx.userId.
-    let connectCtx: BrokerToolCtx | undefined;
-    if (connectBroker && route.ctx.teamId && route.ctx.userId) {
-      connectCtx = connectBroker.buildCtx({
-        // Live read: route.ctx.userId is mutated per inbound turn (see the
-        // per-message update below). The resolver runs once at session boot,
-        // so a snapshot here would freeze auth to the booting user.
-        getCallerUserId: () => route.ctx.userId ?? "unknown",
-        thread: { team_id: route.ctx.teamId, channel_id: route.ctx.channel, thread_ts: route.ctx.threadTs },
-        postConnectUrl: async (_service) => ({
-          // Deploy-time seam: the CDP login host returns a one-time live-view URL.
-          url: "(login host not configured in this build)",
-          expiresInMs: 0,
-        }),
-      });
-      servers[CONNECT_MCP_NAME] = createConnectMcp(connectCtx);
-    }
-    sessionCtx.set(sessionId, { slack: route.ctx, surface: route.surface, connect: connectCtx });
+    sessionCtx.set(sessionId, { slack: route.ctx, surface: route.surface });
     return servers;
   };
   agent.setMcpResolver(mcpResolver);
+
+  // /mcp OAuth connect flow. The runner is injectable so a sim can stub the
+  // network/browser round-trip; the default does real discover → begin → exchange.
+  const runConnect = opts.oauthConnect ?? (async ({ serverName, serverConfig, postAuthorizeUrl }) => {
+    const meta = await discover(serverConfig.url);
+    const handle = await beginConnect({
+      serverName, serverConfig, meta,
+      loopbackHost: env.oauthLoopbackHost(),
+      loopbackPort: env.oauthLoopbackPorts()[0],
+      timeoutMs: 5 * 60_000,
+    });
+    await postAuthorizeUrl(handle.authorizeUrl);
+    const code = await handle.waitForCode();
+    return handle.exchange(code);
+  });
+
+  // Paste-back prepare step (k8s / remote): register + build the authorize URL
+  // against the operator's fixed redirect page, no loopback. Injectable for sims.
+  const runPrepare = opts.oauthPrepare ?? (async ({ serverName, serverConfig, redirectUri }) => {
+    const meta = await discover(serverConfig.url);
+    return prepareConnect({ serverName, serverConfig, meta, redirectUri });
+  });
+
+  // Pending /mcp connect buttons: token → the context needed to run the connect.
+  const pendingMcp = new Map<string, { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string }>();
+
+  // Paste-back: a started-but-not-completed OAuth flow, keyed by channel:thread:user
+  // (one in-flight connect per initiator per thread). The initiator completes it by
+  // pasting the callback URL/code into the locked thread.
+  type PendingPaste = {
+    state: string;
+    exchange: (code: string) => Promise<OAuthTokens>;
+    serverName: string;
+    serverConfig: OAuthServerConfig;
+    sessionId: string; channelId: string; threadTs: string; userId: string;
+    expiresAt: number;
+  };
+  const pendingPaste = new Map<string, PendingPaste>();
+  const pasteKey = (channelId: string, threadTs: string, userId: string) => `${channelId}:${threadTs}:${userId}`;
+
+  // Only HTTP servers participate in the OAuth connect flow.
+  const httpExternalServers = (): Record<string, { url: string; headers?: Record<string, string> }> => {
+    const out: Record<string, { url: string; headers?: Record<string, string> }> = {};
+    for (const [name, cfg] of Object.entries<any>(externalMcp.servers)) {
+      if (cfg?.type === "http" && typeof cfg.url === "string") out[name] = { url: cfg.url, headers: cfg.headers };
+    }
+    return out;
+  };
+
+  /** Persist freshly-exchanged tokens into the initiator's CLI store and reboot the
+   *  locked session so the CLI picks them up. Shared by loopback + paste paths. */
+  async function persistTokens(a: { sessionId: string; userId: string; serverName: string; serverConfig: OAuthServerConfig }, tokens: OAuthTokens) {
+    // ensureInitiatorConfigDir seeds + creates the dir; writeEntry does not mkdir,
+    // and the connect flow may run before any locked session has booted.
+    const configDir = ensureInitiatorConfigDir(a.userId);
+    writeEntry(configDir, a.serverName, a.serverConfig, tokens);
+    agent.reload(a.sessionId);
+  }
+
+  async function connectServer(a: { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string; serverCfg: any }) {
+    const post = (text: string) => t.client.chat.postMessage({ channel: a.channelId, thread_ts: a.threadTs, text });
+    const serverConfig: OAuthServerConfig = { type: "http", url: a.serverCfg.url, headers: a.serverCfg.headers };
+    const redirectUrl = env.oauthRedirectUrl();
+
+    // Paste-back mode (k8s / remote): the loopback isn't reachable, so register the
+    // operator's fixed redirect page, post the authorize URL, and park a pending
+    // flow the initiator completes by pasting the callback back into the thread.
+    // The injectable `oauthConnect` stub forces loopback semantics, so paste mode
+    // is gated on the redirect URL being set AND no loopback stub being supplied.
+    if (redirectUrl && !opts.oauthConnect) {
+      try {
+        const prepared = await runPrepare({ serverName: a.serverName, serverConfig, redirectUri: redirectUrl });
+        pendingPaste.set(pasteKey(a.channelId, a.threadTs, a.userId), {
+          state: prepared.state,
+          exchange: prepared.exchange,
+          serverName: a.serverName,
+          serverConfig,
+          sessionId: a.sessionId, channelId: a.channelId, threadTs: a.threadTs, userId: a.userId,
+          expiresAt: Date.now() + 10 * 60_000,
+        });
+        await post(
+          `:link: Authorize \`${a.serverName}\`:\n${prepared.authorizeUrl}\n\n` +
+            `After you approve, the page will show a code. *Paste the full redirect URL (or just the code) back here in this thread* to finish.`,
+        );
+      } catch (e) {
+        await post(`:x: \`${a.serverName}\` connect failed: ${(e as Error).message}`);
+      }
+      return;
+    }
+
+    // Loopback mode (local / same-host container): block on the listener.
+    try {
+      const tokens = await runConnect({
+        serverName: a.serverName, serverConfig,
+        postAuthorizeUrl: async (url) => { await post(`:link: Authorize \`${a.serverName}\`: ${url}\n(opens a browser; the loopback captures the result)`); },
+      });
+      await persistTokens({ sessionId: a.sessionId, userId: a.userId, serverName: a.serverName, serverConfig }, tokens);
+      await post(`:white_check_mark: \`${a.serverName}\` connected. Next message will use it.`);
+    } catch (e) {
+      await post(`:x: \`${a.serverName}\` connect failed: ${(e as Error).message}`);
+    }
+  }
+
+  /** Complete a parked paste-back flow once the initiator pastes the callback. */
+  async function completePaste(pend: PendingPaste, code: string, state?: string): Promise<void> {
+    const post = (text: string) => t.client.chat.postMessage({ channel: pend.channelId, thread_ts: pend.threadTs, text });
+    if (state && state !== pend.state) {
+      await post(":x: OAuth `state` mismatch — paste the URL from the same authorize step, or rerun `/mcp connect`.");
+      return;
+    }
+    try {
+      const tokens = await pend.exchange(code);
+      await persistTokens(pend, tokens);
+      await post(`:white_check_mark: \`${pend.serverName}\` connected. Next message will use it.`);
+    } catch (e) {
+      await post(`:x: \`${pend.serverName}\` connect failed: ${(e as Error).message}`);
+    }
+  }
+
+  t.action(/^slaude_mcp:connect:.+$/, async ({ ack, action, body }) => {
+    await ack();
+    const token = (action as { action_id: string }).action_id.replace(/^slaude_mcp:connect:/, "");
+    const ctx = pendingMcp.get(token);
+    if (!ctx) return;
+    // Slack shows the button to everyone in the thread. Only the user who owns the
+    // /1on1 lock (and who originally requested the card) may trigger the connect —
+    // otherwise a bystander could drive the initiator's OAuth grant.
+    const clicker = (body as any).user?.id;
+    const lock = OneOnOne.find(ctx.channelId, ctx.threadTs);
+    if (clicker !== ctx.userId || !lock || lock.locked_user !== ctx.userId) return;
+    pendingMcp.delete(token);
+    const cfg = httpExternalServers()[ctx.serverName];
+    if (!cfg) return;
+    await connectServer({ ...ctx, serverCfg: cfg });
+  });
 
   agent.on("event", (e: AgentEvent) => {
     console.log(`[agent-evt] ${e.type} session=${e.sessionId}${"tool" in e ? ` tool=${e.tool}` : ""}${"error" in e ? ` err=${e.error}` : ""}`);
@@ -435,6 +547,27 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       thread_ts: threadTs,
     });
 
+    // Paste-back OAuth completion: if this initiator has a parked /mcp connect in
+    // this thread and the message carries the callback (URL or bare code), finish
+    // the flow here and do NOT forward to the model. The 1on1 lock check above
+    // guarantees only the initiator reaches this point in a locked thread.
+    {
+      const pkey = pasteKey(channelId, threadTs, userId);
+      const pend = pendingPaste.get(pkey);
+      if (pend) {
+        if (Date.now() > pend.expiresAt) {
+          pendingPaste.delete(pkey);
+        } else {
+          const parsed = parseOAuthCallback(stripped);
+          if (parsed.code) {
+            pendingPaste.delete(pkey);
+            await completePaste(pend, parsed.code, parsed.state);
+            return;
+          }
+        }
+      }
+    }
+
     // Slash commands: /mode, /abort, /help. Handled locally; do not forward to model.
     const slash = parseSlashCommand(stripped);
     if (slash) {
@@ -497,6 +630,56 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         OneOnOne.unlock(channelId, threadTs);
         agent.reload(session.id);     // reboot so the resolver restores agent-cred mounts next turn
         await reply(":unlock: 1on1 released — the thread is open again.");
+        return;
+      }
+      if (slash.kind === "mcp") {
+        // /mcp is initiator-only and only inside a /1on1-locked thread: the connect
+        // writes tokens into THIS user's isolated config home, so it must be their lock.
+        const lock = OneOnOne.find(channelId, threadTs);
+        if (!lock || lock.locked_user !== userId) {
+          await reply(":lock: `/mcp` requires a 1on1 lock you own — run `/1on1` first, then connect your own MCP servers.");
+          return;
+        }
+        if (opts.mcpConnectEnabled === false) {
+          await reply(":warning: `/mcp` connect is temporarily disabled (store-format canary failed) — see server logs.");
+          return;
+        }
+        const httpServers = httpExternalServers();
+
+        if (slash.action === "connect") {
+          const name = slash.server;
+          if (!name || !httpServers[name]) {
+            await reply(`:warning: unknown HTTP MCP server \`${name ?? ""}\`. Run \`/mcp\` to list connectable servers.`);
+            return;
+          }
+          await connectServer({ sessionId: session.id, channelId, threadTs, userId, serverName: name, serverCfg: httpServers[name] });
+          return;
+        }
+
+        // action === "status": render the server status card.
+        const statuses = await agent.mcpServerStatus(session.id);
+        if (statuses === null) {
+          await reply("Send a message in this thread first so the session boots, then `/mcp` can read MCP server status.");
+          return;
+        }
+        const lines = statuses.map((s) => `• \`${s.name}\` — ${s.status}`).join("\n") || "(no MCP servers mounted)";
+        const blocks: any[] = [
+          { type: "section", text: { type: "mrkdwn", text: `*MCP servers*\n${lines}` } },
+        ];
+        const connectable = statuses.filter((s) => s.status !== "connected" && httpServers[s.name]);
+        if (connectable.length) {
+          const elements = connectable.map((s) => {
+            const token = randomBytes(8).toString("hex");
+            pendingMcp.set(token, { sessionId: session.id, channelId, threadTs, userId, serverName: s.name });
+            return {
+              type: "button",
+              text: { type: "plain_text", text: `Connect ${s.name}` },
+              action_id: `slaude_mcp:connect:${token}`,
+            };
+          });
+          blocks.push({ type: "actions", elements });
+        }
+        await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: "MCP servers", mrkdwn: true });
         return;
       }
       if (slash.kind === "ignore" || slash.kind === "unignore") {

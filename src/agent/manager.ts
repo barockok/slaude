@@ -201,6 +201,19 @@ export class AgentManager extends EventEmitter {
     }
   }
 
+  /** Current MCP server statuses for a live session, or null if not live.
+   *  Read-only passthrough to the SDK Query — slaude maintains no mirror. */
+  async mcpServerStatus(sessionId: string) {
+    const live = this.#live.get(sessionId);
+    if (!live?.query) return null;
+    try {
+      return await live.query.mcpServerStatus();
+    } catch (e) {
+      console.error("[agent] mcpServerStatus failed:", e);
+      return null;
+    }
+  }
+
   async #startSession(sessionId: string, firstText: string) {
     const row = Sessions.findById(sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);

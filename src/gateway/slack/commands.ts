@@ -36,7 +36,8 @@ export type SlashHit =
   | { kind: "cron-add"; cronExpr: string; prompt: string; target: "thread" | "channel" }
   | { kind: "cron-list" }
   | { kind: "cron-remove"; id: string }
-  | { kind: "one-on-one"; action: "on" | "off" };
+  | { kind: "one-on-one"; action: "on" | "off" }
+  | { kind: "mcp"; action: "status" | "connect"; server?: string };
 
 /** One descriptor per agent slash command — the single source of truth for every help
  *  surface (Slack `/help`, the sim REPL `/help`). Add a command here and it shows up
@@ -46,6 +47,7 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/mode <name>", summary: "set the tool-permission mode (per session/thread)" },
   { usage: "/abort", summary: "cancel the current turn" },
   { usage: "/1on1 [off]", summary: "lock this thread to you + the manager; `off` releases" },
+  { usage: "/mcp [connect <server>]", summary: "in 1on1: list MCP servers / connect an OAuth HTTP server" },
   { usage: "/ignore @user [dur]", summary: "ignore a user (optional duration, e.g. 1h, 30m)" },
   { usage: "/ignore-thread [dur]", summary: "ignore this thread (optional duration)" },
   { usage: "/unignore @user", summary: "stop ignoring a user" },
@@ -114,6 +116,12 @@ export function parseSlashCommand(text: string): SlashHit | null {
   }
   if (cmd === "1on1") {
     return { kind: "one-on-one", action: arg === "off" ? "off" : "on" };
+  }
+  if (cmd === "mcp") {
+    if ((rest[0] ?? "").toLowerCase() === "connect") {
+      return { kind: "mcp", action: "connect", server: rest[1] };
+    }
+    return { kind: "mcp", action: "status" };
   }
   if (HELP_NAMES.has(cmd)) {
     return { kind: "help" };
