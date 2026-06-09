@@ -25,8 +25,10 @@ import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plu
 import { soulSystemBlock } from "../soul/loader";
 import * as Sessions from "../db/sessions";
 import type { ThreadKey } from "../db/sessions";
+import * as OneOnOne from "../db/one-on-one";
 import { memory } from "../memory/sqlite-provider";
 import { scrubChildEnv } from "./child-env";
+import { resolveSessionConfigDir } from "./oauth-home";
 
 type LiveSession = {
   id: string;
@@ -257,6 +259,18 @@ export class AgentManager extends EventEmitter {
     providerEnv.DISABLE_BUG_COMMAND = "1";
     providerEnv.DISABLE_ERROR_REPORTING = "1";
     providerEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+    // /1on1 privacy: when this session's thread is locked, point the claude-code
+    // child at the initiator's isolated config home so OAuth-authenticated MCP
+    // servers (whose tokens the CLI persists under CLAUDE_CONFIG_DIR, beyond the
+    // reach of the .mcp.json credential-strip) resolve as the initiator, not the
+    // agent. Unlocked → inherit the agent's config dir. Reboot-on-/1on1 forces
+    // re-resolution (CLAUDE_CONFIG_DIR is read once at child boot).
+    const lock =
+      row.slack_channel_id && row.slack_thread_ts
+        ? OneOnOne.find(row.slack_channel_id, row.slack_thread_ts)
+        : null;
+    const lockedConfigDir = resolveSessionConfigDir(lock?.locked_user);
+    if (lockedConfigDir) providerEnv.CLAUDE_CONFIG_DIR = lockedConfigDir;
 
     const resolver = this.#resolver;
     const canUseTool: CanUseTool | undefined = resolver
