@@ -20,4 +20,12 @@ describe("startLoopback", () => {
     const lb = await startLoopback({ host: "127.0.0.1", expectedState: "S", timeoutMs: 50 });
     await expect(lb.waitForCode()).rejects.toThrow(/timeout/i);
   });
+
+  it("rejects with missing code error and returns 400 when state matches but code is absent", async () => {
+    const lb = await startLoopback({ host: "127.0.0.1", expectedState: "S2", timeoutMs: 2000 });
+    const url = `http://127.0.0.1:${lb.port}${lb.callbackPath}?state=S2`;
+    const resp = await fetch(url);
+    expect(resp.status).toBe(400);
+    await expect(lb.waitForCode()).rejects.toThrow(/missing code/i);
+  });
 });
