@@ -119,9 +119,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     timeoutSeconds: () => soulData().approvalTimeoutSeconds,
   });
   const ignoreGate = new IgnoreGate();
-  // Clean up expired ignores every 5 minutes
+  // Clean up expired ignores + abandoned paste-back OAuth flows every 5 minutes.
+  // Each pendingPaste entry closes over live client creds + the PKCE verifier, so
+  // an abandoned flow must not linger in memory until the initiator happens to
+  // message again (the lazy check in the inbound path).
   setInterval(() => {
     import("../../db/ignores").then((m) => m.cleanupExpired());
+    const now = Date.now();
+    for (const [k, p] of pendingPaste) if (now > p.expiresAt) pendingPaste.delete(k);
   }, 5 * 60 * 1000);
 
   const cronScheduler = new CronScheduler({
