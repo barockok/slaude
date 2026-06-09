@@ -145,6 +145,13 @@ export const env = {
     const raw = opt("SLAUDE_METRICS_PER_USER", "0").toLowerCase();
     return raw === "1" || raw === "true" || raw === "yes";
   },
+  /** Fixed redirect_uri for /mcp OAuth in paste-back mode. When set, slaude does
+   *  NOT bind a loopback listener — it registers this URL as the redirect, the
+   *  IdP sends the browser here (an operator-hosted static page that shows the
+   *  code + a "paste this back into Slack" instruction), and the initiator pastes
+   *  the callback URL/code into the locked thread. Required for k8s / remote
+   *  deploys where an ephemeral loopback port isn't reachable. Empty → loopback. */
+  oauthRedirectUrl: () => opt("SLAUDE_OAUTH_REDIRECT_URL", ""),
   /** Loopback bind host for the /mcp OAuth callback. 127.0.0.1 locally; set
    *  0.0.0.0 in-container so a `docker -p` mapped port is reachable from the host. */
   oauthLoopbackHost: () => opt("SLAUDE_OAUTH_LOOPBACK_HOST", "127.0.0.1"),
