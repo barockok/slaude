@@ -33,6 +33,24 @@ export const env = {
     botToken: () => req("SLACK_BOT_TOKEN"),
     appToken: () => req("SLACK_APP_TOKEN"),
     /**
+     * Optional user token (xoxp). Historically used only for presence
+     * (`users.profile.set`). Also the token used for post-as-user when
+     * SLACK_POST_AS_USER is enabled.
+     */
+    userToken: () => opt("SLACK_USER_TOKEN"),
+    /**
+     * Opt-in: when "true" AND a user token is set, the agent posts/edits/reacts/
+     * uploads AS the real Slack user (its own account) rather than the app bot.
+     * App-bound interactivity (permission/approval gate buttons) always stays on
+     * the bot token. Default off — existing deploys that set SLACK_USER_TOKEN
+     * for presence keep posting as the bot, unchanged.
+     *
+     * The user token must carry write scopes (chat:write, reactions:write,
+     * files:write) and, because reads also route through it in this mode, read
+     * scopes (channels:history, groups:history, im:history, users:read).
+     */
+    postAsUser: () => opt("SLACK_POST_AS_USER").trim().toLowerCase() === "true",
+    /**
      * Env-level fallback approver allowlist. Used only when SOUL.md has no
      * `## Approvers` section. Empty list = approval gate accepts any user —
      * useful only for solo / DM workspaces.

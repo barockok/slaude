@@ -99,6 +99,10 @@ export interface GatewayOptions {
   }) => Promise<{ authorizeUrl: string; state: string; exchange: (code: string) => Promise<import("../../agent/mcp-oauth/store").OAuthTokens> }>;
   /** Disable `/mcp connect` when the boot-time store-format canary fails. Defaults to enabled. */
   mcpConnectEnabled?: boolean;
+  /** Test seam: inject the outbound (post-as-user) client directly, bypassing the
+   *  SLACK_POST_AS_USER / SLACK_USER_TOKEN env path. When set, the gateway behaves as
+   *  if posting-as-user is enabled (self-user echo guard active). */
+  outClient?: any;
 }
 
 /** A live SessionBinding view over the mutated-in-place SlackContext, so the Surface always
@@ -117,7 +121,21 @@ function bindingFor(ctx: SlackContext): SessionBinding {
 
 export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOptions = {}): GatewayHandle {
 
-  const surfaceFactory: SurfaceFactory = opts.surfaceFactory ?? makeSlackSurfaceFactory(t.client as any);
+  // Outbound content client. When SLACK_USER_TOKEN (xoxp) is set, agent replies,
+  // edits, reactions and uploads go out AS the real Slack user account rather than
+  // the app bot. Interactivity-bound paths (gates) keep using `t.client` (bot).
+  // No user token → outClient IS the bot client, preserving current behavior.
+  const userToken = env.slack.userToken();
+  const postsAsUser = Boolean(opts.outClient) || (env.slack.postAsUser() && Boolean(userToken));
+  const outClient: any = opts.outClient
+    ? opts.outClient
+    : postsAsUser
+    ? new (require("@slack/web-api").WebClient)(userToken)
+    : (t.client as any);
+  if (postsAsUser) console.log("[slack-out] posting as user (xoxp) — bot token reserved for gates/events");
+  else if (env.slack.postAsUser()) console.warn("[slack-out] SLACK_POST_AS_USER=true but SLACK_USER_TOKEN unset — posting as bot");
+
+  const surfaceFactory: SurfaceFactory = opts.surfaceFactory ?? makeSlackSurfaceFactory(outClient);
 
   const reactions = new ReactionTracker(t.client);
   const presence = new Presence(t.client as any);
@@ -143,7 +161,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     onExecute: (job, sessionId) => {
       // Register a route so cron sessions get Slack MCP tools + event handling.
       const ctx: SlackContext = {
-        client: t.client as any,
+        client: outClient,
         channel: job.slackChannelId!,
         threadTs: job.slackThreadTs ?? job.channelId,
         inboundTs: String(Date.now()), // synthetic — no real inbound msg for cron
@@ -521,6 +539,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (event.bot_id && selfBotId && event.bot_id === selfBotId) {
       console.log(`[slack-rx] drop ch=${channelId} ts=${eventTs} — self bot echo`);
       metric.slackDropsTotal.inc({ reason: "self_bot" });
+      return;
+    }
+    // Self-echo when posting as a real user (xoxp): own posts carry our user id
+    // and no bot_id. Drop them to avoid re-ingesting our own output.
+    const selfUserId = await getSelfUserId();
+    if (selfUserId && userId === selfUserId) {
+      console.log(`[slack-rx] drop ch=${channelId} ts=${eventTs} — self user echo`);
+      metric.slackDropsTotal.inc({ reason: "self_user" });
       return;
     }
 
@@ -1028,7 +1054,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.spoke = false;
     } else {
       const ctx: SlackContext = {
-        client: t.client as any,
+        client: outClient,
         channel: channelId,
         threadTs,
         inboundTs: eventTs,
@@ -1172,6 +1198,30 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return cachedSelfBotId;
   };
 
+  // When posting as a real user (xoxp), the agent's own messages arrive as plain
+  // `message` events with NO `bot_id` — the bot-id self-filter misses them and we
+  // would re-ingest our own output (infinite loop). Resolve the user-token's own
+  // user id once and drop events authored by it. Null when posting as bot (the
+  // bot_id filter already covers self-echoes there).
+  let cachedSelfUserId: string | null = null;
+  let selfUserIdResolved = false;
+  const getSelfUserId = async (): Promise<string | null> => {
+    if (selfUserIdResolved) return cachedSelfUserId;
+    if (!postsAsUser) {
+      selfUserIdResolved = true;
+      return null;
+    }
+    try {
+      const res = await outClient.auth.test();
+      cachedSelfUserId = (res as any).user_id as string;
+    } catch (e: any) {
+      console.error("[slack-out] auth.test on user token failed:", e?.data?.error ?? e?.message);
+      cachedSelfUserId = null;
+    }
+    selfUserIdResolved = true;
+    return cachedSelfUserId;
+  };
+
   // app_mention is a guaranteed delivery path even if message.channels event
   // subscription isn't enabled. Engage the thread, then defer to handleMessage.
   // (handleMessage's seenEvents dedup prevents double-handling when the same
@@ -1193,6 +1243,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const selfBotId = await getSelfBotId();
     if (e.bot_id && selfBotId && e.bot_id === selfBotId) return;
     if (!e.user) return;
+    // Drop self-echoes when posting as a real user (xoxp): own posts carry our
+    // user id and no bot_id, so they'd otherwise drive engagement/disengagement.
+    const selfUserId = await getSelfUserId();
+    if (selfUserId && e.user === selfUserId) {
+      metric.slackDropsTotal.inc({ reason: "self_user" });
+      return;
+    }
 
     const channelId: string = e.channel;
     const ts: string = e.thread_ts || e.ts;
