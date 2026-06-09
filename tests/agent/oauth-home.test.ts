@@ -50,14 +50,19 @@ describe("oauth-home", () => {
     expect(existsSync(join(dir, "mcp-needs-auth-cache.json"))).toBe(false);
   });
 
-  it("is idempotent and removes any pre-existing leaked cred files", () => {
+  it("is idempotent and PRESERVES the initiator's own .credentials.json", () => {
+    // The initiator dir is meant to hold the initiator's own OAuth token store
+    // (written by the /mcp connect flow). ensureInitiatorConfigDir runs on every
+    // locked-session boot, so it must NOT scrub that file. See finding
+    // 2026-06-09-mcp-oauth-connect-1on1.
     const dir = initiatorConfigDir("U0BOB");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, ".credentials.json"), "LEAKED"); // simulate a bad prior seed
+    writeFileSync(join(dir, ".credentials.json"), JSON.stringify({ mcpOAuth: { "w|abc": { accessToken: "t" } } }));
     ensureInitiatorConfigDir("U0BOB");
-    expect(existsSync(join(dir, ".credentials.json"))).toBe(false);
-    // second call doesn't throw
+    expect(existsSync(join(dir, ".credentials.json"))).toBe(true);
+    // second call doesn't throw and still preserves the token store
     expect(ensureInitiatorConfigDir("U0BOB")).toBe(dir);
+    expect(existsSync(join(dir, ".credentials.json"))).toBe(true);
   });
 
   it("resolveSessionConfigDir: unlocked inherits (undefined), locked → initiator home", () => {
