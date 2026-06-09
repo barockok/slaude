@@ -1,6 +1,9 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach } from "bun:test";
 import { ApprovalGate } from "../../../src/gateway/slack/approval-gate";
 import type { Transport } from "../../../src/gateway/core/transport";
+import { __resetSoulDataMemo } from "../../../src/soul/extract";
+import { paths } from "../../../src/config/home";
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 
 function fakeTransport() {
   const actions: Array<{ id: any; h: any }> = [];
@@ -17,11 +20,20 @@ function fakeTransport() {
 }
 
 describe("ApprovalGate accepts a Transport", () => {
+  // Clear any soul-approver state leaked by earlier suites (a stale SOUL.md on
+  // the shared temp home + the memoized extraction) so #resolveApprovers yields
+  // an empty set (anyone may click) and the test stays hermetic.
+  beforeEach(() => {
+    if (existsSync(paths.soul)) unlinkSync(paths.soul);
+    writeFileSync(paths.soul, "# Persona\n");
+    __resetSoulDataMemo();
+  });
+
   it("registers an action handler and posts a card, resolves on authorized click", async () => {
     const t = fakeTransport();
     const gate = new ApprovalGate(t, [], { timeoutSeconds: () => 0 });
     expect(t.actions.length).toBe(1);
-    const decision = gate.request({ channel: "C1", threadTs: "1.0", summary: "do it", approvers: ["U_MGR"] });
+    const decision = gate.request({ channel: "C1", threadTs: "1.0", summary: "do it" });
     await new Promise((r) => setTimeout(r, 0));
     expect(t.posted.length).toBe(1);
     const lastBlock = t.posted[0].blocks.at(-1)!;
