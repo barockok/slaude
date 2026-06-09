@@ -145,4 +145,18 @@ export const env = {
     const raw = opt("SLAUDE_METRICS_PER_USER", "0").toLowerCase();
     return raw === "1" || raw === "true" || raw === "yes";
   },
+  /** Loopback bind host for the /mcp OAuth callback. 127.0.0.1 locally; set
+   *  0.0.0.0 in-container so a `docker -p` mapped port is reachable from the host. */
+  oauthLoopbackHost: () => opt("SLAUDE_OAUTH_LOOPBACK_HOST", "127.0.0.1"),
+  /** Inclusive port range "a-b" the container pre-maps with `-p`. Empty → ephemeral
+   *  (port 0); the connect flow picks the first free port in the range otherwise. */
+  oauthLoopbackPorts: (): number[] => {
+    const raw = opt("SLAUDE_OAUTH_LOOPBACK_PORTS", "").trim();
+    const m = raw.match(/^(\d+)-(\d+)$/);
+    if (!m) return [];
+    const lo = parseInt(m[1]!, 10), hi = parseInt(m[2]!, 10);
+    const out: number[] = [];
+    for (let p = lo; p <= hi; p++) out.push(p);
+    return out;
+  },
 };
