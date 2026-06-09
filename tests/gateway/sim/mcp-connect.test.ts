@@ -128,6 +128,81 @@ describe("/mcp gating + connect", () => {
     expect(creds.mcpOAuth[key].clientId).toBe("cid");
   });
 
+  it("paste-back mode: posts the authorize URL, then completes on a pasted callback", async () => {
+    const prev = process.env.SLAUDE_OAUTH_REDIRECT_URL;
+    process.env.SLAUDE_OAUTH_REDIRECT_URL = "https://slaude.example/oauth/paste";
+    try {
+      const { t, posts, emit } = capturingTransport();
+      const agent = new AgentManager();
+      agent.sendMessage = async () => {};
+
+      let prepareCalls = 0;
+      let exchangeCalls = 0;
+      createGateway(agent, t, {
+        oauthPrepare: async ({ redirectUri }) => {
+          prepareCalls++;
+          return {
+            authorizeUrl: `https://authorize.example/x?redirect_uri=${encodeURIComponent(redirectUri)}&state=STATE123`,
+            state: "STATE123",
+            exchange: async (code: string) => { exchangeCalls++; expect(code).toBe("THECODE"); return { clientId: "cid", accessToken: "AT", refreshToken: "RT", expiresIn: 3600 }; },
+          };
+        },
+      });
+
+      OneOnOne.lock({ channelId: CHANNEL, threadTs: THREAD, lockedUser: INITIATOR, createdBy: INITIATOR });
+
+      // 1) start connect → posts authorize URL + paste instructions, NO token yet.
+      await sendInbound(emit, "/mcp connect workbench", INITIATOR, "100.4", t.client);
+      expect(prepareCalls).toBe(1);
+      const authPost = posts.find((p) => String(p.text ?? "").includes("authorize.example"));
+      expect(authPost).toBeDefined();
+      expect(String(authPost.text)).toMatch(/[Pp]aste/);
+      expect(existsSync(join(initiatorDir, ".credentials.json"))).toBe(false);
+
+      // 2) initiator pastes the callback URL → exchange + write + connected.
+      await sendInbound(emit, "https://slaude.example/oauth/paste?code=THECODE&state=STATE123", INITIATOR, "100.5", t.client);
+      expect(exchangeCalls).toBe(1);
+      const okPost = posts.find((p) => String(p.text ?? "").includes("connected"));
+      expect(okPost).toBeDefined();
+
+      const creds = JSON.parse(readFileSync(join(initiatorDir, ".credentials.json"), "utf8"));
+      const key = oauthKey("workbench", { type: "http", url: "https://workbench.example/mcp", headers: undefined });
+      expect(creds.mcpOAuth?.[key]?.accessToken).toBe("AT");
+    } finally {
+      if (prev === undefined) delete process.env.SLAUDE_OAUTH_REDIRECT_URL;
+      else process.env.SLAUDE_OAUTH_REDIRECT_URL = prev;
+    }
+  });
+
+  it("paste-back mode: rejects a state mismatch and writes nothing", async () => {
+    const prev = process.env.SLAUDE_OAUTH_REDIRECT_URL;
+    process.env.SLAUDE_OAUTH_REDIRECT_URL = "https://slaude.example/oauth/paste";
+    try {
+      const { t, posts, emit } = capturingTransport();
+      const agent = new AgentManager();
+      agent.sendMessage = async () => {};
+      let exchangeCalls = 0;
+      createGateway(agent, t, {
+        oauthPrepare: async () => ({
+          authorizeUrl: "https://authorize.example/x?state=GOOD",
+          state: "GOOD",
+          exchange: async () => { exchangeCalls++; return { clientId: "c", accessToken: "A" }; },
+        }),
+      });
+      OneOnOne.lock({ channelId: CHANNEL, threadTs: THREAD, lockedUser: INITIATOR, createdBy: INITIATOR });
+
+      await sendInbound(emit, "/mcp connect workbench", INITIATOR, "100.6", t.client);
+      await sendInbound(emit, "https://slaude.example/oauth/paste?code=X&state=BAD", INITIATOR, "100.7", t.client);
+
+      expect(exchangeCalls).toBe(0);
+      expect(posts.find((p) => String(p.text ?? "").includes("state` mismatch"))).toBeDefined();
+      expect(existsSync(join(initiatorDir, ".credentials.json"))).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.SLAUDE_OAUTH_REDIRECT_URL;
+      else process.env.SLAUDE_OAUTH_REDIRECT_URL = prev;
+    }
+  });
+
   it("rejects /mcp from a non-initiator in an initiator-locked thread and runs no connect", async () => {
     const { t, posts, emit } = capturingTransport();
     const agent = new AgentManager();
