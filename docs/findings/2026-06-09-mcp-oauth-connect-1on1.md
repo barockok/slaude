@@ -91,6 +91,29 @@ already runs *as* the initiator. The broker tables (`connections`, `connection_g
 `connection_audit`), the `SLAUDE_ENABLE_CONNECT_BROKER` flag, and the `grantButtons`/borrow
 extensions to `ApprovalGate` are deleted in the same change set.
 
+## Callback modes — loopback vs paste-back (k8s)
+
+The authorization-code callback is delivered two ways, env-selected. **Uniqueness across
+concurrent flows never relies on the port** — it rests on `state` (CSRF) + a per-initiator,
+per-thread pending entry.
+
+- **Loopback (default)** — ephemeral `http://localhost:<port>/callback` on the slaude host.
+  Works local / same-host container (host networking → no `-p`; bridge → pre-map
+  `SLAUDE_OAUTH_LOOPBACK_PORTS`). Browser must reach the slaude host.
+- **Paste-back (`SLAUDE_OAUTH_REDIRECT_URL` set)** — for **k8s / remote**, where the pod
+  can't expose an arbitrary runtime port and the user's browser is remote (so `localhost`
+  would hit the user's own machine). No listener. slaude registers the operator's **fixed
+  static redirect page**, posts the authorize URL + "paste it back" instruction; the IdP
+  redirects the browser to that page (it shows `code`+`state`); the initiator pastes the
+  callback URL/bare code into the locked thread; slaude parses it (`parseOAuthCallback`),
+  matches the parked flow by `channel:thread:user`, validates `state`, runs `exchange`.
+  No ingress *into* slaude — only the static page must be user-reachable.
+
+Both modes share the listener-free core `prepareConnect` (register + PKCE + authorize URL +
+`exchange`); `beginConnect` is the loopback wrapper. Pending paste flows expire after 10 min;
+one in-flight connect per initiator per thread. The 1on1 lock guarantees only the initiator
+can complete (non-initiators are dropped before reaching the paste interception).
+
 ## Testing
 
 - OAuth client: mocked discovery / registration / PKCE params / token exchange / state-mismatch / timeout.
