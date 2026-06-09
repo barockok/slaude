@@ -127,4 +127,22 @@ describe("/mcp gating + connect", () => {
     expect(creds.mcpOAuth[key].refreshToken).toBe("RT");
     expect(creds.mcpOAuth[key].clientId).toBe("cid");
   });
+
+  it("rejects /mcp from a non-initiator in an initiator-locked thread and runs no connect", async () => {
+    const { t, posts, emit } = capturingTransport();
+    const agent = new AgentManager();
+    agent.sendMessage = async () => {};
+    let connectCalls = 0;
+    createGateway(agent, t, { oauthConnect: async () => { connectCalls++; return { clientId: "x", accessToken: "x" }; } });
+
+    // Thread is locked to INITIATOR, but the manager (heard in the thread via the
+    // manager exception, so reaches slash parsing) is NOT the lock owner.
+    OneOnOne.lock({ channelId: CHANNEL, threadTs: THREAD, lockedUser: INITIATOR, createdBy: INITIATOR });
+
+    await sendInbound(emit, "/mcp connect workbench", WORLD.manager, "100.3", t.client);
+
+    const reply = posts.find((p) => String(p.text ?? "").includes("requires a 1on1 lock"));
+    expect(reply).toBeDefined();
+    expect(connectCalls).toBe(0);
+  });
 });
