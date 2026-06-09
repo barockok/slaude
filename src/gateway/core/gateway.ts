@@ -21,10 +21,6 @@ import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME } from "../../knowledge/mcp-tools";
-import { loadEncryptionKey } from "../../config/env";
-import { createBroker } from "../../agent/connect-broker/index";
-import { createConnectMcp, CONNECT_MCP_NAME, type BrokerToolCtx } from "../../agent/connect-broker/broker-mcp";
-import { buildApprovalRequester } from "../slack/connect-wiring";
 import { resolveUserName } from "../slack/users";
 import { downloadAttachments, type SlackFile } from "../slack/attachments";
 import * as Sessions from "../../db/sessions";
@@ -39,7 +35,7 @@ import { CronScheduler } from "../slack/cron-scheduler";
 import { getNextRun } from "../slack/cron-parser";
 import type { Transport } from "./transport";
 
-export interface SessionMcpCtx { slack: SlackContext; surface: Surface; connect?: BrokerToolCtx }
+export interface SessionMcpCtx { slack: SlackContext; surface: Surface }
 export interface GatewayHandle {
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -105,34 +101,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     import("../../db/ignores").then((m) => m.cleanupExpired());
   }, 5 * 60 * 1000);
 
-  // Contextual MCP connections broker (`slaude_connect`). OFF by default — gated
-  // behind SLAUDE_ENABLE_CONNECT_BROKER (explicit switch, decoupled from the
-  // encryption key) so a default deployment exposes no connection tools; `/1on1`
-  // mode is the shipped per-thread feature. Enabling requires BOTH the flag AND
-  // SLAUDE_ENCRYPTION_KEY. spawnChild / postConnectUrl are deploy-time seams.
-  const connectBroker = (() => {
-    if (!env.enableConnectBroker()) {
-      console.log("[connect-broker] disabled (set SLAUDE_ENABLE_CONNECT_BROKER=1 to enable)");
-      return null;
-    }
-    let key: Buffer;
-    try {
-      key = loadEncryptionKey();
-    } catch (e) {
-      console.log(`[connect-broker] disabled: ${(e as Error).message}`);
-      return null;
-    }
-    const requestApproval = buildApprovalRequester(approvals);
-    return createBroker({
-      key,
-      idleMs: 5 * 60_000,
-      spawnChild: () => {
-        throw new Error("connect-broker: vendor MCP child spawn is wired at deploy time (CDP login host)");
-      },
-      requestApproval,
-      isMember: () => true, // MVP: Slack delivered the event => caller is in the channel.
-    });
-  })();
   const cronScheduler = new CronScheduler({
     agent,
     client: t.client as any,
@@ -223,26 +191,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // auth). Other sessions/threads keep the agent identity (source map untouched).
     const oneOnOneLock = OneOnOne.find(route.ctx.channel, route.ctx.threadTs);
     Object.assign(servers, privateOverrides(externalMcp.servers, privateServiceSet, !!oneOnOneLock));
-    // Mount the per-user connections broker when enabled and the thread is
-    // fully keyed (team + channel + thread). Caller identity is bound in-band
-    // via on_behalf_of (B1) — the agent must pass route.ctx.userId.
-    let connectCtx: BrokerToolCtx | undefined;
-    if (connectBroker && route.ctx.teamId && route.ctx.userId) {
-      connectCtx = connectBroker.buildCtx({
-        // Live read: route.ctx.userId is mutated per inbound turn (see the
-        // per-message update below). The resolver runs once at session boot,
-        // so a snapshot here would freeze auth to the booting user.
-        getCallerUserId: () => route.ctx.userId ?? "unknown",
-        thread: { team_id: route.ctx.teamId, channel_id: route.ctx.channel, thread_ts: route.ctx.threadTs },
-        postConnectUrl: async (_service) => ({
-          // Deploy-time seam: the CDP login host returns a one-time live-view URL.
-          url: "(login host not configured in this build)",
-          expiresInMs: 0,
-        }),
-      });
-      servers[CONNECT_MCP_NAME] = createConnectMcp(connectCtx);
-    }
-    sessionCtx.set(sessionId, { slack: route.ctx, surface: route.surface, connect: connectCtx });
+    sessionCtx.set(sessionId, { slack: route.ctx, surface: route.surface });
     return servers;
   };
   agent.setMcpResolver(mcpResolver);
