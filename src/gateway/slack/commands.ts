@@ -50,7 +50,7 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/ignore-thread [dur]", summary: "ignore this thread (optional duration)" },
   { usage: "/unignore @user", summary: "stop ignoring a user" },
   { usage: "/unignore-thread", summary: "stop ignoring this thread" },
-  { usage: `/cron-add "<expr>" "<prompt>"`, summary: "schedule a prompt on a cron expression" },
+  { usage: `/cron-add "<expr>" "<prompt>" [channel]`, summary: "schedule a prompt; add `channel` to post to channel root" },
   { usage: "/cron-list", summary: "list scheduled crons" },
   { usage: "/cron-remove <id>", summary: "remove a scheduled cron" },
   { usage: "/ingest", summary: "synthesize raw/ → wiki/ in the writable KB (manager/approver)" },
