@@ -60,10 +60,17 @@ skills/plugins, but **never** the credential files (`.credentials.json`,
 
 ## Caveats
 
-- **macOS:** claude-code may store some credentials in the Keychain (global per OS user),
-  which `CLAUDE_CONFIG_DIR` does not isolate. File-based MCP OAuth caches DO isolate.
-  Deploy target is Linux (container, all file-based) → fine; the local sim on macOS may
-  not fully isolate subscription-level OAuth.
+- **macOS: isolation is a NO-OP (confirmed).** claude-code stores OAuth credentials in
+  the **global login Keychain** (`Claude Code-credentials-*`), per OS user — it does
+  **not** respect `CLAUDE_CONFIG_DIR`. So a locked session on darwin still reads the
+  agent's tokens; `/1on1` cannot disconnect an OAuth MCP server locally. There is no
+  documented env to force file-based creds on macOS. Verified empirically: the locked
+  session booted with `CLAUDE_CONFIG_DIR=$SLAUDE_HOME/oauth/<userId>` (runtime artifacts
+  written there, no `.credentials.json`), yet workbench stayed connected — the token came
+  from the Keychain. `resolveSessionConfigDir` warns once on darwin.
+- **Linux (deploy target): isolation WORKS.** Creds are file-based at
+  `$CLAUDE_CONFIG_DIR/.credentials.json`; a fresh per-initiator dir has no token → the CLI
+  resolves as the initiator. **Verify there, not in the local macOS sim.**
 - `clearCredentials` (config-cred path) still applies to non-OAuth whitelisted servers and
   is unchanged. The two mechanisms are complementary.
 
