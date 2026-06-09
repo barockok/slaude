@@ -46,6 +46,11 @@ export interface GatewayHandle {
   /** TEST/SIM SEAM ONLY. Live per-session MCP contexts built by the resolver.
    *  Undefined until the session's resolver has run. Production never calls this. */
   __sessionCtx(sessionId: string): SessionMcpCtx | undefined;
+  /** TEST/SIM SEAM ONLY. Re-run the per-session MCP resolver and return the
+   *  mounted server map (incl. /1on1 private-service credential overlays).
+   *  Requires the session's route to exist (feed a message first). Production
+   *  never calls this. */
+  __resolveMcp(sessionId: string): Record<string, McpServerConfig> | undefined;
 }
 
 const REACT_RECEIVED = "eyes";
@@ -195,7 +200,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return "You have not delivered a reply to the user. Call `mcp__slaude_surface__reply` now with your answer to the inbound message, then stop. Do not stop without replying.";
   });
 
-  agent.setMcpResolver((sessionId) => {
+  const mcpResolver = (sessionId: string): Record<string, McpServerConfig> | undefined => {
     const route = routes.get(sessionId);
     if (!route) return undefined;
     const servers: Record<string, McpServerConfig> = {
@@ -235,7 +240,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
     sessionCtx.set(sessionId, { slack: route.ctx, surface: route.surface, connect: connectCtx });
     return servers;
-  });
+  };
+  agent.setMcpResolver(mcpResolver);
 
   agent.on("event", (e: AgentEvent) => {
     console.log(`[agent-evt] ${e.type} session=${e.sessionId}${"tool" in e ? ` tool=${e.tool}` : ""}${"error" in e ? ` err=${e.error}` : ""}`);
@@ -904,5 +910,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     start: () => t.start(),
     stop: () => t.stop(),
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
+    __resolveMcp: (sessionId: string) => mcpResolver(sessionId),
   };
 }
