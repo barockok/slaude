@@ -16,7 +16,7 @@ cp "$MARIA/.mcp.json" "$DATA/.mcp.json"
 echo "seeded $DATA  (SOUL.md + .mcp.json from $MARIA)"
 echo
 
-CLI="bun node_modules/@anthropic-ai/claude-agent-sdk/cli.js"
+CLI="bun /app/node_modules/@anthropic-ai/claude-agent-sdk/cli.js"
 COMPOSE="docker compose -f docker-compose.verify.yaml --env-file .env.verify"
 
 cat <<EOF
@@ -42,8 +42,19 @@ NEXT STEPS
 
   4) Inspect from the host:
        ls verify-data/.claude/.credentials.json        # agent token (present)
-       ls verify-data/oauth/<userId>/.credentials.json # initiator dir (absent → no token)
+       ls verify-data/oauth/<userId>/.credentials.json # initiator dir (absent → no token yet)
+
+  5) /mcp OAuth connect-from-Slack (this feature). In the REPL, inside the locked thread:
+       a) /1on1                              → lock; session reboots onto /data/oauth/<userId>
+       b) /mcp                               → status card; workbench shows needs-auth + [Connect]
+       c) /mcp connect workbench             → posts an authorize URL; open it, complete browser auth
+                                                (loopback bound 0.0.0.0; SLAUDE_OAUTH_LOOPBACK_PORTS pre-mapped via -p)
+       d) "is workbench connected?"          → expect: connected (CLI read the initiator token)
+     Then verify the token landed in the INITIATOR dir (NOT the agent dir):
+       scripts/verify-mcp-oauth.sh <userId>  # asserts mcpOAuth entry in verify-data/oauth/<userId>/.credentials.json
 
 NOTE: the OAuth callback is loopback. Clean on a real Linux host/VM; on
 Docker-Desktop-for-mac the callback lands in the Linux VM — run on Linux to verify.
+On macOS the CLI store is keychain-backed, so the .credentials.json write is
+shadowed and the connect→connected loop only round-trips on Linux/container.
 EOF

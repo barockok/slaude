@@ -1,6 +1,5 @@
 import { AgentManager, type McpResolver, type AgentEvent } from "../../agent/manager";
 import type { GatewayHandle, SessionMcpCtx } from "../core/gateway";
-import { brokerHandlers } from "../../agent/connect-broker/broker-mcp";
 
 export interface BehaviorArgs {
   sessionId: string;
@@ -9,10 +8,6 @@ export interface BehaviorArgs {
   emit: (e: AgentEvent) => void;
 }
 export type Behavior = (a: BehaviorArgs) => Promise<void>;
-
-function userIdFromEnvelope(envelope: string): string {
-  return envelope.match(/user_id="([^"]+)"/)?.[1] ?? "unknown";
-}
 
 export const BEHAVIORS: Record<string, Behavior> = {
   async reply({ ctx, emit, sessionId }) {
@@ -25,13 +20,6 @@ export const BEHAVIORS: Record<string, Behavior> = {
     emit({ type: "toolCall", sessionId, tool: "mcp__slaude_surface__request_approval", input: {} });
     const r = await ctx.surface.requestApproval({ summary: "deploy prod", risks: "irreversible" });
     await ctx.surface.reply({ text: r.approved ? `approved by <@${r.by}>` : `denied by <@${r.by}>${r.note ? ` (${r.note})` : ""}` });
-  },
-  async connect_borrow({ ctx, emit, sessionId, envelope }) {
-    if (!ctx?.connect) throw new Error("connect_borrow behavior: no broker ctx (SLAUDE_ENCRYPTION_KEY unset?)");
-    const onBehalf = userIdFromEnvelope(envelope);
-    emit({ type: "toolCall", sessionId, tool: "mcp__slaude_connect__mcp_call", input: {} });
-    const res = await brokerHandlers.mcp_call(ctx.connect, { service: "jira", tool: "jira_search", args: { jql: "assignee=currentUser()" }, on_behalf_of: onBehalf });
-    await ctx.surface.reply({ text: res.content[0]!.text });
   },
   // Throws → StubAgent emits an error event → gateway error handler posts a warning.
   async boom() { throw new Error("simulated failure"); },
@@ -107,7 +95,7 @@ export class StubAgent extends AgentManager {
   }
 
   /** Let a detached behavior post its initial card(s), then return. Deliberately
-   *  does NOT await #running: request_approval / connect_borrow behaviors park on
+   *  does NOT await #running: the request_approval behavior parks on
    *  an approval decision that only resolves on a later feedAction, so awaiting
    *  here would deadlock send(). Errors thrown before the first await are captured
    *  synchronously into #errors; post-await errors surface on the next drain. */
