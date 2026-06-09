@@ -119,10 +119,21 @@ export class SimSession {
     // `thread` pins messages to a shared thread_ts so multi-message, thread-scoped
     // behaviors (e.g. /1on1 locks) model one real Slack thread. Omitted → each send
     // is its own thread (handleMessage falls back to the message ts).
+    // Track whether the gateway dispatches this message to the agent. sendMessage
+    // emits `turnStart` synchronously while feedMessage awaits the handler, so by
+    // the time feedMessage resolves we know if a real turn is in flight. Slash
+    // commands and gate-dropped messages never run the agent → no turnStart → we
+    // skip the turn wait instead of blocking on the 180s timeout fallback.
+    let turnStarted = false;
+    const isReal = this.agent instanceof AgentManager;
+    const onStart = (e: AgentEvent) => { if (e.type === "turnStart") turnStarted = true; };
+    if (isReal) (this.agent as AgentManager).on("event", onStart);
     const turn = this.#armTurn();
     await this.transport.feedMessage({ channel, user: as, text, channel_type: dm ? "im" : "channel", team: TEAM, thread_ts: step.thread ?? this.thread });
     await this.#drain();
-    await turn;
+    if (isReal) (this.agent as AgentManager).off("event", onStart);
+    if (this.agent instanceof StubAgent || turnStarted) await turn.done;
+    else turn.cancel();
   }
 
   async click(step: { as?: string; action: string }): Promise<void> {
@@ -133,7 +144,7 @@ export class SimSession {
     const turn = this.#armTurn();
     await this.transport.feedAction(actionId, as);
     await this.#drain();
-    await turn;
+    await turn.done;
   }
 
   cards() { return this.transport.outbound; }
@@ -175,7 +186,7 @@ export class SimSession {
     const actionId = gate.actionIds.find((id) => id.split(":")[1] === verb) ?? gate.actionIds[0]!;
     const turn = this.#armTurn();
     await this.transport.feedAction(actionId, this.actor);
-    await turn;
+    await turn.done;
   }
 
   async #drain(): Promise<void> {
@@ -188,10 +199,11 @@ export class SimSession {
   // it after. Resolves on done/error, OR when a permission/approval gate opens —
   // a gate pauses the SDK turn awaiting a human click, so we hand control back to
   // the REPL to prompt inline; resolveGate() re-arms for the continuation.
-  #armTurn(): Promise<void> {
-    if (this.agent instanceof StubAgent) return Promise.resolve();
+  #armTurn(): { done: Promise<void>; cancel: () => void } {
+    if (this.agent instanceof StubAgent) return { done: Promise.resolve(), cancel: () => {} };
     const mgr = this.agent;
-    return new Promise<void>((resolve) => {
+    let cleanup = () => {};
+    const done = new Promise<void>((resolve) => {
       const onEvent = (e: AgentEvent) => {
         if (e.type === "done" || e.type === "error") { cleanup(); resolve(); }
       };
@@ -199,9 +211,13 @@ export class SimSession {
         if ((c.kind === "permission" || c.kind === "approval") && !c.resolved && c.actionIds.length > 0) { cleanup(); resolve(); }
       });
       const timer = setTimeout(() => { cleanup(); resolve(); }, 180_000);
-      const cleanup = () => { clearTimeout(timer); mgr.off("event", onEvent); offCard(); };
+      cleanup = () => { clearTimeout(timer); mgr.off("event", onEvent); offCard(); };
       mgr.on("event", onEvent);
     });
+    // cancel() tears down the listener + timer without resolving — used when the
+    // send turned out to be a no-agent path (slash command / dropped message) so
+    // we don't leak the 180s timer or block on a done event that never comes.
+    return { done, cancel: () => cleanup() };
   }
 
   async dispose(): Promise<void> {

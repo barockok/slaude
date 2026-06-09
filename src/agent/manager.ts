@@ -53,6 +53,7 @@ export type AgentEvent =
   | { type: "toolCall"; sessionId: string; tool: string; input: unknown }
   | { type: "toolResult"; sessionId: string; tool: string; result: unknown }
   | { type: "thinking"; sessionId: string; text: string }
+  | { type: "turnStart"; sessionId: string }
   | { type: "done"; sessionId: string; autoEvolve?: boolean }
   | { type: "error"; sessionId: string; error: string }
   | { type: "tokenUsage"; sessionId: string; snapshot: UsageSnapshot }
@@ -135,6 +136,10 @@ export class AgentManager extends EventEmitter {
 
   /** Send user input. Starts session loop if not already live. */
   async sendMessage(sessionId: string, text: string) {
+    // Signal that a real user turn is starting for this session. Slash commands
+    // and dropped messages never reach here, so a listener can distinguish
+    // "agent will run" from "handled inline" without waiting for done/error.
+    this.emit("event", { type: "turnStart", sessionId } satisfies AgentEvent);
     const live = this.#live.get(sessionId);
     if (live) {
       // flush prior turn if any pending assistant content was buffered
