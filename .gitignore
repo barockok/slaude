@@ -16,3 +16,5 @@ target/
 .env*.swp
 coverage/
 data/
+verify-data/
+.env.verify
