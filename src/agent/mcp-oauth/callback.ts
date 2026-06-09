@@ -35,8 +35,11 @@ export function parseOAuthCallback(text: string): ParsedCallback {
   }
 
   // 2) Bare token: a single whitespace-free string that looks like an auth code.
-  //    No state available — the caller relies on thread+initiator scoping.
-  if (!/\s/.test(t) && /^[A-Za-z0-9._~\-]{8,}$/.test(t)) {
+  //    No state available — the caller relies on thread+initiator scoping. Require
+  //    >=20 chars (real authorization codes are long) so ordinary one-word replies
+  //    ("acknowledged", a short path) aren't swallowed as a code while a flow is
+  //    pending. Users should prefer pasting the full callback URL (carries state).
+  if (!/\s/.test(t) && /^[A-Za-z0-9._~\-]{20,}$/.test(t)) {
     return { code: t };
   }
 
