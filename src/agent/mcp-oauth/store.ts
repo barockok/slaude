@@ -35,6 +35,13 @@ export function oauthKey(serverName: string, cfg: OAuthServerConfig): string {
   return `${serverName}|${hash}`;
 }
 
+/** Boot-time canary: our oauthKey replica must still reproduce the pinned golden.
+ *  Returns false (caller disables /mcp + logs loud) if the formula drifts. */
+export function assertOAuthKeyCanary(): boolean {
+  return oauthKey("workbench", { type: "http", url: "https://mcp.example.com/sse", headers: {} })
+    === "workbench|c17ea65c6b709142";
+}
+
 /** Read-modify-write the credential file: set mcpOAuth[key], preserve every other
  *  key, write atomically (temp + rename) at 0600. `now` is injectable for tests. */
 export function writeEntry(
