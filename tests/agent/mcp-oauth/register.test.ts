@@ -12,10 +12,16 @@ describe("registerClient", () => {
     expect(seen.redirect_uris).toEqual(["http://localhost:5599/callback"]);
     expect(seen.token_endpoint_auth_method).toBe("none");
     expect(seen.grant_types).toContain("authorization_code");
+    expect(seen.grant_types).toContain("refresh_token");
   });
 
   it("throws on non-2xx", async () => {
     const f = async () => ({ status: 400, headers: { get: () => null }, json: async () => ({ error: "invalid" }) } as any);
     await expect(registerClient("https://as/register", "http://localhost:1/callback", f as any)).rejects.toThrow(/registration failed/i);
+  });
+
+  it("throws when response has no client_id", async () => {
+    const f = async () => ({ status: 201, headers: { get: () => null }, json: async () => ({}) } as any);
+    await expect(registerClient("https://as/register", "http://localhost:1/callback", f as any)).rejects.toThrow(/missing client_id/i);
   });
 });

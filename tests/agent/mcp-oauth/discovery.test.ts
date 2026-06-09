@@ -36,4 +36,12 @@ describe("discover", () => {
     const f = fetchStub({ "https://mcp.example.com/": { status: 401, headers: {} } });
     await expect(discover("https://mcp.example.com/", f as any)).rejects.toThrow(/resource_metadata/);
   });
+
+  it("throws a clear error when resource-metadata fetch returns 404", async () => {
+    const f = fetchStub({
+      "https://mcp.example.com/": { status: 401, headers: { "www-authenticate": 'Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"' } },
+      "https://mcp.example.com/.well-known/oauth-protected-resource": { status: 404 },
+    });
+    await expect(discover("https://mcp.example.com/", f as any)).rejects.toThrow(/metadata fetch failed/i);
+  });
 });
