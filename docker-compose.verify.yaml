@@ -1,0 +1,37 @@
+# /1on1 OAuth-isolation verification harness.
+#
+# WHY a separate compose: this must run on LINUX, where claude-code stores OAuth
+# creds in file form under $CLAUDE_CONFIG_DIR (so the per-initiator config-dir
+# isolation actually takes effect). On macOS the creds live in the global Keychain
+# and the isolation is a no-op — see docs/findings/2026-06-08-oauth-config-dir-1on1.md.
+#
+# Seed ./verify-data first:  ./scripts/verify-1on1.sh
+# Then:                      docker compose -f docker-compose.verify.yaml --env-file .env.verify run --rm verify
+services:
+  verify:
+    build: .
+    image: slaude:latest
+    container_name: slaude-verify
+    stdin_open: true            # interactive sim REPL
+    tty: true
+    # OAuth authorization-code flow uses a loopback callback. host networking makes
+    # it reachable from a browser on the SAME Linux host. On Docker-Desktop-for-mac
+    # this maps to the Linux VM (callback awkward) — prefer a real Linux host / VM.
+    network_mode: host
+    environment:
+      SLAUDE_HOME: /data
+      # Agent's OAuth home. File-based on Linux → a fresh per-initiator dir under
+      # /data/oauth/<userId> (set by /1on1) has no token → forces re-auth/disconnect.
+      CLAUDE_CONFIG_DIR: /data/.claude
+      SLAUDE_MODEL: ${SLAUDE_MODEL:-claude-sonnet-4-6}
+      # Agent LLM auth — provide ONE (maria/.env carries neither; the host normally
+      # supplies the claude subscription). CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      # grafana stdio MCP creds (from maria/.env). Workbench needs none (OAuth).
+      GRAFANA_URL: ${GRAFANA_URL:-}
+      GRAFANA_API_KEY: ${GRAFANA_API_KEY:-}
+    volumes:
+      - ./verify-data:/data
+    command: ["bun", "run", "sim"]
