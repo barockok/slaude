@@ -1,4 +1,4 @@
-type FetchLike = (url: string, init?: any) => Promise<{ status: number; headers: { get(n: string): string | null }; json(): Promise<any>; }>;
+import type { FetchLike } from "./types";
 
 export interface ClientInfo { clientId: string; clientSecret?: string; }
 
