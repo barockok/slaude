@@ -29,10 +29,22 @@ slaude runs **only** the initial OAuth handshake (because the Slack user can't),
 
 This keeps the shipped `CLAUDE_CONFIG_DIR` override as the runtime mechanism and adds only: a gate command, an OAuth client, and a store writer.
 
+### SDK-utilization boundary (what slaude does NOT reinvent)
+
+slaude must lean on the claude-code SDK for everything the SDK owns; it reimplements **only** the one step the SDK exposes no hook for.
+
+- **Credential session management — SDK/CLI owns it, slaude must not touch.** Token refresh, reconnect, connection lifecycle, expiry handling. These run inside the CLI's own MCP OAuth provider (`r2A` in `cli.js`), which reads `mcpOAuth[key]` from its store and refreshes off `clientId` + `refreshToken`. Because we write the token where the CLI looks, this is automatic. Non-goals already forbid a slaude refresh/reconnect path; this section is the positive statement of the same rule.
+- **Status — read from the SDK.** Server state comes from `Query.mcpServerStatus()` (`connected | failed | needs-auth | pending`), never a slaude-maintained mirror.
+- **The one unavoidable reimplementation — the initial handshake (Unit 1).** Verified against the installed SDK: the public `Query` interface exposes only `mcpServerStatus()` / `setMcpServers()`, and the control protocol subtypes are `initialize, interrupt, can_use_tool, set_permission_mode, set_model, set_max_thinking_tokens, mcp_status, rewind_files, hook_callback, mcp_message, mcp_set_servers` — **no oauth/authorize subtype**. The CLI's OAuth machinery (`a2A`, `r2A`, discovery/registration/exchange) is internal, not exported. So there is no SDK call to "run the OAuth grant"; Unit 1 performs the grant **once** and stops. It does NOT manage sessions, refresh, or reconnect — it hands the resulting tokens to the store and the CLI takes over. If a future SDK release adds a programmatic auth hook, Unit 1 is the single module to delete.
+
 ### The store format (reverse-engineered from `cli.js`, must be pinned)
 
 ```
-key = serverName + "|" + sha256( canonicalJson({ type, url, headers||{} }) ).hex.slice(0, 16)
+# NOT canonical/sorted JSON — the CLI uses plain JSON.stringify with a FIXED field
+# order and headers kept verbatim (insertion order from the server config). Do NOT
+# sort keys; doing so changes the hash and every server mismatches.
+key = serverName + "|" + sha256( JSON.stringify({ type, url, headers: headers||{} }) ).hex.slice(0, 16)
+# Source: cli.js `a2A(A,Q)` = Q1({type,url,headers||{}}); Q1 === JSON.stringify (no key sort).
 
 <CLAUDE_CONFIG_DIR>/.credentials.json:
   mcpOAuth[key] = {
@@ -44,6 +56,8 @@ key = serverName + "|" + sha256( canonicalJson({ type, url, headers||{} }) ).hex
 ```
 
 Validated against a known CLI-written entry (`workbench|33367cca58b918d7`). The CLI's refresh path keys off `clientId` + `refreshToken` in this same entry — so once written, refresh is native.
+
+**macOS write-path is a no-op (Linux/container only).** The CLI's store reader `Ow()` is keychain-backed on darwin: `Ow(){if(process.platform==="darwin")return pVQ(cVQ,V_1);return V_1}`, where `pVQ` is keychain-primary + file-fallback — `read()` returns the keychain blob if non-null and **only** falls to the file when it's null. So a `.credentials.json` write is *shadowed by the keychain* on macOS and the CLI never reads it. This extends the existing `resolveSessionConfigDir` darwin caveat (claudeAiOauth) to the **entire `mcpOAuth` store**. Consequence: the full connect→`connected` loop is verifiable only on Linux/container (the deploy target). On a macOS dev box only the store-writer unit/fixture (a pure function) round-trips; the "CLI reads the token → connected" leg cannot. The container smoke test (below) is the authoritative end-to-end check.
 
 ## Architecture
 
@@ -67,6 +81,7 @@ Unit-tested against mocked discovery/registration/token endpoints. No slaude glo
 
 - `oauthKey(serverName, serverConfig)` → the `serverName|hash16` key (replicates `a2A`).
 - `writeEntry(configDir, serverName, serverConfig, tokens)` → read-modify-write `<configDir>/.credentials.json`, set `mcpOAuth[key]`, preserve `claudeAiOauth` + other keys, `0600`.
+- **RMW race.** A still-live locked session's CLI child can refresh-write the same `.credentials.json` concurrently (the CLI refresh path also writes `mcpOAuth[key]`). `agent.reload` fires *after* the write, so a window exists where our read-modify-write and the CLI's overlap → lost update / truncated file. Mitigation: write atomically (temp file + `rename`), and prefer writing while the session is idle (no turn in flight) — the connect flow already pauses on `await waitForCode()`, so gate the write on session-idle before committing.
 - A **fixture test** asserts `oauthKey` reproduces the known `workbench|33367cca58b918d7` for that config — the canary that fails loudly if the CLI format changes.
 
 ### 3. Gate command — `parseSlashCommand` kind `mcp` + gateway handler
@@ -134,7 +149,7 @@ The authorize `redirect_uri` is `http://localhost:<port>/callback` on the slaude
 ## Alternatives considered
 
 - **`setMcpServers` header injection** (slaude owns token + refresh + reconnect). Rejected: slaude would re-own the whole lifecycle (refresh, reconnect) the CLI already does; the config-dir write lets the CLI own it. More code, parallel path.
-- **connect-broker** (`slaude_connect`, `mcp_call` proxy, CDP cred-scrape). Rejected by the owner: wrong layer; not the SDK's native MCP-HTTP-OAuth connection; borrow-model, not self-connect.
+- **connect-broker** (`slaude_connect`, `mcp_call` proxy, CDP cred-scrape). Rejected by the owner: wrong layer; not the SDK's native MCP-HTTP-OAuth connection; borrow-model, not self-connect. **Now removed entirely** — the `/1on1` per-initiator lock makes the borrow-on-behalf-of concept obsolete (each locked thread already runs *as* the initiator). The `slaude_connect` tool family, broker module, `connections`/`connection_grants`/`connection_audit` tables, `SLAUDE_ENABLE_CONNECT_BROKER` flag, and the `grantButtons`/borrow extensions to `ApprovalGate` are deleted in the same change set as this feature.
 - **Out-of-band `claude /mcp` bootstrap.** Rejected: Slack users have no CLI access.
 
 ## Open decisions
