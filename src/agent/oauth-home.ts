@@ -59,10 +59,26 @@ export function ensureInitiatorConfigDir(userId: string): string {
   return dir;
 }
 
+let warnedMacKeychain = false;
+
 /** CLAUDE_CONFIG_DIR override for a session given its /1on1 lock state.
  *  Locked → the initiator's isolated home (their OAuth identity).
- *  Unlocked → undefined (caller inherits the agent's config dir). */
+ *  Unlocked → undefined (caller inherits the agent's config dir).
+ *
+ *  macOS caveat: claude-code stores OAuth creds in the global login Keychain,
+ *  which CLAUDE_CONFIG_DIR does NOT isolate — so on darwin a locked session still
+ *  inherits the agent's tokens (the isolation is a no-op for OAuth servers). It
+ *  works on Linux (file-based `.credentials.json` under CLAUDE_CONFIG_DIR). We
+ *  still return the dir (filesystem isolation is harmless) but warn once so a
+ *  local macOS run doesn't read as a silent failure. */
 export function resolveSessionConfigDir(lockedUser: string | null | undefined): string | undefined {
   if (!lockedUser) return undefined;
+  if (process.platform === "darwin" && !warnedMacKeychain) {
+    warnedMacKeychain = true;
+    console.warn(
+      "[1on1] CLAUDE_CONFIG_DIR isolation is a no-op for OAuth MCP servers on macOS " +
+        "(creds live in the global Keychain). Verify on Linux; the deploy target isolates correctly.",
+    );
+  }
   return ensureInitiatorConfigDir(lockedUser);
 }
