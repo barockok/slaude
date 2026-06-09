@@ -118,17 +118,30 @@ Unit-tested against mocked discovery/registration/token endpoints. No slaude glo
      → CLI reads mcpOAuth[key] → connected; CLI owns refresh/reconnect thereafter
 ```
 
-## Loopback constraint (no public URL)
+## Callback modes — loopback vs paste-back
 
-The authorize `redirect_uri` is `http://localhost:<port>/callback` on the slaude host — never a public URL. The initiator's browser must reach that loopback:
+The authorization-code callback is delivered one of two ways, chosen by env. Uniqueness across concurrent flows never relies on the port — it rests on `state` (CSRF) plus the per-initiator-per-thread pending entry.
+
+### Loopback (default — local / same-host container)
+`redirect_uri = http://localhost:<port>/callback` on the slaude host — never a public URL. The initiator's browser must reach that loopback:
 - **local / sim:** works directly.
-- **container:** bind `0.0.0.0` + `docker -p <port>:<port>`; the initiator opens `localhost:<port>` on the Docker host. Port chosen from a configured range (`SLAUDE_OAUTH_LOOPBACK_PORTS`) so the `-p` map is known. Documented as a deploy constraint; still no public ingress.
+- **container:** bind `0.0.0.0` (`SLAUDE_OAUTH_LOOPBACK_HOST`); under `network_mode: host` no `-p` needed; under bridge networking pre-map `SLAUDE_OAUTH_LOOPBACK_PORTS` with `docker -p`. The browser opens `localhost:<port>` on the same host.
+
+### Paste-back (`SLAUDE_OAUTH_REDIRECT_URL` set — k8s / remote)
+**Why:** in k8s the pod can't expose an arbitrary runtime port, and the user's browser is remote from the pod — `localhost:<port>` would hit the *user's* machine. Loopback is structurally impossible. So there is **no listener**:
+
+1. slaude registers the client against the operator's **fixed static redirect page** (`SLAUDE_OAUTH_REDIRECT_URL`) and posts the authorize URL to the locked thread + a "paste the result back here" instruction.
+2. The IdP redirects the browser to that static page, which displays `?code&state` with copy instructions (operator-hosted; slaude does not serve it).
+3. The initiator **pastes the callback URL (or bare code) into the locked thread**. slaude parses it (`parseOAuthCallback`), matches the parked flow by `channel:thread:user`, validates `state`, and runs `exchange`.
+
+No port, no ingress *into* slaude — only that one static page need be reachable by the user. Pending flows expire (10 min); one in-flight connect per initiator per thread. The same `prepareConnect` core (register + PKCE + authorize URL + `exchange`) backs both modes; only the redirect target and the code-capture differ (listener vs pasted message). Trade-off: one copy-paste, and the `code` is briefly visible in-thread (single-use, short-lived).
 
 ## Error handling
 
 - discovery/registration/exchange failure → card `failed` + reason; pending torn down.
 - loopback timeout (no callback within N s) → expire, card prompts retry.
-- `state` mismatch on callback → reject (CSRF guard).
+- paste-back: pending flow expires after 10 min; a pasted message with no parseable `code` falls through to the agent normally.
+- `state` mismatch on callback (loopback listener OR pasted URL) → reject (CSRF guard).
 - no live `Query` for `mcpServerStatus` → "send a message first".
 - not locked / not the initiator → command rejected (gate).
 - `oauthKey` canary mismatch at startup → log loud + disable the command (format drift).
@@ -154,6 +167,7 @@ The authorize `redirect_uri` is `http://localhost:<port>/callback` on the slaude
 
 ## Open decisions
 
-- [ ] Command name: `/mcp` (mirrors claude-code) vs `/connect`. Default `/mcp`.
-- [ ] Loopback port strategy in container: fixed single port vs a small configured range.
-- [ ] Surface the authorize URL via the thread, or via Telegram/DM to the initiator (link is sensitive-ish; thread is simpler). Default: thread, ephemeral where possible.
+- [x] Command name: `/mcp` (mirrors claude-code). Shipped.
+- [x] Loopback port strategy: ephemeral under host networking; the configured range applies only to bridge-mapped deploys. For k8s/remote the port question is moot — **paste-back** is used instead (no listener). Shipped.
+- [x] Surface the authorize URL via the thread. Shipped (paste-back also reads the user's reply from the same locked thread).
+- [ ] Paste-back: a hosted static redirect page is operator-supplied (`SLAUDE_OAUTH_REDIRECT_URL`). slaude does not bundle one; a sample page (echo `code`+`state` + copy button) could ship in `docs/` later.
