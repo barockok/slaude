@@ -1,7 +1,7 @@
 # Design — `/mcp` Slack gate command: connect MCP HTTP OAuth in `/1on1` mode
 
 **Date:** 2026-06-09
-**Status:** Draft for review
+**Status:** Implemented (see plan + finding 2026-06-09-mcp-oauth-connect-1on1)
 **Related:** [[2026-06-08-oauth-config-dir-1on1]] (per-initiator `CLAUDE_CONFIG_DIR`, shipped `965de07`), [[2026-06-08-private-services-1on1]] (`/1on1` credential overlay), [[2026-05-29-contextual-mcp-connections]] (connect-broker — explicitly NOT this path).
 
 ## Problem
