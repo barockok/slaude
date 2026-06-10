@@ -69,9 +69,16 @@ export class CronScheduler {
 
     const session = this.#agent.ensureSession(threadKey);
 
-    // Cron fires by default even when the thread/channel session is live — scheduled
-    // jobs run on time regardless of human activity. (Same-job re-entry is still
-    // guarded by #running in #tick.)
+    // Cron fires by default even when the thread/channel session is live. A job may
+    // opt into passive mode (when_active='skip') to defer the run while a human is
+    // active — they get priority for that tick. (Same-job re-entry is still guarded
+    // by #running in #tick.)
+    if (job.whenActive === "skip" && this.#agent.isLive(session.id)) {
+      console.log(`[cron] job ${job.id} skipped — session ${session.id} is live (when_active=skip)`);
+      CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), "skipped: session live");
+      this.#running.delete(job.id);
+      return;
+    }
 
     // Let the adapter register a route so this session gets Slack MCP tools.
     this.#onExecute?.(job, session.id);
