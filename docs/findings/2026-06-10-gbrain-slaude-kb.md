@@ -1,7 +1,7 @@
 # gbrain × slaude — powering slaude_kb with a real brain
 
 **Date:** 2026-06-10
-**Status:** Design (pre-implementation)
+**Status:** Phase 1 implemented (slaude_kb v2: scoped brain, gated writes, KB wiki indexing). Phases 2-4 pending.
 **Verdict:** **Adopt gbrain. Embed as a Bun library, not as an external process.** License (MIT), stack (Bun ≥1.3.10, TypeScript, ESM), and architecture (engine library + MCP server + skills) all line up with slaude. The fit is unusually good — gbrain was built to be operated *by* an agent platform, and slaude *is* an agent platform missing exactly the brain layer gbrain ships.
 
 Repo studied: [garrytan/gbrain](https://github.com/garrytan/gbrain) @ v0.42.38.0 (clone at `/tmp/gbrain` during research). Note: **the npm package named `gbrain` is an unrelated project** (stormcolor/gbrain) — garrytan/gbrain must be consumed as a git dependency (`bun add github:garrytan/gbrain`) and pinned in `slaude.lock`-style fashion via `package.json` + `bun.lock`.
@@ -144,3 +144,22 @@ This is the "interacting with others as tools" answer in slaude's spirit: identi
 ## Decision
 
 Adopt gbrain as slaude's brain layer per above. Supersedes the bespoke roadmap items for semantic KB search, fact extraction, and the embedding-provider TODO in the memory open-decision. Phase 1 is the next implementation milestone.
+
+## Implementation notes (Phase 1, 2026-06-10)
+
+Plan: `docs/superpowers/plans/2026-06-10-gbrain-slaude-kb-phase1.md`. New modules:
+
+- `src/knowledge/brain.ts` — PGLite engine lifecycle under `$SLAUDE_BRAIN_HOME` (default `~/.slaude/brain/`; sets `GBRAIN_HOME` there), `brainCall` (remote:true + synthetic AuthInfo → gbrain SQL scoping), `brainAdminCall` (remote:false, boot/admin), `ensureSources`.
+- `src/knowledge/scope.ts` — Slack identity → `BrainScope`; sources `agent`/`shared`/`public`/`user-<id>`/`kb-<label>`.
+- `src/knowledge/gated-dispatch.ts` — op tier classification (auto/approval/manager/deny) + Surface `requestApproval` bridge.
+- `src/knowledge/brain-sync.ts` — installed KB wikis imported as `kb-<label>` sources at boot.
+- `src/knowledge/mcp-tools.ts` — slaude_kb v2: `kb_think/kb_search/kb_get_page/kb_list_pages/kb_graph/kb_put_page/kb_delete_page` (legacy 3 tools kept).
+
+Spike caveats that shaped the code:
+- A `put_page` into a nonexistent source spins indefinitely — `ensureSources()` runs at gateway boot before any tool can write.
+- `sync_brain` source routing falls back to "sole non-default source"; `syncKbWikis` pins `GBRAIN_SOURCE` per call, sequentially.
+- gbrain's TS sources don't compile under slaude's tsc strictness — `brain.ts` erases import specifiers (`gbrainImport`) so typecheck never descends into the package.
+- `sources_list` returns `{ sources: [...] }`, not a bare array.
+- npm `gbrain` is unrelated; dep pinned to `github:garrytan/gbrain#03ffc6e`.
+
+Env: `SLAUDE_BRAIN_HOME` (override location), `SLAUDE_BRAIN_DISABLED=1` (kill switch — legacy keyword tools remain).
