@@ -44,7 +44,7 @@ slaude/
       slack/       # slack-bolt Socket Mode adapter, engagement, approval
     soul/          # SOUL.md loader + structured extraction + system prompt
     skills/        # skill discovery + evolution MCP + manifest sync
-    knowledge/     # KB loader + MCP tools + ingest engine
+    knowledge/     # KB loader + brain (gbrain engine: scoped search/think, gated writes) + ingest
     memory/        # memory provider interface (sqlite + markdown)
     db/            # bun:sqlite schema (sessions, kb_ingest_jobs)
     config/        # env, $SLAUDE_HOME, mcp.json loader, manifest schema
