@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadKbs } from "./loader";
 import { brainCall, brainEnabled } from "./brain";
+import { brainThink } from "./brain-think";
 import { gatedBrainCall, type ApprovalReq, type ApprovalRes, type GateInput } from "./gated-dispatch";
 import type { BrainScope } from "./scope";
 
@@ -77,6 +78,8 @@ export interface BrainToolDeps {
   requestApproval: (r: ApprovalReq) => Promise<ApprovalRes>;
   /** Injectable op caller (tests). Default: brainCall with current scope. */
   call?: (name: string, params: Record<string, unknown>, scope: BrainScope) => Promise<unknown>;
+  /** Injectable think (tests). Default: brainThink (SDK-routed synthesis). */
+  think?: (question: string, scope: BrainScope) => Promise<unknown>;
 }
 
 const asJson = (v: unknown): ToolResult => ok(typeof v === "string" ? v : JSON.stringify(v, null, 2));
@@ -108,7 +111,15 @@ async function runGated(name: string, params: Record<string, unknown>, summary: 
 }
 
 export const brainHandlers = {
-  kb_think: (p: { question: string }, d: BrainToolDeps) => runRead("think", { question: p.question }, d),
+  kb_think: async (p: { question: string }, d: BrainToolDeps): Promise<ToolResult> => {
+    try {
+      // SDK-routed synthesis (subscription auth) — not the raw think op.
+      const think = d.think ?? brainThink;
+      return asJson(await think(p.question, d.scope()));
+    } catch (e) {
+      return err(`brain think failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  },
   kb_search: (p: { query: string; limit?: number }, d: BrainToolDeps) =>
     runRead("search", { query: p.query, ...(p.limit ? { limit: p.limit } : {}) }, d),
   kb_get_page: (p: { slug: string }, d: BrainToolDeps) => runRead("get_page", { slug: p.slug }, d),
