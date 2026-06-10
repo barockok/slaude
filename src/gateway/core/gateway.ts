@@ -27,7 +27,7 @@ import * as Sessions from "../../db/sessions";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { loadExternalMcp, privateOverrides } from "./external-mcp";
 import { randomBytes } from "node:crypto";
-import { ensureInitiatorConfigDir } from "../../agent/oauth-home";
+import { ensureInitiatorConfigDir, agentConfigDir } from "../../agent/oauth-home";
 import { writeEntry, type OAuthServerConfig, type OAuthTokens } from "../../agent/mcp-oauth/store";
 import { discover } from "../../agent/mcp-oauth/discovery";
 import { beginConnect, prepareConnect } from "../../agent/mcp-oauth/client";
@@ -246,8 +246,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return prepareConnect({ serverName, serverConfig, meta, redirectUri });
   });
 
+  // OAuth connect scope: "initiator" writes to the per-user config home (inside a
+  // /1on1 lock); "global" writes to the agent's own config dir (manager-driven, no
+  // lock — connects the agent's shared identity).
+  type ConnectScope = "initiator" | "global";
+
   // Pending /mcp connect buttons: token → the context needed to run the connect.
-  const pendingMcp = new Map<string, { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string }>();
+  const pendingMcp = new Map<string, { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string; scope: ConnectScope }>();
 
   // Paste-back: a started-but-not-completed OAuth flow, keyed by channel:thread:user
   // (one in-flight connect per initiator per thread). The initiator completes it by
@@ -258,6 +263,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     serverName: string;
     serverConfig: OAuthServerConfig;
     sessionId: string; channelId: string; threadTs: string; userId: string;
+    scope: ConnectScope;
     expiresAt: number;
   };
   const pendingPaste = new Map<string, PendingPaste>();
@@ -272,17 +278,19 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return out;
   };
 
-  /** Persist freshly-exchanged tokens into the initiator's CLI store and reboot the
-   *  locked session so the CLI picks them up. Shared by loopback + paste paths. */
-  async function persistTokens(a: { sessionId: string; userId: string; serverName: string; serverConfig: OAuthServerConfig }, tokens: OAuthTokens) {
-    // ensureInitiatorConfigDir seeds + creates the dir; writeEntry does not mkdir,
-    // and the connect flow may run before any locked session has booted.
-    const configDir = ensureInitiatorConfigDir(a.userId);
+  /** Persist freshly-exchanged tokens into the CLI store and reboot the session so
+   *  the CLI picks them up. "initiator" scope writes the per-user config home;
+   *  "global" scope writes the agent's own config dir. Shared by loopback + paste. */
+  async function persistTokens(a: { sessionId: string; userId: string; serverName: string; serverConfig: OAuthServerConfig; scope: ConnectScope }, tokens: OAuthTokens) {
+    // initiator: ensureInitiatorConfigDir seeds + creates the dir (the connect flow
+    // may run before any locked session has booted). global: the agent config dir is
+    // the live CLAUDE_CONFIG_DIR — already present, just write into it.
+    const configDir = a.scope === "global" ? agentConfigDir() : ensureInitiatorConfigDir(a.userId);
     writeEntry(configDir, a.serverName, a.serverConfig, tokens);
     agent.reload(a.sessionId);
   }
 
-  async function connectServer(a: { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string; serverCfg: any }) {
+  async function connectServer(a: { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string; serverCfg: any; scope: ConnectScope }) {
     const post = (text: string) => t.client.chat.postMessage({ channel: a.channelId, thread_ts: a.threadTs, text });
     const serverConfig: OAuthServerConfig = { type: "http", url: a.serverCfg.url, headers: a.serverCfg.headers };
     const redirectUrl = env.oauthRedirectUrl();
@@ -301,6 +309,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           serverName: a.serverName,
           serverConfig,
           sessionId: a.sessionId, channelId: a.channelId, threadTs: a.threadTs, userId: a.userId,
+          scope: a.scope,
           expiresAt: Date.now() + 10 * 60_000,
         });
         await post(
@@ -319,7 +328,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         serverName: a.serverName, serverConfig,
         postAuthorizeUrl: async (url) => { await post(`:link: Authorize \`${a.serverName}\`: ${url}\n(opens a browser; the loopback captures the result)`); },
       });
-      await persistTokens({ sessionId: a.sessionId, userId: a.userId, serverName: a.serverName, serverConfig }, tokens);
+      await persistTokens({ sessionId: a.sessionId, userId: a.userId, serverName: a.serverName, serverConfig, scope: a.scope }, tokens);
       await post(`:white_check_mark: \`${a.serverName}\` connected. Next message will use it.`);
     } catch (e) {
       await post(`:x: \`${a.serverName}\` connect failed: ${(e as Error).message}`);
@@ -347,12 +356,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const token = (action as { action_id: string }).action_id.replace(/^slaude_mcp:connect:/, "");
     const ctx = pendingMcp.get(token);
     if (!ctx) return;
-    // Slack shows the button to everyone in the thread. Only the user who owns the
-    // /1on1 lock (and who originally requested the card) may trigger the connect —
-    // otherwise a bystander could drive the initiator's OAuth grant.
+    // Slack shows the button to everyone in the thread. The clicker must be the user
+    // who originally requested the card, and still authorized for the card's scope:
+    //   initiator → they must still own the /1on1 lock (bystanders can't drive an
+    //               initiator's OAuth grant; a dropped lock invalidates the card).
+    //   global    → no lock, and they must still be the manager/backup.
     const clicker = (body as any).user?.id;
-    const lock = OneOnOne.find(ctx.channelId, ctx.threadTs);
-    if (clicker !== ctx.userId || !lock || lock.locked_user !== ctx.userId) return;
+    if (clicker !== ctx.userId) return;
+    if (ctx.scope === "initiator") {
+      const lock = OneOnOne.find(ctx.channelId, ctx.threadTs);
+      if (!lock || lock.locked_user !== ctx.userId) return;
+    } else {
+      if (OneOnOne.find(ctx.channelId, ctx.threadTs)) return; // a lock appeared — global no longer applies
+      const soul = soulData();
+      if (ctx.userId !== soul.manager.userId && ctx.userId !== soul.backupManager.userId) return;
+    }
     pendingMcp.delete(token);
     const cfg = httpExternalServers()[ctx.serverName];
     if (!cfg) return;
@@ -551,10 +569,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       thread_ts: threadTs,
     });
 
-    // Paste-back OAuth completion: if this initiator has a parked /mcp connect in
-    // this thread and the message carries the callback (URL or bare code), finish
-    // the flow here and do NOT forward to the model. The 1on1 lock check above
-    // guarantees only the initiator reaches this point in a locked thread.
+    // Paste-back OAuth completion: if this user has a parked /mcp connect in this
+    // thread and the message carries the callback (URL or bare code), finish the flow
+    // here and do NOT forward to the model. The binding is the pendingPaste key
+    // (channel:thread:userId) on the signed inbound userId — a bystander's paste maps
+    // to a different key and finds no entry. (Holds for both initiator and global
+    // scope; global has no lock, so the key, not the lock, is what binds.)
     {
       const pkey = pasteKey(channelId, threadTs, userId);
       const pend = pendingPaste.get(pkey);
@@ -637,12 +657,26 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         return;
       }
       if (slash.kind === "mcp") {
-        // /mcp is initiator-only and only inside a /1on1-locked thread: the connect
-        // writes tokens into THIS user's isolated config home, so it must be their lock.
+        // Two scopes:
+        //   inside a /1on1 lock → "initiator": the connect writes into THIS user's
+        //     isolated config home, so it must be their own lock.
+        //   no lock → "global": the connect writes into the agent's own config dir,
+        //     wiring the agent's shared identity — manager/backup only.
         const lock = OneOnOne.find(channelId, threadTs);
-        if (!lock || lock.locked_user !== userId) {
-          await reply(":lock: `/mcp` requires a 1on1 lock you own — run `/1on1` first, then connect your own MCP servers.");
-          return;
+        let scope: ConnectScope;
+        if (lock) {
+          if (lock.locked_user !== userId) {
+            await reply(`:lock: \`/mcp\` in a 1on1 thread is for the lock owner — only <@${lock.locked_user}> can connect here.`);
+            return;
+          }
+          scope = "initiator";
+        } else {
+          const soul = soulData();
+          if (userId !== soul.manager.userId && userId !== soul.backupManager.userId) {
+            await reply(":lock: global `/mcp` connect is manager-only — it wires the agent's shared identity. Run `/1on1` first to connect your *own* MCP servers instead.");
+            return;
+          }
+          scope = "global";
         }
         if (opts.mcpConnectEnabled === false) {
           await reply(":warning: `/mcp` connect is temporarily disabled (store-format canary failed) — see server logs.");
@@ -656,7 +690,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await reply(`:warning: unknown HTTP MCP server \`${name ?? ""}\`. Run \`/mcp\` to list connectable servers.`);
             return;
           }
-          await connectServer({ sessionId: session.id, channelId, threadTs, userId, serverName: name, serverCfg: httpServers[name] });
+          await connectServer({ sessionId: session.id, channelId, threadTs, userId, serverName: name, serverCfg: httpServers[name], scope });
           return;
         }
 
@@ -674,7 +708,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (connectable.length) {
           const elements = connectable.map((s) => {
             const token = randomBytes(8).toString("hex");
-            pendingMcp.set(token, { sessionId: session.id, channelId, threadTs, userId, serverName: s.name });
+            pendingMcp.set(token, { sessionId: session.id, channelId, threadTs, userId, serverName: s.name, scope });
             return {
               type: "button",
               text: { type: "plain_text", text: `Connect ${s.name}` },
