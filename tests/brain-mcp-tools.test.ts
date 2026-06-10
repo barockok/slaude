@@ -6,6 +6,7 @@ const scope: BrainScope = { clientId: "U1", sourceId: "shared", allowedSources: 
 const deps = (over: Partial<BrainToolDeps> = {}): BrainToolDeps => ({
   scope: () => scope,
   gate: () => ({ userId: "U1", lockedUser: null, channelTrust: "trusted", isManager: false }),
+  managers: () => ["UMGR"],
   requestApproval: async () => ({ approved: true, by: "UMGR" }),
   call: async (name) => ({ echoed: name }),
   ...over,

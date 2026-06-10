@@ -52,7 +52,7 @@ describe("gatedBrainCall", () => {
   test("auto tier calls through without approval", async () => {
     let approvals = 0;
     const r = await gatedBrainCall("search", {
-      scope: scopeFor(gate()), gate: gate(),
+      scope: scopeFor(gate()), gate: gate(), managers: ["UMGR"],
       requestApproval: async () => { approvals++; return { approved: true, by: "x" }; },
       call: async () => ["hit"], describe: "search",
     });
@@ -61,7 +61,7 @@ describe("gatedBrainCall", () => {
   });
   test("approval tier asks and respects denial", async () => {
     const r = await gatedBrainCall("put_page", {
-      scope: scopeFor(gate()), gate: gate(),
+      scope: scopeFor(gate()), gate: gate(), managers: ["UMGR"],
       requestApproval: async () => ({ approved: false, by: "UMGR", note: "nope" }),
       call: async () => { throw new Error("must not run"); }, describe: "write page",
     });
@@ -70,27 +70,58 @@ describe("gatedBrainCall", () => {
   });
   test("approval tier runs call after approval", async () => {
     const r = await gatedBrainCall("put_page", {
-      scope: scopeFor(gate()), gate: gate(),
+      scope: scopeFor(gate()), gate: gate(), managers: ["UMGR"],
       requestApproval: async () => ({ approved: true, by: "UMGR" }),
       call: async () => "written", describe: "write page",
     });
     expect(r).toEqual({ ok: true, result: "written" });
   });
-  test("manager tier routes approval with kb-admin category", async () => {
+  test("manager tier routes approval with kb-admin category, manager click passes", async () => {
     let category: string | undefined;
     const r = await gatedBrainCall("sources_add", {
-      scope: scopeFor(gate()), gate: gate(),
+      scope: scopeFor(gate()), gate: gate(), managers: ["UMGR", "UBACKUP"],
       requestApproval: async (req) => { category = req.category; return { approved: true, by: "UMGR" }; },
       call: async () => "added", describe: "add source",
     });
     expect(r.ok).toBe(true);
     expect(category).toBe("kb-admin");
   });
+
+  test("manager tier rejects approval clicked by non-manager", async () => {
+    let called = 0;
+    const r = await gatedBrainCall("sources_remove", {
+      scope: scopeFor(gate()), gate: gate(), managers: ["UMGR"],
+      requestApproval: async () => ({ approved: true, by: "U0RANDO" }),
+      call: async () => { called++; return null; }, describe: "remove source",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain("manager");
+    expect(called).toBe(0);
+  });
+
+  test("manager tier fails closed when no manager configured", async () => {
+    const r = await gatedBrainCall("purge_deleted_pages", {
+      scope: scopeFor(gate()), gate: gate(), managers: [],
+      requestApproval: async () => ({ approved: true, by: "UMGR" }),
+      call: async () => null, describe: "purge",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain("manager");
+  });
+
+  test("plain approval tier does NOT require manager click", async () => {
+    const r = await gatedBrainCall("put_page", {
+      scope: scopeFor(gate()), gate: gate(), managers: ["UMGR"],
+      requestApproval: async () => ({ approved: true, by: "U0APP" }),
+      call: async () => "written", describe: "write",
+    });
+    expect(r).toEqual({ ok: true, result: "written" });
+  });
   test("deny tier never calls approval or op", async () => {
     const g = gate({ channelTrust: "public" });
     let touched = 0;
     const r = await gatedBrainCall("put_page", {
-      scope: scopeFor(g), gate: g,
+      scope: scopeFor(g), gate: g, managers: ["UMGR"],
       requestApproval: async () => { touched++; return { approved: true, by: "x" }; },
       call: async () => { touched++; return null; }, describe: "write",
     });
