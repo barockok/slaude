@@ -22,6 +22,7 @@ import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME } from "../../knowledge/mcp-tools";
 import { brainEnabled, ensureSources } from "../../knowledge/brain";
+import { syncKbWikis } from "../../knowledge/brain-sync";
 import { channelTrustFor, kbSourceId, resolveBrainScope } from "../../knowledge/scope";
 import type { GateInput } from "../../knowledge/gated-dispatch";
 import { loadKbs } from "../../knowledge/loader";
@@ -195,8 +196,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     console.log(`[mcp] private (1on1-scoped) services: ${externalMcp.privateServices.join(", ")}`);
   }
   // Brain source bootstrap — sources MUST exist before any kb_put_page runs.
+  // KB wiki import runs after, in the background; failures are logged, not fatal.
   if (brainEnabled()) {
-    void ensureSources().catch((e) => console.error("[brain] source bootstrap failed:", e));
+    void ensureSources()
+      .then(() => syncKbWikis())
+      .then((rs) => {
+        for (const r of rs) {
+          if (r.ok) console.log(`[brain] kb wiki indexed: ${r.label}`);
+          else console.error(`[brain] kb sync failed for ${r.label}: ${r.error}`);
+        }
+      })
+      .catch((e) => console.error("[brain] source bootstrap failed:", e));
   }
   // Stop-hook enforcement: if a turn ends without any user-visible Slack tool
   // (reply / edit / upload), block the stop once with an instruction that
