@@ -52,9 +52,15 @@ export function embeddingConfigured(): boolean {
  */
 export function applyEmbeddingEnv(): void {
   const url = process.env.EMBEDDING_URL;
-  if (!url) return;
-  process.env.LITELLM_BASE_URL = url;
-  if (process.env.EMBEDDING_API_KEY) process.env.LITELLM_API_KEY = process.env.EMBEDDING_API_KEY;
+  const model = process.env.EMBEDDING_MODEL;
+  // Provider-qualified model ("zeroentropyai:zembed-1") needs no URL — the
+  // native recipe resolves its own endpoint from its provider key env.
+  const providerQualified = !!model && model.includes(":");
+  if (!url && !providerQualified) return;
+  if (url) {
+    process.env.LITELLM_BASE_URL = url;
+    if (process.env.EMBEDDING_API_KEY) process.env.LITELLM_API_KEY = process.env.EMBEDDING_API_KEY;
+  }
   if (embeddingConfigured()) return;
   const home = brainHome();
   mkdirSync(home, { recursive: true });
@@ -65,8 +71,8 @@ export function applyEmbeddingEnv(): void {
   } catch {
     // missing or unreadable → start fresh
   }
-  cfg.embedding_model = `litellm:${process.env.EMBEDDING_MODEL ?? "text-embedding-3-small"}`;
-  cfg.embedding_dimensions = Number(process.env.EMBEDDING_DIMENSIONS ?? 1536);
+  cfg.embedding_model = providerQualified ? model! : `litellm:${model ?? "text-embedding-3-small"}`;
+  cfg.embedding_dimensions = Number(process.env.EMBEDDING_DIMENSIONS ?? (providerQualified ? 2560 : 1536));
   writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n");
 }
 
