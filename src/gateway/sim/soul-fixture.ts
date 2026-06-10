@@ -9,6 +9,8 @@ export interface SoulFixture {
   approvers: string[];
   trusted: string[];
   allowed: string[];
+  /** Users allowed to DM directly, on top of manager/backup. */
+  dmAllowed?: string[];
 }
 
 /** The default sim world: a manager, a backup, one approver, one trusted + one allowed
@@ -43,6 +45,9 @@ export function writeSoulFixture(f: SoulFixture): void {
     "## Trusted channels",
     ...f.trusted.map((c) => `- ${c}`),
     "",
+    "## DM allowlist",
+    ...(f.dmAllowed ?? []).map((u) => `- <@${u}>`),
+    "",
   ];
   writeFileSync(paths.soul, lines.join("\n"), "utf8");
 
@@ -54,6 +59,7 @@ export function writeSoulFixture(f: SoulFixture): void {
     approvers: f.approvers.map((userId) => ({ userId, scope: "anything", catchall: true })),
     trustedChannels: f.trusted,
     allowedChannels: f.allowed,
+    dmAllowedUsers: f.dmAllowed ?? [],
   });
   setSoulData(data);
 }
