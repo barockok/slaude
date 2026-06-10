@@ -164,7 +164,7 @@ describe("CronScheduler", () => {
     expect(updated!.lastResult).toMatch(/^error: missing Slack keys/);
   });
 
-  test("tick skips already-live session", async () => {
+  test("tick fires even when the session is live (cron runs by default)", async () => {
     const now = Date.now();
     const job = CronJobs.create({
       slackTeamId: "T1",
@@ -183,9 +183,10 @@ describe("CronScheduler", () => {
     scheduler.start();
     await new Promise((r) => setTimeout(r, 20));
     scheduler.stop();
-    expect(sendMessage).toHaveBeenCalledTimes(0);
+    // A live session no longer suppresses the cron — it dispatches regardless.
+    expect(sendMessage).toHaveBeenCalledTimes(1);
     const updated = CronJobs.findById(job.id);
-    expect(updated!.lastResult).toBe("skipped: session live");
+    expect(updated!.lastResult).not.toBe("skipped: session live");
   });
 
   test("tick executes due job with Slack keys and waits for done event", async () => {
