@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
 import { loadKbs } from "./loader";
@@ -42,11 +42,40 @@ export function embeddingConfigured(): boolean {
   }
 }
 
+/**
+ * Provider-generic embedding config, mirroring slaude's ANTHROPIC_BASE_URL
+ * pattern: EMBEDDING_URL (+ EMBEDDING_API_KEY, EMBEDDING_MODEL,
+ * EMBEDDING_DIMENSIONS) point at any OpenAI-compatible /v1/embeddings
+ * endpoint. Mapped onto gbrain's `litellm:` recipe (its generic
+ * base-URL+key passthrough). An explicit embedding_model already in
+ * config.json always wins — env never clobbers operator config.
+ */
+export function applyEmbeddingEnv(): void {
+  const url = process.env.EMBEDDING_URL;
+  if (!url) return;
+  process.env.LITELLM_BASE_URL = url;
+  if (process.env.EMBEDDING_API_KEY) process.env.LITELLM_API_KEY = process.env.EMBEDDING_API_KEY;
+  if (embeddingConfigured()) return;
+  const home = brainHome();
+  mkdirSync(home, { recursive: true });
+  const cfgPath = join(home, "config.json");
+  let cfg: Record<string, unknown> = {};
+  try {
+    cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as Record<string, unknown>;
+  } catch {
+    // missing or unreadable → start fresh
+  }
+  cfg.embedding_model = `litellm:${process.env.EMBEDDING_MODEL ?? "text-embedding-3-small"}`;
+  cfg.embedding_dimensions = Number(process.env.EMBEDDING_DIMENSIONS ?? 1536);
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n");
+}
+
 async function boot(): Promise<Engine> {
   const home = brainHome();
   mkdirSync(home, { recursive: true });
   // gbrain reads GBRAIN_HOME for config.json, lock files, clones.
   process.env.GBRAIN_HOME = home;
+  applyEmbeddingEnv();
   const { createEngine } = (await gbrainImport("engine-factory")) as { createEngine: (c: object) => Promise<Engine> };
   const cfg = { engine: "pglite" as const, database_path: join(home, "db") };
   const engine = (await createEngine(cfg)) as Engine;
