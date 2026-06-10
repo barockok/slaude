@@ -22,6 +22,13 @@ writeFileSync(join(kbDir, "README.md"), "---\ndescription: runbook\n---\n# Runbo
 writeFileSync(join(wiki, "alerts.md"), "# Alerts\nGrafana dashboard quirks for billing.\n");
 // Literal fixture commands only — no interpolated input.
 execSync(`git init -q && git add -A && git -c user.email=t@t -c user.name=t commit -qm init`, { cwd: wiki });
+
+// Second KB deliberately WITHOUT .git — mirrors image-baked installs
+// (slaude install copies content only). syncKbWikis must self-init.
+const kbDir2 = join(paths.knowledge, "nogit");
+mkdirSync(kbDir2, { recursive: true });
+writeFileSync(join(kbDir2, "README.md"), "---\ndescription: nogit kb\n---\n# NoGit\n");
+writeFileSync(join(kbDir2, "rates.md"), "# Rates\nLending margin xylophone fact.\n");
 clearKbCache();
 
 afterAll(async () => {
@@ -29,6 +36,7 @@ afterAll(async () => {
   delete process.env.SLAUDE_BRAIN_HOME;
   rmSync(brainDir, { recursive: true, force: true });
   rmSync(kbDir, { recursive: true, force: true });
+  rmSync(kbDir2, { recursive: true, force: true });
   clearKbCache();
 });
 
@@ -39,6 +47,16 @@ describe("syncKbWikis (integration)", () => {
     expect(results.find((r) => r.label === "runbook")?.ok).toBe(true);
     const src = kbSourceId("runbook");
     const hits = (await brainCall("search", { query: "grafana billing" }, {
+      clientId: "U1", sourceId: "shared", allowedSources: ["shared", src],
+    })) as unknown[];
+    expect(hits.length).toBeGreaterThan(0);
+  }, 60_000);
+
+  test("self-inits git for KBs installed without .git", async () => {
+    const results = await syncKbWikis();
+    expect(results.find((r) => r.label === "nogit")?.ok).toBe(true);
+    const src = kbSourceId("nogit");
+    const hits = (await brainCall("search", { query: "xylophone lending" }, {
       clientId: "U1", sourceId: "shared", allowedSources: ["shared", src],
     })) as unknown[];
     expect(hits.length).toBeGreaterThan(0);
