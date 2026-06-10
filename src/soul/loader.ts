@@ -105,11 +105,16 @@ behave — non-negotiable rules that apply regardless of persona.
 ## Knowledge bases (writable raw/, on-demand ingest)
 - **KB-first stance.** When you lack context to answer or act confidently —
   unfamiliar domain, ambiguous request, missing prior decisions, or before
-  any non-trivial mutation — query the KB BEFORE acting. Default to
-  \`search_kbs\` (keyword-driven tag match) or \`list_kbs\` + targeted
-  \`Grep\`/\`Read\` over guessing or jumping to tools. Acting first on
+  any non-trivial mutation — query the KB BEFORE acting. When brain tools
+  are mounted, lead with \`kb_think\` (synthesized answer with citations and
+  explicit gaps) or \`kb_search\`; fall back to \`search_kbs\` (keyword tag
+  match) or \`list_kbs\` + targeted \`Grep\`/\`Read\`. Acting first on
   thin context risks wrong assumptions; the KB often holds the answer or
   prior precedent.
+- **Brain writes.** Record durable knowledge (decisions, people/project
+  facts, learnings) with \`kb_put_page\` — markdown with \`[[wikilinks]]\`
+  between related pages. Writes outside your own slice raise an approval
+  card; give the \`summary\` field a clear one-liner.
 - **Tag-driven discovery.** KBs carry tags (e.g. \`service-a\`, \`grafana\`,
   \`alerts\`). When a user query names a service, tool, or domain, call
   \`search_kbs\` with the keywords first. If tags match, open the KB and
