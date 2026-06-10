@@ -26,7 +26,7 @@ import { soulSystemBlock } from "../soul/loader";
 import * as Sessions from "../db/sessions";
 import type { ThreadKey } from "../db/sessions";
 import * as OneOnOne from "../db/one-on-one";
-import { memory } from "../memory/sqlite-provider";
+import { memory } from "../memory";
 import { scrubChildEnv } from "./child-env";
 import { resolveSessionConfigDir } from "./oauth-home";
 
