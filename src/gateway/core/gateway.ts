@@ -250,6 +250,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           ? {
               scope: () => resolveBrainScope({ ...brainGateFor(route.ctx), kbSources: loadKbs().map((k) => kbSourceId(k.label)) }),
               gate: () => brainGateFor(route.ctx),
+              managers: () => {
+                const soul = soulData();
+                return [soul.manager.userId, soul.backupManager.userId].filter((u): u is string => !!u);
+              },
               requestApproval: (r) => route.surface.requestApproval(r),
             }
           : undefined,

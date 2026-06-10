@@ -72,6 +72,8 @@ export const kbHandlers = {
 export interface BrainToolDeps {
   scope: () => BrainScope;
   gate: () => GateInput;
+  /** Manager + backup user ids — hard backstop for kb-admin approvals. */
+  managers: () => string[];
   requestApproval: (r: ApprovalReq) => Promise<ApprovalRes>;
   /** Injectable op caller (tests). Default: brainCall with current scope. */
   call?: (name: string, params: Record<string, unknown>, scope: BrainScope) => Promise<unknown>;
@@ -94,6 +96,7 @@ async function runGated(name: string, params: Record<string, unknown>, summary: 
     const r = await gatedBrainCall(name, {
       scope: d.scope(),
       gate: d.gate(),
+      managers: d.managers(),
       requestApproval: d.requestApproval,
       call: () => call(name, params, d.scope()),
       describe: summary,

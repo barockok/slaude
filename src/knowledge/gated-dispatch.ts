@@ -61,6 +61,10 @@ export interface ApprovalRes {
 export interface GatedCallDeps {
   scope: BrainScope;
   gate: GateInput;
+  /** Slack user ids allowed to approve manager-tier (kb-admin) ops — the
+   *  manager + backup. ApprovalGate routing is config-driven; this is the
+   *  hard backstop on WHO clicked, independent of routing. */
+  managers: string[];
   requestApproval: (r: ApprovalReq) => Promise<ApprovalRes>;
   call: () => Promise<unknown>;
   describe: string;
@@ -73,6 +77,9 @@ export async function gatedBrainCall(op: string, d: GatedCallDeps): Promise<Gate
   if (tier === "deny") {
     return { ok: false, reason: `kb operation "${op}" is not allowed from this channel` };
   }
+  if (tier === "manager" && d.managers.length === 0) {
+    return { ok: false, reason: `kb operation "${op}" requires a manager and none is configured in SOUL.md` };
+  }
   if (tier === "approval" || tier === "manager") {
     const r = await d.requestApproval({
       summary: d.describe,
@@ -80,6 +87,9 @@ export async function gatedBrainCall(op: string, d: GatedCallDeps): Promise<Gate
       category: tier === "manager" ? "kb-admin" : "kb",
     });
     if (!r.approved) return { ok: false, reason: `denied by ${r.by}${r.note ? `: ${r.note}` : ""}` };
+    if (tier === "manager" && !d.managers.includes(r.by)) {
+      return { ok: false, reason: `kb operation "${op}" needs manager approval — approved by ${r.by}, who is not the manager` };
+    }
   }
   return { ok: true, result: await d.call() };
 }
