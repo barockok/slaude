@@ -21,6 +21,11 @@ import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME } from "../../knowledge/mcp-tools";
+import { brainEnabled, ensureSources } from "../../knowledge/brain";
+import { syncKbWikis } from "../../knowledge/brain-sync";
+import { channelTrustFor, kbSourceId, resolveBrainScope } from "../../knowledge/scope";
+import type { GateInput } from "../../knowledge/gated-dispatch";
+import { loadKbs } from "../../knowledge/loader";
 import { resolveUserName } from "../slack/users";
 import { downloadAttachments, type SlackFile } from "../slack/attachments";
 import * as Sessions from "../../db/sessions";
@@ -190,6 +195,19 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   if (externalMcp.privateServices.length) {
     console.log(`[mcp] private (1on1-scoped) services: ${externalMcp.privateServices.join(", ")}`);
   }
+  // Brain source bootstrap — sources MUST exist before any kb_put_page runs.
+  // KB wiki import runs after, in the background; failures are logged, not fatal.
+  if (brainEnabled()) {
+    void ensureSources()
+      .then(() => syncKbWikis())
+      .then((rs) => {
+        for (const r of rs) {
+          if (r.ok) console.log(`[brain] kb wiki indexed: ${r.label}`);
+          else console.error(`[brain] kb sync failed for ${r.label}: ${r.error}`);
+        }
+      })
+      .catch((e) => console.error("[brain] source bootstrap failed:", e));
+  }
   // Stop-hook enforcement: if a turn ends without any user-visible Slack tool
   // (reply / edit / upload), block the stop once with an instruction that
   // forces the agent to call `mcp__slaude_slack__reply` before exiting.
@@ -199,6 +217,19 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (route.spoke) return null;
     return "You have not delivered a reply to the user. Call `mcp__slaude_surface__reply` now with your answer to the inbound message, then stop. Do not stop without replying.";
   });
+
+  // Brain gate input from the live SlackContext — read per tool call so the
+  // current turn's author (not the session creator) drives KB scoping.
+  const brainGateFor = (ctx: SlackContext): GateInput => {
+    const soul = soulData();
+    const lock = OneOnOne.find(ctx.channel, ctx.threadTs);
+    return {
+      userId: ctx.userId ?? null,
+      lockedUser: lock?.locked_user ?? null,
+      channelTrust: channelTrustFor(ctx.channel, soul),
+      isManager: !!ctx.userId && (ctx.userId === soul.manager.userId || ctx.userId === soul.backupManager.userId),
+    };
+  };
 
   const mcpResolver = (sessionId: string): Record<string, McpServerConfig> | undefined => {
     const route = routes.get(sessionId);
@@ -211,7 +242,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       [SESSION_MCP_NAME]: createSessionMcp({
         getSnapshot: () => agent.getTokenSnapshot(sessionId),
       }),
-      [KB_MCP_NAME]: createKbMcp(),
+      [KB_MCP_NAME]: createKbMcp(
+        brainEnabled()
+          ? {
+              scope: () => resolveBrainScope({ ...brainGateFor(route.ctx), kbSources: loadKbs().map((k) => kbSourceId(k.label)) }),
+              gate: () => brainGateFor(route.ctx),
+              requestApproval: (r) => route.surface.requestApproval(r),
+            }
+          : undefined,
+      ),
       ...externalMcp.servers,
     };
     // 1on1 privacy: when this thread is locked, whitelisted external services mount
