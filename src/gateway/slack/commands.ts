@@ -33,7 +33,7 @@ export type SlashHit =
   | { kind: "ignore"; target: "thread"; duration: string | null }
   | { kind: "unignore"; target: "user"; userId: string }
   | { kind: "unignore"; target: "thread" }
-  | { kind: "cron-add"; cronExpr: string; prompt: string; target: "thread" | "channel" }
+  | { kind: "cron-add"; cronExpr: string; prompt: string; target: "thread" | "channel"; whenActive: "fire" | "skip" }
   | { kind: "cron-list" }
   | { kind: "cron-remove"; id: string }
   | { kind: "one-on-one"; action: "on" | "off" }
@@ -52,7 +52,7 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/ignore-thread [dur]", summary: "ignore this thread (optional duration)" },
   { usage: "/unignore @user", summary: "stop ignoring a user" },
   { usage: "/unignore-thread", summary: "stop ignoring this thread" },
-  { usage: `/cron-add "<expr>" "<prompt>" [channel]`, summary: "schedule a prompt; add `channel` to post to channel root" },
+  { usage: `/cron-add "<expr>" "<prompt>" [channel] [passive]`, summary: "schedule a prompt; `channel` posts to channel root, `passive` skips when a human is active" },
   { usage: "/cron-list", summary: "list scheduled crons" },
   { usage: "/cron-remove <id>", summary: "remove a scheduled cron" },
   { usage: "/ingest", summary: "synthesize raw/ → wiki/ in the writable KB (manager/approver)" },
@@ -100,11 +100,13 @@ export function parseSlashCommand(text: string): SlashHit | null {
     return { kind: "unignore", target: "thread" };
   }
   if (cmd === "cron-add") {
-    // Match: "expr" "prompt" [channel|thread]   (target optional, defaults to thread)
-    const quoteMatch = t.match(/^\/cron-add\s+"([^"]+)"\s+"([^"]+)"(?:\s+(channel|thread))?$/);
+    // Match: "expr" "prompt" [channel|thread] [passive]   (both flags optional, any order)
+    const quoteMatch = t.match(/^\/cron-add\s+"([^"]+)"\s+"([^"]+)"((?:\s+(?:channel|thread|passive))*)$/);
     if (!quoteMatch) return null;
-    const target = quoteMatch[3] === "channel" ? "channel" : "thread";
-    return { kind: "cron-add", cronExpr: quoteMatch[1]!, prompt: quoteMatch[2]!, target };
+    const flags = quoteMatch[3] ?? "";
+    const target = /\bchannel\b/.test(flags) ? "channel" : "thread";
+    const whenActive = /\bpassive\b/.test(flags) ? "skip" : "fire";
+    return { kind: "cron-add", cronExpr: quoteMatch[1]!, prompt: quoteMatch[2]!, target, whenActive };
   }
   if (cmd === "cron-list") {
     return { kind: "cron-list" };

@@ -102,6 +102,22 @@ describe("cron-jobs DB", () => {
     expect(job.target).toBe("channel");
     expect(CronJobs.findById(job.id)!.target).toBe("channel");
   });
+
+  test("defaults whenActive to fire", () => {
+    const job = CronJobs.create({
+      channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now(),
+    });
+    expect(job.whenActive).toBe("fire");
+  });
+
+  test("persists whenActive skip", () => {
+    const job = CronJobs.create({
+      channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now(),
+      whenActive: "skip",
+    });
+    expect(job.whenActive).toBe("skip");
+    expect(CronJobs.findById(job.id)!.whenActive).toBe("skip");
+  });
 });
 
 describe("CronScheduler", () => {
@@ -162,6 +178,30 @@ describe("CronScheduler", () => {
     expect(sendMessage).toHaveBeenCalledTimes(0);
     const updated = CronJobs.findById(job.id);
     expect(updated!.lastResult).toMatch(/^error: missing Slack keys/);
+  });
+
+  test("tick skips a passive job (when_active=skip) when the session is live", async () => {
+    const now = Date.now();
+    const job = CronJobs.create({
+      slackTeamId: "T1",
+      slackChannelId: "C123",
+      channelId: "C123",
+      createdBy: "U999",
+      cronExpr: "0 9 * * *",
+      prompt: "summarize",
+      nextRunAt: now - 1000,
+      whenActive: "skip",
+    });
+    const sendMessage = mock(async () => {});
+    const scheduler = new CronScheduler({
+      agent: { ensureSession: () => ({ id: "sess-1" }), sendMessage, isLive: () => true, on: () => {}, off: () => {} } as any,
+      client: { chat: { postMessage: async () => ({}) } } as any,
+    });
+    scheduler.start();
+    await new Promise((r) => setTimeout(r, 20));
+    scheduler.stop();
+    expect(sendMessage).toHaveBeenCalledTimes(0);
+    expect(CronJobs.findById(job.id)!.lastResult).toBe("skipped: session live");
   });
 
   test("tick fires even when the session is live (cron runs by default)", async () => {
