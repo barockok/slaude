@@ -343,14 +343,14 @@ export const adminHandlers = {
     if (!jobs.length) return ok("No active cron jobs.");
     const lines = jobs.map(
       (j) =>
-        `• \`${j.id.slice(0, 8)}\` \`${j.cronExpr}\` [${j.target}] → ${j.prompt} (next: ${new Date(j.nextRunAt).toISOString()})`,
+        `• \`${j.id.slice(0, 8)}\` \`${j.cronExpr}\` [${j.target}${j.whenActive === "skip" ? ", passive" : ""}] → ${j.prompt} (next: ${new Date(j.nextRunAt).toISOString()})`,
     );
     return ok("*Active cron jobs*\n" + lines.join("\n"));
   },
 
   async addCronJob(
     ctx: SlackContext,
-    { cronExpr, prompt }: { cronExpr: string; prompt: string },
+    { cronExpr, prompt, target, whenActive }: { cronExpr: string; prompt: string; target?: "thread" | "channel"; whenActive?: "fire" | "skip" },
   ): Promise<ToolResult> {
     if (!isManagerOrApprover(ctx.userId)) {
       return err("Only manager or approver can add cron jobs.");
@@ -371,9 +371,11 @@ export const adminHandlers = {
       cronExpr,
       prompt,
       nextRunAt: nextRun,
+      target,
+      whenActive,
     });
     return ok(
-      `Cron job created (\`${job.id.slice(0, 8)}\`). Next run: ${new Date(nextRun).toISOString()}`,
+      `Cron job created (\`${job.id.slice(0, 8)}\`) [${job.target}, when_active=${job.whenActive}]. Next run: ${new Date(nextRun).toISOString()}`,
     );
   },
 
@@ -594,12 +596,14 @@ export function createRuntimeMcp(ctx: SlackContext): McpSdkServerConfigWithInsta
 
       tool(
         "add_cron_job",
-        "Schedule a recurring prompt that fires on a cron expression and posts results to this thread. Use when the user asks for regular check-ins (e.g. 'daily summary'), weekly reports, recurring reminders, or periodic tasks. Requires manager or approver authorization. Use 5-field cron format: minute hour day-of-month month day-of-week (UTC). Examples: '0 9 * * 1-5' = weekdays at 9am UTC; '0 0 * * *' = daily midnight; '*/30 * * * *' = every 30 minutes.",
+        "Schedule a recurring prompt that fires on a cron expression and posts results back to Slack. Use when the user asks for regular check-ins (e.g. 'daily summary'), weekly reports, recurring reminders, or periodic tasks. Requires manager or approver authorization. Use 5-field cron format: minute hour day-of-month month day-of-week (UTC). Examples: '0 9 * * 1-5' = weekdays at 9am UTC; '0 0 * * *' = daily midnight; '*/30 * * * *' = every 30 minutes. By default the result posts in THIS thread; pass target='channel' to broadcast at the channel root instead. By default the job fires even if someone is chatting in the target; pass when_active='skip' to defer that run while a human is active.",
         {
           cron_expr: z.string().describe("5-field cron expression in UTC. e.g. '0 9 * * 1-5' for weekdays at 9am."),
           prompt: z.string().describe("The prompt sent to you each time the job fires. Be specific so future you knows what to do."),
+          target: z.enum(["thread", "channel"]).optional().describe("Where the result posts: 'thread' (default, this thread) or 'channel' (the channel root, a fresh top-level message)."),
+          when_active: z.enum(["fire", "skip"]).optional().describe("Behavior when a human is active in the target: 'fire' (default, run anyway) or 'skip' (defer this run, humans get priority)."),
         },
-        (args) => adminHandlers.addCronJob(ctx, { cronExpr: args.cron_expr, prompt: args.prompt }),
+        (args) => adminHandlers.addCronJob(ctx, { cronExpr: args.cron_expr, prompt: args.prompt, target: args.target, whenActive: args.when_active }),
       ),
 
       tool(
