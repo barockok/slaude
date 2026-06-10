@@ -38,3 +38,14 @@ describe("brain engine (integration)", () => {
     expect(brainCall("nope_op", {}, aliceScope)).rejects.toThrow(/unknown brain op/);
   });
 });
+
+describe("embeddingConfigured", () => {
+  test("false without config.json, true once embedding_model set", async () => {
+    const { embeddingConfigured } = await import("../src/knowledge/brain");
+    const { writeFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    expect(embeddingConfigured()).toBe(false);
+    writeFileSync(join(home, "config.json"), JSON.stringify({ embedding_model: "zeroentropyai:zembed-1" }));
+    expect(embeddingConfigured()).toBe(true);
+  });
+});
