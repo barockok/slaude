@@ -16,6 +16,9 @@ export type CronJob = {
   lastResult: string | null;
   active: number;
   target: "thread" | "channel";
+  /** 'fire' (default) runs even when a human is active in the target;
+   *  'skip' defers the run while the session is live. */
+  whenActive: "fire" | "skip";
 };
 
 export function create(args: {
@@ -29,11 +32,12 @@ export function create(args: {
   prompt: string;
   nextRunAt: number;
   target?: "thread" | "channel";
+  whenActive?: "fire" | "skip";
 }): CronJob {
   const id = randomUUID();
   db.run(
-    `INSERT INTO cron_jobs (id, slack_team_id, slack_channel_id, slack_thread_ts, channel_id, thread_ts, created_by, cron_expr, prompt, next_run_at, target, active)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    `INSERT INTO cron_jobs (id, slack_team_id, slack_channel_id, slack_thread_ts, channel_id, thread_ts, created_by, cron_expr, prompt, next_run_at, target, when_active, active)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
     [
       id,
       args.slackTeamId ?? null,
@@ -46,6 +50,7 @@ export function create(args: {
       args.prompt,
       args.nextRunAt,
       args.target ?? "thread",
+      args.whenActive ?? "fire",
     ],
   );
   return findById(id)!;
@@ -109,5 +114,6 @@ function mapRow(row: any): CronJob {
     lastResult: row.last_result,
     active: row.active,
     target: (row.target ?? "thread") as "thread" | "channel",
+    whenActive: (row.when_active ?? "fire") as "fire" | "skip",
   };
 }

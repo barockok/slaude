@@ -129,6 +129,12 @@ if (!cronCols.some((c) => c.name === "target")) {
   db.run(`ALTER TABLE cron_jobs ADD COLUMN target TEXT NOT NULL DEFAULT 'thread'`);
 }
 
+// Migration: add per-job active-session behavior. 'fire' (default) runs the job
+// even when a human is live in the target thread/channel; 'skip' defers that run.
+if (!cronCols.some((c) => c.name === "when_active")) {
+  db.run(`ALTER TABLE cron_jobs ADD COLUMN when_active TEXT NOT NULL DEFAULT 'fire'`);
+}
+
 export type SessionRow = {
   id: string;
   created_at: number;
