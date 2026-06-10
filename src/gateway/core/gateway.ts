@@ -506,10 +506,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (!publicZone) {
         const managerId = soul.manager.userId;
         const backupId = soul.backupManager.userId;
-        const allowed = (managerId && userId === managerId) || (backupId && userId === backupId);
+        // Whitelisted DM users may engage in 1:1 DMs (not in non-whitelisted
+        // channels) on top of manager/backup. Grants chat only — admin commands
+        // still gate on manager/backup/approver below.
+        const dmAllowed = isDM_ && soul.dmAllowedUsers.includes(userId);
+        const allowed = (managerId && userId === managerId) || (backupId && userId === backupId) || dmAllowed;
         if (!allowed) {
           console.log(
-            `[slack-rx] drop ch=${channelId} user=${userId} — non-whitelist/DM accepts manager/backup only` +
+            `[slack-rx] drop ch=${channelId} user=${userId} — non-whitelist/DM accepts manager/backup${isDM_ ? "/dm-allowlist" : ""} only` +
               (managerId ? "" : " (no manager set in SOUL.md)"),
           );
           metric.slackDropsTotal.inc({ reason: "whitelist" });
