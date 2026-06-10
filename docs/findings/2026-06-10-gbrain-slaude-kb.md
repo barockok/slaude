@@ -175,10 +175,20 @@ Env: `SLAUDE_BRAIN_HOME` (override location), `SLAUDE_BRAIN_DISABLED=1` (kill sw
 
 Vectors are opt-in; keyword+graph search needs no keys. To enable:
 
-1. Pick a hosted provider (decision: keep embeddings remote — no local daemon in the deploy unit). Cheapest viable: `zeroentropyai:zembed-1` ($0.05/1M tok) or `openai:text-embedding-3-small`. Slaude-scale spend ≈ pennies/month; the real cost lever is the reranker (`tokenmax` mode), not embeddings.
-2. Set the provider key env (e.g. `ZEROENTROPY_API_KEY` / `OPENAI_API_KEY`) on the deploy.
-3. Write `~/.slaude/brain/config.json`: `{ "embedding_model": "<provider:model>", "embedding_dimensions": <dims> }`. Dims lock the schema at first embed — pick once.
-4. Done — `embeddingConfigured()` flips, nightly sync drops `no_embed`, new/changed chunks embed from then on. gbrain stamps chunks with their model and re-embeds stale ones, so enabling late backfills naturally via sync.
+Simplest path — provider-generic env (mirrors the `ANTHROPIC_BASE_URL` pattern; any OpenAI-compatible `/v1/embeddings` endpoint):
+
+```
+EMBEDDING_URL=https://api.openai.com/v1      # or any compatible endpoint
+EMBEDDING_API_KEY=sk-...
+EMBEDDING_MODEL=text-embedding-3-small       # default if unset
+EMBEDDING_DIMENSIONS=1536                    # default if unset; locks schema at first embed
+```
+
+`applyEmbeddingEnv()` (runs at brain boot) maps these onto gbrain's `litellm:` recipe (its generic base-URL+key passthrough) and writes `embedding_model`/`embedding_dimensions` into `~/.slaude/brain/config.json` — without ever clobbering an operator-set `embedding_model`.
+
+Alternative — gbrain-native provider config: set the provider's own key env (e.g. `ZEROENTROPY_API_KEY` for `zeroentropyai:zembed-1`, $0.05/1M tok) and write `embedding_model` in config.json directly. Needed for providers whose APIs are NOT OpenAI-compatible (ZeroEntropy's native asymmetric API among them).
+
+Either way, once `embedding_model` is set the nightly sync drops `no_embed` and new/changed chunks embed from then on; gbrain stamps chunks per-model and re-embeds stale ones, so enabling late backfills naturally. Decision: embeddings stay remote — no local daemon in the deploy unit. Slaude-scale spend ≈ pennies/month; the real cost lever is the reranker (`tokenmax` mode), not embeddings.
 
 Known limit: chunks created by `kb_put_page`/memory between cycles embed only when a sync touches them; a dedicated stale-chunk embed sweep (gbrain's `embed` command is CLI-only) is future work if query-time gaps show up.
 
