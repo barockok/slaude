@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
 import { loadKbs } from "./loader";
@@ -25,6 +25,21 @@ export function brainHome(): string {
 
 export function brainEnabled(): boolean {
   return process.env.SLAUDE_BRAIN_DISABLED !== "1";
+}
+
+/**
+ * True when the operator wired a (remote) embedding model into the brain:
+ * `embedding_model` set in $SLAUDE_BRAIN_HOME/config.json (gbrain's own config
+ * file; provider key env validated by gbrain itself, which fails loud).
+ * Gates the embed step in sync — keyword+graph search needs none of this.
+ */
+export function embeddingConfigured(): boolean {
+  try {
+    const raw = readFileSync(join(brainHome(), "config.json"), "utf8");
+    return Boolean((JSON.parse(raw) as { embedding_model?: string }).embedding_model);
+  } catch {
+    return false;
+  }
 }
 
 async function boot(): Promise<Engine> {

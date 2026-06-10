@@ -171,6 +171,17 @@ Env: `SLAUDE_BRAIN_HOME` (override location), `SLAUDE_BRAIN_DISABLED=1` (kill sw
 - Soul baseline KB-first stance now leads with `kb_think`/`kb_search` and documents `kb_put_page` for durable knowledge.
 - **Known gap:** `[[wikilink]]`s in fs-synced wiki sources produce 0 graph edges via `runExtractCore`/`runExtract --source db` (tried qualified slugs, markdown links, `link_resolution.global_basename`) — resolution rules need upstream investigation. Agent `put_page` writes DO reconcile edges inline (verified), so the agent-authored graph works; only imported-wiki cross-links are missing edges. Hybrid/keyword search over wikis is unaffected.
 
+## Enabling semantic search (remote embedding model)
+
+Vectors are opt-in; keyword+graph search needs no keys. To enable:
+
+1. Pick a hosted provider (decision: keep embeddings remote — no local daemon in the deploy unit). Cheapest viable: `zeroentropyai:zembed-1` ($0.05/1M tok) or `openai:text-embedding-3-small`. Slaude-scale spend ≈ pennies/month; the real cost lever is the reranker (`tokenmax` mode), not embeddings.
+2. Set the provider key env (e.g. `ZEROENTROPY_API_KEY` / `OPENAI_API_KEY`) on the deploy.
+3. Write `~/.slaude/brain/config.json`: `{ "embedding_model": "<provider:model>", "embedding_dimensions": <dims> }`. Dims lock the schema at first embed — pick once.
+4. Done — `embeddingConfigured()` flips, nightly sync drops `no_embed`, new/changed chunks embed from then on. gbrain stamps chunks with their model and re-embeds stale ones, so enabling late backfills naturally via sync.
+
+Known limit: chunks created by `kb_put_page`/memory between cycles embed only when a sync touches them; a dedicated stale-chunk embed sweep (gbrain's `embed` command is CLI-only) is future work if query-time gaps show up.
+
 ## Phase 4 (not implemented)
 
 Team brain: flip engine to Postgres (`database_url`), register per-agent OAuth clients, point multiple slaude deploys at one brain. All slaude-side plumbing (scope resolver, gated dispatch) is engine-agnostic already; the work is config + ops, not code.

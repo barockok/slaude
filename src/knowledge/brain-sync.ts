@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { brainAdminCall } from "./brain";
+import { brainAdminCall, embeddingConfigured } from "./brain";
 import { loadKbs } from "./loader";
 import { kbSourceId } from "./scope";
 
@@ -25,7 +25,7 @@ export async function syncKbWikis(): Promise<KbSyncResult[]> {
     const prev = process.env.GBRAIN_SOURCE;
     process.env.GBRAIN_SOURCE = sourceId;
     try {
-      await brainAdminCall("sync_brain", { repo, no_pull: true, no_embed: true }, sourceId);
+      await brainAdminCall("sync_brain", { repo, no_pull: true, no_embed: !embeddingConfigured() }, sourceId);
       out.push({ label: kb.label, ok: true });
     } catch (e) {
       out.push({ label: kb.label, ok: false, error: e instanceof Error ? e.message : String(e) });
