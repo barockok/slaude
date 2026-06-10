@@ -569,10 +569,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       thread_ts: threadTs,
     });
 
-    // Paste-back OAuth completion: if this initiator has a parked /mcp connect in
-    // this thread and the message carries the callback (URL or bare code), finish
-    // the flow here and do NOT forward to the model. The 1on1 lock check above
-    // guarantees only the initiator reaches this point in a locked thread.
+    // Paste-back OAuth completion: if this user has a parked /mcp connect in this
+    // thread and the message carries the callback (URL or bare code), finish the flow
+    // here and do NOT forward to the model. The binding is the pendingPaste key
+    // (channel:thread:userId) on the signed inbound userId — a bystander's paste maps
+    // to a different key and finds no entry. (Holds for both initiator and global
+    // scope; global has no lock, so the key, not the lock, is what binds.)
     {
       const pkey = pasteKey(channelId, threadTs, userId);
       const pend = pendingPaste.get(pkey);
