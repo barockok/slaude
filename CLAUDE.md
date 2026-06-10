@@ -93,6 +93,7 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 Entries live in `docs/findings/<date>-<slug>.md`. Add a new file per significant finding/decision/mistake; index it below. Newest first.
 
+- [2026-06-10 — gbrain × slaude: adopt gbrain as brain layer (KB, RBAC, approval, dream cycle, multi-agent)](docs/findings/2026-06-10-gbrain-slaude-kb.md)
 - [2026-06-10 — /mcp global connect (manager wires the agent's shared identity; scope = lock state)](docs/findings/2026-06-10-mcp-global-connect.md)
 - [2026-06-09 — /mcp OAuth connect in /1on1 (write CLI mcpOAuth store, CLI owns lifecycle)](docs/findings/2026-06-09-mcp-oauth-connect-1on1.md)
 - [2026-06-08 — cron-on-channel + a latent scheduler-boot TDZ crash](docs/findings/2026-06-08-cron-on-channel.md)
