@@ -136,6 +136,32 @@ describe("loadSoulData — extraction + cache", () => {
     expect(d.trustedChannels).toEqual(["C0TEAMCH00"]);
   });
 
+  test("extracts dmAllowedUsers when grounded", async () => {
+    seedPersona([
+      "# P",
+      "## DM allowlist",
+      "- <@U0DMUSER01>",
+      "## Approvers",
+      "- <@U0XXXXXXXXX>: anything",
+    ].join("\n"));
+    mockFetch(async () => okResponse(JSON.stringify({
+      dmAllowedUsers: ["U0DMUSER01"],
+      approvers: [{ userId: "U0XXXXXXXXX", scope: "anything", catchall: true }],
+    })));
+    const d = await loadSoulData();
+    expect(d.dmAllowedUsers).toEqual(["U0DMUSER01"]);
+  });
+
+  test("rejects ungrounded dmAllowedUser → fallback", async () => {
+    seedPersona("# P\n## Approvers\n- <@U0XXXXXXXXX>: anything\n");
+    mockFetch(async () => okResponse(JSON.stringify({
+      approvers: [{ userId: "U0XXXXXXXXX", scope: "anything", catchall: true }],
+      dmAllowedUsers: ["U999PHANTOM"],
+    })));
+    const d = await loadSoulData();
+    expect(d.dmAllowedUsers).toEqual([]);
+  });
+
   test("rejects ungrounded trustedChannel id → fallback", async () => {
     seedPersona("# P\n## Approvers\n- <@U0XXXXXXXXX>: anything\n");
     mockFetch(async () => okResponse(JSON.stringify({
