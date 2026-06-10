@@ -1,7 +1,7 @@
 # gbrain × slaude — powering slaude_kb with a real brain
 
 **Date:** 2026-06-10
-**Status:** Phase 1 implemented (slaude_kb v2: scoped brain, gated writes, KB wiki indexing). Phases 2-4 pending.
+**Status:** Phases 1-3 implemented (slaude_kb v2 scoped brain + gated writes + KB wiki indexing; brain-backed memory provider; nightly maintenance cycle). Phase 4 (multi-agent team brain on Postgres) designed, not yet implemented.
 **Verdict:** **Adopt gbrain. Embed as a Bun library, not as an external process.** License (MIT), stack (Bun ≥1.3.10, TypeScript, ESM), and architecture (engine library + MCP server + skills) all line up with slaude. The fit is unusually good — gbrain was built to be operated *by* an agent platform, and slaude *is* an agent platform missing exactly the brain layer gbrain ships.
 
 Repo studied: [garrytan/gbrain](https://github.com/garrytan/gbrain) @ v0.42.38.0 (clone at `/tmp/gbrain` during research). Note: **the npm package named `gbrain` is an unrelated project** (stormcolor/gbrain) — garrytan/gbrain must be consumed as a git dependency (`bun add github:garrytan/gbrain`) and pinned in `slaude.lock`-style fashion via `package.json` + `bun.lock`.
@@ -163,3 +163,14 @@ Spike caveats that shaped the code:
 - npm `gbrain` is unrelated; dep pinned to `github:garrytan/gbrain#03ffc6e`.
 
 Env: `SLAUDE_BRAIN_HOME` (override location), `SLAUDE_BRAIN_DISABLED=1` (kill switch — legacy keyword tools remain).
+
+## Implementation notes (Phases 2-3, 2026-06-10)
+
+- `src/memory/brain-provider.ts` + `src/memory/index.ts` — `BrainMemoryProvider` is the default memory when the brain is enabled (`SLAUDE_MEMORY=sqlite` reverts). Each session gets a `conversations/<sessionId>` page in the `agent` source; turns append as timeline entries (rows, not page rewrites — avoids `page_versions` bloat). Prefetch renders the last 5 entries as `<recent-turns>`. Failure policy: memory never breaks a turn — prefetch degrades to null, syncTurn to a logged no-op. Note: `get_page` throws `OperationError(code=page_not_found)` rather than returning null.
+- `src/knowledge/brain-cycle.ts` — `runNightlyMaintenance()` (KB wiki re-sync → per-wiki extraction → orphan report → purge expired soft-deletes) scheduled in-process at 03:00 local (`SLAUDE_BRAIN_CYCLE="HH:MM"|"off"`). In-process because PGLite is single-writer: an external `gbrain dream` subprocess cannot run while the server holds the engine lock.
+- Soul baseline KB-first stance now leads with `kb_think`/`kb_search` and documents `kb_put_page` for durable knowledge.
+- **Known gap:** `[[wikilink]]`s in fs-synced wiki sources produce 0 graph edges via `runExtractCore`/`runExtract --source db` (tried qualified slugs, markdown links, `link_resolution.global_basename`) — resolution rules need upstream investigation. Agent `put_page` writes DO reconcile edges inline (verified), so the agent-authored graph works; only imported-wiki cross-links are missing edges. Hybrid/keyword search over wikis is unaffected.
+
+## Phase 4 (not implemented)
+
+Team brain: flip engine to Postgres (`database_url`), register per-agent OAuth clients, point multiple slaude deploys at one brain. All slaude-side plumbing (scope resolver, gated dispatch) is engine-agnostic already; the work is config + ops, not code.
