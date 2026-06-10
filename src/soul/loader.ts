@@ -189,6 +189,17 @@ const STARTER_PERSONA = `# Persona
 - Backup manager: <optional fallback user id, e.g. U0DEPUTY123 — leave blank for none>
 - Backup manager handle: <e.g. @deputy>
 
+## DM allowlist
+
+Users allowed to DM slaude directly (1:1), in addition to the manager and
+backup. Without this, a DM from anyone but manager/backup is dropped at the
+engagement gate. Grants DM chat only — admin commands (cron / ignore /
+ingest) still require manager/backup or an approver. One id per line,
+\`<@Uxxx>\` or raw \`Uxxx\`. Omit the section for manager-only DMs.
+
+- <@U0TEAMMATE1>
+- <@U0TEAMMATE2>
+
 ## Redaction
 
 Outbound replies are scrubbed for substrings matching the regex patterns
