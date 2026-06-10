@@ -92,6 +92,7 @@ export async function closeBrain(): Promise<void> {
   if (!enginePromise) return;
   const e = await enginePromise;
   enginePromise = null;
+  ensureInFlight = null; // next boot may target a different brain home
   await e.disconnect();
 }
 
@@ -160,16 +161,36 @@ export function baselineSources(): string[] {
  * KB sources register with their wiki/ dir so sync can import the curated
  * content (raw/ stays out of the index).
  */
-export async function ensureSources(extra: string[] = []): Promise<void> {
-  const listed = (await brainAdminCall("sources_list", {})) as { sources: Array<{ id: string }> };
-  const existing = new Set(listed.sources.map((s) => s.id));
-  const kbs = loadKbs();
-  for (const id of [...baselineSources(), ...extra]) {
-    if (existing.has(id)) continue;
-    const kb = kbs.find((k) => kbSourceId(k.label) === id);
-    await brainAdminCall(
-      "sources_add",
-      kb ? { id, path: join(kb.path, "wiki"), federated: true } : { id, federated: true },
-    );
+let ensureInFlight: Promise<void> | null = null;
+
+export function ensureSources(extra: string[] = []): Promise<void> {
+  // Single-flight: gateway boot and the memory provider both call this at
+  // startup; concurrent list-then-add races into duplicate sources_pkey.
+  if (extra.length === 0 && ensureInFlight) return ensureInFlight;
+  const run = (async () => {
+    const listed = (await brainAdminCall("sources_list", {})) as { sources: Array<{ id: string }> };
+    const existing = new Set(listed.sources.map((s) => s.id));
+    const kbs = loadKbs();
+    for (const id of [...baselineSources(), ...extra]) {
+      if (existing.has(id)) continue;
+      const kb = kbs.find((k) => kbSourceId(k.label) === id);
+      try {
+        await brainAdminCall(
+          "sources_add",
+          kb ? { id, path: join(kb.path, "wiki"), federated: true } : { id, federated: true },
+        );
+      } catch (e) {
+        // lost a create race elsewhere — the source exists, which is all we need
+        if (!/duplicate key|already exists/i.test(e instanceof Error ? e.message : String(e))) throw e;
+      }
+    }
+  })();
+  if (extra.length === 0) {
+    ensureInFlight = run.catch((e) => {
+      ensureInFlight = null; // allow retry after failure
+      throw e;
+    });
+    return ensureInFlight;
   }
+  return run;
 }
