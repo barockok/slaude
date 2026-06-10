@@ -151,12 +151,13 @@ describe("cron commands", () => {
     expect(parseSlashCommand('/cron-add "expr"')).toBeNull();
   });
 
-  test("/cron-add with quoted args defaults to thread", () => {
+  test("/cron-add with quoted args defaults to thread + fire", () => {
     expect(parseSlashCommand('/cron-add "0 9 * * *" "daily summary"')).toEqual({
       kind: "cron-add",
       cronExpr: "0 9 * * *",
       prompt: "daily summary",
       target: "thread",
+      whenActive: "fire",
     });
   });
 
@@ -166,6 +167,7 @@ describe("cron commands", () => {
       cronExpr: "0 9 * * *",
       prompt: "digest",
       target: "channel",
+      whenActive: "fire",
     });
   });
 
@@ -175,6 +177,27 @@ describe("cron commands", () => {
       cronExpr: "0 9 * * *",
       prompt: "digest",
       target: "thread",
+      whenActive: "fire",
+    });
+  });
+
+  test("/cron-add with passive flag → when_active skip", () => {
+    expect(parseSlashCommand('/cron-add "0 9 * * *" "digest" passive')).toEqual({
+      kind: "cron-add",
+      cronExpr: "0 9 * * *",
+      prompt: "digest",
+      target: "thread",
+      whenActive: "skip",
+    });
+  });
+
+  test("/cron-add with channel + passive flags together", () => {
+    expect(parseSlashCommand('/cron-add "0 9 * * *" "digest" channel passive')).toEqual({
+      kind: "cron-add",
+      cronExpr: "0 9 * * *",
+      prompt: "digest",
+      target: "channel",
+      whenActive: "skip",
     });
   });
 
