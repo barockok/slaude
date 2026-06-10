@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { brainAdminCall, embeddingConfigured } from "./brain";
 import { loadKbs } from "./loader";
@@ -8,6 +9,25 @@ export interface KbSyncResult {
   label: string;
   ok: boolean;
   error?: string;
+}
+
+/**
+ * gbrain's sync requires a git repo (commit-based checkpoints), but installed
+ * KBs often ship content-only (image bake / `slaude install` copy drops .git).
+ * Self-init a local checkpoint repo — never pushed anywhere, purely so sync
+ * can diff between runs. Re-runs commit any drift since the last sync.
+ */
+function ensureGitRepo(repo: string): void {
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", repo, "-c", "user.email=slaude@local", "-c", "user.name=slaude", ...args], { stdio: "pipe" });
+  if (!existsSync(join(repo, ".git"))) git("init", "-q");
+  try {
+    git("add", "-A");
+    git("commit", "-q", "-m", "slaude brain sync checkpoint");
+  } catch {
+    // clean tree (nothing to commit) or transient index issue — sync proceeds
+    // off the existing HEAD either way
+  }
 }
 
 /**
@@ -25,6 +45,7 @@ export async function syncKbWikis(): Promise<KbSyncResult[]> {
     const prev = process.env.GBRAIN_SOURCE;
     process.env.GBRAIN_SOURCE = sourceId;
     try {
+      ensureGitRepo(repo);
       await brainAdminCall("sync_brain", { repo, no_pull: true, no_embed: !embeddingConfigured() }, sourceId);
       out.push({ label: kb.label, ok: true });
     } catch (e) {
