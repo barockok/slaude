@@ -45,10 +45,11 @@ export function classifyBrainOp(op: string, scope: BrainScope, g: GateInput): Ga
   return "manager"; // unknown op: fail closed
 }
 
+// Field-compatible subset of the Surface ApprovalRequest contract.
 export interface ApprovalReq {
   summary: string;
   tools?: string[];
-  risks?: string[];
+  risks?: string;
   category?: string;
 }
 export interface ApprovalRes {
