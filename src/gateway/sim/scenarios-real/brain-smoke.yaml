@@ -1,0 +1,9 @@
+layer: trusted
+as: member
+steps:
+  - send: { text: "Call the kb_put_page tool with slug \"notes/sim-smoke\", content \"Deploys ship every Thursday. marker ZYXTEST\", summary \"sim smoke write\". After the tool succeeds, reply with the single word WRITEDONE." }
+  - expect_card: { kind: approval }
+  - click: { as: U0APP, action: approve }
+  - expect_reply: { contains: "WRITEDONE" }
+  - send: { text: "Call the kb_search tool with query \"ZYXTEST\" and reply with the slug of the page you found." }
+  - expect_reply: { contains: "sim-smoke" }
