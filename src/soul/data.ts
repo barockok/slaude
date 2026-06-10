@@ -60,6 +60,12 @@ export const SoulDataSchema = z.object({
    *  no token spend). Useful for banning a noisy user inside an otherwise-
    *  trusted/allowed channel without un-trusting the whole channel. */
   blockedUsers: z.array(z.string().regex(/^[UW][A-Z0-9]+$/)).default([]),
+  /** Slack user ids allowed to DM slaude directly (1:1), in addition to the
+   *  manager/backup. Without this, a DM from anyone but manager/backup is
+   *  dropped at the engagement gate. Grants DM engagement only — it does NOT
+   *  confer manager authority over admin commands (cron / ignore / ingest),
+   *  which still require manager/backup or approver. */
+  dmAllowedUsers: z.array(z.string().regex(/^[UW][A-Z0-9]+$/)).default([]),
   approvers: z.array(ApproverEntrySchema).default([]),
   /** Reply-redaction patterns. Each entry is a JS regex (no flags — applied
    *  as global+case-insensitive). Matched substrings replaced with `[REDACTED]`
@@ -86,6 +92,7 @@ export const EXTRACTION_PROMPT = `You are a structured-data extractor. Read the 
   "allowedChannels":       string[],
   "trustedChannels":       string[],
   "blockedUsers":          string[],
+  "dmAllowedUsers":        string[],
   "approvers":             Array<{ "userId": string, "scope": string, "catchall": boolean }>,
   "redactPatterns":        string[],
   "approvalTimeoutSeconds": number,
@@ -102,6 +109,7 @@ Rules:
 - allowedChannels: public-zone channels where slaude may interact but must mind info exposure. Look for sections titled "Allowed channels", "Public channels".
 - trustedChannels: internal team channels where slaude operates as a member (can show MCP servers, skills, internals). Look for sections titled "Trusted channels", "Team channel", "Home channel", "BU channel".
 - blockedUsers: ids the persona explicitly marks as banned, blocked, ignored, blacklisted, or "do not respond". Look for sections titled "Blocked", "Blacklist", "Ignore", "Banned". Empty array if no such section.
+- dmAllowedUsers: ids allowed to DM slaude directly besides the manager. Look for sections titled "DM allowlist", "Allowed DMs", "Direct message allowlist", "Who can DM". Empty array if no such section.
 - backupManager: optional fallback manager. Look for sections titled "Backup manager", "Secondary manager", "Deputy". Same id-validation rules as manager.
 - redactPatterns: array of regex source strings (no /…/ wrappers, no flags) the persona declares for redacting outbound replies. Look for sections titled "Redaction", "Redact", "PII patterns". Empty array if no such section.
 - approvalTimeoutSeconds: integer seconds. Look for "Approval timeout" or "Auto-deny after". 0 means wait forever.
