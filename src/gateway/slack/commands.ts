@@ -47,7 +47,7 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/mode <name>", summary: "set the tool-permission mode (per session/thread)" },
   { usage: "/abort", summary: "cancel the current turn" },
   { usage: "/1on1 [off]", summary: "lock this thread to you + the manager; `off` releases" },
-  { usage: "/mcp [connect <server>]", summary: "in 1on1: list MCP servers / connect an OAuth HTTP server" },
+  { usage: "/mcp [connect <server>]", summary: "list/connect OAuth HTTP MCP servers — in 1on1: as you; outside 1on1: manager connects the agent's shared identity" },
   { usage: "/ignore @user [dur]", summary: "ignore a user (optional duration, e.g. 1h, 30m)" },
   { usage: "/ignore-thread [dur]", summary: "ignore this thread (optional duration)" },
   { usage: "/unignore @user", summary: "stop ignoring a user" },

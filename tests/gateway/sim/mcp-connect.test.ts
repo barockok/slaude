@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createGateway } from "../../../src/gateway/core/gateway";
 import { AgentManager } from "../../../src/agent/manager";
@@ -83,7 +83,9 @@ describe("/mcp gating + connect", () => {
 
     await sendInbound(emit, "/mcp", INITIATOR, "100.1", t.client);
 
-    const reply = posts.find((p) => String(p.text ?? "").includes("requires a 1on1 lock"));
+    // INITIATOR (U0ALICE) is not the manager, and there's no lock → global connect is
+    // manager-only, so they're told to /1on1 first. No connect runs.
+    const reply = posts.find((p) => String(p.text ?? "").includes("manager-only"));
     expect(reply).toBeDefined();
     expect(connectCalls).toBe(0);
   });
@@ -203,6 +205,39 @@ describe("/mcp gating + connect", () => {
     }
   });
 
+  it("global connect: the manager (no lock) writes the token to the AGENT config dir", async () => {
+    const prev = process.env.CLAUDE_CONFIG_DIR;
+    const agentDir = join(paths.home, "agent-cfg-test");
+    mkdirSync(agentDir, { recursive: true });
+    process.env.CLAUDE_CONFIG_DIR = agentDir;
+    try {
+      const { t, posts, emit } = capturingTransport();
+      const agent = new AgentManager();
+      agent.sendMessage = async () => {};
+      createGateway(agent, t, {
+        oauthConnect: async ({ postAuthorizeUrl }) => {
+          await postAuthorizeUrl("https://authorize.example/g");
+          return { clientId: "gcid", accessToken: "GAT", refreshToken: "GRT", expiresIn: 3600 };
+        },
+      });
+
+      // No lock. The manager runs /mcp connect → global scope → agent config dir.
+      await sendInbound(emit, "/mcp connect workbench", WORLD.manager, "100.9", t.client);
+
+      expect(posts.find((p) => String(p.text ?? "").includes("connected"))).toBeDefined();
+      const creds = JSON.parse(readFileSync(join(agentDir, ".credentials.json"), "utf8"));
+      const key = oauthKey("workbench", { type: "http", url: "https://workbench.example/mcp", headers: undefined });
+      expect(creds.mcpOAuth?.[key]?.accessToken).toBe("GAT");
+      // It did NOT leak into any per-initiator dir.
+      expect(existsSync(join(initiatorConfigDir(WORLD.manager), ".credentials.json"))).toBe(false);
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true });
+      try { rmSync(initiatorConfigDir(WORLD.manager), { recursive: true, force: true }); } catch {}
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = prev;
+    }
+  });
+
   it("rejects /mcp from a non-initiator in an initiator-locked thread and runs no connect", async () => {
     const { t, posts, emit } = capturingTransport();
     const agent = new AgentManager();
@@ -216,7 +251,9 @@ describe("/mcp gating + connect", () => {
 
     await sendInbound(emit, "/mcp connect workbench", WORLD.manager, "100.3", t.client);
 
-    const reply = posts.find((p) => String(p.text ?? "").includes("requires a 1on1 lock"));
+    // The thread is locked to INITIATOR; even the manager is not the lock owner, so
+    // /mcp here is refused (a locked thread is initiator-scoped, not global).
+    const reply = posts.find((p) => String(p.text ?? "").includes("lock owner"));
     expect(reply).toBeDefined();
     expect(connectCalls).toBe(0);
   });
