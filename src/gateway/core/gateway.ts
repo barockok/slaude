@@ -762,7 +762,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await reply("No active cron jobs.");
             return;
           }
-          const lines = jobs.map((j) => `• \`${j.id.slice(0, 8)}\` \`${j.cronExpr}\` [${j.target}] → ${j.prompt}`);
+          const lines = jobs.map((j) => `• \`${j.id.slice(0, 8)}\` \`${j.cronExpr}\` [${j.target}${j.whenActive === "skip" ? ", passive" : ""}] → ${j.prompt}`);
           await reply("*Active cron jobs*\n" + lines.join("\n"));
           return;
         }
@@ -817,9 +817,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             prompt: slash.prompt,
             nextRunAt: nextRun,
             target: slash.target,
+            whenActive: slash.whenActive,
           });
           const where = slash.target === "channel" ? "channel root" : "this thread";
-          await reply(`:calendar: cron job created (\`${job.id.slice(0, 8)}\`, posts to ${where}) — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
+          const mode = slash.whenActive === "skip" ? ", passive (skips when active)" : "";
+          await reply(`:calendar: cron job created (\`${job.id.slice(0, 8)}\`, posts to ${where}${mode}) — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
           return;
         }
       }
