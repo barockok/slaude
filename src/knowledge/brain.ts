@@ -6,6 +6,11 @@ import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, type BrainScope
 
 // Engine surface kept minimal on purpose: gbrain ships TS sources and its own
 // types stay internal to it; slaude only needs lifecycle + handler dispatch.
+// Imports go through gbrainImport so tsc never resolves into node_modules/gbrain
+// (its sources don't compile under slaude's strictness); Bun resolves at runtime.
+const gbrainImport = (subpath: string): Promise<Record<string, unknown>> =>
+  import(("gbrain/" + subpath) as string) as Promise<Record<string, unknown>>;
+
 type Engine = {
   connect(c: object): Promise<void>;
   disconnect(): Promise<void>;
@@ -27,7 +32,7 @@ async function boot(): Promise<Engine> {
   mkdirSync(home, { recursive: true });
   // gbrain reads GBRAIN_HOME for config.json, lock files, clones.
   process.env.GBRAIN_HOME = home;
-  const { createEngine } = await import("gbrain/engine-factory");
+  const { createEngine } = (await gbrainImport("engine-factory")) as { createEngine: (c: object) => Promise<Engine> };
   const cfg = { engine: "pglite" as const, database_path: join(home, "db") };
   const engine = (await createEngine(cfg)) as Engine;
   await engine.connect(cfg);
@@ -54,7 +59,7 @@ const quietLogger = {
 
 async function buildCtx(over: Record<string, unknown>) {
   const engine = await getBrain();
-  const { loadConfig } = await import("gbrain/config");
+  const { loadConfig } = (await gbrainImport("config")) as { loadConfig: () => object | null };
   return {
     engine,
     config: loadConfig() ?? {},
@@ -69,7 +74,7 @@ async function buildCtx(over: Record<string, unknown>) {
 type Op = { name: string; handler: (ctx: unknown, p: Record<string, unknown>) => Promise<unknown> };
 
 async function findOp(name: string): Promise<Op> {
-  const { operations } = await import("gbrain/operations");
+  const { operations } = (await gbrainImport("operations")) as { operations: Op[] };
   const op = (operations as Op[]).find((o) => o.name === name);
   if (!op) throw new Error(`unknown brain op: ${name}`);
   return op;

@@ -4,6 +4,9 @@ import { z } from "zod";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadKbs } from "./loader";
+import { brainCall, brainEnabled } from "./brain";
+import { gatedBrainCall, type ApprovalReq, type ApprovalRes, type GateInput } from "./gated-dispatch";
+import type { BrainScope } from "./scope";
 
 export const KB_MCP_NAME = "slaude_kb";
 
@@ -66,11 +69,131 @@ export const kbHandlers = {
   },
 };
 
-export function createKbMcp(): McpSdkServerConfigWithInstance {
+export interface BrainToolDeps {
+  scope: () => BrainScope;
+  gate: () => GateInput;
+  requestApproval: (r: ApprovalReq) => Promise<ApprovalRes>;
+  /** Injectable op caller (tests). Default: brainCall with current scope. */
+  call?: (name: string, params: Record<string, unknown>, scope: BrainScope) => Promise<unknown>;
+}
+
+const asJson = (v: unknown): ToolResult => ok(typeof v === "string" ? v : JSON.stringify(v, null, 2));
+
+async function runRead(name: string, params: Record<string, unknown>, d: BrainToolDeps): Promise<ToolResult> {
+  try {
+    const call = d.call ?? brainCall;
+    return asJson(await call(name, params, d.scope()));
+  } catch (e) {
+    return err(`brain ${name} failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+async function runGated(name: string, params: Record<string, unknown>, summary: string, d: BrainToolDeps): Promise<ToolResult> {
+  try {
+    const call = d.call ?? brainCall;
+    const r = await gatedBrainCall(name, {
+      scope: d.scope(),
+      gate: d.gate(),
+      requestApproval: d.requestApproval,
+      call: () => call(name, params, d.scope()),
+      describe: summary,
+    });
+    return r.ok ? asJson(r.result) : err(r.reason);
+  } catch (e) {
+    return err(`brain ${name} failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+export const brainHandlers = {
+  kb_think: (p: { question: string }, d: BrainToolDeps) => runRead("think", { question: p.question }, d),
+  kb_search: (p: { query: string; limit?: number }, d: BrainToolDeps) =>
+    runRead("search", { query: p.query, ...(p.limit ? { limit: p.limit } : {}) }, d),
+  kb_get_page: (p: { slug: string }, d: BrainToolDeps) => runRead("get_page", { slug: p.slug }, d),
+  kb_list_pages: (p: { type?: string; tag?: string; limit?: number }, d: BrainToolDeps) =>
+    runRead("list_pages", { ...p }, d),
+  kb_graph: async (p: { slug: string }, d: BrainToolDeps): Promise<ToolResult> => {
+    const links = await runRead("get_links", { slug: p.slug }, d);
+    if (links.isError) return links;
+    const back = await runRead("get_backlinks", { slug: p.slug }, d);
+    if (back.isError) return back;
+    return ok(JSON.stringify({
+      links: JSON.parse(links.content[0]!.text),
+      backlinks: JSON.parse(back.content[0]!.text),
+    }, null, 2));
+  },
+  kb_put_page: (p: { slug: string; content: string; summary: string }, d: BrainToolDeps) =>
+    runGated("put_page", { slug: p.slug, content: p.content }, `KB write: ${p.slug} — ${p.summary}`, d),
+  kb_delete_page: (p: { slug: string; reason: string }, d: BrainToolDeps) =>
+    runGated("delete_page", { slug: p.slug }, `KB delete: ${p.slug} — ${p.reason}`, d),
+};
+
+export function createKbMcp(deps?: BrainToolDeps): McpSdkServerConfigWithInstance {
+  const brainTools = deps && brainEnabled()
+    ? [
+        tool(
+          "kb_think",
+          "Ask the knowledge brain a question. Returns a synthesized answer with [Source: ...] citations and explicit gaps. Prefer this over kb_search when you need an answer, not documents.",
+          { question: z.string().describe("The question to answer from the brain.") },
+          (a: { question: string }) => brainHandlers.kb_think(a, deps),
+        ),
+        tool(
+          "kb_search",
+          "Search the knowledge brain (pages across your allowed scopes). Returns ranked chunks with slugs.",
+          {
+            query: z.string().describe("Search query."),
+            limit: z.number().optional().describe("Max results (default 20)."),
+          },
+          (a: { query: string; limit?: number }) => brainHandlers.kb_search(a, deps),
+        ),
+        tool(
+          "kb_get_page",
+          "Read a brain page by slug (e.g. 'people/alice').",
+          { slug: z.string().describe("Page slug.") },
+          (a: { slug: string }) => brainHandlers.kb_get_page(a, deps),
+        ),
+        tool(
+          "kb_list_pages",
+          "List brain pages, optionally filtered by type or tag.",
+          {
+            type: z.string().optional().describe("Filter by page type."),
+            tag: z.string().optional().describe("Filter by tag."),
+            limit: z.number().optional().describe("Max results (default 50)."),
+          },
+          (a: { type?: string; tag?: string; limit?: number }) => brainHandlers.kb_list_pages(a, deps),
+        ),
+        tool(
+          "kb_graph",
+          "Get knowledge-graph edges for a page: outgoing links and backlinks.",
+          { slug: z.string().describe("Page slug.") },
+          (a: { slug: string }) => brainHandlers.kb_graph(a, deps),
+        ),
+        tool(
+          "kb_put_page",
+          "Write/update a brain page (markdown, optional YAML frontmatter; [[wikilinks]] become graph edges). Writes outside your own slice require human approval — provide a clear summary.",
+          {
+            slug: z.string().describe("Page slug, e.g. 'people/alice' or 'notes/2026-06-10-x'."),
+            content: z.string().describe("Full markdown content for the page."),
+            summary: z.string().describe("One-line description of the change, shown on the approval card."),
+          },
+          (a: { slug: string; content: string; summary: string }) => brainHandlers.kb_put_page(a, deps),
+        ),
+        tool(
+          "kb_delete_page",
+          "Soft-delete a brain page (recoverable). Requires approval.",
+          {
+            slug: z.string().describe("Page slug to delete."),
+            reason: z.string().describe("Why this page should be deleted (shown on the approval card)."),
+          },
+          (a: { slug: string; reason: string }) => brainHandlers.kb_delete_page(a, deps),
+        ),
+      ]
+    : [];
+
   return createSdkMcpServer({
     name: KB_MCP_NAME,
-    version: "0.1.0",
+    version: "0.2.0",
     tools: [
+      ...brainTools,
       tool(
         "list_kbs",
         "List installed knowledge bases. Returns JSON array with label, description, path, and index_file for each KB.",
