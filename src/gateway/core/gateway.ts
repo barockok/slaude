@@ -13,7 +13,9 @@ import { PermissionGate } from "../slack/permission-gate";
 import { ApprovalGate } from "../slack/approval-gate";
 import { IgnoreGate } from "../slack/ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slack/commands";
-import { soulData } from "../../soul/extract";
+import { soulData, soulDataBase } from "../../soul/extract";
+import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
+import * as SoulOverrides from "../../db/soul-overrides";
 import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
 import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
@@ -238,7 +240,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const route = routes.get(sessionId);
     if (!route) return undefined;
     const servers: Record<string, McpServerConfig> = {
-      [SURFACE_MCP_NAME]: createSurfaceMcp(route.surface),
+      [SURFACE_MCP_NAME]: createSurfaceMcp(route.surface, { initiator: () => route.ctx.userId }),
       [RUNTIME_MCP_NAME]: createRuntimeMcp(route.ctx),
       [SLACK_MCP_NAME]: createSlackMcp(route.ctx),
       [SKILLS_MCP_NAME]: createSkillsMcp(),
@@ -702,6 +704,51 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         await reply(":unlock: 1on1 released — the thread is open again.");
         return;
       }
+      if (slash.kind === "soul" || slash.kind === "soul-list" || slash.kind === "soul-clear") {
+        // Manager-only — primary manager, NOT backup (owner: "only Manager").
+        // Gate on the signed inbound Slack user id before any mutation.
+        const soul = soulData();
+        if (!soul.manager.userId || userId !== soul.manager.userId) {
+          await reply(":lock: `/soul` is manager-only.");
+          return;
+        }
+        if (slash.kind === "soul") {
+          const res = mutateOverride(
+            { field: slash.field, action: slash.action, value: slash.value, by: userId },
+            { managerId: soul.manager.userId },
+          );
+          await reply(
+            res.ok
+              ? `:white_check_mark: soul override: \`${res.field}\` ${slash.action} \`${res.value}\` — effective immediately, all sessions.`
+              : `:warning: ${res.reason}`,
+          );
+          return;
+        }
+        if (slash.kind === "soul-clear") {
+          if (slash.field === "all") SoulOverrides.clear();
+          else SoulOverrides.clear(FIELD_ALIASES[slash.field]);
+          await reply(`:leftwards_arrow_with_hook: soul overrides cleared (\`${slash.field}\`) — reverted to SOUL.md.`);
+          return;
+        }
+        // soul-list: provenance — SOUL.md base vs runtime overlay.
+        const base = soulDataBase();
+        const rows = SoulOverrides.list();
+        const lines: string[] = ["*soul runtime overrides*"];
+        for (const [alias, field] of Object.entries(FIELD_ALIASES)) {
+          const adds = rows.filter((r) => r.field === field && r.action === "add");
+          const removes = rows.filter((r) => r.field === field && r.action === "remove");
+          const baseIds = base[field];
+          if (!adds.length && !removes.length && !baseIds.length) continue;
+          lines.push(
+            `*${alias}* — soul: ${baseIds.length ? baseIds.map((v) => `\`${v}\``).join(" ") : "_none_"}` +
+              (adds.length ? ` | +runtime: ${adds.map((r) => `\`${r.value}\``).join(" ")}` : "") +
+              (removes.length ? ` | −masked: ${removes.map((r) => `\`${r.value}\``).join(" ")}` : ""),
+          );
+        }
+        if (lines.length === 1) lines.push("_no overrides, no soul ACL entries_");
+        await reply(lines.join("\n"));
+        return;
+      }
       if (slash.kind === "mcp") {
         // Two scopes:
         //   inside a /1on1 lock → "initiator": the connect writes into THIS user's
@@ -1097,8 +1144,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // Per-thread engagement state. Disengaged by default. @mentioning slaude
   // engages the thread (subsequent plain replies handled). @mentioning a
   // different user disengages (the user is now talking to a colleague).
+  //
+  // The Set is a hot cache only — engagement is persisted on the session row
+  // (sessions.engaged). Without persistence a disengage lasted zero messages:
+  // every engaged thread has a session row, so the next plain reply fell
+  // through to the restore path and re-engaged (restarts had the same effect).
   const engaged = new Set<string>(); // key: `${channel}:${thread_ts}`
   const threadKey = (channel: string, ts: string) => `${channel}:${ts}`;
+  const persistEngaged = (teamId: string | undefined, channelId: string, threadTs: string, value: boolean) => {
+    if (!teamId) return;
+    const row = Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: threadTs });
+    if (row) Sessions.setEngaged(row.id, value);
+  };
 
   let cachedBotId: string | null = null;
   let cachedSelfBotId: string | null = null;
@@ -1123,6 +1180,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const e: any = args.event;
     const ts: string = e.thread_ts || e.ts;
     engaged.add(threadKey(e.channel, ts));
+    persistEngaged(args.context?.teamId ?? e.team, e.channel, ts, true);
     await handleMessage(args);
   });
 
@@ -1152,12 +1210,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const mentionsBot = mentions.includes(botId);
     const mentionsOther = mentions.some((u) => u && u !== botId);
 
+    const teamId: string | undefined = args.context?.teamId ?? e.team;
     if (mentionsBot) {
       engaged.add(key);
+      persistEngaged(teamId, channelId, ts, true);
       return await handleMessage(args);
     }
     if (mentionsOther) {
       engaged.delete(key);
+      persistEngaged(teamId, channelId, ts, false);
       console.log(
         `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — mention to other user, disengaging thread`,
       );
@@ -1167,13 +1228,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (engaged.has(key)) {
       return await handleMessage(args);
     }
-    // Restore engagement across restarts: if a session row exists for this
-    // thread, the bot was engaged here historically — keep handling plain
-    // replies without forcing a re-@mention.
-    const teamId: string | undefined = args.context?.teamId ?? e.team;
-    if (teamId && Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts })) {
-      engaged.add(key);
-      return await handleMessage(args);
+    // Restore engagement across restarts: a session row means the bot was
+    // engaged here historically — keep handling plain replies without forcing
+    // a re-@mention, unless the thread was explicitly disengaged (row.engaged=0).
+    if (teamId) {
+      const row = Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts });
+      if (row && row.engaged) {
+        engaged.add(key);
+        return await handleMessage(args);
+      }
     }
     console.log(
       `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — channel msg, thread not engaged (no @mention)`,

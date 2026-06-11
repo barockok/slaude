@@ -53,6 +53,22 @@ export function ensureInitiatorConfigDir(userId: string): string {
   if (existsSync(srcPlugins) && !existsSync(dstPlugins)) {
     try { symlinkSync(srcPlugins, dstPlugins, "dir"); } catch { /* best-effort */ }
   }
+  // projects/ — symlink to the agent's transcript home. The CLI keys transcripts
+  // off CLAUDE_CONFIG_DIR, so without this a /1on1 lock (or unlock) flips the
+  // config dir and `resume` searches the wrong home: cold start at lock, stale
+  // pre-lock context at unlock. Isolation is for credential stores only —
+  // transcripts must stay in one place. Created even when the agent home has no
+  // projects/ yet (locked-first thread), so the CLI never writes transcripts
+  // into the initiator dir. A pre-existing real projects/ dir (legacy initiator
+  // home) is left as-is: replacing it would orphan transcripts already inside.
+  const srcProjects = join(src, "projects");
+  const dstProjects = join(dir, "projects");
+  if (!existsSync(dstProjects)) {
+    try {
+      mkdirSync(srcProjects, { recursive: true });
+      symlinkSync(srcProjects, dstProjects, "dir");
+    } catch { /* best-effort */ }
+  }
   return dir;
 }
 
