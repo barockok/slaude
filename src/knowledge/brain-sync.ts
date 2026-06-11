@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { brainAdminCall, embeddingConfigured } from "./brain";
+import { brainAdminCall, embeddingActive } from "./brain";
 import { loadKbs } from "./loader";
 import { kbSourceId } from "./scope";
 
@@ -46,7 +46,7 @@ export async function syncKbWikis(): Promise<KbSyncResult[]> {
     process.env.GBRAIN_SOURCE = sourceId;
     try {
       ensureGitRepo(repo);
-      await brainAdminCall("sync_brain", { repo, no_pull: true, no_embed: !embeddingConfigured() }, sourceId);
+      await brainAdminCall("sync_brain", { repo, no_pull: true, no_embed: !embeddingActive() }, sourceId);
       out.push({ label: kb.label, ok: true });
     } catch (e) {
       out.push({ label: kb.label, ok: false, error: e instanceof Error ? e.message : String(e) });
