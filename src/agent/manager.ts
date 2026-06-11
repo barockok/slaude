@@ -29,6 +29,7 @@ import * as OneOnOne from "../db/one-on-one";
 import { memory } from "../memory";
 import { scrubChildEnv } from "./child-env";
 import { resolveSessionConfigDir } from "./oauth-home";
+import { sessionIdOpts } from "./session-id-opts";
 
 type LiveSession = {
   id: string;
@@ -371,7 +372,7 @@ export class AgentManager extends EventEmitter {
           .filter(Boolean)
           .join("\n\n"),
       },
-      ...(row.claude_started ? { resume: row.id } : {}),
+      ...sessionIdOpts(row),
     };
 
     const live: LiveSession = {
@@ -422,6 +423,18 @@ export class AgentManager extends EventEmitter {
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           // Fire and forget — restart with the same first prompt.
+          void this.#startSession(sessionId, firstText);
+          return;
+        }
+        // Mirror failure: we seeded --session-id but a transcript with that id
+        // already exists (claude_started flag lost, e.g. crash between the CLI
+        // persisting and markStarted). Flip to resume and retry.
+        if (/session.*(already in use|already exists)/i.test(stderrBuf)) {
+          retried = true;
+          console.log(`[mgr] session id already has a transcript — retrying with resume session=${sessionId}`);
+          Sessions.markStarted(sessionId);
+          if (live.idleTimer) clearTimeout(live.idleTimer);
+          this.#live.delete(sessionId);
           void this.#startSession(sessionId, firstText);
           return;
         }
