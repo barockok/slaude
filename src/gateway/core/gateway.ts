@@ -1097,8 +1097,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // Per-thread engagement state. Disengaged by default. @mentioning slaude
   // engages the thread (subsequent plain replies handled). @mentioning a
   // different user disengages (the user is now talking to a colleague).
+  //
+  // The Set is a hot cache only — engagement is persisted on the session row
+  // (sessions.engaged). Without persistence a disengage lasted zero messages:
+  // every engaged thread has a session row, so the next plain reply fell
+  // through to the restore path and re-engaged (restarts had the same effect).
   const engaged = new Set<string>(); // key: `${channel}:${thread_ts}`
   const threadKey = (channel: string, ts: string) => `${channel}:${ts}`;
+  const persistEngaged = (teamId: string | undefined, channelId: string, threadTs: string, value: boolean) => {
+    if (!teamId) return;
+    const row = Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: threadTs });
+    if (row) Sessions.setEngaged(row.id, value);
+  };
 
   let cachedBotId: string | null = null;
   let cachedSelfBotId: string | null = null;
@@ -1123,6 +1133,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const e: any = args.event;
     const ts: string = e.thread_ts || e.ts;
     engaged.add(threadKey(e.channel, ts));
+    persistEngaged(args.context?.teamId ?? e.team, e.channel, ts, true);
     await handleMessage(args);
   });
 
@@ -1152,12 +1163,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const mentionsBot = mentions.includes(botId);
     const mentionsOther = mentions.some((u) => u && u !== botId);
 
+    const teamId: string | undefined = args.context?.teamId ?? e.team;
     if (mentionsBot) {
       engaged.add(key);
+      persistEngaged(teamId, channelId, ts, true);
       return await handleMessage(args);
     }
     if (mentionsOther) {
       engaged.delete(key);
+      persistEngaged(teamId, channelId, ts, false);
       console.log(
         `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — mention to other user, disengaging thread`,
       );
@@ -1167,13 +1181,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (engaged.has(key)) {
       return await handleMessage(args);
     }
-    // Restore engagement across restarts: if a session row exists for this
-    // thread, the bot was engaged here historically — keep handling plain
-    // replies without forcing a re-@mention.
-    const teamId: string | undefined = args.context?.teamId ?? e.team;
-    if (teamId && Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts })) {
-      engaged.add(key);
-      return await handleMessage(args);
+    // Restore engagement across restarts: a session row means the bot was
+    // engaged here historically — keep handling plain replies without forcing
+    // a re-@mention, unless the thread was explicitly disengaged (row.engaged=0).
+    if (teamId) {
+      const row = Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts });
+      if (row && row.engaged) {
+        engaged.add(key);
+        return await handleMessage(args);
+      }
     }
     console.log(
       `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — channel msg, thread not engaged (no @mention)`,
