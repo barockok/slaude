@@ -20,7 +20,8 @@
     "validate-soul": "bun src/cli/validate.ts",
     "install-deps": "bun src/cli/install.ts",
     "test": "bun test",
-    "test:coverage": "bun test --coverage"
+    "test:coverage": "bun test --coverage",
+    "brain-backfill": "bun src/cli/brain-backfill.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
