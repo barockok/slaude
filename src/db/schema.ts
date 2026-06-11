@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   slack_channel_id TEXT,
   slack_thread_ts TEXT,
   permission_mode TEXT NOT NULL DEFAULT 'default',
+  engaged INTEGER NOT NULL DEFAULT 1,
   UNIQUE(slack_team_id, slack_channel_id, slack_thread_ts)
 );
 
@@ -93,6 +94,16 @@ CREATE TABLE IF NOT EXISTS one_on_one_locks (
   created_at  INTEGER NOT NULL,
   PRIMARY KEY (channel_id, thread_ts)
 );
+
+CREATE TABLE IF NOT EXISTS soul_overrides (
+  field      TEXT    NOT NULL CHECK(field IN
+              ('trustedChannels','allowedChannels','dmAllowedUsers','blockedUsers')),
+  value      TEXT    NOT NULL,
+  action     TEXT    NOT NULL CHECK(action IN ('add','remove')),
+  created_by TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (field, value)
+);
 `;
 
 for (const stmt of SCHEMA.split(";")) {
@@ -104,6 +115,10 @@ for (const stmt of SCHEMA.split(";")) {
 const sessionCols = db.query(`PRAGMA table_info(sessions)`).all() as Array<{ name: string }>;
 if (!sessionCols.some((c) => c.name === "permission_mode")) {
   db.run(`ALTER TABLE sessions ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'default'`);
+}
+// Migration: per-thread engagement flag (disengage must survive restarts).
+if (!sessionCols.some((c) => c.name === "engaged")) {
+  db.run(`ALTER TABLE sessions ADD COLUMN engaged INTEGER NOT NULL DEFAULT 1`);
 }
 
 // Migration: add Slack key columns to cron_jobs for real thread sessions.
@@ -148,4 +163,5 @@ export type SessionRow = {
   slack_channel_id: string | null;
   slack_thread_ts: string | null;
   permission_mode: string;
+  engaged: number;
 };

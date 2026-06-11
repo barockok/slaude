@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import type { Surface } from "./surface";
+import { mutateOverride, FIELD_ALIASES, type FieldAlias } from "../../soul/overrides";
+import * as SoulOverrides from "../../db/soul-overrides";
+import { soulData } from "../../soul/extract";
 
 export const SURFACE_MCP_NAME = "slaude_surface";
 
@@ -15,10 +18,16 @@ export interface SurfaceToolDef {
   handler: (args: any) => Promise<ToolResult>;
 }
 
+export interface SurfaceMcpOpts {
+  /** Resolves the CURRENT turn's inbound platform user id (live getter — the
+   *  gateway mutates ctx per turn). Required to mount manager-gated tools. */
+  initiator?: () => string | undefined;
+}
+
 /** Build the agent-facing interaction tools for a Surface. Core tools are always present;
  *  optional tools are mounted only when the matching capability is declared. Exported
  *  separately from createSurfaceMcp so the gating is unit-testable without the SDK server. */
-export function surfaceTools(surface: Surface): SurfaceToolDef[] {
+export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): SurfaceToolDef[] {
   const defs: SurfaceToolDef[] = [
     {
       name: "reply",
@@ -126,14 +135,49 @@ export function surfaceTools(surface: Surface): SurfaceToolDef[] {
     });
   }
 
+  if (opts.initiator) {
+    const initiator = opts.initiator;
+    defs.push({
+      name: "soul_override",
+      description:
+        "MANAGER-ONLY. Runtime override of soul ACLs: add/remove trusted channels (trust), public channels (allow), DM allowlist (dm), blocked users (block). Takes effect on the next message in every session and shadows SOUL.md. Refused unless the current turn was initiated by the manager's own Slack message.",
+      schema: {
+        field: z.enum(["trust", "allow", "dm", "block"]).describe("Which ACL to override."),
+        action: z.enum(["add", "remove", "list", "clear"]).describe("list shows current overrides; clear drops this field's overrides."),
+        value: z.string().optional().describe("Channel (C…/G…/D…) or user (U…/W…) id. Required for add/remove."),
+      },
+      handler: async ({ field, action, value }) => {
+        const soul = soulData();
+        const who = initiator();
+        // Primary manager only (owner: "only Manager") — checked against the
+        // signed inbound Slack user id, not the model's intent.
+        if (!soul.manager.userId || who !== soul.manager.userId) {
+          return fail("soul_override is manager-only: this turn was not initiated by the manager.");
+        }
+        if (action === "list") {
+          return ok(JSON.stringify(SoulOverrides.list(), null, 2));
+        }
+        if (action === "clear") {
+          SoulOverrides.clear(FIELD_ALIASES[field as FieldAlias]);
+          return ok(`cleared runtime overrides for ${field}`);
+        }
+        if (!value) return fail("value is required for add/remove");
+        const res = mutateOverride({ field: field as FieldAlias, action, value, by: who }, { managerId: soul.manager.userId });
+        return res.ok
+          ? ok(`soul override applied: ${res.field} ${action} ${res.value} — effective immediately`)
+          : fail(res.reason);
+      },
+    });
+  }
+
   return defs;
 }
 
 /** Build an SDK MCP server (`slaude_surface`) from a Surface's declared capabilities. */
-export function createSurfaceMcp(surface: Surface): McpSdkServerConfigWithInstance {
+export function createSurfaceMcp(surface: Surface, opts: SurfaceMcpOpts = {}): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
     name: SURFACE_MCP_NAME,
     version: "0.1.0",
-    tools: surfaceTools(surface).map((d) => tool(d.name, d.description, d.schema, d.handler)),
+    tools: surfaceTools(surface, opts).map((d) => tool(d.name, d.description, d.schema, d.handler)),
   });
 }
