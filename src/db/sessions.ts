@@ -77,6 +77,16 @@ export function clearStarted(id: string) {
   ]);
 }
 
+/** Persist per-thread engagement so a disengage (user @mentioned a colleague)
+ *  survives both the next-message restore path and gateway restarts. */
+export function setEngaged(id: string, engaged: boolean) {
+  db.run(`UPDATE sessions SET engaged = ?, updated_at = ? WHERE id = ?`, [
+    engaged ? 1 : 0,
+    Date.now(),
+    id,
+  ]);
+}
+
 export function setPermissionMode(id: string, mode: string) {
   db.run(`UPDATE sessions SET permission_mode = ?, updated_at = ? WHERE id = ?`, [
     mode,

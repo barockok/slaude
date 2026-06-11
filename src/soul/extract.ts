@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { paths } from "../config/home";
 import { loadSoul, soulSystemBlock, loadApproverEntries } from "./loader";
 import { SoulDataSchema, EXTRACTION_PROMPT, type SoulData } from "./data";
+import { applyOverrides } from "./overrides";
+import * as SoulOverrides from "../db/soul-overrides";
 
 const CACHE_DIR = join(paths.home, "cache");
 
@@ -170,7 +172,9 @@ export function setSoulData(d: SoulData) { memo = d; }
 /** Test helper: drop the in-memory memo so the next {@link soulData} call
  *  re-reads from disk cache or falls back to regex. */
 export function __resetSoulDataMemo() { memo = null; }
-export function soulData(): SoulData {
+/** Un-overlaid view of SOUL.md (memo / disk cache / regex fallback).
+ *  Use for provenance rendering (/soul list); gates must use soulData(). */
+export function soulDataBase(): SoulData {
   if (memo) return memo;
   // Best-effort sync read of the freshest cache file for current SOUL.md.
   // NOT memoized into `memo` — operator can edit SOUL.md and a subsequent
@@ -183,4 +187,16 @@ export function soulData(): SoulData {
     }
   } catch { /* fall through */ }
   return regexFallback();
+}
+
+/** Effective soul: (SOUL.md ∪ runtime adds) − runtime removes. The overlay is
+ *  read per call, so a manager override is live on the next inbound message
+ *  in every session — no reload. See src/soul/overrides.ts. */
+export function soulData(): SoulData {
+  const base = soulDataBase();
+  try {
+    return applyOverrides(base, SoulOverrides.list());
+  } catch {
+    return base; // overlay must never take the gates down
+  }
 }
