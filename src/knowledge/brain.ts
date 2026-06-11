@@ -98,6 +98,60 @@ function takeoverStaleLock(dbDir: string): void {
   rmSync(lockDir, { recursive: true, force: true });
 }
 
+let embeddingActiveFlag = false;
+
+/** Runtime truth for "may sync attempt embeds": gateway configured AND the
+ *  provider's key env present. config.json alone isn't enough — gbrain's
+ *  embedding gateway is a process singleton that hard-fails sync (observed:
+ *  process exit on maria UAT) when an embed step runs unconfigured. */
+export function embeddingActive(): boolean {
+  return embeddingActiveFlag;
+}
+
+// Provider prefix → required key env. null = keyless/optional-key provider.
+const PROVIDER_KEY_ENV: Record<string, string | null> = {
+  zeroentropyai: "ZEROENTROPY_API_KEY",
+  openai: "OPENAI_API_KEY",
+  voyage: "VOYAGE_API_KEY",
+  google: "GOOGLE_GENERATIVE_AI_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+  minimax: "MINIMAX_API_KEY",
+  together: "TOGETHER_API_KEY",
+  litellm: null,
+  ollama: null,
+  "llama-server": null,
+};
+
+async function configureEmbeddingGateway(): Promise<void> {
+  embeddingActiveFlag = false;
+  if (!embeddingConfigured()) return;
+  let model = "";
+  try {
+    const raw = JSON.parse(readFileSync(join(brainHome(), "config.json"), "utf8")) as { embedding_model?: string };
+    model = raw.embedding_model ?? "";
+  } catch {
+    return;
+  }
+  const provider = model.split(":")[0] ?? "";
+  const keyEnv = PROVIDER_KEY_ENV[provider];
+  if (keyEnv && !process.env[keyEnv]) {
+    console.warn(`[brain] embedding_model ${model} configured but ${keyEnv} is not set — embeds stay off`);
+    return;
+  }
+  try {
+    const { buildGatewayConfig } = (await import(
+      join(import.meta.dir, "../../node_modules/gbrain/src/core/ai/build-gateway-config.ts")
+    )) as { buildGatewayConfig: (c: object) => object };
+    const { configureGateway } = (await gbrainImport("ai/gateway")) as { configureGateway: (c: object) => void };
+    const { loadConfig } = (await gbrainImport("config")) as { loadConfig: () => object | null };
+    configureGateway(buildGatewayConfig(loadConfig() ?? {}));
+    embeddingActiveFlag = true;
+    console.log(`[brain] embedding gateway configured: ${model}`);
+  } catch (e) {
+    console.warn("[brain] embedding gateway configuration failed — embeds stay off:", e instanceof Error ? e.message : e);
+  }
+}
+
 /**
  * Same takeover principle, one layer up: gbrain's sync/dream advisory locks
  * persist as rows in gbrain_cycle_locks (30-min TTL, host+pid attributed).
@@ -134,6 +188,7 @@ async function boot(): Promise<Engine> {
   await engine.connect(cfg);
   await engine.initSchema();
   await clearStaleDbLocks(engine);
+  await configureEmbeddingGateway();
   return engine;
 }
 
@@ -146,6 +201,7 @@ export async function closeBrain(): Promise<void> {
   const e = await enginePromise;
   enginePromise = null;
   ensureInFlight = null; // next boot may target a different brain home
+  embeddingActiveFlag = false;
   await e.disconnect();
 }
 
