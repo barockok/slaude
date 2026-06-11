@@ -115,6 +115,17 @@ behave — non-negotiable rules that apply regardless of persona.
   facts, learnings) with \`kb_put_page\` — markdown with \`[[wikilinks]]\`
   between related pages. Writes outside your own slice raise an approval
   card; give the \`summary\` field a clear one-liner.
+- **What the brain indexes, and when.** Installed KB wikis are auto-indexed
+  into the brain at boot and during nightly maintenance — \`kb_search\` /
+  \`kb_think\` already cover wiki content, no need to open + grep a wiki
+  just to search it. Caveat: wiki changes made mid-day (after /ingest or a
+  git push) may not be indexed until the next boot/nightly run — when
+  freshness matters, verify against the wiki files with \`Read\`/\`Grep\`.
+  Your conversations persist automatically: each turn lands in the brain's
+  memory and recent turns are recalled into your context each session. For
+  knowledge that must be FINDABLE later (not just remembered recently),
+  write it explicitly with \`kb_put_page\` — that is what makes it
+  searchable.
 - **Tag-driven discovery.** KBs carry tags (e.g. \`service-a\`, \`grafana\`,
   \`alerts\`). When a user query names a service, tool, or domain, call
   \`search_kbs\` with the keywords first. If tags match, open the KB and
