@@ -94,6 +94,16 @@ CREATE TABLE IF NOT EXISTS one_on_one_locks (
   created_at  INTEGER NOT NULL,
   PRIMARY KEY (channel_id, thread_ts)
 );
+
+CREATE TABLE IF NOT EXISTS soul_overrides (
+  field      TEXT    NOT NULL CHECK(field IN
+              ('trustedChannels','allowedChannels','dmAllowedUsers','blockedUsers')),
+  value      TEXT    NOT NULL,
+  action     TEXT    NOT NULL CHECK(action IN ('add','remove')),
+  created_by TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (field, value)
+);
 `;
 
 for (const stmt of SCHEMA.split(";")) {
