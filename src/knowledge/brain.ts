@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
 import { loadKbs } from "./loader";
@@ -76,12 +76,35 @@ export function applyEmbeddingEnv(): void {
   writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n");
 }
 
+/**
+ * Clear a leftover PGLite lock before connect. gbrain's staleness check is
+ * kill(pid, 0) — after a pod restart the previous container's recorded PID
+ * usually maps to SOME live process in the new PID namespace, so the lock
+ * never looks stale and connect times out (seen on maria UAT). slaude's
+ * deploy contract is one process per brain (one container = one persona,
+ * Recreate strategy), so a lock present at fresh-process boot is stale by
+ * construction. Opt out with SLAUDE_BRAIN_TAKEOVER=0 if you intentionally
+ * share a brain home across processes (don't — PGLite is single-writer).
+ */
+function takeoverStaleLock(dbDir: string): void {
+  if (process.env.SLAUDE_BRAIN_TAKEOVER === "0") return;
+  const lockDir = join(dbDir, ".gbrain-lock");
+  try {
+    if (!readdirSync(lockDir).length && !existsSync(join(lockDir, "lock"))) return;
+  } catch {
+    return; // no lock dir — nothing to do
+  }
+  console.warn("[brain] removing leftover PGLite lock (previous process did not shut down cleanly)");
+  rmSync(lockDir, { recursive: true, force: true });
+}
+
 async function boot(): Promise<Engine> {
   const home = brainHome();
   mkdirSync(home, { recursive: true });
   // gbrain reads GBRAIN_HOME for config.json, lock files, clones.
   process.env.GBRAIN_HOME = home;
   applyEmbeddingEnv();
+  takeoverStaleLock(join(home, "db"));
   const { createEngine } = (await gbrainImport("engine-factory")) as { createEngine: (c: object) => Promise<Engine> };
   const cfg = { engine: "pglite" as const, database_path: join(home, "db") };
   const engine = (await createEngine(cfg)) as Engine;
