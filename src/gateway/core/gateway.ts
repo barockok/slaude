@@ -240,7 +240,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const route = routes.get(sessionId);
     if (!route) return undefined;
     const servers: Record<string, McpServerConfig> = {
-      [SURFACE_MCP_NAME]: createSurfaceMcp(route.surface),
+      [SURFACE_MCP_NAME]: createSurfaceMcp(route.surface, { initiator: () => route.ctx.userId }),
       [RUNTIME_MCP_NAME]: createRuntimeMcp(route.ctx),
       [SLACK_MCP_NAME]: createSlackMcp(route.ctx),
       [SKILLS_MCP_NAME]: createSkillsMcp(),
