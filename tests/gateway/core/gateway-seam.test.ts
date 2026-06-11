@@ -130,4 +130,91 @@ describe("createGateway", () => {
 
     db.run("DELETE FROM cron_jobs");
   });
+
+  // Engagement lifecycle: disengage (mention of another user) must stick — across
+  // both the next plain reply (session-row restore path) and a gateway restart
+  // (in-memory engagement set wiped). Regression for the "agent keeps replying
+  // after I started talking to a colleague" bug.
+  describe("engage/disengage durability", () => {
+    const CH = WORLD.trusted[0]!; // trusted channel: anyone can address slaude
+    const mk = (ts: string, text: string, thread?: string) => ({
+      event: { type: "message", channel: CH, channel_type: "channel", user: WORLD.manager, team: "T", ts, text, ...(thread ? { thread_ts: thread } : {}) },
+      context: { teamId: "T" },
+    });
+    const newGateway = () => {
+      const cap = capturingTransport();
+      const agent = new AgentManager();
+      const sends: string[] = [];
+      agent.sendMessage = async (_id: string, txt: string) => { sends.push(txt); };
+      createGateway(agent, cap.t);
+      // Engage the way real Slack does: a bot mention fires app_mention (the
+      // fixture bot id U_SLAUDE has an underscore, so the message-event mention
+      // regex can't engage on its own — same landmine as mcp-connect.test.ts).
+      const mention = async (ts: string, text: string, thread?: string) => {
+        const args = { ...mk(ts, text, thread), client: cap.t.client };
+        await cap.emit("app_mention", { ...args, event: { ...args.event, type: "app_mention" } });
+        await cap.emit("message", args);
+      };
+      return { ...cap, sends, mention };
+    };
+    const wipe = () => {
+      db.run("DELETE FROM sessions");
+      // handleMessage's attachment download resolves the bot token lazily.
+      process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
+    };
+
+    it("disengage survives the session-row restore path (next plain reply stays dropped)", async () => {
+      wipe();
+      writeSoulFixture(WORLD);
+      const g = newGateway();
+
+      await g.mention("200.1", "<@U_SLAUDE> hello");
+      expect(g.sends.length).toBe(1); // engaged + handled, session row now exists
+
+      await g.emit("message", { ...mk("200.2", "<@U0APP> can you take this?", "200.1"), client: g.t.client });
+      expect(g.sends.length).toBe(1); // mention-other: dropped + disengaged
+
+      await g.emit("message", { ...mk("200.3", "sure, on it", "200.1"), client: g.t.client });
+      expect(g.sends.length).toBe(1); // plain reply after disengage must NOT be handled
+    });
+
+    it("disengage survives a gateway restart (engagement set wiped, db restores state)", async () => {
+      wipe();
+      writeSoulFixture(WORLD);
+      const g1 = newGateway();
+      await g1.mention("300.1", "<@U_SLAUDE> hello");
+      await g1.emit("message", { ...mk("300.2", "<@U0APP> over to you", "300.1"), client: g1.t.client });
+      expect(g1.sends.length).toBe(1);
+
+      const g2 = newGateway(); // fresh in-memory engagement set
+      await g2.emit("message", { ...mk("300.3", "thanks!", "300.1"), client: g2.t.client });
+      expect(g2.sends.length).toBe(0); // restore path must respect the persisted disengage
+    });
+
+    it("re-mentioning the bot re-engages durably (plain replies handled again)", async () => {
+      wipe();
+      writeSoulFixture(WORLD);
+      const g = newGateway();
+      await g.mention("400.1", "<@U_SLAUDE> hello");
+      await g.emit("message", { ...mk("400.2", "<@U0APP> fyi", "400.1"), client: g.t.client });
+      await g.mention("400.3", "<@U_SLAUDE> back to you", "400.1");
+      expect(g.sends.length).toBe(2);
+
+      const g2 = newGateway(); // restart: re-engage must have been persisted too
+      await g2.emit("message", { ...mk("400.4", "continue please", "400.1"), client: g2.t.client });
+      expect(g2.sends.length).toBe(1);
+    });
+
+    it("restart restore still works for engaged threads (no re-mention needed)", async () => {
+      wipe();
+      writeSoulFixture(WORLD);
+      const g1 = newGateway();
+      await g1.mention("500.1", "<@U_SLAUDE> hello");
+      expect(g1.sends.length).toBe(1);
+
+      const g2 = newGateway();
+      await g2.emit("message", { ...mk("500.2", "still there?", "500.1"), client: g2.t.client });
+      expect(g2.sends.length).toBe(1);
+    });
+  });
 });
