@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { brainAdminCall, getBrain } from "./brain";
+import { embedStaleChunks } from "./brain-backfill";
 import { syncKbWikis, type KbSyncResult } from "./brain-sync";
 import { loadKbs } from "./loader";
 import { kbSourceId } from "./scope";
@@ -23,6 +24,7 @@ export interface ExtractPhaseResult {
 export interface MaintenanceReport {
   kbSync: KbSyncResult[];
   extract: ExtractPhaseResult[];
+  embed: { ok: boolean; embedded?: number; skipped?: boolean; error?: string };
   orphans: { ok: boolean; count?: number; error?: string };
   purge: { ok: boolean; error?: string };
 }
@@ -59,6 +61,16 @@ export async function runNightlyMaintenance(): Promise<MaintenanceReport> {
     extract.push(await extractWiki(kbSourceId(kb.label), dir));
   }
 
+  // Embed sweep covers chunks created by put_page (agent memory, shared
+  // pages, backfills) that sync never touches. No-op when gateway inactive.
+  let embed: MaintenanceReport["embed"];
+  try {
+    const r = await embedStaleChunks();
+    embed = r ? { ok: true, embedded: r.embedded } : { ok: true, skipped: true };
+  } catch (e) {
+    embed = { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+
   let orphans: MaintenanceReport["orphans"];
   try {
     const r = (await brainAdminCall("find_orphans", {})) as { orphans?: unknown[] } | unknown[];
@@ -76,7 +88,7 @@ export async function runNightlyMaintenance(): Promise<MaintenanceReport> {
     purge = { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 
-  return { kbSync, extract, orphans, purge };
+  return { kbSync, extract, embed, orphans, purge };
 }
 
 /** Milliseconds until the next local occurrence of hh:mm. */
