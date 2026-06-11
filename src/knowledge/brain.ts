@@ -98,6 +98,29 @@ function takeoverStaleLock(dbDir: string): void {
   rmSync(lockDir, { recursive: true, force: true });
 }
 
+/**
+ * Same takeover principle, one layer up: gbrain's sync/dream advisory locks
+ * persist as rows in gbrain_cycle_locks (30-min TTL, host+pid attributed).
+ * A pod killed mid-sync leaves its row on the PVC; the next pod is a
+ * different host so gbrain won't steal it until TTL expiry — every KB sync
+ * fails "Another sync is in progress" for up to 30 minutes (seen on maria
+ * UAT). At fresh-process boot we own the brain exclusively, so all lock
+ * rows are stale by construction.
+ */
+async function clearStaleDbLocks(engine: Engine): Promise<void> {
+  if (process.env.SLAUDE_BRAIN_TAKEOVER === "0") return;
+  const db = (engine as { db?: { query: (sql: string) => Promise<{ rows: unknown[] }> } }).db;
+  if (!db) return;
+  try {
+    const { rows } = await db.query("DELETE FROM gbrain_cycle_locks RETURNING id");
+    if (rows.length) {
+      console.warn(`[brain] cleared ${rows.length} stale gbrain lock row(s) left by a previous process`);
+    }
+  } catch (e) {
+    console.warn("[brain] stale-lock sweep failed (continuing):", e instanceof Error ? e.message : e);
+  }
+}
+
 async function boot(): Promise<Engine> {
   const home = brainHome();
   mkdirSync(home, { recursive: true });
@@ -110,6 +133,7 @@ async function boot(): Promise<Engine> {
   const engine = (await createEngine(cfg)) as Engine;
   await engine.connect(cfg);
   await engine.initSchema();
+  await clearStaleDbLocks(engine);
   return engine;
 }
 
