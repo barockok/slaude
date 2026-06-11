@@ -37,7 +37,10 @@ export type SlashHit =
   | { kind: "cron-list" }
   | { kind: "cron-remove"; id: string }
   | { kind: "one-on-one"; action: "on" | "off" }
-  | { kind: "mcp"; action: "status" | "connect"; server?: string };
+  | { kind: "mcp"; action: "status" | "connect"; server?: string }
+  | { kind: "soul"; field: "trust" | "allow" | "dm" | "block"; action: "add" | "remove"; value: string }
+  | { kind: "soul-list" }
+  | { kind: "soul-clear"; field: "trust" | "allow" | "dm" | "block" | "all" };
 
 /** One descriptor per agent slash command — the single source of truth for every help
  *  surface (Slack `/help`, the sim REPL `/help`). Add a command here and it shows up
@@ -56,6 +59,9 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/cron-list", summary: "list scheduled crons" },
   { usage: "/cron-remove <id>", summary: "remove a scheduled cron" },
   { usage: "/ingest", summary: "synthesize raw/ → wiki/ in the writable KB (manager/approver)" },
+  { usage: "/soul <trust|allow|dm|block> <add|remove> <id>", summary: "manager-only: runtime override of soul ACLs (channels/users) — immediate, shadows SOUL.md" },
+  { usage: "/soul list", summary: "show runtime soul overrides vs SOUL.md base" },
+  { usage: "/soul clear <trust|allow|dm|block|all>", summary: "manager-only: drop runtime overrides (revert to SOUL.md)" },
   { usage: "/help", summary: "show this help" },
 ];
 
@@ -118,6 +124,23 @@ export function parseSlashCommand(text: string): SlashHit | null {
   }
   if (cmd === "1on1") {
     return { kind: "one-on-one", action: arg === "off" ? "off" : "on" };
+  }
+  if (cmd === "soul") {
+    const sub = (rest[0] ?? "").toLowerCase();
+    if (sub === "list") return { kind: "soul-list" };
+    if (sub === "clear") {
+      const f = (rest[1] ?? "").toLowerCase();
+      if (!["trust", "allow", "dm", "block", "all"].includes(f)) return null;
+      return { kind: "soul-clear", field: f as "trust" | "allow" | "dm" | "block" | "all" };
+    }
+    if (["trust", "allow", "dm", "block"].includes(sub)) {
+      const action = (rest[1] ?? "").toLowerCase();
+      if (action !== "add" && action !== "remove") return null;
+      const value = rest[2]; // case-preserved: raw ids / <#…|name> / <@…> wrappers
+      if (!value) return null;
+      return { kind: "soul", field: sub as "trust" | "allow" | "dm" | "block", action, value };
+    }
+    return null;
   }
   if (cmd === "mcp") {
     if ((rest[0] ?? "").toLowerCase() === "connect") {
