@@ -216,3 +216,34 @@ describe("cron commands", () => {
     });
   });
 });
+
+describe("/soul", () => {
+  test("parses add/remove for all four nouns", () => {
+    expect(parseSlashCommand("/soul trust add <#C0NEW|general>")).toEqual({
+      kind: "soul", field: "trust", action: "add", value: "<#C0NEW|general>",
+    });
+    expect(parseSlashCommand("/soul allow remove C0PUB")).toEqual({
+      kind: "soul", field: "allow", action: "remove", value: "C0PUB",
+    });
+    expect(parseSlashCommand("/soul dm add <@U0FRIEND>")).toEqual({
+      kind: "soul", field: "dm", action: "add", value: "<@U0FRIEND>",
+    });
+    expect(parseSlashCommand("/soul block add <@U0BAD>")).toEqual({
+      kind: "soul", field: "block", action: "add", value: "<@U0BAD>",
+    });
+  });
+
+  test("parses list and clear", () => {
+    expect(parseSlashCommand("/soul list")).toEqual({ kind: "soul-list" });
+    expect(parseSlashCommand("/soul clear trust")).toEqual({ kind: "soul-clear", field: "trust" });
+    expect(parseSlashCommand("/soul clear all")).toEqual({ kind: "soul-clear", field: "all" });
+  });
+
+  test("rejects malformed forms", () => {
+    expect(parseSlashCommand("/soul")).toBeNull();
+    expect(parseSlashCommand("/soul trust")).toBeNull();
+    expect(parseSlashCommand("/soul trust add")).toBeNull();
+    expect(parseSlashCommand("/soul trust drop C1")).toBeNull();
+    expect(parseSlashCommand("/soul clear bogus")).toBeNull();
+  });
+});
