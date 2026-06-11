@@ -3,6 +3,7 @@ import { db } from "../src/db/schema";
 import { SoulDataSchema } from "../src/soul/data";
 import { applyOverrides, mutateOverride, FIELD_ALIASES } from "../src/soul/overrides";
 import * as SO from "../src/db/soul-overrides";
+import { soulData, soulDataBase, setSoulData } from "../src/soul/extract";
 
 const base = SoulDataSchema.parse({
   manager: { userId: "U0MGR" },
@@ -60,6 +61,26 @@ describe("mutateOverride", () => {
     const r = mutateOverride({ field: "block", action: "add", value: "<@U0MGR>", by: "U0MGR" }, { managerId: "U0MGR" });
     expect(r.ok).toBe(false);
     expect(SO.list().length).toBe(0);
+  });
+});
+
+describe("soulData() overlay", () => {
+  beforeEach(() => {
+    db.run("DELETE FROM soul_overrides");
+    setSoulData(base); // memo = base fixture from above
+  });
+
+  it("applies overrides on every read — memo path included", () => {
+    expect(soulData().trustedChannels).toEqual(["C0TEAM"]);
+    SO.upsert({ field: "trustedChannels", value: "C0LIVE", action: "add", created_by: "U0MGR" });
+    expect(soulData().trustedChannels.sort()).toEqual(["C0LIVE", "C0TEAM"]); // no reload needed
+    SO.upsert({ field: "trustedChannels", value: "C0TEAM", action: "remove", created_by: "U0MGR" });
+    expect(soulData().trustedChannels).toEqual(["C0LIVE"]); // shadows SOUL.md entry
+  });
+
+  it("soulDataBase() exposes the un-overlaid view (provenance rendering)", () => {
+    SO.upsert({ field: "trustedChannels", value: "C0LIVE", action: "add", created_by: "U0MGR" });
+    expect(soulDataBase().trustedChannels).toEqual(["C0TEAM"]);
   });
 });
 
