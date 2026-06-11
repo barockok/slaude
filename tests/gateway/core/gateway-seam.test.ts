@@ -131,6 +131,84 @@ describe("createGateway", () => {
     db.run("DELETE FROM cron_jobs");
   });
 
+  describe("/soul runtime overrides", () => {
+    const dm = (ts: string, text: string, user = WORLD.manager, channel = "D_MGR") => ({
+      event: { type: "message", channel, channel_type: "im", user, team: "T", ts, text },
+      context: { teamId: "T" },
+    });
+    const newGw = () => {
+      const cap = capturingTransport();
+      const agent = new AgentManager();
+      const sends: string[] = [];
+      agent.sendMessage = async (_id: string, txt: string) => { sends.push(txt); };
+      createGateway(agent, cap.t);
+      return { ...cap, sends };
+    };
+
+    it("manager adds an allowed channel — gate opens on the next message (immediacy)", async () => {
+      db.run("DELETE FROM sessions");
+      db.run("DELETE FROM soul_overrides");
+      process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
+      writeSoulFixture(WORLD);
+      const g = newGw();
+
+      // C0FRESH is not in the soul fixture: a non-manager mention there drops at the whitelist gate.
+      const fresh = (ts: string, text: string) => ({
+        event: { type: "message", channel: "C0FRESH", channel_type: "channel", user: "U0RANDO", team: "T", ts, text },
+        context: { teamId: "T" }, client: g.t.client,
+      });
+      const mention = async (ts: string) => {
+        const a = fresh(ts, "<@U_SLAUDE> hi");
+        await g.emit("app_mention", { ...a, event: { ...a.event, type: "app_mention" } });
+        await g.emit("message", a);
+      };
+      await mention("600.1");
+      expect(g.sends.length).toBe(0); // unlisted channel, non-manager → dropped
+
+      await g.emit("message", { ...dm("600.2", "/soul allow add C0FRESH"), client: g.t.client });
+      const confirm = g.posts.find((p) => String(p.text).includes("C0FRESH"));
+      expect(confirm).toBeDefined();
+
+      await mention("600.3");
+      expect(g.sends.length).toBe(1); // gate open, no reload needed
+    });
+
+    it("non-manager /soul refused — backup manager too — store untouched", async () => {
+      db.run("DELETE FROM soul_overrides");
+      writeSoulFixture(WORLD);
+      const g = newGw();
+
+      await g.emit("message", { ...dm("601.1", "/soul allow add C0NOPE", WORLD.backup, "D_BCK"), client: g.t.client });
+      const refusal = g.posts.find((p) => String(p.text).includes("manager-only"));
+      expect(refusal).toBeDefined();
+      const { list } = await import("../../../src/db/soul-overrides");
+      expect(list().length).toBe(0);
+    });
+
+    it("/soul block add drops the user's next message; /soul clear reverts", async () => {
+      db.run("DELETE FROM sessions");
+      db.run("DELETE FROM soul_overrides");
+      writeSoulFixture(WORLD);
+      const g = newGw();
+
+      const teamMsg = async (ts: string, user: string) => {
+        const a = { event: { type: "message", channel: WORLD.trusted[0]!, channel_type: "channel", user, team: "T", ts, text: "<@U_SLAUDE> hello" }, context: { teamId: "T" }, client: g.t.client };
+        await g.emit("app_mention", { ...a, event: { ...a.event, type: "app_mention" } });
+        await g.emit("message", a);
+      };
+      await teamMsg("602.1", "U0NOISY");
+      expect(g.sends.length).toBe(1); // trusted channel: anyone can chat
+
+      await g.emit("message", { ...dm("602.2", "/soul block add <@U0NOISY>"), client: g.t.client });
+      await teamMsg("602.3", "U0NOISY");
+      expect(g.sends.length).toBe(1); // blocked → dropped
+
+      await g.emit("message", { ...dm("602.4", "/soul clear block"), client: g.t.client });
+      await teamMsg("602.5", "U0NOISY");
+      expect(g.sends.length).toBe(2); // unblocked → flows again
+    });
+  });
+
   // Engagement lifecycle: disengage (mention of another user) must stick — across
   // both the next plain reply (session-row restore path) and a gateway restart
   // (in-memory engagement set wiped). Regression for the "agent keeps replying

@@ -13,7 +13,9 @@ import { PermissionGate } from "../slack/permission-gate";
 import { ApprovalGate } from "../slack/approval-gate";
 import { IgnoreGate } from "../slack/ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slack/commands";
-import { soulData } from "../../soul/extract";
+import { soulData, soulDataBase } from "../../soul/extract";
+import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
+import * as SoulOverrides from "../../db/soul-overrides";
 import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
 import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
@@ -700,6 +702,51 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         OneOnOne.unlock(channelId, threadTs);
         agent.reload(session.id);     // reboot so the resolver restores agent-cred mounts next turn
         await reply(":unlock: 1on1 released — the thread is open again.");
+        return;
+      }
+      if (slash.kind === "soul" || slash.kind === "soul-list" || slash.kind === "soul-clear") {
+        // Manager-only — primary manager, NOT backup (owner: "only Manager").
+        // Gate on the signed inbound Slack user id before any mutation.
+        const soul = soulData();
+        if (!soul.manager.userId || userId !== soul.manager.userId) {
+          await reply(":lock: `/soul` is manager-only.");
+          return;
+        }
+        if (slash.kind === "soul") {
+          const res = mutateOverride(
+            { field: slash.field, action: slash.action, value: slash.value, by: userId },
+            { managerId: soul.manager.userId },
+          );
+          await reply(
+            res.ok
+              ? `:white_check_mark: soul override: \`${res.field}\` ${slash.action} \`${res.value}\` — effective immediately, all sessions.`
+              : `:warning: ${res.reason}`,
+          );
+          return;
+        }
+        if (slash.kind === "soul-clear") {
+          if (slash.field === "all") SoulOverrides.clear();
+          else SoulOverrides.clear(FIELD_ALIASES[slash.field]);
+          await reply(`:leftwards_arrow_with_hook: soul overrides cleared (\`${slash.field}\`) — reverted to SOUL.md.`);
+          return;
+        }
+        // soul-list: provenance — SOUL.md base vs runtime overlay.
+        const base = soulDataBase();
+        const rows = SoulOverrides.list();
+        const lines: string[] = ["*soul runtime overrides*"];
+        for (const [alias, field] of Object.entries(FIELD_ALIASES)) {
+          const adds = rows.filter((r) => r.field === field && r.action === "add");
+          const removes = rows.filter((r) => r.field === field && r.action === "remove");
+          const baseIds = base[field];
+          if (!adds.length && !removes.length && !baseIds.length) continue;
+          lines.push(
+            `*${alias}* — soul: ${baseIds.length ? baseIds.map((v) => `\`${v}\``).join(" ") : "_none_"}` +
+              (adds.length ? ` | +runtime: ${adds.map((r) => `\`${r.value}\``).join(" ")}` : "") +
+              (removes.length ? ` | −masked: ${removes.map((r) => `\`${r.value}\``).join(" ")}` : ""),
+          );
+        }
+        if (lines.length === 1) lines.push("_no overrides, no soul ACL entries_");
+        await reply(lines.join("\n"));
         return;
       }
       if (slash.kind === "mcp") {
