@@ -427,8 +427,33 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     await connectServer({ ...ctx, serverCfg: cfg });
   });
 
+  let sandboxAlertSent = false;
   agent.on("event", (e: AgentEvent) => {
     console.log(`[agent-evt] ${e.type} session=${e.sessionId}${"tool" in e ? ` tool=${e.tool}` : ""}${"error" in e ? ` err=${e.error}` : ""}`);
+
+    if (e.type === "sandboxUnavailable") {
+      if (sandboxAlertSent) return;
+      sandboxAlertSent = true;
+      void (async () => {
+        const mgr = soulData().manager?.userId;
+        if (!mgr) return;
+        try {
+          const im = await (t.client.conversations as any).open({ users: mgr });
+          const ch = (im as any).channel?.id;
+          if (ch) {
+            await t.client.chat.postMessage({
+              channel: ch,
+              text: ":warning: OS sandbox unavailable on the host — Bash is disabled in jailed (non-manager-DM) sessions. Install `bubblewrap` to restore sandboxed bash, or set `SLAUDE_JAIL_MODE=discipline`.",
+              mrkdwn: true,
+            });
+          }
+        } catch (err) {
+          console.error("[jail] manager sandbox alert failed:", err);
+        }
+      })();
+      return;
+    }
+
     const route = routes.get(e.sessionId);
     if (!route) return;
 
