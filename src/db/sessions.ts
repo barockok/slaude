@@ -23,6 +23,7 @@ export function createForThread(args: {
   working_dir: string;
   title?: string;
   permission_mode?: string;
+  dm_user_id?: string | null;
 }): SessionRow {
   const id = randomUUID();
   const now = Date.now();
@@ -30,8 +31,8 @@ export function createForThread(args: {
     `INSERT INTO sessions
      (id, created_at, updated_at, title, model, working_dir, status,
       claude_started, slack_team_id, slack_channel_id, slack_thread_ts,
-      permission_mode)
-     VALUES (?, ?, ?, ?, ?, ?, 'idle', 0, ?, ?, ?, ?)`,
+      permission_mode, dm_user_id)
+     VALUES (?, ?, ?, ?, ?, ?, 'idle', 0, ?, ?, ?, ?, ?)`,
     [
       id,
       now,
@@ -43,6 +44,7 @@ export function createForThread(args: {
       args.thread.channel_id,
       args.thread.thread_ts,
       args.permission_mode ?? "default",
+      args.dm_user_id ?? null,
     ],
   );
   return findById(id)!;
