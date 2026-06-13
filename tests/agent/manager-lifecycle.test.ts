@@ -310,6 +310,35 @@ describe("AgentManager lifecycle", () => {
     expect(mgr.getTokenSnapshot(row.id)).toBeNull();
   });
 
+  it("suppresses a resume-miss result(is_error) but still surfaces other turn errors", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = mgr.ensureSession(thread());
+    const fs = plan((s) => {
+      s.onUser = (um) => {
+        const text = String(um.message.content);
+        if (text === "resumemiss") {
+          // Resume miss arrives as a result(is_error); the reboot handles recovery.
+          s.emit(res({ is_error: true, errors: ["No conversation found with session ID: " + row.id] }));
+        } else if (text === "realerror") {
+          s.emit(res({ is_error: true, subtype: "error_during_execution" }));
+        }
+      };
+    });
+
+    await mgr.sendMessage(row.id, "resumemiss");
+    // give the result a beat to flow through #fanout
+    await until(() => fs.users.length === 1, 3000, "first turn consumed");
+    await Bun.sleep(20);
+    expect(events.some((e) => e.type === "error")).toBe(false); // suppressed
+
+    await mgr.sendMessage(row.id, "realerror");
+    await until(() => events.some((e) => e.type === "error"), 3000, "real error surfaces");
+    expect(events.find((e) => e.type === "error")?.error).toBe("error_during_execution");
+
+    await shutdown(mgr, row.id);
+  });
+
   it("abort() aborts the SDK query and surfaces the generic error path", async () => {
     const mgr = new AgentManager();
     const events = record(mgr);
