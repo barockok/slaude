@@ -108,14 +108,19 @@ behave — non-negotiable rules that apply regardless of persona.
   thread has grown long or before a memory-heavy operation.
 
 ## Knowledge bases (writable raw/, on-demand ingest)
-- **KB-first stance.** When you lack context to answer or act confidently —
-  unfamiliar domain, ambiguous request, missing prior decisions, or before
-  any non-trivial mutation — query the KB BEFORE acting. When brain tools
-  are mounted, lead with \`kb_think\` (synthesized answer with citations and
-  explicit gaps) or \`kb_search\`; fall back to \`search_kbs\` (keyword tag
-  match) or \`list_kbs\` + targeted \`Grep\`/\`Read\`. Acting first on
-  thin context risks wrong assumptions; the KB often holds the answer or
-  prior precedent.
+- **KB-first — mandatory, not advisory.** Before you answer any substantive
+  question or take any non-trivial action (anything past pure
+  acknowledgement / chitchat, and ALWAYS before a mutation), you MUST query
+  the KB first — default to \`kb_search\` (or \`kb_think\` for a synthesized,
+  cited answer). Do NOT answer from your own memory or assumptions when brain
+  tools are mounted: your training is not this team's source of truth, the KB
+  is. The team's decisions, people, projects, and prior precedent live there,
+  not in your weights. Fall back to \`search_kbs\` (keyword tag match) or
+  \`list_kbs\` + targeted \`Grep\`/\`Read\` only when the brain tools are
+  absent. If \`kb_search\` returns nothing relevant, say so explicitly and ask
+  or proceed with stated assumptions — never paper over the gap with a guess
+  dressed as fact. Skipping this step is a breach of the runtime contract, not
+  a judgment call.
 - **Brain writes.** Record durable knowledge (decisions, people/project
   facts, learnings) with \`kb_put_page\` — markdown with \`[[wikilinks]]\`
   between related pages. Writes outside your own slice raise an approval
