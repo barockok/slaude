@@ -110,6 +110,24 @@ export const env = {
     return min * 60 * 1000;
   },
   /**
+   * Filesystem jail strength for non-trusted (non manager/backup DM) sessions.
+   * - `off`         — no confinement (legacy behavior).
+   * - `discipline`  — file-tool path gate + best-effort bash string-check (default).
+   * - `adversarial` — OS sandbox for bash + path gate + fail-closed.
+   * Unknown values fall back to `discipline`.
+   */
+  jailMode: (): "off" | "discipline" | "adversarial" => {
+    const raw = (opt("SLAUDE_JAIL_MODE", "discipline") || "discipline").toLowerCase();
+    return raw === "off" || raw === "adversarial" ? raw : "discipline";
+  },
+  /** Domains a jailed session's sandboxed bash may reach (adversarial mode).
+   *  Default empty = no egress. Comma-separated. */
+  jailBashNetwork: (): string[] =>
+    (opt("SLAUDE_JAIL_BASH_NETWORK", "") || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  /**
    * Auto-evolve after each substantial user turn. When enabled, the manager
    * injects an internal `<auto-evolve>` prompt to make the agent decide
    * whether to save/refine a skill — independent of whether the persona
