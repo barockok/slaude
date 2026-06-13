@@ -83,6 +83,12 @@ export type McpResolver = (sessionId: string) => Record<string, McpServerConfig>
  *  call is ignored (agent stops) and manager logs to stderr. */
 export type StopGuard = (sessionId: string) => string | null;
 
+/** Resume miss: the provider has no transcript for the seeded/resumed session id
+ *  (e.g. a pre-resumable-sessions row whose claude_started flag predates the CLI
+ *  ever sharing slaude's id). Expected + self-healing — #startSession clears the
+ *  started flag and reboots seeding `--session-id`, so the user must NOT see it. */
+const RESUME_MISS_RE = /No conversation found with session ID/i;
+
 export class AgentManager extends EventEmitter {
   #live = new Map<string, LiveSession>();
   #resolver: PermissionResolver | undefined;
@@ -420,7 +426,7 @@ export class AgentManager extends EventEmitter {
         // after swapping ANTHROPIC_BASE_URL across providers). Clear the
         // started flag and reboot the session w/o `resume` so the user
         // doesn't have to retry manually.
-        if (/No conversation found with session ID/i.test(stderrBuf)) {
+        if (RESUME_MISS_RE.test(stderrBuf)) {
           retried = true;
           console.log(`[mgr] clearing stale claude_started + retrying session=${sessionId}`);
           Sessions.clearStarted(sessionId);
@@ -540,14 +546,24 @@ export class AgentManager extends EventEmitter {
             "errors" in msg && Array.isArray((msg as any).errors)
               ? (msg as any).errors.join("; ")
               : msg.subtype;
-          metric.turnsTotal.inc({ result: "error" });
-          metric.errorsTotal.inc({ kind: "turn" });
-          this.emit("event", {
-            type: "error",
-            sessionId,
-            error: errStr,
-          } satisfies AgentEvent);
-          if (live) live.turnTools = [];
+          // A resume miss also arrives here as a result(is_error), in parallel
+          // with the stderr/throw that drives the silent reboot in #startSession.
+          // Suppress the user-facing emit so the self-healing migration stays
+          // invisible — the catch path recovers it; surfacing a :warning: here
+          // just scares the user about an expected, already-handled condition.
+          if (RESUME_MISS_RE.test(errStr)) {
+            console.log(`[resume-attempt] suppressing resume-miss result error session=${sessionId} (reboot will reseed --session-id)`);
+            if (live) live.turnTools = [];
+          } else {
+            metric.turnsTotal.inc({ result: "error" });
+            metric.errorsTotal.inc({ kind: "turn" });
+            this.emit("event", {
+              type: "error",
+              sessionId,
+              error: errStr,
+            } satisfies AgentEvent);
+            if (live) live.turnTools = [];
+          }
         } else {
           const wasAutoEvolve = live?.inAutoEvolve === true;
           if (live) live.inAutoEvolve = false;
