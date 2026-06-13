@@ -94,3 +94,11 @@ export function setPermissionMode(id: string, mode: string) {
     id,
   ]);
 }
+
+export function setModel(id: string, model: string) {
+  db.run(`UPDATE sessions SET model = ?, updated_at = ? WHERE id = ?`, [
+    model,
+    Date.now(),
+    id,
+  ]);
+}
