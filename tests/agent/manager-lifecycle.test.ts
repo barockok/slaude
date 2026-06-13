@@ -30,15 +30,11 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
   query: (args: QueryArgs) => currentQuery(args),
 }));
 
-// Query-string import forces manager.ts to RE-EVALUATE so its `import { query }`
-// binding resolves through the mock above. A plain import returns the cached
-// module when an earlier test file already imported AgentManager — that cached
-// copy captured the REAL query before mock.module ran, so the fake never applies
-// and the lifecycle test boots a real SDK query (hangs). The re-evaluated class
-// shares all other singletons (Sessions, db, memory) since those keep their
-// canonical specifiers.
-// @ts-expect-error — the ?query suffix is a runtime cache-buster bun resolves; TS can't type it.
-const { AgentManager } = await import("../../src/agent/manager.ts?lifecycle-mock");
+// Canonical import (no query-string cache-buster): manager.ts dereferences
+// `agentSdk.query` at call time, so the mock.module swap above applies even
+// when an earlier test file already imported AgentManager. Keeping the canonical
+// specifier means coverage is attributed to src/agent/manager.ts.
+const { AgentManager } = await import("../../src/agent/manager");
 const Sessions = await import("../../src/db/sessions");
 
 // ---------------------------------------------------------------------------
