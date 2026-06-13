@@ -212,6 +212,19 @@ export class AgentManager extends EventEmitter {
     }
   }
 
+  /** Change the model for a session. Persists; if live, also pushed to the SDK Query. */
+  async setSessionModel(sessionId: string, model: string) {
+    Sessions.setModel(sessionId, model);
+    const live = this.#live.get(sessionId);
+    if (live?.query) {
+      try {
+        await live.query.setModel(model);
+      } catch (e) {
+        console.error("[agent] setModel failed:", e);
+      }
+    }
+  }
+
   /** Current MCP server statuses for a live session, or null if not live.
    *  Read-only passthrough to the SDK Query — slaude maintains no mirror. */
   async mcpServerStatus(sessionId: string) {

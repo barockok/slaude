@@ -43,6 +43,21 @@ describe("parseSlashCommand", () => {
   test("unknown command → null", () => {
     expect(parseSlashCommand("/wat")).toBeNull();
   });
+  test("/model with no arg → list", () => {
+    expect(parseSlashCommand("/model")).toEqual({ kind: "model" });
+  });
+  test("/model <id> → set", () => {
+    expect(parseSlashCommand("/model claude-opus-4-8")).toEqual({
+      kind: "model",
+      id: "claude-opus-4-8",
+    });
+  });
+  test("/model keeps only the first token", () => {
+    expect(parseSlashCommand("/model claude-opus-4-8 extra")).toEqual({
+      kind: "model",
+      id: "claude-opus-4-8",
+    });
+  });
 });
 
 describe("helpText", () => {
