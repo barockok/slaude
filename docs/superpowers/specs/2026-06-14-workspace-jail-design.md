@@ -21,15 +21,33 @@ manager roams freely.**
 
 | Question | Choice |
 |----------|--------|
-| Threat | **Adversarial exfiltration** — a hostile non-manager actively trying to read host secrets via bash/file tools. |
-| Boundary | **Host / shared machine** — the jail IS the security boundary, not a backstop behind a container. |
+| Threat | **Configurable** — operator picks `discipline` (accident-proofing) or `adversarial` (exfil-proofing) per deploy. |
+| Boundary | **Host / shared machine** — in `adversarial`, the jail IS the security boundary. |
 | Confine | **Reads + writes both**, outside the workspace. |
-| Bash | **SDK-native OS sandbox** (sandbox-exec on macOS, bubblewrap on Linux) — string-parsing leaks, rejected. |
+| Bash | `adversarial`: **SDK-native OS sandbox** (sandbox-exec / bubblewrap). `discipline`: best-effort string-check (leaky, accident-only). |
 | Trusted (unjailed) | **A DM whose partner is the manager or backup manager.** Nothing else. |
-| Sandbox binary missing | **Fail closed + alert manager** — jailed session boots with Bash disabled; one-shot Telegram alert. |
+| Sandbox binary missing (`adversarial`) | **Fail closed + alert manager** — jailed session boots with Bash disabled; one-shot Telegram alert. |
 
 SDK is `@anthropic-ai/claude-agent-sdk@0.1.77`, which exposes
 `Options.sandbox: SandboxSettings` and `Options.additionalDirectories`.
+
+## Jail mode (configurable)
+
+`SLAUDE_JAIL_MODE` selects how strongly jailed (non-trusted) sessions are
+confined. The **trust model is identical across all modes** — only the meaning
+of "jailed" changes.
+
+| `SLAUDE_JAIL_MODE` | Jailed-session enforcement | Needs sandbox binary | Fail-closed |
+|--------------------|----------------------------|----------------------|-------------|
+| `off` | None — current behavior, no confinement. Escape hatch. | no | n/a |
+| `discipline` **(default)** | Layer 2 file-tool path gate (hard deny) **+** best-effort bash string-check (deny obvious absolute / `..` / out-of-tree). Stops accidents; a determined adversary can still leak via bash. | no | no |
+| `adversarial` | Layer 1 OS sandbox (airtight bash) **+** Layer 2 file-tool path gate **+** fail-closed + manager alert. | yes (`adversarial` only) | yes |
+
+Default is `discipline`: it needs no `bwrap`, never disables bash, and won't
+break existing deploys — operators opt **up** to `adversarial` on hosts where the
+jail is the real security boundary. `off` fully restores today's behavior.
+
+Trusted (manager/backup DM) sessions are **unjailed in every mode**.
 
 ## Trust model
 
@@ -64,9 +82,10 @@ The SDK sandbox covers **command execution (Bash)**; per SDK docs the SDK's own
 **Read/Edit/Write tools are governed by permission rules, not the sandbox**. So
 fs confinement needs both.
 
-### Layer 1 — OS sandbox for Bash (jailed sessions only)
+### Layer 1 — OS sandbox for Bash (`adversarial` mode, jailed sessions only)
 
-In `#startSession`, when `!trusted` and the sandbox binary is available, set:
+In `#startSession`, when mode is `adversarial`, `!trusted`, and the sandbox
+binary is available, set:
 
 ```ts
 sandbox: {
@@ -84,13 +103,21 @@ interpreters are all confined by the kernel, not by string inspection.
 Bash network egress defaults to **deny-all** (exfil guard); tunable via
 `SLAUDE_JAIL_BASH_NETWORK` (comma-separated allowed domains).
 
-Trusted sessions: no `sandbox` key (unchanged).
+In `discipline` mode there is no OS sandbox; jailed bash instead gets a
+**best-effort string-check** in `canUseTool`: parse the command for absolute
+paths, `..` traversal, and `cd` outside the workspace, and hard-deny obvious
+escapes. This is explicitly leaky (interpreters, `$(...)`, env-indirection slip
+through) and exists only to catch accidents — not adversaries.
+
+Trusted sessions, and all sessions in `off` mode: no `sandbox` key, no bash
+check (unchanged from today).
 
 ### Layer 2 — file-tool path gate (`permission-gate.ts` `canUseTool`)
 
-For jailed sessions, *before* existing gate logic, enforce paths on the SDK file
-tools (`Read`, `Write`, `Edit`, `NotebookEdit`, and `Grep`/`Glob` when an
-explicit `path` is given):
+For jailed sessions in `discipline` and `adversarial` modes (skipped in `off`),
+*before* existing gate logic, enforce paths on the SDK file tools (`Read`,
+`Write`, `Edit`, `NotebookEdit`, and `Grep`/`Glob` when an explicit `path` is
+given):
 
 ```
 target = realpath(toolPath)                  // resolve symlinks
@@ -107,9 +134,9 @@ The gate needs each session's jail state. `#startSession` records it
 (`Map<sessionId, { jailed: boolean; workspaceDir: string }>` on the manager, or
 passed into the gate factory); `canUseTool` looks it up by `sessionId`.
 
-### Fail-closed + manager alert
+### Fail-closed + manager alert (`adversarial` mode only)
 
-At jailed-session boot, probe sandbox availability:
+At jailed-session boot **in `adversarial` mode**, probe sandbox availability:
 
 - darwin → `sandbox-exec` (built in) → available.
 - linux → `bwrap` (bubblewrap) on `PATH` → available; else unavailable.
@@ -124,8 +151,9 @@ bubblewrap." Trusted sessions are unaffected.
 
 | File | Responsibility |
 |------|----------------|
-| `src/agent/sandbox.ts` (new) | `sandboxAvailable(): boolean` (platform probe), `jailSandboxOptions(): SandboxSettings`, `jailBashNetwork()` |
-| `src/agent/jail.ts` (new) | `isDmChannel(row)`, `isTrustedSession(row, soul)`, `pathWithinWorkspace(target, root): boolean` (realpath + relative) |
+| `src/config/env.ts` | `jailMode(): "off" \| "discipline" \| "adversarial"` (default `discipline`), `jailBashNetwork()` |
+| `src/agent/sandbox.ts` (new) | `sandboxAvailable(): boolean` (platform probe), `jailSandboxOptions(): SandboxSettings` |
+| `src/agent/jail.ts` (new) | `isDmChannel(row)`, `isTrustedSession(row, soul)`, `pathWithinWorkspace(target, root): boolean` (realpath + relative), `bashEscapesWorkspace(cmd, root): boolean` (best-effort string-check) |
 | `src/db/schema.ts` | `dm_user_id` column + migration + `SessionRow` field |
 | `src/db/sessions.ts` | `createForThread` accepts `dm_user_id` |
 | `src/agent/manager.ts` | `ensureSession` `dmUserId` arg; `#startSession` computes trust, wires sandbox / disallow-Bash / records jail state |
@@ -139,17 +167,20 @@ inbound msg (gateway): userId, isDM, channelId
   → ensureSession(thread, { dmUserId: isDM ? userId : undefined })
       → createForThread persists dm_user_id (first time only)
   → sendMessage → #startSession(sessionId)
-      → row = Sessions.findById; soul = soulData()
+      → row = Sessions.findById; soul = soulData(); mode = env.jailMode()
       → trusted = isTrustedSession(row, soul)
-      → if trusted:   options = { cwd, ... }                       (free roam)
+      → if trusted || mode === "off":  options = { cwd, ... }       (free roam)
         else jailed:
-           avail = sandboxAvailable()
-           options.sandbox = avail ? jailSandboxOptions() : undefined
-           if !avail: options.disallowedTools = ["Bash"]; alertManagerOnce()
-           record jail state { jailed:true, workspaceDir: row.working_dir }
+           if mode === "adversarial":
+              avail = sandboxAvailable()
+              options.sandbox = avail ? jailSandboxOptions() : undefined
+              if !avail: options.disallowedTools = ["Bash"]; alertManagerOnce()
+           record jail state { jailed:true, mode, workspaceDir: row.working_dir }
       → query({ prompt, options })
   → per tool call: canUseTool
-      → if session jailed && tool has out-of-workspace path → deny (hard)
+      → if session jailed:
+           file tool out-of-workspace path → deny (hard)            (discipline + adversarial)
+           Bash (discipline mode) && bashEscapesWorkspace → deny     (best-effort)
       → else existing gate logic
 ```
 
@@ -165,11 +196,14 @@ inbound msg (gateway): userId, isDM, channelId
 
 ## Behavior change (explicit)
 
-Today nothing is jailed. After this, **every non-(manager/backup DM) thread loses
-free filesystem and free bash** — channels can't `cat` repo files or run
-arbitrary host commands; bash runs sandboxed to the workspace. This is the intent
-for the adversarial model but is a real default shift. The manager/backup work
-unrestricted simply by DMing the agent.
+Default mode is `discipline`: after this, every non-(manager/backup DM) thread
+gets its **file tools** confined to the workspace and obvious bash escapes
+blocked — but bash is not OS-sandboxed, so a determined adversary can still leak.
+This is a moderate default shift (no more `cat ../../repo/secret` via Read), with
+no infra dependency. Operators who need the hard boundary set
+`SLAUDE_JAIL_MODE=adversarial` (bash OS-sandboxed, fail-closed). `SLAUDE_JAIL_MODE=off`
+restores today's behavior exactly. The manager/backup always work unrestricted by
+DMing the agent.
 
 ## Testing
 
@@ -180,8 +214,13 @@ unrestricted simply by DMing the agent.
 - `sandbox.test.ts`: `sandboxAvailable` darwin → true; linux with/without `bwrap`
   on a mocked PATH. `jailSandboxOptions` shape; `jailBashNetwork` env parse.
 - `permission-gate` path gate: jailed session denies out-of-tree Read/Write;
-  allows in-tree; trusted session skips gate. Bash disabled when sandbox
-  unavailable.
+  allows in-tree; trusted session skips gate; `off` mode skips gate. Bash
+  disabled when sandbox unavailable (`adversarial`). `discipline` bash
+  string-check denies `cat /etc/passwd` / `../` escape, allows in-tree command.
+- `env.jailMode`: unset → `discipline`; `off`/`adversarial` parse; unknown →
+  `discipline` (fail-safe).
+- `bashEscapesWorkspace`: absolute out-of-tree path → true; `..` past root →
+  true; plain in-tree command → false.
 - Migration: fresh db has `dm_user_id`; existing db backfills nullable.
 
 ## Out of scope
