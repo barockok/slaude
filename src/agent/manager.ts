@@ -461,7 +461,14 @@ export class AgentManager extends EventEmitter {
     switch (msg.type) {
       case "assistant": {
         Sessions.markStarted(sessionId);
-        for (const block of msg.message.content) {
+        // The SDK's BetaContentBlock union types only text + tool_use, but the
+        // model also emits thinking blocks at runtime. Widen so the thinking
+        // branch type-checks (both the discriminant and `.thinking`).
+        type ThinkingBlock = { type: "thinking"; thinking: string };
+        const blocks = msg.message.content as Array<
+          (typeof msg.message.content)[number] | ThinkingBlock
+        >;
+        for (const block of blocks) {
           if (block.type === "text") {
             live?.turn.assistant.push(block.text);
             this.emit("event", {
