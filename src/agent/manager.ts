@@ -131,7 +131,7 @@ export class AgentManager extends EventEmitter {
   }
 
   /** Get-or-create a session bound to a Slack thread. */
-  ensureSession(thread: ThreadKey, opts: { title?: string } = {}) {
+  ensureSession(thread: ThreadKey, opts: { title?: string; dmUserId?: string } = {}) {
     let row = Sessions.findByThread(thread);
     if (!row) {
       const workingDir = join(paths.workspaces, `${thread.team_id}-${thread.channel_id}-${thread.thread_ts}`);
@@ -142,6 +142,7 @@ export class AgentManager extends EventEmitter {
         working_dir: workingDir,
         title: opts.title,
         permission_mode: env.defaultPermissionMode(),
+        dm_user_id: opts.dmUserId ?? null,
       });
     }
     return row;

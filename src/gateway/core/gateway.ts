@@ -613,11 +613,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const hasFiles = Array.isArray(event.files) && event.files.length > 0;
     if (!stripped && !hasFiles) return;
 
-    const session = agent.ensureSession({
-      team_id: teamId,
-      channel_id: channelId,
-      thread_ts: threadTs,
-    });
+    const session = agent.ensureSession(
+      {
+        team_id: teamId,
+        channel_id: channelId,
+        thread_ts: threadTs,
+      },
+      isDM ? { dmUserId: userId } : {},
+    );
 
     // Paste-back OAuth completion: if this user has a parked /mcp connect in this
     // thread and the message carries the callback (URL or bare code), finish the flow
