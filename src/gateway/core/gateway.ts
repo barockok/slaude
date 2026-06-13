@@ -41,6 +41,8 @@ import { discover } from "../../agent/mcp-oauth/discovery";
 import { beginConnect, prepareConnect } from "../../agent/mcp-oauth/client";
 import { parseOAuthCallback } from "../../agent/mcp-oauth/callback";
 import { canTriggerIngest } from "../slack/ingest-auth";
+import { canChangeModel } from "../slack/model-auth";
+import { listModels } from "../../agent/models";
 import * as kbIngest from "../../knowledge/ingest";
 import * as Ignores from "../../db/ignores";
 import * as CronJobs from "../../db/cron-jobs";
@@ -951,6 +953,37 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           await reply(`:calendar: cron job created (\`${job.id.slice(0, 8)}\`, posts to ${where}${mode}) — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
           return;
         }
+      }
+
+      if (slash.kind === "model") {
+        const soul = soulData();
+        if (!canChangeModel(userId, soul)) {
+          await reply(":lock: `/model` — manager, approver, or DM-allowed users only.");
+          return;
+        }
+        if (!slash.id) {
+          try {
+            const models = await listModels();
+            const lines = models.map((m) => `• \`${m.id}\``).join("\n") || "_none returned_";
+            await reply(`*available models*\n${lines}\n\ncurrent: \`${session.model}\``);
+          } catch {
+            await reply(`can't fetch model list from provider. current: \`${session.model}\``);
+          }
+          return;
+        }
+        let verified = false;
+        try {
+          verified = (await listModels()).some((m) => m.id === slash.id);
+        } catch {
+          // provider has no /v1/models (non-Anthropic gateway) — pass through.
+        }
+        await agent.setSessionModel(session.id, slash.id);
+        await reply(
+          verified
+            ? `model → \`${slash.id}\``
+            : `model → \`${slash.id}\` :warning: couldn't verify against provider`,
+        );
+        return;
       }
     }
 
