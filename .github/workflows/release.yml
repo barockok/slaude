@@ -25,7 +25,25 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Run tests with coverage
-        run: bun test --coverage
+        # bun 1.3.11 exits 99 for this suite even when every test passes — a
+        # runner-internal quirk unrelated to coverage (see ci.yml + PR #22).
+        # Gate on the parsed failure count, not bun's raw exit code, so a clean
+        # run can't abort the release. Any exit other than 0/99 is a real crash.
+        run: |
+          set +e
+          bun test --coverage 2>&1 | tee test-output.txt
+          code=${PIPESTATUS[0]}
+          set -e
+          fails=$(grep -oE '^[[:space:]]*[0-9]+ fail' test-output.txt | grep -oE '[0-9]+' | tail -1)
+          fails=${fails:-0}
+          echo "bun exit code: ${code}; parsed test failures: ${fails}"
+          if [ "${fails}" -ne 0 ]; then
+            echo "::error::${fails} test(s) failed"; exit 1
+          fi
+          if [ "${code}" -ne 0 ] && [ "${code}" -ne 99 ]; then
+            echo "::error::bun exited ${code} (not 0/99) — treating as a crash"; exit "${code}"
+          fi
+          echo "tests passed (${fails} failures; bun exit ${code} tolerated)"
 
       - name: Generate changelog
         id: changelog
