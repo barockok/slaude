@@ -1,4 +1,5 @@
 import { ensureHome } from "./config/home";
+import { seedBundledSkills } from "./skills/seed";
 import { AgentManager } from "./agent/manager";
 import { createSlackApp } from "./gateway/slack/adapter";
 import { startHealthServer } from "./health";
@@ -7,6 +8,7 @@ import { assertOAuthKeyCanary } from "./agent/mcp-oauth/store";
 
 async function main() {
   ensureHome();
+  seedBundledSkills();
 
   // Warm the structured-soul cache before sessions start. Best-effort: the
   // extractor falls back to regex parsing internally on any failure, so

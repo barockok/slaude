@@ -48,6 +48,8 @@ if (isolated) {
 
 const { ensureHome } = await import("../../config/home");
 ensureHome();
+const { seedBundledSkills } = await import("../../skills/seed");
+seedBundledSkills();
 
 // config/env auto-loads $SLAUDE_HOME/.env at import. For a real agent also pull the project
 // ./.env as a dev fallback (no override of already-set vars).
