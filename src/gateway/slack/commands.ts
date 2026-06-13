@@ -40,7 +40,8 @@ export type SlashHit =
   | { kind: "mcp"; action: "status" | "connect"; server?: string }
   | { kind: "soul"; field: "trust" | "allow" | "dm" | "block"; action: "add" | "remove"; value: string }
   | { kind: "soul-list" }
-  | { kind: "soul-clear"; field: "trust" | "allow" | "dm" | "block" | "all" };
+  | { kind: "soul-clear"; field: "trust" | "allow" | "dm" | "block" | "all" }
+  | { kind: "model"; id?: string };
 
 /** One descriptor per agent slash command — the single source of truth for every help
  *  surface (Slack `/help`, the sim REPL `/help`). Add a command here and it shows up
@@ -62,6 +63,7 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/soul <trust|allow|dm|block> <add|remove> <id>", summary: "manager-only: runtime override of soul ACLs (channels/users) — immediate, shadows SOUL.md" },
   { usage: "/soul list", summary: "show runtime soul overrides vs SOUL.md base" },
   { usage: "/soul clear <trust|allow|dm|block|all>", summary: "manager-only: drop runtime overrides (revert to SOUL.md)" },
+  { usage: "/model [id]", summary: "show or set this thread's model (manager/approver) — no arg lists available models" },
   { usage: "/help", summary: "show this help" },
 ];
 
@@ -147,6 +149,10 @@ export function parseSlashCommand(text: string): SlashHit | null {
       return { kind: "mcp", action: "connect", server: rest[1] };
     }
     return { kind: "mcp", action: "status" };
+  }
+  if (cmd === "model") {
+    const id = rest[0]; // case-preserved provider id; ignore trailing tokens
+    return id ? { kind: "model", id } : { kind: "model" };
   }
   if (HELP_NAMES.has(cmd)) {
     return { kind: "help" };
