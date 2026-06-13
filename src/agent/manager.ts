@@ -2,7 +2,6 @@ import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
-  query,
   type SDKMessage,
   type Options,
   type CanUseTool,
@@ -10,6 +9,11 @@ import {
   type McpServerConfig,
   type HookCallback,
 } from "@anthropic-ai/claude-agent-sdk";
+// Namespace import (not a named `query`) so tests can swap the SDK via
+// mock.module: the call site dereferences `agentSdk.query` fresh each boot,
+// so the mock applies even when an earlier module already imported the SDK —
+// no query-string re-import (which would split coverage off the canonical file).
+import * as agentSdk from "@anthropic-ai/claude-agent-sdk";
 import { TokenBudget, type UsageSnapshot } from "./token-budget";
 import { m as metric } from "../metrics";
 
@@ -399,7 +403,7 @@ export class AgentManager extends EventEmitter {
     (async () => {
       try {
         console.log(`[mgr] query() boot session=${sessionId} model=${row.model} cwd=${row.working_dir} resume=${!!row.claude_started}`);
-        const q = query({ prompt: promptIterable, options });
+        const q = agentSdk.query({ prompt: promptIterable, options });
         live.query = q;
         for await (const msg of q as AsyncIterable<SDKMessage>) {
           console.log(`[mgr] sdk msg type=${(msg as any).type} subtype=${(msg as any).subtype ?? "-"}`);
@@ -461,7 +465,14 @@ export class AgentManager extends EventEmitter {
     switch (msg.type) {
       case "assistant": {
         Sessions.markStarted(sessionId);
-        for (const block of msg.message.content) {
+        // The SDK's BetaContentBlock union types only text + tool_use, but the
+        // model also emits thinking blocks at runtime. Widen so the thinking
+        // branch type-checks (both the discriminant and `.thinking`).
+        type ThinkingBlock = { type: "thinking"; thinking: string };
+        const blocks = msg.message.content as Array<
+          (typeof msg.message.content)[number] | ThinkingBlock
+        >;
+        for (const block of blocks) {
           if (block.type === "text") {
             live?.turn.assistant.push(block.text);
             this.emit("event", {
