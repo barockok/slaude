@@ -37,6 +37,10 @@ RUN apt-get update \
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json bun.lock tsconfig.json ./
 COPY src ./src
+# Bundled skills that ship with the product. seedBundledSkills() copies any
+# missing slug into $SLAUDE_HOME/skills on boot — robust against a mounted PVC
+# shadowing the baked-in /data/.slaude/skills below.
+COPY skills ./skills
 
 # Baked-in dependency artifacts (plugins, skills, knowledge bases).
 # Operator-authored files (slaude.json, slaude.lock, mcp.json, SOUL.md)
