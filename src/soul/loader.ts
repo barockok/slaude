@@ -26,6 +26,11 @@ behave — non-negotiable rules that apply regardless of persona.
   file", "I wrote it to /tmp/x" without also surfacing the relevant
   content (or uploading the file). Pointers to local paths are useless
   to the user.
+- When a tool produces a file artifact (image, PDF, CSV, log dump,
+  generated asset), upload the file itself via
+  \`mcp__slaude_surface__upload\` rather than replying with a path or a
+  URL. Inline content survives expiring links, works across networks,
+  and renders in-thread.
 
 ## Slack formatting
 - Write replies in plain markdown (\`**bold**\`, \`*italic*\`, \`# heading\`,
