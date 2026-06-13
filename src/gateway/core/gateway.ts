@@ -135,6 +135,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     import("../../db/ignores").then((m) => m.cleanupExpired());
     const now = Date.now();
     for (const [k, p] of pendingPaste) if (now > p.expiresAt) pendingPaste.delete(k);
+    for (const [k, p] of pendingBotEvents) if (now > p.expiresAt) pendingBotEvents.delete(k);
   }, 5 * 60 * 1000);
 
   const cronScheduler = new CronScheduler({
@@ -317,6 +318,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const pendingPaste = new Map<string, PendingPaste>();
   const pasteKey = (channelId: string, threadTs: string, userId: string) => `${channelId}:${threadTs}:${userId}`;
 
+  // Parked bot events awaiting manager approval to bypass the trust gate.
+  // Keyed by a random token.
+  const pendingBotEvents = new Map<string, { eventArgs: any; expiresAt: number }>();
+
   // Only HTTP servers participate in the OAuth connect flow.
   const httpExternalServers = (): Record<string, { url: string; headers?: Record<string, string> }> => {
     const out: Record<string, { url: string; headers?: Record<string, string> }> = {};
@@ -425,6 +430,49 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     await connectServer({ ...ctx, serverCfg: cfg });
   });
 
+  t.action(/^slaude_bot_approve:.+$/, async ({ ack, action, body }) => {
+    await ack();
+    const token = (action as { action_id: string }).action_id.replace(/^slaude_bot_approve:/, "");
+    const pend = pendingBotEvents.get(token);
+    if (!pend) return;
+    const clicker = (body as any).user?.id;
+    const soul = soulData();
+    if (clicker !== soul.manager.userId && clicker !== soul.backupManager.userId) return;
+    pendingBotEvents.delete(token);
+
+    try {
+      await t.client.chat.update({
+        channel: (body as any).container.channel_id,
+        ts: (body as any).container.message_ts,
+        text: `:white_check_mark: Bot execution approved for this run by <@${clicker}>.`,
+        blocks: [],
+      });
+    } catch {}
+
+    // Re-inject the event into handleMessage with forceApprove=true
+    await handleMessage(pend.eventArgs, true);
+  });
+
+  t.action(/^slaude_bot_deny:.+$/, async ({ ack, action, body }) => {
+    await ack();
+    const token = (action as { action_id: string }).action_id.replace(/^slaude_bot_deny:/, "");
+    const pend = pendingBotEvents.get(token);
+    if (!pend) return;
+    const clicker = (body as any).user?.id;
+    const soul = soulData();
+    if (clicker !== soul.manager.userId && clicker !== soul.backupManager.userId) return;
+    pendingBotEvents.delete(token);
+
+    try {
+      await t.client.chat.update({
+        channel: (body as any).container.channel_id,
+        ts: (body as any).container.message_ts,
+        text: `:x: Bot execution denied by <@${clicker}>.`,
+        blocks: [],
+      });
+    } catch {}
+  });
+
   agent.on("event", (e: AgentEvent) => {
     console.log(`[agent-evt] ${e.type} session=${e.sessionId}${"tool" in e ? ` tool=${e.tool}` : ""}${"error" in e ? ` err=${e.error}` : ""}`);
     const route = routes.get(e.sessionId);
@@ -501,20 +549,77 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
   });
 
-  async function handleMessage(args: any) {
+  async function handleMessage(args: any, forceApprove = false) {
     const { event, client, context } = args;
     const teamId: string | undefined = context.teamId ?? event.team;
     const channelId: string = event.channel;
-    const userId: string | undefined = event.user;
+    let userId: string | undefined = event.user;
     const eventTs: string = event.ts;
     const text: string = (event.text || "").trim();
     const channelType: string = event.channel_type ?? "";
+
+    if (!userId && event.bot_id) {
+      userId = `bot:${event.bot_id}`;
+    }
 
     console.log(
       `[slack-rx] type=${event.type} subtype=${event.subtype ?? "-"} ch=${channelId} ts=${eventTs} thread=${event.thread_ts ?? "-"} user=${userId} txt=${JSON.stringify(text.slice(0, 80))}`,
     );
 
     if (!teamId || !userId) return;
+
+    // Bot Trust Gate
+    if (event.bot_id && !forceApprove) {
+      const soul = soulData();
+      if (!soul.trustedBots.includes(event.bot_id)) {
+        console.log(`[slack-rx] drop ch=${channelId} ts=${eventTs} — untrusted bot ${event.bot_id}`);
+        metric.slackDropsTotal.inc({ reason: "untrusted_bot" });
+        
+        // Intercept and ask manager
+        if (soul.manager.userId) {
+          const token = randomBytes(16).toString("hex");
+          pendingBotEvents.set(token, { eventArgs: args, expiresAt: Date.now() + 15 * 60_000 });
+          
+          try {
+            await client.chat.postMessage({
+              channel: soul.manager.userId,
+              text: `An untrusted bot/workflow (\`${event.bot_id}\`) attempted to trigger Slaude in <#${channelId}>.`,
+              blocks: [
+                {
+                  type: "section",
+                  text: { type: "mrkdwn", text: `An untrusted bot/workflow (\`${event.bot_id}\`) attempted to trigger Slaude in <#${channelId}>.\n\n*Message preview:*\n> ${text.slice(0, 200)}...` }
+                },
+                {
+                  type: "actions",
+                  elements: [
+                    {
+                      type: "button",
+                      text: { type: "plain_text", text: "Approve Once" },
+                      style: "primary",
+                      action_id: `slaude_bot_approve:${token}`
+                    },
+                    {
+                      type: "button",
+                      text: { type: "plain_text", text: "Deny" },
+                      style: "danger",
+                      action_id: `slaude_bot_deny:${token}`
+                    }
+                  ]
+                },
+                {
+                  type: "context",
+                  elements: [{ type: "mrkdwn", text: `To trust this workflow permanently, manually add \`${event.bot_id}\` to the *Trusted bots* section of your \`SOUL.md\` file.` }]
+                }
+              ]
+            });
+          } catch (e) {
+            console.error("[slack-rx] failed to send bot interception DM to manager:", e);
+          }
+        }
+        return;
+      }
+    }
+
     // Drop only self-echoes; other bots' messages flow through so slaude can
     // see CI alerts, summarizer bots, etc. in shared threads.
     const selfBotId = await getSelfBotId();
