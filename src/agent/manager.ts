@@ -27,6 +27,9 @@ import { paths } from "../config/home";
 import { env } from "../config/env";
 import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plugins";
 import { soulSystemBlock } from "../soul/loader";
+import { soulData } from "../soul/extract";
+import { isTrustedSession, jailDecision, type JailMode } from "./jail";
+import { sandboxAvailable, jailSandboxOptions } from "./sandbox";
 import * as Sessions from "../db/sessions";
 import type { ThreadKey } from "../db/sessions";
 import * as OneOnOne from "../db/one-on-one";
@@ -64,7 +67,8 @@ export type AgentEvent =
   | { type: "done"; sessionId: string; autoEvolve?: boolean }
   | { type: "error"; sessionId: string; error: string }
   | { type: "tokenUsage"; sessionId: string; snapshot: UsageSnapshot }
-  | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" };
+  | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" }
+  | { type: "sandboxUnavailable"; sessionId: string };
 
 /** Permission resolver — called per tool use; given a sessionId so transports can present UI in the right thread. */
 export type PermissionResolver = (
@@ -96,6 +100,8 @@ export class AgentManager extends EventEmitter {
   #stopGuard: StopGuard | undefined;
   /** Sessions whose Stop hook already blocked once this turn — cleared on user msg. */
   #stopBlocked = new Set<string>();
+  /** One-shot guard so the sandbox-unavailable alert fires once per process. */
+  static #sandboxAlerted = false;
   #budget = new TokenBudget({
     fallbackContextWindow: env.tokenFallbackContextWindow(),
   });
@@ -310,10 +316,45 @@ export class AgentManager extends EventEmitter {
     const lockedConfigDir = resolveSessionConfigDir(lock?.locked_user);
     if (lockedConfigDir) providerEnv.CLAUDE_CONFIG_DIR = lockedConfigDir;
 
+    // Workspace jail: trusted (manager/backup DM) sessions roam free; everything
+    // else is confined to row.working_dir per SLAUDE_JAIL_MODE.
+    const jailMode: JailMode = env.jailMode();
+    const trusted = isTrustedSession(row, soulData());
+    const jailed = !trusted && jailMode !== "off";
+    const jailRoot = row.working_dir;
+
     const resolver = this.#resolver;
-    const canUseTool: CanUseTool | undefined = resolver
-      ? (toolName, input, ctx) => resolver(sessionId, toolName, input, ctx)
-      : undefined;
+    const canUseTool: CanUseTool | undefined =
+      resolver || jailed
+        ? async (toolName, input, ctx) => {
+            if (jailed) {
+              const deny = jailDecision({ mode: jailMode, jailed, toolName, input, root: jailRoot });
+              if (deny) return deny;
+            }
+            return resolver
+              ? resolver(sessionId, toolName, input, ctx)
+              : { behavior: "allow" as const, updatedInput: input };
+          }
+        : undefined;
+
+    // Adversarial mode: OS-sandbox bash for jailed sessions. If the sandbox
+    // backend is missing, fail closed — disable Bash entirely and alert once.
+    let sandboxOpt: ReturnType<typeof jailSandboxOptions> | undefined;
+    let disallowBash = false;
+    if (jailed && jailMode === "adversarial") {
+      if (sandboxAvailable()) {
+        sandboxOpt = jailSandboxOptions(env.jailBashNetwork());
+      } else {
+        disallowBash = true;
+        if (!AgentManager.#sandboxAlerted) {
+          AgentManager.#sandboxAlerted = true;
+          console.error(
+            "[jail] OS sandbox unavailable (install bubblewrap) — Bash disabled in jailed sessions",
+          );
+          this.emit("event", { type: "sandboxUnavailable", sessionId } satisfies AgentEvent);
+        }
+      }
+    }
 
     const mode = (row.permission_mode || "default") as PermissionMode;
     const mcpServers = this.#mcpResolver?.(sessionId);
@@ -375,6 +416,8 @@ export class AgentManager extends EventEmitter {
       ...(mode === "bypassPermissions"
         ? { allowDangerouslySkipPermissions: true }
         : {}),
+      ...(sandboxOpt ? { sandbox: sandboxOpt } : {}),
+      ...(disallowBash ? { disallowedTools: ["Bash"] } : {}),
       hooks: {
         PreCompact: [{ hooks: [preCompact] }],
         Stop: [{ hooks: [stopHook] }],
