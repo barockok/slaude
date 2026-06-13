@@ -958,7 +958,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (slash.kind === "model") {
         const soul = soulData();
         if (!canChangeModel(userId, soul)) {
-          await reply(":lock: `/model` — manager or approver only.");
+          await reply(":lock: `/model` — manager, approver, or DM-allowed users only.");
           return;
         }
         if (!slash.id) {
