@@ -505,14 +505,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const { event, client, context } = args;
     const teamId: string | undefined = context.teamId ?? event.team;
     const channelId: string = event.channel;
-    let userId: string | undefined = event.user;
+    const userId: string | undefined = event.user || (event.bot_id ? `bot:${event.bot_id}` : undefined);
     const eventTs: string = event.ts;
     const text: string = (event.text || "").trim();
     const channelType: string = event.channel_type ?? "";
-
-    if (!userId && event.bot_id) {
-      userId = `bot:${event.bot_id}`;
-    }
 
     console.log(
       `[slack-rx] type=${event.type} subtype=${event.subtype ?? "-"} ch=${channelId} ts=${eventTs} thread=${event.thread_ts ?? "-"} user=${userId} txt=${JSON.stringify(text.slice(0, 80))}`,
