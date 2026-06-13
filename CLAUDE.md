@@ -93,6 +93,7 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 Entries live in `docs/findings/<date>-<slug>.md`. Add a new file per significant finding/decision/mistake; index it below. Newest first.
 
+- [2026-06-13 — KB-first enforcement: from prose to teeth (Stop-hook guard design, shadow-first)](docs/findings/2026-06-13-kb-first-enforcement.md)
 - [2026-06-11 — Soul runtime overrides: manager-editable ACLs without redeploy (/soul + soul_override)](docs/findings/2026-06-11-soul-runtime-overrides.md)
 - [2026-06-11 — Engagement review: disengage lasted zero messages (sessions.engaged persistence)](docs/findings/2026-06-11-engagement-disengage-durability.md)
 - [2026-06-11 — /1on1 transcript sharding: resume breaks on lock flips (projects/ symlink fix)](docs/findings/2026-06-11-1on1-transcript-sharding.md)
