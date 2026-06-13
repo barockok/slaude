@@ -136,6 +136,32 @@ describe("loadSoulData — extraction + cache", () => {
     expect(d.trustedChannels).toEqual(["C0TEAMCH00"]);
   });
 
+  test("extracts trustedBots when grounded", async () => {
+    seedPersona([
+      "# P",
+      "## Trusted bots",
+      "- <@B0BOTUSER01>",
+      "## Approvers",
+      "- <@U06ENBS6PV0>: anything",
+    ].join("\n"));
+    mockFetch(async () => okResponse(JSON.stringify({
+      trustedBots: ["B0BOTUSER01"],
+      approvers: [{ userId: "U06ENBS6PV0", scope: "anything", catchall: true }],
+    })));
+    const d = await loadSoulData();
+    expect(d.trustedBots).toEqual(["B0BOTUSER01"]);
+  });
+
+  test("rejects ungrounded trustedBot id → fallback", async () => {
+    seedPersona("# P\n## Approvers\n- <@U06ENBS6PV0>: anything\n");
+    mockFetch(async () => okResponse(JSON.stringify({
+      approvers: [{ userId: "U06ENBS6PV0", scope: "anything", catchall: true }],
+      trustedBots: ["B999PHANTOM"],
+    })));
+    const d = await loadSoulData();
+    expect(d.trustedBots).toEqual([]);
+  });
+
   test("extracts dmAllowedUsers when grounded", async () => {
     seedPersona([
       "# P",
