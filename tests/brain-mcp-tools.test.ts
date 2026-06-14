@@ -79,4 +79,26 @@ describe("brainHandlers", () => {
     expect(searchCalled).toBe(false);
     expect(JSON.parse(r.content[0]!.text).search_fallback).toBeUndefined();
   });
+
+  test("kb_think returns the raw result when the fallback search is empty", async () => {
+    const d = deps({
+      think: async () => ({ answer: "not in the brain", citations: [], pagesGathered: 40 }),
+      call: async () => [],
+    });
+    const r = await brainHandlers.kb_think({ question: "q" }, d);
+    expect(r.isError).toBeUndefined();
+    const out = JSON.parse(r.content[0]!.text);
+    expect(out.search_fallback).toBeUndefined();
+    expect(out.answer).toBe("not in the brain");
+  });
+
+  test("kb_think swallows a failing fallback search and returns the think result", async () => {
+    const d = deps({
+      think: async () => ({ answer: "not in the brain", citations: [], pagesGathered: 40 }),
+      call: async () => { throw new Error("search index offline"); },
+    });
+    const r = await brainHandlers.kb_think({ question: "q" }, d);
+    expect(r.isError).toBeUndefined();
+    expect(JSON.parse(r.content[0]!.text).answer).toBe("not in the brain");
+  });
 });
