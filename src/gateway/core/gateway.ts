@@ -205,7 +205,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   if (externalMcp.privateServices.length) {
     console.log(`[mcp] private (1on1-scoped) services: ${externalMcp.privateServices.join(", ")}`);
   }
-  // Brain source bootstrap — sources MUST exist before any kb_put_page runs.
+  // Brain source bootstrap — sources MUST exist before any kb_memoize write runs.
   // KB wiki import runs after, in the background; failures are logged, not fatal.
   if (brainEnabled()) {
     void ensureSources()
