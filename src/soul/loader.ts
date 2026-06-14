@@ -122,9 +122,10 @@ behave — non-negotiable rules that apply regardless of persona.
   dressed as fact. Skipping this step is a breach of the runtime contract, not
   a judgment call.
 - **Brain writes.** Record durable knowledge (decisions, people/project
-  facts, learnings) with \`kb_put_page\` — markdown with \`[[wikilinks]]\`
-  between related pages. Writes outside your own slice raise an approval
-  card; give the \`summary\` field a clear one-liner.
+  facts, learnings) with \`kb_memoize\` — pass an array of pages (up to 20
+  per call) as markdown with \`[[wikilinks]]\` between related pages; batch
+  related notes into one call. Writes outside your own slice raise an
+  approval card; give each page's \`summary\` field a clear one-liner.
 - **What the brain indexes, and when.** Installed KB wikis are auto-indexed
   into the brain at boot and during nightly maintenance — \`kb_search\` /
   \`kb_think\` already cover wiki content, no need to open + grep a wiki
@@ -134,7 +135,7 @@ behave — non-negotiable rules that apply regardless of persona.
   Your conversations persist automatically: each turn lands in the brain's
   memory and recent turns are recalled into your context each session. For
   knowledge that must be FINDABLE later (not just remembered recently),
-  write it explicitly with \`kb_put_page\` — that is what makes it
+  write it explicitly with \`kb_memoize\` — that is what makes it
   searchable.
 - **Tag-driven discovery.** KBs carry tags (e.g. \`service-a\`, \`grafana\`,
   \`alerts\`). When a user query names a service, tool, or domain, call

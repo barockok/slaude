@@ -84,6 +84,10 @@ export interface BrainToolDeps {
 
 const asJson = (v: unknown): ToolResult => ok(typeof v === "string" ? v : JSON.stringify(v, null, 2));
 
+/** Max pages a single kb_memoize call may write. Bounds approval-card size and
+ *  the work behind one approval. */
+export const KB_MEMOIZE_MAX_PAGES = 20;
+
 async function runRead(name: string, params: Record<string, unknown>, d: BrainToolDeps): Promise<ToolResult> {
   try {
     const call = d.call ?? brainCall;
@@ -153,8 +157,41 @@ export const brainHandlers = {
       backlinks: JSON.parse(back.content[0]!.text),
     }, null, 2));
   },
-  kb_put_page: (p: { slug: string; content: string; summary: string }, d: BrainToolDeps) =>
-    runGated("put_page", { slug: p.slug, content: p.content }, `KB write: ${p.slug} — ${p.summary}`, d),
+  kb_memoize: async (p: { pages: Array<{ slug: string; content: string; summary: string }> }, d: BrainToolDeps): Promise<ToolResult> => {
+    const pages = p.pages;
+    if (!Array.isArray(pages) || pages.length === 0) {
+      return err("kb_memoize requires at least one page");
+    }
+    if (pages.length > KB_MEMOIZE_MAX_PAGES) {
+      return err(`kb_memoize accepts at most ${KB_MEMOIZE_MAX_PAGES} pages per call (got ${pages.length})`);
+    }
+    const describe = pages.length === 1
+      ? `KB write: ${pages[0]!.slug} — ${pages[0]!.summary}`
+      : `KB write: ${pages.length} pages — ${pages.map((pg) => pg.slug).join(", ")}`;
+    try {
+      const call = d.call ?? brainCall;
+      // One approval gates the whole batch; the gated thunk writes every page.
+      // Each put_page goes through brainCall, which ensures scope.sourceId
+      // exists first (see docs/findings/2026-06-14-brain-memoize-failure.md).
+      const r = await gatedBrainCall("put_page", {
+        scope: d.scope(),
+        gate: d.gate(),
+        managers: d.managers(),
+        requestApproval: d.requestApproval,
+        call: async () => {
+          const results: unknown[] = [];
+          for (const pg of pages) {
+            results.push(await call("put_page", { slug: pg.slug, content: pg.content }, d.scope()));
+          }
+          return results;
+        },
+        describe,
+      });
+      return r.ok ? asJson({ written: pages.map((pg) => pg.slug), results: r.result }) : err(r.reason);
+    } catch (e) {
+      return err(`brain put_page failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  },
   kb_delete_page: (p: { slug: string; reason: string }, d: BrainToolDeps) =>
     runGated("delete_page", { slug: p.slug }, `KB delete: ${p.slug} — ${p.reason}`, d),
 };
@@ -200,14 +237,22 @@ export function createKbMcp(deps?: BrainToolDeps): McpSdkServerConfigWithInstanc
           (a: { slug: string }) => brainHandlers.kb_graph(a, deps),
         ),
         tool(
-          "kb_put_page",
-          "Write/update a brain page (markdown, optional YAML frontmatter; [[wikilinks]] become graph edges). Writes outside your own slice require human approval — provide a clear summary.",
+          "kb_memoize",
+          `Write/update one or more brain pages in a single call (markdown, optional YAML frontmatter; [[wikilinks]] become graph edges). Pass an array of pages — up to ${KB_MEMOIZE_MAX_PAGES} per call — and they are written under one approval. Writes outside your own slice require human approval — give each page a clear summary.`,
           {
-            slug: z.string().describe("Page slug, e.g. 'people/alice' or 'notes/2026-06-10-x'."),
-            content: z.string().describe("Full markdown content for the page."),
-            summary: z.string().describe("One-line description of the change, shown on the approval card."),
+            pages: z
+              .array(
+                z.object({
+                  slug: z.string().describe("Page slug, e.g. 'people/alice' or 'notes/2026-06-10-x'."),
+                  content: z.string().describe("Full markdown content for the page."),
+                  summary: z.string().describe("One-line description of the change, shown on the approval card."),
+                }),
+              )
+              .min(1)
+              .max(KB_MEMOIZE_MAX_PAGES)
+              .describe(`Pages to write (1..${KB_MEMOIZE_MAX_PAGES}).`),
           },
-          (a: { slug: string; content: string; summary: string }) => brainHandlers.kb_put_page(a, deps),
+          (a: { pages: Array<{ slug: string; content: string; summary: string }> }) => brainHandlers.kb_memoize(a, deps),
         ),
         tool(
           "kb_delete_page",
