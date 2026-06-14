@@ -19,20 +19,75 @@ describe("brainHandlers", () => {
     expect(JSON.parse(r.content[0]!.text)).toEqual({ echoed: "search" });
   });
 
-  test("kb_put_page goes through the gate — denial surfaces as error", async () => {
+  test("kb_memoize goes through the gate — denial surfaces as error", async () => {
     const d = deps({ requestApproval: async () => ({ approved: false, by: "UMGR" }) });
-    const r = await brainHandlers.kb_put_page({ slug: "a/b", content: "x", summary: "add page" }, d);
+    const r = await brainHandlers.kb_memoize({ pages: [{ slug: "a/b", content: "x", summary: "add page" }] }, d);
     expect(r.isError).toBe(true);
     expect(r.content[0]!.text).toContain("denied");
   });
 
-  test("kb_put_page passes slug+content to the op after approval", async () => {
+  test("kb_memoize passes slug+content to the put_page op after approval", async () => {
     let got: { name?: string; params?: Record<string, unknown> } = {};
     const d = deps({ call: async (name, params) => { got = { name, params }; return { ok: 1 }; } });
-    const r = await brainHandlers.kb_put_page({ slug: "a/b", content: "hello", summary: "add" }, d);
+    const r = await brainHandlers.kb_memoize({ pages: [{ slug: "a/b", content: "hello", summary: "add" }] }, d);
     expect(r.isError).toBeUndefined();
     expect(got.name).toBe("put_page");
     expect(got.params).toEqual({ slug: "a/b", content: "hello" });
+  });
+
+  test("kb_memoize writes multiple pages under a single approval", async () => {
+    const calls: Array<{ name: string; params: Record<string, unknown> }> = [];
+    let approvals = 0;
+    const d = deps({
+      requestApproval: async () => { approvals++; return { approved: true, by: "UMGR" }; },
+      call: async (name, params) => { calls.push({ name, params }); return { ok: 1 }; },
+    });
+    const r = await brainHandlers.kb_memoize({ pages: [
+      { slug: "a/1", content: "c1", summary: "s1" },
+      { slug: "a/2", content: "c2", summary: "s2" },
+      { slug: "a/3", content: "c3", summary: "s3" },
+    ] }, d);
+    expect(r.isError).toBeUndefined();
+    expect(approvals).toBe(1);
+    expect(calls.map((c) => c.name)).toEqual(["put_page", "put_page", "put_page"]);
+    expect(calls.map((c) => c.params.slug)).toEqual(["a/1", "a/2", "a/3"]);
+  });
+
+  test("kb_memoize rejects an empty pages array (no approval, no writes)", async () => {
+    let approvals = 0;
+    const calls: string[] = [];
+    const d = deps({
+      requestApproval: async () => { approvals++; return { approved: true, by: "UMGR" }; },
+      call: async (name) => { calls.push(name); return {}; },
+    });
+    const r = await brainHandlers.kb_memoize({ pages: [] }, d);
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toContain("at least one");
+    expect(approvals).toBe(0);
+    expect(calls).toEqual([]);
+  });
+
+  test("kb_memoize rejects more than 20 pages", async () => {
+    const pages = Array.from({ length: 21 }, (_, i) => ({ slug: `a/${i}`, content: "c", summary: "s" }));
+    const r = await brainHandlers.kb_memoize({ pages }, deps());
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toContain("20");
+  });
+
+  test("kb_memoize denial writes nothing", async () => {
+    const calls: string[] = [];
+    const d = deps({
+      requestApproval: async () => ({ approved: false, by: "UMGR" }),
+      call: async (name) => { calls.push(name); return {}; },
+    });
+    const r = await brainHandlers.kb_memoize({ pages: [{ slug: "a/1", content: "c", summary: "s" }] }, d);
+    expect(r.isError).toBe(true);
+    expect(calls).toEqual([]);
+  });
+
+  test("kb_put_page is replaced by kb_memoize", () => {
+    expect((brainHandlers as Record<string, unknown>).kb_put_page).toBeUndefined();
+    expect(typeof brainHandlers.kb_memoize).toBe("function");
   });
 
   test("kb_graph combines links and backlinks", async () => {

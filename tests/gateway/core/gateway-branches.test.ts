@@ -286,12 +286,12 @@ describe("gateway uncovered branches", () => {
     const client = new Client({ name: "t", version: "0.0.0" });
     await client.connect(ct);
 
-    // kb_put_page → runGated evaluates scope() (brainGateFor), gate(), managers()
-    // eagerly; manager in a DM (restricted trust) → approval tier → our fake
-    // surface denies → tool returns the denial reason without touching gbrain.
+    // kb_memoize → gatedBrainCall evaluates scope() (brainGateFor), gate(),
+    // managers() eagerly; manager in a DM (restricted trust) → approval tier →
+    // our fake surface denies → tool returns the denial reason without touching gbrain.
     const res: any = await client.callTool({
-      name: "kb_put_page",
-      arguments: { slug: "test-page", content: "x", summary: "test write" },
+      name: "kb_memoize",
+      arguments: { pages: [{ slug: "test-page", content: "x", summary: "test write" }] },
     });
     expect(res.isError).toBe(true);
     expect(sink.approvals.length).toBe(1);
