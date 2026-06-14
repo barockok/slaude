@@ -105,10 +105,15 @@ export interface GatewayOptions {
 
 /** A live SessionBinding view over the mutated-in-place SlackContext, so the Surface always
  *  reads the current turn's conversation/inbound/user (the gateway mutates ctx across turns). */
-function bindingFor(ctx: SlackContext): SessionBinding {
+export function bindingFor(ctx: SlackContext): SessionBinding {
   return {
     get conversationId() { return ctx.channel; },
-    get threadRef() { return ctx.threadTs; },
+    // Channel-target crons must post at channel root, not threaded under the
+    // originating thread. The surface binding is the single seam every post
+    // tool (reply/upload/getHistory) reads, so drop the thread ref here when
+    // the context is channel-targeted. postTarget is only set for crons; normal
+    // inbound sessions leave it unset and keep their thread.
+    get threadRef() { return ctx.postTarget === "channel" ? undefined : ctx.threadTs; },
     get inboundRef() { return ctx.inboundTs; },
     get userId() { return ctx.userId; },
     get teamId() { return ctx.teamId; },
