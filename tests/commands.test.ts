@@ -82,6 +82,15 @@ describe("helpText", () => {
       expect(usages).toContain(name);
     }
   });
+
+  test("commands render in a fenced code block with summaries aligned to one column", () => {
+    const t = helpText();
+    expect(t).toContain("```");
+    const gutter = Math.max(...AGENT_COMMANDS.map((c) => c.usage.length)) + 2;
+    for (const c of AGENT_COMMANDS) {
+      expect(t).toContain(c.usage.padEnd(gutter) + c.summary);
+    }
+  });
 });
 
   test("parses /ingest with no args", () => {
