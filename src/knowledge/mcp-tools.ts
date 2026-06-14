@@ -115,7 +115,25 @@ export const brainHandlers = {
     try {
       // SDK-routed synthesis (subscription auth) — not the raw think op.
       const think = d.think ?? brainThink;
-      return asJson(await think(p.question, d.scope()));
+      const result = await think(p.question, d.scope());
+      // Mode-B guard: a zero-citation synthesis means the gather missed the
+      // page, not that it's absent — `kb_think` over-reports "not captured"
+      // where a keyword `kb_search` finds the page at rank 1. Fall back to
+      // search so present knowledge is never declared missing.
+      // See docs/findings/2026-06-14-brain-memoize-failure.md.
+      const citations = (result as { citations?: unknown[] } | null)?.citations;
+      if (Array.isArray(citations) && citations.length === 0) {
+        try {
+          const call = d.call ?? brainCall;
+          const hits = await call("search", { query: p.question, limit: 5 }, d.scope());
+          if (Array.isArray(hits) && hits.length > 0) {
+            return asJson({ ...(result as object), search_fallback: hits });
+          }
+        } catch {
+          // fallback is best-effort; fall through to the raw think result
+        }
+      }
+      return asJson(result);
     } catch (e) {
       return err(`brain think failed: ${e instanceof Error ? e.message : String(e)}`);
     }

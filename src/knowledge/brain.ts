@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { paths } from "../config/home";
 import { loadKbs } from "./loader";
 import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, type BrainScope } from "./scope";
+import { isScopeWriteOp } from "./gated-dispatch";
 
 // Engine surface kept minimal on purpose: gbrain ships TS sources and its own
 // types stay internal to it; slaude only needs lifecycle + handler dispatch.
@@ -234,9 +235,33 @@ async function findOp(name: string): Promise<Op> {
   return op;
 }
 
+/**
+ * Idempotently register a single source (used for write-time sources that
+ * ensureSources()/baselineSources() never cover — notably user-<id> slices that
+ * a /1on1 lock writes to). Cached so repeat writes don't re-query. Without this,
+ * every kb_put_page inside a /1on1 lock FK-failed on pages_source_id_fkey.
+ * See docs/findings/2026-06-14-brain-memoize-failure.md.
+ */
+const ensuredSources = new Set<string>();
+export async function ensureSource(id: string): Promise<void> {
+  if (ensuredSources.has(id)) return;
+  try {
+    await brainAdminCall("sources_add", { id, federated: true });
+  } catch (e) {
+    // already-registered is success for our purposes; gbrain reports it as
+    // source_id_taken / "already registered" (Postgres) or duplicate key (pglite).
+    const msg = e instanceof Error ? e.message : String(e);
+    const code = (e as { code?: string })?.code;
+    if (code !== "source_id_taken" && !/duplicate key|already exists|already registered/i.test(msg)) throw e;
+  }
+  ensuredSources.add(id);
+}
+
 /** User-scoped call: remote=true + synthetic AuthInfo → gbrain enforces scope in SQL. */
 export async function brainCall(name: string, params: Record<string, unknown>, scope: BrainScope): Promise<unknown> {
   const op = await findOp(name);
+  // A write needs its scope source to exist first (FK pages_source_id_fkey).
+  if (isScopeWriteOp(name)) await ensureSource(scope.sourceId);
   const ctx = await buildCtx({
     remote: true,
     sourceId: scope.sourceId,

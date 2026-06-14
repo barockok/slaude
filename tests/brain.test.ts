@@ -37,6 +37,19 @@ describe("brain engine (integration)", () => {
   test("unknown op throws", async () => {
     expect(brainCall("nope_op", {}, aliceScope)).rejects.toThrow(/unknown brain op/);
   });
+
+  // Mode A regression: a write to an un-bootstrapped user source (the /1on1
+  // lock scope) must auto-register the source instead of FK-failing.
+  // docs/findings/2026-06-14-brain-memoize-failure.md
+  test("put_page auto-ensures an un-bootstrapped user source", async () => {
+    const carol: BrainScope = { clientId: "U_CAROL", sourceId: "user-ucarol", allowedSources: ["user-ucarol", "shared"] };
+    // user-ucarol was never passed to ensureSources — pre-fix this FK-failed.
+    await brainCall("put_page", { slug: "notes/c", content: "Carol kilimanjaro fact." }, carol);
+    const listed = (await brainAdminCall("sources_list", {})) as { sources: Array<{ id: string }> };
+    expect(listed.sources.map((s) => s.id)).toContain("user-ucarol");
+    const mine = (await brainCall("search", { query: "kilimanjaro" }, carol)) as unknown[];
+    expect(mine.length).toBeGreaterThan(0);
+  }, 60_000);
 });
 
 describe("embeddingConfigured", () => {
