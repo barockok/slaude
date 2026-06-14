@@ -24,6 +24,14 @@ const WRITE_OPS = new Set([
 // Destructive: approval even on the caller's own slice.
 const DESTRUCTIVE_OPS = new Set(["delete_page", "restore_page"]);
 
+// Mutations that write into scope.sourceId — that source row MUST exist first,
+// else gbrain's insert hits pages_source_id_fkey. Per-user sources (user-<id>,
+// the /1on1 lock scope) are resolved at write time but never bootstrapped, so
+// the write path must ensure the source. See
+// docs/findings/2026-06-14-brain-memoize-failure.md.
+const SCOPE_WRITE_OPS = new Set([...WRITE_OPS, ...DESTRUCTIVE_OPS]);
+export const isScopeWriteOp = (op: string): boolean => SCOPE_WRITE_OPS.has(op);
+
 // Brain administration: manager approval always.
 const MANAGER_OPS = new Set([
   "purge_deleted_pages", "sources_add", "sources_remove", "sync_brain",

@@ -48,4 +48,57 @@ describe("brainHandlers", () => {
     expect(r.isError).toBe(true);
     expect(r.content[0]!.text).toContain("db on fire");
   });
+
+  // Mode B: a zero-citation think result must fall back to keyword search so a
+  // present page isn't reported "not captured".
+  // docs/findings/2026-06-14-brain-memoize-failure.md
+  test("kb_think falls back to search when synthesis has zero citations", async () => {
+    let searched: string | undefined;
+    const d = deps({
+      think: async () => ({ answer: "not in the brain", citations: [], pagesGathered: 40 }),
+      call: async (name) => {
+        if (name === "search") { searched = name; return [{ slug: "lessons/jot-deployment-pattern", score: 1.08 }]; }
+        return { echoed: name };
+      },
+    });
+    const r = await brainHandlers.kb_think({ question: "what lesson on jot deployment?" }, d);
+    expect(r.isError).toBeUndefined();
+    expect(searched).toBe("search");
+    const out = JSON.parse(r.content[0]!.text);
+    expect(out.search_fallback[0].slug).toBe("lessons/jot-deployment-pattern");
+  });
+
+  test("kb_think does NOT fall back when citations exist", async () => {
+    let searchCalled = false;
+    const d = deps({
+      think: async () => ({ answer: "yes", citations: [{ page_slug: "x" }], pagesGathered: 3 }),
+      call: async (name) => { if (name === "search") searchCalled = true; return []; },
+    });
+    const r = await brainHandlers.kb_think({ question: "q" }, d);
+    expect(r.isError).toBeUndefined();
+    expect(searchCalled).toBe(false);
+    expect(JSON.parse(r.content[0]!.text).search_fallback).toBeUndefined();
+  });
+
+  test("kb_think returns the raw result when the fallback search is empty", async () => {
+    const d = deps({
+      think: async () => ({ answer: "not in the brain", citations: [], pagesGathered: 40 }),
+      call: async () => [],
+    });
+    const r = await brainHandlers.kb_think({ question: "q" }, d);
+    expect(r.isError).toBeUndefined();
+    const out = JSON.parse(r.content[0]!.text);
+    expect(out.search_fallback).toBeUndefined();
+    expect(out.answer).toBe("not in the brain");
+  });
+
+  test("kb_think swallows a failing fallback search and returns the think result", async () => {
+    const d = deps({
+      think: async () => ({ answer: "not in the brain", citations: [], pagesGathered: 40 }),
+      call: async () => { throw new Error("search index offline"); },
+    });
+    const r = await brainHandlers.kb_think({ question: "q" }, d);
+    expect(r.isError).toBeUndefined();
+    expect(JSON.parse(r.content[0]!.text).answer).toBe("not in the brain");
+  });
 });
