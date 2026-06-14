@@ -161,12 +161,18 @@ export function parseSlashCommand(text: string): SlashHit | null {
 }
 
 export function helpText(): string {
+  // Render the command table inside a code fence with the summary column aligned
+  // to a single gutter (longest usage + 2). Slack renders fences monospace, so
+  // space-padding lines up cleanly; tabs render at inconsistent widths and are
+  // avoided. Usages are NOT backtick-wrapped — backticks show literally inside a
+  // fence.
+  const gutter = Math.max(...AGENT_COMMANDS.map((c) => c.usage.length)) + 2;
+  const cmds = AGENT_COMMANDS.map((c) => c.usage.padEnd(gutter) + c.summary).join("\n");
   const modes = Object.values(MODE_ALIASES)
     .filter((v, i, a) => a.indexOf(v) === i)
     .map((m) => `  • \`/mode ${humanModeName(m)}\` — ${MODE_LABELS[m]}`)
     .join("\n");
-  const cmds = AGENT_COMMANDS.map((c) => `\`${c.usage}\` — ${c.summary}`).join("\n");
-  return ["*slaude commands*", cmds, "", "tool-permission modes:", modes].join("\n");
+  return ["*slaude commands*", "```", cmds, "```", "tool-permission modes:", modes].join("\n");
 }
 
 export function humanModeName(m: PermissionMode): string {
