@@ -270,4 +270,11 @@ describe("/soul", () => {
     expect(parseSlashCommand("/soul trust drop C1")).toBeNull();
     expect(parseSlashCommand("/soul clear bogus")).toBeNull();
   });
+
+  test("parses /mcp status, connect, disconnect", () => {
+    expect(parseSlashCommand("/mcp")).toEqual({ kind: "mcp", action: "status" });
+    expect(parseSlashCommand("/mcp connect workbench")).toEqual({ kind: "mcp", action: "connect", server: "workbench" });
+    expect(parseSlashCommand("/mcp disconnect workbench")).toEqual({ kind: "mcp", action: "disconnect", server: "workbench" });
+    expect(parseSlashCommand("/mcp DISCONNECT workbench")).toEqual({ kind: "mcp", action: "disconnect", server: "workbench" });
+  });
 });
