@@ -124,40 +124,6 @@ describe("kbHandlers.search_kbs", () => {
   });
 });
 
-describe("kbHandlers.open_kb", () => {
-  test("returns index file contents", async () => {
-    seedKb("runbooks", "# Amartha Runbooks\n\nOperational procedures.");
-    const r = await kbHandlers.open_kb({ label: "runbooks" });
-    expect(r.isError).toBeUndefined();
-    expect(r.content[0]!.text).toContain("Amartha Runbooks");
-    expect(r.content[0]!.text).toContain("Operational procedures.");
-  });
-
-  test("returns error for unknown label", async () => {
-    const r = await kbHandlers.open_kb({ label: "nonexistent" });
-    expect(r.isError).toBe(true);
-    expect(r.content[0]!.text).toContain("unknown knowledge base");
-    expect(r.content[0]!.text).toContain("nonexistent");
-    expect(r.content[0]!.text).toContain("list_kbs");
-  });
-
-  test("returns full file content not truncated", async () => {
-    const body = "A".repeat(500);
-    seedKb("big", body);
-    const r = await kbHandlers.open_kb({ label: "big" });
-    expect(r.content[0]!.text).toBe(body);
-  });
-
-  test("works with index.md fallback", async () => {
-    const dir = join(paths.knowledge, "fallback-kb");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "index.md"), "# Fallback Wiki");
-    const r = await kbHandlers.open_kb({ label: "fallback-kb" });
-    expect(r.isError).toBeUndefined();
-    expect(r.content[0]!.text).toContain("Fallback Wiki");
-  });
-});
-
 describe("createKbMcp", () => {
   test("returns SDK MCP config with correct name", () => {
     const cfg = createKbMcp();

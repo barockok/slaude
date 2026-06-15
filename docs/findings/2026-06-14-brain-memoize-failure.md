@@ -234,6 +234,162 @@ unopened KB. The defect is **retrieval**:
 - **Not yet done** (lower priority): actionable FK→agent error mapping;
   failed-intent brain-write stop-guard; deeper `kb_think` candidate-set ranking.
 
+## 2026-06-15 update — deeper investigation (live UAT brain)
+
+Followed three more recall complaints to the live UAT brain (PGLite snapshot +
+ArgoCD exec, read-only). This corrected several earlier guesses.
+
+### Confirmed via live DB
+
+- **Mode C (scope silo) is real:** a `/1on1` memoize lands in `user-<id>`, which
+  a normal-channel recall (scope = `shared`+`public`+`kb-*`) cannot read. The
+  OKR pages existed in BOTH `user-u06enbs6pv0` (from the `/1on1`) and `shared`
+  (from a later manual re-memoize). The operator had to re-memoize to get them
+  recallable — friction worth removing (default `/1on1` memoize to `shared`?).
+- **Mode D (embedding gap) RULED OUT:** every chunk is embedded
+  (`zeroentropyai:zembed-1`, 3442/3442, `missing=0`), vectors are a consistent
+  **1280-dim**, and an HNSW cosine index exists. Embeddings are healthy.
+- **Embedding config bug (latent):** `values.yaml` sets
+  `EMBEDDING_DIMENSIONS=2560` but the actual column/vectors/index are **1280**
+  (zembed-1 native). Works by luck (doc + query both 1280); if any path ever
+  honors 2560 for the query, recall breaks. Fix: set `EMBEDDING_DIMENSIONS=1280`
+  in `deploy-hermes/agents/maria/uat/values.yaml`.
+- **The real recall bug is `kb_think` ranking, not storage.** `gather.ts`
+  already does hybrid (vector + keyword + RRF). A rich (3054-char), well-titled
+  (`notes/amartha-2026-company-okr` → "Amartha 2026 Company OKRs"), embedded,
+  in-scope page still lost the rank race to many BU/dbt OKR pages, and the LLM
+  produced a confident non-empty answer from neighbors — so the zero-citation
+  fallback (above) never fired. Verbose query dilutes; the jot case proved a
+  tight `kb_search` keyword hits rank 1 where full-question `kb_think` misses.
+  Levers: query distillation (verbose → keywords) [highest-confidence],
+  title/slug match boost, larger `gather_limit`. Decide retrieval-fix vs
+  synthesis-fix once the recall jsonl confirms gathered-but-ignored vs
+  not-gathered.
+- **Maria misdescribes her own mechanics.** She told the operator memoize
+  "writes a local file, not indexed, needs `/ingest`." False — `kb_memoize` →
+  `put_page` upserts the gbrain DB (chunk+embed) directly; the `.sources/*.md`
+  write-through is an inert byproduct. Worth a soul/skill note so she stops
+  asserting the wrong model.
+
+### Storage model (confirmed)
+
+gbrain DB is the single retrieval source. Boot/nightly `syncKbWikis` index the
+git `wiki/` dirs into `kb-*` sources; runtime memoize writes `shared`/`user-*`
+sources directly; all recall reads the DB. Nightly sync targets `kb-*` only, so
+it never reconciles/wipes memoized pages, and it reads `wiki/`, never the
+`.sources/` write-through mirror.
+
+### Follow-ups
+
+- **Durability gap (memoized knowledge has no git backup).** Seed KBs survive a
+  DB wipe (re-sync from git `wiki/`). Memoized `shared`/`user-*` pages live ONLY
+  in the PVC gbrain DB — the `.sources/*.md` write-through is **never
+  re-imported** by sync (sync reads `wiki/`), so it is not a real backup. If PVC
+  durability is insufficient, add a real backup path: nightly export memoized
+  `shared`/`user-*` pages into a git-backed writable-KB `wiki/` so sync
+  round-trips them. (This also reframes the "remove write-through" request:
+  removing the mirror loses nothing for recovery — it was already inert.)
+- **`open_kb` removed** (2026-06-15, branch `refactor/remove-open-kb`): it was
+  the last KB tool that `readFileSync`'d local markdown at runtime; capability
+  covered by DB-backed `kb_list_pages`/`kb_get_page`/`kb_search`. Every KB tool
+  now sources purely from the gbrain DB.
+- Memoize DB-only (drop write-through): cosmetic now that the mirror is known
+  inert; needs gbrain `write_through:false` (SHA-pinned dep → fork/patch).
+- `EMBEDDING_DIMENSIONS` 2560 → 1280 in deploy-hermes values.
+
+## Decisions & current model (2026-06-15)
+
+After tracing the write/read paths end-to-end, the design intent is settled:
+
+**One opinionated write path: `kb_memoize → gbrain DB.`**
+- `kb_memoize` (→ `put_page`) upserts the gbrain DB directly (chunk + embed),
+  searchable immediately. The `.sources/*.md` write-through is an **inert
+  mirror** — never re-read by sync (sync reads `wiki/`), not a backup.
+- The pre-gbrain writable-KB path (`slaude_knowledge` + `/ingest` +
+  `raw/→wiki→git`) is **redundant** with this. Three ways to "remember"
+  (memoize / `/ingest` / drop a raw file) is the confusion that misled both the
+  agent and the operator.
+
+**`slaude_knowledge` / `/ingest` — kept in code, left dormant.** Decided NOT to
+rip them out for now. Instead: the operator configures **all** KBs as read-only
+(`knowledge[]`); nothing is set under `slaude_knowledge`. With no writable KB
+configured, `kb_memoize → gbrain` is the effective sole write path — the "one
+opinionated way" achieved operationally, zero code surgery. (Full removal —
+`/ingest` command, `ingest.ts`, `trigger_ingest`, `ingest-jobs`, the config key
+— remains an option later if we want to delete the dead path outright.)
+
+**`/ingest` is NOT a step in memoize.** It's a separate, manager-gated, git-
+backed curation pipeline for a *writable* KB. Memoize already indexed to the DB;
+"ready for `/ingest`" after a memoize (what Maria said) is wrong. With
+`slaude_knowledge` dormant, `/ingest` has no target and shouldn't be referenced.
+
+**Storage model (confirmed):** gbrain DB is the single retrieval source. Boot/
+nightly index read-only seed `wiki/` dirs → `kb-*` sources; runtime memoize →
+`agent`/`shared`/`user-*` sources; all recall reads the DB. No KB tool reads
+markdown at runtime (after `open_kb` removal).
+
+**Durability:** PVC-only accepted. Memoized `shared`/`user-*` pages live only in
+the gbrain DB on the PVC (no git backup; the `.sources/` mirror is never
+re-imported). A DB snapshot/export is the future option if git-grade durability
+is ever needed — not blocking.
+
+## Open work (ranked, 2026-06-15)
+
+1. **`kb_think` ranking (Mode B′)** — the real remaining recall bug: a rich,
+   embedded, in-scope, well-titled page lost the RRF rank race to neighbor pages
+   and the LLM answered from them with citations, so the zero-citation fallback
+   never fired. gbrain's `gather.ts` already does hybrid (vector+keyword+RRF), so
+   the fix is *relevance*, not a missing arm: **query distillation** (verbose NL
+   → keywords — proven by the jot case where tight `kb_search` hit rank 1),
+   title/slug match boost, larger `gather_limit`. Confirm gathered-vs-not via the
+   recall jsonl to pick retrieval-fix vs synthesis-fix. *Headline.*
+2. **`open_kb` removal** — done (branch `refactor/remove-open-kb`), unpushed.
+3. **`EMBEDDING_DIMENSIONS` 2560 → 1280** — deploy-hermes one-liner; latent bug.
+4. **Standing grant for `put_page`** — designed: implicit on first approve,
+   thread-scoped, 8h TTL, in-memory (restart re-asks). Keeps the gate's
+   deny/scope (authorization); only suppresses the repeat approval *card* for
+   trusted writers. Pairs with #5.
+5. **`/1on1` memoize → `shared` (Mode C)** — stop siloing 1:1-taught knowledge in
+   `user-<id>`. Interplays with #4 (auto-write + global-read for trusted 1:1).
+6. **Soul prompt** — drop the `/ingest`/`raw/` write instructions; point all
+   writes at `kb_memoize`. Stops the agent re-deriving the "needs /ingest" misinfo.
+7. Backlog: actionable FK→agent error mapping; failed-intent brain-write
+   stop-guard.
+
+## Design direction — per-source ownership & owner-routed approval (future)
+
+Today's write gate keys on **caller + channel trust**, not on the source. The
+writable sources a user-context resolves to are only: `agent` (auto, cron),
+`user-<id>` (auto, private own slice), and `shared` (approval). `kb-*` sources
+(one per KB in slaude.json) are **read-only** at runtime — they change only via
+their git wiki — and `public` writes are denied. So "contributing to a KB
+source" isn't possible today; `shared` is the single common writable bucket,
+and its approval routes to the global SOUL.md `<approvers>` (category `kb` →
+manager), **not** to any per-source owner.
+
+Gaps if we want real per-source governance:
+- **No `owner` on sources.** Nothing records who is responsible for a source.
+- **Approval is global, not per-source.** A `shared` write routes by category,
+  not to "the owner of this source."
+- **Only one shared writable target.** No way to stand up a named, contributable
+  domain/team source distinct from `shared`.
+- **Source creation is manager-tier, owner-less** (`sources_add`).
+
+Proposed model (net-new RBAC, its own design — not part of the memoize fixes):
+1. **Owner metadata per source** — `owner:` in slaude.json per KB, and an
+   `owner` column on the `sources` table for runtime-created sources.
+2. **Named contributable sources** — make designated sources user-writable
+   (beyond the single `shared`), each with an owner.
+3. **Owner-routed approval** — the gate passes the *target source's owner* as the
+   eligible approver: anyone may contribute, the source's owner approves. The
+   per-thread standing grant (shipped) then still absorbs repeat cards per
+   contributor.
+
+This generalizes the current model: `user-<id>` is just "a source owned by one
+person, auto-approved for that owner"; `shared` is "a source the manager owns."
+Per-source ownership makes that explicit and lets domains/teams own their slice
+of the brain. Captured as direction; not scheduled.
+
 ## Artifacts
 
 Session JSONL retained locally (gitignored, not committed):
