@@ -234,6 +234,69 @@ unopened KB. The defect is **retrieval**:
 - **Not yet done** (lower priority): actionable FK→agent error mapping;
   failed-intent brain-write stop-guard; deeper `kb_think` candidate-set ranking.
 
+## 2026-06-15 update — deeper investigation (live UAT brain)
+
+Followed three more recall complaints to the live UAT brain (PGLite snapshot +
+ArgoCD exec, read-only). This corrected several earlier guesses.
+
+### Confirmed via live DB
+
+- **Mode C (scope silo) is real:** a `/1on1` memoize lands in `user-<id>`, which
+  a normal-channel recall (scope = `shared`+`public`+`kb-*`) cannot read. The
+  OKR pages existed in BOTH `user-u06enbs6pv0` (from the `/1on1`) and `shared`
+  (from a later manual re-memoize). The operator had to re-memoize to get them
+  recallable — friction worth removing (default `/1on1` memoize to `shared`?).
+- **Mode D (embedding gap) RULED OUT:** every chunk is embedded
+  (`zeroentropyai:zembed-1`, 3442/3442, `missing=0`), vectors are a consistent
+  **1280-dim**, and an HNSW cosine index exists. Embeddings are healthy.
+- **Embedding config bug (latent):** `values.yaml` sets
+  `EMBEDDING_DIMENSIONS=2560` but the actual column/vectors/index are **1280**
+  (zembed-1 native). Works by luck (doc + query both 1280); if any path ever
+  honors 2560 for the query, recall breaks. Fix: set `EMBEDDING_DIMENSIONS=1280`
+  in `deploy-hermes/agents/maria/uat/values.yaml`.
+- **The real recall bug is `kb_think` ranking, not storage.** `gather.ts`
+  already does hybrid (vector + keyword + RRF). A rich (3054-char), well-titled
+  (`notes/amartha-2026-company-okr` → "Amartha 2026 Company OKRs"), embedded,
+  in-scope page still lost the rank race to many BU/dbt OKR pages, and the LLM
+  produced a confident non-empty answer from neighbors — so the zero-citation
+  fallback (above) never fired. Verbose query dilutes; the jot case proved a
+  tight `kb_search` keyword hits rank 1 where full-question `kb_think` misses.
+  Levers: query distillation (verbose → keywords) [highest-confidence],
+  title/slug match boost, larger `gather_limit`. Decide retrieval-fix vs
+  synthesis-fix once the recall jsonl confirms gathered-but-ignored vs
+  not-gathered.
+- **Maria misdescribes her own mechanics.** She told the operator memoize
+  "writes a local file, not indexed, needs `/ingest`." False — `kb_memoize` →
+  `put_page` upserts the gbrain DB (chunk+embed) directly; the `.sources/*.md`
+  write-through is an inert byproduct. Worth a soul/skill note so she stops
+  asserting the wrong model.
+
+### Storage model (confirmed)
+
+gbrain DB is the single retrieval source. Boot/nightly `syncKbWikis` index the
+git `wiki/` dirs into `kb-*` sources; runtime memoize writes `shared`/`user-*`
+sources directly; all recall reads the DB. Nightly sync targets `kb-*` only, so
+it never reconciles/wipes memoized pages, and it reads `wiki/`, never the
+`.sources/` write-through mirror.
+
+### Follow-ups
+
+- **Durability gap (memoized knowledge has no git backup).** Seed KBs survive a
+  DB wipe (re-sync from git `wiki/`). Memoized `shared`/`user-*` pages live ONLY
+  in the PVC gbrain DB — the `.sources/*.md` write-through is **never
+  re-imported** by sync (sync reads `wiki/`), so it is not a real backup. If PVC
+  durability is insufficient, add a real backup path: nightly export memoized
+  `shared`/`user-*` pages into a git-backed writable-KB `wiki/` so sync
+  round-trips them. (This also reframes the "remove write-through" request:
+  removing the mirror loses nothing for recovery — it was already inert.)
+- **`open_kb` removed** (2026-06-15, branch `refactor/remove-open-kb`): it was
+  the last KB tool that `readFileSync`'d local markdown at runtime; capability
+  covered by DB-backed `kb_list_pages`/`kb_get_page`/`kb_search`. Every KB tool
+  now sources purely from the gbrain DB.
+- Memoize DB-only (drop write-through): cosmetic now that the mirror is known
+  inert; needs gbrain `write_through:false` (SHA-pinned dep → fork/patch).
+- `EMBEDDING_DIMENSIONS` 2560 → 1280 in deploy-hermes values.
+
 ## Artifacts
 
 Session JSONL retained locally (gitignored, not committed):
