@@ -257,4 +257,39 @@ describe("/mcp gating + connect", () => {
     expect(reply).toBeDefined();
     expect(connectCalls).toBe(0);
   });
+
+  it("disconnects an HTTP server for the lock initiator and removes the token", async () => {
+    const { t, posts, emit } = capturingTransport();
+    const agent = new AgentManager();
+    agent.sendMessage = async () => {};
+    // Connect via the real gateway path so the credential is written with the
+    // exact same server config (and thus the same oauthKey) disconnect uses.
+    createGateway(agent, t, {
+      oauthConnect: async () => ({ clientId: "cid", accessToken: "AT", refreshToken: "RT", expiresIn: 3600 }),
+    });
+
+    OneOnOne.lock({ channelId: CHANNEL, threadTs: THREAD, lockedUser: INITIATOR, createdBy: INITIATOR });
+
+    await sendInbound(emit, "/mcp connect workbench", INITIATOR, "100.41", t.client);
+    const credPath = join(initiatorDir, ".credentials.json");
+    const oauthCount = () => Object.keys(JSON.parse(readFileSync(credPath, "utf8")).mcpOAuth ?? {}).length;
+    expect(oauthCount()).toBe(1);
+
+    await sendInbound(emit, "/mcp disconnect workbench", INITIATOR, "100.42", t.client);
+
+    expect(posts.find((p) => String(p.text ?? "").includes("Disconnected"))).toBeDefined();
+    expect(oauthCount()).toBe(0);
+  });
+
+  it("disconnect of a not-connected server reports nothing to do", async () => {
+    const { t, posts, emit } = capturingTransport();
+    const agent = new AgentManager();
+    agent.sendMessage = async () => {};
+    createGateway(agent, t);
+    OneOnOne.lock({ channelId: CHANNEL, threadTs: THREAD, lockedUser: INITIATOR, createdBy: INITIATOR });
+
+    await sendInbound(emit, "/mcp disconnect workbench", INITIATOR, "100.5", t.client);
+
+    expect(posts.find((p) => String(p.text ?? "").includes("nothing to disconnect"))).toBeDefined();
+  });
 });

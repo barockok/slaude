@@ -806,7 +806,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // identity. Removing the stored grant means no token at next session
           // boot — the agent reconnects only if re-connected.
           const configDir = scope === "global" ? agentConfigDir() : ensureInitiatorConfigDir(userId);
-          const removed = removeEntry(configDir, name, httpServers[name] as OAuthServerConfig);
+          // Reconstruct the SAME OAuthServerConfig shape connectServer wrote with
+          // ({type:"http", url, headers}) — httpExternalServers drops `type`, so
+          // passing its bare {url,headers} would compute a different oauthKey and
+          // never match the stored grant.
+          const cfg: OAuthServerConfig = { type: "http", url: httpServers[name]!.url, headers: httpServers[name]!.headers };
+          const removed = removeEntry(configDir, name, cfg);
           await reply(
             removed
               ? `:white_check_mark: Disconnected \`${name}\`${scope === "global" ? " (agent's shared identity)" : ""} — credential removed. Takes effect on the next session boot.`
