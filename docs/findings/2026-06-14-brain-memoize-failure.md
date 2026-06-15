@@ -356,6 +356,40 @@ is ever needed — not blocking.
 7. Backlog: actionable FK→agent error mapping; failed-intent brain-write
    stop-guard.
 
+## Design direction — per-source ownership & owner-routed approval (future)
+
+Today's write gate keys on **caller + channel trust**, not on the source. The
+writable sources a user-context resolves to are only: `agent` (auto, cron),
+`user-<id>` (auto, private own slice), and `shared` (approval). `kb-*` sources
+(one per KB in slaude.json) are **read-only** at runtime — they change only via
+their git wiki — and `public` writes are denied. So "contributing to a KB
+source" isn't possible today; `shared` is the single common writable bucket,
+and its approval routes to the global SOUL.md `<approvers>` (category `kb` →
+manager), **not** to any per-source owner.
+
+Gaps if we want real per-source governance:
+- **No `owner` on sources.** Nothing records who is responsible for a source.
+- **Approval is global, not per-source.** A `shared` write routes by category,
+  not to "the owner of this source."
+- **Only one shared writable target.** No way to stand up a named, contributable
+  domain/team source distinct from `shared`.
+- **Source creation is manager-tier, owner-less** (`sources_add`).
+
+Proposed model (net-new RBAC, its own design — not part of the memoize fixes):
+1. **Owner metadata per source** — `owner:` in slaude.json per KB, and an
+   `owner` column on the `sources` table for runtime-created sources.
+2. **Named contributable sources** — make designated sources user-writable
+   (beyond the single `shared`), each with an owner.
+3. **Owner-routed approval** — the gate passes the *target source's owner* as the
+   eligible approver: anyone may contribute, the source's owner approves. The
+   per-thread standing grant (shipped) then still absorbs repeat cards per
+   contributor.
+
+This generalizes the current model: `user-<id>` is just "a source owned by one
+person, auto-approved for that owner"; `shared` is "a source the manager owns."
+Per-source ownership makes that explicit and lets domains/teams own their slice
+of the brain. Captured as direction; not scheduled.
+
 ## Artifacts
 
 Session JSONL retained locally (gitignored, not committed):
