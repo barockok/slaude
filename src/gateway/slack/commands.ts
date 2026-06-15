@@ -37,7 +37,7 @@ export type SlashHit =
   | { kind: "cron-list" }
   | { kind: "cron-remove"; id: string }
   | { kind: "one-on-one"; action: "on" | "off" }
-  | { kind: "mcp"; action: "status" | "connect"; server?: string }
+  | { kind: "mcp"; action: "status" | "connect" | "disconnect"; server?: string }
   | { kind: "soul"; field: "trust" | "allow" | "dm" | "block"; action: "add" | "remove"; value: string }
   | { kind: "soul-list" }
   | { kind: "soul-clear"; field: "trust" | "allow" | "dm" | "block" | "all" }
@@ -51,7 +51,7 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/mode <name>", summary: "set the tool-permission mode (per session/thread)" },
   { usage: "/abort", summary: "cancel the current turn" },
   { usage: "/1on1 [off]", summary: "lock this thread to you + the manager; `off` releases" },
-  { usage: "/mcp [connect <server>]", summary: "list/connect OAuth HTTP MCP servers — in 1on1: as you; outside 1on1: manager connects the agent's shared identity" },
+  { usage: "/mcp [connect|disconnect <server>]", summary: "list/connect/disconnect OAuth HTTP MCP servers — in 1on1: as you; outside 1on1: manager manages the agent's shared identity" },
   { usage: "/ignore @user [dur]", summary: "ignore a user (optional duration, e.g. 1h, 30m)" },
   { usage: "/ignore-thread [dur]", summary: "ignore this thread (optional duration)" },
   { usage: "/unignore @user", summary: "stop ignoring a user" },
@@ -145,8 +145,12 @@ export function parseSlashCommand(text: string): SlashHit | null {
     return null;
   }
   if (cmd === "mcp") {
-    if ((rest[0] ?? "").toLowerCase() === "connect") {
+    const sub = (rest[0] ?? "").toLowerCase();
+    if (sub === "connect") {
       return { kind: "mcp", action: "connect", server: rest[1] };
+    }
+    if (sub === "disconnect") {
+      return { kind: "mcp", action: "disconnect", server: rest[1] };
     }
     return { kind: "mcp", action: "status" };
   }

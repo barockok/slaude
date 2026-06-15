@@ -79,3 +79,28 @@ export function writeEntry(
   chmodSync(tmp, 0o600);
   renameSync(tmp, path);
 }
+
+/** Read-modify-write: delete mcpOAuth[key] for this server, preserve everything
+ *  else, write atomically at 0600. Returns true if an entry was actually removed
+ *  (false when no credential file or no matching key). Mirrors writeEntry's
+ *  atomic-write contract so a concurrent CLI refresh can't observe a torn file. */
+export function removeEntry(
+  configDir: string,
+  serverName: string,
+  cfg: OAuthServerConfig,
+): boolean {
+  const path = join(configDir, ".credentials.json");
+  if (!existsSync(path)) return false;
+  let current: Record<string, any> = {};
+  try { current = JSON.parse(readFileSync(path, "utf8")) || {}; } catch { return false; }
+  const key = oauthKey(serverName, cfg);
+  if (!current.mcpOAuth || !(key in current.mcpOAuth)) return false;
+  const nextOAuth = { ...current.mcpOAuth };
+  delete nextOAuth[key];
+  const next = { ...current, mcpOAuth: nextOAuth };
+  const tmp = join(configDir, `.credentials.json.tmp-${randomBytes(6).toString("hex")}`);
+  writeFileSync(tmp, JSON.stringify(next), { encoding: "utf8", mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, path);
+  return true;
+}
