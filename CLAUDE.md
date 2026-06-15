@@ -23,6 +23,7 @@ Zidni Mubarok <zidmubarock@gmail.com>. Telegram bridge available — use for blo
 
 ## Working Rules
 
+- **Public repo — no internal/proprietary references.** This repo is public. Never commit real people's names, company/employer/org names, internal Slack channel names, or internal service / KB / data-source identifiers in code, tests, comments, docs, commit messages, or PR text. Use generic placeholders instead (e.g. `bulk-corpus`, `org/team-directory`, `#team-channel`, `Jane Doe`). Findings docs describe the *mechanism*, never the internal incident specifics or the operator's deployment.
 - Granular commits. One logical change per commit.
 - Log significant findings/decisions/mistakes as a new `docs/findings/<date>-<slug>.md` file and link it from the Findings Log index below (newest first). Keep this file lean — only the index lives here.
 - Autonomous by default. Don't ask trivial; ask via Telegram only when:
@@ -93,6 +94,7 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 Entries live in `docs/findings/<date>-<slug>.md`. Add a new file per significant finding/decision/mistake; index it below. Newest first.
 
+- [2026-06-15 — Per-source `gather()`: bulk-corpus volume drowns curated pages in the pooled candidate set (cold-retrieval fails where warm-context masks it). Slaude-side per-source fan-out wrapper; gbrain stays stock; upstream promotion deferred](docs/findings/2026-06-15-per-source-gather.md)
 - [2026-06-14 — Brain memoize: write-never-lands (kb_put_page FK in /1on1) + write-lands-recall-misses (kb_think ranking) + one-write-path/open_kb/standing-grant cleanup. RESOLVED — all shipped, security-reviewed (#34/#38/#39/#36/#40)](docs/findings/2026-06-14-brain-memoize-failure.md)
 - [2026-06-14 — /model per-thread model switch (provider /v1/models validation, pass-through fallback)](docs/findings/2026-06-14-model-switch-command.md)
 - [2026-06-13 — KB-first enforcement: from prose to teeth (Stop-hook guard design, shadow-first)](docs/findings/2026-06-13-kb-first-enforcement.md)
