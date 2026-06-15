@@ -3,8 +3,29 @@
 **Theme:** brain memoize — the remember / think / explore → persist-to-brain →
 recall-it-later loop.
 
-**Status:** root cause confirmed; both modes **fixed** (2026-06-14). See "Fix
-landed" at the end.
+**Status:** RESOLVED (2026-06-15). All ranked work shipped to `main` + security-
+reviewed; see "Shipped" below. Two items deferred by decision (durability
+DB-backup; per-source ownership RBAC) — captured as design direction, not bugs.
+
+## Shipped (merged to `main`)
+
+| Item | What | PR |
+|---|---|---|
+| Mode A | `kb_put_page` FK in `/1on1` → `ensureSource` before write | v0.23.1 |
+| Mode B/B′ | `kb_think` always cross-checks a distilled `kb_search`, surfaces uncited hits | #38 |
+| open_kb | removed the last markdown-reading KB tool (all KB tools now pure gbrain DB) | #34 |
+| soul | `kb_memoize` is the one write path; dropped `/ingest`/`raw/` steering | #38 |
+| standing grant | per-thread, per-writer, 8h, in-memory approval grant | #36 |
+| grant security | bound grant to `(thread, writer)` — fixes cross-user approval bypass | #40 |
+| #7a | `humanizeBrainError` — actionable brain-write errors | #39 |
+| #7b | soul baseline: a failed brain write is reported, never papered over | #39 |
+| EMBEDDING_DIMENSIONS | 2560→1280 to match zembed-1 | deploy-hermes (Bitbucket) |
+
+**Mode C (`/1on1` scope silo):** resolved as **by-design** — `/1on1` memoize is
+personal (`user-<id>`); team knowledge goes via a shared channel. No code change.
+
+Historical investigation detail (Cases 1–2, live-DB forensics, ruled-out
+hypotheses) is preserved below as the record.
 
 ## Summary
 
@@ -231,8 +252,9 @@ unopened KB. The defect is **retrieval**:
 - Tests: `tests/brain.test.ts` (Mode A: put_page auto-ensures an un-bootstrapped
   user source), `tests/brain-mcp-tools.test.ts` (Mode B: zero-citation →
   fallback; citations present → no fallback). Full suite 987 pass, tsc clean.
-- **Not yet done** (lower priority): actionable FK→agent error mapping;
-  failed-intent brain-write stop-guard; deeper `kb_think` candidate-set ranking.
+- _(This section captured the first two fixes on 2026-06-14; the remaining
+  items — actionable errors, no-silent-success, kb_think ranking — all shipped
+  by 2026-06-15. See the "Shipped" table at the top.)_
 
 ## 2026-06-15 update — deeper investigation (live UAT brain)
 
@@ -333,28 +355,29 @@ the gbrain DB on the PVC (no git backup; the `.sources/` mirror is never
 re-imported). A DB snapshot/export is the future option if git-grade durability
 is ever needed — not blocking.
 
-## Open work (ranked, 2026-06-15)
+## Open work (ranked, 2026-06-15) — ALL SHIPPED
 
-1. **`kb_think` ranking (Mode B′)** — the real remaining recall bug: a rich,
-   embedded, in-scope, well-titled page lost the RRF rank race to neighbor pages
-   and the LLM answered from them with citations, so the zero-citation fallback
-   never fired. gbrain's `gather.ts` already does hybrid (vector+keyword+RRF), so
-   the fix is *relevance*, not a missing arm: **query distillation** (verbose NL
-   → keywords — proven by the jot case where tight `kb_search` hit rank 1),
-   title/slug match boost, larger `gather_limit`. Confirm gathered-vs-not via the
-   recall jsonl to pick retrieval-fix vs synthesis-fix. *Headline.*
-2. **`open_kb` removal** — done (branch `refactor/remove-open-kb`), unpushed.
-3. **`EMBEDDING_DIMENSIONS` 2560 → 1280** — deploy-hermes one-liner; latent bug.
-4. **Standing grant for `put_page`** — designed: implicit on first approve,
-   thread-scoped, 8h TTL, in-memory (restart re-asks). Keeps the gate's
-   deny/scope (authorization); only suppresses the repeat approval *card* for
-   trusted writers. Pairs with #5.
-5. **`/1on1` memoize → `shared` (Mode C)** — stop siloing 1:1-taught knowledge in
-   `user-<id>`. Interplays with #4 (auto-write + global-read for trusted 1:1).
-6. **Soul prompt** — drop the `/ingest`/`raw/` write instructions; point all
-   writes at `kb_memoize`. Stops the agent re-deriving the "needs /ingest" misinfo.
-7. Backlog: actionable FK→agent error mapping; failed-intent brain-write
-   stop-guard.
+The ranked list below is kept for the record; every item resolved (see "Shipped"
+table at top for PR refs).
+
+1. ✅ **`kb_think` ranking (Mode B′)** — shipped (#38). `kb_think` always runs a
+   cross-check `kb_search` on a **distilled** keyword query (verbose NL →
+   keywords, proven by the jot case) and surfaces any strong hit the synthesis
+   didn't cite (`search_fallback`). Implemented slaude-side (the always-search +
+   distill approach catches both gathered-but-ignored and not-gathered, so the
+   recall-jsonl branch decision was moot).
+2. ✅ **`open_kb` removal** — shipped (#34).
+3. ✅ **`EMBEDDING_DIMENSIONS` 2560 → 1280** — shipped (deploy-hermes, Bitbucket).
+4. ✅ **Standing grant for `put_page`** — shipped (#36), then hardened (#40) to be
+   per-(thread, writer) after a security review found the thread-only key let one
+   user's approval cover another user's writes in a trusted multi-user thread.
+5. ✅ **Mode C** — resolved **by-design**: `/1on1` memoize stays personal
+   (`user-<id>`); team knowledge goes via a shared channel. No re-routing.
+6. ✅ **Soul prompt** — shipped (#38).
+7. ✅ **#7a/#7b** — shipped (#39): `humanizeBrainError` actionable errors; soul
+   baseline forbids papering over a failed brain write. (A gateway stop-guard was
+   considered and rejected — `toolResult` events carry no tool name / `isError`,
+   so the prompt layer is the right seam.)
 
 ## Design direction — per-source ownership & owner-routed approval (future)
 
