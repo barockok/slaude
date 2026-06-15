@@ -8,6 +8,9 @@ export interface GateInput {
   lockedUser: string | null;
   channelTrust: ChannelTrust;
   isManager: boolean;
+  /** Stable per-thread key (`channel:threadTs`). Scopes the standing grant —
+   *  one approval in a thread auto-passes later non-destructive writes there. */
+  threadKey?: string | null;
 }
 
 const READ_OPS = new Set([
@@ -80,6 +83,36 @@ export interface GatedCallDeps {
 
 export type GatedResult = { ok: true; result: unknown } | { ok: false; reason: string };
 
+// ── Standing grant ─────────────────────────────────────────────────────────
+// A non-destructive brain write ("approval" tier from WRITE_OPS) cards the human
+// once per thread; after they approve, later such writes in the SAME thread
+// auto-pass for a TTL window. In-memory only — process restart re-asks. Keeps
+// the gate's authorization (deny/scope/manager-tier) fully intact; only the
+// repeat *card* is suppressed for the trusted writer. Destructive and
+// manager-tier ops are never covered. See docs/findings/2026-06-14-brain-memoize-failure.md.
+// Read per-grant (not at import) so tests/ops can tune the window via env.
+// Explicit 0 disables the standing grant (every write cards); unset/invalid → 8h.
+const grantTtlMs = (): number => {
+  const n = Number(process.env.SLAUDE_KB_GRANT_TTL_MS);
+  return Number.isFinite(n) && n >= 0 ? n : 8 * 60 * 60 * 1000;
+};
+interface StandingGrant { by: string; expiresAt: number; }
+const standingGrants = new Map<string, StandingGrant>();
+
+/** WRITE_OPS only — destructive/manager ops always card. */
+const isStandingGrantable = (op: string): boolean => WRITE_OPS.has(op);
+
+/** Test hook: clear all in-memory grants. */
+export function resetStandingGrants(): void { standingGrants.clear(); }
+
+function liveGrant(key: string | null | undefined, now: number): boolean {
+  if (!key) return false;
+  const g = standingGrants.get(key);
+  if (!g) return false;
+  if (g.expiresAt <= now) { standingGrants.delete(key); return false; }
+  return true;
+}
+
 export async function gatedBrainCall(op: string, d: GatedCallDeps): Promise<GatedResult> {
   const tier = classifyBrainOp(op, d.scope, d.gate);
   if (tier === "deny") {
@@ -87,6 +120,12 @@ export async function gatedBrainCall(op: string, d: GatedCallDeps): Promise<Gate
   }
   if (tier === "manager" && d.managers.length === 0) {
     return { ok: false, reason: `kb operation "${op}" requires a manager and none is configured in SOUL.md` };
+  }
+  const now = Date.now();
+  const grantable = tier === "approval" && isStandingGrantable(op);
+  // Standing-grant fast path: a live grant in this thread skips the repeat card.
+  if (grantable && liveGrant(d.gate.threadKey, now)) {
+    return { ok: true, result: await d.call() };
   }
   if (tier === "approval" || tier === "manager") {
     const r = await d.requestApproval({
@@ -97,6 +136,10 @@ export async function gatedBrainCall(op: string, d: GatedCallDeps): Promise<Gate
     if (!r.approved) return { ok: false, reason: `denied by ${r.by}${r.note ? `: ${r.note}` : ""}` };
     if (tier === "manager" && !d.managers.includes(r.by)) {
       return { ok: false, reason: `kb operation "${op}" needs manager approval — approved by ${r.by}, who is not the manager` };
+    }
+    // First approval in this thread opens the standing grant for later writes.
+    if (grantable && d.gate.threadKey) {
+      standingGrants.set(d.gate.threadKey, { by: r.by, expiresAt: now + grantTtlMs() });
     }
   }
   return { ok: true, result: await d.call() };
