@@ -77,12 +77,30 @@ const asJson = (v: unknown): ToolResult => ok(typeof v === "string" ? v : JSON.s
  *  the work behind one approval. */
 export const KB_MEMOIZE_MAX_PAGES = 20;
 
+/**
+ * Map raw brain/Postgres errors to actionable agent-facing text. A leaked
+ * `pages_source_id_fkey` / `$libdir/vector` string is meaningless to the agent
+ * and led it to abandon the brain and silently write files instead (Mode A).
+ * Translate known shapes into "what to do"; pass unknown errors through.
+ * See docs/findings/2026-06-14-brain-memoize-failure.md.
+ */
+export function humanizeBrainError(name: string, e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  if (/pages_source_id_fkey|foreign key constraint|source.*not.*(exist|registered)/i.test(raw)) {
+    return `brain ${name} failed: the target brain source isn't ready yet. This is a transient brain-write error — retry the same ${name} call once. If it still fails, tell the user the write did NOT land and ask the manager; do NOT fall back to writing a file or claim it was saved.`;
+  }
+  if (/\$libdir\/vector|could not access file|extension .*vector/i.test(raw)) {
+    return `brain ${name} failed: the brain's vector extension is unavailable, so embeddings/search can't run. This is an infrastructure fault, not your input — tell the user the brain is degraded; do NOT work around it with files.`;
+  }
+  return `brain ${name} failed: ${raw}`;
+}
+
 async function runRead(name: string, params: Record<string, unknown>, d: BrainToolDeps): Promise<ToolResult> {
   try {
     const call = d.call ?? brainCall;
     return asJson(await call(name, params, d.scope()));
   } catch (e) {
-    return err(`brain ${name} failed: ${e instanceof Error ? e.message : String(e)}`);
+    return err(humanizeBrainError(name, e));
   }
 }
 
@@ -99,7 +117,7 @@ async function runGated(name: string, params: Record<string, unknown>, summary: 
     });
     return r.ok ? asJson(r.result) : err(r.reason);
   } catch (e) {
-    return err(`brain ${name} failed: ${e instanceof Error ? e.message : String(e)}`);
+    return err(humanizeBrainError(name, e));
   }
 }
 
@@ -167,7 +185,7 @@ export const brainHandlers = {
       }
       return asJson(result);
     } catch (e) {
-      return err(`brain think failed: ${e instanceof Error ? e.message : String(e)}`);
+      return err(humanizeBrainError("think", e));
     }
   },
   kb_search: (p: { query: string; limit?: number }, d: BrainToolDeps) =>
@@ -217,7 +235,7 @@ export const brainHandlers = {
       });
       return r.ok ? asJson({ written: pages.map((pg) => pg.slug), results: r.result }) : err(r.reason);
     } catch (e) {
-      return err(`brain put_page failed: ${e instanceof Error ? e.message : String(e)}`);
+      return err(humanizeBrainError("put_page", e));
     }
   },
   kb_delete_page: (p: { slug: string; reason: string }, d: BrainToolDeps) =>

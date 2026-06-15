@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { brainHandlers, type BrainToolDeps } from "../src/knowledge/mcp-tools";
+import { brainHandlers, humanizeBrainError, type BrainToolDeps } from "../src/knowledge/mcp-tools";
 import type { BrainScope } from "../src/knowledge/scope";
 
 const scope: BrainScope = { clientId: "U1", sourceId: "shared", allowedSources: ["shared"] };
@@ -102,6 +102,28 @@ describe("brainHandlers", () => {
     const r = await brainHandlers.kb_search({ query: "x" }, d);
     expect(r.isError).toBe(true);
     expect(r.content[0]!.text).toContain("db on fire");
+  });
+
+  // #7a: raw FK / vector errors become actionable, never leaked verbatim.
+  test("FK error maps to actionable retry-not-file guidance", async () => {
+    const d = deps({ call: async () => { throw new Error('insert ... violates foreign key constraint "pages_source_id_fkey"'); } });
+    const r = await brainHandlers.kb_memoize({ pages: [{ slug: "a/b", content: "c", summary: "s" }] }, d);
+    expect(r.isError).toBe(true);
+    const t = r.content[0]!.text;
+    expect(t).toMatch(/retry/i);
+    expect(t).toMatch(/do NOT fall back to writing a file/i);
+    expect(t).not.toMatch(/pages_source_id_fkey/); // raw shape not leaked
+  });
+
+  test("vector-extension error maps to infra-fault guidance", async () => {
+    const d = deps({ call: async () => { throw new Error('could not access file "$libdir/vector": No such file or directory'); } });
+    const r = await brainHandlers.kb_search({ query: "x" }, d);
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/vector extension is unavailable|brain is degraded/i);
+  });
+
+  test("unknown errors pass through unchanged", () => {
+    expect(humanizeBrainError("search", new Error("db on fire"))).toBe("brain search failed: db on fire");
   });
 
   // Mode B: a zero-citation think result must fall back to keyword search so a
