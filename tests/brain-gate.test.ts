@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { classifyBrainOp, gatedBrainCall, type GateInput } from "../src/knowledge/gated-dispatch";
+import { describe, expect, test, beforeEach } from "bun:test";
+import { classifyBrainOp, gatedBrainCall, resetStandingGrants, type GateInput } from "../src/knowledge/gated-dispatch";
 import { resolveBrainScope } from "../src/knowledge/scope";
 
 const gate = (over: Partial<GateInput> = {}): GateInput => ({
@@ -127,5 +127,84 @@ describe("gatedBrainCall", () => {
     });
     expect(r.ok).toBe(false);
     expect(touched).toBe(0);
+  });
+});
+
+describe("gatedBrainCall — standing grant (per-thread, implicit on first approve)", () => {
+  beforeEach(() => resetStandingGrants());
+  const T = "C1:1781000000.000";
+  const callWith = (gateOver: Partial<GateInput>, approve: () => void) =>
+    gatedBrainCall("put_page", {
+      scope: scopeFor(gate(gateOver)), gate: gate(gateOver), managers: ["UMGR"],
+      requestApproval: async () => { approve(); return { approved: true, by: "UMGR" }; },
+      call: async () => "written", describe: "write",
+    });
+
+  test("first write cards; second write in same thread auto-passes", async () => {
+    let cards = 0;
+    const r1 = await callWith({ threadKey: T }, () => cards++);
+    const r2 = await callWith({ threadKey: T }, () => cards++);
+    expect(r1).toEqual({ ok: true, result: "written" });
+    expect(r2).toEqual({ ok: true, result: "written" });
+    expect(cards).toBe(1); // only the first asked
+  });
+
+  test("grant is scoped to the thread — a different thread still cards", async () => {
+    let cards = 0;
+    await callWith({ threadKey: T }, () => cards++);
+    await callWith({ threadKey: "C1:9999999999.999" }, () => cards++);
+    expect(cards).toBe(2);
+  });
+
+  test("no threadKey → no grant, every write cards", async () => {
+    let cards = 0;
+    await callWith({ threadKey: null }, () => cards++);
+    await callWith({ threadKey: null }, () => cards++);
+    expect(cards).toBe(2);
+  });
+
+  test("a denied first write opens no grant", async () => {
+    let cards = 0;
+    const deny = () =>
+      gatedBrainCall("put_page", {
+        scope: scopeFor(gate({ threadKey: T })), gate: gate({ threadKey: T }), managers: ["UMGR"],
+        requestApproval: async () => { cards++; return { approved: false, by: "UMGR" }; },
+        call: async () => "written", describe: "write",
+      });
+    const r1 = await deny();
+    expect(r1.ok).toBe(false);
+    const r2 = await callWith({ threadKey: T }, () => cards++);
+    expect(r2.ok).toBe(true);
+    expect(cards).toBe(2); // denial didn't grant; second still asked
+  });
+
+  test("destructive ops are never covered by the grant", async () => {
+    // open a grant via put_page
+    await callWith({ threadKey: T }, () => {});
+    let deleteCards = 0;
+    const r = await gatedBrainCall("delete_page", {
+      scope: scopeFor(gate({ threadKey: T })), gate: gate({ threadKey: T }), managers: ["UMGR"],
+      requestApproval: async () => { deleteCards++; return { approved: true, by: "UMGR" }; },
+      call: async () => "deleted", describe: "delete",
+    });
+    expect(r.ok).toBe(true);
+    expect(deleteCards).toBe(1); // delete still carded despite the put_page grant
+  });
+
+  test("expired grant re-cards", async () => {
+    const prev = process.env.SLAUDE_KB_GRANT_TTL_MS;
+    process.env.SLAUDE_KB_GRANT_TTL_MS = "0"; // every grant immediately stale
+    try {
+      let cards = 0;
+      // module read GRANT_TTL_MS at import; force via a fresh import is overkill —
+      // instead rely on expiresAt = now + 0 <= now next tick. Use a tiny sleep.
+      await callWith({ threadKey: T }, () => cards++);
+      await new Promise((res) => setTimeout(res, 2));
+      await callWith({ threadKey: T }, () => cards++);
+      expect(cards).toBe(2);
+    } finally {
+      if (prev === undefined) delete process.env.SLAUDE_KB_GRANT_TTL_MS;
+      else process.env.SLAUDE_KB_GRANT_TTL_MS = prev;
+    }
   });
 });
