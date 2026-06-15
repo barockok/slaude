@@ -297,6 +297,65 @@ it never reconciles/wipes memoized pages, and it reads `wiki/`, never the
   inert; needs gbrain `write_through:false` (SHA-pinned dep → fork/patch).
 - `EMBEDDING_DIMENSIONS` 2560 → 1280 in deploy-hermes values.
 
+## Decisions & current model (2026-06-15)
+
+After tracing the write/read paths end-to-end, the design intent is settled:
+
+**One opinionated write path: `kb_memoize → gbrain DB.`**
+- `kb_memoize` (→ `put_page`) upserts the gbrain DB directly (chunk + embed),
+  searchable immediately. The `.sources/*.md` write-through is an **inert
+  mirror** — never re-read by sync (sync reads `wiki/`), not a backup.
+- The pre-gbrain writable-KB path (`slaude_knowledge` + `/ingest` +
+  `raw/→wiki→git`) is **redundant** with this. Three ways to "remember"
+  (memoize / `/ingest` / drop a raw file) is the confusion that misled both the
+  agent and the operator.
+
+**`slaude_knowledge` / `/ingest` — kept in code, left dormant.** Decided NOT to
+rip them out for now. Instead: the operator configures **all** KBs as read-only
+(`knowledge[]`); nothing is set under `slaude_knowledge`. With no writable KB
+configured, `kb_memoize → gbrain` is the effective sole write path — the "one
+opinionated way" achieved operationally, zero code surgery. (Full removal —
+`/ingest` command, `ingest.ts`, `trigger_ingest`, `ingest-jobs`, the config key
+— remains an option later if we want to delete the dead path outright.)
+
+**`/ingest` is NOT a step in memoize.** It's a separate, manager-gated, git-
+backed curation pipeline for a *writable* KB. Memoize already indexed to the DB;
+"ready for `/ingest`" after a memoize (what Maria said) is wrong. With
+`slaude_knowledge` dormant, `/ingest` has no target and shouldn't be referenced.
+
+**Storage model (confirmed):** gbrain DB is the single retrieval source. Boot/
+nightly index read-only seed `wiki/` dirs → `kb-*` sources; runtime memoize →
+`agent`/`shared`/`user-*` sources; all recall reads the DB. No KB tool reads
+markdown at runtime (after `open_kb` removal).
+
+**Durability:** PVC-only accepted. Memoized `shared`/`user-*` pages live only in
+the gbrain DB on the PVC (no git backup; the `.sources/` mirror is never
+re-imported). A DB snapshot/export is the future option if git-grade durability
+is ever needed — not blocking.
+
+## Open work (ranked, 2026-06-15)
+
+1. **`kb_think` ranking (Mode B′)** — the real remaining recall bug: a rich,
+   embedded, in-scope, well-titled page lost the RRF rank race to neighbor pages
+   and the LLM answered from them with citations, so the zero-citation fallback
+   never fired. gbrain's `gather.ts` already does hybrid (vector+keyword+RRF), so
+   the fix is *relevance*, not a missing arm: **query distillation** (verbose NL
+   → keywords — proven by the jot case where tight `kb_search` hit rank 1),
+   title/slug match boost, larger `gather_limit`. Confirm gathered-vs-not via the
+   recall jsonl to pick retrieval-fix vs synthesis-fix. *Headline.*
+2. **`open_kb` removal** — done (branch `refactor/remove-open-kb`), unpushed.
+3. **`EMBEDDING_DIMENSIONS` 2560 → 1280** — deploy-hermes one-liner; latent bug.
+4. **Standing grant for `put_page`** — designed: implicit on first approve,
+   thread-scoped, 8h TTL, in-memory (restart re-asks). Keeps the gate's
+   deny/scope (authorization); only suppresses the repeat approval *card* for
+   trusted writers. Pairs with #5.
+5. **`/1on1` memoize → `shared` (Mode C)** — stop siloing 1:1-taught knowledge in
+   `user-<id>`. Interplays with #4 (auto-write + global-read for trusted 1:1).
+6. **Soul prompt** — drop the `/ingest`/`raw/` write instructions; point all
+   writes at `kb_memoize`. Stops the agent re-deriving the "needs /ingest" misinfo.
+7. Backlog: actionable FK→agent error mapping; failed-intent brain-write
+   stop-guard.
+
 ## Artifacts
 
 Session JSONL retained locally (gitignored, not committed):
