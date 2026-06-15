@@ -156,6 +156,18 @@ describe("gatedBrainCall — standing grant (per-thread, implicit on first appro
     expect(cards).toBe(2);
   });
 
+  test("grant is bound to the writer — a different user in the same thread still cards", async () => {
+    let cards = 0;
+    // User U1 gets approved → opens a grant for (T, U1) only.
+    await callWith({ threadKey: T, userId: "U1" }, () => cards++);
+    // User U2 writes in the SAME thread → must NOT ride U1's grant.
+    await callWith({ threadKey: T, userId: "U2" }, () => cards++);
+    expect(cards).toBe(2);
+    // U1 again in the same thread → still covered, no extra card.
+    await callWith({ threadKey: T, userId: "U1" }, () => cards++);
+    expect(cards).toBe(2);
+  });
+
   test("no threadKey → no grant, every write cards", async () => {
     let cards = 0;
     await callWith({ threadKey: null }, () => cards++);

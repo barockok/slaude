@@ -102,10 +102,22 @@ const standingGrants = new Map<string, StandingGrant>();
 /** WRITE_OPS only — destructive/manager ops always card. */
 const isStandingGrantable = (op: string): boolean => WRITE_OPS.has(op);
 
+/**
+ * Grant key binds the grant to BOTH the thread AND the writer. A grant opened
+ * by one user's approval must NOT auto-pass a different user's writes in the
+ * same thread (trusted channels are multi-user). Null when either part is
+ * missing — no key means no grant (always card). userId === null is an agent
+ * turn, which is "auto" tier and never reaches the grant path anyway.
+ */
+function grantKey(g: GateInput): string | null {
+  if (!g.threadKey || !g.userId) return null;
+  return `${g.threadKey} ${g.userId}`;
+}
+
 /** Test hook: clear all in-memory grants. */
 export function resetStandingGrants(): void { standingGrants.clear(); }
 
-function liveGrant(key: string | null | undefined, now: number): boolean {
+function liveGrant(key: string | null, now: number): boolean {
   if (!key) return false;
   const g = standingGrants.get(key);
   if (!g) return false;
@@ -123,8 +135,10 @@ export async function gatedBrainCall(op: string, d: GatedCallDeps): Promise<Gate
   }
   const now = Date.now();
   const grantable = tier === "approval" && isStandingGrantable(op);
-  // Standing-grant fast path: a live grant in this thread skips the repeat card.
-  if (grantable && liveGrant(d.gate.threadKey, now)) {
+  const gkey = grantKey(d.gate);
+  // Standing-grant fast path: a live grant for THIS writer in THIS thread skips
+  // the repeat card. Per-writer key — one user's approval never covers another.
+  if (grantable && liveGrant(gkey, now)) {
     return { ok: true, result: await d.call() };
   }
   if (tier === "approval" || tier === "manager") {
@@ -137,9 +151,10 @@ export async function gatedBrainCall(op: string, d: GatedCallDeps): Promise<Gate
     if (tier === "manager" && !d.managers.includes(r.by)) {
       return { ok: false, reason: `kb operation "${op}" needs manager approval — approved by ${r.by}, who is not the manager` };
     }
-    // First approval in this thread opens the standing grant for later writes.
-    if (grantable && d.gate.threadKey) {
-      standingGrants.set(d.gate.threadKey, { by: r.by, expiresAt: now + grantTtlMs() });
+    // First approval opens a standing grant scoped to (thread, this writer) —
+    // not the approver, and not the whole thread — for later writes by them.
+    if (grantable && gkey) {
+      standingGrants.set(gkey, { by: r.by, expiresAt: now + grantTtlMs() });
     }
   }
   return { ok: true, result: await d.call() };
