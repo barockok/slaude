@@ -36,7 +36,7 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { loadExternalMcp, privateOverrides } from "./external-mcp";
 import { randomBytes } from "node:crypto";
 import { ensureInitiatorConfigDir, agentConfigDir } from "../../agent/oauth-home";
-import { writeEntry, type OAuthServerConfig, type OAuthTokens } from "../../agent/mcp-oauth/store";
+import { writeEntry, removeEntry, type OAuthServerConfig, type OAuthTokens } from "../../agent/mcp-oauth/store";
 import { discover } from "../../agent/mcp-oauth/discovery";
 import { beginConnect, prepareConnect } from "../../agent/mcp-oauth/client";
 import { parseOAuthCallback } from "../../agent/mcp-oauth/callback";
@@ -792,6 +792,31 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             return;
           }
           await connectServer({ sessionId: session.id, channelId, threadTs, userId, serverName: name, serverCfg: httpServers[name], scope });
+          return;
+        }
+
+        if (slash.action === "disconnect") {
+          const name = slash.server;
+          if (!name || !httpServers[name]) {
+            await reply(`:warning: unknown HTTP MCP server \`${name ?? ""}\`. Run \`/mcp\` to list servers.`);
+            return;
+          }
+          // Same scope gate as connect already ran above: initiator removes from
+          // their own config home, global (manager) removes the agent's shared
+          // identity. Removing the stored grant means no token at next session
+          // boot — the agent reconnects only if re-connected.
+          const configDir = scope === "global" ? agentConfigDir() : ensureInitiatorConfigDir(userId);
+          // Reconstruct the SAME OAuthServerConfig shape connectServer wrote with
+          // ({type:"http", url, headers}) — httpExternalServers drops `type`, so
+          // passing its bare {url,headers} would compute a different oauthKey and
+          // never match the stored grant.
+          const cfg: OAuthServerConfig = { type: "http", url: httpServers[name]!.url, headers: httpServers[name]!.headers };
+          const removed = removeEntry(configDir, name, cfg);
+          await reply(
+            removed
+              ? `:white_check_mark: Disconnected \`${name}\`${scope === "global" ? " (agent's shared identity)" : ""} — credential removed. Takes effect on the next session boot.`
+              : `:information_source: \`${name}\` wasn't connected${scope === "global" ? " (agent's shared identity)" : " for you"} — nothing to disconnect.`,
+          );
           return;
         }
 

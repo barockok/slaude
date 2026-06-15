@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { oauthKey, writeEntry } from "../../../src/agent/mcp-oauth/store";
+import { oauthKey, writeEntry, removeEntry } from "../../../src/agent/mcp-oauth/store";
 
 describe("mcp-oauth store", () => {
   it("oauthKey reproduces the pinned golden (canary on a2A drift)", () => {
@@ -44,5 +44,34 @@ describe("mcp-oauth store", () => {
     const c = JSON.parse(readFileSync(p, "utf8"));
     const key = oauthKey("s", { type: "http", url: "https://h/" });
     expect(c.mcpOAuth[key].expiresAt).toBe(3600 * 1000);
+  });
+
+  const cfg = { type: "http" as const, url: "https://mcp.example.com/sse", headers: {} };
+
+  it("removeEntry deletes only the target key, preserves other entries + top-level keys", () => {
+    writeFileSync(join(dir, ".credentials.json"), JSON.stringify({ claudeAiOauth: { keep: 1 } }));
+    writeEntry(dir, "workbench", cfg, { clientId: "c", accessToken: "a", refreshToken: "r", expiresIn: 3600 });
+    writeEntry(dir, "other", { type: "http", url: "https://other/", headers: {} }, { clientId: "c2", accessToken: "a2", refreshToken: "r2", expiresIn: 3600 });
+    const removed = removeEntry(dir, "workbench", cfg);
+    expect(removed).toBe(true);
+    const c = JSON.parse(readFileSync(join(dir, ".credentials.json"), "utf8"));
+    expect(c.mcpOAuth["workbench|c17ea65c6b709142"]).toBeUndefined();
+    expect(c.mcpOAuth[oauthKey("other", { type: "http", url: "https://other/" })]).toBeDefined();
+    expect(c.claudeAiOauth).toEqual({ keep: 1 });
+  });
+
+  it("removeEntry returns false when no credential file", () => {
+    expect(removeEntry(dir, "workbench", cfg)).toBe(false);
+  });
+
+  it("removeEntry returns false when the key isn't present", () => {
+    writeFileSync(join(dir, ".credentials.json"), JSON.stringify({ mcpOAuth: {} }));
+    expect(removeEntry(dir, "workbench", cfg)).toBe(false);
+  });
+
+  it("removeEntry keeps file mode 0600", () => {
+    writeEntry(dir, "workbench", cfg, { clientId: "c", accessToken: "a", refreshToken: "r", expiresIn: 3600 });
+    removeEntry(dir, "workbench", cfg);
+    expect(statSync(join(dir, ".credentials.json")).mode & 0o777).toBe(0o600);
   });
 });
