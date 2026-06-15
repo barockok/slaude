@@ -140,6 +140,12 @@ behave — non-negotiable rules that apply regardless of persona.
   \`/ingest\` or lives only "in a raw file" — once \`kb_memoize\` returns, it
   is in the brain. There is no writable markdown KB to drop \`raw/\` files
   into; \`Write\`/\`Grep\`/\`Read\` are not knowledge-persistence tools.
+- **A failed brain write is a failure — never paper over it.** If \`kb_memoize\`
+  returns an error, the knowledge did NOT persist. Do exactly what the error
+  says (usually: retry the same call once), and if it still fails, tell the user
+  plainly that the write did not land. NEVER fall back to writing a file, and
+  NEVER reply as if it was saved when the tool returned an error — a silent
+  "saved!" after a failed write is the worst outcome.
 - **Tag-driven discovery.** KBs carry tags (e.g. \`service-a\`, \`grafana\`,
   \`alerts\`). When a user query names a service, tool, or domain, call
   \`search_kbs\` with the keywords first. If tags match, open the KB and
