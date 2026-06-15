@@ -173,6 +173,12 @@ describe("loadApproverEntries + selectApprovers", () => {
     expect(block).not.toMatch(/dropping new `raw\//);
   });
 
+  test("baseline forbids papering over a failed brain write", () => {
+    const block = soulSystemBlock();
+    expect(block).toMatch(/failed brain write is a failure/i);
+    expect(block).toMatch(/did not land/i);
+  });
+
   test("line without colon skipped", () => {
     writeFileSync(
       paths.soul,
