@@ -162,11 +162,15 @@ describe("loadApproverEntries + selectApprovers", () => {
     expect(out).toEqual(["U0XXXXXXXXX"]);
   });
 
-  test("baseline mentions raw/ during normal sessions and wiki/ during ingest", () => {
+  test("baseline names kb_memoize as the one write path, not the raw//ingest flow", () => {
     const block = soulSystemBlock();
-    expect(block).toMatch(/raw\//);
-    expect(block).toMatch(/wiki\//);
-    expect(block).toMatch(/\/ingest/i);
+    expect(block).toMatch(/kb_memoize/);
+    expect(block).toMatch(/ONE write path/);
+    // the pre-gbrain raw/→/ingest write path is dormant — the baseline must not
+    // STEER the agent to it (the corrective text may still name it to forbid it).
+    expect(block).not.toMatch(/owned by the ingest workflow/);
+    expect(block).not.toMatch(/To synthesise/);
+    expect(block).not.toMatch(/dropping new `raw\//);
   });
 
   test("line without colon skipped", () => {

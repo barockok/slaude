@@ -103,28 +103,67 @@ async function runGated(name: string, params: Record<string, unknown>, summary: 
   }
 }
 
+// Question words / stopwords stripped before the kb_think cross-check search.
+// A verbose NL question ("what's our company wide OKR?") dilutes both the vector
+// and keyword arms; the distilled keyword form ("company wide okr") ranks the
+// canonical page far higher (jot-deployment case: full-question kb_think missed,
+// tight kb_search hit rank 1). See docs/findings/2026-06-14-brain-memoize-failure.md.
+const THINK_STOPWORDS = new Set([
+  "a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "do", "does",
+  "did", "what", "whats", "which", "who", "whom", "whose", "when", "where", "why",
+  "how", "our", "your", "my", "we", "you", "i", "me", "us", "it", "its", "of", "to",
+  "in", "on", "for", "about", "with", "and", "or", "tell", "know", "have", "has",
+  "give", "show", "find", "any", "anything", "current", "currently", "please",
+]);
+
+/** Distill a verbose NL question to its content keywords for the cross-check
+ *  search. Falls back to the original question if distillation empties it. */
+export function distillQuery(question: string): string {
+  const kept = question
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= 2 && !THINK_STOPWORDS.has(t));
+  return kept.length > 0 ? kept.join(" ") : question;
+}
+
+const citationSlugs = (result: unknown): Set<string> => {
+  const cites = (result as { citations?: Array<{ page_slug?: string }> } | null)?.citations;
+  const out = new Set<string>();
+  if (Array.isArray(cites)) for (const c of cites) if (c?.page_slug) out.add(c.page_slug);
+  return out;
+};
+
+const hitSlug = (h: unknown): string | undefined =>
+  (h as { slug?: string; page_slug?: string })?.slug ?? (h as { page_slug?: string })?.page_slug;
+
 export const brainHandlers = {
   kb_think: async (p: { question: string }, d: BrainToolDeps): Promise<ToolResult> => {
     try {
       // SDK-routed synthesis (subscription auth) — not the raw think op.
       const think = d.think ?? brainThink;
       const result = await think(p.question, d.scope());
-      // Mode-B guard: a zero-citation synthesis means the gather missed the
-      // page, not that it's absent — `kb_think` over-reports "not captured"
-      // where a keyword `kb_search` finds the page at rank 1. Fall back to
-      // search so present knowledge is never declared missing.
+      // Mode B / B′ guard: kb_think's hybrid gather can rank a present,
+      // well-titled page below noisier neighbors and then synthesize a
+      // confident answer that cites the wrong pages (or none). Always
+      // cross-check with a distilled keyword search and surface any strong hit
+      // the synthesis did NOT cite — so a present page is never silently
+      // dropped, whether the answer was empty or just off-target.
       // See docs/findings/2026-06-14-brain-memoize-failure.md.
-      const citations = (result as { citations?: unknown[] } | null)?.citations;
-      if (Array.isArray(citations) && citations.length === 0) {
-        try {
-          const call = d.call ?? brainCall;
-          const hits = await call("search", { query: p.question, limit: 5 }, d.scope());
-          if (Array.isArray(hits) && hits.length > 0) {
-            return asJson({ ...(result as object), search_fallback: hits });
+      try {
+        const call = d.call ?? brainCall;
+        const hits = await call("search", { query: distillQuery(p.question), limit: 5 }, d.scope());
+        if (Array.isArray(hits) && hits.length > 0) {
+          const cited = citationSlugs(result);
+          const missed = hits.filter((h) => {
+            const s = hitSlug(h);
+            return s !== undefined && !cited.has(s);
+          });
+          if (missed.length > 0) {
+            return asJson({ ...(result as object), search_fallback: missed });
           }
-        } catch {
-          // fallback is best-effort; fall through to the raw think result
         }
+      } catch {
+        // cross-check is best-effort; fall through to the raw think result
       }
       return asJson(result);
     } catch (e) {
