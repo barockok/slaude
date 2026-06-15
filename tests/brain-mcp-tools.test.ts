@@ -138,17 +138,17 @@ describe("brainHandlers", () => {
   // The cross-check search must surface the uncited strong hit.
   test("kb_think surfaces a strong hit the synthesis cited around (B′)", async () => {
     const d = deps({
-      think: async () => ({ answer: "BU OKRs are…", citations: [{ page_slug: "acore/bu-overview" }], pagesGathered: 40 }),
+      think: async () => ({ answer: "neighbor info…", citations: [{ page_slug: "team/sub-overview" }], pagesGathered: 40 }),
       call: async (name) =>
         name === "search"
-          ? [{ slug: "notes/amartha-2026-company-okr", score: 1.1 }, { slug: "acore/bu-overview", score: 0.9 }]
+          ? [{ slug: "notes/canonical-page", score: 1.1 }, { slug: "team/sub-overview", score: 0.9 }]
           : { echoed: name },
     });
-    const r = await brainHandlers.kb_think({ question: "what's our company wide OKR?" }, d);
+    const r = await brainHandlers.kb_think({ question: "what is the canonical page?" }, d);
     expect(r.isError).toBeUndefined();
     const out = JSON.parse(r.content[0]!.text);
     // the cited page is filtered out; the uncited canonical page is surfaced
-    expect(out.search_fallback.map((h: { slug: string }) => h.slug)).toEqual(["notes/amartha-2026-company-okr"]);
+    expect(out.search_fallback.map((h: { slug: string }) => h.slug)).toEqual(["notes/canonical-page"]);
   });
 
   test("kb_think cross-check uses a distilled keyword query", async () => {
@@ -160,8 +160,8 @@ describe("brainHandlers", () => {
         return { echoed: name };
       },
     });
-    await brainHandlers.kb_think({ question: "what's our company wide OKR?" }, d);
-    expect(sentQuery).toBe("company wide okr");
+    await brainHandlers.kb_think({ question: "what is our deploy policy?" }, d);
+    expect(sentQuery).toBe("deploy policy");
   });
 
   test("kb_think returns the raw result when the fallback search is empty", async () => {
