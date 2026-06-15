@@ -1,8 +1,6 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { loadKbs } from "./loader";
 import { brainCall, brainEnabled } from "./brain";
 import { brainThink } from "./brain-think";
@@ -43,15 +41,6 @@ export const kbHandlers = {
     const kbs = loadKbs();
     if (kbs.length === 0) return ok("(no knowledge bases installed)");
     return ok(JSON.stringify(kbs, null, 2));
-  },
-
-  async open_kb({ label }: { label: string }): Promise<ToolResult> {
-    const kbs = loadKbs();
-    const kb = kbs.find((k) => k.label === label);
-    if (!kb) return err(`unknown knowledge base "${label}". Use list_kbs to see available labels.`);
-    const indexPath = join(kb.path, kb.index_file);
-    if (!existsSync(indexPath)) return err(`index file ${kb.index_file} not found in "${label}"`);
-    return ok(readFileSync(indexPath, "utf8"));
   },
 
   async search_kbs({ query, limit }: { query: string; limit?: number }): Promise<ToolResult> {
@@ -276,12 +265,6 @@ export function createKbMcp(deps?: BrainToolDeps): McpSdkServerConfigWithInstanc
         "List installed knowledge bases. Returns JSON array with label, description, path, and index_file for each KB.",
         {},
         kbHandlers.list_kbs,
-      ),
-      tool(
-        "open_kb",
-        "Open a knowledge base by label. Returns the full contents of its index file (README.md, index.md, or first .md). Use this to discover the wiki's structure, then navigate with Read/Grep/Glob.",
-        { label: z.string().describe("Knowledge base label as listed by list_kbs.") },
-        kbHandlers.open_kb,
       ),
       tool(
         "search_kbs",

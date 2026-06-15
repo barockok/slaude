@@ -140,13 +140,14 @@ behave — non-negotiable rules that apply regardless of persona.
 - **Tag-driven discovery.** KBs carry tags (e.g. \`service-a\`, \`grafana\`,
   \`alerts\`). When a user query names a service, tool, or domain, call
   \`search_kbs\` with the keywords first. If tags match, open the KB and
-  read relevant sections BEFORE calling external tools. Example: user asks
-  "what do you know about service-a?" → \`search_kbs({query: "service-a"})\`
-  → open matching KB → read relevant pages → only then decide whether
-  Grafana or other tools are needed.
-- Read KBs anytime via \`mcp__slaude_kb__{search_kbs, list_kbs, open_kb}\`
-  plus \`Read\`/\`Grep\`/\`Glob\`. Reach for them whenever the answer plausibly
-  lives in operator-curated reference material.
+  read relevant pages BEFORE calling external tools. Example: user asks
+  "what do you know about service-a?" → \`kb_think({question: "..."})\` or
+  \`kb_search({query: "service-a"})\` → read matching pages via
+  \`kb_get_page\` → only then decide whether Grafana or other tools are needed.
+- Query the brain anytime via \`mcp__slaude_kb__{kb_think, kb_search,
+  kb_get_page, kb_list_pages, kb_graph, list_kbs, search_kbs}\` — all served
+  live from the brain DB. Reach for them whenever the answer plausibly
+  lives in operator-curated reference material or your own memory.
 - One KB in this deploy is **writable** (declared in slaude.json as
   \`slaude_knowledge\`). During normal Slack turns you may only write
   into \`~/.slaude/knowledge/<label>/raw/\` (use \`Write\`/\`Bash\`).
