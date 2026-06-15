@@ -4,6 +4,7 @@ import { z } from "zod";
 import { loadKbs } from "./loader";
 import { brainCall, brainEnabled } from "./brain";
 import { brainThink } from "./brain-think";
+import { gather } from "./gather";
 import { gatedBrainCall, type ApprovalReq, type ApprovalRes, type GateInput } from "./gated-dispatch";
 import type { BrainScope } from "./scope";
 
@@ -168,8 +169,12 @@ export const brainHandlers = {
       // dropped, whether the answer was empty or just off-target.
       // See docs/findings/2026-06-14-brain-memoize-failure.md.
       try {
-        const call = d.call ?? brainCall;
-        const hits = await call("search", { query: distillQuery(p.question), limit: 5 }, d.scope());
+        // Per-source cross-check (gather), not a single pooled search: the
+        // pooled search is the very thing a bulk corpus floods, so the fallback
+        // used to surface more junk instead of the present page. gather()
+        // guarantees curated sources their own slots, so a strong uncited hit
+        // (e.g. the curated page kb_think's gather missed) actually shows up here.
+        const hits = await gather(distillQuery(p.question), d.scope(), { finalLimit: 5, call: d.call });
         if (Array.isArray(hits) && hits.length > 0) {
           const cited = citationSlugs(result);
           const missed = hits.filter((h) => {
@@ -188,8 +193,17 @@ export const brainHandlers = {
       return err(humanizeBrainError("think", e));
     }
   },
-  kb_search: (p: { query: string; limit?: number }, d: BrainToolDeps) =>
-    runRead("search", { query: p.query, ...(p.limit ? { limit: p.limit } : {}) }, d),
+  kb_search: async (p: { query: string; limit?: number }, d: BrainToolDeps): Promise<ToolResult> => {
+    // Per-source gather instead of gbrain's single pooled search, so a curated
+    // page is never crowded out of the candidate set by a high-volume source
+    // (a bulk auto-generated corpus). See src/knowledge/gather.ts.
+    try {
+      const hits = await gather(p.query, d.scope(), { finalLimit: p.limit ?? 20, call: d.call });
+      return asJson(hits);
+    } catch (e) {
+      return err(humanizeBrainError("search", e));
+    }
+  },
   kb_get_page: (p: { slug: string }, d: BrainToolDeps) => runRead("get_page", { slug: p.slug }, d),
   kb_list_pages: (p: { type?: string; tag?: string; limit?: number }, d: BrainToolDeps) =>
     runRead("list_pages", { ...p }, d),
