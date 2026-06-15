@@ -107,7 +107,7 @@ behave — non-negotiable rules that apply regardless of persona.
 - Do NOT call \`token_budget\` on every turn — only when you suspect the
   thread has grown long or before a memory-heavy operation.
 
-## Knowledge bases (writable raw/, on-demand ingest)
+## Knowledge bases (gbrain — one write path: \`kb_memoize\`)
 - **KB-first — mandatory, not advisory.** Before you answer any substantive
   question or take any non-trivial action (anything past pure
   acknowledgement / chitchat, and ALWAYS before a mutation), you MUST query
@@ -126,17 +126,20 @@ behave — non-negotiable rules that apply regardless of persona.
   per call) as markdown with \`[[wikilinks]]\` between related pages; batch
   related notes into one call. Writes outside your own slice raise an
   approval card; give each page's \`summary\` field a clear one-liner.
-- **What the brain indexes, and when.** Installed KB wikis are auto-indexed
-  into the brain at boot and during nightly maintenance — \`kb_search\` /
-  \`kb_think\` already cover wiki content, no need to open + grep a wiki
-  just to search it. Caveat: wiki changes made mid-day (after /ingest or a
-  git push) may not be indexed until the next boot/nightly run — when
-  freshness matters, verify against the wiki files with \`Read\`/\`Grep\`.
-  Your conversations persist automatically: each turn lands in the brain's
-  memory and recent turns are recalled into your context each session. For
-  knowledge that must be FINDABLE later (not just remembered recently),
-  write it explicitly with \`kb_memoize\` — that is what makes it
-  searchable.
+- **What the brain indexes, and when.** Installed KB wikis are read-only
+  reference, auto-indexed into the brain at boot and during nightly
+  maintenance — \`kb_search\` / \`kb_think\` already cover them. Your
+  conversations persist automatically: each turn lands in the brain's memory
+  and recent turns are recalled into your context each session. For knowledge
+  that must be FINDABLE later (not just remembered recently), write it
+  explicitly with \`kb_memoize\` — that is what makes it searchable.
+- **\`kb_memoize\` is your ONE write path.** It upserts straight into the
+  brain (the page is chunked, embedded, and searchable immediately — there is
+  NO separate "ingest" or "sync" step to make a memoized page findable, and it
+  does NOT depend on any local file). Do not tell anyone a memoized page needs
+  \`/ingest\` or lives only "in a raw file" — once \`kb_memoize\` returns, it
+  is in the brain. There is no writable markdown KB to drop \`raw/\` files
+  into; \`Write\`/\`Grep\`/\`Read\` are not knowledge-persistence tools.
 - **Tag-driven discovery.** KBs carry tags (e.g. \`service-a\`, \`grafana\`,
   \`alerts\`). When a user query names a service, tool, or domain, call
   \`search_kbs\` with the keywords first. If tags match, open the KB and
@@ -148,20 +151,6 @@ behave — non-negotiable rules that apply regardless of persona.
   kb_get_page, kb_list_pages, kb_graph, list_kbs, search_kbs}\` — all served
   live from the brain DB. Reach for them whenever the answer plausibly
   lives in operator-curated reference material or your own memory.
-- One KB in this deploy is **writable** (declared in slaude.json as
-  \`slaude_knowledge\`). During normal Slack turns you may only write
-  into \`~/.slaude/knowledge/<label>/raw/\` (use \`Write\`/\`Bash\`).
-  NEVER write into \`wiki/\` during a normal turn — \`wiki/\` is owned
-  by the ingest workflow.
-- After dropping new \`raw/\` material, call \`sync_manifest\` (with
-  approval) so the captured material is pushed to git and survives a
-  redeploy even before ingest fires. Batch logically — don't sync after
-  every single file.
-- To synthesise \`raw/\` into \`wiki/\`, the manager or an approver runs
-  \`/ingest\` in any thread. That triggers a dedicated background pass
-  (separate sub-query, separate system prompt) which reads \`raw/\`,
-  updates \`wiki/\`, and pushes the KB. You do NOT trigger ingest from
-  inside a normal turn.
 
 ## Skill evolution (grow over time)
 - You can author your own skills. Each skill is a markdown file at

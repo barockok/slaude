@@ -123,16 +123,45 @@ describe("brainHandlers", () => {
     expect(out.search_fallback[0].slug).toBe("lessons/jot-deployment-pattern");
   });
 
-  test("kb_think does NOT fall back when citations exist", async () => {
-    let searchCalled = false;
+  test("kb_think does NOT surface a hit the synthesis already cited", async () => {
+    // search runs (always), but its only hit == the cited page → nothing missed.
     const d = deps({
-      think: async () => ({ answer: "yes", citations: [{ page_slug: "x" }], pagesGathered: 3 }),
-      call: async (name) => { if (name === "search") searchCalled = true; return []; },
+      think: async () => ({ answer: "yes", citations: [{ page_slug: "notes/x" }], pagesGathered: 3 }),
+      call: async (name) => (name === "search" ? [{ slug: "notes/x", score: 1.2 }] : { echoed: name }),
     });
     const r = await brainHandlers.kb_think({ question: "q" }, d);
     expect(r.isError).toBeUndefined();
-    expect(searchCalled).toBe(false);
     expect(JSON.parse(r.content[0]!.text).search_fallback).toBeUndefined();
+  });
+
+  // Mode B′: synthesis answered with citations but ranked the canonical page out.
+  // The cross-check search must surface the uncited strong hit.
+  test("kb_think surfaces a strong hit the synthesis cited around (B′)", async () => {
+    const d = deps({
+      think: async () => ({ answer: "neighbor info…", citations: [{ page_slug: "team/sub-overview" }], pagesGathered: 40 }),
+      call: async (name) =>
+        name === "search"
+          ? [{ slug: "notes/canonical-page", score: 1.1 }, { slug: "team/sub-overview", score: 0.9 }]
+          : { echoed: name },
+    });
+    const r = await brainHandlers.kb_think({ question: "what is the canonical page?" }, d);
+    expect(r.isError).toBeUndefined();
+    const out = JSON.parse(r.content[0]!.text);
+    // the cited page is filtered out; the uncited canonical page is surfaced
+    expect(out.search_fallback.map((h: { slug: string }) => h.slug)).toEqual(["notes/canonical-page"]);
+  });
+
+  test("kb_think cross-check uses a distilled keyword query", async () => {
+    let sentQuery: string | undefined;
+    const d = deps({
+      think: async () => ({ answer: "x", citations: [], pagesGathered: 1 }),
+      call: async (name, params) => {
+        if (name === "search") { sentQuery = (params as { query: string }).query; return []; }
+        return { echoed: name };
+      },
+    });
+    await brainHandlers.kb_think({ question: "what is our deploy policy?" }, d);
+    expect(sentQuery).toBe("deploy policy");
   });
 
   test("kb_think returns the raw result when the fallback search is empty", async () => {
