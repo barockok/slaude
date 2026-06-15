@@ -292,4 +292,16 @@ describe("/mcp gating + connect", () => {
 
     expect(posts.find((p) => String(p.text ?? "").includes("nothing to disconnect"))).toBeDefined();
   });
+
+  it("disconnect of an unknown server is rejected", async () => {
+    const { t, posts, emit } = capturingTransport();
+    const agent = new AgentManager();
+    agent.sendMessage = async () => {};
+    createGateway(agent, t);
+    OneOnOne.lock({ channelId: CHANNEL, threadTs: THREAD, lockedUser: INITIATOR, createdBy: INITIATOR });
+
+    await sendInbound(emit, "/mcp disconnect bogus", INITIATOR, "100.6", t.client);
+
+    expect(posts.find((p) => String(p.text ?? "").includes("unknown HTTP MCP server"))).toBeDefined();
+  });
 });
