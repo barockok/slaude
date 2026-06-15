@@ -19,6 +19,7 @@ import * as SoulOverrides from "../../db/soul-overrides";
 import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
 import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
+import { humanizeToolStatus } from "./status-text";
 import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
@@ -1121,78 +1122,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
-  function shortPath(p: string | undefined): string {
-    if (!p) return "";
-    const parts = p.split("/").filter(Boolean);
-    return parts.slice(-2).join("/") || p;
-  }
-
-  function humanizeToolStatus(tool: string, input: any): string {
-    const inp = input ?? {};
-    switch (tool) {
-      case "Read":
-        return `reading ${shortPath(inp.file_path) || "file"}`;
-      case "Write":
-        return `writing ${shortPath(inp.file_path) || "file"}`;
-      case "Edit":
-      case "MultiEdit":
-        return `editing ${shortPath(inp.file_path) || "file"}`;
-      case "NotebookEdit":
-        return `editing notebook`;
-      case "Bash": {
-        const cmd: string = (inp.command ?? "").toString().split("\n")[0]!.slice(0, 50);
-        return cmd ? `running \`${cmd}\`` : "running command";
-      }
-      case "Grep":
-        return `searching for "${(inp.pattern ?? "").toString().slice(0, 40)}"`;
-      case "Glob":
-        return `finding files (${(inp.pattern ?? "").toString().slice(0, 40)})`;
-      case "LS":
-        return `listing ${shortPath(inp.path) || "directory"}`;
-      case "TodoWrite":
-        return "updating todos";
-      case "WebFetch":
-        return `fetching ${(inp.url ?? "").toString().slice(0, 50)}`;
-      case "WebSearch":
-        return `searching web: "${(inp.query ?? "").toString().slice(0, 40)}"`;
-      case "Task":
-        return `delegating to subagent`;
-      case `mcp__${SURFACE_MCP_NAME}__reply`:
-      case `mcp__${SLACK_MCP_NAME}__reply`:
-        return "replying";
-      case `mcp__${SURFACE_MCP_NAME}__edit`:
-      case `mcp__${SLACK_MCP_NAME}__edit`:
-        return "editing reply";
-      case `mcp__${SURFACE_MCP_NAME}__upload`:
-      case `mcp__${SLACK_MCP_NAME}__upload`:
-        return `uploading ${shortPath(inp.path) || "file"}`;
-      case `mcp__${SURFACE_MCP_NAME}__react`:
-      case `mcp__${SURFACE_MCP_NAME}__unreact`:
-      case `mcp__${SLACK_MCP_NAME}__react`:
-        return `reacting :${inp.name ?? "?"}:`;
-      case `mcp__${SURFACE_MCP_NAME}__request_approval`:
-      case `mcp__${SLACK_MCP_NAME}__request_approval`:
-        return "requesting approval";
-      case `mcp__${SURFACE_MCP_NAME}__get_history`:
-        return `reading conversation history`;
-      case `mcp__${SLACK_MCP_NAME}__get_user_profile`:
-        return `fetching user profile`;
-      case `mcp__${SLACK_MCP_NAME}__get_channel_info`:
-        return `fetching channel info`;
-      case `mcp__${SLACK_MCP_NAME}__get_thread_history`:
-        return `reading thread history`;
-      case `mcp__${SLACK_MCP_NAME}__list_users_in_channel`:
-        return `listing channel members`;
-      case `mcp__${SLACK_MCP_NAME}__search_messages`:
-        return `searching messages`;
-      default: {
-        // Generic mcp tool: mcp__<server>__<tool> → "tool (server)"
-        const mm = tool.match(/^mcp__([^_]+(?:_[^_]+)*)__(.+)$/);
-        if (mm) return `running ${mm[2]} (${mm[1]})`;
-        return `running ${tool}`;
-      }
-    }
-  }
 
   // Generic diagnostic — log every event Bolt receives so we can see what's
   // arriving (or *not*) over the Socket Mode WebSocket.
