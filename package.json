@@ -1,6 +1,6 @@
 {
   "name": "slaude",
-  "version": "0.23.5",
+  "version": "0.24.0",
   "type": "module",
   "private": true,
   "description": "Slack-native Claude Code runtime. Onboard AI agent as team member.",
