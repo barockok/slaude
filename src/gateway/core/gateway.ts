@@ -240,6 +240,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       lockedUser: lock?.locked_user ?? null,
       channelTrust: channelTrustFor(ctx.channel, soul),
       isManager: !!ctx.userId && (ctx.userId === soul.manager.userId || ctx.userId === soul.backupManager.userId),
+      threadKey: `${ctx.channel}:${ctx.threadTs}`,
     };
   };
 
