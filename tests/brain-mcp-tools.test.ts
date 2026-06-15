@@ -13,10 +13,32 @@ const deps = (over: Partial<BrainToolDeps> = {}): BrainToolDeps => ({
 });
 
 describe("brainHandlers", () => {
-  test("kb_search returns JSON of op result", async () => {
-    const r = await brainHandlers.kb_search({ query: "x" }, deps());
+  test("kb_search returns gathered hits (per-source fan-out, merged)", async () => {
+    // kb_search now routes through gather(): one search per allowed source,
+    // merged + ranked. With a single source, that's one call returning its hits.
+    const d = deps({ call: async () => [{ slug: "a/b", score: 0.9 }] });
+    const r = await brainHandlers.kb_search({ query: "x" }, d);
     expect(r.isError).toBeUndefined();
-    expect(JSON.parse(r.content[0]!.text)).toEqual({ echoed: "search" });
+    expect(JSON.parse(r.content[0]!.text)).toEqual([{ slug: "a/b", score: 0.9 }]);
+  });
+
+  test("kb_search fans out one search per allowed source and merges", async () => {
+    const seen: string[] = [];
+    const multi: BrainScope = { clientId: "U1", sourceId: "shared", allowedSources: ["shared", "bulk-corpus"] };
+    const d = deps({
+      scope: () => multi,
+      call: async (_name, _params, s) => {
+        seen.push(s.allowedSources[0]!);
+        return s.allowedSources[0] === "shared"
+          ? [{ slug: "org/page", rerank_score: 0.8 }]
+          : [{ slug: "bulk/stub", rerank_score: 0.05 }];
+      },
+    });
+    const r = await brainHandlers.kb_search({ query: "x" }, d);
+    const hits = JSON.parse(r.content[0]!.text) as Array<{ slug: string }>;
+    expect(seen.sort()).toEqual(["bulk-corpus", "shared"]); // one call per source
+    expect(hits[0]!.slug).toBe("org/page"); // higher rerank wins the merge
+    expect(hits.map((h) => h.slug)).toContain("bulk/stub");
   });
 
   test("kb_memoize goes through the gate — denial surfaces as error", async () => {
