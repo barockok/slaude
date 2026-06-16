@@ -219,11 +219,19 @@ describe("createGateway", () => {
       event: { type: "message", channel: CH, channel_type: "channel", user: WORLD.manager, team: "T", ts, text, ...(thread ? { thread_ts: thread } : {}) },
       context: { teamId: "T" },
     });
+    // A disengaged message is no longer dropped — it's forwarded to the session
+    // (so the transcript stays populated) but tagged "recorded for context only"
+    // so the UserPromptSubmit hook suppresses it (no model run, no reply). The
+    // agent.sendMessage stub bypasses the real hook, so we classify by envelope:
+    // a processed turn carries the reply directive; a suppressed turn does not.
+    const isSuppressed = (env: string) => env.includes("do NOT reply");
     const newGateway = () => {
       const cap = capturingTransport();
       const agent = new AgentManager();
       const sends: string[] = [];
       agent.sendMessage = async (_id: string, txt: string) => { sends.push(txt); };
+      const processed = () => sends.filter((s) => !isSuppressed(s));
+      const suppressed = () => sends.filter((s) => isSuppressed(s));
       createGateway(agent, cap.t);
       // Engage the way real Slack does: a bot mention fires app_mention (the
       // fixture bot id U_SLAUDE has an underscore, so the message-event mention
@@ -233,7 +241,7 @@ describe("createGateway", () => {
         await cap.emit("app_mention", { ...args, event: { ...args.event, type: "app_mention" } });
         await cap.emit("message", args);
       };
-      return { ...cap, sends, mention };
+      return { ...cap, sends, mention, processed, suppressed };
     };
     const wipe = () => {
       db.run("DELETE FROM sessions");
@@ -241,32 +249,50 @@ describe("createGateway", () => {
       process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
     };
 
-    it("disengage survives the session-row restore path (next plain reply stays dropped)", async () => {
+    it("disengaged messages are recorded-but-suppressed, never processed (no reply)", async () => {
       wipe();
       writeSoulFixture(WORLD);
       const g = newGateway();
 
       await g.mention("200.1", "<@U_SLAUDE> hello");
-      expect(g.sends.length).toBe(1); // engaged + handled, session row now exists
+      expect(g.processed().length).toBe(1); // engaged + handled, session row now exists
+      expect(g.suppressed().length).toBe(0);
 
       await g.emit("message", { ...mk("200.2", "<@U0APP> can you take this?", "200.1"), client: g.t.client });
-      expect(g.sends.length).toBe(1); // mention-other: dropped + disengaged
+      // mention-other: thread disengages, but the message is recorded (suppressed),
+      // not dropped — the transcript stays populated for re-engage.
+      expect(g.processed().length).toBe(1); // still no new *processed* turn
+      expect(g.suppressed().length).toBe(1);
 
       await g.emit("message", { ...mk("200.3", "sure, on it", "200.1"), client: g.t.client });
-      expect(g.sends.length).toBe(1); // plain reply after disengage must NOT be handled
+      // plain reply after disengage: recorded (suppressed), still not processed.
+      expect(g.processed().length).toBe(1);
+      expect(g.suppressed().length).toBe(2);
     });
 
-    it("disengage survives a gateway restart (engagement set wiped, db restores state)", async () => {
+    it("mention-other with NO session is dropped (never spins one up)", async () => {
+      wipe();
+      writeSoulFixture(WORLD);
+      const g = newGateway();
+      // No prior engagement → no session row. A colleague-mention here must not
+      // create a session or record anything.
+      await g.emit("message", { ...mk("250.1", "<@U0APP> hey can you help", "250.1"), client: g.t.client });
+      expect(g.sends.length).toBe(0);
+    });
+
+    it("disengage survives a gateway restart (recorded-suppressed, not processed)", async () => {
       wipe();
       writeSoulFixture(WORLD);
       const g1 = newGateway();
       await g1.mention("300.1", "<@U_SLAUDE> hello");
       await g1.emit("message", { ...mk("300.2", "<@U0APP> over to you", "300.1"), client: g1.t.client });
-      expect(g1.sends.length).toBe(1);
+      expect(g1.processed().length).toBe(1);
 
       const g2 = newGateway(); // fresh in-memory engagement set
       await g2.emit("message", { ...mk("300.3", "thanks!", "300.1"), client: g2.t.client });
-      expect(g2.sends.length).toBe(0); // restore path must respect the persisted disengage
+      // restore path must respect the persisted disengage: recorded, not processed.
+      expect(g2.processed().length).toBe(0);
+      expect(g2.suppressed().length).toBe(1);
     });
 
     it("re-mentioning the bot re-engages durably (plain replies handled again)", async () => {
@@ -276,11 +302,13 @@ describe("createGateway", () => {
       await g.mention("400.1", "<@U_SLAUDE> hello");
       await g.emit("message", { ...mk("400.2", "<@U0APP> fyi", "400.1"), client: g.t.client });
       await g.mention("400.3", "<@U_SLAUDE> back to you", "400.1");
-      expect(g.sends.length).toBe(2);
+      expect(g.processed().length).toBe(2); // both bot-mentions processed
+      expect(g.suppressed().length).toBe(1); // the colleague-mention was recorded
 
       const g2 = newGateway(); // restart: re-engage must have been persisted too
       await g2.emit("message", { ...mk("400.4", "continue please", "400.1"), client: g2.t.client });
-      expect(g2.sends.length).toBe(1);
+      expect(g2.processed().length).toBe(1);
+      expect(g2.suppressed().length).toBe(0);
     });
 
     it("restart restore still works for engaged threads (no re-mention needed)", async () => {
