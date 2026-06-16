@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   slack_thread_ts TEXT,
   permission_mode TEXT NOT NULL DEFAULT 'default',
   engaged INTEGER NOT NULL DEFAULT 1,
+  disengaged_at TEXT,
   UNIQUE(slack_team_id, slack_channel_id, slack_thread_ts)
 );
 
@@ -120,6 +121,11 @@ if (!sessionCols.some((c) => c.name === "permission_mode")) {
 if (!sessionCols.some((c) => c.name === "engaged")) {
   db.run(`ALTER TABLE sessions ADD COLUMN engaged INTEGER NOT NULL DEFAULT 1`);
 }
+// Migration: timestamp of the message that disengaged the thread, so a re-engage
+// can backfill the messages posted in the gap. NULL while engaged.
+if (!sessionCols.some((c) => c.name === "disengaged_at")) {
+  db.run(`ALTER TABLE sessions ADD COLUMN disengaged_at TEXT`);
+}
 
 // Migration: add Slack key columns to cron_jobs for real thread sessions.
 const cronCols = db.query(`PRAGMA table_info(cron_jobs)`).all() as Array<{ name: string }>;
@@ -164,4 +170,5 @@ export type SessionRow = {
   slack_thread_ts: string | null;
   permission_mode: string;
   engaged: number;
+  disengaged_at: string | null;
 };

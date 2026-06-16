@@ -20,6 +20,7 @@ import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, typ
 import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
 import { humanizeToolStatus } from "./status-text";
+import { selectGapMessages, renderBackfillPreamble } from "./reengage-backfill";
 import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
@@ -510,7 +511,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
   });
 
-  async function handleMessage(args: any) {
+  async function handleMessage(args: any, backfill?: string) {
     const { event, client, context } = args;
     const teamId: string | undefined = context.teamId ?? event.team;
     const channelId: string = event.channel;
@@ -1063,7 +1064,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
     // Wrap inbound in a channel envelope so the agent has slack context
     // and a clear directive to reply via the MCP tool — not as plain text.
+    // A re-engage backfill (gap messages dropped while disengaged) is prepended
+    // so the agent catches up before reading the current message.
     const envelope =
+      (backfill ? `${backfill}\n\n` : "") +
       `<channel source="slack" channel_id="${channelId}" thread_ts="${threadTs}" ` +
       `inbound_ts="${eventTs}" user_id="${userId}" user_name="${escapeAttr(userName)}" ` +
       `trust="${trust}">\n` +
@@ -1150,6 +1154,57 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (row) Sessions.setEngaged(row.id, value);
   };
 
+  // Re-engage backfill: when a disengaged thread is re-@mentioned, the messages
+  // posted in the gap were dropped at the gate and never reached the session.
+  // Pull them so the agent isn't blind to what it missed. Recency-prioritized
+  // (keep the most recent), chronological presentation, bounded.
+  const BACKFILL_MAX_MSGS = 50;
+  const BACKFILL_WINDOW_MS = 24 * 60 * 60 * 1000;
+  const BACKFILL_LINE_MAX = 300;
+  const buildBackfillPreamble = async (
+    channel: string,
+    threadTs: string,
+    disengagedAt: string,
+    reengageTs: string,
+  ): Promise<string | undefined> => {
+    // Never reach back further than the window before the re-engage.
+    const oldest = Math.max(Number(disengagedAt), Number(reengageTs) - BACKFILL_WINDOW_MS / 1000);
+    let messages: any[];
+    try {
+      const r = await (t.client as any).conversations.replies({
+        channel,
+        ts: threadTs,
+        oldest: String(oldest),
+        latest: reengageTs,
+        inclusive: false,
+        limit: 200,
+      });
+      messages = (r.messages ?? []) as any[];
+    } catch (e: any) {
+      // Degrade gracefully — the re-engage must proceed even if the fetch fails.
+      console.error(`[reengage-backfill] conversations.replies failed: ${e?.data?.error ?? e?.message}`);
+      return undefined;
+    }
+    const sel = selectGapMessages(messages, {
+      botId: await getBotId(),
+      selfBotId: await getSelfBotId(),
+      reengageTs,
+      threadTs,
+      maxMsgs: BACKFILL_MAX_MSGS,
+    });
+    if (sel.kept.length === 0) return undefined;
+    // Resolve display names once per distinct user (kept set only).
+    const names = new Map<string, string>();
+    for (const m of sel.kept) {
+      if (m.user && !names.has(m.user)) names.set(m.user, await resolveUserName(t.client as any, m.user));
+    }
+    return renderBackfillPreamble(
+      sel,
+      (m) => (m.user ? names.get(m.user) ?? m.user : m.username || "someone"),
+      BACKFILL_LINE_MAX,
+    );
+  };
+
   let cachedBotId: string | null = null;
   let cachedSelfBotId: string | null = null;
   const getBotId = async () => {
@@ -1205,13 +1260,28 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
     const teamId: string | undefined = args.context?.teamId ?? e.team;
     if (mentionsBot) {
+      // If this thread was previously disengaged, backfill the gap messages the
+      // gate dropped while we were away, so the agent re-engages with context.
+      let backfill: string | undefined;
+      if (teamId) {
+        const row = Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts });
+        if (row && row.engaged === 0 && row.disengaged_at) {
+          backfill = await buildBackfillPreamble(channelId, ts, row.disengaged_at, e.ts);
+          Sessions.clearDisengagedAt(row.id);
+        }
+      }
       engaged.add(key);
       persistEngaged(teamId, channelId, ts, true);
-      return await handleMessage(args);
+      return await handleMessage(args, backfill);
     }
     if (mentionsOther) {
       engaged.delete(key);
       persistEngaged(teamId, channelId, ts, false);
+      // Mark where the gap starts so a later re-engage can backfill it.
+      if (teamId) {
+        const row = Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts });
+        if (row) Sessions.setDisengagedAt(row.id, e.ts);
+      }
       console.log(
         `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — mention to other user, disengaging thread`,
       );

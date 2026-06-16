@@ -87,6 +87,23 @@ export function setEngaged(id: string, engaged: boolean) {
   ]);
 }
 
+/** Record the message ts that disengaged this thread (NULL while engaged). On
+ *  re-engage the gateway reads this to backfill the gap, then clears it. */
+export function setDisengagedAt(id: string, ts: string) {
+  db.run(`UPDATE sessions SET disengaged_at = ?, updated_at = ? WHERE id = ?`, [
+    ts,
+    Date.now(),
+    id,
+  ]);
+}
+
+export function clearDisengagedAt(id: string) {
+  db.run(`UPDATE sessions SET disengaged_at = NULL, updated_at = ? WHERE id = ?`, [
+    Date.now(),
+    id,
+  ]);
+}
+
 export function setPermissionMode(id: string, mode: string) {
   db.run(`UPDATE sessions SET permission_mode = ?, updated_at = ? WHERE id = ?`, [
     mode,
