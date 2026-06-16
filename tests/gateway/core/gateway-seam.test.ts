@@ -3,6 +3,7 @@ import { createGateway } from "../../../src/gateway/core/gateway";
 import { AgentManager } from "../../../src/agent/manager";
 import type { Transport } from "../../../src/gateway/core/transport";
 import { db } from "../../../src/db/schema";
+import * as Sessions from "../../../src/db/sessions";
 import * as CronJobs from "../../../src/db/cron-jobs";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 
@@ -22,14 +23,15 @@ function fakeTransport(): Transport {
 
 /** Transport that records `chat.postMessage` calls and captures registered event
  *  handlers so a test can drive an inbound Slack message through the gateway. */
-function capturingTransport(): { t: Transport; posts: any[]; emit: (name: string, args: any) => Promise<void> } {
+function capturingTransport(): { t: Transport; posts: any[]; reacts: any[]; emit: (name: string, args: any) => Promise<void> } {
   const posts: any[] = [];
+  const reacts: any[] = []; // every reactions.add (so a test can see ✅/👀/⚙️ stamping)
   const handlers = new Map<string, (args: any) => Promise<void>>();
   const t: Transport = {
     client: {
       auth: { test: async () => ({ user_id: "U_SLAUDE", bot_id: "B_SLAUDE", team: "T", url: "x" }) },
       chat: { postMessage: async (a: any) => { posts.push(a); return { ok: true, ts: "1.1" }; }, update: async () => ({ ok: true }) },
-      reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
+      reactions: { add: async (a: any) => { reacts.push(a); return { ok: true }; }, remove: async () => ({ ok: true }) },
       conversations: { info: async () => ({}), members: async () => ({}), replies: async () => ({}) },
       users: { info: async () => ({ user: { real_name: "Test" } }), profile: { set: async () => ({}) } },
       search: { messages: async () => ({}) },
@@ -38,7 +40,7 @@ function capturingTransport(): { t: Transport; posts: any[]; emit: (name: string
     event: (name: string, fn: any) => { handlers.set(name, fn); },
   };
   const emit = async (name: string, args: any) => { await handlers.get(name)?.(args); };
-  return { t, posts, emit };
+  return { t, posts, reacts, emit };
 }
 
 describe("createGateway", () => {
@@ -241,7 +243,7 @@ describe("createGateway", () => {
         await cap.emit("app_mention", { ...args, event: { ...args.event, type: "app_mention" } });
         await cap.emit("message", args);
       };
-      return { ...cap, sends, mention, processed, suppressed };
+      return { ...cap, agent, sends, mention, processed, suppressed };
     };
     const wipe = () => {
       db.run("DELETE FROM sessions");
@@ -321,6 +323,31 @@ describe("createGateway", () => {
       const g2 = newGateway();
       await g2.emit("message", { ...mk("500.2", "still there?", "500.1"), client: g2.t.client });
       expect(g2.sends.length).toBe(1);
+    });
+
+    // The agent-event `done` handler must skip its ✅/status cleanup for a
+    // suppressed (disengaged) turn — that message was recorded but never
+    // processed, so there's no 👀 to clear and stamping ✅ would be wrong.
+    it("a suppressed (disengaged) done short-circuits — no ✅ stamped", async () => {
+      wipe();
+      writeSoulFixture(WORLD);
+      const g = newGateway();
+      const tick = () => new Promise((r) => setTimeout(r, 20));
+      const doneCount = () => g.reacts.filter((r) => r.name === "white_check_mark").length;
+
+      // Engage → route exists with suppress=false. A done event stamps ✅.
+      await g.mention("700.1", "<@U_SLAUDE> hello");
+      const row = Sessions.findByThread({ team_id: "T", channel_id: CH, thread_ts: "700.1" });
+      expect(row).not.toBeNull();
+      g.agent.emit("event", { type: "done", sessionId: row!.id } as any);
+      await tick();
+      expect(doneCount()).toBe(1); // engaged turn cleaned up normally
+
+      // Disengage (colleague mention) → same route flips to suppress=true.
+      await g.emit("message", { ...mk("700.2", "<@U0APP> your turn", "700.1"), client: g.t.client });
+      g.agent.emit("event", { type: "done", sessionId: row!.id } as any);
+      await tick();
+      expect(doneCount()).toBe(1); // suppressed done short-circuited — no new ✅
     });
   });
 });
