@@ -79,6 +79,9 @@ type SessionRoute = {
   surface: Surface;
   /** Whether the agent has emitted user-visible output this turn (surface reply/edit/upload). */
   spoke: boolean;
+  /** This turn is a disengaged message recorded into the transcript but suppressed
+   *  by the UserPromptSubmit hook (no model run). Skip all Slack-visible feedback. */
+  suppress?: boolean;
 };
 
 export interface GatewayOptions {
@@ -468,6 +471,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
       case "done": {
         void (async () => {
+          // Suppressed (disengaged) turns set no 👀/status and must not stamp a
+          // ✅ on the recorded-but-unprocessed message. Nothing to clean up.
+          if (route.suppress) return;
           // Auto-evolve turns are internal — don't reset reactions/presence
           // (they were already finalized on the user-visible turn's done).
           if (e.autoEvolve) return;
@@ -510,7 +516,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
   });
 
-  async function handleMessage(args: any) {
+  async function handleMessage(args: any, dispatch?: { suppress?: boolean }) {
+    const suppress = dispatch?.suppress === true;
     const { event, client, context } = args;
     const teamId: string | undefined = context.teamId ?? event.team;
     const channelId: string = event.channel;
@@ -1071,13 +1078,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       (files.length
         ? `User attached ${files.length} file(s); paths above are local — Read them directly.\n`
         : "") +
-      `Reply to the user by calling the \`mcp__${SLACK_MCP_NAME}__reply\` tool. ` +
-      `Plain assistant text is not delivered to Slack — only tool calls reach the user.`;
+      (suppress
+        ? `You are currently disengaged from this thread, so this message is recorded ` +
+          `for context only — do NOT reply to it. You will catch up on it when re-engaged.`
+        : `Reply to the user by calling the \`mcp__${SLACK_MCP_NAME}__reply\` tool. ` +
+          `Plain assistant text is not delivered to Slack — only tool calls reach the user.`);
 
-    // 👀 received
-    void reactions.set(session.id, channelId, eventTs, REACT_RECEIVED);
-    presence.enter(session.id, STATUS_THINKING);
-    void status.set(session.id, channelId, threadTs, "thinking…");
+    if (!suppress) {
+      // 👀 received
+      void reactions.set(session.id, channelId, eventTs, REACT_RECEIVED);
+      presence.enter(session.id, STATUS_THINKING);
+      void status.set(session.id, channelId, threadTs, "thinking…");
+    }
     permissions.bindSession(session.id, channelId, threadTs);
 
     // First turn for this session → seed the SlackContext + route.
@@ -1091,6 +1103,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.ctx.userId = userId;
       existing.ctx.reloadSession = () => agent.reload(session.id);
       existing.spoke = false;
+      existing.suppress = suppress;
     } else {
       const ctx: SlackContext = {
         client: t.client as any,
@@ -1107,7 +1120,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           ...req,
         });
       ctx.reloadSession = () => agent.reload(session.id);
-      routes.set(session.id, { ctx, surface: surfaceFactory(bindingFor(ctx)), spoke: false });
+      routes.set(session.id, { ctx, surface: surfaceFactory(bindingFor(ctx)), spoke: false, suppress });
     }
 
     console.log(`[slaude] sendMessage session=${session.id} cwd=${session.working_dir} model=${session.model}`);
@@ -1212,8 +1225,22 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (mentionsOther) {
       engaged.delete(key);
       persistEngaged(teamId, channelId, ts, false);
+      // Don't drop: if slaude has a session here, record the disengaging message
+      // into the transcript (suppressed — the UserPromptSubmit hook halts the turn
+      // before the model runs) so the session stays populated. On re-engage the
+      // model resumes with the gap already in history. No session → nothing to
+      // populate, so drop as before (never spin one up for an unrelated thread).
+      const row = teamId
+        ? Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts })
+        : null;
+      if (row) {
+        console.log(
+          `[slack-rx] disengage ch=${channelId} ts=${e.ts} user=${e.user} — recording (suppressed), thread now disengaged`,
+        );
+        return await handleMessage(args, { suppress: true });
+      }
       console.log(
-        `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — mention to other user, disengaging thread`,
+        `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — mention to other user, no session to populate`,
       );
       metric.slackDropsTotal.inc({ reason: "mention_other" });
       return;
@@ -1229,6 +1256,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (row && row.engaged) {
         engaged.add(key);
         return await handleMessage(args);
+      }
+      // Explicitly disengaged (row.engaged=0): record plain messages into the
+      // transcript too (suppressed by the hook) so the session stays populated
+      // for re-engage. No model run, no Slack feedback.
+      if (row && row.engaged === 0) {
+        console.log(
+          `[slack-rx] record ch=${channelId} ts=${e.ts} user=${e.user} — disengaged thread, suppressed`,
+        );
+        return await handleMessage(args, { suppress: true });
       }
     }
     console.log(
