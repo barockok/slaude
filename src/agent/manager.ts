@@ -83,6 +83,40 @@ export type McpResolver = (sessionId: string) => Record<string, McpServerConfig>
  *  call is ignored (agent stops) and manager logs to stderr. */
 export type StopGuard = (sessionId: string) => string | null;
 
+/** Decide whether a UserPromptSubmit should be suppressed because its thread is
+ *  disengaged. `continue:false` lets the user message persist to the transcript
+ *  (session stays populated) but halts the turn before the model runs — so on
+ *  re-engage the model resumes with the gap already in conversation history.
+ *  `decision:"block"` is deliberately NOT used: it discards the prompt before it
+ *  persists (verified against the pinned SDK — see the 2026-06-16 finding).
+ *  Pure + exported for unit tests; the live hook reads the row via findById. */
+export function disengagedHookDecision(
+  row: { engaged: number } | null,
+): { continue: boolean; suppressOutput?: boolean; stopReason?: string } {
+  if (row && row.engaged === 0) {
+    return {
+      continue: false,
+      suppressOutput: true,
+      stopReason: "thread disengaged — message recorded, not processed",
+    };
+  }
+  return { continue: true };
+}
+
+/** UserPromptSubmit hook that suppresses the model while the thread is
+ *  disengaged. Engagement is re-read live (via findById) each turn, not closed
+ *  over, so a re-@mention takes effect on the very next message. On suppression
+ *  the metric is bumped. Exported (as a factory over sessionId) for unit tests;
+ *  the suppression decision itself lives in disengagedHookDecision. */
+export function makeDisengageSuppressHook(sessionId: string): HookCallback {
+  return async (input) => {
+    if (input.hook_event_name !== "UserPromptSubmit") return { continue: true };
+    const decision = disengagedHookDecision(Sessions.findById(sessionId));
+    if (decision.continue === false) metric.disengagedSuppressedTotal.inc();
+    return decision;
+  };
+}
+
 /** Resume miss: the provider has no transcript for the seeded/resumed session id
  *  (e.g. a pre-resumable-sessions row whose claude_started flag predates the CLI
  *  ever sharing slaude's id). Expected + self-healing — #startSession clears the
@@ -345,6 +379,14 @@ export class AgentManager extends EventEmitter {
       metric.stopGuardBlockedTotal.inc();
       return { decision: "block", reason };
     };
+    // While a thread is disengaged (sessions.engaged=0), keep the session
+    // transcript populated WITHOUT running the model. `continue:false` halts the
+    // turn after the user message is enqueued/persisted but before generation,
+    // so on re-engage the model resumes with the gap already in conversation
+    // history — no Slack re-fetch, no synthetic preamble. (decision:"block"
+    // discards the prompt *before* it persists — verified against the pinned
+    // SDK; see docs/findings/2026-06-16-reengage-hook-suppress.md.)
+    const disengageSuppress = makeDisengageSuppressHook(sessionId);
     // CC plugins installed via `bun run install-deps`. Without this, the SDK
     // ignores the enabledPlugins entry in settings.json (it only reads
     // settings when settingSources is set). Explicit Options.plugins surfaces
@@ -377,6 +419,7 @@ export class AgentManager extends EventEmitter {
       hooks: {
         PreCompact: [{ hooks: [preCompact] }],
         Stop: [{ hooks: [stopHook] }],
+        UserPromptSubmit: [{ hooks: [disengageSuppress] }],
       },
       systemPrompt: {
         type: "preset",
