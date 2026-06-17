@@ -135,7 +135,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const status = new Status(t.client);
   const permissions = new PermissionGate(t);
   const approvals = new ApprovalGate(t, env.slack.approvers(), {
-    timeoutSeconds: () => soulData().approvalTimeoutSeconds,
+    timeoutSeconds: () => soulData().approvalTimeoutSeconds || 300,
   });
   const ignoreGate = new IgnoreGate();
   // Clean up expired ignores + abandoned paste-back OAuth flows every 5 minutes.
