@@ -195,6 +195,12 @@ export class ApprovalGate {
     });
 
     const timeoutSec = this.#timeoutSeconds();
+    if (timeoutSec > 0) {
+      sections.push({
+        type: "context",
+        elements: [{ type: "mrkdwn", text: `:hourglass: Auto-denies in *${timeoutSec}s* if no one clicks.` }],
+      });
+    }
     return new Promise<ApprovalDecision>((resolve) => {
       const pending: Pending = {
         resolve,
