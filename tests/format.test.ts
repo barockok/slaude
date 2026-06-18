@@ -36,6 +36,17 @@ describe("mdToMrkdwn", () => {
   test("italic does not eat bold", () => {
     expect(mdToMrkdwn("**bold** *em*")).toBe("*bold* _em_");
   });
+  test("bold+italic *** → _*x*_ (Slack has no triple-star)", () => {
+    expect(mdToMrkdwn("***x***")).toBe("_*x*_");
+    expect(mdToMrkdwn("a ***big*** b")).toBe("a _*big*_ b");
+  });
+  test("inner-padded bold → markers hug content (Slack won't bold ' x ')", () => {
+    expect(mdToMrkdwn("** spaced **")).toBe("*spaced*");
+    expect(mdToMrkdwn("a **  b  ** c")).toBe("a *b* c");
+  });
+  test("inner-padded italic → markers hug content", () => {
+    expect(mdToMrkdwn("a * em * b")).toBe("a _em_ b");
+  });
   test("narrow table → monospace block", () => {
     const md = "| a | b |\n| - | - |\n| 1 | 2 |";
     const out = mdToMrkdwn(md);

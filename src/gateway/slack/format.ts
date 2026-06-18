@@ -44,14 +44,32 @@ export function mdToMrkdwn(md: string): string {
   // 4. Headings → bold line.
   work = work.replace(/^#{1,6}\s+(.+?)\s*#*\s*$/gm, `${C3}$1${C4}`);
 
+  // 4b. Bold+italic ***X*** → _*X*_. Slack nests emphasis but has no
+  //     triple-star; a literal *** leaves stray asterisks unrendered.
+  work = work.replace(
+    /\*\*\*([^*\n]+?)\*\*\*/g,
+    (_m, body) => `_${C3}${body.trim()}${C4}_`,
+  );
+
   // 5. Italic FIRST while bold markers are still **. Single-star italic
-  //    requires non-* on both sides so we don't munch bold.
-  work = work.replace(/(^|[^*])\*([^*\n]+?)\*(?!\*)/g, "$1_$2_");
+  //    requires non-* on both sides so we don't munch bold. Trim inner
+  //    padding — Slack won't render "_ x _" (space hugging the marker).
+  work = work.replace(
+    /(^|[^*])\*([^*\n]+?)\*(?!\*)/g,
+    (_m, pre, body) => `${pre}_${body.trim()}_`,
+  );
 
   // 6. Bold: **X** or __X__ → sentinel; restored to single * at the end so
-  //    nothing else mistakes them for emphasis.
-  work = work.replace(/\*\*([\s\S]+?)\*\*/g, `${C3}$1${C4}`);
-  work = work.replace(/__([^_\n]+?)__/g, `${C3}$1${C4}`);
+  //    nothing else mistakes them for emphasis. Trim inner padding — Slack
+  //    won't render "* x *".
+  work = work.replace(
+    /\*\*([\s\S]+?)\*\*/g,
+    (_m, body) => `${C3}${body.trim()}${C4}`,
+  );
+  work = work.replace(
+    /__([^_\n]+?)__/g,
+    (_m, body) => `${C3}${body.trim()}${C4}`,
+  );
 
   // 7. Strike: ~~X~~ → ~X~.
   work = work.replace(/~~([^~\n]+?)~~/g, "~$1~");
