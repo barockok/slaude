@@ -840,4 +840,46 @@ describe("gateway uncovered branches", () => {
       }
     });
   });
+
+  describe("cron lifecycle slash commands", () => {
+    it("manager can pause, queue, resume, edit, and remove by 8-char prefix", async () => {
+      writeSoulFixture(WORLD);
+      db.run("DELETE FROM cron_jobs");
+      const job = CronJobs.create({
+        slackTeamId: "T",
+        slackChannelId: "D_MGR",
+        slackThreadTs: "8000.1",
+        channelId: "D_MGR",
+        threadTs: "8000.1",
+        createdBy: WORLD.manager,
+        cronExpr: "0 9 * * *",
+        prompt: "old digest",
+        nextRunAt: Date.now() + 600_000,
+      });
+      const id = job.id.slice(0, 8);
+      const g = makeGw();
+
+      await g.emit("message", dmArgs(g, `/cron pause ${id}`));
+      expect(CronJobs.findById(job.id)!.paused).toBe(1);
+      expect(g.posts.some((p) => String(p.text).includes("paused"))).toBe(true);
+
+      await g.emit("message", dmArgs(g, `/cron run ${id}`));
+      expect(typeof CronJobs.findById(job.id)!.runRequestedAt).toBe("number");
+      expect(g.posts.some((p) => String(p.text).includes("queued for the next scheduler tick"))).toBe(true);
+
+      await g.emit("message", dmArgs(g, `/cron resume ${id}`));
+      expect(CronJobs.findById(job.id)!.paused).toBe(0);
+      expect(CronJobs.findById(job.id)!.runRequestedAt).toBeNull();
+
+      await g.emit("message", dmArgs(g, `/cron edit ${id} "30 10 * * 1" "new digest" channel passive`));
+      const edited = CronJobs.findById(job.id)!;
+      expect(edited.cronExpr).toBe("30 10 * * 1");
+      expect(edited.prompt).toBe("new digest");
+      expect(edited.target).toBe("channel");
+      expect(edited.whenActive).toBe("skip");
+
+      await g.emit("message", dmArgs(g, `/cron remove ${id}`));
+      expect(CronJobs.listActive()).toHaveLength(0);
+    });
+  });
 });

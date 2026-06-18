@@ -12,8 +12,10 @@ export type CronJob = {
   cronExpr: string;
   prompt: string;
   nextRunAt: number;
+  runRequestedAt: number | null;
   lastRunAt: number | null;
   lastResult: string | null;
+  paused: number;
   active: number;
   target: "thread" | "channel";
   /** 'fire' (default) runs even when a human is active in the target;
@@ -77,14 +79,19 @@ export function findByPrefix(prefix: string): CronJob | null {
 
 export function findDue(now: number): CronJob[] {
   const rows = db
-    .query("SELECT * FROM cron_jobs WHERE active = 1 AND next_run_at <= ?")
+    .query(
+      `SELECT * FROM cron_jobs
+       WHERE active = 1
+         AND (run_requested_at IS NOT NULL OR (paused = 0 AND next_run_at <= ?))
+       ORDER BY COALESCE(run_requested_at, next_run_at)`,
+    )
     .all(now) as any[];
   return rows.map(mapRow);
 }
 
 export function updateNextRun(id: string, nextRunAt: number, lastResult: string): void {
   db.run(
-    "UPDATE cron_jobs SET next_run_at = ?, last_run_at = ?, last_result = ? WHERE id = ?",
+    "UPDATE cron_jobs SET next_run_at = ?, run_requested_at = NULL, last_run_at = ?, last_result = ? WHERE id = ?",
     [nextRunAt, Date.now(), lastResult, id],
   );
 }
@@ -93,8 +100,62 @@ export function deactivate(id: string): void {
   db.run("UPDATE cron_jobs SET active = 0 WHERE id = ?", [id]);
 }
 
+export function pause(id: string): void {
+  db.run("UPDATE cron_jobs SET paused = 1, run_requested_at = NULL WHERE id = ?", [id]);
+}
+
+export function resume(id: string, nextRunAt: number): void {
+  db.run("UPDATE cron_jobs SET paused = 0, run_requested_at = NULL, next_run_at = ? WHERE id = ?", [
+    nextRunAt,
+    id,
+  ]);
+}
+
+export function requestRun(id: string, at = Date.now()): void {
+  db.run("UPDATE cron_jobs SET run_requested_at = ? WHERE id = ?", [at, id]);
+}
+
+export function update(
+  id: string,
+  args: {
+    cronExpr?: string;
+    prompt?: string;
+    nextRunAt?: number;
+    target?: "thread" | "channel";
+    whenActive?: "fire" | "skip";
+  },
+): void {
+  const sets: string[] = [];
+  const values: (string | number)[] = [];
+  if (args.cronExpr !== undefined) {
+    sets.push("cron_expr = ?");
+    values.push(args.cronExpr);
+  }
+  if (args.prompt !== undefined) {
+    sets.push("prompt = ?");
+    values.push(args.prompt);
+  }
+  if (args.nextRunAt !== undefined) {
+    sets.push("next_run_at = ?");
+    values.push(args.nextRunAt);
+  }
+  if (args.target !== undefined) {
+    sets.push("target = ?");
+    values.push(args.target);
+  }
+  if (args.whenActive !== undefined) {
+    sets.push("when_active = ?");
+    values.push(args.whenActive);
+  }
+  if (!sets.length) return;
+  values.push(id);
+  db.run(`UPDATE cron_jobs SET ${sets.join(", ")} WHERE id = ?`, values);
+}
+
 export function listActive(): CronJob[] {
-  const rows = db.query("SELECT * FROM cron_jobs WHERE active = 1 ORDER BY next_run_at").all() as any[];
+  const rows = db
+    .query("SELECT * FROM cron_jobs WHERE active = 1 ORDER BY paused, COALESCE(run_requested_at, next_run_at)")
+    .all() as any[];
   return rows.map(mapRow);
 }
 
@@ -110,8 +171,10 @@ function mapRow(row: any): CronJob {
     cronExpr: row.cron_expr,
     prompt: row.prompt,
     nextRunAt: row.next_run_at,
+    runRequestedAt: row.run_requested_at,
     lastRunAt: row.last_run_at,
     lastResult: row.last_result,
+    paused: row.paused ?? 0,
     active: row.active,
     target: (row.target ?? "thread") as "thread" | "channel",
     whenActive: (row.when_active ?? "fire") as "fire" | "skip",

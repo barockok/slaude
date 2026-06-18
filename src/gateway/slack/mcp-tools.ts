@@ -335,16 +335,33 @@ export function parseDuration(raw: string): { ok: true; minutes: number; permane
   return { ok: true, permanent: false, minutes };
 }
 
+function cronJobLine(j: CronJobs.CronJob): string {
+  const flags = [
+    j.target,
+    j.whenActive === "skip" ? "passive" : null,
+    j.paused ? "paused" : null,
+    j.runRequestedAt ? "queued" : null,
+  ].filter(Boolean).join(", ");
+  return `• \`${j.id.slice(0, 8)}\` \`${j.cronExpr}\` [${flags}] → ${j.prompt} (next: ${new Date(j.nextRunAt).toISOString()})`;
+}
+
+function findCronJob(jobId: string): CronJobs.CronJob | ToolResult {
+  try {
+    const job = CronJobs.findByPrefix(jobId);
+    if (!job) return err(`Job \`${jobId}\` not found.`);
+    return job;
+  } catch (e: any) {
+    return err(e.message);
+  }
+}
+
 /** Cron / ingest handlers — exposed as MCP tools so the agent can manage
  *  scheduled work and knowledge base directly. */
 export const adminHandlers = {
   async listCronJobs(): Promise<ToolResult> {
     const jobs = CronJobs.listActive();
     if (!jobs.length) return ok("No active cron jobs.");
-    const lines = jobs.map(
-      (j) =>
-        `• \`${j.id.slice(0, 8)}\` \`${j.cronExpr}\` [${j.target}${j.whenActive === "skip" ? ", passive" : ""}] → ${j.prompt} (next: ${new Date(j.nextRunAt).toISOString()})`,
-    );
+    const lines = jobs.map(cronJobLine);
     return ok("*Active cron jobs*\n" + lines.join("\n"));
   },
 
@@ -379,17 +396,73 @@ export const adminHandlers = {
     );
   },
 
+  async editCronJob(
+    ctx: SlackContext,
+    { jobId, cronExpr, prompt, target, whenActive }: { jobId: string; cronExpr?: string; prompt?: string; target?: "thread" | "channel"; whenActive?: "fire" | "skip" },
+  ): Promise<ToolResult> {
+    if (!isManagerOrApprover(ctx.userId)) {
+      return err("Only manager or approver can edit cron jobs.");
+    }
+    const job = findCronJob(jobId);
+    if ("content" in job) return job;
+    if (cronExpr === undefined && prompt === undefined && target === undefined && whenActive === undefined) {
+      return err("No cron fields provided to edit.");
+    }
+    let nextRunAt: number | undefined;
+    if (cronExpr !== undefined) {
+      try {
+        nextRunAt = getNextRun(cronExpr);
+      } catch (e: any) {
+        return err(`Invalid cron expression: ${e.message}`);
+      }
+    }
+    CronJobs.update(job.id, { cronExpr, prompt, nextRunAt, target, whenActive });
+    const updated = CronJobs.findById(job.id)!;
+    return ok(`Cron job \`${updated.id.slice(0, 8)}\` updated. Next run: ${new Date(updated.nextRunAt).toISOString()}`);
+  },
+
+  async pauseCronJob(ctx: SlackContext, { jobId }: { jobId: string }): Promise<ToolResult> {
+    if (!isManagerOrApprover(ctx.userId)) {
+      return err("Only manager or approver can pause cron jobs.");
+    }
+    const job = findCronJob(jobId);
+    if ("content" in job) return job;
+    CronJobs.pause(job.id);
+    return ok(`Cron job \`${job.id.slice(0, 8)}\` paused.`);
+  },
+
+  async resumeCronJob(ctx: SlackContext, { jobId }: { jobId: string }): Promise<ToolResult> {
+    if (!isManagerOrApprover(ctx.userId)) {
+      return err("Only manager or approver can resume cron jobs.");
+    }
+    const job = findCronJob(jobId);
+    if ("content" in job) return job;
+    let nextRun: number;
+    try {
+      nextRun = getNextRun(job.cronExpr);
+    } catch (e: any) {
+      return err(`Invalid stored cron expression: ${e.message}`);
+    }
+    CronJobs.resume(job.id, nextRun);
+    return ok(`Cron job \`${job.id.slice(0, 8)}\` resumed. Next run: ${new Date(nextRun).toISOString()}`);
+  },
+
+  async runCronJob(ctx: SlackContext, { jobId }: { jobId: string }): Promise<ToolResult> {
+    if (!isManagerOrApprover(ctx.userId)) {
+      return err("Only manager or approver can run cron jobs.");
+    }
+    const job = findCronJob(jobId);
+    if ("content" in job) return job;
+    CronJobs.requestRun(job.id);
+    return ok(`Cron job \`${job.id.slice(0, 8)}\` queued for the next scheduler tick.`);
+  },
+
   async removeCronJob(_ctx: SlackContext, { jobId }: { jobId: string }): Promise<ToolResult> {
     if (!isManagerOrApprover(_ctx.userId)) {
       return err("Only manager or approver can remove cron jobs.");
     }
-    let job: CronJobs.CronJob | null;
-    try {
-      job = CronJobs.findByPrefix(jobId);
-    } catch (e: any) {
-      return err(e.message);
-    }
-    if (!job) return err(`Job \`${jobId}\` not found.`);
+    const job = findCronJob(jobId);
+    if ("content" in job) return job;
     CronJobs.deactivate(job.id);
     return ok(`Cron job \`${job.id.slice(0, 8)}\` deactivated.`);
   },
@@ -604,6 +677,46 @@ export function createRuntimeMcp(ctx: SlackContext): McpSdkServerConfigWithInsta
           when_active: z.enum(["fire", "skip"]).optional().describe("Behavior when a human is active in the target: 'fire' (default, run anyway) or 'skip' (defer this run, humans get priority)."),
         },
         (args) => adminHandlers.addCronJob(ctx, { cronExpr: args.cron_expr, prompt: args.prompt, target: args.target, whenActive: args.when_active }),
+      ),
+
+      tool(
+        "edit_cron_job",
+        "Update an existing scheduled cron job. Use when the user wants to change the schedule, prompt, posting target, or passive/active behavior without deleting and recreating the job. Requires manager or approver authorization.",
+        {
+          job_id: z.string().describe("Full job ID or 8-character prefix from list_cron_jobs."),
+          cron_expr: z.string().optional().describe("Replacement 5-field cron expression in UTC."),
+          prompt: z.string().optional().describe("Replacement prompt sent each time the job fires."),
+          target: z.enum(["thread", "channel"]).optional().describe("Replacement posting target."),
+          when_active: z.enum(["fire", "skip"]).optional().describe("Replacement active-session behavior."),
+        },
+        (args) => adminHandlers.editCronJob(ctx, { jobId: args.job_id, cronExpr: args.cron_expr, prompt: args.prompt, target: args.target, whenActive: args.when_active }),
+      ),
+
+      tool(
+        "pause_cron_job",
+        "Pause a scheduled cron job without deleting it. Paused jobs stay listed and can be manually run once or resumed later. Requires manager or approver authorization.",
+        {
+          job_id: z.string().describe("Full job ID or 8-character prefix from list_cron_jobs."),
+        },
+        (args) => adminHandlers.pauseCronJob(ctx, { jobId: args.job_id }),
+      ),
+
+      tool(
+        "resume_cron_job",
+        "Resume a paused cron job and recompute its next future run from its stored cron expression. Requires manager or approver authorization.",
+        {
+          job_id: z.string().describe("Full job ID or 8-character prefix from list_cron_jobs."),
+        },
+        (args) => adminHandlers.resumeCronJob(ctx, { jobId: args.job_id }),
+      ),
+
+      tool(
+        "run_cron_job",
+        "Queue a scheduled cron job to run on the next scheduler tick, outside its normal schedule. This does not unpause a paused job after the manual run completes. Requires manager or approver authorization.",
+        {
+          job_id: z.string().describe("Full job ID or 8-character prefix from list_cron_jobs."),
+        },
+        (args) => adminHandlers.runCronJob(ctx, { jobId: args.job_id }),
       ),
 
       tool(

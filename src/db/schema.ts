@@ -78,8 +78,10 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
   cron_expr TEXT NOT NULL,
   prompt TEXT NOT NULL,
   next_run_at INTEGER NOT NULL,
+  run_requested_at INTEGER,
   last_run_at INTEGER,
   last_result TEXT,
+  paused INTEGER NOT NULL DEFAULT 0,
   active INTEGER NOT NULL DEFAULT 1
 );
 
@@ -156,6 +158,16 @@ if (!cronCols.some((c) => c.name === "target")) {
 // even when a human is live in the target thread/channel; 'skip' defers that run.
 if (!cronCols.some((c) => c.name === "when_active")) {
   db.run(`ALTER TABLE cron_jobs ADD COLUMN when_active TEXT NOT NULL DEFAULT 'fire'`);
+}
+
+// Migration: add pause + manual-run lifecycle state. `active` remains the
+// soft-delete bit; paused jobs stay listed but don't fire on schedule. A manual
+// run sets run_requested_at and is picked up by the scheduler even while paused.
+if (!cronCols.some((c) => c.name === "paused")) {
+  db.run(`ALTER TABLE cron_jobs ADD COLUMN paused INTEGER NOT NULL DEFAULT 0`);
+}
+if (!cronCols.some((c) => c.name === "run_requested_at")) {
+  db.run(`ALTER TABLE cron_jobs ADD COLUMN run_requested_at INTEGER`);
 }
 
 export type SessionRow = {
