@@ -244,6 +244,7 @@ describe("cron commands", () => {
     expect(parseSlashCommand("/cron-pause abc12345")).toEqual({ kind: "cron-pause", id: "abc12345" });
     expect(parseSlashCommand("/cron-resume abc12345")).toEqual({ kind: "cron-resume", id: "abc12345" });
     expect(parseSlashCommand("/cron-run abc12345")).toEqual({ kind: "cron-run", id: "abc12345" });
+    expect(parseSlashCommand("/cron-pause")).toBeNull();
   });
 
   test("/cron edit with quoted args", () => {
@@ -255,6 +256,7 @@ describe("cron commands", () => {
       target: "channel",
       whenActive: "skip",
     });
+    expect(parseSlashCommand('/cron-edit abc12345 "0 10 * * 1"')).toBeNull();
   });
 
   test("unified /cron aliases", () => {
@@ -278,6 +280,10 @@ describe("cron commands", () => {
       target: "thread",
       whenActive: "skip",
     });
+    expect(parseSlashCommand("/cron rm")).toBeNull();
+    expect(parseSlashCommand("/cron pause")).toBeNull();
+    expect(parseSlashCommand('/cron update abc12345 "0 10 * * 1"')).toBeNull();
+    expect(parseSlashCommand("/cron wat")).toBeNull();
   });
 });
 

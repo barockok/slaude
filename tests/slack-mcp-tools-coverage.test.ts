@@ -252,6 +252,30 @@ describe("adminHandlers cron jobs", () => {
     expect(res.content[0]!.text).toContain("quiet digest");
   });
 
+  test("listCronJobs renders paused and queued lifecycle flags", async () => {
+    const paused = CronJobs.create({
+      channelId: "C1",
+      createdBy: MANAGER,
+      cronExpr: "0 9 * * *",
+      prompt: "paused digest",
+      nextRunAt: Date.now(),
+    });
+    CronJobs.pause(paused.id);
+    const queued = CronJobs.create({
+      channelId: "C1",
+      createdBy: MANAGER,
+      cronExpr: "30 9 * * *",
+      prompt: "queued digest",
+      nextRunAt: Date.now() + 600_000,
+    });
+    CronJobs.requestRun(queued.id);
+    const res = await adminHandlers.listCronJobs();
+    expect(res.content[0]!.text).toContain("paused digest");
+    expect(res.content[0]!.text).toContain("paused");
+    expect(res.content[0]!.text).toContain("queued digest");
+    expect(res.content[0]!.text).toContain("queued");
+  });
+
   test("addCronJob rejects invalid cron expression", async () => {
     const res = await adminHandlers.addCronJob(makeCtx(), {
       cronExpr: "not a cron",
@@ -354,6 +378,43 @@ describe("adminHandlers cron jobs", () => {
     const res = await adminHandlers.pauseCronJob(makeCtx({ userId: RANDO }), { jobId: "deadbeef" });
     expect(res.isError).toBe(true);
     expect(res.content[0]!.text).toContain("Only manager or approver");
+  });
+
+  test("edit/resume/run cron lifecycle denied for non-manager", async () => {
+    const edit = await adminHandlers.editCronJob(makeCtx({ userId: RANDO }), {
+      jobId: "deadbeef",
+      prompt: "x",
+    });
+    const resume = await adminHandlers.resumeCronJob(makeCtx({ userId: RANDO }), { jobId: "deadbeef" });
+    const run = await adminHandlers.runCronJob(makeCtx({ userId: RANDO }), { jobId: "deadbeef" });
+    for (const res of [edit, resume, run]) {
+      expect(res.isError).toBe(true);
+      expect(res.content[0]!.text).toContain("Only manager or approver");
+    }
+  });
+
+  test("lifecycle handlers surface not-found lookup errors", async () => {
+    const pause = await adminHandlers.pauseCronJob(makeCtx(), { jobId: "deadbeef" });
+    const resume = await adminHandlers.resumeCronJob(makeCtx(), { jobId: "deadbeef" });
+    const run = await adminHandlers.runCronJob(makeCtx(), { jobId: "deadbeef" });
+    const edit = await adminHandlers.editCronJob(makeCtx(), { jobId: "deadbeef", prompt: "new prompt" });
+    for (const res of [pause, resume, run, edit]) {
+      expect(res.isError).toBe(true);
+      expect(res.content[0]!.text).toContain("not found");
+    }
+  });
+
+  test("resumeCronJob rejects invalid stored cron expression", async () => {
+    const job = CronJobs.create({
+      channelId: "C1",
+      createdBy: MANAGER,
+      cronExpr: "not a cron",
+      prompt: "bad stored expr",
+      nextRunAt: Date.now(),
+    });
+    const res = await adminHandlers.resumeCronJob(makeCtx(), { jobId: job.id.slice(0, 8) });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("Invalid stored cron expression");
   });
 
   test("removeCronJob denied for non-manager", async () => {

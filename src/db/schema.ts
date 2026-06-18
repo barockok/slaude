@@ -7,6 +7,16 @@ export const db = new Database(paths.db, { create: true });
 db.run("PRAGMA journal_mode = WAL;");
 db.run("PRAGMA foreign_keys = ON;");
 
+export function ensureCronLifecycleColumns(database: Database): void {
+  const cols = database.query(`PRAGMA table_info(cron_jobs)`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "paused")) {
+    database.run(`ALTER TABLE cron_jobs ADD COLUMN paused INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!cols.some((c) => c.name === "run_requested_at")) {
+    database.run(`ALTER TABLE cron_jobs ADD COLUMN run_requested_at INTEGER`);
+  }
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
@@ -163,12 +173,7 @@ if (!cronCols.some((c) => c.name === "when_active")) {
 // Migration: add pause + manual-run lifecycle state. `active` remains the
 // soft-delete bit; paused jobs stay listed but don't fire on schedule. A manual
 // run sets run_requested_at and is picked up by the scheduler even while paused.
-if (!cronCols.some((c) => c.name === "paused")) {
-  db.run(`ALTER TABLE cron_jobs ADD COLUMN paused INTEGER NOT NULL DEFAULT 0`);
-}
-if (!cronCols.some((c) => c.name === "run_requested_at")) {
-  db.run(`ALTER TABLE cron_jobs ADD COLUMN run_requested_at INTEGER`);
-}
+ensureCronLifecycleColumns(db);
 
 export type SessionRow = {
   id: string;
