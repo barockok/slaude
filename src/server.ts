@@ -35,6 +35,7 @@ async function main() {
     const lb = sharedLoopback({
       host: env.oauthLoopbackHost(),
       port: env.oauthSharedLoopbackPort(),
+      publicUrl: env.oauthPublicUrl() || undefined,
       verify: (s) => verifyState(s, env.oauthStateSecret()) !== null,
     });
     await lb.start();

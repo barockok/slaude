@@ -11,8 +11,8 @@ import type { AddressInfo } from "node:net";
  * flow that owns its `state`. Pair with `state.ts` so the `state` carries — and
  * authenticates — the session id.
  *
- * redirect_uri is state-independent: `http://localhost:<port><callbackPath>`. The
- * IdP appends `?code=…&state=…`; we match `state` against the pending registry.
+ * redirect_uri is state-independent: `<publicUrl|http://localhost:<port>><callbackPath>`.
+ * The IdP appends `?code=…&state=…`; we match `state` against the pending registry.
  */
 export interface SharedLoopbackOpts {
   /** "127.0.0.1" locally; "0.0.0.0" in-container. */
@@ -20,6 +20,12 @@ export interface SharedLoopbackOpts {
   /** Fixed listen port (default 3118). 0 → ephemeral OS-assigned (tests). */
   port?: number;
   callbackPath?: string;
+  /** Public base URL advertised as the redirect_uri (e.g.
+   *  "https://maria-hermes-uat.amartha.id"). In-cluster the listener binds a
+   *  private port, but the IdP redirects the user's *browser* — so the redirect_uri
+   *  must be a publicly routable host fronted by an ingress that forwards back to
+   *  this listener. Empty → fall back to `http://localhost:<boundPort>`. */
+  publicUrl?: string;
   /** Optional defense-in-depth gate run on the inbound `state` *before* registry
    *  lookup. Wire to `verifyState(state, secret)` so only states bearing a valid
    *  HMAC are ever routed — a tampered/forged state is rejected before it can match
@@ -48,6 +54,7 @@ export class SharedLoopback {
   #port: number;
   #callbackPath: string;
   #verify?: (state: string) => boolean;
+  #publicUrl?: string;
   #boundPort = 0;
 
   constructor(opts: SharedLoopbackOpts = {}) {
@@ -55,6 +62,14 @@ export class SharedLoopback {
     this.#port = opts.port ?? 3118;
     this.#callbackPath = opts.callbackPath ?? "/callback";
     this.#verify = opts.verify;
+    this.#publicUrl = opts.publicUrl?.trim() || undefined;
+  }
+
+  /** The redirect_uri to register + send to the IdP. Public host when configured
+   *  (in-cluster, fronted by an ingress), else the bound loopback port. */
+  #redirectUri(): string {
+    if (this.#publicUrl) return `${this.#publicUrl.replace(/\/+$/, "")}${this.#callbackPath}`;
+    return `http://localhost:${this.#boundPort}${this.#callbackPath}`;
   }
 
   get port(): number {
@@ -119,7 +134,7 @@ export class SharedLoopback {
     }, timeoutMs);
     this.#pending.set(state, { resolve, reject, timer });
     return {
-      redirectUri: `http://localhost:${this.#boundPort}${this.#callbackPath}`,
+      redirectUri: this.#redirectUri(),
       waitForCode: () => p,
     };
   }
