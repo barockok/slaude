@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { paths } from "./home";
 
 // Load a .env file if present (does not override existing process.env)
@@ -166,4 +167,25 @@ export const env = {
     for (let p = lo; p <= hi; p++) out.push(p);
     return out;
   },
+  /** Use the always-on shared loopback (one fixed port, flows demuxed by signed
+   *  state) instead of a fresh ephemeral listener per connect. Lets many sessions
+   *  authorize concurrently behind a single pre-mapped port. Default off. */
+  oauthSharedLoopback: (): boolean => /^(1|true|yes)$/i.test(opt("SLAUDE_OAUTH_SHARED_LOOPBACK", "").trim()),
+  /** Fixed port for the shared loopback callback server (default 3118 — the same
+   *  port the claude CLI uses). Only meaningful when oauthSharedLoopback is on. */
+  oauthSharedLoopbackPort: (): number => {
+    const n = parseInt(opt("SLAUDE_OAUTH_SHARED_LOOPBACK_PORT", "3118").trim(), 10);
+    return Number.isFinite(n) ? n : 3118;
+  },
+  /** HMAC secret signing the session id inside the OAuth `state`. Empty → a random
+   *  per-process secret (fine: the shared listener lives for the process lifetime,
+   *  so in-flight states stay verifiable; a restart invalidates pending flows). */
+  oauthStateSecret: (): string => {
+    const set = opt("SLAUDE_OAUTH_STATE_SECRET", "").trim();
+    if (set) return set;
+    if (!ephemeralStateSecret) ephemeralStateSecret = randomBytes(32).toString("base64url");
+    return ephemeralStateSecret;
+  },
 };
+
+let ephemeralStateSecret = "";

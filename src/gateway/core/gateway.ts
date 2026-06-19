@@ -40,6 +40,7 @@ import { ensureInitiatorConfigDir, agentConfigDir } from "../../agent/oauth-home
 import { writeEntry, removeEntry, type OAuthServerConfig, type OAuthTokens } from "../../agent/mcp-oauth/store";
 import { discover } from "../../agent/mcp-oauth/discovery";
 import { beginConnect, prepareConnect } from "../../agent/mcp-oauth/client";
+import { beginConnectShared } from "../../agent/mcp-oauth/shared-client";
 import { parseOAuthCallback } from "../../agent/mcp-oauth/callback";
 import { canTriggerIngest } from "../slack/ingest-auth";
 import { canChangeModel } from "../slack/model-auth";
@@ -91,6 +92,7 @@ export interface GatewayOptions {
   /** Override the OAuth connect runner so a sim can stub the network/browser flow.
    *  Defaults to the real discover → beginConnect → exchange round-trip. */
   oauthConnect?: (args: {
+    sessionId: string;
     serverName: string;
     serverConfig: import("../../agent/mcp-oauth/store").OAuthServerConfig;
     postAuthorizeUrl: (url: string) => Promise<void>;
@@ -286,14 +288,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // /mcp OAuth connect flow. The runner is injectable so a sim can stub the
   // network/browser round-trip; the default does real discover → begin → exchange.
-  const runConnect = opts.oauthConnect ?? (async ({ serverName, serverConfig, postAuthorizeUrl }) => {
+  const runConnect = opts.oauthConnect ?? (async ({ sessionId, serverName, serverConfig, postAuthorizeUrl }) => {
     const meta = await discover(serverConfig.url);
-    const handle = await beginConnect({
-      serverName, serverConfig, meta,
-      loopbackHost: env.oauthLoopbackHost(),
-      loopbackPort: env.oauthLoopbackPorts()[0],
-      timeoutMs: 5 * 60_000,
-    });
+    // Shared always-on loopback (one port, flows demuxed by signed state) vs the
+    // default fresh ephemeral listener per connect.
+    const handle = env.oauthSharedLoopback()
+      ? await beginConnectShared({
+          sessionId, stateSecret: env.oauthStateSecret(),
+          serverName, serverConfig, meta, timeoutMs: 5 * 60_000,
+        })
+      : await beginConnect({
+          serverName, serverConfig, meta,
+          loopbackHost: env.oauthLoopbackHost(),
+          loopbackPort: env.oauthLoopbackPorts()[0],
+          timeoutMs: 5 * 60_000,
+        });
     await postAuthorizeUrl(handle.authorizeUrl);
     const code = await handle.waitForCode();
     return handle.exchange(code);
@@ -324,6 +333,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     serverConfig: OAuthServerConfig;
     sessionId: string; channelId: string; threadTs: string; userId: string;
     scope: ConnectScope;
+    /** ts of the posted authorize-URL message, redacted in place on settle. */
+    authMsgRef?: string;
     expiresAt: number;
   };
   const pendingPaste = new Map<string, PendingPaste>();
@@ -350,8 +361,35 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     agent.reload(a.sessionId);
   }
 
+  // Build a Surface for the connect channel/thread so the OAuth flow talks to
+  // whatever platform the session is on (Slack, sim, …) instead of hard-coding the
+  // Slack client. The connect flow may run outside a live turn (button click /
+  // pre-session global connect), so we mint a binding from the ids in hand;
+  // requestApproval/reloadSession aren't used by reply/edit.
+  const connectSurface = (channelId: string, threadTs: string, userId: string): Surface =>
+    surfaceFactory({
+      conversationId: channelId,
+      threadRef: threadTs,
+      inboundRef: threadTs,
+      userId,
+      requestApproval: async () => { throw new Error("approval unavailable in the connect flow"); },
+      reloadSession: () => false,
+    });
+
+  // Once the flow settles, edit the auth-URL message in place to strip the live
+  // link (redact rather than delete — keeps the breadcrumb, kills the URL). The
+  // URL is single-use/expired by now; this just avoids a stale clickable secret
+  // lingering in the thread. Best-effort; needs the "edit" capability.
+  const redactAuthMessage = async (surface: Surface, ref: string | undefined, serverName: string) => {
+    if (!ref || !surface.capabilities.has("edit") || !surface.edit) return;
+    try {
+      await surface.edit({ ref, text: `:link: Authorize \`${serverName}\` — link removed (flow finished).` });
+    } catch { /* best-effort: redaction failure must not mask the connect outcome */ }
+  };
+
   async function connectServer(a: { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string; serverCfg: any; scope: ConnectScope }) {
-    const post = (text: string) => t.client.chat.postMessage({ channel: a.channelId, thread_ts: a.threadTs, text });
+    const surface = connectSurface(a.channelId, a.threadTs, a.userId);
+    const post = (text: string) => surface.reply({ text });
     const serverConfig: OAuthServerConfig = { type: "http", url: a.serverCfg.url, headers: a.serverCfg.headers };
     const redirectUrl = env.oauthRedirectUrl();
 
@@ -363,6 +401,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (redirectUrl && !opts.oauthConnect) {
       try {
         const prepared = await runPrepare({ serverName: a.serverName, serverConfig, redirectUri: redirectUrl });
+        const { ref } = await post(
+          `:link: Authorize \`${a.serverName}\`:\n${prepared.authorizeUrl}\n\n` +
+            `After you approve, the page will show a code. *Paste the full redirect URL (or just the code) back here in this thread* to finish.`,
+        );
         pendingPaste.set(pasteKey(a.channelId, a.threadTs, a.userId), {
           state: prepared.state,
           exchange: prepared.exchange,
@@ -370,12 +412,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           serverConfig,
           sessionId: a.sessionId, channelId: a.channelId, threadTs: a.threadTs, userId: a.userId,
           scope: a.scope,
+          authMsgRef: ref,
           expiresAt: Date.now() + 10 * 60_000,
         });
-        await post(
-          `:link: Authorize \`${a.serverName}\`:\n${prepared.authorizeUrl}\n\n` +
-            `After you approve, the page will show a code. *Paste the full redirect URL (or just the code) back here in this thread* to finish.`,
-        );
       } catch (e) {
         await post(`:x: \`${a.serverName}\` connect failed: ${(e as Error).message}`);
       }
@@ -383,30 +422,40 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
 
     // Loopback mode (local / same-host container): block on the listener.
+    let authMsgRef: string | undefined;
     try {
       const tokens = await runConnect({
-        serverName: a.serverName, serverConfig,
-        postAuthorizeUrl: async (url) => { await post(`:link: Authorize \`${a.serverName}\`: ${url}\n(opens a browser; the loopback captures the result)`); },
+        sessionId: a.sessionId, serverName: a.serverName, serverConfig,
+        postAuthorizeUrl: async (url) => {
+          const { ref } = await post(`:link: Authorize \`${a.serverName}\`: ${url}\n(opens a browser; the loopback captures the result)`);
+          authMsgRef = ref;
+        },
       });
       await persistTokens({ sessionId: a.sessionId, userId: a.userId, serverName: a.serverName, serverConfig, scope: a.scope }, tokens);
+      await redactAuthMessage(surface, authMsgRef, a.serverName);
       await post(`:white_check_mark: \`${a.serverName}\` connected. Next message will use it.`);
     } catch (e) {
+      await redactAuthMessage(surface, authMsgRef, a.serverName);
       await post(`:x: \`${a.serverName}\` connect failed: ${(e as Error).message}`);
     }
   }
 
   /** Complete a parked paste-back flow once the initiator pastes the callback. */
   async function completePaste(pend: PendingPaste, code: string, state?: string): Promise<void> {
-    const post = (text: string) => t.client.chat.postMessage({ channel: pend.channelId, thread_ts: pend.threadTs, text });
+    const surface = connectSurface(pend.channelId, pend.threadTs, pend.userId);
+    const post = (text: string) => surface.reply({ text });
     if (state && state !== pend.state) {
+      // Not terminal — the initiator can paste the right URL; leave the link intact.
       await post(":x: OAuth `state` mismatch — paste the URL from the same authorize step, or rerun `/mcp connect`.");
       return;
     }
     try {
       const tokens = await pend.exchange(code);
       await persistTokens(pend, tokens);
+      await redactAuthMessage(surface, pend.authMsgRef, pend.serverName);
       await post(`:white_check_mark: \`${pend.serverName}\` connected. Next message will use it.`);
     } catch (e) {
+      await redactAuthMessage(surface, pend.authMsgRef, pend.serverName);
       await post(`:x: \`${pend.serverName}\` connect failed: ${(e as Error).message}`);
     }
   }
