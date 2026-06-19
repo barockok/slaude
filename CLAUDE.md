@@ -94,6 +94,8 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 Entries live in `docs/findings/<date>-<slug>.md`. Add a new file per significant finding/decision/mistake; index it below. Newest first.
 
+- [2026-06-19 — Shared always-on OAuth loopback (signed-state demux, verify-before-routing) + surface-aware `/mcp connect` (route via Surface, redact auth URL on settle) + URL-safe `mdToMrkdwn` + mrkdwn flanking fix (#51)](docs/findings/2026-06-19-shared-oauth-loopback-surface-connect.md)
+
 - [2026-06-16 — Re-engage via in-session suppression (hook-only): a `UserPromptSubmit` hook returning `continue:false` (NOT `decision:"block"`, which discards the prompt pre-persist) keeps a disengaged thread's transcript populated without running the model; supersedes the Slack-backfill approach](docs/findings/2026-06-16-reengage-hook-suppress.md)
 - [2026-06-15 — Status line secret/path leak: the "is thinking…" indicator inlined raw tool args (Bash command, absolute paths) → secrets + outside-workspace structure broadcast to Slack. Fixed in `status-text.ts` (program-name-only Bash, basename paths, host-only WebFetch, redactSecrets net); shipped v0.25.1](docs/releases/v0.25.1.md)
 - [2026-06-15 — Per-source `gather()`: bulk-corpus volume drowns curated pages in the pooled candidate set (cold-retrieval fails where warm-context masks it). Slaude-side per-source fan-out wrapper; gbrain stays stock; upstream promotion deferred](docs/findings/2026-06-15-per-source-gather.md)
