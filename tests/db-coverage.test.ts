@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { db, ensureCronLifecycleColumns } from "../src/db/schema";
+import { db, ensureCronPauseColumn } from "../src/db/schema";
 import { findById, findByPrefix } from "../src/db/cron-jobs";
 
 // Covers the ambiguous-prefix guard in src/db/cron-jobs.ts.
@@ -36,7 +36,7 @@ describe("cron-jobs findByPrefix", () => {
 });
 
 describe("cron_jobs schema migrations", () => {
-  test("ensureCronLifecycleColumns adds missing lifecycle columns", () => {
+  test("ensureCronPauseColumn adds missing paused column", () => {
     const legacy = new Database(":memory:");
     try {
       legacy.run(`
@@ -50,17 +50,16 @@ describe("cron_jobs schema migrations", () => {
           active INTEGER NOT NULL DEFAULT 1
         )
       `);
-      ensureCronLifecycleColumns(legacy);
+      ensureCronPauseColumn(legacy);
       const cols = legacy.query("PRAGMA table_info(cron_jobs)").all() as Array<{ name: string }>;
       expect(cols.map((c) => c.name)).toContain("paused");
-      expect(cols.map((c) => c.name)).toContain("run_requested_at");
-      expect(() => ensureCronLifecycleColumns(legacy)).not.toThrow();
+      expect(() => ensureCronPauseColumn(legacy)).not.toThrow();
     } finally {
       legacy.close();
     }
   });
 
-  test("adds paused and run_requested_at to legacy cron_jobs tables", async () => {
+  test("adds paused to legacy cron_jobs tables", async () => {
     const home = mkdtempSync(join(tmpdir(), "slaude-schema-migration-"));
     try {
       const script = `
@@ -108,7 +107,6 @@ describe("cron_jobs schema migrations", () => {
       expect(code).toBe(0);
       const cols = JSON.parse(stdout.trim());
       expect(cols).toContain("paused");
-      expect(cols).toContain("run_requested_at");
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

@@ -852,7 +852,7 @@ describe("gateway uncovered branches", () => {
       return g.emit("app_mention", args);
     };
 
-    it("manager can pause, queue, resume, edit, and remove by 8-char prefix", async () => {
+    it("manager can pause, resume, edit, and remove by 8-char prefix", async () => {
       writeSoulFixture(WORLD);
       db.run("DELETE FROM cron_jobs");
       const job = CronJobs.create({
@@ -873,13 +873,8 @@ describe("gateway uncovered branches", () => {
       expect(CronJobs.findById(job.id)!.paused).toBe(1);
       expect(g.posts.some((p) => String(p.text).includes("paused"))).toBe(true);
 
-      await g.emit("message", dmArgs(g, `/cron run ${id}`));
-      expect(typeof CronJobs.findById(job.id)!.runRequestedAt).toBe("number");
-      expect(g.posts.some((p) => String(p.text).includes("queued for the next scheduler tick"))).toBe(true);
-
       await g.emit("message", dmArgs(g, `/cron resume ${id}`));
       expect(CronJobs.findById(job.id)!.paused).toBe(0);
-      expect(CronJobs.findById(job.id)!.runRequestedAt).toBeNull();
 
       await g.emit("message", dmArgs(g, `/cron edit ${id} "30 10 * * 1" "new digest" channel passive`));
       const edited = CronJobs.findById(job.id)!;
@@ -892,7 +887,7 @@ describe("gateway uncovered branches", () => {
       expect(CronJobs.listActive()).toHaveLength(0);
     });
 
-    it("list renders empty, paused, and queued lifecycle states", async () => {
+    it("list renders empty and paused lifecycle states", async () => {
       writeSoulFixture(WORLD);
       db.run("DELETE FROM cron_jobs");
       const g = makeGw();
@@ -910,21 +905,10 @@ describe("gateway uncovered branches", () => {
         nextRunAt: Date.now() + 600_000,
       });
       CronJobs.pause(paused.id);
-      const queued = CronJobs.create({
-        slackTeamId: "T",
-        slackChannelId: "D_MGR",
-        channelId: "D_MGR",
-        createdBy: WORLD.manager,
-        cronExpr: "30 9 * * *",
-        prompt: "queued digest",
-        nextRunAt: Date.now() + 600_000,
-      });
-      CronJobs.requestRun(queued.id);
 
       await g.emit("message", dmArgs(g, "/cron list"));
       const list = g.posts.filter((p) => String(p.text).includes("*Active cron jobs*")).at(-1);
       expect(String(list.text)).toContain("paused");
-      expect(String(list.text)).toContain("queued");
     });
 
     it("unauthorized users cannot manage cron lifecycle commands", async () => {

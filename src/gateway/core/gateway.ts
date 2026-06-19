@@ -1075,8 +1075,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         slash.kind === "cron-remove" ||
         slash.kind === "cron-edit" ||
         slash.kind === "cron-pause" ||
-        slash.kind === "cron-resume" ||
-        slash.kind === "cron-run"
+        slash.kind === "cron-resume"
       ) {
         const soul = soulData();
         const managerId = soul.manager.userId;
@@ -1095,7 +1094,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             j.target,
             j.whenActive === "skip" ? "passive" : null,
             j.paused ? "paused" : null,
-            j.runRequestedAt ? "queued" : null,
           ].filter(Boolean).join(", ");
           return `• \`${j.id.slice(0, 8)}\` \`${j.cronExpr}\` [${flags}] → ${j.prompt}`;
         };
@@ -1135,7 +1133,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           return;
         }
 
-        if (slash.kind === "cron-pause" || slash.kind === "cron-resume" || slash.kind === "cron-run") {
+        if (slash.kind === "cron-pause" || slash.kind === "cron-resume") {
           if (!isManager && !isApprover) {
             await reply(`:no_entry: only manager or approver can ${slash.kind.replace("cron-", "")} cron jobs`);
             return;
@@ -1154,20 +1152,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await reply(`:pause_button: cron job \`${job.id.slice(0, 8)}\` paused`);
             return;
           }
-          if (slash.kind === "cron-resume") {
-            let nextRun: number;
-            try {
-              nextRun = getNextRun(job.cronExpr);
-            } catch (e: any) {
-              await reply(`:warning: invalid stored cron expression: ${e.message}`);
-              return;
-            }
-            CronJobs.resume(job.id, nextRun);
-            await reply(`:arrow_forward: cron job \`${job.id.slice(0, 8)}\` resumed — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
+          let nextRun: number;
+          try {
+            nextRun = getNextRun(job.cronExpr);
+          } catch (e: any) {
+            await reply(`:warning: invalid stored cron expression: ${e.message}`);
             return;
           }
-          CronJobs.requestRun(job.id);
-          await reply(`:rocket: cron job \`${job.id.slice(0, 8)}\` queued for the next scheduler tick`);
+          CronJobs.resume(job.id, nextRun);
+          await reply(`:arrow_forward: cron job \`${job.id.slice(0, 8)}\` resumed — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
           return;
         }
 
@@ -1184,10 +1177,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               category: "cron",
               risks: "Changes unattended scheduled agent execution.",
             });
-            if (!approval.approved) {
-              await reply(":x: cron edit denied by manager");
-              return;
-            }
+            if (!approval.approved) return void (await reply(":x: cron edit denied by manager"));
           }
           const job = findJob(slash.id);
           if (typeof job === "string") {

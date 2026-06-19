@@ -252,7 +252,7 @@ describe("adminHandlers cron jobs", () => {
     expect(res.content[0]!.text).toContain("quiet digest");
   });
 
-  test("listCronJobs renders paused and queued lifecycle flags", async () => {
+  test("listCronJobs renders paused lifecycle flag", async () => {
     const paused = CronJobs.create({
       channelId: "C1",
       createdBy: MANAGER,
@@ -261,19 +261,9 @@ describe("adminHandlers cron jobs", () => {
       nextRunAt: Date.now(),
     });
     CronJobs.pause(paused.id);
-    const queued = CronJobs.create({
-      channelId: "C1",
-      createdBy: MANAGER,
-      cronExpr: "30 9 * * *",
-      prompt: "queued digest",
-      nextRunAt: Date.now() + 600_000,
-    });
-    CronJobs.requestRun(queued.id);
     const res = await adminHandlers.listCronJobs();
     expect(res.content[0]!.text).toContain("paused digest");
     expect(res.content[0]!.text).toContain("paused");
-    expect(res.content[0]!.text).toContain("queued digest");
-    expect(res.content[0]!.text).toContain("queued");
   });
 
   test("addCronJob rejects invalid cron expression", async () => {
@@ -353,7 +343,7 @@ describe("adminHandlers cron jobs", () => {
     expect(invalid.content[0]!.text).toContain("Invalid cron expression");
   });
 
-  test("pause/resume/run cron lifecycle", async () => {
+  test("pause/resume cron lifecycle", async () => {
     const job = CronJobs.create({
       channelId: "C1",
       createdBy: MANAGER,
@@ -364,14 +354,10 @@ describe("adminHandlers cron jobs", () => {
     const paused = await adminHandlers.pauseCronJob(makeCtx(), { jobId: job.id.slice(0, 8) });
     expect(paused.isError).toBeUndefined();
     expect(CronJobs.findById(job.id)!.paused).toBe(1);
-    const queued = await adminHandlers.runCronJob(makeCtx(), { jobId: job.id.slice(0, 8) });
-    expect(queued.isError).toBeUndefined();
-    expect(typeof CronJobs.findById(job.id)!.runRequestedAt).toBe("number");
     const resumed = await adminHandlers.resumeCronJob(makeCtx(), { jobId: job.id.slice(0, 8) });
     expect(resumed.isError).toBeUndefined();
     const updated = CronJobs.findById(job.id)!;
     expect(updated.paused).toBe(0);
-    expect(updated.runRequestedAt).toBeNull();
   });
 
   test("pauseCronJob denied for non-manager", async () => {
@@ -380,14 +366,13 @@ describe("adminHandlers cron jobs", () => {
     expect(res.content[0]!.text).toContain("Only manager or approver");
   });
 
-  test("edit/resume/run cron lifecycle denied for non-manager", async () => {
+  test("edit/resume cron lifecycle denied for non-manager", async () => {
     const edit = await adminHandlers.editCronJob(makeCtx({ userId: RANDO }), {
       jobId: "deadbeef",
       prompt: "x",
     });
     const resume = await adminHandlers.resumeCronJob(makeCtx({ userId: RANDO }), { jobId: "deadbeef" });
-    const run = await adminHandlers.runCronJob(makeCtx({ userId: RANDO }), { jobId: "deadbeef" });
-    for (const res of [edit, resume, run]) {
+    for (const res of [edit, resume]) {
       expect(res.isError).toBe(true);
       expect(res.content[0]!.text).toContain("Only manager or approver");
     }
@@ -396,9 +381,8 @@ describe("adminHandlers cron jobs", () => {
   test("lifecycle handlers surface not-found lookup errors", async () => {
     const pause = await adminHandlers.pauseCronJob(makeCtx(), { jobId: "deadbeef" });
     const resume = await adminHandlers.resumeCronJob(makeCtx(), { jobId: "deadbeef" });
-    const run = await adminHandlers.runCronJob(makeCtx(), { jobId: "deadbeef" });
     const edit = await adminHandlers.editCronJob(makeCtx(), { jobId: "deadbeef", prompt: "new prompt" });
-    for (const res of [pause, resume, run, edit]) {
+    for (const res of [pause, resume, edit]) {
       expect(res.isError).toBe(true);
       expect(res.content[0]!.text).toContain("not found");
     }

@@ -38,7 +38,6 @@ export type SlashHit =
   | { kind: "cron-remove"; id: string }
   | { kind: "cron-pause"; id: string }
   | { kind: "cron-resume"; id: string }
-  | { kind: "cron-run"; id: string }
   | { kind: "cron-edit"; id: string; cronExpr: string; prompt: string; target: "thread" | "channel"; whenActive: "fire" | "skip" }
   | { kind: "one-on-one"; action: "on" | "off" }
   | { kind: "mention-only"; action: "on" | "off" }
@@ -67,7 +66,6 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: `/cron-edit <id> "<expr>" "<prompt>" [channel] [passive]`, summary: "update a scheduled cron's expression, prompt, target, and passive mode" },
   { usage: "/cron-pause <id>", summary: "pause a scheduled cron without deleting it" },
   { usage: "/cron-resume <id>", summary: "resume a paused cron and recompute its next run" },
-  { usage: "/cron-run <id>", summary: "queue a cron to run on the next scheduler tick" },
   { usage: "/cron-remove <id>", summary: "remove a scheduled cron" },
   { usage: "/soul <trust|allow|dm|block> <add|remove> <id>", summary: "manager-only: runtime override of soul ACLs (channels/users) — immediate, shadows SOUL.md" },
   { usage: "/soul list", summary: "show runtime soul overrides vs SOUL.md base" },
@@ -152,10 +150,10 @@ export function parseSlashCommand(text: string): SlashHit | null {
     if (!id) return null;
     return { kind: "cron-remove", id };
   }
-  if (cmd === "cron-pause" || cmd === "cron-resume" || cmd === "cron-run") {
+  if (cmd === "cron-pause" || cmd === "cron-resume") {
     const id = rest[0];
     if (!id) return null;
-    return { kind: cmd as "cron-pause" | "cron-resume" | "cron-run", id };
+    return { kind: cmd as "cron-pause" | "cron-resume", id };
   }
   if (cmd === "cron-edit") {
     return parseCronEditTail(rest.join(" "));
@@ -172,9 +170,9 @@ export function parseSlashCommand(text: string): SlashHit | null {
       const id = rest[1];
       return id ? { kind: "cron-remove", id } : null;
     }
-    if (sub === "pause" || sub === "resume" || sub === "run") {
+    if (sub === "pause" || sub === "resume") {
       const id = rest[1];
-      return id ? { kind: `cron-${sub}` as "cron-pause" | "cron-resume" | "cron-run", id } : null;
+      return id ? { kind: `cron-${sub}` as "cron-pause" | "cron-resume", id } : null;
     }
     if (sub === "edit" || sub === "update") {
       return parseCronEditTail(tail);

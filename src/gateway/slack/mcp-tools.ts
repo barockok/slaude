@@ -340,7 +340,6 @@ function cronJobLine(j: CronJobs.CronJob): string {
     j.target,
     j.whenActive === "skip" ? "passive" : null,
     j.paused ? "paused" : null,
-    j.runRequestedAt ? "queued" : null,
   ].filter(Boolean).join(", ");
   return `• \`${j.id.slice(0, 8)}\` \`${j.cronExpr}\` [${flags}] → ${j.prompt} (next: ${new Date(j.nextRunAt).toISOString()})`;
 }
@@ -445,16 +444,6 @@ export const adminHandlers = {
     }
     CronJobs.resume(job.id, nextRun);
     return ok(`Cron job \`${job.id.slice(0, 8)}\` resumed. Next run: ${new Date(nextRun).toISOString()}`);
-  },
-
-  async runCronJob(ctx: SlackContext, { jobId }: { jobId: string }): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId)) {
-      return err("Only manager or approver can run cron jobs.");
-    }
-    const job = findCronJob(jobId);
-    if ("content" in job) return job;
-    CronJobs.requestRun(job.id);
-    return ok(`Cron job \`${job.id.slice(0, 8)}\` queued for the next scheduler tick.`);
   },
 
   async removeCronJob(_ctx: SlackContext, { jobId }: { jobId: string }): Promise<ToolResult> {
@@ -708,15 +697,6 @@ export function createRuntimeMcp(ctx: SlackContext): McpSdkServerConfigWithInsta
           job_id: z.string().describe("Full job ID or 8-character prefix from list_cron_jobs."),
         },
         (args) => adminHandlers.resumeCronJob(ctx, { jobId: args.job_id }),
-      ),
-
-      tool(
-        "run_cron_job",
-        "Queue a scheduled cron job to run on the next scheduler tick, outside its normal schedule. This does not unpause a paused job after the manual run completes. Requires manager or approver authorization.",
-        {
-          job_id: z.string().describe("Full job ID or 8-character prefix from list_cron_jobs."),
-        },
-        (args) => adminHandlers.runCronJob(ctx, { jobId: args.job_id }),
       ),
 
       tool(

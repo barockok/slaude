@@ -12,7 +12,6 @@ export type CronJob = {
   cronExpr: string;
   prompt: string;
   nextRunAt: number;
-  runRequestedAt: number | null;
   lastRunAt: number | null;
   lastResult: string | null;
   paused: number;
@@ -82,8 +81,9 @@ export function findDue(now: number): CronJob[] {
     .query(
       `SELECT * FROM cron_jobs
        WHERE active = 1
-         AND (run_requested_at IS NOT NULL OR (paused = 0 AND next_run_at <= ?))
-       ORDER BY COALESCE(run_requested_at, next_run_at)`,
+         AND paused = 0
+         AND next_run_at <= ?
+       ORDER BY next_run_at`,
     )
     .all(now) as any[];
   return rows.map(mapRow);
@@ -91,7 +91,7 @@ export function findDue(now: number): CronJob[] {
 
 export function updateNextRun(id: string, nextRunAt: number, lastResult: string): void {
   db.run(
-    "UPDATE cron_jobs SET next_run_at = ?, run_requested_at = NULL, last_run_at = ?, last_result = ? WHERE id = ?",
+    "UPDATE cron_jobs SET next_run_at = ?, last_run_at = ?, last_result = ? WHERE id = ?",
     [nextRunAt, Date.now(), lastResult, id],
   );
 }
@@ -101,18 +101,11 @@ export function deactivate(id: string): void {
 }
 
 export function pause(id: string): void {
-  db.run("UPDATE cron_jobs SET paused = 1, run_requested_at = NULL WHERE id = ?", [id]);
+  db.run("UPDATE cron_jobs SET paused = 1 WHERE id = ?", [id]);
 }
 
 export function resume(id: string, nextRunAt: number): void {
-  db.run("UPDATE cron_jobs SET paused = 0, run_requested_at = NULL, next_run_at = ? WHERE id = ?", [
-    nextRunAt,
-    id,
-  ]);
-}
-
-export function requestRun(id: string, at = Date.now()): void {
-  db.run("UPDATE cron_jobs SET run_requested_at = ? WHERE id = ?", [at, id]);
+  db.run("UPDATE cron_jobs SET paused = 0, next_run_at = ? WHERE id = ?", [nextRunAt, id]);
 }
 
 export function update(
@@ -154,7 +147,7 @@ export function update(
 
 export function listActive(): CronJob[] {
   const rows = db
-    .query("SELECT * FROM cron_jobs WHERE active = 1 ORDER BY paused, COALESCE(run_requested_at, next_run_at)")
+    .query("SELECT * FROM cron_jobs WHERE active = 1 ORDER BY paused, next_run_at")
     .all() as any[];
   return rows.map(mapRow);
 }
@@ -171,7 +164,6 @@ function mapRow(row: any): CronJob {
     cronExpr: row.cron_expr,
     prompt: row.prompt,
     nextRunAt: row.next_run_at,
-    runRequestedAt: row.run_requested_at,
     lastRunAt: row.last_run_at,
     lastResult: row.last_result,
     paused: row.paused ?? 0,

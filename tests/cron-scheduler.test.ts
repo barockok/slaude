@@ -124,30 +124,13 @@ describe("cron-jobs DB", () => {
     const job = CronJobs.create({
       channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: now - 1000,
     });
-    CronJobs.requestRun(job.id, now);
     CronJobs.pause(job.id);
     expect(CronJobs.findById(job.id)!.paused).toBe(1);
-    expect(CronJobs.findById(job.id)!.runRequestedAt).toBeNull();
     expect(CronJobs.findDue(now)).toHaveLength(0);
     CronJobs.resume(job.id, now + 60_000);
     const resumed = CronJobs.findById(job.id)!;
     expect(resumed.paused).toBe(0);
     expect(resumed.nextRunAt).toBe(now + 60_000);
-  });
-
-  test("manual run request makes a paused job due once", () => {
-    const now = Date.now();
-    const job = CronJobs.create({
-      channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: now + 600_000,
-    });
-    CronJobs.pause(job.id);
-    CronJobs.requestRun(job.id, now);
-    expect(CronJobs.findDue(now)).toHaveLength(1);
-    CronJobs.updateNextRun(job.id, now + 3_600_000, "completed");
-    const updated = CronJobs.findById(job.id)!;
-    expect(updated.runRequestedAt).toBeNull();
-    expect(updated.paused).toBe(1);
-    expect(CronJobs.findDue(now + 10_000)).toHaveLength(0);
   });
 
   test("updates editable cron fields", () => {
@@ -301,45 +284,6 @@ describe("CronScheduler", () => {
     await new Promise((r) => setTimeout(r, 20));
     scheduler.stop();
     expect(sendMessage).toHaveBeenCalledTimes(0);
-  });
-
-  test("tick executes manual run request for paused job", async () => {
-    const now = Date.now();
-    const job = CronJobs.create({
-      slackTeamId: "T1",
-      slackChannelId: "C123",
-      channelId: "C123",
-      createdBy: "U999",
-      cronExpr: "0 9 * * *",
-      prompt: "manual",
-      nextRunAt: now + 600_000,
-    });
-    CronJobs.pause(job.id);
-    CronJobs.requestRun(job.id, now);
-    const eventHandlers = new Map<string, Function[]>();
-    const sendMessage = mock(async () => {});
-    const scheduler = new CronScheduler({
-      agent: {
-        ensureSession: () => ({ id: "sess-1" }),
-        sendMessage,
-        isLive: () => false,
-        on: (evt: string, fn: Function) => {
-          if (!eventHandlers.has(evt)) eventHandlers.set(evt, []);
-          eventHandlers.get(evt)!.push(fn);
-        },
-        off: () => {},
-      } as any,
-      client: { chat: { postMessage: async () => ({}) } } as any,
-    });
-    scheduler.start();
-    await new Promise((r) => setTimeout(r, 20));
-    scheduler.stop();
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    for (const fn of eventHandlers.get("event") ?? []) fn({ type: "done", sessionId: "sess-1" });
-    const updated = CronJobs.findById(job.id)!;
-    expect(updated.runRequestedAt).toBeNull();
-    expect(updated.paused).toBe(1);
-    expect(updated.lastResult).toBe("completed");
   });
 
   test("tick executes due job with Slack keys and waits for done event", async () => {

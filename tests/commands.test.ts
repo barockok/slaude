@@ -243,7 +243,7 @@ describe("cron commands", () => {
   test("/cron lifecycle commands with dashed aliases", () => {
     expect(parseSlashCommand("/cron-pause abc12345")).toEqual({ kind: "cron-pause", id: "abc12345" });
     expect(parseSlashCommand("/cron-resume abc12345")).toEqual({ kind: "cron-resume", id: "abc12345" });
-    expect(parseSlashCommand("/cron-run abc12345")).toEqual({ kind: "cron-run", id: "abc12345" });
+    expect(parseSlashCommand("/cron-run abc12345")).toBeNull();
     expect(parseSlashCommand("/cron-pause")).toBeNull();
   });
 
@@ -270,7 +270,7 @@ describe("cron commands", () => {
     });
     expect(parseSlashCommand("/cron pause abc12345")).toEqual({ kind: "cron-pause", id: "abc12345" });
     expect(parseSlashCommand("/cron resume abc12345")).toEqual({ kind: "cron-resume", id: "abc12345" });
-    expect(parseSlashCommand("/cron run abc12345")).toEqual({ kind: "cron-run", id: "abc12345" });
+    expect(parseSlashCommand("/cron run abc12345")).toBeNull();
     expect(parseSlashCommand("/cron remove abc12345")).toEqual({ kind: "cron-remove", id: "abc12345" });
     expect(parseSlashCommand('/cron edit abc12345 "0 10 * * 1" "weekly" passive')).toEqual({
       kind: "cron-edit",
