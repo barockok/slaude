@@ -21,6 +21,7 @@ type Rich = ReturnType<typeof richTransport>;
 
 function richTransport(o: { botUserId?: string; authThrows?: boolean } = {}) {
   const posts: any[] = [];
+  const edits: any[] = [];
   const handlers = new Map<string, (args: any) => Promise<void>>();
   const actions: { pattern: RegExp | string; fn: any }[] = [];
   const middlewares: any[] = [];
@@ -32,8 +33,8 @@ function richTransport(o: { botUserId?: string; authThrows?: boolean } = {}) {
       },
     },
     chat: {
-      postMessage: async (a: any) => { posts.push(a); return { ok: true, ts: `${Date.now()}.${posts.length}` }; },
-      update: async () => ({ ok: true }),
+      postMessage: async (a: any) => { const ts = `${Date.now()}.${posts.length}`; posts.push({ ...a, ts }); return { ok: true, ts }; },
+      update: async (a: any) => { edits.push(a); return { ok: true }; },
     },
     reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
     conversations: { info: async () => ({}), members: async () => ({}), replies: async () => ({}) },
@@ -55,7 +56,7 @@ function richTransport(o: { botUserId?: string; authThrows?: boolean } = {}) {
       if (hit) await fn({ ack: async () => {}, action: { action_id: actionId }, body: { user: { id: userId } }, respond: async () => {} });
     }
   };
-  return { t, client, posts, emit, emitAction, middlewares };
+  return { t, client, posts, edits, emit, emitAction, middlewares };
 }
 
 function makeGw(o: { transport?: Rich; gwOpts?: GatewayOptions; agent?: AgentManager } = {}) {
@@ -573,6 +574,12 @@ describe("gateway uncovered branches", () => {
         expect(cb.status).toBe(200);
         await done;
         expect(g.posts.some((p) => String(p.text).includes("`svc` connected"))).toBe(true);
+        // the auth-URL message is edited in place to strip the live link once the
+        // flow settles — redacted text, no URL.
+        const redact = g.edits.find((e) => String(e.text).includes("link removed"));
+        expect(redact).toBeDefined();
+        expect(redact.ts).toBe(String(authPost.ts));
+        expect(String(redact.text)).not.toContain("http");
         const creds = JSON.parse(readFileSync(join(paths.claudeConfig, ".credentials.json"), "utf8"));
         expect(JSON.stringify(creds.mcpOAuth)).toContain("atk");
       } finally {
