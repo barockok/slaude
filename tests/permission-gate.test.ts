@@ -65,6 +65,30 @@ describe("PermissionGate", () => {
     expect(f.posts.length).toBe(0);
   });
 
+  test("synthesized OAuth tools are denied even with a live thread (not just fail-closed)", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app);
+    gate.bindSession("S", "C1", "1.0"); // live route — would otherwise prompt for approval
+    const ac = new AbortController();
+    for (const t of [
+      "mcp__workbench__authenticate",
+      "mcp__composio__complete_authentication",
+      "mcp__some_server__authenticate",
+    ]) {
+      const r = await gate.resolver("S", t, {}, ctx("T", ac.signal));
+      expect(r.behavior).toBe("deny");
+    }
+    expect(f.posts.length).toBe(0); // never prompts the user
+  });
+
+  test("mcp__slaude_connect__* always allowed (our deterministic connect path)", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app);
+    const ac = new AbortController();
+    const r = await gate.resolver("S", "mcp__slaude_connect__connect_mcp", { server: "x" }, ctx("T", ac.signal));
+    expect(r.behavior).toBe("allow");
+  });
+
   test("mcp__slaude_slack__* always allowed", async () => {
     const f = fakeApp();
     const gate = new PermissionGate(f.app);

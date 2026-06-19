@@ -631,3 +631,31 @@ export function createRuntimeMcp(ctx: SlackContext): McpSdkServerConfigWithInsta
     ],
   });
 }
+
+export const CONNECT_MCP_NAME = "slaude_connect";
+
+export interface ConnectDeps {
+  /** Kick off the deterministic connect engine for `server` and return a short
+   *  status line for the agent — never the authorize URL (that's posted out-of-band
+   *  by the gateway). The agent decides *when*; the engine owns *how*. */
+  connect: (server: string) => Promise<string>;
+}
+
+/** The natural-language front door to MCP OAuth connect. The agent calls this when a
+ *  user asks to connect/authorize a service; it routes into the same gateway engine as
+ *  `/mcp connect` (loopback + signed-state + URL-safe out-of-band post + redact teardown).
+ *  The authorize URL never passes through the model, and no paste is needed. */
+export function connectTools(deps: ConnectDeps) {
+  return [
+    tool(
+      "connect_mcp",
+      "Connect an external MCP server's OAuth so its tools become available, when the user asks to connect / authorize / log in to a service (e.g. 'connect workbench'). Posts an authorization link into this thread out-of-band and captures the result automatically — you never see or relay the link, and the user does NOT paste anything back. Returns a short status; tell the user you've started it and the link is in the thread. Authorization is scope-gated (your own services in a 1on1, the shared identity is manager-only).",
+      { server: z.string().describe("Name of the MCP server to connect (as shown by /mcp).") },
+      async (args) => ok(await deps.connect(args.server)),
+    ),
+  ];
+}
+
+export function createConnectMcp(deps: ConnectDeps): McpSdkServerConfigWithInstance {
+  return createSdkMcpServer({ name: CONNECT_MCP_NAME, version: "0.1.0", tools: connectTools(deps) });
+}

@@ -136,6 +136,20 @@ export class PermissionGate {
     if (this.#autoAllow.has(toolName)) {
       return { behavior: "allow", updatedInput: input };
     }
+    // Hard-deny the runtime/SDK-synthesized OAuth bootstrap tools. MCP OAuth must
+    // only ever start through our deterministic engine (`/mcp connect` or the
+    // mcp__slaude_connect__ tool), which owns the loopback, signed-state redirect,
+    // URL-safe out-of-band post, and redact-teardown. The synthesized path uses an
+    // uncontrolled redirect and would launder the auth URL — never let it run, and
+    // never even prompt the user to approve it.
+    if (/^mcp__.+__(authenticate|complete_authentication)$/.test(toolName)) {
+      return { behavior: "deny", message: "OAuth connect must go through `/mcp connect` (or ask me to connect it) — the synthesized auth tool is disabled." };
+    }
+    // Our own connect tool is the controlled entry point — never gate it (it only
+    // posts an authorize link; nothing is granted until the user clicks + approves).
+    if (toolName.startsWith("mcp__slaude_connect__")) {
+      return { behavior: "allow", updatedInput: input };
+    }
     // Surface (interaction) + runtime (control-plane) + the legacy slack namespace are
     // the agent's path to user output / housekeeping — never gate. Surface reply/edit/
     // upload especially MUST stay un-gated or every message would prompt for approval.
