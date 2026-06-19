@@ -6,6 +6,7 @@ import { startHealthServer } from "./health";
 import { loadSoulData, setSoulData } from "./soul/extract";
 import { assertOAuthKeyCanary } from "./agent/mcp-oauth/store";
 import { sharedLoopback } from "./agent/mcp-oauth/shared-loopback";
+import { verifyState } from "./agent/mcp-oauth/state";
 import { env } from "./config/env";
 
 async function main() {
@@ -31,7 +32,11 @@ async function main() {
   // remains the default.
   let loopback: { stop(): Promise<void> } | undefined;
   if (env.oauthSharedLoopback()) {
-    const lb = sharedLoopback({ host: env.oauthLoopbackHost(), port: env.oauthSharedLoopbackPort() });
+    const lb = sharedLoopback({
+      host: env.oauthLoopbackHost(),
+      port: env.oauthSharedLoopbackPort(),
+      verify: (s) => verifyState(s, env.oauthStateSecret()) !== null,
+    });
     await lb.start();
     loopback = lb;
     console.log(`[mcp-oauth] shared loopback listening on ${env.oauthLoopbackHost()}:${lb.port}${lb.callbackPath}`);

@@ -20,6 +20,11 @@ export interface SharedLoopbackOpts {
   /** Fixed listen port (default 3118). 0 → ephemeral OS-assigned (tests). */
   port?: number;
   callbackPath?: string;
+  /** Optional defense-in-depth gate run on the inbound `state` *before* registry
+   *  lookup. Wire to `verifyState(state, secret)` so only states bearing a valid
+   *  HMAC are ever routed — a tampered/forged state is rejected before it can match
+   *  a pending flow, and any sid later decoded from a routed state is provably ours. */
+  verify?: (state: string) => boolean;
 }
 
 interface Pending {
@@ -42,12 +47,14 @@ export class SharedLoopback {
   #host: string;
   #port: number;
   #callbackPath: string;
+  #verify?: (state: string) => boolean;
   #boundPort = 0;
 
   constructor(opts: SharedLoopbackOpts = {}) {
     this.#host = opts.host ?? "127.0.0.1";
     this.#port = opts.port ?? 3118;
     this.#callbackPath = opts.callbackPath ?? "/callback";
+    this.#verify = opts.verify;
   }
 
   get port(): number {
@@ -70,6 +77,14 @@ export class SharedLoopback {
       }
       const state = u.searchParams.get("state") ?? "";
       const code = u.searchParams.get("code");
+      // Defense-in-depth: reject any state without a valid HMAC before it can even
+      // match a pending flow. The nonce in the registry key is the capability guard;
+      // this guarantees a routed state is authentic so its sid can be trusted.
+      if (this.#verify && !this.#verify(state)) {
+        res.statusCode = 400;
+        res.end("invalid state — you can close this tab");
+        return;
+      }
       const flow = this.#pending.get(state);
       if (!flow) {
         // Unknown/expired state — never resolve a flow we don't own.

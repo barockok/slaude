@@ -86,6 +86,27 @@ describe("SharedLoopback", () => {
     expect(sharedLoopback()).toBe(sharedLoopback());
   });
 
+  test("verify gates routing even for a registered state (MAC checked first)", async () => {
+    // verify rejects everything → even an exact registry hit must not route.
+    lb = new SharedLoopback({ port: 0, verify: () => false });
+    await lb.start();
+    const flow = lb.register("good-1", 5000);
+    const res = await hit(lb, "code=x&state=good-1");
+    expect(res.status).toBe(400);
+    let settled = false;
+    flow.waitForCode().then(() => { settled = true; }, () => { settled = true; });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(settled).toBe(false);
+  });
+
+  test("with verify: a state passing the check routes normally", async () => {
+    lb = new SharedLoopback({ port: 0, verify: (s) => s.startsWith("good-") });
+    await lb.start();
+    const flow = lb.register("good-1", 5000);
+    await hit(lb, "code=OK&state=good-1");
+    expect(await flow.waitForCode()).toBe("OK");
+  });
+
   test("stop() rejects outstanding flows", async () => {
     lb = await newStarted();
     const flow = lb.register("pending", 5000);
