@@ -6,7 +6,7 @@ function fakeClient(impl: any = {}) {
   return {
     chat: {
       postMessage: async () => impl.postMessage?.() ?? { ts: "100.0" },
-      update: async () => impl.chatUpdate?.() ?? {},
+      update: async (a: any) => impl.chatUpdate?.(a) ?? {},
     },
     reactions: {
       add: async () => impl.reactionsAdd?.() ?? {},
@@ -33,6 +33,15 @@ describe("SlackSurface", () => {
     const s = new SlackSurface(fakeClient(), binding());
     expect(s.id).toBe("slack");
     expect([...s.capabilities].sort()).toEqual(["edit", "react", "upload"]);
+  });
+
+  test("edit updates the message at ref in the bound conversation", async () => {
+    const calls: any[] = [];
+    const s = new SlackSurface(fakeClient({ chatUpdate: (a: any) => { calls.push(a); return {}; } }), binding());
+    await s.edit!({ ref: "555.0", text: "redacted" });
+    expect(calls.length).toBe(1);
+    expect(calls[0].channel).toBe("C1");
+    expect(calls[0].ts).toBe("555.0");
   });
 
   test("reply posts to the bound conversation and returns ts as ref", async () => {
