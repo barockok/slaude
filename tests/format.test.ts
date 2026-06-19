@@ -36,6 +36,36 @@ describe("mdToMrkdwn", () => {
   test("italic does not eat bold", () => {
     expect(mdToMrkdwn("**bold** *em*")).toBe("*bold* _em_");
   });
+  test("bold+italic *** → _*x*_ (Slack has no triple-star)", () => {
+    expect(mdToMrkdwn("***x***")).toBe("_*x*_");
+    expect(mdToMrkdwn("a ***big*** b")).toBe("a _*big*_ b");
+  });
+  test("inner-padded bold → markers hug content (Slack won't bold ' x ')", () => {
+    expect(mdToMrkdwn("** spaced **")).toBe("*spaced*");
+    expect(mdToMrkdwn("a **  b  ** c")).toBe("a *b* c");
+  });
+  test("inner-padded italic → markers hug content", () => {
+    expect(mdToMrkdwn("a * em * b")).toBe("a _em_ b");
+  });
+  test("bare URL with base64url __ survives (no emphasis mangling)", () => {
+    const url = "https://idp.example.com/authorize?code_challenge=aB_c__dE&state=x__y";
+    expect(mdToMrkdwn(url)).toBe(url);
+  });
+  test("bare URL with single underscores untouched", () => {
+    const url = "https://h.io/a_b_c?x=1&y=2";
+    expect(mdToMrkdwn(url)).toBe(url);
+  });
+  test("URL inside prose keeps surrounding markdown working", () => {
+    const out = mdToMrkdwn("see **here**: https://h.io/p__q for the link");
+    expect(out).toContain("https://h.io/p__q");
+    expect(out).toContain("*here*");
+  });
+  test("angle-bracket autolink preserved verbatim", () => {
+    expect(mdToMrkdwn("<https://h.io/a__b>")).toBe("<https://h.io/a__b>");
+  });
+  test("markdown link [text](url) still converts, url part protected", () => {
+    expect(mdToMrkdwn("[t](https://h.io/a__b)")).toBe("<https://h.io/a__b|t>");
+  });
   test("narrow table → monospace block", () => {
     const md = "| a | b |\n| - | - |\n| 1 | 2 |";
     const out = mdToMrkdwn(md);

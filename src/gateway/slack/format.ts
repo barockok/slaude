@@ -13,6 +13,7 @@ const C1 = ""; // code block ref
 const C2 = ""; // code span ref
 const C3 = ""; // bold open
 const C4 = ""; // bold close
+const C5 = ""; // url ref
 
 export function mdToMrkdwn(md: string): string {
   // 0. Markdown tables → fixed-width code block (Slack has no native tables).
@@ -35,6 +36,14 @@ export function mdToMrkdwn(md: string): string {
     return `${C2}${spans.length - 1}${C2}`;
   });
 
+  // 2b. Carve URLs (autolinks <…> and bare http(s)://…) so emphasis rules never
+  //     rewrite a `_`/`__`/`*` inside a link. Restored verbatim at the end. Runs
+  //     before the link rule, whose url group then carries the sentinel through.
+  const urls: string[] = [];
+  const carveUrl = (m: string) => { urls.push(m); return `${C5}${urls.length - 1}${C5}`; };
+  work = work.replace(/<https?:\/\/[^>\s]+>/g, carveUrl);
+  work = work.replace(/https?:\/\/[^\s<>)\]]+/g, carveUrl);
+
   // 3. Links: [text](url) → <url|text>.
   work = work.replace(
     /\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
@@ -44,14 +53,32 @@ export function mdToMrkdwn(md: string): string {
   // 4. Headings → bold line.
   work = work.replace(/^#{1,6}\s+(.+?)\s*#*\s*$/gm, `${C3}$1${C4}`);
 
+  // 4b. Bold+italic ***X*** → _*X*_. Slack nests emphasis but has no
+  //     triple-star; a literal *** leaves stray asterisks unrendered.
+  work = work.replace(
+    /\*\*\*([^*\n]+?)\*\*\*/g,
+    (_m, body) => `_${C3}${body.trim()}${C4}_`,
+  );
+
   // 5. Italic FIRST while bold markers are still **. Single-star italic
-  //    requires non-* on both sides so we don't munch bold.
-  work = work.replace(/(^|[^*])\*([^*\n]+?)\*(?!\*)/g, "$1_$2_");
+  //    requires non-* on both sides so we don't munch bold. Trim inner
+  //    padding — Slack won't render "_ x _" (space hugging the marker).
+  work = work.replace(
+    /(^|[^*])\*([^*\n]+?)\*(?!\*)/g,
+    (_m, pre, body) => `${pre}_${body.trim()}_`,
+  );
 
   // 6. Bold: **X** or __X__ → sentinel; restored to single * at the end so
-  //    nothing else mistakes them for emphasis.
-  work = work.replace(/\*\*([\s\S]+?)\*\*/g, `${C3}$1${C4}`);
-  work = work.replace(/__([^_\n]+?)__/g, `${C3}$1${C4}`);
+  //    nothing else mistakes them for emphasis. Trim inner padding — Slack
+  //    won't render "* x *".
+  work = work.replace(
+    /\*\*([\s\S]+?)\*\*/g,
+    (_m, body) => `${C3}${body.trim()}${C4}`,
+  );
+  work = work.replace(
+    /__([^_\n]+?)__/g,
+    (_m, body) => `${C3}${body.trim()}${C4}`,
+  );
 
   // 7. Strike: ~~X~~ → ~X~.
   work = work.replace(/~~([^~\n]+?)~~/g, "~$1~");
@@ -65,6 +92,7 @@ export function mdToMrkdwn(md: string): string {
     .replaceAll(C4, "*")
     .replace(new RegExp(`${C2}(\\d+)${C2}`, "g"), (_m, i) => spans[+i] ?? "")
     .replace(new RegExp(`${C1}(\\d+)${C1}`, "g"), (_m, i) => blocks[+i] ?? "");
+  work = work.replace(new RegExp(`${C5}(\\d+)${C5}`, "g"), (_m, i) => urls[+i] ?? "");
 
   return work;
 }
