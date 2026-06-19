@@ -39,12 +39,10 @@ export function verifyState(state: string, secret: string): SignedState | null {
   const a = Buffer.from(mac);
   const b = Buffer.from(expected);
   if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
-  try {
-    return {
-      sid: Buffer.from(sidB, "base64url").toString("utf8"),
-      nonce: Buffer.from(nonceB, "base64url").toString("utf8"),
-    };
-  } catch {
-    return null;
-  }
+  // base64url decode is lenient (never throws on bad input), and the MAC has
+  // already verified, so the head is one we signed — decode is safe.
+  return {
+    sid: Buffer.from(sidB, "base64url").toString("utf8"),
+    nonce: Buffer.from(nonceB, "base64url").toString("utf8"),
+  };
 }
