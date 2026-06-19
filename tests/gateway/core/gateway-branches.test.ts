@@ -540,6 +540,34 @@ describe("gateway uncovered branches", () => {
       expect(denied).toContain("manager-only");
       expect(connects).toBe(1);
       writeSoulFixture(WORLD);
+
+      // initiator scope: caller owns the 1on1 lock → connect runs into their config home
+      OneOnOne.lock({ channelId: "D_MGR", threadTs: ts, lockedUser: WORLD.manager, createdBy: WORLD.manager });
+      const asInitiator = await g.h.__agentConnect(session.id, "svc");
+      expect(asInitiator).toContain("Started authorizing");
+      await waitFor(() => connects === 2);
+      expect(existsSync(join(paths.home, "oauth", WORLD.manager))).toBe(true);
+      OneOnOne.unlock("D_MGR", ts);
+
+      // a 1on1 lock owned by someone else → refused (initiator scope, not the owner)
+      OneOnOne.lock({ channelId: "D_MGR", threadTs: ts, lockedUser: "U0OTHER", createdBy: "U0OTHER" });
+      const notOwner = await g.h.__agentConnect(session.id, "svc");
+      expect(notOwner).toContain("belongs to");
+      expect(connects).toBe(2);
+      OneOnOne.unlock("D_MGR", ts);
+
+      // unknown session → no active thread
+      expect(await g.h.__agentConnect("no-such-session", "svc")).toContain("no active thread");
+    });
+
+    it("agent connect is disabled when the store-format canary failed", async () => {
+      writeSoulFixture(WORLD);
+      writeMcpJson({ svc: { type: "http", url: "http://127.0.0.1:1/mcp" } });
+      const g = makeGw({ gwOpts: { mcpConnectEnabled: false } });
+      const ts = nextTs();
+      await g.emit("message", dmArgs(g, "hi", { ts }));
+      const session = g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+      expect(await g.h.__agentConnect(session.id, "svc")).toContain("disabled");
     });
 
     it("initiator-scoped connect card: click gated on still owning the 1on1 lock", async () => {

@@ -473,8 +473,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (opts.mcpConnectEnabled === false) {
       return ":warning: MCP connect is temporarily disabled (store-format canary failed) — see server logs.";
     }
-    const userId = ctx.userId;
-    if (!userId) return "can't tell who's asking — no user on this turn.";
+    // Empty if somehow absent — the scope checks below then reject (it can't equal a
+    // lock owner or the manager), so connectServer is never reached without a real user.
+    const userId = ctx.userId ?? "";
     const threadTs = ctx.threadTs ?? ctx.inboundTs ?? "";
     const lock = OneOnOne.find(ctx.channel, threadTs);
     let scope: ConnectScope;
