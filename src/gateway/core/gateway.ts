@@ -40,6 +40,7 @@ import { ensureInitiatorConfigDir, agentConfigDir } from "../../agent/oauth-home
 import { writeEntry, removeEntry, type OAuthServerConfig, type OAuthTokens } from "../../agent/mcp-oauth/store";
 import { discover } from "../../agent/mcp-oauth/discovery";
 import { beginConnect, prepareConnect } from "../../agent/mcp-oauth/client";
+import { beginConnectShared } from "../../agent/mcp-oauth/shared-client";
 import { parseOAuthCallback } from "../../agent/mcp-oauth/callback";
 import { canTriggerIngest } from "../slack/ingest-auth";
 import { canChangeModel } from "../slack/model-auth";
@@ -91,6 +92,7 @@ export interface GatewayOptions {
   /** Override the OAuth connect runner so a sim can stub the network/browser flow.
    *  Defaults to the real discover → beginConnect → exchange round-trip. */
   oauthConnect?: (args: {
+    sessionId: string;
     serverName: string;
     serverConfig: import("../../agent/mcp-oauth/store").OAuthServerConfig;
     postAuthorizeUrl: (url: string) => Promise<void>;
@@ -286,14 +288,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // /mcp OAuth connect flow. The runner is injectable so a sim can stub the
   // network/browser round-trip; the default does real discover → begin → exchange.
-  const runConnect = opts.oauthConnect ?? (async ({ serverName, serverConfig, postAuthorizeUrl }) => {
+  const runConnect = opts.oauthConnect ?? (async ({ sessionId, serverName, serverConfig, postAuthorizeUrl }) => {
     const meta = await discover(serverConfig.url);
-    const handle = await beginConnect({
-      serverName, serverConfig, meta,
-      loopbackHost: env.oauthLoopbackHost(),
-      loopbackPort: env.oauthLoopbackPorts()[0],
-      timeoutMs: 5 * 60_000,
-    });
+    // Shared always-on loopback (one port, flows demuxed by signed state) vs the
+    // default fresh ephemeral listener per connect.
+    const handle = env.oauthSharedLoopback()
+      ? await beginConnectShared({
+          sessionId, stateSecret: env.oauthStateSecret(),
+          serverName, serverConfig, meta, timeoutMs: 5 * 60_000,
+        })
+      : await beginConnect({
+          serverName, serverConfig, meta,
+          loopbackHost: env.oauthLoopbackHost(),
+          loopbackPort: env.oauthLoopbackPorts()[0],
+          timeoutMs: 5 * 60_000,
+        });
     await postAuthorizeUrl(handle.authorizeUrl);
     const code = await handle.waitForCode();
     return handle.exchange(code);
@@ -385,7 +394,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // Loopback mode (local / same-host container): block on the listener.
     try {
       const tokens = await runConnect({
-        serverName: a.serverName, serverConfig,
+        sessionId: a.sessionId, serverName: a.serverName, serverConfig,
         postAuthorizeUrl: async (url) => { await post(`:link: Authorize \`${a.serverName}\`: ${url}\n(opens a browser; the loopback captures the result)`); },
       });
       await persistTokens({ sessionId: a.sessionId, userId: a.userId, serverName: a.serverName, serverConfig, scope: a.scope }, tokens);
