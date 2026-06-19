@@ -16,7 +16,7 @@ import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slac
 import { soulData, soulDataBase } from "../../soul/extract";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
-import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
+import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, createConnectMcp, CONNECT_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
 import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
 import { humanizeToolStatus } from "./status-text";
@@ -65,6 +65,9 @@ export interface GatewayHandle {
    *  Requires the session's route to exist (feed a message first). Production
    *  never calls this. */
   __resolveMcp(sessionId: string): Record<string, McpServerConfig> | undefined;
+  /** TEST/SIM SEAM ONLY. Drive the natural-language connect path (what the
+   *  mcp__slaude_connect__connect_mcp tool calls) for a live session. */
+  __agentConnect(sessionId: string, server: string): Promise<string>;
 }
 
 const REACT_RECEIVED = "eyes";
@@ -256,6 +259,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const servers: Record<string, McpServerConfig> = {
       [SURFACE_MCP_NAME]: createSurfaceMcp(route.surface, { initiator: () => route.ctx.userId }),
       [RUNTIME_MCP_NAME]: createRuntimeMcp(route.ctx),
+      [CONNECT_MCP_NAME]: createConnectMcp({ connect: (server) => agentConnect(sessionId, route.ctx, server) }),
       [SLACK_MCP_NAME]: createSlackMcp(route.ctx),
       [SKILLS_MCP_NAME]: createSkillsMcp(),
       [SESSION_MCP_NAME]: createSessionMcp({
@@ -458,6 +462,45 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await redactAuthMessage(surface, pend.authMsgRef, pend.serverName);
       await post(`:x: \`${pend.serverName}\` connect failed: ${(e as Error).message}`);
     }
+  }
+
+  // Natural-language front door: the agent calls mcp__slaude_connect__connect_mcp
+  // (when a user asks to connect a service) → here. Same scope gate as `/mcp connect`,
+  // then fire the SAME connectServer engine and return a status line — never the URL.
+  // Fire-and-forget: connectServer posts the authorize link out-of-band, runs the
+  // loopback, and redacts on settle, so the model turn isn't held while the user clicks.
+  async function agentConnect(sessionId: string, ctx: SlackContext, serverName: string): Promise<string> {
+    if (opts.mcpConnectEnabled === false) {
+      return ":warning: MCP connect is temporarily disabled (store-format canary failed) — see server logs.";
+    }
+    // Empty if somehow absent — the scope checks below then reject (it can't equal a
+    // lock owner or the manager), so connectServer is never reached without a real user.
+    const userId = ctx.userId ?? "";
+    const threadTs = ctx.threadTs ?? ctx.inboundTs ?? "";
+    const lock = OneOnOne.find(ctx.channel, threadTs);
+    let scope: ConnectScope;
+    if (lock) {
+      if (lock.locked_user !== userId) {
+        return `:lock: this 1on1 thread belongs to <@${lock.locked_user}> — only they can connect MCP servers here.`;
+      }
+      scope = "initiator";
+    } else {
+      const soul = soulData();
+      if (userId !== soul.manager.userId && userId !== soul.backupManager.userId) {
+        return ":lock: connecting the agent's shared identity is manager-only. Start a `/1on1` to connect your own MCP servers instead.";
+      }
+      scope = "global";
+    }
+    const httpServers = httpExternalServers();
+    const cfg = httpServers[serverName];
+    if (!cfg) {
+      const names = Object.keys(httpServers);
+      return `unknown MCP server \`${serverName}\`.` +
+        (names.length ? ` Connectable: ${names.map((n) => `\`${n}\``).join(", ")}.` : " None are configured.");
+    }
+    void connectServer({ sessionId, channelId: ctx.channel, threadTs, userId: userId, serverName, serverCfg: cfg, scope })
+      .catch(() => { /* connectServer posts its own failure out-of-band */ });
+    return `Started authorizing \`${serverName}\` — I've posted the authorization link in this thread. Open it to approve; I'll confirm here once it's connected. You won't need to paste anything back.`;
   }
 
   t.action(/^slaude_mcp:connect:.+$/, async ({ ack, action, body }) => {
@@ -1327,5 +1370,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     stop: () => t.stop(),
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),
+    __agentConnect: (sessionId: string, server: string) => {
+      const route = routes.get(sessionId);
+      if (!route) return Promise.resolve("no active thread for this session");
+      return agentConnect(sessionId, route.ctx, server);
+    },
   };
 }
