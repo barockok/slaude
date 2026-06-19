@@ -63,6 +63,29 @@ Slack mrkdwn rejects emphasis when a space hugs the marker and has no triple-sta
 → `_*x*_`; `** x **` → `*x*` (trim inner padding). Intra-word bold (`word**b**word`) is a
 Slack-renderer limit, left as-is.
 
+## 4. Two front doors, one engine: natural-language connect + deny the synthesized path
+
+Follow-up: keep `/mcp connect` deterministic but also let the agent connect on request
+("connect workbench") — and make *both* go through the same engine, with the security
+properties intact.
+
+- New in-process tool `mcp__slaude_connect__connect_mcp(server)` (`mcp-tools.ts
+  createConnectMcp`). The agent decides *when*; the tool is a thin trigger that calls
+  `agentConnect()` in the gateway and returns only a status line — **never the URL**.
+- `agentConnect()` reuses the exact `/mcp connect` scope gate (initiator owns the
+  `/1on1` lock; global is manager/backup-only), then fires the **same `connectServer`**
+  fire-and-forget. The authorize link is posted out-of-band by the engine, the shared
+  loopback captures the code (no paste), and redaction runs on settle. The model never
+  sees the URL → no prompt-injection laundering; the turn isn't held while the user clicks.
+- `canUseTool` (permission-gate) **hard-denies** `mcp__*__authenticate` /
+  `__complete_authentication` — the runtime/SDK-synthesized OAuth tools use an
+  uncontrolled redirect and would launder the URL. Denying them (before the approval
+  prompt) forces every connect through our engine. (Whether the headless SDK actually
+  exposes them is uncertain; the deny is harmless if not, load-bearing if so.)
+
+Key property: OAuth connect is never an LLM-couriered string. The agent triggers; the
+deterministic gateway owns URL generation, emission, capture, and teardown.
+
 ## Takeaways
 
 - Security-sensitive control strings (auth URLs, tokens) must go **out-of-band of the LLM**,

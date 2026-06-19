@@ -510,6 +510,38 @@ describe("gateway uncovered branches", () => {
       expect(connects).toBe(1);
     });
 
+    it("natural-language connect (agentConnect): scope-gated, fire-and-forget, no URL to the model", async () => {
+      writeSoulFixture(WORLD);
+      writeMcpJson({ svc: { type: "http", url: "http://127.0.0.1:1/mcp" } });
+      let connects = 0;
+      const g = makeGw({ gwOpts: { oauthConnect: async () => { connects++; return { clientId: "c", accessToken: "a" }; } } });
+      mkdirSync(paths.claudeConfig, { recursive: true });
+
+      // boot a manager DM route, then resolve its session id
+      const ts = nextTs();
+      await g.emit("message", dmArgs(g, "hi", { ts }));
+      const session = g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+
+      // happy path (global/manager): returns a started-status, never the URL; same engine fires
+      const status = await g.h.__agentConnect(session.id, "svc");
+      expect(status).toContain("Started authorizing");
+      expect(status).not.toContain("http");
+      await waitFor(() => g.posts.some((p) => String(p.text).includes("`svc` connected")));
+      expect(connects).toBe(1);
+
+      // unknown server → helpful error, no connect attempt
+      const unknown = await g.h.__agentConnect(session.id, "nope");
+      expect(unknown).toContain("unknown MCP server");
+      expect(connects).toBe(1);
+
+      // non-manager (no lock → global) → refused, engine never runs
+      writeSoulFixture({ ...WORLD, manager: "U0NEWMGR", backup: "U0NEWBCK" });
+      const denied = await g.h.__agentConnect(session.id, "svc");
+      expect(denied).toContain("manager-only");
+      expect(connects).toBe(1);
+      writeSoulFixture(WORLD);
+    });
+
     it("initiator-scoped connect card: click gated on still owning the 1on1 lock", async () => {
       writeSoulFixture(WORLD);
       writeMcpJson({ svc: { type: "http", url: "http://127.0.0.1:1/mcp" } });
