@@ -27,6 +27,7 @@ import { paths } from "../config/home";
 import { env } from "../config/env";
 import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plugins";
 import { soulSystemBlock } from "../soul/loader";
+import { soulData, effectiveSoulForChannel } from "../soul/extract";
 import * as Sessions from "../db/sessions";
 import type { ThreadKey } from "../db/sessions";
 import * as OneOnOne from "../db/one-on-one";
@@ -389,6 +390,18 @@ export class AgentManager extends EventEmitter {
 
     const mode = (row.permission_mode || "default") as PermissionMode;
     const mcpServers = this.#mcpResolver?.(sessionId);
+    // Per-channel mandate override: when SOUL.md defines a `## Channel` block
+    // with its own `### Mandate` for this channel, inject an authoritative
+    // directive that supersedes the global Mandate (which lives, unedited,
+    // inside the <persona> text block). See effectiveSoulForChannel.
+    const channelMandateBlock = ((): string => {
+      const channelId = row.slack_channel_id;
+      if (!channelId) return "";
+      const eff = effectiveSoulForChannel(channelId).mandate?.trim();
+      const base = soulData().mandate?.trim();
+      if (!eff || eff === base) return "";
+      return `<channel-mandate>\nFor this channel your mandate is: ${eff}\nThis supersedes the Mandate section in your persona for this channel.\n</channel-mandate>`;
+    })();
     const preCompact: HookCallback = async (input) => {
       if (input.hook_event_name !== "PreCompact") return { continue: true };
       this.emit("event", {
@@ -465,6 +478,7 @@ export class AgentManager extends EventEmitter {
         preset: "claude_code",
         append: [
           soulSystemBlock(),
+          channelMandateBlock,
           sessionModeBlock(lock),
           mcpServers
             ? `<mcp-servers>\nMCP server namespaces mounted this session. Call tools as \`mcp__<server>__<tool>\`.\n${Object.keys(mcpServers)

@@ -1,6 +1,6 @@
 import type { Transport, WebClientLike } from "../core/transport";
 import { loadApprovers, selectApprovers, selectApproversFrom } from "../../soul/loader";
-import { soulData } from "../../soul/extract";
+import { effectiveSoulForChannel } from "../../soul/extract";
 
 export type ApprovalRequest = {
   channel: string;
@@ -113,7 +113,7 @@ export class ApprovalGate {
    *   4. env SLAUDE_APPROVERS.
    *   5. Empty (anyone may click). */
   #resolveApprovers(req: ApprovalRequest): Set<string> {
-    const structured = soulData().approvers;
+    const structured = effectiveSoulForChannel(req.channel).approvers;
     if (structured.length) {
       const ids = selectApproversFrom(structured, req.summary, req.category);
       if (ids.length) return new Set(ids);
