@@ -107,6 +107,14 @@ describe("PermissionGate", () => {
     }
   });
 
+  test("mcp__slaude_1on1__* always allowed (gate-control tool — never prompt)", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app);
+    const ac = new AbortController();
+    const r = await gate.resolver("S", "mcp__slaude_1on1__set_one_on_one", { active: true }, ctx("T2", ac.signal));
+    expect(r.behavior).toBe("allow");
+  });
+
   test("mcp__slaude_runtime__* always allowed", async () => {
     const f = fakeApp();
     const gate = new PermissionGate(f.app);

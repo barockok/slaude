@@ -659,3 +659,30 @@ export function connectTools(deps: ConnectDeps) {
 export function createConnectMcp(deps: ConnectDeps): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({ name: CONNECT_MCP_NAME, version: "0.1.0", tools: connectTools(deps) });
 }
+
+export const ONE_ON_ONE_MCP_NAME = "slaude_1on1";
+
+export interface OneOnOneDeps {
+  /** Lock (true) or release (false) 1on1 mode for the current thread; returns a short
+   *  status line. Same engine as the `/1on1` command (lock to the current speaker +
+   *  session reboot); no gating — anyone who can chat can toggle it. */
+  setOneOnOne: (active: boolean) => Promise<string>;
+}
+
+/** Agent-facing front door to 1on1 mode (the `/1on1` gate command). Lets the agent
+ *  start or release a private 1on1 lock itself — e.g. when a user says "let's take this
+ *  private". Routes into the same gateway engine as the slash command. */
+export function oneOnOneTools(deps: OneOnOneDeps) {
+  return [
+    tool(
+      "set_one_on_one",
+      "Lock or release 1on1 mode for this thread. Lock (active=true) makes it a private session heard only by the current user and the manager; release (active=false) reopens it. Use when the user asks to go private / one-on-one, or to end it. Returns a short status to relay.",
+      { active: z.boolean().describe("true = start 1on1 (lock to the current user); false = release it.") },
+      async (args) => ok(await deps.setOneOnOne(args.active)),
+    ),
+  ];
+}
+
+export function createOneOnOneMcp(deps: OneOnOneDeps): McpSdkServerConfigWithInstance {
+  return createSdkMcpServer({ name: ONE_ON_ONE_MCP_NAME, version: "0.1.0", tools: oneOnOneTools(deps) });
+}
