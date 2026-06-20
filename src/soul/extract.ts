@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
 import { loadSoul, soulSystemBlock, loadApproverEntries } from "./loader";
-import { SoulDataSchema, EXTRACTION_PROMPT, type SoulData } from "./data";
+import { SoulDataSchema, EXTRACTION_PROMPT, type SoulData, type ApproverEntry } from "./data";
 import { applyOverrides } from "./overrides";
 import * as SoulOverrides from "../db/soul-overrides";
 
@@ -219,6 +219,25 @@ export function soulData(): SoulData {
  * Always returns a usable SoulData — any failure falls back to the global
  * view so the gates never break.
  */
+/**
+ * Guarantee the manager (and backup manager) stay eligible approvers even when
+ * a channel override replaces the approver set. Without this, a channel block
+ * that lists only e.g. the DBA would lock the operator out of the approval gate
+ * in that channel. Manager/backup are appended as catchalls (always eligible)
+ * unless already present in the override list.
+ */
+function withManagerApprover(approvers: ApproverEntry[], base: SoulData): ApproverEntry[] {
+  const out = [...approvers];
+  const have = new Set(out.map((a) => a.userId));
+  for (const id of [base.manager?.userId, base.backupManager?.userId]) {
+    if (id && !have.has(id)) {
+      out.push({ userId: id, scope: "anything", catchall: true });
+      have.add(id);
+    }
+  }
+  return out;
+}
+
 export function effectiveSoulForChannel(channelId?: string): SoulData {
   const base = soulData();
   if (!channelId) return base;
@@ -228,7 +247,9 @@ export function effectiveSoulForChannel(channelId?: string): SoulData {
     return {
       ...base,
       mandate: ov.mandate?.trim() ? ov.mandate : base.mandate,
-      approvers: ov.approvers.length ? ov.approvers : base.approvers,
+      approvers: ov.approvers.length
+        ? withManagerApprover(ov.approvers, base)
+        : base.approvers,
     };
   } catch {
     return base;

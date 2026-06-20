@@ -40,15 +40,17 @@ New, repeatable H2 block:
   consulted for approval-gate eligibility and approver-based admin auth.
   Absent / empty → global approvers.
 
-### Safety: no operator lockout
+### Safety: manager is always an approver (no lockout)
 
 `manager` / `backupManager` authority is a **separate** check from the
-approver list everywhere it matters (admin commands, engagement gate), so
-Replace never locks the operator out of admin authority. It DOES, however,
-remove a global catchall approver from the **approval gate** inside an
-overridden channel — so if the operator wants the manager to remain able to
-click Approve/Deny there, they must list the manager in that channel's
-`### Approvers`. Documented in the SOUL.md section text and STARTER_PERSONA.
+approver list for admin commands and the engagement gate, so Replace never
+locks the operator out of admin authority. Additionally — per operator
+decision — the **manager and backup manager are always injected as catchall
+approvers** into the resolved channel approver set (`withManagerApprover`), so
+they remain eligible to click Approve/Deny on the approval gate inside an
+overridden channel even if the channel `### Approvers` block does not list
+them. A channel override can only *add* approvers on top of the manager, never
+remove the manager.
 
 ## Schema (`src/soul/data.ts`)
 
