@@ -644,10 +644,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const isDM = channelType === "im";
     const threadTs: string = event.thread_ts || (isDM ? eventTs : eventTs);
 
-    // Ignore gate: temp/permanent ignores for users or threads
+    // Ignore gate: temp/permanent ignores for users or threads. /unignore* must
+    // bypass it — otherwise a thread-ignore drops the very message meant to lift it
+    // (the /unignore-thread is in the ignored thread), and the thread is stuck
+    // ignored forever. The blocklist + channel-mode gates below still apply, so this
+    // doesn't grant a non-allowed user any new reach.
     {
-      const ignored = ignoreGate.shouldDrop(userId, channelId, threadTs);
-      if (ignored) {
+      // botUserId isn't resolved yet here; strip any leading user-mention so a
+      // "<@bot> /unignore-thread" still parses.
+      const peek = parseSlashCommand(text.replace(/<@[^>]+>/g, "").trim());
+      const isUnignore = peek?.kind === "unignore";
+      if (!isUnignore && ignoreGate.shouldDrop(userId, channelId, threadTs)) {
         console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — ignored`);
         metric.slackDropsTotal.inc({ reason: "ignored" });
         return;
