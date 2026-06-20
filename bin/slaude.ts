@@ -33,6 +33,19 @@ switch (sub) {
     entry = "src/server.ts";
     rest = argv.slice(1);
     break;
+  case "brain-server":
+    entry = "src/knowledge/server/brain-server.ts";
+    rest = argv.slice(1);
+    break;
+  case "brain":
+    if (argv[1] === "connect") {
+      entry = "src/cli/brain-connect.ts";
+      rest = argv.slice(2);
+      break;
+    }
+    console.error("usage: slaude brain connect");
+    process.exit(2);
+    break;
   case "-h":
   case "--help":
     console.log(
@@ -42,6 +55,8 @@ switch (sub) {
         "Usage:",
         "  slaude [start]        boot the Slack runtime (uses $SLAUDE_HOME or ./SOUL.md dir)",
         "  slaude sim [args...]  run the simulation gateway / REPL",
+        "  slaude brain-server   run the brain engine as a standalone OAuth'd MCP process",
+        "  slaude brain connect  OAuth-bootstrap the remote brain link (SLAUDE_BRAIN_URL)",
         "",
         "SLAUDE_HOME resolves to $SLAUDE_HOME, else the cwd if it has SOUL.md, else ~/.slaude.",
       ].join("\n"),
