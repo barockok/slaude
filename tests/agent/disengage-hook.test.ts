@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { disengagedHookDecision, makeDisengageSuppressHook } from "../../src/agent/manager";
+import { disengagedHookDecision, makeDisengageSuppressHook, makeUserPromptHook } from "../../src/agent/manager";
 import { db } from "../../src/db/schema";
 import * as Sessions from "../../src/db/sessions";
 import { metrics } from "../../src/metrics";
@@ -75,5 +75,50 @@ describe("makeDisengageSuppressHook (live hook)", () => {
     const id = mkSession(0); // disengaged, but the event isn't a prompt submit
     const d = (await makeDisengageSuppressHook(id)({ hook_event_name: "PreCompact" } as any, undefined as any, {} as any)) as { continue: boolean };
     expect(d.continue).toBe(true);
+  });
+});
+
+describe("makeUserPromptHook (disengage + drain queued notes)", () => {
+  let seq = 0;
+  const mkSession = (engaged: number) => {
+    const row = Sessions.createForThread({
+      thread: { team_id: "T", channel_id: "C", thread_ts: `up.${seq++}` },
+      model: "",
+      working_dir: "/tmp",
+    });
+    Sessions.setEngaged(row.id, engaged === 1);
+    return row.id;
+  };
+  const submit = { hook_event_name: "UserPromptSubmit" } as any;
+  const run = (id: string, notes: Map<string, string[]>) =>
+    makeUserPromptHook(id, notes)(submit, undefined as any, {} as any);
+
+  it("non-UserPromptSubmit event passes through", async () => {
+    const r = (await makeUserPromptHook("x", new Map())({ hook_event_name: "Stop" } as any, undefined as any, {} as any)) as any;
+    expect(r).toEqual({ continue: true });
+  });
+
+  it("disengaged → continue:false, notes left queued (not drained)", async () => {
+    const id = mkSession(0);
+    const notes = new Map([[id, ["Model changed to `x`."]]]);
+    const r = (await run(id, notes)) as { continue: boolean };
+    expect(r.continue).toBe(false);
+    expect(notes.get(id)).toEqual(["Model changed to `x`."]); // preserved
+  });
+
+  it("engaged with queued notes → drains once into additionalContext", async () => {
+    const id = mkSession(1);
+    const notes = new Map([[id, ["Connected MCP server `wb`."]]]);
+    const r1 = (await run(id, notes)) as any;
+    expect(r1.hookSpecificOutput.additionalContext).toContain("Connected MCP server `wb`.");
+    expect(notes.get(id)).toEqual([]); // drained
+    const r2 = (await run(id, notes)) as any; // nothing left
+    expect(r2).toEqual({ continue: true });
+  });
+
+  it("engaged, no notes → plain continue", async () => {
+    const id = mkSession(1);
+    const r = (await run(id, new Map())) as any;
+    expect(r).toEqual({ continue: true });
   });
 });
