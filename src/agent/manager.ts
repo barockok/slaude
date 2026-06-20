@@ -119,6 +119,30 @@ export function makeDisengageSuppressHook(sessionId: string): HookCallback {
   };
 }
 
+/** Combined UserPromptSubmit hook: suppress while disengaged (notes stay queued for
+ *  the next engaged turn), otherwise drain any queued out-of-band gate events
+ *  (mcp connect/disconnect, /model, /mode, /soul, /cron) into the turn's
+ *  additionalContext — exactly once. Exported as a factory over (sessionId, notes
+ *  store) for unit tests; reads engagement live via findById each turn. */
+export function makeUserPromptHook(sessionId: string, notes: Map<string, string[]>): HookCallback {
+  return async (input) => {
+    if (input.hook_event_name !== "UserPromptSubmit") return { continue: true };
+    const dis = disengagedHookDecision(Sessions.findById(sessionId));
+    if (dis.continue === false) {
+      metric.disengagedSuppressedTotal.inc();
+      return dis; // leave queued notes for the next engaged turn
+    }
+    const pending = notes.get(sessionId) ?? [];
+    notes.set(sessionId, []);
+    const block = formatSessionNotes(pending);
+    if (!block) return { continue: true };
+    return {
+      continue: true,
+      hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: block },
+    };
+  };
+}
+
 /** Resume miss: the provider has no transcript for the seeded/resumed session id
  *  (e.g. a pre-resumable-sessions row whose claude_started flag predates the CLI
  *  ever sharing slaude's id). Expected + self-healing — #startSession clears the
@@ -401,25 +425,7 @@ export class AgentManager extends EventEmitter {
     // history — no Slack re-fetch, no synthetic preamble. (decision:"block"
     // discards the prompt *before* it persists — verified against the pinned
     // SDK; see docs/findings/2026-06-16-reengage-hook-suppress.md.)
-    // UserPromptSubmit: suppress while disengaged; otherwise drain any queued
-    // out-of-band gate events (mcp connect/disconnect, model change) into this
-    // turn's context so the model sees them in the timeline — exactly once.
-    const userPromptHook: HookCallback = async (input) => {
-      if (input.hook_event_name !== "UserPromptSubmit") return { continue: true };
-      const dis = disengagedHookDecision(Sessions.findById(sessionId));
-      if (dis.continue === false) {
-        metric.disengagedSuppressedTotal.inc();
-        return dis; // leave queued notes for the next engaged turn
-      }
-      const notes = this.#sessionNotes.get(sessionId) ?? [];
-      this.#sessionNotes.set(sessionId, []);
-      const block = formatSessionNotes(notes);
-      if (!block) return { continue: true };
-      return {
-        continue: true,
-        hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: block },
-      };
-    };
+    const userPromptHook = makeUserPromptHook(sessionId, this.#sessionNotes);
     // CC plugins installed via `bun run install-deps`. Without this, the SDK
     // ignores the enabledPlugins entry in settings.json (it only reads
     // settings when settingSources is set). Explicit Options.plugins surfaces

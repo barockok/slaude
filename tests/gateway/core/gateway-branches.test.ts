@@ -9,6 +9,7 @@ import { db } from "../../../src/db/schema";
 import * as CronJobs from "../../../src/db/cron-jobs";
 import * as OneOnOne from "../../../src/db/one-on-one";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
+import { __resetModelCache } from "../../../src/agent/models";
 import { paths } from "../../../src/config/home";
 import { KB_MCP_NAME } from "../../../src/knowledge/mcp-tools";
 
@@ -746,6 +747,25 @@ describe("gateway uncovered branches", () => {
       await done;
       expect(CronJobs.listActive().length).toBe(0);
       expect(g.posts.some((p) => String(p.text).includes("cron job denied by manager"))).toBe(true);
+    });
+  });
+
+  describe("/model emits a session marker", () => {
+    it("/model <id> sets the model + posts a status (no provider auth → unverified)", async () => {
+      writeSoulFixture(WORLD);
+      const prevKey = process.env.ANTHROPIC_API_KEY;
+      const prevOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      __resetModelCache();
+      try {
+        const g = makeGw();
+        await g.emit("message", dmArgs(g, "/model deepseek-v4-pro", { ts: nextTs() }));
+        await waitFor(() => g.posts.some((p) => String(p.text).includes("model →")));
+      } finally {
+        if (prevKey) process.env.ANTHROPIC_API_KEY = prevKey;
+        if (prevOauth) process.env.CLAUDE_CODE_OAUTH_TOKEN = prevOauth;
+      }
     });
   });
 });
