@@ -16,7 +16,7 @@ import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slac
 import { soulData, soulDataBase } from "../../soul/extract";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
-import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, createConnectMcp, CONNECT_MCP_NAME, createOneOnOneMcp, ONE_ON_ONE_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
+import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, createConnectMcp, CONNECT_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
 import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
 import { humanizeToolStatus } from "./status-text";
@@ -260,10 +260,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const route = routes.get(sessionId);
     if (!route) return undefined;
     const servers: Record<string, McpServerConfig> = {
-      [SURFACE_MCP_NAME]: createSurfaceMcp(route.surface, { initiator: () => route.ctx.userId }),
+      [SURFACE_MCP_NAME]: createSurfaceMcp(route.surface, {
+        initiator: () => route.ctx.userId,
+        setOneOnOne: (active) => agentOneOnOne(sessionId, route.ctx, active),
+      }),
       [RUNTIME_MCP_NAME]: createRuntimeMcp(route.ctx),
       [CONNECT_MCP_NAME]: createConnectMcp({ connect: (server) => agentConnect(sessionId, route.ctx, server) }),
-      [ONE_ON_ONE_MCP_NAME]: createOneOnOneMcp({ setOneOnOne: (active) => agentOneOnOne(sessionId, route.ctx, active) }),
       [SLACK_MCP_NAME]: createSlackMcp(route.ctx),
       [SKILLS_MCP_NAME]: createSkillsMcp(),
       [SESSION_MCP_NAME]: createSessionMcp({

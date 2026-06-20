@@ -156,7 +156,6 @@ export class PermissionGate {
     if (
       toolName.startsWith("mcp__slaude_surface__") ||
       toolName.startsWith("mcp__slaude_runtime__") ||
-      toolName.startsWith("mcp__slaude_1on1__") ||
       toolName.startsWith("mcp__slaude_slack__")
     ) {
       return { behavior: "allow", updatedInput: input };
