@@ -1,0 +1,15 @@
+# Regression: an ignored thread must still accept /unignore-thread. Both messages
+# are pinned to one thread (T0DL) so the ignore actually covers the unignore — the
+# real-Slack condition. Without the fix the ignore gate drops /unignore-thread
+# before slash parsing and the thread is stuck ignored forever.
+soul:
+  manager: U0MGR
+  approvers: []
+  trusted: [C0IGN]
+  allowed: []
+agent_behavior: reply
+steps:
+  - send: { as: U0MGR, channel: C0IGN, thread: T0DL, text: "/ignore-thread" }
+  - expect_reply: { contains: "ignoring this thread" }
+  - send: { as: U0MGR, channel: C0IGN, thread: T0DL, text: "/unignore-thread" }
+  - expect_reply: { contains: "stopped ignoring this thread" }
