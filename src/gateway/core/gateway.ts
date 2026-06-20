@@ -68,6 +68,9 @@ export interface GatewayHandle {
   /** TEST/SIM SEAM ONLY. Drive the natural-language connect path (what the
    *  mcp__slaude_connect__connect_mcp tool calls) for a live session. */
   __agentConnect(sessionId: string, server: string): Promise<string>;
+  /** TEST/SIM SEAM ONLY. Drive the agent-facing 1on1 toggle
+   *  (mcp__slaude_1on1__set_one_on_one) for a live session. */
+  __agentOneOnOne(sessionId: string, active: boolean): Promise<string>;
 }
 
 const REACT_RECEIVED = "eyes";
@@ -257,7 +260,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const route = routes.get(sessionId);
     if (!route) return undefined;
     const servers: Record<string, McpServerConfig> = {
-      [SURFACE_MCP_NAME]: createSurfaceMcp(route.surface, { initiator: () => route.ctx.userId }),
+      [SURFACE_MCP_NAME]: createSurfaceMcp(route.surface, {
+        initiator: () => route.ctx.userId,
+        setOneOnOne: (active) => agentOneOnOne(sessionId, route.ctx, active),
+      }),
       [RUNTIME_MCP_NAME]: createRuntimeMcp(route.ctx),
       [CONNECT_MCP_NAME]: createConnectMcp({ connect: (server) => agentConnect(sessionId, route.ctx, server) }),
       [SLACK_MCP_NAME]: createSlackMcp(route.ctx),
@@ -502,6 +508,23 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     void connectServer({ sessionId, channelId: ctx.channel, threadTs, userId: userId, serverName, serverCfg: cfg, scope })
       .catch(() => { /* connectServer posts its own failure out-of-band */ });
     return `Started authorizing \`${serverName}\` — I've posted the authorization link in this thread. Open it to approve; I'll confirm here once it's connected. You won't need to paste anything back.`;
+  }
+
+  // Agent-facing 1on1 toggle — same engine as the /1on1 command (lock to the current
+  // speaker + session reboot). No gating, matching the slash command: anyone who can
+  // chat can start/release it.
+  async function agentOneOnOne(sessionId: string, ctx: SlackContext, active: boolean): Promise<string> {
+    const userId = ctx.userId ?? "";
+    const threadTs = ctx.threadTs ?? ctx.inboundTs ?? "";
+    if (active) {
+      OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
+      agent.reload(sessionId); // reboot so the resolver + session-mode block pick it up
+      return `Locked this thread to a 1on1 with <@${userId}> — only they and the manager are heard here now.`;
+    }
+    if (!OneOnOne.find(ctx.channel, threadTs)) return "No active 1on1 in this thread — nothing to release.";
+    OneOnOne.unlock(ctx.channel, threadTs);
+    agent.reload(sessionId);
+    return "Released 1on1 — the thread is open again.";
   }
 
   t.action(/^slaude_mcp:connect:.+$/, async ({ ack, action, body }) => {
@@ -1386,6 +1409,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const route = routes.get(sessionId);
       if (!route) return Promise.resolve("no active thread for this session");
       return agentConnect(sessionId, route.ctx, server);
+    },
+    __agentOneOnOne: (sessionId: string, active: boolean) => {
+      const route = routes.get(sessionId);
+      if (!route) return Promise.resolve("no active thread for this session");
+      return agentOneOnOne(sessionId, route.ctx, active);
     },
   };
 }

@@ -659,3 +659,4 @@ export function connectTools(deps: ConnectDeps) {
 export function createConnectMcp(deps: ConnectDeps): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({ name: CONNECT_MCP_NAME, version: "0.1.0", tools: connectTools(deps) });
 }
+

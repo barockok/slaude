@@ -561,6 +561,31 @@ describe("gateway uncovered branches", () => {
       expect(await g.h.__agentConnect("no-such-session", "svc")).toContain("no active thread");
     });
 
+    it("agent 1on1 toggle (agentOneOnOne): lock to caller, release, no-op when none, unknown session", async () => {
+      writeSoulFixture(WORLD);
+      const g = makeGw();
+      const ts = nextTs();
+      await g.emit("message", dmArgs(g, "hi", { ts }));
+      const session = g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+
+      // release with no active lock → no-op message, still unlocked
+      expect(await g.h.__agentOneOnOne(session.id, false)).toContain("nothing to release");
+      expect(OneOnOne.find("D_MGR", ts)).toBeNull();
+
+      // lock → locks the thread to the calling user (the DM's manager)
+      const locked = await g.h.__agentOneOnOne(session.id, true);
+      expect(locked).toContain("1on1");
+      expect(OneOnOne.find("D_MGR", ts)?.locked_user).toBe(WORLD.manager);
+
+      // release → unlocked again
+      const released = await g.h.__agentOneOnOne(session.id, false);
+      expect(released).toContain("open again");
+      expect(OneOnOne.find("D_MGR", ts)).toBeNull();
+
+      // unknown session → no active thread
+      expect(await g.h.__agentOneOnOne("no-such-session", true)).toContain("no active thread");
+    });
+
     it("agent connect is disabled when the store-format canary failed", async () => {
       writeSoulFixture(WORLD);
       writeMcpJson({ svc: { type: "http", url: "http://127.0.0.1:1/mcp" } });
