@@ -40,7 +40,7 @@ describe("brain server round trip (auth disabled)", () => {
 
   test("serves protected-resource metadata", async () => {
     started = await startBrainServer(
-      { port: 0, host: "127.0.0.1", authDisabled: false, publicUrl: "https://brain.example", issuer: "https://kc.example/realms/r" },
+      { port: 0, host: "127.0.0.1", authDisabled: false, publicUrl: "https://brain.example", issuer: "https://kc.example/realms/r", audience: "slaude-brain" },
       stubDeps,
     );
     const prmUrl = started.url.replace("/mcp", "/.well-known/oauth-protected-resource");

@@ -45,15 +45,30 @@ function jwksFor(cfg: GuardConfig): JWTVerifyGetKey {
   return resolver;
 }
 
+/**
+ * Reasons a guard config is unsafe to enforce. When auth is enabled, both issuer
+ * and audience MUST be set — otherwise jwtVerify would skip those checks and
+ * accept any well-formed token. Returns null when the config is safe.
+ */
+export function guardConfigError(cfg: GuardConfig): string | null {
+  if (cfg.authDisabled) return null;
+  if (!cfg.issuer) return "SLAUDE_BRAIN_OIDC_ISSUER is required when OAuth is enabled";
+  if (!cfg.audience) return "SLAUDE_BRAIN_OIDC_AUDIENCE is required when OAuth is enabled";
+  return null;
+}
+
 export async function verifyBearer(authHeader: string | null, cfg: GuardConfig): Promise<VerifyResult> {
   if (cfg.authDisabled) return { ok: true };
+  // Fail closed on misconfiguration: never fall through to a check-skipping verify.
+  const cfgErr = guardConfigError(cfg);
+  if (cfgErr) return { ok: false, status: 500 };
   const m = (authHeader ?? "").match(/^Bearer\s+(.+)$/i);
   if (!m) return { ok: false, status: 401, wwwAuth: challenge(cfg) };
   const token = m[1]!;
   try {
     await jwtVerify(token, jwksFor(cfg), {
       issuer: cfg.issuer,
-      audience: cfg.audience,
+      audience: [cfg.audience!],
     });
     return { ok: true };
   } catch {

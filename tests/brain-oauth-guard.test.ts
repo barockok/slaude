@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
-import { protectedResourceMetadata, verifyBearer } from "../src/knowledge/server/oauth-guard";
+import { guardConfigError, protectedResourceMetadata, verifyBearer } from "../src/knowledge/server/oauth-guard";
 
 const ISSUER = "https://kc.example/realms/slaude";
 const AUDIENCE = "slaude-brain";
@@ -73,6 +73,33 @@ describe("oauth-guard verifyBearer", () => {
     const { cfg } = await setup();
     const r = await verifyBearer(null, { ...cfg, authDisabled: true });
     expect(r.ok).toBe(true);
+  });
+
+  test("fails closed (500) with a valid token but missing audience config", async () => {
+    const { sign, cfg } = await setup();
+    const tok = await sign({});
+    const r = await verifyBearer(`Bearer ${tok}`, { ...cfg, audience: undefined });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.status).toBe(500);
+  });
+
+  test("fails closed (500) with missing issuer config", async () => {
+    const { sign, cfg } = await setup();
+    const tok = await sign({});
+    const r = await verifyBearer(`Bearer ${tok}`, { ...cfg, issuer: undefined });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.status).toBe(500);
+  });
+});
+
+describe("guardConfigError", () => {
+  test("ok when auth disabled regardless of issuer/audience", () => {
+    expect(guardConfigError({ authDisabled: true })).toBeNull();
+  });
+  test("requires issuer + audience when auth enabled", () => {
+    expect(guardConfigError({ authDisabled: false })).toMatch(/ISSUER/);
+    expect(guardConfigError({ authDisabled: false, issuer: "i" })).toMatch(/AUDIENCE/);
+    expect(guardConfigError({ authDisabled: false, issuer: "i", audience: "a" })).toBeNull();
   });
 });
 

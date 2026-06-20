@@ -10,6 +10,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { brainServerConfig, type BrainServerConfig } from "../brain-config";
 import {
   PROTECTED_RESOURCE_PATH,
+  guardConfigError,
   protectedResourceMetadata,
   verifyBearer,
   type GuardConfig,
@@ -76,6 +77,10 @@ export async function startBrainServer(
   }
 
   const guard = guardConfig(cfg);
+  // Refuse to start in an insecure configuration (auth on, but issuer/audience
+  // unset would make every well-formed token pass).
+  const cfgErr = guardConfigError(guard);
+  if (cfgErr) throw new Error(`[brain-server] insecure OAuth config: ${cfgErr}`);
 
   const server = Bun.serve({
     port: cfg.port,

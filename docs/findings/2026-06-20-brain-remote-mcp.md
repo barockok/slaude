@@ -59,6 +59,12 @@ Local mode short-circuits at `getBackend()`.
    and that RFC 9728 PRM endpoint advertises the issuer so slaude's existing
    `discover()` finds it. `SLAUDE_BRAIN_AUTH_DISABLED=1` bypasses (trusted network).
 
+   **Fail-closed config:** when auth is enabled, both issuer and audience MUST be
+   set. `jwtVerify` skips the `iss`/`aud` checks if either is `undefined`, which
+   would accept any well-formed token from anywhere — so `guardConfigError()` makes
+   `startBrainServer` refuse to boot on that config, and `verifyBearer` returns
+   `500` (never a check-skipping verify) if it ever slips through.
+
 ### Auth reuses the existing loopback
 
 `slaude brain connect` (`src/cli/brain-connect.ts`) drives the shared OAuth
