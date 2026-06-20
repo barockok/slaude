@@ -1,0 +1,392 @@
+- generic [ref=e4]:
+  - link "Skip to main content" [ref=e5] [cursor=pointer]:
+    - /url: "#pageContent"
+    - generic [ref=e6]: Skip to main content
+  - generic [ref=e7]:
+    - generic [ref=e8]:
+      - generic [ref=e9]:
+        - button "Close menu" [ref=e10] [cursor=pointer]:
+          - img "Grafana" [ref=e12]
+        - generic [ref=e13]: Grafana
+      - button "Undock menu" [ref=e14] [cursor=pointer]
+    - navigation [ref=e16]:
+      - list "Navigation" [ref=e20]:
+        - listitem [ref=e21]:
+          - link "Home" [ref=e25] [cursor=pointer]:
+            - /url: /
+            - generic [ref=e29]: Home
+        - listitem [ref=e30]:
+          - generic [ref=e31]:
+            - link "Bookmarks" [ref=e34] [cursor=pointer]:
+              - /url: /bookmarks
+              - generic [ref=e38]: Bookmarks
+            - 'button "Expand section: Bookmarks" [ref=e40] [cursor=pointer]'
+        - listitem [ref=e42]:
+          - generic [ref=e43]:
+            - link "Starred" [ref=e46] [cursor=pointer]:
+              - /url: /dashboards?starred
+              - generic [ref=e50]: Starred
+            - 'button "Expand section: Starred" [ref=e52] [cursor=pointer]'
+        - listitem [ref=e54]:
+          - generic [ref=e55]:
+            - link "Dashboards" [ref=e58] [cursor=pointer]:
+              - /url: /dashboards
+              - generic [ref=e62]: Dashboards
+            - 'button "Expand section: Dashboards" [ref=e64] [cursor=pointer]'
+        - listitem [ref=e66]:
+          - link "Explore" [ref=e70] [cursor=pointer]:
+            - /url: /explore
+            - generic [ref=e74]: Explore
+        - listitem [ref=e75]:
+          - generic [ref=e76]:
+            - link "Drilldown" [ref=e79] [cursor=pointer]:
+              - /url: /drilldown
+              - generic [ref=e83]: Drilldown
+            - 'button "Expand section: Drilldown" [ref=e85] [cursor=pointer]'
+        - listitem [ref=e87]:
+          - generic [ref=e88]:
+            - link "Alerting" [ref=e91] [cursor=pointer]:
+              - /url: /alerting
+              - generic [ref=e95]: Alerting
+            - 'button "Expand section: Alerting" [ref=e97] [cursor=pointer]'
+        - listitem [ref=e99]:
+          - generic [ref=e100]:
+            - link "More apps" [ref=e103] [cursor=pointer]:
+              - /url: /apps
+              - generic [ref=e107]: More apps
+            - 'button "Expand section: More apps" [ref=e109] [cursor=pointer]'
+        - listitem [ref=e111]:
+          - generic [ref=e112]:
+            - link "Administration" [ref=e115] [cursor=pointer]:
+              - /url: /admin
+              - generic [ref=e119]: Administration
+            - 'button "Expand section: Administration" [ref=e121] [cursor=pointer]'
+  - banner [ref=e123]:
+    - generic [ref=e124]:
+      - navigation "Breadcrumbs" [ref=e126]:
+        - list [ref=e127]:
+          - listitem [ref=e128]:
+            - link "Home" [ref=e129] [cursor=pointer]:
+              - /url: /
+          - listitem [ref=e132]:
+            - generic "Dashboards" [ref=e133]
+      - generic [ref=e134]:
+        - generic [ref=e136]:
+          - button "Search..." [ref=e139] [cursor=pointer]
+          - generic [ref=e141]: ⌘+k
+        - button "Help" [ref=e142] [cursor=pointer]
+        - button "Profile" [ref=e145] [cursor=pointer]:
+          - img "User avatar" [ref=e146]
+  - main [ref=e149]:
+    - generic [ref=e152]:
+      - generic [ref=e153]:
+        - heading "Dashboards" [level=1] [ref=e158]
+        - generic [ref=e159]: Create and manage dashboards to visualize your data
+      - generic [ref=e161]:
+        - generic [ref=e164]:
+          - textbox "Search for dashboards and folders" [ref=e167]: nightly
+          - button "Clear" [ref=e169] [cursor=pointer]:
+            - generic [ref=e171]: Clear
+        - generic [ref=e173]:
+          - generic [ref=e174]:
+            - generic [ref=e176] [cursor=pointer]:
+              - log [ref=e178]
+              - generic [ref=e182]:
+                - generic [ref=e183]: Filter by tag
+                - combobox "Tag filter" [ref=e185]
+            - generic [ref=e189]:
+              - checkbox "Starred" [ref=e191]
+              - generic [ref=e193] [cursor=pointer]: Starred
+          - radiogroup [ref=e195]:
+            - generic [ref=e196]:
+              - radio [disabled] [ref=e197]
+              - generic "View by folders" [ref=e198]
+            - generic [ref=e200]:
+              - radio [checked] [ref=e201] [cursor=pointer]
+              - generic "View as list" [ref=e202] [cursor=pointer]
+        - generic [ref=e204]:
+          - generic:
+            - table "Search results table":
+              - row "Name Type Location Tags" [ref=e205]:
+                - columnheader "Name" [ref=e206]:
+                  - generic [ref=e207]: Name
+                - columnheader "Type" [ref=e208]
+                - columnheader "Location" [ref=e209]
+                - columnheader "Tags" [ref=e210]
+              - rowgroup:
+                - generic [ref=e212]:
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e213]:
+                    - cell "‌" [ref=e214]:
+                      - generic [ref=e216]: ‌
+                    - cell "‌" [ref=e217]:
+                      - generic [ref=e219]: ‌
+                    - cell "‌" [ref=e220]:
+                      - generic [ref=e222]: ‌
+                    - cell "‌ ‌" [ref=e223]:
+                      - generic [ref=e224]:
+                        - generic [ref=e226]: ‌
+                        - generic [ref=e228]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e229]:
+                    - cell "‌" [ref=e230]:
+                      - generic [ref=e232]: ‌
+                    - cell "‌" [ref=e233]:
+                      - generic [ref=e235]: ‌
+                    - cell "‌" [ref=e236]:
+                      - generic [ref=e238]: ‌
+                    - cell "‌ ‌" [ref=e239]:
+                      - generic [ref=e240]:
+                        - generic [ref=e242]: ‌
+                        - generic [ref=e244]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e245]:
+                    - cell "‌" [ref=e246]:
+                      - generic [ref=e248]: ‌
+                    - cell "‌" [ref=e249]:
+                      - generic [ref=e251]: ‌
+                    - cell "‌" [ref=e252]:
+                      - generic [ref=e254]: ‌
+                    - cell "‌ ‌" [ref=e255]:
+                      - generic [ref=e256]:
+                        - generic [ref=e258]: ‌
+                        - generic [ref=e260]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e261]:
+                    - cell "‌" [ref=e262]:
+                      - generic [ref=e264]: ‌
+                    - cell "‌" [ref=e265]:
+                      - generic [ref=e267]: ‌
+                    - cell "‌" [ref=e268]:
+                      - generic [ref=e270]: ‌
+                    - cell "‌ ‌" [ref=e271]:
+                      - generic [ref=e272]:
+                        - generic [ref=e274]: ‌
+                        - generic [ref=e276]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e277]:
+                    - cell "‌" [ref=e278]:
+                      - generic [ref=e280]: ‌
+                    - cell "‌" [ref=e281]:
+                      - generic [ref=e283]: ‌
+                    - cell "‌" [ref=e284]:
+                      - generic [ref=e286]: ‌
+                    - cell "‌ ‌" [ref=e287]:
+                      - generic [ref=e288]:
+                        - generic [ref=e290]: ‌
+                        - generic [ref=e292]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e293]:
+                    - cell "‌" [ref=e294]:
+                      - generic [ref=e296]: ‌
+                    - cell "‌" [ref=e297]:
+                      - generic [ref=e299]: ‌
+                    - cell "‌" [ref=e300]:
+                      - generic [ref=e302]: ‌
+                    - cell "‌ ‌" [ref=e303]:
+                      - generic [ref=e304]:
+                        - generic [ref=e306]: ‌
+                        - generic [ref=e308]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e309]:
+                    - cell "‌" [ref=e310]:
+                      - generic [ref=e312]: ‌
+                    - cell "‌" [ref=e313]:
+                      - generic [ref=e315]: ‌
+                    - cell "‌" [ref=e316]:
+                      - generic [ref=e318]: ‌
+                    - cell "‌ ‌" [ref=e319]:
+                      - generic [ref=e320]:
+                        - generic [ref=e322]: ‌
+                        - generic [ref=e324]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e325]:
+                    - cell "‌" [ref=e326]:
+                      - generic [ref=e328]: ‌
+                    - cell "‌" [ref=e329]:
+                      - generic [ref=e331]: ‌
+                    - cell "‌" [ref=e332]:
+                      - generic [ref=e334]: ‌
+                    - cell "‌ ‌" [ref=e335]:
+                      - generic [ref=e336]:
+                        - generic [ref=e338]: ‌
+                        - generic [ref=e340]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e341]:
+                    - cell "‌" [ref=e342]:
+                      - generic [ref=e344]: ‌
+                    - cell "‌" [ref=e345]:
+                      - generic [ref=e347]: ‌
+                    - cell "‌" [ref=e348]:
+                      - generic [ref=e350]: ‌
+                    - cell "‌ ‌" [ref=e351]:
+                      - generic [ref=e352]:
+                        - generic [ref=e354]: ‌
+                        - generic [ref=e356]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e357]:
+                    - cell "‌" [ref=e358]:
+                      - generic [ref=e360]: ‌
+                    - cell "‌" [ref=e361]:
+                      - generic [ref=e363]: ‌
+                    - cell "‌" [ref=e364]:
+                      - generic [ref=e366]: ‌
+                    - cell "‌ ‌" [ref=e367]:
+                      - generic [ref=e368]:
+                        - generic [ref=e370]: ‌
+                        - generic [ref=e372]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e373]:
+                    - cell "‌" [ref=e374]:
+                      - generic [ref=e376]: ‌
+                    - cell "‌" [ref=e377]:
+                      - generic [ref=e379]: ‌
+                    - cell "‌" [ref=e380]:
+                      - generic [ref=e382]: ‌
+                    - cell "‌ ‌" [ref=e383]:
+                      - generic [ref=e384]:
+                        - generic [ref=e386]: ‌
+                        - generic [ref=e388]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e389]:
+                    - cell "‌" [ref=e390]:
+                      - generic [ref=e392]: ‌
+                    - cell "‌" [ref=e393]:
+                      - generic [ref=e395]: ‌
+                    - cell "‌" [ref=e396]:
+                      - generic [ref=e398]: ‌
+                    - cell "‌ ‌" [ref=e399]:
+                      - generic [ref=e400]:
+                        - generic [ref=e402]: ‌
+                        - generic [ref=e404]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e405]:
+                    - cell "‌" [ref=e406]:
+                      - generic [ref=e408]: ‌
+                    - cell "‌" [ref=e409]:
+                      - generic [ref=e411]: ‌
+                    - cell "‌" [ref=e412]:
+                      - generic [ref=e414]: ‌
+                    - cell "‌ ‌" [ref=e415]:
+                      - generic [ref=e416]:
+                        - generic [ref=e418]: ‌
+                        - generic [ref=e420]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e421]:
+                    - cell "‌" [ref=e422]:
+                      - generic [ref=e424]: ‌
+                    - cell "‌" [ref=e425]:
+                      - generic [ref=e427]: ‌
+                    - cell "‌" [ref=e428]:
+                      - generic [ref=e430]: ‌
+                    - cell "‌ ‌" [ref=e431]:
+                      - generic [ref=e432]:
+                        - generic [ref=e434]: ‌
+                        - generic [ref=e436]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e437]:
+                    - cell "‌" [ref=e438]:
+                      - generic [ref=e440]: ‌
+                    - cell "‌" [ref=e441]:
+                      - generic [ref=e443]: ‌
+                    - cell "‌" [ref=e444]:
+                      - generic [ref=e446]: ‌
+                    - cell "‌ ‌" [ref=e447]:
+                      - generic [ref=e448]:
+                        - generic [ref=e450]: ‌
+                        - generic [ref=e452]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e453]:
+                    - cell "‌" [ref=e454]:
+                      - generic [ref=e456]: ‌
+                    - cell "‌" [ref=e457]:
+                      - generic [ref=e459]: ‌
+                    - cell "‌" [ref=e460]:
+                      - generic [ref=e462]: ‌
+                    - cell "‌ ‌" [ref=e463]:
+                      - generic [ref=e464]:
+                        - generic [ref=e466]: ‌
+                        - generic [ref=e468]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e469]:
+                    - cell "‌" [ref=e470]:
+                      - generic [ref=e472]: ‌
+                    - cell "‌" [ref=e473]:
+                      - generic [ref=e475]: ‌
+                    - cell "‌" [ref=e476]:
+                      - generic [ref=e478]: ‌
+                    - cell "‌ ‌" [ref=e479]:
+                      - generic [ref=e480]:
+                        - generic [ref=e482]: ‌
+                        - generic [ref=e484]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e485]:
+                    - cell "‌" [ref=e486]:
+                      - generic [ref=e488]: ‌
+                    - cell "‌" [ref=e489]:
+                      - generic [ref=e491]: ‌
+                    - cell "‌" [ref=e492]:
+                      - generic [ref=e494]: ‌
+                    - cell "‌ ‌" [ref=e495]:
+                      - generic [ref=e496]:
+                        - generic [ref=e498]: ‌
+                        - generic [ref=e500]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e501]:
+                    - cell "‌" [ref=e502]:
+                      - generic [ref=e504]: ‌
+                    - cell "‌" [ref=e505]:
+                      - generic [ref=e507]: ‌
+                    - cell "‌" [ref=e508]:
+                      - generic [ref=e510]: ‌
+                    - cell "‌ ‌" [ref=e511]:
+                      - generic [ref=e512]:
+                        - generic [ref=e514]: ‌
+                        - generic [ref=e516]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e517]:
+                    - cell "‌" [ref=e518]:
+                      - generic [ref=e520]: ‌
+                    - cell "‌" [ref=e521]:
+                      - generic [ref=e523]: ‌
+                    - cell "‌" [ref=e524]:
+                      - generic [ref=e526]: ‌
+                    - cell "‌ ‌" [ref=e527]:
+                      - generic [ref=e528]:
+                        - generic [ref=e530]: ‌
+                        - generic [ref=e532]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e533]:
+                    - cell "‌" [ref=e534]:
+                      - generic [ref=e536]: ‌
+                    - cell "‌" [ref=e537]:
+                      - generic [ref=e539]: ‌
+                    - cell "‌" [ref=e540]:
+                      - generic [ref=e542]: ‌
+                    - cell "‌ ‌" [ref=e543]:
+                      - generic [ref=e544]:
+                        - generic [ref=e546]: ‌
+                        - generic [ref=e548]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e549]:
+                    - cell "‌" [ref=e550]:
+                      - generic [ref=e552]: ‌
+                    - cell "‌" [ref=e553]:
+                      - generic [ref=e555]: ‌
+                    - cell "‌" [ref=e556]:
+                      - generic [ref=e558]: ‌
+                    - cell "‌ ‌" [ref=e559]:
+                      - generic [ref=e560]:
+                        - generic [ref=e562]: ‌
+                        - generic [ref=e564]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e565]:
+                    - cell "‌" [ref=e566]:
+                      - generic [ref=e568]: ‌
+                    - cell "‌" [ref=e569]:
+                      - generic [ref=e571]: ‌
+                    - cell "‌" [ref=e572]:
+                      - generic [ref=e574]: ‌
+                    - cell "‌ ‌" [ref=e575]:
+                      - generic [ref=e576]:
+                        - generic [ref=e578]: ‌
+                        - generic [ref=e580]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e581]:
+                    - cell "‌" [ref=e582]:
+                      - generic [ref=e584]: ‌
+                    - cell "‌" [ref=e585]:
+                      - generic [ref=e587]: ‌
+                    - cell "‌" [ref=e588]:
+                      - generic [ref=e590]: ‌
+                    - cell "‌ ‌" [ref=e591]:
+                      - generic [ref=e592]:
+                        - generic [ref=e594]: ‌
+                        - generic [ref=e596]: ‌
+                  - row "‌ ‌ ‌ ‌ ‌" [ref=e597]:
+                    - cell "‌" [ref=e598]:
+                      - generic [ref=e600]: ‌
+                    - cell "‌" [ref=e601]:
+                      - generic [ref=e603]: ‌
+                    - cell "‌" [ref=e604]:
+                      - generic [ref=e606]: ‌
+                    - cell "‌ ‌" [ref=e607]:
+                      - generic [ref=e608]:
+                        - generic [ref=e610]: ‌
+                        - generic [ref=e612]: ‌

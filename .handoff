@@ -1,0 +1,75 @@
+# Handoff — gbrain brain rollout (2026-06-10 → 2026-06-11)
+
+## What this was
+
+Adopted garrytan/gbrain (MIT, Bun, PGLite) as slaude's brain layer and rolled it
+to the maria deployment. Design + all decisions: docs/findings/2026-06-10-gbrain-slaude-kb.md.
+
+## Released (slaude, all tagged + GHCR images built)
+
+- v0.18.0 — brain core: slaude_kb v2 (kb_think/kb_search/kb_get_page/kb_list_pages/
+  kb_graph/kb_put_page/kb_delete_page), per-Slack-user source scoping (agent/shared/
+  public/user-<id>/kb-<label>, DB-enforced via synthetic AuthInfo + remote:true),
+  approval tiers (own-slice auto / shared approval / admin manager-only hard check),
+  brain memory provider (default; SLAUDE_MEMORY=sqlite reverts), nightly maintenance
+  03:00 local (SLAUDE_BRAIN_CYCLE), KB wikis indexed as brain sources.
+- v0.19.0 — kb_think synthesis routed through claude-agent-sdk (reuses subscription
+  OAuth; no ANTHROPIC_API_KEY needed in pod). Provider-qualified EMBEDDING_MODEL.
+- v0.19.1 — fix: self-init git checkpoint repo for content-only KB installs.
+- v0.19.2 — fix: take over stale PGLite lock at boot (k8s PID-namespace trap).
+- v0.19.3 — fix: sweep stale gbrain_cycle_locks rows at boot (cross-host sync lock).
+- v0.19.4 — fix: configure embedding gateway at boot; missing key degrades to
+  keyword-only instead of killing the server. embeddingActive() runtime flag.
+- v0.20.0 — brain-backfill command (sqlite memory_turns → conversation pages,
+  idempotent) + stale-chunk embed sweep (post-backfill + nightly phase).
+- v0.20.1 — fix: CLI session-id seeding (resume was a 100% miss — slaude uuid vs
+  CLI's own id; now extraArgs --session-id at first boot). Baseline documents
+  brain auto-indexing + memory recall-vs-searchability contract.
+
+## deploy-hermes state
+
+- main = 0.19.4 (currently deployed to UAT, healthy: gateway configured, 7 KBs indexed)
+- branch `chore/maria-slaude-0.20.0` (pushed, UNMERGED): image → 0.20.1 + brain PVC
+  mount notes. ONE Bitbucket merge ships backfill + embed sweep + resume fix.
+- maria values (uat+prod, already on main since 0.19.x rollout): /data/brain PVC
+  subPath mount, SLAUDE_BRAIN_CYCLE=03:00, EMBEDDING_MODEL=zeroentropyai:zembed-1,
+  EMBEDDING_DIMENSIONS=2560. Vault HERMES_AGENT has ZEROENTROPY_API_KEY (confirmed set).
+
+## Next actions (in order)
+
+1. Merge `chore/maria-slaude-0.20.0` in Bitbucket → run deploy-uat (AGENT_SLUG=maria).
+2. Backfill the 3-week session backlog — NOT via kubectl exec beside the live server
+   (PGLite single-writer; boot takeover would steal the live lock). Procedure:
+   scale maria to 0 → run one-off pod/Job on the same PVC with command
+   `bun run brain-backfill` → scale back to 1. Expected: "[backfill] done: N sessions,
+   M turns, 0 errors" then "embedded K stale chunks" (= ZeroEntropy dashboard lights up).
+3. Verify: idle-reopen a thread → no "No conversation found with session ID" in logs
+   (one final occurrence per old thread = self-migration, recurring = new bug).
+4. Promote prod (same vault key already global; prod values already carry brain config).
+
+## Known gaps / debt
+
+- Wiki [[wikilinks]] → graph edges: 0 edges from fs-synced sources (gbrain resolution
+  rules; tried qualified slugs, md links, global_basename). Agent kb_put_page writes
+  DO wire edges. Upstream investigation. Search unaffected.
+- brain-backfill lock guard not built: running it beside a live server steals the
+  PGLite lock (corruption risk). Mitigated by documented scale-down procedure; a
+  refuse-if-server-alive guard is the proper fix.
+- Pre-existing main typecheck errors in src/agent/manager.ts:459/463 (SDK type drift,
+  "tool_use"/"thinking") — unrelated to this work, still unfixed.
+- Flaky test under load: skillHandlers sync_manifest (15s, passes isolated).
+- deploy-hermes CLAUDE.md says maria runs deepseek-v4-pro — stale; actual = Claude
+  subscription token (CLAUDE_CODE_OAUTH_TOKEN), default Anthropic models.
+- Phase 4 (multi-agent shared brain on Postgres) designed, not implemented — config
+  not code (database_url + per-agent OAuth clients). See finding doc.
+
+## Key invariants (don't break)
+
+- One process owns the brain (one container = one persona). All lock takeovers
+  (SLAUDE_BRAIN_TAKEOVER=1 default) are safe ONLY under this contract.
+- ensureSources() before any brain write — put_page into a missing source spins.
+- gbrain pinned to github:garrytan/gbrain#03ffc6e — npm "gbrain" is unrelated.
+  tsc must not descend into gbrain (erased import specifiers in brain.ts).
+- Never put a bare ANTHROPIC_API_KEY in maria's pod env — flips the main loop
+  off subscription billing. kb_think rides the SDK on purpose.
+- Releases/tags/deploy-bumps only on Zidni's explicit go; features as PRs.

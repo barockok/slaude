@@ -1,3 +1,8 @@
+/**
+ * @deprecated Superseded by brain memoize (gbrain captures knowledge
+ * automatically). The /ingest command no longer triggers this flow; this
+ * module is retained only until removal. Do not wire new callers.
+ */
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, readdirSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { join } from "node:path";

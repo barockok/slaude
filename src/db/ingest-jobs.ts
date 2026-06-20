@@ -1,3 +1,8 @@
+/**
+ * @deprecated Superseded by brain memoize (gbrain captures knowledge
+ * automatically). The /ingest command no longer triggers this flow; this
+ * module is retained only until removal. Do not wire new callers.
+ */
 import { db } from "./schema";
 
 export const STALE_AFTER_MS = 10 * 60 * 1000; // 10 min

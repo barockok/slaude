@@ -1,0 +1,49 @@
+- generic [ref=e1]:
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e6]:
+        - generic [ref=e7]: Loading
+        - progressbar [ref=e8]
+      - main [ref=e15]:
+        - generic [ref=e16]:
+          - generic [ref=e19]:
+            - img [ref=e21]
+            - generic [ref=e26]: Sign in with Google
+          - generic [ref=e27]:
+            - heading "Sign in" [level=1] [ref=e28]
+            - generic [ref=e30]:
+              - text: to continue to
+              - button "Amartha DEV" [ref=e31] [cursor=pointer]
+        - generic [ref=e39]:
+          - generic [ref=e43]:
+            - generic [ref=e44]:
+              - textbox "Enter your email" [active] [ref=e45]
+              - generic: Enter your email
+            - generic [ref=e47]: "@amartha.com"
+          - button "Forgot email?" [ref=e51] [cursor=pointer]
+        - generic [ref=e53]:
+          - button "Next" [ref=e57]:
+            - generic [ref=e60]: Next
+          - button "Create account" [ref=e65]:
+            - generic [ref=e68]: Create account
+    - contentinfo [ref=e72]:
+      - combobox "Change language English (United States)" [ref=e76] [cursor=pointer]:
+        - generic:
+          - generic: English (United States)
+        - generic:
+          - img
+      - list [ref=e78]:
+        - listitem [ref=e79]:
+          - link "Open Google Account Help Center (external, opens in a new window)" [ref=e80] [cursor=pointer]:
+            - /url: https://support.google.com/accounts?hl=en-US&p=account_iph
+            - text: Help
+        - listitem [ref=e81]:
+          - link "Privacy Policy (external, opens in a new window)" [ref=e82] [cursor=pointer]:
+            - /url: https://accounts.google.com/TOS?loc=ID&hl=en-US&privacy=true
+            - text: Privacy
+        - listitem [ref=e83]:
+          - link "Google Terms of Service (external, opens in a new window)" [ref=e84] [cursor=pointer]:
+            - /url: https://accounts.google.com/TOS?loc=ID&hl=en-US
+            - text: Terms
+  - iframe [ref=e85]:
+    
