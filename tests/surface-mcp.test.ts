@@ -42,6 +42,17 @@ describe("surfaceTools — capability gating", () => {
     expect(r.content[0].text).toBe("locked");
   });
 
+  test("set_mention_only mounts only when the opt is provided + handler calls the engine", async () => {
+    expect(surfaceTools(fakeSurface([])).map((t) => t.name)).not.toContain("set_mention_only");
+    const seen: boolean[] = [];
+    const defs = surfaceTools(fakeSurface([]), { setMentionOnly: async (a) => { seen.push(a); return a ? "on" : "off"; } });
+    const def = defs.find((t) => t.name === "set_mention_only")!;
+    expect(def).toBeDefined();
+    const r: any = await def.handler({ active: true });
+    expect(seen).toEqual([true]);
+    expect(r.content[0].text).toBe("on");
+  });
+
   test("unreact rides on the react capability", () => {
     const reactNames = surfaceTools(fakeSurface(["react"])).map((t) => t.name);
     expect(reactNames).toContain("react");

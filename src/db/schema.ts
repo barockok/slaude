@@ -95,6 +95,14 @@ CREATE TABLE IF NOT EXISTS one_on_one_locks (
   PRIMARY KEY (channel_id, thread_ts)
 );
 
+CREATE TABLE IF NOT EXISTS mention_only_threads (
+  channel_id TEXT    NOT NULL,
+  thread_ts  TEXT    NOT NULL,
+  created_by TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (channel_id, thread_ts)
+);
+
 CREATE TABLE IF NOT EXISTS soul_overrides (
   field      TEXT    NOT NULL CHECK(field IN
               ('trustedChannels','allowedChannels','dmAllowedUsers','blockedUsers')),
