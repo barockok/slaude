@@ -94,6 +94,7 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 Entries live in `docs/findings/<date>-<slug>.md`. Add a new file per significant finding/decision/mistake; index it below. Newest first.
 
+- [2026-06-20 — Brain as a remote OAuth-protected MCP process (configurable): `BrainBackend` seam routes `brainCall`/`brainAdminCall` to a `LocalBackend` (in-process, default) or `RemoteBackend` (OAuth'd MCP client → `slaude brain-server`); scope+gating stay in slaude (dumb-engine server, two tools `brain_op`/`brain_admin_op`); Keycloak JWT resource-guard (jose JWKS + RFC 9728 PRM); reuses the shared OAuth loopback via `slaude brain connect`; one-writer two-process deploy](docs/findings/2026-06-20-brain-remote-mcp.md)
 - [2026-06-19 — Shared always-on OAuth loopback (signed-state demux, verify-before-routing) + surface-aware `/mcp connect` (route via Surface, redact auth URL on settle) + URL-safe `mdToMrkdwn` + mrkdwn flanking fix (#51)](docs/findings/2026-06-19-shared-oauth-loopback-surface-connect.md)
 
 - [2026-06-16 — Re-engage via in-session suppression (hook-only): a `UserPromptSubmit` hook returning `continue:false` (NOT `decision:"block"`, which discards the prompt pre-persist) keeps a disengaged thread's transcript populated without running the model; supersedes the Slack-backfill approach](docs/findings/2026-06-16-reengage-hook-suppress.md)
