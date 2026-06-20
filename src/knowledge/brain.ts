@@ -4,6 +4,7 @@ import { paths } from "../config/home";
 import { loadKbs } from "./loader";
 import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, type BrainScope } from "./scope";
 import { isScopeWriteOp } from "./gated-dispatch";
+import { getBackend } from "./backend";
 
 // Engine surface kept minimal on purpose: gbrain ships TS sources and its own
 // types stay internal to it; slaude only needs lifecycle + handler dispatch.
@@ -300,12 +301,12 @@ export async function runAdminOp(name: string, params: Record<string, unknown>, 
 
 /** User-scoped call: dispatched through the configured backend (local/remote). */
 export async function brainCall(name: string, params: Record<string, unknown>, scope: BrainScope): Promise<unknown> {
-  return runScopedOp(name, params, scope);
+  return getBackend().call(name, params, scope);
 }
 
 /** Trusted call (boot, admin, sync): dispatched through the configured backend. */
 export async function brainAdminCall(name: string, params: Record<string, unknown>, sourceId = "default"): Promise<unknown> {
-  return runAdminOp(name, params, sourceId);
+  return getBackend().adminCall(name, params, sourceId);
 }
 
 export function baselineSources(): string[] {
