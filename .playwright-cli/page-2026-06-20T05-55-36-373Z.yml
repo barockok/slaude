@@ -1,0 +1,25 @@
+- generic [ref=e4]:
+  - generic [ref=e6]:
+    - generic [ref=e7]:
+      - generic [ref=e9] [cursor=pointer]: 
+      - generic [ref=e10]:
+        - img "Argo" [ref=e11]
+        - generic [ref=e12] [cursor=pointer]: v2.14.11+8283115
+      - img "Argo" [ref=e13]
+    - generic [ref=e15] [cursor=pointer]:
+      - generic [ref=e16]: 
+      - text: Applications
+    - generic [ref=e18] [cursor=pointer]:
+      - generic [ref=e19]: 
+      - text: Settings
+    - generic [ref=e21] [cursor=pointer]:
+      - generic [ref=e22]: 
+      - text: User Info
+    - generic [ref=e24] [cursor=pointer]:
+      - generic [ref=e25]: 
+      - text: Documentation
+  - generic [ref=e28]:
+    - generic [ref=e30]:
+      - generic [ref=e34]: Application Details
+      - button "Log in" [ref=e38] [cursor=pointer]
+    - generic [ref=e39]: Loading...

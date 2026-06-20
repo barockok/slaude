@@ -1,0 +1,147 @@
+- generic [ref=e4]:
+  - link "Skip to main content" [ref=e5] [cursor=pointer]:
+    - /url: "#pageContent"
+    - generic [ref=e6]: Skip to main content
+  - generic [ref=e7]:
+    - generic [ref=e8]:
+      - generic [ref=e9]:
+        - button "Close menu" [ref=e10] [cursor=pointer]:
+          - img "Grafana" [ref=e12]
+        - generic [ref=e13]: Grafana
+      - button "Undock menu" [ref=e14] [cursor=pointer]:
+        - img [ref=e15]
+    - navigation [ref=e17]:
+      - list "Navigation" [ref=e21]:
+        - listitem [ref=e22]:
+          - link "Home" [ref=e26] [cursor=pointer]:
+            - /url: /
+            - generic [ref=e28]:
+              - img [ref=e29]
+              - generic [ref=e31]: Home
+        - listitem [ref=e32]:
+          - generic [ref=e33]:
+            - link "Bookmarks" [ref=e36] [cursor=pointer]:
+              - /url: /bookmarks
+              - generic [ref=e38]:
+                - img [ref=e39]
+                - generic [ref=e41]: Bookmarks
+            - 'button "Expand section: Bookmarks" [ref=e43] [cursor=pointer]':
+              - img [ref=e44]
+        - listitem [ref=e46]:
+          - generic [ref=e47]:
+            - link "Starred" [ref=e50] [cursor=pointer]:
+              - /url: /dashboards?starred
+              - generic [ref=e52]:
+                - img [ref=e53]
+                - generic [ref=e55]: Starred
+            - 'button "Expand section: Starred" [ref=e57] [cursor=pointer]':
+              - img [ref=e58]
+        - listitem [ref=e60]:
+          - generic [ref=e61]:
+            - link "Dashboards" [ref=e64] [cursor=pointer]:
+              - /url: /dashboards
+              - generic [ref=e66]:
+                - img [ref=e67]
+                - generic [ref=e69]: Dashboards
+            - 'button "Expand section: Dashboards" [ref=e71] [cursor=pointer]':
+              - img [ref=e72]
+        - listitem [ref=e74]:
+          - link "Explore" [ref=e78] [cursor=pointer]:
+            - /url: /explore
+            - generic [ref=e80]:
+              - img [ref=e81]
+              - generic [ref=e83]: Explore
+        - listitem [ref=e84]:
+          - generic [ref=e85]:
+            - link "Drilldown" [ref=e88] [cursor=pointer]:
+              - /url: /drilldown
+              - generic [ref=e90]:
+                - img [ref=e91]
+                - generic [ref=e96]: Drilldown
+            - 'button "Expand section: Drilldown" [ref=e98] [cursor=pointer]':
+              - img [ref=e99]
+        - listitem [ref=e101]:
+          - generic [ref=e102]:
+            - link "Alerting" [ref=e105] [cursor=pointer]:
+              - /url: /alerting
+              - generic [ref=e107]:
+                - img [ref=e108]
+                - generic [ref=e110]: Alerting
+            - 'button "Expand section: Alerting" [ref=e112] [cursor=pointer]':
+              - img [ref=e113]
+        - listitem [ref=e115]:
+          - generic [ref=e116]:
+            - link "More apps" [ref=e119] [cursor=pointer]:
+              - /url: /apps
+              - generic [ref=e121]:
+                - img [ref=e122]
+                - generic [ref=e124]: More apps
+            - 'button "Expand section: More apps" [ref=e126] [cursor=pointer]':
+              - img [ref=e127]
+        - listitem [ref=e129]:
+          - generic [ref=e130]:
+            - link "Administration" [ref=e133] [cursor=pointer]:
+              - /url: /admin
+              - generic [ref=e135]:
+                - img [ref=e136]
+                - generic [ref=e138]: Administration
+            - 'button "Expand section: Administration" [ref=e140] [cursor=pointer]':
+              - img [ref=e141]
+  - banner [ref=e143]:
+    - generic [ref=e144]:
+      - navigation "Breadcrumbs" [ref=e146]:
+        - list [ref=e147]:
+          - listitem [ref=e148]:
+            - generic "Home" [ref=e149]
+      - generic [ref=e150]:
+        - generic [ref=e152]:
+          - img [ref=e154]
+          - button "Search..." [ref=e156] [cursor=pointer]
+          - generic [ref=e158]: ⌘+k
+        - button "Help" [ref=e159] [cursor=pointer]:
+          - img [ref=e160]
+        - button "Profile" [ref=e163] [cursor=pointer]:
+          - img "User avatar" [ref=e164]
+    - generic [ref=e168]:
+      - button "Edit" [ref=e172] [cursor=pointer]:
+        - generic [ref=e173]: Edit
+      - button "Export" [ref=e178] [cursor=pointer]:
+        - generic [ref=e179]: Export
+      - generic [ref=e182]:
+        - button "Share" [ref=e183] [cursor=pointer]:
+          - generic [ref=e184]: Share
+        - button "Toggle share menu" [ref=e185] [cursor=pointer]
+  - main [ref=e189]:
+    - generic [ref=e199]:
+      - region "Alerts" [ref=e204]:
+        - heading "Alerts" [level=2] [ref=e207]
+        - generic [ref=e211]:
+          - list
+      - region "Logs" [ref=e216]:
+        - heading "Logs" [level=2] [ref=e219]
+        - generic [ref=e223]:
+          - list
+      - region "Kubernetes" [ref=e228]:
+        - heading "Kubernetes" [level=2] [ref=e231]
+        - generic [ref=e235]:
+          - list
+      - region "Google Cloud Monitoring" [ref=e240]:
+        - heading "Google Cloud Monitoring" [level=2] [ref=e243]
+        - generic [ref=e247]:
+          - list
+      - region "Elasticsearch" [ref=e252]:
+        - heading "Elasticsearch" [level=2] [ref=e255]
+        - generic [ref=e259]:
+          - list
+      - region "Redis Operator | Cluster Dashboard" [ref=e264]:
+        - heading "Redis Operator | Cluster Dashboard" [level=2] [ref=e267]
+        - generic [ref=e271]:
+          - list
+      - region "Strimzi Kafka" [ref=e276]:
+        - heading "Strimzi Kafka" [level=2] [ref=e279]
+        - generic [ref=e283]:
+          - list
+      - region "Prometheus" [ref=e288]:
+        - heading "Prometheus" [level=2] [ref=e291]
+        - generic [ref=e295]:
+          - list

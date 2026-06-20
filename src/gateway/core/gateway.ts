@@ -781,18 +781,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         return;
       }
       if (slash.kind === "ingest") {
-        const soul = soulData();
-        if (!canTriggerIngest(userId, soul)) {
-          await reply("not authorized to trigger /ingest — manager or approver only");
-          return;
-        }
-        await reply(":hourglass_flowing_sand: ingest started…");
-        const result = await kbIngest.run({ triggeredBy: userId });
-        if (result.ok) {
-          await reply(`:white_check_mark: ingest done — ${result.summary}`);
-        } else {
-          await reply(`:x: ingest failed: ${result.reason}`);
-        }
+        // DEPRECATED: the raw/ → wiki/ synthesis flow is superseded by brain
+        // memoize (gbrain captures knowledge automatically). The command no longer
+        // runs the job; it points to the replacement. Code kept for now (see
+        // knowledge/ingest.ts @deprecated); slated for removal.
+        await reply(
+          ":warning: `/ingest` is *deprecated* — knowledge is captured automatically via brain memoize now, so the raw/→wiki synthesis no longer runs.",
+        );
         return;
       }
       if (slash.kind === "one-on-one") {
