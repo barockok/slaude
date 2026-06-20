@@ -8,6 +8,7 @@ import type { Surface, SessionBinding } from "../../../src/gateway/core/surface"
 import { db } from "../../../src/db/schema";
 import * as CronJobs from "../../../src/db/cron-jobs";
 import * as OneOnOne from "../../../src/db/one-on-one";
+import * as MentionOnly from "../../../src/db/mention-only";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 import { __resetModelCache } from "../../../src/agent/models";
 import { paths } from "../../../src/config/home";
@@ -584,6 +585,52 @@ describe("gateway uncovered branches", () => {
 
       // unknown session → no active thread
       expect(await g.h.__agentOneOnOne("no-such-session", true)).toContain("no active thread");
+    });
+
+    it("agent mention-only toggle (agentMentionOnly seam)", async () => {
+      writeSoulFixture(WORLD);
+      MentionOnly._wipeForTests();
+      const g = makeGw();
+      const ts = nextTs();
+      await g.emit("message", dmArgs(g, "hi", { ts }));
+      const session = g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+
+      // off when not set → no-op
+      expect(await g.h.__agentMentionOnly(session.id, false)).toContain("nothing to change");
+      expect(MentionOnly.find("D_MGR", ts)).toBeNull();
+
+      // on → flag set
+      expect(await g.h.__agentMentionOnly(session.id, true)).toContain("Mention-only on");
+      expect(MentionOnly.find("D_MGR", ts)).not.toBeNull();
+
+      // off → cleared
+      expect(await g.h.__agentMentionOnly(session.id, false)).toContain("off");
+      expect(MentionOnly.find("D_MGR", ts)).toBeNull();
+
+      // unknown session
+      expect(await g.h.__agentMentionOnly("no-such-session", true)).toContain("no active thread");
+    });
+
+    it("/mention-only on/off command toggles the thread flag", async () => {
+      writeSoulFixture(WORLD);
+      MentionOnly._wipeForTests();
+      const g = makeGw();
+      const ts = nextTs();
+      await g.emit("message", dmArgs(g, "hi", { ts }));
+
+      // off when not set → informational
+      await g.emit("message", dmArgs(g, "/mention-only off", { ts: nextTs(), thread_ts: ts }));
+      await waitFor(() => g.posts.some((p) => /isn't in mention-only/.test(String(p.text))));
+
+      // on → flag set
+      await g.emit("message", dmArgs(g, "/mention-only", { ts: nextTs(), thread_ts: ts }));
+      await waitFor(() => g.posts.some((p) => /reply in this thread only when @-mentioned/.test(String(p.text))));
+      expect(MentionOnly.find("D_MGR", ts)).not.toBeNull();
+
+      // off → cleared
+      await g.emit("message", dmArgs(g, "/mention-only off", { ts: nextTs(), thread_ts: ts }));
+      await waitFor(() => g.posts.some((p) => /follow the thread normally/.test(String(p.text))));
+      expect(MentionOnly.find("D_MGR", ts)).toBeNull();
     });
 
     it("agent connect is disabled when the store-format canary failed", async () => {

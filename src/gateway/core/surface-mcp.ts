@@ -25,6 +25,10 @@ export interface SurfaceMcpOpts {
   /** Start (true) / release (false) a /1on1 lock on the current thread (gateway
    *  injects the engine). When present, the set_one_on_one tool is mounted. */
   setOneOnOne?: (active: boolean) => Promise<string>;
+  /** Toggle mention-only mode for the current thread (gateway injects the engine —
+   *  surface-mcp stays decoupled from the db). When present, the set_mention_only
+   *  tool is mounted. */
+  setMentionOnly?: (active: boolean) => Promise<string>;
 }
 
 /** Build the agent-facing interaction tools for a Surface. Core tools are always present;
@@ -148,6 +152,20 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
       handler: async ({ active }) => {
         try { return ok(await setOneOnOne(active)); }
         catch (e: any) { return fail(`set_one_on_one failed: ${e?.message ?? String(e)}`); }
+      },
+    });
+  }
+
+  if (opts.setMentionOnly) {
+    const setMentionOnly = opts.setMentionOnly;
+    defs.push({
+      name: "set_mention_only",
+      description:
+        "Set whether THIS thread is mention-only. active=true → reply ONLY when @-mentioned (ignore plain follow-ups); active=false → follow the thread normally again. Use when the user asks you to pipe down / only respond when tagged, or to undo it. Returns a short status to relay.",
+      schema: { active: z.boolean().describe("true = mention-only; false = normal following.") },
+      handler: async ({ active }) => {
+        try { return ok(await setMentionOnly(active)); }
+        catch (e: any) { return fail(`set_mention_only failed: ${e?.message ?? String(e)}`); }
       },
     });
   }

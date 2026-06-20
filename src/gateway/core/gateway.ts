@@ -49,6 +49,7 @@ import * as kbIngest from "../../knowledge/ingest";
 import * as Ignores from "../../db/ignores";
 import * as CronJobs from "../../db/cron-jobs";
 import * as OneOnOne from "../../db/one-on-one";
+import * as MentionOnly from "../../db/mention-only";
 import { CronScheduler } from "../slack/cron-scheduler";
 import { getNextRun } from "../slack/cron-parser";
 import type { Transport } from "./transport";
@@ -69,8 +70,11 @@ export interface GatewayHandle {
    *  mcp__slaude_connect__connect_mcp tool calls) for a live session. */
   __agentConnect(sessionId: string, server: string): Promise<string>;
   /** TEST/SIM SEAM ONLY. Drive the agent-facing 1on1 toggle
-   *  (mcp__slaude_1on1__set_one_on_one) for a live session. */
+   *  (mcp__slaude_surface__set_one_on_one) for a live session. */
   __agentOneOnOne(sessionId: string, active: boolean): Promise<string>;
+  /** TEST/SIM SEAM ONLY. Drive the agent-facing mention-only toggle
+   *  (mcp__slaude_surface__set_mention_only) for a live session. */
+  __agentMentionOnly(sessionId: string, active: boolean): Promise<string>;
 }
 
 const REACT_RECEIVED = "eyes";
@@ -263,6 +267,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       [SURFACE_MCP_NAME]: createSurfaceMcp(route.surface, {
         initiator: () => route.ctx.userId,
         setOneOnOne: (active) => agentOneOnOne(sessionId, route.ctx, active),
+        setMentionOnly: (active) => agentMentionOnly(route.ctx, active),
       }),
       [RUNTIME_MCP_NAME]: createRuntimeMcp(route.ctx),
       [CONNECT_MCP_NAME]: createConnectMcp({ connect: (server) => agentConnect(sessionId, route.ctx, server) }),
@@ -525,6 +530,19 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     OneOnOne.unlock(ctx.channel, threadTs);
     agent.reload(sessionId);
     return "Released 1on1 — the thread is open again.";
+  }
+
+  // Agent-facing mention-only toggle — same engine as /mention-only. No reboot: it's
+  // a receive-time routing flag, not session-baked. No gating.
+  async function agentMentionOnly(ctx: SlackContext, active: boolean): Promise<string> {
+    const threadTs = ctx.threadTs ?? ctx.inboundTs ?? "";
+    if (active) {
+      MentionOnly.set({ channelId: ctx.channel, threadTs, createdBy: ctx.userId ?? "" });
+      return "Mention-only on — I'll reply in this thread only when @-mentioned.";
+    }
+    if (!MentionOnly.find(ctx.channel, threadTs)) return "This thread isn't in mention-only mode — nothing to change.";
+    MentionOnly.clear(ctx.channel, threadTs);
+    return "Mention-only off — I'll follow this thread normally again.";
   }
 
   t.action(/^slaude_mcp:connect:.+$/, async ({ ack, action, body }) => {
@@ -837,6 +855,20 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         OneOnOne.unlock(channelId, threadTs);
         agent.reload(session.id);     // reboot so the resolver restores agent-cred mounts next turn
         await reply(":unlock: 1on1 released — the thread is open again.");
+        return;
+      }
+      if (slash.kind === "mention-only") {
+        if (slash.action === "on") {
+          MentionOnly.set({ channelId, threadTs, createdBy: userId });
+          await reply(":speech_balloon: *mention-only* — I'll reply in this thread only when @-mentioned. `/mention-only off` to restore.");
+          return;
+        }
+        if (!MentionOnly.find(channelId, threadTs)) {
+          await reply("This thread isn't in mention-only mode.");
+          return;
+        }
+        MentionOnly.clear(channelId, threadTs);
+        await reply(":speech_balloon: mention-only off — I'll follow the thread normally again.");
         return;
       }
       if (slash.kind === "soul" || slash.kind === "soul-list" || slash.kind === "soul-clear") {
@@ -1372,6 +1404,23 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       metric.slackDropsTotal.inc({ reason: "mention_other" });
       return;
     }
+    // Mention-only thread: a plain (non-@mention) message never triggers a reply,
+    // even mid-conversation — the auto-continue paths below are skipped. The
+    // message is still recorded (suppressed) if a session exists so the model has
+    // context when next mentioned; otherwise dropped.
+    const mentionOnly = MentionOnly.find(channelId, ts) != null;
+    if (mentionOnly) {
+      const row = teamId
+        ? Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts })
+        : null;
+      if (row) {
+        console.log(`[slack-rx] record ch=${channelId} ts=${e.ts} user=${e.user} — mention-only, suppressed`);
+        return await handleMessage(args, { suppress: true });
+      }
+      console.log(`[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — mention-only, no @mention`);
+      metric.slackDropsTotal.inc({ reason: "mention_only" });
+      return;
+    }
     if (engaged.has(key)) {
       return await handleMessage(args);
     }
@@ -1414,6 +1463,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const route = routes.get(sessionId);
       if (!route) return Promise.resolve("no active thread for this session");
       return agentOneOnOne(sessionId, route.ctx, active);
+    },
+    __agentMentionOnly: (sessionId: string, active: boolean) => {
+      const route = routes.get(sessionId);
+      if (!route) return Promise.resolve("no active thread for this session");
+      return agentMentionOnly(route.ctx, active);
     },
   };
 }
