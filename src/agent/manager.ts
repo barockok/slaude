@@ -34,6 +34,7 @@ import { memory } from "../memory";
 import { scrubChildEnv } from "./child-env";
 import { resolveSessionConfigDir } from "./oauth-home";
 import { sessionIdOpts } from "./session-id-opts";
+import { sessionModeBlock } from "./session-mode";
 
 type LiveSession = {
   id: string;
@@ -426,6 +427,7 @@ export class AgentManager extends EventEmitter {
         preset: "claude_code",
         append: [
           soulSystemBlock(),
+          sessionModeBlock(lock),
           mcpServers
             ? `<mcp-servers>\nMCP server namespaces mounted this session. Call tools as \`mcp__<server>__<tool>\`.\n${Object.keys(mcpServers)
                 .map((n) => `- ${n}`)
