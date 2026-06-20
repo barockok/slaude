@@ -153,6 +153,12 @@ export const env = {
    *  the callback URL/code into the locked thread. Required for k8s / remote
    *  deploys where an ephemeral loopback port isn't reachable. Empty → loopback. */
   oauthRedirectUrl: () => opt("SLAUDE_OAUTH_REDIRECT_URL", ""),
+  /** Public base URL the shared loopback advertises as its redirect_uri (e.g.
+   *  "https://maria-hermes-uat.example.com"). In-cluster the listener binds a
+   *  private port but the IdP must redirect the user's browser to a publicly
+   *  routable host fronted by an ingress; this is that host. The callbackPath is
+   *  appended. Empty → the loopback falls back to http://localhost:<port>. */
+  oauthPublicUrl: () => opt("SLAUDE_OAUTH_PUBLIC_URL", "").trim(),
   /** Loopback bind host for the /mcp OAuth callback. 127.0.0.1 locally; set
    *  0.0.0.0 in-container so a `docker -p` mapped port is reachable from the host. */
   oauthLoopbackHost: () => opt("SLAUDE_OAUTH_LOOPBACK_HOST", "127.0.0.1"),

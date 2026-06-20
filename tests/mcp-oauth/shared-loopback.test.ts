@@ -24,6 +24,28 @@ describe("SharedLoopback", () => {
     expect(a.redirectUri).toContain(`:${lb.port}/callback`);
   });
 
+  test("publicUrl → redirect_uri uses the public host, not localhost", async () => {
+    lb = new SharedLoopback({ port: 0, publicUrl: "https://maria-hermes-uat.example.com" });
+    await lb.start();
+    const f = lb.register("s", 5000);
+    expect(f.redirectUri).toBe("https://maria-hermes-uat.example.com/callback");
+    expect(f.redirectUri).not.toContain("localhost");
+  });
+
+  test("publicUrl trailing slashes are normalized against callbackPath", async () => {
+    lb = new SharedLoopback({ port: 0, publicUrl: "https://h.example//", callbackPath: "/cb" });
+    await lb.start();
+    expect(lb.register("s", 5000).redirectUri).toBe("https://h.example/cb");
+  });
+
+  test("publicUrl still routes locally-arriving callbacks by state", async () => {
+    lb = new SharedLoopback({ port: 0, publicUrl: "https://h.example" });
+    await lb.start();
+    const f = lb.register("st", 5000);
+    await hit(lb, "code=PUB&state=st"); // ingress would forward here in prod
+    expect(await f.waitForCode()).toBe("PUB");
+  });
+
   test("routes the callback to the matching state", async () => {
     lb = await newStarted();
     const flow = lb.register("state-xyz", 5000);
