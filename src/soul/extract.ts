@@ -110,6 +110,10 @@ function assertIdsGroundedInPersona(data: SoulData, persona: string): void {
   for (const u of data.blockedUsers) ids.add(u);
   for (const u of data.dmAllowedUsers) ids.add(u);
   for (const a of data.approvers) ids.add(a.userId);
+  for (const co of data.channelOverrides) {
+    ids.add(co.channel);
+    for (const a of co.approvers) ids.add(a.userId);
+  }
   const missing = [...ids].filter((id) => !persona.includes(id));
   if (missing.length) {
     throw new Error(`extractor produced ungrounded ids: ${missing.join(", ")}`);
@@ -198,5 +202,35 @@ export function soulData(): SoulData {
     return applyOverrides(base, SoulOverrides.list());
   } catch {
     return base; // overlay must never take the gates down
+  }
+}
+
+/**
+ * Effective soul for a specific Slack channel. Starts from the global
+ * {@link soulData} (runtime overlays preserved), then applies the matching
+ * `## Channel` block: mandate replaced when the override sets one, approvers
+ * replaced when the override lists ≥1. No channel / no match → global view.
+ *
+ * Replace semantics (operator choice): inside an overridden channel the
+ * channel approver list is the *only* approver source for the approval gate
+ * and approver-based admin auth. manager/backup authority is a separate check
+ * and is never affected. See docs/superpowers/specs/2026-06-20-channel-soul-overrides-design.md.
+ *
+ * Always returns a usable SoulData — any failure falls back to the global
+ * view so the gates never break.
+ */
+export function effectiveSoulForChannel(channelId?: string): SoulData {
+  const base = soulData();
+  if (!channelId) return base;
+  try {
+    const ov = base.channelOverrides.find((c) => c.channel === channelId);
+    if (!ov) return base;
+    return {
+      ...base,
+      mandate: ov.mandate?.trim() ? ov.mandate : base.mandate,
+      approvers: ov.approvers.length ? ov.approvers : base.approvers,
+    };
+  } catch {
+    return base;
   }
 }
