@@ -362,6 +362,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // the live CLAUDE_CONFIG_DIR — already present, just write into it.
     const configDir = a.scope === "global" ? agentConfigDir() : ensureInitiatorConfigDir(a.userId);
     writeEntry(configDir, a.serverName, a.serverConfig, tokens);
+    agent.noteSessionEvent(a.sessionId, `Connected MCP server \`${a.serverName}\`${a.scope === "global" ? " (agent's shared identity)" : ""}.`);
     agent.reload(a.sessionId);
   }
 
@@ -914,6 +915,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // never match the stored grant.
           const cfg: OAuthServerConfig = { type: "http", url: httpServers[name]!.url, headers: httpServers[name]!.headers };
           const removed = removeEntry(configDir, name, cfg);
+          if (removed) agent.noteSessionEvent(session.id, `Disconnected MCP server \`${name}\`${scope === "global" ? " (agent's shared identity)" : ""}.`);
           await reply(
             removed
               ? `:white_check_mark: Disconnected \`${name}\`${scope === "global" ? " (agent's shared identity)" : ""} — credential removed. Takes effect on the next session boot.`
@@ -1111,6 +1113,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // provider has no /v1/models (non-Anthropic gateway) — pass through.
         }
         await agent.setSessionModel(session.id, slash.id);
+        agent.noteSessionEvent(session.id, `Model changed to \`${slash.id}\`.`);
         await reply(
           verified
             ? `model → \`${slash.id}\``

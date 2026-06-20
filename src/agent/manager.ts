@@ -35,6 +35,7 @@ import { scrubChildEnv } from "./child-env";
 import { resolveSessionConfigDir } from "./oauth-home";
 import { sessionIdOpts } from "./session-id-opts";
 import { sessionModeBlock } from "./session-mode";
+import { formatSessionNotes } from "./session-notes";
 
 type LiveSession = {
   id: string;
@@ -131,6 +132,10 @@ export class AgentManager extends EventEmitter {
   #stopGuard: StopGuard | undefined;
   /** Sessions whose Stop hook already blocked once this turn — cleared on user msg. */
   #stopBlocked = new Set<string>();
+  /** Out-of-band gate events (mcp connect/disconnect, model change) pending delivery
+   *  to a session's transcript. Keyed by sessionId; survives reload (only #live is
+   *  torn down on reboot). Drained once onto the next engaged user turn. */
+  #sessionNotes = new Map<string, string[]>();
   #budget = new TokenBudget({
     fallbackContextWindow: env.tokenFallbackContextWindow(),
   });
@@ -232,6 +237,15 @@ export class AgentManager extends EventEmitter {
     live.reloading = true;
     live.closeIterable();
     return true;
+  }
+
+  /** Queue an out-of-band gate event (e.g. "Connected MCP server `x`.") for delivery
+   *  to the session's transcript on its next engaged user turn. Persists across the
+   *  reboot that connect/disconnect trigger. */
+  noteSessionEvent(sessionId: string, text: string) {
+    const q = this.#sessionNotes.get(sessionId) ?? [];
+    q.push(text);
+    this.#sessionNotes.set(sessionId, q);
   }
 
   /** Change permission mode for a session. Persists; if live, also pushed to the SDK Query. */
@@ -387,7 +401,25 @@ export class AgentManager extends EventEmitter {
     // history — no Slack re-fetch, no synthetic preamble. (decision:"block"
     // discards the prompt *before* it persists — verified against the pinned
     // SDK; see docs/findings/2026-06-16-reengage-hook-suppress.md.)
-    const disengageSuppress = makeDisengageSuppressHook(sessionId);
+    // UserPromptSubmit: suppress while disengaged; otherwise drain any queued
+    // out-of-band gate events (mcp connect/disconnect, model change) into this
+    // turn's context so the model sees them in the timeline — exactly once.
+    const userPromptHook: HookCallback = async (input) => {
+      if (input.hook_event_name !== "UserPromptSubmit") return { continue: true };
+      const dis = disengagedHookDecision(Sessions.findById(sessionId));
+      if (dis.continue === false) {
+        metric.disengagedSuppressedTotal.inc();
+        return dis; // leave queued notes for the next engaged turn
+      }
+      const notes = this.#sessionNotes.get(sessionId) ?? [];
+      this.#sessionNotes.set(sessionId, []);
+      const block = formatSessionNotes(notes);
+      if (!block) return { continue: true };
+      return {
+        continue: true,
+        hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: block },
+      };
+    };
     // CC plugins installed via `bun run install-deps`. Without this, the SDK
     // ignores the enabledPlugins entry in settings.json (it only reads
     // settings when settingSources is set). Explicit Options.plugins surfaces
@@ -420,7 +452,7 @@ export class AgentManager extends EventEmitter {
       hooks: {
         PreCompact: [{ hooks: [preCompact] }],
         Stop: [{ hooks: [stopHook] }],
-        UserPromptSubmit: [{ hooks: [disengageSuppress] }],
+        UserPromptSubmit: [{ hooks: [userPromptHook] }],
       },
       systemPrompt: {
         type: "preset",
