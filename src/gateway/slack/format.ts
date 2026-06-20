@@ -36,6 +36,19 @@ export function mdToMrkdwn(md: string): string {
     return `${C2}${spans.length - 1}${C2}`;
   });
 
+  // 2a. Standalone bare URLs → labeled links using the host, so Slack renders a
+  //     compact <url|host> instead of a space-eating raw URL. Skipped (via the
+  //     lookbehind) when already a markdown link `[t](url)`, a mrkdwn link/label
+  //     `<url|t>`, or an autolink `<url>`; code spans are already carved out.
+  //     The full URL stays as the link target — only the visible text shrinks.
+  work = work.replace(/(?<![(<|])https?:\/\/[^\s<>)\]]+/g, (u) => {
+    try {
+      return `[${new URL(u).host}](${u})`;
+    } catch {
+      return u;
+    }
+  });
+
   // 2b. Carve URLs (autolinks <…> and bare http(s)://…) so emphasis rules never
   //     rewrite a `_`/`__`/`*` inside a link. Restored verbatim at the end. Runs
   //     before the link rule, whose url group then carries the sentinel through.
