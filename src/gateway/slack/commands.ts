@@ -37,6 +37,7 @@ export type SlashHit =
   | { kind: "cron-list" }
   | { kind: "cron-remove"; id: string }
   | { kind: "one-on-one"; action: "on" | "off" }
+  | { kind: "mention-only"; action: "on" | "off" }
   | { kind: "mcp"; action: "status" | "connect" | "disconnect"; server?: string }
   | { kind: "soul"; field: "trust" | "allow" | "dm" | "block"; action: "add" | "remove"; value: string }
   | { kind: "soul-list" }
@@ -51,6 +52,7 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/mode <name>", summary: "set the tool-permission mode (per session/thread)" },
   { usage: "/abort", summary: "cancel the current turn" },
   { usage: "/1on1 [off]", summary: "lock this thread to you + the manager; `off` releases" },
+  { usage: "/mention-only [off]", summary: "reply only when @-mentioned in this thread; `off` restores normal" },
   { usage: "/mcp [connect|disconnect <server>]", summary: "list/connect/disconnect OAuth HTTP MCP servers — in 1on1: as you; outside 1on1: manager manages the agent's shared identity" },
   { usage: "/ignore @user [dur]", summary: "ignore a user (optional duration, e.g. 1h, 30m)" },
   { usage: "/ignore-thread [dur]", summary: "ignore this thread (optional duration)" },
@@ -125,6 +127,9 @@ export function parseSlashCommand(text: string): SlashHit | null {
   }
   if (cmd === "1on1") {
     return { kind: "one-on-one", action: arg === "off" ? "off" : "on" };
+  }
+  if (cmd === "mention-only") {
+    return { kind: "mention-only", action: arg === "off" ? "off" : "on" };
   }
   if (cmd === "soul") {
     const sub = (rest[0] ?? "").toLowerCase();

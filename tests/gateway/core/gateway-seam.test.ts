@@ -5,6 +5,7 @@ import type { Transport } from "../../../src/gateway/core/transport";
 import { db } from "../../../src/db/schema";
 import * as Sessions from "../../../src/db/sessions";
 import * as CronJobs from "../../../src/db/cron-jobs";
+import * as MentionOnly from "../../../src/db/mention-only";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 
 function fakeTransport(): Transport {
@@ -250,6 +251,37 @@ describe("createGateway", () => {
       // handleMessage's attachment download resolves the bot token lazily.
       process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
     };
+
+    it("mention-only thread: plain follow-up recorded-but-suppressed, @mention still replies", async () => {
+      wipe();
+      MentionOnly._wipeForTests();
+      writeSoulFixture(WORLD);
+      const g = newGateway();
+      const thread = "300.1";
+
+      await g.mention(thread, "<@U_SLAUDE> hello");
+      expect(g.processed().length).toBe(1); // engaged, session row exists
+
+      MentionOnly.set({ channelId: CH, threadTs: thread, createdBy: WORLD.manager });
+
+      // plain follow-up (no @mention) → recorded-suppressed, NOT processed, no reply
+      await g.emit("message", { ...mk("300.2", "just a plain follow-up", thread), client: g.t.client });
+      expect(g.processed().length).toBe(1);  // no new processed turn
+      expect(g.suppressed().length).toBe(1); // recorded for context
+
+      // an @mention still replies (mention-only stays set)
+      await g.mention("300.3", "<@U_SLAUDE> ping", thread);
+      expect(g.processed().length).toBe(2);
+      expect(MentionOnly.find(CH, thread)).not.toBeNull();
+
+      // mention-only on a thread with NO session → plain message is dropped
+      // outright (nothing to record), not suppressed.
+      const fresh = "301.1";
+      MentionOnly.set({ channelId: CH, threadTs: fresh, createdBy: WORLD.manager });
+      const before = g.processed().length + g.suppressed().length;
+      await g.emit("message", { ...mk("301.2", "plain, no session", fresh), client: g.t.client });
+      expect(g.processed().length + g.suppressed().length).toBe(before); // dropped
+    });
 
     it("disengaged messages are recorded-but-suppressed, never processed (no reply)", async () => {
       wipe();
