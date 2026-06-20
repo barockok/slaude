@@ -22,6 +22,9 @@ export interface SurfaceMcpOpts {
   /** Resolves the CURRENT turn's inbound platform user id (live getter — the
    *  gateway mutates ctx per turn). Required to mount manager-gated tools. */
   initiator?: () => string | undefined;
+  /** Start (true) / release (false) a /1on1 lock on the current thread (gateway
+   *  injects the engine). When present, the set_one_on_one tool is mounted. */
+  setOneOnOne?: (active: boolean) => Promise<string>;
 }
 
 /** Build the agent-facing interaction tools for a Surface. Core tools are always present;
@@ -131,6 +134,20 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
       handler: async ({ on }) => {
         try { await surface.typing!({ on }); return ok(`typing ${on ? "on" : "off"}`); }
         catch (e: any) { return fail(`typing failed: ${e?.message ?? String(e)}`); }
+      },
+    });
+  }
+
+  if (opts.setOneOnOne) {
+    const setOneOnOne = opts.setOneOnOne;
+    defs.push({
+      name: "set_one_on_one",
+      description:
+        "Lock or release 1on1 mode for THIS thread. active=true → private session heard only by the current user + the manager; active=false → reopen it. Use when the user asks to go private / one-on-one, or to end it. Returns a short status to relay.",
+      schema: { active: z.boolean().describe("true = start 1on1 (lock to the current user); false = release it.") },
+      handler: async ({ active }) => {
+        try { return ok(await setOneOnOne(active)); }
+        catch (e: any) { return fail(`set_one_on_one failed: ${e?.message ?? String(e)}`); }
       },
     });
   }

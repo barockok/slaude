@@ -31,6 +31,17 @@ describe("surfaceTools — capability gating", () => {
     );
   });
 
+  test("set_one_on_one mounts only when the opt is provided + handler calls the engine", async () => {
+    expect(surfaceTools(fakeSurface([])).map((t) => t.name)).not.toContain("set_one_on_one");
+    const seen: boolean[] = [];
+    const defs = surfaceTools(fakeSurface([]), { setOneOnOne: async (a) => { seen.push(a); return a ? "locked" : "released"; } });
+    const def = defs.find((t) => t.name === "set_one_on_one")!;
+    expect(def).toBeDefined();
+    const r: any = await def.handler({ active: true });
+    expect(seen).toEqual([true]);
+    expect(r.content[0].text).toBe("locked");
+  });
+
   test("unreact rides on the react capability", () => {
     const reactNames = surfaceTools(fakeSurface(["react"])).map((t) => t.name);
     expect(reactNames).toContain("react");
