@@ -48,4 +48,12 @@ describe("oauth loopback env", () => {
     expect(a.length).toBeGreaterThan(20);
     expect(env.oauthStateSecret()).toBe(a); // stable across calls
   });
+
+  it("public url: empty by default, trimmed when set", () => {
+    delete process.env.SLAUDE_OAUTH_PUBLIC_URL;
+    expect(env.oauthPublicUrl()).toBe("");
+    process.env.SLAUDE_OAUTH_PUBLIC_URL = "  https://maria-hermes-uat.amartha.id  ";
+    expect(env.oauthPublicUrl()).toBe("https://maria-hermes-uat.amartha.id");
+    delete process.env.SLAUDE_OAUTH_PUBLIC_URL;
+  });
 });
