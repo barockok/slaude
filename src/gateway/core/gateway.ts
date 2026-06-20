@@ -25,6 +25,7 @@ import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME } from "../../knowledge/mcp-tools";
 import { brainEnabled, ensureSources } from "../../knowledge/brain";
+import { brainMode } from "../../knowledge/brain-config";
 import { syncKbWikis } from "../../knowledge/brain-sync";
 import { scheduleNightlyMaintenance } from "../../knowledge/brain-cycle";
 import { channelTrustFor, kbSourceId, resolveBrainScope } from "../../knowledge/scope";
@@ -223,7 +224,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   }
   // Brain source bootstrap — sources MUST exist before any kb_memoize write runs.
   // KB wiki import runs after, in the background; failures are logged, not fatal.
-  if (brainEnabled()) {
+  // In remote mode the separate brain-server process owns the engine, source
+  // bootstrap and nightly maintenance; the gateway only proxies runtime calls.
+  if (brainEnabled() && brainMode() === "local") {
     void ensureSources()
       .then(() => syncKbWikis())
       .then((rs) => {
