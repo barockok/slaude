@@ -1,0 +1,104 @@
+- generic [ref=e4]:
+  - link "Skip to main content" [ref=e5] [cursor=pointer]:
+    - /url: "#pageContent"
+    - generic [ref=e6]: Skip to main content
+  - generic [ref=e7]:
+    - generic [ref=e8]:
+      - generic [ref=e9]:
+        - button "Close menu" [ref=e10] [cursor=pointer]:
+          - img "Grafana" [ref=e12]
+        - generic [ref=e13]: Grafana
+      - button "Undock menu" [ref=e14] [cursor=pointer]:
+        - img [ref=e15]
+    - navigation [ref=e17]:
+      - list "Navigation" [ref=e21]:
+        - listitem [ref=e22]:
+          - link "Home" [ref=e26] [cursor=pointer]:
+            - /url: /
+            - generic [ref=e28]:
+              - img [ref=e29]
+              - generic [ref=e31]: Home
+        - listitem [ref=e32]:
+          - generic [ref=e33]:
+            - link "Bookmarks" [ref=e36] [cursor=pointer]:
+              - /url: /bookmarks
+              - generic [ref=e40]: Bookmarks
+            - 'button "Expand section: Bookmarks" [ref=e42] [cursor=pointer]':
+              - img [ref=e43]
+        - listitem [ref=e45]:
+          - generic [ref=e46]:
+            - link "Starred" [ref=e49] [cursor=pointer]:
+              - /url: /dashboards?starred
+              - generic [ref=e51]:
+                - img [ref=e52]
+                - generic [ref=e54]: Starred
+            - 'button "Expand section: Starred" [ref=e56] [cursor=pointer]'
+        - listitem [ref=e58]:
+          - generic [ref=e59]:
+            - link "Dashboards" [ref=e62] [cursor=pointer]:
+              - /url: /dashboards
+              - generic [ref=e64]:
+                - img [ref=e65]
+                - generic [ref=e67]: Dashboards
+            - 'button "Expand section: Dashboards" [ref=e69] [cursor=pointer]'
+        - listitem [ref=e71]:
+          - link "Explore" [ref=e75] [cursor=pointer]:
+            - /url: /explore
+            - generic [ref=e77]:
+              - img [ref=e78]
+              - generic [ref=e80]: Explore
+        - listitem [ref=e81]:
+          - generic [ref=e82]:
+            - link "Drilldown" [ref=e85] [cursor=pointer]:
+              - /url: /drilldown
+              - generic [ref=e87]:
+                - img [ref=e88]
+                - generic [ref=e93]: Drilldown
+            - 'button "Expand section: Drilldown" [ref=e95] [cursor=pointer]'
+        - listitem [ref=e97]:
+          - generic [ref=e98]:
+            - link "Alerting" [ref=e101] [cursor=pointer]:
+              - /url: /alerting
+              - generic [ref=e103]:
+                - img [ref=e104]
+                - generic [ref=e106]: Alerting
+            - 'button "Expand section: Alerting" [ref=e108] [cursor=pointer]'
+        - listitem [ref=e110]:
+          - generic [ref=e111]:
+            - link "More apps" [ref=e114] [cursor=pointer]:
+              - /url: /apps
+              - generic [ref=e116]:
+                - img [ref=e117]
+                - generic [ref=e119]: More apps
+            - 'button "Expand section: More apps" [ref=e121] [cursor=pointer]'
+        - listitem [ref=e123]:
+          - generic [ref=e124]:
+            - link "Administration" [ref=e127] [cursor=pointer]:
+              - /url: /admin
+              - generic [ref=e129]:
+                - img [ref=e130]
+                - generic [ref=e132]: Administration
+            - 'button "Expand section: Administration" [ref=e134] [cursor=pointer]'
+  - banner [ref=e136]:
+    - generic [ref=e137]:
+      - navigation "Breadcrumbs" [ref=e139]:
+        - list [ref=e140]:
+          - listitem [ref=e141]:
+            - link "Home" [ref=e142] [cursor=pointer]:
+              - /url: /
+            - img [ref=e144]
+          - listitem [ref=e146]:
+            - generic "Dashboards" [ref=e147]
+      - generic [ref=e148]:
+        - generic [ref=e150]:
+          - img [ref=e152]
+          - button "Search..." [ref=e154] [cursor=pointer]
+          - generic [ref=e156]: ⌘+k
+        - button "Help" [ref=e157] [cursor=pointer]:
+          - img [ref=e158]
+        - button "Profile" [ref=e161] [cursor=pointer]:
+          - img "User avatar" [ref=e162]
+  - main [ref=e165]:
+    - generic [ref=e171]:
+      - text: Loading ...
+      - img "Loading" [ref=e173]
