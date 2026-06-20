@@ -780,6 +780,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
       if (slash.kind === "mode") {
         await agent.setPermissionMode(session.id, slash.mode);
+        agent.noteSessionEvent(session.id, `Permission mode changed to \`${humanModeName(slash.mode)}\`.`);
         await reply(`mode → \`${humanModeName(slash.mode)}\``);
         return;
       }
@@ -828,6 +829,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             { field: slash.field, action: slash.action, value: slash.value, by: userId },
             { managerId: soul.manager.userId },
           );
+          if (res.ok) {
+            agent.noteSessionEvent(session.id, `Soul ACL override: ${slash.action} \`${res.value}\` to \`${res.field}\` (shadows SOUL.md).`);
+          }
           await reply(
             res.ok
               ? `:white_check_mark: soul override: \`${res.field}\` ${slash.action} \`${res.value}\` — effective immediately, all sessions.`
@@ -838,6 +842,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (slash.kind === "soul-clear") {
           if (slash.field === "all") SoulOverrides.clear();
           else SoulOverrides.clear(FIELD_ALIASES[slash.field]);
+          agent.noteSessionEvent(session.id, `Soul ACL overrides cleared (\`${slash.field}\`) — reverted to SOUL.md.`);
           await reply(`:leftwards_arrow_with_hook: soul overrides cleared (\`${slash.field}\`) — reverted to SOUL.md.`);
           return;
         }
@@ -1037,6 +1042,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             return;
           }
           CronJobs.deactivate(slash.id);
+          agent.noteSessionEvent(session.id, `Removed scheduled cron job \`${slash.id.slice(0, 8)}\`.`);
           await reply(`:wastebasket: cron job \`${slash.id.slice(0, 8)}\` removed`);
           return;
         }
@@ -1085,6 +1091,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           });
           const where = slash.target === "channel" ? "channel root" : "this thread";
           const mode = slash.whenActive === "skip" ? ", passive (skips when active)" : "";
+          agent.noteSessionEvent(session.id, `Scheduled cron job \`${job.id.slice(0, 8)}\`: \`${slash.cronExpr}\` → "${slash.prompt}" (posts to ${where}).`);
           await reply(`:calendar: cron job created (\`${job.id.slice(0, 8)}\`, posts to ${where}${mode}) — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
           return;
         }
