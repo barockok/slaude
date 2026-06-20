@@ -59,7 +59,6 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: `/cron-add "<expr>" "<prompt>" [channel] [passive]`, summary: "schedule a prompt; `channel` posts to channel root, `passive` skips when a human is active" },
   { usage: "/cron-list", summary: "list scheduled crons" },
   { usage: "/cron-remove <id>", summary: "remove a scheduled cron" },
-  { usage: "/ingest", summary: "synthesize raw/ → wiki/ in the writable KB (manager/approver)" },
   { usage: "/soul <trust|allow|dm|block> <add|remove> <id>", summary: "manager-only: runtime override of soul ACLs (channels/users) — immediate, shadows SOUL.md" },
   { usage: "/soul list", summary: "show runtime soul overrides vs SOUL.md base" },
   { usage: "/soul clear <trust|allow|dm|block|all>", summary: "manager-only: drop runtime overrides (revert to SOUL.md)" },

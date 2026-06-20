@@ -1,5 +1,7 @@
 layer: trusted
 as: member
 steps:
+  # /ingest is deprecated (superseded by brain memoize) — no longer authz-gated,
+  # replies a deprecation notice to anyone.
   - send: { as: U0ALICE, channel: C0TEAM, text: "/ingest" }
-  - expect_reply: { contains: "not authorized" }
+  - expect_reply: { contains: "deprecated" }

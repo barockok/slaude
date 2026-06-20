@@ -101,8 +101,8 @@ describe("helpText", () => {
     expect(parseSlashCommand("/ingest  whatever")).toEqual({ kind: "ingest" });
   });
 
-  test("/help mentions /ingest", () => {
-    expect(helpText()).toContain("/ingest");
+  test("/help no longer lists /ingest (deprecated — use brain memoize)", () => {
+    expect(helpText()).not.toContain("/ingest");
   });
 
 describe("humanModeName", () => {

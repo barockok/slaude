@@ -2,4 +2,4 @@ layer: dm
 as: manager
 steps:
   - send: { text: "/ingest" }
-  - expect_reply: { contains: "ingest" }
+  - expect_reply: { contains: "deprecated" }
