@@ -611,6 +611,28 @@ describe("gateway uncovered branches", () => {
       expect(await g.h.__agentMentionOnly("no-such-session", true)).toContain("no active thread");
     });
 
+    it("/mention-only on/off command toggles the thread flag", async () => {
+      writeSoulFixture(WORLD);
+      MentionOnly._wipeForTests();
+      const g = makeGw();
+      const ts = nextTs();
+      await g.emit("message", dmArgs(g, "hi", { ts }));
+
+      // off when not set → informational
+      await g.emit("message", dmArgs(g, "/mention-only off", { ts: nextTs(), thread_ts: ts }));
+      await waitFor(() => g.posts.some((p) => /isn't in mention-only/.test(String(p.text))));
+
+      // on → flag set
+      await g.emit("message", dmArgs(g, "/mention-only", { ts: nextTs(), thread_ts: ts }));
+      await waitFor(() => g.posts.some((p) => /reply in this thread only when @-mentioned/.test(String(p.text))));
+      expect(MentionOnly.find("D_MGR", ts)).not.toBeNull();
+
+      // off → cleared
+      await g.emit("message", dmArgs(g, "/mention-only off", { ts: nextTs(), thread_ts: ts }));
+      await waitFor(() => g.posts.some((p) => /follow the thread normally/.test(String(p.text))));
+      expect(MentionOnly.find("D_MGR", ts)).toBeNull();
+    });
+
     it("agent connect is disabled when the store-format canary failed", async () => {
       writeSoulFixture(WORLD);
       writeMcpJson({ svc: { type: "http", url: "http://127.0.0.1:1/mcp" } });

@@ -273,6 +273,14 @@ describe("createGateway", () => {
       await g.mention("300.3", "<@U_SLAUDE> ping", thread);
       expect(g.processed().length).toBe(2);
       expect(MentionOnly.find(CH, thread)).not.toBeNull();
+
+      // mention-only on a thread with NO session → plain message is dropped
+      // outright (nothing to record), not suppressed.
+      const fresh = "301.1";
+      MentionOnly.set({ channelId: CH, threadTs: fresh, createdBy: WORLD.manager });
+      const before = g.processed().length + g.suppressed().length;
+      await g.emit("message", { ...mk("301.2", "plain, no session", fresh), client: g.t.client });
+      expect(g.processed().length + g.suppressed().length).toBe(before); // dropped
     });
 
     it("disengaged messages are recorded-but-suppressed, never processed (no reply)", async () => {
