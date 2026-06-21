@@ -80,6 +80,33 @@ export function writeEntry(
   renameSync(tmp, path);
 }
 
+/** Stored credential entry (subset slaude reads back). */
+export interface StoredEntry {
+  serverName: string;
+  serverUrl: string;
+  clientId?: string;
+  clientSecret?: string;
+  accessToken: string;
+  refreshToken?: string;
+  /** Epoch ms. */
+  expiresAt: number;
+}
+
+/** Read the stored entry for a server (or undefined if absent / unreadable). */
+export function readEntry(
+  configDir: string,
+  serverName: string,
+  cfg: OAuthServerConfig,
+): StoredEntry | undefined {
+  const path = join(configDir, ".credentials.json");
+  if (!existsSync(path)) return undefined;
+  let current: Record<string, any> = {};
+  try { current = JSON.parse(readFileSync(path, "utf8")) || {}; } catch { return undefined; }
+  const entry = current.mcpOAuth?.[oauthKey(serverName, cfg)];
+  if (!entry || typeof entry.accessToken !== "string") return undefined;
+  return entry as StoredEntry;
+}
+
 /** Read-modify-write: delete mcpOAuth[key] for this server, preserve everything
  *  else, write atomically at 0600. Returns true if an entry was actually removed
  *  (false when no credential file or no matching key). Mirrors writeEntry's

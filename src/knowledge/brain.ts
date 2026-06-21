@@ -4,6 +4,7 @@ import { paths } from "../config/home";
 import { loadKbs } from "./loader";
 import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, type BrainScope } from "./scope";
 import { isScopeWriteOp } from "./gated-dispatch";
+import { getBackend } from "./backend";
 
 // Engine surface kept minimal on purpose: gbrain ships TS sources and its own
 // types stay internal to it; slaude only needs lifecycle + handler dispatch.
@@ -257,32 +258,55 @@ export async function ensureSource(id: string): Promise<void> {
   ensuredSources.add(id);
 }
 
-/** User-scoped call: remote=true + synthetic AuthInfo → gbrain enforces scope in SQL. */
-export async function brainCall(name: string, params: Record<string, unknown>, scope: BrainScope): Promise<unknown> {
+/**
+ * Synthetic AuthInfo for a scoped op — gbrain reads this to enforce scope in
+ * SQL (remote=true path). Pure: same shape the local engine and the remote
+ * brain server both construct from a resolved BrainScope.
+ */
+export function buildScopedCtxAuth(scope: BrainScope): Record<string, unknown> {
+  return {
+    token: "in-process",
+    clientId: scope.clientId,
+    clientName: scope.clientId,
+    scopes: ["read", "write"],
+    sourceId: scope.sourceId,
+    allowedSources: scope.allowedSources,
+  };
+}
+
+/**
+ * Run a scoped op against the LOCAL gbrain engine. This is the LocalBackend
+ * primitive; the remote brain server reuses it verbatim behind OAuth.
+ * remote=true + synthetic AuthInfo → gbrain enforces scope in SQL.
+ */
+export async function runScopedOp(name: string, params: Record<string, unknown>, scope: BrainScope): Promise<unknown> {
   const op = await findOp(name);
   // A write needs its scope source to exist first (FK pages_source_id_fkey).
   if (isScopeWriteOp(name)) await ensureSource(scope.sourceId);
   const ctx = await buildCtx({
     remote: true,
     sourceId: scope.sourceId,
-    auth: {
-      token: "in-process",
-      clientId: scope.clientId,
-      clientName: scope.clientId,
-      scopes: ["read", "write"],
-      sourceId: scope.sourceId,
-      allowedSources: scope.allowedSources,
-    },
+    auth: buildScopedCtxAuth(scope),
     takesHoldersAllowList: [scope.clientId, "world"],
   });
   return op.handler(ctx, params);
 }
 
-/** Trusted local call (boot, admin, sync) — slaude owns the box. */
-export async function brainAdminCall(name: string, params: Record<string, unknown>, sourceId = "default"): Promise<unknown> {
+/** Run a trusted admin op against the LOCAL gbrain engine (boot, admin, sync). */
+export async function runAdminOp(name: string, params: Record<string, unknown>, sourceId = "default"): Promise<unknown> {
   const op = await findOp(name);
   const ctx = await buildCtx({ remote: false, sourceId });
   return op.handler(ctx, params);
+}
+
+/** User-scoped call: dispatched through the configured backend (local/remote). */
+export async function brainCall(name: string, params: Record<string, unknown>, scope: BrainScope): Promise<unknown> {
+  return getBackend().call(name, params, scope);
+}
+
+/** Trusted call (boot, admin, sync): dispatched through the configured backend. */
+export async function brainAdminCall(name: string, params: Record<string, unknown>, sourceId = "default"): Promise<unknown> {
+  return getBackend().adminCall(name, params, sourceId);
 }
 
 export function baselineSources(): string[] {

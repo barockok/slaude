@@ -18,3 +18,11 @@ coverage:
       default:
         target: auto
         threshold: 1%
+
+# Process-entrypoint files: thin `read config → boot → serve` bootstraps that can
+# only run against a live engine/network, so they're smoke-tested, not unit-tested
+# (mirrors the project-level integration-only rationale above). Logic lives in the
+# importable modules they call, which stay enforced.
+ignore:
+  - "src/server.ts"
+  - "src/knowledge/server/brain-server-entry.ts"
