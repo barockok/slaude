@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
 import { loadSoul, soulSystemBlock, loadApproverEntries } from "./loader";
-import { SoulDataSchema, EXTRACTION_PROMPT, type SoulData } from "./data";
+import { SoulDataSchema, EXTRACTION_PROMPT, type SoulData, type ApproverEntry } from "./data";
 import { applyOverrides } from "./overrides";
 import * as SoulOverrides from "../db/soul-overrides";
 
@@ -110,6 +110,10 @@ function assertIdsGroundedInPersona(data: SoulData, persona: string): void {
   for (const u of data.blockedUsers) ids.add(u);
   for (const u of data.dmAllowedUsers) ids.add(u);
   for (const a of data.approvers) ids.add(a.userId);
+  for (const co of data.channelOverrides) {
+    ids.add(co.channel);
+    for (const a of co.approvers) ids.add(a.userId);
+  }
   const missing = [...ids].filter((id) => !persona.includes(id));
   if (missing.length) {
     throw new Error(`extractor produced ungrounded ids: ${missing.join(", ")}`);
@@ -198,5 +202,56 @@ export function soulData(): SoulData {
     return applyOverrides(base, SoulOverrides.list());
   } catch {
     return base; // overlay must never take the gates down
+  }
+}
+
+/**
+ * Effective soul for a specific Slack channel. Starts from the global
+ * {@link soulData} (runtime overlays preserved), then applies the matching
+ * `## Channel` block: mandate replaced when the override sets one, approvers
+ * replaced when the override lists ≥1. No channel / no match → global view.
+ *
+ * Replace semantics (operator choice): inside an overridden channel the
+ * channel approver list is the *only* approver source for the approval gate
+ * and approver-based admin auth. manager/backup authority is a separate check
+ * and is never affected. See docs/superpowers/specs/2026-06-20-channel-soul-overrides-design.md.
+ *
+ * Always returns a usable SoulData — any failure falls back to the global
+ * view so the gates never break.
+ */
+/**
+ * Guarantee the manager (and backup manager) stay eligible approvers even when
+ * a channel override replaces the approver set. Without this, a channel block
+ * that lists only e.g. the DBA would lock the operator out of the approval gate
+ * in that channel. Manager/backup are appended as catchalls (always eligible)
+ * unless already present in the override list.
+ */
+function withManagerApprover(approvers: ApproverEntry[], base: SoulData): ApproverEntry[] {
+  const out = [...approvers];
+  const have = new Set(out.map((a) => a.userId));
+  for (const id of [base.manager?.userId, base.backupManager?.userId]) {
+    if (id && !have.has(id)) {
+      out.push({ userId: id, scope: "anything", catchall: true });
+      have.add(id);
+    }
+  }
+  return out;
+}
+
+export function effectiveSoulForChannel(channelId?: string): SoulData {
+  const base = soulData();
+  if (!channelId) return base;
+  try {
+    const ov = base.channelOverrides.find((c) => c.channel === channelId);
+    if (!ov) return base;
+    return {
+      ...base,
+      mandate: ov.mandate?.trim() ? ov.mandate : base.mandate,
+      approvers: ov.approvers.length
+        ? withManagerApprover(ov.approvers, base)
+        : base.approvers,
+    };
+  } catch {
+    return base;
   }
 }

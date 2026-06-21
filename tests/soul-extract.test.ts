@@ -3,7 +3,7 @@ import { existsSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node
 import { join } from "node:path";
 import { paths } from "../src/config/home";
 import { SoulDataSchema } from "../src/soul/data";
-import { __resetSoulDataMemo, loadSoulData, setSoulData, soulData } from "../src/soul/extract";
+import { __resetSoulDataMemo, effectiveSoulForChannel, loadSoulData, setSoulData, soulData } from "../src/soul/extract";
 
 const CACHE_DIR = join(paths.home, "cache");
 const originalFetch = globalThis.fetch;
@@ -368,5 +368,128 @@ describe("soulData — sync accessor", () => {
     expect(d.approvers).toHaveLength(1);
     expect(d.approvers[0]!.userId).toBe("U06ENBS6PV0");
     expect(d.identity.name).toBeUndefined();
+  });
+});
+
+describe("channelOverrides — extraction grounding", () => {
+  test("extracts channelOverrides when channel + approver ids grounded", async () => {
+    seedPersona([
+      "# P",
+      "## Approvers",
+      "- <@U06ENBS6PV0>: anything",
+      "## Channel <#C0CHAN0001|eng>",
+      "### Mandate",
+      "- Ship backend fixes.",
+      "### Approvers",
+      "- <@U0DBAUSER1>: migrations, SQL",
+    ].join("\n"));
+    mockFetch(async () => okResponse(JSON.stringify({
+      approvers: [{ userId: "U06ENBS6PV0", scope: "anything", catchall: true }],
+      channelOverrides: [{
+        channel: "C0CHAN0001",
+        mandate: "Ship backend fixes.",
+        approvers: [{ userId: "U0DBAUSER1", scope: "migrations, SQL", catchall: false }],
+      }],
+    })));
+    const d = await loadSoulData();
+    expect(d.channelOverrides).toHaveLength(1);
+    expect(d.channelOverrides[0]!.channel).toBe("C0CHAN0001");
+    expect(d.channelOverrides[0]!.mandate).toBe("Ship backend fixes.");
+    expect(d.channelOverrides[0]!.approvers[0]!.userId).toBe("U0DBAUSER1");
+  });
+
+  test("rejects ungrounded channel id in override → fallback (no overrides)", async () => {
+    seedPersona("# P\n## Approvers\n- <@U06ENBS6PV0>: anything\n");
+    mockFetch(async () => okResponse(JSON.stringify({
+      approvers: [{ userId: "U06ENBS6PV0", scope: "anything", catchall: true }],
+      channelOverrides: [{ channel: "C0PHANTOM9", approvers: [] }],
+    })));
+    const d = await loadSoulData();
+    expect(d.channelOverrides).toEqual([]);
+  });
+
+  test("rejects ungrounded channel approver id → fallback (no overrides)", async () => {
+    seedPersona("# P\n## Approvers\n- <@U06ENBS6PV0>: anything\n## Channel <#C0CHAN0001|eng>\n");
+    mockFetch(async () => okResponse(JSON.stringify({
+      approvers: [{ userId: "U06ENBS6PV0", scope: "anything", catchall: true }],
+      channelOverrides: [{
+        channel: "C0CHAN0001",
+        approvers: [{ userId: "U999PHANTOM", scope: "x", catchall: false }],
+      }],
+    })));
+    const d = await loadSoulData();
+    expect(d.channelOverrides).toEqual([]);
+  });
+});
+
+describe("effectiveSoulForChannel — resolution", () => {
+  function seed(overrides: any[], extra: Partial<any> = {}) {
+    setSoulData(SoulDataSchema.parse({
+      manager: { userId: "U0MGR00001" },
+      backupManager: { userId: "U0BACKUP01" },
+      mandate: "Global mandate.",
+      approvers: [{ userId: "U0GLOBAL01", scope: "anything", catchall: true }],
+      channelOverrides: overrides,
+      ...extra,
+    }));
+  }
+
+  test("no channelId → global view unchanged", () => {
+    seed([{ channel: "C0CHAN0001", mandate: "Chan mandate.", approvers: [] }]);
+    const d = effectiveSoulForChannel(undefined);
+    expect(d.mandate).toBe("Global mandate.");
+    expect(d.approvers.map((a) => a.userId)).toEqual(["U0GLOBAL01"]);
+  });
+
+  test("unknown channel → global view unchanged", () => {
+    seed([{ channel: "C0CHAN0001", mandate: "Chan mandate.", approvers: [] }]);
+    const d = effectiveSoulForChannel("C0OTHER999");
+    expect(d.mandate).toBe("Global mandate.");
+  });
+
+  test("matching channel replaces mandate", () => {
+    seed([{ channel: "C0CHAN0001", mandate: "Chan mandate.", approvers: [] }]);
+    const d = effectiveSoulForChannel("C0CHAN0001");
+    expect(d.mandate).toBe("Chan mandate.");
+    // approvers empty in override → keep global
+    expect(d.approvers.map((a) => a.userId)).toEqual(["U0GLOBAL01"]);
+  });
+
+  test("empty mandate in override → keeps global mandate", () => {
+    seed([{ channel: "C0CHAN0001", approvers: [{ userId: "U0CHANAPP1", scope: "x", catchall: false }] }]);
+    const d = effectiveSoulForChannel("C0CHAN0001");
+    expect(d.mandate).toBe("Global mandate.");
+  });
+
+  test("matching channel replaces approvers AND always retains manager + backup", () => {
+    seed([{ channel: "C0CHAN0001", approvers: [{ userId: "U0CHANAPP1", scope: "deploys", catchall: false }] }]);
+    const d = effectiveSoulForChannel("C0CHAN0001");
+    const ids = d.approvers.map((a) => a.userId);
+    expect(ids).toContain("U0CHANAPP1");
+    expect(ids).toContain("U0MGR00001");   // manager auto-injected
+    expect(ids).toContain("U0BACKUP01");   // backup auto-injected
+    expect(ids).not.toContain("U0GLOBAL01"); // global approver replaced
+    // manager/backup injected as catchall
+    expect(d.approvers.find((a) => a.userId === "U0MGR00001")!.catchall).toBe(true);
+  });
+
+  test("manager already listed in channel approvers is not duplicated", () => {
+    seed([{ channel: "C0CHAN0001", approvers: [{ userId: "U0MGR00001", scope: "anything", catchall: true }] }]);
+    const d = effectiveSoulForChannel("C0CHAN0001");
+    expect(d.approvers.filter((a) => a.userId === "U0MGR00001")).toHaveLength(1);
+  });
+
+  test("malformed channelOverride entry → falls back to global view, never throws", () => {
+    // setSoulData bypasses schema validation; a null override entry makes the
+    // resolver's `.find()` throw. The catch must return the global view so a
+    // corrupt cache can never take the approval gate down.
+    const base = SoulDataSchema.parse({
+      manager: { userId: "U0MGR00001" },
+      approvers: [{ userId: "U0GLOBAL01", scope: "anything", catchall: true }],
+    });
+    setSoulData({ ...base, channelOverrides: [null as any] });
+    expect(() => effectiveSoulForChannel("C0CHAN0001")).not.toThrow();
+    const d = effectiveSoulForChannel("C0CHAN0001");
+    expect(d.approvers.map((a) => a.userId)).toContain("U0GLOBAL01");
   });
 });
