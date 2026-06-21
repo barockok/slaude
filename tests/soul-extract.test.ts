@@ -478,4 +478,18 @@ describe("effectiveSoulForChannel — resolution", () => {
     const d = effectiveSoulForChannel("C0CHAN0001");
     expect(d.approvers.filter((a) => a.userId === "U0MGR00001")).toHaveLength(1);
   });
+
+  test("malformed channelOverride entry → falls back to global view, never throws", () => {
+    // setSoulData bypasses schema validation; a null override entry makes the
+    // resolver's `.find()` throw. The catch must return the global view so a
+    // corrupt cache can never take the approval gate down.
+    const base = SoulDataSchema.parse({
+      manager: { userId: "U0MGR00001" },
+      approvers: [{ userId: "U0GLOBAL01", scope: "anything", catchall: true }],
+    });
+    setSoulData({ ...base, channelOverrides: [null as any] });
+    expect(() => effectiveSoulForChannel("C0CHAN0001")).not.toThrow();
+    const d = effectiveSoulForChannel("C0CHAN0001");
+    expect(d.approvers.map((a) => a.userId)).toContain("U0GLOBAL01");
+  });
 });
