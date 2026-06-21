@@ -11,6 +11,8 @@ export interface SoulFixture {
   allowed: string[];
   /** Users allowed to DM directly, on top of manager/backup. */
   dmAllowed?: string[];
+  /** Per-channel mandate/approver overrides. `approvers` empty → keep global. */
+  channelOverrides?: Array<{ channel: string; mandate?: string; approvers?: string[] }>;
 }
 
 /** The default sim world: a manager, a backup, one approver, one trusted + one allowed
@@ -48,6 +50,14 @@ export function writeSoulFixture(f: SoulFixture): void {
     "## DM allowlist",
     ...(f.dmAllowed ?? []).map((u) => `- <@${u}>`),
     "",
+    ...(f.channelOverrides ?? []).flatMap((co) => [
+      `## Channel ${co.channel}`,
+      "",
+      ...(co.mandate ? ["### Mandate", `- ${co.mandate}`, ""] : []),
+      ...(co.approvers?.length
+        ? ["### Approvers", ...co.approvers.map((a) => `- <@${a}>: anything ; catchall`), ""]
+        : []),
+    ]),
   ];
   writeFileSync(paths.soul, lines.join("\n"), "utf8");
 
@@ -60,6 +70,11 @@ export function writeSoulFixture(f: SoulFixture): void {
     trustedChannels: f.trusted,
     allowedChannels: f.allowed,
     dmAllowedUsers: f.dmAllowed ?? [],
+    channelOverrides: (f.channelOverrides ?? []).map((co) => ({
+      channel: co.channel,
+      ...(co.mandate ? { mandate: co.mandate } : {}),
+      approvers: (co.approvers ?? []).map((userId) => ({ userId, scope: "anything", catchall: true })),
+    })),
   });
   setSoulData(data);
 }
