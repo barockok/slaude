@@ -47,7 +47,7 @@ describe("brain server round trip (auth disabled)", () => {
     // publicUrl is used for url string, but the server binds locally; hit the bound port directly.
     const localPrm = `http://127.0.0.1:${started.port}/.well-known/oauth-protected-resource`;
     const r = await fetch(localPrm);
-    const prm = await r.json();
+    const prm = (await r.json()) as { resource: string; authorization_servers: string[] };
     expect(prm.resource).toBe("https://brain.example");
     expect(prm.authorization_servers).toEqual(["https://kc.example/realms/r"]);
     expect(prmUrl).toContain("oauth-protected-resource");

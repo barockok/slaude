@@ -108,7 +108,7 @@ export async function startBrainServer(
     },
   });
 
-  const port = server.port;
+  const port = server.port!; // bound after Bun.serve returns
   const base = cfg.publicUrl?.replace(/\/+$/, "") ?? `http://${cfg.host}:${port}`;
   return {
     url: `${base}${MCP_PATH}`,

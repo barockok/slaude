@@ -33,6 +33,7 @@ async function main(): Promise<void> {
   const handle = await beginConnectShared({
     meta,
     serverConfig,
+    serverName: "brain",
     sessionId: "brain-connect",
     stateSecret,
   });
