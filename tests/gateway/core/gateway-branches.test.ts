@@ -840,4 +840,173 @@ describe("gateway uncovered branches", () => {
       }
     });
   });
+
+  describe("cron lifecycle slash commands", () => {
+    const mention = async (g: any, text: string, user = WORLD.manager) => {
+      const ts = nextTs();
+      const args = {
+        event: { type: "app_mention", channel: "C0TEAM", channel_type: "channel", user, team: "T", ts, text: `<@U_SLAUDE> ${text}` },
+        client: g.client,
+        context: { teamId: "T" },
+      };
+      return g.emit("app_mention", args);
+    };
+
+    it("manager can pause, resume, edit, and remove by 8-char prefix", async () => {
+      writeSoulFixture(WORLD);
+      db.run("DELETE FROM cron_jobs");
+      const job = CronJobs.create({
+        slackTeamId: "T",
+        slackChannelId: "D_MGR",
+        slackThreadTs: "8000.1",
+        channelId: "D_MGR",
+        threadTs: "8000.1",
+        createdBy: WORLD.manager,
+        cronExpr: "0 9 * * *",
+        prompt: "old digest",
+        nextRunAt: Date.now() + 600_000,
+      });
+      const id = job.id.slice(0, 8);
+      const g = makeGw();
+
+      await g.emit("message", dmArgs(g, `/cron pause ${id}`));
+      expect(CronJobs.findById(job.id)!.paused).toBe(1);
+      expect(g.posts.some((p) => String(p.text).includes("paused"))).toBe(true);
+
+      await g.emit("message", dmArgs(g, `/cron resume ${id}`));
+      expect(CronJobs.findById(job.id)!.paused).toBe(0);
+
+      await g.emit("message", dmArgs(g, `/cron edit ${id} "30 10 * * 1" "new digest" channel passive`));
+      const edited = CronJobs.findById(job.id)!;
+      expect(edited.cronExpr).toBe("30 10 * * 1");
+      expect(edited.prompt).toBe("new digest");
+      expect(edited.target).toBe("channel");
+      expect(edited.whenActive).toBe("skip");
+
+      await g.emit("message", dmArgs(g, `/cron remove ${id}`));
+      expect(CronJobs.listActive()).toHaveLength(0);
+    });
+
+    it("list renders empty and paused lifecycle states", async () => {
+      writeSoulFixture(WORLD);
+      db.run("DELETE FROM cron_jobs");
+      const g = makeGw();
+
+      await g.emit("message", dmArgs(g, "/cron list"));
+      expect(g.posts.some((p) => String(p.text).includes("No active cron jobs"))).toBe(true);
+
+      const paused = CronJobs.create({
+        slackTeamId: "T",
+        slackChannelId: "D_MGR",
+        channelId: "D_MGR",
+        createdBy: WORLD.manager,
+        cronExpr: "0 9 * * *",
+        prompt: "paused digest",
+        nextRunAt: Date.now() + 600_000,
+      });
+      CronJobs.pause(paused.id);
+
+      await g.emit("message", dmArgs(g, "/cron list"));
+      const list = g.posts.filter((p) => String(p.text).includes("*Active cron jobs*")).at(-1);
+      expect(String(list.text)).toContain("paused");
+    });
+
+    it("unauthorized users cannot manage cron lifecycle commands", async () => {
+      writeSoulFixture(WORLD);
+      const g = makeGw();
+      await mention(g, "/cron list", "U0RANDO");
+      await mention(g, "/cron remove deadbeef", "U0RANDO");
+      await mention(g, "/cron pause deadbeef", "U0RANDO");
+      await mention(g, '/cron edit deadbeef "0 9 * * *" "x"', "U0RANDO");
+      expect(g.posts.some((p) => String(p.text).includes("only manager or approver can list"))).toBe(true);
+      expect(g.posts.some((p) => String(p.text).includes("only manager or approver can remove"))).toBe(true);
+      expect(g.posts.some((p) => String(p.text).includes("only manager or approver can pause"))).toBe(true);
+      expect(g.posts.some((p) => String(p.text).includes("only manager or approver can edit"))).toBe(true);
+    });
+
+    it("missing jobs and invalid expressions reply with warnings", async () => {
+      writeSoulFixture(WORLD);
+      db.run("DELETE FROM cron_jobs");
+      const g = makeGw();
+
+      await g.emit("message", dmArgs(g, "/cron remove deadbeef"));
+      await g.emit("message", dmArgs(g, "/cron pause deadbeef"));
+      await g.emit("message", dmArgs(g, '/cron edit deadbeef "0 9 * * *" "x"'));
+      expect(g.posts.filter((p) => String(p.text).includes("not found")).length).toBeGreaterThanOrEqual(3);
+
+      const bad = CronJobs.create({
+        slackTeamId: "T",
+        slackChannelId: "D_MGR",
+        channelId: "D_MGR",
+        createdBy: WORLD.manager,
+        cronExpr: "not a cron",
+        prompt: "bad expr",
+        nextRunAt: Date.now() + 600_000,
+      });
+      await g.emit("message", dmArgs(g, `/cron resume ${bad.id.slice(0, 8)}`));
+      expect(g.posts.some((p) => String(p.text).includes("invalid stored cron expression"))).toBe(true);
+
+      const good = CronJobs.create({
+        slackTeamId: "T",
+        slackChannelId: "D_MGR",
+        channelId: "D_MGR",
+        createdBy: WORLD.manager,
+        cronExpr: "0 9 * * *",
+        prompt: "good expr",
+        nextRunAt: Date.now() + 600_000,
+      });
+      await g.emit("message", dmArgs(g, `/cron edit ${good.id.slice(0, 8)} "not cron" "x"`));
+      expect(g.posts.some((p) => String(p.text).includes("invalid cron expression"))).toBe(true);
+    });
+
+    it("ambiguous cron ID prefixes reply with the lookup warning", async () => {
+      writeSoulFixture(WORLD);
+      db.run("DELETE FROM cron_jobs");
+      const insert = (id: string) =>
+        db.run(
+          `INSERT INTO cron_jobs (id, slack_team_id, slack_channel_id, slack_thread_ts, channel_id, thread_ts, created_by, cron_expr, prompt, next_run_at, target, when_active, active)
+           VALUES (?, 'T', 'D_MGR', NULL, 'D_MGR', NULL, ?, '0 9 * * *', 'p', ?, 'thread', 'fire', 1)`,
+          [id, WORLD.manager, Date.now() + 600_000],
+        );
+      insert("aaaabbbb-0000-4000-8000-000000000001");
+      insert("aaaabbbb-0000-4000-8000-000000000002");
+      const g = makeGw();
+
+      await g.emit("message", dmArgs(g, "/cron remove aaaabbbb"));
+      await g.emit("message", dmArgs(g, "/cron pause aaaabbbb"));
+      await g.emit("message", dmArgs(g, '/cron edit aaaabbbb "30 10 * * 1" "x"'));
+
+      const warnings = g.posts.filter((p) => String(p.text).includes("matches multiple jobs"));
+      expect(warnings.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it("approver cron edit denial leaves the job unchanged", async () => {
+      writeSoulFixture(WORLD);
+      db.run("DELETE FROM cron_jobs");
+      const job = CronJobs.create({
+        slackTeamId: "T",
+        slackChannelId: "C0TEAM",
+        slackThreadTs: "9000.1",
+        channelId: "C0TEAM",
+        threadTs: "9000.1",
+        createdBy: WORLD.manager,
+        cronExpr: "0 9 * * *",
+        prompt: "old prompt",
+        nextRunAt: Date.now() + 600_000,
+      });
+      const g = makeGw();
+      const done = mention(g, `/cron edit ${job.id.slice(0, 8)} "30 10 * * 1" "new prompt"`, WORLD.approvers[0]!);
+      await waitFor(() => g.posts.some((p) => String(p.text).includes("Approval needed")));
+      const appr = g.posts.filter((p) => String(p.text).includes("Approval needed")).at(-1);
+      const denyId = appr.blocks.find((b: any) => b.type === "actions").elements
+        .find((e: any) => e.action_id.includes("deny")).action_id;
+      await g.emitAction(denyId, WORLD.approvers[0]!);
+      await done;
+
+      const unchanged = CronJobs.findById(job.id)!;
+      expect(unchanged.cronExpr).toBe("0 9 * * *");
+      expect(unchanged.prompt).toBe("old prompt");
+      expect(g.posts.some((p) => String(p.text).includes("cron edit denied by manager"))).toBe(true);
+    });
+  });
 });
