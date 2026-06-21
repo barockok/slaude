@@ -252,6 +252,20 @@ describe("adminHandlers cron jobs", () => {
     expect(res.content[0]!.text).toContain("quiet digest");
   });
 
+  test("listCronJobs renders paused lifecycle flag", async () => {
+    const paused = CronJobs.create({
+      channelId: "C1",
+      createdBy: MANAGER,
+      cronExpr: "0 9 * * *",
+      prompt: "paused digest",
+      nextRunAt: Date.now(),
+    });
+    CronJobs.pause(paused.id);
+    const res = await adminHandlers.listCronJobs();
+    expect(res.content[0]!.text).toContain("paused digest");
+    expect(res.content[0]!.text).toContain("paused");
+  });
+
   test("addCronJob rejects invalid cron expression", async () => {
     const res = await adminHandlers.addCronJob(makeCtx(), {
       cronExpr: "not a cron",
@@ -284,6 +298,107 @@ describe("adminHandlers cron jobs", () => {
       whenActive: "skip",
     });
     expect(res.content[0]!.text).toContain("[channel, when_active=skip]");
+  });
+
+  test("editCronJob updates schedule, prompt, target, and when_active", async () => {
+    const job = CronJobs.create({
+      channelId: "C1",
+      createdBy: MANAGER,
+      cronExpr: "0 9 * * *",
+      prompt: "old",
+      nextRunAt: Date.now(),
+    });
+    const res = await adminHandlers.editCronJob(makeCtx(), {
+      jobId: job.id.slice(0, 8),
+      cronExpr: "30 10 * * 1",
+      prompt: "new",
+      target: "channel",
+      whenActive: "skip",
+    });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toContain("updated");
+    const updated = CronJobs.findById(job.id)!;
+    expect(updated.cronExpr).toBe("30 10 * * 1");
+    expect(updated.prompt).toBe("new");
+    expect(updated.target).toBe("channel");
+    expect(updated.whenActive).toBe("skip");
+  });
+
+  test("editCronJob rejects empty edits and invalid cron expressions", async () => {
+    const job = CronJobs.create({
+      channelId: "C1",
+      createdBy: MANAGER,
+      cronExpr: "0 9 * * *",
+      prompt: "old",
+      nextRunAt: Date.now(),
+    });
+    const empty = await adminHandlers.editCronJob(makeCtx(), { jobId: job.id.slice(0, 8) });
+    expect(empty.isError).toBe(true);
+    expect(empty.content[0]!.text).toContain("No cron fields");
+    const invalid = await adminHandlers.editCronJob(makeCtx(), {
+      jobId: job.id.slice(0, 8),
+      cronExpr: "not-cron",
+    });
+    expect(invalid.isError).toBe(true);
+    expect(invalid.content[0]!.text).toContain("Invalid cron expression");
+  });
+
+  test("pause/resume cron lifecycle", async () => {
+    const job = CronJobs.create({
+      channelId: "C1",
+      createdBy: MANAGER,
+      cronExpr: "0 9 * * *",
+      prompt: "lifecycle",
+      nextRunAt: Date.now(),
+    });
+    const paused = await adminHandlers.pauseCronJob(makeCtx(), { jobId: job.id.slice(0, 8) });
+    expect(paused.isError).toBeUndefined();
+    expect(CronJobs.findById(job.id)!.paused).toBe(1);
+    const resumed = await adminHandlers.resumeCronJob(makeCtx(), { jobId: job.id.slice(0, 8) });
+    expect(resumed.isError).toBeUndefined();
+    const updated = CronJobs.findById(job.id)!;
+    expect(updated.paused).toBe(0);
+  });
+
+  test("pauseCronJob denied for non-manager", async () => {
+    const res = await adminHandlers.pauseCronJob(makeCtx({ userId: RANDO }), { jobId: "deadbeef" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("Only manager or approver");
+  });
+
+  test("edit/resume cron lifecycle denied for non-manager", async () => {
+    const edit = await adminHandlers.editCronJob(makeCtx({ userId: RANDO }), {
+      jobId: "deadbeef",
+      prompt: "x",
+    });
+    const resume = await adminHandlers.resumeCronJob(makeCtx({ userId: RANDO }), { jobId: "deadbeef" });
+    for (const res of [edit, resume]) {
+      expect(res.isError).toBe(true);
+      expect(res.content[0]!.text).toContain("Only manager or approver");
+    }
+  });
+
+  test("lifecycle handlers surface not-found lookup errors", async () => {
+    const pause = await adminHandlers.pauseCronJob(makeCtx(), { jobId: "deadbeef" });
+    const resume = await adminHandlers.resumeCronJob(makeCtx(), { jobId: "deadbeef" });
+    const edit = await adminHandlers.editCronJob(makeCtx(), { jobId: "deadbeef", prompt: "new prompt" });
+    for (const res of [pause, resume, edit]) {
+      expect(res.isError).toBe(true);
+      expect(res.content[0]!.text).toContain("not found");
+    }
+  });
+
+  test("resumeCronJob rejects invalid stored cron expression", async () => {
+    const job = CronJobs.create({
+      channelId: "C1",
+      createdBy: MANAGER,
+      cronExpr: "not a cron",
+      prompt: "bad stored expr",
+      nextRunAt: Date.now(),
+    });
+    const res = await adminHandlers.resumeCronJob(makeCtx(), { jobId: job.id.slice(0, 8) });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("Invalid stored cron expression");
   });
 
   test("removeCronJob denied for non-manager", async () => {

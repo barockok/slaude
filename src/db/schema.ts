@@ -7,6 +7,13 @@ export const db = new Database(paths.db, { create: true });
 db.run("PRAGMA journal_mode = WAL;");
 db.run("PRAGMA foreign_keys = ON;");
 
+export function ensureCronPauseColumn(database: Database): void {
+  const cols = database.query(`PRAGMA table_info(cron_jobs)`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "paused")) {
+    database.run(`ALTER TABLE cron_jobs ADD COLUMN paused INTEGER NOT NULL DEFAULT 0`);
+  }
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
@@ -80,6 +87,7 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
   next_run_at INTEGER NOT NULL,
   last_run_at INTEGER,
   last_result TEXT,
+  paused INTEGER NOT NULL DEFAULT 0,
   active INTEGER NOT NULL DEFAULT 1
 );
 
@@ -157,6 +165,10 @@ if (!cronCols.some((c) => c.name === "target")) {
 if (!cronCols.some((c) => c.name === "when_active")) {
   db.run(`ALTER TABLE cron_jobs ADD COLUMN when_active TEXT NOT NULL DEFAULT 'fire'`);
 }
+
+// Migration: add pause lifecycle state. `active` remains the soft-delete bit;
+// paused jobs stay listed but don't fire on schedule.
+ensureCronPauseColumn(db);
 
 export type SessionRow = {
   id: string;

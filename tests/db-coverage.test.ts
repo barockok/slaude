@@ -1,16 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { db } from "../src/db/schema";
+import { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { db, ensureCronPauseColumn } from "../src/db/schema";
 import { findById, findByPrefix } from "../src/db/cron-jobs";
 
 // Covers the ambiguous-prefix guard in src/db/cron-jobs.ts.
-//
-// NOTE: the legacy-db schema-migration branches (src/db/schema.ts ADD COLUMN
-// paths) are intentionally NOT exercised here. Hitting them requires presenting
-// a db missing those columns, which on the process-shared singleton db means
-// DROP COLUMN — destructive DDL that left other files' cron tests reading a
-// schema with regenerated (default-stripped) columns under full-suite ordering.
-// schema.ts hardcodes its `../config/home` import, so a query-string re-import
-// can't be redirected to an isolated db. Not worth the suite fragility.
 
 afterAll(() => {
   db.run("DELETE FROM cron_jobs WHERE id LIKE 'abcdef12%'");
@@ -36,5 +32,83 @@ describe("cron-jobs findByPrefix", () => {
     expect(findByPrefix("abcdef12-aaaa-aaaa")?.id).toBe("abcdef12-aaaa-aaaa"); // full id path
     expect(findByPrefix("00000000")).toBeNull(); // 8 chars, no match
     expect(findById("nope")).toBeNull();
+  });
+});
+
+describe("cron_jobs schema migrations", () => {
+  test("ensureCronPauseColumn adds missing paused column", () => {
+    const legacy = new Database(":memory:");
+    try {
+      legacy.run(`
+        CREATE TABLE cron_jobs (
+          id TEXT PRIMARY KEY,
+          channel_id TEXT NOT NULL,
+          created_by TEXT NOT NULL,
+          cron_expr TEXT NOT NULL,
+          prompt TEXT NOT NULL,
+          next_run_at INTEGER NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1
+        )
+      `);
+      ensureCronPauseColumn(legacy);
+      const cols = legacy.query("PRAGMA table_info(cron_jobs)").all() as Array<{ name: string }>;
+      expect(cols.map((c) => c.name)).toContain("paused");
+      expect(() => ensureCronPauseColumn(legacy)).not.toThrow();
+    } finally {
+      legacy.close();
+    }
+  });
+
+  test("adds paused to legacy cron_jobs tables", async () => {
+    const home = mkdtempSync(join(tmpdir(), "slaude-schema-migration-"));
+    try {
+      const script = `
+        import { Database } from "bun:sqlite";
+        import { mkdirSync } from "node:fs";
+        const home = process.env.SLAUDE_HOME;
+        mkdirSync(home, { recursive: true });
+        const seed = new Database(home + "/db.sqlite", { create: true });
+        seed.run(\`
+          CREATE TABLE cron_jobs (
+            id TEXT PRIMARY KEY,
+            slack_team_id TEXT,
+            slack_channel_id TEXT,
+            slack_thread_ts TEXT,
+            channel_id TEXT NOT NULL,
+            thread_ts TEXT,
+            created_by TEXT NOT NULL,
+            cron_expr TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            next_run_at INTEGER NOT NULL,
+            last_run_at INTEGER,
+            last_result TEXT,
+            target TEXT NOT NULL DEFAULT 'thread',
+            when_active TEXT NOT NULL DEFAULT 'fire',
+            active INTEGER NOT NULL DEFAULT 1
+          )
+        \`);
+        seed.close();
+        const { db } = await import("./src/db/schema");
+        const cols = db.query("PRAGMA table_info(cron_jobs)").all().map((c) => c.name);
+        console.log(JSON.stringify(cols));
+      `;
+      const proc = Bun.spawn({
+        cmd: ["bun", "-e", script],
+        env: { ...process.env, SLAUDE_HOME: home, SLAUDE_DB_PATH: "" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      expect(stderr).toBe("");
+      expect(code).toBe(0);
+      const cols = JSON.parse(stdout.trim());
+      expect(cols).toContain("paused");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

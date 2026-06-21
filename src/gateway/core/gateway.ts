@@ -1069,12 +1069,34 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         }
       }
 
-      if (slash.kind === "cron-add" || slash.kind === "cron-list" || slash.kind === "cron-remove") {
+      if (
+        slash.kind === "cron-add" ||
+        slash.kind === "cron-list" ||
+        slash.kind === "cron-remove" ||
+        slash.kind === "cron-edit" ||
+        slash.kind === "cron-pause" ||
+        slash.kind === "cron-resume"
+      ) {
         const soul = soulData();
         const managerId = soul.manager.userId;
         const backupId = soul.backupManager.userId;
         const isManager = (managerId && userId === managerId) || (backupId && userId === backupId);
         const isApprover = soul.approvers.some((a) => a.userId === userId);
+        const findJob = (id: string) => {
+          try {
+            return CronJobs.findByPrefix(id);
+          } catch (e: any) {
+            return e instanceof Error ? e.message : String(e);
+          }
+        };
+        const renderJob = (j: CronJobs.CronJob) => {
+          const flags = [
+            j.target,
+            j.whenActive === "skip" ? "passive" : null,
+            j.paused ? "paused" : null,
+          ].filter(Boolean).join(", ");
+          return `• \`${j.id.slice(0, 8)}\` \`${j.cronExpr}\` [${flags}] → ${j.prompt}`;
+        };
 
         if (slash.kind === "cron-list") {
           if (!isManager && !isApprover) {
@@ -1086,7 +1108,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await reply("No active cron jobs.");
             return;
           }
-          const lines = jobs.map((j) => `• \`${j.id.slice(0, 8)}\` \`${j.cronExpr}\` [${j.target}${j.whenActive === "skip" ? ", passive" : ""}] → ${j.prompt}`);
+          const lines = jobs.map(renderJob);
           await reply("*Active cron jobs*\n" + lines.join("\n"));
           return;
         }
@@ -1096,9 +1118,93 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await reply(":no_entry: only manager or approver can remove cron jobs");
             return;
           }
-          CronJobs.deactivate(slash.id);
-          agent.noteSessionEvent(session.id, `Removed scheduled cron job \`${slash.id.slice(0, 8)}\`.`);
-          await reply(`:wastebasket: cron job \`${slash.id.slice(0, 8)}\` removed`);
+          const job = findJob(slash.id);
+          if (typeof job === "string") {
+            await reply(`:warning: ${job}`);
+            return;
+          }
+          if (!job) {
+            await reply(`:warning: cron job \`${slash.id}\` not found`);
+            return;
+          }
+          CronJobs.deactivate(job.id);
+          agent.noteSessionEvent(session.id, `Removed scheduled cron job \`${job.id.slice(0, 8)}\`.`);
+          await reply(`:wastebasket: cron job \`${job.id.slice(0, 8)}\` removed`);
+          return;
+        }
+
+        if (slash.kind === "cron-pause" || slash.kind === "cron-resume") {
+          if (!isManager && !isApprover) {
+            await reply(`:no_entry: only manager or approver can ${slash.kind.replace("cron-", "")} cron jobs`);
+            return;
+          }
+          const job = findJob(slash.id);
+          if (typeof job === "string") {
+            await reply(`:warning: ${job}`);
+            return;
+          }
+          if (!job) {
+            await reply(`:warning: cron job \`${slash.id}\` not found`);
+            return;
+          }
+          if (slash.kind === "cron-pause") {
+            CronJobs.pause(job.id);
+            await reply(`:pause_button: cron job \`${job.id.slice(0, 8)}\` paused`);
+            return;
+          }
+          let nextRun: number;
+          try {
+            nextRun = getNextRun(job.cronExpr);
+          } catch (e: any) {
+            await reply(`:warning: invalid stored cron expression: ${e.message}`);
+            return;
+          }
+          CronJobs.resume(job.id, nextRun);
+          await reply(`:arrow_forward: cron job \`${job.id.slice(0, 8)}\` resumed — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
+          return;
+        }
+
+        if (slash.kind === "cron-edit") {
+          if (!isManager && !isApprover) {
+            await reply(":no_entry: only manager or approver can edit cron jobs");
+            return;
+          }
+          if (isApprover && !isManager) {
+            const approval = await approvals.request({
+              channel: channelId,
+              threadTs: threadTs,
+              summary: `Edit cron job ${slash.id}: "${slash.prompt}" at "${slash.cronExpr}"`,
+              category: "cron",
+              risks: "Changes unattended scheduled agent execution.",
+            });
+            if (!approval.approved) return void (await reply(":x: cron edit denied by manager"));
+          }
+          const job = findJob(slash.id);
+          if (typeof job === "string") {
+            await reply(`:warning: ${job}`);
+            return;
+          }
+          if (!job) {
+            await reply(`:warning: cron job \`${slash.id}\` not found`);
+            return;
+          }
+          let nextRun: number;
+          try {
+            nextRun = getNextRun(slash.cronExpr);
+          } catch (e: any) {
+            await reply(`:warning: invalid cron expression: ${e.message}`);
+            return;
+          }
+          CronJobs.update(job.id, {
+            cronExpr: slash.cronExpr,
+            prompt: slash.prompt,
+            nextRunAt: nextRun,
+            target: slash.target,
+            whenActive: slash.whenActive,
+          });
+          const mode = slash.whenActive === "skip" ? ", passive (skips when active)" : "";
+          const where = slash.target === "channel" ? "channel root" : "this thread";
+          await reply(`:pencil2: cron job \`${job.id.slice(0, 8)}\` updated (posts to ${where}${mode}) — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
           return;
         }
 

@@ -118,6 +118,40 @@ describe("cron-jobs DB", () => {
     expect(job.whenActive).toBe("skip");
     expect(CronJobs.findById(job.id)!.whenActive).toBe("skip");
   });
+
+  test("pause hides due scheduled job until resume", () => {
+    const now = Date.now();
+    const job = CronJobs.create({
+      channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: now - 1000,
+    });
+    CronJobs.pause(job.id);
+    expect(CronJobs.findById(job.id)!.paused).toBe(1);
+    expect(CronJobs.findDue(now)).toHaveLength(0);
+    CronJobs.resume(job.id, now + 60_000);
+    const resumed = CronJobs.findById(job.id)!;
+    expect(resumed.paused).toBe(0);
+    expect(resumed.nextRunAt).toBe(now + 60_000);
+  });
+
+  test("updates editable cron fields", () => {
+    const now = Date.now();
+    const job = CronJobs.create({
+      channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: now,
+    });
+    CronJobs.update(job.id, {
+      cronExpr: "30 9 * * 1",
+      prompt: "weekly",
+      nextRunAt: now + 60_000,
+      target: "channel",
+      whenActive: "skip",
+    });
+    const updated = CronJobs.findById(job.id)!;
+    expect(updated.cronExpr).toBe("30 9 * * 1");
+    expect(updated.prompt).toBe("weekly");
+    expect(updated.nextRunAt).toBe(now + 60_000);
+    expect(updated.target).toBe("channel");
+    expect(updated.whenActive).toBe("skip");
+  });
 });
 
 describe("CronScheduler", () => {
@@ -227,6 +261,29 @@ describe("CronScheduler", () => {
     expect(sendMessage).toHaveBeenCalledTimes(1);
     const updated = CronJobs.findById(job.id);
     expect(updated!.lastResult).not.toBe("skipped: session live");
+  });
+
+  test("tick does not execute paused scheduled job", async () => {
+    const now = Date.now();
+    const job = CronJobs.create({
+      slackTeamId: "T1",
+      slackChannelId: "C123",
+      channelId: "C123",
+      createdBy: "U999",
+      cronExpr: "0 9 * * *",
+      prompt: "paused",
+      nextRunAt: now - 1000,
+    });
+    CronJobs.pause(job.id);
+    const sendMessage = mock(async () => {});
+    const scheduler = new CronScheduler({
+      agent: { ensureSession: () => ({ id: "sess-1" }), sendMessage, isLive: () => false, on: () => {}, off: () => {} } as any,
+      client: { chat: { postMessage: async () => ({}) } } as any,
+    });
+    scheduler.start();
+    await new Promise((r) => setTimeout(r, 20));
+    scheduler.stop();
+    expect(sendMessage).toHaveBeenCalledTimes(0);
   });
 
   test("tick executes due job with Slack keys and waits for done event", async () => {

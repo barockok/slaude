@@ -239,6 +239,52 @@ describe("cron commands", () => {
       id: "job-123",
     });
   });
+
+  test("/cron lifecycle commands with dashed aliases", () => {
+    expect(parseSlashCommand("/cron-pause abc12345")).toEqual({ kind: "cron-pause", id: "abc12345" });
+    expect(parseSlashCommand("/cron-resume abc12345")).toEqual({ kind: "cron-resume", id: "abc12345" });
+    expect(parseSlashCommand("/cron-run abc12345")).toBeNull();
+    expect(parseSlashCommand("/cron-pause")).toBeNull();
+  });
+
+  test("/cron edit with quoted args", () => {
+    expect(parseSlashCommand('/cron-edit abc12345 "0 10 * * 1" "weekly digest" channel passive')).toEqual({
+      kind: "cron-edit",
+      id: "abc12345",
+      cronExpr: "0 10 * * 1",
+      prompt: "weekly digest",
+      target: "channel",
+      whenActive: "skip",
+    });
+    expect(parseSlashCommand('/cron-edit abc12345 "0 10 * * 1"')).toBeNull();
+  });
+
+  test("unified /cron aliases", () => {
+    expect(parseSlashCommand("/cron list")).toEqual({ kind: "cron-list" });
+    expect(parseSlashCommand('/cron add "0 9 * * *" "daily"')).toEqual({
+      kind: "cron-add",
+      cronExpr: "0 9 * * *",
+      prompt: "daily",
+      target: "thread",
+      whenActive: "fire",
+    });
+    expect(parseSlashCommand("/cron pause abc12345")).toEqual({ kind: "cron-pause", id: "abc12345" });
+    expect(parseSlashCommand("/cron resume abc12345")).toEqual({ kind: "cron-resume", id: "abc12345" });
+    expect(parseSlashCommand("/cron run abc12345")).toBeNull();
+    expect(parseSlashCommand("/cron remove abc12345")).toEqual({ kind: "cron-remove", id: "abc12345" });
+    expect(parseSlashCommand('/cron edit abc12345 "0 10 * * 1" "weekly" passive')).toEqual({
+      kind: "cron-edit",
+      id: "abc12345",
+      cronExpr: "0 10 * * 1",
+      prompt: "weekly",
+      target: "thread",
+      whenActive: "skip",
+    });
+    expect(parseSlashCommand("/cron rm")).toBeNull();
+    expect(parseSlashCommand("/cron pause")).toBeNull();
+    expect(parseSlashCommand('/cron update abc12345 "0 10 * * 1"')).toBeNull();
+    expect(parseSlashCommand("/cron wat")).toBeNull();
+  });
 });
 
 describe("/soul", () => {
