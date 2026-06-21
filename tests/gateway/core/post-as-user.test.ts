@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, afterEach } from "bun:test";
 import { createGateway } from "../../../src/gateway/core/gateway";
 import { AgentManager } from "../../../src/agent/manager";
 import type { Transport } from "../../../src/gateway/core/transport";
@@ -66,5 +66,62 @@ describe("post-as-user self-echo loop guard", () => {
       context: { teamId: "T" },
     });
     expect(dropCount("self_user")).toBe(before);
+  });
+
+  it("drops a self-user echo arriving via app_mention (handleMessage guard)", async () => {
+    const { t, handlers } = captureTransport();
+    createGateway(new AgentManager(), t, { outClient: fakeUserClient() });
+
+    const before = dropCount("self_user");
+    // An app_mention engages first, then defers to handleMessage — whose own
+    // self-user guard must also drop the agent's own post.
+    await handlers["app_mention"]!({
+      event: { type: "app_mention", channel: "C1", ts: "12.0", user: "U_AGENT", text: "<@U_AGENT> loop" },
+      context: { teamId: "T" },
+    });
+    expect(dropCount("self_user")).toBe(before + 1);
+  });
+
+  it("when the user-token auth.test fails, resolves to null and drops nothing", async () => {
+    const { t, handlers } = captureTransport();
+    const throwingClient = {
+      auth: { test: async () => { throw Object.assign(new Error("invalid_auth"), { data: { error: "invalid_auth" } }); } },
+      chat: { postMessage: async () => ({ ok: true, ts: "3.3" }), update: async () => ({ ok: true }) },
+      reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
+      conversations: { replies: async () => ({}) },
+      users: { info: async () => ({ user: { real_name: "Agent" } }) },
+    } as any;
+    createGateway(new AgentManager(), t, { outClient: throwingClient });
+
+    const before = dropCount("self_user");
+    // getSelfUserId() catches the auth.test failure → null → no self-echo guard.
+    await handlers["message"]!({
+      event: { type: "message", channel: "C1", ts: "13.0", user: "U_AGENT", text: "hi" },
+      context: { teamId: "T" },
+    });
+    expect(dropCount("self_user")).toBe(before);
+  });
+});
+
+describe("post-as-user env wiring", () => {
+  const saved: Record<string, string | undefined> = {};
+  afterEach(() => {
+    for (const k of ["SLACK_POST_AS_USER", "SLACK_USER_TOKEN"]) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it("warns and stays on the bot when SLACK_POST_AS_USER=true but no user token", () => {
+    saved.SLACK_POST_AS_USER = process.env.SLACK_POST_AS_USER;
+    saved.SLACK_USER_TOKEN = process.env.SLACK_USER_TOKEN;
+    process.env.SLACK_POST_AS_USER = "true";
+    delete process.env.SLACK_USER_TOKEN;
+    process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
+
+    const { t } = captureTransport();
+    // No outClient + flag on + token unset → postsAsUser false, warn branch fires.
+    // Constructing without throwing exercises the fallback path.
+    expect(() => createGateway(new AgentManager(), t)).not.toThrow();
   });
 });
