@@ -9,7 +9,7 @@ import { createReadStream, statSync } from "node:fs";
 import { basename } from "node:path";
 import { mdToMrkdwn } from "./format";
 import { redactSlack } from "./redact";
-import { soulData } from "../../soul/extract";
+import { soulData, effectiveSoulForChannel } from "../../soul/extract";
 import * as Ignores from "../../db/ignores";
 import * as CronJobs from "../../db/cron-jobs";
 import { getNextRun } from "./cron-parser";
@@ -311,10 +311,13 @@ export const slackHandlers = {
   },
 };
 
-/** Check whether the current turn's user is manager or approver. */
-function isManagerOrApprover(userId?: string): boolean {
+/** Check whether the current turn's user is manager or approver. When a
+ *  channel id is given, approvers are resolved per-channel (a `## Channel`
+ *  override replaces the global approver set there); manager/backup are
+ *  always honored regardless of channel. */
+function isManagerOrApprover(userId?: string, channelId?: string): boolean {
   if (!userId) return false;
-  const soul = soulData();
+  const soul = channelId ? effectiveSoulForChannel(channelId) : soulData();
   if (soul.manager?.userId === userId) return true;
   if (soul.backupManager?.userId === userId) return true;
   if (soul.approvers?.some((a) => a.userId === userId)) return true;
@@ -368,7 +371,7 @@ export const adminHandlers = {
     ctx: SlackContext,
     { cronExpr, prompt, target, whenActive }: { cronExpr: string; prompt: string; target?: "thread" | "channel"; whenActive?: "fire" | "skip" },
   ): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId)) {
+    if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
       return err("Only manager or approver can add cron jobs.");
     }
     let nextRun: number;
@@ -447,7 +450,7 @@ export const adminHandlers = {
   },
 
   async removeCronJob(_ctx: SlackContext, { jobId }: { jobId: string }): Promise<ToolResult> {
-    if (!isManagerOrApprover(_ctx.userId)) {
+    if (!isManagerOrApprover(_ctx.userId, _ctx.channel)) {
       return err("Only manager or approver can remove cron jobs.");
     }
     const job = findCronJob(jobId);
@@ -457,7 +460,7 @@ export const adminHandlers = {
   },
 
   async triggerIngest(ctx: SlackContext): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId)) {
+    if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
       return err("Only manager or approver can trigger ingest.");
     }
     const result = await runIngest({ triggeredBy: ctx.userId ?? "agent" });
@@ -471,7 +474,7 @@ export const adminHandlers = {
     ctx: SlackContext,
     { duration, reason }: { duration: string; reason: string },
   ): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId)) {
+    if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
       return err("Only manager or approver can ignore threads.");
     }
     const parsed = parseDuration(duration);
@@ -490,7 +493,7 @@ export const adminHandlers = {
   },
 
   async unignoreThread(ctx: SlackContext): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId)) {
+    if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
       return err("Only manager or approver can unignore threads.");
     }
     const removed = Ignores.remove({ targetType: "thread", channelId: ctx.channel, threadTs: ctx.threadTs });
@@ -502,7 +505,7 @@ export const adminHandlers = {
     ctx: SlackContext,
     { userId, duration, reason }: { userId: string; duration: string; reason: string },
   ): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId)) {
+    if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
       return err("Only manager or approver can ignore users.");
     }
     const parsed = parseDuration(duration);
@@ -520,7 +523,7 @@ export const adminHandlers = {
   },
 
   async unignoreUser(ctx: SlackContext, { userId }: { userId: string }): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId)) {
+    if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
       return err("Only manager or approver can unignore users.");
     }
     const removed = Ignores.remove({ targetType: "user", userId });
@@ -529,7 +532,7 @@ export const adminHandlers = {
   },
 
   async reloadSession(ctx: SlackContext): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId)) {
+    if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
       return err("Only manager or approver can reload session.");
     }
     if (!ctx.reloadSession) {

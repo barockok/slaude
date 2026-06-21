@@ -2,6 +2,8 @@ import { describe, expect, test, beforeEach } from "bun:test";
 import { writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { paths } from "../src/config/home";
 import { ApprovalGate } from "../src/gateway/slack/approval-gate";
+import { setSoulData, __resetSoulDataMemo } from "../src/soul/extract";
+import { SoulDataSchema } from "../src/soul/data";
 
 type Handler = (a: any) => Promise<void>;
 
@@ -84,6 +86,36 @@ describe("ApprovalGate", () => {
     const d = await promise;
     expect(d.approved).toBe(true);
     expect(d.by).toBe("U001");
+  });
+
+  test("per-channel override: channel approver eligible, global approver is not", async () => {
+    setSoulData(SoulDataSchema.parse({
+      manager: { userId: "U0MGR00001" },
+      approvers: [{ userId: "U0GLOBAL01", scope: "anything", catchall: true }],
+      channelOverrides: [{
+        channel: "C0CHAN0001",
+        approvers: [{ userId: "U0CHANAPP1", scope: "anything", catchall: true }],
+      }],
+    }));
+    try {
+      const f = fakeApp();
+      const gate = new ApprovalGate(f.app, []);
+      // Pending in the overridden channel; only the channel approver (+ manager,
+      // auto-retained) may clear it — the global approver must NOT.
+      let resolved = false;
+      const p = gate.request({ channel: "C0CHAN0001", threadTs: "T", summary: "x" })
+        .then((d) => { resolved = true; return d; });
+      const okId = f.posts[0].blocks
+        .find((b: any) => b.type === "actions")
+        .elements.find((e: any) => e.action_id.includes("approve")).action_id;
+      await f.fire(okId, "U0GLOBAL01"); // global approver replaced out of this channel
+      await new Promise((r) => setTimeout(r, 5));
+      expect(resolved).toBe(false);
+      await f.fire(okId, "U0MGR00001"); // manager always retained
+      expect((await p).approved).toBe(true);
+    } finally {
+      __resetSoulDataMemo();
+    }
   });
 
   test("deny by authorized user", async () => {

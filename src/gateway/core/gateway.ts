@@ -13,7 +13,7 @@ import { PermissionGate } from "../slack/permission-gate";
 import { ApprovalGate } from "../slack/approval-gate";
 import { IgnoreGate } from "../slack/ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slack/commands";
-import { soulData, soulDataBase } from "../../soul/extract";
+import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extract";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
 import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, createConnectMcp, CONNECT_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
@@ -1288,7 +1288,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
 
       if (slash.kind === "model") {
-        const soul = soulData();
+        const soul = effectiveSoulForChannel(channelId);
         if (!canChangeModel(userId, soul)) {
           await reply(":lock: `/model` — manager, approver, or DM-allowed users only.");
           return;

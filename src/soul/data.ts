@@ -14,6 +14,20 @@ export const ApproverEntrySchema = z.object({
   catchall: z.boolean(),
 });
 
+/**
+ * Per-channel override of the global mandate / approvers. Sourced from a
+ * `## Channel <#Cxxx|name>` block in SOUL.md. Both inner fields are optional:
+ *   - mandate present → replaces the global mandate in that channel.
+ *   - approvers non-empty → replaces the global approver set in that channel.
+ * An absent field falls back to the global value. See
+ * {@link SoulDataSchema.channelOverrides} and `effectiveSoulForChannel`.
+ */
+export const ChannelOverrideSchema = z.object({
+  channel: z.string().regex(/^[CGD][A-Z0-9]+$/),
+  mandate: z.string().optional(),
+  approvers: z.array(ApproverEntrySchema).default([]),
+});
+
 export const SoulDataSchema = z.object({
   identity: z
     .object({
@@ -78,9 +92,13 @@ export const SoulDataSchema = z.object({
   approvalTimeoutSeconds: z.number().int().nonnegative().default(0),
   mandate: z.string().optional(),
   values: z.array(z.string()).default([]),
+  /** Per-channel overrides of mandate / approvers. Empty = global only.
+   *  Resolved at runtime by `effectiveSoulForChannel(channelId)`. */
+  channelOverrides: z.array(ChannelOverrideSchema).default([]),
 });
 
 export type ApproverEntry = z.infer<typeof ApproverEntrySchema>;
+export type ChannelOverride = z.infer<typeof ChannelOverrideSchema>;
 export type SoulData = z.infer<typeof SoulDataSchema>;
 
 export const EXTRACTION_PROMPT = `You are a structured-data extractor. Read the persona block above and return a single JSON object matching this TypeScript shape — no prose, no fences, just JSON:
@@ -97,7 +115,8 @@ export const EXTRACTION_PROMPT = `You are a structured-data extractor. Read the 
   "redactPatterns":        string[],
   "approvalTimeoutSeconds": number,
   "mandate"?:              string,
-  "values":                string[]
+  "values":                string[],
+  "channelOverrides":      Array<{ "channel": string, "mandate"?: string, "approvers": Array<{ "userId": string, "scope": string, "catchall": boolean }> }>
 }
 
 Rules:
@@ -113,5 +132,6 @@ Rules:
 - backupManager: optional fallback manager. Look for sections titled "Backup manager", "Secondary manager", "Deputy". Same id-validation rules as manager.
 - redactPatterns: array of regex source strings (no /…/ wrappers, no flags) the persona declares for redacting outbound replies. Look for sections titled "Redaction", "Redact", "PII patterns". Empty array if no such section.
 - approvalTimeoutSeconds: integer seconds. Look for "Approval timeout" or "Auto-deny after". 0 means wait forever.
+- channelOverrides: one entry per "## Channel <#Cxxx|name>" (or raw Cxxx/Gxxx/Dxxx) section. For each: "channel" = the channel id (strip <#…|name> wrappers, keep only the id); "mandate" = the text under that block's "### Mandate" subsection (omit if absent); "approvers" = the entries under that block's "### Approvers" subsection (same userId/scope/catchall rules as the top-level approvers). Skip template-stub blocks whose channel id is a placeholder like "<#Cxxx|name>" or "C0123456789". Empty array if there are no channel sections.
 - Omit fields you cannot determine. Do not invent ids — every id you return MUST appear verbatim somewhere in the persona text.
 - Return ONLY the JSON object. No \`\`\` fence. No explanation.`;

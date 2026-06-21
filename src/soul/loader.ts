@@ -293,6 +293,24 @@ When this section is absent, env \`SLAUDE_APPROVERS\` is used.
 - <@sre-id>:        deploys, infra, kubernetes, rollbacks, ingress, CI/CD
 - <@security-id>:   secrets, credentials, IAM, env vars, OAuth scopes
 - <@comms-id>:      external comms, customer messages, emails, social
+
+## Channel <#C0123456789|example-channel>
+
+Optional, repeatable. Per-channel override of *Mandate* and *Approvers*. When
+slaude operates in this channel, the subsections below replace the global ones
+(absent subsection → global value). One \`## Channel <id>\` block per channel;
+\`<#Cxxx|name>\` or raw \`Cxxx\`/\`Gxxx\`/\`Dxxx\`. Delete this stub block (its id
+is a placeholder, ignored by the parser) or fill it with a real channel id.
+
+The manager (and backup) stay eligible approvers here automatically — a
+channel block can only *add* approvers, never lock the operator out.
+
+### Mandate
+- <what slaude is meant to accomplish specifically in this channel>
+
+### Approvers
+- <@channel-lead-id>: anything            ; catchall for this channel
+- <@channel-dba-id>:  migrations, SQL, schema changes
 `;
 
 export function loadSoul(): string {
