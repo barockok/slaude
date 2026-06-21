@@ -7,7 +7,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { brainServerConfig, type BrainServerConfig } from "../brain-config";
+import { type BrainServerConfig } from "../brain-config";
 import {
   PROTECTED_RESOURCE_PATH,
   guardConfigError,
@@ -117,18 +117,4 @@ export async function startBrainServer(
       await server.stop(true);
     },
   };
-}
-
-if (import.meta.main) {
-  const cfg = brainServerConfig();
-  startBrainServer(cfg, undefined, { boot: true })
-    .then((s) => {
-      console.log(`[brain-server] listening on ${cfg.host}:${s.port} (mcp ${MCP_PATH})`);
-      if (cfg.authDisabled) console.warn("[brain-server] OAuth DISABLED (SLAUDE_BRAIN_AUTH_DISABLED=1)");
-      else console.log(`[brain-server] OAuth issuer=${cfg.issuer ?? "(unset!)"} audience=${cfg.audience ?? "(unset!)"}`);
-    })
-    .catch((e) => {
-      console.error("[brain-server] failed to start:", e);
-      process.exit(1);
-    });
 }

@@ -53,6 +53,18 @@ describe("brain server round trip (auth disabled)", () => {
     expect(prmUrl).toContain("oauth-protected-resource");
   });
 
+  test("boots the real engine and wires default deps when none are injected", async () => {
+    // No deps + boot:true exercises the lazy default-deps import (real
+    // runScopedOp/runAdminOp) and the getBrain()/ensureSources() boot path.
+    started = await startBrainServer(
+      { port: 0, host: "127.0.0.1", authDisabled: true },
+      undefined,
+      { boot: true },
+    );
+    expect(started.url).toContain("/mcp");
+    expect(started.port).toBeGreaterThan(0);
+  });
+
   test("rejects unauthenticated MCP requests with 401 + WWW-Authenticate", async () => {
     started = await startBrainServer(
       { port: 0, host: "127.0.0.1", authDisabled: false, publicUrl: "https://brain.example", issuer: "https://kc.example/realms/r", audience: "slaude-brain" },

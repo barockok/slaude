@@ -92,6 +92,29 @@ describe("oauth-guard verifyBearer", () => {
   });
 });
 
+describe("oauth-guard jwksFor (real remote resolver, no injected getJWKS)", () => {
+  // No getJWKS → verifyBearer builds a real createRemoteJWKSet for the issuer and
+  // fetches its certs. Point the issuer at a closed port so the fetch fails fast
+  // (ECONNREFUSED) → jwtVerify throws → 401. Exercises the resolver-build + cache
+  // path that every other test bypasses via an injected getJWKS.
+  test("builds + caches a resolver and 401s when the JWKS endpoint is unreachable", async () => {
+    const { sign } = await setup();
+    const issuer = "http://127.0.0.1:1/realms/unreachable";
+    const tok = await sign({ iss: issuer }); // well-formed JWS so jose invokes the key resolver
+    const cfg = { issuer, audience: AUDIENCE, publicUrl: PUBLIC_URL, authDisabled: false };
+
+    const r1 = await verifyBearer(`Bearer ${tok}`, cfg);
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) {
+      expect(r1.status).toBe(401);
+      expect(r1.wwwAuth).toContain("invalid_token");
+    }
+    // Second call reuses the issuer-keyed cached resolver — same outcome.
+    const r2 = await verifyBearer(`Bearer ${tok}`, cfg);
+    expect(r2.ok).toBe(false);
+  });
+});
+
 describe("guardConfigError", () => {
   test("ok when auth disabled regardless of issuer/audience", () => {
     expect(guardConfigError({ authDisabled: true })).toBeNull();

@@ -34,7 +34,7 @@ switch (sub) {
     rest = argv.slice(1);
     break;
   case "brain-server":
-    entry = "src/knowledge/server/brain-server.ts";
+    entry = "src/knowledge/server/brain-server-entry.ts";
     rest = argv.slice(1);
     break;
   case "brain":
