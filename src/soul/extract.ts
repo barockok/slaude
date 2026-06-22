@@ -108,6 +108,7 @@ function assertIdsGroundedInPersona(data: SoulData, persona: string): void {
   for (const c of data.allowedChannels) ids.add(c);
   for (const c of data.trustedChannels) ids.add(c);
   for (const u of data.blockedUsers) ids.add(u);
+  for (const b of data.trustedBots) ids.add(b);
   for (const u of data.dmAllowedUsers) ids.add(u);
   for (const a of data.approvers) ids.add(a.userId);
   for (const co of data.channelOverrides) {

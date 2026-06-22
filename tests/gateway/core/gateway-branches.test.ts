@@ -321,6 +321,30 @@ describe("gateway uncovered branches", () => {
     expect(g.sends.length).toBe(0);
   });
 
+  it("untrusted bot is silently dropped", async () => {
+    writeSoulFixture(WORLD);
+    const g = makeGw();
+    // bot_id present but no user id, and bot_id not in trustedBots
+    const args = dmArgs(g, "hello", { bot_id: "B_UNTRUSTED", user: undefined });
+    await g.emit("message", args);
+    expect(g.sends.length).toBe(0);
+  });
+
+  it("trusted bot is allowed through the bot trust gate", async () => {
+    writeSoulFixture([
+      "# World",
+      "## Manager",
+      "- <@U_MGR>",
+      "## Trusted bots",
+      "- <@B_TRUSTED>",
+    ].join("\n"));
+    const g = makeGw();
+    const args = dmArgs(g, "trigger", { bot_id: "B_TRUSTED", user: undefined });
+    await g.emit("message", args);
+    // message is passed to the agent
+    expect(g.sends.length).toBe(1);
+  });
+
   it("agent.sendMessage throwing is caught", async () => {
     writeSoulFixture(WORLD);
     const g = makeGw();
