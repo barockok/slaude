@@ -19,3 +19,5 @@ data/
 verify-data/
 .env.verify
 jsonl/
+.playwright-cli/
+.playwright-mcp/
