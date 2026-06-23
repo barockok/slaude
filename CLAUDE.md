@@ -24,6 +24,15 @@ Zidni Mubarok <zidmubarock@gmail.com>. Telegram bridge available — use for blo
 ## Working Rules
 
 - **Public repo — no internal/proprietary references.** This repo is public. Never commit real people's names, company/employer/org names, internal Slack channel names, or internal service / KB / data-source identifiers in code, tests, comments, docs, commit messages, or PR text. Use generic placeholders instead (e.g. `bulk-corpus`, `org/team-directory`, `#team-channel`, `Jane Doe`). Findings docs describe the *mechanism*, never the internal incident specifics or the operator's deployment.
+- **Pre-commit hygiene — run BEFORE every `git add`/commit.** A leak in a public repo's history is near-impossible to fully undo (forks/clones/cached SHAs survive a rewrite). Catch it before it lands:
+  1. **Scrub scratch artifacts** — never stage runtime/tooling junk: `.handoff`, `.mcp.json` (runtime config; commit `.mcp.json.example` instead), `.playwright-cli/`, `.playwright-mcp/`, stray screenshots/PNGs in repo root, `*.log`. These are gitignored — if one shows in `git status`, it's a new escapee; gitignore it.
+  2. **Leak scan the staged diff** for internal references. Quick grep over what you're about to commit:
+     ```sh
+     git diff --cached -U0 | grep -nIiE 'amartha|\.amartha\.|\.slack\.com|squadrondevel|\b[CUTGW]0[A-Z0-9]{8,}\b|AKIA[0-9A-Z]{16}|xox[baprs]-|ghp_|sk-[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY|vault|deepseek|real-employee-names'
+     ```
+     Any hit that isn't an intentional placeholder or kept branding (the sim-TUI logo asset) → replace with a generic placeholder before committing.
+  3. **Secrets are values, not names** — but treat leaked *secret names* (Vault keys, env var names tied to a real deployment) as sensitive too; they map to the operator's infra.
+  4. If a leak already landed, see the history-rewrite playbook: `git filter-repo --invert-paths --path <file>` + `--replace-text <rules>` then force-push; always `git bundle create` a backup first.
 - Granular commits. One logical change per commit.
 - Log significant findings/decisions/mistakes as a new `docs/findings/<date>-<slug>.md` file and link it from the Findings Log index below (newest first). Keep this file lean — only the index lives here.
 - Autonomous by default. Don't ask trivial; ask via Telegram only when:
