@@ -21,3 +21,5 @@ verify-data/
 jsonl/
 .playwright-cli/
 .playwright-mcp/
+.handoff
+.mcp.json
