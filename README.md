@@ -502,4 +502,6 @@ Built-in scenarios: `manager-dm`, `member-public`, `member-trusted`, `restricted
 
 ## License
 
-UNLICENSED — private project. Author: Zidni Mubarok.
+[MIT](LICENSE) © Zidni Mubarok.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) to get started and [SECURITY.md](SECURITY.md) to report vulnerabilities.
