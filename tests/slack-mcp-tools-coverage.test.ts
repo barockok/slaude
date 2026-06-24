@@ -233,8 +233,22 @@ describe("adminHandlers authorization (isManagerOrApprover)", () => {
 
 describe("adminHandlers cron jobs", () => {
   test("listCronJobs empty", async () => {
-    const res = await adminHandlers.listCronJobs();
+    const res = await adminHandlers.listCronJobs(makeCtx());
     expect(res.content[0]!.text).toBe("No active cron jobs.");
+  });
+
+  test("listCronJobs denies non-manager/approver", async () => {
+    CronJobs.create({
+      channelId: "C1",
+      createdBy: MANAGER,
+      cronExpr: "0 9 * * *",
+      prompt: "secret digest",
+      nextRunAt: Date.now(),
+    });
+    const res = await adminHandlers.listCronJobs(makeCtx({ userId: RANDO }));
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("Only manager or approver can list cron jobs");
+    expect(res.content[0]!.text).not.toContain("secret digest");
   });
 
   test("listCronJobs renders passive tag for when_active=skip", async () => {
@@ -246,7 +260,7 @@ describe("adminHandlers cron jobs", () => {
       nextRunAt: Date.now(),
       whenActive: "skip",
     });
-    const res = await adminHandlers.listCronJobs();
+    const res = await adminHandlers.listCronJobs(makeCtx());
     expect(res.content[0]!.text).toContain("*Active cron jobs*");
     expect(res.content[0]!.text).toContain(", passive");
     expect(res.content[0]!.text).toContain("quiet digest");
@@ -261,7 +275,7 @@ describe("adminHandlers cron jobs", () => {
       nextRunAt: Date.now(),
     });
     CronJobs.pause(paused.id);
-    const res = await adminHandlers.listCronJobs();
+    const res = await adminHandlers.listCronJobs(makeCtx());
     expect(res.content[0]!.text).toContain("paused digest");
     expect(res.content[0]!.text).toContain("paused");
   });
