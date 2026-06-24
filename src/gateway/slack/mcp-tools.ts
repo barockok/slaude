@@ -360,7 +360,10 @@ function findCronJob(jobId: string): CronJobs.CronJob | ToolResult {
 /** Cron / ingest handlers — exposed as MCP tools so the agent can manage
  *  scheduled work and knowledge base directly. */
 export const adminHandlers = {
-  async listCronJobs(): Promise<ToolResult> {
+  async listCronJobs(ctx: SlackContext): Promise<ToolResult> {
+    if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
+      return err("Only manager or approver can list cron jobs.");
+    }
     const jobs = CronJobs.listActive();
     if (!jobs.length) return ok("No active cron jobs.");
     const lines = jobs.map(cronJobLine);
@@ -656,7 +659,7 @@ export function createRuntimeMcp(ctx: SlackContext): McpSdkServerConfigWithInsta
         "list_cron_jobs",
         "List all active scheduled cron jobs. Use when the user asks what recurring tasks are set up, wants to audit scheduled work, or needs a job ID before calling remove_cron_job. Returns job IDs, cron expressions, prompts, and next run times.",
         {},
-        () => adminHandlers.listCronJobs(),
+        () => adminHandlers.listCronJobs(ctx),
       ),
 
       tool(

@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { slackHandlers, adminHandlers, type SlackContext } from "../src/gateway/slack/mcp-tools";
 import * as CronJobs from "../src/db/cron-jobs";
 import { db } from "../src/db/schema";
+import { setSoulData, __resetSoulDataMemo } from "../src/soul/extract";
+import { SoulDataSchema } from "../src/soul/data";
 
 function fakeCtx(impl: {
   postMessage?: () => any;
@@ -354,13 +356,15 @@ describe("slackHandlers", () => {
 
 describe("listCronJobs target tag", () => {
   test("renders [channel] tag", async () => {
+    setSoulData(SoulDataSchema.parse({ manager: { userId: "U0MGR" } }));
     db.run("DELETE FROM cron_jobs");
     CronJobs.create({
       channelId: "C1", createdBy: "U1", cronExpr: "0 9 * * *",
       prompt: "digest", nextRunAt: Date.now(), target: "channel",
     });
-    const res = await adminHandlers.listCronJobs();
+    const res = await adminHandlers.listCronJobs({ channel: "C1", userId: "U0MGR" } as SlackContext);
     expect(res.content[0]!.text).toContain("[channel]");
     db.run("DELETE FROM cron_jobs");
+    __resetSoulDataMemo();
   });
 });
