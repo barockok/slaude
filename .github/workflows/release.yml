@@ -71,6 +71,12 @@ jobs:
             } > CHANGELOG.md
           fi
 
+      - name: Package release tarball
+        run: |
+          mkdir -p dist
+          bash scripts/package-release.sh dist
+          ls -l dist
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -79,3 +85,6 @@ jobs:
           body_path: CHANGELOG.md
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            dist/slaude-*.tar.gz
+            dist/sha256sums.txt
