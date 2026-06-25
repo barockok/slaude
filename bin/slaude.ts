@@ -15,6 +15,16 @@ import { existsSync } from "node:fs";
 const root = dirname(import.meta.dir); // bin/ -> repo root
 const argv = process.argv.slice(2);
 
+// Self-management subcommands run in-process (no repo spawn).
+if (argv[0] === "update" || argv[0] === "rollback" || argv[0] === "version") {
+  const sub = argv[0];
+  const { runUpdate, runRollback, runVersion } = await import("../src/cli/update");
+  const code = sub === "rollback" ? runRollback()
+    : sub === "version" ? await runVersion()
+    : await runUpdate();
+  process.exit(code);
+}
+
 const env: Record<string, string> = { ...process.env } as Record<string, string>;
 if (!env.SLAUDE_HOME && existsSync(join(process.cwd(), "SOUL.md"))) {
   env.SLAUDE_HOME = process.cwd();
