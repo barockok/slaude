@@ -34,6 +34,7 @@ Zidni Mubarok <zidmubarock@gmail.com>. Telegram bridge available — use for blo
   3. **Secrets are values, not names** — but treat leaked *secret names* (Vault keys, env var names tied to a real deployment) as sensitive too; they map to the operator's infra.
   4. If a leak already landed, see the history-rewrite playbook: `git filter-repo --invert-paths --path <file>` + `--replace-text <rules>` then force-push; always `git bundle create` a backup first.
 - Granular commits. One logical change per commit.
+- **No AI co-authorship.** Never add a `Co-Authored-By:` or "Generated with …" trailer naming Claude/Anthropic to commits or PRs, and never commit under an AI author identity. The `.githooks/commit-msg` hook enforces this (enable once per clone: `git config core.hooksPath .githooks`).
 - Log significant findings/decisions/mistakes as a new `docs/findings/<date>-<slug>.md` file and link it from the Findings Log index below (newest first). Keep this file lean — only the index lives here.
 - Autonomous by default. Don't ask trivial; ask via Telegram only when:
   - Irreversible action needed
