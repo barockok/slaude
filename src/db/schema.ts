@@ -166,6 +166,15 @@ if (!cronCols.some((c) => c.name === "when_active")) {
   db.run(`ALTER TABLE cron_jobs ADD COLUMN when_active TEXT NOT NULL DEFAULT 'fire'`);
 }
 
+// Migration: record the /1on1 lock owner active when the job was created. Cron
+// runs for DM/channel-target jobs key on a synthetic `cron:<id>` thread that
+// carries no 1on1 lock, so #startSession's thread-lock lookup can't find the
+// initiator — without this the child would boot with the agent's OAuth tokens
+// instead of the initiator's. NULL = created outside a 1on1 (no isolation).
+if (!cronCols.some((c) => c.name === "oauth_user")) {
+  db.run(`ALTER TABLE cron_jobs ADD COLUMN oauth_user TEXT`);
+}
+
 // Migration: add pause lifecycle state. `active` remains the soft-delete bit;
 // paused jobs stay listed but don't fire on schedule.
 ensureCronPauseColumn(db);

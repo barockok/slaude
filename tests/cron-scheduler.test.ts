@@ -133,6 +133,23 @@ describe("cron-jobs DB", () => {
     expect(resumed.nextRunAt).toBe(now + 60_000);
   });
 
+  test("defaults oauthUser to null", () => {
+    const job = CronJobs.create({
+      channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now(),
+    });
+    expect(job.oauthUser).toBeNull();
+    expect(CronJobs.findById(job.id)!.oauthUser).toBeNull();
+  });
+
+  test("persists oauthUser (1on1 lock owner)", () => {
+    const job = CronJobs.create({
+      channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now(),
+      oauthUser: "Uowner",
+    });
+    expect(job.oauthUser).toBe("Uowner");
+    expect(CronJobs.findById(job.id)!.oauthUser).toBe("Uowner");
+  });
+
   test("updates editable cron fields", () => {
     const now = Date.now();
     const job = CronJobs.create({
@@ -408,6 +425,58 @@ describe("CronScheduler", () => {
     await new Promise((r) => setTimeout(r, 20));
     scheduler.stop();
     expect(capturedKey.thread_ts).toBe(`cron:${job.id}`);
+  });
+
+  test("job created in a 1on1 hands the lock owner to the agent before sending", async () => {
+    db.run("DELETE FROM cron_jobs");
+    const now = Date.now();
+    const job = CronJobs.create({
+      slackTeamId: "T1", slackChannelId: "C123",
+      channelId: "C123", createdBy: "U999", cronExpr: "0 9 * * *",
+      prompt: "digest", nextRunAt: now - 1000, target: "channel",
+      oauthUser: "Uowner",
+    });
+    const calls: Array<{ fn: string; args: any[] }> = [];
+    const scheduler = new CronScheduler({
+      agent: {
+        ensureSession: () => ({ id: "sess-cron" }),
+        setCronOAuthUser: (...args: any[]) => calls.push({ fn: "setCronOAuthUser", args }),
+        sendMessage: async (...args: any[]) => { calls.push({ fn: "sendMessage", args }); },
+        isLive: () => false, on: () => {}, off: () => {},
+      } as any,
+      client: { chat: { postMessage: async () => ({}) } } as any,
+    });
+    scheduler.start();
+    await new Promise((r) => setTimeout(r, 20));
+    scheduler.stop();
+    // Override must be set on the run's session, before the message is sent.
+    expect(calls[0]).toEqual({ fn: "setCronOAuthUser", args: ["sess-cron", "Uowner"] });
+    expect(calls[1]?.fn).toBe("sendMessage");
+    void job;
+  });
+
+  test("job created outside a 1on1 never sets an OAuth override", async () => {
+    db.run("DELETE FROM cron_jobs");
+    const now = Date.now();
+    CronJobs.create({
+      slackTeamId: "T1", slackChannelId: "C123",
+      channelId: "C123", createdBy: "U999", cronExpr: "0 9 * * *",
+      prompt: "digest", nextRunAt: now - 1000, target: "channel",
+    });
+    const setCronOAuthUser = mock(() => {});
+    const scheduler = new CronScheduler({
+      agent: {
+        ensureSession: () => ({ id: "sess-cron" }),
+        setCronOAuthUser,
+        sendMessage: async () => {},
+        isLive: () => false, on: () => {}, off: () => {},
+      } as any,
+      client: { chat: { postMessage: async () => ({}) } } as any,
+    });
+    scheduler.start();
+    await new Promise((r) => setTimeout(r, 20));
+    scheduler.stop();
+    expect(setCronOAuthUser).toHaveBeenCalledTimes(0);
   });
 
   test("thread-target job keys session on slackThreadTs", async () => {
