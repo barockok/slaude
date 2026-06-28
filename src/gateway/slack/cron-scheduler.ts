@@ -69,6 +69,12 @@ export class CronScheduler {
 
     const session = this.#agent.ensureSession(threadKey);
 
+    // Jobs created inside a /1on1 carry the lock owner. The run keys on a
+    // synthetic `cron:<id>` thread with no lock, so hand the initiator to the
+    // manager directly — it boots the child under the initiator's OAuth config
+    // dir (same isolation the interactive 1on1 session gets). No-op otherwise.
+    if (job.oauthUser) this.#agent.setCronOAuthUser(session.id, job.oauthUser);
+
     // Cron fires by default even when the thread/channel session is live. A job may
     // opt into passive mode (when_active='skip') to defer the run while a human is
     // active — they get priority for that tick. (Same-job re-entry is still guarded

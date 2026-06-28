@@ -161,6 +161,12 @@ export class AgentManager extends EventEmitter {
    *  to a session's transcript. Keyed by sessionId; survives reload (only #live is
    *  torn down on reboot). Drained once onto the next engaged user turn. */
   #sessionNotes = new Map<string, string[]>();
+  /** Per-session OAuth-identity override for cron runs. A cron job created inside
+   *  a /1on1 keys its run on a synthetic `cron:<id>` thread with no lock, so the
+   *  thread-lock lookup in #startSession can't find the initiator. The scheduler
+   *  sets this before sending so the child boots under the initiator's config dir.
+   *  Takes precedence over the thread-lock lookup. Keyed by sessionId. */
+  #cronOAuthUser = new Map<string, string>();
   #budget = new TokenBudget({
     fallbackContextWindow: env.tokenFallbackContextWindow(),
   });
@@ -183,6 +189,14 @@ export class AgentManager extends EventEmitter {
   /** Install a transport-level Stop hook guard (e.g. Slack "must reply" enforcement). */
   setStopGuard(guard: StopGuard | undefined) {
     this.#stopGuard = guard;
+  }
+
+  /** Bind a cron run's OAuth identity to a session. Set by the scheduler before
+   *  the run when the job was created inside a /1on1, so #startSession boots the
+   *  child under the initiator's CLAUDE_CONFIG_DIR (initiator OAuth isolation)
+   *  even though the run keys on a synthetic `cron:<id>` thread with no lock. */
+  setCronOAuthUser(sessionId: string, userId: string) {
+    this.#cronOAuthUser.set(sessionId, userId);
   }
 
   /** Number of SDK Query sessions currently live in this process. */
@@ -380,7 +394,11 @@ export class AgentManager extends EventEmitter {
       row.slack_channel_id && row.slack_thread_ts
         ? OneOnOne.find(row.slack_channel_id, row.slack_thread_ts)
         : null;
-    const lockedConfigDir = resolveSessionConfigDir(lock?.locked_user);
+    // A cron run created inside a /1on1 keys on a synthetic `cron:<id>` thread
+    // that carries no lock, so the thread lookup above misses. The scheduler
+    // supplies the initiator via setCronOAuthUser — prefer it over the lock.
+    const oauthUser = this.#cronOAuthUser.get(sessionId) ?? lock?.locked_user;
+    const lockedConfigDir = resolveSessionConfigDir(oauthUser);
     if (lockedConfigDir) providerEnv.CLAUDE_CONFIG_DIR = lockedConfigDir;
 
     const resolver = this.#resolver;

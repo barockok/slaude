@@ -1311,6 +1311,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             }
           }
 
+          // If this /cron-add ran inside a /1on1-locked thread, remember the lock
+          // owner on the job. DM and channel-target runs key on a synthetic
+          // `cron:<id>` thread that carries no lock, so the scheduler needs this to
+          // boot the run under the initiator's OAuth config dir (initiator
+          // isolation), not the agent's. NULL when created outside a 1on1.
+          const cronLock = OneOnOne.find(channelId, threadTs);
           const job = CronJobs.create({
             slackTeamId: teamId,
             slackChannelId: channelId,
@@ -1323,6 +1329,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             nextRunAt: nextRun,
             target: slash.target,
             whenActive: slash.whenActive,
+            oauthUser: cronLock?.locked_user,
           });
           const where = slash.target === "channel" ? "channel root" : "this thread";
           const mode = slash.whenActive === "skip" ? ", passive (skips when active)" : "";
