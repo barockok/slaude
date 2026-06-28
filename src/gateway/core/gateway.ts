@@ -91,6 +91,12 @@ type SessionRoute = {
   surface: Surface;
   /** Whether the agent has emitted user-visible output this turn (surface reply/edit/upload). */
   spoke: boolean;
+  /** Slack message ref for the live todo tracker posted by the TodoWrite interceptor.
+   *  Cleared at the start of each new user turn so each request gets a fresh block. */
+  todoRef?: string;
+  /** Last todos array written via TodoWrite — used to stamp the message "all done"
+   *  when the turn ends with every item completed. Cleared alongside todoRef. */
+  todosSnapshot?: Array<{ content: string; status: string }>;
   /** This turn is a disengaged message recorded into the transcript but suppressed
    *  by the UserPromptSubmit hook (no model run). Skip all Slack-visible feedback. */
   suppress?: boolean;
@@ -122,6 +128,16 @@ export interface GatewayOptions {
    *  SLACK_POST_AS_USER / SLACK_USER_TOKEN env path. When set, the gateway behaves as
    *  if posting-as-user is enabled (self-user echo guard active). */
   outClient?: any;
+}
+
+/** Render a TodoWrite todos array as a compact markdown task list for the Slack surface. */
+function formatTodoList(todos: Array<{ content: string; status: string }>): string {
+  const lines = todos.map((t) => {
+    if (t.status === "completed") return `✅ ${t.content}`;
+    if (t.status === "in_progress") return `▶ **${t.content}**`;
+    return `○ ${t.content}`;
+  });
+  return `**Tasks**\n${lines.join("\n")}`;
 }
 
 /** A live SessionBinding view over the mutated-in-place SlackContext, so the Surface always
@@ -614,6 +630,28 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           route.spoke = true;
           void reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_WORKING);
         } else {
+          // Live todo tracker: post or edit a task-list message in the thread whenever
+          // the agent writes todos. Does not set `spoke` — the stop guard still requires
+          // the agent to call reply() with its actual answer.
+          if (e.tool === "TodoWrite") {
+            const todos = (e.input as any)?.todos;
+            if (Array.isArray(todos) && todos.length > 0) {
+              route.todosSnapshot = todos;
+              const text = formatTodoList(todos);
+              void (async () => {
+                try {
+                  if (route.todoRef && route.surface.capabilities.has("edit") && route.surface.edit) {
+                    await route.surface.edit({ ref: route.todoRef, text });
+                  } else {
+                    const { ref } = await route.surface.reply({ text });
+                    route.todoRef = ref;
+                  }
+                } catch (err) {
+                  console.error("[todo] failed to post/edit todo message:", err);
+                }
+              })();
+            }
+          }
           // Animated humanized status next to the bot name.
           void status.set(
             e.sessionId,
@@ -632,6 +670,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // Auto-evolve turns are internal — don't reset reactions/presence
           // (they were already finalized on the user-visible turn's done).
           if (e.autoEvolve) return;
+          // Stamp the todo message "all done" when every task completed.
+          if (route.todoRef && route.todosSnapshot?.length &&
+              route.todosSnapshot.every((t) => t.status === "completed") &&
+              route.surface.capabilities.has("edit") && route.surface.edit) {
+            const doneText = `**Tasks** ✅\n${route.todosSnapshot.map((t) => `✅ ${t.content}`).join("\n")}`;
+            await route.surface.edit({ ref: route.todoRef, text: doneText }).catch(() => {});
+          }
           // No fallback notice: setStopGuard above forces a reply via the SDK
           // Stop hook. If the agent still stops without spoke, manager logs
           // to stderr — surfacing a Slack message here would be redundant.
@@ -1397,6 +1442,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.ctx.userId = userId;
       existing.ctx.reloadSession = () => agent.reload(session.id);
       existing.spoke = false;
+      existing.todoRef = undefined;       // fresh tracker per user turn
+      existing.todosSnapshot = undefined;
       existing.suppress = suppress;
     } else {
       const ctx: SlackContext = {
