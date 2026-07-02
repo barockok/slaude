@@ -43,6 +43,7 @@
     "@opentui/react": "^0.3.2",
     "@slack/bolt": "^4.1.0",
     "gbrain": "github:garrytan/gbrain#03ffc6ebdbc7dd8b29e5bfd0c3a9a6c983b54f01",
+    "playwright": "^1.61.1",
     "react": "^19.2.7",
     "yaml": "^2.6.0",
     "zod": "^3.23.8"

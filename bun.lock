@@ -11,6 +11,7 @@
         "@opentui/react": "^0.3.2",
         "@slack/bolt": "^4.1.0",
         "gbrain": "github:garrytan/gbrain#03ffc6ebdbc7dd8b29e5bfd0c3a9a6c983b54f01",
+        "playwright": "^1.61.1",
         "react": "^19.2.7",
         "yaml": "^2.6.0",
         "zod": "^3.23.8",
@@ -349,6 +350,8 @@
 
     "fresh": ["fresh@2.0.0", "", {}, "sha512-Rx/WycZ60HOaqLKAi6cHRKKI7zxWbJ31MhntmtwMoaTeF7XFH9hhBp8vITaMidfljRQ6eYWCKkaTK+ykVJHP2A=="],
 
+    "fsevents": ["fsevents@2.3.2", "", { "os": "darwin" }, "sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA=="],
+
     "function-bind": ["function-bind@1.1.2", "", {}, "sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA=="],
 
     "gbrain": ["gbrain@github:garrytan/gbrain#03ffc6e", { "dependencies": { "@ai-sdk/anthropic": "^3.0.71", "@ai-sdk/google": "^3.0.64", "@ai-sdk/openai": "^3.0.53", "@ai-sdk/openai-compatible": "^2.0.41", "@anthropic-ai/sdk": "^0.30.0", "@aws-sdk/client-s3": "^3.1028.0", "@dqbd/tiktoken": "^1.0.22", "@electric-sql/pglite": "0.4.3", "@jsquash/avif": "^2.1.1", "@jsquash/png": "^3.1.1", "@modelcontextprotocol/sdk": "1.29.0", "ai": "^6.0.168", "chokidar": "^4.0.3", "cookie-parser": "^1.4.7", "cors": "^2.8.5", "eventsource-parser": "^3.0.8", "exifr": "^7.1.3", "express": "^5.1.0", "express-rate-limit": "^7.5.0", "gray-matter": "^4.0.3", "heic-decode": "^2.1.0", "js-yaml": "^3.14.2", "marked": "^18.0.0", "openai": "^4.0.0", "pgvector": "^0.2.0", "postgres": "^3.4.0", "tree-sitter-wasms": "0.1.13", "web-tree-sitter": "0.22.6", "zod": "^4.3.6" }, "bin": { "gbrain": "src/cli.ts" } }, "garrytan-gbrain-03ffc6e", "sha512-HzZLkfs6sV9MvO6y/uwzTzIzVB5i5RnNWvvLGpn/djcO/+AVzsK+85Gt4gbyz6vGXvnC6VW+cuJc/x7D+ziZqg=="],
@@ -480,6 +483,10 @@
     "pgvector": ["pgvector@0.2.1", "", {}, "sha512-nKaQY9wtuiidwLMdVIce1O3kL0d+FxrigCVzsShnoqzOSaWWWOvuctb/sYwlai5cTwwzRSNa+a/NtN2kVZGNJw=="],
 
     "pkce-challenge": ["pkce-challenge@5.0.1", "", {}, "sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ=="],
+
+    "playwright": ["playwright@1.61.1", "", { "dependencies": { "playwright-core": "1.61.1" }, "optionalDependencies": { "fsevents": "2.3.2" }, "bin": { "playwright": "cli.js" } }, "sha512-DWnY5o3YbLWK4GovuAVwpqL+1VwGNdUGrRr++8j8PtQQzvAVZUIMjKQ90fY689sEJZJBbZVw1rXaOKSTitkzPQ=="],
+
+    "playwright-core": ["playwright-core@1.61.1", "", { "bin": { "playwright-core": "cli.js" } }, "sha512-h7Qlt6m4REp25qvIdvbDtVmD4LqVXfpRxhORv9L0jzETM05p4fuPJ3dKyuSXQxDSbXnmS79HAgi9589lGSpLkg=="],
 
     "postgres": ["postgres@3.4.9", "", {}, "sha512-GD3qdB0x1z9xgFI6cdRD6xu2Sp2WCOEoe3mtnyB5Ee0XrrL5Pe+e4CCnJrRMnL1zYtRDZmQQVbvOttLnKDLnaw=="],
 
