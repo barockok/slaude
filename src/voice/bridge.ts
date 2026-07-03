@@ -52,12 +52,13 @@ const mal = process.env.MAL_API_KEY
     })
   : null;
 const speaker = new Speaker(apiKey, process.env.SLAUDE_VOICE_TTS_MODEL);
+const pendingDelegates = new Map<number, { question: string; timer: Timer }>();
+const DELEGATE_PATIENCE_MS = envNum("SLAUDE_VOICE_DELEGATE_PATIENCE_MS") ?? 45_000;
 
 function envNum(name: string): number | undefined {
   const v = Number(process.env[name]);
   return Number.isFinite(v) && process.env[name] !== undefined ? v : undefined;
 }
-const pendingDelegates = new Map<number, string>();
 let delegateSeq = 0;
 
 await ensurePulse();
@@ -86,11 +87,27 @@ flux.on("turn", (t) => {
       .onTurn(t.transcript)
       .then(async (d) => {
         if (d.delegate) {
+          // Field lesson: fragmented turns produced a fresh filler per
+          // fragment while a delegate was already out. One filler, then
+          // hold — and if the big brain is slow, apologize exactly once
+          // instead of leaving dead air.
+          const hadPending = pendingDelegates.size > 0;
           const id = ++delegateSeq;
-          pendingDelegates.set(id, d.delegate);
+          const timer = setTimeout(() => {
+            if (!pendingDelegates.has(id)) return;
+            void speaker
+              .speak(
+                "Still working on that one — it's taking longer than usual. If it drags on, I'll drop the answer in the Slack thread.",
+              )
+              .then((spoken) => spoken && out({ ev: "said", text: "(delegate-patience apology)" }));
+          }, DELEGATE_PATIENCE_MS);
+          pendingDelegates.set(id, { question: d.delegate, timer });
           out({ ev: "delegate", id, question: d.delegate });
-        }
-        if (d.say) {
+          if (d.say && !hadPending) {
+            await speaker.speak(d.say);
+            out({ ev: "said", text: d.say });
+          }
+        } else if (d.say) {
           await speaker.speak(d.say);
           out({ ev: "said", text: d.say });
         }
@@ -116,9 +133,10 @@ cap.stderr.on("data", () => {});
       continue;
     }
     if (cmd.cmd === "say" && cmd.text) {
-      const q = cmd.id !== undefined ? pendingDelegates.get(cmd.id) : undefined;
-      if (q && cmd.id !== undefined) {
-        mal?.noteBrainAnswer(q, cmd.text);
+      const pending = cmd.id !== undefined ? pendingDelegates.get(cmd.id) : undefined;
+      if (pending && cmd.id !== undefined) {
+        clearTimeout(pending.timer);
+        mal?.noteBrainAnswer(pending.question, cmd.text);
         pendingDelegates.delete(cmd.id);
       } else {
         mal?.noteSpoken(cmd.text);

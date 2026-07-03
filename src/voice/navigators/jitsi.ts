@@ -28,13 +28,24 @@ export const jitsiNavigator: Navigator = {
       .first();
     await joinBtn.click({ timeout: 15_000 });
 
-    // In-call marker: the hangup control. Long timeout covers "waiting for
-    // moderator" when the host hasn't started the room yet. (Known gap: the
-    // lobby shows a hangup control too — this can fire before audio flows.)
-    await page
-      .locator('[data-testid="toolbox-hangup"], [aria-label*="eave"]')
-      .first()
-      .waitFor({ state: "visible", timeout: opts.joinTimeoutMs ?? 300_000 });
+    // The "waiting for moderator" lobby shows a hangup control too, so the
+    // button alone false-positives as in-call. Jitsi's own conference state
+    // is the truth; fall back to the button marker if the APP global ever
+    // disappears in a future Jitsi build.
+    const timeout = opts.joinTimeoutMs ?? 300_000;
+    try {
+      await page.waitForFunction(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        () => (globalThis as any).APP?.conference?.isJoined?.() === true,
+        undefined,
+        { timeout },
+      );
+    } catch {
+      await page
+        .locator('[data-testid="toolbox-hangup"], [aria-label*="eave"]')
+        .first()
+        .waitFor({ state: "visible", timeout: 10_000 });
+    }
 
     return page;
   },
