@@ -18,10 +18,13 @@ export async function launchBrowser(): Promise<BrowserContext> {
     headless: false, // real Chrome under Xvfb; Meet rejects headless
     viewport: { width: 1280, height: 720 },
     permissions: ["microphone", "camera"],
+    locale: "en-US", // geo-derived locales break our selectors
     args: [
       "--use-fake-ui-for-media-stream", // auto-accept mic/cam prompts
       "--autoplay-policy=no-user-gesture-required",
       "--disable-blink-features=AutomationControlled",
+      "--lang=en-US",
+      "--remote-debugging-port=9222", // lets us attach/screenshot a live bridge
     ],
     env: {
       ...process.env,
@@ -34,12 +37,27 @@ export async function launchBrowser(): Promise<BrowserContext> {
 /** Join a Meet as a guest (no Google login). Resolves once in the call. */
 export async function joinMeet(ctx: BrowserContext, opts: JoinOptions): Promise<Page> {
   const page = await ctx.newPage();
-  await page.goto(opts.url, { waitUntil: "domcontentloaded" });
+  // hl=en forces Meet's UI language regardless of account/geo defaults.
+  const url = new URL(opts.url);
+  url.searchParams.set("hl", "en");
+  await page.goto(url.toString(), { waitUntil: "domcontentloaded" });
+
+  // Promo tooltips ("Sign in with your Google account") overlay the form
+  // and can swallow interactions — dismiss before touching anything.
+  await page
+    .getByRole("button", { name: /got it/i })
+    .click({ timeout: 3_000 })
+    .catch(() => {});
 
   // Guest flow: name field appears when not signed in.
-  const nameBox = page.getByPlaceholder(/your name/i);
+  const nameBox = page.getByPlaceholder("Your name");
   if (await nameBox.isVisible({ timeout: 10_000 }).catch(() => false)) {
+    await nameBox.click();
     await nameBox.fill(opts.displayName);
+    // The join button only enables once Meet registers a non-empty name.
+    if ((await nameBox.inputValue()) !== opts.displayName) {
+      await nameBox.pressSequentially(opts.displayName, { delay: 50 });
+    }
   }
 
   // Pre-join screen: mute cam, keep mic (we ARE the mic).
@@ -48,10 +66,18 @@ export async function joinMeet(ctx: BrowserContext, opts: JoinOptions): Promise<
     .click({ timeout: 5_000 })
     .catch(() => {}); // already off / not present
 
+  // "Ask to join" may render as "... without microphone & camera" when Meet
+  // sees no devices; both are fine for the listen-only milestone. The button
+  // stays disabled until the name is non-empty.
   const joinBtn = page
-    .getByRole("button", { name: /^(join now|ask to join)/i })
+    .getByRole("button", { name: /join now|ask to join/i })
     .first();
-  await joinBtn.click({ timeout: 15_000 });
+  try {
+    await joinBtn.click({ timeout: 15_000 });
+  } catch (err) {
+    await page.screenshot({ path: "/tmp/meet-join-fail.png" }).catch(() => {});
+    throw err;
+  }
 
   // In-call marker: the leave-call control. Long timeout covers lobby approval.
   await page

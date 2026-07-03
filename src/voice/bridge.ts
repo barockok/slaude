@@ -15,6 +15,7 @@
 import { captureCall, ensurePulse } from "./audio";
 import { FluxClient } from "./flux";
 import { joinMeet, launchBrowser, leaveMeet } from "./meet";
+import { joinJitsi, leaveJitsi } from "./jitsi";
 
 function out(obj: Record<string, unknown>): void {
   console.log(JSON.stringify(obj));
@@ -37,9 +38,12 @@ if (!apiKey) {
 await ensurePulse();
 out({ ev: "status", state: "launching" });
 
+const isJitsi = /jit\.si|8x8\.vc/.test(new URL(url).hostname);
 const ctx = await launchBrowser();
 out({ ev: "status", state: "joining" });
-const page = await joinMeet(ctx, { url, displayName });
+const page = isJitsi
+  ? await joinJitsi(ctx, { url, displayName })
+  : await joinMeet(ctx, { url, displayName });
 out({ ev: "status", state: "in-call" });
 
 const flux = new FluxClient({ apiKey });
@@ -59,7 +63,7 @@ cap.stderr.on("data", () => {});
 async function shutdown(): Promise<void> {
   cap.kill();
   flux.close();
-  await leaveMeet(page);
+  await (isJitsi ? leaveJitsi(page) : leaveMeet(page));
   await ctx.close().catch(() => {});
   out({ ev: "status", state: "closed" });
   process.exit(0);

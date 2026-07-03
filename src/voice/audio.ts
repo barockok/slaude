@@ -10,7 +10,9 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 export const CALL_SINK = "call_out";
 export const MIC_SINK = "bot_mic";
-export const MIC_SOURCE = `${MIC_SINK}.monitor`;
+// Chrome won't enumerate .monitor sources as microphones — it needs a real
+// source, so we remap bot_mic.monitor into one (see ensurePulse).
+export const MIC_SOURCE = "virtmic";
 export const CALL_MONITOR = `${CALL_SINK}.monitor`;
 
 /** Flux wants linear16 mono 16k; 80ms chunks = 2560 bytes. */
@@ -45,6 +47,16 @@ export async function ensurePulse(): Promise<void> {
         `sink_properties=device.description=${name}`,
       );
     }
+  }
+  const sources = await pactl("list", "short", "sources");
+  if (!sources.includes(`\t${MIC_SOURCE}\t`)) {
+    await pactl(
+      "load-module",
+      "module-remap-source",
+      `master=${MIC_SINK}.monitor`,
+      `source_name=${MIC_SOURCE}`,
+      `source_properties=device.description=${MIC_SOURCE}`,
+    );
   }
 }
 
