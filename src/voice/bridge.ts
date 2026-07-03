@@ -18,10 +18,10 @@
 //   {"cmd":"leave"}                     hang up and exit
 
 import { captureCall, ensurePulse } from "./audio";
+import { launchBrowser } from "./browser";
 import { FluxClient } from "./flux";
-import { joinMeet, launchBrowser, leaveMeet } from "./meet";
-import { joinJitsi, leaveJitsi } from "./jitsi";
 import { Mal } from "./mal";
+import { resolveNavigator } from "./navigators";
 import { Speaker } from "./tts";
 
 function out(obj: Record<string, unknown>): void {
@@ -57,12 +57,10 @@ let delegateSeq = 0;
 await ensurePulse();
 out({ ev: "status", state: "launching" });
 
-const isJitsi = /jit\.si|8x8\.vc/.test(new URL(url).hostname);
+const navigator = resolveNavigator(url);
 const ctx = await launchBrowser();
 out({ ev: "status", state: "joining" });
-const page = isJitsi
-  ? await joinJitsi(ctx, { url, displayName })
-  : await joinMeet(ctx, { url, displayName });
+const page = await navigator.join(ctx, { url, displayName });
 out({ ev: "status", state: "in-call" });
 
 // Higher EOT threshold: field test showed think-aloud pauses ("can you,
@@ -128,7 +126,7 @@ async function shutdown(): Promise<void> {
   speaker.cancel();
   cap.kill();
   flux.close();
-  await (isJitsi ? leaveJitsi(page) : leaveMeet(page));
+  await navigator.leave(page);
   await ctx.close().catch(() => {});
   out({ ev: "status", state: "closed" });
   process.exit(0);
