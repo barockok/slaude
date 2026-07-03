@@ -3,7 +3,7 @@
 // https://developers.deepgram.com/docs/flux/quickstart
 
 import { EventEmitter } from "node:events";
-import { CHUNK_BYTES, SAMPLE_RATE } from "./audio";
+import { CHUNK_BYTES, Framer, SAMPLE_RATE } from "./pcm";
 
 export interface FluxWord {
   word: string;
@@ -41,8 +41,7 @@ export interface FluxOptions {
  */
 export class FluxClient extends EventEmitter {
   #ws: WebSocket | null = null;
-  #buf: Buffer[] = [];
-  #buffered = 0;
+  #framer = new Framer(CHUNK_BYTES);
   #opts: FluxOptions;
 
   constructor(opts: FluxOptions) {
@@ -80,15 +79,10 @@ export class FluxClient extends EventEmitter {
 
   /** Buffer PCM and ship in ~80ms binary frames. */
   write(pcm: Buffer): void {
-    this.#buf.push(pcm);
-    this.#buffered += pcm.length;
-    while (this.#buffered >= CHUNK_BYTES) {
-      const chunk = Buffer.concat(this.#buf);
-      this.#buf = [chunk.subarray(CHUNK_BYTES)];
-      this.#buffered = this.#buf[0]!.length;
+    for (const frame of this.#framer.push(pcm)) {
       if (this.#ws?.readyState === WebSocket.OPEN) {
         try {
-          this.#ws.send(chunk.subarray(0, CHUNK_BYTES));
+          this.#ws.send(frame);
         } catch (e) {
           // Socket can close between the readyState check and send (EPIPE
           // race) — surface as an event, never crash the bridge.

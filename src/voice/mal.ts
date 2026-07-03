@@ -14,6 +14,7 @@ export interface MalConfig {
   baseUrl: string;
   model: string;
   agentName: string;
+  maxTokens?: number;
 }
 
 export interface MalDecision {
@@ -70,7 +71,7 @@ export class Mal {
       },
       body: JSON.stringify({
         model: this.#cfg.model,
-        max_tokens: 300,
+        max_tokens: this.#cfg.maxTokens ?? 300,
         system: SYSTEM(this.#cfg.agentName),
         messages: this.#history,
       }),

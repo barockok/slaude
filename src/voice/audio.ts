@@ -7,6 +7,7 @@
 // The browser process is pointed at them via PULSE_SINK / PULSE_SOURCE env.
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { SAMPLE_RATE } from "./pcm";
 
 export const CALL_SINK = "call_out";
 export const MIC_SINK = "bot_mic";
@@ -14,10 +15,6 @@ export const MIC_SINK = "bot_mic";
 // source, so we remap bot_mic.monitor into one (see ensurePulse).
 export const MIC_SOURCE = "virtmic";
 export const CALL_MONITOR = `${CALL_SINK}.monitor`;
-
-/** Flux wants linear16 mono 16k; 80ms chunks = 2560 bytes. */
-export const SAMPLE_RATE = 16000;
-export const CHUNK_BYTES = (SAMPLE_RATE * 2 * 80) / 1000; // 2560
 
 async function pactl(...args: string[]): Promise<string> {
   const proc = Bun.spawn(["pactl", ...args], { stdout: "pipe", stderr: "pipe" });
@@ -72,19 +69,5 @@ export function captureCall(): ChildProcessWithoutNullStreams {
     "--channels=1",
     "--raw",
     `--latency-msec=80`,
-  ]);
-}
-
-/**
- * Play raw PCM (s16le mono, `rate` Hz) into the browser's microphone.
- * Returns the child; write PCM to stdin, end() when done speaking.
- */
-export function speakToMic(rate = 24000): ChildProcessWithoutNullStreams {
-  return spawn("paplay", [
-    `--device=${MIC_SINK}`,
-    "--format=s16le",
-    `--rate=${rate}`,
-    "--channels=1",
-    "--raw",
   ]);
 }

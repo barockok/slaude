@@ -48,9 +48,15 @@ const mal = process.env.MAL_API_KEY
       baseUrl: process.env.MAL_BASE_URL ?? "https://api.anthropic.com",
       model: process.env.MAL_MODEL ?? "claude-haiku-4-5",
       agentName: displayName,
+      maxTokens: envNum("SLAUDE_VOICE_MAL_MAX_TOKENS"),
     })
   : null;
-const speaker = new Speaker(apiKey);
+const speaker = new Speaker(apiKey, process.env.SLAUDE_VOICE_TTS_MODEL);
+
+function envNum(name: string): number | undefined {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && process.env[name] !== undefined ? v : undefined;
+}
 const pendingDelegates = new Map<number, string>();
 let delegateSeq = 0;
 
@@ -65,7 +71,10 @@ out({ ev: "status", state: "in-call" });
 
 // Higher EOT threshold: field test showed think-aloud pauses ("can you,
 // like, ...") fragmenting one request into 4 turns, each triggering MAL.
-const flux = new FluxClient({ apiKey, eotThreshold: 0.85 });
+const flux = new FluxClient({
+  apiKey,
+  eotThreshold: envNum("SLAUDE_VOICE_EOT_THRESHOLD") ?? 0.85,
+});
 flux.on("turn", (t) => {
   if (t.event === "Update") return;
   out({ ev: "turn", event: t.event, turn: t.turn_index, transcript: t.transcript });
