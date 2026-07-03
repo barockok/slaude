@@ -75,6 +75,10 @@ export class Speaker {
         "--raw",
       ]);
       this.#current = play;
+      // paplay can die mid-write (barge-in kill, pulse restart) — an
+      // unhandled stdin EPIPE would take the whole bridge down.
+      play.stdin.on("error", () => {});
+      play.on("error", () => resolve(false));
       play.on("exit", (code, signal) => {
         if (this.#current === play) this.#current = null;
         resolve(signal === null && code === 0);

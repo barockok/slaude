@@ -87,7 +87,13 @@ export class FluxClient extends EventEmitter {
       this.#buf = [chunk.subarray(CHUNK_BYTES)];
       this.#buffered = this.#buf[0]!.length;
       if (this.#ws?.readyState === WebSocket.OPEN) {
-        this.#ws.send(chunk.subarray(0, CHUNK_BYTES));
+        try {
+          this.#ws.send(chunk.subarray(0, CHUNK_BYTES));
+        } catch (e) {
+          // Socket can close between the readyState check and send (EPIPE
+          // race) — surface as an event, never crash the bridge.
+          this.emit("error", e);
+        }
       }
     }
   }

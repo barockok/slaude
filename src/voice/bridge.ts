@@ -65,7 +65,9 @@ const page = isJitsi
   : await joinMeet(ctx, { url, displayName });
 out({ ev: "status", state: "in-call" });
 
-const flux = new FluxClient({ apiKey });
+// Higher EOT threshold: field test showed think-aloud pauses ("can you,
+// like, ...") fragmenting one request into 4 turns, each triggering MAL.
+const flux = new FluxClient({ apiKey, eotThreshold: 0.85 });
 flux.on("turn", (t) => {
   if (t.event === "Update") return;
   out({ ev: "turn", event: t.event, turn: t.turn_index, transcript: t.transcript });
