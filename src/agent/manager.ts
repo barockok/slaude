@@ -658,10 +658,16 @@ export class AgentManager extends EventEmitter {
             modelUsage: (msg as any).modelUsage,
           });
           const snapshot = this.#budget.snapshot(sessionId)!;
-          metric.tokensTotal.inc({ kind: "input" }, (msg as any).usage.input_tokens ?? 0);
-          metric.tokensTotal.inc({ kind: "output" }, (msg as any).usage.output_tokens ?? 0);
-          metric.tokensTotal.inc({ kind: "cache_read" }, (msg as any).usage.cache_read_input_tokens ?? 0);
-          metric.tokensTotal.inc({ kind: "cache_creation" }, (msg as any).usage.cache_creation_input_tokens ?? 0);
+
+          const sessionRow = Sessions.findById(sessionId);
+          const channelId = sessionRow?.slack_channel_id ?? "unknown";
+          const modelName = (msg as any).model ?? env.SLAUDE_MODEL ?? "unknown";
+          const baseLabels = { channel_id: channelId, model: modelName };
+
+          metric.tokensTotal.inc({ ...baseLabels, kind: "input" }, (msg as any).usage.input_tokens ?? 0);
+          metric.tokensTotal.inc({ ...baseLabels, kind: "output" }, (msg as any).usage.output_tokens ?? 0);
+          metric.tokensTotal.inc({ ...baseLabels, kind: "cache_read" }, (msg as any).usage.cache_read_input_tokens ?? 0);
+          metric.tokensTotal.inc({ ...baseLabels, kind: "cache_creation" }, (msg as any).usage.cache_creation_input_tokens ?? 0);
           metric.contextWindowPct.set(snapshot.pctUsed);
           this.emit("event", {
             type: "tokenUsage",
