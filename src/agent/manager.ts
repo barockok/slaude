@@ -661,7 +661,7 @@ export class AgentManager extends EventEmitter {
 
           const sessionRow = Sessions.findById(sessionId);
           const channelId = sessionRow?.slack_channel_id ?? "unknown";
-          const modelName = (msg as any).model ?? env.SLAUDE_MODEL ?? "unknown";
+          const modelName = (msg as any).model ?? env.model() ?? "unknown";
           const baseLabels = { channel_id: channelId, model: modelName };
 
           metric.tokensTotal.inc({ ...baseLabels, kind: "input" }, (msg as any).usage.input_tokens ?? 0);
