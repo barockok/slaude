@@ -732,7 +732,7 @@ export class AgentManager extends EventEmitter {
           });
           const snapshot = this.#budget.snapshot(sessionId)!;
 
-          const channelId = row.slack_channel_id ?? "unknown";
+          const channelId = Sessions.findById(sessionId)?.slack_channel_id ?? "unknown";
           const modelUsageKeys = Object.keys((msg as any).modelUsage ?? {});
           const modelName = modelUsageKeys[0] ?? env.model() ?? "unknown";
           const baseLabels = { channel_id: channelId, model: modelName };
