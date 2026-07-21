@@ -136,7 +136,7 @@ export const m = {
   sessionsLive: metrics.gauge("slaude_sessions_live", "Number of live SDK sessions in this process."),
   turnsTotal: metrics.counter("slaude_turns_total", "Completed turns, labeled by result."),
   toolCallsTotal: metrics.counter("slaude_tool_calls_total", "Tool invocations, labeled by tool name."),
-  tokensTotal: metrics.counter("slaude_tokens_total", "Tokens consumed, labeled by kind."),
+  tokensTotal: metrics.counter("slaude_tokens_total", "Tokens consumed, labeled by kind, channel_id, and model."),
   contextWindowPct: metrics.gauge("slaude_context_window_pct", "Most recent context-window usage fraction (0..1)."),
   stopGuardBlockedTotal: metrics.counter("slaude_stop_guard_blocked_total", "Times the Stop hook blocked an agent from stopping."),
   stopGuardFailedTotal: metrics.counter("slaude_stop_guard_failed_total", "Times the Stop hook blocked but the agent still stopped without satisfying the guard."),

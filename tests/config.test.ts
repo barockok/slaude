@@ -23,7 +23,7 @@ describe("SLAUDE_DB_PATH override", () => {
   // resolution logic in a subprocess so each invocation reads a fresh env.
   test("default db path is SLAUDE_HOME/db.sqlite", async () => {
     const out = await Bun.spawn({
-      cmd: ["bun", "-e", "import {paths} from './src/config/home'; console.log(paths.db)"],
+      cmd: [process.execPath, "-e", "import {paths} from './src/config/home'; console.log(paths.db)"],
       env: { ...process.env, SLAUDE_HOME: "/tmp/slaude-cfg-test-default", SLAUDE_DB_PATH: "" },
       stdout: "pipe",
     }).stdout;
@@ -33,7 +33,7 @@ describe("SLAUDE_DB_PATH override", () => {
 
   test("SLAUDE_DB_PATH absolute path used verbatim", async () => {
     const out = await Bun.spawn({
-      cmd: ["bun", "-e", "import {paths} from './src/config/home'; console.log(paths.db)"],
+      cmd: [process.execPath, "-e", "import {paths} from './src/config/home'; console.log(paths.db)"],
       env: { ...process.env, SLAUDE_HOME: "/tmp/slaude-cfg-test-abs", SLAUDE_DB_PATH: "/var/lib/slaude/db.sqlite" },
       stdout: "pipe",
     }).stdout;
@@ -42,7 +42,7 @@ describe("SLAUDE_DB_PATH override", () => {
 
   test("SLAUDE_DB_PATH relative path joined under SLAUDE_HOME", async () => {
     const out = await Bun.spawn({
-      cmd: ["bun", "-e", "import {paths} from './src/config/home'; console.log(paths.db)"],
+      cmd: [process.execPath, "-e", "import {paths} from './src/config/home'; console.log(paths.db)"],
       env: { ...process.env, SLAUDE_HOME: "/tmp/slaude-cfg-test-rel", SLAUDE_DB_PATH: "state/db.sqlite" },
       stdout: "pipe",
     }).stdout;
