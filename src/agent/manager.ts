@@ -199,6 +199,19 @@ export class AgentManager extends EventEmitter {
     this.#cronOAuthUser.set(sessionId, userId);
   }
 
+  /** Resolve the identity a session should run as for both CLAUDE_CONFIG_DIR
+   *  isolation and private-MCP credential scoping: the cron-captured initiator
+   *  (if any) takes precedence over the live /1on1 lock, so both mechanisms
+   *  agree by construction instead of independently re-deriving the same rule. */
+  resolveEffectiveIdentity(
+    sessionId: string,
+    channel?: string | null,
+    threadTs?: string | null,
+  ): string | undefined {
+    return this.#cronOAuthUser.get(sessionId)
+      ?? (channel && threadTs ? OneOnOne.find(channel, threadTs)?.locked_user : undefined);
+  }
+
   /** Number of SDK Query sessions currently live in this process. */
   liveCount() {
     return this.#live.size;
@@ -394,10 +407,11 @@ export class AgentManager extends EventEmitter {
       row.slack_channel_id && row.slack_thread_ts
         ? OneOnOne.find(row.slack_channel_id, row.slack_thread_ts)
         : null;
-    // A cron run created inside a /1on1 keys on a synthetic `cron:<id>` thread
-    // that carries no lock, so the thread lookup above misses. The scheduler
-    // supplies the initiator via setCronOAuthUser — prefer it over the lock.
-    const oauthUser = this.#cronOAuthUser.get(sessionId) ?? lock?.locked_user;
+    const oauthUser = this.resolveEffectiveIdentity(
+      sessionId,
+      row.slack_channel_id,
+      row.slack_thread_ts,
+    );
     const lockedConfigDir = resolveSessionConfigDir(oauthUser);
     if (lockedConfigDir) providerEnv.CLAUDE_CONFIG_DIR = lockedConfigDir;
 

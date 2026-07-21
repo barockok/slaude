@@ -328,11 +328,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       ),
       ...externalMcp.servers,
     };
-    // 1on1 privacy: when this thread is locked, whitelisted external services mount
-    // with the agent's credentials stripped so they run as the initiator (self-prompt
+    // 1on1 privacy: when this session's effective identity is locked (live /1on1
+    // lock, or a cron job's captured initiator), whitelisted external services mount
+    // with the agent's credentials stripped so they run as that identity (self-prompt
     // auth). Other sessions/threads keep the agent identity (source map untouched).
-    const oneOnOneLock = OneOnOne.find(route.ctx.channel, route.ctx.threadTs);
-    Object.assign(servers, privateOverrides(externalMcp.servers, privateServiceSet, !!oneOnOneLock));
+    const effectiveIdentity = agent.resolveEffectiveIdentity(sessionId, route.ctx.channel, route.ctx.threadTs);
+    Object.assign(servers, privateOverrides(externalMcp.servers, privateServiceSet, !!effectiveIdentity));
     sessionCtx.set(sessionId, { slack: route.ctx, surface: route.surface });
     return servers;
   };
