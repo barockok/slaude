@@ -673,9 +673,9 @@ export class AgentManager extends EventEmitter {
           });
           const snapshot = this.#budget.snapshot(sessionId)!;
 
-          const sessionRow = Sessions.findById(sessionId);
-          const channelId = sessionRow?.slack_channel_id ?? "unknown";
-          const modelName = (msg as any).model ?? env.model() ?? "unknown";
+          const channelId = row.slack_channel_id ?? "unknown";
+          const modelUsageKeys = Object.keys((msg as any).modelUsage ?? {});
+          const modelName = modelUsageKeys[0] ?? env.model() ?? "unknown";
           const baseLabels = { channel_id: channelId, model: modelName };
 
           metric.tokensTotal.inc({ ...baseLabels, kind: "input" }, (msg as any).usage.input_tokens ?? 0);
