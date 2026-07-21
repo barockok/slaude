@@ -93,7 +93,7 @@ describe("cron_jobs schema migrations", () => {
         console.log(JSON.stringify(cols));
       `;
       const proc = Bun.spawn({
-        cmd: ["bun", "-e", script],
+        cmd: [process.execPath, "-e", script],
         env: { ...process.env, SLAUDE_HOME: home, SLAUDE_DB_PATH: "" },
         stdout: "pipe",
         stderr: "pipe",
