@@ -650,4 +650,131 @@ describe("AgentManager lifecycle", () => {
       "session not found: no-such-session",
     );
   });
+
+  // -------------------------------------------------------------------------
+  // stream_closed auto-recovery
+  // -------------------------------------------------------------------------
+
+  it("stream_closed: auto-reloads and injects auto-continue prompt on first detection", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = mgr.ensureSession(thread());
+
+    // Session 1: emits a stream_closed tool error then turn result → triggers reload
+    plan((s) => {
+      s.onUser = () => {
+        s.emit({ type: "user", tool_use_result: { is_error: true, content: "Stream closed" } });
+        s.emit(res());
+      };
+    });
+
+    // Session 2: receives auto-continue message, completes cleanly
+    plan((s) => {
+      s.onUser = () => {
+        s.emit(asst([txt("back online")]));
+        s.emit(res());
+      };
+    });
+
+    await mgr.sendMessage(row.id, "trigger");
+    await until(() => spawned.length >= 2, 5000, "two sessions spawned");
+    await until(() => events.some((e) => e.type === "done"), 5000, "done from second session");
+
+    // Recovery was transparent — no error event surfaced
+    expect(events.filter((e) => e.type === "error")).toHaveLength(0);
+    // Second session received the synthetic auto-continue prompt
+    expect(String(spawned[1]!.users[0]?.message?.content)).toContain("MCP stream was restored");
+
+    await shutdown(mgr, row.id);
+  });
+
+  it("stream_closed: circuit opens and emits error event after three consecutive failures", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = mgr.ensureSession(thread());
+
+    // Three successive sessions each trigger stream_closed
+    for (let i = 0; i < 3; i++) {
+      plan((s) => {
+        s.onUser = () => {
+          s.emit({ type: "user", tool_use_result: { is_error: true, content: "Stream closed" } });
+          s.emit(res());
+        };
+      });
+    }
+
+    await mgr.sendMessage(row.id, "trigger");
+    await until(
+      () => events.some((e) => e.type === "error" && String(e.error).includes("circuit open")),
+      8000,
+      "circuit-open error event",
+    );
+
+    // Original + 2 auto-continue; circuit prevented a 4th spawn
+    expect(spawned.length).toBe(3);
+    const errEvt = events.find((e) => e.type === "error");
+    expect(errEvt?.error).toContain("3×");
+    expect(errEvt?.error).toContain("circuit open");
+
+    await shutdown(mgr, row.id);
+  });
+
+  it("stream_closed: detects error text supplied as a content-block array", async () => {
+    const mgr = new AgentManager();
+    const row = mgr.ensureSession(thread());
+
+    // Session 1: error content is an array of blocks, not a plain string
+    plan((s) => {
+      s.onUser = () => {
+        s.emit({
+          type: "user",
+          tool_use_result: {
+            is_error: true,
+            content: [{ type: "text", text: "MCP stream closed by server" }],
+          },
+        });
+        s.emit(res());
+      };
+    });
+
+    // Session 2: receives auto-continue
+    plan((s) => {
+      s.onUser = () => {
+        s.emit(res());
+      };
+    });
+
+    await mgr.sendMessage(row.id, "trigger");
+    await until(() => spawned.length >= 2, 5000, "two sessions spawned");
+    // Array content was parsed and matched → auto-continue fired
+    expect(String(spawned[1]!.users[0]?.message?.content)).toContain("MCP stream was restored");
+
+    await shutdown(mgr, row.id);
+  });
+
+  it("stream_closed: abort() before turn-end clears pending reload, no auto-continue fires", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = mgr.ensureSession(thread());
+
+    plan((s) => {
+      s.onUser = () => {
+        // Emit stream_closed user event but never emit result — session stalls
+        s.emit({ type: "user", tool_use_result: { is_error: true, content: "Stream closed" } });
+      };
+    });
+
+    await mgr.sendMessage(row.id, "trigger");
+    // toolResult event confirms #pendingReload was set in #fanout
+    await until(() => events.some((e) => e.type === "toolResult"), 3000, "toolResult processed");
+
+    // abort() clears #pendingReload and #autoContinue before aborting the SDK query
+    mgr.abort(row.id);
+    await until(() => !mgr.isLive(row.id), 3000, "session dead");
+
+    // Allow any stray microtasks to settle
+    await Bun.sleep(30);
+    // No new session spawned — auto-continue was cleared
+    expect(spawned.length).toBe(1);
+  });
 });
