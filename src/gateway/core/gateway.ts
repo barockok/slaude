@@ -97,6 +97,13 @@ type SessionRoute = {
   /** Last todos array written via TodoWrite — used to stamp the message "all done"
    *  when the turn ends with every item completed. Cleared alongside todoRef. */
   todosSnapshot?: Array<{ content: string; status: string }>;
+  /** Slack message ref for the structured TaskCreate/TaskUpdate tracker.
+   *  Keyed separately from todoRef so both systems can coexist. */
+  tasksRef?: string;
+  /** Ordered task map from TaskCreate/TaskUpdate, keyed by task ID. */
+  tasksMap?: Map<string, { subject: string; status: string }>;
+  /** Subject of the in-flight TaskCreate awaiting its toolResult (to capture the assigned ID). */
+  pendingTaskCreate?: string;
   /** This turn is a disengaged message recorded into the transcript but suppressed
    *  by the UserPromptSubmit hook (no model run). Skip all Slack-visible feedback. */
   suppress?: boolean;
@@ -128,6 +135,16 @@ export interface GatewayOptions {
    *  SLACK_POST_AS_USER / SLACK_USER_TOKEN env path. When set, the gateway behaves as
    *  if posting-as-user is enabled (self-user echo guard active). */
   outClient?: any;
+}
+
+/** Render a TaskCreate/TaskUpdate tasks map as a compact markdown task list. */
+function formatTaskList(tasks: Map<string, { subject: string; status: string }>): string {
+  const lines = [...tasks.values()].map((t) => {
+    if (t.status === "completed") return `✅ ${t.subject}`;
+    if (t.status === "in_progress") return `▶ **${t.subject}**`;
+    return `○ ${t.subject}`;
+  });
+  return `**Tasks**\n${lines.join("\n")}`;
 }
 
 /** Render a TodoWrite todos array as a compact markdown task list for the Slack surface. */
@@ -653,6 +670,39 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               })();
             }
           }
+          // Structured task system: TaskCreate captures the subject so the toolResult
+          // handler can register the assigned ID. TaskUpdate re-renders immediately.
+          if (e.tool === "TaskCreate") {
+            const subject = (e.input as any)?.subject as string | undefined;
+            if (subject) route.pendingTaskCreate = subject;
+          }
+          if (e.tool === "TaskUpdate") {
+            const taskId = String((e.input as any)?.taskId ?? "");
+            const newStatus = (e.input as any)?.status as string | undefined;
+            if (taskId && newStatus && route.tasksMap?.has(taskId)) {
+              const task = route.tasksMap.get(taskId)!;
+              if (newStatus === "deleted") {
+                route.tasksMap.delete(taskId);
+              } else {
+                task.status = newStatus;
+              }
+              if (route.tasksMap.size > 0) {
+                const text = formatTaskList(route.tasksMap);
+                void (async () => {
+                  try {
+                    if (route.tasksRef && route.surface.capabilities.has("edit") && route.surface.edit) {
+                      await route.surface.edit({ ref: route.tasksRef, text });
+                    } else {
+                      const { ref } = await route.surface.reply({ text });
+                      route.tasksRef = ref;
+                    }
+                  } catch (err) {
+                    console.error("[tasks] failed to update task:", err);
+                  }
+                })();
+              }
+            }
+          }
           // Animated humanized status next to the bot name.
           void status.set(
             e.sessionId,
@@ -660,6 +710,33 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             route.ctx.threadTs,
             humanizeToolStatus(e.tool, e.input as any),
           );
+        }
+        break;
+      }
+      case "toolResult": {
+        // Correlate with a pending TaskCreate: the result carries the assigned task ID.
+        if (route.pendingTaskCreate) {
+          const subject = route.pendingTaskCreate;
+          route.pendingTaskCreate = undefined;
+          const result = (e as any).result as any;
+          const taskId: string | undefined = result?.task?.id;
+          if (taskId && subject) {
+            if (!route.tasksMap) route.tasksMap = new Map();
+            route.tasksMap.set(taskId, { subject, status: "pending" });
+            const text = formatTaskList(route.tasksMap);
+            void (async () => {
+              try {
+                if (route.tasksRef && route.surface.capabilities.has("edit") && route.surface.edit) {
+                  await route.surface.edit({ ref: route.tasksRef, text });
+                } else {
+                  const { ref } = await route.surface.reply({ text });
+                  route.tasksRef = ref;
+                }
+              } catch (err) {
+                console.error("[tasks] failed to post task:", err);
+              }
+            })();
+          }
         }
         break;
       }
@@ -677,6 +754,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               route.surface.capabilities.has("edit") && route.surface.edit) {
             const doneText = `**Tasks** ✅\n${route.todosSnapshot.map((t) => `✅ ${t.content}`).join("\n")}`;
             await route.surface.edit({ ref: route.todoRef, text: doneText }).catch(() => {});
+          }
+          // Stamp the structured task block "all done" when every task is completed/deleted.
+          if (route.tasksRef && route.tasksMap?.size &&
+              [...route.tasksMap.values()].every((t) => t.status === "completed" || t.status === "deleted") &&
+              route.surface.capabilities.has("edit") && route.surface.edit) {
+            const completedTasks = [...route.tasksMap.values()].filter((t) => t.status === "completed");
+            const doneText = `**Tasks** ✅\n${completedTasks.map((t) => `✅ ${t.subject}`).join("\n")}`;
+            await route.surface.edit({ ref: route.tasksRef, text: doneText }).catch(() => {});
           }
           // No fallback notice: setStopGuard above forces a reply via the SDK
           // Stop hook. If the agent still stops without spoke, manager logs
@@ -1452,6 +1537,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.spoke = false;
       existing.todoRef = undefined;       // fresh tracker per user turn
       existing.todosSnapshot = undefined;
+      existing.tasksRef = undefined;
+      existing.tasksMap = undefined;
+      existing.pendingTaskCreate = undefined;
       existing.suppress = suppress;
     } else {
       const ctx: SlackContext = {
