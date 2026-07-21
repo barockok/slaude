@@ -167,6 +167,12 @@ export class AgentManager extends EventEmitter {
    *  sets this before sending so the child boots under the initiator's config dir.
    *  Takes precedence over the thread-lock lookup. Keyed by sessionId. */
   #cronOAuthUser = new Map<string, string>();
+  /** Sessions with a stream_closed tool error this turn — trigger reload at turn end. */
+  #pendingReload = new Set<string>();
+  /** Count of consecutive stream_closed auto-reloads per session (circuit breaker). */
+  #streamClosedCount = new Map<string, number>();
+  /** Sessions that should inject a synthetic "continue" message after their reload. */
+  #autoContinue = new Set<string>();
   #budget = new TokenBudget({
     fallbackContextWindow: env.tokenFallbackContextWindow(),
   });
@@ -278,6 +284,8 @@ export class AgentManager extends EventEmitter {
 
   /** Cancel any in-flight turn for the session. */
   abort(sessionId: string) {
+    this.#pendingReload.delete(sessionId);
+    this.#autoContinue.delete(sessionId);
     this.#live.get(sessionId)?.abort.abort();
   }
 
@@ -604,6 +612,13 @@ export class AgentManager extends EventEmitter {
         this.#budget.forget(sessionId);
         this.#stopBlocked.delete(sessionId);
         metric.sessionsLive.set(this.#live.size);
+        // After a stream_closed auto-reload, inject a synthetic "continue"
+        // prompt so the resumed session picks up without human input.
+        if (live.reloading && this.#autoContinue.has(sessionId)) {
+          this.#autoContinue.delete(sessionId);
+          console.log(`[mgr] auto-continuing after stream_closed reload session=${sessionId}`);
+          void this.sendMessage(sessionId, "The MCP stream was restored. Please continue where you left off.");
+        }
       }
     })();
   }
@@ -649,6 +664,25 @@ export class AgentManager extends EventEmitter {
       }
       case "user": {
         if (msg.tool_use_result !== undefined) {
+          // Detect stream_closed cascade: an external MCP server disconnecting
+          // can tear down the SDK's shared MCP transport pool, causing ALL
+          // in-process slaude_* tool calls to fail with "Stream closed".
+          // Flag the session so the turn-end "result" handler can reload.
+          const r = msg.tool_use_result as any;
+          if (r?.is_error && !this.#pendingReload.has(sessionId)) {
+            const text =
+              typeof r.content === "string"
+                ? r.content
+                : Array.isArray(r.content)
+                ? r.content.map((b: any) => (typeof b === "string" ? b : (b?.text ?? ""))).join(" ")
+                : "";
+            if (/stream.?closed/i.test(text)) {
+              console.warn(`[mgr] stream_closed tool error detected session=${sessionId}`);
+              this.#pendingReload.add(sessionId);
+              const prev = this.#streamClosedCount.get(sessionId) ?? 0;
+              this.#streamClosedCount.set(sessionId, prev + 1);
+            }
+          }
           this.emit("event", {
             type: "toolResult",
             sessionId,
@@ -659,6 +693,31 @@ export class AgentManager extends EventEmitter {
         break;
       }
       case "result": {
+        // Stream-closed circuit breaker: if a stream_closed error was detected
+        // during this turn, handle at turn-end (clean exit point).
+        if (this.#pendingReload.has(sessionId)) {
+          this.#pendingReload.delete(sessionId);
+          if (live) this.#flushTurn(live);
+          const count = this.#streamClosedCount.get(sessionId) ?? 1;
+          if (count <= 2) {
+            console.warn(`[mgr] stream_closed auto-reload session=${sessionId} attempt=${count}/2`);
+            this.#autoContinue.add(sessionId);
+            this.noteSessionEvent(sessionId, `⚠️ MCP stream closed (auto-reload ${count}/2) — recovering…`);
+            this.reload(sessionId);
+          } else {
+            // Circuit open — stop reloading; surface the failure directly.
+            console.warn(`[mgr] stream_closed circuit open session=${sessionId} count=${count}`);
+            this.emit("event", {
+              type: "error",
+              sessionId,
+              error: `MCP stream closed ${count}× in a row — circuit open, not auto-reloading. Send any message to restart.`,
+            } satisfies AgentEvent);
+          }
+          break;
+        }
+        // Clean turn — reset the circuit breaker counter.
+        this.#streamClosedCount.delete(sessionId);
+
         // End of one user→assistant turn. Persist memory + signal listeners.
         if (live) {
           this.#flushTurn(live);
