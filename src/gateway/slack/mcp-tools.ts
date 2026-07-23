@@ -12,6 +12,7 @@ import { redactSlack } from "./redact";
 import { soulData, effectiveSoulForChannel } from "../../soul/extract";
 import * as Ignores from "../../db/ignores";
 import * as CronJobs from "../../db/cron-jobs";
+import * as OneOnOne from "../../db/one-on-one";
 import { getNextRun } from "./cron-parser";
 import { run as runIngest } from "../../knowledge/ingest";
 
@@ -383,6 +384,7 @@ export const adminHandlers = {
     } catch (e: any) {
       return err(`Invalid cron expression: ${e.message}`);
     }
+    const cronLock = ctx.channel && ctx.threadTs ? OneOnOne.find(ctx.channel, ctx.threadTs) : null;
     const job = CronJobs.create({
       slackTeamId: ctx.teamId,
       slackChannelId: ctx.channel,
@@ -395,6 +397,7 @@ export const adminHandlers = {
       nextRunAt: nextRun,
       target,
       whenActive,
+      oauthUser: cronLock?.locked_user ?? undefined,
     });
     return ok(
       `Cron job created (\`${job.id.slice(0, 8)}\`) [${job.target}, when_active=${job.whenActive}]. Next run: ${new Date(nextRun).toISOString()}`,
