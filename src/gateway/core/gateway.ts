@@ -101,7 +101,7 @@ type SessionRoute = {
    *  Keyed separately from todoRef so both systems can coexist. */
   tasksRef?: string;
   /** Ordered task map from TaskCreate/TaskUpdate, keyed by task ID. */
-  tasksMap?: Map<string, { subject: string; status: string }>;
+  tasksMap?: Map<string, { subject: string; status: string; completedAt?: string }>;
   /** Subject of the in-flight TaskCreate awaiting its toolResult (to capture the assigned ID). */
   pendingTaskCreate?: string;
   /** This turn is a disengaged message recorded into the transcript but suppressed
@@ -138,9 +138,9 @@ export interface GatewayOptions {
 }
 
 /** Render a TaskCreate/TaskUpdate tasks map as a compact markdown task list. */
-function formatTaskList(tasks: Map<string, { subject: string; status: string }>): string {
+function formatTaskList(tasks: Map<string, { subject: string; status: string; completedAt?: string }>): string {
   const lines = [...tasks.values()].map((t) => {
-    if (t.status === "completed") return `✅ ${t.subject}`;
+    if (t.status === "completed") return `✅ ${t.subject}${t.completedAt ? ` _(${t.completedAt})_` : ""}`;
     if (t.status === "in_progress") return `▶ **${t.subject}**`;
     return `○ ${t.subject}`;
   });
@@ -685,6 +685,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
                 route.tasksMap.delete(taskId);
               } else {
                 task.status = newStatus;
+                if (newStatus === "completed") {
+                  const now = new Date();
+                  task.completedAt = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+                }
               }
               if (route.tasksMap.size > 0) {
                 const text = formatTaskList(route.tasksMap);
@@ -760,9 +764,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               [...route.tasksMap.values()].every((t) => t.status === "completed" || t.status === "deleted") &&
               route.surface.capabilities.has("edit") && route.surface.edit) {
             const completedTasks = [...route.tasksMap.values()].filter((t) => t.status === "completed");
-            const doneText = `**Tasks** ✅\n${completedTasks.map((t) => `✅ ${t.subject}`).join("\n")}`;
+            const doneText = `**Tasks** ✅\n${completedTasks.map((t) => `✅ ${t.subject}${t.completedAt ? ` _(${t.completedAt})_` : ""}`).join("\n")}`;
             await route.surface.edit({ ref: route.tasksRef, text: doneText }).catch(() => {});
           }
+          route.tasksRef = undefined;
+          route.tasksMap = undefined;
           // No fallback notice: setStopGuard above forces a reply via the SDK
           // Stop hook. If the agent still stops without spoke, manager logs
           // to stderr — surfacing a Slack message here would be redundant.
@@ -1541,9 +1547,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.spoke = false;
       existing.todoRef = undefined;       // fresh tracker per user turn
       existing.todosSnapshot = undefined;
-      existing.tasksRef = undefined;
-      existing.tasksMap = undefined;
       existing.pendingTaskCreate = undefined;
+      // tasksRef/tasksMap are cleared in the done handler so mid-turn inbound
+      // messages don't wipe in-flight task state from the previous turn.
       existing.suppress = suppress;
     } else {
       const ctx: SlackContext = {
