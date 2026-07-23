@@ -1511,7 +1511,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const oneOnOneLock = OneOnOne.find(channelId, threadTs);
     const oneOnOneAttr = oneOnOneLock
       ? ` one_on_one="true" locked_user="<@${oneOnOneLock.locked_user}>"`
-      : "";
+      : ` one_on_one="false" locked_user=""`;
     const envelope =
       `<channel source="slack" channel_id="${channelId}" thread_ts="${threadTs}" ` +
       `inbound_ts="${eventTs}" user_id="${userId}" user_name="${escapeAttr(userName)}" ` +
