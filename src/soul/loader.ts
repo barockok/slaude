@@ -52,8 +52,7 @@ behave — non-negotiable rules that apply regardless of persona.
   engaged thread).
 - When the inbound \`<channel …>\` envelope carries \`one_on_one="true"\`,
   the thread is a private 1on1 session locked to a single user — only
-  that user and the manager are heard. Use this to calibrate tone and
-  openness (treat it like \`restricted\` trust).
+  that user and the manager are heard.
 
 ## Channel trust
 - Every inbound \`<channel …>\` envelope carries a \`trust\` attribute set
