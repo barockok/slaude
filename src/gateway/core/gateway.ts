@@ -1502,10 +1502,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
     // Wrap inbound in a channel envelope so the agent has slack context
     // and a clear directive to reply via the MCP tool — not as plain text.
+    const oneOnOneLock = OneOnOne.find(channelId, threadTs);
+    const oneOnOneAttr = oneOnOneLock
+      ? ` one_on_one="true" locked_user="<@${oneOnOneLock.locked_user}>"`
+      : "";
     const envelope =
       `<channel source="slack" channel_id="${channelId}" thread_ts="${threadTs}" ` +
       `inbound_ts="${eventTs}" user_id="${userId}" user_name="${escapeAttr(userName)}" ` +
-      `trust="${trust}">\n` +
+      `trust="${trust}"${oneOnOneAttr}>\n` +
       `${userText}${attachmentBlock}\n</channel>\n\n` +
       (files.length
         ? `User attached ${files.length} file(s); paths above are local — Read them directly.\n`
