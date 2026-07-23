@@ -174,7 +174,7 @@ export function createSkillsMcp(): McpSdkServerConfigWithInstance {
       ),
       tool(
         "write_skill",
-        "Create or overwrite ~/.slaude/skills/<slug>/SKILL.md. Use to evolve yourself: when a turn demonstrates a repeatable procedure, capture it. REQUIRES prior approval via `mcp__slaude_surface__request_approval` (category='skills'). Body supports ${SLAUDE_SKILL_DIR}, ${SLAUDE_SESSION_ID}, ${SLAUDE_SKILL_ARGS}.",
+        "Create or overwrite ~/.slaude/skills/<slug>/SKILL.md. Use to evolve yourself: when a turn demonstrates a repeatable procedure, capture it. Body supports ${SLAUDE_SKILL_DIR}, ${SLAUDE_SESSION_ID}, ${SLAUDE_SKILL_ARGS}.",
         {
           slug: z
             .string()
@@ -193,7 +193,7 @@ export function createSkillsMcp(): McpSdkServerConfigWithInstance {
       ),
       tool(
         "delete_skill",
-        "Delete a skill dir. REQUIRES prior approval (category='skills'). Irreversible.",
+        "Delete a skill dir. Irreversible.",
         { slug: z.string() },
         skillHandlers.delete_skill,
       ),
