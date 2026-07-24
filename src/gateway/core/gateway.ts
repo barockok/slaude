@@ -281,11 +281,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // Resolve this agent's stable identity (its `agent-<id>` slice anchor) once at
   // boot — SLAUDE_AGENT_ID wins, else auth.test on the posting token. Kicked off
   // for any brain mode so per-turn scoping and memory writes see the real id.
-  if (brainEnabled()) {
-    void resolveAgentId(() => outClient.auth.test())
-      .then((id) => console.log(`[brain] agent identity resolved: ${id}`))
-      .catch(() => { /* resolveAgentId already falls back internally */ });
-  }
+  // resolveAgentId catches auth.test failures internally and always resolves, so
+  // a bare fire-and-forget is safe (no unhandled rejection).
+  if (brainEnabled()) void resolveAgentId(() => outClient.auth.test());
   if (brainEnabled() && brainMode() === "local") {
     void ensureSources()
       .then(() => syncKbWikis())

@@ -145,6 +145,44 @@ describe("brainHandlers", () => {
     expect(typeof brainHandlers.kb_memoize).toBe("function");
   });
 
+  test("kb_delete_page goes through the gate and passes the slug on approval", async () => {
+    let got: { name?: string; params?: Record<string, unknown> } = {};
+    const d = deps({ call: async (name, params) => { got = { name, params }; return { deleted: 1 }; } });
+    const r = await brainHandlers.kb_delete_page({ slug: "a/b", reason: "stale" }, d);
+    expect(r.isError).toBeUndefined();
+    expect(got.name).toBe("delete_page");
+    expect(got.params).toEqual({ slug: "a/b" });
+  });
+
+  test("kb_delete_page denial surfaces as error and writes nothing", async () => {
+    const calls: string[] = [];
+    const d = deps({
+      requestApproval: async () => ({ approved: false, by: "UMGR" }),
+      call: async (name) => { calls.push(name); return {}; },
+    });
+    const r = await brainHandlers.kb_delete_page({ slug: "a/b", reason: "stale" }, d);
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toContain("denied");
+    expect(calls).toEqual([]);
+  });
+
+  test("kb_get_page returns the page and maps op errors to tool errors", async () => {
+    const ok = await brainHandlers.kb_get_page({ slug: "people/alice" }, deps({ call: async () => ({ slug: "people/alice" }) }));
+    expect(ok.isError).toBeUndefined();
+    expect(JSON.parse(ok.content[0]!.text)).toEqual({ slug: "people/alice" });
+    const bad = await brainHandlers.kb_get_page({ slug: "x" }, deps({ call: async () => { throw new Error("db on fire"); } }));
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0]!.text).toContain("db on fire");
+  });
+
+  test("kb_list_pages forwards filters to the list_pages op", async () => {
+    let params: Record<string, unknown> | undefined;
+    const d = deps({ call: async (_n, p) => { params = p; return []; } });
+    const r = await brainHandlers.kb_list_pages({ type: "conversation", tag: "x", limit: 3 }, d);
+    expect(r.isError).toBeUndefined();
+    expect(params).toEqual({ type: "conversation", tag: "x", limit: 3 });
+  });
+
   test("kb_graph combines links and backlinks", async () => {
     const d = deps({ call: async (name) => (name === "get_links" ? [{ to: "x" }] : [{ from: "y" }]) });
     const r = await brainHandlers.kb_graph({ slug: "a/b" }, d);
