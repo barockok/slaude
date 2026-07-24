@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { brainHandlers, humanizeBrainError, type BrainToolDeps } from "../src/knowledge/mcp-tools";
-import type { BrainScope } from "../src/knowledge/scope";
+import { agentSourceId, type BrainScope } from "../src/knowledge/scope";
 
 const scope: BrainScope = { clientId: "U1", sourceId: "shared", allowedSources: ["shared"] };
 const deps = (over: Partial<BrainToolDeps> = {}): BrainToolDeps => ({
   scope: () => scope,
-  gate: () => ({ userId: "U1", lockedUser: null, channelTrust: "trusted", isManager: false }),
+  gate: () => ({ userId: "U1", lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "AGENT1" }),
   managers: () => ["UMGR"],
   requestApproval: async () => ({ approved: true, by: "UMGR" }),
   call: async (name) => ({ echoed: name }),
@@ -105,6 +105,39 @@ describe("brainHandlers", () => {
     const r = await brainHandlers.kb_memoize({ pages: [{ slug: "a/1", content: "c", summary: "s" }] }, d);
     expect(r.isError).toBe(true);
     expect(calls).toEqual([]);
+  });
+
+  test("kb_memoize target:'mine' writes to the agent's own slice without approval", async () => {
+    // Own-slice scope: default target "mine" auto-passes the gate (no card).
+    const mine: BrainScope = { clientId: "AGENT1", sourceId: agentSourceId("AGENT1"), allowedSources: [agentSourceId("AGENT1")] };
+    let approvals = 0;
+    const wrote: unknown[] = [];
+    const d = deps({
+      scope: () => mine,
+      requestApproval: async () => { approvals++; return { approved: true, by: "UMGR" }; },
+      call: async (_n, _p, s) => { wrote.push(s.sourceId); return { ok: 1 }; },
+    });
+    const r = await brainHandlers.kb_memoize({ pages: [{ slug: "notes/x", content: "c", summary: "s" }] }, d);
+    expect(r.isError).toBeUndefined();
+    expect(approvals).toBe(0);
+    expect(wrote).toEqual([agentSourceId("AGENT1")]);
+  });
+
+  test("kb_memoize target:'shared' overrides the write to the shared slice and cards", async () => {
+    // Even from an own-slice scope, escalating to shared routes the write to
+    // SHARED_SOURCE and goes through approval.
+    const mine: BrainScope = { clientId: "AGENT1", sourceId: agentSourceId("AGENT1"), allowedSources: [agentSourceId("AGENT1"), "shared"] };
+    let approvals = 0;
+    const wrote: string[] = [];
+    const d = deps({
+      scope: () => mine,
+      requestApproval: async () => { approvals++; return { approved: true, by: "UMGR" }; },
+      call: async (_n, _p, s) => { wrote.push(s.sourceId); return { ok: 1 }; },
+    });
+    const r = await brainHandlers.kb_memoize({ pages: [{ slug: "team/y", content: "c", summary: "s" }], target: "shared" }, d);
+    expect(r.isError).toBeUndefined();
+    expect(approvals).toBe(1);
+    expect(wrote).toEqual(["shared"]);
   });
 
   test("kb_put_page is replaced by kb_memoize", () => {

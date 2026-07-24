@@ -290,11 +290,13 @@ describe("gateway uncovered branches", () => {
     await client.connect(ct);
 
     // kb_memoize → gatedBrainCall evaluates scope() (brainGateFor), gate(),
-    // managers() eagerly; manager in a DM (restricted trust) → approval tier →
-    // our fake surface denies → tool returns the denial reason without touching gbrain.
+    // managers() eagerly. A target:"shared" write to the common KB → approval tier
+    // (even for the manager) → our fake surface denies → tool returns the denial
+    // reason without touching gbrain. (Default target:"mine" would auto-pass into
+    // the agent's own slice — this asserts the live approval wiring specifically.)
     const res: any = await client.callTool({
       name: "kb_memoize",
-      arguments: { pages: [{ slug: "test-page", content: "x", summary: "test write" }] },
+      arguments: { pages: [{ slug: "test-page", content: "x", summary: "test write" }], target: "shared" },
     });
     expect(res.isError).toBe(true);
     expect(sink.approvals.length).toBe(1);
