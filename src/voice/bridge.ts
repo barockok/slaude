@@ -1,15 +1,14 @@
-// Voice bridge — GPT-4o Realtime: join a call, hear it, converse, delegate.
+// Voice bridge — GPT Realtime: join a call, hear it, converse, delegate.
 //
 // Usage:
 //   xvfb-run -a bun src/voice/bridge.ts <call-url> [--name "Trevor"]
 //
 // Env: OPENAI_API_KEY (required)
-//      SLAUDE_VOICE_MODEL  (default: gpt-4o-realtime-preview)
+//      SLAUDE_VOICE_MODEL  (default: gpt-realtime-1.5)
 //      SLAUDE_VOICE_VOICE  (default: shimmer)
 //
 // stdout (one JSON object per line):
 //   {"ev":"status","state":"launching|joining|in-call|closed"}
-//   {"ev":"transcript","role":"user|assistant","text":"..."}
 //   {"ev":"delegate","id":1,"question":"..."}  big brain requested
 //   {"ev":"error","message":"..."}
 // stdin (one JSON object per line):
@@ -44,6 +43,7 @@ if (!apiKey) {
 
 // --- PCM speaker (Realtime audio → bot_mic sink) ---
 let paplay: ChildProcessWithoutNullStreams | null = null;
+let suppressCaptureUntil = 0; // suppress capture while speaking to break echo loop
 
 function startPlayback(): ChildProcessWithoutNullStreams {
   const proc = spawn("paplay", [
@@ -61,16 +61,21 @@ function startPlayback(): ChildProcessWithoutNullStreams {
 function speakPcm(pcm: Buffer): void {
   if (!paplay) paplay = startPlayback();
   paplay.stdin.write(pcm);
+  suppressCaptureUntil = Date.now() + 400;
 }
 
 function cancelPlayback(): void {
   paplay?.kill("SIGKILL");
   paplay = null;
+  suppressCaptureUntil = 0;
 }
 
 // --- Delegate tracking ---
 let delegateSeq = 0;
 const pendingDelegates = new Map<number, (answer: string) => void>();
+// Dedup same-question tool calls: if the model retries the same ask_big_brain
+// while the first is still pending, piggyback on the existing delegate.
+const pendingByQuestion = new Map<string, { id: number; extraCallIds: string[] }>();
 
 function waitForAnswer(id: number): Promise<string> {
   return new Promise((resolve) => pendingDelegates.set(id, resolve));
@@ -105,6 +110,10 @@ const rt = new RealtimeClient({
   ],
 });
 
+rt.once("ready", () => {
+  rt.sendText(`Hello! I'm ${displayName}, your AI teammate. How can I help?`);
+});
+
 rt.on("audio", speakPcm);
 
 rt.on("barge-in", () => {
@@ -115,10 +124,19 @@ rt.on("barge-in", () => {
 rt.on("tool-call", async (tc: ToolCall) => {
   if (tc.name === "ask_big_brain") {
     const question = String((tc.args as { question?: unknown }).question ?? "");
+    const existing = pendingByQuestion.get(question);
+    if (existing) {
+      existing.extraCallIds.push(tc.callId);
+      return;
+    }
     const id = ++delegateSeq;
+    const entry = { id, extraCallIds: [] as string[] };
+    pendingByQuestion.set(question, entry);
     out({ ev: "delegate", id, question });
     const answer = await waitForAnswer(id);
+    pendingByQuestion.delete(question);
     rt.submitToolResult(tc.callId, answer);
+    for (const cid of entry.extraCallIds) rt.submitToolResult(cid, answer);
   }
 });
 
@@ -126,9 +144,11 @@ rt.on("error", (e: Error) => out({ ev: "error", message: `realtime: ${e.message}
 rt.on("close", (code: number) => out({ ev: "status", state: "closed", code }));
 rt.connect();
 
-// Capture call audio (24kHz to match Realtime's expected input)
+// Capture call audio at 24kHz; skip while speaking to break the echo loop.
 const cap = captureCall(REALTIME_SAMPLE_RATE);
-cap.stdout.on("data", (pcm: Buffer) => rt.sendAudio(pcm));
+cap.stdout.on("data", (pcm: Buffer) => {
+  if (Date.now() >= suppressCaptureUntil) rt.sendAudio(pcm);
+});
 cap.stderr.on("data", () => {});
 
 // Stdin: big-brain session sends delegate answers and leave command

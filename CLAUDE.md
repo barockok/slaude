@@ -104,6 +104,7 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 Entries live in `docs/findings/<date>-<slug>.md`. Add a new file per significant finding/decision/mistake; index it below. Newest first.
 
+- [2026-07-25 — Voice Realtime GA API migration: ephemeral token (`/v1/realtime/client_secrets` → `ek_*`), model `gpt-realtime-1.5`, event rename `response.output_audio.delta`, echo suppression via capture-suppress-while-speaking, double-delegate dedup by question text](docs/findings/2026-07-25-voice-realtime-api-migration.md)
 - [2026-07-24 — Per-agent brain slices: `agent-<id>` private minds (mirror of `user-<id>`); default `kb_memoize` target `"mine"` auto-passes to the caller agent's own slice, explicit `target:"shared"` cards; classify write DESTINATION not (unknowable) intent; identity anchored on `SLAUDE_AGENT_ID`/auth.test; legacy `agent` source kept read-only for continuity](docs/findings/2026-07-24-per-agent-brain-slices.md)
 - [2026-07-08 — Per-channel token and model metrics: augment Prometheus metrics to export channel_id and model labels to enable downstream cost calculation](docs/findings/2026-07-08-per-channel-metrics.md)
 - [2026-07-04 — Voice bridge field test: two-tier call agent (browser+PulseAudio bridge, MAL reflex loop w/ delegate protocol); Meet blocks anonymous guests, Chromium won't enumerate .monitor mics (remap-source fix), EPIPE hardening, EOT fragmentation tuning](docs/findings/2026-07-04-voice-bridge-field-test.md)

@@ -1,4 +1,5 @@
 // OpenAI Realtime API WebSocket client.
+// Auth: POST /v1/realtime/client_secrets → ephemeral token → WS connect.
 // Audio format: PCM16 mono 24kHz in both directions, base64-encoded over WS.
 //
 // Events emitted:
@@ -35,6 +36,7 @@ export interface ToolCall {
 export class RealtimeClient extends EventEmitter {
   private opts: RealtimeOptions;
   private ws: WebSocket | null = null;
+  private responseActive = false;
   // keyed by call_id; name captured from output_item.added, args from args.delta
   private pendingToolCalls = new Map<string, { name: string; argsRaw: string }>();
 
@@ -44,38 +46,70 @@ export class RealtimeClient extends EventEmitter {
   }
 
   connect(): void {
-    const model = this.opts.model ?? "gpt-4o-realtime-preview";
-    const ws = new WebSocket(
-      `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`,
-      ["realtime", `openai-insecure-api-key.${this.opts.apiKey}`, "openai-beta.realtime-v1"],
-    );
-    this.ws = ws;
+    void this._connect();
+  }
 
-    ws.addEventListener("open", () => {
-      this.send({
-        type: "session.update",
-        session: {
-          modalities: ["audio", "text"],
-          voice: this.opts.voice ?? "shimmer",
-          instructions: this.opts.instructions ?? "",
-          input_audio_format: "pcm16",
-          output_audio_format: "pcm16",
-          turn_detection: {
-            type: "server_vad",
-            threshold: 0.5,
-            prefix_padding_ms: 300,
-            silence_duration_ms: 500,
+  private async _connect(): Promise<void> {
+    // Fetch ephemeral token via the GA client_secrets endpoint.
+    // The session is fully pre-configured here; no session.update needed on the WS.
+    const sessionBody = {
+      session: {
+        type: "realtime",
+        instructions: this.opts.instructions ?? "",
+        audio: {
+          input: {
+            format: { type: "audio/pcm", rate: REALTIME_SAMPLE_RATE },
+            turn_detection: {
+              type: "server_vad",
+              threshold: 0.5,
+              prefix_padding_ms: 300,
+              silence_duration_ms: 500,
+              idle_timeout_ms: null,
+            },
           },
-          tools: (this.opts.tools ?? []).map((t) => ({
-            type: "function",
-            name: t.name,
-            description: t.description,
-            parameters: t.parameters,
-          })),
-          tool_choice: "auto",
+          output: {
+            format: { type: "audio/pcm", rate: REALTIME_SAMPLE_RATE },
+            voice: this.opts.voice ?? "shimmer",
+          },
         },
+        output_modalities: ["audio"],
+        tools: (this.opts.tools ?? []).map((t) => ({
+          type: "function",
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters,
+        })),
+        max_output_tokens: "inf",
+      },
+    };
+
+    let ephemeralKey: string;
+    try {
+      const res = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.opts.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(sessionBody),
       });
-    });
+      if (!res.ok) {
+        const msg = await res.text().catch(() => res.statusText);
+        this.emit("error", new Error(`client_secrets ${res.status}: ${msg}`));
+        return;
+      }
+      const data = await res.json() as { value: string };
+      ephemeralKey = data.value;
+    } catch (e) {
+      this.emit("error", new Error(`client_secrets fetch failed: ${String(e)}`));
+      return;
+    }
+
+    const model = this.opts.model ?? "gpt-realtime-1.5";
+    const wsUrl = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ws = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${ephemeralKey}` } } as any);
+    this.ws = ws;
 
     ws.addEventListener("message", (ev) => {
       let msg: Record<string, unknown>;
@@ -111,9 +145,9 @@ export class RealtimeClient extends EventEmitter {
     this.send({ type: "response.create" });
   }
 
-  /** Barge-in: cancel the active response. */
+  /** Barge-in: cancel the active response (no-op if none active). */
   cancel(): void {
-    this.send({ type: "response.cancel" });
+    if (this.responseActive) this.send({ type: "response.cancel" });
   }
 
   close(): void {
@@ -170,11 +204,24 @@ export class RealtimeClient extends EventEmitter {
         break;
       }
 
+      case "response.output_audio.delta":
       case "response.audio.delta": {
         const delta = msg.delta as string | undefined;
         if (delta) this.emit("audio", Buffer.from(delta, "base64"));
         break;
       }
+
+      case "session.created":
+        this.emit("ready");
+        break;
+
+      case "response.created":
+        this.responseActive = true;
+        break;
+
+      case "response.done":
+        this.responseActive = false;
+        break;
 
       case "error": {
         const err = msg.error as { message?: string } | undefined;
@@ -182,5 +229,14 @@ export class RealtimeClient extends EventEmitter {
         break;
       }
     }
+  }
+
+  /** Inject a user text turn and trigger a response (for testing / greetings). */
+  sendText(text: string): void {
+    this.send({
+      type: "conversation.item.create",
+      item: { type: "message", role: "user", content: [{ type: "input_text", text }] },
+    });
+    this.send({ type: "response.create" });
   }
 }

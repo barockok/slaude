@@ -34,7 +34,17 @@ describe("RealtimeClient event handling", () => {
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
-  test("audio event emits decoded buffer on audio.delta", () => {
+  test("audio event emits decoded buffer on response.output_audio.delta (GA API)", () => {
+    const { client, dispatch } = makeClient();
+    const chunks: Buffer[] = [];
+    client.on("audio", (buf: Buffer) => chunks.push(buf));
+    const raw = Buffer.from("hello");
+    dispatch({ type: "response.output_audio.delta", delta: raw.toString("base64") });
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toEqual(raw);
+  });
+
+  test("audio event emits decoded buffer on response.audio.delta (legacy)", () => {
     const { client, dispatch } = makeClient();
     const chunks: Buffer[] = [];
     client.on("audio", (buf: Buffer) => chunks.push(buf));
