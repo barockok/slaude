@@ -22,8 +22,13 @@ export interface ScopeInput {
   channelTrust: ChannelTrust;
   isManager: boolean;
   kbSources: string[];
+  /** This agent's stable identity — anchors its private `agent-<id>` slice.
+   *  Resolved once at boot (SLAUDE_AGENT_ID or auth.test); see agent-identity.ts. */
+  agentId: string;
 }
 
+/** Legacy single-agent source. Kept in the agent read union for continuity with
+ *  brains created before per-agent slices — new writes target `agent-<id>`. */
 export const AGENT_SOURCE = "agent";
 export const SHARED_SOURCE = "shared";
 export const PUBLIC_SOURCE = "public";
@@ -33,6 +38,12 @@ const sourceSafe = (s: string) => s.toLowerCase().replace(/[^a-z0-9-]/g, "");
 
 export function userSourceId(userId: string): string {
   return ("user-" + sourceSafe(userId).replace(/-/g, "")).slice(0, 32);
+}
+
+/** Per-agent private slice — mirror of userSourceId, keyed on the agent's own
+ *  identity so multiple agents sharing one brain never collide on `agent`. */
+export function agentSourceId(agentId: string): string {
+  return ("agent-" + sourceSafe(agentId).replace(/-/g, "")).slice(0, 32);
 }
 
 export function kbSourceId(label: string): string {
@@ -46,11 +57,18 @@ export function channelTrustFor(channel: string, soul: SoulData): ChannelTrust {
 }
 
 export function resolveBrainScope(i: ScopeInput): BrainScope {
+  const agentSrc = agentSourceId(i.agentId);
+  // The agent's own mind is readable on EVERY turn it runs, regardless of who is
+  // talking (it holds its identity across turns). Legacy `agent` rides along for
+  // continuity with pre-per-agent brains. These are read-only here except when
+  // agentSrc is also the write target.
+  const agentReads = [agentSrc, AGENT_SOURCE];
   if (i.userId === null) {
+    // Background/cron turn — the agent operating purely as itself.
     return {
-      clientId: "agent",
-      sourceId: AGENT_SOURCE,
-      allowedSources: [AGENT_SOURCE, SHARED_SOURCE, PUBLIC_SOURCE, ...i.kbSources],
+      clientId: i.agentId,
+      sourceId: agentSrc,
+      allowedSources: [...agentReads, SHARED_SOURCE, PUBLIC_SOURCE, ...i.kbSources],
     };
   }
   if (i.lockedUser !== null) {
@@ -59,7 +77,7 @@ export function resolveBrainScope(i: ScopeInput): BrainScope {
       return {
         clientId: i.userId,
         sourceId: own,
-        allowedSources: [own, SHARED_SOURCE, PUBLIC_SOURCE, ...i.kbSources],
+        allowedSources: [own, ...agentReads, SHARED_SOURCE, PUBLIC_SOURCE, ...i.kbSources],
       };
     }
     if (!i.isManager) {
@@ -68,10 +86,17 @@ export function resolveBrainScope(i: ScopeInput): BrainScope {
     }
   }
   if (i.channelTrust === "trusted" || i.isManager) {
+    // Default durable-write target is the agent's OWN private mind (auto-passes
+    // the gate). Escalation to the shared team KB is explicit and deliberate —
+    // kb_memoize target:"shared" overrides sourceId to SHARED_SOURCE, which cards.
+    // clientId is the agent here (was the user pre-per-agent). gbrain uses
+    // clientId only for takesHoldersAllowList (takes-visibility filtering), NOT
+    // page authorship/created_by or access control — those key on sourceId — so
+    // this re-attribution is benign and consistent with agent-slice writes (C4).
     return {
-      clientId: i.userId,
-      sourceId: SHARED_SOURCE,
-      allowedSources: [SHARED_SOURCE, PUBLIC_SOURCE, ...i.kbSources],
+      clientId: i.agentId,
+      sourceId: agentSrc,
+      allowedSources: [...agentReads, SHARED_SOURCE, PUBLIC_SOURCE, ...i.kbSources],
     };
   }
   return { clientId: i.userId, sourceId: PUBLIC_SOURCE, allowedSources: [PUBLIC_SOURCE] };
