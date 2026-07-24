@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { paths } from "../config/home";
 import { loadKbs } from "./loader";
-import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, type BrainScope } from "./scope";
+import { PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, type BrainScope } from "./scope";
 import { isScopeWriteOp } from "./gated-dispatch";
 import { getBackend } from "./backend";
 
@@ -310,7 +310,10 @@ export async function brainAdminCall(name: string, params: Record<string, unknow
 }
 
 export function baselineSources(): string[] {
-  return [AGENT_SOURCE, SHARED_SOURCE, PUBLIC_SOURCE, ...loadKbs().map((k) => kbSourceId(k.label))];
+  // Per-agent `agent-<id>` slices are NOT baseline — like `user-<id>` slices they
+  // are ensured lazily at first write (runScopedOp → ensureSource). This keeps the
+  // brain server (which doesn't know the agent's identity) free of that concern.
+  return [SHARED_SOURCE, PUBLIC_SOURCE, ...loadKbs().map((k) => kbSourceId(k.label))];
 }
 
 /**

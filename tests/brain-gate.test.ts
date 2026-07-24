@@ -1,11 +1,13 @@
 import { describe, expect, test, beforeEach } from "bun:test";
 import { classifyBrainOp, gatedBrainCall, resetStandingGrants, type GateInput } from "../src/knowledge/gated-dispatch";
-import { resolveBrainScope } from "../src/knowledge/scope";
+import { resolveBrainScope, SHARED_SOURCE, type BrainScope } from "../src/knowledge/scope";
 
 const gate = (over: Partial<GateInput> = {}): GateInput => ({
-  userId: "U1", lockedUser: null, channelTrust: "trusted", isManager: false, ...over,
+  userId: "U1", lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "AGENT1", ...over,
 });
 const scopeFor = (g: GateInput, kb: string[] = []) => resolveBrainScope({ ...g, kbSources: kb });
+// Explicit "shared" escalation — kb_memoize target:"shared" overrides sourceId.
+const sharedScope = (g: GateInput): BrainScope => ({ ...scopeFor(g), sourceId: SHARED_SOURCE });
 
 describe("classifyBrainOp", () => {
   test("reads are auto everywhere", () => {
@@ -18,17 +20,29 @@ describe("classifyBrainOp", () => {
     const g = gate({ userId: null });
     expect(classifyBrainOp("put_page", scopeFor(g), g)).toBe("auto");
   });
+  test("default write to the agent's own slice is auto (trusted channel)", () => {
+    const g = gate();
+    expect(classifyBrainOp("put_page", scopeFor(g), g)).toBe("auto");
+  });
   test("own-slice write in locked 1on1 is auto", () => {
     const g = gate({ lockedUser: "U1" });
     expect(classifyBrainOp("put_page", scopeFor(g), g)).toBe("auto");
   });
-  test("shared write from trusted channel needs approval", () => {
+  test("explicit shared write from a non-manager trusted channel needs approval", () => {
     const g = gate();
-    expect(classifyBrainOp("put_page", scopeFor(g), g)).toBe("approval");
+    expect(classifyBrainOp("put_page", sharedScope(g), g)).toBe("approval");
+  });
+  test("explicit shared write from the manager still cards (common KB is approval-worthy)", () => {
+    const g = gate({ isManager: true });
+    expect(classifyBrainOp("put_page", sharedScope(g), g)).toBe("approval");
   });
   test("write from public channel is denied", () => {
     const g = gate({ channelTrust: "public" });
     expect(classifyBrainOp("put_page", scopeFor(g), g)).toBe("deny");
+  });
+  test("explicit shared write from a public channel non-manager is denied", () => {
+    const g = gate({ channelTrust: "public" });
+    expect(classifyBrainOp("put_page", sharedScope(g), g)).toBe("deny");
   });
   test("deletes always need approval, even own slice", () => {
     const g = gate({ lockedUser: "U1" });
@@ -61,7 +75,7 @@ describe("gatedBrainCall", () => {
   });
   test("approval tier asks and respects denial", async () => {
     const r = await gatedBrainCall("put_page", {
-      scope: scopeFor(gate()), gate: gate(), managers: ["UMGR"],
+      scope: sharedScope(gate()), gate: gate(), managers: ["UMGR"],
       requestApproval: async () => ({ approved: false, by: "UMGR", note: "nope" }),
       call: async () => { throw new Error("must not run"); }, describe: "write page",
     });
@@ -70,7 +84,7 @@ describe("gatedBrainCall", () => {
   });
   test("approval tier runs call after approval", async () => {
     const r = await gatedBrainCall("put_page", {
-      scope: scopeFor(gate()), gate: gate(), managers: ["UMGR"],
+      scope: sharedScope(gate()), gate: gate(), managers: ["UMGR"],
       requestApproval: async () => ({ approved: true, by: "UMGR" }),
       call: async () => "written", describe: "write page",
     });
@@ -111,7 +125,7 @@ describe("gatedBrainCall", () => {
 
   test("plain approval tier does NOT require manager click", async () => {
     const r = await gatedBrainCall("put_page", {
-      scope: scopeFor(gate()), gate: gate(), managers: ["UMGR"],
+      scope: sharedScope(gate()), gate: gate(), managers: ["UMGR"],
       requestApproval: async () => ({ approved: true, by: "U0APP" }),
       call: async () => "written", describe: "write",
     });
@@ -133,9 +147,10 @@ describe("gatedBrainCall", () => {
 describe("gatedBrainCall — standing grant (per-thread, implicit on first approve)", () => {
   beforeEach(() => resetStandingGrants());
   const T = "C1:1781000000.000";
+  // Shared-target writes are what card; the grant suppresses the repeat card.
   const callWith = (gateOver: Partial<GateInput>, approve: () => void) =>
     gatedBrainCall("put_page", {
-      scope: scopeFor(gate(gateOver)), gate: gate(gateOver), managers: ["UMGR"],
+      scope: sharedScope(gate(gateOver)), gate: gate(gateOver), managers: ["UMGR"],
       requestApproval: async () => { approve(); return { approved: true, by: "UMGR" }; },
       call: async () => "written", describe: "write",
     });
@@ -179,7 +194,7 @@ describe("gatedBrainCall — standing grant (per-thread, implicit on first appro
     let cards = 0;
     const deny = () =>
       gatedBrainCall("put_page", {
-        scope: scopeFor(gate({ threadKey: T })), gate: gate({ threadKey: T }), managers: ["UMGR"],
+        scope: sharedScope(gate({ threadKey: T })), gate: gate({ threadKey: T }), managers: ["UMGR"],
         requestApproval: async () => { cards++; return { approved: false, by: "UMGR" }; },
         call: async () => "written", describe: "write",
       });
@@ -195,7 +210,7 @@ describe("gatedBrainCall — standing grant (per-thread, implicit on first appro
     await callWith({ threadKey: T }, () => {});
     let deleteCards = 0;
     const r = await gatedBrainCall("delete_page", {
-      scope: scopeFor(gate({ threadKey: T })), gate: gate({ threadKey: T }), managers: ["UMGR"],
+      scope: sharedScope(gate({ threadKey: T })), gate: gate({ threadKey: T }), managers: ["UMGR"],
       requestApproval: async () => { deleteCards++; return { approved: true, by: "UMGR" }; },
       call: async () => "deleted", describe: "delete",
     });

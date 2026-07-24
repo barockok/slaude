@@ -1,5 +1,5 @@
 import type { BrainScope, ChannelTrust } from "./scope";
-import { userSourceId } from "./scope";
+import { agentSourceId, userSourceId } from "./scope";
 
 export type GateTier = "auto" | "approval" | "manager" | "deny";
 
@@ -8,6 +8,8 @@ export interface GateInput {
   lockedUser: string | null;
   channelTrust: ChannelTrust;
   isManager: boolean;
+  /** This agent's identity — writes to its own `agent-<id>` slice auto-pass. */
+  agentId: string;
   /** Stable per-thread key (`channel:threadTs`). Scopes the standing grant —
    *  one approval in a thread auto-passes later non-destructive writes there. */
   threadKey?: string | null;
@@ -48,8 +50,12 @@ export function classifyBrainOp(op: string, scope: BrainScope, g: GateInput): Ga
     return g.channelTrust === "public" && !g.isManager ? "deny" : "approval";
   }
   if (WRITE_OPS.has(op)) {
-    if (g.userId === null) return "auto"; // agent writing its own mind
-    if (g.lockedUser === g.userId && scope.sourceId === userSourceId(g.userId)) return "auto";
+    if (g.userId === null) return "auto"; // background turn — agent's own mind
+    if (scope.sourceId === agentSourceId(g.agentId)) return "auto"; // agent's own private slice
+    if (g.lockedUser === g.userId && scope.sourceId === userSourceId(g.userId)) return "auto"; // user's own 1on1 slice
+    // Everything else is a write to the shared/common KB (explicit target:"shared").
+    // Legit to ask approval — including the manager (the standing grant collapses
+    // repeat cards per thread). Non-manager in a public channel: denied.
     if (g.channelTrust === "trusted" || g.isManager) return "approval";
     return "deny";
   }

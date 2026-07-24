@@ -1,23 +1,18 @@
 import type { MemoryProvider, SyncTurn } from "./provider";
 import { truncate } from "./sqlite-provider";
 import { brainCall, ensureSources } from "../knowledge/brain";
-import { AGENT_SOURCE, type BrainScope } from "../knowledge/scope";
+import { agentIdReady, agentScope } from "../knowledge/agent-identity";
+import type { BrainScope } from "../knowledge/scope";
 
 /**
  * Brain-backed memory: each session gets a conversation page in the agent's
- * own source; turns append as timeline entries (rows — no page rewrite, no
- * page_versions bloat). The nightly cycle can later mine these pages into
- * facts/takes. Episodic memory lives where semantic memory will.
+ * own per-agent source; turns append as timeline entries (rows — no page
+ * rewrite, no page_versions bloat). The nightly cycle can later mine these
+ * pages into facts/takes. Episodic memory lives where semantic memory will.
  *
  * Failure policy: memory must never break a turn — prefetch degrades to null,
  * syncTurn to a logged no-op.
  */
-
-const AGENT_SCOPE: BrainScope = {
-  clientId: "agent",
-  sourceId: AGENT_SOURCE,
-  allowedSources: [AGENT_SOURCE],
-};
 
 type TimelineRow = { id?: number; date: string; summary: string; detail?: string | null };
 type BrainOpCall = (name: string, params: Record<string, unknown>, scope: BrainScope) => Promise<unknown>;
@@ -39,7 +34,9 @@ export class BrainMemoryProvider implements MemoryProvider {
   }
 
   #ensureReady(): Promise<void> {
-    return (this.#ready ??= ensureSources());
+    // Resolve the agent identity before the first write so memory never lands
+    // in `agent-default` and then splits off to `agent-<id>` once auth.test settles.
+    return (this.#ready ??= agentIdReady().then(() => ensureSources()));
   }
 
   async #ensurePage(sessionId: string): Promise<string> {
@@ -47,7 +44,7 @@ export class BrainMemoryProvider implements MemoryProvider {
     if (this.#pagesEnsured.has(slug)) return slug;
     let existing: unknown = null;
     try {
-      existing = await this.#call("get_page", { slug }, AGENT_SCOPE);
+      existing = await this.#call("get_page", { slug }, agentScope());
     } catch (e) {
       // get_page throws OperationError(code=page_not_found) for missing pages.
       if ((e as { code?: string }).code !== "page_not_found") throw e;
@@ -59,7 +56,7 @@ export class BrainMemoryProvider implements MemoryProvider {
           slug,
           content: `---\ntype: conversation\n---\n# Conversation ${sessionId}\n\nSlack session transcript timeline. Turns live in the Timeline section.\n`,
         },
-        AGENT_SCOPE,
+        agentScope(),
       );
     }
     this.#pagesEnsured.add(slug);
@@ -69,7 +66,7 @@ export class BrainMemoryProvider implements MemoryProvider {
   async prefetch(sessionId: string): Promise<string | null> {
     try {
       await this.#ensureReady();
-      const rows = (await this.#call("get_timeline", { slug: this.#slug(sessionId) }, AGENT_SCOPE)) as TimelineRow[] | null;
+      const rows = (await this.#call("get_timeline", { slug: this.#slug(sessionId) }, agentScope())) as TimelineRow[] | null;
       if (!rows || rows.length === 0) return null;
       const ordered = [...rows].sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
       const recent = ordered.slice(-this.recentTurnLimit);
@@ -96,7 +93,7 @@ export class BrainMemoryProvider implements MemoryProvider {
           summary: truncate(t.user, 200),
           detail: `<user>${truncate(t.user, 800)}</user>\n<assistant>${truncate(t.assistant, 800)}</assistant>`,
         },
-        AGENT_SCOPE,
+        agentScope(),
       );
     } catch (e) {
       console.error("[brain-memory] syncTurn failed:", e instanceof Error ? e.message : e);

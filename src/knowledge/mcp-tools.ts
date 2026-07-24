@@ -6,7 +6,8 @@ import { brainCall, brainEnabled } from "./brain";
 import { brainThink } from "./brain-think";
 import { gather } from "./gather";
 import { gatedBrainCall, type ApprovalReq, type ApprovalRes, type GateInput } from "./gated-dispatch";
-import type { BrainScope } from "./scope";
+import { SHARED_SOURCE, type BrainScope } from "./scope";
+import { agentIdReady } from "./agent-identity";
 
 export const KB_MCP_NAME = "slaude_kb";
 
@@ -217,7 +218,7 @@ export const brainHandlers = {
       backlinks: JSON.parse(back.content[0]!.text),
     }, null, 2));
   },
-  kb_memoize: async (p: { pages: Array<{ slug: string; content: string; summary: string }> }, d: BrainToolDeps): Promise<ToolResult> => {
+  kb_memoize: async (p: { pages: Array<{ slug: string; content: string; summary: string }>; target?: "mine" | "shared" }, d: BrainToolDeps): Promise<ToolResult> => {
     const pages = p.pages;
     if (!Array.isArray(pages) || pages.length === 0) {
       return err("kb_memoize requires at least one page");
@@ -225,29 +226,38 @@ export const brainHandlers = {
     if (pages.length > KB_MEMOIZE_MAX_PAGES) {
       return err(`kb_memoize accepts at most ${KB_MEMOIZE_MAX_PAGES} pages per call (got ${pages.length})`);
     }
+    // C1: settle the agent identity before resolving the write scope, so a write
+    // in the boot window (before auth.test lands) targets the real `agent-<id>`
+    // slice, not `agent-default`. No-op once resolved; never hangs (falls back).
+    await agentIdReady();
+    // "mine" (default) writes to the resolved own slice — the agent's private
+    // mind outside a 1on1, the user's slice inside one — and auto-passes.
+    // "shared" escalates to the common team KB, which requires human approval.
+    const scope = p.target === "shared" ? { ...d.scope(), sourceId: SHARED_SOURCE } : d.scope();
+    const label = p.target === "shared" ? "→ shared" : "→ mine";
     const describe = pages.length === 1
-      ? `KB write: ${pages[0]!.slug} — ${pages[0]!.summary}`
-      : `KB write: ${pages.length} pages — ${pages.map((pg) => pg.slug).join(", ")}`;
+      ? `KB write ${label}: ${pages[0]!.slug} — ${pages[0]!.summary}`
+      : `KB write ${label}: ${pages.length} pages — ${pages.map((pg) => pg.slug).join(", ")}`;
     try {
       const call = d.call ?? brainCall;
       // One approval gates the whole batch; the gated thunk writes every page.
       // Each put_page goes through brainCall, which ensures scope.sourceId
       // exists first (see docs/findings/2026-06-14-brain-memoize-failure.md).
       const r = await gatedBrainCall("put_page", {
-        scope: d.scope(),
+        scope,
         gate: d.gate(),
         managers: d.managers(),
         requestApproval: d.requestApproval,
         call: async () => {
           const results: unknown[] = [];
           for (const pg of pages) {
-            results.push(await call("put_page", { slug: pg.slug, content: pg.content }, d.scope()));
+            results.push(await call("put_page", { slug: pg.slug, content: pg.content }, scope));
           }
           return results;
         },
         describe,
       });
-      return r.ok ? asJson({ written: pages.map((pg) => pg.slug), results: r.result }) : err(r.reason);
+      return r.ok ? asJson({ written: pages.map((pg) => pg.slug), target: p.target ?? "mine", results: r.result }) : err(r.reason);
     } catch (e) {
       return err(humanizeBrainError("put_page", e));
     }
@@ -298,7 +308,7 @@ export function createKbMcp(deps?: BrainToolDeps): McpSdkServerConfigWithInstanc
         ),
         tool(
           "kb_memoize",
-          `Write/update one or more brain pages in a single call (markdown, optional YAML frontmatter; [[wikilinks]] become graph edges). Pass an array of pages — up to ${KB_MEMOIZE_MAX_PAGES} per call — and they are written under one approval. Writes outside your own slice require human approval — give each page a clear summary.`,
+          `Write/update one or more brain pages in a single call (markdown, optional YAML frontmatter; [[wikilinks]] become graph edges). Pass an array of pages — up to ${KB_MEMOIZE_MAX_PAGES} per call. By default (target:"mine") pages go to YOUR OWN slice — your private agent mind — and are saved without asking. Set target:"shared" ONLY for durable team-common knowledge (decisions, people/project facts everyone needs); shared writes ask the manager for approval. Default to "mine" for your own notes, learnings, and working context; reserve "shared" for the team KB.`,
           {
             pages: z
               .array(
@@ -311,8 +321,12 @@ export function createKbMcp(deps?: BrainToolDeps): McpSdkServerConfigWithInstanc
               .min(1)
               .max(KB_MEMOIZE_MAX_PAGES)
               .describe(`Pages to write (1..${KB_MEMOIZE_MAX_PAGES}).`),
+            target: z
+              .enum(["mine", "shared"])
+              .optional()
+              .describe(`Where to write. "mine" (default) = your own slice, saved without approval. "shared" = the common team KB, requires manager approval.`),
           },
-          (a: { pages: Array<{ slug: string; content: string; summary: string }> }) => brainHandlers.kb_memoize(a, deps),
+          (a: { pages: Array<{ slug: string; content: string; summary: string }>; target?: "mine" | "shared" }) => brainHandlers.kb_memoize(a, deps),
         ),
         tool(
           "kb_delete_page",

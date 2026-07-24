@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { brainHandlers, humanizeBrainError, type BrainToolDeps } from "../src/knowledge/mcp-tools";
-import type { BrainScope } from "../src/knowledge/scope";
+import { agentSourceId, type BrainScope } from "../src/knowledge/scope";
+import { agentIdSync, resolveAgentId, resetAgentId } from "../src/knowledge/agent-identity";
 
 const scope: BrainScope = { clientId: "U1", sourceId: "shared", allowedSources: ["shared"] };
 const deps = (over: Partial<BrainToolDeps> = {}): BrainToolDeps => ({
   scope: () => scope,
-  gate: () => ({ userId: "U1", lockedUser: null, channelTrust: "trusted", isManager: false }),
+  gate: () => ({ userId: "U1", lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "AGENT1" }),
   managers: () => ["UMGR"],
   requestApproval: async () => ({ approved: true, by: "UMGR" }),
   call: async (name) => ({ echoed: name }),
@@ -107,9 +108,99 @@ describe("brainHandlers", () => {
     expect(calls).toEqual([]);
   });
 
+  test("kb_memoize target:'mine' writes to the agent's own slice without approval", async () => {
+    // Own-slice scope: default target "mine" auto-passes the gate (no card).
+    const mine: BrainScope = { clientId: "AGENT1", sourceId: agentSourceId("AGENT1"), allowedSources: [agentSourceId("AGENT1")] };
+    let approvals = 0;
+    const wrote: unknown[] = [];
+    const d = deps({
+      scope: () => mine,
+      requestApproval: async () => { approvals++; return { approved: true, by: "UMGR" }; },
+      call: async (_n, _p, s) => { wrote.push(s.sourceId); return { ok: 1 }; },
+    });
+    const r = await brainHandlers.kb_memoize({ pages: [{ slug: "notes/x", content: "c", summary: "s" }] }, d);
+    expect(r.isError).toBeUndefined();
+    expect(approvals).toBe(0);
+    expect(wrote).toEqual([agentSourceId("AGENT1")]);
+  });
+
+  test("kb_memoize target:'shared' overrides the write to the shared slice and cards", async () => {
+    // Even from an own-slice scope, escalating to shared routes the write to
+    // SHARED_SOURCE and goes through approval.
+    const mine: BrainScope = { clientId: "AGENT1", sourceId: agentSourceId("AGENT1"), allowedSources: [agentSourceId("AGENT1"), "shared"] };
+    let approvals = 0;
+    const wrote: string[] = [];
+    const d = deps({
+      scope: () => mine,
+      requestApproval: async () => { approvals++; return { approved: true, by: "UMGR" }; },
+      call: async (_n, _p, s) => { wrote.push(s.sourceId); return { ok: 1 }; },
+    });
+    const r = await brainHandlers.kb_memoize({ pages: [{ slug: "team/y", content: "c", summary: "s" }], target: "shared" }, d);
+    expect(r.isError).toBeUndefined();
+    expect(approvals).toBe(1);
+    expect(wrote).toEqual(["shared"]);
+  });
+
+  test("kb_memoize awaits identity so a boot-window write hits the resolved slice, not agent-default (C1)", async () => {
+    resetAgentId();
+    let settle!: (v: { user_id: string }) => void;
+    const authP = new Promise<{ user_id: string }>((res) => { settle = res; });
+    void resolveAgentId(() => authP); // identity in-flight, not yet settled
+    const wrote: string[] = [];
+    const d = deps({
+      // scope reads the live id at call time — the gateway wiring does the same.
+      scope: () => ({ clientId: agentIdSync(), sourceId: agentSourceId(agentIdSync()), allowedSources: [agentSourceId(agentIdSync())] }),
+      call: async (_n, _p, s) => { wrote.push(s.sourceId); return { ok: 1 }; },
+    });
+    const pending = brainHandlers.kb_memoize({ pages: [{ slug: "notes/boot", content: "c", summary: "s" }] }, d);
+    settle({ user_id: "U_REAL" }); // auth.test lands after the write call began
+    const r = await pending;
+    expect(r.isError).toBeUndefined();
+    expect(wrote).toEqual([agentSourceId("U_REAL")]); // NOT agent-default
+    resetAgentId();
+  });
+
   test("kb_put_page is replaced by kb_memoize", () => {
     expect((brainHandlers as Record<string, unknown>).kb_put_page).toBeUndefined();
     expect(typeof brainHandlers.kb_memoize).toBe("function");
+  });
+
+  test("kb_delete_page goes through the gate and passes the slug on approval", async () => {
+    let got: { name?: string; params?: Record<string, unknown> } = {};
+    const d = deps({ call: async (name, params) => { got = { name, params }; return { deleted: 1 }; } });
+    const r = await brainHandlers.kb_delete_page({ slug: "a/b", reason: "stale" }, d);
+    expect(r.isError).toBeUndefined();
+    expect(got.name).toBe("delete_page");
+    expect(got.params).toEqual({ slug: "a/b" });
+  });
+
+  test("kb_delete_page denial surfaces as error and writes nothing", async () => {
+    const calls: string[] = [];
+    const d = deps({
+      requestApproval: async () => ({ approved: false, by: "UMGR" }),
+      call: async (name) => { calls.push(name); return {}; },
+    });
+    const r = await brainHandlers.kb_delete_page({ slug: "a/b", reason: "stale" }, d);
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toContain("denied");
+    expect(calls).toEqual([]);
+  });
+
+  test("kb_get_page returns the page and maps op errors to tool errors", async () => {
+    const ok = await brainHandlers.kb_get_page({ slug: "people/alice" }, deps({ call: async () => ({ slug: "people/alice" }) }));
+    expect(ok.isError).toBeUndefined();
+    expect(JSON.parse(ok.content[0]!.text)).toEqual({ slug: "people/alice" });
+    const bad = await brainHandlers.kb_get_page({ slug: "x" }, deps({ call: async () => { throw new Error("db on fire"); } }));
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0]!.text).toContain("db on fire");
+  });
+
+  test("kb_list_pages forwards filters to the list_pages op", async () => {
+    let params: Record<string, unknown> | undefined;
+    const d = deps({ call: async (_n, p) => { params = p; return []; } });
+    const r = await brainHandlers.kb_list_pages({ type: "conversation", tag: "x", limit: 3 }, d);
+    expect(r.isError).toBeUndefined();
+    expect(params).toEqual({ type: "conversation", tag: "x", limit: 3 });
   });
 
   test("kb_graph combines links and backlinks", async () => {

@@ -23,7 +23,9 @@ describe("brain engine (integration)", () => {
     await ensureSources(["user-ualice"]);
     const listed = (await brainAdminCall("sources_list", {})) as { sources: Array<{ id: string }> };
     const ids = listed.sources.map((s) => s.id);
-    for (const want of ["agent", "shared", "public", "user-ualice"]) expect(ids).toContain(want);
+    // `agent` is no longer baseline — per-agent `agent-<id>` slices (like user
+    // slices) are ensured lazily at first write, not bootstrapped here.
+    for (const want of ["shared", "public", "user-ualice"]) expect(ids).toContain(want);
   }, 60_000);
 
   test("write lands in scope source; cross-scope read is empty", async () => {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BrainMemoryProvider } from "../src/memory/brain-provider";
 import { brainCall, closeBrain } from "../src/knowledge/brain";
-import { AGENT_SOURCE } from "../src/knowledge/scope";
+import { agentScope } from "../src/knowledge/agent-identity";
 
 const brainDir = mkdtempSync(join(tmpdir(), "slaude-brainmem-"));
 process.env.SLAUDE_BRAIN_HOME = brainDir;
@@ -32,11 +32,11 @@ describe("BrainMemoryProvider (integration)", () => {
     expect(block).toContain("rotates monday");
   }, 60_000);
 
-  test("conversation page lives in the agent source", async () => {
+  test("conversation page lives in the agent's own per-agent slice", async () => {
     const page = (await brainCall(
       "get_page",
       { slug: `conversations/${sessionId}` },
-      { clientId: "agent", sourceId: AGENT_SOURCE, allowedSources: [AGENT_SOURCE] },
+      agentScope(),
     )) as { slug: string } | null;
     expect(page?.slug).toBe(`conversations/${sessionId}`);
   }, 60_000);
