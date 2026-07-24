@@ -58,14 +58,14 @@ export async function ensurePulse(): Promise<void> {
 }
 
 /**
- * Capture what the call sounds like: raw s16le mono 16k PCM from
- * call_out.monitor, suitable for streaming straight into Flux.
+ * Capture what the call sounds like: raw s16le mono PCM from
+ * call_out.monitor. Pass the desired sample rate (default 16 kHz).
  */
-export function captureCall(): ChildProcessWithoutNullStreams {
+export function captureCall(sampleRate = SAMPLE_RATE): ChildProcessWithoutNullStreams {
   return spawn("parec", [
     `--device=${CALL_MONITOR}`,
     "--format=s16le",
-    `--rate=${SAMPLE_RATE}`,
+    `--rate=${sampleRate}`,
     "--channels=1",
     "--raw",
     `--latency-msec=80`,

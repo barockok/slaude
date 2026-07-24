@@ -1,31 +1,31 @@
-// Voice bridge — duplex: join a call, hear it (Flux), converse (MAL + Aura),
-// delegate hard questions up to the big-brain session via stdio JSONL.
+// Voice bridge — GPT-4o Realtime: join a call, hear it, converse, delegate.
 //
 // Usage:
 //   xvfb-run -a bun src/voice/bridge.ts <call-url> [--name "Trevor"]
 //
-// Env: DEEPGRAM_API_KEY (required)
-//      MAL_API_KEY, MAL_BASE_URL, MAL_MODEL (optional — listen-only without)
+// Env: OPENAI_API_KEY (required)
+//      SLAUDE_VOICE_MODEL  (default: gpt-4o-realtime-preview)
+//      SLAUDE_VOICE_VOICE  (default: shimmer)
 //
 // stdout (one JSON object per line):
-//   {"ev":"status","state":"launching|joining|in-call|closed|flux-closed"}
-//   {"ev":"turn","event":"EndOfTurn","turn":3,"transcript":"..."}
-//   {"ev":"said","text":"..."}                 what we spoke in the call
+//   {"ev":"status","state":"launching|joining|in-call|closed"}
+//   {"ev":"transcript","role":"user|assistant","text":"..."}
 //   {"ev":"delegate","id":1,"question":"..."}  big brain requested
 //   {"ev":"error","message":"..."}
 // stdin (one JSON object per line):
-//   {"cmd":"say","text":"...","id":1}   speak; id ties back to a delegate
+//   {"cmd":"say","text":"...","id":1}   answer a delegate
 //   {"cmd":"leave"}                     hang up and exit
 
-import { captureCall, ensurePulse } from "./audio";
+import { spawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { captureCall, ensurePulse, MIC_SINK } from "./audio";
 import { launchBrowser } from "./browser";
-import { FluxClient } from "./flux";
-import { Mal } from "./mal";
 import { resolveNavigator } from "./navigators";
-import { Speaker } from "./tts";
+import { RealtimeClient, REALTIME_SAMPLE_RATE } from "./realtime";
+import type { ToolCall } from "./realtime";
 
 function out(obj: Record<string, unknown>): void {
-  console.log(JSON.stringify(obj));
+  process.stdout.write(JSON.stringify(obj) + "\n");
 }
 
 const url = process.argv[2];
@@ -36,31 +36,47 @@ if (!url) {
   out({ ev: "error", message: "usage: bridge.ts <call-url> [--name X]" });
   process.exit(2);
 }
-const apiKey = process.env.DEEPGRAM_API_KEY;
+const apiKey = process.env.OPENAI_API_KEY;
 if (!apiKey) {
-  out({ ev: "error", message: "DEEPGRAM_API_KEY not set" });
+  out({ ev: "error", message: "OPENAI_API_KEY not set" });
   process.exit(2);
 }
 
-const mal = process.env.MAL_API_KEY
-  ? new Mal({
-      apiKey: process.env.MAL_API_KEY,
-      baseUrl: process.env.MAL_BASE_URL ?? "https://api.anthropic.com",
-      model: process.env.MAL_MODEL ?? "claude-haiku-4-5",
-      agentName: displayName,
-      maxTokens: envNum("SLAUDE_VOICE_MAL_MAX_TOKENS"),
-    })
-  : null;
-const speaker = new Speaker(apiKey, process.env.SLAUDE_VOICE_TTS_MODEL);
-const pendingDelegates = new Map<number, { question: string; timer: Timer }>();
-const DELEGATE_PATIENCE_MS = envNum("SLAUDE_VOICE_DELEGATE_PATIENCE_MS") ?? 45_000;
+// --- PCM speaker (Realtime audio → bot_mic sink) ---
+let paplay: ChildProcessWithoutNullStreams | null = null;
 
-function envNum(name: string): number | undefined {
-  const v = Number(process.env[name]);
-  return Number.isFinite(v) && process.env[name] !== undefined ? v : undefined;
+function startPlayback(): ChildProcessWithoutNullStreams {
+  const proc = spawn("paplay", [
+    `--device=${MIC_SINK}`,
+    "--format=s16le",
+    `--rate=${REALTIME_SAMPLE_RATE}`,
+    "--channels=1",
+    "--raw",
+  ]) as ChildProcessWithoutNullStreams;
+  proc.on("exit", () => { if (paplay === proc) paplay = null; });
+  proc.stderr.on("data", () => {});
+  return proc;
 }
-let delegateSeq = 0;
 
+function speakPcm(pcm: Buffer): void {
+  if (!paplay) paplay = startPlayback();
+  paplay.stdin.write(pcm);
+}
+
+function cancelPlayback(): void {
+  paplay?.kill("SIGKILL");
+  paplay = null;
+}
+
+// --- Delegate tracking ---
+let delegateSeq = 0;
+const pendingDelegates = new Map<number, (answer: string) => void>();
+
+function waitForAnswer(id: number): Promise<string> {
+  return new Promise((resolve) => pendingDelegates.set(id, resolve));
+}
+
+// --- Boot ---
 await ensurePulse();
 out({ ev: "status", state: "launching" });
 
@@ -70,60 +86,52 @@ out({ ev: "status", state: "joining" });
 const page = await navigator.join(ctx, { url, displayName });
 out({ ev: "status", state: "in-call" });
 
-// Higher EOT threshold: field test showed think-aloud pauses ("can you,
-// like, ...") fragmenting one request into 4 turns, each triggering MAL.
-const flux = new FluxClient({
+const rt = new RealtimeClient({
   apiKey,
-  eotThreshold: envNum("SLAUDE_VOICE_EOT_THRESHOLD") ?? 0.85,
+  model: process.env.SLAUDE_VOICE_MODEL,
+  voice: process.env.SLAUDE_VOICE_VOICE,
+  instructions: `You are ${displayName}, an AI teammate present in a live voice call. You are the conversational layer; a far more capable "big brain" session with tools, files, and full memory backs you up. Use ask_big_brain for anything beyond small talk, greetings, or simple acknowledgements. Keep answers short and in a natural spoken register — no markdown, no lists.`,
+  tools: [
+    {
+      name: "ask_big_brain",
+      description:
+        "Delegate to the main Claude session which has tools, files, memory, and can take actions. Use whenever the request needs data, computation, documents, or any action on a computer.",
+      parameters: {
+        type: "object",
+        properties: { question: { type: "string", description: "Self-contained question or request" } },
+        required: ["question"],
+      },
+    },
+  ],
 });
-flux.on("turn", (t) => {
-  if (t.event === "Update") return;
-  out({ ev: "turn", event: t.event, turn: t.turn_index, transcript: t.transcript });
 
-  if (t.event === "StartOfTurn" && speaker.speaking) speaker.cancel(); // barge-in
+rt.on("audio", speakPcm);
 
-  if (t.event === "EndOfTurn" && mal && t.transcript.trim()) {
-    void mal
-      .onTurn(t.transcript)
-      .then(async (d) => {
-        if (d.delegate) {
-          // Field lesson: fragmented turns produced a fresh filler per
-          // fragment while a delegate was already out. One filler, then
-          // hold — and if the big brain is slow, apologize exactly once
-          // instead of leaving dead air.
-          const hadPending = pendingDelegates.size > 0;
-          const id = ++delegateSeq;
-          const timer = setTimeout(() => {
-            if (!pendingDelegates.has(id)) return;
-            void speaker
-              .speak(
-                "Still working on that one — it's taking longer than usual. If it drags on, I'll drop the answer in the Slack thread.",
-              )
-              .then((spoken) => spoken && out({ ev: "said", text: "(delegate-patience apology)" }));
-          }, DELEGATE_PATIENCE_MS);
-          pendingDelegates.set(id, { question: d.delegate, timer });
-          out({ ev: "delegate", id, question: d.delegate });
-          if (d.say && !hadPending) {
-            await speaker.speak(d.say);
-            out({ ev: "said", text: d.say });
-          }
-        } else if (d.say) {
-          await speaker.speak(d.say);
-          out({ ev: "said", text: d.say });
-        }
-      })
-      .catch((e) => out({ ev: "error", message: `mal: ${String(e)}` }));
+rt.on("barge-in", () => {
+  rt.cancel();
+  cancelPlayback();
+});
+
+rt.on("tool-call", async (tc: ToolCall) => {
+  if (tc.name === "ask_big_brain") {
+    const question = String((tc.args as { question?: unknown }).question ?? "");
+    const id = ++delegateSeq;
+    out({ ev: "delegate", id, question });
+    const answer = await waitForAnswer(id);
+    rt.submitToolResult(tc.callId, answer);
   }
 });
-flux.on("error", (e) => out({ ev: "error", message: `flux: ${String(e)}` }));
-flux.on("close", (code: number) => out({ ev: "status", state: "flux-closed", code }));
-flux.connect();
 
-const cap = captureCall();
-cap.stdout.on("data", (pcm: Buffer) => flux.write(pcm));
+rt.on("error", (e: Error) => out({ ev: "error", message: `realtime: ${e.message}` }));
+rt.on("close", (code: number) => out({ ev: "status", state: "closed", code }));
+rt.connect();
+
+// Capture call audio (24kHz to match Realtime's expected input)
+const cap = captureCall(REALTIME_SAMPLE_RATE);
+cap.stdout.on("data", (pcm: Buffer) => rt.sendAudio(pcm));
 cap.stderr.on("data", () => {});
 
-// Command channel: the big-brain session drives us through stdin.
+// Stdin: big-brain session sends delegate answers and leave command
 (async () => {
   for await (const line of console) {
     let cmd: { cmd: string; text?: string; id?: number };
@@ -132,17 +140,12 @@ cap.stderr.on("data", () => {});
     } catch {
       continue;
     }
-    if (cmd.cmd === "say" && cmd.text) {
-      const pending = cmd.id !== undefined ? pendingDelegates.get(cmd.id) : undefined;
-      if (pending && cmd.id !== undefined) {
-        clearTimeout(pending.timer);
-        mal?.noteBrainAnswer(pending.question, cmd.text);
+    if (cmd.cmd === "say" && cmd.text && cmd.id !== undefined) {
+      const resolve = pendingDelegates.get(cmd.id);
+      if (resolve) {
         pendingDelegates.delete(cmd.id);
-      } else {
-        mal?.noteSpoken(cmd.text);
+        resolve(cmd.text);
       }
-      await speaker.speak(cmd.text);
-      out({ ev: "said", text: cmd.text });
     } else if (cmd.cmd === "leave") {
       await shutdown();
     }
@@ -150,9 +153,9 @@ cap.stderr.on("data", () => {});
 })();
 
 async function shutdown(): Promise<void> {
-  speaker.cancel();
+  cancelPlayback();
   cap.kill();
-  flux.close();
+  rt.close();
   await navigator.leave(page);
   await ctx.close().catch(() => {});
   out({ ev: "status", state: "closed" });
