@@ -24,6 +24,7 @@ import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME } from "../../knowledge/mcp-tools";
+import { createVoiceMcp, VOICE_MCP_NAME } from "../../voice/voice-mcp";
 import { brainEnabled, ensureSources } from "../../knowledge/brain";
 import { brainMode } from "../../knowledge/brain-config";
 import { syncKbWikis } from "../../knowledge/brain-sync";
@@ -351,6 +352,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             }
           : undefined,
       ),
+      [VOICE_MCP_NAME]: createVoiceMcp({
+        surface: route.surface,
+        onDelegate: (id, question) => {
+          void agent.sendMessage(
+            sessionId,
+            `<voice-delegate id="${id}">${question}</voice-delegate>\n\nA question was delegated from the live call. Answer it now using the \`voice_answer\` tool with id=${id}.`,
+          );
+        },
+      }),
       ...externalMcp.servers,
     };
     // 1on1 privacy: when this session's effective identity is locked (live /1on1
