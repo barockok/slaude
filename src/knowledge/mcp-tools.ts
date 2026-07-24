@@ -7,6 +7,7 @@ import { brainThink } from "./brain-think";
 import { gather } from "./gather";
 import { gatedBrainCall, type ApprovalReq, type ApprovalRes, type GateInput } from "./gated-dispatch";
 import { SHARED_SOURCE, type BrainScope } from "./scope";
+import { agentIdReady } from "./agent-identity";
 
 export const KB_MCP_NAME = "slaude_kb";
 
@@ -225,13 +226,18 @@ export const brainHandlers = {
     if (pages.length > KB_MEMOIZE_MAX_PAGES) {
       return err(`kb_memoize accepts at most ${KB_MEMOIZE_MAX_PAGES} pages per call (got ${pages.length})`);
     }
+    // C1: settle the agent identity before resolving the write scope, so a write
+    // in the boot window (before auth.test lands) targets the real `agent-<id>`
+    // slice, not `agent-default`. No-op once resolved; never hangs (falls back).
+    await agentIdReady();
     // "mine" (default) writes to the resolved own slice — the agent's private
     // mind outside a 1on1, the user's slice inside one — and auto-passes.
     // "shared" escalates to the common team KB, which requires human approval.
     const scope = p.target === "shared" ? { ...d.scope(), sourceId: SHARED_SOURCE } : d.scope();
+    const label = p.target === "shared" ? "→ shared" : "→ mine";
     const describe = pages.length === 1
-      ? `KB write → shared: ${pages[0]!.slug} — ${pages[0]!.summary}`
-      : `KB write → shared: ${pages.length} pages — ${pages.map((pg) => pg.slug).join(", ")}`;
+      ? `KB write ${label}: ${pages[0]!.slug} — ${pages[0]!.summary}`
+      : `KB write ${label}: ${pages.length} pages — ${pages.map((pg) => pg.slug).join(", ")}`;
     try {
       const call = d.call ?? brainCall;
       // One approval gates the whole batch; the gated thunk writes every page.

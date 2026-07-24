@@ -17,14 +17,19 @@ import { AGENT_SOURCE, agentSourceId, type BrainScope } from "./scope";
 
 const sanitize = (s: string): string => s.trim();
 
+/** SLAUDE_AGENT_ID, trimmed, or null when unset/blank. Single read path. */
+function readEnv(): string | null {
+  const env = process.env.SLAUDE_AGENT_ID?.trim();
+  return env && env.length > 0 ? env : null;
+}
+
 let cached: string | null = null;
 let resolving: Promise<string> | null = null;
+let warnedNoResolver = false;
 
 /** Synchronous best-effort id: resolved value → env → "default". */
 export function agentIdSync(): string {
-  if (cached) return cached;
-  const env = process.env.SLAUDE_AGENT_ID?.trim();
-  return env && env.length > 0 ? env : "default";
+  return cached ?? readEnv() ?? "default";
 }
 
 /** Test/boot hook: pin the agent id explicitly. */
@@ -36,6 +41,7 @@ export function setAgentId(id: string): void {
 export function resetAgentId(): void {
   cached = null;
   resolving = null;
+  warnedNoResolver = false;
 }
 
 /**
@@ -46,8 +52,8 @@ export function resetAgentId(): void {
  */
 export function resolveAgentId(authTest: () => Promise<{ user_id?: string }>): Promise<string> {
   if (cached) return Promise.resolve(cached);
-  const env = process.env.SLAUDE_AGENT_ID?.trim();
-  if (env && env.length > 0) {
+  const env = readEnv();
+  if (env) {
     cached = sanitize(env);
     return Promise.resolve(cached);
   }
@@ -63,15 +69,24 @@ export function resolveAgentId(authTest: () => Promise<{ user_id?: string }>): P
 }
 
 /** Await the resolved id: settled cache / env immediately, else the in-flight
- *  resolution, else the sync fallback (no resolver wired). */
+ *  resolution, else the sync fallback (no resolver wired). MUST be called after
+ *  resolveAgentId() has been kicked off (gateway boot) to await the real id —
+ *  the bare fallback below returns "default" and cannot chain on a later resolve. */
 export function agentIdReady(): Promise<string> {
   if (cached) return Promise.resolve(cached);
-  const env = process.env.SLAUDE_AGENT_ID?.trim();
-  if (env && env.length > 0) {
+  const env = readEnv();
+  if (env) {
     cached = sanitize(env);
     return Promise.resolve(cached);
   }
-  return resolving ?? Promise.resolve(agentIdSync());
+  if (resolving) return resolving;
+  // No resolver wired and no env — settle on the fallback, but warn once: a caller
+  // is awaiting identity before boot resolved it (C3).
+  if (!warnedNoResolver) {
+    warnedNoResolver = true;
+    console.warn("[brain] agentIdReady() called before resolveAgentId() wired an identity — falling back to 'default'");
+  }
+  return Promise.resolve(agentIdSync());
 }
 
 /**

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { brainHandlers, humanizeBrainError, type BrainToolDeps } from "../src/knowledge/mcp-tools";
 import { agentSourceId, type BrainScope } from "../src/knowledge/scope";
+import { agentIdSync, resolveAgentId, resetAgentId } from "../src/knowledge/agent-identity";
 
 const scope: BrainScope = { clientId: "U1", sourceId: "shared", allowedSources: ["shared"] };
 const deps = (over: Partial<BrainToolDeps> = {}): BrainToolDeps => ({
@@ -138,6 +139,25 @@ describe("brainHandlers", () => {
     expect(r.isError).toBeUndefined();
     expect(approvals).toBe(1);
     expect(wrote).toEqual(["shared"]);
+  });
+
+  test("kb_memoize awaits identity so a boot-window write hits the resolved slice, not agent-default (C1)", async () => {
+    resetAgentId();
+    let settle!: (v: { user_id: string }) => void;
+    const authP = new Promise<{ user_id: string }>((res) => { settle = res; });
+    void resolveAgentId(() => authP); // identity in-flight, not yet settled
+    const wrote: string[] = [];
+    const d = deps({
+      // scope reads the live id at call time — the gateway wiring does the same.
+      scope: () => ({ clientId: agentIdSync(), sourceId: agentSourceId(agentIdSync()), allowedSources: [agentSourceId(agentIdSync())] }),
+      call: async (_n, _p, s) => { wrote.push(s.sourceId); return { ok: 1 }; },
+    });
+    const pending = brainHandlers.kb_memoize({ pages: [{ slug: "notes/boot", content: "c", summary: "s" }] }, d);
+    settle({ user_id: "U_REAL" }); // auth.test lands after the write call began
+    const r = await pending;
+    expect(r.isError).toBeUndefined();
+    expect(wrote).toEqual([agentSourceId("U_REAL")]); // NOT agent-default
+    resetAgentId();
   });
 
   test("kb_put_page is replaced by kb_memoize", () => {
