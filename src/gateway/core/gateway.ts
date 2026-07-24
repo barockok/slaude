@@ -29,6 +29,7 @@ import { brainMode } from "../../knowledge/brain-config";
 import { syncKbWikis } from "../../knowledge/brain-sync";
 import { scheduleNightlyMaintenance } from "../../knowledge/brain-cycle";
 import { channelTrustFor, kbSourceId, resolveBrainScope } from "../../knowledge/scope";
+import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
 import type { GateInput } from "../../knowledge/gated-dispatch";
 import { loadKbs } from "../../knowledge/loader";
 import { resolveUserName } from "../slack/users";
@@ -277,6 +278,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // KB wiki import runs after, in the background; failures are logged, not fatal.
   // In remote mode the separate brain-server process owns the engine, source
   // bootstrap and nightly maintenance; the gateway only proxies runtime calls.
+  // Resolve this agent's stable identity (its `agent-<id>` slice anchor) once at
+  // boot — SLAUDE_AGENT_ID wins, else auth.test on the posting token. Kicked off
+  // for any brain mode so per-turn scoping and memory writes see the real id.
+  if (brainEnabled()) {
+    void resolveAgentId(() => outClient.auth.test())
+      .then((id) => console.log(`[brain] agent identity resolved: ${id}`))
+      .catch(() => { /* resolveAgentId already falls back internally */ });
+  }
   if (brainEnabled() && brainMode() === "local") {
     void ensureSources()
       .then(() => syncKbWikis())
@@ -310,6 +319,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       lockedUser: lock?.locked_user ?? null,
       channelTrust: channelTrustFor(ctx.channel, soul),
       isManager: !!ctx.userId && (ctx.userId === soul.manager.userId || ctx.userId === soul.backupManager.userId),
+      agentId: agentIdSync(),
       threadKey: `${ctx.channel}:${ctx.threadTs}`,
     };
   };
