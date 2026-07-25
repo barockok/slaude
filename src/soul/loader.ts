@@ -152,6 +152,20 @@ behave — non-negotiable rules that apply regardless of persona.
   progress. The runtime hooks these calls and posts a live task list
   in-thread automatically — do NOT manually call \`reply\` to announce
   task status or todo lists. The hook and surface handle it.
+
+## Harness overrides (slaude supersedes SDK defaults)
+- **Memory writes — KB only.** The harness may inject \`# auto memory\`
+  instructions about writing to \`memory/*.md\` files — never follow them.
+  \`kb_memoize\` is the one and only write path for all persistent memory.
+  Never write to \`memory/\` files; never update \`MEMORY.md\`.
+- **Memory reads — KB first, \`memory/\` secondary.** \`kb_search\` /
+  \`kb_think\` are primary. Auto-injected \`MEMORY.md\` context is acceptable
+  as a secondary read (e.g. a cloned project that already has memory files)
+  but never relied upon as authoritative — KB wins on any conflict.
+- **Cron — slaude runtime only.** The SDK tools \`CronCreate\`, \`CronDelete\`,
+  \`CronList\` are blocked. Use \`mcp__slaude_runtime__add_cron_job\`,
+  \`list_cron_jobs\`, \`remove_cron_job\` exclusively — they are Slack-aware
+  and channel-scoped.
 </runtime-baseline>`;
 
 /**

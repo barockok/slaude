@@ -141,8 +141,8 @@ export interface GatewayOptions {
 /** Render a TaskCreate/TaskUpdate tasks map as a compact markdown task list. */
 function formatTaskList(tasks: Map<string, { subject: string; status: string; completedAt?: string }>): string {
   const lines = [...tasks.values()].map((t) => {
-    if (t.status === "completed") return `✅ ${t.subject}${t.completedAt ? ` _(${t.completedAt})_` : ""}`;
-    if (t.status === "in_progress") return `▶ **${t.subject}**`;
+    if (t.status === "completed") return `✔ ${t.subject}${t.completedAt ? ` _(${t.completedAt})_` : ""}`;
+    if (t.status === "in_progress") return `→ **${t.subject}**`;
     return `○ ${t.subject}`;
   });
   return `**Tasks**\n${lines.join("\n")}`;
@@ -151,8 +151,8 @@ function formatTaskList(tasks: Map<string, { subject: string; status: string; co
 /** Render a TodoWrite todos array as a compact markdown task list for the Slack surface. */
 function formatTodoList(todos: Array<{ content: string; status: string }>): string {
   const lines = todos.map((t) => {
-    if (t.status === "completed") return `✅ ${t.content}`;
-    if (t.status === "in_progress") return `▶ **${t.content}**`;
+    if (t.status === "completed") return `✔ ${t.content}`;
+    if (t.status === "in_progress") return `→ **${t.content}**`;
     return `○ ${t.content}`;
   });
   return `**Tasks**\n${lines.join("\n")}`;
