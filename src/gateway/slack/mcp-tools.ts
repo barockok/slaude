@@ -400,6 +400,9 @@ export const adminHandlers = {
       target,
       whenActive,
       oauthUser: cronLock?.locked_user ?? undefined,
+      // Persist the owning persona so the run fires as that persona (soul + brain
+      // + config dir), not the default bot. Undefined/'default' → single-bot.
+      personaId: ctx.personaId,
     });
     return ok(
       `Cron job created (\`${job.id.slice(0, 8)}\`) [${job.target}, when_active=${job.whenActive}]. Next run: ${new Date(nextRun).toISOString()}`,

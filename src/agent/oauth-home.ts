@@ -26,25 +26,12 @@ export function agentConfigDir(): string {
   return process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
 }
 
-/** Persistent per-initiator config home. The initiator's OAuth tokens accumulate
- *  here across all their locked threads (per-initiator, not per-thread). */
-export function initiatorConfigDir(userId: string): string {
-  return join(paths.home, "oauth", userId);
-}
-
-/** Ensure the initiator's config home exists, seeded with the agent's non-secret
- *  settings + plugins (so the locked session keeps skills/plugins). Idempotent.
- *  The initiator's own .credentials.json (written by the /mcp connect flow) is
- *  intentionally preserved — scrubbing it would wipe their OAuth tokens. */
-export function ensureInitiatorConfigDir(userId: string): string {
-  const dir = initiatorConfigDir(userId);
-  mkdirSync(dir, { recursive: true });
-
-  const src = agentConfigDir();
+/** Seed a config dir with the non-secret settings + plugins from `src` (copy
+ *  settings once, symlink plugins read-only). Never touches credential stores. */
+function seedConfigDir(dir: string, src: string): void {
   // settings.json + settings.local.json — copy once (non-secret: enabledPlugins,
   // marketplaces, local overrides). Never copy credential stores: the whole point
-  // is the initiator's own identity, and this dir now HOLDS the initiator's own
-  // .credentials.json (written by the /mcp connect flow) — so we must not scrub it.
+  // is an isolated identity, and this dir HOLDS its own .credentials.json.
   for (const name of ["settings.json", "settings.local.json"]) {
     const s = join(src, name);
     const d = join(dir, name);
@@ -56,15 +43,63 @@ export function ensureInitiatorConfigDir(userId: string): string {
   if (existsSync(srcPlugins) && !existsSync(dstPlugins)) {
     try { symlinkSync(srcPlugins, dstPlugins, "dir"); } catch { /* best-effort */ }
   }
-  // projects/ — symlink to the agent's transcript home. The CLI keys transcripts
-  // off CLAUDE_CONFIG_DIR, so without this a /1on1 lock (or unlock) flips the
-  // config dir and `resume` searches the wrong home: cold start at lock, stale
-  // pre-lock context at unlock. Isolation is for credential stores only —
-  // transcripts must stay in one place. Created even when the agent home has no
-  // projects/ yet (locked-first thread), so the CLI never writes transcripts
-  // into the initiator dir. A pre-existing real projects/ dir (legacy initiator
-  // home) is left as-is: replacing it would orphan transcripts already inside.
-  const srcProjects = join(src, "projects");
+}
+
+/** A named persona's config home: personas/<name>/.claude. Carries the persona's
+ *  own .credentials.json (MCP OAuth tokens) AND its own projects/ transcript tree,
+ *  keeping both isolated from other personas and the global agent. */
+export function personaConfigDir(personaName: string): string {
+  return join(paths.personas, personaName, ".claude");
+}
+
+/** Ensure a persona config home exists, seeded from the global agent home. Unlike
+ *  an initiator home, projects/ here is a REAL directory (the persona's own
+ *  transcript store), not a symlink — this is what isolates the sessions dir. */
+export function ensurePersonaConfigDir(personaName: string): string {
+  const dir = personaConfigDir(personaName);
+  mkdirSync(dir, { recursive: true });
+  seedConfigDir(dir, agentConfigDir());
+  mkdirSync(join(dir, "projects"), { recursive: true });
+  return dir;
+}
+
+/** Persistent per-initiator config home. The initiator's OAuth tokens accumulate
+ *  here across all their locked threads (per-initiator, not per-thread). When a
+ *  named persona owns the session, the home nests under the persona so isolation
+ *  is per-(persona × user): oauth/<persona>/<userId>. */
+export function initiatorConfigDir(userId: string, personaName?: string): string {
+  const persona = personaName && personaName !== "default" ? personaName : null;
+  return persona
+    ? join(paths.home, "oauth", persona, userId)
+    : join(paths.home, "oauth", userId);
+}
+
+/** Ensure the initiator's config home exists, seeded with the non-secret settings
+ *  + plugins of its base home (so the locked session keeps skills/plugins).
+ *  Idempotent. The initiator's own .credentials.json (written by the /mcp connect
+ *  flow) is intentionally preserved — scrubbing it would wipe their OAuth tokens.
+ *
+ *  When `personaName` names a real persona, the base is the persona config home
+ *  (so settings/plugins/projects anchor on the persona, not the global agent),
+ *  making the 1on1 nest INSIDE the persona boundary. Default persona → global
+ *  agent home, path oauth/<userId> — byte-identical to pre-persona behavior. */
+export function ensureInitiatorConfigDir(userId: string, personaName?: string): string {
+  const persona = personaName && personaName !== "default" ? personaName : null;
+  const base = persona ? ensurePersonaConfigDir(persona) : agentConfigDir();
+  const dir = initiatorConfigDir(userId, persona ?? undefined);
+  mkdirSync(dir, { recursive: true });
+
+  seedConfigDir(dir, base);
+
+  // projects/ — symlink to the base transcript home (persona home for a named
+  // persona, else the global agent home). The CLI keys transcripts off
+  // CLAUDE_CONFIG_DIR, so without this a /1on1 lock (or unlock) flips the config
+  // dir and `resume` searches the wrong home: cold start at lock, stale pre-lock
+  // context at unlock. Isolation is for credential stores only — within a persona,
+  // its 1on1 transcripts must stay in the persona's one transcript tree. Created
+  // even when the base has no projects/ yet, so the CLI never writes transcripts
+  // into the initiator dir. A pre-existing real projects/ dir is left as-is.
+  const srcProjects = join(base, "projects");
   const dstProjects = join(dir, "projects");
   // Determine whether we need to (re)create the symlink.
   // Skip if it's already a correct symlink; skip if it's a real dir (legacy
@@ -94,9 +129,10 @@ export function ensureInitiatorConfigDir(userId: string): string {
 
 let warnedMacKeychain = false;
 
-/** CLAUDE_CONFIG_DIR override for a session given its /1on1 lock state.
- *  Locked → the initiator's isolated home (their OAuth identity).
- *  Unlocked → undefined (caller inherits the agent's config dir).
+/** CLAUDE_CONFIG_DIR override for a session given its /1on1 lock state and persona.
+ *  Locked → the initiator's isolated home (their OAuth identity), nested under the
+ *  persona when named. Unlocked + named persona → the persona config home. Unlocked
+ *  + default persona → undefined (caller inherits the agent's config dir).
  *
  *  macOS caveat: claude-code stores OAuth creds in the global login Keychain,
  *  which CLAUDE_CONFIG_DIR does NOT isolate — so on darwin a locked session still
@@ -104,14 +140,20 @@ let warnedMacKeychain = false;
  *  works on Linux (file-based `.credentials.json` under CLAUDE_CONFIG_DIR). We
  *  still return the dir (filesystem isolation is harmless) but warn once so a
  *  local macOS run doesn't read as a silent failure. */
-export function resolveSessionConfigDir(lockedUser: string | null | undefined): string | undefined {
-  if (!lockedUser) return undefined;
-  if (process.platform === "darwin" && !warnedMacKeychain) {
-    warnedMacKeychain = true;
-    console.warn(
-      "[1on1] CLAUDE_CONFIG_DIR isolation is a no-op for OAuth MCP servers on macOS " +
-        "(creds live in the global Keychain). Verify on Linux; the deploy target isolates correctly.",
-    );
+export function resolveSessionConfigDir(
+  lockedUser: string | null | undefined,
+  personaName?: string,
+): string | undefined {
+  const persona = personaName && personaName !== "default" ? personaName : null;
+  if (lockedUser) {
+    if (process.platform === "darwin" && !warnedMacKeychain) {
+      warnedMacKeychain = true;
+      console.warn(
+        "[1on1] CLAUDE_CONFIG_DIR isolation is a no-op for OAuth MCP servers on macOS " +
+          "(creds live in the global Keychain). Verify on Linux; the deploy target isolates correctly.",
+      );
+    }
+    return ensureInitiatorConfigDir(lockedUser, persona ?? undefined);
   }
-  return ensureInitiatorConfigDir(lockedUser);
+  return persona ? ensurePersonaConfigDir(persona) : undefined;
 }

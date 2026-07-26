@@ -348,7 +348,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       [RUNTIME_MCP_NAME]: createRuntimeMcp(route.ctx),
       [CONNECT_MCP_NAME]: createConnectMcp({ connect: (server) => agentConnect(sessionId, route.ctx, server) }),
       [SLACK_MCP_NAME]: createSlackMcp(route.ctx),
-      [SKILLS_MCP_NAME]: createSkillsMcp(),
+      [SKILLS_MCP_NAME]: createSkillsMcp(route.ctx.personaId),
       [SESSION_MCP_NAME]: createSessionMcp({
         getSnapshot: () => agent.getTokenSnapshot(sessionId),
       }),
@@ -1486,6 +1486,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             target: slash.target,
             whenActive: slash.whenActive,
             oauthUser: cronLock?.locked_user,
+            // Persist the owning persona so the scheduled run fires as that persona.
+            personaId: dispatch?.personaId,
           });
           const where = slash.target === "channel" ? "channel root" : "this thread";
           const mode = slash.whenActive === "skip" ? ", passive (skips when active)" : "";
@@ -1597,7 +1599,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
 
     let userText = stripped;
-    const skillHit = matchSkillInvocation(stripped, discoverSkills());
+    const skillHit = matchSkillInvocation(stripped, discoverSkills(session.persona_id));
     if (skillHit) {
       userText = buildSkillInvocation(skillHit.skill, skillHit.args, session.id);
     }

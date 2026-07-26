@@ -89,7 +89,8 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
   last_run_at INTEGER,
   last_result TEXT,
   paused INTEGER NOT NULL DEFAULT 0,
-  active INTEGER NOT NULL DEFAULT 1
+  active INTEGER NOT NULL DEFAULT 1,
+  persona_id TEXT NOT NULL DEFAULT 'default'
 );
 
 CREATE INDEX IF NOT EXISTS idx_cron_jobs_next_run
@@ -218,6 +219,13 @@ if (!oooLockCols.some((c) => c.name === "open_scope")) {
 // instead of the initiator's. NULL = created outside a 1on1 (no isolation).
 if (!cronCols.some((c) => c.name === "oauth_user")) {
   db.run(`ALTER TABLE cron_jobs ADD COLUMN oauth_user TEXT`);
+}
+
+// Migration: multi-persona. Which persona owns the job — the scheduler keys the
+// run's thread on it so the fire resolves the persona's session (soul + brain
+// slice + config dir). Existing jobs get 'default' (single-bot persona).
+if (!cronCols.some((c) => c.name === "persona_id")) {
+  db.run(`ALTER TABLE cron_jobs ADD COLUMN persona_id TEXT NOT NULL DEFAULT 'default'`);
 }
 
 // Migration: add pause lifecycle state. `active` remains the soft-delete bit;

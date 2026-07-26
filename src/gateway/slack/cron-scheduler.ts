@@ -65,6 +65,9 @@ export class CronScheduler {
       team_id: job.slackTeamId,
       channel_id: job.slackChannelId,
       thread_ts: threadTs,
+      // Key the run's session on the owning persona so ensureSession resolves the
+      // persona's soul + brain slice + config dir + cwd (all keyed off persona_id).
+      persona_id: job.personaId,
     };
 
     const session = this.#agent.ensureSession(threadKey);
