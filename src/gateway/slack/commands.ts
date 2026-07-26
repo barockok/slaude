@@ -45,7 +45,8 @@ export type SlashHit =
   | { kind: "soul"; field: "trust" | "allow" | "dm" | "block"; action: "add" | "remove"; value: string }
   | { kind: "soul-list" }
   | { kind: "soul-clear"; field: "trust" | "allow" | "dm" | "block" | "all" }
-  | { kind: "model"; id?: string };
+  | { kind: "model"; id?: string }
+  | { kind: "bash"; command: string };
 
 /** One descriptor per agent slash command — the single source of truth for every help
  *  surface (Slack `/help`, the sim REPL `/help`). Add a command here and it shows up
@@ -71,6 +72,7 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/soul list", summary: "show runtime soul overrides vs SOUL.md base" },
   { usage: "/soul clear <trust|allow|dm|block|all>", summary: "manager-only: drop runtime overrides (revert to SOUL.md)" },
   { usage: "/model [id]", summary: "show or set this thread's model (manager/approver) — no arg lists available models" },
+  { usage: "/bash <command>", summary: "run a shell command on the server (gated — approval required)" },
   { usage: "/help", summary: "show this help" },
 ];
 
@@ -98,6 +100,18 @@ function parseCronEditTail(t: string): Extract<SlashHit, { kind: "cron-edit" }> 
     target: /\bchannel\b/.test(flags) ? "channel" : "thread",
     whenActive: /\bpassive\b/.test(flags) ? "skip" : "fire",
   };
+}
+
+/** Strip optional backtick or triple-backtick wrapping from a raw /bash tail. */
+function extractBashCommand(raw: string): string {
+  const s = raw.trim();
+  // Triple-backtick fence: ```...``` or ```\n...\n```
+  const triple = s.match(/^```(?:[^\n]*\n)?([\s\S]*?)```$/);
+  if (triple) return triple[1]!.trim();
+  // Single-backtick wrapping: `command`
+  const single = s.match(/^`([^`]+)`$/);
+  if (single) return single[1]!.trim();
+  return s;
 }
 
 export function parseSlashCommand(text: string): SlashHit | null {
@@ -215,6 +229,14 @@ export function parseSlashCommand(text: string): SlashHit | null {
   if (cmd === "model") {
     const id = rest[0]; // case-preserved provider id; ignore trailing tokens
     return id ? { kind: "model", id } : { kind: "model" };
+  }
+  if (cmd === "bash") {
+    // Work on the raw tail (after "/bash ") to preserve newlines and spacing
+    // from triple-backtick fences before \s+ splitting destroyed them.
+    const tail = t.replace(/^\/bash\s*/i, "");
+    const command = extractBashCommand(tail);
+    if (!command) return null;
+    return { kind: "bash", command };
   }
   if (HELP_NAMES.has(cmd)) {
     return { kind: "help" };
