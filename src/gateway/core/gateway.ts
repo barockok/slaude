@@ -144,8 +144,8 @@ export interface GatewayOptions {
 /** Render a TaskCreate/TaskUpdate tasks map as a compact markdown task list. */
 function formatTaskList(tasks: Map<string, { subject: string; status: string; completedAt?: string }>): string {
   const lines = [...tasks.values()].map((t) => {
-    if (t.status === "completed") return `✔ ${t.subject}${t.completedAt ? ` _(${t.completedAt})_` : ""}`;
-    if (t.status === "in_progress") return `→ **${t.subject}**`;
+    if (t.status === "completed") return `✓ ${t.subject}${t.completedAt ? ` _(${t.completedAt})_` : ""}`;
+    if (t.status === "in_progress") return `➠ **${t.subject}**`;
     return `○ ${t.subject}`;
   });
   return `**Tasks**\n${lines.join("\n")}`;
@@ -154,8 +154,8 @@ function formatTaskList(tasks: Map<string, { subject: string; status: string; co
 /** Render a TodoWrite todos array as a compact markdown task list for the Slack surface. */
 function formatTodoList(todos: Array<{ content: string; status: string }>): string {
   const lines = todos.map((t) => {
-    if (t.status === "completed") return `✔ ${t.content}`;
-    if (t.status === "in_progress") return `→ **${t.content}**`;
+    if (t.status === "completed") return `✓ ${t.content}`;
+    if (t.status === "in_progress") return `➠ **${t.content}**`;
     return `○ ${t.content}`;
   });
   return `**Tasks**\n${lines.join("\n")}`;
@@ -768,7 +768,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           if (route.todoRef && route.todosSnapshot?.length &&
               route.todosSnapshot.every((t) => t.status === "completed") &&
               route.surface.capabilities.has("edit") && route.surface.edit) {
-            const doneText = `**Tasks** ✅\n${route.todosSnapshot.map((t) => `✅ ${t.content}`).join("\n")}`;
+            const doneText = `**Tasks**\n${route.todosSnapshot.map((t) => `✓ ${t.content}`).join("\n")}`;
             await route.surface.edit({ ref: route.todoRef, text: doneText }).catch(() => {});
           }
           // Stamp the structured task block "all done" when every task is completed/deleted.
@@ -776,7 +776,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               [...route.tasksMap.values()].every((t) => t.status === "completed" || t.status === "deleted") &&
               route.surface.capabilities.has("edit") && route.surface.edit) {
             const completedTasks = [...route.tasksMap.values()].filter((t) => t.status === "completed");
-            const doneText = `**Tasks** ✅\n${completedTasks.map((t) => `✅ ${t.subject}${t.completedAt ? ` _(${t.completedAt})_` : ""}`).join("\n")}`;
+            const doneText = `**Tasks**\n${completedTasks.map((t) => `✓ ${t.subject}${t.completedAt ? ` _(${t.completedAt})_` : ""}`).join("\n")}`;
             await route.surface.edit({ ref: route.tasksRef, text: doneText }).catch(() => {});
           }
           route.tasksRef = undefined;
