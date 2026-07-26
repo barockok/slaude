@@ -1474,6 +1474,35 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         );
         return;
       }
+      if (slash.kind === "bash") {
+        const soul = soulData();
+        const managerId = soul.manager.userId;
+        const backupId = soul.backupManager.userId;
+        const isManager = (managerId && userId === managerId) || (backupId && userId === backupId);
+        if (!isManager) {
+          await reply(":no_entry: `/bash` is manager-only");
+          return;
+        }
+        // Decode Slack's URL encoding: <https://url|label> → https://url
+        const command = slash.command.replace(/<(https?:\/\/[^|>]+)(?:\|[^>]*)?>?/g, "$1");
+        try {
+          const proc = Bun.spawn(["bash", "-c", command], {
+            stdout: "pipe",
+            stderr: "pipe",
+          });
+          const [stdout, stderr, exitCode] = await Promise.all([
+            new Response(proc.stdout).text(),
+            new Response(proc.stderr).text(),
+            proc.exited,
+          ]);
+          const out = [stdout, stderr].filter(Boolean).join("\n").trim();
+          const truncated = out.length > 2800 ? out.slice(0, 2800) + "\n…(truncated)" : out;
+          await reply(`\`$ ${command}\` (exit ${exitCode})\n\`\`\`\n${truncated || "(no output)"}\n\`\`\``);
+        } catch (e: any) {
+          await reply(`:x: failed to run: ${e?.message}`);
+        }
+        return;
+      }
     }
 
     let userText = stripped;
