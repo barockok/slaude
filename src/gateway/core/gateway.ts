@@ -108,6 +108,9 @@ type SessionRoute = {
   /** This turn is a disengaged message recorded into the transcript but suppressed
    *  by the UserPromptSubmit hook (no model run). Skip all Slack-visible feedback. */
   suppress?: boolean;
+  /** When true, this session was started by a silent cron job — the stop guard
+   *  must not force a reply (the job ran without intending to post to Slack). */
+  silent?: boolean;
 };
 
 export interface GatewayOptions {
@@ -234,7 +237,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           ...req,
         });
       ctx.reloadSession = () => agent.reload(sessionId);
-      routes.set(sessionId, { ctx, surface: surfaceFactory(bindingFor(ctx)), spoke: false });
+      routes.set(sessionId, { ctx, surface: surfaceFactory(bindingFor(ctx)), spoke: false, silent: true });
     },
   });
   agent.setPermissionResolver(permissions.resolver);
@@ -304,6 +307,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const route = routes.get(sessionId);
     if (!route) return null;
     if (route.spoke) return null;
+    if (route.silent) return null;
     return "You have not delivered a reply to the user. Call `mcp__slaude_surface__reply` now with your answer to the inbound message, then stop. Do not stop without replying.";
   });
 
