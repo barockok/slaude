@@ -57,6 +57,8 @@ export type SlackContext = {
   }) => Promise<{ approved: boolean; by: string; note?: string }>;
   /** Optional session reload — set by the adapter so reload_session works. */
   reloadSession?: (prompt?: string) => boolean;
+  /** Which persona owns this session. 'default' = single-bot mode. */
+  personaId?: string;
 };
 
 export const SLACK_MCP_NAME = "slaude_slack";

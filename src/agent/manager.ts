@@ -26,8 +26,9 @@ export type PermissionMode =
 import { paths } from "../config/home";
 import { env } from "../config/env";
 import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plugins";
-import { soulSystemBlock } from "../soul/loader";
+import { soulSystemBlock, loadSoul } from "../soul/loader";
 import { soulData, effectiveSoulForChannel } from "../soul/extract";
+import { getPersonaRegistry } from "../persona/registry";
 import * as Sessions from "../db/sessions";
 import type { ThreadKey } from "../db/sessions";
 import * as OneOnOne from "../db/one-on-one";
@@ -439,6 +440,16 @@ export class AgentManager extends EventEmitter {
     const lockedConfigDir = resolveSessionConfigDir(oauthUser);
     if (lockedConfigDir) providerEnv.CLAUDE_CONFIG_DIR = lockedConfigDir;
 
+    // Multi-persona: inject the persona's Slack user ID as the brain-slice anchor
+    // so named personas each get their own private KB slice.
+    const personaId = row.persona_id;
+    const persona = personaId && personaId !== "default"
+      ? getPersonaRegistry().lookupByName(personaId)
+      : null;
+    if (persona) {
+      providerEnv.SLAUDE_AGENT_ID = persona.slackUserId;
+    }
+
     const resolver = this.#resolver;
     const canUseTool: CanUseTool | undefined = resolver
       ? (toolName, input, ctx) => resolver(sessionId, toolName, input, ctx)
@@ -539,7 +550,9 @@ export class AgentManager extends EventEmitter {
         type: "preset",
         preset: "claude_code",
         append: [
-          soulSystemBlock(),
+          // Named personas use their own SOUL.md for the persona block; the
+          // runtime baseline stays the same. Default persona = global SOUL.md.
+          soulSystemBlock(persona ? loadSoul(persona.soulPath) : undefined),
           channelMandateBlock,
           sessionModeBlock(lock),
           mcpServers

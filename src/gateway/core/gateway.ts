@@ -30,6 +30,7 @@ import { syncKbWikis } from "../../knowledge/brain-sync";
 import { scheduleNightlyMaintenance } from "../../knowledge/brain-cycle";
 import { channelTrustFor, kbSourceId, resolveBrainScope } from "../../knowledge/scope";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
+import { getPersonaRegistry } from "../../persona/registry";
 import type { GateInput } from "../../knowledge/gated-dispatch";
 import { loadKbs } from "../../knowledge/loader";
 import { resolveUserName } from "../slack/users";
@@ -319,12 +320,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const brainGateFor = (ctx: SlackContext): GateInput => {
     const soul = soulData();
     const lock = OneOnOne.find(ctx.channel, ctx.threadTs);
+    // Use the persona's Slack user ID as the agent brain-slice key when in
+    // multi-persona mode; fall back to the process-level bot ID otherwise.
+    const personaId = ctx.personaId && ctx.personaId !== "default" ? ctx.personaId : null;
+    const personaAgentId = personaId
+      ? (getPersonaRegistry().lookupByName(personaId)?.slackUserId ?? agentIdSync())
+      : agentIdSync();
     return {
       userId: ctx.userId ?? null,
       lockedUser: lock?.locked_user ?? null,
       channelTrust: channelTrustFor(ctx.channel, soul),
       isManager: !!ctx.userId && (ctx.userId === soul.manager.userId || ctx.userId === soul.backupManager.userId),
-      agentId: agentIdSync(),
+      agentId: personaAgentId,
       threadKey: `${ctx.channel}:${ctx.threadTs}`,
     };
   };
@@ -837,7 +844,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
   });
 
-  async function handleMessage(args: any, dispatch?: { suppress?: boolean }) {
+  async function handleMessage(args: any, dispatch?: { suppress?: boolean; personaId?: string }) {
     const suppress = dispatch?.suppress === true;
     const { event, client, context } = args;
     const teamId: string | undefined = context.teamId ?? event.team;
@@ -968,6 +975,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       team_id: teamId,
       channel_id: channelId,
       thread_ts: threadTs,
+      persona_id: dispatch?.personaId,
     });
 
     // Paste-back OAuth completion: if this user has a parked /mcp connect in this
@@ -1667,6 +1675,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.ctx.threadTs = threadTs;
       existing.ctx.inboundTs = eventTs;
       existing.ctx.userId = userId;
+      existing.ctx.personaId = dispatch?.personaId;
       existing.ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
       existing.spoke = false;
       existing.todoRef = undefined;       // fresh tracker per user turn
@@ -1683,6 +1692,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         inboundTs: eventTs,
         userId,
         teamId,
+        personaId: dispatch?.personaId,
       };
       ctx.requestApproval = (req) =>
         approvals.request({
@@ -1730,7 +1740,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const threadKey = (channel: string, ts: string) => `${channel}:${ts}`;
   const persistEngaged = (teamId: string | undefined, channelId: string, threadTs: string, value: boolean) => {
     if (!teamId) return;
-    const row = Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: threadTs });
+    // Only the default-persona session row carries the bot's engagement flag.
+    const row = Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: "default" });
     if (row) Sessions.setEngaged(row.id, value);
   };
 
@@ -1816,24 +1827,41 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
     const mentions = Array.from(text.matchAll(/<@([A-Z0-9]+)>/g)).map((m) => m[1]);
     const mentionsBot = mentions.includes(botId);
-    const mentionsOther = mentions.some((u) => u && u !== botId);
 
     const teamId: string | undefined = args.context?.teamId ?? e.team;
+
+    // Multi-persona: check if any mention targets a known persona user.
+    const registry = getPersonaRegistry();
+    const mentionedPersona = registry.isMultiPersonaMode()
+      ? (mentions.map((id) => registry.lookupByUserId(id!)).find(Boolean) ?? null)
+      : null;
+    // A mention is "other" only when it targets neither the bot nor a known persona.
+    const mentionsOther = mentions.some(
+      (u) => u && u !== botId && !registry.lookupByUserId(u),
+    );
+
     if (mentionsBot) {
       engaged.add(key);
       persistEngaged(teamId, channelId, ts, true);
       return await handleMessage(args);
     }
+    if (mentionedPersona) {
+      const pKey = `${key}:${mentionedPersona.name}`;
+      engaged.add(pKey);
+      return await handleMessage(args, { personaId: mentionedPersona.name });
+    }
     if (mentionsOther) {
       engaged.delete(key);
       persistEngaged(teamId, channelId, ts, false);
+      // Also disengage any persona-specific keys for this thread.
+      for (const p of registry.list()) engaged.delete(`${key}:${p.name}`);
       // Don't drop: if slaude has a session here, record the disengaging message
       // into the transcript (suppressed — the UserPromptSubmit hook halts the turn
       // before the model runs) so the session stays populated. On re-engage the
       // model resumes with the gap already in history. No session → nothing to
       // populate, so drop as before (never spin one up for an unrelated thread).
       const row = teamId
-        ? Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts })
+        ? Sessions.findAnyByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts })
         : null;
       if (row) {
         console.log(
@@ -1854,7 +1882,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const mentionOnly = MentionOnly.find(channelId, ts) != null;
     if (mentionOnly) {
       const row = teamId
-        ? Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts })
+        ? Sessions.findAnyByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts })
         : null;
       if (row) {
         console.log(`[slack-rx] record ch=${channelId} ts=${e.ts} user=${e.user} — mention-only, suppressed`);
@@ -1867,23 +1895,37 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (engaged.has(key)) {
       return await handleMessage(args);
     }
+    // Multi-persona: a plain reply continues whichever persona is engaged in this thread.
+    if (registry.isMultiPersonaMode()) {
+      for (const p of registry.list()) {
+        if (engaged.has(`${key}:${p.name}`)) {
+          return await handleMessage(args, { personaId: p.name });
+        }
+      }
+    }
     // Restore engagement across restarts: a session row means the bot was
     // engaged here historically — keep handling plain replies without forcing
     // a re-@mention, unless the thread was explicitly disengaged (row.engaged=0).
     if (teamId) {
-      const row = Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts });
+      const row = Sessions.findAnyByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts });
       if (row && row.engaged) {
-        engaged.add(key);
-        return await handleMessage(args);
+        const restoredPersonaId = row.persona_id !== "default" ? row.persona_id : undefined;
+        if (restoredPersonaId) {
+          engaged.add(`${key}:${restoredPersonaId}`);
+        } else {
+          engaged.add(key);
+        }
+        return await handleMessage(args, { personaId: restoredPersonaId });
       }
       // Explicitly disengaged (row.engaged=0): record plain messages into the
       // transcript too (suppressed by the hook) so the session stays populated
       // for re-engage. No model run, no Slack feedback.
       if (row && row.engaged === 0) {
+        const disengagedPersonaId = row.persona_id !== "default" ? row.persona_id : undefined;
         console.log(
           `[slack-rx] record ch=${channelId} ts=${e.ts} user=${e.user} — disengaged thread, suppressed`,
         );
-        return await handleMessage(args, { suppress: true });
+        return await handleMessage(args, { suppress: true, personaId: disengagedPersonaId });
       }
     }
     console.log(
