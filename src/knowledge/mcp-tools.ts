@@ -3,7 +3,7 @@ import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-
 import { z } from "zod";
 import { loadKbs } from "./loader";
 import { brainCall, brainEnabled } from "./brain";
-import { brainThink } from "./brain-think";
+import { brainThink, sdkThinkClient } from "./brain-think";
 import { gather } from "./gather";
 import { gatedBrainCall, type ApprovalReq, type ApprovalRes, type GateInput } from "./gated-dispatch";
 import { SHARED_SOURCE, type BrainScope } from "./scope";
@@ -183,11 +183,47 @@ export const brainHandlers = {
             return s !== undefined && !cited.has(s);
           });
           if (missed.length > 0) {
+            // If runThink gathered nothing, attempt rescue synthesis from the
+            // fallback pages. runThink uses gbrain's pooled search (sourceId-
+            // anchored) which consistently misses pages in other agent slices
+            // even when gather()'s per-source fan-out finds them fine.
+            // See docs/findings/2026-07-27-kb-think-gather-miss.md.
+            const pagesGathered = (result as { pagesGathered?: number }).pagesGathered ?? -1;
+            if (pagesGathered === 0) {
+              try {
+                const pageContext = missed
+                  .filter((h) => typeof (h as { chunk_text?: unknown }).chunk_text === "string")
+                  .map((h) => `[Source: ${hitSlug(h)}]\n${(h as { chunk_text: string }).chunk_text}`)
+                  .join("\n\n---\n\n");
+                if (pageContext) {
+                  const client = sdkThinkClient();
+                  const synthetic = await client.create({
+                    messages: [{ role: "user", content: `Answer the following question using only the provided context. Be concise and cite the source slugs.\n\nQuestion: ${p.question}\n\nContext:\n${pageContext}` }],
+                    max_tokens: 1024,
+                  });
+                  const synthText = ((synthetic as { content?: Array<{ text?: string }> }).content?.[0]?.text) ?? "";
+                  if (synthText) {
+                    return asJson({
+                      question: p.question,
+                      answer: synthText,
+                      citations: missed.map((h) => ({ page_slug: hitSlug(h) })).filter((c) => c.page_slug),
+                      pagesGathered: missed.length,
+                      takesGathered: 0,
+                      graphHits: 0,
+                      synthesisOk: true,
+                      gather_rescue: true,
+                    });
+                  }
+                }
+              } catch (synthErr) {
+                console.warn("[brain] kb_think rescue synthesis failed:", synthErr instanceof Error ? synthErr.message : String(synthErr));
+              }
+            }
             return asJson({ ...(result as object), search_fallback: missed });
           }
         }
-      } catch {
-        // cross-check is best-effort; fall through to the raw think result
+      } catch (crossCheckErr) {
+        console.warn("[brain] kb_think cross-check failed:", crossCheckErr instanceof Error ? crossCheckErr.message : String(crossCheckErr));
       }
       return asJson(result);
     } catch (e) {
