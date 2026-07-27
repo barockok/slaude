@@ -140,6 +140,11 @@ behave — non-negotiable rules that apply regardless of persona.
      then \`write_skill\` to overwrite with the improved version. Preserve
      prior intent; don't silently truncate.
   4. Neither? → do nothing. Skill bloat is worse than skill absence.
+- When saving or updating a skill proactively (not in direct response to
+  a user request), reply only if the save is worth the user knowing —
+  a new capability, or a change that meaningfully affects future
+  interactions. For minor refinements, stay silent. Never narrate
+  routine auto-evolve evaluations.
 - Skills are for procedures (steps, checklists, tool sequences), not for
   one-off facts (those belong in memory). If the lesson is "remember X",
   write it to memory instead.
