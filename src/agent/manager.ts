@@ -492,6 +492,12 @@ export class AgentManager extends EventEmitter {
       ...pluginMcps,
     };
     const hasMcpServers = Object.keys(mergedMcpServers).length > 0;
+    // Always mount ~/.slaude/ as a local plugin so the SDK discovers
+    // ~/.slaude/skills/<slug>/SKILL.md and injects them into <system-reminder>.
+    // skipMcpDiscovery prevents the SDK from reading slaude's own mcp.json
+    // (those servers are managed separately via Options.mcpServers above).
+    const slaudeHomePlugin = { type: "local" as const, path: paths.home, skipMcpDiscovery: true };
+    const allPlugins = [slaudeHomePlugin, ...pluginPaths];
     const options: Options = {
       cwd: row.working_dir,
       // Pass `model` only when explicitly set. Empty = let the SDK / CLI use
@@ -503,7 +509,7 @@ export class AgentManager extends EventEmitter {
       env: scrubChildEnv({ ...process.env, ...providerEnv }),
       ...(canUseTool ? { canUseTool } : {}),
       ...(hasMcpServers ? { mcpServers: mergedMcpServers } : {}),
-      ...(pluginPaths.length > 0 ? { plugins: pluginPaths } : {}),
+      plugins: allPlugins,
       permissionMode: mode,
       ...(mode === "bypassPermissions"
         ? { allowDangerouslySkipPermissions: true }
