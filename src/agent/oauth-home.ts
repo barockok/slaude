@@ -15,12 +15,15 @@
  * agent's config dir unchanged.
  */
 import { mkdirSync, existsSync, copyFileSync, symlinkSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { paths } from "../config/home";
 
-/** The agent's own claude config dir (where its OAuth tokens + plugins live). */
+/** The agent's own claude config dir (where its OAuth tokens + plugins live).
+ *  Falls back to `~/.claude` — the CLI's built-in default — so the projects/
+ *  symlink in initiator dirs always targets the same location as unlocked sessions. */
 export function agentConfigDir(): string {
-  return process.env.CLAUDE_CONFIG_DIR || paths.claudeConfig;
+  return process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
 }
 
 /** Persistent per-initiator config home. The initiator's OAuth tokens accumulate

@@ -6,6 +6,9 @@ import { join } from "node:path";
 // soul/loader writes don't touch the operator's real ~/.slaude.
 const home = mkdtempSync(join(tmpdir(), "slaude-test-"));
 process.env.SLAUDE_HOME = home;
+// Set CLAUDE_CONFIG_DIR to the temp home's .claude dir so agentConfigDir() returns
+// a test-controlled path (not the real ~/.claude) and test isolation holds.
+process.env.CLAUDE_CONFIG_DIR = join(home, ".claude");
 
 // Seed a .env file in the test home so loadDotenv has something to parse on
 // first import of config/env. Covers the quoted-value / dedup branches.
