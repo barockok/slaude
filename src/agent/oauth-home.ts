@@ -14,7 +14,7 @@
  * initiator's tokens instead of the agent's. Unlocked sessions inherit the
  * agent's config dir unchanged.
  */
-import { mkdirSync, existsSync, copyFileSync, symlinkSync } from "node:fs";
+import { mkdirSync, existsSync, lstatSync, readlinkSync, unlinkSync, copyFileSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { paths } from "../config/home";
@@ -66,7 +66,24 @@ export function ensureInitiatorConfigDir(userId: string): string {
   // home) is left as-is: replacing it would orphan transcripts already inside.
   const srcProjects = join(src, "projects");
   const dstProjects = join(dir, "projects");
+  // Determine whether we need to (re)create the symlink.
+  // Skip if it's already a correct symlink; skip if it's a real dir (legacy
+  // initiator home with transcripts inside — replacing it would orphan them).
+  // Re-create if it's a symlink pointing at the wrong target (stale from before
+  // agentConfigDir() was fixed to return ~/.claude instead of paths.claudeConfig).
+  let needsLink = false;
   if (!existsSync(dstProjects)) {
+    needsLink = true;
+  } else {
+    try {
+      const st = lstatSync(dstProjects);
+      if (st.isSymbolicLink() && readlinkSync(dstProjects) !== srcProjects) {
+        unlinkSync(dstProjects);
+        needsLink = true;
+      }
+    } catch { /* leave as-is */ }
+  }
+  if (needsLink) {
     try {
       mkdirSync(srcProjects, { recursive: true });
       symlinkSync(srcProjects, dstProjects, "dir");
