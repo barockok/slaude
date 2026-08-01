@@ -1474,6 +1474,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         );
         return;
       }
+      if (slash.kind === "compact") {
+        const triggered = agent.triggerCommand(session.id, "/compact");
+        if (!triggered) {
+          await reply(":warning: no active session to compact — send a message first to boot the session");
+          return;
+        }
+        await reply(":hourglass_flowing_sand: compacting context…");
+        return;
+      }
       if (slash.kind === "bash") {
         const soul = soulData();
         const managerId = soul.manager.userId;
