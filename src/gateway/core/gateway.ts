@@ -1189,19 +1189,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         return;
       }
       if (slash.kind === "ignore" || slash.kind === "unignore") {
-        // Authorization: manager or approver only
-        const soul = soulData();
-        const managerId = soul.manager.userId;
-        const backupId = soul.backupManager.userId;
-        const isManager = (managerId && userId === managerId) || (backupId && userId === backupId);
-        const isApprover = soul.approvers.some((a) => a.userId === userId);
-        if (!isManager && !isApprover) {
-          await reply(":no_entry: only manager or approver can manage ignores");
-          return;
-        }
-
         if (slash.kind === "ignore") {
           if (slash.target === "user") {
+            const soul = soulData();
+            const managerId = soul.manager.userId;
+            const backupId = soul.backupManager.userId;
+            const isManager = (managerId && userId === managerId) || (backupId && userId === backupId);
+            const isApprover = soul.approvers.some((a) => a.userId === userId);
+            if (!isManager && !isApprover) {
+              await reply(":no_entry: only manager or approver can ignore users");
+              return;
+            }
             const duration = slash.duration;
             let expiresAt: number | undefined;
             if (duration) {
@@ -1237,6 +1235,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
         if (slash.kind === "unignore") {
           if (slash.target === "user") {
+            const soul = soulData();
+            const managerId = soul.manager.userId;
+            const backupId = soul.backupManager.userId;
+            const isManager = (managerId && userId === managerId) || (backupId && userId === backupId);
+            const isApprover = soul.approvers.some((a) => a.userId === userId);
+            if (!isManager && !isApprover) {
+              await reply(":no_entry: only manager or approver can unignore users");
+              return;
+            }
             Ignores.remove({ targetType: "user", userId: slash.userId });
             await reply(`:speaker: stopped ignoring <@${slash.userId}>`);
           } else {
