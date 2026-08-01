@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "bun:test";
-import { mkdirSync, writeFileSync, existsSync, rmSync, lstatSync, realpathSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, rmSync, lstatSync, realpathSync, symlinkSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../../src/config/home";
 import { ensureInitiatorConfigDir } from "../../src/agent/oauth-home";
@@ -49,6 +49,24 @@ describe("ensureInitiatorConfigDir", () => {
 
     expect(existsSync(agentProjects)).toBe(true);
     expect(lstatSync(join(dir, "projects")).isSymbolicLink()).toBe(true);
+  });
+
+  it("replaces a stale symlink pointing at the wrong target", () => {
+    const agentDir = process.env.CLAUDE_CONFIG_DIR || paths.claudeConfig;
+    const agentProjects = join(agentDir, "projects");
+    mkdirSync(agentProjects, { recursive: true });
+    mkdirSync(dir, { recursive: true });
+    // Plant a symlink pointing somewhere else (simulates pre-fix stale link)
+    const staleTarget = join(dir, "_stale_target");
+    mkdirSync(staleTarget, { recursive: true });
+    const linked = join(dir, "projects");
+    symlinkSync(staleTarget, linked, "dir");
+    expect(readlinkSync(linked)).toBe(staleTarget);
+
+    ensureInitiatorConfigDir(userId);
+
+    expect(lstatSync(linked).isSymbolicLink()).toBe(true);
+    expect(realpathSync(linked)).toBe(realpathSync(agentProjects));
   });
 
   it("leaves a pre-existing real projects/ dir untouched (legacy initiator home)", () => {
