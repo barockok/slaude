@@ -289,6 +289,16 @@ export class AgentManager extends EventEmitter {
     this.#live.get(sessionId)?.abort.abort();
   }
 
+  /** Push a raw CLI command (e.g. "/compact") directly into the live session's
+   *  input iterable, bypassing the normal channel-envelope wrapper. Returns false
+   *  if the session has no live query yet (user hasn't sent a message this boot). */
+  triggerCommand(sessionId: string, command: string): boolean {
+    const live = this.#live.get(sessionId);
+    if (!live) return false;
+    live.pushUser(command);
+    return true;
+  }
+
   /** Gracefully close a live session so the next inbound message boots a
    *  fresh Query with newly-resolved MCPs, plugins, and skills. */
   reload(sessionId: string) {
