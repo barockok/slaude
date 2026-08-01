@@ -46,7 +46,8 @@ export type SlashHit =
   | { kind: "soul-list" }
   | { kind: "soul-clear"; field: "trust" | "allow" | "dm" | "block" | "all" }
   | { kind: "model"; id?: string }
-  | { kind: "bash"; command: string };
+  | { kind: "bash"; command: string }
+  | { kind: "compact" };
 
 /** One descriptor per agent slash command — the single source of truth for every help
  *  surface (Slack `/help`, the sim REPL `/help`). Add a command here and it shows up
@@ -73,6 +74,7 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/soul clear <trust|allow|dm|block|all>", summary: "manager-only: drop runtime overrides (revert to SOUL.md)" },
   { usage: "/model [id]", summary: "show or set this thread's model (manager/approver) — no arg lists available models" },
   { usage: "/bash <command>", summary: "run a shell command on the server (gated — approval required)" },
+  { usage: "/compact", summary: "summarize and compact the conversation context" },
   { usage: "/help", summary: "show this help" },
 ];
 
@@ -237,6 +239,9 @@ export function parseSlashCommand(text: string): SlashHit | null {
     const command = extractBashCommand(tail);
     if (!command) return null;
     return { kind: "bash", command };
+  }
+  if (cmd === "compact") {
+    return { kind: "compact" };
   }
   if (HELP_NAMES.has(cmd)) {
     return { kind: "help" };
