@@ -1524,7 +1524,37 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (slash.kind === "compact") {
         const triggered = agent.triggerCommand(session.id, "/compact");
         if (!triggered) {
-          await reply(":warning: no active session to compact — send a message first to boot the session");
+          // No live session — auto-boot and compact.
+          const existing = routes.get(session.id);
+          if (existing) {
+            existing.ctx.channel = channelId;
+            existing.ctx.threadTs = threadTs;
+            existing.ctx.inboundTs = eventTs;
+            existing.spoke = false;
+            existing.wasCompacting = true;
+          } else {
+            const ctx: SlackContext = {
+              client: outClient,
+              channel: channelId,
+              threadTs,
+              inboundTs: eventTs,
+              userId,
+              teamId,
+            };
+            ctx.requestApproval = (req) =>
+              approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, ...req });
+            ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
+            routes.set(session.id, {
+              ctx,
+              surface: surfaceFactory(bindingFor(ctx)),
+              spoke: false,
+              wasCompacting: true,
+            });
+          }
+          await reply(":hourglass_flowing_sand: compacting context…");
+          void agent.sendMessage(session.id, "/compact").catch((e: any) =>
+            console.error("[slaude] compact auto-boot error:", e?.message ?? e),
+          );
           return;
         }
         await reply(":hourglass_flowing_sand: compacting context…");
