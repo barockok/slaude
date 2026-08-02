@@ -111,6 +111,9 @@ type SessionRoute = {
   /** When true, this session was started by a silent cron job — the stop guard
    *  must not force a reply (the job ran without intending to post to Slack). */
   silent?: boolean;
+  /** Set when a manual /compact is in flight; cleared in the done handler after
+   *  posting the ✅ confirmation reply. */
+  wasCompacting?: boolean;
 };
 
 export interface GatewayOptions {
@@ -775,6 +778,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // Auto-evolve turns are internal — don't reset reactions/presence
           // (they were already finalized on the user-visible turn's done).
           if (e.autoEvolve) return;
+          // Post compact-done confirmation after a manual /compact.
+          if (route.wasCompacting) {
+            route.wasCompacting = undefined;
+            await route.surface.reply({ text: ":white_check_mark: compacted" }).catch(() => {});
+          }
           // Stamp the todo message "all done" when every task completed.
           if (route.todoRef && route.todosSnapshot?.length &&
               route.todosSnapshot.every((t) => t.status === "completed") &&
@@ -820,6 +828,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         break;
       }
       case "compacting": {
+        if (e.trigger === "manual") route.wasCompacting = true;
         void status.set(
           e.sessionId,
           route.ctx.channel,
