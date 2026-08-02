@@ -56,7 +56,7 @@ export type SlackContext = {
     category?: string;
   }) => Promise<{ approved: boolean; by: string; note?: string }>;
   /** Optional session reload — set by the adapter so reload_session works. */
-  reloadSession?: () => boolean;
+  reloadSession?: (prompt?: string) => boolean;
 };
 
 export const SLACK_MCP_NAME = "slaude_slack";
@@ -537,16 +537,18 @@ export const adminHandlers = {
     return ok(`stopped ignoring <@${userId}>`);
   },
 
-  async reloadSession(ctx: SlackContext): Promise<ToolResult> {
+  async reloadSession(ctx: SlackContext, { prompt }: { prompt?: string }): Promise<ToolResult> {
     if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
       return err("Only manager or approver can reload session.");
     }
     if (!ctx.reloadSession) {
       return err("reload not wired (transport bug)");
     }
-    const ok_ = ctx.reloadSession();
+    const ok_ = ctx.reloadSession(prompt);
     if (!ok_) return err("session not live — nothing to reload");
-    return ok("Session reloaded. Next message will start fresh with newly-resolved MCPs, plugins, and skills.");
+    return prompt
+      ? ok("Session reloaded. Prompt will be injected automatically on the fresh session.")
+      : ok("Session reloaded. Next message will start fresh with newly-resolved MCPs, plugins, and skills.");
   },
 };
 
@@ -726,9 +728,11 @@ export function createRuntimeMcp(ctx: SlackContext): McpSdkServerConfigWithInsta
 
       tool(
         "reload_session",
-        "Gracefully reload the current session so newly installed MCP servers, plugins, or skills are picked up on the next turn. Closes the SDK loop cleanly (no scary error messages) and marks the session idle. The next inbound message starts a fresh Query with freshly-resolved MCPs, plugins, and skills. Requires manager or approver authorization.",
-        {},
-        () => adminHandlers.reloadSession(ctx),
+        "Gracefully reload the current session so newly installed MCP servers, plugins, or skills are picked up on the next turn. Closes the SDK loop cleanly (no scary error messages) and marks the session idle. The next inbound message starts a fresh Query with freshly-resolved MCPs, plugins, and skills. Optionally pass `prompt` to auto-inject a message immediately after reload so the session resumes without waiting for user input. Requires manager or approver authorization.",
+        {
+          prompt: z.string().optional().describe("If provided, injected as the first message of the fresh session so the flow resumes automatically."),
+        },
+        (args) => adminHandlers.reloadSession(ctx, args),
       ),
     ],
   });

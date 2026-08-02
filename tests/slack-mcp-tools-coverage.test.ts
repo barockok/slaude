@@ -593,25 +593,25 @@ describe("adminHandlers user ignores", () => {
 
 describe("adminHandlers reloadSession", () => {
   test("denied for non-manager", async () => {
-    const res = await adminHandlers.reloadSession(makeCtx({ userId: RANDO }));
+    const res = await adminHandlers.reloadSession(makeCtx({ userId: RANDO }), {});
     expect(res.isError).toBe(true);
     expect(res.content[0]!.text).toContain("Only manager or approver");
   });
 
   test("errors when reload not wired", async () => {
-    const res = await adminHandlers.reloadSession(makeCtx());
+    const res = await adminHandlers.reloadSession(makeCtx(), {});
     expect(res.isError).toBe(true);
     expect(res.content[0]!.text).toContain("reload not wired");
   });
 
   test("errors when session not live", async () => {
-    const res = await adminHandlers.reloadSession(makeCtx({ reloadSession: () => false }));
+    const res = await adminHandlers.reloadSession(makeCtx({ reloadSession: () => false }), {});
     expect(res.isError).toBe(true);
     expect(res.content[0]!.text).toContain("session not live");
   });
 
   test("reloads live session", async () => {
-    const res = await adminHandlers.reloadSession(makeCtx({ reloadSession: () => true }));
+    const res = await adminHandlers.reloadSession(makeCtx({ reloadSession: () => true }), {});
     expect(res.isError).toBeUndefined();
     expect(res.content[0]!.text).toContain("Session reloaded");
   });

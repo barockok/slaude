@@ -173,6 +173,8 @@ export class AgentManager extends EventEmitter {
   #streamClosedCount = new Map<string, number>();
   /** Sessions that should inject a synthetic "continue" message after their reload. */
   #autoContinue = new Set<string>();
+  /** Prompt to inject after a manual reload_session call (keyed by sessionId). */
+  #reloadPrompt = new Map<string, string>();
   #budget = new TokenBudget({
     fallbackContextWindow: env.tokenFallbackContextWindow(),
   });
@@ -286,6 +288,7 @@ export class AgentManager extends EventEmitter {
   abort(sessionId: string) {
     this.#pendingReload.delete(sessionId);
     this.#autoContinue.delete(sessionId);
+    this.#reloadPrompt.delete(sessionId);
     this.#live.get(sessionId)?.abort.abort();
   }
 
@@ -300,10 +303,13 @@ export class AgentManager extends EventEmitter {
   }
 
   /** Gracefully close a live session so the next inbound message boots a
-   *  fresh Query with newly-resolved MCPs, plugins, and skills. */
-  reload(sessionId: string) {
+   *  fresh Query with newly-resolved MCPs, plugins, and skills.
+   *  If `prompt` is provided it is injected automatically after the reload
+   *  instead of waiting for the user to type something. */
+  reload(sessionId: string, prompt?: string) {
     const live = this.#live.get(sessionId);
     if (!live) return false;
+    if (prompt) this.#reloadPrompt.set(sessionId, prompt);
     live.reloading = true;
     live.closeIterable();
     return true;
@@ -634,6 +640,14 @@ export class AgentManager extends EventEmitter {
           this.#autoContinue.delete(sessionId);
           console.log(`[mgr] auto-continuing after stream_closed reload session=${sessionId}`);
           void this.sendMessage(sessionId, "The MCP stream was restored. Please continue where you left off.");
+        }
+        // After a manual reload_session with a prompt, inject it so the user
+        // doesn't need to type anything to resume the flow.
+        if (live.reloading && this.#reloadPrompt.has(sessionId)) {
+          const p = this.#reloadPrompt.get(sessionId)!;
+          this.#reloadPrompt.delete(sessionId);
+          console.log(`[mgr] injecting reload prompt session=${sessionId}`);
+          void this.sendMessage(sessionId, p);
         }
       }
     })();

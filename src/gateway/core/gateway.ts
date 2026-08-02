@@ -176,7 +176,7 @@ export function bindingFor(ctx: SlackContext): SessionBinding {
     get userId() { return ctx.userId; },
     get teamId() { return ctx.teamId; },
     requestApproval: (r) => ctx.requestApproval!(r),
-    reloadSession: () => ctx.reloadSession?.() ?? false,
+    reloadSession: (prompt?) => ctx.reloadSession?.(prompt) ?? false,
   };
 }
 
@@ -236,7 +236,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           threadTs: ctx.threadTs,
           ...req,
         });
-      ctx.reloadSession = () => agent.reload(sessionId);
+      ctx.reloadSession = (prompt?) => agent.reload(sessionId, prompt);
       routes.set(sessionId, { ctx, surface: surfaceFactory(bindingFor(ctx)), spoke: false, silent: true });
     },
   });
@@ -1631,7 +1631,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.ctx.threadTs = threadTs;
       existing.ctx.inboundTs = eventTs;
       existing.ctx.userId = userId;
-      existing.ctx.reloadSession = () => agent.reload(session.id);
+      existing.ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
       existing.spoke = false;
       existing.todoRef = undefined;       // fresh tracker per user turn
       existing.todosSnapshot = undefined;
@@ -1654,7 +1654,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           threadTs: ctx.threadTs,
           ...req,
         });
-      ctx.reloadSession = () => agent.reload(session.id);
+      ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
       routes.set(session.id, { ctx, surface: surfaceFactory(bindingFor(ctx)), spoke: false, suppress });
     }
 
