@@ -1,4 +1,5 @@
 import { brainCall } from "./brain";
+import { audienceVisible, pageAudience } from "./audience";
 import type { BrainScope } from "./scope";
 
 /**
@@ -41,6 +42,8 @@ export interface GatherOpts {
   finalLimit?: number;
   /** Injectable op caller (tests). Default: brainCall. */
   call?: (name: string, params: Record<string, unknown>, scope: BrainScope) => Promise<unknown>;
+  /** Injectable audience lookup (tests). Default: sqlite index (audience.ts). */
+  audienceOf?: (sourceId: string, slug: string) => string | null;
 }
 
 /** Effective rank: gbrain's reranker output when present, else the base score. */
@@ -68,6 +71,17 @@ export async function gather(query: string, scope: BrainScope, opts: GatherOpts 
   const call = opts.call ?? brainCall;
 
   const sources = scope.allowedSources.length > 0 ? scope.allowedSources : [scope.sourceId];
+  // Audience disclosure filter for the agent's own mind (see audience.ts). We
+  // filter INSIDE each per-source list — the source is known there without
+  // trusting hit.source_id — and fail closed: a hit from a tiered source with
+  // no slug can't be checked, so it drops.
+  const grant = scope.audience;
+  const tiered = grant && grant.level !== "all" ? new Set(scope.audienceSources ?? []) : null;
+  const audienceOf = opts.audienceOf ?? pageAudience;
+  const audienceFilter = (s: string, hits: GatherHit[]): GatherHit[] => {
+    if (!tiered || !tiered.has(s)) return hits;
+    return hits.filter((h) => typeof h.slug === "string" && h.slug && audienceVisible(audienceOf(s, h.slug), grant!));
+  };
 
   // One search per source, scoped to that source alone, in parallel. A single
   // source failing (e.g. transient) drops to [] rather than sinking the gather
@@ -81,7 +95,7 @@ export async function gather(query: string, scope: BrainScope, opts: GatherOpts 
       const sub: BrainScope = { clientId: scope.clientId, sourceId: s, allowedSources: [s] };
       try {
         const hits = await call("search", { query, limit: perSourceK }, sub);
-        return Array.isArray(hits) ? (hits as GatherHit[]) : [];
+        return Array.isArray(hits) ? audienceFilter(s, hits as GatherHit[]) : [];
       } catch (e) {
         failures++;
         lastErr = e;
