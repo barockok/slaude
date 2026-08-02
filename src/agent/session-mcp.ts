@@ -21,8 +21,8 @@ export const SESSION_MCP_NAME = "slaude_session";
 
 export type SessionContext = {
   getSnapshot: () => UsageSnapshot | null;
-  ignoreUser: (userId: string, reason: string, durationMinutes?: number) => void;
-  notifyManager: (text: string) => Promise<void>;
+  ignoreUser?: (userId: string, reason: string, durationMinutes?: number) => void;
+  notifyManager?: (text: string) => Promise<void>;
 };
 
 type ToolResult = {
@@ -85,9 +85,10 @@ export function createSessionMcp(
           required: ["user_id", "reason"],
         },
         async (args: { user_id: string; reason: string; duration_minutes?: number }) => {
+          if (!ctx.ignoreUser) return ok("ignore_user not available in this context");
           ctx.ignoreUser(args.user_id, args.reason, args.duration_minutes);
           const durText = args.duration_minutes ? `for ${args.duration_minutes}m` : "permanently";
-          await ctx.notifyManager(
+          await ctx.notifyManager?.(
             `:no_entry: *agent sanctioned* <@${args.user_id}> ${durText}\n> ${args.reason}`,
           );
           return ok(`<@${args.user_id}> ignored ${durText}`);
