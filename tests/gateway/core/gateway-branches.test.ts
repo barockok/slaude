@@ -572,21 +572,21 @@ describe("gateway uncovered branches", () => {
       const session = g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
 
       // release with no active lock → no-op message, still unlocked
-      expect(await g.h.__agentOneOnOne(session.id, false)).toContain("nothing to release");
+      expect(await g.h.__agentOneOnOne(session.id, "off")).toContain("nothing to release");
       expect(OneOnOne.find("D_MGR", ts)).toBeNull();
 
       // lock → locks the thread to the calling user (the DM's manager)
-      const locked = await g.h.__agentOneOnOne(session.id, true);
+      const locked = await g.h.__agentOneOnOne(session.id, "lock");
       expect(locked).toContain("1on1");
       expect(OneOnOne.find("D_MGR", ts)?.locked_user).toBe(WORLD.manager);
 
       // release → unlocked again
-      const released = await g.h.__agentOneOnOne(session.id, false);
+      const released = await g.h.__agentOneOnOne(session.id, "off");
       expect(released).toContain("open again");
       expect(OneOnOne.find("D_MGR", ts)).toBeNull();
 
       // unknown session → no active thread
-      expect(await g.h.__agentOneOnOne("no-such-session", true)).toContain("no active thread");
+      expect(await g.h.__agentOneOnOne("no-such-session", "lock")).toContain("no active thread");
     });
 
     it("agent mention-only toggle (agentMentionOnly seam)", async () => {
