@@ -111,14 +111,6 @@ CREATE TABLE IF NOT EXISTS mention_only_threads (
   PRIMARY KEY (channel_id, thread_ts)
 );
 
-CREATE TABLE IF NOT EXISTS kb_page_audience (
-  source_id  TEXT    NOT NULL,
-  slug       TEXT    NOT NULL,
-  audience   TEXT    NOT NULL,
-  updated_at INTEGER NOT NULL,
-  PRIMARY KEY (source_id, slug)
-);
-
 CREATE TABLE IF NOT EXISTS soul_overrides (
   field      TEXT    NOT NULL CHECK(field IN
               ('trustedChannels','allowedChannels','dmAllowedUsers','blockedUsers')),
