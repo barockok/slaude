@@ -56,7 +56,7 @@ export interface SessionBinding {
   userId?: string;
   teamId?: string;
   requestApproval: (r: ApprovalRequest) => Promise<ApprovalResult>;
-  reloadSession: () => boolean;
+  reloadSession: (prompt?: string) => boolean;
 }
 
 export type SurfaceFactory = (b: SessionBinding) => Surface;
