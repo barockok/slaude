@@ -1,5 +1,4 @@
-import { db } from "../db/schema";
-import type { AudienceGrant } from "./scope";
+import type { AudienceGrant, BrainScope } from "./scope";
 
 /**
  * Audience share-tiers for the agent's own mind.
@@ -27,14 +26,23 @@ import type { AudienceGrant } from "./scope";
  * RESTRICTS the agent's own recall; escalating a page to other readers still
  * goes through the destination-classified write gate (target:"shared").
  *
- * Enforcement source of truth is a local sqlite index (kb_page_audience),
- * written through on every kb_memoize into an agent slice. Pages written by
- * other paths (nightly ingest, timeline entries) have no index row and get
- * the `team` default.
+ * STORAGE IS BRAIN TAGS, not a slaude-side index — the brain stays the single
+ * source of truth (remote brain-server deploys, restores, other writers), and
+ * tiers are auditable with plain kb_list_pages({tag:"audience:manager"}).
+ * kb_memoize derives tags from the frontmatter: `audience:<tier>`, plus for
+ * user tiers a marker pair `audience:user` + `audience:user:<ID>` (user ids
+ * aren't enumerable, the marker makes "any user-restricted page?" one query).
+ * gbrain's own put_page tag reconciliation is ADD-ONLY (their #1621), so a
+ * demoted tier would leave the old tag behind and fail OPEN — slaude
+ * reconciles explicitly (get_tags → remove stale → add current) instead.
  */
 
 const TIERS = new Set(["private", "manager", "team", "public"]);
 const USER_TIER = /^user:[A-Za-z0-9]+$/;
+
+export const AUDIENCE_TAG_PREFIX = "audience:";
+/** Marker tag carried by every user-tier page alongside audience:user:<ID>. */
+export const AUDIENCE_USER_MARKER = "audience:user";
 
 export type ParsedAudience = { audience: string | null; error?: string };
 
@@ -47,7 +55,7 @@ export function parseAudience(content: string): ParsedAudience {
   if (!line) return { audience: null };
   const raw = line[1]!.replace(/^["']|["']$/g, "");
   const value = raw.startsWith("user:") || raw.startsWith("USER:")
-    ? "user:" + raw.slice(5)
+    ? "user:" + raw.slice(5).toUpperCase()
     : raw.toLowerCase();
   if (TIERS.has(value) || USER_TIER.test(value)) return { audience: value };
   return {
@@ -56,69 +64,149 @@ export function parseAudience(content: string): ParsedAudience {
   };
 }
 
-const userIdEq = (a: string, b: string): boolean => a.toUpperCase() === b.toUpperCase();
-
 /** May a page with this audience tier surface under this turn's grant?
  *  `audience: null` = unlabeled page = `team` tier. */
 export function audienceVisible(audience: string | null, g: AudienceGrant): boolean {
   if (g.level === "all") return true;
   const a = audience ?? "team";
   if (a === "public") return true;
-  if (a.startsWith("user:")) return g.userId !== null && userIdEq(a.slice(5), g.userId);
+  if (a.startsWith("user:")) return g.userId !== null && a.slice(5).toUpperCase() === g.userId.toUpperCase();
   if (a === "team") return g.level === "team" || g.level === "manager";
   if (a === "manager") return g.level === "manager";
   return false; // private
 }
 
-/** Upsert (or clear, when audience is null) a page's tier in the index. */
-export function setPageAudience(sourceId: string, slug: string, audience: string | null): void {
-  if (audience === null) {
-    db.run(`DELETE FROM kb_page_audience WHERE source_id = ? AND slug = ?`, [sourceId, slug]);
-    return;
+/** Brain tags encoding a tier. Tag matching is exact-string in SQL, so user
+ *  ids are normalized uppercase (parseAudience does the same). */
+export function audienceTags(audience: string): string[] {
+  if (audience.startsWith("user:")) {
+    return [AUDIENCE_USER_MARKER, `${AUDIENCE_TAG_PREFIX}user:${audience.slice(5).toUpperCase()}`];
   }
-  db.run(
-    `INSERT INTO kb_page_audience (source_id, slug, audience, updated_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(source_id, slug) DO UPDATE SET audience = excluded.audience, updated_at = excluded.updated_at`,
-    [sourceId, slug, audience, Date.now()],
-  );
+  return [`${AUDIENCE_TAG_PREFIX}${audience}`];
 }
 
-/** Indexed tier for a page, or null (= unlabeled → team default). */
-export function pageAudience(sourceId: string, slug: string): string | null {
-  const row = db
-    .query(`SELECT audience FROM kb_page_audience WHERE source_id = ? AND slug = ?`)
-    .get(sourceId, slug) as { audience: string } | null;
-  return row?.audience ?? null;
+export type BrainCallFn = (name: string, params: Record<string, unknown>, scope: BrainScope) => Promise<unknown>;
+
+/** Single-source read/write scope for tag ops — get_tags/add_tag/remove_tag
+ *  thread ctx.sourceId, so the source must be explicit, not the turn default. */
+const sub = (scope: BrainScope, sourceId: string): BrainScope => ({
+  clientId: scope.clientId,
+  sourceId,
+  allowedSources: [sourceId],
+});
+
+const asTagList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((t): t is string => typeof t === "string") : []);
+
+/** Tier of a page as recorded in brain tags, or null (unlabeled → team).
+ *  A bare marker without its audience:user:<ID> pair reads as a user tier
+ *  for nobody — fails closed via audienceVisible. */
+export async function pageAudienceFromTags(
+  call: BrainCallFn, scope: BrainScope, sourceId: string, slug: string,
+): Promise<string | null> {
+  const tags = asTagList(await call("get_tags", { slug }, sub(scope, sourceId)));
+  const tier = tags.find((t) => t.startsWith(AUDIENCE_TAG_PREFIX) && t !== AUDIENCE_USER_MARKER);
+  if (tier) return tier.slice(AUDIENCE_TAG_PREFIX.length);
+  return tags.includes(AUDIENCE_USER_MARKER) ? "user:" : null;
 }
 
-const rowsFor = (sources: string[]): Array<{ slug: string; audience: string }> => {
-  if (sources.length === 0) return [];
-  const marks = sources.map(() => "?").join(",");
-  return db
-    .query(`SELECT slug, audience FROM kb_page_audience WHERE source_id IN (${marks})`)
-    .all(...sources) as Array<{ slug: string; audience: string }>;
-};
-
-/** Slugs with an EXPLICIT tier the grant may not surface. (Unlabeled pages are
- *  not representable here — callers that must hide those too fail closed by
- *  stripping the sources instead; see kb_list_pages / kb_think.) */
-export function hiddenSlugs(sources: string[], g: AudienceGrant): Set<string> {
-  const out = new Set<string>();
-  if (g.level === "all") return out;
-  for (const r of rowsFor(sources)) {
-    if (!audienceVisible(r.audience, g)) out.add(r.slug);
+/** Make a page's audience tags match its frontmatter tier exactly. Explicit
+ *  remove-then-add because gbrain's put_page reconciliation is add-only —
+ *  without this a demoted page keeps its old (more permissive) tag. */
+export async function reconcileAudienceTags(
+  call: BrainCallFn, scope: BrainScope, slug: string, audience: string | null,
+): Promise<void> {
+  const current = asTagList(await call("get_tags", { slug }, scope)).filter((t) => t.startsWith(AUDIENCE_TAG_PREFIX));
+  const desired = audience === null ? [] : audienceTags(audience);
+  for (const t of current) {
+    if (!desired.includes(t)) await call("remove_tag", { slug, tag: t }, scope);
   }
-  return out;
+  for (const t of desired) {
+    if (!current.includes(t)) await call("add_tag", { slug, tag: t }, scope);
+  }
 }
 
-/** Does the grant hide ANY page in these sources? Drives the kb_think source
- *  strip: gbrain's internal gather can't filter per page, so when something is
- *  hidden the whole slice drops out of synthesis (the slaude-side cross-check
- *  gather, which CAN filter, compensates). At "public" level unlabeled pages
- *  are hidden by default and unverifiable from the index — always true. */
-export function hasHiddenPages(sources: string[], g: AudienceGrant): boolean {
-  if (g.level === "all") return false;
-  if (g.level === "public") return true;
-  return rowsFor(sources).some((r) => !audienceVisible(r.audience, g));
+export interface AudienceFilter {
+  /** May this (source, slug) surface? Non-tiered sources always pass. */
+  visible(sourceId: string, slug: string): boolean;
+  /** Does the grant hide ANYTHING in the tiered sources? Drives the kb_think
+   *  source strip (gbrain's internal gather can't filter per page). */
+  anyHidden: boolean;
+}
+
+const PASS_ALL: AudienceFilter = { visible: () => true, anyHidden: false };
+const HIDE_TIERED = (tiered: string[]): AudienceFilter => ({
+  visible: (src) => !tiered.includes(src),
+  anyHidden: true,
+});
+
+// list_pages caps at 100 rows with no pagination. A full page means the slug
+// set may be truncated — an incomplete HIDDEN set would fail open, so the
+// whole source is treated as hidden for the turn instead. (A truncated
+// VISIBLE set at public level under-shows, which already fails closed.)
+const LIST_LIMIT = 100;
+
+/**
+ * Build the per-turn disclosure filter from brain tags: one slug-set query per
+ * relevant audience tag per tiered source. team/manager levels compute the
+ * HIDDEN set (explicitly-restricted pages); public level computes the VISIBLE
+ * set (only `audience:public` + the speaker's own user tier — unlabeled pages
+ * default to team and stay hidden there). Any query failure → tiered sources
+ * fully hidden (fail closed).
+ */
+export async function buildAudienceFilter(call: BrainCallFn, scope: BrainScope): Promise<AudienceFilter> {
+  const g = scope.audience;
+  const tiered = scope.audienceSources ?? [];
+  if (!g || g.level === "all" || tiered.length === 0) return PASS_ALL;
+  const uid = g.userId ? g.userId.toUpperCase() : null;
+
+  const listSlugs = async (src: string, tag: string): Promise<{ slugs: Set<string>; full: boolean }> => {
+    const rows = await call("list_pages", { tag, limit: LIST_LIMIT }, sub(scope, src));
+    const arr = Array.isArray(rows) ? rows : [];
+    const slugs = new Set<string>();
+    for (const r of arr) {
+      const s = (r as { slug?: unknown }).slug;
+      if (typeof s === "string" && s) slugs.add(s);
+    }
+    return { slugs, full: arr.length >= LIST_LIMIT };
+  };
+
+  try {
+    if (g.level === "public") {
+      const visible = new Map<string, Set<string>>();
+      for (const src of tiered) {
+        const pub = await listSlugs(src, `${AUDIENCE_TAG_PREFIX}public`);
+        const mine = uid ? await listSlugs(src, `${AUDIENCE_TAG_PREFIX}user:${uid}`) : { slugs: new Set<string>() };
+        visible.set(src, new Set([...pub.slugs, ...mine.slugs]));
+      }
+      return {
+        visible: (src, slug) => !tiered.includes(src) || (visible.get(src)?.has(slug) ?? false),
+        anyHidden: true, // unlabeled pages are hidden at this level, always
+      };
+    }
+    // team | manager: hidden = private (+ manager at team) + user:<not me>
+    const hidden = new Map<string, Set<string> | "all">();
+    let any = false;
+    for (const src of tiered) {
+      const parts = [await listSlugs(src, `${AUDIENCE_TAG_PREFIX}private`)];
+      if (g.level === "team") parts.push(await listSlugs(src, `${AUDIENCE_TAG_PREFIX}manager`)); // eslint-disable-line no-await-in-loop
+      const userAll = await listSlugs(src, AUDIENCE_USER_MARKER);
+      const userMine = uid ? await listSlugs(src, `${AUDIENCE_TAG_PREFIX}user:${uid}`) : { slugs: new Set<string>(), full: false };
+      const set = new Set<string>();
+      for (const p of parts) for (const s of p.slugs) set.add(s);
+      for (const s of userAll.slugs) if (!userMine.slugs.has(s)) set.add(s);
+      const overflow = parts.some((p) => p.full) || userAll.full;
+      hidden.set(src, overflow ? "all" : set);
+      if (overflow || set.size > 0) any = true;
+    }
+    return {
+      visible: (src, slug) => {
+        const h = hidden.get(src);
+        if (h === undefined) return true;
+        return h === "all" ? false : !h.has(slug);
+      },
+      anyHidden: any,
+    };
+  } catch {
+    return HIDE_TIERED(tiered);
+  }
 }

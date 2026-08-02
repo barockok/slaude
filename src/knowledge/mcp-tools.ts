@@ -7,7 +7,7 @@ import { brainThink, sdkThinkClient } from "./brain-think";
 import { gather } from "./gather";
 import { gatedBrainCall, type ApprovalReq, type ApprovalRes, type GateInput } from "./gated-dispatch";
 import { SHARED_SOURCE, agentSourceId, type BrainScope } from "./scope";
-import { audienceVisible, hasHiddenPages, hiddenSlugs, pageAudience, parseAudience, setPageAudience } from "./audience";
+import { audienceVisible, buildAudienceFilter, pageAudienceFromTags, parseAudience, reconcileAudienceTags } from "./audience";
 import { agentIdReady } from "./agent-identity";
 
 export const KB_MCP_NAME = "slaude_kb";
@@ -166,7 +166,8 @@ export const brainHandlers = {
       // surface as search_fallback / rescue context. See audience.ts.
       const g = scope.audience;
       const tiered = scope.audienceSources ?? [];
-      const thinkScope = g && tiered.length > 0 && hasHiddenPages(tiered, g)
+      const thinkScope = g && g.level !== "all" && tiered.length > 0
+        && (await buildAudienceFilter(d.call ?? brainCall, scope)).anyHidden
         ? stripAudienceSources(scope)
         : scope;
       // SDK-routed synthesis (subscription auth) — not the raw think op.
@@ -260,14 +261,18 @@ export const brainHandlers = {
       const tiered = scope.audienceSources ?? [];
       if (g && g.level !== "all" && tiered.length > 0 && page && typeof page === "object") {
         const src = (page as { source_id?: unknown }).source_id;
-        // Keyed on the result's source when present; when absent, fail closed
-        // on any explicit index entry for the slug in a tiered source.
+        // Keyed on the result's source when present (per-slug get_tags — no
+        // list truncation concerns); when absent, fail closed on any explicit
+        // tier for the slug in a tiered source.
         const denied = typeof src === "string"
-          ? tiered.includes(src) && !audienceVisible(pageAudience(src, p.slug), g)
-          : tiered.some((s) => {
-              const a = pageAudience(s, p.slug);
-              return a !== null && !audienceVisible(a, g);
-            });
+          ? tiered.includes(src) && !audienceVisible(await pageAudienceFromTags(call, scope, src, p.slug), g)
+          : await (async () => {
+              for (const s of tiered) {
+                const a = await pageAudienceFromTags(call, scope, s, p.slug);
+                if (a !== null && !audienceVisible(a, g)) return true;
+              }
+              return false;
+            })();
         if (denied) return err(`page not available in this conversation: ${p.slug}`);
       }
       return asJson(page);
@@ -287,10 +292,15 @@ export const brainHandlers = {
     try {
       const call = d.call ?? brainCall;
       const rows = await call("list_pages", { ...p }, listScope);
-      if (g && (g.level === "team" || g.level === "manager") && Array.isArray(rows)) {
-        const hidden = hiddenSlugs(tiered, g);
-        if (hidden.size > 0) {
-          return asJson(rows.filter((r) => !hidden.has((r as { slug?: string })?.slug ?? "")));
+      if (g && (g.level === "team" || g.level === "manager") && tiered.length > 0 && Array.isArray(rows)) {
+        const filter = await buildAudienceFilter(call, scope);
+        if (filter.anyHidden) {
+          // Rows carry no source_id — keep a row only if its slug is visible
+          // in EVERY tiered source (slug-collision over-filtering fails closed).
+          return asJson(rows.filter((r) => {
+            const slug = (r as { slug?: string })?.slug ?? "";
+            return tiered.every((s) => filter.visible(s, slug));
+          }));
         }
       }
       return asJson(rows);
@@ -302,17 +312,24 @@ export const brainHandlers = {
     const scope = d.scope();
     const g = scope.audience;
     const tiered = scope.audienceSources ?? [];
+    const call = d.call ?? brainCall;
     let readScope = scope;
     if (g && g.level !== "all" && tiered.length > 0) {
-      if (hiddenSlugs(tiered, g).has(p.slug)) {
-        return err(`page not available in this conversation: ${p.slug}`);
+      try {
+        for (const s of tiered) {
+          const a = await pageAudienceFromTags(call, scope, s, p.slug);
+          if (a !== null && !audienceVisible(a, g)) {
+            return err(`page not available in this conversation: ${p.slug}`);
+          }
+        }
+      } catch (e) {
+        return err(humanizeBrainError("get_tags", e)); // fail closed
       }
       // Link targets of a readable page are part of its content — no per-edge
       // filtering needed. At "public" level unlabeled agent pages are hidden,
       // so their graphs must be too: drop the tiered sources (fail closed).
       if (g.level === "public") readScope = stripAudienceSources(scope);
     }
-    const call = d.call ?? brainCall;
     let links: unknown;
     try {
       links = await call("get_links", { slug: p.slug }, readScope);
@@ -374,13 +391,30 @@ export const brainHandlers = {
         describe,
       });
       if (!r.ok) return err(r.reason);
-      // Write-through the audience index — only for pages landing in the
+      // Reconcile audience tags in the BRAIN — only for pages landing in the
       // agent's OWN slice (tiers govern the agent's mind; user/shared slices
-      // have source-level visibility already). Clearing on null keeps a
-      // re-memoize without the key back at the team default.
+      // have source-level visibility already). Explicit remove-then-add
+      // because gbrain's put_page tag reconciliation is add-only; a
+      // re-memoize without the key clears back to the team default. Same
+      // authorization envelope as the approved batch (own-slice tag writes
+      // auto-pass the gate anyway).
       const ownSlice = scope.sourceId === agentSourceId(d.gate().agentId);
       if (ownSlice) {
-        pages.forEach((pg, idx) => setPageAudience(scope.sourceId, pg.slug, audiences[idx] ?? null));
+        for (let idx = 0; idx < pages.length; idx++) {
+          const pg = pages[idx]!;
+          try {
+            await reconcileAudienceTags(call, scope, pg.slug, audiences[idx] ?? null);
+          } catch (e) {
+            // The page IS saved but its tier is NOT applied — never report
+            // clean success on a possibly under-protected page.
+            const raw = e instanceof Error ? e.message : String(e);
+            return err(
+              `page "${pg.slug}" was saved, but applying its audience tags failed: ${raw} — ` +
+              `retry the SAME kb_memoize call once (put_page is idempotent); ` +
+              `until it succeeds, treat the page's audience tier as not enforced.`,
+            );
+          }
+        }
       }
       const audienceNote = !ownSlice && audiences.some((a) => a !== null)
         ? { audience_note: "audience frontmatter applies only to your own agent slice; ignored for this target" }
