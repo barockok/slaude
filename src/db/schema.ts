@@ -166,6 +166,12 @@ if (!cronCols.some((c) => c.name === "when_active")) {
   db.run(`ALTER TABLE cron_jobs ADD COLUMN when_active TEXT NOT NULL DEFAULT 'fire'`);
 }
 
+// Migration: open-mode 1on1 — initiator can open the session to guests with a scope constraint.
+const oooLockCols = db.query(`PRAGMA table_info(one_on_one_locks)`).all() as Array<{ name: string }>;
+if (!oooLockCols.some((c) => c.name === "open_scope")) {
+  db.run(`ALTER TABLE one_on_one_locks ADD COLUMN open_scope TEXT`);
+}
+
 // Migration: record the /1on1 lock owner active when the job was created. Cron
 // runs for DM/channel-target jobs key on a synthetic `cron:<id>` thread that
 // carries no 1on1 lock, so #startSession's thread-lock lookup can't find the

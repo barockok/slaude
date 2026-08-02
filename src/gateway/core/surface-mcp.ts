@@ -22,9 +22,10 @@ export interface SurfaceMcpOpts {
   /** Resolves the CURRENT turn's inbound platform user id (live getter — the
    *  gateway mutates ctx per turn). Required to mount manager-gated tools. */
   initiator?: () => string | undefined;
-  /** Start (true) / release (false) a /1on1 lock on the current thread (gateway
-   *  injects the engine). When present, the set_one_on_one tool is mounted. */
-  setOneOnOne?: (active: boolean) => Promise<string>;
+  /** Manage 1on1 state on the current thread (gateway injects the engine).
+   *  action="lock" → private (initiator+manager only); "open" → admit guests with
+   *  optional scope description; "off" → fully release. */
+  setOneOnOne?: (action: "lock" | "open" | "off", scope?: string) => Promise<string>;
   /** Toggle mention-only mode for the current thread (gateway injects the engine —
    *  surface-mcp stays decoupled from the db). When present, the set_mention_only
    *  tool is mounted. */
@@ -147,10 +148,17 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
     defs.push({
       name: "set_one_on_one",
       description:
-        "Lock or release 1on1 mode for THIS thread. active=true → private session heard only by the current user + the manager; active=false → reopen it. Use when the user asks to go private / one-on-one, or to end it. Returns a short status to relay.",
-      schema: { active: z.boolean().describe("true = start 1on1 (lock to the current user); false = release it.") },
-      handler: async ({ active }) => {
-        try { return ok(await setOneOnOne(active)); }
+        'Manage 1on1 mode for THIS thread.\n' +
+        '• action="lock" → private session, only current user + manager are heard (start or re-lock).\n' +
+        '• action="open" → admit all participants; use `scope` to describe behavioural constraints for guests (e.g. "read-only, no credentials"). The scope is injected into the session context — interpret and respect it for non-initiator users.\n' +
+        '• action="off" → fully release 1on1; thread is public again.\n' +
+        'Returns a short status to relay.',
+      schema: {
+        action: z.enum(["lock", "open", "off"]).describe('"lock" = start/re-lock to current user; "open" = admit guests (add scope if needed); "off" = release entirely.'),
+        scope: z.string().optional().describe('Guest constraint description for action="open". Free text — you interpret and enforce it for non-initiator users.'),
+      },
+      handler: async ({ action, scope }) => {
+        try { return ok(await setOneOnOne(action, scope)); }
         catch (e: any) { return fail(`set_one_on_one failed: ${e?.message ?? String(e)}`); }
       },
     });
