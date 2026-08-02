@@ -73,7 +73,7 @@ export interface GatewayHandle {
   __agentConnect(sessionId: string, server: string): Promise<string>;
   /** TEST/SIM SEAM ONLY. Drive the agent-facing 1on1 toggle
    *  (mcp__slaude_surface__set_one_on_one) for a live session. */
-  __agentOneOnOne(sessionId: string, active: boolean): Promise<string>;
+  __agentOneOnOne(sessionId: string, action: "lock" | "open" | "off", scope?: string): Promise<string>;
   /** TEST/SIM SEAM ONLY. Drive the agent-facing mention-only toggle
    *  (mcp__slaude_surface__set_mention_only) for a live session. */
   __agentMentionOnly(sessionId: string, active: boolean): Promise<string>;
@@ -332,7 +332,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const servers: Record<string, McpServerConfig> = {
       [SURFACE_MCP_NAME]: createSurfaceMcp(route.surface, {
         initiator: () => route.ctx.userId,
-        setOneOnOne: (active) => agentOneOnOne(sessionId, route.ctx, active),
+        setOneOnOne: (action, scope) => agentOneOnOne(sessionId, route.ctx, action, scope),
         setMentionOnly: (active) => agentMentionOnly(route.ctx, active),
       }),
       [RUNTIME_MCP_NAME]: createRuntimeMcp(route.ctx),
@@ -582,16 +582,27 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return `Started authorizing \`${serverName}\` — I've posted the authorization link in this thread. Open it to approve; I'll confirm here once it's connected. You won't need to paste anything back.`;
   }
 
-  // Agent-facing 1on1 toggle — same engine as the /1on1 command (lock to the current
-  // speaker + session reboot). No gating, matching the slash command: anyone who can
-  // chat can start/release it.
-  async function agentOneOnOne(sessionId: string, ctx: SlackContext, active: boolean): Promise<string> {
+  // Agent-facing 1on1 toggle — driven by the set_one_on_one surface tool.
+  // "lock" = lock/re-lock to current user; "open" = admit guests (with scope);
+  // "off" = fully release. Session reloads on every state change so the
+  // session-mode block and resolver pick up the new DB state.
+  async function agentOneOnOne(sessionId: string, ctx: SlackContext, action: "lock" | "open" | "off", scope?: string): Promise<string> {
     const userId = ctx.userId ?? "";
     const threadTs = ctx.threadTs ?? ctx.inboundTs ?? "";
-    if (active) {
+    if (action === "lock") {
       OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
-      agent.reload(sessionId); // reboot so the resolver + session-mode block pick it up
+      agent.reload(sessionId);
       return `Locked this thread to a 1on1 with <@${userId}> — only they and the manager are heard here now.`;
+    }
+    if (action === "open") {
+      const existing = OneOnOne.find(ctx.channel, threadTs);
+      if (!existing) {
+        OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
+      }
+      OneOnOne.setOpen(ctx.channel, threadTs, scope ?? "");
+      agent.reload(sessionId);
+      const scopeNote = scope ? ` Scope: ${scope}` : "";
+      return `Opened this 1on1 to all participants.${scopeNote} Use set_one_on_one(action="lock") to restrict again.`;
     }
     if (!OneOnOne.find(ctx.channel, threadTs)) return "No active 1on1 in this thread — nothing to release.";
     OneOnOne.unlock(ctx.channel, threadTs);
@@ -933,7 +944,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (lock) {
         const soul = soulData();
         const isMgr = userId === soul.manager.userId || userId === soul.backupManager.userId;
-        if (userId !== lock.locked_user && !isMgr) {
+        // In open mode (open_scope !== null) anyone may speak; only locked mode enforces the initiator gate.
+        if (lock.open_scope === null && userId !== lock.locked_user && !isMgr) {
           console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — 1on1 locked to ${lock.locked_user}`);
           metric.slackDropsTotal.inc({ reason: "one_on_one" });
           return;
@@ -1021,8 +1033,27 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (slash.kind === "one-on-one") {
         if (slash.action === "on") {
           OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId });
-          agent.reload(session.id);   // reboot so the resolver clears private services next turn
-          await reply(`:lock: *1on1 mode* — only <@${userId}> and the manager will be heard in this thread. \`/1on1 off\` to release.`);
+          agent.reload(session.id);
+          await reply(`:lock: *1on1 mode* — only <@${userId}> and the manager will be heard in this thread. \`/1on1 off\` to release. Ask me to open it to guests when needed.`);
+          return;
+        }
+        if (slash.action === "lock") {
+          const existing = OneOnOne.find(channelId, threadTs);
+          if (!existing) {
+            await reply("No active 1on1 in this thread.");
+            return;
+          }
+          if (existing.locked_user !== userId && !(() => { const s = soulData(); return userId === s.manager.userId || userId === s.backupManager.userId; })()) {
+            await reply(`:lock: only the session owner (<@${existing.locked_user}>) can lock it.`);
+            return;
+          }
+          if (existing.open_scope === null) {
+            await reply("This 1on1 is already locked.");
+            return;
+          }
+          OneOnOne.setLocked(channelId, threadTs);
+          agent.reload(session.id);
+          await reply(`:lock: *1on1 re-locked* — only <@${existing.locked_user}> and the manager are heard again.`);
           return;
         }
         const existing = OneOnOne.find(channelId, threadTs);
@@ -1031,7 +1062,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           return;
         }
         OneOnOne.unlock(channelId, threadTs);
-        agent.reload(session.id);     // reboot so the resolver restores agent-cred mounts next turn
+        agent.reload(session.id);
         await reply(":unlock: 1on1 released — the thread is open again.");
         return;
       }
@@ -1835,10 +1866,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (!route) return Promise.resolve("no active thread for this session");
       return agentConnect(sessionId, route.ctx, server);
     },
-    __agentOneOnOne: (sessionId: string, active: boolean) => {
+    __agentOneOnOne: (sessionId: string, action: "lock" | "open" | "off", scope?: string) => {
       const route = routes.get(sessionId);
       if (!route) return Promise.resolve("no active thread for this session");
-      return agentOneOnOne(sessionId, route.ctx, active);
+      return agentOneOnOne(sessionId, route.ctx, action, scope);
     },
     __agentMentionOnly: (sessionId: string, active: boolean) => {
       const route = routes.get(sessionId);

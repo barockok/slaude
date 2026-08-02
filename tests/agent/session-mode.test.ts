@@ -2,12 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { sessionModeBlock } from "../../src/agent/session-mode";
 import type { OneOnOneLockRow } from "../../src/db/one-on-one";
 
-const lock = (locked_user: string): OneOnOneLockRow => ({
+const lock = (locked_user: string, open_scope: string | null = null): OneOnOneLockRow => ({
   channel_id: "C1",
   thread_ts: "1.1",
   locked_user,
   created_by: locked_user,
   created_at: 0,
+  open_scope,
 });
 
 describe("sessionModeBlock", () => {

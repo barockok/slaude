@@ -39,7 +39,8 @@ export type SlashHit =
   | { kind: "cron-pause"; id: string }
   | { kind: "cron-resume"; id: string }
   | { kind: "cron-edit"; id: string; cronExpr: string; prompt: string; target: "thread" | "channel"; whenActive: "fire" | "skip" }
-  | { kind: "one-on-one"; action: "on" | "off" }
+  | { kind: "one-on-one"; action: "on" | "off"; scope: string }
+  | { kind: "one-on-one"; action: "lock" }
   | { kind: "mention-only"; action: "on" | "off" }
   | { kind: "mcp"; action: "status" | "connect" | "disconnect"; server?: string }
   | { kind: "soul"; field: "trust" | "allow" | "dm" | "block"; action: "add" | "remove"; value: string }
@@ -56,7 +57,7 @@ export interface SlashSpec { usage: string; summary: string }
 export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/mode <name>", summary: "set the tool-permission mode (per session/thread)" },
   { usage: "/abort", summary: "cancel the current turn" },
-  { usage: "/1on1 [off]", summary: "lock this thread to you + the manager; `off` releases" },
+  { usage: "/1on1 [lock | off]", summary: "start a private 1on1 (locked to you); `lock` re-restricts after open; `off` releases — to open to guests, ask the agent directly" },
   { usage: "/mention-only [off]", summary: "reply only when @-mentioned in this thread; `off` restores normal" },
   { usage: "/mcp [connect|disconnect <server>]", summary: "list/connect/disconnect OAuth HTTP MCP servers — in 1on1: as you; outside 1on1: manager manages the agent's shared identity" },
   { usage: "/ignore @user [dur]", summary: "ignore a user (optional duration, e.g. 1h, 30m)" },
@@ -196,7 +197,10 @@ export function parseSlashCommand(text: string): SlashHit | null {
     return null;
   }
   if (cmd === "1on1") {
-    return { kind: "one-on-one", action: arg === "off" ? "off" : "on" };
+    const sub = (rest[0] ?? "").toLowerCase();
+    if (sub === "off") return { kind: "one-on-one", action: "off", scope: "" };
+    if (sub === "lock") return { kind: "one-on-one", action: "lock" };
+    return { kind: "one-on-one", action: "on", scope: "" };
   }
   if (cmd === "mention-only") {
     return { kind: "mention-only", action: arg === "off" ? "off" : "on" };
