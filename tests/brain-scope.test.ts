@@ -51,12 +51,29 @@ describe("resolveBrainScope", () => {
     expect(s.sourceId).toBe(A);
     expect(s.allowedSources).toContain(SHARED_SOURCE);
   });
-  test("public/unknown channel: public reads only", () => {
-    for (const trust of ["public", "unknown"] as const) {
-      const s = resolveBrainScope({ userId: "U3", lockedUser: null, channelTrust: trust, isManager: false, kbSources: kb, agentId: AGENT });
-      expect(s.sourceId).toBe(PUBLIC_SOURCE);
-      expect(s.allowedSources).toEqual([PUBLIC_SOURCE]);
-    }
+  test("public (allowed) channel: public writes, agent mind rides along read-only under a public-level grant", () => {
+    const s = resolveBrainScope({ userId: "U3", lockedUser: null, channelTrust: "public", isManager: false, kbSources: kb, agentId: AGENT });
+    expect(s.sourceId).toBe(PUBLIC_SOURCE);
+    expect(s.allowedSources).toEqual([PUBLIC_SOURCE, A, AGENT_SOURCE]);
+    expect(s.audience).toEqual({ level: "public", userId: "U3" });
+    expect(s.audienceSources).toEqual([A, AGENT_SOURCE]);
+  });
+  test("unknown channel: public reads only, no agent slice at all", () => {
+    const s = resolveBrainScope({ userId: "U3", lockedUser: null, channelTrust: "unknown", isManager: false, kbSources: kb, agentId: AGENT });
+    expect(s.sourceId).toBe(PUBLIC_SOURCE);
+    expect(s.allowedSources).toEqual([PUBLIC_SOURCE]);
+    expect(s.audience).toBeUndefined();
+  });
+  test("audience grants: background=all, manager=manager, trusted/1on1=team", () => {
+    const bg = resolveBrainScope({ userId: null, lockedUser: null, channelTrust: "trusted", isManager: false, kbSources: [], agentId: AGENT });
+    expect(bg.audience).toEqual({ level: "all", userId: null });
+    const mgr = resolveBrainScope({ userId: "UMGR", lockedUser: null, channelTrust: "unknown", isManager: true, kbSources: [], agentId: AGENT });
+    expect(mgr.audience).toEqual({ level: "manager", userId: "UMGR" });
+    const team = resolveBrainScope({ userId: "U2", lockedUser: null, channelTrust: "trusted", isManager: false, kbSources: [], agentId: AGENT });
+    expect(team.audience).toEqual({ level: "team", userId: "U2" });
+    const oneOnOne = resolveBrainScope({ userId: "U1", lockedUser: "U1", channelTrust: "trusted", isManager: false, kbSources: [], agentId: AGENT });
+    expect(oneOnOne.audience).toEqual({ level: "team", userId: "U1" });
+    for (const s of [bg, mgr, team, oneOnOne]) expect(s.audienceSources).toEqual([A, AGENT_SOURCE]);
   });
   test("other user in someone else's locked thread gets public scope", () => {
     const s = resolveBrainScope({ userId: "U9", lockedUser: "U1", channelTrust: "trusted", isManager: false, kbSources: [], agentId: AGENT });

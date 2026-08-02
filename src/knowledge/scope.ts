@@ -3,6 +3,20 @@ import type { SoulData } from "../soul/data";
 export type ChannelTrust = "trusted" | "public" | "unknown";
 
 /**
+ * What the current turn may SURFACE from audience-tiered sources (the agent's
+ * own mind). Levels are turn contexts, not people: "all" = the agent working
+ * alone (background/cron), "manager" = a manager turn, "team" = a trusted
+ * channel or own-/1on1 turn, "public" = an allowed (public) channel turn.
+ * Page tiers (see audience.ts): private < manager < team (default) < public,
+ * plus `user:<id>` (visible only when that user is the current speaker).
+ */
+export interface AudienceGrant {
+  level: "all" | "manager" | "team" | "public";
+  /** Current speaker — unlocks `user:<id>`-tiered pages for that user. */
+  userId: string | null;
+}
+
+/**
  * Synthetic identity threaded into gbrain's OperationContext.auth — gbrain's
  * fail-closed SQL scoping (sourceScopeOpts) does the actual enforcement.
  */
@@ -12,6 +26,15 @@ export interface BrainScope {
   sourceId: string;
   /** Federated read union. */
   allowedSources: string[];
+  /**
+   * Disclosure filter for the agent's own mind. gbrain enforces SOURCE scoping
+   * in SQL; audience tiers are a slaude-side per-PAGE filter applied on top,
+   * only to `audienceSources`. Absent = unrestricted (back-compat: agentScope()
+   * and internal callers). See src/knowledge/audience.ts.
+   */
+  audience?: AudienceGrant;
+  /** Sources whose pages carry audience tiers — the agent slices. */
+  audienceSources?: string[];
 }
 
 export interface ScopeInput {
@@ -64,13 +87,19 @@ export function resolveBrainScope(i: ScopeInput): BrainScope {
   // agentSrc is also the write target.
   const agentReads = [agentSrc, AGENT_SOURCE];
   if (i.userId === null) {
-    // Background/cron turn — the agent operating purely as itself.
+    // Background/cron turn — the agent operating purely as itself. Sees every
+    // audience tier of its own mind, including `private`.
     return {
       clientId: i.agentId,
       sourceId: agentSrc,
       allowedSources: [...agentReads, SHARED_SOURCE, PUBLIC_SOURCE, ...i.kbSources],
+      audience: { level: "all", userId: null },
+      audienceSources: agentReads,
     };
   }
+  // Manager turns surface manager-tier pages (but not `private` — that tier is
+  // the agent's alone in conversation; the operator can always inspect the db).
+  const userLevel = i.isManager ? "manager" as const : "team" as const;
   if (i.lockedUser !== null) {
     if (i.lockedUser === i.userId) {
       const own = userSourceId(i.userId);
@@ -78,6 +107,8 @@ export function resolveBrainScope(i: ScopeInput): BrainScope {
         clientId: i.userId,
         sourceId: own,
         allowedSources: [own, ...agentReads, SHARED_SOURCE, PUBLIC_SOURCE, ...i.kbSources],
+        audience: { level: userLevel, userId: i.userId },
+        audienceSources: agentReads,
       };
     }
     if (!i.isManager) {
@@ -97,6 +128,21 @@ export function resolveBrainScope(i: ScopeInput): BrainScope {
       clientId: i.agentId,
       sourceId: agentSrc,
       allowedSources: [...agentReads, SHARED_SOURCE, PUBLIC_SOURCE, ...i.kbSources],
+      audience: { level: userLevel, userId: i.userId },
+      audienceSources: agentReads,
+    };
+  }
+  if (i.channelTrust === "public") {
+    // Allowed (public) channel: the agent's mind rides along READ-ONLY, filtered
+    // to `public`-tier (and the speaker's own `user:<id>`) pages. Unlabeled
+    // pages default to `team` tier, so they stay hidden here — fail closed.
+    // Writes still target the public source (WRITE_OPS deny in gated-dispatch).
+    return {
+      clientId: i.userId,
+      sourceId: PUBLIC_SOURCE,
+      allowedSources: [PUBLIC_SOURCE, ...agentReads],
+      audience: { level: "public", userId: i.userId },
+      audienceSources: agentReads,
     };
   }
   return { clientId: i.userId, sourceId: PUBLIC_SOURCE, allowedSources: [PUBLIC_SOURCE] };
