@@ -69,6 +69,26 @@ describe("mdToMrkdwn", () => {
   test("markdown link [text](url) still converts, url part protected", () => {
     expect(mdToMrkdwn("[t](https://h.io/a__b)")).toBe("<https://h.io/a__b|t>");
   });
+  test("bold link → *<url|label>*", () => {
+    expect(mdToMrkdwn("**[link](https://x.io)**")).toBe("*<https://x.io|link>*");
+  });
+  test("bold link with trailing *** → no ** leak", () => {
+    // *** close (mismatched triple-star) must not leave ** after the link
+    expect(mdToMrkdwn("**[link](https://x.io)***")).toBe("*<https://x.io|link>*");
+  });
+  test("bold text + link with trailing *** → no ** leak", () => {
+    expect(mdToMrkdwn("**see [docs](https://x.io)***")).toBe("*see <https://x.io|docs>*");
+  });
+  test("link followed by bold → no ** between them", () => {
+    expect(mdToMrkdwn("[link](https://x.io)**bold**")).toBe("<https://x.io|link>*bold*");
+  });
+  test("bold in link label → *label* inside link, no trailing **", () => {
+    expect(mdToMrkdwn("[**label**](https://x.io)")).toBe("<https://x.io|*label*>");
+  });
+  test("multiple bold links in one line", () => {
+    const out = mdToMrkdwn("**[a](https://a.io)** and **[b](https://b.io)**");
+    expect(out).toBe("*<https://a.io|a>* and *<https://b.io|b>*");
+  });
   test("narrow table → monospace block", () => {
     const md = "| a | b |\n| - | - |\n| 1 | 2 |";
     const out = mdToMrkdwn(md);
@@ -76,7 +96,7 @@ describe("mdToMrkdwn", () => {
     expect(out).toContain("a");
     expect(out).toContain("1");
   });
-  test("wide table → definition list", () => {
+  test("wide table → code block (always, regardless of width)", () => {
     const md = [
       "| name | description | extra |",
       "| - | - | - |",
@@ -84,8 +104,11 @@ describe("mdToMrkdwn", () => {
       "| beta  | another long description well past the threshold      | yy |",
     ].join("\n");
     const out = mdToMrkdwn(md);
-    expect(out).toContain("*alpha*");
-    expect(out).toContain("• description");
+    expect(out).toContain("```");
+    expect(out).toContain("alpha");
+    expect(out).toContain("description");
+    expect(out).not.toContain("*alpha*");
+    expect(out).not.toContain("• description");
   });
   test("narrow table strips emphasis inside code block cells", () => {
     const md = [

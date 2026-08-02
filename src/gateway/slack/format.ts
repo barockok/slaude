@@ -72,6 +72,13 @@ export function mdToMrkdwn(md: string): string {
     /\*\*\*([^*\n]+?)\*\*\*/g,
     (_m, body) => `_${C3}${body.trim()}${C4}_`,
   );
+  // 4c. **X*** → bold(X): mismatched triple-star close leaves a dangling *
+  //     that, after sentinel restoration, becomes ** immediately after the
+  //     converted link. Consume the trailing * before it causes the leak.
+  work = work.replace(
+    /\*\*([^*\n]+?)\*\*\*/g,
+    (_m, body) => `${C3}${body.trim()}${C4}`,
+  );
 
   // 5. Italic FIRST while bold markers are still **. Single-star italic
   //    requires non-* on both sides so we don't munch bold. Trim inner
@@ -131,21 +138,6 @@ function renderTable(block: string): string {
     for (let i = 0; i < cols; i++) {
       widths[i] = Math.max(widths[i], (r[i] ?? "").length);
     }
-  }
-  // Slack's thread panel is narrow (~70 chars). If the table is wider,
-  // render as a definition list so long cells don't wrap mid-row.
-  const totalWidth = widths.reduce((a, b) => a + b, 0) + (cols - 1) * 2;
-  if (totalWidth > 60 && cols >= 2) {
-    const lines: string[] = [];
-    for (const r of body) {
-      lines.push(`**${r[0] ?? "—"}**`);
-      for (let i = 1; i < cols; i++) {
-        const k = header[i] ?? `col${i}`;
-        const v = r[i] ?? "";
-        lines.push(`  • ${k}: ${v}`);
-      }
-    }
-    return "\n" + lines.join("\n") + "\n";
   }
   const fmt = (r: string[]) =>
     r.map((c, i) => (c ?? "").padEnd(widths[i] ?? 0)).join("  ").trimEnd();
