@@ -778,11 +778,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // Auto-evolve turns are internal — don't reset reactions/presence
           // (they were already finalized on the user-visible turn's done).
           if (e.autoEvolve) return;
-          // Post compact-done confirmation after a manual /compact.
-          if (route.wasCompacting) {
-            route.wasCompacting = undefined;
-            await route.surface.reply({ text: ":white_check_mark: compacted" }).catch(() => {});
-          }
+          // Clear compact flag — ✅ reaction is already posted by REACT_DONE below.
+          if (route.wasCompacting) route.wasCompacting = undefined;
           // Stamp the todo message "all done" when every task completed.
           if (route.todoRef && route.todosSnapshot?.length &&
               route.todosSnapshot.every((t) => t.status === "completed") &&
@@ -1551,13 +1548,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               wasCompacting: true,
             });
           }
-          await reply(":hourglass_flowing_sand: compacting context…");
+          void reactions.set(session.id, channelId, eventTs, REACT_WORKING);
           void agent.sendMessage(session.id, "/compact").catch((e: any) =>
             console.error("[slaude] compact auto-boot error:", e?.message ?? e),
           );
           return;
         }
-        await reply(":hourglass_flowing_sand: compacting context…");
+        void reactions.set(session.id, channelId, eventTs, REACT_WORKING);
         return;
       }
       if (slash.kind === "bash") {
