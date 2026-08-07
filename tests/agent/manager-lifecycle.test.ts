@@ -339,7 +339,7 @@ describe("AgentManager lifecycle", () => {
     await shutdown(mgr, row.id);
   });
 
-  it("abort() aborts the SDK query and surfaces the generic error path", async () => {
+  it("abort() aborts the SDK query and suppresses the error event", async () => {
     const mgr = new AgentManager();
     const events = record(mgr);
     mgr.abort("not-live"); // no-op
@@ -349,8 +349,9 @@ describe("AgentManager lifecycle", () => {
     await until(() => mgr.isLive(row.id), 3000, "live");
     mgr.abort(row.id);
     await until(() => !mgr.isLive(row.id), 3000, "abort teardown");
+    // Intentional abort suppresses the error event (no spurious error surfaced to the gateway)
     const err = events.find((e) => e.type === "error");
-    expect(err?.error).toContain("aborted by controller");
+    expect(err).toBeUndefined();
     expect(Sessions.findById(row.id)!.status).toBe("idle");
   });
 

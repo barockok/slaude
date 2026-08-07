@@ -13,24 +13,31 @@ import {
 } from "node:fs";
 import { join, resolve, relative } from "node:path";
 import { paths } from "../config/home";
-import { discoverSkills, type Skill } from "./loader";
+import { discoverSkills, personaSkillsRoot, type Skill } from "./loader";
 import { syncManifest } from "./sync-manifest";
 
 export const SKILLS_MCP_NAME = "slaude_skills";
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
+/** True when a persona name denotes a real (non-default) persona. */
+function namedPersona(personaName?: string): string | null {
+  return personaName && personaName !== "default" ? personaName : null;
+}
+
 /**
- * Validate slug + resolve its dir under $SLAUDE_HOME/skills/. Returns the
- * absolute dir path. Throws on invalid slug or any path-escape attempt.
+ * Validate slug + resolve its dir under the skills root. Base root is
+ * $SLAUDE_HOME/skills/; a named persona resolves under its overlay
+ * (personas/<name>/skills/). Throws on invalid slug or any path-escape attempt.
  */
-export function resolveSkillDir(slug: string): string {
+export function resolveSkillDir(slug: string, personaName?: string): string {
   if (!SLUG_RE.test(slug)) {
     throw new Error(
       `invalid slug "${slug}" — must match [a-z0-9][a-z0-9-]{0,63}`,
     );
   }
-  const root = resolve(paths.skills);
+  const persona = namedPersona(personaName);
+  const root = resolve(persona ? personaSkillsRoot(persona) : paths.skills);
   const dir = resolve(join(root, slug));
   const rel = relative(root, dir);
   if (rel !== slug) {
@@ -56,12 +63,16 @@ export function buildSkillMd(
 }
 
 export const skillOps = {
-  list(): Skill[] {
-    return discoverSkills();
+  list(personaName?: string): Skill[] {
+    return discoverSkills(personaName);
   },
-  read(slug: string): string {
-    const dir = resolveSkillDir(slug);
-    const path = join(dir, "SKILL.md");
+  read(slug: string, personaName?: string): string {
+    // Effective read: a persona's overlay skill shadows the base of the same slug.
+    if (namedPersona(personaName)) {
+      const overlay = join(resolveSkillDir(slug, personaName), "SKILL.md");
+      if (existsSync(overlay)) return readFileSync(overlay, "utf8");
+    }
+    const path = join(resolveSkillDir(slug), "SKILL.md");
     if (!existsSync(path)) throw new Error(`skill "${slug}" not found`);
     return readFileSync(path, "utf8");
   },
@@ -70,16 +81,19 @@ export const skillOps = {
     name: string,
     description: string,
     body: string,
+    personaName?: string,
   ): { path: string; created: boolean } {
-    const dir = resolveSkillDir(slug);
+    // Named personas author into their own overlay; base stays shared/read-only.
+    const dir = resolveSkillDir(slug, personaName);
     mkdirSync(dir, { recursive: true });
     const path = join(dir, "SKILL.md");
     const created = !existsSync(path);
     writeFileSync(path, buildSkillMd(name, description, body), "utf8");
     return { path, created };
   },
-  delete(slug: string): void {
-    const dir = resolveSkillDir(slug);
+  delete(slug: string, personaName?: string): void {
+    // A persona can only retire its own overlay skills, never a shared base skill.
+    const dir = resolveSkillDir(slug, personaName);
     if (!existsSync(dir)) throw new Error(`skill "${slug}" not found`);
     rmSync(dir, { recursive: true, force: true });
   },
@@ -102,60 +116,69 @@ const err = (text: string): ToolResult => ({
   isError: true,
 });
 
-export const skillHandlers = {
-  async list_skills(): Promise<ToolResult> {
-    const skills = skillOps.list();
-    if (skills.length === 0) return ok("(no skills installed)");
-    return ok(
-      skills
-        .map(
-          (s) =>
-            `- /${s.slug}  —  ${s.name}: ${s.description || "(no description)"}`,
-        )
-        .join("\n"),
-    );
-  },
-  async read_skill({ slug }: { slug: string }): Promise<ToolResult> {
-    try {
-      return ok(skillOps.read(slug));
-    } catch (e: any) {
-      return err(e?.message ?? String(e));
-    }
-  },
-  async write_skill({
-    slug,
-    name,
-    description,
-    body,
-  }: {
-    slug: string;
-    name: string;
-    description: string;
-    body: string;
-  }): Promise<ToolResult> {
-    try {
-      const r = skillOps.write(slug, name, description, body);
+/** Build the skill MCP handlers bound to a persona (undefined/'default' = the
+ *  shared base). Named personas read a merged base+overlay view but write/delete
+ *  only into their own overlay. */
+export function makeSkillHandlers(personaName?: string) {
+  return {
+    async list_skills(): Promise<ToolResult> {
+      const skills = skillOps.list(personaName);
+      if (skills.length === 0) return ok("(no skills installed)");
       return ok(
-        `${r.created ? "created" : "updated"} skill /${slug} at ${r.path}`,
+        skills
+          .map(
+            (s) =>
+              `- /${s.slug}  —  ${s.name}: ${s.description || "(no description)"}`,
+          )
+          .join("\n"),
       );
-    } catch (e: any) {
-      return err(e?.message ?? String(e));
-    }
-  },
-  async delete_skill({ slug }: { slug: string }): Promise<ToolResult> {
-    try {
-      skillOps.delete(slug);
-      return ok(`deleted skill /${slug}`);
-    } catch (e: any) {
-      return err(e?.message ?? String(e));
-    }
-  },
-  async sync_manifest(): Promise<ToolResult> {
-    return syncManifest();
-  },
-};
+    },
+    async read_skill({ slug }: { slug: string }): Promise<ToolResult> {
+      try {
+        return ok(skillOps.read(slug, personaName));
+      } catch (e: any) {
+        return err(e?.message ?? String(e));
+      }
+    },
+    async write_skill({
+      slug,
+      name,
+      description,
+      body,
+    }: {
+      slug: string;
+      name: string;
+      description: string;
+      body: string;
+    }): Promise<ToolResult> {
+      try {
+        const r = skillOps.write(slug, name, description, body, personaName);
+        return ok(
+          `${r.created ? "created" : "updated"} skill /${slug} at ${r.path}`,
+        );
+      } catch (e: any) {
+        return err(e?.message ?? String(e));
+      }
+    },
+    async delete_skill({ slug }: { slug: string }): Promise<ToolResult> {
+      try {
+        skillOps.delete(slug, personaName);
+        return ok(`deleted skill /${slug}`);
+      } catch (e: any) {
+        return err(e?.message ?? String(e));
+      }
+    },
+    async sync_manifest(): Promise<ToolResult> {
+      return syncManifest();
+    },
+  };
+}
 
-export function createSkillsMcp(): McpSdkServerConfigWithInstance {
+/** Default (shared-base) handlers, for callers that aren't persona-scoped. */
+export const skillHandlers = makeSkillHandlers();
+
+export function createSkillsMcp(personaName?: string): McpSdkServerConfigWithInstance {
+  const handlers = makeSkillHandlers(personaName);
   return createSdkMcpServer({
     name: SKILLS_MCP_NAME,
     version: "0.1.0",
@@ -164,13 +187,13 @@ export function createSkillsMcp(): McpSdkServerConfigWithInstance {
         "list_skills",
         "List installed skills (slug, name, description). Use to discover existing capabilities before authoring a new one — refine instead of duplicate.",
         {},
-        skillHandlers.list_skills,
+        handlers.list_skills,
       ),
       tool(
         "read_skill",
         "Read a skill's full SKILL.md. Use before refining so you preserve existing instructions.",
         { slug: z.string().describe("Skill slug, e.g. 'release-notes'.") },
-        skillHandlers.read_skill,
+        handlers.read_skill,
       ),
       tool(
         "write_skill",
@@ -189,19 +212,19 @@ export function createSkillsMcp(): McpSdkServerConfigWithInstance {
               "Markdown body — instructions executed on /<slug>. Use ${SLAUDE_SKILL_ARGS} for caller args.",
             ),
         },
-        skillHandlers.write_skill,
+        handlers.write_skill,
       ),
       tool(
         "delete_skill",
         "Delete a skill dir. Irreversible.",
         { slug: z.string() },
-        skillHandlers.delete_skill,
+        handlers.delete_skill,
       ),
       tool(
         "sync_manifest",
         "Sync runtime-created skills and knowledge bases back to slaude.json + slaude.lock. If SLAUDE_SKILLS_REPO is configured, pushes new skills to git; otherwise records them as local entries. Call sparingly — only after creating or evolving multiple skills or KBs. Returns JSON summary with synced_skills, synced_kbs, warnings, and skills_in_git.",
         {},
-        skillHandlers.sync_manifest,
+        handlers.sync_manifest,
       ),
     ],
   });

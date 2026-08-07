@@ -298,15 +298,16 @@ channel block can only *add* approvers, never lock the operator out.
 - <@channel-dba-id>:  migrations, SQL, schema changes
 `;
 
-export function loadSoul(): string {
-  if (!existsSync(paths.soul)) {
-    writeFileSync(paths.soul, STARTER_PERSONA, "utf8");
+export function loadSoul(soulPath?: string): string {
+  const target = soulPath ?? paths.soul;
+  if (target === paths.soul && !existsSync(target)) {
+    writeFileSync(target, STARTER_PERSONA, "utf8");
     console.warn(
-      `[soul] seeded starter persona at ${paths.soul} — fill it in before going live`,
+      `[soul] seeded starter persona at ${target} — fill it in before going live`,
     );
     return STARTER_PERSONA;
   }
-  return readFileSync(paths.soul, "utf8");
+  return readFileSync(target, "utf8");
 }
 
 /**

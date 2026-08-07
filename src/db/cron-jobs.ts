@@ -24,6 +24,10 @@ export type CronJob = {
    *  scheduler boots the run under this user's OAuth config dir (initiator
    *  isolation), mirroring the interactive 1on1 session. */
   oauthUser: string | null;
+  /** Which persona owns the job. The scheduler keys the run's thread on this so
+   *  the fire resolves the persona's session (soul + brain slice + config dir).
+   *  'default' = single-bot persona. */
+  personaId: string;
 };
 
 export function create(args: {
@@ -39,11 +43,12 @@ export function create(args: {
   target?: "thread" | "channel";
   whenActive?: "fire" | "skip";
   oauthUser?: string;
+  personaId?: string;
 }): CronJob {
   const id = randomUUID();
   db.run(
-    `INSERT INTO cron_jobs (id, slack_team_id, slack_channel_id, slack_thread_ts, channel_id, thread_ts, created_by, cron_expr, prompt, next_run_at, target, when_active, oauth_user, active)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    `INSERT INTO cron_jobs (id, slack_team_id, slack_channel_id, slack_thread_ts, channel_id, thread_ts, created_by, cron_expr, prompt, next_run_at, target, when_active, oauth_user, persona_id, active)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
     [
       id,
       args.slackTeamId ?? null,
@@ -58,6 +63,7 @@ export function create(args: {
       args.target ?? "thread",
       args.whenActive ?? "fire",
       args.oauthUser ?? null,
+      args.personaId && args.personaId !== "default" ? args.personaId : "default",
     ],
   );
   return findById(id)!;
@@ -177,5 +183,6 @@ function mapRow(row: any): CronJob {
     target: (row.target ?? "thread") as "thread" | "channel",
     whenActive: (row.when_active ?? "fire") as "fire" | "skip",
     oauthUser: row.oauth_user ?? null,
+    personaId: row.persona_id ?? "default",
   };
 }

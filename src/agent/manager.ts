@@ -26,8 +26,9 @@ export type PermissionMode =
 import { paths } from "../config/home";
 import { env } from "../config/env";
 import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plugins";
-import { soulSystemBlock } from "../soul/loader";
+import { soulSystemBlock, loadSoul } from "../soul/loader";
 import { soulData, effectiveSoulForChannel } from "../soul/extract";
+import { getPersonaRegistry } from "../persona/registry";
 import * as Sessions from "../db/sessions";
 import type { ThreadKey } from "../db/sessions";
 import * as OneOnOne from "../db/one-on-one";
@@ -234,7 +235,14 @@ export class AgentManager extends EventEmitter {
   ensureSession(thread: ThreadKey, opts: { title?: string } = {}) {
     let row = Sessions.findByThread(thread);
     if (!row) {
-      const workingDir = join(paths.workspaces, `${thread.team_id}-${thread.channel_id}-${thread.thread_ts}`);
+      // Multi-persona: named personas sharing a thread must not share a cwd.
+      // Suffix the workspace with the persona; default persona → path unchanged.
+      const personaSuffix =
+        thread.persona_id && thread.persona_id !== "default" ? `__${thread.persona_id}` : "";
+      const workingDir = join(
+        paths.workspaces,
+        `${thread.team_id}-${thread.channel_id}-${thread.thread_ts}${personaSuffix}`,
+      );
       mkdirSync(workingDir, { recursive: true });
       row = Sessions.createForThread({
         thread,
@@ -436,8 +444,24 @@ export class AgentManager extends EventEmitter {
       row.slack_channel_id,
       row.slack_thread_ts,
     );
-    const lockedConfigDir = resolveSessionConfigDir(oauthUser);
-    if (lockedConfigDir) providerEnv.CLAUDE_CONFIG_DIR = lockedConfigDir;
+    // Multi-persona: resolve the persona first — it anchors both the brain slice
+    // (SLAUDE_AGENT_ID) and the config dir (creds + transcripts) below.
+    const personaId = row.persona_id;
+    const persona = personaId && personaId !== "default"
+      ? getPersonaRegistry().lookupByName(personaId)
+      : null;
+    if (persona) {
+      // Inject the persona's Slack user ID as the brain-slice anchor so named
+      // personas each get their own private KB slice.
+      providerEnv.SLAUDE_AGENT_ID = persona.slackUserId;
+    }
+
+    // CLAUDE_CONFIG_DIR precedence: a named persona gets its own config home
+    // (isolated .credentials.json + projects/ transcripts); a /1on1 lock nests
+    // its per-initiator home INSIDE that persona boundary. Default persona +
+    // unlocked → undefined → inherit the agent's config dir (unchanged).
+    const sessionConfigDir = resolveSessionConfigDir(oauthUser, persona?.name);
+    if (sessionConfigDir) providerEnv.CLAUDE_CONFIG_DIR = sessionConfigDir;
 
     const resolver = this.#resolver;
     const canUseTool: CanUseTool | undefined = resolver
@@ -539,7 +563,9 @@ export class AgentManager extends EventEmitter {
         type: "preset",
         preset: "claude_code",
         append: [
-          soulSystemBlock(),
+          // Named personas use their own SOUL.md for the persona block; the
+          // runtime baseline stays the same. Default persona = global SOUL.md.
+          soulSystemBlock(persona ? loadSoul(persona.soulPath) : undefined),
           channelMandateBlock,
           sessionModeBlock(lock),
           mcpServers
