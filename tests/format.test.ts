@@ -89,6 +89,102 @@ describe("mdToMrkdwn", () => {
     const out = mdToMrkdwn("**[a](https://a.io)** and **[b](https://b.io)**");
     expect(out).toBe("*<https://a.io|a>* and *<https://b.io|b>*");
   });
+
+  // -- bold bare URL (regression: URL carving was absorbing trailing ** into the URL sentinel,
+  //    leaving no closing ** for the bold regex to match, so the bold was silently dropped) --
+
+  test("bold bare URL → *<url|host>*, not literal **url**", () => {
+    expect(mdToMrkdwn("**https://x.io**")).toBe("*<https://x.io|x.io>*");
+  });
+  test("bold bare URL in surrounding prose", () => {
+    expect(mdToMrkdwn("See **https://x.io** for details")).toBe(
+      "See *<https://x.io|x.io>* for details",
+    );
+  });
+  test("bold bare URL on its own paragraph (real-world modal deploy case)", () => {
+    const out = mdToMrkdwn("Same URL:\n\n**https://x.io**\n\nFirst load will be slow.");
+    expect(out).toContain("*<https://x.io|x.io>*");
+    expect(out).not.toContain("**https://");
+    expect(out).not.toContain("**\n");
+  });
+  test("bold bare URL with hyphenated hostname", () => {
+    // the original bug was triggered by https://barockok--personaplex-serve-dev.modal.run
+    expect(mdToMrkdwn("**https://foo--bar-baz.modal.run**")).toBe(
+      "*<https://foo--bar-baz.modal.run|foo--bar-baz.modal.run>*",
+    );
+  });
+  test("bold bare URL with path", () => {
+    expect(mdToMrkdwn("**https://x.io/path/to/page**")).toBe(
+      "*<https://x.io/path/to/page|x.io>*",
+    );
+  });
+  test("bold bare URL with query string", () => {
+    expect(mdToMrkdwn("**https://x.io/?q=foo&bar=baz**")).toBe(
+      "*<https://x.io/?q=foo&bar=baz|x.io>*",
+    );
+  });
+  test("bold bare URL with fragment", () => {
+    expect(mdToMrkdwn("**https://x.io/#section**")).toBe(
+      "*<https://x.io/#section|x.io>*",
+    );
+  });
+  test("multiple bold bare URLs on one line", () => {
+    expect(mdToMrkdwn("**https://a.io** and **https://b.io**")).toBe(
+      "*<https://a.io|a.io>* and *<https://b.io|b.io>*",
+    );
+  });
+  test("bold bare URL followed by bold text → both render", () => {
+    expect(mdToMrkdwn("**https://x.io** then **text**")).toBe(
+      "*<https://x.io|x.io>* then *text*",
+    );
+  });
+  test("bold text followed by bold bare URL → both render", () => {
+    expect(mdToMrkdwn("**text** then **https://x.io**")).toBe(
+      "*text* then *<https://x.io|x.io>*",
+    );
+  });
+  test("non-bold bare URL unaffected", () => {
+    expect(mdToMrkdwn("visit https://x.io today")).toBe(
+      "visit <https://x.io|x.io> today",
+    );
+  });
+  test("bare URL does not absorb trailing ** into the URL token", () => {
+    // regression: before the fix, https://x.io** was carved as one token,
+    // stripping ** from the bold context so bold never fired.
+    const out = mdToMrkdwn("visit https://x.io** for info");
+    expect(out).toContain("<https://x.io|x.io>");
+    expect(out).not.toContain("https://x.io**");
+  });
+  test("bold bare URL at very start of string", () => {
+    expect(mdToMrkdwn("**https://x.io** — click here")).toBe(
+      "*<https://x.io|x.io>* — click here",
+    );
+  });
+  test("bold bare URL at very end of string", () => {
+    expect(mdToMrkdwn("Open this: **https://x.io**")).toBe(
+      "Open this: *<https://x.io|x.io>*",
+    );
+  });
+  test("italic bare URL → labeled italic link", () => {
+    expect(mdToMrkdwn("*https://x.io*")).toBe("_<https://x.io|x.io>_");
+  });
+  test("bold bare URL inside a list item", () => {
+    const out = mdToMrkdwn("- Open **https://x.io**\n- Done");
+    expect(out).toContain("*<https://x.io|x.io>*");
+    expect(out).toContain("• Open");
+  });
+  test("bold bare URL multiline — other lines unaffected", () => {
+    const md = [
+      "Step 1: go to",
+      "**https://x.io**",
+      "Step 2: click login",
+    ].join("\n");
+    const out = mdToMrkdwn(md);
+    expect(out).toContain("*<https://x.io|x.io>*");
+    expect(out).toContain("Step 1");
+    expect(out).toContain("Step 2");
+  });
+
   test("narrow table → monospace block", () => {
     const md = "| a | b |\n| - | - |\n| 1 | 2 |";
     const out = mdToMrkdwn(md);
