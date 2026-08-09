@@ -41,7 +41,7 @@ export function mdToMrkdwn(md: string): string {
   //     lookbehind) when already a markdown link `[t](url)`, a mrkdwn link/label
   //     `<url|t>`, or an autolink `<url>`; code spans are already carved out.
   //     The full URL stays as the link target — only the visible text shrinks.
-  work = work.replace(/(?<![(<|])https?:\/\/[^\s<>)\]]+/g, (u) => {
+  work = work.replace(/(?<![(<|])https?:\/\/[^\s<>)\]*]+/g, (u) => {
     try {
       return `[${new URL(u).host}](${u})`;
     } catch {
@@ -55,7 +55,7 @@ export function mdToMrkdwn(md: string): string {
   const urls: string[] = [];
   const carveUrl = (m: string) => { urls.push(m); return `${C5}${urls.length - 1}${C5}`; };
   work = work.replace(/<https?:\/\/[^>\s]+>/g, carveUrl);
-  work = work.replace(/https?:\/\/[^\s<>)\]]+/g, carveUrl);
+  work = work.replace(/https?:\/\/[^\s<>)\]*]+/g, carveUrl);
 
   // 3. Links: [text](url) → <url|text>.
   work = work.replace(
