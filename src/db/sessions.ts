@@ -5,13 +5,31 @@ export type ThreadKey = {
   team_id: string;
   channel_id: string;
   thread_ts: string;
+  /** Which persona owns this session. Defaults to 'default' (the single-bot mode). */
+  persona_id?: string;
 };
 
 export function findByThread(k: ThreadKey): SessionRow | null {
+  const personaId = k.persona_id ?? "default";
   const row = db
     .query(
       `SELECT * FROM sessions
-       WHERE slack_team_id = ? AND slack_channel_id = ? AND slack_thread_ts = ?`,
+       WHERE slack_team_id = ? AND slack_channel_id = ? AND slack_thread_ts = ?
+         AND persona_id = ?`,
+    )
+    .get(k.team_id, k.channel_id, k.thread_ts, personaId) as SessionRow | null;
+  return row ?? null;
+}
+
+/** Find the most-recently-updated session for a thread regardless of persona.
+ *  Used for "is there any session to populate?" checks (engagement restore,
+ *  mention-only recording) where the caller doesn't know which persona to ask for. */
+export function findAnyByThread(k: Omit<ThreadKey, "persona_id">): SessionRow | null {
+  const row = db
+    .query(
+      `SELECT * FROM sessions
+       WHERE slack_team_id = ? AND slack_channel_id = ? AND slack_thread_ts = ?
+       ORDER BY updated_at DESC LIMIT 1`,
     )
     .get(k.team_id, k.channel_id, k.thread_ts) as SessionRow | null;
   return row ?? null;
@@ -26,12 +44,13 @@ export function createForThread(args: {
 }): SessionRow {
   const id = randomUUID();
   const now = Date.now();
+  const personaId = args.thread.persona_id ?? "default";
   db.run(
     `INSERT INTO sessions
      (id, created_at, updated_at, title, model, working_dir, status,
       claude_started, slack_team_id, slack_channel_id, slack_thread_ts,
-      permission_mode)
-     VALUES (?, ?, ?, ?, ?, ?, 'idle', 0, ?, ?, ?, ?)`,
+      permission_mode, persona_id)
+     VALUES (?, ?, ?, ?, ?, ?, 'idle', 0, ?, ?, ?, ?, ?)`,
     [
       id,
       now,
@@ -43,6 +62,7 @@ export function createForThread(args: {
       args.thread.channel_id,
       args.thread.thread_ts,
       args.permission_mode ?? "default",
+      personaId,
     ],
   );
   return findById(id)!;
