@@ -76,13 +76,8 @@ export function createWhatsAppApp(agent: AgentManager) {
         }).catch(() => {});
         break;
       }
-      case "tokenWarning": {
-        const level = ev.level === "critical" ? "🚨" : "⚠️";
-        sock.sendMessage(route.ctx.jid, {
-          text: `${level} Context ${ev.level}: ${ev.snapshot.pctUsed.toFixed(1)}% used`,
-        }).catch(() => {});
+      case "tokenUsage":
         break;
-      }
       case "compacting": {
         sock.sendPresenceUpdate("composing", route.ctx.jid).catch(() => {});
         break;
