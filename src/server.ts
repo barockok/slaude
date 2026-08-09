@@ -2,6 +2,7 @@ import { ensureHome } from "./config/home";
 import { seedBundledSkills } from "./skills/seed";
 import { AgentManager } from "./agent/manager";
 import { createSlackApp } from "./gateway/slack/adapter";
+import { createSlackTransport, createSlackWebhookTransport } from "./gateway/slack/transport";
 import { startHealthServer } from "./health";
 import { loadSoulData, setSoulData } from "./soul/extract";
 import { assertOAuthKeyCanary } from "./agent/mcp-oauth/store";
@@ -51,12 +52,15 @@ async function main() {
     console.log(`[mcp-oauth] shared loopback listening on ${env.oauthLoopbackHost()}:${lb.port}${lb.callbackPath}`);
   }
 
+  const transportMode = env.transport();
+  const transport = transportMode === "webhook" ? createSlackWebhookTransport() : createSlackTransport();
+
   const agent = new AgentManager();
-  const slack = createSlackApp(agent, { mcpConnectEnabled: mcpOAuthHealthy });
+  const slack = createSlackApp(agent, { mcpConnectEnabled: mcpOAuthHealthy }, transport);
   const health = startHealthServer({ liveSessions: () => agent.liveCount() });
 
   await slack.start();
-  console.log("[slaude] slack socket mode started");
+  console.log(`[slaude] slack ${transportMode} transport started`);
 
   const shutdown = async () => {
     console.log("[slaude] shutting down");

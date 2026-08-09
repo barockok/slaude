@@ -30,9 +30,25 @@ function opt(name: string, fallback = ""): string {
 }
 
 export const env = {
+  /**
+   * Slack transport mode: "socket" (default, Socket Mode via SLACK_APP_TOKEN)
+   * or "webhook" (HTTP Events API via SLACK_SIGNING_SECRET + SLACK_WEBHOOK_PORT).
+   */
+  transport: () => (opt("SLAUDE_TRANSPORT", "socket").toLowerCase() === "webhook" ? "webhook" : "socket") as "socket" | "webhook",
   slack: {
     botToken: () => req("SLACK_BOT_TOKEN"),
     appToken: () => req("SLACK_APP_TOKEN"),
+    /**
+     * Required in webhook mode. Used by bolt to verify incoming request signatures.
+     */
+    signingSecret: () => req("SLACK_SIGNING_SECRET"),
+    /**
+     * HTTP port bolt listens on in webhook mode. Default 3000.
+     */
+    webhookPort: () => {
+      const n = parseInt(opt("SLACK_WEBHOOK_PORT", "3000"), 10);
+      return Number.isFinite(n) && n > 0 ? n : 3000;
+    },
     /**
      * Optional user token (xoxp). Historically used only for presence
      * (`users.profile.set`). Also the token used for post-as-user when
