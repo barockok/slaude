@@ -142,39 +142,44 @@ if (!sessionCols.some((c) => c.name === "engaged")) {
 // personas in the same thread. Existing rows get 'default' (the single-bot persona).
 // SQLite has no DROP CONSTRAINT, so we rebuild the table to replace the old unique
 // index (team, channel, thread) with the new (team, channel, thread, persona_id).
+// Wrapped in a transaction: a crash between the rename and the copy would leave
+// `sessions_old` orphaned and the guard above satisfied by a freshly-created empty
+// `sessions`, silently losing every thread→session mapping.
 if (!sessionCols.some((c) => c.name === "persona_id")) {
-  db.run(`ALTER TABLE sessions RENAME TO sessions_old`);
-  db.run(`
-    CREATE TABLE sessions (
-      id TEXT PRIMARY KEY,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      title TEXT,
-      model TEXT NOT NULL,
-      working_dir TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'idle',
-      claude_started INTEGER NOT NULL DEFAULT 0,
-      slack_team_id TEXT,
-      slack_channel_id TEXT,
-      slack_thread_ts TEXT,
-      permission_mode TEXT NOT NULL DEFAULT 'default',
-      engaged INTEGER NOT NULL DEFAULT 1,
-      persona_id TEXT NOT NULL DEFAULT 'default',
-      UNIQUE(slack_team_id, slack_channel_id, slack_thread_ts, persona_id)
-    )
-  `);
-  db.run(`
-    INSERT INTO sessions
-      (id, created_at, updated_at, title, model, working_dir, status,
-       claude_started, slack_team_id, slack_channel_id, slack_thread_ts,
-       permission_mode, engaged, persona_id)
-    SELECT id, created_at, updated_at, title, model, working_dir, status,
-       claude_started, slack_team_id, slack_channel_id, slack_thread_ts,
-       permission_mode, engaged, 'default'
-    FROM sessions_old
-  `);
-  db.run(`DROP TABLE sessions_old`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_thread ON sessions (slack_team_id, slack_channel_id, slack_thread_ts)`);
+  db.transaction(() => {
+    db.run(`ALTER TABLE sessions RENAME TO sessions_old`);
+    db.run(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        title TEXT,
+        model TEXT NOT NULL,
+        working_dir TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'idle',
+        claude_started INTEGER NOT NULL DEFAULT 0,
+        slack_team_id TEXT,
+        slack_channel_id TEXT,
+        slack_thread_ts TEXT,
+        permission_mode TEXT NOT NULL DEFAULT 'default',
+        engaged INTEGER NOT NULL DEFAULT 1,
+        persona_id TEXT NOT NULL DEFAULT 'default',
+        UNIQUE(slack_team_id, slack_channel_id, slack_thread_ts, persona_id)
+      )
+    `);
+    db.run(`
+      INSERT INTO sessions
+        (id, created_at, updated_at, title, model, working_dir, status,
+         claude_started, slack_team_id, slack_channel_id, slack_thread_ts,
+         permission_mode, engaged, persona_id)
+      SELECT id, created_at, updated_at, title, model, working_dir, status,
+         claude_started, slack_team_id, slack_channel_id, slack_thread_ts,
+         permission_mode, engaged, 'default'
+      FROM sessions_old
+    `);
+    db.run(`DROP TABLE sessions_old`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_thread ON sessions (slack_team_id, slack_channel_id, slack_thread_ts)`);
+  })();
 }
 
 // Migration: add Slack key columns to cron_jobs for real thread sessions.
