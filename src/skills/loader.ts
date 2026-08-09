@@ -38,9 +38,13 @@ function parseSkillFile(absPath: string): Pick<Skill, "name" | "description" | "
   };
 }
 
-/** Discover skills from $SLAUDE_HOME/skills/<slug>/SKILL.md */
-export function discoverSkills(): Skill[] {
-  const root = paths.skills;
+/** A named persona's private skills overlay: personas/<name>/skills/ */
+export function personaSkillsRoot(personaName: string): string {
+  return join(paths.personas, personaName, "skills");
+}
+
+/** Scan one skills root into Skill[]. Missing root → []. */
+function scanSkillsRoot(root: string): Skill[] {
   if (!existsSync(root)) return [];
   const out: Skill[] = [];
   for (const entry of readdirSync(root)) {
@@ -58,6 +62,19 @@ export function discoverSkills(): Skill[] {
     });
   }
   return out;
+}
+
+/** Discover skills from the global base ($SLAUDE_HOME/skills/). When a named
+ *  persona is given, its private overlay (personas/<name>/skills/) is merged on
+ *  top — a persona skill shadows a base skill of the same slug. Default persona
+ *  (or no persona) → base only, unchanged. */
+export function discoverSkills(personaName?: string): Skill[] {
+  const base = scanSkillsRoot(paths.skills);
+  const persona = personaName && personaName !== "default" ? personaName : null;
+  if (!persona) return base;
+  const bySlug = new Map<string, Skill>(base.map((s) => [s.slug, s]));
+  for (const s of scanSkillsRoot(personaSkillsRoot(persona))) bySlug.set(s.slug, s);
+  return [...bySlug.values()];
 }
 
 /** Slack message text → maybe a /skill-name invocation. Returns matching skill + remaining args. */

@@ -8,6 +8,7 @@ import { assertOAuthKeyCanary } from "./agent/mcp-oauth/store";
 import { sharedLoopback } from "./agent/mcp-oauth/shared-loopback";
 import { verifyState } from "./agent/mcp-oauth/state";
 import { env } from "./config/env";
+import { loadPersonaRegistry, setPersonaRegistry } from "./persona/registry";
 
 async function main() {
   ensureHome();
@@ -20,6 +21,13 @@ async function main() {
     setSoulData(await loadSoulData());
   } catch (e) {
     console.warn("[slaude] soul prewarm failed (continuing with regex fallback):", e);
+  }
+
+  // Load persona registry. Absent ~/.slaude/personas/ = single-bot mode (no-op).
+  const registry = loadPersonaRegistry();
+  setPersonaRegistry(registry);
+  if (registry.isMultiPersonaMode()) {
+    console.log(`[persona] multi-persona mode: ${registry.list().map((p) => p.name).join(", ")}`);
   }
 
   const mcpOAuthHealthy = assertOAuthKeyCanary();

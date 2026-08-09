@@ -30,6 +30,8 @@ export const paths = {
   workspaces: workspacesPath,
   knowledge: join(SLAUDE_HOME, "knowledge"),
   claudeConfig: join(SLAUDE_HOME, ".claude"),
+  // Operator-created directory for multi-persona configs. Absence = single-bot mode.
+  personas: join(SLAUDE_HOME, "personas"),
 } as const;
 
 export function ensureHome() {

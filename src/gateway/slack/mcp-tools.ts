@@ -57,6 +57,8 @@ export type SlackContext = {
   }) => Promise<{ approved: boolean; by: string; note?: string }>;
   /** Optional session reload — set by the adapter so reload_session works. */
   reloadSession?: (prompt?: string) => boolean;
+  /** Which persona owns this session. 'default' = single-bot mode. */
+  personaId?: string;
 };
 
 export const SLACK_MCP_NAME = "slaude_slack";
@@ -398,6 +400,9 @@ export const adminHandlers = {
       target,
       whenActive,
       oauthUser: cronLock?.locked_user ?? undefined,
+      // Persist the owning persona so the run fires as that persona (soul + brain
+      // + config dir), not the default bot. Undefined/'default' → single-bot.
+      personaId: ctx.personaId,
     });
     return ok(
       `Cron job created (\`${job.id.slice(0, 8)}\`) [${job.target}, when_active=${job.whenActive}]. Next run: ${new Date(nextRun).toISOString()}`,
