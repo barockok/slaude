@@ -1,7 +1,8 @@
 # Webhook multi-replica: session leases + event forwarding
 
 **Date:** 2026-08-10
-**Status:** design (builds on the webhook transport, PR #88)
+**Status:** lease + forwarder implemented (`3b2b700`, `src/cluster/`); session
+mirror for cross-instance cold-resume deferred — see Follow-up below.
 **Scope:** `SLAUDE_TRANSPORT=webhook` deployments running more than one replica,
 opted in via `SLAUDE_CLUSTER=1`. Socket Mode, single-replica webhook, and any
 deployment with `SLAUDE_CLUSTER` unset are untouched — no Redis connection is even
@@ -130,6 +131,35 @@ volume at the Claude config dir (transcripts) and `$SLAUDE_HOME/workspaces`
 by the operator. Safe under the lease model because exactly one instance writes a
 given thread's files at a time. Without shared storage, a stolen/expired thread
 resumes as a fresh session with a history gap — degraded, not broken.
+
+## Follow-up: session table mirror (blocked on shared transcripts)
+
+The `sessions` row (id, model, working_dir, permission_mode) is still per-process
+sqlite, invisible to a peer that claims/steals a thread's lease. In practice this
+only matters after idle-close: while a thread is live, the lease keeps every event
+routed to the instance that already holds the row, so nothing is missing. The gap
+is a different instance cold-resuming an idle-closed thread — it has no row, so it
+boots a brand-new session instead of resuming.
+
+Not implemented yet because it's coupled to the shared-transcript prerequisite
+above, not because it's hard on its own — `ensureSession()` has exactly two call
+sites (`gateway.ts`, `cron-scheduler.ts`), both already `async`, so making it async
+and mirroring the row through Redis is a small change. The reason to hold off:
+
+- Mirroring the row alone gives the claiming instance a session id to `resume:`,
+  but without the shared transcript volume the SDK finds no matching transcript on
+  local disk. `manager.ts` already has a `RESUME_MISS_RE` handler for exactly this
+  — provider/SDK has no record of the session id — and it falls back to a fresh
+  session. So today, building the mirror produces the *same* degraded outcome
+  (fresh session, history gap) as not building it — just less legible, since it
+  looks like a resume was attempted.
+- The two pieces (mirror + shared volume) are only useful built together, and the
+  shared volume is a deploy-time decision (NFS/EFS/equivalent) that isn't
+  provisioned in any environment yet — there's nowhere to verify the full
+  cross-instance resume loop actually round-trips.
+
+Do this once the shared-transcript volume exists, alongside it, so the mirror can
+be tested end-to-end rather than shipped on faith.
 
 ## Known gaps (explicitly out of scope, phase 1)
 
