@@ -104,6 +104,7 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 Entries live in `docs/findings/<date>-<slug>.md`. Add a new file per significant finding/decision/mistake; index it below. Newest first.
 
+- [2026-08-10 — Webhook multi-replica design: Redis session lease = thread ownership (claim = registration, `PUBLISH` count = liveness, TTL = crash net) + pub/sub event forwarding to the owner pod; sessions table stays owner-free; shared-transcript RWX volume prerequisite; opt-in via `SLAUDE_CLUSTER`](docs/findings/2026-08-10-webhook-session-lease.md)
 - [2026-07-27 — kb_think gather miss: runThink uses gbrain's sourceId-anchored pooled search (misses pages in other agent slices); gather() per-source fan-out finds them. Fix: rescue synthesis via sdkThinkClient when pagesGathered=0 + cross-check finds pages; log cross-check exceptions instead of silent catch](docs/findings/2026-07-27-kb-think-gather-miss.md)
 - [2026-07-24 — Per-agent brain slices: `agent-<id>` private minds (mirror of `user-<id>`); default `kb_memoize` target `"mine"` auto-passes to the caller agent's own slice, explicit `target:"shared"` cards; classify write DESTINATION not (unknowable) intent; identity anchored on `SLAUDE_AGENT_ID`/auth.test; legacy `agent` source kept read-only for continuity](docs/findings/2026-07-24-per-agent-brain-slices.md)
 - [2026-07-08 — Per-channel token and model metrics: augment Prometheus metrics to export channel_id and model labels to enable downstream cost calculation](docs/findings/2026-07-08-per-channel-metrics.md)
