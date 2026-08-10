@@ -56,6 +56,8 @@ import * as MentionOnly from "../../db/mention-only";
 import { CronScheduler } from "../slack/cron-scheduler";
 import { getNextRun } from "../slack/cron-parser";
 import type { Transport } from "./transport";
+import { getLeaseStore, type LeaseStore, type ThreadLeaseKey } from "../../cluster/lease";
+import { getForwarder, type Forwarder, type ForwardEnvelope } from "../../cluster/forwarder";
 
 export interface SessionMcpCtx { slack: SlackContext; surface: Surface }
 export interface GatewayHandle {
@@ -143,6 +145,12 @@ export interface GatewayOptions {
    *  SLACK_POST_AS_USER / SLACK_USER_TOKEN env path. When set, the gateway behaves as
    *  if posting-as-user is enabled (self-user echo guard active). */
   outClient?: any;
+  /** Test seam: inject the cluster LeaseStore/Forwarder directly, bypassing the
+   *  lazy getLeaseStore()/getForwarder() singletons (which construct a real Redis
+   *  connection keyed off a process-wide cache — awkward to control per-test).
+   *  Production never sets these; SLAUDE_CLUSTER still gates whether they're used. */
+  leaseStore?: LeaseStore;
+  forwarder?: Forwarder;
 }
 
 /** Render a TaskCreate/TaskUpdate tasks map as a compact markdown task list. */
@@ -703,6 +711,22 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const cfg = httpExternalServers()[ctx.serverName];
     if (!cfg) return;
     await connectServer({ ...ctx, serverCfg: cfg, personaName: (ctx as any).personaName });
+  });
+
+  // Release this thread's lease once its SDK session actually ends — decoupled
+  // from `routes` (which may already be cleaned up) since the lease outlives
+  // the route's own bookkeeping.
+  agent.on("event", (e: AgentEvent) => {
+    if (e.type !== "sessionClosed" || !env.cluster.enabled()) return;
+    const row = Sessions.findById(e.sessionId);
+    if (!row?.slack_team_id || !row.slack_channel_id || !row.slack_thread_ts) return;
+    void resolveLeaseStore().then((leaseStore) =>
+      leaseStore.release({
+        team_id: row.slack_team_id!,
+        channel_id: row.slack_channel_id!,
+        thread_ts: row.slack_thread_ts!,
+      }),
+    );
   });
 
   agent.on("event", (e: AgentEvent) => {
@@ -1804,6 +1828,43 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (row) Sessions.setEngaged(row.id, value);
   };
 
+  // Multi-replica webhook clustering (opt-in via SLAUDE_CLUSTER). A thread's
+  // live session, engagement state, and routing decisions all live on exactly
+  // one instance; every other instance forwards the raw event there instead of
+  // re-deriving the routing logic above. See
+  // docs/findings/2026-08-10-webhook-session-lease.md.
+  const selfInstanceId = env.cluster.instanceId();
+  const resolveLeaseStore = async (): Promise<LeaseStore> => opts.leaseStore ?? (await getLeaseStore());
+  const resolveForwarder = async (): Promise<Forwarder> => opts.forwarder ?? (await getForwarder());
+
+  /** Claims or forwards an inbound Slack event by thread ownership. Returns
+   *  true if the event was handed off to another instance (caller must stop
+   *  processing); false if this instance owns the thread and should continue —
+   *  either because clustering is off, it already/newly holds the lease, or it
+   *  just took over from an unreachable owner. */
+  async function routeOrForward(eventName: ForwardEnvelope["eventName"], args: any): Promise<boolean> {
+    if (!env.cluster.enabled()) return false;
+    const e: any = args.event;
+    const ts: string = e.thread_ts || e.ts;
+    const teamId: string | undefined = args.context?.teamId ?? e.team;
+    if (!teamId || !e.channel || !ts) return false;
+    const key: ThreadLeaseKey = { team_id: teamId, channel_id: e.channel, thread_ts: ts };
+    const leaseStore = await resolveLeaseStore();
+    let owner = await leaseStore.get(key);
+    if (owner === selfInstanceId) return false;
+    if (owner === null) {
+      if (await leaseStore.claim(key)) return false;
+      owner = await leaseStore.get(key); // lost the race — forward to the winner
+    }
+    if (!owner || owner === selfInstanceId) return false;
+    const forwarder = await resolveForwarder();
+    const receivers = await forwarder.publish(owner, { eventName, event: e, context: args.context });
+    if (receivers > 0) return true;
+    // Owner unreachable (crashed without releasing) — take over and handle locally.
+    await leaseStore.steal(key, owner);
+    return false;
+  }
+
   let cachedBotId: string | null = null;
   let cachedSelfBotId: string | null = null;
   const getBotId = async () => {
@@ -1853,18 +1914,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // subscription isn't enabled. Engage the thread, then defer to handleMessage.
   // (handleMessage's seenEvents dedup prevents double-handling when the same
   //  ts also arrives via the message event.)
-  t.event("app_mention", async (args: any) => {
+  async function onAppMention(args: any) {
+    if (await routeOrForward("app_mention", args)) return;
     const e: any = args.event;
     const ts: string = e.thread_ts || e.ts;
     engaged.add(threadKey(e.channel, ts));
     persistEngaged(args.context?.teamId ?? e.team, e.channel, ts, true);
     await handleMessage(args);
-  });
+  }
+  t.event("app_mention", onAppMention);
 
   // Single message router: every non-bot message goes here so we can manage
   // engagement state consistently. We dispatch to handleMessage when slaude
   // should answer.
-  t.event("message", async (args: any) => {
+  async function onMessage(args: any) {
+    if (await routeOrForward("message", args)) return;
     const e: any = args.event;
     // Drop only self bot-echoes; other bots flow through.
     const selfBotId = await getSelfBotId();
@@ -1998,11 +2062,40 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — channel msg, thread not engaged (no @mention)`,
     );
     metric.slackDropsTotal.inc({ reason: "engagement" });
-  });
+  }
+  t.event("message", onMessage);
+
+  // A forwarded envelope re-enters the same routing functions with a locally
+  // reconstructed args object — the owner's own client, not the sender's
+  // (bolt's client isn't serializable across the wire).
+  async function startCluster(): Promise<void> {
+    if (!env.cluster.enabled()) return;
+    const forwarder = await resolveForwarder();
+    await forwarder.start((envelope) => {
+      const localArgs = { event: envelope.event, client: t.client, context: envelope.context };
+      void (envelope.eventName === "app_mention" ? onAppMention(localArgs) : onMessage(localArgs));
+    });
+    const leaseStore = await resolveLeaseStore();
+    leaseStore.startHeartbeat();
+  }
+
+  async function stopCluster(): Promise<void> {
+    if (!env.cluster.enabled()) return;
+    const leaseStore = await resolveLeaseStore();
+    await leaseStore.releaseAll();
+    const forwarder = await resolveForwarder();
+    await forwarder.stop();
+  }
 
   return {
-    start: () => t.start(),
-    stop: () => t.stop(),
+    start: async () => {
+      await startCluster();
+      await t.start();
+    },
+    stop: async () => {
+      await stopCluster();
+      await t.stop();
+    },
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),
     __agentConnect: (sessionId: string, server: string) => {
