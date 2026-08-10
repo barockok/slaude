@@ -68,7 +68,12 @@ export type AgentEvent =
   | { type: "done"; sessionId: string; autoEvolve?: boolean }
   | { type: "error"; sessionId: string; error: string }
   | { type: "tokenUsage"; sessionId: string; snapshot: UsageSnapshot }
-  | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" };
+  | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" }
+  /** The SDK Query loop ended without an immediate same-instance restart
+   *  (idle timeout, error, abort) — NOT emitted around a reload(), which tears
+   *  down #live only to reboot it right after on this same instance. Consumed
+   *  by cluster mode to release the thread's lease; harmless to ignore otherwise. */
+  | { type: "sessionClosed"; sessionId: string };
 
 /** Permission resolver — called per tool use; given a sessionId so transports can present UI in the right thread. */
 export type PermissionResolver = (
@@ -662,6 +667,9 @@ export class AgentManager extends EventEmitter {
         this.#budget.forget(sessionId);
         this.#stopBlocked.delete(sessionId);
         metric.sessionsLive.set(this.#live.size);
+        if (!live.reloading) {
+          this.emit("event", { type: "sessionClosed", sessionId } satisfies AgentEvent);
+        }
         // After a stream_closed auto-reload, inject a synthetic "continue"
         // prompt so the resumed session picks up without human input.
         if (live.reloading && this.#autoContinue.has(sessionId)) {
