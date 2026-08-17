@@ -228,7 +228,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return f;
   };
 
-  const reactions = new ReactionTracker(t.client);
+  // Resolve per-session client: persona xoxp when available, bot token as fallback.
+  // routes Map is populated lazily (after this line), but the resolver is called
+  // only at reaction time — no init-order issue.
+  const reactions = new ReactionTracker(
+    (sessionId: string) => routes.get(sessionId)?.ctx.client ?? (t.client as any),
+  );
   const presence = new Presence(t.client as any);
   const status = new Status(t.client);
   const permissions = new PermissionGate(t);
