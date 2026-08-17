@@ -1,3 +1,5 @@
+import type { WebClient } from "@slack/web-api";
+
 export interface PersonaConfig {
   slackUserId: string;
   name: string;
@@ -10,4 +12,8 @@ export interface Persona {
   slackUserId: string;
   soulPath: string;
   config: PersonaConfig;
+  /** Set when config.userToken (xoxp) is present — replies/edits/reactions/uploads
+   *  for this persona's sessions go out as its own Slack user account instead of
+   *  the bot app. Null → this persona posts as the bot, same as Phase 1. */
+  outClient: WebClient | null;
 }
