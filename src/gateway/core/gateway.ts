@@ -190,6 +190,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // edits, reactions and uploads go out AS the real Slack user account rather than
   // the app bot. Interactivity-bound paths (gates) keep using `t.client` (bot).
   // No user token → outClient IS the bot client, preserving current behavior.
+  // This is the DEFAULT identity (persona_id='default') — named personas with
+  // their own `userToken` get their own client, resolved per-session below.
   const userToken = env.slack.userToken();
   const postsAsUser = Boolean(opts.outClient) || (env.slack.postAsUser() && Boolean(userToken));
   const outClient: any = opts.outClient
@@ -201,6 +203,30 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   else if (env.slack.postAsUser()) console.warn("[slack-out] SLACK_POST_AS_USER=true but SLACK_USER_TOKEN unset — posting as bot");
 
   const surfaceFactory: SurfaceFactory = opts.surfaceFactory ?? makeSlackSurfaceFactory(outClient);
+
+  // Per-persona xoxp posting: a named persona with its own `userToken` gets its
+  // own WebClient + surfaceFactory instead of the default outClient above, so its
+  // replies/edits/uploads show as that persona's own Slack account. Default
+  // persona (or a named persona with no token) → falls through to outClient,
+  // byte-identical to before this feature existed. `opts.surfaceFactory` (test/
+  // sim override) always wins regardless of persona — sim never needs a real
+  // per-persona Slack client, and per-persona resolution would otherwise try to
+  // hit the real Slack API with whatever token a test happens to configure.
+  const outClientForPersona = (personaId?: string): any => {
+    if (!personaId || personaId === "default") return outClient;
+    return getPersonaRegistry().lookupByName(personaId)?.outClient ?? outClient;
+  };
+  const surfaceFactoryCache = new Map<string, SurfaceFactory>();
+  const surfaceFactoryFor = (personaId?: string): SurfaceFactory => {
+    if (opts.surfaceFactory) return opts.surfaceFactory;
+    const key = personaId ?? "default";
+    let f = surfaceFactoryCache.get(key);
+    if (!f) {
+      f = makeSlackSurfaceFactory(outClientForPersona(personaId));
+      surfaceFactoryCache.set(key, f);
+    }
+    return f;
+  };
 
   const reactions = new ReactionTracker(t.client);
   const presence = new Presence(t.client as any);
@@ -225,14 +251,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     client: t.client as any,
     onExecute: (job, sessionId) => {
       // Register a route so cron sessions get Slack MCP tools + event handling.
+      const jobPersonaId = job.personaId !== "default" ? job.personaId : undefined;
       const ctx: SlackContext = {
-        client: outClient,
+        client: outClientForPersona(jobPersonaId),
         channel: job.slackChannelId!,
         threadTs: job.slackThreadTs ?? job.channelId,
         inboundTs: String(Date.now()), // synthetic — no real inbound msg for cron
         userId: job.createdBy,
         teamId: job.slackTeamId ?? undefined,
         postTarget: job.target,
+        personaId: jobPersonaId,
       };
       ctx.requestApproval = (req) =>
         approvals.request({
@@ -241,7 +269,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           ...req,
         });
       ctx.reloadSession = (prompt?) => agent.reload(sessionId, prompt);
-      routes.set(sessionId, { ctx, surface: surfaceFactory(bindingFor(ctx)), spoke: false, silent: true });
+      routes.set(sessionId, { ctx, surface: surfaceFactoryFor(jobPersonaId)(bindingFor(ctx)), spoke: false, silent: true });
     },
   });
   agent.setPermissionResolver(permissions.resolver);
@@ -867,10 +895,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       metric.slackDropsTotal.inc({ reason: "self_bot" });
       return;
     }
-    // Self-echo when posting as a real user (xoxp): own posts carry our user id
-    // and no bot_id. Drop them to avoid re-ingesting our own output.
-    const selfUserId = await getSelfUserId();
-    if (selfUserId && userId === selfUserId) {
+    // Self-echo when posting as a real user (xoxp) — default identity or a named
+    // persona: own posts carry our user id and no bot_id. Drop them to avoid
+    // re-ingesting our own output.
+    const selfUserIds = await getSelfUserIds();
+    if (selfUserIds.has(userId)) {
       console.log(`[slack-rx] drop ch=${channelId} ts=${eventTs} — self user echo`);
       metric.slackDropsTotal.inc({ reason: "self_user" });
       return;
@@ -1540,20 +1569,22 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             existing.spoke = false;
             existing.wasCompacting = true;
           } else {
+            const compactPersonaId = session.persona_id !== "default" ? session.persona_id : undefined;
             const ctx: SlackContext = {
-              client: outClient,
+              client: outClientForPersona(compactPersonaId),
               channel: channelId,
               threadTs,
               inboundTs: eventTs,
               userId,
               teamId,
+              personaId: compactPersonaId,
             };
             ctx.requestApproval = (req) =>
               approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, ...req });
             ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
             routes.set(session.id, {
               ctx,
-              surface: surfaceFactory(bindingFor(ctx)),
+              surface: surfaceFactoryFor(compactPersonaId)(bindingFor(ctx)),
               spoke: false,
               wasCompacting: true,
             });
@@ -1688,7 +1719,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.suppress = suppress;
     } else {
       const ctx: SlackContext = {
-        client: outClient,
+        client: outClientForPersona(dispatch?.personaId),
         channel: channelId,
         threadTs,
         inboundTs: eventTs,
@@ -1703,7 +1734,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           ...req,
         });
       ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
-      routes.set(session.id, { ctx, surface: surfaceFactory(bindingFor(ctx)), spoke: false, suppress });
+      routes.set(session.id, { ctx, surface: surfaceFactoryFor(dispatch?.personaId)(bindingFor(ctx)), spoke: false, suppress });
     }
 
     console.log(`[slaude] sendMessage session=${session.id} cwd=${session.working_dir} model=${session.model}`);
@@ -1764,26 +1795,32 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // When posting as a real user (xoxp), the agent's own messages arrive as plain
   // `message` events with NO `bot_id` — the bot-id self-filter misses them and we
-  // would re-ingest our own output (infinite loop). Resolve the user-token's own
-  // user id once and drop events authored by it. Null when posting as bot (the
-  // bot_id filter already covers self-echoes there).
+  // would re-ingest our own output (infinite loop). Resolve the default posting
+  // identity's own user id once (auth.test) and drop events authored by it, UNION
+  // every named persona's own `slackUserId` when that persona has a `userToken`
+  // (known statically from config — no auth.test needed per persona). Personas
+  // with no token post as the bot, already covered by the bot-id filter above.
   let cachedSelfUserId: string | null = null;
   let selfUserIdResolved = false;
-  const getSelfUserId = async (): Promise<string | null> => {
-    if (selfUserIdResolved) return cachedSelfUserId;
-    if (!postsAsUser) {
+  const getSelfUserIds = async (): Promise<Set<string>> => {
+    if (!selfUserIdResolved) {
+      if (postsAsUser) {
+        try {
+          const res = await outClient.auth.test();
+          cachedSelfUserId = (res as any).user_id as string;
+        } catch (e: any) {
+          console.error("[slack-out] auth.test on user token failed:", e?.data?.error ?? e?.message);
+          cachedSelfUserId = null;
+        }
+      }
       selfUserIdResolved = true;
-      return null;
     }
-    try {
-      const res = await outClient.auth.test();
-      cachedSelfUserId = (res as any).user_id as string;
-    } catch (e: any) {
-      console.error("[slack-out] auth.test on user token failed:", e?.data?.error ?? e?.message);
-      cachedSelfUserId = null;
+    const ids = new Set<string>();
+    if (cachedSelfUserId) ids.add(cachedSelfUserId);
+    for (const p of getPersonaRegistry().list()) {
+      if (p.outClient) ids.add(p.slackUserId);
     }
-    selfUserIdResolved = true;
-    return cachedSelfUserId;
+    return ids;
   };
 
   // app_mention is a guaranteed delivery path even if message.channels event
@@ -1807,10 +1844,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const selfBotId = await getSelfBotId();
     if (e.bot_id && selfBotId && e.bot_id === selfBotId) return;
     if (!e.user) return;
-    // Drop self-echoes when posting as a real user (xoxp): own posts carry our
-    // user id and no bot_id, so they'd otherwise drive engagement/disengagement.
-    const selfUserId = await getSelfUserId();
-    if (selfUserId && e.user === selfUserId) {
+    // Drop self-echoes when posting as a real user (xoxp) — default identity or a
+    // named persona: own posts carry our user id and no bot_id, so they'd
+    // otherwise drive engagement/disengagement.
+    const selfUserIds = await getSelfUserIds();
+    if (selfUserIds.has(e.user)) {
       metric.slackDropsTotal.inc({ reason: "self_user" });
       return;
     }
