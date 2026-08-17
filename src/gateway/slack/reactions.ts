@@ -3,23 +3,34 @@ import type { WebClientLike } from "../core/transport";
 /**
  * Track one "status reaction" per inbound message so we can transition the
  * emoji as the session progresses (👀 received → ⚙️ working → ✅ done / ❌ error).
+ *
+ * Accepts either a fixed client (single-bot mode) or a per-session resolver so
+ * named personas can react using their own xoxp token while the default bot
+ * is the fallback. Resolver is called lazily on each `set()` — no init-order risk.
  */
 export class ReactionTracker {
-  #client: WebClientLike;
+  #clientOrResolver: WebClientLike | ((sessionId: string) => WebClientLike);
   #current = new Map<string, { channel: string; ts: string; emoji: string }>();
   #disabled = false;
 
-  constructor(client: WebClientLike) {
-    this.#client = client;
+  constructor(clientOrResolver: WebClientLike | ((sessionId: string) => WebClientLike)) {
+    this.#clientOrResolver = clientOrResolver;
+  }
+
+  #clientFor(sessionId: string): WebClientLike {
+    return typeof this.#clientOrResolver === "function"
+      ? this.#clientOrResolver(sessionId)
+      : this.#clientOrResolver;
   }
 
   async set(sessionId: string, channel: string, ts: string, emoji: string) {
     if (this.#disabled) return;
+    const client = this.#clientFor(sessionId);
     const prev = this.#current.get(sessionId);
     if (prev?.emoji === emoji) return;
     if (prev) {
       try {
-        await this.#client.reactions.remove({
+        await client.reactions.remove({
           channel: prev.channel,
           timestamp: prev.ts,
           name: prev.emoji,
@@ -29,7 +40,7 @@ export class ReactionTracker {
       }
     }
     try {
-      await this.#client.reactions.add({ channel, timestamp: ts, name: emoji });
+      await client.reactions.add({ channel, timestamp: ts, name: emoji });
       this.#current.set(sessionId, { channel, ts, emoji });
     } catch (e: any) {
       const code = e?.data?.error ?? e?.message;
