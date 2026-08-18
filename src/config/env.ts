@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { hostname } from "node:os";
 import { paths } from "./home";
 
 // Load a .env file if present (does not override existing process.env)
@@ -30,9 +31,25 @@ function opt(name: string, fallback = ""): string {
 }
 
 export const env = {
+  /**
+   * Slack transport mode: "socket" (default, Socket Mode via SLACK_APP_TOKEN)
+   * or "webhook" (HTTP Events API via SLACK_SIGNING_SECRET + SLACK_WEBHOOK_PORT).
+   */
+  transport: () => (opt("SLAUDE_TRANSPORT", "socket").toLowerCase() === "webhook" ? "webhook" : "socket") as "socket" | "webhook",
   slack: {
     botToken: () => req("SLACK_BOT_TOKEN"),
     appToken: () => req("SLACK_APP_TOKEN"),
+    /**
+     * Required in webhook mode. Used by bolt to verify incoming request signatures.
+     */
+    signingSecret: () => req("SLACK_SIGNING_SECRET"),
+    /**
+     * HTTP port bolt listens on in webhook mode. Default 3000.
+     */
+    webhookPort: () => {
+      const n = parseInt(opt("SLACK_WEBHOOK_PORT", "3000"), 10);
+      return Number.isFinite(n) && n > 0 ? n : 3000;
+    },
     /**
      * Optional user token (xoxp). Historically used only for presence
      * (`users.profile.set`). Also the token used for post-as-user when
@@ -209,6 +226,32 @@ export const env = {
     if (set) return set;
     if (!ephemeralStateSecret) ephemeralStateSecret = randomBytes(32).toString("base64url");
     return ephemeralStateSecret;
+  },
+  /**
+   * Multi-replica webhook clustering. Off by default — a single-replica or
+   * Socket Mode deployment never touches Redis (the client module isn't even
+   * imported unless this is on). See docs/findings/2026-08-10-webhook-session-lease.md.
+   */
+  cluster: {
+    enabled: (): boolean => /^(1|true|yes)$/i.test(opt("SLAUDE_CLUSTER", "").trim()),
+    /** Required when clustering is enabled; never read otherwise. */
+    redisUrl: () => req("SLAUDE_REDIS_URL"),
+    /**
+     * This replica's identity for lease ownership. Deployment-target-agnostic:
+     * the operator supplies whatever identifies a replica in their environment
+     * (a Kubernetes pod name, a systemd unit, a plain UUID). Falls back to the
+     * OS hostname, which is usually replica-unique in practice (e.g. the pod
+     * name on most container platforms).
+     */
+    instanceId: () => opt("SLAUDE_INSTANCE_ID", "").trim() || hostname(),
+    /** Lease TTL in seconds — the crash-recovery net, not the idle clock (leases
+     *  are heartbeat-refreshed while a session is live and explicitly released
+     *  on idle-close). Default aligns with the default idle timeout. */
+    leaseTtlSeconds: (): number => {
+      const raw = opt("SLAUDE_LEASE_TTL_SECONDS", "900");
+      const n = parseInt(raw, 10);
+      return Number.isFinite(n) && n > 0 ? n : 900;
+    },
   },
 };
 
