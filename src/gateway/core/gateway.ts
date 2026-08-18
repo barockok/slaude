@@ -453,7 +453,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   type ConnectScope = "initiator" | "global";
 
   // Pending /mcp connect buttons: token → the context needed to run the connect.
-  const pendingMcp = new Map<string, { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string; scope: ConnectScope }>();
+  const pendingMcp = new Map<string, { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string; scope: ConnectScope; personaName?: string }>();
 
   // Paste-back: a started-but-not-completed OAuth flow, keyed by channel:thread:user
   // (one in-flight connect per initiator per thread). The initiator completes it by
@@ -465,6 +465,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     serverConfig: OAuthServerConfig;
     sessionId: string; channelId: string; threadTs: string; userId: string;
     scope: ConnectScope;
+    /** Named persona that owns this session, if any. Threads the persona boundary
+     *  into persistTokens so the token lands in oauth/<persona>/<userId> rather
+     *  than oauth/<userId> when the connect runs inside a persona's 1on1. */
+    personaName?: string;
     /** ts of the posted authorize-URL message, redacted in place on settle. */
     authMsgRef?: string;
     expiresAt: number;
@@ -484,11 +488,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   /** Persist freshly-exchanged tokens into the CLI store and reboot the session so
    *  the CLI picks them up. "initiator" scope writes the per-user config home;
    *  "global" scope writes the agent's own config dir. Shared by loopback + paste. */
-  async function persistTokens(a: { sessionId: string; userId: string; serverName: string; serverConfig: OAuthServerConfig; scope: ConnectScope }, tokens: OAuthTokens) {
+  async function persistTokens(a: { sessionId: string; userId: string; serverName: string; serverConfig: OAuthServerConfig; scope: ConnectScope; personaName?: string }, tokens: OAuthTokens) {
     // initiator: ensureInitiatorConfigDir seeds + creates the dir (the connect flow
     // may run before any locked session has booted). global: the agent config dir is
     // the live CLAUDE_CONFIG_DIR — already present, just write into it.
-    const configDir = a.scope === "global" ? agentConfigDir() : ensureInitiatorConfigDir(a.userId);
+    const configDir = a.scope === "global" ? agentConfigDir() : ensureInitiatorConfigDir(a.userId, a.personaName);
     writeEntry(configDir, a.serverName, a.serverConfig, tokens);
     agent.noteSessionEvent(a.sessionId, `Connected MCP server \`${a.serverName}\`${a.scope === "global" ? " (agent's shared identity)" : ""}.`);
     agent.reload(a.sessionId);
@@ -520,7 +524,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     } catch { /* best-effort: redaction failure must not mask the connect outcome */ }
   };
 
-  async function connectServer(a: { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string; serverCfg: any; scope: ConnectScope }) {
+  async function connectServer(a: { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string; serverCfg: any; scope: ConnectScope; personaName?: string }) {
     const surface = connectSurface(a.channelId, a.threadTs, a.userId);
     const post = (text: string) => surface.reply({ text });
     const serverConfig: OAuthServerConfig = { type: "http", url: a.serverCfg.url, headers: a.serverCfg.headers };
@@ -545,6 +549,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           serverConfig,
           sessionId: a.sessionId, channelId: a.channelId, threadTs: a.threadTs, userId: a.userId,
           scope: a.scope,
+          personaName: a.personaName,
           authMsgRef: ref,
           expiresAt: Date.now() + 10 * 60_000,
         });
@@ -627,7 +632,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       return `unknown MCP server \`${serverName}\`.` +
         (names.length ? ` Connectable: ${names.map((n) => `\`${n}\``).join(", ")}.` : " None are configured.");
     }
-    void connectServer({ sessionId, channelId: ctx.channel, threadTs, userId: userId, serverName, serverCfg: cfg, scope })
+    const personaName = ctx.personaId && ctx.personaId !== "default" ? ctx.personaId : undefined;
+    void connectServer({ sessionId, channelId: ctx.channel, threadTs, userId, serverName, serverCfg: cfg, scope, personaName })
       .catch(() => { /* connectServer posts its own failure out-of-band */ });
     return `Started authorizing \`${serverName}\` — I've posted the authorization link in this thread. Open it to approve; I'll confirm here once it's connected. You won't need to paste anything back.`;
   }
@@ -696,7 +702,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     pendingMcp.delete(token);
     const cfg = httpExternalServers()[ctx.serverName];
     if (!cfg) return;
-    await connectServer({ ...ctx, serverCfg: cfg });
+    await connectServer({ ...ctx, serverCfg: cfg, personaName: (ctx as any).personaName });
   });
 
   agent.on("event", (e: AgentEvent) => {
@@ -1226,7 +1232,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await reply(`:warning: unknown HTTP MCP server \`${name ?? ""}\`. Run \`/mcp\` to list connectable servers.`);
             return;
           }
-          await connectServer({ sessionId: session.id, channelId, threadTs, userId, serverName: name, serverCfg: httpServers[name], scope });
+          await connectServer({ sessionId: session.id, channelId, threadTs, userId, serverName: name, serverCfg: httpServers[name], scope, personaName: dispatch?.personaId && dispatch.personaId !== "default" ? dispatch.personaId : undefined });
           return;
         }
 
@@ -1270,7 +1276,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (connectable.length) {
           const elements = connectable.map((s) => {
             const token = randomBytes(8).toString("hex");
-            pendingMcp.set(token, { sessionId: session.id, channelId, threadTs, userId, serverName: s.name, scope });
+            pendingMcp.set(token, { sessionId: session.id, channelId, threadTs, userId, serverName: s.name, scope, personaName: dispatch?.personaId && dispatch.personaId !== "default" ? dispatch.personaId : undefined });
             return {
               type: "button",
               text: { type: "plain_text", text: `Connect ${s.name}` },
