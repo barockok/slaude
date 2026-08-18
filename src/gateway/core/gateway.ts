@@ -1001,7 +1001,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
 
     const botUserId = (await client.auth.test()).user_id as string;
-    const stripped = text.replace(new RegExp(`<@${botUserId}>`, "g"), "").trim();
+    // Strip bot mention + persona mention (e.g. "@Noah /model" → "/model").
+    const personaUserId = dispatch?.personaId
+      ? getPersonaRegistry().lookupByName(dispatch.personaId)?.slackUserId
+      : undefined;
+    const stripped = text
+      .replace(new RegExp(`<@${botUserId}>`, "g"), "")
+      .replace(personaUserId ? new RegExp(`<@${personaUserId}>`, "g") : /(?!x)/g, "")
+      .trim();
     const hasFiles = Array.isArray(event.files) && event.files.length > 0;
     if (!stripped && !hasFiles) return;
 
