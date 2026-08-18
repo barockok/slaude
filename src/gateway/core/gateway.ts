@@ -1045,8 +1045,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // Slash commands: /mode, /abort, /help. Handled locally; do not forward to model.
     const slash = parseSlashCommand(stripped);
     if (slash) {
+      const slashClient = outClientForPersona(dispatch?.personaId);
       const reply = async (txt: string) => {
-        await client.chat.postMessage({
+        await slashClient.chat.postMessage({
           channel: channelId,
           thread_ts: threadTs,
           text: txt,
