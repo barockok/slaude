@@ -12,6 +12,23 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # Real Redis for tests/cluster/redis-integration.test.ts — the SLAUDE_CLUSTER
+    # lease/forwarder unit tests use an in-memory fake for fast, deterministic CAS
+    # assertions, but that only proves internal self-consistency, not that the
+    # real `redis` npm client's option shapes / EVAL / pub/sub behave as assumed.
+    # This service container gives that a real target without docker-compose.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    env:
+      SLAUDE_TEST_REDIS_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@v4
 

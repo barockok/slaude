@@ -121,7 +121,13 @@ export class RedisLeaseStore implements LeaseStore {
 
   startHeartbeat(): void {
     if (this.#heartbeat) return;
-    const intervalMs = Math.max(1000, (this.#ttl * 1000) / 3);
+    // ttl/3 keeps a 3x refresh margin regardless of TTL size. A 1000ms floor
+    // here previously broke that margin for TTLs under ~3s — with a 1s TTL the
+    // first refresh landed too late and the real Redis key had already expired
+    // (caught by the real-Redis integration test; the in-memory fake client
+    // doesn't implement TTL expiry so this bug was invisible to unit tests).
+    // 50ms floor only guards against a runaway tight loop on a near-zero TTL.
+    const intervalMs = Math.max(50, (this.#ttl * 1000) / 3);
     this.#heartbeat = setInterval(() => {
       for (const k of this.#held) {
         this.#client

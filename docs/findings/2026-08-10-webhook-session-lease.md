@@ -1,8 +1,9 @@
 # Webhook multi-replica: session leases + event forwarding
 
 **Date:** 2026-08-10
-**Status:** lease + forwarder implemented (`3b2b700`, `src/cluster/`); session
-mirror for cross-instance cold-resume deferred — see Follow-up below.
+**Status:** lease + forwarder implemented (`3b2b700`, `src/cluster/`); real-Redis
+CI coverage added (see Testing below); session mirror for cross-instance
+cold-resume deferred — see Follow-up below.
 **Scope:** `SLAUDE_TRANSPORT=webhook` deployments running more than one replica,
 opted in via `SLAUDE_CLUSTER=1`. Socket Mode, single-replica webhook, and any
 deployment with `SLAUDE_CLUSTER` unset are untouched — no Redis connection is even
@@ -121,6 +122,31 @@ SLAUDE_REDIS_URL=redis://…    # required when clustered
 SLAUDE_INSTANCE_ID            # this replica's identity for lease ownership; falls back to os.hostname()
 SLAUDE_LEASE_TTL_SECONDS      # default 900 (aligned with SLAUDE_IDLE_MINUTES)
 ```
+
+## Testing
+
+`tests/cluster/{lease,forwarder}.test.ts` and the gateway routing test use a
+hand-written `FakeRedisClient` (in-memory `get`/`set`/`eval`/`publish`/`subscribe`)
+injected via `GatewayOptions.leaseStore`/`.forwarder` — fast and deterministic,
+but only proves the code is internally self-consistent, not that the real
+`redis` npm client's option shapes, `EVAL` execution, and pub/sub actually behave
+the way this code assumes.
+
+`tests/cluster/redis-integration.test.ts` closes that gap: it runs the real
+`RedisLeaseStore`/`RedisForwarder` against an actual Redis, gated on
+`SLAUDE_TEST_REDIS_URL` (skipped locally when unset; CI provides it via a
+`services: redis:` block in `.github/workflows/ci.yml` — no docker-compose
+needed for a single ephemeral service in GitHub Actions).
+
+That integration test caught a real bug on first run: `startHeartbeat()`'s
+interval was `Math.max(1000, ttl*1000/3)` — the 1000ms floor broke the intended
+3x refresh margin for any TTL under ~3s (a 1s TTL got a 1s heartbeat interval,
+so the first refresh could land after the key had already expired). The
+`FakeRedisClient` never caught this because it didn't implement TTL expiry at
+all — every "TTL expires" assertion against it was vacuously true. Fixed by
+dropping the floor to 50ms (just guards a near-zero TTL from spinning) and
+giving `FakeRedisClient` real wall-clock TTL semantics so the unit tests are no
+longer trivially passing regardless of correctness.
 
 ## Prerequisite: shared transcripts
 
