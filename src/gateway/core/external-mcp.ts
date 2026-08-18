@@ -81,9 +81,12 @@ export function privateOverrides(
   return out;
 }
 
-/** Load + parse `~/.slaude/.mcp.json`. Missing file → empty result. */
-export function loadExternalMcp(): ExternalMcp {
-  const f = join(paths.home, ".mcp.json");
+/** Load + parse `~/.slaude/.mcp.json` (global) or `~/.slaude/personas/<name>/mcp.json`
+ *  (per-persona). Missing file → empty result. */
+export function loadExternalMcp(personaName?: string): ExternalMcp {
+  const f = personaName
+    ? join(paths.personas, personaName.toLowerCase(), "mcp.json")
+    : join(paths.home, ".mcp.json");
   if (!existsSync(f)) return { servers: {}, privateServices: [] };
   try {
     return parseExternalMcp(JSON.parse(readFileSync(f, "utf8")));

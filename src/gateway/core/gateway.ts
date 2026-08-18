@@ -398,14 +398,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             }
           : undefined,
       ),
-      ...externalMcp.servers,
+      // Per-persona MCP isolation: named personas load ~/.slaude/personas/<name>/mcp.json
+      // instead of the shared global config. Default sessions use the boot-time global.
+      ...(route.ctx.personaId && route.ctx.personaId !== "default"
+        ? loadExternalMcp(route.ctx.personaId).servers
+        : externalMcp.servers),
     };
     // 1on1 privacy: when this session's effective identity is locked (live /1on1
     // lock, or a cron job's captured initiator), whitelisted external services mount
     // with the agent's credentials stripped so they run as that identity (self-prompt
     // auth). Other sessions/threads keep the agent identity (source map untouched).
     const effectiveIdentity = agent.resolveEffectiveIdentity(sessionId, route.ctx.channel, route.ctx.threadTs);
-    Object.assign(servers, privateOverrides(externalMcp.servers, privateServiceSet, !!effectiveIdentity));
+    const sessionMcp = route.ctx.personaId && route.ctx.personaId !== "default"
+      ? loadExternalMcp(route.ctx.personaId)
+      : externalMcp;
+    Object.assign(servers, privateOverrides(sessionMcp.servers, new Set(sessionMcp.privateServices), !!effectiveIdentity));
     sessionCtx.set(sessionId, { slack: route.ctx, surface: route.surface });
     return servers;
   };
