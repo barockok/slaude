@@ -116,7 +116,9 @@ describe("brainHandlers", () => {
     const d = deps({
       scope: () => mine,
       requestApproval: async () => { approvals++; return { approved: true, by: "UMGR" }; },
-      call: async (_n, _p, s) => { wrote.push(s.sourceId); return { ok: 1 }; },
+      // get_tags rides along on own-slice writes (audience reconcile); the
+      // page write itself must be exactly one put_page to the own slice.
+      call: async (n, _p, s) => { if (n === "put_page") wrote.push(s.sourceId); return n === "get_tags" ? [] : { ok: 1 }; },
     });
     const r = await brainHandlers.kb_memoize({ pages: [{ slug: "notes/x", content: "c", summary: "s" }] }, d);
     expect(r.isError).toBeUndefined();

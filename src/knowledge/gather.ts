@@ -1,4 +1,5 @@
 import { brainCall } from "./brain";
+import { buildAudienceFilter, type AudienceFilter } from "./audience";
 import type { BrainScope } from "./scope";
 
 /**
@@ -68,6 +69,17 @@ export async function gather(query: string, scope: BrainScope, opts: GatherOpts 
   const call = opts.call ?? brainCall;
 
   const sources = scope.allowedSources.length > 0 ? scope.allowedSources : [scope.sourceId];
+  // Audience disclosure filter for the agent's own mind (see audience.ts),
+  // built once per gather from brain tags. We filter INSIDE each per-source
+  // list — the source is known there without trusting hit.source_id — and
+  // fail closed: a hit from a tiered source with no slug can't be checked, so
+  // it drops (buildAudienceFilter already fails closed on query errors).
+  const tiered = scope.audience && scope.audience.level !== "all" ? new Set(scope.audienceSources ?? []) : null;
+  const filter: AudienceFilter | null = tiered && tiered.size > 0 ? await buildAudienceFilter(call, scope) : null;
+  const audienceFilter = (s: string, hits: GatherHit[]): GatherHit[] => {
+    if (!filter || !tiered?.has(s)) return hits;
+    return hits.filter((h) => typeof h.slug === "string" && h.slug && filter.visible(s, h.slug));
+  };
 
   // One search per source, scoped to that source alone, in parallel. A single
   // source failing (e.g. transient) drops to [] rather than sinking the gather
@@ -81,7 +93,7 @@ export async function gather(query: string, scope: BrainScope, opts: GatherOpts 
       const sub: BrainScope = { clientId: scope.clientId, sourceId: s, allowedSources: [s] };
       try {
         const hits = await call("search", { query, limit: perSourceK }, sub);
-        return Array.isArray(hits) ? (hits as GatherHit[]) : [];
+        return Array.isArray(hits) ? audienceFilter(s, hits as GatherHit[]) : [];
       } catch (e) {
         failures++;
         lastErr = e;

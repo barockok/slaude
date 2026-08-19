@@ -6,7 +6,8 @@ import { brainCall, brainEnabled } from "./brain";
 import { brainThink, sdkThinkClient } from "./brain-think";
 import { gather } from "./gather";
 import { gatedBrainCall, type ApprovalReq, type ApprovalRes, type GateInput } from "./gated-dispatch";
-import { SHARED_SOURCE, type BrainScope } from "./scope";
+import { SHARED_SOURCE, agentSourceId, type BrainScope } from "./scope";
+import { audienceVisible, buildAudienceFilter, pageAudienceFromTags, parseAudience, reconcileAudienceTags } from "./audience";
 import { agentIdReady } from "./agent-identity";
 
 export const KB_MCP_NAME = "slaude_kb";
@@ -75,6 +76,13 @@ export interface BrainToolDeps {
 
 const asJson = (v: unknown): ToolResult => ok(typeof v === "string" ? v : JSON.stringify(v, null, 2));
 
+/** Drop the audience-tiered sources (the agent slices) from a scope's read
+ *  union — the fail-closed move for read paths that can't filter per page. */
+function stripAudienceSources(scope: BrainScope): BrainScope {
+  const tiered = new Set(scope.audienceSources ?? []);
+  return { ...scope, allowedSources: scope.allowedSources.filter((s) => !tiered.has(s)) };
+}
+
 /** Max pages a single kb_memoize call may write. Bounds approval-card size and
  *  the work behind one approval. */
 export const KB_MEMOIZE_MAX_PAGES = 20;
@@ -95,15 +103,6 @@ export function humanizeBrainError(name: string, e: unknown): string {
     return `brain ${name} failed: the brain's vector extension is unavailable, so embeddings/search can't run. This is an infrastructure fault, not your input — tell the user the brain is degraded; do NOT work around it with files.`;
   }
   return `brain ${name} failed: ${raw}`;
-}
-
-async function runRead(name: string, params: Record<string, unknown>, d: BrainToolDeps): Promise<ToolResult> {
-  try {
-    const call = d.call ?? brainCall;
-    return asJson(await call(name, params, d.scope()));
-  } catch (e) {
-    return err(humanizeBrainError(name, e));
-  }
 }
 
 async function runGated(name: string, params: Record<string, unknown>, summary: string, d: BrainToolDeps): Promise<ToolResult> {
@@ -159,9 +158,21 @@ const hitSlug = (h: unknown): string | undefined =>
 export const brainHandlers = {
   kb_think: async (p: { question: string }, d: BrainToolDeps): Promise<ToolResult> => {
     try {
+      const scope = d.scope();
+      // Audience tiers: gbrain's internal gather can't filter per page, so when
+      // this turn's grant hides ANY agent-slice page, the slices drop out of
+      // synthesis entirely (fail closed). The cross-check gather below keeps the
+      // full scope — it filters per page — so visible agent-slice pages still
+      // surface as search_fallback / rescue context. See audience.ts.
+      const g = scope.audience;
+      const tiered = scope.audienceSources ?? [];
+      const thinkScope = g && g.level !== "all" && tiered.length > 0
+        && (await buildAudienceFilter(d.call ?? brainCall, scope)).anyHidden
+        ? stripAudienceSources(scope)
+        : scope;
       // SDK-routed synthesis (subscription auth) — not the raw think op.
       const think = d.think ?? brainThink;
-      const result = await think(p.question, d.scope());
+      const result = await think(p.question, thinkScope);
       // Mode B / B′ guard: kb_think's hybrid gather can rank a present,
       // well-titled page below noisier neighbors and then synthesize a
       // confident answer that cites the wrong pages (or none). Always
@@ -175,7 +186,7 @@ export const brainHandlers = {
         // used to surface more junk instead of the present page. gather()
         // guarantees curated sources their own slots, so a strong uncited hit
         // (e.g. the curated page kb_think's gather missed) actually shows up here.
-        const hits = await gather(distillQuery(p.question), d.scope(), { finalLimit: 5, call: d.call });
+        const hits = await gather(distillQuery(p.question), scope, { finalLimit: 5, call: d.call });
         if (Array.isArray(hits) && hits.length > 0) {
           const cited = citationSlugs(result);
           const missed = hits.filter((h) => {
@@ -241,18 +252,96 @@ export const brainHandlers = {
       return err(humanizeBrainError("search", e));
     }
   },
-  kb_get_page: (p: { slug: string }, d: BrainToolDeps) => runRead("get_page", { slug: p.slug }, d),
-  kb_list_pages: (p: { type?: string; tag?: string; limit?: number }, d: BrainToolDeps) =>
-    runRead("list_pages", { ...p }, d),
+  kb_get_page: async (p: { slug: string }, d: BrainToolDeps): Promise<ToolResult> => {
+    const scope = d.scope();
+    try {
+      const call = d.call ?? brainCall;
+      const page = await call("get_page", { slug: p.slug }, scope);
+      const g = scope.audience;
+      const tiered = scope.audienceSources ?? [];
+      if (g && g.level !== "all" && tiered.length > 0 && page && typeof page === "object") {
+        const src = (page as { source_id?: unknown }).source_id;
+        // Keyed on the result's source when present (per-slug get_tags — no
+        // list truncation concerns); when absent, fail closed on any explicit
+        // tier for the slug in a tiered source.
+        const denied = typeof src === "string"
+          ? tiered.includes(src) && !audienceVisible(await pageAudienceFromTags(call, scope, src, p.slug), g)
+          : await (async () => {
+              for (const s of tiered) {
+                const a = await pageAudienceFromTags(call, scope, s, p.slug);
+                if (a !== null && !audienceVisible(a, g)) return true;
+              }
+              return false;
+            })();
+        if (denied) return err(`page not available in this conversation: ${p.slug}`);
+      }
+      return asJson(page);
+    } catch (e) {
+      return err(humanizeBrainError("get_page", e));
+    }
+  },
+  kb_list_pages: async (p: { type?: string; tag?: string; limit?: number }, d: BrainToolDeps): Promise<ToolResult> => {
+    const scope = d.scope();
+    const g = scope.audience;
+    const tiered = scope.audienceSources ?? [];
+    // list_pages rows carry no source_id, so per-row audience checks can't be
+    // keyed reliably. At "public" level unlabeled pages are hidden by default —
+    // fail closed by dropping the tiered sources from the listing. At
+    // team/manager level only explicitly-hidden slugs need filtering.
+    const listScope = g && g.level === "public" && tiered.length > 0 ? stripAudienceSources(scope) : scope;
+    try {
+      const call = d.call ?? brainCall;
+      const rows = await call("list_pages", { ...p }, listScope);
+      if (g && (g.level === "team" || g.level === "manager") && tiered.length > 0 && Array.isArray(rows)) {
+        const filter = await buildAudienceFilter(call, scope);
+        if (filter.anyHidden) {
+          // Rows carry no source_id — keep a row only if its slug is visible
+          // in EVERY tiered source (slug-collision over-filtering fails closed).
+          return asJson(rows.filter((r) => {
+            const slug = (r as { slug?: string })?.slug ?? "";
+            return tiered.every((s) => filter.visible(s, slug));
+          }));
+        }
+      }
+      return asJson(rows);
+    } catch (e) {
+      return err(humanizeBrainError("list_pages", e));
+    }
+  },
   kb_graph: async (p: { slug: string }, d: BrainToolDeps): Promise<ToolResult> => {
-    const links = await runRead("get_links", { slug: p.slug }, d);
-    if (links.isError) return links;
-    const back = await runRead("get_backlinks", { slug: p.slug }, d);
-    if (back.isError) return back;
-    return ok(JSON.stringify({
-      links: JSON.parse(links.content[0]!.text),
-      backlinks: JSON.parse(back.content[0]!.text),
-    }, null, 2));
+    const scope = d.scope();
+    const g = scope.audience;
+    const tiered = scope.audienceSources ?? [];
+    const call = d.call ?? brainCall;
+    let readScope = scope;
+    if (g && g.level !== "all" && tiered.length > 0) {
+      try {
+        for (const s of tiered) {
+          const a = await pageAudienceFromTags(call, scope, s, p.slug);
+          if (a !== null && !audienceVisible(a, g)) {
+            return err(`page not available in this conversation: ${p.slug}`);
+          }
+        }
+      } catch (e) {
+        return err(humanizeBrainError("get_tags", e)); // fail closed
+      }
+      // Link targets of a readable page are part of its content — no per-edge
+      // filtering needed. At "public" level unlabeled agent pages are hidden,
+      // so their graphs must be too: drop the tiered sources (fail closed).
+      if (g.level === "public") readScope = stripAudienceSources(scope);
+    }
+    let links: unknown;
+    try {
+      links = await call("get_links", { slug: p.slug }, readScope);
+    } catch (e) {
+      return err(humanizeBrainError("get_links", e));
+    }
+    try {
+      const back = await call("get_backlinks", { slug: p.slug }, readScope);
+      return ok(JSON.stringify({ links, backlinks: back }, null, 2));
+    } catch (e) {
+      return err(humanizeBrainError("get_backlinks", e));
+    }
   },
   kb_memoize: async (p: { pages: Array<{ slug: string; content: string; summary: string }>; target?: "mine" | "shared" }, d: BrainToolDeps): Promise<ToolResult> => {
     const pages = p.pages;
@@ -261,6 +350,14 @@ export const brainHandlers = {
     }
     if (pages.length > KB_MEMOIZE_MAX_PAGES) {
       return err(`kb_memoize accepts at most ${KB_MEMOIZE_MAX_PAGES} pages per call (got ${pages.length})`);
+    }
+    // Audience tiers: validate BEFORE any write so a bad value never lands
+    // half-indexed. null = no/absent frontmatter key = team default.
+    const audiences: Array<string | null> = [];
+    for (const pg of pages) {
+      const parsed = parseAudience(pg.content);
+      if (parsed.error) return err(`invalid audience frontmatter on ${pg.slug}: ${parsed.error}`);
+      audiences.push(parsed.audience);
     }
     // C1: settle the agent identity before resolving the write scope, so a write
     // in the boot window (before auth.test lands) targets the real `agent-<id>`
@@ -293,7 +390,36 @@ export const brainHandlers = {
         },
         describe,
       });
-      return r.ok ? asJson({ written: pages.map((pg) => pg.slug), target: p.target ?? "mine", results: r.result }) : err(r.reason);
+      if (!r.ok) return err(r.reason);
+      // Reconcile audience tags in the BRAIN — only for pages landing in the
+      // agent's OWN slice (tiers govern the agent's mind; user/shared slices
+      // have source-level visibility already). Explicit remove-then-add
+      // because gbrain's put_page tag reconciliation is add-only; a
+      // re-memoize without the key clears back to the team default. Same
+      // authorization envelope as the approved batch (own-slice tag writes
+      // auto-pass the gate anyway).
+      const ownSlice = scope.sourceId === agentSourceId(d.gate().agentId);
+      if (ownSlice) {
+        for (let idx = 0; idx < pages.length; idx++) {
+          const pg = pages[idx]!;
+          try {
+            await reconcileAudienceTags(call, scope, pg.slug, audiences[idx] ?? null);
+          } catch (e) {
+            // The page IS saved but its tier is NOT applied — never report
+            // clean success on a possibly under-protected page.
+            const raw = e instanceof Error ? e.message : String(e);
+            return err(
+              `page "${pg.slug}" was saved, but applying its audience tags failed: ${raw} — ` +
+              `retry the SAME kb_memoize call once (put_page is idempotent); ` +
+              `until it succeeds, treat the page's audience tier as not enforced.`,
+            );
+          }
+        }
+      }
+      const audienceNote = !ownSlice && audiences.some((a) => a !== null)
+        ? { audience_note: "audience frontmatter applies only to your own agent slice; ignored for this target" }
+        : {};
+      return asJson({ written: pages.map((pg) => pg.slug), target: p.target ?? "mine", ...audienceNote, results: r.result });
     } catch (e) {
       return err(humanizeBrainError("put_page", e));
     }
@@ -344,7 +470,7 @@ export function createKbMcp(deps?: BrainToolDeps): McpSdkServerConfigWithInstanc
         ),
         tool(
           "kb_memoize",
-          `Write/update one or more brain pages in a single call (markdown, optional YAML frontmatter; [[wikilinks]] become graph edges). Pass an array of pages — up to ${KB_MEMOIZE_MAX_PAGES} per call. By default (target:"mine") pages go to YOUR OWN slice — your private agent mind — and are saved without asking. Set target:"shared" ONLY for durable team-common knowledge (decisions, people/project facts everyone needs); shared writes ask the manager for approval. Default to "mine" for your own notes, learnings, and working context; reserve "shared" for the team KB.`,
+          `Write/update one or more brain pages in a single call (markdown, optional YAML frontmatter; [[wikilinks]] become graph edges). Pass an array of pages — up to ${KB_MEMOIZE_MAX_PAGES} per call. By default (target:"mine") pages go to YOUR OWN slice — your private agent mind — and are saved without asking. Set target:"shared" ONLY for durable team-common knowledge (decisions, people/project facts everyone needs); shared writes ask the manager for approval. Default to "mine" for your own notes, learnings, and working context; reserve "shared" for the team KB. Own-slice pages may declare a disclosure tier via frontmatter \`audience: private|manager|team|public|user:<slack-id>\` — it controls which later conversations may surface the page (private = only when you work alone, manager = manager turns, team = trusted channels [the default when unlabeled], public = also allowed/public channels, user:<id> = only when that user is speaking).`,
           {
             pages: z
               .array(
