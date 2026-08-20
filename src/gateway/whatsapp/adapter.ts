@@ -117,10 +117,13 @@ export function createWhatsAppApp(agent: AgentManager) {
     mkdirSync(authDir, { recursive: true });
 
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
+    const phoneNumber = env.whatsapp.phoneNumber();
+    const usePairingCode = !!phoneNumber && !state.creds.registered;
 
     sock = makeWASocket({
       auth: state,
-      printQRInTerminal: true,
+      // Suppress QR terminal output when using pairing code
+      printQRInTerminal: !usePairingCode,
       syncFullHistory: false,
       markOnlineOnConnect: true,
     });
@@ -130,22 +133,36 @@ export function createWhatsAppApp(agent: AgentManager) {
 
     sock.ev.on("creds.update", saveCreds);
 
-    sock.ev.on("connection.update", (update) => {
+    sock.ev.on("connection.update", async (update) => {
       const { connection, lastDisconnect, qr } = update;
-      if (qr) {
+      if (qr && !usePairingCode) {
         console.log("[whatsapp] scan QR code to authenticate");
       }
-      if (connection === "close") {
+      if (connection === "open") {
+        console.log(`[whatsapp] connected as ${sock.user?.id}`);
+      } else if (connection === "close") {
         const shouldReconnect =
           (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
         console.log(`[whatsapp] connection closed${shouldReconnect ? ", reconnecting..." : ""}`);
         if (shouldReconnect) {
           setTimeout(() => start(), 3000);
         }
-      } else if (connection === "open") {
-        console.log(`[whatsapp] connected as ${sock.user?.id}`);
       }
     });
+
+    // Request pairing code after socket opens but before it registers
+    if (usePairingCode) {
+      // Wait briefly for the socket to reach a state where pairing code can be requested
+      setTimeout(async () => {
+        try {
+          const code = await sock.requestPairingCode(phoneNumber);
+          console.log(`[whatsapp] *** PAIRING CODE: ${code} ***`);
+          console.log(`[whatsapp] Open WhatsApp → Linked Devices → Link with phone number → enter: ${code}`);
+        } catch (e) {
+          console.error("[whatsapp] failed to request pairing code:", e);
+        }
+      }, 3000);
+    }
 
     sock.ev.on("messages.upsert", async (upsert) => {
       if (upsert.type !== "notify") return;
