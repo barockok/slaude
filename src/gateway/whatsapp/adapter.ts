@@ -1,6 +1,7 @@
 import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
+  Browsers,
   type WASocket,
   type WAMessage,
 } from "@whiskeysockets/baileys";
@@ -122,6 +123,7 @@ export function createWhatsAppApp(agent: AgentManager) {
 
     sock = makeWASocket({
       auth: state,
+      browser: Browsers.macOS("Desktop"),
       // Suppress QR terminal output when using pairing code
       printQRInTerminal: !usePairingCode,
       syncFullHistory: false,
