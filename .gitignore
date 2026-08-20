@@ -25,3 +25,4 @@ jsonl/
 .handoff
 .mcp.json
 .playwright/
+wa-test-data/
