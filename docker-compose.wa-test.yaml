@@ -1,0 +1,35 @@
+# WhatsApp gateway isolated test.
+# Runs slaude:wa-test with ONLY the WhatsApp surface — no Slack tokens set,
+# so the Slack gateway doesn't start. QR code appears in container logs.
+#
+# Usage:
+#   docker compose -f docker-compose.wa-test.yaml --env-file .env up
+#
+# Watch for QR:
+#   docker logs -f slaude-wa
+#
+# State persists in ./wa-test-data (Baileys session, DB, etc.)
+
+services:
+  slaude-wa:
+    image: slaude:wa-test
+    container_name: slaude-wa
+    restart: "no"
+    environment:
+      SLAUDE_HOME: /data
+      # LLM auth — inherit from .env
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      SLAUDE_MODEL: ${SLAUDE_MODEL:-claude-sonnet-4-6}
+      # WhatsApp — set WHATSAPP_APPROVERS to comma-separated E.164 phone numbers
+      # of people allowed to approve agent actions (e.g. +6281234567890)
+      WHATSAPP_ENABLED: "true"
+      WHATSAPP_APPROVERS: ${WHATSAPP_APPROVERS:-}
+      WHATSAPP_APPROVAL_TIMEOUT_SECONDS: "300"
+      # E.164 digits only, e.g. 628123456789 (no + sign)
+      # When set, uses pairing code instead of QR — better for cloud/Docker IPs
+      WHATSAPP_PHONE_NUMBER: ${WHATSAPP_PHONE_NUMBER:-}
+      # No SLACK_BOT_TOKEN / SLACK_APP_TOKEN → Slack gateway won't start
+    volumes:
+      - ./wa-test-data:/data
