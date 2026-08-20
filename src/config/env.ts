@@ -31,8 +31,8 @@ function opt(name: string, fallback = ""): string {
 
 export const env = {
   slack: {
-    botToken: () => req("SLACK_BOT_TOKEN"),
-    appToken: () => req("SLACK_APP_TOKEN"),
+    botToken: () => opt("SLACK_BOT_TOKEN"),
+    appToken: () => opt("SLACK_APP_TOKEN"),
     /**
      * Optional user token (xoxp). Historically used only for presence
      * (`users.profile.set`). Also the token used for post-as-user when
@@ -88,6 +88,10 @@ export const env = {
       const n = Number(raw);
       return Number.isFinite(n) && n > 0 ? n : 300;
     },
+    // E.164 phone number (digits only, e.g. "628123456789") to use pairing-code
+    // auth instead of QR. When set, the agent logs a code you enter in
+    // WhatsApp → Linked Devices → Link with phone number.
+    phoneNumber: () => opt("WHATSAPP_PHONE_NUMBER").replace(/\D/g, ""),
   },
   provider: {
     apiKey: () => opt("ANTHROPIC_API_KEY"),
