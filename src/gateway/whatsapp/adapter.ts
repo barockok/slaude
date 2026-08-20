@@ -135,8 +135,19 @@ export function createWhatsAppApp(agent: AgentManager) {
 
     sock.ev.on("connection.update", async (update) => {
       const { connection, lastDisconnect, qr } = update;
-      if (qr && !usePairingCode) {
-        console.log("[whatsapp] scan QR code to authenticate");
+      if (qr) {
+        if (usePairingCode) {
+          // qr event fires when WA is ready for auth — exactly when to request the pairing code
+          try {
+            const code = await sock.requestPairingCode(phoneNumber);
+            console.log(`[whatsapp] *** PAIRING CODE: ${code} ***`);
+            console.log(`[whatsapp] Open WhatsApp → Linked Devices → Link with phone number → enter: ${code}`);
+          } catch (e) {
+            console.error("[whatsapp] failed to request pairing code:", e);
+          }
+        } else {
+          console.log("[whatsapp] scan QR code to authenticate");
+        }
       }
       if (connection === "open") {
         console.log(`[whatsapp] connected as ${sock.user?.id}`);
@@ -149,20 +160,6 @@ export function createWhatsAppApp(agent: AgentManager) {
         }
       }
     });
-
-    // Request pairing code after socket opens but before it registers
-    if (usePairingCode) {
-      // Wait briefly for the socket to reach a state where pairing code can be requested
-      setTimeout(async () => {
-        try {
-          const code = await sock.requestPairingCode(phoneNumber);
-          console.log(`[whatsapp] *** PAIRING CODE: ${code} ***`);
-          console.log(`[whatsapp] Open WhatsApp → Linked Devices → Link with phone number → enter: ${code}`);
-        } catch (e) {
-          console.error("[whatsapp] failed to request pairing code:", e);
-        }
-      }, 3000);
-    }
 
     sock.ev.on("messages.upsert", async (upsert) => {
       if (upsert.type !== "notify") return;
