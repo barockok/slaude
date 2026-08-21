@@ -27,6 +27,10 @@ jobs:
         run: bun run typecheck
 
       - name: Run tests with coverage
+        # --parallel=1: serialize test-file execution. brain-coverage.test.ts boots
+        # a real brain with module-level singletons (embeddingActive state); without
+        # serialization, concurrent test files race and flip that state, causing
+        # non-deterministic failures.
         # bun 1.3.11 exits non-zero for this suite even when every test passes and
         # coverage clears — a runner-internal quirk unrelated to coverage (repros
         # with coverage fully disabled; no test fails, no rejection surfaces). The
@@ -38,7 +42,7 @@ jobs:
         # Only a real crash exit (not 0/99/100) fails the job.
         run: |
           set +e
-          bun test --coverage 2>&1 | tee test-output.txt
+          bun test --coverage --parallel=1 2>&1 | tee test-output.txt
           code=${PIPESTATUS[0]}
           set -e
           fails=$(grep -oE '^[[:space:]]*[0-9]+ fail' test-output.txt | grep -oE '[0-9]+' | tail -1)

@@ -33,7 +33,7 @@ jobs:
         # Only a real crash exit (not 0/99/100) is treated as a failure.
         run: |
           set +e
-          bun test --coverage 2>&1 | tee test-output.txt
+          bun test --coverage --parallel=1 2>&1 | tee test-output.txt
           code=${PIPESTATUS[0]}
           set -e
           fails=$(grep -oE '^[[:space:]]*[0-9]+ fail' test-output.txt | grep -oE '[0-9]+' | tail -1)
