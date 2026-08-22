@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,6 +42,15 @@ async function setEmbedTransport(fn: unknown): Promise<void> {
   };
   gw.__setEmbedTransportForTests(fn);
 }
+
+// Another test file (brain-server-roundtrip) boots a real brain, leaving
+// enginePromise + ensureInFlight cached. If that file runs before this one in
+// the same process, ensureSources() returns the stale cached promise — no
+// boot(), no configureEmbeddingGateway(), embeddingActiveFlag stays false.
+// Reset all shared brain state before this suite runs.
+beforeAll(async () => {
+  await closeBrain().catch(() => {});
+});
 
 afterAll(async () => {
   await setEmbedTransport(null).catch(() => {});
