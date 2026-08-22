@@ -37,6 +37,7 @@ export class SimTransport implements Transport {
   #botUserId: string;
   #seq = 0;
   #cardCbs: Array<(c: OutboundCard) => void> = [];
+  #messages = new Map<string, any[]>();
 
   /** Subscribe to every outbound card as it is pushed (live render / gate detection).
    *  Returns an unsubscribe fn. */
@@ -49,17 +50,24 @@ export class SimTransport implements Transport {
     this.#users = opts.users ?? {};
     this.#botUserId = opts.botUserId ?? "U_SLAUDE";
     const push = (kind: OutboundCard["kind"], channel: string, threadTs: string | undefined, text: string | undefined, blocks: any[] | undefined, raw: any) => {
+      const ts = `${++this.#seq}.0`;
       const actionIds = extractActionIds(blocks);
       const card: OutboundCard = { kind, channel, threadTs, text, blocks, actionIds, resolved: false, raw };
       this.outbound.push(card);
       for (const cb of this.#cardCbs) cb(card);
-      return { ok: true, ts: `${++this.#seq}.0` };
+      if (kind === "message" && channel !== "(respond)") {
+        const messages = this.#messages.get(channel) ?? [];
+        messages.push({ ts, thread_ts: threadTs, user: this.#botUserId, text: text ?? "" });
+        this.#messages.set(channel, messages);
+      }
+      return { ok: true, ts };
     };
     this.client = {
       auth: { test: async () => ({ ok: true, user_id: this.#botUserId, bot_id: "B_SLAUDE", team: "T_SIM", url: "https://sim" }) },
       chat: {
         postMessage: async (a: any) => push(classify(extractActionIds(a.blocks)), a.channel, a.thread_ts, a.text, a.blocks, a),
         update: async (a: any) => push("message", a.channel, a.ts, a.text, a.blocks, a),
+        getPermalink: async (a: any) => ({ ok: true, permalink: `https://sim.slack.com/archives/${a.channel}/p${String(a.message_ts).replace(".", "")}` }),
       },
       reactions: {
         add: async (a: any) => push("reaction", a.channel, a.timestamp, `:${a.name}:`, undefined, a),
@@ -67,8 +75,15 @@ export class SimTransport implements Transport {
       },
       conversations: {
         info: async (a: any) => ({ ok: true, channel: { id: a.channel } }),
-        members: async () => ({ ok: true, members: [] }),
-        replies: async () => ({ ok: true, messages: [] }),
+        members: async () => ({ ok: true, members: Object.keys(this.#users) }),
+        replies: async (a: any) => {
+          const all = (this.#messages.get(a.channel) ?? []).filter((message) => message.ts === a.ts || message.thread_ts === a.ts);
+          const offset = Number(a.cursor ?? 0) || 0;
+          const limit = Math.max(1, Number(a.limit ?? 100));
+          const messages = all.slice(offset, offset + limit);
+          const next = offset + messages.length < all.length ? String(offset + messages.length) : "";
+          return { ok: true, messages, has_more: Boolean(next), response_metadata: { next_cursor: next } };
+        },
       },
       users: { info: async (a: any) => ({ ok: true, user: { id: a.user, real_name: this.#users[a.user] ?? a.user } }), profile: { set: async () => ({ ok: true }) } },
       search: { messages: async () => ({ ok: true, messages: { matches: [] } }) },
@@ -88,6 +103,9 @@ export class SimTransport implements Transport {
       type: "message", channel: raw.channel, user: raw.user, text: raw.text,
       channel_type: raw.channel_type, thread_ts: raw.thread_ts, ts, team: raw.team,
     };
+    const messages = this.#messages.get(raw.channel) ?? [];
+    messages.push({ ts, thread_ts: raw.thread_ts, user: raw.user, text: raw.text });
+    this.#messages.set(raw.channel, messages);
     const args = { event, client: this.client, context: { teamId: raw.team } };
     if (raw.text.includes(`<@${this.#botUserId}>`)) {
       await this.#events.get("app_mention")?.({ ...args, event: { ...event, type: "app_mention" } });

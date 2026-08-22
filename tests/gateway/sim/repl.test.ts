@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { ReplController } from "../../../src/gateway/sim/repl";
-import { AGENT_COMMANDS } from "../../../src/gateway/slack/commands";
+import { visibleAgentCommands } from "../../../src/gateway/slack/commands";
 
 let r: ReplController | undefined;
 afterEach(async () => { await r?.dispose(); r = undefined; });
@@ -103,7 +103,7 @@ describe("REPL controller", () => {
     out.length = 0;
     await r.handle("/help");
     const o = out.join("\n");
-    for (const c of AGENT_COMMANDS) expect(o).toContain(c.usage);
+    for (const c of visibleAgentCommands()) expect(o).toContain(c.usage);
   });
 
   it("rejects a genuine unknown slash (not an agent command)", async () => {

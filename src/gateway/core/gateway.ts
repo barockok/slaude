@@ -56,6 +56,14 @@ import * as MentionOnly from "../../db/mention-only";
 import { CronScheduler } from "../slack/cron-scheduler";
 import { getNextRun } from "../slack/cron-parser";
 import type { Transport } from "./transport";
+import * as DecisionNotes from "../../db/decision-notes";
+import { summarizeDecision, type DecisionSummary, type SummarizeDecisionInput } from "../../notes/summarize";
+import { loadThreadSource, validatePermalink } from "../../notes/slack-source";
+import { visibleSourceChannels } from "../../notes/visibility";
+import { renderCreatedNote, renderHistory, renderTagList } from "../../notes/render";
+import { createNotesMcp, NOTES_MCP_NAME } from "../../notes/mcp-tools";
+import { redactSlack } from "../slack/redact";
+import { listVisibleHistory, listVisibleTags } from "../../notes/read";
 
 export interface SessionMcpCtx { slack: SlackContext; surface: Surface }
 export interface GatewayHandle {
@@ -143,6 +151,8 @@ export interface GatewayOptions {
    *  SLACK_POST_AS_USER / SLACK_USER_TOKEN env path. When set, the gateway behaves as
    *  if posting-as-user is enabled (self-user echo guard active). */
   outClient?: any;
+  decisionNotesEnabled?: boolean;
+  summarizeDecision?: (input: SummarizeDecisionInput) => Promise<DecisionSummary>;
 }
 
 /** Render a TaskCreate/TaskUpdate tasks map as a compact markdown task list. */
@@ -185,6 +195,9 @@ export function bindingFor(ctx: SlackContext): SessionBinding {
 }
 
 export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOptions = {}): GatewayHandle {
+
+  const decisionNotesEnabled = opts.decisionNotesEnabled ?? env.decisionNotesEnabled();
+  const runDecisionSummary = opts.summarizeDecision ?? summarizeDecision;
 
   // Outbound content client. When SLACK_USER_TOKEN (xoxp) is set, agent replies,
   // edits, reactions and uploads go out AS the real Slack user account rather than
@@ -264,6 +277,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         inboundTs: String(Date.now()), // synthetic — no real inbound msg for cron
         userId: job.createdBy,
         teamId: job.slackTeamId ?? undefined,
+        channelType: "channel",
         postTarget: job.target,
         personaId: jobPersonaId,
       };
@@ -369,6 +383,28 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     };
   };
 
+  const decisionScopeFor = (ctx: SlackContext): DecisionNotes.DecisionNoteScope => {
+    if (!ctx.teamId) throw new Error("decision notes require a Slack team id");
+    return { slackTeamId: ctx.teamId, personaId: ctx.personaId ?? "default" };
+  };
+
+  const visibleDecisionChannels = (ctx: SlackContext) => visibleSourceChannels({
+    scope: decisionScopeFor(ctx),
+    currentChannelId: ctx.channel,
+    currentChannelType: ctx.channelType ?? "",
+    userId: ctx.userId ?? "",
+    client: ctx.client as any,
+  });
+
+  const decisionReadContextFor = (ctx: SlackContext) => ({
+    teamId: decisionScopeFor(ctx).slackTeamId,
+    personaId: ctx.personaId ?? "default",
+    channelId: ctx.channel,
+    channelType: ctx.channelType ?? "",
+    userId: ctx.userId ?? "",
+    client: ctx.client as any,
+  });
+
   const mcpResolver = (sessionId: string): Record<string, McpServerConfig> | undefined => {
     const route = routes.get(sessionId);
     if (!route) return undefined;
@@ -398,6 +434,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             }
           : undefined,
       ),
+      ...(decisionNotesEnabled
+        ? {
+            [NOTES_MCP_NAME]: createNotesMcp({
+              listTags: (limit) => listVisibleTags(decisionReadContextFor(route.ctx), limit),
+              listHistory: (tag, limit) => listVisibleHistory(decisionReadContextFor(route.ctx), tag, limit),
+            }),
+          }
+        : {}),
       // Per-persona MCP isolation: named personas load ~/.slaude/personas/<name>/mcp.json
       // instead of the shared global config. Default sessions use the boot-time global.
       ...(route.ctx.personaId && route.ctx.personaId !== "default"
@@ -1068,7 +1112,159 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         });
       };
       if (slash.kind === "help") {
-        await reply(helpText());
+        await reply(helpText(decisionNotesEnabled));
+        return;
+      }
+      if (
+        slash.kind === "note-add" ||
+        slash.kind === "note-list" ||
+        slash.kind === "note-history" ||
+        slash.kind === "note-usage"
+      ) {
+        if (!decisionNotesEnabled) {
+          await reply(":information_source: Decision notes are not enabled on this deployment.");
+          return;
+        }
+        const noteReply = (value: string) => reply(redactSlack(value, soulData().redactPatterns));
+        if (slash.kind === "note-usage") {
+          const usage = slash.command === "note-add"
+            ? "/note-add <#tag> [focus]"
+            : slash.command === "note-list"
+            ? "/note-list [limit]"
+            : "/note-history <#tag> [limit]";
+          await noteReply(`*usage:* \`${usage}\``);
+          return;
+        }
+        const noteCtx: SlackContext = {
+          client: slashClient,
+          channel: channelId,
+          threadTs,
+          inboundTs: eventTs,
+          userId,
+          teamId,
+          channelType,
+          personaId: dispatch?.personaId,
+        };
+        if (slash.kind === "note-list") {
+          try {
+            const channelIds = await visibleDecisionChannels(noteCtx);
+            const result = DecisionNotes.listTags(decisionScopeFor(noteCtx), {
+              channelIds,
+              limit: slash.limit,
+            });
+            metric.decisionNoteListTotal.inc({ result: result.tags.length ? "found" : "empty" });
+            await noteReply(renderTagList(result.tags, result.total));
+          } catch (error) {
+            metric.decisionNoteListTotal.inc({ result: "error" });
+            console.error("[decision-notes] list failed:", error instanceof Error ? error.message : String(error));
+            await noteReply(":warning: I couldn't list decision-note tags. Nothing was changed.");
+          }
+          return;
+        }
+        if (slash.kind === "note-history") {
+          try {
+            const channelIds = await visibleDecisionChannels(noteCtx);
+            const scope = decisionScopeFor(noteCtx);
+            const notes = DecisionNotes.listByTag(scope, slash.tag, {
+              channelIds,
+              limit: slash.limit,
+            });
+            const total = DecisionNotes.countByTag(scope, slash.tag, channelIds);
+            metric.decisionNoteHistoryTotal.inc({ result: notes.length ? "found" : "empty" });
+            await noteReply(renderHistory(slash.tag, notes, total));
+          } catch (error) {
+            metric.decisionNoteHistoryTotal.inc({ result: "error" });
+            console.error("[decision-notes] history failed:", error instanceof Error ? error.message : String(error));
+            await noteReply(":warning: I couldn't read decision-note history. Nothing was changed.");
+          }
+          return;
+        }
+
+        const effectiveSoul = effectiveSoulForChannel(channelId);
+        const canAdd = soulData().trustedChannels.includes(channelId)
+          || userId === effectiveSoul.manager.userId
+          || userId === effectiveSoul.backupManager.userId
+          || effectiveSoul.approvers.some((approver) => approver.userId === userId);
+        if (!canAdd) {
+          await noteReply(":lock: In this conversation, only a manager or approver can add decision notes.");
+          return;
+        }
+        if (!event.thread_ts) {
+          await noteReply(":warning: `/note-add` must be used inside the thread that contains the decision. I won't infer context from unrelated channel messages.");
+          return;
+        }
+        let finalReaction = REACT_DONE;
+        await reactions.set(session.id, channelId, eventTs, REACT_WORKING);
+        await status.set(session.id, channelId, threadTs, "capturing decision note…");
+        try {
+          const scope = decisionScopeFor(noteCtx);
+          const existing = DecisionNotes.findBySource({
+            ...scope,
+            tag: slash.tag,
+            slackChannelId: channelId,
+            sourceMessageTs: eventTs,
+          });
+          if (existing) {
+            metric.decisionNotesTotal.inc({ result: "duplicate" });
+            await noteReply(renderCreatedNote(existing, false));
+            return;
+          }
+          const source = await loadThreadSource(slashClient, {
+            channel: channelId,
+            threadTs,
+            beforeTs: eventTs,
+          });
+          if (source.messages.length === 0) {
+            metric.decisionNotesTotal.inc({ result: "no_decision" });
+            await noteReply(":information_source: I couldn't find any earlier messages in this thread, so no note was saved.");
+            return;
+          }
+          const getPermalink = slashClient.chat?.getPermalink;
+          if (typeof getPermalink !== "function") throw new Error("Slack client does not support chat.getPermalink");
+          const permalinkResult = await getPermalink.call(slashClient.chat, {
+            channel: channelId,
+            message_ts: eventTs,
+          });
+          const sourcePermalink = validatePermalink(permalinkResult?.permalink);
+          const summary = await runDecisionSummary({
+            messages: source.messages,
+            instruction: slash.instruction,
+            model: session.model,
+          });
+          if (!summary.found) {
+            metric.decisionNotesTotal.inc({ result: "no_decision" });
+            await noteReply(":information_source: I couldn't find a clear decision in this thread, so no note was saved. Add the decision to the thread or provide a more specific instruction and try again.");
+            return;
+          }
+          const result = DecisionNotes.create({
+            ...scope,
+            tag: slash.tag,
+            title: summary.title,
+            summary: summary.summary,
+            decisions: summary.decisions,
+            instruction: slash.instruction,
+            slackChannelId: channelId,
+            slackThreadTs: threadTs,
+            sourceMessageTs: eventTs,
+            sourcePermalink,
+            sourceMessageCount: source.messages.length,
+            sourceTruncated: source.truncated,
+            createdBy: userId,
+            summarizerModel: summary.model,
+          });
+          metric.decisionNotesTotal.inc({ result: result.created ? "created" : "duplicate" });
+          await noteReply(renderCreatedNote(result.note, result.created));
+        } catch (error) {
+          finalReaction = REACT_ERROR;
+          metric.decisionNotesTotal.inc({ result: "error" });
+          console.error("[decision-notes] add failed:", error instanceof Error ? error.message : String(error));
+          try {
+            await noteReply(":warning: I couldn't create the decision note. No note was saved; please retry.");
+          } catch {}
+        } finally {
+          await status.clear(session.id);
+          await reactions.set(session.id, channelId, eventTs, finalReaction);
+        }
         return;
       }
       if (slash.kind === "mode-help") {
@@ -1735,6 +1931,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.ctx.inboundTs = eventTs;
       existing.ctx.userId = userId;
       existing.ctx.personaId = dispatch?.personaId;
+      existing.ctx.channelType = channelType;
       existing.ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
       existing.spoke = false;
       existing.todoRef = undefined;       // fresh tracker per user turn
@@ -1751,6 +1948,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         inboundTs: eventTs,
         userId,
         teamId,
+        channelType,
         personaId: dispatch?.personaId,
       };
       ctx.requestApproval = (req) =>

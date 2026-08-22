@@ -115,6 +115,21 @@ describe("PermissionGate", () => {
     expect(r.behavior).toBe("allow");
   });
 
+  test("only the two read-only slaude_notes tools are always allowed", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app);
+    const ac = new AbortController();
+    for (const tool of [
+      "mcp__slaude_notes__list_note_tags",
+      "mcp__slaude_notes__list_decision_notes",
+    ]) {
+      const r = await gate.resolver("S", tool, {}, ctx("T2", ac.signal));
+      expect(r.behavior).toBe("allow");
+    }
+    const futureWrite = await gate.resolver("S", "mcp__slaude_notes__write_note", {}, ctx("T2", ac.signal));
+    expect(futureWrite.behavior).toBe("deny");
+  });
+
   test("no route bound → deny", async () => {
     const f = fakeApp();
     const gate = new PermissionGate(f.app);

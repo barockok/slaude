@@ -3,7 +3,7 @@ import type { OutboundCard } from "./transport";
 import type { AgentEvent } from "../../agent/manager";
 import { soulData } from "../../soul/extract";
 import { toolLine, resultLine, replyLine, errorLine, statusLabel, gateBox, isReplyTool, thinkingLine, usageLine, budgetView } from "./render";
-import { parseSlashCommand, AGENT_COMMANDS } from "../slack/commands";
+import { parseSlashCommand, visibleAgentCommands } from "../slack/commands";
 import { LAYERS, ROLE_NAMES, findLayer, resolveRole } from "./roles";
 import { memory } from "../../memory/sqlite-provider";
 
@@ -14,7 +14,7 @@ export const SIM_COMMANDS = [
 ];
 /** Every command name the REPL accepts — sim-native + the agent slash heads — for Tab-completion. */
 export function replCommandNames(): string[] {
-  return [...SIM_COMMANDS, ...AGENT_COMMANDS.map((c) => c.usage.split(" ")[0]!)];
+  return [...SIM_COMMANDS, ...visibleAgentCommands().map((c) => c.usage.split(" ")[0]!)];
 }
 
 /** Transport-agnostic REPL logic: feed it command lines, it emits two streams —
@@ -132,9 +132,7 @@ export class ReplController {
     this.#shown = cards.length;
   }
 
-  /** The /help content as lines — shared by the scrollback dump (#help) and the cli's
-   *  bottom-sheet panel. Agent commands derive from AGENT_COMMANDS (add one there and it
-   *  shows here automatically); the sim-native commands are REPL-only, so they stay local. */
+  /** The /help content as lines — shared by scrollback and the bottom sheet. */
   helpLines(): string[] {
     return [
       "sim commands:",
@@ -149,7 +147,7 @@ export class ReplController {
       "  /budget /memory /sessions   inspect token usage · stored memory · live sessions",
       "",
       "agent commands (forwarded to the agent like a real Slack message):",
-      ...AGENT_COMMANDS.map((c) => `  ${c.usage.padEnd(30)}${c.summary}`),
+      ...visibleAgentCommands().map((c) => `  ${c.usage.padEnd(30)}${c.summary}`),
     ];
   }
 

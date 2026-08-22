@@ -43,7 +43,7 @@ Slack-native Claude Code runtime. Onboard an AI agent as a teammate in your Slac
 - **Dependency manifest** — declarative `slaude.json` + `slaude.lock` for three surfaces: Claude Code plugins (marketplace git), skills (git repo per skill), knowledge bases (Karpathy-style markdown wikis). Install runs at image build (`slaude install --frozen`), runtime ships self-contained. See [Dependency manifest (`slaude.json`)](#dependency-manifest-slaudejson).
 - **Runtime manifest sync** — `mcp__slaude_skills__sync_manifest` syncs runtime-created skills and knowledge bases back to `slaude.json` + `slaude.lock`. Push target resolved via `slaude_skills` manifest field, env var `SLAUDE_SKILLS_REPO` as fallback. `slaude_knowledge` writable KB pushes `raw/` on each sync; read-only `knowledge[]` entries are pulled fresh. See [Dependency manifest (`slaude.json`)](#dependency-manifest-slaudejson).
 - **Writable KB + /ingest** — the agent captures material into `raw/` during normal Slack turns; `sync_manifest` pushes it to git. Manager/approver runs `/ingest` to synthesise `raw/` → `wiki/` via a dedicated SDK sub-query. Sqlite mutex ensures at most one ingest at a time.
-- **Slash commands in thread** — `/mode <ask|accept-edits|bypass|plan|dont-ask>`, `/abort`, `/ingest`, `/help`. Per-session `permission_mode` persists.
+- **Slash commands in thread** — runtime controls plus optional source-linked decision notes: `/note-add`, `/note-list`, and `/note-history` when `SLAUDE_DECISION_NOTES_ENABLED=1`. Run `/help` for the active command set.
 - `/1on1` (and `/1on1 off`) — lock the current thread to you + the manager; everyone else is ignored until released. Approvers can still approve.
 - **Idle TTL with resume** — `SLAUDE_IDLE_MINUTES` (default 15). On expiry the SDK Query closes silently; next inbound message re-boots with `resume: row.id`.
 - **Provider-agnostic** — any Anthropic-compatible API (Anthropic direct, OpenRouter, DeepSeek, Z.ai, self-hosted gateway, …). Telemetry / autoupdater / bug-reporter disabled in the SDK child so non-Anthropic gateways don't crash the CLI.
@@ -414,7 +414,7 @@ src/
     redact.ts               # regex redaction from soul.redactPatterns
     attachments.ts          # download Slack files into session dir
     users.ts                # users.info name resolution (TTL cache)
-    commands.ts             # /mode /abort /ingest /help
+    commands.ts             # gateway-local Slack commands and generated help
   soul/
     loader.ts               # runtime baseline + SOUL.md persona, regex approver parser
     data.ts                 # zod schema for SoulData

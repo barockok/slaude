@@ -47,6 +47,8 @@ export type SlackContext = {
   userId?: string;
   /** Slack team id of the current workspace. */
   teamId?: string;
+  /** Prevents channel threads from inheriting DM-only cross-channel reads. */
+  channelType?: string;
   /** Optional approval gate — set by the adapter so request_approval works. */
   requestApproval?: (req: {
     summary: string;
@@ -770,4 +772,3 @@ export function connectTools(deps: ConnectDeps) {
 export function createConnectMcp(deps: ConnectDeps): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({ name: CONNECT_MCP_NAME, version: "0.1.0", tools: connectTools(deps) });
 }
-

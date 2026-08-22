@@ -92,6 +92,7 @@ export const env = {
    * default; set it only to pin a specific tier-allowed model.
    */
   model: () => opt("SLAUDE_MODEL"),
+  decisionNotesEnabled: () => /^(1|true|yes)$/i.test(opt("SLAUDE_DECISION_NOTES_ENABLED", "0").trim()),
   /**
    * Default permission mode for new sessions. One of:
    *   default | acceptEdits | bypassPermissions | plan | dontAsk

@@ -160,6 +160,12 @@ export class PermissionGate {
     ) {
       return { behavior: "allow", updatedInput: input };
     }
+    if (
+      toolName === "mcp__slaude_notes__list_note_tags" ||
+      toolName === "mcp__slaude_notes__list_decision_notes"
+    ) {
+      return { behavior: "allow", updatedInput: input };
+    }
     // Skill introspection is read-only — auto-allow so evolution checks
     // don't spam the user. Write/delete still flow through approval.
     if (

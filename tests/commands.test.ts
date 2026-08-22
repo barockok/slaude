@@ -71,7 +71,7 @@ describe("helpText", () => {
   });
 
   test("AGENT_COMMANDS is the single source — every usage appears in helpText", () => {
-    const t = helpText();
+    const t = helpText(true);
     expect(AGENT_COMMANDS.length).toBeGreaterThan(5);
     for (const c of AGENT_COMMANDS) expect(t).toContain(c.usage);
   });
@@ -84,12 +84,46 @@ describe("helpText", () => {
   });
 
   test("commands render in a fenced code block with summaries aligned to one column", () => {
-    const t = helpText();
+    const t = helpText(true);
     expect(t).toContain("```");
     const gutter = Math.max(...AGENT_COMMANDS.map((c) => c.usage.length)) + 2;
     for (const c of AGENT_COMMANDS) {
       expect(t).toContain(c.usage.padEnd(gutter) + c.summary);
     }
+  });
+
+  test("decision-note commands are hidden while the feature flag is off", () => {
+    const t = helpText(false);
+    expect(t).not.toContain("/note-add");
+    expect(t).not.toContain("/note-list");
+    expect(t).not.toContain("/note-history");
+  });
+});
+
+describe("decision-note commands", () => {
+  test("parses add with a normalized tag and preserves focus text", () => {
+    expect(parseSlashCommand("/note-add #Task-Framework Focus on Ownership")).toEqual({
+      kind: "note-add",
+      tag: "task-framework",
+      instruction: "Focus on Ownership",
+    });
+    expect(parseSlashCommand("/note-add <#C123|Task-Framework>")).toEqual({
+      kind: "note-add",
+      tag: "task-framework",
+    });
+  });
+
+  test("parses list/history limits and clamps their maxima", () => {
+    expect(parseSlashCommand("/note-list")).toEqual({ kind: "note-list", limit: 20 });
+    expect(parseSlashCommand("/note-list 999")).toEqual({ kind: "note-list", limit: 50 });
+    expect(parseSlashCommand("/note-history #task-framework")).toEqual({ kind: "note-history", tag: "task-framework", limit: 10 });
+    expect(parseSlashCommand("/note-history task-framework 999")).toEqual({ kind: "note-history", tag: "task-framework", limit: 25 });
+  });
+
+  test("invalid note syntax remains local as a usage result", () => {
+    expect(parseSlashCommand("/note-add bad.tag")).toEqual({ kind: "note-usage", command: "note-add" });
+    expect(parseSlashCommand("/note-list nope")).toEqual({ kind: "note-usage", command: "note-list" });
+    expect(parseSlashCommand("/note-history #tag 0")).toEqual({ kind: "note-usage", command: "note-history" });
   });
 });
 

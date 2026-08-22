@@ -2,7 +2,7 @@
  *  typed loosely so bolt's real client and the sim fake both satisfy it. */
 export interface WebClientLike {
   auth: { test(args?: any): Promise<any> };
-  chat: { postMessage(args: any): Promise<any>; update(args: any): Promise<any> };
+  chat: { postMessage(args: any): Promise<any>; update(args: any): Promise<any>; getPermalink?(args: any): Promise<any> };
   reactions: { add(args: any): Promise<any>; remove(args: any): Promise<any> };
   conversations: {
     info(args: any): Promise<any>;

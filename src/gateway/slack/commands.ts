@@ -1,4 +1,6 @@
 import type { PermissionMode } from "../../agent/manager";
+import { env } from "../../config/env";
+import { normalizeTag } from "../../notes/tags";
 
 export const MODE_ALIASES: Record<string, PermissionMode> = {
   ask: "default",
@@ -48,12 +50,16 @@ export type SlashHit =
   | { kind: "soul-clear"; field: "trust" | "allow" | "dm" | "block" | "all" }
   | { kind: "model"; id?: string }
   | { kind: "bash"; command: string }
+  | { kind: "note-add"; tag: string; instruction?: string }
+  | { kind: "note-list"; limit: number }
+  | { kind: "note-history"; tag: string; limit: number }
+  | { kind: "note-usage"; command: "note-add" | "note-list" | "note-history" }
   | { kind: "compact" };
 
 /** One descriptor per agent slash command — the single source of truth for every help
  *  surface (Slack `/help`, the sim REPL `/help`). Add a command here and it shows up
  *  everywhere; the parser branch below is the only other place to touch. */
-export interface SlashSpec { usage: string; summary: string }
+export interface SlashSpec { usage: string; summary: string; feature?: "decision-notes" }
 export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/mode <name>", summary: "set the tool-permission mode (per session/thread)" },
   { usage: "/abort", summary: "cancel the current turn" },
@@ -75,9 +81,16 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/soul clear <trust|allow|dm|block|all>", summary: "manager-only: drop runtime overrides (revert to SOUL.md)" },
   { usage: "/model [id]", summary: "show or set this thread's model (manager/approver) — no arg lists available models" },
   { usage: "/bash <command>", summary: "run a shell command on the server (gated — approval required)" },
+  { usage: "/note-add <#tag> [focus]", summary: "summarize this thread's explicit decisions into a durable, source-linked note", feature: "decision-notes" },
+  { usage: "/note-list [limit]", summary: "list visible decision-note tags, counts, and latest activity", feature: "decision-notes" },
+  { usage: "/note-history <#tag> [limit]", summary: "list visible decision notes for a tag with Slack source links", feature: "decision-notes" },
   { usage: "/compact", summary: "summarize and compact the conversation context" },
   { usage: "/help", summary: "show this help" },
 ];
+
+export function visibleAgentCommands(decisionNotesEnabled = env.decisionNotesEnabled()): SlashSpec[] {
+  return AGENT_COMMANDS.filter((command) => command.feature !== "decision-notes" || decisionNotesEnabled);
+}
 
 const HELP_NAMES = new Set(["help", "h", "?"]);
 
@@ -244,6 +257,25 @@ export function parseSlashCommand(text: string): SlashHit | null {
     if (!command) return null;
     return { kind: "bash", command };
   }
+  if (cmd === "note-add") {
+    const tag = normalizeTag(rest[0] ?? "");
+    const instruction = rest.slice(1).join(" ").trim();
+    if (!tag || instruction.length > 1000) return { kind: "note-usage", command: "note-add" };
+    return instruction ? { kind: "note-add", tag, instruction } : { kind: "note-add", tag };
+  }
+  if (cmd === "note-list") {
+    if (rest.length > 1) return { kind: "note-usage", command: "note-list" };
+    if (!rest.length) return { kind: "note-list", limit: 20 };
+    if (!/^\d+$/.test(rest[0]!) || Number(rest[0]) < 1) return { kind: "note-usage", command: "note-list" };
+    return { kind: "note-list", limit: Math.min(Number(rest[0]), 50) };
+  }
+  if (cmd === "note-history") {
+    const tag = normalizeTag(rest[0] ?? "");
+    if (!tag || rest.length > 2) return { kind: "note-usage", command: "note-history" };
+    if (rest.length === 1) return { kind: "note-history", tag, limit: 10 };
+    if (!/^\d+$/.test(rest[1]!) || Number(rest[1]) < 1) return { kind: "note-usage", command: "note-history" };
+    return { kind: "note-history", tag, limit: Math.min(Number(rest[1]), 25) };
+  }
   if (cmd === "compact") {
     return { kind: "compact" };
   }
@@ -253,14 +285,15 @@ export function parseSlashCommand(text: string): SlashHit | null {
   return null;
 }
 
-export function helpText(): string {
+export function helpText(decisionNotesEnabled = env.decisionNotesEnabled()): string {
   // Render the command table inside a code fence with the summary column aligned
   // to a single gutter (longest usage + 2). Slack renders fences monospace, so
   // space-padding lines up cleanly; tabs render at inconsistent widths and are
   // avoided. Usages are NOT backtick-wrapped — backticks show literally inside a
   // fence.
-  const gutter = Math.max(...AGENT_COMMANDS.map((c) => c.usage.length)) + 2;
-  const cmds = AGENT_COMMANDS.map((c) => c.usage.padEnd(gutter) + c.summary).join("\n");
+  const commands = visibleAgentCommands(decisionNotesEnabled);
+  const gutter = Math.max(...commands.map((c) => c.usage.length)) + 2;
+  const cmds = commands.map((c) => c.usage.padEnd(gutter) + c.summary).join("\n");
   const modes = Object.values(MODE_ALIASES)
     .filter((v, i, a) => a.indexOf(v) === i)
     .map((m) => `  • \`/mode ${humanModeName(m)}\` — ${MODE_LABELS[m]}`)

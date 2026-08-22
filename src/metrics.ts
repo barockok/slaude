@@ -144,4 +144,7 @@ export const m = {
   slackDropsTotal: metrics.counter("slaude_slack_drops_total", "Inbound Slack events dropped before processing, labeled by reason."),
   disengagedSuppressedTotal: metrics.counter("slaude_disengaged_suppressed_total", "Messages recorded into a disengaged thread's session transcript but suppressed by the UserPromptSubmit hook (no model run)."),
   userTurnsTotal: metrics.counter("slaude_user_turns_total", "Inbound user turns, labeled by user_id + user_name (opt-in via SLAUDE_METRICS_PER_USER=1)."),
+  decisionNotesTotal: metrics.counter("slaude_decision_notes_total", "Decision-note capture attempts, labeled by result."),
+  decisionNoteListTotal: metrics.counter("slaude_decision_note_list_total", "Decision-note tag listings, labeled by result."),
+  decisionNoteHistoryTotal: metrics.counter("slaude_decision_note_history_total", "Decision-note history queries, labeled by result."),
 };

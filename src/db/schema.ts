@@ -122,6 +122,41 @@ CREATE TABLE IF NOT EXISTS soul_overrides (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (field, value)
 );
+
+CREATE TABLE IF NOT EXISTS decision_notes (
+  id                   TEXT PRIMARY KEY,
+  tag                  TEXT NOT NULL,
+  title                TEXT NOT NULL,
+  summary              TEXT NOT NULL,
+  decisions_json       TEXT NOT NULL,
+  instruction          TEXT,
+  slack_team_id        TEXT NOT NULL,
+  slack_channel_id     TEXT NOT NULL,
+  slack_thread_ts      TEXT NOT NULL,
+  source_message_ts    TEXT NOT NULL,
+  source_permalink     TEXT NOT NULL,
+  source_message_count INTEGER NOT NULL,
+  source_truncated     INTEGER NOT NULL DEFAULT 0,
+  created_by           TEXT NOT NULL,
+  created_at           INTEGER NOT NULL,
+  persona_id           TEXT NOT NULL DEFAULT 'default',
+  summarizer_model     TEXT NOT NULL,
+  UNIQUE (
+    slack_team_id,
+    persona_id,
+    tag,
+    slack_channel_id,
+    source_message_ts
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_decision_notes_history
+  ON decision_notes (
+    slack_team_id,
+    persona_id,
+    tag,
+    created_at DESC
+  );
 `;
 
 for (const stmt of SCHEMA.split(";")) {
