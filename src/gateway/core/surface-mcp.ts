@@ -148,13 +148,12 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
     defs.push({
       name: "set_one_on_one",
       description:
-        'Manage 1on1 mode for THIS thread.\n' +
-        '• action="lock" → private session, only current user + manager are heard (start or re-lock).\n' +
+        'Adjust an ALREADY-ACTIVE 1on1 session for THIS thread. Cannot initiate 1on1 — use the /1on1 slash command for that.\n' +
         '• action="open" → admit all participants; use `scope` to describe behavioural constraints for guests (e.g. "read-only, no credentials"). The scope is injected into the session context — interpret and respect it for non-initiator users.\n' +
         '• action="off" → fully release 1on1; thread is public again.\n' +
         'Returns a short status to relay.',
       schema: {
-        action: z.enum(["lock", "open", "off"]).describe('"lock" = start/re-lock to current user; "open" = admit guests (add scope if needed); "off" = release entirely.'),
+        action: z.enum(["open", "off"]).describe('"open" = admit guests (add scope if needed); "off" = release entirely.'),
         scope: z.string().optional().describe('Guest constraint description for action="open". Free text — you interpret and enforce it for non-initiator users.'),
       },
       handler: async ({ action, scope }) => {
