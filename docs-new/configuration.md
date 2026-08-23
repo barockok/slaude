@@ -275,6 +275,9 @@ All vars are read via `src/config/env.ts` (`req()` throws on missing, `opt()` re
 | `SLAUDE_PG_URL` | With `SLAUDE_DB=pg` | none | Postgres connection URL (`postgres://user:pass@host:5432/db`). Driver is `Bun.sql`. |
 | `SLAUDE_PG_POOL` | No | `10` | Bun.sql connection pool size for `SLAUDE_DB=pg`. Positive integer. |
 | `SLAUDE_MASTER_KEY` | For encrypted columns | none | 32 random bytes, base64 (`openssl rand -base64 32`). Keys AES-256-GCM for the `(enc)` Postgres columns (`slack_apps.bot_token`, `signing_secret`, `provider_creds.value`). Not needed while the monolith runs a single Socket Mode app. |
+| `SLAUDE_ROLE` | No | `mono` | Process role for the gateway/node split: `mono` (single process, today's behavior), `gateway` (Slack ingress + control plane), or `node` (queue worker). `mono` and `gateway` mount the node-facing REST `/v1` on the health server; `node` never does. Unknown values fall back to `mono`. |
+| `SLAUDE_NODE_TOKEN` | For `/v1` | none | Static shared secret nodes present as `Authorization: Bearer <token>` on every `/v1` request (timing-safe compare). Unset = `/v1` refuses all requests. Rotate via env. |
+| `SLAUDE_JOB_SECRET` | For `/v1` tool plane | none | HS256 secret for the short-lived per-job JWT (`X-Slaude-Job`) the gateway mints per turn job and verifies on `/v1/sessions/*` and `/v1/tools/*`. Claims: `{tenant, persona, session, team, channel, thread, initiator, scope, exp}`. Unset = tool-plane and session endpoints refuse. |
 
 See [Filesystem layout](#filesystem) for every file under `SLAUDE_HOME`.
 
