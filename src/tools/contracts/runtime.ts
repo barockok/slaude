@@ -103,6 +103,22 @@ export const runtimeContract = {
         "Synchronize raw knowledge-base content into the processed wiki format. Use when new raw files have been added to the KB and the user asks to refresh, rebuild, or update the knowledge base. This can be slow — only trigger when actually needed. Requires manager or approver authorization.",
       schema: {},
     },
+    can_use_tool: {
+      name: "can_use_tool",
+      description:
+        "REST-only (never mounted for the model): a node worker opens a permission gate for a tool call the SDK wants to run. The gateway applies the auto-allow policy; when a human decision is needed it posts the Block Kit permission card and returns {pendingId} for the node to long-poll on /v1/pending/:id (spec §3 'Blocking tools'). Short-circuits return {decision} immediately.",
+      restOnly: true,
+      schema: {
+        tool_name: z.string().describe("Tool the SDK asked to run (e.g. 'Bash')."),
+        input: z.record(z.unknown()).optional().describe("Tool input, echoed on the approval card."),
+        tool_use_id: z.string().describe("SDK toolUseID — becomes the pending gate id."),
+        decision_reason: z.string().optional().describe("SDK-provided reason line, shown on the card."),
+        suggestions: z
+          .array(z.unknown())
+          .optional()
+          .describe("SDK PermissionUpdate suggestions, persisted so an 'always allow' click can be honored node-side."),
+      },
+    },
     reload_session: {
       name: "reload_session",
       description:

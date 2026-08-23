@@ -63,7 +63,7 @@ const FIXTURES: Record<string, Record<string, Fixture>> = {
   surface: {
     reply: { input: { text: "roundtrip" } },
     get_history: { input: {} },
-    request_approval: { input: { summary: "roundtrip approval" } }, // auto-denies after 1s (soul fixture)
+    request_approval: { input: { summary: "roundtrip approval" } }, // non-blocking: returns {pendingId} (spec §3)
     edit: { input: { ref: "1.1", text: "edited" } },
     react: { input: { name: "eyes" } },
     unreact: { input: { name: "eyes" } },
@@ -93,6 +93,7 @@ const FIXTURES: Record<string, Record<string, Fixture>> = {
     remove_cron_job: { input: () => ({ job_id: cronJobId }) },
     trigger_ingest: { input: {}, isErrorOk: true }, // no slaude.json in the test home
     reload_session: { input: {}, isErrorOk: true }, // session not live in this process
+    can_use_tool: { input: { tool_name: "Bash", input: { command: "ls" }, tool_use_id: "rt_perm_fixture" } }, // REST-only: returns {pendingId}
   },
   connect: {
     connect_mcp: { input: { server: "nonexistent" } }, // manager scope → "unknown MCP server" text

@@ -8,6 +8,8 @@
  */
 import { z } from "zod";
 import { surfaceTools } from "../../core/surface-mcp";
+import { surfaceContract } from "../../../tools/contracts/surface";
+import { parseToolArgs } from "../../../tools/contracts/types";
 import type { JobClaims } from "../auth";
 import type { ToolPlaneDeps, ToolResult } from "./deps";
 
@@ -17,6 +19,15 @@ export async function executeSurfaceTool(
   claims: JobClaims,
   deps: ToolPlaneDeps,
 ): Promise<ToolResult | null> {
+  // request_approval must NOT block the REST call for minutes the way the
+  // in-process MCP handler blocks the SDK — spec §3 "Blocking tools": return
+  // {pendingId} immediately; the node long-polls /v1/pending/:id and renders
+  // the same "approved by ..." text the MCP handler would have.
+  if (tool === surfaceContract.tools.request_approval.name) {
+    const a = parseToolArgs(surfaceContract.tools.request_approval, body);
+    const res = await deps.openApproval(claims, a);
+    return { content: [{ type: "text", text: JSON.stringify(res) }] };
+  }
   const ctx = deps.slackCtx(claims);
   const surface = deps.surfaceFor(ctx);
   const defs = surfaceTools(surface, deps.surfaceOpts(claims, ctx));

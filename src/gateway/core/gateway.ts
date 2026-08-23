@@ -26,6 +26,7 @@ import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME, type BrainToolDeps } from "../../knowledge/mcp-tools";
 import { createV1Api } from "../api";
 import type { PendingSource } from "../api/pending-source";
+import { defaultGateBus } from "../../queue/gate-bus";
 import { brainEnabled, ensureSources } from "../../knowledge/brain";
 import { brainMode } from "../../knowledge/brain-config";
 import { syncKbWikis } from "../../knowledge/brain-sync";
@@ -2082,6 +2083,36 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }),
       connect: (claims, ctx, server) => agentConnect(claims.session, ctx, server),
       brainDeps: brainDepsFor,
+      // Non-blocking gate opens (spec §3 "Blocking tools"): the node long-polls
+      // /v1/pending/:id; ANY replica's Block Kit click settles the durable row
+      // and publishes gate:<id> for the instant wakeup.
+      openPermission: (claims, args) =>
+        permissions.open({
+          sessionId: claims.session,
+          toolName: args.toolName,
+          input: args.input,
+          toolUseId: args.toolUseId,
+          channel: claims.channel,
+          threadTs: claims.thread,
+          decisionReason: args.decisionReason,
+          suggestions: args.suggestions,
+        }),
+      openApproval: (claims, args) =>
+        approvals.open({
+          channel: claims.channel,
+          threadTs: claims.thread,
+          sessionId: claims.session,
+          ...args,
+        }),
+    },
+    // Instant long-poll wakeup on gate clicks when Redis is configured;
+    // pure DB polling otherwise (mono default).
+    pending: {
+      wake: (id, cb) => {
+        const bus = defaultGateBus();
+        if (!bus) return Promise.resolve(async () => {});
+        return bus.subscribe(id, cb);
+      },
     },
   });
 

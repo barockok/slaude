@@ -36,7 +36,7 @@ import { runtimeContract } from "../../src/tools/contracts/runtime";
 import { connectContract } from "../../src/tools/contracts/connect";
 import { skillsContract } from "../../src/tools/contracts/skills";
 import { kbContract } from "../../src/tools/contracts/kb";
-import type { ServerContract } from "../../src/tools/contracts/types";
+import { mcpMountedTools, type ServerContract } from "../../src/tools/contracts/types";
 
 import { createSurfaceMcp } from "../../src/gateway/core/surface-mcp";
 import { createSlackMcp, createRuntimeMcp, createConnectMcp, type SlackContext } from "../../src/gateway/slack/mcp-tools";
@@ -59,12 +59,13 @@ async function listRegistered(cfg: McpSdkServerConfigWithInstance): Promise<Map<
   }
 }
 
-/** Register the contract itself through the same SDK pipeline → expected shapes. */
+/** Register the contract itself through the same SDK pipeline → expected shapes.
+ *  restOnly tools are REST-plane plumbing (node internals) — never MCP-mounted. */
 function referenceServer(contract: ServerContract): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
     name: `${contract.server}-contract-ref`,
     version: "0.0.0",
-    tools: Object.values(contract.tools).map((t) =>
+    tools: mcpMountedTools(contract).map((t) =>
       tool(t.name, t.description, t.schema, async () => ({ content: [] })),
     ),
   });
@@ -74,8 +75,9 @@ async function assertMatchesContract(real: McpSdkServerConfigWithInstance, contr
   const registered = await listRegistered(real);
   const expected = await listRegistered(referenceServer(contract));
 
-  // Tool list: the fully-capable server mounts exactly the contract's tools.
-  expect([...registered.keys()].sort()).toEqual(Object.keys(contract.tools).sort());
+  // Tool list: the fully-capable server mounts exactly the contract's
+  // MCP-mounted tools (restOnly entries live on the REST plane only).
+  expect([...registered.keys()].sort()).toEqual(mcpMountedTools(contract).map((t) => t.name).sort());
 
   // Shape: description + JSON schema identical for every tool.
   for (const [name, exp] of expected) {

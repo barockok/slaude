@@ -24,6 +24,18 @@ export interface ToolContract<S extends ZodShape = ZodShape> {
   description: string;
   /** Zod raw shape — the exact object handed to the SDK `tool()` helper. */
   schema: S;
+  /**
+   * REST-plane-only tool: exposed on `POST /v1/tools/...` for node runtime
+   * plumbing (e.g. runtime/can_use_tool) but NEVER mounted as an MCP tool —
+   * the model must not see it. MCP builders, node shims and the contract
+   * snapshot tests all skip restOnly entries.
+   */
+  restOnly?: boolean;
+}
+
+/** The subset of a server's tools that MCP servers (and node shims) mount. */
+export function mcpMountedTools(contract: ServerContract): ToolContract[] {
+  return Object.values(contract.tools).filter((t) => !t.restOnly);
 }
 
 export interface ServerContract {

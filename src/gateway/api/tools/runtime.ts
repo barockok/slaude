@@ -62,6 +62,19 @@ export async function executeRuntimeTool(
       return adminHandlers.triggerIngest(ctx);
     case c.reload_session.name:
       return adminHandlers.reloadSession(ctx, parseToolArgs(c.reload_session, body));
+    case c.can_use_tool.name: {
+      // REST-only (never MCP-mounted): the node worker's permissionResolver
+      // opens a gate here and long-polls /v1/pending/:id for the click.
+      const a = parseToolArgs(c.can_use_tool, body);
+      const res = await deps.openPermission(claims, {
+        toolName: a.tool_name,
+        input: (a.input ?? {}) as Record<string, unknown>,
+        toolUseId: a.tool_use_id,
+        decisionReason: a.decision_reason,
+        suggestions: a.suggestions,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(res) }] };
+    }
     default:
       return null;
   }
