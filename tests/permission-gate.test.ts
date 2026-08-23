@@ -54,6 +54,17 @@ beforeEach(() => {
   delete process.env.SLAUDE_AUTO_ALLOW_TOOLS;
 });
 
+// The resolver now writes the durable pending_gates row before posting the
+// prompt, so the Block Kit message lands a few microtasks after the resolver
+// is called — wait for it instead of reading posts[0] synchronously.
+async function firstPost(f: { posts: any[] }): Promise<any> {
+  for (let i = 0; i < 500 && f.posts.length === 0; i++) {
+    await new Promise((r) => setTimeout(r, 1));
+  }
+  if (f.posts.length === 0) throw new Error("no prompt posted");
+  return f.posts[0];
+}
+
 describe("PermissionGate", () => {
   test("auto-allow list bypasses prompt", async () => {
     process.env.SLAUDE_AUTO_ALLOW_TOOLS = "Read,Glob";
@@ -129,7 +140,7 @@ describe("PermissionGate", () => {
     gate.bindSession("S", "C", "T");
     const ac = new AbortController();
     const promise = gate.resolver("S", "Bash", { command: "ls" }, ctx("U1", ac.signal));
-    const allowId = f.posts[0].blocks
+    const allowId = (await firstPost(f)).blocks
       .find((b: any) => b.type === "actions")
       .elements.find((e: any) => e.action_id.includes("allow:")).action_id;
     await f.fire(allowId, "USR");
@@ -144,7 +155,7 @@ describe("PermissionGate", () => {
     gate.bindSession("S", "C", "T");
     const ac = new AbortController();
     const p = gate.resolver("S", "Bash", { command: "ls" }, ctx("U2", ac.signal));
-    const alwaysId = f.posts[0].blocks
+    const alwaysId = (await firstPost(f)).blocks
       .find((b: any) => b.type === "actions")
       .elements.find((e: any) => e.action_id.includes("always:")).action_id;
     await f.fire(alwaysId, "USR");
@@ -161,7 +172,7 @@ describe("PermissionGate", () => {
     const ac = new AbortController();
     const sugg = [{ type: "addRules", rules: [{ toolName: "Bash(ls:*)" }], behavior: "allow", destination: "session" }];
     const p = gate.resolver("S", "Bash", { command: "ls" }, ctx("U3", ac.signal, sugg as any));
-    const alwaysId = f.posts[0].blocks
+    const alwaysId = (await firstPost(f)).blocks
       .find((b: any) => b.type === "actions")
       .elements.find((e: any) => e.action_id.includes("always:")).action_id;
     await f.fire(alwaysId, "USR");
@@ -175,7 +186,7 @@ describe("PermissionGate", () => {
     gate.bindSession("S", "C", "T");
     const ac = new AbortController();
     const p = gate.resolver("S", "Write", { file_path: "/x" }, ctx("U4", ac.signal));
-    const denyId = f.posts[0].blocks
+    const denyId = (await firstPost(f)).blocks
       .find((b: any) => b.type === "actions")
       .elements.find((e: any) => e.action_id.includes("deny:")).action_id;
     await f.fire(denyId, "USR");
@@ -201,7 +212,7 @@ describe("PermissionGate", () => {
     gate.bindSession("S", "C", "T");
     const ac = new AbortController();
     const p = gate.resolver("S", "Bash", {}, ctx("U6", ac.signal));
-    const allowId = f.posts[0].blocks
+    const allowId = (await firstPost(f)).blocks
       .find((b: any) => b.type === "actions")
       .elements.find((e: any) => e.action_id.includes("allow:")).action_id;
     await f.fire(allowId, "USR");
@@ -220,8 +231,8 @@ describe("PermissionGate", () => {
       signal: ac.signal,
       decisionReason: "policy says ask",
     } as any);
-    expect(JSON.stringify(f.posts[0].blocks)).toContain("policy says ask");
-    const denyId = f.posts[0].blocks
+    expect(JSON.stringify((await firstPost(f)).blocks)).toContain("policy says ask");
+    const denyId = (await firstPost(f)).blocks
       .find((b: any) => b.type === "actions")
       .elements.find((e: any) => e.action_id.includes("deny:")).action_id;
     await f.fire(denyId, "USR");

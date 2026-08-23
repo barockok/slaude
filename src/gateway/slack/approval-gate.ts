@@ -1,11 +1,17 @@
 import type { Transport, WebClientLike } from "../core/transport";
 import { loadApprovers, selectApprovers, selectApproversFrom } from "../../soul/loader";
 import { effectiveSoulForChannel } from "../../soul/extract";
+import * as PendingGates from "../../db/pending-gates";
+import { randomBytes } from "node:crypto";
 
 export type ApprovalRequest = {
   channel: string;
   threadTs: string;
   summary: string;
+  /** Session the plan belongs to, when known. Falls back to the thread key —
+   *  pending_gates.session_id is NOT NULL and some approvals (slash-command
+   *  authz) run before any session exists. */
+  sessionId?: string;
   tools?: string[];
   files?: string[];
   risks?: string;
@@ -29,6 +35,12 @@ export type ApprovalDecision = {
  * Distinct from PermissionGate (per-tool, SDK-driven). This one is per-task,
  * agent-driven — typical use: agent runs in YOLO/bypass mode but soul forces
  * a high-level approval checkpoint before destructive batches.
+ *
+ * Durable state: each request writes a pending_gates row (kind 'approval');
+ * clicks and the auto-deny timer settle it through the repo's
+ * status='pending' guarded UPDATE, so exactly one outcome wins even across
+ * replicas. The in-process #pending map stays as the promise wakeup until
+ * the long-poll plane lands (spec M4).
  */
 type Pending = {
   resolve: (d: ApprovalDecision) => void;
@@ -68,7 +80,7 @@ export class ApprovalGate {
         const id = m[2]!;
         const pending = this.#pending.get(id);
         const userId = (body as any).user?.id ?? "unknown";
-        if (!pending) {
+        const stale = async () => {
           try {
             await respond({
               replace_original: true,
@@ -76,11 +88,24 @@ export class ApprovalGate {
               blocks: [],
             });
           } catch {}
-          return;
+        };
+        // Durable row is the source of truth for "still open?".
+        const row = await PendingGates.get(id);
+        if (!row || row.status !== "pending") return void (await stale());
+        if (!pending) {
+          // Open row but no local waiter: the process restarted and the
+          // promise died with it. Settle the orphan so it doesn't linger;
+          // nothing is listening, so keep the already-decided UX.
+          await PendingGates.resolve(id, "cancelled", userId);
+          return void (await stale());
         }
 
-        // Authorize the clicker against this request's allowlist.
-        if (pending.approvers.size > 0 && !pending.approvers.has(userId)) {
+        // Authorize the clicker against this request's allowlist — BEFORE the
+        // guarded resolve, so a non-approver click never consumes the row.
+        const approvers = new Set<string>(
+          (row.payload.approvers as string[] | undefined) ?? [...pending.approvers],
+        );
+        if (approvers.size > 0 && !approvers.has(userId)) {
           try {
             await respond({
               response_type: "ephemeral",
@@ -90,6 +115,11 @@ export class ApprovalGate {
           } catch {}
           return; // do NOT consume the pending entry
         }
+
+        // Exactly one click wins the guarded UPDATE; a duplicate or a race
+        // against the auto-deny timer sees null and is stale.
+        const resolved = await PendingGates.resolve(id, approved ? "approved" : "denied", userId);
+        if (!resolved) return void (await stale());
 
         if (pending.timer) clearTimeout(pending.timer);
         this.#pending.delete(id);
@@ -135,7 +165,9 @@ export class ApprovalGate {
   }
 
   async request(req: ApprovalRequest, abortSignal?: AbortSignal): Promise<ApprovalDecision> {
-    const id = `${Date.now().toString(36)}_${(++this.#counter).toString(36)}`;
+    // Globally unique — the id is now a pending_gates PRIMARY KEY, and several
+    // gate instances (tests, future replicas) may mint in the same millisecond.
+    const id = `${Date.now().toString(36)}_${(++this.#counter).toString(36)}_${randomBytes(4).toString("hex")}`;
     const approvers = this.#resolveApprovers(req);
     const heading = req.category
       ? `:bell: *Approval needed* — \`${req.category}\``
@@ -187,31 +219,46 @@ export class ApprovalGate {
     ];
     sections.push({ type: "actions", elements: actionElements });
 
-    const posted = await this.#client.chat.postMessage({
-      channel: req.channel,
-      thread_ts: req.threadTs,
-      text: `:bell: Approval needed: ${truncate(req.summary, 80)}`,
-      blocks: sections,
+    const timeoutSec = this.#timeoutSeconds();
+
+    // Durable pending state FIRST, then the in-process waiter, then the
+    // buttons — by the time a click can exist, both stores are in place.
+    await PendingGates.create({
+      id,
+      kind: "approval",
+      sessionId: req.sessionId ?? `${req.channel}:${req.threadTs}`,
+      payload: {
+        channel: req.channel,
+        threadTs: req.threadTs,
+        summary: req.summary,
+        category: req.category ?? null,
+        approvers: [...approvers],
+      },
+      expiresAt: timeoutSec > 0 ? Date.now() + timeoutSec * 1000 : undefined,
     });
 
-    const timeoutSec = this.#timeoutSeconds();
+    let resolveFn!: (d: ApprovalDecision) => void;
+    const promise = new Promise<ApprovalDecision>((resolve) => {
+      resolveFn = resolve;
+    });
+    const pending: Pending = {
+      resolve: resolveFn,
+      approvers,
+      channel: req.channel,
+    };
     if (timeoutSec > 0) {
-      sections.push({
-        type: "context",
-        elements: [{ type: "mrkdwn", text: `:hourglass: Auto-denies in *${timeoutSec}s* if no one clicks.` }],
-      });
-    }
-    return new Promise<ApprovalDecision>((resolve) => {
-      const pending: Pending = {
-        resolve,
-        approvers,
-        channel: req.channel,
-        ts: posted.ts as string | undefined,
-      };
-      if (timeoutSec > 0) {
-        pending.timer = setTimeout(() => {
+      pending.timer = setTimeout(() => {
+        void (async () => {
           const p = this.#pending.get(id);
           if (!p) return;
+          // Settle the durable row; a click that raced us wins the guard and
+          // its handler owns the outcome. A recurring sweep may have expired
+          // the row already — that outcome is still ours to deliver locally.
+          const row = await PendingGates.resolve(id, "expired", "system");
+          if (!row) {
+            const cur = await PendingGates.get(id);
+            if (cur && cur.status !== "expired") return; // a click won
+          }
           this.#pending.delete(id);
           // Best-effort UI update so the block doesn't look pending forever.
           if (p.ts) {
@@ -225,21 +272,46 @@ export class ApprovalGate {
               .catch(() => {});
           }
           p.resolve({ approved: false, by: "system", note: `timeout-${timeoutSec}s` });
-        }, timeoutSec * 1000);
-      }
-      this.#pending.set(id, pending);
-      abortSignal?.addEventListener(
-        "abort",
-        () => {
-          const p = this.#pending.get(id);
-          if (!p) return;
-          if (p.timer) clearTimeout(p.timer);
-          this.#pending.delete(id);
-          p.resolve({ approved: false, by: "system", note: "aborted" });
-        },
-        { once: true },
-      );
-    });
+        })();
+      }, timeoutSec * 1000);
+    }
+    this.#pending.set(id, pending);
+    abortSignal?.addEventListener(
+      "abort",
+      () => {
+        const p = this.#pending.get(id);
+        if (!p) return;
+        if (p.timer) clearTimeout(p.timer);
+        this.#pending.delete(id);
+        void PendingGates.resolve(id, "cancelled", "system").catch(() => {});
+        p.resolve({ approved: false, by: "system", note: "aborted" });
+      },
+      { once: true },
+    );
+
+    try {
+      const posted = await this.#client.chat.postMessage({
+        channel: req.channel,
+        thread_ts: req.threadTs,
+        text: `:bell: Approval needed: ${truncate(req.summary, 80)}`,
+        blocks: sections,
+      });
+      pending.ts = posted.ts as string | undefined;
+    } catch (e) {
+      // The prompt never reached Slack — tear both stores down and rethrow.
+      if (pending.timer) clearTimeout(pending.timer);
+      this.#pending.delete(id);
+      void PendingGates.resolve(id, "cancelled", "system").catch(() => {});
+      throw e;
+    }
+
+    if (timeoutSec > 0) {
+      sections.push({
+        type: "context",
+        elements: [{ type: "mrkdwn", text: `:hourglass: Auto-denies in *${timeoutSec}s* if no one clicks.` }],
+      });
+    }
+    return promise;
   }
 }
 

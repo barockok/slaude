@@ -4,6 +4,7 @@ import type {
   PermissionUpdate,
 } from "@anthropic-ai/claude-agent-sdk";
 import { env } from "../../config/env";
+import * as PendingGates from "../../db/pending-gates";
 
 type PendingKey = string; // toolUseID
 type Pending = {
@@ -20,6 +21,12 @@ type Pending = {
  * Slack approval gate. When the SDK asks for a tool permission, we post a
  * Block Kit message to the active session's thread with Allow / Always /
  * Deny buttons, then resolve the SDK promise on the user's click.
+ *
+ * Durable state: every prompt writes a pending_gates row (kind 'perm') and a
+ * click settles it through the repo's status='pending' guarded UPDATE, so a
+ * duplicate or cross-replica click loses cleanly. The in-process #pending map
+ * stays as the wakeup mechanism for the SDK promise until the long-poll plane
+ * lands (spec M4).
  *
  * Pre-approved tools (env SLAUDE_AUTO_ALLOW_TOOLS, comma-separated) return
  * allow without prompting — useful for safe read-only ops like Read/Grep/Glob.
@@ -49,10 +56,11 @@ export class PermissionGate {
         if (!m) return;
         const decision = m[1] as "allow" | "always" | "deny";
         const toolUseId = m[2]!;
-        const pend = this.#pending.get(toolUseId);
-        if (!pend) {
-          // Already decided (e.g. duplicate click). Make sure the buttons go
-          // away by replacing the message via the click's response_url.
+        const userId = (body as any).user?.id ?? "unknown";
+        const stale = async () => {
+          // Already decided (duplicate click, expiry, abort, or another
+          // replica won). Make sure the buttons go away by replacing the
+          // message via the click's response_url.
           try {
             await respond({
               replace_original: true,
@@ -60,11 +68,24 @@ export class PermissionGate {
               blocks: [],
             });
           } catch {}
-          return;
+        };
+        const pend = this.#pending.get(toolUseId);
+        if (!pend) {
+          // No local waiter. If a pending row survived a restart, settle it so
+          // the orphan doesn't linger — nothing is waiting on the promise.
+          await PendingGates.resolve(toolUseId, "cancelled", userId);
+          return void (await stale());
         }
+        // DB row is the source of truth: exactly one click wins the guarded
+        // UPDATE; every later click sees null and is stale.
+        const row = await PendingGates.resolve(
+          toolUseId,
+          decision === "deny" ? "denied" : "approved",
+          userId,
+        );
+        if (!row) return void (await stale());
         this.#pending.delete(toolUseId);
 
-        const userId = (body as any).user?.id ?? "unknown";
         const decided =
           decision === "allow"
             ? "*Allowed* once"
@@ -228,34 +249,59 @@ export class PermissionGate {
       },
     ];
 
-    const posted = await this.#client.chat.postMessage({
-      channel: route.channel,
-      thread_ts: route.threadTs,
-      text,
-      blocks,
+    // Durable pending state FIRST, then the in-process waiter, then the
+    // buttons: by the time a click can exist, both stores are in place — no
+    // window where a click finds half-initialized state.
+    await PendingGates.create({
+      id: toolUseId,
+      kind: "perm",
+      sessionId,
+      payload: { toolName, channel: route.channel, threadTs: route.threadTs },
     });
 
-    return new Promise<Awaited<ReturnType<CanUseTool>>>((resolve) => {
-      this.#pending.set(toolUseId, {
-        channel: route.channel,
-        threadTs: route.threadTs,
-        messageTs: posted.ts as string,
-        toolName,
-        input,
-        suggestions: ctx.suggestions,
-        resolve,
-      });
-      // Honor abort signal — tear down the prompt and deny.
-      ctx.signal.addEventListener(
-        "abort",
-        () => {
-          if (!this.#pending.has(toolUseId)) return;
-          this.#pending.delete(toolUseId);
-          resolve({ behavior: "deny", message: "aborted" });
-        },
-        { once: true },
-      );
+    let resolveFn!: (r: Awaited<ReturnType<CanUseTool>>) => void;
+    const promise = new Promise<Awaited<ReturnType<CanUseTool>>>((resolve) => {
+      resolveFn = resolve;
     });
+    const pend: Pending = {
+      channel: route.channel,
+      threadTs: route.threadTs,
+      messageTs: "",
+      toolName,
+      input,
+      suggestions: ctx.suggestions,
+      resolve: resolveFn,
+    };
+    this.#pending.set(toolUseId, pend);
+    // Honor abort signal — tear down the prompt and deny.
+    ctx.signal.addEventListener(
+      "abort",
+      () => {
+        if (!this.#pending.has(toolUseId)) return;
+        this.#pending.delete(toolUseId);
+        // Settle the durable row too; a click that raced the abort loses.
+        void PendingGates.resolve(toolUseId, "cancelled", "system").catch(() => {});
+        resolveFn({ behavior: "deny", message: "aborted" });
+      },
+      { once: true },
+    );
+
+    try {
+      const posted = await this.#client.chat.postMessage({
+        channel: route.channel,
+        thread_ts: route.threadTs,
+        text,
+        blocks,
+      });
+      pend.messageTs = (posted.ts as string) ?? "";
+    } catch (e) {
+      // The prompt never reached Slack — tear both stores down and rethrow.
+      this.#pending.delete(toolUseId);
+      void PendingGates.resolve(toolUseId, "cancelled", "system").catch(() => {});
+      throw e;
+    }
+
+    return promise;
   };
 }
 

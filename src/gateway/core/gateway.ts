@@ -243,12 +243,25 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     timeoutSeconds: () => soulData().approvalTimeoutSeconds || 300,
   });
   const ignoreGate = new IgnoreGate();
+  // Boot sweep: auto-expire pending gates whose deadline passed while no
+  // process was alive (a restart killed their auto-deny timers). Rows with no
+  // deadline stay; a later click on one settles it as cancelled.
+  void PendingGates.sweepExpired()
+    .then((rows) => {
+      for (const r of rows) console.log(`[gates] expired orphaned ${r.kind} gate ${r.id} (session ${r.sessionId})`);
+    })
+    .catch((e) => console.error("[gates] boot sweep failed:", e));
   // Clean up expired ignores + abandoned paste-back OAuth flows every 5 minutes.
   // Each pendingPaste entry closes over live client creds + the PKCE verifier, so
   // an abandoned flow must not linger in memory until the initiator happens to
   // message again (the lazy check in the inbound path).
   setInterval(() => {
     import("../../db/ignores").then((m) => m.cleanupExpired());
+    // Overdue gates (live auto-deny timers normally win; this catches strays)
+    // + stale dedup rows on quiet deployments where the inbound-path purge
+    // never fires.
+    void PendingGates.sweepExpired().catch(() => {});
+    void SeenEvents.purgeOlderThan().catch(() => {});
     const now = Date.now();
     for (const [k, p] of pendingPaste) if (now > p.expiresAt) pendingPaste.delete(k);
   }, 5 * 60 * 1000);
@@ -273,6 +286,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         approvals.request({
           channel: ctx.channel,
           threadTs: ctx.threadTs,
+          sessionId,
           ...req,
         });
       ctx.reloadSession = (prompt?) => agent.reload(sessionId, prompt);
@@ -452,8 +466,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // lock — connects the agent's shared identity).
   type ConnectScope = "initiator" | "global";
 
-  // Pending /mcp connect buttons: token → the context needed to run the connect.
-  const pendingMcp = new Map<string, { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string; scope: ConnectScope; personaName?: string }>();
+  // Pending /mcp connect buttons live in pending_gates (kind 'mcp_connect'):
+  // the token is the row id and the payload carries everything the click needs
+  // to run the connect, so the card still works after a restart and a click is
+  // settled exactly once via the guarded resolve.
+  type McpGatePayload = { channelId: string; threadTs: string; userId: string; serverName: string; scope: ConnectScope; personaName?: string };
 
   // Paste-back: a started-but-not-completed OAuth flow, keyed by channel:thread:user
   // (one in-flight connect per initiator per thread). The initiator completes it by
@@ -682,13 +699,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   t.action(/^slaude_mcp:connect:.+$/, async ({ ack, action, body }) => {
     await ack();
     const token = (action as { action_id: string }).action_id.replace(/^slaude_mcp:connect:/, "");
-    const ctx = pendingMcp.get(token);
-    if (!ctx) return;
+    const gate = await PendingGates.get(token);
+    if (!gate || gate.kind !== "mcp_connect" || gate.status !== "pending") return;
+    const ctx = gate.payload as unknown as McpGatePayload;
     // Slack shows the button to everyone in the thread. The clicker must be the user
     // who originally requested the card, and still authorized for the card's scope:
     //   initiator → they must still own the /1on1 lock (bystanders can't drive an
     //               initiator's OAuth grant; a dropped lock invalidates the card).
     //   global    → no lock, and they must still be the manager/backup.
+    // Checks run BEFORE the guarded resolve so an unauthorized click never
+    // consumes the card.
     const clicker = (body as any).user?.id;
     if (clicker !== ctx.userId) return;
     if (ctx.scope === "initiator") {
@@ -699,10 +719,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const soul = soulData();
       if (ctx.userId !== soul.manager.userId && ctx.userId !== soul.backupManager.userId) return;
     }
-    pendingMcp.delete(token);
+    // One click wins; a duplicate (or another replica) sees null and stops.
+    if (!(await PendingGates.resolve(token, "approved", clicker))) return;
     const cfg = httpExternalServers()[ctx.serverName];
     if (!cfg) return;
-    await connectServer({ ...ctx, serverCfg: cfg, personaName: (ctx as any).personaName });
+    await connectServer({ ...ctx, sessionId: gate.sessionId, serverCfg: cfg, personaName: ctx.personaName });
   });
 
   agent.on("event", (e: AgentEvent) => {
@@ -1276,15 +1297,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         ];
         const connectable = statuses.filter((s) => s.status !== "connected" && httpServers[s.name]);
         if (connectable.length) {
-          const elements = connectable.map((s) => {
+          const elements = [];
+          for (const s of connectable) {
             const token = randomBytes(8).toString("hex");
-            pendingMcp.set(token, { sessionId: session.id, channelId, threadTs, userId, serverName: s.name, scope, personaName: dispatch?.personaId && dispatch.personaId !== "default" ? dispatch.personaId : undefined });
-            return {
+            const payload: McpGatePayload = { channelId, threadTs, userId, serverName: s.name, scope, personaName: dispatch?.personaId && dispatch.personaId !== "default" ? dispatch.personaId : undefined };
+            await PendingGates.create({ id: token, kind: "mcp_connect", sessionId: session.id, payload });
+            elements.push({
               type: "button",
               text: { type: "plain_text", text: `Connect ${s.name}` },
               action_id: `slaude_mcp:connect:${token}`,
-            };
-          });
+            });
+          }
           blocks.push({ type: "actions", elements });
         }
         await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: "MCP servers", mrkdwn: true });
@@ -1608,7 +1631,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               personaId: compactPersonaId,
             };
             ctx.requestApproval = (req) =>
-              approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, ...req });
+              approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, ...req });
             ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
             routes.set(session.id, {
               ctx,
@@ -1759,6 +1782,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         approvals.request({
           channel: ctx.channel,
           threadTs: ctx.threadTs,
+          sessionId: session.id,
           ...req,
         });
       ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
