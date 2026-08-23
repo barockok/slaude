@@ -1818,16 +1818,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // engages the thread (subsequent plain replies handled). @mentioning a
   // different user disengages (the user is now talking to a colleague).
   //
-  // The Set is a hot cache only — engagement is persisted on the session row
-  // (sessions.engaged). Without persistence a disengage lasted zero messages:
-  // every engaged thread has a session row, so the next plain reply fell
-  // through to the restore path and re-engaged (restarts had the same effect).
-  const engaged = new Set<string>(); // key: `${channel}:${thread_ts}`
-  const threadKey = (channel: string, ts: string) => `${channel}:${ts}`;
-  const persistEngaged = async (teamId: string | undefined, channelId: string, threadTs: string, value: boolean) => {
+  // sessions.engaged is the ONLY source — the old in-memory Set is gone, so
+  // engagement reads identically across restarts and (later) replicas. A
+  // fresh session row is born engaged (schema default 1), which is what the
+  // Set's add-on-mention used to express.
+  const persistEngaged = async (teamId: string | undefined, channelId: string, threadTs: string, value: boolean, personaId = "default") => {
     if (!teamId) return;
-    // Only the default-persona session row carries the bot's engagement flag.
-    const row = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: "default" });
+    const row = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: personaId });
     if (row) await Sessions.setEngaged(row.id, value);
   };
 
@@ -1883,7 +1880,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   t.event("app_mention", async (args: any) => {
     const e: any = args.event;
     const ts: string = e.thread_ts || e.ts;
-    engaged.add(threadKey(e.channel, ts));
     await persistEngaged(args.context?.teamId ?? e.team, e.channel, ts, true);
     await handleMessage(args);
   });
@@ -1908,13 +1904,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
     const channelId: string = e.channel;
     const ts: string = e.thread_ts || e.ts;
-    const key = threadKey(channelId, ts);
     const text: string = (e.text || "").toString();
     const botId = await getBotId();
 
     // DMs: always handle, no engagement tracking needed.
     if (e.channel_type === "im") {
-      engaged.add(key);
       return await handleMessage(args);
     }
 
@@ -1934,20 +1928,19 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     );
 
     if (mentionsBot) {
-      engaged.add(key);
       await persistEngaged(teamId, channelId, ts, true);
       return await handleMessage(args);
     }
     if (mentionedPersona) {
-      const pKey = `${key}:${mentionedPersona.name}`;
-      engaged.add(pKey);
+      // Re-engage the persona's row if it was disengaged; a first mention has
+      // no row yet and the session is born engaged.
+      await persistEngaged(teamId, channelId, ts, true, mentionedPersona.name);
       return await handleMessage(args, { personaId: mentionedPersona.name });
     }
     if (mentionsOther) {
-      engaged.delete(key);
-      await persistEngaged(teamId, channelId, ts, false);
-      // Also disengage any persona-specific keys for this thread.
-      for (const p of registry.list()) engaged.delete(`${key}:${p.name}`);
+      // Disengage the bot AND every persona in this thread (the user is
+      // talking to a colleague now) — one durable write, no in-memory keys.
+      if (teamId) await Sessions.setEngagedForThread({ team_id: teamId, channel_id: channelId, thread_ts: ts }, false);
       // Don't drop: if slaude has a session here, record the disengaging message
       // into the transcript (suppressed — the UserPromptSubmit hook halts the turn
       // before the model runs) so the session stays populated. On re-engage the
@@ -1985,36 +1978,37 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       metric.slackDropsTotal.inc({ reason: "mention_only" });
       return;
     }
-    if (engaged.has(key)) {
-      return await handleMessage(args);
-    }
-    // Multi-persona: a plain reply continues whichever persona is engaged in this thread.
-    if (registry.isMultiPersonaMode()) {
-      for (const p of registry.list()) {
-        if (engaged.has(`${key}:${p.name}`)) {
-          return await handleMessage(args, { personaId: p.name });
+    // Plain reply: engagement is read straight from sessions.engaged (the only
+    // source — durable across restarts and replicas). The bot's own (default
+    // persona) row is checked first, mirroring the bot-first ordering the old
+    // in-memory Set had, then named personas in registry order, then any other
+    // session row for the thread.
+    if (teamId) {
+      const def = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: "default" });
+      if (def?.engaged) {
+        return await handleMessage(args);
+      }
+      // Multi-persona: a plain reply continues whichever persona is engaged in this thread.
+      if (registry.isMultiPersonaMode()) {
+        for (const p of registry.list()) {
+          const row = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: p.name });
+          if (row?.engaged) {
+            return await handleMessage(args, { personaId: p.name });
+          }
         }
       }
-    }
-    // Restore engagement across restarts: a session row means the bot was
-    // engaged here historically — keep handling plain replies without forcing
-    // a re-@mention, unless the thread was explicitly disengaged (row.engaged=0).
-    if (teamId) {
-      const row = await Sessions.findAnyByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts });
-      if (row && row.engaged) {
-        const restoredPersonaId = row.persona_id !== "default" ? row.persona_id : undefined;
-        if (restoredPersonaId) {
-          engaged.add(`${key}:${restoredPersonaId}`);
-        } else {
-          engaged.add(key);
-        }
+      const any = def ?? (await Sessions.findAnyByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts }));
+      if (any && any.engaged) {
+        // Engaged session outside the registry (e.g. persona removed from
+        // config) — keep handling plain replies as that persona.
+        const restoredPersonaId = any.persona_id !== "default" ? any.persona_id : undefined;
         return await handleMessage(args, { personaId: restoredPersonaId });
       }
       // Explicitly disengaged (row.engaged=0): record plain messages into the
       // transcript too (suppressed by the hook) so the session stays populated
       // for re-engage. No model run, no Slack feedback.
-      if (row && row.engaged === 0) {
-        const disengagedPersonaId = row.persona_id !== "default" ? row.persona_id : undefined;
+      if (any && any.engaged === 0) {
+        const disengagedPersonaId = any.persona_id !== "default" ? any.persona_id : undefined;
         console.log(
           `[slack-rx] record ch=${channelId} ts=${e.ts} user=${e.user} — disengaged thread, suppressed`,
         );

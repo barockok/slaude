@@ -100,6 +100,20 @@ export async function setEngaged(id: string, engaged: boolean): Promise<void> {
   ]);
 }
 
+/** Flip engagement for EVERY persona session in a thread — a colleague-mention
+ *  disengages the bot and all personas at once (sessions.engaged is the only
+ *  engagement source; there is no in-memory set anymore). */
+export async function setEngagedForThread(
+  k: Omit<ThreadKey, "persona_id">,
+  engaged: boolean,
+): Promise<void> {
+  await db.run(
+    `UPDATE sessions SET engaged = ?, updated_at = ?
+     WHERE slack_team_id = ? AND slack_channel_id = ? AND slack_thread_ts = ?`,
+    [engaged ? 1 : 0, Date.now(), k.team_id, k.channel_id, k.thread_ts],
+  );
+}
+
 export async function setPermissionMode(id: string, mode: string): Promise<void> {
   await db.run(`UPDATE sessions SET permission_mode = ?, updated_at = ? WHERE id = ?`, [
     mode,
