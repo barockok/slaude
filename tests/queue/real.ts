@@ -25,9 +25,40 @@ export function realRedis(): Redis {
 
 /** Delete every key under the suite's prefix. */
 export async function cleanupPrefix(redis: Redis, prefix: string): Promise<void> {
+  await deletePattern(redis, `${prefix}:*`);
+}
+
+/**
+ * Delete every key from ANY previous run of this suite tag
+ * (`slaudetest-<tag>-*`). An interrupted run never reaches its afterAll
+ * cleanup, so its random-prefix keys (notably BullMQ `:meta`) leak until the
+ * NEXT run of the same suite sweeps them here. Assumes at most one concurrent
+ * run per suite tag against one Redis — true in CI (per-job service
+ * container) and the documented constraint for a shared local Redis.
+ */
+export async function sweepTag(redis: Redis, tag: string): Promise<void> {
+  await deletePattern(redis, `slaudetest-${tag}-*`);
+}
+
+/** BullMQ-aware teardown: obliterate the named queues (removes :meta and all
+ *  internal structures) before the generic prefix delete. */
+export async function obliterateQueues(redis: Redis, bullPrefix: string, names: string[]): Promise<void> {
+  const { Queue } = await import("bullmq");
+  for (const name of names) {
+    const q = new Queue(name, { connection: redis, prefix: bullPrefix });
+    try {
+      await q.obliterate({ force: true });
+    } catch {
+      // Queue never materialized — nothing to remove.
+    }
+    await q.close();
+  }
+}
+
+async function deletePattern(redis: Redis, pattern: string): Promise<void> {
   let cursor = "0";
   do {
-    const [next, keys] = await redis.scan(cursor, "MATCH", `${prefix}:*`, "COUNT", 500);
+    const [next, keys] = await redis.scan(cursor, "MATCH", pattern, "COUNT", 500);
     cursor = next;
     if (keys.length > 0) await redis.del(...keys);
   } while (cursor !== "0");

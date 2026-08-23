@@ -9,7 +9,7 @@
  *   finishes its work; stopped → server gone.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { REAL_URL, realEnabled, testPrefix, cleanupPrefix, until, sleep } from "../queue/real";
+import { REAL_URL, realEnabled, testPrefix, cleanupPrefix, sweepTag, obliterateQueues, until, sleep } from "../queue/real";
 
 const d = describe.skipIf(!realEnabled);
 const NODE_ID = "health-node";
@@ -32,6 +32,7 @@ beforeAll(async () => {
 
   keys = makeKeys(testPrefix("health"));
   redis = new Redis(REAL_URL, { maxRetriesPerRequest: null });
+  await sweepTag(redis, "health"); // interrupted-run leftovers
   turns = new TurnQueues({ connection: redis, keys });
 
   // Stub agent: each turn parks until the test releases it, then finishes.
@@ -72,6 +73,7 @@ afterAll(async () => {
   if (!realEnabled) return;
   releaseTurn?.();
   await handle?.stop({ drainSec: 1 }).catch(() => {});
+  if (redis) await obliterateQueues(redis, keys.bullPrefix, ["turns", `turns.${NODE_ID}`]);
   if (redis) await cleanupPrefix(redis, keys.prefix);
   try {
     await redis?.quit();

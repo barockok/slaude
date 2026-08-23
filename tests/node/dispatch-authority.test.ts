@@ -11,7 +11,7 @@
  *     consumed (all nodes down) cannot silently kill the next turn.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { REAL_URL, realEnabled, testPrefix, cleanupPrefix, until, sleep } from "../queue/real";
+import { REAL_URL, realEnabled, testPrefix, cleanupPrefix, sweepTag, obliterateQueues, until, sleep } from "../queue/real";
 
 const d = describe.skipIf(!realEnabled);
 
@@ -41,6 +41,7 @@ beforeAll(async () => {
 
   keys = makeKeys(testPrefix("dauth"));
   redis = new Redis(REAL_URL, { maxRetriesPerRequest: null });
+  await sweepTag(redis, "dauth"); // interrupted-run leftovers
   const sub = new Redis(REAL_URL, { maxRetriesPerRequest: null });
   const turns = new TurnQueues({ connection: redis, keys });
   const registry = makeRegistry({ redis, keys, heartbeatSec: 1 });
@@ -72,6 +73,7 @@ afterAll(async () => {
   if (!realEnabled) return;
   for (const w of workers) await w.close(true).catch(() => {});
   await qd?.close().catch(() => {});
+  if (redis) await obliterateQueues(redis, keys.bullPrefix, ["turns"]);
   if (redis) await cleanupPrefix(redis, keys.prefix);
   try {
     await redis?.quit();

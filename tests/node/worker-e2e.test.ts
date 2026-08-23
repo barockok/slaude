@@ -11,7 +11,7 @@
  * delay+requeue; lost-lock abort; SIGTERM drain (last — it stops the node).
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { REAL_URL, realEnabled, testPrefix, cleanupPrefix, until, sleep } from "../queue/real";
+import { REAL_URL, realEnabled, testPrefix, cleanupPrefix, sweepTag, obliterateQueues, until, sleep } from "../queue/real";
 
 process.env.SLAUDE_BRAIN_DISABLED = "1";
 
@@ -86,6 +86,8 @@ beforeAll(async () => {
 
   keys = makeKeys(testPrefix("we2e"));
   redis = new Redis(REAL_URL, { maxRetriesPerRequest: null });
+  // Interrupted runs never reach afterAll — sweep their leftovers up front.
+  await sweepTag(redis, "we2e");
   const subG = new Redis(REAL_URL, { maxRetriesPerRequest: null });
 
   // ---- gateway side ----
@@ -210,6 +212,9 @@ afterAll(async () => {
   await workerHandle?.stop({ drainSec: 1 }).catch(() => {});
   await qd?.close().catch(() => {});
   server?.stop(true);
+  // Obliterate the BullMQ queues (drops :meta and every internal structure)
+  // before the generic prefix delete.
+  if (redis) await obliterateQueues(redis, keys.bullPrefix, ["turns", nodeTurnsQueueFn(NODE_ID)]);
   if (redis) await cleanupPrefix(redis, keys.prefix);
   try {
     await redis?.quit();
