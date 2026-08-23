@@ -184,7 +184,11 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
    */
   async function readBodyCapped(req: Request): Promise<string | null> {
     const declared = Number(req.headers.get("content-length"));
-    if (Number.isFinite(declared) && declared > maxBodyBytes) return null;
+    if (Number.isFinite(declared) && declared > maxBodyBytes) {
+      // Abandon the upload without buffering it.
+      await req.body?.cancel().catch(() => {});
+      return null;
+    }
     if (!req.body) return "";
     const reader = req.body.getReader();
     const chunks: Uint8Array[] = [];
@@ -279,7 +283,12 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
     const raw = await readBodyCapped(req);
     if (raw === null) {
       log(`[slack-http] rejected ${pathname}: body over ${maxBodyBytes} bytes`);
-      return new Response("payload too large", { status: 413 });
+      // The unread remainder of the upload would poison a kept-alive
+      // connection for the next request — force a close.
+      return new Response("payload too large", {
+        status: 413,
+        headers: { connection: "close" },
+      });
     }
     // Slack's SSL certificate probe (`ssl_check=1` form post, sent when the
     // request URL is saved). Bolt semantics: bare 200, no signature check,
