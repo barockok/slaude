@@ -52,6 +52,7 @@
 - **Deployment & Operations**
   - [Overview](deployment/index.md)
   - [Docker Compose](deployment/index.md#docker)
+  - [Multi-Node (gateway + workers)](deployment/multi-node.md)
   - [Kubernetes](deployment/index.md#kubernetes)
   - [Health & Readiness](deployment/index.md#health)
   - [Prometheus Metrics](deployment/index.md#metrics)
