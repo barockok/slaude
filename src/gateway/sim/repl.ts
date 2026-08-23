@@ -156,7 +156,15 @@ export class ReplController {
   #help() { this.#out(this.helpLines().join("\n")); }
 
   #subscribe(s: SimSession) {
-    if (this.#agent !== "real") return;
+    if (this.#agent !== "real") {
+      // The stub path renders by cursor after each handled turn — but a gate
+      // card posts only after its durable pending_gates insert lands, which on
+      // a real Postgres can be after that render pass. Re-run the cursor
+      // render whenever a card arrives so a late card still prints exactly
+      // once (#shown advances past everything rendered).
+      this.#unsub.push(s.onCard(() => this.#renderStubTurn()));
+      return;
+    }
     this.#unsub.push(s.onAgentEvent((e) => this.#renderEvent(e)));
     this.#unsub.push(s.onCard((c) => this.#renderCard(c)));
   }
