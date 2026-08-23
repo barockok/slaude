@@ -37,6 +37,7 @@ import type { SlackAppRow } from "../../db/slack-apps";
 import { verifySlackSignature } from "./verify";
 import { healthRoutes, type HealthDeps } from "../../health";
 import { env } from "../../config/env";
+import { m } from "../../metrics";
 
 type AppEntry = {
   row: SlackAppRow;
@@ -309,7 +310,10 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
       if (r) return r;
     }
     if (url.pathname === "/slack/events" || url.pathname === "/slack/interactions") {
-      return handleSlack(req, url.pathname);
+      const res = await handleSlack(req, url.pathname);
+      // Every ingress response is counted — 200s and rejects (401/404/400/413).
+      m.httpRequestsTotal.inc({ route: url.pathname, status: String(res.status) });
+      return res;
     }
     return new Response("not found", { status: 404 });
   }

@@ -430,6 +430,48 @@ describe("http slack transport — interactions", () => {
   });
 });
 
+describe("http slack transport — ingress metrics", () => {
+  it("counts every /slack/* response by route and status in /metrics", async () => {
+    // Small cap so the 413 leg needs only a few KB of upload (keeps the test
+    // free of large-body backpressure timing).
+    const { base } = await boot([appRow()], {
+      health: { liveSessions: () => 0 },
+      maxBodyBytes: 5000,
+    });
+    await postEvents(base, SECRET_A, eventEnvelope()); // 200
+    await postEvents(base, "wrong-secret", eventEnvelope()); // 401
+    const rawUnknown = JSON.stringify({ ...eventEnvelope(), team_id: "T0NOPE" });
+    await fetch(`${base}/slack/events`, {
+      method: "POST",
+      headers: signedHeaders(SECRET_A, rawUnknown),
+      body: rawUnknown,
+    }); // 404
+    await fetch(`${base}/slack/interactions`, {
+      method: "POST",
+      headers: signedHeaders(SECRET_A, "not-a-payload"),
+      body: "not-a-payload",
+    }); // 400
+    await fetch(`${base}/slack/interactions`, {
+      method: "POST",
+      body: "x".repeat(6000), // over the 5000-byte cap
+    }); // 413
+
+    const rendered = await (await fetch(`${base}/metrics`)).text();
+    expect(rendered).toContain("# TYPE slaude_http_requests_total counter");
+    for (const [route, status] of [
+      ["/slack/events", "200"],
+      ["/slack/events", "401"],
+      ["/slack/events", "404"],
+      ["/slack/interactions", "400"],
+      ["/slack/interactions", "413"],
+    ]) {
+      expect(rendered).toMatch(
+        new RegExp(`slaude_http_requests_total\\{[^}]*route="${route}"[^}]*status="${status}"`),
+      );
+    }
+  });
+});
+
 describe("http slack transport — ssl_check", () => {
   it("answers Slack's ssl_check probe with a bare 200 on both endpoints — no sig, no dispatch", async () => {
     const seen: any[] = [];
