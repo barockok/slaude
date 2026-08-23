@@ -1,0 +1,7 @@
+# slaude horizontal-scale topology (spec §1): gateway ×N + node ×M.
+# Namespaced separately from deploy/k8s/slaude.yaml (single-persona mono
+# deploy) so the two never fight over resource names.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: slaude-scale
