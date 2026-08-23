@@ -106,7 +106,7 @@ A turn is a job on a BullMQ queue. Payload:
 ### Serialization per session
 
 - Node acquires `lock:session:<id>` (SET NX, TTL 10m, extended every 60s while the turn runs) before starting a turn. Lock held by another node: the job is re-queued with a short delay.
-- Gateway coalesces: messages arriving while a session has a pending or running job are appended to that job's `messages[]` (BullMQ job update) so the next turn sees all of them, matching today's `pushUser` queue semantics.
+- Gateway coalesces: messages arriving while a session has a *pending* (waiting/delayed, not yet claimed) job are appended to that job's `messages[]` (BullMQ job update) so the next turn sees all of them, matching today's `pushUser` queue semantics. Messages arriving while the job is already *running* become a fresh follow-up job — a claimed job's data cannot be safely rewritten — and the session lock serializes it behind the running turn.
 
 ### Abort
 

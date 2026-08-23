@@ -285,6 +285,23 @@ All vars are read via `src/config/env.ts` (`req()` throws on missing, `opt()` re
 
 See [Filesystem layout](#filesystem) for every file under `SLAUDE_HOME`.
 
+### Queue & Redis — horizontal scale <a id="queue-redis"></a>
+
+Used by the gateway/node split (`src/queue/`): BullMQ turn queues, the warm-session
+registry, session/leader locks, and abort/reload/gate pub-sub. A single-process
+(`mono`) deploy never touches Redis and needs none of these.
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `SLAUDE_REDIS_URL` | For gateway/node roles | `redis://localhost:6379` | The one Redis behind job queues, session registry, node heartbeats, locks, and pub/sub. |
+| `SLAUDE_REDIS_PREFIX` | No | `slaude` | Namespace prefixed to every Redis key, channel, stream, and BullMQ queue this deploy touches. Lets several deploys (or a test run) share one Redis without collisions. |
+| `SLAUDE_HEARTBEAT_SEC` | No | `10` | Cadence at which nodes heartbeat each live session's `sess:<id>` registry entry. Entry TTL is 2× this — an entry older than that means "cold, route to the shared queue". Non-positive or non-numeric falls back to 10. |
+| `SLAUDE_NODE_DRAIN_SEC` | No | `120` | On SIGTERM a node stops claiming jobs and finishes in-flight turns for up to this many seconds before deregistering and exiting. Negative or non-numeric falls back to 120. |
+
+Tests for this layer run only against a real Redis (BullMQ's Lua scripts don't run
+on `ioredis-mock`) and are gated on `SLAUDE_REDIS_TEST_URL`, mirroring the
+`SLAUDE_PG_TEST_URL` gate for Postgres.
+
 ### Sessions & UX
 
 | Name | Required | Default | Description |
