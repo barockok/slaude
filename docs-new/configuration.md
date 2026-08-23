@@ -271,6 +271,9 @@ All vars are read via `src/config/env.ts` (`req()` throws on missing, `opt()` re
 | `SLAUDE_HOME` | No | `~/.slaude` | Runtime home. All state lives beneath it. Overridable for testing or multi-persona hosts. |
 | `SLAUDE_DB_PATH` | No | `$SLAUDE_HOME/db.sqlite` | Override the sqlite file. Accepts absolute path or path relative to `SLAUDE_HOME`. Use when `SLAUDE_HOME` is a read-only image layer and the DB must live on a separately-mounted volume (e.g. k8s `subPath`). |
 | `SLAUDE_WORKSPACES` | No | `$SLAUDE_HOME/workspaces` | Per-session cwd root. Same absolute/relative semantics as `SLAUDE_DB_PATH`. The sim redirects both under `$SLAUDE_HOME/sim/` so it shares config without mutating prod state. |
+| `SLAUDE_DB` | No | `sqlite` | State store dialect: `sqlite` (file at `SLAUDE_DB_PATH`) or `pg` (Postgres). With `pg` and no `SLAUDE_PG_URL`, an in-process PGLite is used (sim and tests; `SLAUDE_PGLITE_DIR` persists it to disk). Schema for `pg` is applied from `src/db/migrations/*.sql` at boot. |
+| `SLAUDE_PG_URL` | With `SLAUDE_DB=pg` | none | Postgres connection URL (`postgres://user:pass@host:5432/db`). Driver is `Bun.sql`; pool size via `SLAUDE_PG_POOL` (default 10). |
+| `SLAUDE_MASTER_KEY` | For encrypted columns | none | 32 random bytes, base64 (`openssl rand -base64 32`). Keys AES-256-GCM for the `(enc)` Postgres columns (`slack_apps.bot_token`, `signing_secret`, `provider_creds.value`). Not needed while the monolith runs a single Socket Mode app. |
 
 See [Filesystem layout](#filesystem) for every file under `SLAUDE_HOME`.
 
@@ -365,6 +368,9 @@ ANTHROPIC_API_KEY=sk-ant-...
 # --- Home ---
 # SLAUDE_HOME=~/.slaude
 # SLAUDE_DB_PATH=db.sqlite
+# SLAUDE_DB=pg
+# SLAUDE_PG_URL=postgres://slaude:change-me@localhost:5432/slaude
+# SLAUDE_MASTER_KEY=<openssl rand -base64 32>
 # SLAUDE_WORKSPACES=workspaces
 
 # --- Sessions ---
@@ -422,7 +428,7 @@ GRAFANA_API_KEY=
 | `~/.slaude/workspaces/` | Per-session cwd — `workspaces/<team>-<channel>-<thread>[__persona]/`. Each thread gets its own git worktree-like dir. |
 | `~/.slaude/.claude/` | Claude Code config dir (`CLAUDE_CONFIG_DIR`). Holds `installed_plugins.json`, plugin cache, project transcripts (`projects/`). In `/1on1` mode the child is pointed at `$SLAUDE_HOME/oauth/<userId>` for OAuth isolation. |
 | `~/.slaude/personas/` | Multi-persona operator-created directory. Presence means multi-bot mode; each named persona has its own `SOUL.md` and `mcp.json` overlay. |
-| `~/.slaude/db.sqlite` | `bun:sqlite` — `sessions`, `brain`, `soul_overrides`, `kb_ingest_jobs` tables. Override via `SLAUDE_DB_PATH` for PVC `subPath` mounts. |
+| `~/.slaude/db.sqlite` | `bun:sqlite` — `sessions`, `brain`, `soul_overrides`, `kb_ingest_jobs` tables. Override via `SLAUDE_DB_PATH` for PVC `subPath` mounts. Absent when `SLAUDE_DB=pg`; move an existing file with `bun run migrate-sqlite` (idempotent, `--dry-run` to preview). |
 
 ```bash
 ~/.slaude/
