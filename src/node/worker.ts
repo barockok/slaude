@@ -38,6 +38,20 @@ import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Fraction of a job token's lifetime already spent (0..∞; >1 = expired).
+ *  Pure payload parse — the gateway is the verifier; the node only decides
+ *  WHEN to ask for a refresh. null when the token is unparseable. */
+export function tokenAgeFraction(token: string, nowMs: number = Date.now()): number | null {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"));
+    const { iat, exp } = payload as { iat?: number; exp?: number };
+    if (typeof iat !== "number" || typeof exp !== "number" || exp <= iat) return null;
+    return (nowMs / 1000 - iat) / (exp - iat);
+  } catch {
+    return null;
+  }
+}
+
 export interface NodeWorkerOpts {
   /** Default: `<hostname>-<rand>` (spec §6). */
   nodeId?: string;
@@ -50,8 +64,11 @@ export interface NodeWorkerOpts {
   heartbeatSec?: number;
   nodeTtlSec?: number;
   drainSec?: number;
-  /** /healthz + /metrics port. Default env SLAUDE_NODE_PORT; null = no server. */
+  /** /healthz + /metrics port. Default env SLAUDE_NODE_PORT (where 0 also
+   *  disables); explicit null = no server; explicit 0 = ephemeral (tests). */
   port?: number | null;
+  /** How long a BullMQ worker error keeps /healthz unhealthy. Default 30s. */
+  errorWindowMs?: number;
   /** Session-lock knobs (tests shrink them). */
   lock?: { ttlMs?: number; extendEveryMs?: number };
   /** Hard turn deadline in ms. Default: the job-token TTL (max turn duration). */
@@ -61,12 +78,18 @@ export interface NodeWorkerOpts {
   bull?: { lockDuration?: number; stalledInterval?: number; maxStalledCount?: number };
 }
 
+export type NodeWorkerState = "starting" | "ready" | "draining" | "stopped";
+
 export interface NodeWorkerHandle {
   nodeId: string;
   agent: AgentManager;
   store: RestSessionStore;
   /** Sessions this node currently holds warm. */
   warmSessions(): string[];
+  /** Lifecycle state driving /healthz and /readyz. */
+  state(): NodeWorkerState;
+  /** Port the /healthz+/metrics server bound, or null when disabled. */
+  httpPort(): number | null;
   /** Graceful drain + full shutdown. */
   stop(opts?: { drainSec?: number }): Promise<void>;
   /** SIGKILL emulation (tests): sever every Redis connection abruptly — no
@@ -75,6 +98,8 @@ export interface NodeWorkerHandle {
    *  so a surviving worker's stalled checker recovers the claim — exactly the
    *  failure surface a killed pod leaves behind (spec §6 failure matrix). */
   kill(): void;
+  /** TEST SEAM: the command Redis connection (break it to probe /healthz). */
+  __cmd: Redis;
 }
 
 export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWorkerHandle> {
@@ -86,6 +111,14 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   const hbSec = opts.heartbeatSec ?? envHeartbeatSec();
   const drainSecDefault = opts.drainSec ?? nodeDrainSec();
   const turnTimeoutMs = opts.turnTimeoutMs ?? JOB_TOKEN_TTL_SEC * 1000;
+  const errorWindowMs = opts.errorWindowMs ?? 30_000;
+
+  // Lifecycle driving the health endpoints: starting → ready (workers
+  // subscribed) → draining (SIGTERM) → stopped. Probes must pull a draining
+  // node out of rotation, and a node whose queue/Redis plumbing is erroring
+  // must not claim to be healthy.
+  let state: NodeWorkerState = "starting";
+  let lastWorkerError: { at: number; message: string } | null = null;
 
   // Connections: one command conn (registry/locks/streams), one subscriber,
   // one per BullMQ worker (blocking claims must never share).
@@ -135,7 +168,11 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   agent.on("event", (e: AgentEvent) => {
     // Every AgentEvent also lands on the events:<session> stream (spec §4) so
     // the gateway can drive Slack reactions/status and surface errors.
-    void pubsub.appendEvent(e.sessionId, e).catch(() => {});
+    // Exact trim: at MAXLEN 1000 the cost is negligible and it removes the
+    // approximate-trim overshoot window, keeping the gateway follower's gap
+    // exposure to genuinely >1000-event bursts (which the dispatcher covers
+    // via job-completion authority anyway).
+    void pubsub.appendEvent(e.sessionId, e, { exact: true }).catch(() => {});
     if (e.type === "done" && !e.autoEvolve) turnWaiters.get(e.sessionId)?.("done");
     else if (e.type === "error") turnWaiters.get(e.sessionId)?.("error");
   });
@@ -213,9 +250,25 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       metric.nodeTurnsTotal.inc({ result: "skipped" });
       return { skipped: "abort-flag" };
     }
-    store.bindToken(data.sessionId, data.jobToken);
+    // Refresh an aging token at claim: minted at ENQUEUE, but the turn's
+    // deadline starts NOW — a job that sat in the queue would otherwise run
+    // on a mostly-spent (or expired, within the refresh grace) token.
+    let jobToken = data.jobToken;
+    const age = tokenAgeFraction(jobToken);
+    if (age !== null && age > 0.2) {
+      try {
+        jobToken = await client.refreshJobToken(String(job.id), jobToken);
+      } catch (e) {
+        console.warn(`[node] token refresh failed job=${job.id} (continuing with the original):`, e);
+      }
+    }
+    store.bindToken(data.sessionId, jobToken);
     tenants.set(data.sessionId, data.tenantId);
-    void ensureReloadSub(data.tenantId);
+    // Subscribe reload:<tenant> BEFORE any runtime-bundle fetch for this
+    // tenant can happen (the child-env resolver during ensureSession) — a
+    // reload published between fetch and a lazy subscribe would leave a
+    // stale cache with nothing to bust it.
+    await ensureReloadSub(data.tenantId);
 
     const started = Date.now();
     const res = await withSessionLock(
@@ -274,8 +327,17 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     }),
   ];
   for (const w of workers) {
-    w.on("error", (e) => console.error(`[node] worker error:`, e));
+    w.on("error", (e) => {
+      lastWorkerError = { at: Date.now(), message: String((e as Error)?.message ?? e) };
+      console.error(`[node] worker error:`, e);
+    });
   }
+  // Ready once both BullMQ workers have actually subscribed to their queues.
+  void Promise.all(workers.map((w) => w.waitUntilReady()))
+    .then(() => {
+      if (state === "starting") state = "ready";
+    })
+    .catch((e) => console.error(`[node] workers failed to become ready:`, e));
 
   // Heartbeats: node liveness + every warm session; drop registry entries for
   // sessions whose Query the idle TTL closed.
@@ -301,10 +363,23 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   }, hbSec * 1000);
   hbTimer.unref?.();
 
-  // /healthz + /metrics (spec §6).
-  const port = opts.port === undefined ? env.nodePort() : opts.port;
+  // /healthz + /readyz + /metrics (spec §6). Both probes gate on the worker
+  // lifecycle: a draining node must drop out of rotation, and a node whose
+  // BullMQ/Redis plumbing is broken must not report healthy.
+  const workersRunning = () => workers.every((w) => w.isRunning());
+  const redisReady = () => cmd.status === "ready";
+  const recentWorkerError = () => lastWorkerError !== null && Date.now() - lastWorkerError.at < errorWindowMs;
+  const healthBody = () => ({
+    node_id: nodeId,
+    state,
+    sessions_live: agent.liveCount(),
+    redis: cmd.status,
+    workers_running: workersRunning(),
+    ...(lastWorkerError ? { last_worker_error: lastWorkerError } : {}),
+  });
+  const port = opts.port === undefined ? (env.nodePort() || null) : opts.port;
   const http =
-    port === null || port === 0
+    port === null
       ? null
       : Bun.serve({
           port,
@@ -312,7 +387,26 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           fetch: async (req) => {
             const path = new URL(req.url).pathname;
             if (path === "/healthz") {
-              return Response.json({ status: "ok", node_id: nodeId, sessions_live: agent.liveCount() });
+              const healthy = state === "ready" && redisReady() && workersRunning() && !recentWorkerError();
+              return Response.json(
+                { status: healthy ? "ok" : state === "draining" || state === "stopped" ? "draining" : "unhealthy", ...healthBody() },
+                { status: healthy ? 200 : 503 },
+              );
+            }
+            if (path === "/readyz") {
+              // Active check: workers subscribed AND Redis answers a PING now.
+              if (state !== "ready" || !workersRunning()) {
+                return Response.json({ status: "unready", ...healthBody() }, { status: 503 });
+              }
+              try {
+                await cmd.ping();
+              } catch (e) {
+                return Response.json(
+                  { status: "unready", ping_error: String((e as Error)?.message ?? e), ...healthBody() },
+                  { status: 503 },
+                );
+              }
+              return Response.json({ status: "ready", ...healthBody() });
             }
             if (path === "/metrics") {
               return new Response(metrics.render(), {
@@ -329,6 +423,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   async function stop(o: { drainSec?: number } = {}): Promise<void> {
     if (stopped) return;
     stopped = true;
+    state = "draining";
     const grace = (o.drainSec ?? drainSecDefault) * 1000;
     console.log(`[node] ${nodeId} draining (grace ${grace}ms)`);
     clearInterval(hbTimer);
@@ -356,6 +451,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         c.disconnect();
       }
     }
+    state = "stopped";
     console.log(`[node] ${nodeId} stopped`);
   }
 
@@ -380,7 +476,10 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     agent,
     store,
     warmSessions: () => [...warm],
+    state: () => state,
+    httpPort: () => http?.port ?? null,
     stop,
     kill,
+    __cmd: cmd,
   };
 }

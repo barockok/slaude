@@ -115,8 +115,17 @@ export function makeReaper(opts: ReaperOpts) {
     /**
      * Rescue jobs unclaimed on a per-node queue for longer than the threshold
      * (default 5s): move them to the shared queue. Returns the count moved.
+     *
+     * Guarded on the node's HEARTBEAT, not just the job's age: a busy-but-
+     * alive node keeps its warm queue (moving its jobs would churn sessions
+     * onto cold nodes for nothing). Jobs move only when the node's heartbeat
+     * key is gone or its last beat is older than the heartbeat TTL — i.e. the
+     * worker process (whose heartbeat loop and claim loop live and die
+     * together) has actually stopped servicing the queue.
      */
     async moveStalled(nodeId: string, thresholdMs: number = defaultThreshold): Promise<number> {
+      const lastBeat = await registry.nodeLastBeat(nodeId);
+      if (lastBeat !== null && Date.now() - lastBeat <= registry.nodeTtlMs) return 0;
       const q = turns.queue(nodeTurnsQueue(nodeId));
       const now = Date.now();
       let moved = 0;

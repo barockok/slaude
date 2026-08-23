@@ -190,6 +190,17 @@ export class NodeClient {
     return this.#json<ToolResult>(res);
   }
 
+  /**
+   * Exchange a job's (possibly aging or freshly-expired) token for a new one
+   * with identical claims and a full TTL. The original token authenticates
+   * the exchange; the gateway enforces the grace window and job binding.
+   */
+  async refreshJobToken(jobId: string, currentToken: string): Promise<string> {
+    const res = await this.request(`/v1/jobs/${jobId}/token-refresh`, { method: "POST", jobToken: currentToken });
+    const body = await this.#json<{ jobToken: string }>(res);
+    return body.jobToken;
+  }
+
   async ackJob(jobId: string, detail: Record<string, unknown> = {}): Promise<void> {
     await this.request(`/v1/jobs/${jobId}/ack`, { method: "POST", body: detail }).catch(() => {});
   }

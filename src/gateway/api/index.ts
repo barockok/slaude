@@ -24,7 +24,7 @@ import { requireBearer, requireJobToken } from "./auth";
 import { handleSession } from "./sessions";
 import { handleTenantRuntime } from "./tenants";
 import { handlePending, type PendingOptions } from "./pending";
-import { handleJobEvent } from "./jobs";
+import { handleJobEvent, handleTokenRefresh } from "./jobs";
 import { executeToolCall } from "./tools";
 import type { ToolPlaneDeps } from "./tools/deps";
 import { defaultPendingSource, type PendingSource } from "./pending-source";
@@ -85,6 +85,13 @@ export function createV1Api(opts: V1Options): V1Api {
       if (seg.length === 4 && seg[1] === "jobs" && (seg[3] === "ack" || seg[3] === "fail")) {
         if (req.method !== "POST") return methodNotAllowed();
         return await handleJobEvent(req, seg[2]!, seg[3] as "ack" | "fail");
+      }
+
+      // /v1/jobs/:id/token-refresh — auth is the ORIGINAL job token (expiry
+      // forgiven within grace), checked inside the handler, not requireJobToken.
+      if (seg.length === 4 && seg[1] === "jobs" && seg[3] === "token-refresh") {
+        if (req.method !== "POST") return methodNotAllowed();
+        return await handleTokenRefresh(req, seg[2]!);
       }
 
       // /v1/tools/:server/:tool

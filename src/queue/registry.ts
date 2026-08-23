@@ -130,6 +130,19 @@ export function makeRegistry(opts: RegistryOpts) {
       return (await redis.exists(keys.node(node))) === 1;
     },
 
+    /** Last node heartbeat (ms), or null when the key is gone (dead/expired).
+     *  The value is the beat timestamp, so staleness is observable even while
+     *  the key's TTL hasn't lapsed yet. */
+    async nodeLastBeat(node: string): Promise<number | null> {
+      const v = await redis.get(keys.node(node));
+      if (v === null) return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    },
+
+    /** The node-heartbeat TTL this registry was built with (ms). */
+    nodeTtlMs,
+
     /** Currently-alive node ids (heartbeat key present). */
     async listNodes(): Promise<string[]> {
       return (await scanKeys(redis, keys.nodePattern())).map(nodeIdOf);

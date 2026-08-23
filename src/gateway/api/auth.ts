@@ -27,6 +27,9 @@ export interface JobClaims {
   thread: string;
   initiator: string;
   scope: string;
+  /** BullMQ job id this token was minted for. Binds token-refresh to its
+   *  job; optional for tokens minted outside the queue path (tests, tools). */
+  job?: string;
   /** Unix seconds. */
   exp: number;
   iat?: number;
@@ -74,10 +77,12 @@ export type JobVerifyResult =
   | { ok: true; claims: JobClaims }
   | { ok: false; reason: "missing" | "malformed" | "bad_signature" | "expired" | "bad_claims" | "unconfigured" };
 
-/** Verify a job token. HS256 is enforced regardless of the header's `alg`. */
+/** Verify a job token. HS256 is enforced regardless of the header's `alg`.
+ *  `graceSec` (token-refresh only) accepts a token expired by at most that
+ *  many seconds — the signature and claim checks still apply in full. */
 export function verifyJobToken(
   token: string | null | undefined,
-  opts: { secret?: string; now?: number } = {},
+  opts: { secret?: string; now?: number; graceSec?: number } = {},
 ): JobVerifyResult {
   const secret = opts.secret ?? env.jobSecret();
   if (!secret) return { ok: false, reason: "unconfigured" };
@@ -95,7 +100,8 @@ export function verifyJobToken(
     return { ok: false, reason: "malformed" };
   }
   const nowSec = Math.floor((opts.now ?? Date.now()) / 1000);
-  if (typeof claims.exp !== "number" || claims.exp <= nowSec) return { ok: false, reason: "expired" };
+  const grace = Math.max(0, opts.graceSec ?? 0);
+  if (typeof claims.exp !== "number" || claims.exp + grace <= nowSec) return { ok: false, reason: "expired" };
   for (const k of ["tenant", "persona", "session", "team", "channel", "thread", "initiator", "scope"] as const) {
     if (typeof claims[k] !== "string") return { ok: false, reason: "bad_claims" };
   }
