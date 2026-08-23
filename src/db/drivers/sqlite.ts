@@ -1,9 +1,11 @@
 /**
  * `bun:sqlite` driver. Executes synchronously and returns settled promises so
  * the historical sqlite behaviour (callers that never awaited) keeps working.
- * Owns the legacy incremental schema bootstrap: the sqlite path is frozen in
- * its current shape — new tables land only in `src/db/migrations/` for
- * Postgres. A sqlite install moves forward via `bun run migrate-sqlite`.
+ * Owns the legacy incremental schema bootstrap. New tables land in
+ * `src/db/migrations/` for Postgres and are mirrored here only when the
+ * runtime needs them on both dialects (pending_gates, seen_events — the M2
+ * durable gate state). A sqlite install moves forward via
+ * `bun run migrate-sqlite`.
  */
 import { Database } from "bun:sqlite";
 import { ensureHome } from "../../config/home";
@@ -143,6 +145,30 @@ CREATE TABLE IF NOT EXISTS memory_facts (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_facts_session ON memory_facts (session_id);
 CREATE INDEX IF NOT EXISTS idx_memory_facts_scope ON memory_facts (scope);
+
+CREATE TABLE IF NOT EXISTS pending_gates (
+  id          TEXT PRIMARY KEY,
+  session_id  TEXT NOT NULL,
+  kind        TEXT NOT NULL CHECK (kind IN ('perm', 'approval', 'mcp_connect')),
+  payload     TEXT NOT NULL DEFAULT '{}',
+  status      TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'approved', 'denied', 'expired', 'cancelled')),
+  resolved_by TEXT,
+  resolved_at INTEGER,
+  expires_at  INTEGER,
+  created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_gates_session ON pending_gates (session_id);
+CREATE INDEX IF NOT EXISTS idx_pending_gates_open
+  ON pending_gates (expires_at) WHERE status = 'pending';
+
+CREATE TABLE IF NOT EXISTS seen_events (
+  event_id TEXT PRIMARY KEY,
+  ts       INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_seen_events_ts ON seen_events (ts);
 `;
 
 /** Create tables + apply the incremental column migrations on an existing sqlite file. */

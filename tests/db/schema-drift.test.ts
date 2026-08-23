@@ -16,10 +16,13 @@ const PG_ONLY_TABLES = new Set([
   "slack_apps",
   "personas",
   "provider_creds",
-  "pending_gates",
-  "seen_events",
   "schema_migrations",
 ]);
+
+// Shared tables that intentionally carry no tenant_id on Postgres: dedup and
+// gate rows are keyed by globally-unique ids (Slack event ids, toolUseIDs)
+// and are purged/resolved too fast to need tenant scoping (spec §4).
+const NO_TENANT_TABLES = new Set(["pending_gates", "seen_events"]);
 
 // Tables that exist only on sqlite (legacy; dropped from the pg schema).
 const SQLITE_ONLY_TABLES = new Set(["skill_usage"]);
@@ -71,8 +74,9 @@ describe("schema drift: sqlite bootstrap vs pg migrations", () => {
         // Label mismatches with the table name so the failure is readable.
         expect({ table, columns: pgShared }).toEqual({ table, columns: liteCols });
         // The allowlisted pg-only column really is there (except tables where
-        // it genuinely does not apply — none today).
-        expect(pgCols).toContain("tenant_id");
+        // it genuinely does not apply — see NO_TENANT_TABLES).
+        if (!NO_TENANT_TABLES.has(table)) expect(pgCols).toContain("tenant_id");
+        else expect(pgCols).not.toContain("tenant_id");
       }
     } finally {
       await lite.close();
