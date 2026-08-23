@@ -22,6 +22,7 @@
     "link": "chmod +x bin/slaude.ts && ln -sf \"$PWD/bin/slaude.ts\" \"$HOME/.bun/bin/slaude\" && echo linked: $HOME/.bun/bin/slaude",
     "dev": "bun --watch src/server.ts",
     "start": "bun src/server.ts",
+    "worker": "bun src/node/main.ts",
     "sim": "bun src/gateway/sim/cli.ts",
     "typecheck": "tsc --noEmit",
     "manifest": "bun src/cli/manifest.ts",

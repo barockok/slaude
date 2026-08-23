@@ -177,6 +177,10 @@ export class AgentManager extends EventEmitter {
   /** Session persistence. Defaults to the db repo; node workers inject the
    *  REST implementation (spec §6) via setSessionStore. */
   #store: SessionStore = dbSessionStore;
+  /** Optional per-session child-env overlay (node runtime bundle creds). */
+  #childEnvResolver:
+    | ((sessionId: string) => Promise<Record<string, string | undefined> | undefined> | Record<string, string | undefined> | undefined)
+    | undefined;
   #resolver: PermissionResolver | undefined;
   #mcpResolver: McpResolver | undefined;
   #stopGuard: StopGuard | undefined;
@@ -216,6 +220,18 @@ export class AgentManager extends EventEmitter {
    *  transport seams; unset = the default db repo (zero behavior change). */
   setSessionStore(store: SessionStore | undefined) {
     this.#store = store ?? dbSessionStore;
+  }
+
+  /** Install a per-session child-env overlay (spec §6: node workers source
+   *  provider credentials from the tenant runtime bundle, not process env).
+   *  Resolved at session boot, merged OVER the process-env-derived provider
+   *  vars; scrubChildEnv still applies afterwards. Unset = no change. */
+  setChildEnvResolver(
+    resolver:
+      | ((sessionId: string) => Promise<Record<string, string | undefined> | undefined> | Record<string, string | undefined> | undefined)
+      | undefined,
+  ) {
+    this.#childEnvResolver = resolver;
   }
 
   /** Install a transport-level permission resolver (e.g. Slack approval gate). */
@@ -478,6 +494,16 @@ export class AgentManager extends EventEmitter {
     providerEnv.DISABLE_BUG_COMMAND = "1";
     providerEnv.DISABLE_ERROR_REPORTING = "1";
     providerEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+    // Node runtime (spec §6): overlay wins over process-env-derived provider
+    // vars — a node's own env carries no tenant credentials, the runtime
+    // bundle does. No resolver installed → no change (mono/gateway).
+    if (this.#childEnvResolver) {
+      try {
+        Object.assign(providerEnv, (await this.#childEnvResolver(sessionId)) ?? {});
+      } catch (e) {
+        console.error(`[mgr] child-env resolver failed session=${sessionId}:`, e);
+      }
+    }
     // /1on1 privacy: when this session's thread is locked, point the claude-code
     // child at the initiator's isolated config home so OAuth-authenticated MCP
     // servers (whose tokens the CLI persists under CLAUDE_CONFIG_DIR, beyond the

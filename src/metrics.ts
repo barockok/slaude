@@ -147,4 +147,14 @@ export const m = {
   httpRequestsTotal: metrics.counter("slaude_http_requests_total", "Slack ingress HTTP responses (/slack/*), labeled by route and status."),
   v1JobEventsTotal: metrics.counter("slaude_v1_job_events_total", "Node job telemetry received on /v1/jobs/:id (ack|fail), labeled by event."),
   v1ToolCallsTotal: metrics.counter("slaude_v1_tool_calls_total", "REST tool-plane invocations on /v1/tools/<server>/<tool>, labeled by server + tool."),
+  // Node runtime (spec §6). The registry has no histogram type, so duration
+  // is exported as a running sum; rate(sum)/rate(count) gives the mean.
+  nodeSessionsLive: metrics.gauge("slaude_node_sessions_live", "Warm SDK Query sessions held by this node."),
+  nodeTurnsTotal: metrics.counter("slaude_node_turns_total", "Turn jobs processed by this node, labeled by result (done|error|skipped|requeued)."),
+  nodeTurnDurationSum: metrics.counter("slaude_node_turn_duration_seconds_sum", "Total seconds spent running turns on this node (pair with slaude_node_turns_total for the mean)."),
+  nodeClaimLatency: metrics.gauge("slaude_node_queue_claim_latency_seconds", "Most recent enqueue→claim latency observed by this node."),
+  // Gateway queue-side (spec §6), set by the reaper leader loop.
+  queueDepth: metrics.gauge("slaude_queue_depth", "Turn jobs waiting or delayed, labeled by queue."),
+  nodesAlive: metrics.gauge("slaude_nodes_alive", "Node heartbeat keys currently live."),
+  sessionsWarm: metrics.gauge("slaude_sessions_warm", "Sessions registered warm on some node."),
 };
