@@ -36,6 +36,8 @@ import { loadKbs } from "../../knowledge/loader";
 import { resolveUserName } from "../slack/users";
 import { downloadAttachments, type SlackFile } from "../slack/attachments";
 import * as Sessions from "../../db/sessions";
+import * as SeenEvents from "../../db/seen-events";
+import * as PendingGates from "../../db/pending-gates";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { loadExternalMcp, privateOverrides } from "./external-mcp";
 import { randomBytes } from "node:crypto";
@@ -298,8 +300,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // due job through onExecute, which registers into `routes`. Starting earlier would hit
   // a temporal-dead-zone ReferenceError when a cron job is already due at boot.
   cronScheduler.start();
-  // Dedup events by (channel, ts).
-  const seenEvents = new Set<string>();
 
   // MCP resolver — first-call-per-session wires the slack MCP server bound to
   // the session's SlackContext object. We mutate fields on the same context
@@ -923,14 +923,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       return;
     }
 
-    // Dedup
+    // Dedup — durable atomic claim in seen_events by (channel, ts), so a Slack
+    // redelivery is dropped even across a restart or by a sibling replica.
     const dedupKey = `${channelId}:${eventTs}`;
-    if (seenEvents.has(dedupKey)) {
+    if (!(await SeenEvents.tryInsert(dedupKey))) {
       console.log(`[slack-rx] drop ch=${channelId} ts=${eventTs} — dedup (already seen)`);
       metric.slackDropsTotal.inc({ reason: "dedup" });
       return;
     }
-    seenEvents.add(dedupKey);
+    // Rows only matter for Slack's retry window; prune stale ones as we go.
+    void SeenEvents.maybePurge();
 
     const isDM = channelType === "im";
     const threadTs: string = event.thread_ts || (isDM ? eventTs : eventTs);
@@ -1852,7 +1854,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // app_mention is a guaranteed delivery path even if message.channels event
   // subscription isn't enabled. Engage the thread, then defer to handleMessage.
-  // (handleMessage's seenEvents dedup prevents double-handling when the same
+  // (handleMessage's seen_events dedup prevents double-handling when the same
   //  ts also arrives via the message event.)
   t.event("app_mention", async (args: any) => {
     const e: any = args.event;
