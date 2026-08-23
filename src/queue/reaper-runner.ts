@@ -66,6 +66,7 @@ export function startReaperLeader(opts: ReaperRunnerOpts): LeaderHandle {
           );
           metric.nodesAlive.set(alive.length);
           metric.sessionsWarm.set((await scanKeys(opts.redis, keys.sessPattern())).length);
+          metric.reaperLastRun.set(Math.floor(Date.now() / 1000));
         } catch (e) {
           onError(e);
         }

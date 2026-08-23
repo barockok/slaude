@@ -23,6 +23,7 @@ least `role=gateway|node` per Deployment so the series below are separable.
 | `slaude_queue_depth` | gauge | `queue` | Turn jobs waiting + delayed + prioritized on the shared queue † |
 | `slaude_nodes_alive` | gauge | — | Live node heartbeat keys † |
 | `slaude_sessions_warm` | gauge | — | Sessions registered warm on some node † |
+| `slaude_reaper_last_run_timestamp_seconds` | gauge | — | Unix time of the last completed reaper pass † |
 | `slaude_v1_tool_calls_total` | counter | `server`, `tool` | REST tool-plane invocations from nodes |
 | `slaude_v1_job_events_total` | counter | `event` | Node job telemetry (`ack`\|`fail`) |
 
@@ -77,11 +78,22 @@ histogram_quantile(0.95,
 ```
 
 **Reaper leader missing** — the leader gauges stop being exported entirely
-(every gateway replica down, or leadership stuck). Dead nodes then go
-unreaped and their queued jobs strand until it returns.
+(every gateway replica down, or leadership stuck). This is also the
+**per-node queue blind spot**: `turns:<nodeId>` queues are not covered by
+`slaude_queue_depth`, and only the reaper rescues their stalled/orphaned
+jobs — with no leader, a dead node's backlog strands invisibly until the
+leader returns. Alert on both total absence and staleness (an ex-leader
+keeps exporting its last values, so `absent()` alone can stay silent while
+no replica is actually reaping):
 
 ```promql
 absent(slaude_nodes_alive)
+```
+
+```promql
+# Staleness: no replica completed a reaper pass recently. Catches the case
+# absent() misses — an ex-leader still scraping its stale last values.
+time() - max(slaude_reaper_last_run_timestamp_seconds) > 120
 ```
 
 **Turn error rate** — provider failures, lock losses, resume misses.
