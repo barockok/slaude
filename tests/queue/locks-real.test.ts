@@ -86,6 +86,66 @@ describe.skipIf(!realEnabled)("queue/locks against real Redis", () => {
     expect(await redis.get(keys.sessionLock("s-long"))).toBeNull();
   });
 
+  test("TTL lapse under a stalled fn: signal aborts, second owner runs — dual-run is never silent", async () => {
+    await ready;
+    const events: string[] = [];
+    // TTL 250ms, extender deliberately slower than the TTL — models a node
+    // whose event loop stalled (GC pause, blocked I/O) long enough for the
+    // lock to expire out from under it.
+    const a = locks.withSessionLock(
+      "s-esc",
+      "owner-a",
+      async (signal) => {
+        const aborted = new Promise<void>((r) =>
+          signal.addEventListener("abort", () => {
+            events.push("a-abort");
+            r();
+          }),
+        );
+        await sleep(350); // stall past the TTL — the lock is now expired
+        // second owner acquires the lapsed lock and runs while fn A is live…
+        const b = await locks.withSessionLock(
+          "s-esc",
+          "owner-b",
+          async () => {
+            events.push("b-ran");
+            return "b";
+          },
+          { redis, keys, ttlMs: 5000 },
+        );
+        expect(b).toBe("b");
+        // …but A is TOLD: the extender's next compare-owner extend fails and
+        // aborts A's signal within one extendEveryMs of the loss.
+        await aborted;
+        events.push("a-end");
+        return "a";
+      },
+      { redis, keys, ttlMs: 250, extendEveryMs: 450 },
+    );
+    expect(await a).toBe("a");
+    // Timeline: the overlap happened, and the abort fired before A carried on
+    // — the dual-run window exists (bounded by extendEveryMs) but is never
+    // silent, so P6 can abort the in-flight turn.
+    expect(events).toEqual(["b-ran", "a-abort", "a-end"]);
+    // A's owner-checked finally-release must not have clobbered anything
+    // (B released its own lock already; the key is simply gone).
+    expect(await redis.get(keys.sessionLock("s-esc"))).toBeNull();
+  });
+
+  test("signal stays quiet while the extender keeps the lock", async () => {
+    await ready;
+    const r = await locks.withSessionLock(
+      "s-quiet",
+      "owner-a",
+      async (signal) => {
+        await sleep(700); // several extend cycles beyond the raw TTL
+        return signal.aborted;
+      },
+      { redis, keys, ttlMs: 200, extendEveryMs: 80 },
+    );
+    expect(r).toBe(false);
+  });
+
   test("release does not clobber a lock the extender already lost", async () => {
     await ready;
     // ttl tiny, extender far too slow → the lock lapses mid-fn and another

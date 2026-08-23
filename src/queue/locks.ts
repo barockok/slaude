@@ -54,28 +54,42 @@ export interface SessionLockOpts {
  * Run `fn` under `lock:session:<id>`. If the lock is currently held by a
  * different owner, resolves to HELD_BY_OTHER without running fn (the caller
  * re-queues the job with a short delay). While fn runs, a background extender
- * re-arms the TTL so a long turn never loses its lock; the extender is
- * compare-owner, so if the lock is somehow lost it silently stops extending
- * rather than stealing it back.
+ * re-arms the TTL so a long turn never loses its lock.
+ *
+ * Lost-lock escape (mirrors leaderLoop's demote): the extender is
+ * compare-owner, so a failed extend means the lock expired or changed hands —
+ * another node may already be running this session. The extender then stops
+ * and aborts the signal passed to fn; detection is bounded by extendEveryMs.
+ * fn MUST treat the abort as "stop touching the session now" (P6 wires it to
+ * agent.abort). The finally-release stays owner-checked, so it can never
+ * clobber the new holder's lock.
  */
 export async function withSessionLock<T>(
   sessionId: string,
   ownerId: string,
-  fn: () => Promise<T>,
+  fn: (signal: AbortSignal) => Promise<T>,
   opts: SessionLockOpts,
 ): Promise<T | typeof HELD_BY_OTHER> {
   const keys = opts.keys ?? makeKeys();
   const key = keys.sessionLock(sessionId);
   const ttlMs = opts.ttlMs ?? 600_000;
   if (!(await acquireLock(opts.redis, key, ownerId, ttlMs))) return HELD_BY_OTHER;
+  const ac = new AbortController();
   const extender = setInterval(() => {
-    extendLock(opts.redis, key, ownerId, ttlMs).catch(() => {
-      /* transient — TTL still covers us until the next attempt */
-    });
+    void (async () => {
+      try {
+        if (!(await extendLock(opts.redis, key, ownerId, ttlMs))) {
+          clearInterval(extender);
+          ac.abort();
+        }
+      } catch {
+        /* transient — TTL still covers us until the next attempt */
+      }
+    })();
   }, opts.extendEveryMs ?? 60_000);
   extender.unref?.();
   try {
-    return await fn();
+    return await fn(ac.signal);
   } finally {
     clearInterval(extender);
     await releaseLock(opts.redis, key, ownerId).catch(() => {
