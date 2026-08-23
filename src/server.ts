@@ -9,10 +9,20 @@ import { sharedLoopback } from "./agent/mcp-oauth/shared-loopback";
 import { verifyState } from "./agent/mcp-oauth/state";
 import { env } from "./config/env";
 import { loadPersonaRegistry, setPersonaRegistry } from "./persona/registry";
+import { getDb } from "./db/client";
+import * as SoulOverrides from "./db/soul-overrides";
 
 async function main() {
   ensureHome();
   seedBundledSkills();
+
+  // Open the DB first: on Postgres this applies pending migrations, and a
+  // bad SLAUDE_PG_URL fails the boot here instead of on the first message.
+  // Priming the soul-overrides cache keeps the synchronous gate path
+  // (soulData) correct from the first inbound event.
+  const db = await getDb();
+  console.log(`[db] ${db.dialect} (${db.driver}) ready`);
+  await SoulOverrides.refresh();
 
   // Warm the structured-soul cache before sessions start. Best-effort: the
   // extractor falls back to regex parsing internally on any failure, so
