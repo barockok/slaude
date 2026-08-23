@@ -41,6 +41,7 @@ COPY src ./src
 # missing slug into $SLAUDE_HOME/skills on boot — robust against a mounted PVC
 # shadowing the baked-in /data/.slaude/skills below.
 COPY skills ./skills
+COPY scripts ./scripts
 
 # Baked-in dependency artifacts (plugins, skills, knowledge bases).
 # Operator-authored files (slaude.json, slaude.lock, mcp.json, SOUL.md)
