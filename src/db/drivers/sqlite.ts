@@ -156,7 +156,8 @@ CREATE TABLE IF NOT EXISTS pending_gates (
   resolved_by TEXT,
   resolved_at INTEGER,
   expires_at  INTEGER,
-  created_at  INTEGER NOT NULL
+  created_at  INTEGER NOT NULL,
+  instance_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_pending_gates_session ON pending_gates (session_id);
@@ -285,6 +286,14 @@ export function bootstrapSqliteSchema(db: Database): void {
   // Migration: add pause lifecycle state. `active` remains the soft-delete bit;
   // paused jobs stay listed but don't fire on schedule.
   ensureCronPauseColumn(db);
+
+  // Migration: stamp pending gates with the minting process's instance id
+  // (mirrors pg migration 0006) so a replica can tell its own orphans from a
+  // live sibling's rows.
+  const gateCols = db.query(`PRAGMA table_info(pending_gates)`).all() as Array<{ name: string }>;
+  if (!gateCols.some((c) => c.name === "instance_id")) {
+    db.run(`ALTER TABLE pending_gates ADD COLUMN instance_id TEXT`);
+  }
 }
 
 class SqliteClient implements DbClient {

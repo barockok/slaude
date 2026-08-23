@@ -14,6 +14,16 @@ import { randomUUID } from "node:crypto";
 export type GateKind = "perm" | "approval" | "mcp_connect";
 export type GateStatus = "pending" | "approved" | "denied" | "expired" | "cancelled";
 
+/**
+ * This process's boot-time identity, stamped on every row it mints. A gate
+ * whose promise waiter lives in-process can only be woken by this process; a
+ * replica must therefore never click-cancel a pending row minted by a DIFFERENT
+ * instance (the sibling may be alive and waiting) — foreign rows drain via
+ * expires_at, and clicks on them are answered "pending on another replica"
+ * until the long-poll plane (M4) makes cross-replica resolution live.
+ */
+export const INSTANCE_ID = randomUUID();
+
 export type PendingGate = {
   id: string;
   sessionId: string;
@@ -24,6 +34,8 @@ export type PendingGate = {
   resolvedAt: number | null;
   expiresAt: number | null;
   createdAt: number;
+  /** Boot-time id of the process that minted the row; null on pre-upgrade rows. */
+  instanceId: string | null;
 };
 
 export async function create(args: {
@@ -36,9 +48,9 @@ export async function create(args: {
 }): Promise<PendingGate> {
   const id = args.id ?? randomUUID();
   await db.run(
-    `INSERT INTO pending_gates (id, session_id, kind, payload, status, expires_at, created_at)
-     VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
-    [id, args.sessionId, args.kind, JSON.stringify(args.payload ?? {}), args.expiresAt ?? null, Date.now()],
+    `INSERT INTO pending_gates (id, session_id, kind, payload, status, expires_at, created_at, instance_id)
+     VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)`,
+    [id, args.sessionId, args.kind, JSON.stringify(args.payload ?? {}), args.expiresAt ?? null, Date.now(), INSTANCE_ID],
   );
   return (await get(id))!;
 }
@@ -81,6 +93,20 @@ export async function sweepExpired(now: number = Date.now()): Promise<PendingGat
   return rows.map(mapRow);
 }
 
+/** Delete settled rows past their audit horizon so the table stays bounded.
+ *  Pending rows are never touched — they settle via resolve/sweepExpired. */
+export async function purgeSettledOlderThan(
+  maxAgeMs: number = 24 * 60 * 60 * 1000,
+  now: number = Date.now(),
+): Promise<number> {
+  const r = await db.run(
+    `DELETE FROM pending_gates
+     WHERE status != 'pending' AND COALESCE(resolved_at, created_at) < ?`,
+    [now - maxAgeMs],
+  );
+  return r.changes;
+}
+
 function mapRow(row: any): PendingGate {
   return {
     id: row.id,
@@ -92,6 +118,7 @@ function mapRow(row: any): PendingGate {
     resolvedAt: row.resolved_at ?? null,
     expiresAt: row.expires_at ?? null,
     createdAt: row.created_at,
+    instanceId: row.instance_id ?? null,
   };
 }
 

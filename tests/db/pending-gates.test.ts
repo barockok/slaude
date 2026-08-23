@@ -25,6 +25,8 @@ describe("pending-gates repo", () => {
       expiresAt: null,
     });
     expect(typeof row.createdAt).toBe("number");
+    // Rows carry the minting process's boot-time identity.
+    expect(row.instanceId).toBe(PendingGates.INSTANCE_ID);
     expect(await PendingGates.get("tu_1")).toEqual(row);
     expect(await PendingGates.get("missing")).toBeNull();
   });
@@ -76,6 +78,26 @@ describe("pending-gates repo", () => {
     expect((await PendingGates.get("done"))!.status).toBe("approved");
     // Expired row can no longer be resolved by a late click.
     expect(await PendingGates.resolve("due", "approved", "U_LATE")).toBeNull();
+  });
+
+  test("purgeSettledOlderThan drops only old settled rows", async () => {
+    const now = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+    await PendingGates.create({ id: "old_done", kind: "perm", sessionId: "S1" });
+    await PendingGates.resolve("old_done", "approved", "U1");
+    await PendingGates.create({ id: "new_done", kind: "perm", sessionId: "S1" });
+    await PendingGates.resolve("new_done", "denied", "U1");
+    await PendingGates.create({ id: "still_open", kind: "perm", sessionId: "S1" });
+    // Age the settled row past the horizon.
+    await db.run(`UPDATE pending_gates SET resolved_at = ? WHERE id = 'old_done'`, [now - day - 1000]);
+
+    expect(await PendingGates.purgeSettledOlderThan(day, now)).toBe(1);
+    expect(await PendingGates.get("old_done")).toBeNull();
+    expect((await PendingGates.get("new_done"))!.status).toBe("denied");
+    // Pending rows are never purged, no matter how old.
+    await db.run(`UPDATE pending_gates SET created_at = ? WHERE id = 'still_open'`, [now - 30 * day]);
+    expect(await PendingGates.purgeSettledOlderThan(day, now)).toBe(0);
+    expect((await PendingGates.get("still_open"))!.status).toBe("pending");
   });
 
   test("unparseable payload maps to an empty object", async () => {
