@@ -33,6 +33,29 @@ describe("db/client helpers", () => {
     expect(toPositional("SELECT '?' AS q, ? AS p")).toBe("SELECT '?' AS q, $1 AS p");
     expect(toPositional("no params")).toBe("no params");
   });
+
+  test("toPositional: '' escapes, quoted identifiers, comments, dollar quotes", () => {
+    // '' escaped quote inside a string — the ? after it is still inside
+    expect(toPositional("SELECT 'it''s a ?' , ?")).toBe("SELECT 'it''s a ?' , $1");
+    // double-quoted identifier containing ? and ""
+    expect(toPositional('SELECT "a?b", "we""ird?" , ? FROM t')).toBe('SELECT "a?b", "we""ird?" , $1 FROM t');
+    // line comment: ? inside is untouched, params after the newline still count
+    expect(toPositional("SELECT ? -- what?\nFROM t WHERE x = ?")).toBe("SELECT $1 -- what?\nFROM t WHERE x = $2");
+    // unterminated line comment swallows to end
+    expect(toPositional("SELECT 1 -- trailing ?")).toBe("SELECT 1 -- trailing ?");
+    // block comment, including multi-line
+    expect(toPositional("SELECT ? /* a ? b */ , ?")).toBe("SELECT $1 /* a ? b */ , $2");
+    expect(toPositional("/* line1 ?\n line2 ? */ SELECT ?")).toBe("/* line1 ?\n line2 ? */ SELECT $1");
+    expect(toPositional("SELECT 1 /* unterminated ?")).toBe("SELECT 1 /* unterminated ?");
+    // dollar-quoted strings, anonymous and tagged
+    expect(toPositional("SELECT $$who?$$ , ?")).toBe("SELECT $$who?$$ , $1");
+    expect(toPositional("SELECT $fn$body ? $ $fn$ , ?")).toBe("SELECT $fn$body ? $ $fn$ , $1");
+    expect(toPositional("SELECT $tag$unterminated ?")).toBe("SELECT $tag$unterminated ?");
+    // a lone $ (e.g. positional param already present) is left alone
+    expect(toPositional("SELECT $1 , ?")).toBe("SELECT $1 , $1");
+    // adjacent strings
+    expect(toPositional("SELECT '?''?' , ?")).toBe("SELECT '?''?' , $1");
+  });
   test("normalizeRow converts bigint to number", () => {
     expect(normalizeRow<Record<string, unknown>>({ a: 1n, b: "x", c: null })).toEqual({ a: 1, b: "x", c: null });
   });

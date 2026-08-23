@@ -57,20 +57,95 @@ export function resolveDbConfig(env: NodeJS.ProcessEnv = process.env): DbConfig 
   return { dialect: "pg", driver: "pglite", dataDir: dataDir || undefined };
 }
 
-/** Rewrite `?` placeholders to `$1..$n` (skips `?` inside single-quoted literals). */
+/**
+ * Rewrite `?` placeholders to `$1..$n`.
+ *
+ * The scanner skips `?` inside single-quoted strings (`''` escapes included),
+ * double-quoted identifiers, dollar-quoted strings (`$$..$$`, `$tag$..$tag$`),
+ * line comments (`-- ..\n`) and block comments (multi-line safe; nesting not
+ * supported). Constraint for repo SQL: a bare `?` outside those regions is
+ * ALWAYS a placeholder, so the JSONB operators `?`, `?|`, `?&` must not be
+ * used — write `jsonb_exists(col, key)` / `jsonb_exists_any` /
+ * `jsonb_exists_all` instead.
+ */
 export function toPositional(sql: string): string {
   let out = "";
   let n = 0;
-  let inStr = false;
-  for (let i = 0; i < sql.length; i++) {
+  let i = 0;
+  const len = sql.length;
+  while (i < len) {
     const c = sql[i]!;
-    if (c === "'") inStr = !inStr;
-    if (c === "?" && !inStr) {
+    const next = i + 1 < len ? sql[i + 1] : "";
+    if (c === "'") {
+      // single-quoted string; '' is an escaped quote inside it
+      out += c;
+      i++;
+      while (i < len) {
+        out += sql[i];
+        if (sql[i] === "'") {
+          if (sql[i + 1] === "'") {
+            out += "'";
+            i += 2;
+            continue;
+          }
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (c === '"') {
+      // double-quoted identifier; "" is an escaped quote inside it
+      out += c;
+      i++;
+      while (i < len) {
+        out += sql[i];
+        if (sql[i] === '"') {
+          if (sql[i + 1] === '"') {
+            out += '"';
+            i += 2;
+            continue;
+          }
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (c === "-" && next === "-") {
+      const end = sql.indexOf("\n", i);
+      out += end === -1 ? sql.slice(i) : sql.slice(i, end);
+      i = end === -1 ? len : end;
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      const end = sql.indexOf("*/", i + 2);
+      out += end === -1 ? sql.slice(i) : sql.slice(i, end + 2);
+      i = end === -1 ? len : end + 2;
+      continue;
+    }
+    if (c === "$") {
+      // dollar-quoted string: $tag$ ... $tag$ (tag may be empty)
+      const m = /^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/.exec(sql.slice(i));
+      if (m) {
+        const open = m[0];
+        const close = sql.indexOf(open, i + open.length);
+        const end = close === -1 ? len : close + open.length;
+        out += sql.slice(i, end);
+        i = end;
+        continue;
+      }
+    }
+    if (c === "?") {
       n += 1;
       out += `$${n}`;
-    } else {
-      out += c;
+      i++;
+      continue;
     }
+    out += c;
+    i++;
   }
   return out;
 }
