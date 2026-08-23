@@ -4,16 +4,23 @@
  * instance. Run this BEFORE switching SLAUDE_BRAIN_ENGINE=postgres.
  *
  * Usage:
- *   SLAUDE_BRAIN_DATABASE_URL=postgresql://... bun run scripts/migrate-brain-pglite-to-pg.ts
- *   SLAUDE_BRAIN_DATABASE_URL=postgresql://... bun run scripts/migrate-brain-pglite-to-pg.ts --dry-run
+ *   SLAUDE_BRAIN_DATABASE_URL=postgresql://... bun run scripts/migrate-brain-pglite-to-pg.ts [options]
+ *
+ * Options:
+ *   --dry-run              Show row counts, skip all writes to Postgres.
+ *   --pglite-db <path>     PGLite db dir (overrides SLAUDE_BRAIN_HOME derivation).
+ *   --snap-dir <path>      Where to write the working snapshot (default: /tmp/slaude-brain-migrate-<pid>).
+ *   --keep-snap            Don't delete the snapshot after migration (useful for debugging).
  *
  * Env (all optional except SLAUDE_BRAIN_DATABASE_URL):
- *   SLAUDE_BRAIN_HOME        Brain home dir (default: ~/.slaude/brain)
- *   SLAUDE_BRAIN_DATABASE_URL Target Postgres URL (required)
+ *   SLAUDE_BRAIN_HOME        Brain home dir (default: ~/.slaude/brain); db/ subdir is used as source.
+ *   SLAUDE_BRAIN_PGLITE_DB   PGLite db dir (same as --pglite-db; flag takes precedence).
+ *   SLAUDE_BRAIN_SNAP_DIR    Snapshot dir (same as --snap-dir; flag takes precedence).
+ *   SLAUDE_BRAIN_DATABASE_URL Target Postgres URL (required).
  *
  * The running agent MUST be stopped before running this script — PGLite is
  * single-writer and will timeout if the lock is held. The script snapshots
- * the PGLite db dir to /tmp so it doesn't touch the live directory.
+ * the PGLite db dir so it never touches the live data.
  */
 
 import { cpSync, existsSync, rmSync } from "node:fs";
@@ -22,10 +29,16 @@ import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 
 const { values: flags } = parseArgs({
-  options: { "dry-run": { type: "boolean", default: false } },
+  options: {
+    "dry-run":   { type: "boolean", default: false },
+    "pglite-db": { type: "string" },
+    "snap-dir":  { type: "string" },
+    "keep-snap": { type: "boolean", default: false },
+  },
   strict: true,
 });
-const DRY_RUN = flags["dry-run"] as boolean;
+const DRY_RUN   = flags["dry-run"]   as boolean;
+const KEEP_SNAP = flags["keep-snap"] as boolean;
 
 const BRAIN_HOME = process.env.SLAUDE_BRAIN_HOME ?? join(homedir(), ".slaude", "brain");
 const PG_URL = process.env.SLAUDE_BRAIN_DATABASE_URL;
@@ -34,14 +47,15 @@ if (!PG_URL) {
   console.error("error: SLAUDE_BRAIN_DATABASE_URL is required");
   process.exit(1);
 }
-if (!existsSync(BRAIN_HOME)) {
-  console.error(`error: SLAUDE_BRAIN_HOME not found at ${BRAIN_HOME}`);
-  process.exit(1);
-}
 
-const PGLITE_DB = join(BRAIN_HOME, "db");
+const PGLITE_DB =
+  (flags["pglite-db"] as string | undefined) ??
+  process.env.SLAUDE_BRAIN_PGLITE_DB ??
+  join(BRAIN_HOME, "db");
+
 if (!existsSync(PGLITE_DB)) {
   console.error(`error: PGLite db dir not found at ${PGLITE_DB}`);
+  console.error("  set --pglite-db <path> or SLAUDE_BRAIN_PGLITE_DB to override");
   process.exit(1);
 }
 
@@ -212,7 +226,10 @@ async function main() {
   if (DRY_RUN) log("DRY RUN — no writes to Postgres");
 
   // Snapshot PGLite db dir so we open a copy, not the live one.
-  const snap = `/tmp/slaude-brain-migrate-${process.pid}`;
+  const snap =
+    (flags["snap-dir"] as string | undefined) ??
+    process.env.SLAUDE_BRAIN_SNAP_DIR ??
+    `/tmp/slaude-brain-migrate-${process.pid}`;
   log(`snapshotting PGLite → ${snap}`);
   if (existsSync(snap)) rmSync(snap, { recursive: true });
   cpSync(PGLITE_DB, snap, { recursive: true });
@@ -246,8 +263,12 @@ async function main() {
   await src.disconnect();
   await dst.disconnect();
 
-  log("cleaning up snapshot...");
-  rmSync(snap, { recursive: true, force: true });
+  if (KEEP_SNAP) {
+    log(`keeping snapshot at ${snap} (--keep-snap)`);
+  } else {
+    log("cleaning up snapshot...");
+    rmSync(snap, { recursive: true, force: true });
+  }
 
   log(DRY_RUN ? "dry-run complete — no data written" : "migration complete");
   if (!DRY_RUN) {
