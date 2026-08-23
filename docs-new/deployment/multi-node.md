@@ -80,7 +80,38 @@ docker compose -f docker-compose.scale.yaml ps    # all five services → health
 
 Point your Slack app's Events API request URL at the gateway's `:8080/slack/events` (interactions at `/slack/interactions`). The stack boots and reports healthy without ANTHROPIC creds — turns just won't run until the nodes have them. Scale nodes by adding services (or `docker compose … up --scale`-style tooling of your choice); each worker names itself `<hostname>-<rand>` and registers its own per-node queue.
 
+> **`SLAUDE_MASTER_KEY` is not rotatable in place.** It encrypts the Slack app secrets in the `slack_apps` registry at rest. Regenerating it orphans every existing row — the old ciphertext can no longer be decrypted, and the gateway will fail to resolve those apps. Keep the key stable across restarts; if you must rotate, re-register every app afterwards.
+
 The single-process deployment stays in `docker-compose.yaml` — the scale file never touches it.
+
+### Delivery semantics under node failure
+
+Turn delivery is **at-least-once, deduplicated to effectively-once** for the common failure windows:
+
+- A node killed **mid-turn** (before any Slack post): BullMQ stall recovery re-delivers the job; another node runs the turn once.
+- A node killed **after the turn but before the BullMQ ack** (the zombie window): the worker writes a `turn-done:<jobId>` marker to Redis the moment the agent turn finishes, *before* any ack. The retried delivery finds the marker and completes the job without re-running the turn — no duplicate Slack posts.
+- **Residual window**: a node dying *between its last Slack post and the marker write* (single-digit milliseconds) still replays the turn on retry. This is the irreducible at-least-once residue of a post-to-external-system-then-record design; Slack-side `ts` inspection is the audit trail if it ever fires.
+
+---
+
+## Load
+
+Spec §8 budgets **p95 queue claim latency under 500ms at 200 concurrent threads**. Two harnesses:
+
+```sh
+# In-process (CI-friendly): cluster harness + stub agent, real Redis (+ PG per env).
+# Samples every enqueuedAt→claim delta directly; fails when p95 > budget.
+SLAUDE_REDIS_URL=redis://localhost:6379 bun scripts/load/claim-latency.ts --threads 200
+# local baseline: p95 ≈ 325ms (2 nodes × concurrency 100 — capacity sized to the
+# burst, so the number measures queue overhead, not backlog wait)
+
+# Full HTTP path (compose stack): signed Slack envelopes at 200 VUs via k6.
+# Register an app with a known signing secret first (see the script header).
+k6 run scripts/load/k6-turns.js -e GATEWAY_URL=http://localhost:8080 \
+  -e SIGNING_SECRET=load-secret -e APP_ID=A0LOAD -e TEAM_ID=T0LOAD
+```
+
+The k6 script gates the HTTP ack path (Slack's 3s ack budget, held at p95 < 500ms) and leaves claim latency to a metrics scrape of the nodes' `:8081/metrics`; the in-process script is the one that enforces the claim-latency budget, since it keeps the full distribution instead of a last-value gauge. In CI the load leg is `workflow_dispatch` only (`.github/workflows/load.yml`) — deliberately not part of the PR gate.
 
 ---
 
@@ -88,5 +119,7 @@ The single-process deployment stays in `docker-compose.yaml` — the scale file 
 
 `.github/workflows/ci.yml` runs the multi-node surface on every push/PR:
 
-- **scale** job: `bun sim run --nodes 2` against service containers (once PGLite + Redis 7, once Postgres 16 + Redis 7, scratch database per leg), then the five scenario tests, then a `docker compose -f docker-compose.scale.yaml config` validation. The image build itself is covered by `docker.yml`.
+- **scale** job: `bun sim run --nodes 2` against service containers (once PGLite + Redis 7, once Postgres 16 + Redis 7, scratch database per leg), then the six scenario tests, then a `docker compose -f docker-compose.scale.yaml config` validation.
+- **compose-smoke** job: builds the image and boots the REAL multi-process topology — separate gateway and node containers over Postgres + Redis + shared volume — registers a dummy Slack app, and polls gateway `/healthz` plus both nodes' `/healthz` and `/readyz` to 200 before tearing down.
 - **pglite** / **postgres** jobs carry a Redis 7 service so `tests/queue`, the `tests/node` E2E and `tests/integration` run armed instead of skipping.
+- **load** (`load.yml`, manual): the claim-latency smoke above against real services.

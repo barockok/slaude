@@ -9,6 +9,10 @@
 #   SLAUDE_JOB_SECRET   HMAC secret for per-turn job tokens             (required)
 #   SLAUDE_MASTER_KEY   32 random bytes, base64 — encrypts Slack app
 #                       secrets at rest (openssl rand -base64 32)       (required)
+#                       WARNING: rotating/regenerating this key ORPHANS the
+#                       existing slack_apps registry — rows encrypted under
+#                       the old key can no longer be decrypted. Keep the key
+#                       stable; after a rotation, re-register every app.
 #   ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN /
 #   CLAUDE_CODE_OAUTH_TOKEN   agent LLM auth — needed by NODES to run real
 #                             turns; the stack boots and reports healthy
