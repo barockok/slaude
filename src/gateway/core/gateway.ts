@@ -23,7 +23,9 @@ import { humanizeToolStatus } from "./status-text";
 import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
-import { createKbMcp, KB_MCP_NAME } from "../../knowledge/mcp-tools";
+import { createKbMcp, KB_MCP_NAME, type BrainToolDeps } from "../../knowledge/mcp-tools";
+import { createV1Api } from "../api";
+import type { PendingSource } from "../api/pending-source";
 import { brainEnabled, ensureSources } from "../../knowledge/brain";
 import { brainMode } from "../../knowledge/brain-config";
 import { syncKbWikis } from "../../knowledge/brain-sync";
@@ -61,6 +63,12 @@ export interface SessionMcpCtx { slack: SlackContext; surface: Surface }
 export interface GatewayHandle {
   start(): Promise<void>;
   stop(): Promise<void>;
+  /** Node-facing REST /v1 handler (spec §3). Returns null for non-/v1 paths so
+   *  the caller (health server) can fall through. Mounted only when
+   *  SLAUDE_ROLE is mono/gateway — see src/server.ts. */
+  fetchV1(req: Request): Promise<Response | null>;
+  /** TEST/SIM SEAM ONLY. The pending-gate source behind /v1/pending. */
+  __pendingSource(): PendingSource;
   /** TEST/SIM SEAM ONLY. Live per-session MCP contexts built by the resolver.
    *  Undefined until the session's resolver has run. Production never calls this. */
   __sessionCtx(sessionId: string): SessionMcpCtx | undefined;
@@ -369,6 +377,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     };
   };
 
+  // Brain tool deps for a context + surface — shared by the per-session MCP
+  // resolver and the REST tool plane so both run identical scoping and gating.
+  const brainDepsFor = (ctx: SlackContext, surface: Surface): BrainToolDeps | undefined =>
+    brainEnabled()
+      ? {
+          scope: async () => resolveBrainScope({ ...(await brainGateFor(ctx)), kbSources: loadKbs().map((k) => kbSourceId(k.label)) }),
+          gate: () => brainGateFor(ctx),
+          managers: () => {
+            const soul = soulData();
+            return [soul.manager.userId, soul.backupManager.userId].filter((u): u is string => !!u);
+          },
+          requestApproval: (r) => surface.requestApproval(r),
+        }
+      : undefined;
+
   const mcpResolver = async (sessionId: string): Promise<Record<string, McpServerConfig> | undefined> => {
     const route = routes.get(sessionId);
     if (!route) return undefined;
@@ -385,19 +408,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       [SESSION_MCP_NAME]: createSessionMcp({
         getSnapshot: () => agent.getTokenSnapshot(sessionId),
       }),
-      [KB_MCP_NAME]: createKbMcp(
-        brainEnabled()
-          ? {
-              scope: async () => resolveBrainScope({ ...(await brainGateFor(route.ctx)), kbSources: loadKbs().map((k) => kbSourceId(k.label)) }),
-              gate: () => brainGateFor(route.ctx),
-              managers: () => {
-                const soul = soulData();
-                return [soul.manager.userId, soul.backupManager.userId].filter((u): u is string => !!u);
-              },
-              requestApproval: (r) => route.surface.requestApproval(r),
-            }
-          : undefined,
-      ),
+      [KB_MCP_NAME]: createKbMcp(brainDepsFor(route.ctx, route.surface)),
       // Per-persona MCP isolation: named personas load ~/.slaude/personas/<name>/mcp.json
       // instead of the shared global config. Default sessions use the boot-time global.
       ...(route.ctx.personaId && route.ctx.personaId !== "default"
@@ -2001,9 +2012,48 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     metric.slackDropsTotal.inc({ reason: "engagement" });
   });
 
+  // REST /v1 (spec §3), built inside the gateway so the tool plane runs THE
+  // SAME engines as the MCP tools: persona-resolved outbound clients, the
+  // approval gate, the 1on1 / mention-only / connect engines, and brain
+  // scoping. The SessionContext is derived from the verified job token, never
+  // from the request body. src/server.ts mounts fetchV1 on the health server
+  // when SLAUDE_ROLE is mono/gateway.
+  const v1 = createV1Api({
+    tools: {
+      slackCtx: (claims) => {
+        const personaId = claims.persona && claims.persona !== "default" ? claims.persona : undefined;
+        const ctx: SlackContext = {
+          client: outClientForPersona(personaId),
+          channel: claims.channel,
+          threadTs: claims.thread,
+          // No live inbound message on the REST path — reactions and default
+          // react targets anchor on the thread root.
+          inboundTs: claims.thread,
+          userId: claims.initiator,
+          teamId: claims.team,
+          personaId,
+        };
+        ctx.requestApproval = (req) =>
+          approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, ...req });
+        ctx.reloadSession = (prompt?) => agent.reload(claims.session, prompt);
+        return ctx;
+      },
+      surfaceFor: (ctx) => surfaceFactoryFor(ctx.personaId)(bindingFor(ctx)),
+      surfaceOpts: (claims, ctx) => ({
+        initiator: () => ctx.userId,
+        setOneOnOne: (action, scope) => agentOneOnOne(claims.session, ctx, action, scope),
+        setMentionOnly: (active) => agentMentionOnly(ctx, active),
+      }),
+      connect: (claims, ctx, server) => agentConnect(claims.session, ctx, server),
+      brainDeps: brainDepsFor,
+    },
+  });
+
   return {
     start: () => t.start(),
     stop: () => t.stop(),
+    fetchV1: (req: Request) => v1.fetch(req),
+    __pendingSource: () => v1.pendingSource,
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),
     __agentConnect: (sessionId: string, server: string) => {

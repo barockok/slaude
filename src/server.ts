@@ -63,7 +63,13 @@ async function main() {
 
   const agent = new AgentManager();
   const slack = createSlackApp(agent, { mcpConnectEnabled: mcpOAuthHealthy });
-  const health = startHealthServer({ liveSessions: () => agent.liveCount() });
+  // Mount the node-facing REST /v1 on the health server for gateway/mono roles
+  // (spec §7). Node processes call /v1, they never serve it.
+  const health = startHealthServer({
+    liveSessions: () => agent.liveCount(),
+    v1: env.role() !== "node" ? (req) => slack.fetchV1(req) : undefined,
+  });
+  if (env.role() !== "node") console.log(`[slaude] /v1 REST mounted (role=${env.role()})`);
 
   await slack.start();
   console.log("[slaude] slack socket mode started");

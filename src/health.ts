@@ -4,6 +4,10 @@ import { metrics } from "./metrics";
 export type HealthDeps = {
   /** Number of currently live SDK sessions. */
   liveSessions: () => number;
+  /** Optional node-facing REST /v1 handler (GatewayHandle.fetchV1). Mounted
+   *  only when provided — src/server.ts passes it for mono/gateway roles and
+   *  omits it for nodes. Returns null for paths it doesn't own. */
+  v1?: (req: Request) => Promise<Response | null>;
 };
 
 /**
@@ -11,6 +15,7 @@ export type HealthDeps = {
  *
  *   GET /healthz  → 200 always, JSON {status:"ok", uptime, sessions}
  *   GET /readyz   → 200 if DB reachable, else 503
+ *   /v1/*         → gateway REST for nodes, when `deps.v1` is provided
  *
  * Port: SLAUDE_HEALTH_PORT (default 8080). Set to 0 to disable.
  */
@@ -51,6 +56,10 @@ export function startHealthServer(deps: HealthDeps) {
             { status: 503 },
           );
         }
+      }
+      if (deps.v1 && (url.pathname === "/v1" || url.pathname.startsWith("/v1/"))) {
+        const res = await deps.v1(req);
+        if (res) return res;
       }
       return new Response("not found", { status: 404 });
     },
