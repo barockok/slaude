@@ -64,18 +64,44 @@ export async function get(id: string): Promise<PendingGate | null> {
  * Resolve a gate iff it is still pending. Returns the resolved row, or null
  * when someone else already settled it (duplicate click, expiry, abort) — the
  * caller must treat null as a stale click and change nothing.
+ *
+ * `patch` (optional) is shallow-merged into the payload IN THE SAME guarded
+ * UPDATE, so a long-poller that observes the settled status always sees the
+ * resolution detail too (e.g. the perm gate's allow-vs-always `decision`) —
+ * no window where status is settled but the payload is still pre-decision.
  */
 export async function resolve(
   id: string,
   status: Exclude<GateStatus, "pending">,
   resolvedBy: string,
+  patch?: Record<string, unknown>,
 ): Promise<PendingGate | null> {
+  // sqlite stores payload as JSON TEXT (json_patch); Postgres/PGLite as JSONB
+  // (|| shallow-merge). Both are RFC-7386-style object merges at the top level.
+  //
+  // Postgres caveat: drivers disagree on how a JS string binds into a jsonb
+  // column — PGLite casts text → object, while Bun.sql JSON-encodes the string
+  // (a jsonb STRING scalar holding the object's text). `string || object`
+  // would silently produce an ARRAY, so both sides are normalized first:
+  // `x #>> '{}'` unwraps a string scalar to its inner text (and renders an
+  // object as its own text), and `::jsonb` reparses — an object round-trips
+  // unchanged, a double-encoded string becomes the object it holds.
+  const patchSql = patch
+    ? db.dialect === "sqlite"
+      ? ", payload = json_patch(payload, ?)"
+      : `, payload = (CASE WHEN jsonb_typeof(payload) = 'string'
+                          THEN (payload #>> '{}')::jsonb ELSE payload END)
+                    || ((CAST(? AS jsonb)) #>> '{}')::jsonb`
+    : "";
+  const params = patch
+    ? [status, resolvedBy, Date.now(), JSON.stringify(patch), id]
+    : [status, resolvedBy, Date.now(), id];
   const rows = await db.query<any>(
     `UPDATE pending_gates
-     SET status = ?, resolved_by = ?, resolved_at = ?
+     SET status = ?, resolved_by = ?, resolved_at = ?${patchSql}
      WHERE id = ? AND status = 'pending'
      RETURNING *`,
-    [status, resolvedBy, Date.now(), id],
+    params,
   );
   return rows.length ? mapRow(rows[0]) : null;
 }

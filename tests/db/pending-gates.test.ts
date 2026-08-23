@@ -110,3 +110,24 @@ describe("pending-gates repo", () => {
     expect((await PendingGates.get("bad"))!.payload).toEqual({});
   });
 });
+
+describe("pending-gates resolve payload patch", () => {
+  test("patch merges into payload atomically with the status flip", async () => {
+    await PendingGates.create({
+      id: "tu_patch",
+      kind: "perm",
+      sessionId: "S9",
+      payload: { toolName: "Bash", channel: "C1" },
+    });
+    const row = await PendingGates.resolve("tu_patch", "approved", "U9", { decision: "always" });
+    expect(row?.status).toBe("approved");
+    expect(row?.payload).toEqual({ toolName: "Bash", channel: "C1", decision: "always" });
+    // Durable — a later read sees the merged payload.
+    const read = await PendingGates.get("tu_patch");
+    expect(read?.payload).toEqual({ toolName: "Bash", channel: "C1", decision: "always" });
+    // A losing (already-settled) resolve with a patch changes nothing.
+    const lost = await PendingGates.resolve("tu_patch", "denied", "U0", { decision: "allow" });
+    expect(lost).toBeNull();
+    expect((await PendingGates.get("tu_patch"))?.payload).toEqual({ toolName: "Bash", channel: "C1", decision: "always" });
+  });
+});
