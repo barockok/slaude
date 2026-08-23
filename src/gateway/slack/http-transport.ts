@@ -281,6 +281,15 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
       log(`[slack-http] rejected ${pathname}: body over ${maxBodyBytes} bytes`);
       return new Response("payload too large", { status: 413 });
     }
+    // Slack's SSL certificate probe (`ssl_check=1` form post, sent when the
+    // request URL is saved). Bolt semantics: bare 200, no signature check,
+    // no dispatch — on either endpoint.
+    if (
+      (req.headers.get("content-type") ?? "").includes("application/x-www-form-urlencoded") &&
+      new URLSearchParams(raw).get("ssl_check")
+    ) {
+      return new Response("", { status: 200 });
+    }
     return pathname === "/slack/events" ? handleEvents(req, raw) : handleInteractions(req, raw);
   }
 

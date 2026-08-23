@@ -430,6 +430,35 @@ describe("http slack transport — interactions", () => {
   });
 });
 
+describe("http slack transport — ssl_check", () => {
+  it("answers Slack's ssl_check probe with a bare 200 on both endpoints — no sig, no dispatch", async () => {
+    const seen: any[] = [];
+    const { t, base } = await boot();
+    t.event("message", async (a) => {
+      seen.push(a);
+    });
+    t.action(/.*/, async (a) => {
+      seen.push(a);
+    });
+    for (const path of ["/slack/events", "/slack/interactions"]) {
+      const res = await fetch(`${base}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" }, // no signature headers
+        body: "ssl_check=1&token=fake-verification-token",
+      });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("");
+    }
+    await settle();
+    expect(seen.length).toBe(0);
+    // A JSON body containing the string is NOT treated as a probe.
+    const res = await postEvents(base, SECRET_A, { ...eventEnvelope(), ssl_check: 1 });
+    expect(res.status).toBe(200);
+    await settle();
+    expect(seen.length).toBe(1);
+  });
+});
+
 describe("http slack transport — body-size cap", () => {
   it("rejects a 12MB body with 413 fast, no signature work, no dispatch", async () => {
     const seen: any[] = [];
