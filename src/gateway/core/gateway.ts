@@ -258,9 +258,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   setInterval(() => {
     import("../../db/ignores").then((m) => m.cleanupExpired());
     // Overdue gates (live auto-deny timers normally win; this catches strays)
-    // + stale dedup rows on quiet deployments where the inbound-path purge
-    // never fires.
+    // + settled gate rows past the 24h audit horizon + stale dedup rows on
+    // quiet deployments where the inbound-path purge never fires.
     void PendingGates.sweepExpired().catch(() => {});
+    void PendingGates.purgeSettledOlderThan().catch(() => {});
     void SeenEvents.purgeOlderThan().catch(() => {});
     const now = Date.now();
     for (const [k, p] of pendingPaste) if (now > p.expiresAt) pendingPaste.delete(k);
@@ -471,6 +472,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // to run the connect, so the card still works after a restart and a click is
   // settled exactly once via the guarded resolve.
   type McpGatePayload = { channelId: string; threadTs: string; userId: string; serverName: string; scope: ConnectScope; personaName?: string };
+
+  // Connect cards expire so stale rows drain via sweepExpired instead of
+  // accumulating. SLAUDE_MCP_CARD_TTL accepts '30m'/'12h'/'permanent' (max 24h,
+  // parseDuration); unset or invalid → 24h.
+  const mcpCardTtlMs = ((): number | null => {
+    const raw = (process.env.SLAUDE_MCP_CARD_TTL ?? "").trim();
+    if (!raw) return 24 * 60 * 60 * 1000;
+    const d = parseDuration(raw);
+    if (d.ok) return d.permanent ? null : d.minutes * 60 * 1000;
+    console.warn(`[gates] invalid SLAUDE_MCP_CARD_TTL '${raw}' (${d.error}) — using 24h`);
+    return 24 * 60 * 60 * 1000;
+  })();
 
   // Paste-back: a started-but-not-completed OAuth flow, keyed by channel:thread:user
   // (one in-flight connect per initiator per thread). The initiator completes it by
@@ -1301,7 +1314,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           for (const s of connectable) {
             const token = randomBytes(8).toString("hex");
             const payload: McpGatePayload = { channelId, threadTs, userId, serverName: s.name, scope, personaName: dispatch?.personaId && dispatch.personaId !== "default" ? dispatch.personaId : undefined };
-            await PendingGates.create({ id: token, kind: "mcp_connect", sessionId: session.id, payload });
+            await PendingGates.create({
+              id: token, kind: "mcp_connect", sessionId: session.id, payload,
+              ...(mcpCardTtlMs !== null ? { expiresAt: Date.now() + mcpCardTtlMs } : {}),
+            });
             elements.push({
               type: "button",
               text: { type: "plain_text", text: `Connect ${s.name}` },
