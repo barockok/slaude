@@ -6,13 +6,42 @@
 //
 // http mode emits event_subscriptions.request_url and
 // interactivity.request_url pointing at the gateway's /slack/* endpoints and
-// omits socket_mode_enabled. No slash_commands section in either mode:
+// omits socket_mode_enabled. When SLACK_CLIENT_ID is set (OAuth install flow
+// enabled on the gateway) it also emits oauth_config.redirect_urls pointing
+// at /slack/oauth/callback. No slash_commands section in either mode:
 // slaude parses slash-style commands from plain message text, so there are
 // no Slack-registered slash commands to route.
 
 export type ManifestMode = "socket" | "http";
 
-export function buildManifest(opts: { mode?: ManifestMode; url?: string } = {}) {
+/** Bot scopes the app needs — single source for the manifest AND the OAuth
+ *  install flow's authorize URL (src/gateway/slack/oauth.ts). */
+export const BOT_SCOPES = [
+  "app_mentions:read",
+  "channels:history",
+  "channels:read",
+  "chat:write",
+  "chat:write.public",
+  "files:read",
+  "files:write",
+  "groups:history",
+  "groups:read",
+  "im:history",
+  "im:read",
+  "im:write",
+  "mpim:history",
+  "mpim:read",
+  "mpim:write",
+  "reactions:read",
+  "reactions:write",
+  "users:read",
+  "users.profile:write",
+  "assistant:write",
+] as const;
+
+export function buildManifest(
+  opts: { mode?: ManifestMode; url?: string; oauthRedirectUrl?: string } = {},
+) {
   const mode = opts.mode ?? "socket";
   const base = (opts.url ?? "").replace(/\/+$/, "");
   if (mode === "http" && !base) {
@@ -40,28 +69,7 @@ export function buildManifest(opts: { mode?: ManifestMode; url?: string } = {}) 
     },
     oauth_config: {
       scopes: {
-        bot: [
-          "app_mentions:read",
-          "channels:history",
-          "channels:read",
-          "chat:write",
-          "chat:write.public",
-          "files:read",
-          "files:write",
-          "groups:history",
-          "groups:read",
-          "im:history",
-          "im:read",
-          "im:write",
-          "mpim:history",
-          "mpim:read",
-          "mpim:write",
-          "reactions:read",
-          "reactions:write",
-          "users:read",
-          "users.profile:write",
-          "assistant:write",
-        ],
+        bot: [...BOT_SCOPES],
       },
     },
     settings: {
@@ -86,6 +94,11 @@ export function buildManifest(opts: { mode?: ManifestMode; url?: string } = {}) 
     manifest.settings.event_subscriptions.request_url = `${base}/slack/events`;
     manifest.settings.interactivity.request_url = `${base}/slack/interactions`;
     delete manifest.settings.socket_mode_enabled;
+    // OAuth install flow (spec §5 model B): register the callback as the
+    // app's redirect URL so `Add to Slack` links can land on the gateway.
+    if (opts.oauthRedirectUrl) {
+      manifest.oauth_config.redirect_urls = [opts.oauthRedirectUrl];
+    }
   }
 
   return manifest;
@@ -114,7 +127,16 @@ export function parseManifestArgs(argv: string[]): { mode: ManifestMode; url?: s
 
 if (import.meta.main) {
   try {
-    console.log(JSON.stringify(buildManifest(parseManifestArgs(process.argv.slice(2))), null, 2));
+    const args = parseManifestArgs(process.argv.slice(2));
+    // With SLACK_CLIENT_ID configured the gateway serves the OAuth install
+    // flow — emit its callback as the app's redirect URL (overridable via
+    // SLACK_OAUTH_REDIRECT_URL for a differing public host).
+    const oauthRedirectUrl =
+      args.mode === "http" && (process.env.SLACK_CLIENT_ID ?? "").trim()
+        ? (process.env.SLACK_OAUTH_REDIRECT_URL ?? "").trim() ||
+          `${(args.url ?? "").replace(/\/+$/, "")}/slack/oauth/callback`
+        : undefined;
+    console.log(JSON.stringify(buildManifest({ ...args, oauthRedirectUrl }), null, 2));
   } catch (e: any) {
     console.error(`[manifest] ${e?.message ?? e}`);
     process.exit(1);

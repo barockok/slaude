@@ -34,6 +34,7 @@ import type {
 } from "../core/transport";
 import * as SlackApps from "../../db/slack-apps";
 import type { SlackAppRow } from "../../db/slack-apps";
+import { handleOAuth, type OAuthDeps } from "./oauth";
 import { verifySlackSignature } from "./verify";
 import { healthRoutes, type HealthDeps } from "../../health";
 import { env } from "../../config/env";
@@ -60,6 +61,9 @@ export type HttpTransportOptions = {
   makeClient?: (botToken: string) => WebClientLike;
   /** fetch used for response_url posting (test seam). */
   fetchFn?: typeof fetch;
+  /** OAuth install flow seams (spec §5 model B). Endpoints are mounted only
+   *  when SLACK_CLIENT_ID (or oauth.clientId) is set. */
+  oauth?: OAuthDeps;
   now?: () => number;
   log?: (msg: string) => void;
 };
@@ -93,10 +97,31 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
   let primary: AppEntry | null = null;
   let server: ReturnType<typeof Bun.serve> | null = null;
 
-  let resolveStarted!: (e: AppEntry) => void;
-  const started = new Promise<AppEntry>((r) => {
+  let resolveStarted!: () => void;
+  const started = new Promise<void>((r) => {
     resolveStarted = r;
   });
+
+  /** (Re)build the app registry from loadApps(). Called at start() and again
+   *  after a successful OAuth install. Resolves `started` once a primary
+   *  (oldest-registered) app exists. */
+  async function reloadRegistry(): Promise<SlackAppRow[]> {
+    const rows = await loadApps();
+    entries.clear();
+    byApp.clear();
+    primary = null;
+    for (const row of rows) {
+      const { botToken, signingSecret } = decryptTokens(row);
+      const entry: AppEntry = { row, signingSecret, client: makeClient(botToken) };
+      entries.set(`${row.api_app_id}:${row.team_id}`, entry);
+      const group = byApp.get(row.api_app_id) ?? [];
+      group.push(entry);
+      byApp.set(row.api_app_id, group);
+      primary ??= entry;
+    }
+    if (primary) resolveStarted();
+    return rows;
+  }
 
   async function runMiddlewares(payload: any): Promise<void> {
     let i = 0;
@@ -321,6 +346,21 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
       m.httpRequestsTotal.inc({ route: url.pathname, status: String(res.status) });
       return res;
     }
+    if (url.pathname.startsWith("/slack/oauth/")) {
+      // OAuth install flow (spec §5 model B); null = disabled/unknown → 404.
+      const res = await handleOAuth(req, url, { log, ...opts.oauth });
+      if (res) {
+        m.httpRequestsTotal.inc({ route: url.pathname, status: String(res.status) });
+        // A successful install added a slack_apps row — pick it up without a
+        // restart so the new workspace's events resolve immediately.
+        if (url.pathname === "/slack/oauth/callback" && res.status === 200) {
+          await reloadRegistry().catch((e) =>
+            log(`[slack-http] registry reload after install failed: ${e?.message ?? e}`),
+          );
+        }
+        return res;
+      }
+    }
     return new Response("not found", { status: 404 });
   }
 
@@ -329,7 +369,7 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
   // proxy parks on the started promise and then delegates to the primary
   // (oldest-registered) app's client.
   const p = <T>(fn: (c: WebClientLike) => Promise<T>): Promise<T> =>
-    started.then((e) => fn(e.client));
+    started.then(() => fn(primary!.client));
   const lazyClient = {
     auth: { test: (a?: any) => p((c) => c.auth.test(a)) },
     chat: {
@@ -373,26 +413,22 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
       middlewares.push(mw);
     },
     async start() {
-      const rows = await loadApps();
+      const rows = await reloadRegistry();
+      const oauthEnabled = Boolean(opts.oauth?.clientId ?? env.slack.clientId());
       if (rows.length === 0) {
-        throw new Error(
-          "SLAUDE_SLACK_MODE=http but the slack_apps registry is empty — register the app: bun run slack-app add",
-        );
-      }
-      for (const row of rows) {
-        const { botToken, signingSecret } = decryptTokens(row);
-        const entry: AppEntry = { row, signingSecret, client: makeClient(botToken) };
-        entries.set(`${row.api_app_id}:${row.team_id}`, entry);
-        const group = byApp.get(row.api_app_id) ?? [];
-        group.push(entry);
-        byApp.set(row.api_app_id, group);
-        primary ??= entry;
+        if (!oauthEnabled) {
+          throw new Error(
+            "SLAUDE_SLACK_MODE=http but the slack_apps registry is empty — register the app: bun run slack-app add",
+          );
+        }
+        // OAuth install flow enabled: an empty registry is the expected state
+        // of a fresh deploy — the first /slack/oauth/start install populates it.
+        log("[slack-http] slack_apps registry is empty — awaiting OAuth install (/slack/oauth/start)");
       }
       const port = opts.port ?? env.slack.httpPort();
       // idleTimeout 0: /v1/pending long-polls (mounted on this port in http
       // mode) hold requests open ~30s — Bun's 10s default would kill them.
       server = Bun.serve({ port, idleTimeout: 0, fetch: serve });
-      resolveStarted(primary!);
       log(
         `[slack-http] listening on :${server.port} (${entries.size} app${entries.size === 1 ? "" : "s"}) — /slack/events /slack/interactions`,
       );
