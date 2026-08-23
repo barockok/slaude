@@ -35,11 +35,17 @@ export interface DbClient {
   exec(sql: string): Promise<void>;
   transaction<T>(fn: (tx: DbClient) => Promise<T>): Promise<T>;
   /**
-   * Postgres only: block until a session-level advisory lock (key1, key2) is
-   * held on a dedicated connection; resolves to an unlock function. Undefined
-   * on sqlite. Used to serialize replicas around DDL (migrations).
+   * Postgres only: acquire a session-level advisory lock (key1, key2) on a
+   * dedicated connection; resolves to an unlock function. Undefined on sqlite.
+   * Tries pg_try_advisory_lock first; when contended it calls `onWait` once,
+   * then blocks. `timeoutMs > 0` bounds the blocking wait (rejects on expiry);
+   * 0/undefined waits forever. Used to serialize replicas around DDL.
    */
-  advisoryLock?(key1: number, key2: number): Promise<() => Promise<void>>;
+  advisoryLock?(
+    key1: number,
+    key2: number,
+    opts?: { onWait?: () => void; timeoutMs?: number },
+  ): Promise<() => Promise<void>>;
   close(): Promise<void>;
 }
 
@@ -72,7 +78,11 @@ export function resolveDbConfig(env: NodeJS.ProcessEnv = process.env): DbConfig 
  * supported). Constraint for repo SQL: a bare `?` outside those regions is
  * ALWAYS a placeholder, so the JSONB operators `?`, `?|`, `?&` must not be
  * used — write `jsonb_exists(col, key)` / `jsonb_exists_any` /
- * `jsonb_exists_all` instead.
+ * `jsonb_exists_all` instead. Further limitations: escape-string constants
+ * (`E'...'`) are scanned as plain strings, so a backslash-escaped quote
+ * (`E'\'?'`) would end the string early — don't use E-strings in repo SQL;
+ * nested block comments are not tracked; and `$n` params must not be mixed
+ * with `?` (numbering would collide).
  */
 export function toPositional(sql: string): string {
   let out = "";
@@ -156,11 +166,20 @@ export function toPositional(sql: string): string {
   return out;
 }
 
-/** Normalise driver rows: bigint -> number so timestamps compare like sqlite's INTEGER. */
+/**
+ * Normalise driver rows: bigint -> number so timestamps compare like sqlite's
+ * INTEGER. A value outside Number's safe integer range throws instead of
+ * silently losing precision — no slaude column should ever hold one.
+ */
 export function normalizeRow<T = Row>(row: Row): T {
   for (const k of Object.keys(row)) {
     const v = row[k];
-    if (typeof v === "bigint") row[k] = Number(v);
+    if (typeof v === "bigint") {
+      if (v > BigInt(Number.MAX_SAFE_INTEGER) || v < -BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error(`column '${k}' holds int8 value ${v} outside Number.MAX_SAFE_INTEGER; refusing lossy conversion`);
+      }
+      row[k] = Number(v);
+    }
   }
   return row as T;
 }

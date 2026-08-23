@@ -86,6 +86,16 @@ export const env = {
       }
       return n;
     },
+    /** Seconds a booting replica waits for the migration advisory lock.
+     *  0 (default) = wait forever; > 0 fails the boot loudly on expiry. */
+    migrateLockTimeoutSec: () => {
+      const raw = opt("SLAUDE_MIGRATE_LOCK_TIMEOUT_SEC", "0");
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 0) {
+        throw new Error(`SLAUDE_MIGRATE_LOCK_TIMEOUT_SEC must be a non-negative integer (got '${raw}')`);
+      }
+      return n;
+    },
   },
 
   provider: {

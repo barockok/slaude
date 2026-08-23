@@ -55,12 +55,35 @@ class BunSqlClient implements DbClient {
     return this.root.begin(async (tx) => fn(new BunSqlClient(tx, this.root, true))) as Promise<T>;
   }
 
-  async advisoryLock(key1: number, key2: number): Promise<() => Promise<void>> {
+  async advisoryLock(
+    key1: number,
+    key2: number,
+    opts: { onWait?: () => void; timeoutMs?: number } = {},
+  ): Promise<() => Promise<void>> {
     // Session-level advisory locks are tied to one connection, so reserve one
     // from the pool and keep it out of rotation until unlock.
     const reserved = await this.root.reserve();
     try {
-      await reserved.unsafe(`SELECT pg_advisory_lock($1, $2)`, [key1, key2]);
+      const fast = (await reserved.unsafe(`SELECT pg_try_advisory_lock($1, $2) AS ok`, [key1, key2])) as Array<{ ok: boolean }>;
+      if (!fast[0]?.ok) {
+        // Contended: say so before blocking, so a held lock never looks like a hang.
+        opts.onWait?.();
+        const timeoutMs = Math.floor(opts.timeoutMs ?? 0);
+        if (timeoutMs > 0) {
+          // lock_timeout applies to advisory-lock waits; scoped to this
+          // reserved connection, reset once acquired.
+          await reserved.unsafe(`SET lock_timeout = ${timeoutMs}`);
+          try {
+            await reserved.unsafe(`SELECT pg_advisory_lock($1, $2)`, [key1, key2]);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            throw new Error(`advisory lock (${key1}, ${key2}) not acquired within ${timeoutMs}ms: ${msg}`);
+          }
+          await reserved.unsafe(`SET lock_timeout = 0`);
+        } else {
+          await reserved.unsafe(`SELECT pg_advisory_lock($1, $2)`, [key1, key2]);
+        }
+      }
     } catch (e) {
       reserved.release();
       throw e;

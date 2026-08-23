@@ -14,6 +14,7 @@
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { env } from "../config/env";
 import type { DbClient } from "./client";
 
 export const MIGRATIONS_DIR = join(import.meta.dir, "migrations");
@@ -53,7 +54,13 @@ export type MigrateResult = { applied: string[]; skipped: string[] };
 
 export async function runMigrations(
   db: DbClient,
-  opts: { migrations?: Migration[]; lock?: LeaderLock; log?: (msg: string) => void } = {},
+  opts: {
+    migrations?: Migration[];
+    lock?: LeaderLock;
+    log?: (msg: string) => void;
+    /** Override for SLAUDE_MIGRATE_LOCK_TIMEOUT_SEC (ms). 0 = wait forever. */
+    lockTimeoutMs?: number;
+  } = {},
 ): Promise<MigrateResult> {
   if (db.dialect !== "pg") {
     // sqlite keeps its legacy bootstrap (src/db/drivers/sqlite.ts).
@@ -71,7 +78,22 @@ export async function runMigrations(
     // session-level advisory lock on a dedicated connection covers the whole
     // run; the per-file transaction + version-row claim below stays as the
     // guard for anything not holding the lock.
-    const unlock = db.advisoryLock ? await db.advisoryLock(...MIGRATE_LOCK_KEY) : null;
+    const timeoutMs = opts.lockTimeoutMs ?? env.db.migrateLockTimeoutSec() * 1000;
+    let unlock: (() => Promise<void>) | null = null;
+    if (db.advisoryLock) {
+      try {
+        unlock = await db.advisoryLock(...MIGRATE_LOCK_KEY, {
+          onWait: () => log("waiting for migration lock (another replica is migrating)"),
+          timeoutMs,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        throw new Error(
+          `migrations not started: ${msg}. Another replica may be stuck mid-migration; ` +
+            `inspect it, or tune SLAUDE_MIGRATE_LOCK_TIMEOUT_SEC (0 waits forever).`,
+        );
+      }
+    }
     try {
       await db.exec(`
         CREATE TABLE IF NOT EXISTS schema_migrations (

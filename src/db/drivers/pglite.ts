@@ -45,10 +45,19 @@ class PgliteClient implements DbClient {
     return out as T;
   }
 
-  async advisoryLock(key1: number, key2: number): Promise<() => Promise<void>> {
-    // PGLite is a single in-process connection, so the lock is trivially held;
-    // taken anyway so both pg drivers behave identically.
-    await this.root.query(`SELECT pg_advisory_lock($1, $2)`, [key1, key2]);
+  async advisoryLock(
+    key1: number,
+    key2: number,
+    opts: { onWait?: () => void; timeoutMs?: number } = {},
+  ): Promise<() => Promise<void>> {
+    // PGLite is a single in-process connection: advisory locks are re-entrant
+    // per session, so the try always succeeds; taken anyway so both pg
+    // drivers behave identically.
+    const fast = await this.root.query<{ ok: boolean }>(`SELECT pg_try_advisory_lock($1, $2) AS ok`, [key1, key2]);
+    if (!fast.rows[0]?.ok) {
+      opts.onWait?.();
+      await this.root.query(`SELECT pg_advisory_lock($1, $2)`, [key1, key2]);
+    }
     let released = false;
     return async () => {
       if (released) return;

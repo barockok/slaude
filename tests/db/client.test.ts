@@ -58,6 +58,17 @@ describe("db/client helpers", () => {
   });
   test("normalizeRow converts bigint to number", () => {
     expect(normalizeRow<Record<string, unknown>>({ a: 1n, b: "x", c: null })).toEqual({ a: 1, b: "x", c: null });
+    const max = BigInt(Number.MAX_SAFE_INTEGER);
+    expect(normalizeRow<Record<string, unknown>>({ a: max, b: -max })).toEqual({
+      a: Number.MAX_SAFE_INTEGER,
+      b: -Number.MAX_SAFE_INTEGER,
+    });
+  });
+
+  test("normalizeRow refuses lossy int8 conversions", () => {
+    const over = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
+    expect(() => normalizeRow({ big: over })).toThrow(/outside Number.MAX_SAFE_INTEGER/);
+    expect(() => normalizeRow({ big: -over })).toThrow(/'big'/);
   });
 });
 

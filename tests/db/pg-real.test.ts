@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { openDb, type DbClient } from "../../src/db/client";
-import { runMigrations, appliedVersions } from "../../src/db/migrate";
+import { runMigrations, appliedVersions, MIGRATE_LOCK_KEY } from "../../src/db/migrate";
 import { redactPgUrl, openBunSql } from "../../src/db/drivers/pg";
 
 /**
@@ -105,6 +105,33 @@ describe.skipIf(!enabled)("db against real Postgres", () => {
       const unlock = await db.advisoryLock!(101, 202);
       await unlock();
       await unlock();
+    });
+  }, 30_000);
+
+  test("contended migration lock: logs a wait, and a timeout fails loudly", async () => {
+    await withScratchDb(async (mk) => {
+      const holder = await mk();
+      const other = await mk();
+      const unlock = await holder.advisoryLock!(...MIGRATE_LOCK_KEY);
+      try {
+        // Bounded wait: fails loudly, naming the tuning knob.
+        const logs: string[] = [];
+        const err = await runMigrations(other, { log: (m) => logs.push(m), lockTimeoutMs: 1200 }).then(
+          () => null,
+          (e: Error) => e.message,
+        );
+        expect(err).toContain("migrations not started");
+        expect(err).toContain("SLAUDE_MIGRATE_LOCK_TIMEOUT_SEC");
+        expect(logs.some((l) => l.includes("waiting for migration lock"))).toBe(true);
+        // Unbounded wait: blocks until the holder releases, then completes.
+        const pending = runMigrations(other, { log: () => {}, lockTimeoutMs: 0 });
+        await Bun.sleep(300);
+        await unlock();
+        const done = await pending;
+        expect(done.applied.length).toBeGreaterThanOrEqual(5);
+      } finally {
+        await unlock();
+      }
     });
   }, 30_000);
 
