@@ -15,6 +15,11 @@ export interface StreamEvent {
   event: unknown;
 }
 
+/** How long an unconsumed abort flag survives. Matches the session lock TTL
+ *  (10m) — the spec's proxy for the maximum turn duration: an abort older
+ *  than the longest possible turn can only refer to a turn that is gone. */
+export const ABORT_FLAG_TTL_MS = 600_000;
+
 export interface PubSubOpts {
   /** Command connection: PUBLISH / XADD / XRANGE. */
   redis: Redis;
@@ -23,6 +28,8 @@ export interface PubSubOpts {
   keys?: Keys;
   /** Event stream cap (XADD MAXLEN ~). Spec default: 1000. */
   streamMaxLen?: number;
+  /** Abort-flag TTL override (tests). Default: ABORT_FLAG_TTL_MS. */
+  abortFlagTtlMs?: number;
 }
 
 export type PubSub = ReturnType<typeof makePubSub>;
@@ -31,6 +38,7 @@ export function makePubSub(opts: PubSubOpts) {
   const { redis, sub } = opts;
   const keys = opts.keys ?? makeKeys();
   const maxLen = opts.streamMaxLen ?? 1000;
+  const abortTtlMs = opts.abortFlagTtlMs ?? ABORT_FLAG_TTL_MS;
   const handlers = new Map<string, Set<(payload: string) => void>>();
   let listening = false;
 
@@ -67,14 +75,26 @@ export function makePubSub(opts: PubSubOpts) {
   return {
     keys,
 
-    /** Gateway → the node running the session: kill the in-flight turn. */
+    /**
+     * Gateway → the node running the session: kill the in-flight turn.
+     * Publish is fire-and-forget, so a durable flag is set first: if no node
+     * is subscribed right now (turn queued but unclaimed, node mid-restart),
+     * whichever node starts the turn finds the flag via consumeAbortFlag.
+     * Returns the live-subscriber count from the publish.
+     */
     async publishAbort(sessionId: string): Promise<number> {
+      await redis.set(keys.abortFlag(sessionId), "1", "PX", abortTtlMs);
       return await redis.publish(keys.abortChannel(sessionId), "1");
     },
     /** Node-side: fires when an abort for this session is published.
      *  Returns an unsubscribe fn. */
     onAbort(sessionId: string, cb: () => void) {
       return on(keys.abortChannel(sessionId), () => cb());
+    },
+    /** Node-side, at turn start: was an abort published while nobody was
+     *  listening? True at most once per flag (GETDEL). */
+    async consumeAbortFlag(sessionId: string): Promise<boolean> {
+      return (await redis.getdel(keys.abortFlag(sessionId))) !== null;
     },
 
     /** Gateway → nodes: tenant config changed, bust the runtime-bundle cache. */
@@ -93,9 +113,19 @@ export function makePubSub(opts: PubSubOpts) {
       return on(keys.gateChannel(pendingId), () => cb());
     },
 
-    /** Node → gateway: append a serialized AgentEvent to the session's capped
-     *  stream. Approximate trim (~) unless exact is requested. Returns the
-     *  stream entry id. */
+    /**
+     * Node → gateway: append a serialized AgentEvent to the session's capped
+     * stream. Returns the stream entry id.
+     *
+     * Semantics — metrics/status surface, NOT a reliable log: the default
+     * approximate trim (`MAXLEN ~`) only drops whole radix-tree macro nodes,
+     * so the stream can overshoot the cap (worst case toward ~2× with small
+     * caps or large node sizes) before trimming; and once entries ARE
+     * trimmed, readers see no marker — a readEvents(fromId) that outlived
+     * the cap silently skips the gap. Anything that must not be lost goes
+     * through the queue or Postgres, never through this stream. `exact`
+     * exists for tests that need a deterministic length.
+     */
     async appendEvent(sessionId: string, event: unknown, o?: { exact?: boolean }): Promise<string> {
       const stream = keys.eventsStream(sessionId);
       const body = JSON.stringify(event);

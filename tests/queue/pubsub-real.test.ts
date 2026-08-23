@@ -11,7 +11,7 @@ describe.skipIf(!realEnabled)("queue/pubsub against real Redis", () => {
   let sub: Redis;
   let keys: Keys;
   let ps: PubSub;
-  let mkPubSub: (opts?: { streamMaxLen?: number }) => PubSub;
+  let mkPubSub: (opts?: { streamMaxLen?: number; abortFlagTtlMs?: number }) => PubSub;
 
   const ready = (async () => {
     if (!realEnabled) return;
@@ -50,6 +50,21 @@ describe.skipIf(!realEnabled)("queue/pubsub against real Redis", () => {
     await until(() => hitsB === 1);
     expect(hitsA).toBe(1);
     await offB();
+  });
+
+  test("durable abort flag: zero-subscriber publish is consumable exactly once", async () => {
+    await ready;
+    expect(await ps.publishAbort("sessFlag")).toBe(0); // nobody subscribed
+    expect(await ps.consumeAbortFlag("sessFlag")).toBe(true); // flag survived
+    expect(await ps.consumeAbortFlag("sessFlag")).toBe(false); // GETDEL: once only
+  });
+
+  test("abort flag expires at its TTL", async () => {
+    await ready;
+    const quick = mkPubSub({ abortFlagTtlMs: 100 });
+    await quick.publishAbort("sessFlagTtl");
+    await sleep(200);
+    expect(await quick.consumeAbortFlag("sessFlagTtl")).toBe(false);
   });
 
   test("gate + reload channels deliver", async () => {

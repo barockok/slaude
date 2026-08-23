@@ -34,6 +34,7 @@ describe("queue/keys", () => {
     expect(k.coalesce("s1")).toBe("p:coalesce:s1");
     expect(k.coalesceLock("s1")).toBe("p:lock:coalesce:s1");
     expect(k.abortChannel("s1")).toBe("p:abort:s1");
+    expect(k.abortFlag("s1")).toBe("p:abort-flag:s1");
     expect(k.reloadChannel("t1")).toBe("p:reload:t1");
     expect(k.gateChannel("g1")).toBe("p:gate:g1");
     expect(k.eventsStream("s1")).toBe("p:events:s1");

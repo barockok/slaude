@@ -50,6 +50,9 @@ export interface Keys {
   coalesceLock(sessionId: string): string;
   /** Pub/sub channel: abort the running turn of a session. */
   abortChannel(sessionId: string): string;
+  /** Durable abort flag set alongside the publish — survives a node that
+   *  wasn't subscribed at publish time (checked at turn start, GETDEL). */
+  abortFlag(sessionId: string): string;
   /** Pub/sub channel: bust a tenant's cached runtime bundle. */
   reloadChannel(tenantId: string): string;
   /** Pub/sub channel: a pending gate was resolved. */
@@ -72,6 +75,7 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     coalesce: (sessionId) => `${prefix}:coalesce:${sessionId}`,
     coalesceLock: (sessionId) => `${prefix}:lock:coalesce:${sessionId}`,
     abortChannel: (sessionId) => `${prefix}:abort:${sessionId}`,
+    abortFlag: (sessionId) => `${prefix}:abort-flag:${sessionId}`,
     reloadChannel: (tenantId) => `${prefix}:reload:${tenantId}`,
     gateChannel: (pendingId) => `${prefix}:gate:${pendingId}`,
     eventsStream: (sessionId) => `${prefix}:events:${sessionId}`,
