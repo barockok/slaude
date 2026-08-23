@@ -188,9 +188,9 @@ describe("durable gate state across gateway restarts", () => {
     }
   });
 
-  it("a click on an approval row orphaned by a restart is stale and settles the row", async () => {
-    // The row survived; the promise did not. The click must not pretend the
-    // plan was approved — it answers already-decided and closes the orphan.
+  it("a waiter-less approval row minted by THIS instance is settled as a stray (abort raced the click)", async () => {
+    // Same instance id + no local waiter can only mean our own teardown raced
+    // the click — settle it so it doesn't linger until expiry.
     await PendingGates.create({
       id: "orphan_appr", kind: "approval", sessionId: "S_OLD",
       payload: { channel: CH, threadTs: "1.0", summary: "old plan", approvers: [WORLD.manager] },
@@ -199,6 +199,28 @@ describe("durable gate state across gateway restarts", () => {
     const responds = await g.click("slaude_appr:approve:orphan_appr", WORLD.manager);
     expect(responds.some((r) => /already decided/.test(r.text ?? ""))).toBe(true);
     expect((await PendingGates.get("orphan_appr"))!.status).toBe("cancelled");
+  });
+
+  it("a pending row from ANOTHER instance is never click-cancelled — clicker is told it lives elsewhere", async () => {
+    // A foreign pending row may belong to a live sibling replica holding the
+    // in-process waiter. Cancelling it would hang the sibling forever; the
+    // row must survive the click untouched and drain via expiry instead.
+    await PendingGates.create({
+      id: "foreign_appr", kind: "approval", sessionId: "S_SIBLING",
+      payload: { channel: CH, threadTs: "2.0", summary: "sibling plan", approvers: [WORLD.manager] },
+    });
+    await db.run(`UPDATE pending_gates SET instance_id = 'some-other-replica' WHERE id = 'foreign_appr'`);
+    const g = makeGw();
+    const responds = await g.click("slaude_appr:approve:foreign_appr", WORLD.manager);
+    expect(responds.some((r) => /another replica/.test(r.text ?? ""))).toBe(true);
+    expect(responds.some((r) => r.replace_original === true)).toBe(false); // buttons stay
+    expect((await PendingGates.get("foreign_appr"))!.status).toBe("pending");
+    // Same protection for permission prompts.
+    await PendingGates.create({ id: "foreign_perm", kind: "perm", sessionId: "S_SIBLING", payload: {} });
+    await db.run(`UPDATE pending_gates SET instance_id = 'some-other-replica' WHERE id = 'foreign_perm'`);
+    const r2 = await g.click("slaude_perm:allow:foreign_perm", WORLD.manager);
+    expect(r2.some((r) => /another replica/.test(r.text ?? ""))).toBe(true);
+    expect((await PendingGates.get("foreign_perm"))!.status).toBe("pending");
   });
 });
 

@@ -7,6 +7,11 @@ import { env } from "../../config/env";
 import * as PendingGates from "../../db/pending-gates";
 
 type PendingKey = string; // toolUseID
+
+/** Durable-row deadline for a permission prompt. Orphans (dead process) drain
+ *  via sweepExpired at this horizon; a live waiter that outlasts it is denied
+ *  on the next click or torn down by the turn's abort signal. */
+export const PERM_GATE_TTL_MS = 60 * 60 * 1000;
 type Pending = {
   channel: string;
   threadTs: string;
@@ -71,10 +76,26 @@ export class PermissionGate {
         };
         const pend = this.#pending.get(toolUseId);
         if (!pend) {
-          // No local waiter. If a pending row survived a restart, settle it so
-          // the orphan doesn't linger — nothing is waiting on the promise.
-          await PendingGates.resolve(toolUseId, "cancelled", userId);
-          return void (await stale());
+          const cur = await PendingGates.get(toolUseId);
+          if (!cur || cur.status !== "pending") return void (await stale());
+          if (cur.instanceId === PendingGates.INSTANCE_ID) {
+            // Our own row with no waiter: the abort raced the click. Settle
+            // the stray so it doesn't linger until expiry.
+            await PendingGates.resolve(toolUseId, "cancelled", userId);
+            return void (await stale());
+          }
+          // Foreign pending row: a sibling replica may be alive and holding
+          // the waiter — never cancel it from here. Until M4's pub/sub can
+          // wake the sibling, tell the clicker where the gate lives and keep
+          // the buttons.
+          try {
+            await respond({
+              response_type: "ephemeral",
+              replace_original: false,
+              text: ":hourglass: This approval is pending on another replica — it will be decided there (or auto-expire).",
+            });
+          } catch {}
+          return;
         }
         // DB row is the source of truth: exactly one click wins the guarded
         // UPDATE; every later click sees null and is stale.
@@ -83,7 +104,15 @@ export class PermissionGate {
           decision === "deny" ? "denied" : "approved",
           userId,
         );
-        if (!row) return void (await stale());
+        if (!row) {
+          // A sweep may have expired (or an abort cancelled) the row while the
+          // waiter is still alive — deliver the deny locally, never hang.
+          const cur = await PendingGates.get(toolUseId);
+          if (cur && (cur.status === "expired" || cur.status === "cancelled") && this.#pending.delete(toolUseId)) {
+            pend.resolve({ behavior: "deny", message: cur.status === "expired" ? "expired before a decision" : "cancelled" });
+          }
+          return void (await stale());
+        }
         this.#pending.delete(toolUseId);
 
         const decided =
@@ -257,6 +286,7 @@ export class PermissionGate {
       kind: "perm",
       sessionId,
       payload: { toolName, channel: route.channel, threadTs: route.threadTs },
+      expiresAt: Date.now() + PERM_GATE_TTL_MS,
     });
 
     let resolveFn!: (r: Awaited<ReturnType<CanUseTool>>) => void;

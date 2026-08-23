@@ -91,13 +91,40 @@ export class ApprovalGate {
         };
         // Durable row is the source of truth for "still open?".
         const row = await PendingGates.get(id);
-        if (!row || row.status !== "pending") return void (await stale());
-        if (!pending) {
-          // Open row but no local waiter: the process restarted and the
-          // promise died with it. Settle the orphan so it doesn't linger;
-          // nothing is listening, so keep the already-decided UX.
-          await PendingGates.resolve(id, "cancelled", userId);
+        if (!row || row.status !== "pending") {
+          // A sweep expired (or something cancelled/purged) the row while our
+          // waiter is still parked on it — deliver the deny locally so the
+          // agent never hangs. approved/denied rows are a click's outcome and
+          // its handler already delivered.
+          if (
+            pending &&
+            (!row || row.status === "expired" || row.status === "cancelled") &&
+            this.#pending.delete(id)
+          ) {
+            if (pending.timer) clearTimeout(pending.timer);
+            pending.resolve({ approved: false, by: "system", note: row?.status ?? "missing" });
+          }
           return void (await stale());
+        }
+        if (!pending) {
+          if (row.instanceId === PendingGates.INSTANCE_ID) {
+            // Our own row with no waiter: the abort raced the click. Settle
+            // the stray so it doesn't linger until expiry.
+            await PendingGates.resolve(id, "cancelled", userId);
+            return void (await stale());
+          }
+          // Foreign pending row: a sibling replica may be alive and holding
+          // the promise — cancelling here would leave the legit approver with
+          // "already decided" while the sibling hangs forever. Not ours to
+          // decide until M4's pub/sub; keep the buttons, tell the clicker.
+          try {
+            await respond({
+              response_type: "ephemeral",
+              replace_original: false,
+              text: ":hourglass: This approval is pending on another replica — it will be decided there (or auto-expire).",
+            });
+          } catch {}
+          return;
         }
 
         // Authorize the clicker against this request's allowlist — BEFORE the
@@ -119,7 +146,16 @@ export class ApprovalGate {
         // Exactly one click wins the guarded UPDATE; a duplicate or a race
         // against the auto-deny timer sees null and is stale.
         const resolved = await PendingGates.resolve(id, approved ? "approved" : "denied", userId);
-        if (!resolved) return void (await stale());
+        if (!resolved) {
+          // A sweep expired (or an abort cancelled) the row under the live
+          // waiter — deliver the deny locally, never hang.
+          const cur = await PendingGates.get(id);
+          if (cur && (cur.status === "expired" || cur.status === "cancelled") && this.#pending.delete(id)) {
+            if (pending.timer) clearTimeout(pending.timer);
+            pending.resolve({ approved: false, by: "system", note: cur.status });
+          }
+          return void (await stale());
+        }
 
         if (pending.timer) clearTimeout(pending.timer);
         this.#pending.delete(id);
@@ -251,15 +287,17 @@ export class ApprovalGate {
         void (async () => {
           const p = this.#pending.get(id);
           if (!p) return;
-          // Settle the durable row; a click that raced us wins the guard and
-          // its handler owns the outcome. A recurring sweep may have expired
-          // the row already — that outcome is still ours to deliver locally.
+          // Settle the durable row. If someone beat us to it, only a click on
+          // THIS instance (status approved/denied) has a handler that will
+          // deliver the decision — foreign replicas never resolve our rows.
+          // Any other terminal state (expired by a sweep, cancelled, or even
+          // a purged row) is ours to finish: deny locally, never hang.
           const row = await PendingGates.resolve(id, "expired", "system");
           if (!row) {
             const cur = await PendingGates.get(id);
-            if (cur && cur.status !== "expired") return; // a click won
+            if (cur && (cur.status === "approved" || cur.status === "denied")) return;
           }
-          this.#pending.delete(id);
+          if (!this.#pending.delete(id)) return; // decision already delivered
           // Best-effort UI update so the block doesn't look pending forever.
           if (p.ts) {
             void this.#client.chat
@@ -289,6 +327,15 @@ export class ApprovalGate {
       { once: true },
     );
 
+    // Auto-deny hint must be in the blocks BEFORE the post — appending after
+    // postMessage (the historical bug) never rendered anywhere.
+    if (timeoutSec > 0) {
+      sections.push({
+        type: "context",
+        elements: [{ type: "mrkdwn", text: `:hourglass: Auto-denies in *${timeoutSec}s* if no one clicks.` }],
+      });
+    }
+
     try {
       const posted = await this.#client.chat.postMessage({
         channel: req.channel,
@@ -303,13 +350,6 @@ export class ApprovalGate {
       this.#pending.delete(id);
       void PendingGates.resolve(id, "cancelled", "system").catch(() => {});
       throw e;
-    }
-
-    if (timeoutSec > 0) {
-      sections.push({
-        type: "context",
-        elements: [{ type: "mrkdwn", text: `:hourglass: Auto-denies in *${timeoutSec}s* if no one clicks.` }],
-      });
     }
     return promise;
   }
