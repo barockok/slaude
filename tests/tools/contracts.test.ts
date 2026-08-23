@@ -1,13 +1,25 @@
 /**
  * Contract snapshot tests (spec §3 "Shared contracts", §8).
  *
- * For every MCP server, assert that what the server actually registers (tool
- * list + JSON-schema shape, as seen by a real MCP client over an in-memory
- * transport) matches the shared contract in src/tools/contracts. The expected
- * side is produced by registering the contract itself through the same SDK
- * `tool()` pipeline, so both sides go through the identical zod → JSON-schema
- * serializer: any drift is a genuine contract/server mismatch, never a
- * serializer difference.
+ * What these tests guarantee — and what they don't:
+ *
+ *   GUARANTEED: mount/omission/import drift. A fully-capable server must
+ *   register exactly the contract's tool list (no forgotten tool, no extra
+ *   tool, conditional gating verified), and each registered tool's
+ *   description + JSON schema must be byte-identical to registering the
+ *   contract entry through the same SDK `tool()` pipeline — which catches a
+ *   builder that stops importing from the contract (e.g. reverts to a local
+ *   inline schema that then drifts).
+ *
+ *   NOT the job of this file: contract-vs-handler field renames/retypes.
+ *   Because the builders and REST executors pass schema-inferred args
+ *   straight into the handlers, tsc catches those at compile time (see
+ *   parseToolArgs in src/tools/contracts/types.ts).
+ *
+ * The expected side is produced by registering the contract itself through
+ * the same SDK pipeline over an in-memory MCP transport, so both sides use
+ * the identical zod → JSON-schema serializer: any diff is genuine drift,
+ * never a serializer difference.
  */
 import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
