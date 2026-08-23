@@ -29,7 +29,9 @@
     "install-deps": "bun src/cli/install.ts",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
-    "brain-backfill": "bun src/cli/brain-backfill.ts"
+    "brain-backfill": "bun src/cli/brain-backfill.ts",
+    "migrate-sqlite": "bun src/cli/migrate-sqlite.ts",
+    "test:pg": "SLAUDE_DB=pg bun test"
   },
   "devDependencies": {
     "@types/bun": "latest",
