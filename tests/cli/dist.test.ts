@@ -29,3 +29,17 @@ test("installedVersions lists + semver-sorts version dirs, ignoring junk", () =>
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("release candidates are real versions, sorted below their stable release", () => {
+  const root = mkdtempSync(join(tmpdir(), "dist-rc-"));
+  try {
+    for (const v of ["0.41.0", "0.41.0-rc.2", "0.41.0-rc.10", "0.40.3"]) mkdirSync(join(root, v));
+    symlinkSync("0.41.0-rc.10", join(root, "current"));
+    // rc.2 before rc.10 (numeric identifiers), all rcs before the stable 0.41.0
+    expect(installedVersions(root)).toEqual(["0.40.3", "0.41.0-rc.2", "0.41.0-rc.10", "0.41.0"]);
+    expect(currentVersion(root)).toBe("0.41.0-rc.10");
+    expect(previousVersion(root)).toBe("0.41.0");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

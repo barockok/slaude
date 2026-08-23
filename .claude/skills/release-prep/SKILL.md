@@ -9,6 +9,13 @@ description: Use when cutting a new slaude release, bumping version, or writing 
 
 Slaude release workflow. Granular commits, hand-written release notes, automated verification. Follows `docs/releases/<tag>.md` convention from `CLAUDE.md`.
 
+Two paths:
+
+- **Direct** — bump, tag `vX.Y.Z`, push. For patches and low-risk minors.
+- **Release candidate** — tag `vX.Y.Z-rc.N` first, soak, then promote to `vX.Y.Z`. Use for anything touching the install path, the DB schema, or the agent loop.
+
+Both run the same `release.yml`; the RC path just publishes as a GitHub *pre-release* (auto-detected from the `-` in the tag) so `install.sh` never picks it up as `latest`.
+
 ## When to Use
 
 - User asks to prep/cut/ship a release
@@ -25,6 +32,8 @@ Slaude release workflow. Granular commits, hand-written release notes, automated
 | Check changed files | `git diff --stat <tag>..HEAD` |
 | Type check | `bun run typecheck` |
 | Run tests | `bun test` |
+| Installer smoke | `bash tests/installer/smoke.sh` |
+| Promote an RC | `scripts/promote-rc.sh vX.Y.Z-rc.N [--dry-run]` |
 
 ## Release Workflow
 
@@ -112,6 +121,47 @@ bun test
 ```
 
 Zero failures required. Check coverage report: aim for 97%+ function, 99%+ line.
+
+## Release Candidate Workflow
+
+Use when the change touches `install.sh`, the dist/version layout, the DB schema, or the agent loop — anywhere a bad stable tag is expensive to walk back.
+
+### 1. Cut the RC
+
+Write `docs/releases/vX.Y.Z.md` **first** — under the *stable* name. `promote-rc.sh` requires it, and the RC build reuses it.
+
+```bash
+# package.json version must be the full RC string, tag and all
+sed -i -E 's/("version": *")[^"]+(")/\1X.Y.Z-rc.1\2/' package.json
+git commit -am "chore(release): vX.Y.Z-rc.1"
+git tag vX.Y.Z-rc.1
+git push origin main && git push origin vX.Y.Z-rc.1
+```
+
+`release.yml` then: verifies tag == package.json, runs tests, packages the tarball, runs the installer smoke test, and publishes a GitHub **pre-release**.
+
+The tag and `package.json` MUST agree — `install.sh` builds the asset URL from the tag while `package-release.sh` names the tarball from `package.json`. The workflow fails fast on a mismatch rather than shipping a 404.
+
+### 2. Soak
+
+Install the RC explicitly (it is never `latest`):
+
+```bash
+SLAUDE_VERSION=X.Y.Z-rc.1 curl -fsSL https://raw.githubusercontent.com/barockok/slaude/main/install.sh | bash
+```
+
+Check `slaude version` reports the RC. Run it against a real workspace. `slaude update` will pull *back* to the newest stable — that is intentional; an RC is a deliberate pin.
+
+Found a bug? Fix on main, cut `-rc.2`. Don't patch an RC tag in place.
+
+### 3. Promote
+
+```bash
+scripts/promote-rc.sh vX.Y.Z-rc.2 --dry-run   # inspect first
+scripts/promote-rc.sh vX.Y.Z-rc.2
+```
+
+The script refuses to run unless: the tag is `vX.Y.Z-rc.N`, the RC tag exists, the stable tag does *not*, you are on a clean `main`, the RC is an ancestor of HEAD, and `docs/releases/vX.Y.Z.md` exists. It prints any commits that landed after the RC — those ship **unsoaked**, so re-cut an RC if that list is non-trivial. Then it bumps `package.json`, commits, tags, and pushes on confirmation.
 
 ## Release Note Anti-Patterns
 

@@ -42,6 +42,7 @@ Zidni Mubarok <zidmubarock@gmail.com>. Telegram bridge available — use for blo
   - Secret/credential required
 - **Memory — KB only (overrides harness default):** All memory writes go to `kb_memoize`. Never write to `memory/` files — the `# auto memory` harness instructions are superseded by this rule. For reads, `kb_search`/`kb_think` are primary; treat injected MEMORY.md context as legacy.
 - Releases: every release ships a hand-written `docs/releases/<tag>.md` with decent markdown notes — group by category (Features / Fixes / Docs / Internal), explain the *why* not just the commit subject, link findings docs when relevant. The release workflow prefers this file over auto-generated git-log dumps.
+- **Release candidates.** Anything touching `install.sh`, the dist/version layout, the DB schema, or the agent loop goes out as `vX.Y.Z-rc.N` first. The RC publishes as a GitHub pre-release (auto-detected from the `-` in the tag) so `install.sh` never resolves it as `latest`; install it explicitly with `SLAUDE_VERSION=X.Y.Z-rc.N`. Soak, then `scripts/promote-rc.sh vX.Y.Z-rc.N` to bump, tag, and push the stable release. Notes live under the *stable* name (`docs/releases/vX.Y.Z.md`) from the first RC onward. Tag and `package.json` must always agree — `release.yml` fails the build otherwise. Full procedure: `.claude/skills/release-prep/SKILL.md`.
 
 ## Architecture
 
@@ -104,6 +105,7 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 Entries live in `docs/findings/<date>-<slug>.md`. Add a new file per significant finding/decision/mistake; index it below. Newest first.
 
+- [2026-08-23 — Release candidate pipeline: `-rc.N` tags already published as GitHub pre-releases (and `releases/latest` already excluded them), so the soak stage was mostly free; the gap was `promote-rc.sh` + guards. Cutting a fake RC surfaced three latent bugs — smoke.sh's `[0-9.]` version sed silently non-matching, `dist.ts` SEMVER rejecting prereleases (`slaude version` → `(none)`), and unguarded tag/package.json drift shipping a 404 download](docs/findings/2026-08-23-release-candidate-pipeline.md)
 - [2026-07-27 — kb_think gather miss: runThink uses gbrain's sourceId-anchored pooled search (misses pages in other agent slices); gather() per-source fan-out finds them. Fix: rescue synthesis via sdkThinkClient when pagesGathered=0 + cross-check finds pages; log cross-check exceptions instead of silent catch](docs/findings/2026-07-27-kb-think-gather-miss.md)
 - [2026-07-24 — Per-agent brain slices: `agent-<id>` private minds (mirror of `user-<id>`); default `kb_memoize` target `"mine"` auto-passes to the caller agent's own slice, explicit `target:"shared"` cards; classify write DESTINATION not (unknowable) intent; identity anchored on `SLAUDE_AGENT_ID`/auth.test; legacy `agent` source kept read-only for continuity](docs/findings/2026-07-24-per-agent-brain-slices.md)
 - [2026-07-08 — Per-channel token and model metrics: augment Prometheus metrics to export channel_id and model labels to enable downstream cost calculation](docs/findings/2026-07-08-per-channel-metrics.md)

@@ -8,7 +8,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK="$(mktemp -d)"; export HOME="$WORK/home"; mkdir -p "$HOME"
 export SLAUDE_DIST="$HOME/.slaude-dist" SLAUDE_BIN_DIR="$HOME/.local/bin"
 export SLAUDE_NO_BOOTSTRAP=1   # bun/git/uv already present in the CI image
-VERSION="$(grep -m1 '"version"' "$ROOT/package.json" | sed -E 's/.*"([0-9.]+)".*/\1/')"
+# Same capture as package-release.sh — [0-9.] alone silently fails to match a
+# prerelease version (0.41.0-rc.1) and leaves VERSION as the whole json line.
+VERSION="$(grep -m1 '"version"' "$ROOT/package.json" | sed -E 's/.*"version": *"([^"]+)".*/\1/')"
 export SLAUDE_VERSION="$VERSION"
 
 # Build the fixture release assets the installer expects.

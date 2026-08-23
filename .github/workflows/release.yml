@@ -16,6 +16,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      # install.sh derives the asset URL from the *tag* but package-release.sh
+      # names the tarball from *package.json*. A mismatch ships a release whose
+      # download 404s, so fail fast here instead.
+      - name: Verify tag matches package.json version
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          PKG_VERSION="$(grep -m1 '"version"' package.json | sed -E 's/.*"version": *"([^"]+)".*/\1/')"
+          if [ "v${PKG_VERSION}" != "${REF_NAME}" ]; then
+            echo "::error::tag ${REF_NAME} != package.json v${PKG_VERSION}"; exit 1
+          fi
+          echo "tag and package.json agree on ${REF_NAME}"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -78,6 +92,13 @@ jobs:
           mkdir -p dist
           bash scripts/package-release.sh dist
           ls -l dist
+
+      # An RC exists to catch install-path regressions before the stable tag.
+      # ci.yml only smokes the installer on main/PRs, so a release built from a
+      # tag would otherwise ship unverified. Runs on every tag — an RC that
+      # skipped this check would not be worth soaking.
+      - name: Installer smoke test
+        run: bash tests/installer/smoke.sh
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
