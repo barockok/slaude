@@ -173,8 +173,19 @@ describe("/v1/sessions/:id", () => {
 });
 
 describe("/v1/tenants/:id/runtime", () => {
-  test("returns the default-tenant bundle with an ETag; If-None-Match → 304", async () => {
+  test("requires a job token (decrypted creds are not bearer-only)", async () => {
     const r = await call(`/v1/tenants/default/runtime`, {}, { job: null });
+    expect(r.status).toBe(401);
+  });
+
+  test("job token scoped to another tenant → 403", async () => {
+    const foreign = mintJobToken({ ...claimsFor(sessionId), tenant: "other-tenant" });
+    const r = await call(`/v1/tenants/default/runtime`, {}, { job: foreign });
+    expect(r.status).toBe(403);
+  });
+
+  test("returns the default-tenant bundle with an ETag; If-None-Match → 304", async () => {
+    const r = await call(`/v1/tenants/default/runtime`);
     expect(r.status).toBe(200);
     const etag = r.headers.get("etag")!;
     expect(etag).toMatch(/^"[0-9a-f]{64}"$/);
@@ -187,13 +198,18 @@ describe("/v1/tenants/:id/runtime", () => {
     expect(bundle.mcpJson).toBeDefined();
     expect(typeof bundle.providerCreds).toBe("object");
 
-    const r304 = await call(`/v1/tenants/default/runtime`, { headers: { "if-none-match": etag } }, { job: null });
+    const r304 = await call(`/v1/tenants/default/runtime`, { headers: { "if-none-match": etag } });
     expect(r304.status).toBe(304);
     expect(r304.headers.get("etag")).toBe(etag);
+
+    // RFC 7232: If-None-Match: * matches any current representation.
+    const rStar = await call(`/v1/tenants/default/runtime`, { headers: { "if-none-match": "*" } });
+    expect(rStar.status).toBe(304);
   });
 
-  test("unknown tenant → 404", async () => {
-    const r = await call(`/v1/tenants/nope/runtime`, {}, { job: null });
+  test("unknown tenant (token scoped to it) → 404", async () => {
+    const foreign = mintJobToken({ ...claimsFor(sessionId), tenant: "nope" });
+    const r = await call(`/v1/tenants/nope/runtime`, {}, { job: foreign });
     expect(r.status).toBe(404);
   });
 });

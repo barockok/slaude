@@ -12,7 +12,10 @@
  *
  *   GET   /v1/sessions/:id            session row          (bearer + job token)
  *   PATCH /v1/sessions/:id            update started/model/mode  (same)
- *   GET   /v1/tenants/:id/runtime     runtime bundle, ETag/304   (bearer)
+ *   GET   /v1/tenants/:id/runtime     runtime bundle, ETag/304   (bearer + job token;
+ *                                     the bundle carries DECRYPTED provider creds, so a
+ *                                     leaked static bearer alone must not fetch it — the
+ *                                     token's tenant claim must match :id)
  *   GET   /v1/pending/:id             30s long-poll, 204 timeout (bearer)
  *   POST  /v1/jobs/:id/ack|fail       telemetry only             (bearer)
  *   POST  /v1/tools/:server/:tool     contract-validated tool call (bearer + job token)
@@ -64,6 +67,11 @@ export function createV1Api(opts: V1Options): V1Api {
       // /v1/tenants/:id/runtime
       if (seg.length === 4 && seg[1] === "tenants" && seg[3] === "runtime") {
         if (req.method !== "GET") return methodNotAllowed();
+        const job = requireJobToken(req);
+        if ("response" in job) return job.response;
+        if (job.claims.tenant !== seg[2]!) {
+          return json(403, { error: "job token is not scoped to this tenant" });
+        }
         return await handleTenantRuntime(req, seg[2]!);
       }
 
