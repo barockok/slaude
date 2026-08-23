@@ -38,6 +38,7 @@ describe("queue/keys", () => {
     expect(k.reloadChannel("t1")).toBe("p:reload:t1");
     expect(k.gateChannel("g1")).toBe("p:gate:g1");
     expect(k.eventsStream("s1")).toBe("p:events:s1");
+    expect(k.turnDone("j1")).toBe("p:turn-done:j1");
   });
 
   test("queue names: shared is bare, per-node dots the nodeId in", () => {

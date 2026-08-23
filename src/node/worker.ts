@@ -76,7 +76,15 @@ export interface NodeWorkerOpts {
   /** BullMQ Worker tuning (tests shrink stall detection to simulate a killed
    *  node whose claimed job must be recovered by a surviving worker). */
   bull?: { lockDuration?: number; stalledInterval?: number; maxStalledCount?: number };
+  /** TEST SEAM: awaited right after the turn-done marker is written and
+   *  before the processor returns (i.e. before any BullMQ ack) — the window
+   *  a kill-after-reply zombie test needs to die in. */
+  hooks?: { afterTurn?: (jobId: string, outcome: "done" | "error") => void | Promise<void> };
 }
+
+/** How long a turn-done marker outlives its job (covers Slack's retry window
+ *  and any realistic BullMQ stall-recovery delay by a wide margin). */
+const TURN_DONE_TTL_SEC = 3600;
 
 export type NodeWorkerState = "starting" | "ready" | "draining" | "stopped";
 
@@ -223,6 +231,18 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           reject(e);
         });
       });
+      // Completion marker BEFORE any ack (processor return / /v1 ack): if
+      // this node dies in the ack window, the BullMQ retry finds the marker
+      // and completes the job without re-running the turn — the model ran
+      // and its Slack posts are already out. Residual at-least-once window:
+      // dying between the turn's last Slack post and this write still
+      // replays the turn on retry (docs-new/deployment/multi-node.md).
+      try {
+        await cmd.set(keys.turnDone(String(job.id)), outcome, "EX", TURN_DONE_TTL_SEC, "NX");
+      } catch (e) {
+        console.error(`[node] turn-done marker write failed job=${job.id}:`, e);
+      }
+      if (opts.hooks?.afterTurn) await opts.hooks.afterTurn(String(job.id), outcome);
       return outcome;
     } finally {
       turnAborts.delete(sessionId);
@@ -245,6 +265,20 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     const data = job.data as TurnJob;
     const claimLatencySec = Math.max(0, (Date.now() - (data.enqueuedAt || job.timestamp)) / 1000);
     metric.nodeClaimLatency.set(claimLatencySec);
+    // Turn-done marker: a prior attempt of THIS job already ran its agent
+    // turn but died before BullMQ acked (kill-after-reply zombie). Re-running
+    // would double-post to Slack — complete the job instead. Checked
+    // unconditionally, not on attemptsMade: stall recovery re-delivers with
+    // attemptsMade still 0, and a first attempt can never see its own marker.
+    try {
+      if (await cmd.exists(keys.turnDone(String(job.id)))) {
+        metric.nodeTurnsTotal.inc({ result: "deduped" });
+        void client.ackJob(String(job.id), { sessionId: data.sessionId, result: "done" });
+        return { skipped: "turn-done" };
+      }
+    } catch {
+      // Marker unreadable — proceed with the turn (at-least-once).
+    }
     // Durable abort flag: /abort published before any node claimed the job.
     if (await pubsub.consumeAbortFlag(data.sessionId)) {
       metric.nodeTurnsTotal.inc({ result: "skipped" });

@@ -59,6 +59,11 @@ export interface Keys {
   gateChannel(pendingId: string): string;
   /** `events:<sessionId>` capped stream of serialized AgentEvents. */
   eventsStream(sessionId: string): string;
+  /** `turn-done:<jobId>` — completion marker written the moment a job's agent
+   *  turn finishes, BEFORE any ack. A BullMQ retry of the same job (stall
+   *  recovery or failure retry) that finds it must not re-run the turn —
+   *  the model already ran and its Slack posts are out. */
+  turnDone(jobId: string): string;
 }
 
 export function makeKeys(prefix: string = redisPrefix()): Keys {
@@ -79,5 +84,6 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     reloadChannel: (tenantId) => `${prefix}:reload:${tenantId}`,
     gateChannel: (pendingId) => `${prefix}:gate:${pendingId}`,
     eventsStream: (sessionId) => `${prefix}:events:${sessionId}`,
+    turnDone: (jobId) => `${prefix}:turn-done:${jobId}`,
   };
 }
