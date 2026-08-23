@@ -31,6 +31,7 @@ import { soulData, effectiveSoulForChannel } from "../soul/extract";
 import { getPersonaRegistry } from "../persona/registry";
 import * as Sessions from "../db/sessions";
 import type { ThreadKey } from "../db/sessions";
+import { dbSessionStore, type SessionStore } from "./session-store";
 import * as OneOnOne from "../db/one-on-one";
 import { memory } from "../memory";
 import { scrubChildEnv } from "./child-env";
@@ -116,10 +117,13 @@ export function disengagedHookDecision(
  *  over, so a re-@mention takes effect on the very next message. On suppression
  *  the metric is bumped. Exported (as a factory over sessionId) for unit tests;
  *  the suppression decision itself lives in disengagedHookDecision. */
-export function makeDisengageSuppressHook(sessionId: string): HookCallback {
+export function makeDisengageSuppressHook(
+  sessionId: string,
+  findById: SessionStore["findById"] = Sessions.findById,
+): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== "UserPromptSubmit") return { continue: true };
-    const decision = disengagedHookDecision(await Sessions.findById(sessionId));
+    const decision = disengagedHookDecision(await findById(sessionId));
     if (decision.continue === false) metric.disengagedSuppressedTotal.inc();
     return decision;
   };
@@ -136,10 +140,11 @@ export function makeUserPromptHook(
   sessionId: string,
   notes: Map<string, string[]>,
   suppressCheck?: () => boolean,
+  findById: SessionStore["findById"] = Sessions.findById,
 ): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== "UserPromptSubmit") return { continue: true };
-    const dis = disengagedHookDecision(await Sessions.findById(sessionId));
+    const dis = disengagedHookDecision(await findById(sessionId));
     if (dis.continue === false) {
       metric.disengagedSuppressedTotal.inc();
       return dis; // leave queued notes for the next engaged turn
@@ -169,6 +174,9 @@ const RESUME_MISS_RE = /No conversation found with session ID/i;
 
 export class AgentManager extends EventEmitter {
   #live = new Map<string, LiveSession>();
+  /** Session persistence. Defaults to the db repo; node workers inject the
+   *  REST implementation (spec §6) via setSessionStore. */
+  #store: SessionStore = dbSessionStore;
   #resolver: PermissionResolver | undefined;
   #mcpResolver: McpResolver | undefined;
   #stopGuard: StopGuard | undefined;
@@ -202,6 +210,12 @@ export class AgentManager extends EventEmitter {
   /** Current context-usage snapshot for a session, or null if no turn has completed. */
   getTokenSnapshot(sessionId: string): UsageSnapshot | null {
     return this.#budget.snapshot(sessionId);
+  }
+
+  /** Install a session persistence backend. Same setter pattern as the other
+   *  transport seams; unset = the default db repo (zero behavior change). */
+  setSessionStore(store: SessionStore | undefined) {
+    this.#store = store ?? dbSessionStore;
   }
 
   /** Install a transport-level permission resolver (e.g. Slack approval gate). */
@@ -252,7 +266,7 @@ export class AgentManager extends EventEmitter {
 
   /** Get-or-create a session bound to a Slack thread. */
   async ensureSession(thread: ThreadKey, opts: { title?: string } = {}) {
-    let row = await Sessions.findByThread(thread);
+    let row = await this.#store.findByThread(thread);
     if (!row) {
       // Multi-persona: named personas sharing a thread must not share a cwd.
       // Suffix the workspace with the persona; default persona → path unchanged.
@@ -264,7 +278,7 @@ export class AgentManager extends EventEmitter {
       );
       mkdirSync(workingDir, { recursive: true });
       try {
-        row = await Sessions.createForThread({
+        row = await this.#store.createForThread({
           thread,
           model: env.model(),
           working_dir: workingDir,
@@ -276,7 +290,7 @@ export class AgentManager extends EventEmitter {
         // cron scheduler alongside an inbound event) inserted this thread's
         // row between our find and insert and tripped the unique index. The
         // sibling's row is the session — use it.
-        row = await Sessions.findByThread(thread);
+        row = await this.#store.findByThread(thread);
         if (!row) throw e;
       }
     }
@@ -369,7 +383,7 @@ export class AgentManager extends EventEmitter {
 
   /** Change permission mode for a session. Persists; if live, also pushed to the SDK Query. */
   async setPermissionMode(sessionId: string, mode: PermissionMode) {
-    await Sessions.setPermissionMode(sessionId, mode);
+    await this.#store.setPermissionMode(sessionId, mode);
     const live = this.#live.get(sessionId);
     if (live?.query) {
       try {
@@ -382,7 +396,7 @@ export class AgentManager extends EventEmitter {
 
   /** Change the model for a session. Persists; if live, also pushed to the SDK Query. */
   async setSessionModel(sessionId: string, model: string) {
-    await Sessions.setModel(sessionId, model);
+    await this.#store.setModel(sessionId, model);
     const live = this.#live.get(sessionId);
     if (live?.query) {
       try {
@@ -407,7 +421,7 @@ export class AgentManager extends EventEmitter {
   }
 
   async #startSession(sessionId: string, firstText: string) {
-    const row = await Sessions.findById(sessionId);
+    const row = await this.#store.findById(sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);
 
     const memBlock = await memory.prefetch(sessionId);
@@ -557,6 +571,7 @@ export class AgentManager extends EventEmitter {
       sessionId,
       this.#sessionNotes,
       () => this.#suppressNextTurn.delete(sessionId),
+      (id) => this.#store.findById(id),
     );
     // CC plugins installed via `bun run install-deps`. Without this, the SDK
     // ignores the enabledPlugins entry in settings.json (it only reads
@@ -635,7 +650,7 @@ export class AgentManager extends EventEmitter {
     this.#live.set(sessionId, live);
     metric.sessionsLive.set(this.#live.size);
     this.#armIdle(live);
-    await Sessions.setStatus(sessionId, "running");
+    await this.#store.setStatus(sessionId, "running");
 
     let stderrBuf = "";
     (options as any).stderr = (chunk: string) => {
@@ -667,7 +682,7 @@ export class AgentManager extends EventEmitter {
         if (RESUME_MISS_RE.test(stderrBuf)) {
           retried = true;
           console.log(`[mgr] clearing stale claude_started + retrying session=${sessionId}`);
-          await Sessions.clearStarted(sessionId);
+          await this.#store.clearStarted(sessionId);
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           // Fire and forget — restart with the same first prompt.
@@ -680,7 +695,7 @@ export class AgentManager extends EventEmitter {
         if (/session.*(already in use|already exists)/i.test(stderrBuf)) {
           retried = true;
           console.log(`[mgr] session id already has a transcript — retrying with resume session=${sessionId}`);
-          await Sessions.markStarted(sessionId);
+          await this.#store.markStarted(sessionId);
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           void this.#startSession(sessionId, firstText);
@@ -698,7 +713,7 @@ export class AgentManager extends EventEmitter {
       } finally {
         if (retried) return;
         if (live.idleTimer) clearTimeout(live.idleTimer);
-        await Sessions.setStatus(sessionId, "idle");
+        await this.#store.setStatus(sessionId, "idle");
         this.#live.delete(sessionId);
         this.#budget.forget(sessionId);
         this.#stopBlocked.delete(sessionId);
@@ -726,7 +741,7 @@ export class AgentManager extends EventEmitter {
     const live = this.#live.get(sessionId);
     switch (msg.type) {
       case "assistant": {
-        void Sessions.markStarted(sessionId);
+        void this.#store.markStarted(sessionId);
         // The SDK's BetaContentBlock union types only text + tool_use, but the
         // model also emits thinking blocks at runtime. Widen so the thinking
         // branch type-checks (both the discriminant and `.thinking`).
