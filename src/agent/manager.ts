@@ -263,13 +263,22 @@ export class AgentManager extends EventEmitter {
         `${thread.team_id}-${thread.channel_id}-${thread.thread_ts}${personaSuffix}`,
       );
       mkdirSync(workingDir, { recursive: true });
-      row = await Sessions.createForThread({
-        thread,
-        model: env.model(),
-        working_dir: workingDir,
-        title: opts.title,
-        permission_mode: env.defaultPermissionMode(),
-      });
+      try {
+        row = await Sessions.createForThread({
+          thread,
+          model: env.model(),
+          working_dir: workingDir,
+          title: opts.title,
+          permission_mode: env.defaultPermissionMode(),
+        });
+      } catch (e) {
+        // Find-then-create race: a concurrent caller (another replica, or the
+        // cron scheduler alongside an inbound event) inserted this thread's
+        // row between our find and insert and tripped the unique index. The
+        // sibling's row is the session — use it.
+        row = await Sessions.findByThread(thread);
+        if (!row) throw e;
+      }
     }
     return row;
   }
