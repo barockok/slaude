@@ -12,6 +12,14 @@
  * moveStalled additionally rescues jobs sitting unclaimed on a *live* node's
  * queue past a threshold (node too busy or its worker wedged): they too go
  * back to the shared queue for anyone to pick up.
+ *
+ * Duplicate-delivery window: moveToShared coalesces via the coalesce index,
+ * but that index has its own TTL. A session with a job stranded on a dead
+ * node's queue AND an already-pending shared job whose index entry has
+ * expired ends up with TWO shared jobs after the reap — the move can no
+ * longer see the sibling. This is accepted at-least-once behavior: the
+ * session lock serializes the two turns, and the consumer's Slack-ts dedup
+ * drops the repeated messages downstream.
  */
 import type { Redis } from "ioredis";
 import type { Job } from "bullmq";
