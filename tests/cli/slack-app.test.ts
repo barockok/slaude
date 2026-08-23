@@ -114,7 +114,11 @@ describe("slack-app CLI", () => {
     expect(flagValueFlag.code).toBe(1);
   });
 
-  it("refuses to run against the sqlite facade", async () => {
+  // Skipped on the SLAUDE_DB=pg leg, where the process facade IS Postgres.
+  const pgLeg = ["pg", "postgres", "postgresql"].includes(
+    (process.env.SLAUDE_DB ?? "sqlite").trim().toLowerCase(),
+  );
+  it.skipIf(pgLeg)("refuses to run against the sqlite facade", async () => {
     // No dbc injected and SLAUDE_DB unset (tests default to sqlite).
     const err: string[] = [];
     const code = await main(["list"], { out: () => {}, err: (l) => err.push(l) });
