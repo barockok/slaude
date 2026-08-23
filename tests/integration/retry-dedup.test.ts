@@ -86,7 +86,8 @@ d("Slack retry dedup across replicas (real Redis)", () => {
     expect(replies(gw1.transport, "dedup-reply").length).toBe(1);
     expect(replies(gw2.transport, "dedup-reply").length).toBe(0);
 
-    // Still exactly one after the turn settled (no late duplicate).
+    // Hard negative window (deliberate fixed wait — a negative assertion has
+    // no event to poll for): still exactly one turn, no late duplicate.
     await new Promise((r) => setTimeout(r, 500));
     expect(turnsRan).toBe(1);
     expect(replies(gw1.transport, "dedup-reply").length).toBe(1);

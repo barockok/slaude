@@ -141,7 +141,7 @@ export class SimSession {
       await this.transport.feedMessage({ channel, user: as, text, channel_type: dm ? "im" : "channel", team: TEAM, thread_ts: step.thread ?? this.thread });
       if (this.#cluster.dispatches() > before) await turn.done;
       else turn.cancel();
-      await new Promise((r) => setTimeout(r, 75));
+      await this.#settleOutbound();
       return;
     }
     // `thread` pins messages to a shared thread_ts so multi-message, thread-scoped
@@ -173,7 +173,23 @@ export class SimSession {
     await this.transport.feedAction(actionId, as);
     await this.#drain();
     await turn.done;
-    if (this.#cluster) await new Promise((r) => setTimeout(r, 75));
+    if (this.#cluster) await this.#settleOutbound();
+  }
+
+  /** Cluster mode: after done/error the gateway's UX side effects (✅ reaction,
+   *  status updates, error posts) land asynchronously via the events follower.
+   *  Poll the outbound bus until it stops growing (two quiet 15ms checks),
+   *  bounded — an adaptive settle instead of a fixed sleep. */
+  async #settleOutbound(maxMs = 1500): Promise<void> {
+    const deadline = Date.now() + maxMs;
+    let last = this.transport.outbound.length;
+    let quiet = 0;
+    while (Date.now() < deadline && quiet < 2) {
+      await new Promise((r) => setTimeout(r, 15));
+      const n = this.transport.outbound.length;
+      if (n === last) quiet++;
+      else { quiet = 0; last = n; }
+    }
   }
 
   cards() { return this.transport.outbound; }
