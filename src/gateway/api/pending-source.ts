@@ -1,18 +1,13 @@
 /**
- * MERGE SEAM — pending-gate source for `GET /v1/pending/:id`.
+ * Pending-gate source for `GET /v1/pending/:id`.
  *
- * The durable implementation lives in `src/db/pending-gates.ts` (built in the
- * P2 worktree, Postgres `pending_gates` table) with the API:
- *
- *   create(kind, sessionId, payload, expiresAt) / get(id) /
- *   resolve(id, status, resolvedBy) / sweepExpired()
- *
- * This module mirrors that exact interface behind a thin seam plus an
- * in-memory implementation so /v1/pending is testable before the merge. Once
- * P2 lands, swap `defaultPendingSource()` to return an adapter over
- * `src/db/pending-gates.ts` (a one-line change) and keep the in-memory impl
- * for unit tests.
+ * `defaultPendingSource()` adapts the durable `pending_gates` repo
+ * (src/db/pending-gates.ts) — the same rows the gateway's permission /
+ * approval / mcp_connect gates persist — so a long-poll on /v1/pending sees
+ * a Block Kit click or expiry from ANY replica. `InMemoryPendingSource`
+ * remains for unit tests that don't want a DB.
  */
+import * as PendingGates from "../../db/pending-gates";
 
 export type PendingGateKind = "perm" | "approval" | "mcp_connect";
 
@@ -81,7 +76,55 @@ export class InMemoryPendingSource implements PendingSource {
   }
 }
 
-/** P2 merge point: replace with an adapter over src/db/pending-gates.ts. */
+/**
+ * Adapter over the durable pending_gates repo. Shape notes:
+ * - the repo's `expiresAt` is nullable (never-expiring gates, e.g. mcp_connect
+ *   cards before the TTL); the seam's row is non-null, so null maps to
+ *   Infinity — `handlePending`'s `expiresAt <= now` check then never trips.
+ * - `resolve` statuses are constrained by the pending_gates CHECK
+ *   (approved | denied | expired | cancelled); anything else rejects at the DB.
+ */
+export class DbPendingSource implements PendingSource {
+  async create(kind: PendingGateKind, sessionId: string, payload: unknown, expiresAt: number): Promise<PendingGateRow> {
+    const row = await PendingGates.create({
+      kind,
+      sessionId,
+      payload: (payload ?? {}) as Record<string, unknown>,
+      expiresAt,
+    });
+    return toSeamRow(row);
+  }
+
+  async get(id: string): Promise<PendingGateRow | null> {
+    const row = await PendingGates.get(id);
+    return row ? toSeamRow(row) : null;
+  }
+
+  async resolve(id: string, status: string, resolvedBy: string): Promise<PendingGateRow | null> {
+    if (status === "pending") return null;
+    const row = await PendingGates.resolve(id, status as Exclude<PendingGates.GateStatus, "pending">, resolvedBy);
+    return row ? toSeamRow(row) : null;
+  }
+
+  async sweepExpired(): Promise<number> {
+    return (await PendingGates.sweepExpired()).length;
+  }
+}
+
+function toSeamRow(row: PendingGates.PendingGate): PendingGateRow {
+  return {
+    id: row.id,
+    sessionId: row.sessionId,
+    kind: row.kind,
+    payload: row.payload,
+    status: row.status,
+    resolvedBy: row.resolvedBy,
+    resolvedAt: row.resolvedAt,
+    expiresAt: row.expiresAt ?? Infinity,
+  };
+}
+
+/** Durable by default: /v1/pending long-polls the shared pending_gates table. */
 export function defaultPendingSource(): PendingSource {
-  return new InMemoryPendingSource();
+  return new DbPendingSource();
 }
