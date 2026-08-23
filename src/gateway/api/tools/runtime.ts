@@ -1,45 +1,67 @@
 /**
  * POST /v1/tools/runtime/<tool> — same handlers as the `slaude_runtime` MCP
  * server (adminHandlers), context derived from the job claims. The snake_case →
- * camelCase argument mapping mirrors createRuntimeMcp exactly.
+ * camelCase argument mapping mirrors createRuntimeMcp exactly, and each case
+ * parses with the contract schema so tsc checks the mapping against the
+ * handler's parameter type — no casts.
  */
 import { adminHandlers } from "../../slack/mcp-tools";
+import { runtimeContract } from "../../../tools/contracts/runtime";
+import { parseToolArgs } from "../../../tools/contracts/types";
 import type { JobClaims } from "../auth";
 import type { ToolPlaneDeps, ToolResult } from "./deps";
 
+const c = runtimeContract.tools;
+
 export async function executeRuntimeTool(
   tool: string,
-  args: Record<string, unknown>,
+  body: unknown,
   claims: JobClaims,
   deps: ToolPlaneDeps,
 ): Promise<ToolResult | null> {
   const ctx = deps.slackCtx(claims);
-  const a = args as any;
   switch (tool) {
-    case "ignore_thread":
-      return adminHandlers.ignoreThread(ctx, { duration: a.duration, reason: a.reason });
-    case "unignore_thread":
+    case c.ignore_thread.name:
+      return adminHandlers.ignoreThread(ctx, parseToolArgs(c.ignore_thread, body));
+    case c.unignore_thread.name:
+      parseToolArgs(c.unignore_thread, body);
       return adminHandlers.unignoreThread(ctx);
-    case "ignore_user":
+    case c.ignore_user.name: {
+      const a = parseToolArgs(c.ignore_user, body);
       return adminHandlers.ignoreUser(ctx, { userId: a.user_id, duration: a.duration, reason: a.reason });
-    case "unignore_user":
+    }
+    case c.unignore_user.name: {
+      const a = parseToolArgs(c.unignore_user, body);
       return adminHandlers.unignoreUser(ctx, { userId: a.user_id });
-    case "list_cron_jobs":
+    }
+    case c.list_cron_jobs.name:
+      parseToolArgs(c.list_cron_jobs, body);
       return adminHandlers.listCronJobs(ctx);
-    case "add_cron_job":
+    case c.add_cron_job.name: {
+      const a = parseToolArgs(c.add_cron_job, body);
       return adminHandlers.addCronJob(ctx, { cronExpr: a.cron_expr, prompt: a.prompt, target: a.target, whenActive: a.when_active });
-    case "edit_cron_job":
+    }
+    case c.edit_cron_job.name: {
+      const a = parseToolArgs(c.edit_cron_job, body);
       return adminHandlers.editCronJob(ctx, { jobId: a.job_id, cronExpr: a.cron_expr, prompt: a.prompt, target: a.target, whenActive: a.when_active });
-    case "pause_cron_job":
+    }
+    case c.pause_cron_job.name: {
+      const a = parseToolArgs(c.pause_cron_job, body);
       return adminHandlers.pauseCronJob(ctx, { jobId: a.job_id });
-    case "resume_cron_job":
+    }
+    case c.resume_cron_job.name: {
+      const a = parseToolArgs(c.resume_cron_job, body);
       return adminHandlers.resumeCronJob(ctx, { jobId: a.job_id });
-    case "remove_cron_job":
+    }
+    case c.remove_cron_job.name: {
+      const a = parseToolArgs(c.remove_cron_job, body);
       return adminHandlers.removeCronJob(ctx, { jobId: a.job_id });
-    case "trigger_ingest":
+    }
+    case c.trigger_ingest.name:
+      parseToolArgs(c.trigger_ingest, body);
       return adminHandlers.triggerIngest(ctx);
-    case "reload_session":
-      return adminHandlers.reloadSession(ctx, { prompt: a.prompt });
+    case c.reload_session.name:
+      return adminHandlers.reloadSession(ctx, parseToolArgs(c.reload_session, body));
     default:
       return null;
   }

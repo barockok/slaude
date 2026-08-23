@@ -36,24 +36,22 @@ export interface ServerContract {
 /** Infer the parsed input type of a contract's schema. */
 export type InputOf<T extends ToolContract> = z.infer<z.ZodObject<T["schema"]>>;
 
-/** Look up a tool contract by name; throws on unknown tools (a programming error). */
-export function contractTool(c: ServerContract, name: string): ToolContract {
-  const t = c.tools[name];
-  if (!t) throw new Error(`no contract for tool ${c.server}/${name}`);
-  return t;
+/**
+ * Validate an unknown request body against a tool contract and return the
+ * schema-inferred args. Strict: unknown top-level keys are rejected (one
+ * validation policy across the REST plane — same as the session PATCH schema).
+ * Throws ZodError on invalid input; the /v1 router maps that to a 400.
+ *
+ * The generic keeps the inferred type precise, so call sites pass the result
+ * STRAIGHT into the same handlers the MCP builders use — tsc then checks the
+ * contract schema against each handler's parameter type, exactly like the SDK
+ * `tool()` helper does on the MCP side. No casts.
+ */
+export function parseToolArgs<S extends ZodShape>(t: ToolContract<S>, body: unknown): z.infer<z.ZodObject<S>> {
+  return z.object(t.schema).strict().parse(body ?? {});
 }
 
-/** Validate an unknown body against a tool contract. */
-export function parseToolInput(
-  t: ToolContract,
-  body: unknown,
-): { ok: true; args: Record<string, unknown> } | { ok: false; error: string } {
-  const r = z.object(t.schema).safeParse(body ?? {});
-  if (!r.success) {
-    const issues = r.error.issues
-      .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
-      .join("; ");
-    return { ok: false, error: issues };
-  }
-  return { ok: true, args: r.data as Record<string, unknown> };
+/** Render a ZodError's issues as one compact line for a 400 body. */
+export function zodIssueLine(e: z.ZodError): string {
+  return e.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
 }
