@@ -135,7 +135,9 @@ export async function handleTenantRuntime(req: Request, tenantId: string): Promi
   const body = JSON.stringify(bundle);
   const etag = `"${createHash("sha256").update(body).digest("hex")}"`;
   const inm = req.headers.get("if-none-match");
-  if (inm && inm.split(",").map((s) => s.trim()).includes(etag)) {
+  // RFC 7232 §3.2: "*" matches any current representation; otherwise compare
+  // against each listed entity-tag.
+  if (inm && (inm.trim() === "*" || inm.split(",").map((s) => s.trim()).includes(etag))) {
     return new Response(null, { status: 304, headers: { etag } });
   }
   return new Response(body, {
