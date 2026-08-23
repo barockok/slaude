@@ -15,8 +15,9 @@ import { join, resolve, relative } from "node:path";
 import { paths } from "../config/home";
 import { discoverSkills, personaSkillsRoot, type Skill } from "./loader";
 import { syncManifest } from "./sync-manifest";
+import { skillsContract } from "../tools/contracts/skills";
 
-export const SKILLS_MCP_NAME = "slaude_skills";
+export const SKILLS_MCP_NAME = skillsContract.server;
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
@@ -179,53 +180,16 @@ export const skillHandlers = makeSkillHandlers();
 
 export function createSkillsMcp(personaName?: string): McpSdkServerConfigWithInstance {
   const handlers = makeSkillHandlers(personaName);
+  const c = skillsContract.tools;
   return createSdkMcpServer({
     name: SKILLS_MCP_NAME,
     version: "0.1.0",
     tools: [
-      tool(
-        "list_skills",
-        "List installed skills (slug, name, description). Use to discover existing capabilities before authoring a new one — refine instead of duplicate.",
-        {},
-        handlers.list_skills,
-      ),
-      tool(
-        "read_skill",
-        "Read a skill's full SKILL.md. Use before refining so you preserve existing instructions.",
-        { slug: z.string().describe("Skill slug, e.g. 'release-notes'.") },
-        handlers.read_skill,
-      ),
-      tool(
-        "write_skill",
-        "Create or overwrite ~/.slaude/skills/<slug>/SKILL.md. Use to evolve yourself: when a turn demonstrates a repeatable procedure, capture it. Body supports ${SLAUDE_SKILL_DIR}, ${SLAUDE_SESSION_ID}, ${SLAUDE_SKILL_ARGS}.",
-        {
-          slug: z
-            .string()
-            .describe("Lowercase a-z 0-9 -, ≤64 chars. Invoked as /<slug>."),
-          name: z.string().describe("Human-readable name."),
-          description: z
-            .string()
-            .describe("One-line description shown to the model on match."),
-          body: z
-            .string()
-            .describe(
-              "Markdown body — instructions executed on /<slug>. Use ${SLAUDE_SKILL_ARGS} for caller args.",
-            ),
-        },
-        handlers.write_skill,
-      ),
-      tool(
-        "delete_skill",
-        "Delete a skill dir. Irreversible.",
-        { slug: z.string() },
-        handlers.delete_skill,
-      ),
-      tool(
-        "sync_manifest",
-        "Sync runtime-created skills and knowledge bases back to slaude.json + slaude.lock. If SLAUDE_SKILLS_REPO is configured, pushes new skills to git; otherwise records them as local entries. Call sparingly — only after creating or evolving multiple skills or KBs. Returns JSON summary with synced_skills, synced_kbs, warnings, and skills_in_git.",
-        {},
-        handlers.sync_manifest,
-      ),
+      tool(c.list_skills.name, c.list_skills.description, c.list_skills.schema, handlers.list_skills),
+      tool(c.read_skill.name, c.read_skill.description, c.read_skill.schema, handlers.read_skill),
+      tool(c.write_skill.name, c.write_skill.description, c.write_skill.schema, handlers.write_skill),
+      tool(c.delete_skill.name, c.delete_skill.description, c.delete_skill.schema, handlers.delete_skill),
+      tool(c.sync_manifest.name, c.sync_manifest.description, c.sync_manifest.schema, handlers.sync_manifest),
     ],
   });
 }
