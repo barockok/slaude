@@ -72,6 +72,9 @@ export function startHealthServer(deps: HealthDeps) {
 
   const server = Bun.serve({
     port,
+    // /v1/pending long-polls hold a request open for up to 30s; Bun's default
+    // idleTimeout (10s) would kill them mid-poll. 0 = no idle timeout.
+    idleTimeout: 0,
     async fetch(req) {
       const r = await routes(req);
       return r ?? new Response("not found", { status: 404 });

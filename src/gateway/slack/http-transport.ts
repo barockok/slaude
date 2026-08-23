@@ -388,7 +388,9 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
         primary ??= entry;
       }
       const port = opts.port ?? env.slack.httpPort();
-      server = Bun.serve({ port, fetch: serve });
+      // idleTimeout 0: /v1/pending long-polls (mounted on this port in http
+      // mode) hold requests open ~30s — Bun's 10s default would kill them.
+      server = Bun.serve({ port, idleTimeout: 0, fetch: serve });
       resolveStarted(primary!);
       log(
         `[slack-http] listening on :${server.port} (${entries.size} app${entries.size === 1 ? "" : "s"}) — /slack/events /slack/interactions`,
