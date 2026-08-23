@@ -98,9 +98,11 @@ export function createV1Api(opts: V1Options): V1Api {
       }
 
       return notFound();
-    } catch (e: any) {
+    } catch (e) {
+      // Log the real error server-side; never reflect internals (messages can
+      // carry paths, SQL, or provider detail) to the caller.
       console.error(`[v1] ${req.method} ${url.pathname} failed:`, e);
-      return json(500, { error: e?.message ?? String(e) });
+      return json(500, { error: "internal" });
     }
   }
 
