@@ -215,17 +215,23 @@ describe("approval gate: poll rows + cross-replica clicks", () => {
     const { pendingId } = await gateA.open({ channel: "C1", threadTs: "1.0", summary: "deploy", sessionId: "S1" });
     expect(opener.posts.length).toBe(1);
     await markForeign(pendingId);
+    // The allowlist rides in the payload (that's what makes ANY replica able
+    // to authorize) — a full-suite run may resolve approvers from a soul
+    // fixture instead of the env fallback, so read the effective list.
+    const allowlist = ((await PendingGates.get(pendingId))!.payload.approvers as string[]) ?? [];
+    expect(allowlist.length).toBeGreaterThan(0);
+    const approver = allowlist[0]!;
     const clicker = fakeApp();
     new ApprovalGate(clicker.app, ["U_APPROVER"], { ...soulless, gateBus: memoryGateBus() });
     // Non-approver: refused, row stays pending.
-    const refused = await clicker.fire(`slaude_appr:approve:${pendingId}`, "U_RANDO");
+    const refused = await clicker.fire(`slaude_appr:approve:${pendingId}`, "U_RANDO_NOT_LISTED");
     expect(refused.some((r) => String(r.text).includes("not on the approver allowlist"))).toBe(true);
     expect((await PendingGates.get(pendingId))?.status).toBe("pending");
     // Approver: settles.
-    await clicker.fire(`slaude_appr:approve:${pendingId}`, "U_APPROVER");
+    await clicker.fire(`slaude_appr:approve:${pendingId}`, approver);
     const row = await PendingGates.get(pendingId);
     expect(row?.status).toBe("approved");
-    expect(decisionFromApprovalRow(row!)).toEqual({ approved: true, by: "U_APPROVER" });
+    expect(decisionFromApprovalRow(row!)).toEqual({ approved: true, by: approver });
   });
 
   test("click on replica B resolves replica A's request() promise via the bus", async () => {
@@ -239,11 +245,15 @@ describe("approval gate: poll rows + cross-replica clicks", () => {
       "",
     );
     await markForeign(id);
+    // Click as an allowed user — the payload allowlist may be non-empty when
+    // a soul fixture from another test file resolved approvers.
+    const allowlist = ((await PendingGates.get(id))!.payload.approvers as string[]) ?? [];
+    const clickerId = allowlist[0] ?? "U_B";
     const b = fakeApp();
     new ApprovalGate(b.app, [], { ...soulless, gateBus: bus });
-    await b.fire(`slaude_appr:deny:${id}`, "U_B");
+    await b.fire(`slaude_appr:deny:${id}`, clickerId);
     const d = await promise;
-    expect(d).toEqual({ approved: false, by: "U_B" });
+    expect(d).toEqual({ approved: false, by: clickerId });
   });
 
   test("without a bus, a foreign in-process approval keeps the refusal", async () => {
