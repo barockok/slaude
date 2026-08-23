@@ -146,6 +146,10 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     const ac = new AbortController();
     turnAborts.set(sessionId, ac);
     const abortAgent = () => {
+      // Servicing the abort NOW — also consume the durable flag publishAbort
+      // set alongside the publish, or it would linger and silently skip the
+      // session's NEXT turn at claim time.
+      void pubsub.consumeAbortFlag(sessionId).catch(() => {});
       ac.abort();
       agent.abort(sessionId);
     };
