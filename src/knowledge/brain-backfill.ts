@@ -30,9 +30,9 @@ type TurnRow = { session_id: string; ts: number; user_text: string; assistant_te
 export async function backfillMemoryTurns(
   log: (m: string) => void = () => {},
 ): Promise<BackfillResult> {
-  const rows = db
-    .query("SELECT session_id, ts, user_text, assistant_text FROM memory_turns ORDER BY session_id, ts")
-    .all() as TurnRow[];
+  const rows = await db.query<TurnRow>(
+    "SELECT session_id, ts, user_text, assistant_text FROM memory_turns ORDER BY session_id, ts",
+  );
 
   const bySession = new Map<string, TurnRow[]>();
   for (const r of rows) {

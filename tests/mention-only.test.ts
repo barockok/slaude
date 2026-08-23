@@ -5,14 +5,14 @@ import { parseSlashCommand } from "../src/gateway/slack/commands";
 beforeEach(() => MentionOnly._wipeForTests());
 
 describe("mention-only db", () => {
-  test("set → find; clear → gone; set is an upsert", () => {
-    expect(MentionOnly.find("C1", "1.0")).toBeNull();
-    MentionOnly.set({ channelId: "C1", threadTs: "1.0", createdBy: "U1" });
-    expect(MentionOnly.find("C1", "1.0")?.created_by).toBe("U1");
-    MentionOnly.set({ channelId: "C1", threadTs: "1.0", createdBy: "U2" });
-    expect(MentionOnly.find("C1", "1.0")?.created_by).toBe("U2");
-    MentionOnly.clear("C1", "1.0");
-    expect(MentionOnly.find("C1", "1.0")).toBeNull();
+  test("set → find; clear → gone; set is an upsert", async () => {
+    expect((await MentionOnly.find("C1", "1.0"))).toBeNull();
+    await MentionOnly.set({ channelId: "C1", threadTs: "1.0", createdBy: "U1" });
+    expect((await MentionOnly.find("C1", "1.0"))?.created_by).toBe("U1");
+    await MentionOnly.set({ channelId: "C1", threadTs: "1.0", createdBy: "U2" });
+    expect((await MentionOnly.find("C1", "1.0"))?.created_by).toBe("U2");
+    await MentionOnly.clear("C1", "1.0");
+    expect((await MentionOnly.find("C1", "1.0"))).toBeNull();
   });
 });
 

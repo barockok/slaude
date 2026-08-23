@@ -57,6 +57,8 @@ type LiveSession = {
   idleTimer?: ReturnType<typeof setTimeout>;
   /** Set when reload_session is called so expected exit errors are suppressed. */
   reloading?: boolean;
+  /** Slack channel of the session row, cached at start for metric labels. */
+  channelId?: string | null;
 };
 
 export type AgentEvent =
@@ -79,7 +81,9 @@ export type PermissionResolver = (
 ) => ReturnType<CanUseTool>;
 
 /** Returns transport-supplied MCP servers for a fresh session. */
-export type McpResolver = (sessionId: string) => Record<string, McpServerConfig> | undefined;
+export type McpResolver = (
+  sessionId: string,
+) => Record<string, McpServerConfig> | undefined | Promise<Record<string, McpServerConfig> | undefined>;
 
 /** Stop-hook guard. Return an instruction string to block the agent from
  *  stopping (SDK feeds reason back, agent continues). Return null to allow stop.
@@ -115,7 +119,7 @@ export function disengagedHookDecision(
 export function makeDisengageSuppressHook(sessionId: string): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== "UserPromptSubmit") return { continue: true };
-    const decision = disengagedHookDecision(Sessions.findById(sessionId));
+    const decision = disengagedHookDecision(await Sessions.findById(sessionId));
     if (decision.continue === false) metric.disengagedSuppressedTotal.inc();
     return decision;
   };
@@ -135,7 +139,7 @@ export function makeUserPromptHook(
 ): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== "UserPromptSubmit") return { continue: true };
-    const dis = disengagedHookDecision(Sessions.findById(sessionId));
+    const dis = disengagedHookDecision(await Sessions.findById(sessionId));
     if (dis.continue === false) {
       metric.disengagedSuppressedTotal.inc();
       return dis; // leave queued notes for the next engaged turn
@@ -227,13 +231,13 @@ export class AgentManager extends EventEmitter {
    *  isolation and private-MCP credential scoping: the cron-captured initiator
    *  (if any) takes precedence over the live /1on1 lock, so both mechanisms
    *  agree by construction instead of independently re-deriving the same rule. */
-  resolveEffectiveIdentity(
+  async resolveEffectiveIdentity(
     sessionId: string,
     channel?: string | null,
     threadTs?: string | null,
-  ): string | undefined {
+  ): Promise<string | undefined> {
     return this.#cronOAuthUser.get(sessionId)
-      ?? (channel && threadTs ? OneOnOne.find(channel, threadTs)?.locked_user : undefined);
+      ?? (channel && threadTs ? (await OneOnOne.find(channel, threadTs))?.locked_user : undefined);
   }
 
   /** Number of SDK Query sessions currently live in this process. */
@@ -247,8 +251,8 @@ export class AgentManager extends EventEmitter {
   }
 
   /** Get-or-create a session bound to a Slack thread. */
-  ensureSession(thread: ThreadKey, opts: { title?: string } = {}) {
-    let row = Sessions.findByThread(thread);
+  async ensureSession(thread: ThreadKey, opts: { title?: string } = {}) {
+    let row = await Sessions.findByThread(thread);
     if (!row) {
       // Multi-persona: named personas sharing a thread must not share a cwd.
       // Suffix the workspace with the persona; default persona → path unchanged.
@@ -259,7 +263,7 @@ export class AgentManager extends EventEmitter {
         `${thread.team_id}-${thread.channel_id}-${thread.thread_ts}${personaSuffix}`,
       );
       mkdirSync(workingDir, { recursive: true });
-      row = Sessions.createForThread({
+      row = await Sessions.createForThread({
         thread,
         model: env.model(),
         working_dir: workingDir,
@@ -356,7 +360,7 @@ export class AgentManager extends EventEmitter {
 
   /** Change permission mode for a session. Persists; if live, also pushed to the SDK Query. */
   async setPermissionMode(sessionId: string, mode: PermissionMode) {
-    Sessions.setPermissionMode(sessionId, mode);
+    await Sessions.setPermissionMode(sessionId, mode);
     const live = this.#live.get(sessionId);
     if (live?.query) {
       try {
@@ -369,7 +373,7 @@ export class AgentManager extends EventEmitter {
 
   /** Change the model for a session. Persists; if live, also pushed to the SDK Query. */
   async setSessionModel(sessionId: string, model: string) {
-    Sessions.setModel(sessionId, model);
+    await Sessions.setModel(sessionId, model);
     const live = this.#live.get(sessionId);
     if (live?.query) {
       try {
@@ -394,7 +398,7 @@ export class AgentManager extends EventEmitter {
   }
 
   async #startSession(sessionId: string, firstText: string) {
-    const row = Sessions.findById(sessionId);
+    const row = await Sessions.findById(sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);
 
     const memBlock = await memory.prefetch(sessionId);
@@ -459,9 +463,9 @@ export class AgentManager extends EventEmitter {
     // re-resolution (CLAUDE_CONFIG_DIR is read once at child boot).
     const lock =
       row.slack_channel_id && row.slack_thread_ts
-        ? OneOnOne.find(row.slack_channel_id, row.slack_thread_ts)
+        ? await OneOnOne.find(row.slack_channel_id, row.slack_thread_ts)
         : null;
-    const oauthUser = this.resolveEffectiveIdentity(
+    const oauthUser = await this.resolveEffectiveIdentity(
       sessionId,
       row.slack_channel_id,
       row.slack_thread_ts,
@@ -491,7 +495,7 @@ export class AgentManager extends EventEmitter {
       : undefined;
 
     const mode = (row.permission_mode || "default") as PermissionMode;
-    const mcpServers = this.#mcpResolver?.(sessionId);
+    const mcpServers = await this.#mcpResolver?.(sessionId);
     // Per-channel mandate override: when SOUL.md defines a `## Channel` block
     // with its own `### Mandate` for this channel, inject an authoritative
     // directive that supersedes the global Mandate (which lives, unedited,
@@ -617,11 +621,12 @@ export class AgentManager extends EventEmitter {
       turn: { user: firstText, assistant: [] },
       turnTools: [],
       inAutoEvolve: false,
+      channelId: row.slack_channel_id,
     };
     this.#live.set(sessionId, live);
     metric.sessionsLive.set(this.#live.size);
     this.#armIdle(live);
-    Sessions.setStatus(sessionId, "running");
+    await Sessions.setStatus(sessionId, "running");
 
     let stderrBuf = "";
     (options as any).stderr = (chunk: string) => {
@@ -653,7 +658,7 @@ export class AgentManager extends EventEmitter {
         if (RESUME_MISS_RE.test(stderrBuf)) {
           retried = true;
           console.log(`[mgr] clearing stale claude_started + retrying session=${sessionId}`);
-          Sessions.clearStarted(sessionId);
+          await Sessions.clearStarted(sessionId);
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           // Fire and forget — restart with the same first prompt.
@@ -666,7 +671,7 @@ export class AgentManager extends EventEmitter {
         if (/session.*(already in use|already exists)/i.test(stderrBuf)) {
           retried = true;
           console.log(`[mgr] session id already has a transcript — retrying with resume session=${sessionId}`);
-          Sessions.markStarted(sessionId);
+          await Sessions.markStarted(sessionId);
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           void this.#startSession(sessionId, firstText);
@@ -684,7 +689,7 @@ export class AgentManager extends EventEmitter {
       } finally {
         if (retried) return;
         if (live.idleTimer) clearTimeout(live.idleTimer);
-        Sessions.setStatus(sessionId, "idle");
+        await Sessions.setStatus(sessionId, "idle");
         this.#live.delete(sessionId);
         this.#budget.forget(sessionId);
         this.#stopBlocked.delete(sessionId);
@@ -712,7 +717,7 @@ export class AgentManager extends EventEmitter {
     const live = this.#live.get(sessionId);
     switch (msg.type) {
       case "assistant": {
-        Sessions.markStarted(sessionId);
+        void Sessions.markStarted(sessionId);
         // The SDK's BetaContentBlock union types only text + tool_use, but the
         // model also emits thinking blocks at runtime. Widen so the thinking
         // branch type-checks (both the discriminant and `.thinking`).
@@ -817,7 +822,7 @@ export class AgentManager extends EventEmitter {
           });
           const snapshot = this.#budget.snapshot(sessionId)!;
 
-          const channelId = Sessions.findById(sessionId)?.slack_channel_id ?? "unknown";
+          const channelId = live?.channelId ?? "unknown";
           const modelUsageKeys = Object.keys((msg as any).modelUsage ?? {});
           const modelName = modelUsageKeys[0] ?? env.model() ?? "unknown";
           const baseLabels = { channel_id: channelId, model: modelName };

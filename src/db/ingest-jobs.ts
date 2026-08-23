@@ -24,12 +24,12 @@ function rid(): string {
   return `${nowMs().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export function tryAcquire(label: string, triggeredBy: string): IngestJob | null {
-  reapStale();
+export async function tryAcquire(label: string, triggeredBy: string): Promise<IngestJob | null> {
+  await reapStale();
   const t = nowMs();
   const id = rid();
   try {
-    db.run(
+    await db.run(
       `INSERT INTO kb_ingest_jobs (id, label, status, triggered_by, started_at, heartbeat_at)
        VALUES (?, ?, 'running', ?, ?, ?)`,
       [id, label, triggeredBy, t, t],
@@ -40,24 +40,26 @@ export function tryAcquire(label: string, triggeredBy: string): IngestJob | null
   return { id, label, status: "running", triggered_by: triggeredBy, started_at: t, heartbeat_at: t };
 }
 
-export function heartbeat(id: string): void {
-  db.run("UPDATE kb_ingest_jobs SET heartbeat_at = ? WHERE id = ? AND status = 'running'", [nowMs(), id]);
+export async function heartbeat(id: string): Promise<void> {
+  await db.run("UPDATE kb_ingest_jobs SET heartbeat_at = ? WHERE id = ? AND status = 'running'", [nowMs(), id]);
 }
 
-export function release(id: string, finalStatus: "completed" | "failed" | "crashed"): void {
-  db.run("UPDATE kb_ingest_jobs SET status = ?, heartbeat_at = ? WHERE id = ?", [finalStatus, nowMs(), id]);
+export async function release(id: string, finalStatus: "completed" | "failed" | "crashed"): Promise<void> {
+  await db.run("UPDATE kb_ingest_jobs SET status = ?, heartbeat_at = ? WHERE id = ?", [finalStatus, nowMs(), id]);
 }
 
-export function runningJob(): IngestJob | null {
-  const row = db.query("SELECT * FROM kb_ingest_jobs WHERE status = 'running' LIMIT 1").get() as IngestJob | null;
-  return row ?? null;
+export async function runningJob(): Promise<IngestJob | null> {
+  return db.one<IngestJob>("SELECT * FROM kb_ingest_jobs WHERE status = 'running' LIMIT 1");
 }
 
-export function reapStale(): string[] {
+export async function reapStale(): Promise<string[]> {
   const cutoff = nowMs() - STALE_AFTER_MS;
-  const stale = db.query("SELECT id FROM kb_ingest_jobs WHERE status = 'running' AND heartbeat_at < ?").all(cutoff as any) as Array<{ id: string }>;
+  const stale = await db.query<{ id: string }>(
+    "SELECT id FROM kb_ingest_jobs WHERE status = 'running' AND heartbeat_at < ?",
+    [cutoff],
+  );
   for (const r of stale) {
-    db.run("UPDATE kb_ingest_jobs SET status = 'crashed' WHERE id = ?", [r.id]);
+    await db.run("UPDATE kb_ingest_jobs SET status = 'crashed' WHERE id = ?", [r.id]);
   }
   return stale.map((r) => r.id);
 }

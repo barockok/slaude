@@ -26,7 +26,7 @@ export function startHealthServer(deps: HealthDeps) {
 
   const server = Bun.serve({
     port,
-    fetch(req) {
+    async fetch(req) {
       const url = new URL(req.url);
       if (url.pathname === "/healthz") {
         return Response.json({
@@ -43,7 +43,7 @@ export function startHealthServer(deps: HealthDeps) {
       }
       if (url.pathname === "/readyz") {
         try {
-          db.query("SELECT 1").get();
+          await db.query("SELECT 1");
           return Response.json({ status: "ready" });
         } catch (e: any) {
           return Response.json(

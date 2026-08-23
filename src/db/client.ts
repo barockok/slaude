@@ -144,6 +144,16 @@ function openSqliteSync(path: string): DbClient {
   return activeSync;
 }
 
+/**
+ * Raw `bun:sqlite` handle when the process runs on sqlite, else null. Escape
+ * hatch for the few synchronous hot paths (soul overrides cache) and for
+ * sqlite-only maintenance helpers; repository code must use the facade.
+ */
+export function getSqliteRaw(): import("bun:sqlite").Database | null {
+  const s = sync();
+  return s ? (s as import("./drivers/sqlite").SqliteClient).raw : null;
+}
+
 function sync(): DbClient | null {
   const cfg = config();
   if (cfg.dialect !== "sqlite") return null;

@@ -43,10 +43,10 @@ export async function run(opts: IngestOptions): Promise<IngestResult> {
   const kbDir = join(paths.knowledge, label);
   if (!existsSync(kbDir)) return { ok: false, reason: `KB dir ${kbDir} does not exist (run slaude install or sync_manifest first)` };
 
-  const job = tryAcquire(label, opts.triggeredBy);
+  const job = await tryAcquire(label, opts.triggeredBy);
   if (!job) return { ok: false, reason: "another ingest is already running" };
 
-  const heartbeatTimer = setInterval(() => heartbeat(job.id), 30_000);
+  const heartbeatTimer = setInterval(() => void heartbeat(job.id), 30_000);
   try {
     const readme = readFileSync(join(kbDir, "README.md"), "utf8");
     const rawDir = join(kbDir, "raw");
@@ -74,10 +74,10 @@ export async function run(opts: IngestOptions): Promise<IngestResult> {
     lock.generated_at = new Date().toISOString();
     writeFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n", "utf8");
 
-    release(job.id, "completed");
+    await release(job.id, "completed");
     return { ok: true, jobId: job.id, summary: `ingested ${rawFiles.length} raw file(s); ${subResult.pages_changed} wiki pages changed; pushed ${pushResult.sha.slice(0, 7)}` };
   } catch (e: any) {
-    release(job.id, "failed");
+    await release(job.id, "failed");
     return { ok: false, reason: e?.message ?? String(e) };
   } finally {
     clearInterval(heartbeatTimer);

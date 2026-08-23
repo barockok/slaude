@@ -350,9 +350,9 @@ function cronJobLine(j: CronJobs.CronJob): string {
   return `• \`${j.id.slice(0, 8)}\` \`${j.cronExpr}\` [${flags}] → ${j.prompt} (next: ${new Date(j.nextRunAt).toISOString()})`;
 }
 
-function findCronJob(jobId: string): CronJobs.CronJob | ToolResult {
+async function findCronJob(jobId: string): Promise<CronJobs.CronJob | ToolResult> {
   try {
-    const job = CronJobs.findByPrefix(jobId);
+    const job = await CronJobs.findByPrefix(jobId);
     if (!job) return err(`Job \`${jobId}\` not found.`);
     return job;
   } catch (e: any) {
@@ -367,7 +367,7 @@ export const adminHandlers = {
     if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
       return err("Only manager or approver can list cron jobs.");
     }
-    const jobs = CronJobs.listActive();
+    const jobs = await CronJobs.listActive();
     if (!jobs.length) return ok("No active cron jobs.");
     const lines = jobs.map(cronJobLine);
     return ok("*Active cron jobs*\n" + lines.join("\n"));
@@ -386,8 +386,8 @@ export const adminHandlers = {
     } catch (e: any) {
       return err(`Invalid cron expression: ${e.message}`);
     }
-    const cronLock = ctx.channel && ctx.threadTs ? OneOnOne.find(ctx.channel, ctx.threadTs) : null;
-    const job = CronJobs.create({
+    const cronLock = ctx.channel && ctx.threadTs ? await OneOnOne.find(ctx.channel, ctx.threadTs) : null;
+    const job = await CronJobs.create({
       slackTeamId: ctx.teamId,
       slackChannelId: ctx.channel,
       slackThreadTs: ctx.threadTs,
@@ -416,7 +416,7 @@ export const adminHandlers = {
     if (!isManagerOrApprover(ctx.userId)) {
       return err("Only manager or approver can edit cron jobs.");
     }
-    const job = findCronJob(jobId);
+    const job = await findCronJob(jobId);
     if ("content" in job) return job;
     if (cronExpr === undefined && prompt === undefined && target === undefined && whenActive === undefined) {
       return err("No cron fields provided to edit.");
@@ -429,8 +429,8 @@ export const adminHandlers = {
         return err(`Invalid cron expression: ${e.message}`);
       }
     }
-    CronJobs.update(job.id, { cronExpr, prompt, nextRunAt, target, whenActive });
-    const updated = CronJobs.findById(job.id)!;
+    await CronJobs.update(job.id, { cronExpr, prompt, nextRunAt, target, whenActive });
+    const updated = (await CronJobs.findById(job.id))!;
     return ok(`Cron job \`${updated.id.slice(0, 8)}\` updated. Next run: ${new Date(updated.nextRunAt).toISOString()}`);
   },
 
@@ -438,9 +438,9 @@ export const adminHandlers = {
     if (!isManagerOrApprover(ctx.userId)) {
       return err("Only manager or approver can pause cron jobs.");
     }
-    const job = findCronJob(jobId);
+    const job = await findCronJob(jobId);
     if ("content" in job) return job;
-    CronJobs.pause(job.id);
+    await CronJobs.pause(job.id);
     return ok(`Cron job \`${job.id.slice(0, 8)}\` paused.`);
   },
 
@@ -448,7 +448,7 @@ export const adminHandlers = {
     if (!isManagerOrApprover(ctx.userId)) {
       return err("Only manager or approver can resume cron jobs.");
     }
-    const job = findCronJob(jobId);
+    const job = await findCronJob(jobId);
     if ("content" in job) return job;
     let nextRun: number;
     try {
@@ -456,7 +456,7 @@ export const adminHandlers = {
     } catch (e: any) {
       return err(`Invalid stored cron expression: ${e.message}`);
     }
-    CronJobs.resume(job.id, nextRun);
+    await CronJobs.resume(job.id, nextRun);
     return ok(`Cron job \`${job.id.slice(0, 8)}\` resumed. Next run: ${new Date(nextRun).toISOString()}`);
   },
 
@@ -464,9 +464,9 @@ export const adminHandlers = {
     if (!isManagerOrApprover(_ctx.userId, _ctx.channel)) {
       return err("Only manager or approver can remove cron jobs.");
     }
-    const job = findCronJob(jobId);
+    const job = await findCronJob(jobId);
     if ("content" in job) return job;
-    CronJobs.deactivate(job.id);
+    await CronJobs.deactivate(job.id);
     return ok(`Cron job \`${job.id.slice(0, 8)}\` deactivated.`);
   },
 
@@ -491,8 +491,8 @@ export const adminHandlers = {
     const parsed = parseDuration(duration);
     if (!parsed.ok) return err(parsed.error);
     const expiresAt = parsed.permanent ? undefined : Date.now() + parsed.minutes * 60 * 1000;
-    Ignores.remove({ targetType: "thread", channelId: ctx.channel, threadTs: ctx.threadTs });
-    Ignores.create({
+    await Ignores.remove({ targetType: "thread", channelId: ctx.channel, threadTs: ctx.threadTs });
+    await Ignores.create({
       targetType: "thread",
       channelId: ctx.channel,
       threadTs: ctx.threadTs,
@@ -507,7 +507,7 @@ export const adminHandlers = {
     if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
       return err("Only manager or approver can unignore threads.");
     }
-    const removed = Ignores.remove({ targetType: "thread", channelId: ctx.channel, threadTs: ctx.threadTs });
+    const removed = await Ignores.remove({ targetType: "thread", channelId: ctx.channel, threadTs: ctx.threadTs });
     if (removed === 0) return ok("no active ignore for this thread");
     return ok("Thread ignore removed. Normal processing resumed.");
   },
@@ -522,8 +522,8 @@ export const adminHandlers = {
     const parsed = parseDuration(duration);
     if (!parsed.ok) return err(parsed.error);
     const expiresAt = parsed.permanent ? undefined : Date.now() + parsed.minutes * 60 * 1000;
-    Ignores.remove({ targetType: "user", userId });
-    Ignores.create({
+    await Ignores.remove({ targetType: "user", userId });
+    await Ignores.create({
       targetType: "user",
       userId,
       createdBy: ctx.userId ?? "agent",
@@ -537,7 +537,7 @@ export const adminHandlers = {
     if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
       return err("Only manager or approver can unignore users.");
     }
-    const removed = Ignores.remove({ targetType: "user", userId });
+    const removed = await Ignores.remove({ targetType: "user", userId });
     if (removed === 0) return ok(`no active ignore for user <@${userId}>`);
     return ok(`stopped ignoring <@${userId}>`);
   },

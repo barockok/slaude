@@ -68,7 +68,7 @@ export interface GatewayHandle {
    *  mounted server map (incl. /1on1 private-service credential overlays).
    *  Requires the session's route to exist (feed a message first). Production
    *  never calls this. */
-  __resolveMcp(sessionId: string): Record<string, McpServerConfig> | undefined;
+  __resolveMcp(sessionId: string): Promise<Record<string, McpServerConfig> | undefined>;
   /** TEST/SIM SEAM ONLY. Drive the natural-language connect path (what the
    *  mcp__slaude_connect__connect_mcp tool calls) for a live session. */
   __agentConnect(sessionId: string, server: string): Promise<string>;
@@ -350,9 +350,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // Brain gate input from the live SlackContext — read per tool call so the
   // current turn's author (not the session creator) drives KB scoping.
-  const brainGateFor = (ctx: SlackContext): GateInput => {
+  const brainGateFor = async (ctx: SlackContext): Promise<GateInput> => {
     const soul = soulData();
-    const lock = OneOnOne.find(ctx.channel, ctx.threadTs);
+    const lock = await OneOnOne.find(ctx.channel, ctx.threadTs);
     // Use the persona's Slack user ID as the agent brain-slice key when in
     // multi-persona mode; fall back to the process-level bot ID otherwise.
     const personaId = ctx.personaId && ctx.personaId !== "default" ? ctx.personaId : null;
@@ -369,7 +369,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     };
   };
 
-  const mcpResolver = (sessionId: string): Record<string, McpServerConfig> | undefined => {
+  const mcpResolver = async (sessionId: string): Promise<Record<string, McpServerConfig> | undefined> => {
     const route = routes.get(sessionId);
     if (!route) return undefined;
     const servers: Record<string, McpServerConfig> = {
@@ -388,7 +388,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       [KB_MCP_NAME]: createKbMcp(
         brainEnabled()
           ? {
-              scope: () => resolveBrainScope({ ...brainGateFor(route.ctx), kbSources: loadKbs().map((k) => kbSourceId(k.label)) }),
+              scope: async () => resolveBrainScope({ ...(await brainGateFor(route.ctx)), kbSources: loadKbs().map((k) => kbSourceId(k.label)) }),
               gate: () => brainGateFor(route.ctx),
               managers: () => {
                 const soul = soulData();
@@ -408,7 +408,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // lock, or a cron job's captured initiator), whitelisted external services mount
     // with the agent's credentials stripped so they run as that identity (self-prompt
     // auth). Other sessions/threads keep the agent identity (source map untouched).
-    const effectiveIdentity = agent.resolveEffectiveIdentity(sessionId, route.ctx.channel, route.ctx.threadTs);
+    const effectiveIdentity = await agent.resolveEffectiveIdentity(sessionId, route.ctx.channel, route.ctx.threadTs);
     const sessionMcp = route.ctx.personaId && route.ctx.personaId !== "default"
       ? loadExternalMcp(route.ctx.personaId)
       : externalMcp;
@@ -611,7 +611,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // lock owner or the manager), so connectServer is never reached without a real user.
     const userId = ctx.userId ?? "";
     const threadTs = ctx.threadTs ?? ctx.inboundTs ?? "";
-    const lock = OneOnOne.find(ctx.channel, threadTs);
+    const lock = await OneOnOne.find(ctx.channel, threadTs);
     let scope: ConnectScope;
     if (lock) {
       if (lock.locked_user !== userId) {
@@ -646,22 +646,22 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const userId = ctx.userId ?? "";
     const threadTs = ctx.threadTs ?? ctx.inboundTs ?? "";
     if (action === "lock") {
-      OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
+      await OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
       agent.reload(sessionId);
       return `Locked this thread to a 1on1 with <@${userId}> — only they and the manager are heard here now.`;
     }
     if (action === "open") {
-      const existing = OneOnOne.find(ctx.channel, threadTs);
+      const existing = await OneOnOne.find(ctx.channel, threadTs);
       if (!existing) {
-        OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
+        await OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
       }
-      OneOnOne.setOpen(ctx.channel, threadTs, scope ?? "");
+      await OneOnOne.setOpen(ctx.channel, threadTs, scope ?? "");
       agent.reload(sessionId);
       const scopeNote = scope ? ` Scope: ${scope}` : "";
       return `Opened this 1on1 to all participants.${scopeNote} Use set_one_on_one(action="lock") to restrict again.`;
     }
-    if (!OneOnOne.find(ctx.channel, threadTs)) return "No active 1on1 in this thread — nothing to release.";
-    OneOnOne.unlock(ctx.channel, threadTs);
+    if (!await OneOnOne.find(ctx.channel, threadTs)) return "No active 1on1 in this thread — nothing to release.";
+    await OneOnOne.unlock(ctx.channel, threadTs);
     agent.reload(sessionId);
     return "Released 1on1 — the thread is open again.";
   }
@@ -671,11 +671,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   async function agentMentionOnly(ctx: SlackContext, active: boolean): Promise<string> {
     const threadTs = ctx.threadTs ?? ctx.inboundTs ?? "";
     if (active) {
-      MentionOnly.set({ channelId: ctx.channel, threadTs, createdBy: ctx.userId ?? "" });
+      await MentionOnly.set({ channelId: ctx.channel, threadTs, createdBy: ctx.userId ?? "" });
       return "Mention-only on — I'll reply in this thread only when @-mentioned.";
     }
-    if (!MentionOnly.find(ctx.channel, threadTs)) return "This thread isn't in mention-only mode — nothing to change.";
-    MentionOnly.clear(ctx.channel, threadTs);
+    if (!await MentionOnly.find(ctx.channel, threadTs)) return "This thread isn't in mention-only mode — nothing to change.";
+    await MentionOnly.clear(ctx.channel, threadTs);
     return "Mention-only off — I'll follow this thread normally again.";
   }
 
@@ -692,10 +692,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const clicker = (body as any).user?.id;
     if (clicker !== ctx.userId) return;
     if (ctx.scope === "initiator") {
-      const lock = OneOnOne.find(ctx.channelId, ctx.threadTs);
+      const lock = await OneOnOne.find(ctx.channelId, ctx.threadTs);
       if (!lock || lock.locked_user !== ctx.userId) return;
     } else {
-      if (OneOnOne.find(ctx.channelId, ctx.threadTs)) return; // a lock appeared — global no longer applies
+      if (await OneOnOne.find(ctx.channelId, ctx.threadTs)) return; // a lock appeared — global no longer applies
       const soul = soulData();
       if (ctx.userId !== soul.manager.userId && ctx.userId !== soul.backupManager.userId) return;
     }
@@ -945,7 +945,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // "<@bot> /unignore-thread" still parses.
       const peek = parseSlashCommand(text.replace(/<@[^>]+>/g, "").trim());
       const isUnignore = peek?.kind === "unignore";
-      if (!isUnignore && ignoreGate.shouldDrop(userId, channelId, threadTs)) {
+      if (!isUnignore && (await ignoreGate.shouldDrop(userId, channelId, threadTs))) {
         console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — ignored`);
         metric.slackDropsTotal.inc({ reason: "ignored" });
         return;
@@ -1000,7 +1000,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // someone else's lock). Approval buttons are unaffected — they go through
     // ApprovalGate's action handler, not this path.
     {
-      const lock = OneOnOne.find(channelId, threadTs);
+      const lock = await OneOnOne.find(channelId, threadTs);
       if (lock) {
         const soul = soulData();
         const isMgr = userId === soul.manager.userId || userId === soul.backupManager.userId;
@@ -1025,7 +1025,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const hasFiles = Array.isArray(event.files) && event.files.length > 0;
     if (!stripped && !hasFiles) return;
 
-    const session = agent.ensureSession({
+    const session = await agent.ensureSession({
       team_id: teamId,
       channel_id: channelId,
       thread_ts: threadTs,
@@ -1101,13 +1101,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
       if (slash.kind === "one-on-one") {
         if (slash.action === "on") {
-          OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId });
+          await OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId });
           agent.reload(session.id);
           await reply(`:lock: *1on1 mode* — only <@${userId}> and the manager will be heard in this thread. \`/1on1 off\` to release. Ask me to open it to guests when needed.`);
           return;
         }
         if (slash.action === "lock") {
-          const existing = OneOnOne.find(channelId, threadTs);
+          const existing = await OneOnOne.find(channelId, threadTs);
           if (!existing) {
             await reply("No active 1on1 in this thread.");
             return;
@@ -1120,32 +1120,32 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await reply("This 1on1 is already locked.");
             return;
           }
-          OneOnOne.setLocked(channelId, threadTs);
+          await OneOnOne.setLocked(channelId, threadTs);
           agent.reload(session.id);
           await reply(`:lock: *1on1 re-locked* — only <@${existing.locked_user}> and the manager are heard again.`);
           return;
         }
-        const existing = OneOnOne.find(channelId, threadTs);
+        const existing = await OneOnOne.find(channelId, threadTs);
         if (!existing) {
           await reply("No active 1on1 in this thread.");
           return;
         }
-        OneOnOne.unlock(channelId, threadTs);
+        await OneOnOne.unlock(channelId, threadTs);
         agent.reload(session.id);
         await reply(":unlock: 1on1 released — the thread is open again.");
         return;
       }
       if (slash.kind === "mention-only") {
         if (slash.action === "on") {
-          MentionOnly.set({ channelId, threadTs, createdBy: userId });
+          await MentionOnly.set({ channelId, threadTs, createdBy: userId });
           await reply(":speech_balloon: *mention-only* — I'll reply in this thread only when @-mentioned. `/mention-only off` to restore.");
           return;
         }
-        if (!MentionOnly.find(channelId, threadTs)) {
+        if (!await MentionOnly.find(channelId, threadTs)) {
           await reply("This thread isn't in mention-only mode.");
           return;
         }
-        MentionOnly.clear(channelId, threadTs);
+        await MentionOnly.clear(channelId, threadTs);
         await reply(":speech_balloon: mention-only off — I'll follow the thread normally again.");
         return;
       }
@@ -1158,7 +1158,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           return;
         }
         if (slash.kind === "soul") {
-          const res = mutateOverride(
+          const res = await mutateOverride(
             { field: slash.field, action: slash.action, value: slash.value, by: userId },
             { managerId: soul.manager.userId },
           );
@@ -1173,15 +1173,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           return;
         }
         if (slash.kind === "soul-clear") {
-          if (slash.field === "all") SoulOverrides.clear();
-          else SoulOverrides.clear(FIELD_ALIASES[slash.field]);
+          if (slash.field === "all") await SoulOverrides.clear();
+          else await SoulOverrides.clear(FIELD_ALIASES[slash.field]);
           agent.noteSessionEvent(session.id, `Soul ACL overrides cleared (\`${slash.field}\`) — reverted to SOUL.md.`);
           await reply(`:leftwards_arrow_with_hook: soul overrides cleared (\`${slash.field}\`) — reverted to SOUL.md.`);
           return;
         }
         // soul-list: provenance — SOUL.md base vs runtime overlay.
         const base = soulDataBase();
-        const rows = SoulOverrides.list();
+        const rows = await SoulOverrides.list();
         const lines: string[] = ["*soul runtime overrides*"];
         for (const [alias, field] of Object.entries(FIELD_ALIASES)) {
           const adds = rows.filter((r) => r.field === field && r.action === "add");
@@ -1204,7 +1204,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         //     isolated config home, so it must be their own lock.
         //   no lock → "global": the connect writes into the agent's own config dir,
         //     wiring the agent's shared identity — manager/backup only.
-        const lock = OneOnOne.find(channelId, threadTs);
+        const lock = await OneOnOne.find(channelId, threadTs);
         let scope: ConnectScope;
         if (lock) {
           if (lock.locked_user !== userId) {
@@ -1310,8 +1310,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               }
               expiresAt = parsed.permanent ? undefined : Date.now() + parsed.minutes * 60 * 1000;
             }
-            Ignores.remove({ targetType: "user", userId: slash.userId });
-            Ignores.create({ targetType: "user", userId: slash.userId, createdBy: userId, expiresAt, reason: "manual" });
+            await Ignores.remove({ targetType: "user", userId: slash.userId });
+            await Ignores.create({ targetType: "user", userId: slash.userId, createdBy: userId, expiresAt, reason: "manual" });
             const durText = duration ? `for ${duration}` : "permanently";
             await reply(`:mute: ignoring <@${slash.userId}> ${durText}`);
           } else {
@@ -1325,8 +1325,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               }
               expiresAt = parsed.permanent ? undefined : Date.now() + parsed.minutes * 60 * 1000;
             }
-            Ignores.remove({ targetType: "thread", channelId, threadTs });
-            Ignores.create({ targetType: "thread", channelId, threadTs, createdBy: userId, expiresAt, reason: "manual" });
+            await Ignores.remove({ targetType: "thread", channelId, threadTs });
+            await Ignores.create({ targetType: "thread", channelId, threadTs, createdBy: userId, expiresAt, reason: "manual" });
             const durText = duration ? `for ${duration}` : "permanently";
             await reply(`:mute: ignoring this thread ${durText}`);
           }
@@ -1344,10 +1344,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               await reply(":no_entry: only manager or approver can unignore users");
               return;
             }
-            Ignores.remove({ targetType: "user", userId: slash.userId });
+            await Ignores.remove({ targetType: "user", userId: slash.userId });
             await reply(`:speaker: stopped ignoring <@${slash.userId}>`);
           } else {
-            Ignores.remove({ targetType: "thread", channelId, threadTs });
+            await Ignores.remove({ targetType: "thread", channelId, threadTs });
             await reply(":speaker: stopped ignoring this thread");
           }
           return;
@@ -1367,9 +1367,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         const backupId = soul.backupManager.userId;
         const isManager = (managerId && userId === managerId) || (backupId && userId === backupId);
         const isApprover = soul.approvers.some((a) => a.userId === userId);
-        const findJob = (id: string) => {
+        const findJob = async (id: string) => {
           try {
-            return CronJobs.findByPrefix(id);
+            return await CronJobs.findByPrefix(id);
           } catch (e: any) {
             return e instanceof Error ? e.message : String(e);
           }
@@ -1388,7 +1388,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await reply(":no_entry: only manager or approver can list cron jobs");
             return;
           }
-          const jobs = CronJobs.listActive();
+          const jobs = await CronJobs.listActive();
           if (!jobs.length) {
             await reply("No active cron jobs.");
             return;
@@ -1403,7 +1403,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await reply(":no_entry: only manager or approver can remove cron jobs");
             return;
           }
-          const job = findJob(slash.id);
+          const job = await findJob(slash.id);
           if (typeof job === "string") {
             await reply(`:warning: ${job}`);
             return;
@@ -1412,7 +1412,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await reply(`:warning: cron job \`${slash.id}\` not found`);
             return;
           }
-          CronJobs.deactivate(job.id);
+          await CronJobs.deactivate(job.id);
           agent.noteSessionEvent(session.id, `Removed scheduled cron job \`${job.id.slice(0, 8)}\`.`);
           await reply(`:wastebasket: cron job \`${job.id.slice(0, 8)}\` removed`);
           return;
@@ -1423,7 +1423,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await reply(`:no_entry: only manager or approver can ${slash.kind.replace("cron-", "")} cron jobs`);
             return;
           }
-          const job = findJob(slash.id);
+          const job = await findJob(slash.id);
           if (typeof job === "string") {
             await reply(`:warning: ${job}`);
             return;
@@ -1433,7 +1433,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             return;
           }
           if (slash.kind === "cron-pause") {
-            CronJobs.pause(job.id);
+            await CronJobs.pause(job.id);
             await reply(`:pause_button: cron job \`${job.id.slice(0, 8)}\` paused`);
             return;
           }
@@ -1444,7 +1444,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await reply(`:warning: invalid stored cron expression: ${e.message}`);
             return;
           }
-          CronJobs.resume(job.id, nextRun);
+          await CronJobs.resume(job.id, nextRun);
           await reply(`:arrow_forward: cron job \`${job.id.slice(0, 8)}\` resumed — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
           return;
         }
@@ -1464,7 +1464,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             });
             if (!approval.approved) return void (await reply(":x: cron edit denied by manager"));
           }
-          const job = findJob(slash.id);
+          const job = await findJob(slash.id);
           if (typeof job === "string") {
             await reply(`:warning: ${job}`);
             return;
@@ -1480,7 +1480,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await reply(`:warning: invalid cron expression: ${e.message}`);
             return;
           }
-          CronJobs.update(job.id, {
+          await CronJobs.update(job.id, {
             cronExpr: slash.cronExpr,
             prompt: slash.prompt,
             nextRunAt: nextRun,
@@ -1527,8 +1527,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // `cron:<id>` thread that carries no lock, so the scheduler needs this to
           // boot the run under the initiator's OAuth config dir (initiator
           // isolation), not the agent's. NULL when created outside a 1on1.
-          const cronLock = OneOnOne.find(channelId, threadTs);
-          const job = CronJobs.create({
+          const cronLock = await OneOnOne.find(channelId, threadTs);
+          const job = await CronJobs.create({
             slackTeamId: teamId,
             slackChannelId: channelId,
             slackThreadTs: slash.target === "channel" ? undefined : (isDM ? undefined : threadTs),
@@ -1699,7 +1699,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
     // Wrap inbound in a channel envelope so the agent has slack context
     // and a clear directive to reply via the MCP tool — not as plain text.
-    const oneOnOneLock = OneOnOne.find(channelId, threadTs);
+    const oneOnOneLock = await OneOnOne.find(channelId, threadTs);
     const oneOnOneAttr = oneOnOneLock
       ? ` one_on_one="true" locked_user="<@${oneOnOneLock.locked_user}>"`
       : ` one_on_one="false" locked_user=""`;
@@ -1798,11 +1798,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // through to the restore path and re-engaged (restarts had the same effect).
   const engaged = new Set<string>(); // key: `${channel}:${thread_ts}`
   const threadKey = (channel: string, ts: string) => `${channel}:${ts}`;
-  const persistEngaged = (teamId: string | undefined, channelId: string, threadTs: string, value: boolean) => {
+  const persistEngaged = async (teamId: string | undefined, channelId: string, threadTs: string, value: boolean) => {
     if (!teamId) return;
     // Only the default-persona session row carries the bot's engagement flag.
-    const row = Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: "default" });
-    if (row) Sessions.setEngaged(row.id, value);
+    const row = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: "default" });
+    if (row) await Sessions.setEngaged(row.id, value);
   };
 
   let cachedBotId: string | null = null;
@@ -1858,7 +1858,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const e: any = args.event;
     const ts: string = e.thread_ts || e.ts;
     engaged.add(threadKey(e.channel, ts));
-    persistEngaged(args.context?.teamId ?? e.team, e.channel, ts, true);
+    await persistEngaged(args.context?.teamId ?? e.team, e.channel, ts, true);
     await handleMessage(args);
   });
 
@@ -1909,7 +1909,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
     if (mentionsBot) {
       engaged.add(key);
-      persistEngaged(teamId, channelId, ts, true);
+      await persistEngaged(teamId, channelId, ts, true);
       return await handleMessage(args);
     }
     if (mentionedPersona) {
@@ -1919,7 +1919,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
     if (mentionsOther) {
       engaged.delete(key);
-      persistEngaged(teamId, channelId, ts, false);
+      await persistEngaged(teamId, channelId, ts, false);
       // Also disengage any persona-specific keys for this thread.
       for (const p of registry.list()) engaged.delete(`${key}:${p.name}`);
       // Don't drop: if slaude has a session here, record the disengaging message
@@ -1928,7 +1928,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // model resumes with the gap already in history. No session → nothing to
       // populate, so drop as before (never spin one up for an unrelated thread).
       const row = teamId
-        ? Sessions.findAnyByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts })
+        ? await Sessions.findAnyByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts })
         : null;
       if (row) {
         console.log(
@@ -1946,10 +1946,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // even mid-conversation — the auto-continue paths below are skipped. The
     // message is still recorded (suppressed) if a session exists so the model has
     // context when next mentioned; otherwise dropped.
-    const mentionOnly = MentionOnly.find(channelId, ts) != null;
+    const mentionOnly = await MentionOnly.find(channelId, ts) != null;
     if (mentionOnly) {
       const row = teamId
-        ? Sessions.findAnyByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts })
+        ? await Sessions.findAnyByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts })
         : null;
       if (row) {
         console.log(`[slack-rx] record ch=${channelId} ts=${e.ts} user=${e.user} — mention-only, suppressed`);
@@ -1974,7 +1974,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // engaged here historically — keep handling plain replies without forcing
     // a re-@mention, unless the thread was explicitly disengaged (row.engaged=0).
     if (teamId) {
-      const row = Sessions.findAnyByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts });
+      const row = await Sessions.findAnyByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts });
       if (row && row.engaged) {
         const restoredPersonaId = row.persona_id !== "default" ? row.persona_id : undefined;
         if (restoredPersonaId) {

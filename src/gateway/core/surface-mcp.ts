@@ -197,14 +197,14 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
           return fail("soul_override is manager-only: this turn was not initiated by the manager.");
         }
         if (action === "list") {
-          return ok(JSON.stringify(SoulOverrides.list(), null, 2));
+          return ok(JSON.stringify(await SoulOverrides.list(), null, 2));
         }
         if (action === "clear") {
-          SoulOverrides.clear(FIELD_ALIASES[field as FieldAlias]);
+          await SoulOverrides.clear(FIELD_ALIASES[field as FieldAlias]);
           return ok(`cleared runtime overrides for ${field}`);
         }
         if (!value) return fail("value is required for add/remove");
-        const res = mutateOverride({ field: field as FieldAlias, action, value, by: who }, { managerId: soul.manager.userId });
+        const res = await mutateOverride({ field: field as FieldAlias, action, value, by: who }, { managerId: soul.manager.userId });
         return res.ok
           ? ok(`soul override applied: ${res.field} ${action} ${res.value} — effective immediately`)
           : fail(res.reason);

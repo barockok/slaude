@@ -62,8 +62,8 @@ export const kbHandlers = {
 };
 
 export interface BrainToolDeps {
-  scope: () => BrainScope;
-  gate: () => GateInput;
+  scope: () => BrainScope | Promise<BrainScope>;
+  gate: () => GateInput | Promise<GateInput>;
   /** Manager + backup user ids — hard backstop for kb-admin approvals. */
   managers: () => string[];
   requestApproval: (r: ApprovalReq) => Promise<ApprovalRes>;
@@ -100,7 +100,7 @@ export function humanizeBrainError(name: string, e: unknown): string {
 async function runRead(name: string, params: Record<string, unknown>, d: BrainToolDeps): Promise<ToolResult> {
   try {
     const call = d.call ?? brainCall;
-    return asJson(await call(name, params, d.scope()));
+    return asJson(await call(name, params, await d.scope()));
   } catch (e) {
     return err(humanizeBrainError(name, e));
   }
@@ -110,11 +110,11 @@ async function runGated(name: string, params: Record<string, unknown>, summary: 
   try {
     const call = d.call ?? brainCall;
     const r = await gatedBrainCall(name, {
-      scope: d.scope(),
-      gate: d.gate(),
+      scope: await d.scope(),
+      gate: await d.gate(),
       managers: d.managers(),
       requestApproval: d.requestApproval,
-      call: () => call(name, params, d.scope()),
+      call: async () => call(name, params, await d.scope()),
       describe: summary,
     });
     return r.ok ? asJson(r.result) : err(r.reason);
@@ -161,7 +161,7 @@ export const brainHandlers = {
     try {
       // SDK-routed synthesis (subscription auth) — not the raw think op.
       const think = d.think ?? brainThink;
-      const result = await think(p.question, d.scope());
+      const result = await think(p.question, await d.scope());
       // Mode B / B′ guard: kb_think's hybrid gather can rank a present,
       // well-titled page below noisier neighbors and then synthesize a
       // confident answer that cites the wrong pages (or none). Always
@@ -175,7 +175,7 @@ export const brainHandlers = {
         // used to surface more junk instead of the present page. gather()
         // guarantees curated sources their own slots, so a strong uncited hit
         // (e.g. the curated page kb_think's gather missed) actually shows up here.
-        const hits = await gather(distillQuery(p.question), d.scope(), { finalLimit: 5, call: d.call });
+        const hits = await gather(distillQuery(p.question), await d.scope(), { finalLimit: 5, call: d.call });
         if (Array.isArray(hits) && hits.length > 0) {
           const cited = citationSlugs(result);
           const missed = hits.filter((h) => {
@@ -235,7 +235,7 @@ export const brainHandlers = {
     // page is never crowded out of the candidate set by a high-volume source
     // (a bulk auto-generated corpus). See src/knowledge/gather.ts.
     try {
-      const hits = await gather(p.query, d.scope(), { finalLimit: p.limit ?? 20, call: d.call });
+      const hits = await gather(p.query, await d.scope(), { finalLimit: p.limit ?? 20, call: d.call });
       return asJson(hits);
     } catch (e) {
       return err(humanizeBrainError("search", e));
@@ -269,7 +269,7 @@ export const brainHandlers = {
     // "mine" (default) writes to the resolved own slice — the agent's private
     // mind outside a 1on1, the user's slice inside one — and auto-passes.
     // "shared" escalates to the common team KB, which requires human approval.
-    const scope = p.target === "shared" ? { ...d.scope(), sourceId: SHARED_SOURCE } : d.scope();
+    const scope = p.target === "shared" ? { ...await d.scope(), sourceId: SHARED_SOURCE } : await d.scope();
     const label = p.target === "shared" ? "→ shared" : "→ mine";
     const describe = pages.length === 1
       ? `KB write ${label}: ${pages[0]!.slug} — ${pages[0]!.summary}`
@@ -281,7 +281,7 @@ export const brainHandlers = {
       // exists first (see docs/findings/2026-06-14-brain-memoize-failure.md).
       const r = await gatedBrainCall("put_page", {
         scope,
-        gate: d.gate(),
+        gate: await d.gate(),
         managers: d.managers(),
         requestApproval: d.requestApproval,
         call: async () => {

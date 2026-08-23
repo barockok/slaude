@@ -28,11 +28,9 @@ describe("startHealthServer", () => {
     // Monkey-patch db.query to throw on next /readyz call
     const dbMod = await import("../src/db/schema");
     const orig = dbMod.db.query;
-    (dbMod.db as any).query = () => ({
-      get() {
-        throw new Error("db down");
-      },
-    });
+    (dbMod.db as any).query = async () => {
+      throw new Error("db down");
+    };
     try {
       const r = await fetch(`http://127.0.0.1:${port}/readyz`);
       expect(r.status).toBe(503);

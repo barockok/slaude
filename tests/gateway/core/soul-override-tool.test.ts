@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach } from "bun:test";
-import { db } from "../../../src/db/schema";
 import { surfaceTools } from "../../../src/gateway/core/surface-mcp";
 import { setSoulData } from "../../../src/soul/extract";
 import { SoulDataSchema } from "../../../src/soul/data";
@@ -24,15 +23,15 @@ function toolFor(initiator: string | undefined) {
 }
 
 describe("soul_override MCP tool", () => {
-  beforeEach(() => {
-    db.run("DELETE FROM soul_overrides");
+  beforeEach(async () => {
+    await SO.clear();
     setSoulData(soul);
   });
 
   it("manager-initiated turn mutates the store", async () => {
     const r = await toolFor("U0MGR").handler({ field: "trust", action: "add", value: "C0MCP" });
     expect(JSON.stringify(r)).toContain("C0MCP");
-    expect(SO.list()[0]).toMatchObject({ field: "trustedChannels", value: "C0MCP", action: "add" });
+    expect((await SO.list())[0]).toMatchObject({ field: "trustedChannels", value: "C0MCP", action: "add" });
   });
 
   it("non-manager (incl. backup) refused, store untouched", async () => {
@@ -40,14 +39,14 @@ describe("soul_override MCP tool", () => {
       const r: any = await toolFor(who).handler({ field: "block", action: "add", value: "U0X" });
       expect(r.isError).toBe(true);
     }
-    expect(SO.list().length).toBe(0);
+    expect((await SO.list()).length).toBe(0);
   });
 
   it("list action reports provenance without mutating", async () => {
-    SO.upsert({ field: "trustedChannels", value: "C0A", action: "add", created_by: "U0MGR" });
+    await SO.upsert({ field: "trustedChannels", value: "C0A", action: "add", created_by: "U0MGR" });
     const r: any = await toolFor("U0MGR").handler({ field: "trust", action: "list" });
     expect(r.content[0].text).toContain("C0A");
-    expect(SO.list().length).toBe(1);
+    expect((await SO.list()).length).toBe(1);
   });
 
   it("not mounted when no initiator resolver provided (legacy callers)", () => {

@@ -358,35 +358,35 @@ describe("slackHandlers", () => {
 describe("listCronJobs target tag", () => {
   test("renders [channel] tag", async () => {
     setSoulData(SoulDataSchema.parse({ manager: { userId: "U0MGR" } }));
-    db.run("DELETE FROM cron_jobs");
-    CronJobs.create({
+    await db.run("DELETE FROM cron_jobs");
+    await CronJobs.create({
       channelId: "C1", createdBy: "U1", cronExpr: "0 9 * * *",
       prompt: "digest", nextRunAt: Date.now(), target: "channel",
     });
     const res = await adminHandlers.listCronJobs({ channel: "C1", userId: "U0MGR" } as SlackContext);
     expect(res.content[0]!.text).toContain("[channel]");
-    db.run("DELETE FROM cron_jobs");
+    await db.run("DELETE FROM cron_jobs");
     __resetSoulDataMemo();
   });
 });
 
 describe("addCronJob oauthUser capture", () => {
-  afterEach(() => {
-    db.run("DELETE FROM cron_jobs");
-    OneOnOne._wipeForTests();
+  afterEach(async () => {
+    await db.run("DELETE FROM cron_jobs");
+    await OneOnOne._wipeForTests();
     __resetSoulDataMemo();
   });
 
   test("captures oauthUser from active /1on1 lock when agent calls add_cron_job", async () => {
     setSoulData(SoulDataSchema.parse({ manager: { userId: "U0MGR" } }));
     // Simulate a /1on1 lock: initiator U_INIT paired on channel C1, thread T1
-    OneOnOne.lock({ channelId: "C1", threadTs: "T1", lockedUser: "U_INIT", createdBy: "U_INIT" });
+    await OneOnOne.lock({ channelId: "C1", threadTs: "T1", lockedUser: "U_INIT", createdBy: "U_INIT" });
 
     const ctx = { channel: "C1", threadTs: "T1", userId: "U0MGR" } as SlackContext;
     const res = await adminHandlers.addCronJob(ctx, { cronExpr: "0 9 * * *", prompt: "daily" });
     expect(res.isError).toBeUndefined();
 
-    const jobs = CronJobs.listActive();
+    const jobs = await CronJobs.listActive();
     expect(jobs).toHaveLength(1);
     expect(jobs[0]!.oauthUser).toBe("U_INIT");
   });
@@ -396,7 +396,7 @@ describe("addCronJob oauthUser capture", () => {
     const ctx = { channel: "C1", threadTs: "T1", userId: "U0MGR" } as SlackContext;
     await adminHandlers.addCronJob(ctx, { cronExpr: "0 9 * * *", prompt: "daily" });
 
-    const jobs = CronJobs.listActive();
+    const jobs = await CronJobs.listActive();
     expect(jobs).toHaveLength(1);
     expect(jobs[0]!.oauthUser).toBeNull();
   });

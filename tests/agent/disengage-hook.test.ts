@@ -37,13 +37,13 @@ describe("disengagedHookDecision", () => {
 // suppression metric when it halts.
 describe("makeDisengageSuppressHook (live hook)", () => {
   let seq = 0;
-  const mkSession = (engaged: number) => {
-    const row = Sessions.createForThread({
+  const mkSession = async (engaged: number) => {
+    const row = await Sessions.createForThread({
       thread: { team_id: "T", channel_id: "C", thread_ts: `hk.${seq++}` },
       model: "",
       working_dir: "/tmp",
     });
-    Sessions.setEngaged(row.id, engaged === 1);
+    await Sessions.setEngaged(row.id, engaged === 1);
     return row.id;
   };
   const suppressedCount = () => {
@@ -55,8 +55,8 @@ describe("makeDisengageSuppressHook (live hook)", () => {
   };
 
   it("disengaged session → continue:false and bumps the suppressed metric", async () => {
-    db.run("DELETE FROM sessions");
-    const id = mkSession(0);
+    await db.run("DELETE FROM sessions");
+    const id = await mkSession(0);
     const before = suppressedCount();
     const d = (await makeDisengageSuppressHook(id)({ hook_event_name: "UserPromptSubmit" } as any, undefined as any, {} as any)) as { continue: boolean };
     expect(d.continue).toBe(false);
@@ -64,7 +64,7 @@ describe("makeDisengageSuppressHook (live hook)", () => {
   });
 
   it("engaged session → continue:true, metric unchanged", async () => {
-    const id = mkSession(1);
+    const id = await mkSession(1);
     const before = suppressedCount();
     const d = (await makeDisengageSuppressHook(id)({ hook_event_name: "UserPromptSubmit" } as any, undefined as any, {} as any)) as { continue: boolean };
     expect(d.continue).toBe(true);
@@ -72,7 +72,7 @@ describe("makeDisengageSuppressHook (live hook)", () => {
   });
 
   it("non-UserPromptSubmit event passes through untouched", async () => {
-    const id = mkSession(0); // disengaged, but the event isn't a prompt submit
+    const id = await mkSession(0); // disengaged, but the event isn't a prompt submit
     const d = (await makeDisengageSuppressHook(id)({ hook_event_name: "PreCompact" } as any, undefined as any, {} as any)) as { continue: boolean };
     expect(d.continue).toBe(true);
   });
@@ -80,13 +80,13 @@ describe("makeDisengageSuppressHook (live hook)", () => {
 
 describe("makeUserPromptHook (disengage + drain queued notes)", () => {
   let seq = 0;
-  const mkSession = (engaged: number) => {
-    const row = Sessions.createForThread({
+  const mkSession = async (engaged: number) => {
+    const row = await Sessions.createForThread({
       thread: { team_id: "T", channel_id: "C", thread_ts: `up.${seq++}` },
       model: "",
       working_dir: "/tmp",
     });
-    Sessions.setEngaged(row.id, engaged === 1);
+    await Sessions.setEngaged(row.id, engaged === 1);
     return row.id;
   };
   const submit = { hook_event_name: "UserPromptSubmit" } as any;
@@ -99,7 +99,7 @@ describe("makeUserPromptHook (disengage + drain queued notes)", () => {
   });
 
   it("disengaged → continue:false, notes left queued (not drained)", async () => {
-    const id = mkSession(0);
+    const id = await mkSession(0);
     const notes = new Map([[id, ["Model changed to `x`."]]]);
     const r = (await run(id, notes)) as { continue: boolean };
     expect(r.continue).toBe(false);
@@ -107,7 +107,7 @@ describe("makeUserPromptHook (disengage + drain queued notes)", () => {
   });
 
   it("engaged with queued notes → drains once into additionalContext", async () => {
-    const id = mkSession(1);
+    const id = await mkSession(1);
     const notes = new Map([[id, ["Connected MCP server `wb`."]]]);
     const r1 = (await run(id, notes)) as any;
     expect(r1.hookSpecificOutput.additionalContext).toContain("Connected MCP server `wb`.");
@@ -117,13 +117,13 @@ describe("makeUserPromptHook (disengage + drain queued notes)", () => {
   });
 
   it("engaged, no notes → plain continue", async () => {
-    const id = mkSession(1);
+    const id = await mkSession(1);
     const r = (await run(id, new Map())) as any;
     expect(r).toEqual({ continue: true });
   });
 
   it("suppressCheck returns true → continue:false (mention-only plain message)", async () => {
-    const id = mkSession(1); // engaged — disengage check passes through
+    const id = await mkSession(1); // engaged — disengage check passes through
     let consumed = true;
     const suppressCheck = () => { const v = consumed; consumed = false; return v; };
     const r = (await makeUserPromptHook(id, new Map(), suppressCheck)(submit, undefined as any, {} as any)) as any;
@@ -133,7 +133,7 @@ describe("makeUserPromptHook (disengage + drain queued notes)", () => {
   });
 
   it("suppressCheck returns false → passes through to drain notes", async () => {
-    const id = mkSession(1);
+    const id = await mkSession(1);
     const notes = new Map([[id, ["note"]]]);
     const suppressCheck = () => false;
     const r = (await makeUserPromptHook(id, notes, suppressCheck)(submit, undefined as any, {} as any)) as any;
@@ -142,7 +142,7 @@ describe("makeUserPromptHook (disengage + drain queued notes)", () => {
   });
 
   it("suppressCheck not provided → behaves as before", async () => {
-    const id = mkSession(1);
+    const id = await mkSession(1);
     const r = (await makeUserPromptHook(id, new Map())(submit, undefined as any, {} as any)) as any;
     expect(r).toEqual({ continue: true });
   });
