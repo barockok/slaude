@@ -1,0 +1,23 @@
+# Non-secret runtime config shared by both Deployments. Role, ports and
+# gateway URL are set per-Deployment (40/50) — everything here is common.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: slaude-scale-config
+  namespace: slaude-scale
+data:
+  SLAUDE_DB: "pg"
+  SLAUDE_SLACK_MODE: "http"
+  SLAUDE_MODEL: "claude-sonnet-4-6"
+  # Redis key namespace — lets several slaude deploys share one Redis.
+  # The KEDA trigger in 70-autoscale.yaml hardcodes the BullMQ list name
+  # derived from this prefix; change both together.
+  SLAUDE_REDIS_PREFIX: "slaude"
+  # SIGTERM grace for node workers: seconds to finish in-flight turns.
+  # terminationGracePeriodSeconds on the node Deployment MUST exceed this.
+  SLAUDE_NODE_DRAIN_SEC: "120"
+  # BullMQ concurrency per node process.
+  SLAUDE_NODE_CONCURRENCY: "8"
+  # Public redirect URL registered on the Slack app for the OAuth install
+  # flow — must match the Ingress host in 60-ingress.yaml.
+  SLACK_OAUTH_REDIRECT_URL: "https://slaude-gw.example.com/slack/oauth/callback"

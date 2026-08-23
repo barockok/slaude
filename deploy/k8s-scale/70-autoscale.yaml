@@ -1,0 +1,89 @@
+# Node autoscaling on queue depth (spec §9 M5, "HPA on queue depth").
+#
+# CHOICE: KEDA with the `redis` (list-length) trigger, scaling on the BullMQ
+# wait list directly.
+#
+#   - It measures the same source of truth the workers consume — no
+#     Prometheus scrape loop in the control path, no metrics-adapter install,
+#     and it works even when every gateway replica is down (the queue is the
+#     ground truth for "work exists").
+#   - The alternative (KEDA prometheus trigger on slaude_queue_depth) is
+#     provided below for shops already running Prometheus; note that gauge is
+#     exported only by the current reaper LEADER replica, so the query must
+#     take max() across gateway pods.
+#   - Known blind spot of the list trigger: it sees the SHARED `turns` wait
+#     list only. Per-node queues drain via the reaper's stall-rescue (jobs on
+#     a dead/busy node's queue move to `turns` within ~5s), and delayed jobs
+#     are retries/serialization backoffs — neither should drive scale-up.
+#
+# List key derivation — keep in sync with src/queue/keys.ts:
+#   BullMQ key = <SLAUDE_REDIS_PREFIX>:bull:<queue>:wait
+#   defaults   = slaude:bull:turns:wait
+#
+# Install KEDA first: https://keda.sh/docs/latest/deploy/
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: slaude-node
+  namespace: slaude-scale
+spec:
+  scaleTargetRef:
+    name: slaude-node
+  minReplicaCount: 2
+  maxReplicaCount: 20
+  cooldownPeriod: 300 # scale-down waits for idle-TTL'd warm sessions to expire
+  triggers:
+    - type: redis
+      metadata:
+        # Same endpoint as SLAUDE_REDIS_URL in 10-secrets.yaml (host:port form).
+        address: REPLACE-redis-host:6379
+        listName: slaude:bull:turns:wait
+        # Target waiting jobs per node replica. With SLAUDE_NODE_CONCURRENCY=8
+        # a sustained backlog of >5 unclaimed jobs per node means claim
+        # latency is already climbing toward the 500ms p95 SLO (spec §8).
+        listLength: "5"
+      # Managed Redis with AUTH: reference the password via a
+      # TriggerAuthentication instead of inlining it:
+      #   authenticationRef: { name: slaude-redis-auth }
+#
+# --- Variant B: KEDA prometheus trigger on the gateway's queue-depth gauge.
+# Counts delayed + prioritized jobs too. Replace the redis trigger above with:
+#
+#    - type: prometheus
+#      metadata:
+#        serverAddress: http://prometheus.monitoring:9090
+#        query: max(slaude_queue_depth{queue="turns"})   # max(): leader-only gauge
+#        threshold: "10"
+---
+# --- Fallback: plain HPA on CPU, for clusters without KEDA. ---
+# CPU is a POOR proxy for slaude's load: turns are dominated by waiting on
+# the LLM provider, so a node can be saturated (all concurrency slots busy)
+# at low CPU. Use this only until KEDA is installed; expect it to under-scale.
+# NOTE: mutually exclusive with the ScaledObject above (KEDA manages its own
+# HPA) — apply one or the other, never both.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: slaude-node-cpu-fallback
+  namespace: slaude-scale
+  annotations:
+    slaude/disabled: "delete the ScaledObject before applying this fallback"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: slaude-node
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+  behavior:
+    scaleDown:
+      # Slow scale-down: warm sessions on a reaped replica cold-resume
+      # elsewhere, but churning replicas every window wastes that warmth.
+      stabilizationWindowSeconds: 600

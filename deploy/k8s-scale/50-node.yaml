@@ -1,0 +1,95 @@
+# Node tier (spec §1, §6): M interchangeable BullMQ workers running the SDK
+# turns. No Slack client, no Postgres — Redis for queues/registry and the
+# gateway /v1 for everything else. Scaled by 70-autoscale.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slaude-node
+  namespace: slaude-scale
+  labels:
+    app.kubernetes.io/name: slaude
+    app.kubernetes.io/component: node
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: slaude
+      app.kubernetes.io/component: node
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: slaude
+        app.kubernetes.io/component: node
+    spec:
+      # MUST exceed SLAUDE_NODE_DRAIN_SEC (ConfigMap, default 120): on
+      # SIGTERM the worker stops claiming and finishes in-flight turns
+      # within the drain grace; kubelet must not SIGKILL it mid-drain.
+      terminationGracePeriodSeconds: 150
+      containers:
+        - name: node
+          image: ghcr.io/REPLACE/slaude:latest
+          imagePullPolicy: Always
+          command: ["bun", "run", "worker"]
+          envFrom:
+            - secretRef:
+                name: slaude-scale-secrets
+            - configMapRef:
+                name: slaude-scale-config
+          env:
+            - name: SLAUDE_HOME
+              value: /data
+            - name: SLAUDE_ROLE
+              value: node
+            - name: SLAUDE_GATEWAY_URL
+              value: http://slaude-gateway:8080
+            - name: SLAUDE_NODE_PORT
+              value: "8081"
+          ports:
+            - name: health
+              containerPort: 8081
+          livenessProbe:
+            # Unhealthy when the BullMQ workers stop running or Redis is
+            # gone past the error window — restart the pod.
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            # /readyz = workers subscribed + live Redis PING. A draining
+            # node (SIGTERM) reports 503 and leaves rotation immediately.
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: slaude-home
+              mountPath: /data
+          resources:
+            # Turns spawn Claude Code SDK child processes — size for
+            # SLAUDE_NODE_CONCURRENCY (default 8) concurrent children.
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: slaude-home
+          persistentVolumeClaim:
+            claimName: slaude-home
+---
+# Voluntary disruptions may take nodes one at a time — never all at once —
+# so warm sessions migrate via drain + cold resume instead of being orphaned.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: slaude-node
+  namespace: slaude-scale
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: slaude
+      app.kubernetes.io/component: node

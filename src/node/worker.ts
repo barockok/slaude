@@ -264,7 +264,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   const processor = async (job: Job, token?: string): Promise<unknown> => {
     const data = job.data as TurnJob;
     const claimLatencySec = Math.max(0, (Date.now() - (data.enqueuedAt || job.timestamp)) / 1000);
-    metric.nodeClaimLatency.set(claimLatencySec);
+    metric.nodeClaimLatency.observe(claimLatencySec);
     // Turn-done marker: a prior attempt of THIS job already ran its agent
     // turn but died before BullMQ acked (kill-after-reply zombie). Re-running
     // would double-post to Slack — complete the job instead. Checked
@@ -334,7 +334,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       throw new DelayedError();
     }
 
-    metric.nodeTurnDurationSum.inc({}, (Date.now() - started) / 1000);
+    metric.nodeTurnDuration.observe((Date.now() - started) / 1000);
     metric.nodeTurnsTotal.inc({ result: res });
     if (res === "error") void client.failJob(String(job.id), { sessionId: data.sessionId });
     else void client.ackJob(String(job.id), { sessionId: data.sessionId, result: res });

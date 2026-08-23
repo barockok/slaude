@@ -20,7 +20,15 @@ type Gauge = {
   series: Map<string, number>;
 };
 
-type Metric = Counter | Gauge;
+type Histogram = {
+  type: "histogram";
+  help: string;
+  buckets: number[];
+  /** seriesKey → { counts per bucket (cumulative at render), sum, count } */
+  series: Map<string, { counts: number[]; sum: number; count: number }>;
+};
+
+type Metric = Counter | Gauge | Histogram;
 
 /** Parse `"a=1,b=2"` → `{a:"1",b:"2"}`. Tolerant: empty parts dropped, malformed dropped. */
 export function parseLabels(raw: string | undefined): LabelMap {
@@ -101,6 +109,39 @@ export class Registry {
     };
   }
 
+  /**
+   * Prometheus histogram (fixed buckets, cumulative `_bucket{le=...}` +
+   * `_sum` + `_count` on render). Needed for latency SLOs the spec states as
+   * percentiles (§8: claim-latency p95 < 500ms) — a gauge of the last
+   * observation cannot answer `histogram_quantile()`.
+   */
+  histogram(name: string, help: string, buckets: number[]): {
+    observe: (value: number, labels?: LabelMap) => void;
+  } {
+    let m = this.#metrics.get(name);
+    if (!m) {
+      m = { type: "histogram", help, buckets: [...buckets].sort((a, b) => a - b), series: new Map() };
+      this.#metrics.set(name, m);
+    }
+    const hist = m as Histogram;
+    return {
+      observe: (value, labels = {}) => {
+        const key = seriesKey(labels);
+        let s = hist.series.get(key);
+        if (!s) {
+          s = { counts: hist.buckets.map(() => 0), sum: 0, count: 0 };
+          hist.series.set(key, s);
+        }
+        // Non-cumulative per-bucket increments; cumulated at render time.
+        const idx = hist.buckets.findIndex((b) => value <= b);
+        if (idx >= 0) s.counts[idx]!++;
+        s.sum += value;
+        s.count++;
+        labelStore.set(`${name}|${key}`, labels);
+      },
+    };
+  }
+
   render(): string {
     const out: string[] = [];
     const names = Array.from(this.#metrics.keys()).sort();
@@ -112,7 +153,19 @@ export class Registry {
       for (const key of keys) {
         const dynLabels = labelStore.get(`${name}|${key}`) ?? {};
         const merged: LabelMap = { ...this.#static, ...dynLabels };
-        out.push(`${name}${renderLabels(merged)} ${m.series.get(key)}`);
+        if (m.type === "histogram") {
+          const s = m.series.get(key)!;
+          let cum = 0;
+          for (let i = 0; i < m.buckets.length; i++) {
+            cum += s.counts[i]!;
+            out.push(`${name}_bucket${renderLabels({ ...merged, le: String(m.buckets[i]) })} ${cum}`);
+          }
+          out.push(`${name}_bucket${renderLabels({ ...merged, le: "+Inf" })} ${s.count}`);
+          out.push(`${name}_sum${renderLabels(merged)} ${s.sum}`);
+          out.push(`${name}_count${renderLabels(merged)} ${s.count}`);
+        } else {
+          out.push(`${name}${renderLabels(merged)} ${m.series.get(key)}`);
+        }
       }
     }
     return out.join("\n") + "\n";
@@ -147,14 +200,28 @@ export const m = {
   httpRequestsTotal: metrics.counter("slaude_http_requests_total", "Slack ingress HTTP responses (/slack/*), labeled by route and status."),
   v1JobEventsTotal: metrics.counter("slaude_v1_job_events_total", "Node job telemetry received on /v1/jobs/:id (ack|fail), labeled by event."),
   v1ToolCallsTotal: metrics.counter("slaude_v1_tool_calls_total", "REST tool-plane invocations on /v1/tools/<server>/<tool>, labeled by server + tool."),
-  // Node runtime (spec §6). The registry has no histogram type, so duration
-  // is exported as a running sum; rate(sum)/rate(count) gives the mean.
+  // Node runtime (spec §6).
   nodeSessionsLive: metrics.gauge("slaude_node_sessions_live", "Warm SDK Query sessions held by this node."),
   nodeTurnsTotal: metrics.counter("slaude_node_turns_total", "Turn jobs processed by this node, labeled by result (done|error|skipped|requeued)."),
-  nodeTurnDurationSum: metrics.counter("slaude_node_turn_duration_seconds_sum", "Total seconds spent running turns on this node (pair with slaude_node_turns_total for the mean)."),
-  nodeClaimLatency: metrics.gauge("slaude_node_queue_claim_latency_seconds", "Most recent enqueue→claim latency observed by this node."),
+  nodeTurnDuration: metrics.histogram(
+    "slaude_node_turn_duration_seconds",
+    "Wall-clock duration of turn jobs run on this node (lock wait included).",
+    [1, 2.5, 5, 10, 30, 60, 120, 300, 600, 900],
+  ),
+  nodeClaimLatency: metrics.histogram(
+    "slaude_node_queue_claim_latency_seconds",
+    "enqueue→claim latency of turn jobs claimed by this node (spec §8 SLO: p95 < 0.5s).",
+    [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
+  ),
+  // Gateway ingress (spec §6): accepted Slack events dispatched to handlers
+  // (post-signature, post-registry lookup), labeled by event type.
+  gatewayEventsTotal: metrics.counter("slaude_gateway_events_total", "Slack events accepted and dispatched by this gateway replica, labeled by event type."),
   // Gateway queue-side (spec §6), set by the reaper leader loop.
   queueDepth: metrics.gauge("slaude_queue_depth", "Turn jobs waiting or delayed, labeled by queue."),
+  // Leader liveness: unix seconds of the last completed reaper pass. Lets
+  // alerting distinguish "leader gone" from an ex-leader replica that keeps
+  // rendering its stale last gauge values on every scrape.
+  reaperLastRun: metrics.gauge("slaude_reaper_last_run_timestamp_seconds", "Unix time of the last completed reaper pass on this replica (leader only)."),
   nodesAlive: metrics.gauge("slaude_nodes_alive", "Node heartbeat keys currently live."),
   sessionsWarm: metrics.gauge("slaude_sessions_warm", "Sessions registered warm on some node."),
 };

@@ -75,6 +75,27 @@ export const env = {
     botToken: () => req("SLACK_BOT_TOKEN"),
     appToken: () => req("SLACK_APP_TOKEN"),
     /**
+     * OAuth install flow (spec §5 model B, one app installed to many
+     * workspaces). Setting SLACK_CLIENT_ID enables GET /slack/oauth/start +
+     * /slack/oauth/callback on the HTTP transport; unset, both 404. The
+     * client secret signs the `state` token (shared across gateway replicas,
+     * so a state minted on one replica verifies on another) and authenticates
+     * the oauth.v2.access code exchange.
+     */
+    clientId: () => opt("SLACK_CLIENT_ID").trim(),
+    clientSecret: () => opt("SLACK_CLIENT_SECRET").trim(),
+    /** App-level signing secret stored on each OAuth-installed slack_apps row
+     *  (oauth.v2.access does not return it — it is app config, identical for
+     *  every workspace the app is installed to). */
+    signingSecret: () => opt("SLACK_SIGNING_SECRET").trim(),
+    /** Fixed redirect_uri registered on the Slack app. Empty → Slack uses the
+     *  app's sole configured redirect URL (and no redirect_uri param is sent). */
+    oauthRedirectUrl: () => opt("SLACK_OAUTH_REDIRECT_URL").trim(),
+    /** Dedicated HMAC secret for the OAuth install `state` (must be identical
+     *  on every gateway replica). Empty → the flow falls back to
+     *  SLACK_CLIENT_SECRET with a one-line warning. */
+    oauthStateSecret: () => opt("SLAUDE_OAUTH_STATE_SECRET").trim(),
+    /**
      * Optional user token (xoxp). Historically used only for presence
      * (`users.profile.set`). Also the token used for post-as-user when
      * SLACK_POST_AS_USER is enabled.

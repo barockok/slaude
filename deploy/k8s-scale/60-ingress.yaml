@@ -1,0 +1,48 @@
+# Service + Ingress for the gateway tier. Slack needs a public HTTPS host
+# for the Events API request URL, interactivity, and the OAuth redirect —
+# terminate TLS at the ingress (Slack requires a valid certificate).
+apiVersion: v1
+kind: Service
+metadata:
+  name: slaude-gateway
+  namespace: slaude-scale
+  labels:
+    app.kubernetes.io/name: slaude
+    app.kubernetes.io/component: gateway
+spec:
+  selector:
+    app.kubernetes.io/name: slaude
+    app.kubernetes.io/component: gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: slaude-gateway
+  namespace: slaude-scale
+  annotations:
+    # cert-manager example — swap for your issuer or remove if TLS is
+    # provisioned elsewhere (cloud LB, external cert).
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [slaude-gw.example.com]
+      secretName: slaude-gw-tls
+  rules:
+    - host: slaude-gw.example.com
+      http:
+        paths:
+          # Everything the gateway serves publicly lives under /slack/*.
+          # /v1 (node control plane) and /metrics stay cluster-internal on
+          # purpose — do NOT add a catch-all / path here.
+          - path: /slack
+            pathType: Prefix
+            backend:
+              service:
+                name: slaude-gateway
+                port:
+                  name: http
