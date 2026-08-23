@@ -430,6 +430,67 @@ describe("http slack transport — interactions", () => {
   });
 });
 
+describe("http slack transport — body-size cap", () => {
+  it("rejects a 12MB body with 413 fast, no signature work, no dispatch", async () => {
+    const seen: any[] = [];
+    const { t, base, logs } = await boot();
+    t.event("message", async (a) => {
+      seen.push(a);
+    });
+    const big = "x".repeat(12 * 1024 * 1024);
+    const started = Date.now();
+    // Deliberately signed with the REAL secret: a 413 here proves the cap
+    // fires before verification would have accepted the request.
+    const res = await fetch(`${base}/slack/events`, {
+      method: "POST",
+      headers: signedHeaders(SECRET_A, big),
+      body: big,
+    });
+    expect(res.status).toBe(413);
+    expect(Date.now() - started).toBeLessThan(5000);
+    await settle();
+    expect(seen.length).toBe(0);
+    expect(logs.some((l) => l.includes("body over"))).toBe(true);
+  });
+
+  it("content-length over the cap is refused without reading the body", async () => {
+    const { base } = await boot([appRow()], { maxBodyBytes: 100 });
+    const res = await fetch(`${base}/slack/interactions`, {
+      method: "POST",
+      headers: { "content-length": "101", "content-type": "application/x-www-form-urlencoded" },
+      body: "x".repeat(101),
+    });
+    expect(res.status).toBe(413);
+  });
+
+  it("stream guard catches an oversize body with no content-length", async () => {
+    const { base } = await boot([appRow()], { maxBodyBytes: 1000 });
+    const chunk = new TextEncoder().encode("y".repeat(600));
+    const res = await fetch(`${base}/slack/events`, {
+      method: "POST",
+      body: new ReadableStream({
+        start(c) {
+          c.enqueue(chunk);
+          c.enqueue(chunk); // 1200 bytes total > 1000 cap
+          c.close();
+        },
+      }),
+    });
+    expect(res.status).toBe(413);
+  });
+
+  it("bodies under the cap still flow", async () => {
+    const seen: any[] = [];
+    const { t, base } = await boot([appRow()], { maxBodyBytes: 100_000 });
+    t.event("message", async (a) => {
+      seen.push(a);
+    });
+    expect((await postEvents(base, SECRET_A, eventEnvelope())).status).toBe(200);
+    await settle();
+    expect(seen.length).toBe(1);
+  });
+});
+
 describe("http slack transport — lifecycle and client proxy", () => {
   it("start() throws when the registry is empty", async () => {
     const t = createHttpSlackTransport({ port: 0, loadApps: async () => [] });

@@ -155,6 +155,18 @@ describe("config/env getters", () => {
     delete process.env.SLAUDE_SLACK_MODE;
   });
 
+  test("slack.httpMaxBodyBytes defaults to 1MB, validates", () => {
+    delete process.env.SLAUDE_HTTP_MAX_BODY_BYTES;
+    expect(env.slack.httpMaxBodyBytes()).toBe(1_000_000);
+    process.env.SLAUDE_HTTP_MAX_BODY_BYTES = "5000";
+    expect(env.slack.httpMaxBodyBytes()).toBe(5000);
+    process.env.SLAUDE_HTTP_MAX_BODY_BYTES = "0";
+    expect(() => env.slack.httpMaxBodyBytes()).toThrow(/SLAUDE_HTTP_MAX_BODY_BYTES/);
+    process.env.SLAUDE_HTTP_MAX_BODY_BYTES = "big";
+    expect(() => env.slack.httpMaxBodyBytes()).toThrow(/SLAUDE_HTTP_MAX_BODY_BYTES/);
+    delete process.env.SLAUDE_HTTP_MAX_BODY_BYTES;
+  });
+
   test("slack.httpPort defaults to 8080, validates range", () => {
     delete process.env.SLAUDE_HTTP_PORT;
     expect(env.slack.httpPort()).toBe(8080);

@@ -47,6 +47,8 @@ type AppEntry = {
 export type HttpTransportOptions = {
   /** Listen port. Default SLAUDE_HTTP_PORT (8080); 0 = ephemeral (tests). */
   port?: number;
+  /** Max request-body bytes. Default SLAUDE_HTTP_MAX_BODY_BYTES (1_000_000). */
+  maxBodyBytes?: number;
   /** When set, /healthz /readyz /metrics are served on the same port. */
   health?: HealthDeps;
   /** Registry loader. Default: SlackApps.list() on the process db facade. */
@@ -172,8 +174,35 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
     }
   }
 
-  async function handleEvents(req: Request): Promise<Response> {
-    const raw = await req.text();
+  const maxBodyBytes = opts.maxBodyBytes ?? env.slack.httpMaxBodyBytes();
+
+  /**
+   * Buffer the request body under the size cap, BEFORE any signature work.
+   * A declared Content-Length over the cap is rejected without reading a
+   * byte; an absent or lying Content-Length is caught by counting while
+   * streaming. Returns null when the cap is exceeded (caller sends 413).
+   */
+  async function readBodyCapped(req: Request): Promise<string | null> {
+    const declared = Number(req.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > maxBodyBytes) return null;
+    if (!req.body) return "";
+    const reader = req.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBodyBytes) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  }
+
+  async function handleEvents(req: Request, raw: string): Promise<Response> {
     let body: any;
     try {
       body = JSON.parse(raw);
@@ -211,8 +240,7 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
     return new Response("", { status: 200 });
   }
 
-  async function handleInteractions(req: Request): Promise<Response> {
-    const raw = await req.text();
+  async function handleInteractions(req: Request, raw: string): Promise<Response> {
     // Interactions arrive form-encoded: payload=<json>. Signature covers the
     // raw form body, so parse only after grabbing `raw`.
     let payload: any;
@@ -244,15 +272,26 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
 
   const health = opts.health ? healthRoutes(opts.health) : null;
 
+  async function handleSlack(req: Request, pathname: string): Promise<Response> {
+    if (req.method !== "POST") return new Response("not found", { status: 404 });
+    // Size cap first — an oversize body is refused before any buffering
+    // completes and before any signature work.
+    const raw = await readBodyCapped(req);
+    if (raw === null) {
+      log(`[slack-http] rejected ${pathname}: body over ${maxBodyBytes} bytes`);
+      return new Response("payload too large", { status: 413 });
+    }
+    return pathname === "/slack/events" ? handleEvents(req, raw) : handleInteractions(req, raw);
+  }
+
   async function serve(req: Request): Promise<Response> {
     const url = new URL(req.url);
     if (health) {
       const r = await health(url);
       if (r) return r;
     }
-    if (req.method === "POST" && url.pathname === "/slack/events") return handleEvents(req);
-    if (req.method === "POST" && url.pathname === "/slack/interactions") {
-      return handleInteractions(req);
+    if (url.pathname === "/slack/events" || url.pathname === "/slack/interactions") {
+      return handleSlack(req, url.pathname);
     }
     return new Response("not found", { status: 404 });
   }

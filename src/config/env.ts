@@ -58,6 +58,20 @@ export const env = {
       }
       return n;
     },
+    /**
+     * Max accepted request-body size on /slack/* (bytes, default 1_000_000).
+     * Oversize requests are refused with 413 before signature verification.
+     * Slack event payloads are far below 1MB; raise only if a custom proxy
+     * inflates envelopes.
+     */
+    httpMaxBodyBytes: (): number => {
+      const raw = opt("SLAUDE_HTTP_MAX_BODY_BYTES", "1000000");
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1) {
+        throw new Error(`SLAUDE_HTTP_MAX_BODY_BYTES must be a positive integer (got '${raw}')`);
+      }
+      return n;
+    },
     botToken: () => req("SLACK_BOT_TOKEN"),
     appToken: () => req("SLACK_APP_TOKEN"),
     /**
