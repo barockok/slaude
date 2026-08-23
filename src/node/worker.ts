@@ -244,7 +244,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   const processor = async (job: Job, token?: string): Promise<unknown> => {
     const data = job.data as TurnJob;
     const claimLatencySec = Math.max(0, (Date.now() - (data.enqueuedAt || job.timestamp)) / 1000);
-    metric.nodeClaimLatency.set(claimLatencySec);
+    metric.nodeClaimLatency.observe(claimLatencySec);
     // Durable abort flag: /abort published before any node claimed the job.
     if (await pubsub.consumeAbortFlag(data.sessionId)) {
       metric.nodeTurnsTotal.inc({ result: "skipped" });
@@ -300,7 +300,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       throw new DelayedError();
     }
 
-    metric.nodeTurnDurationSum.inc({}, (Date.now() - started) / 1000);
+    metric.nodeTurnDuration.observe((Date.now() - started) / 1000);
     metric.nodeTurnsTotal.inc({ result: res });
     if (res === "error") void client.failJob(String(job.id), { sessionId: data.sessionId });
     else void client.ackJob(String(job.id), { sessionId: data.sessionId, result: res });

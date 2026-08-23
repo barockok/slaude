@@ -244,6 +244,7 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
     logRetry(req, body);
 
     if (body.type === "event_callback" && body.event?.type) {
+      m.gatewayEventsTotal.inc({ type: body.event.type });
       detach(() => dispatchEvent(body, entry), `event ${body.event.type}`);
     }
     // Anything else (app_rate_limited, unknown envelope) is acked and dropped.
