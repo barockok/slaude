@@ -1,0 +1,331 @@
+/**
+ * `bun:sqlite` driver. Executes synchronously and returns settled promises so
+ * the historical sqlite behaviour (callers that never awaited) keeps working.
+ * Owns the legacy incremental schema bootstrap: the sqlite path is frozen in
+ * its current shape — new tables land only in `src/db/migrations/` for
+ * Postgres. A sqlite install moves forward via `bun run migrate-sqlite`.
+ */
+import { Database } from "bun:sqlite";
+import { ensureHome } from "../../config/home";
+import type { DbClient, Row, RunResult } from "../client";
+
+export function ensureCronPauseColumn(database: Database): void {
+  const cols = database.query(`PRAGMA table_info(cron_jobs)`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "paused")) {
+    database.run(`ALTER TABLE cron_jobs ADD COLUMN paused INTEGER NOT NULL DEFAULT 0`);
+  }
+}
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  title TEXT,
+  model TEXT NOT NULL,
+  working_dir TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'idle',
+  claude_started INTEGER NOT NULL DEFAULT 0,
+  slack_team_id TEXT,
+  slack_channel_id TEXT,
+  slack_thread_ts TEXT,
+  permission_mode TEXT NOT NULL DEFAULT 'default',
+  engaged INTEGER NOT NULL DEFAULT 1,
+  persona_id TEXT NOT NULL DEFAULT 'default',
+  UNIQUE(slack_team_id, slack_channel_id, slack_thread_ts, persona_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_thread
+  ON sessions (slack_team_id, slack_channel_id, slack_thread_ts);
+
+CREATE TABLE IF NOT EXISTS skill_usage (
+  skill TEXT PRIMARY KEY,
+  uses INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS kb_ingest_jobs (
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  status TEXT NOT NULL,
+  triggered_by TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  heartbeat_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_kb_ingest_running
+  ON kb_ingest_jobs (status) WHERE status = 'running';
+
+CREATE TABLE IF NOT EXISTS ignores (
+  id TEXT PRIMARY KEY,
+  target_type TEXT NOT NULL CHECK(target_type IN ('user','thread')),
+  user_id TEXT,
+  channel_id TEXT,
+  thread_ts TEXT,
+  created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER,
+  reason TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ignores_user
+  ON ignores (target_type, user_id) WHERE target_type = 'user';
+
+CREATE INDEX IF NOT EXISTS idx_ignores_thread
+  ON ignores (target_type, channel_id, thread_ts) WHERE target_type = 'thread';
+
+CREATE INDEX IF NOT EXISTS idx_ignores_expires
+  ON ignores (expires_at) WHERE expires_at IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS cron_jobs (
+  id TEXT PRIMARY KEY,
+  slack_team_id TEXT,
+  slack_channel_id TEXT,
+  slack_thread_ts TEXT,
+  channel_id TEXT NOT NULL,
+  thread_ts TEXT,
+  created_by TEXT NOT NULL,
+  cron_expr TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  next_run_at INTEGER NOT NULL,
+  last_run_at INTEGER,
+  last_result TEXT,
+  paused INTEGER NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1,
+  persona_id TEXT NOT NULL DEFAULT 'default'
+);
+
+CREATE INDEX IF NOT EXISTS idx_cron_jobs_next_run
+  ON cron_jobs (next_run_at) WHERE active = 1;
+
+CREATE TABLE IF NOT EXISTS one_on_one_locks (
+  channel_id  TEXT    NOT NULL,
+  thread_ts   TEXT    NOT NULL,
+  locked_user TEXT    NOT NULL,
+  created_by  TEXT    NOT NULL,
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (channel_id, thread_ts)
+);
+
+CREATE TABLE IF NOT EXISTS mention_only_threads (
+  channel_id TEXT    NOT NULL,
+  thread_ts  TEXT    NOT NULL,
+  created_by TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (channel_id, thread_ts)
+);
+
+CREATE TABLE IF NOT EXISTS soul_overrides (
+  field      TEXT    NOT NULL CHECK(field IN
+              ('trustedChannels','allowedChannels','dmAllowedUsers','blockedUsers')),
+  value      TEXT    NOT NULL,
+  action     TEXT    NOT NULL CHECK(action IN ('add','remove')),
+  created_by TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (field, value)
+);
+
+CREATE TABLE IF NOT EXISTS memory_turns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  user_text TEXT NOT NULL,
+  assistant_text TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_turns_session ON memory_turns (session_id, ts);
+
+CREATE TABLE IF NOT EXISTS memory_facts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT,
+  scope TEXT NOT NULL DEFAULT 'session',
+  ts INTEGER NOT NULL,
+  fact TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_facts_session ON memory_facts (session_id);
+CREATE INDEX IF NOT EXISTS idx_memory_facts_scope ON memory_facts (scope);
+`;
+
+/** Create tables + apply the incremental column migrations on an existing sqlite file. */
+export function bootstrapSqliteSchema(db: Database): void {
+  for (const stmt of SCHEMA.split(";")) {
+    const s = stmt.trim();
+    if (s) db.run(s);
+  }
+
+  // Migration: backfill permission_mode column on existing dbs.
+  const sessionCols = db.query(`PRAGMA table_info(sessions)`).all() as Array<{ name: string }>;
+  if (!sessionCols.some((c) => c.name === "permission_mode")) {
+    db.run(`ALTER TABLE sessions ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'default'`);
+  }
+  // Migration: per-thread engagement flag (disengage must survive restarts).
+  if (!sessionCols.some((c) => c.name === "engaged")) {
+    db.run(`ALTER TABLE sessions ADD COLUMN engaged INTEGER NOT NULL DEFAULT 1`);
+  }
+  // Migration: multi-persona support. persona_id differentiates sessions for different
+  // personas in the same thread. Existing rows get 'default' (the single-bot persona).
+  // SQLite has no DROP CONSTRAINT, so we rebuild the table to replace the old unique
+  // index (team, channel, thread) with the new (team, channel, thread, persona_id).
+  // Wrapped in a transaction: a crash between the rename and the copy would leave
+  // `sessions_old` orphaned and the guard above satisfied by a freshly-created empty
+  // `sessions`, silently losing every thread→session mapping.
+  if (!sessionCols.some((c) => c.name === "persona_id")) {
+    db.transaction(() => {
+      db.run(`ALTER TABLE sessions RENAME TO sessions_old`);
+      db.run(`
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          title TEXT,
+          model TEXT NOT NULL,
+          working_dir TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'idle',
+          claude_started INTEGER NOT NULL DEFAULT 0,
+          slack_team_id TEXT,
+          slack_channel_id TEXT,
+          slack_thread_ts TEXT,
+          permission_mode TEXT NOT NULL DEFAULT 'default',
+          engaged INTEGER NOT NULL DEFAULT 1,
+          persona_id TEXT NOT NULL DEFAULT 'default',
+          UNIQUE(slack_team_id, slack_channel_id, slack_thread_ts, persona_id)
+        )
+      `);
+      db.run(`
+        INSERT INTO sessions
+          (id, created_at, updated_at, title, model, working_dir, status,
+           claude_started, slack_team_id, slack_channel_id, slack_thread_ts,
+           permission_mode, engaged, persona_id)
+        SELECT id, created_at, updated_at, title, model, working_dir, status,
+           claude_started, slack_team_id, slack_channel_id, slack_thread_ts,
+           permission_mode, engaged, 'default'
+        FROM sessions_old
+      `);
+      db.run(`DROP TABLE sessions_old`);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_thread ON sessions (slack_team_id, slack_channel_id, slack_thread_ts)`);
+    })();
+  }
+
+  // Migration: add Slack key columns to cron_jobs for real thread sessions.
+  const cronCols = db.query(`PRAGMA table_info(cron_jobs)`).all() as Array<{ name: string }>;
+  if (!cronCols.some((c) => c.name === "slack_team_id")) {
+    db.run(`ALTER TABLE cron_jobs ADD COLUMN slack_team_id TEXT`);
+  }
+  if (!cronCols.some((c) => c.name === "slack_channel_id")) {
+    db.run(`ALTER TABLE cron_jobs ADD COLUMN slack_channel_id TEXT`);
+  }
+  if (!cronCols.some((c) => c.name === "slack_thread_ts")) {
+    db.run(`ALTER TABLE cron_jobs ADD COLUMN slack_thread_ts TEXT`);
+  }
+  // Backfill: copy channel_id → slack_channel_id, thread_ts → slack_thread_ts for existing rows
+  // so cron jobs created before this migration continue to work.
+  const hasBackfill = db.query("SELECT 1 FROM cron_jobs WHERE slack_channel_id IS NULL LIMIT 1").get();
+  if (hasBackfill) {
+    db.run(`UPDATE cron_jobs SET slack_channel_id = channel_id, slack_thread_ts = thread_ts WHERE slack_channel_id IS NULL`);
+  }
+
+  // Migration: add channel-vs-thread posting target to cron_jobs.
+  if (!cronCols.some((c) => c.name === "target")) {
+    db.run(`ALTER TABLE cron_jobs ADD COLUMN target TEXT NOT NULL DEFAULT 'thread'`);
+  }
+
+  // Migration: add per-job active-session behavior. 'fire' (default) runs the job
+  // even when a human is live in the target thread/channel; 'skip' defers that run.
+  if (!cronCols.some((c) => c.name === "when_active")) {
+    db.run(`ALTER TABLE cron_jobs ADD COLUMN when_active TEXT NOT NULL DEFAULT 'fire'`);
+  }
+
+  // Migration: open-mode 1on1 — initiator can open the session to guests with a scope constraint.
+  const oooLockCols = db.query(`PRAGMA table_info(one_on_one_locks)`).all() as Array<{ name: string }>;
+  if (!oooLockCols.some((c) => c.name === "open_scope")) {
+    db.run(`ALTER TABLE one_on_one_locks ADD COLUMN open_scope TEXT`);
+  }
+
+  // Migration: record the /1on1 lock owner active when the job was created. Cron
+  // runs for DM/channel-target jobs key on a synthetic `cron:<id>` thread that
+  // carries no 1on1 lock, so #startSession's thread-lock lookup can't find the
+  // initiator — without this the child would boot with the agent's OAuth tokens
+  // instead of the initiator's. NULL = created outside a 1on1 (no isolation).
+  if (!cronCols.some((c) => c.name === "oauth_user")) {
+    db.run(`ALTER TABLE cron_jobs ADD COLUMN oauth_user TEXT`);
+  }
+
+  // Migration: multi-persona. Which persona owns the job — the scheduler keys the
+  // run's thread on it so the fire resolves the persona's session (soul + brain
+  // slice + config dir). Existing jobs get 'default' (single-bot persona).
+  if (!cronCols.some((c) => c.name === "persona_id")) {
+    db.run(`ALTER TABLE cron_jobs ADD COLUMN persona_id TEXT NOT NULL DEFAULT 'default'`);
+  }
+
+  // Migration: add pause lifecycle state. `active` remains the soft-delete bit;
+  // paused jobs stay listed but don't fire on schedule.
+  ensureCronPauseColumn(db);
+}
+
+class SqliteClient implements DbClient {
+  readonly dialect = "sqlite" as const;
+  readonly driver = "bun-sqlite";
+  constructor(readonly raw: Database) {}
+
+  query<T = Row>(sql: string, params: unknown[] = []): Promise<T[]> {
+    try {
+      return Promise.resolve(this.raw.query(sql).all(...(params as any[])) as T[]);
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  }
+
+  one<T = Row>(sql: string, params: unknown[] = []): Promise<T | null> {
+    try {
+      return Promise.resolve((this.raw.query(sql).get(...(params as any[])) as T | null) ?? null);
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  }
+
+  run(sql: string, params: unknown[] = []): Promise<RunResult> {
+    try {
+      const r = this.raw.run(sql, params as any[]);
+      return Promise.resolve({ changes: r.changes });
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  }
+
+  exec(sql: string): Promise<void> {
+    try {
+      this.raw.exec(sql);
+      return Promise.resolve();
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  }
+
+  async transaction<T>(fn: (tx: DbClient) => Promise<T>): Promise<T> {
+    this.raw.exec("BEGIN");
+    try {
+      const out = await fn(this);
+      this.raw.exec("COMMIT");
+      return out;
+    } catch (e) {
+      this.raw.exec("ROLLBACK");
+      throw e;
+    }
+  }
+
+  close(): Promise<void> {
+    this.raw.close();
+    return Promise.resolve();
+  }
+}
+
+/** Open (create if missing) a sqlite file and apply the legacy bootstrap. */
+export function openSqlite(path: string, opts: { bootstrap?: boolean } = {}): SqliteClient {
+  if (path !== ":memory:") ensureHome();
+  const raw = new Database(path, { create: true });
+  raw.run("PRAGMA journal_mode = WAL;");
+  raw.run("PRAGMA foreign_keys = ON;");
+  if (opts.bootstrap !== false) bootstrapSqliteSchema(raw);
+  return new SqliteClient(raw);
+}
+
+export type { SqliteClient };

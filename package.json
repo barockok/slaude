@@ -39,6 +39,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.173",
     "@anthropic-ai/sdk": "^0.104.1",
+    "@electric-sql/pglite": "^0.5.7",
     "@opentui/core": "^0.3.2",
     "@opentui/react": "^0.3.2",
     "@slack/bolt": "^4.1.0",
