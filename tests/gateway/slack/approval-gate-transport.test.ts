@@ -34,7 +34,12 @@ describe("ApprovalGate accepts a Transport", () => {
     const gate = new ApprovalGate(t, [], { timeoutSeconds: () => 0 });
     expect(t.actions.length).toBe(1);
     const decision = gate.request({ channel: "C1", threadTs: "1.0", summary: "do it" });
-    await new Promise((r) => setTimeout(r, 0));
+    // The card posts only after the durable pending_gates insert lands — on a
+    // real Postgres that round-trip outlasts one macrotask, so poll for it.
+    const deadline = Date.now() + 3000;
+    while (t.posted.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
     expect(t.posted.length).toBe(1);
     const lastBlock = t.posted[0].blocks.at(-1)!;
     const approveId = lastBlock.elements[0].action_id; // slaude_appr:approve:<id>
