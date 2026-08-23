@@ -5,7 +5,10 @@ import { createHash } from "node:crypto";
 
 export const REPO = "barockok/slaude";
 
-const SEMVER = /^\d+\.\d+\.\d+$/;
+// Accepts a release-candidate suffix (0.41.0-rc.1) so an installed RC is a
+// first-class version: without it `slaude version` reports "(none)" and
+// rollback/prune cannot see the directory at all.
+const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 export function distPaths(env: { SLAUDE_DIST?: string; SLAUDE_BIN_DIR?: string; HOME?: string } = process.env as { SLAUDE_DIST?: string; SLAUDE_BIN_DIR?: string; HOME?: string }) {
   const home = env.HOME ?? "";
@@ -15,8 +18,34 @@ export function distPaths(env: { SLAUDE_DIST?: string; SLAUDE_BIN_DIR?: string; 
 }
 
 function cmpSemver(a: string, b: string): number {
-  const pa = a.split(".").map(Number), pb = b.split(".").map(Number);
+  const [ca, prea] = splitPrerelease(a), [cb, preb] = splitPrerelease(b);
+  const pa = ca.split(".").map(Number), pb = cb.split(".").map(Number);
   for (let i = 0; i < 3; i++) if (pa[i]! !== pb[i]!) return pa[i]! - pb[i]!;
+  // semver: a prerelease sorts before its own stable release (0.41.0-rc.1 < 0.41.0)
+  if (!prea && !preb) return 0;
+  if (!prea) return 1;
+  if (!preb) return -1;
+  return cmpPrerelease(prea, preb);
+}
+
+function splitPrerelease(v: string): [string, string] {
+  const i = v.indexOf("-");
+  return i === -1 ? [v, ""] : [v.slice(0, i), v.slice(i + 1)];
+}
+
+// Dot-separated identifiers, numeric ones compared as numbers so rc.10 > rc.2.
+function cmpPrerelease(a: string, b: string): number {
+  const ia = a.split("."), ib = b.split(".");
+  for (let i = 0; i < Math.max(ia.length, ib.length); i++) {
+    const x = ia[i], y = ib[i];
+    if (x === undefined) return -1;   // fewer identifiers sorts lower
+    if (y === undefined) return 1;
+    if (x === y) continue;
+    const nx = /^\d+$/.test(x), ny = /^\d+$/.test(y);
+    if (nx && ny) return Number(x) - Number(y);
+    if (nx !== ny) return nx ? -1 : 1; // numeric identifiers sort below alphanumeric
+    return x < y ? -1 : 1;
+  }
   return 0;
 }
 

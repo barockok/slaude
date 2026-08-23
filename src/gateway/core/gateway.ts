@@ -1764,6 +1764,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
 
     console.log(`[slaude] sendMessage session=${session.id} cwd=${session.working_dir} model=${session.model}`);
+    if (suppress) agent.suppressNextTurn(session.id);
     try {
       await agent.sendMessage(session.id, envelope);
     } catch (e: any) {

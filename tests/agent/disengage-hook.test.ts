@@ -121,4 +121,29 @@ describe("makeUserPromptHook (disengage + drain queued notes)", () => {
     const r = (await run(id, new Map())) as any;
     expect(r).toEqual({ continue: true });
   });
+
+  it("suppressCheck returns true → continue:false (mention-only plain message)", async () => {
+    const id = mkSession(1); // engaged — disengage check passes through
+    let consumed = true;
+    const suppressCheck = () => { const v = consumed; consumed = false; return v; };
+    const r = (await makeUserPromptHook(id, new Map(), suppressCheck)(submit, undefined as any, {} as any)) as any;
+    expect(r.continue).toBe(false);
+    expect(r.suppressOutput).toBe(true);
+    expect(r.stopReason).toContain("mention-only");
+  });
+
+  it("suppressCheck returns false → passes through to drain notes", async () => {
+    const id = mkSession(1);
+    const notes = new Map([[id, ["note"]]]);
+    const suppressCheck = () => false;
+    const r = (await makeUserPromptHook(id, notes, suppressCheck)(submit, undefined as any, {} as any)) as any;
+    expect(r.continue).toBe(true);
+    expect(r.hookSpecificOutput?.additionalContext).toContain("note");
+  });
+
+  it("suppressCheck not provided → behaves as before", async () => {
+    const id = mkSession(1);
+    const r = (await makeUserPromptHook(id, new Map())(submit, undefined as any, {} as any)) as any;
+    expect(r).toEqual({ continue: true });
+  });
 });

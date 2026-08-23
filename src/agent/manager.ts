@@ -121,18 +121,30 @@ export function makeDisengageSuppressHook(sessionId: string): HookCallback {
   };
 }
 
-/** Combined UserPromptSubmit hook: suppress while disengaged (notes stay queued for
- *  the next engaged turn), otherwise drain any queued out-of-band gate events
- *  (mcp connect/disconnect, /model, /mode, /soul, /cron) into the turn's
- *  additionalContext — exactly once. Exported as a factory over (sessionId, notes
- *  store) for unit tests; reads engagement live via findById each turn. */
-export function makeUserPromptHook(sessionId: string, notes: Map<string, string[]>): HookCallback {
+/** Combined UserPromptSubmit hook: suppress while disengaged or mention-only-suppressed
+ *  (notes stay queued for the next engaged turn), otherwise drain any queued
+ *  out-of-band gate events (mcp connect/disconnect, /model, /mode, /soul, /cron)
+ *  into the turn's additionalContext — exactly once. Exported as a factory over
+ *  (sessionId, notes store, suppressCheck) for unit tests; reads engagement live
+ *  via findById each turn. suppressCheck is a consume-once fn that returns true
+ *  when the current turn is a mention-only plain message that must not run the model. */
+export function makeUserPromptHook(
+  sessionId: string,
+  notes: Map<string, string[]>,
+  suppressCheck?: () => boolean,
+): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== "UserPromptSubmit") return { continue: true };
     const dis = disengagedHookDecision(Sessions.findById(sessionId));
     if (dis.continue === false) {
       metric.disengagedSuppressedTotal.inc();
       return dis; // leave queued notes for the next engaged turn
+    }
+    if (suppressCheck?.()) {
+      // mention-only thread: record the message in the transcript but don't run
+      // the model. continue:false persists the prompt; decision:"block" would
+      // discard it (see 2026-06-16 finding).
+      return { continue: false, suppressOutput: true, stopReason: "mention-only — message recorded, not processed" };
     }
     const pending = notes.get(sessionId) ?? [];
     notes.set(sessionId, []);
@@ -176,6 +188,9 @@ export class AgentManager extends EventEmitter {
   #autoContinue = new Set<string>();
   /** Prompt to inject after a manual reload_session call (keyed by sessionId). */
   #reloadPrompt = new Map<string, string>();
+  /** Sessions whose next turn must be suppressed (mention-only plain message).
+   *  Consumed once by the UserPromptSubmit hook; set by suppressNextTurn(). */
+  #suppressNextTurn = new Set<string>();
   #budget = new TokenBudget({
     fallbackContextWindow: env.tokenFallbackContextWindow(),
   });
@@ -253,6 +268,13 @@ export class AgentManager extends EventEmitter {
       });
     }
     return row;
+  }
+
+  /** Mark the next turn for sessionId as a mention-only suppressed turn.
+   *  The UserPromptSubmit hook will return continue:false so the message is
+   *  recorded in the transcript but the model does not run. Consumed once. */
+  suppressNextTurn(sessionId: string) {
+    this.#suppressNextTurn.add(sessionId);
   }
 
   /** Send user input. Starts session loop if not already live. */
@@ -518,7 +540,11 @@ export class AgentManager extends EventEmitter {
     // history — no Slack re-fetch, no synthetic preamble. (decision:"block"
     // discards the prompt *before* it persists — verified against the pinned
     // SDK; see docs/findings/2026-06-16-reengage-hook-suppress.md.)
-    const userPromptHook = makeUserPromptHook(sessionId, this.#sessionNotes);
+    const userPromptHook = makeUserPromptHook(
+      sessionId,
+      this.#sessionNotes,
+      () => this.#suppressNextTurn.delete(sessionId),
+    );
     // CC plugins installed via `bun run install-deps`. Without this, the SDK
     // ignores the enabledPlugins entry in settings.json (it only reads
     // settings when settingSources is set). Explicit Options.plugins surfaces
