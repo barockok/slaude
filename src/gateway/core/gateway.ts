@@ -36,6 +36,8 @@ import { loadKbs } from "../../knowledge/loader";
 import { resolveUserName } from "../slack/users";
 import { downloadAttachments, type SlackFile } from "../slack/attachments";
 import * as Sessions from "../../db/sessions";
+import * as SeenEvents from "../../db/seen-events";
+import * as PendingGates from "../../db/pending-gates";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { loadExternalMcp, privateOverrides } from "./external-mcp";
 import { randomBytes } from "node:crypto";
@@ -241,12 +243,26 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     timeoutSeconds: () => soulData().approvalTimeoutSeconds || 300,
   });
   const ignoreGate = new IgnoreGate();
+  // Boot sweep: auto-expire pending gates whose deadline passed while no
+  // process was alive (a restart killed their auto-deny timers). Rows with no
+  // deadline stay; a later click on one settles it as cancelled.
+  void PendingGates.sweepExpired()
+    .then((rows) => {
+      for (const r of rows) console.log(`[gates] expired orphaned ${r.kind} gate ${r.id} (session ${r.sessionId})`);
+    })
+    .catch((e) => console.error("[gates] boot sweep failed:", e));
   // Clean up expired ignores + abandoned paste-back OAuth flows every 5 minutes.
   // Each pendingPaste entry closes over live client creds + the PKCE verifier, so
   // an abandoned flow must not linger in memory until the initiator happens to
   // message again (the lazy check in the inbound path).
   setInterval(() => {
     import("../../db/ignores").then((m) => m.cleanupExpired());
+    // Overdue gates (live auto-deny timers normally win; this catches strays)
+    // + settled gate rows past the 24h audit horizon + stale dedup rows on
+    // quiet deployments where the inbound-path purge never fires.
+    void PendingGates.sweepExpired().catch(() => {});
+    void PendingGates.purgeSettledOlderThan().catch(() => {});
+    void SeenEvents.purgeOlderThan().catch(() => {});
     const now = Date.now();
     for (const [k, p] of pendingPaste) if (now > p.expiresAt) pendingPaste.delete(k);
   }, 5 * 60 * 1000);
@@ -271,6 +287,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         approvals.request({
           channel: ctx.channel,
           threadTs: ctx.threadTs,
+          sessionId,
           ...req,
         });
       ctx.reloadSession = (prompt?) => agent.reload(sessionId, prompt);
@@ -298,8 +315,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // due job through onExecute, which registers into `routes`. Starting earlier would hit
   // a temporal-dead-zone ReferenceError when a cron job is already due at boot.
   cronScheduler.start();
-  // Dedup events by (channel, ts).
-  const seenEvents = new Set<string>();
 
   // MCP resolver — first-call-per-session wires the slack MCP server bound to
   // the session's SlackContext object. We mutate fields on the same context
@@ -452,8 +467,23 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // lock — connects the agent's shared identity).
   type ConnectScope = "initiator" | "global";
 
-  // Pending /mcp connect buttons: token → the context needed to run the connect.
-  const pendingMcp = new Map<string, { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string; scope: ConnectScope; personaName?: string }>();
+  // Pending /mcp connect buttons live in pending_gates (kind 'mcp_connect'):
+  // the token is the row id and the payload carries everything the click needs
+  // to run the connect, so the card still works after a restart and a click is
+  // settled exactly once via the guarded resolve.
+  type McpGatePayload = { channelId: string; threadTs: string; userId: string; serverName: string; scope: ConnectScope; personaName?: string };
+
+  // Connect cards expire so stale rows drain via sweepExpired instead of
+  // accumulating. SLAUDE_MCP_CARD_TTL accepts '30m'/'12h'/'permanent' (max 24h,
+  // parseDuration); unset or invalid → 24h.
+  const mcpCardTtlMs = ((): number | null => {
+    const raw = (process.env.SLAUDE_MCP_CARD_TTL ?? "").trim();
+    if (!raw) return 24 * 60 * 60 * 1000;
+    const d = parseDuration(raw);
+    if (d.ok) return d.permanent ? null : d.minutes * 60 * 1000;
+    console.warn(`[gates] invalid SLAUDE_MCP_CARD_TTL '${raw}' (${d.error}) — using 24h`);
+    return 24 * 60 * 60 * 1000;
+  })();
 
   // Paste-back: a started-but-not-completed OAuth flow, keyed by channel:thread:user
   // (one in-flight connect per initiator per thread). The initiator completes it by
@@ -682,13 +712,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   t.action(/^slaude_mcp:connect:.+$/, async ({ ack, action, body }) => {
     await ack();
     const token = (action as { action_id: string }).action_id.replace(/^slaude_mcp:connect:/, "");
-    const ctx = pendingMcp.get(token);
-    if (!ctx) return;
+    const gate = await PendingGates.get(token);
+    if (!gate || gate.kind !== "mcp_connect" || gate.status !== "pending") return;
+    const ctx = gate.payload as unknown as McpGatePayload;
     // Slack shows the button to everyone in the thread. The clicker must be the user
     // who originally requested the card, and still authorized for the card's scope:
     //   initiator → they must still own the /1on1 lock (bystanders can't drive an
     //               initiator's OAuth grant; a dropped lock invalidates the card).
     //   global    → no lock, and they must still be the manager/backup.
+    // Checks run BEFORE the guarded resolve so an unauthorized click never
+    // consumes the card.
     const clicker = (body as any).user?.id;
     if (clicker !== ctx.userId) return;
     if (ctx.scope === "initiator") {
@@ -699,10 +732,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const soul = soulData();
       if (ctx.userId !== soul.manager.userId && ctx.userId !== soul.backupManager.userId) return;
     }
-    pendingMcp.delete(token);
+    // One click wins; a duplicate (or another replica) sees null and stops.
+    if (!(await PendingGates.resolve(token, "approved", clicker))) return;
     const cfg = httpExternalServers()[ctx.serverName];
     if (!cfg) return;
-    await connectServer({ ...ctx, serverCfg: cfg, personaName: (ctx as any).personaName });
+    await connectServer({ ...ctx, sessionId: gate.sessionId, serverCfg: cfg, personaName: ctx.personaName });
   });
 
   agent.on("event", (e: AgentEvent) => {
@@ -923,14 +957,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       return;
     }
 
-    // Dedup
+    // Dedup — durable atomic claim in seen_events by (channel, ts), so a Slack
+    // redelivery is dropped even across a restart or by a sibling replica.
     const dedupKey = `${channelId}:${eventTs}`;
-    if (seenEvents.has(dedupKey)) {
+    if (!(await SeenEvents.tryInsert(dedupKey))) {
       console.log(`[slack-rx] drop ch=${channelId} ts=${eventTs} — dedup (already seen)`);
       metric.slackDropsTotal.inc({ reason: "dedup" });
       return;
     }
-    seenEvents.add(dedupKey);
+    // Rows only matter for Slack's retry window; prune stale ones as we go.
+    void SeenEvents.maybePurge();
 
     const isDM = channelType === "im";
     const threadTs: string = event.thread_ts || (isDM ? eventTs : eventTs);
@@ -1274,15 +1310,20 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         ];
         const connectable = statuses.filter((s) => s.status !== "connected" && httpServers[s.name]);
         if (connectable.length) {
-          const elements = connectable.map((s) => {
+          const elements = [];
+          for (const s of connectable) {
             const token = randomBytes(8).toString("hex");
-            pendingMcp.set(token, { sessionId: session.id, channelId, threadTs, userId, serverName: s.name, scope, personaName: dispatch?.personaId && dispatch.personaId !== "default" ? dispatch.personaId : undefined });
-            return {
+            const payload: McpGatePayload = { channelId, threadTs, userId, serverName: s.name, scope, personaName: dispatch?.personaId && dispatch.personaId !== "default" ? dispatch.personaId : undefined };
+            await PendingGates.create({
+              id: token, kind: "mcp_connect", sessionId: session.id, payload,
+              ...(mcpCardTtlMs !== null ? { expiresAt: Date.now() + mcpCardTtlMs } : {}),
+            });
+            elements.push({
               type: "button",
               text: { type: "plain_text", text: `Connect ${s.name}` },
               action_id: `slaude_mcp:connect:${token}`,
-            };
-          });
+            });
+          }
           blocks.push({ type: "actions", elements });
         }
         await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: "MCP servers", mrkdwn: true });
@@ -1606,7 +1647,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               personaId: compactPersonaId,
             };
             ctx.requestApproval = (req) =>
-              approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, ...req });
+              approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, ...req });
             ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
             routes.set(session.id, {
               ctx,
@@ -1757,6 +1798,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         approvals.request({
           channel: ctx.channel,
           threadTs: ctx.threadTs,
+          sessionId: session.id,
           ...req,
         });
       ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
@@ -1792,16 +1834,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // engages the thread (subsequent plain replies handled). @mentioning a
   // different user disengages (the user is now talking to a colleague).
   //
-  // The Set is a hot cache only — engagement is persisted on the session row
-  // (sessions.engaged). Without persistence a disengage lasted zero messages:
-  // every engaged thread has a session row, so the next plain reply fell
-  // through to the restore path and re-engaged (restarts had the same effect).
-  const engaged = new Set<string>(); // key: `${channel}:${thread_ts}`
-  const threadKey = (channel: string, ts: string) => `${channel}:${ts}`;
-  const persistEngaged = async (teamId: string | undefined, channelId: string, threadTs: string, value: boolean) => {
+  // sessions.engaged is the ONLY source — the old in-memory Set is gone, so
+  // engagement reads identically across restarts and (later) replicas. A
+  // fresh session row is born engaged (schema default 1), which is what the
+  // Set's add-on-mention used to express.
+  const persistEngaged = async (teamId: string | undefined, channelId: string, threadTs: string, value: boolean, personaId = "default") => {
     if (!teamId) return;
-    // Only the default-persona session row carries the bot's engagement flag.
-    const row = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: "default" });
+    const row = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: personaId });
     if (row) await Sessions.setEngaged(row.id, value);
   };
 
@@ -1852,12 +1891,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // app_mention is a guaranteed delivery path even if message.channels event
   // subscription isn't enabled. Engage the thread, then defer to handleMessage.
-  // (handleMessage's seenEvents dedup prevents double-handling when the same
+  // (handleMessage's seen_events dedup prevents double-handling when the same
   //  ts also arrives via the message event.)
   t.event("app_mention", async (args: any) => {
     const e: any = args.event;
     const ts: string = e.thread_ts || e.ts;
-    engaged.add(threadKey(e.channel, ts));
     await persistEngaged(args.context?.teamId ?? e.team, e.channel, ts, true);
     await handleMessage(args);
   });
@@ -1882,13 +1920,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
     const channelId: string = e.channel;
     const ts: string = e.thread_ts || e.ts;
-    const key = threadKey(channelId, ts);
     const text: string = (e.text || "").toString();
     const botId = await getBotId();
 
     // DMs: always handle, no engagement tracking needed.
     if (e.channel_type === "im") {
-      engaged.add(key);
       return await handleMessage(args);
     }
 
@@ -1908,20 +1944,19 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     );
 
     if (mentionsBot) {
-      engaged.add(key);
       await persistEngaged(teamId, channelId, ts, true);
       return await handleMessage(args);
     }
     if (mentionedPersona) {
-      const pKey = `${key}:${mentionedPersona.name}`;
-      engaged.add(pKey);
+      // Re-engage the persona's row if it was disengaged; a first mention has
+      // no row yet and the session is born engaged.
+      await persistEngaged(teamId, channelId, ts, true, mentionedPersona.name);
       return await handleMessage(args, { personaId: mentionedPersona.name });
     }
     if (mentionsOther) {
-      engaged.delete(key);
-      await persistEngaged(teamId, channelId, ts, false);
-      // Also disengage any persona-specific keys for this thread.
-      for (const p of registry.list()) engaged.delete(`${key}:${p.name}`);
+      // Disengage the bot AND every persona in this thread (the user is
+      // talking to a colleague now) — one durable write, no in-memory keys.
+      if (teamId) await Sessions.setEngagedForThread({ team_id: teamId, channel_id: channelId, thread_ts: ts }, false);
       // Don't drop: if slaude has a session here, record the disengaging message
       // into the transcript (suppressed — the UserPromptSubmit hook halts the turn
       // before the model runs) so the session stays populated. On re-engage the
@@ -1959,36 +1994,37 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       metric.slackDropsTotal.inc({ reason: "mention_only" });
       return;
     }
-    if (engaged.has(key)) {
-      return await handleMessage(args);
-    }
-    // Multi-persona: a plain reply continues whichever persona is engaged in this thread.
-    if (registry.isMultiPersonaMode()) {
-      for (const p of registry.list()) {
-        if (engaged.has(`${key}:${p.name}`)) {
-          return await handleMessage(args, { personaId: p.name });
+    // Plain reply: engagement is read straight from sessions.engaged (the only
+    // source — durable across restarts and replicas). The bot's own (default
+    // persona) row is checked first, mirroring the bot-first ordering the old
+    // in-memory Set had, then named personas in registry order, then any other
+    // session row for the thread.
+    if (teamId) {
+      const def = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: "default" });
+      if (def?.engaged) {
+        return await handleMessage(args);
+      }
+      // Multi-persona: a plain reply continues whichever persona is engaged in this thread.
+      if (registry.isMultiPersonaMode()) {
+        for (const p of registry.list()) {
+          const row = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: p.name });
+          if (row?.engaged) {
+            return await handleMessage(args, { personaId: p.name });
+          }
         }
       }
-    }
-    // Restore engagement across restarts: a session row means the bot was
-    // engaged here historically — keep handling plain replies without forcing
-    // a re-@mention, unless the thread was explicitly disengaged (row.engaged=0).
-    if (teamId) {
-      const row = await Sessions.findAnyByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts });
-      if (row && row.engaged) {
-        const restoredPersonaId = row.persona_id !== "default" ? row.persona_id : undefined;
-        if (restoredPersonaId) {
-          engaged.add(`${key}:${restoredPersonaId}`);
-        } else {
-          engaged.add(key);
-        }
+      const any = def ?? (await Sessions.findAnyByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts }));
+      if (any && any.engaged) {
+        // Engaged session outside the registry (e.g. persona removed from
+        // config) — keep handling plain replies as that persona.
+        const restoredPersonaId = any.persona_id !== "default" ? any.persona_id : undefined;
         return await handleMessage(args, { personaId: restoredPersonaId });
       }
       // Explicitly disengaged (row.engaged=0): record plain messages into the
       // transcript too (suppressed by the hook) so the session stays populated
       // for re-engage. No model run, no Slack feedback.
-      if (row && row.engaged === 0) {
-        const disengagedPersonaId = row.persona_id !== "default" ? row.persona_id : undefined;
+      if (any && any.engaged === 0) {
+        const disengagedPersonaId = any.persona_id !== "default" ? any.persona_id : undefined;
         console.log(
           `[slack-rx] record ch=${channelId} ts=${e.ts} user=${e.user} — disengaged thread, suppressed`,
         );

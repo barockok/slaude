@@ -28,6 +28,12 @@ function classify(actionIds: string[]): OutboundCard["kind"] {
   return "message";
 }
 
+// Inbound event ts counter — module-global so every minted ts is unique across
+// SimTransport instances, like real Slack ts values are unique across a
+// workspace. Per-instance counters would collide in the durable seen_events
+// dedup once several sim sessions share one process (and one DB).
+let inboundSeq = 0;
+
 export class SimTransport implements Transport {
   outbound: OutboundCard[] = [];
   client: WebClientLike;
@@ -83,7 +89,7 @@ export class SimTransport implements Transport {
   async stop() {}
 
   async feedMessage(raw: { channel: string; user: string; text: string; channel_type?: string; thread_ts?: string; ts?: string; team?: string }) {
-    const ts = raw.ts ?? `${++this.#seq}.5`;
+    const ts = raw.ts ?? `${++inboundSeq}.5`;
     const event = {
       type: "message", channel: raw.channel, user: raw.user, text: raw.text,
       channel_type: raw.channel_type, thread_ts: raw.thread_ts, ts, team: raw.team,

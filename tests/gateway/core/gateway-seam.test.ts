@@ -249,6 +249,9 @@ describe("createGateway", () => {
     };
     const wipe = async () => {
       await db.run("DELETE FROM sessions");
+      // Dedup is durable now (seen_events) — each test replays its own ts
+      // values in the same channel, so clear claims from earlier tests.
+      await db.run("DELETE FROM seen_events");
       // handleMessage's attachment download resolves the bot token lazily.
       process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
     };
