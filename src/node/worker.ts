@@ -56,6 +56,9 @@ export interface NodeWorkerOpts {
   lock?: { ttlMs?: number; extendEveryMs?: number };
   /** Hard turn deadline in ms. Default: the job-token TTL (max turn duration). */
   turnTimeoutMs?: number;
+  /** BullMQ Worker tuning (tests shrink stall detection to simulate a killed
+   *  node whose claimed job must be recovered by a surviving worker). */
+  bull?: { lockDuration?: number; stalledInterval?: number; maxStalledCount?: number };
 }
 
 export interface NodeWorkerHandle {
@@ -66,6 +69,12 @@ export interface NodeWorkerHandle {
   warmSessions(): string[];
   /** Graceful drain + full shutdown. */
   stop(opts?: { drainSec?: number }): Promise<void>;
+  /** SIGKILL emulation (tests): sever every Redis connection abruptly — no
+   *  drain, no deregistration, in-flight turns orphaned. Registry keys and
+   *  session locks are left to expire by TTL, BullMQ job locks stop renewing
+   *  so a surviving worker's stalled checker recovers the claim — exactly the
+   *  failure surface a killed pod leaves behind (spec §6 failure matrix). */
+  kill(): void;
 }
 
 export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWorkerHandle> {
@@ -248,16 +257,20 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // Announce liveness BEFORE claiming anything.
   await registry.nodeUp(nodeId);
 
+  // Own the BullMQ connections so kill() can sever them abruptly.
+  const bullConns = [createRedis(url), createRedis(url)] as const;
   const workers = [
     new Worker(TURNS_QUEUE, processor, {
-      connection: createRedis(url),
+      connection: bullConns[0],
       prefix: keys.bullPrefix,
       concurrency,
+      ...opts.bull,
     }),
     new Worker(nodeTurnsQueue(nodeId), processor, {
-      connection: createRedis(url),
+      connection: bullConns[1],
       prefix: keys.bullPrefix,
       concurrency,
+      ...opts.bull,
     }),
   ];
   for (const w of workers) {
@@ -346,6 +359,21 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     console.log(`[node] ${nodeId} stopped`);
   }
 
+  function kill(): void {
+    if (stopped) return;
+    stopped = true;
+    console.log(`[node] ${nodeId} KILLED (no drain)`);
+    clearInterval(hbTimer);
+    http?.stop(true);
+    // Best-effort quiet-down of the claim loops; deliberately NOT awaited — a
+    // force-close with an in-flight job can wait on it, and a real SIGKILL
+    // waits for nothing.
+    for (const w of workers) void w.close(true).catch(() => {});
+    // Sever every connection: BullMQ job-lock renewal, the session-lock
+    // extender and heartbeats all start failing NOW, like a dead process.
+    for (const c of [...bullConns, cmd, sub]) c.disconnect(false);
+  }
+
   console.log(`[node] ${nodeId} up — queues: ${TURNS_QUEUE}, ${nodeTurnsQueue(nodeId)} (concurrency ${concurrency})`);
   return {
     nodeId,
@@ -353,5 +381,6 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     store,
     warmSessions: () => [...warm],
     stop,
+    kill,
   };
 }
