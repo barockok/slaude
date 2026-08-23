@@ -272,7 +272,8 @@ All vars are read via `src/config/env.ts` (`req()` throws on missing, `opt()` re
 | `SLAUDE_DB_PATH` | No | `$SLAUDE_HOME/db.sqlite` | Override the sqlite file. Accepts absolute path or path relative to `SLAUDE_HOME`. Use when `SLAUDE_HOME` is a read-only image layer and the DB must live on a separately-mounted volume (e.g. k8s `subPath`). |
 | `SLAUDE_WORKSPACES` | No | `$SLAUDE_HOME/workspaces` | Per-session cwd root. Same absolute/relative semantics as `SLAUDE_DB_PATH`. The sim redirects both under `$SLAUDE_HOME/sim/` so it shares config without mutating prod state. |
 | `SLAUDE_DB` | No | `sqlite` | State store dialect: `sqlite` (file at `SLAUDE_DB_PATH`) or `pg` (Postgres). With `pg` and no `SLAUDE_PG_URL`, an in-process PGLite is used (sim and tests; `SLAUDE_PGLITE_DIR` persists it to disk). Schema for `pg` is applied from `src/db/migrations/*.sql` at boot. |
-| `SLAUDE_PG_URL` | With `SLAUDE_DB=pg` | none | Postgres connection URL (`postgres://user:pass@host:5432/db`). Driver is `Bun.sql`; pool size via `SLAUDE_PG_POOL` (default 10). |
+| `SLAUDE_PG_URL` | With `SLAUDE_DB=pg` | none | Postgres connection URL (`postgres://user:pass@host:5432/db`). Driver is `Bun.sql`. |
+| `SLAUDE_PG_POOL` | No | `10` | Bun.sql connection pool size for `SLAUDE_DB=pg`. Positive integer. |
 | `SLAUDE_MASTER_KEY` | For encrypted columns | none | 32 random bytes, base64 (`openssl rand -base64 32`). Keys AES-256-GCM for the `(enc)` Postgres columns (`slack_apps.bot_token`, `signing_secret`, `provider_creds.value`). Not needed while the monolith runs a single Socket Mode app. |
 
 See [Filesystem layout](#filesystem) for every file under `SLAUDE_HOME`.

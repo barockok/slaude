@@ -73,8 +73,8 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
-  postgres:
-    name: tests + sim on PGLite (SLAUDE_DB=pg)
+  pglite:
+    name: tests + sim on PGLite (SLAUDE_DB=pg, in-process)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -98,6 +98,45 @@ jobs:
       - name: Sim transcripts on PGLite
         env:
           SLAUDE_DB: pg
+          SLAUDE_HOME: /tmp/slaude-sim-home
+        run: bun sim run
+
+  postgres:
+    name: db tests + sim on real Postgres 16
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: slaude
+          POSTGRES_PASSWORD: slaude
+          POSTGRES_DB: slaude
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U slaude"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: db + cli tests against real Postgres (Bun.sql driver)
+        # SLAUDE_PG_TEST_URL also arms tests/db/pg-real.test.ts (concurrent
+        # migration race, int8 parity) which creates scratch databases.
+        env:
+          SLAUDE_DB: pg
+          SLAUDE_PG_URL: postgres://slaude:slaude@localhost:5432/slaude
+          SLAUDE_PG_TEST_URL: postgres://slaude:slaude@localhost:5432/slaude
+        run: bun test ./tests/db ./tests/cli
+      - name: Sim transcripts against real Postgres
+        env:
+          SLAUDE_DB: pg
+          SLAUDE_PG_URL: postgres://slaude:slaude@localhost:5432/slaude
           SLAUDE_HOME: /tmp/slaude-sim-home
         run: bun sim run
 
