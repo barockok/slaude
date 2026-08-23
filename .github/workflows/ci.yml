@@ -102,11 +102,15 @@ jobs:
         run: bun sim run
 
   postgres:
-    name: db tests + sim on real Postgres 16
+    name: db tests + sim on real Postgres ${{ matrix.pg }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [14, 16, 17]
     services:
       postgres:
-        image: postgres:16
+        image: postgres:${{ matrix.pg }}
         env:
           POSTGRES_USER: slaude
           POSTGRES_PASSWORD: slaude
