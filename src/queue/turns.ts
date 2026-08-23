@@ -27,6 +27,10 @@ export interface TurnMessage {
   user: string;
   text: string;
   files?: unknown[];
+  /** Record-only message (disengaged/mention-only): the node persists it to
+   *  the transcript via the suppress hook without running the model. A turn
+   *  runs suppressed only when EVERY coalesced message is suppressed. */
+  suppress?: boolean;
 }
 
 /** Payload of one turn job (spec §2). Imported by the node worker (P6). */

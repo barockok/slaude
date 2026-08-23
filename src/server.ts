@@ -105,9 +105,21 @@ async function main() {
   await slack.start();
   console.log(`[slaude] slack ${slackMode} mode started`);
 
+  // Gateway role: contend for the reaper leadership (spec §2) — dead-node
+  // cleanup, stalled-job rescue, and queue/registry gauges, every ~30s on
+  // exactly one replica. mono runs no node pool, so no reaper.
+  let reaperHandle: import("./queue/locks").LeaderHandle | undefined;
+  if (role === "gateway") {
+    const { startReaperLeader } = await import("./queue/reaper-runner");
+    const { getRedis } = await import("./queue/redis");
+    reaperHandle = startReaperLeader({ redis: getRedis() });
+    console.log("[slaude] reaper leader loop contending");
+  }
+
   const shutdown = async () => {
     console.log("[slaude] shutting down");
     health?.stop();
+    await reaperHandle?.stop();
     await loopback?.stop();
     await slack.stop();
     process.exit(0);

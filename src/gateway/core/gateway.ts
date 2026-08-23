@@ -27,6 +27,7 @@ import { createKbMcp, KB_MCP_NAME, type BrainToolDeps } from "../../knowledge/mc
 import { createV1Api } from "../api";
 import type { PendingSource } from "../api/pending-source";
 import { defaultGateBus } from "../../queue/gate-bus";
+import { makeQueueDispatch, type QueueDispatch } from "./dispatch";
 import { brainEnabled, ensureSources } from "../../knowledge/brain";
 import { brainMode } from "../../knowledge/brain-config";
 import { syncKbWikis } from "../../knowledge/brain-sync";
@@ -154,6 +155,11 @@ export interface GatewayOptions {
    *  SLACK_POST_AS_USER / SLACK_USER_TOKEN env path. When set, the gateway behaves as
    *  if posting-as-user is enabled (self-user echo guard active). */
   outClient?: any;
+  /** Turn dispatch override. Default: SLAUDE_ROLE=gateway builds the queue
+   *  dispatcher (enqueue to BullMQ, spec §2); any other role runs the agent
+   *  in-process as today. Tests inject one with stub infra; explicit null
+   *  forces the in-process path regardless of role. */
+  queueDispatch?: QueueDispatch | null;
 }
 
 /** Render a TaskCreate/TaskUpdate tasks map as a compact markdown task list. */
@@ -196,6 +202,18 @@ export function bindingFor(ctx: SlackContext): SessionBinding {
 }
 
 export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOptions = {}): GatewayHandle {
+
+  // Horizontal-scale dispatch (spec §2): in the gateway role turns are
+  // enqueued to the node pool instead of running in-process; the events
+  // stream follower inside the dispatcher re-emits AgentEvents locally so
+  // the Slack UX pipeline below stays identical. mono keeps today's path.
+  const queueDispatch: QueueDispatch | null =
+    opts.queueDispatch !== undefined
+      ? opts.queueDispatch
+      : env.role() === "gateway"
+        ? makeQueueDispatch(agent)
+        : null;
+  if (queueDispatch) console.log("[slaude] gateway role: turns dispatch to the node queue");
 
   // Outbound content client. When SLACK_USER_TOKEN (xoxp) is set, agent replies,
   // edits, reactions and uploads go out AS the real Slack user account rather than
@@ -1133,6 +1151,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         return;
       }
       if (slash.kind === "abort") {
+        // Queue role: durable flag + publish reaches whichever node runs (or
+        // will claim) the turn (spec §2). The local abort stays for mono and
+        // for anything still live in this process.
+        if (queueDispatch) {
+          await queueDispatch.abort(session.id).catch((e) => console.error("[slaude] abort publish failed:", e));
+        }
         agent.abort(session.id);
         await reply("aborted");
         return;
@@ -1669,9 +1693,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             });
           }
           void reactions.set(session.id, channelId, eventTs, REACT_WORKING);
-          void agent.sendMessage(session.id, "/compact").catch((e: any) =>
-            console.error("[slaude] compact auto-boot error:", e?.message ?? e),
-          );
+          void (queueDispatch
+            ? queueDispatch.dispatch(session, "/compact", { teamId, channelId, threadTs, eventTs, userId })
+            : agent.sendMessage(session.id, "/compact")
+          ).catch((e: any) => console.error("[slaude] compact auto-boot error:", e?.message ?? e));
           return;
         }
         void reactions.set(session.id, channelId, eventTs, REACT_WORKING);
@@ -1815,6 +1840,28 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         });
       ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
       routes.set(session.id, { ctx, surface: surfaceFactoryFor(dispatch?.personaId)(bindingFor(ctx)), spoke: false, suppress });
+    }
+
+    if (queueDispatch) {
+      // Gateway role: the turn runs on a node (spec §2). Suppression rides on
+      // the message so the node's suppress hook records without running the
+      // model; the dispatcher's stream follower replays the node's events
+      // into the local handler for reactions/status/errors.
+      console.log(`[slaude] dispatch session=${session.id} model=${session.model}`);
+      try {
+        await queueDispatch.dispatch(session, envelope, {
+          teamId,
+          channelId,
+          threadTs,
+          eventTs,
+          userId,
+          personaId: dispatch?.personaId,
+          suppress,
+        });
+      } catch (e: any) {
+        console.error("[slaude] dispatch threw:", e?.message ?? e, e?.stack);
+      }
+      return;
     }
 
     console.log(`[slaude] sendMessage session=${session.id} cwd=${session.working_dir} model=${session.model}`);
