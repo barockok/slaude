@@ -76,6 +76,18 @@ export const env = {
    *                            anthropic-beta: oauth-2025-04-20 header, and the
    *                            SDK child inherits the token for subscription auth.
    */
+  db: {
+    /** Bun.sql connection pool size for SLAUDE_DB=pg (default 10). */
+    pgPool: () => {
+      const raw = opt("SLAUDE_PG_POOL", "10");
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1) {
+        throw new Error(`SLAUDE_PG_POOL must be a positive integer (got '${raw}')`);
+      }
+      return n;
+    },
+  },
+
   provider: {
     apiKey: () => opt("ANTHROPIC_API_KEY"),
     baseUrl: () => opt("ANTHROPIC_BASE_URL"),

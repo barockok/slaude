@@ -5,7 +5,19 @@
  * identical; `sql.begin` reserves one pooled connection for a transaction.
  */
 import { SQL } from "bun";
+import { env } from "../../config/env";
 import { normalizeRow, toPositional, type DbClient, type Row, type RunResult } from "../client";
+
+/** URL with any password replaced, safe for error messages and logs. */
+export function redactPgUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.password) u.password = "***";
+    return u.toString();
+  } catch {
+    return "<unparseable url>";
+  }
+}
 
 type Executor = Pick<SQL, "unsafe">;
 
@@ -71,8 +83,16 @@ class BunSqlClient implements DbClient {
 }
 
 export async function openBunSql(url: string): Promise<DbClient> {
-  const sql = new SQL({ url, max: Number(process.env.SLAUDE_PG_POOL ?? 10) });
-  // Fail fast on bad credentials / unreachable host instead of on first query.
-  await sql.unsafe("SELECT 1");
+  // bigint: true makes int8 columns come back as BigInt (instead of strings),
+  // which normalizeRow folds to JS numbers — matching PGLite and sqlite row
+  // shapes. Timestamps are ms-since-epoch, far below 2^53.
+  const sql = new SQL({ url, max: env.db.pgPool(), bigint: true });
+  try {
+    // Fail fast on bad credentials / unreachable host instead of on first query.
+    await sql.unsafe("SELECT 1");
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`cannot connect to Postgres at SLAUDE_PG_URL=${redactPgUrl(url)}: ${msg}`);
+  }
   return new BunSqlClient(sql, sql, false);
 }
