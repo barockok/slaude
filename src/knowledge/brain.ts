@@ -177,19 +177,46 @@ async function clearStaleDbLocks(engine: Engine): Promise<void> {
   }
 }
 
+type EngineCfg =
+  | { engine: "pglite"; database_path: string }
+  | { engine: "postgres"; database_url: string };
+
+/**
+ * Engine selection. Default PGLite (embedded, single-writer — one process per
+ * brain, our deploy contract). Set SLAUDE_BRAIN_ENGINE=postgres +
+ * SLAUDE_BRAIN_DATABASE_URL to point at a shared Postgres server, which lets
+ * reads/writes distribute across processes (the serving loop plus an
+ * out-of-process nightly maintenance) instead of contending for PGLite's
+ * single-writer lock. gbrain ships both engines (postgres uses pgvector).
+ */
+export function brainEngineConfig(): EngineCfg {
+  const engine = (process.env.SLAUDE_BRAIN_ENGINE ?? "pglite").toLowerCase();
+  if (engine === "postgres") {
+    const url = process.env.SLAUDE_BRAIN_DATABASE_URL;
+    if (!url) throw new Error("SLAUDE_BRAIN_ENGINE=postgres requires SLAUDE_BRAIN_DATABASE_URL");
+    return { engine: "postgres", database_url: url };
+  }
+  if (engine !== "pglite") throw new Error(`unknown SLAUDE_BRAIN_ENGINE "${engine}" (want pglite|postgres)`);
+  return { engine: "pglite", database_path: join(brainHome(), "db") };
+}
+
 async function boot(): Promise<Engine> {
   const home = brainHome();
   mkdirSync(home, { recursive: true });
   // gbrain reads GBRAIN_HOME for config.json, lock files, clones.
   process.env.GBRAIN_HOME = home;
   applyEmbeddingEnv();
-  takeoverStaleLock(join(home, "db"));
+  const cfg = brainEngineConfig();
+  // Lock takeover assumes exclusive ownership at boot — true only for PGLite's
+  // one-process-per-brain contract. Under shared Postgres another process (the
+  // out-of-process maintenance) may legitimately hold a cycle lock, so neither
+  // the PGLite file-lock rm nor the blanket cycle-lock sweep is safe there.
+  if (cfg.engine === "pglite") takeoverStaleLock(cfg.database_path);
   const { createEngine } = (await gbrainImport("engine-factory")) as { createEngine: (c: object) => Promise<Engine> };
-  const cfg = { engine: "pglite" as const, database_path: join(home, "db") };
   const engine = (await createEngine(cfg)) as Engine;
   await engine.connect(cfg);
   await engine.initSchema();
-  await clearStaleDbLocks(engine);
+  if (cfg.engine === "pglite") await clearStaleDbLocks(engine);
   await configureEmbeddingGateway();
   return engine;
 }
