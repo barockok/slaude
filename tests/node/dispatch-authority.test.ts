@@ -94,8 +94,22 @@ d("dispatch follower: job completion is the authoritative outcome", () => {
     workerMode = "stream-done";
     await qd.dispatch(sessionRow("s-stream"), "hello", meta);
     await until(() => events.some((e) => e.type === "done" && e.sessionId === "s-stream"), 10_000);
-    await sleep(600); // let the authority check observe the settled job
-    expect(events.filter((e) => e.type === "done" && e.sessionId === "s-stream").length).toBe(1);
+    // Settle on the actual condition instead of a fixed sleep (which under
+    // parallel-suite CPU contention could end before the follower's authority
+    // check had even observed the settled job): wait until the done count is
+    // stable across two consecutive checks one full linger+poll window apart
+    // (250ms > followLingerMs 200 + followPollMs 50), capped at 2s. The
+    // negative assertion stays sound — a duplicate synthesized at any point
+    // before quiescence makes the final count 2 and fails the test.
+    const doneCount = () =>
+      events.filter((e) => e.type === "done" && e.sessionId === "s-stream").length;
+    const deadline = Date.now() + 2_000;
+    for (;;) {
+      const before = doneCount();
+      await sleep(250);
+      if (doneCount() === before || Date.now() >= deadline) break;
+    }
+    expect(doneCount()).toBe(1);
     // The stream's other events flowed through too.
     expect(events.some((e) => e.type === "assistantText" && e.sessionId === "s-stream")).toBe(true);
   }, 20_000);
