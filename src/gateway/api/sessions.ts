@@ -27,6 +27,9 @@ const view = (row: SessionRow) => ({
   slack_thread_ts: row.slack_thread_ts,
   created_at: row.created_at,
   updated_at: row.updated_at,
+  // Postgres rows carry tenant_id (P1 migration); sqlite rows don't. Pass it
+  // through when present so the REST row mirrors the db row byte-for-byte.
+  ...((row as any).tenant_id !== undefined ? { tenant_id: (row as any).tenant_id } : {}),
 });
 
 const PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"] as const;

@@ -31,6 +31,8 @@ function toRow(v: SessionView): SessionRow {
     permission_mode: v.permission_mode,
     engaged: v.engaged,
     persona_id: v.persona_id,
+    // Mirror the gateway's dialect: Postgres rows include tenant_id.
+    ...((v as any).tenant_id !== undefined ? { tenant_id: (v as any).tenant_id } : {}),
   };
 }
 
