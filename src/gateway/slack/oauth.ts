@@ -94,12 +94,31 @@ export interface OAuthDeps {
   log?: (msg: string) => void;
 }
 
-const html = (status: number, title: string, body: string): Response =>
-  new Response(
-    `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head>` +
-      `<body style="font-family:sans-serif;max-width:40rem;margin:4rem auto"><h1>${title}</h1><p>${body}</p></body></html>`,
+/** HTML-escape & < > " ' — applied to EVERY interpolated value. */
+export function escapeHtml(v: unknown): string {
+  return String(v)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+/**
+ * The ONLY HTML sink in this module — and it escapes every interpolation
+ * itself, so no caller (present or future) can reflect attacker-controlled
+ * input (Slack's `?error=`, exchange error strings, team ids) as markup.
+ * Body/title are treated as plain text; markup never passes through.
+ */
+const html = (status: number, title: string, body: string): Response => {
+  const t = escapeHtml(title);
+  const b = escapeHtml(body);
+  return new Response(
+    `<!doctype html><html><head><meta charset="utf-8"><title>${t}</title></head>` +
+      `<body style="font-family:sans-serif;max-width:40rem;margin:4rem auto"><h1>${t}</h1><p>${b}</p></body></html>`,
     { status, headers: { "content-type": "text/html; charset=utf-8" } },
   );
+};
 
 /**
  * Handle a request under /slack/oauth/*. Returns null when the path is not an
@@ -200,9 +219,7 @@ export async function handleOAuth(
   }
 
   log(`[slack-oauth] installed app=${appId} team=${teamId}`);
-  return html(
-    200,
-    "App installed",
-    `The app is now installed to workspace <code>${String(teamId).replace(/[^A-Za-z0-9_-]/g, "")}</code>. You can close this tab.`,
-  );
+  // teamId is interpolated as plain text — html() escapes it like every
+  // other value, so a hostile "team id" cannot become markup.
+  return html(200, "App installed", `The app is now installed to workspace ${teamId}. You can close this tab.`);
 }

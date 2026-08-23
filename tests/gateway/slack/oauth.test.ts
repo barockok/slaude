@@ -183,6 +183,19 @@ describe("handleOAuth", () => {
     expect(row!.bot_user_id).toBe("U0OBOT");
   });
 
+  it("callback HTML-escapes reflected values (no raw markup from ?error=)", async () => {
+    const state = mintOAuthState({ secret: SECRET });
+    const payload = `<script>alert(1)</script>`;
+    const [r, u] = req(
+      `/slack/oauth/callback?state=${encodeURIComponent(state)}&error=${encodeURIComponent(payload)}`,
+    );
+    const res = await handleOAuth(r, u, baseDeps());
+    expect(res!.status).toBe(400);
+    const body = await res!.text();
+    expect(body).not.toContain("<script>");
+    expect(body).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+  });
+
   it("callback 502s when slack rejects the exchange", async () => {
     const state = mintOAuthState({ secret: SECRET });
     const [r, u] = req(`/slack/oauth/callback?code=bad&state=${encodeURIComponent(state)}`);
