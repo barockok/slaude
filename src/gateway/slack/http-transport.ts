@@ -165,6 +165,11 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
     });
   }
 
+  // Deliberately NO dedup here: retried deliveries are dispatched too. The
+  // gateway layer owns cross-replica dedup — the in-memory seenEvents set in
+  // core/gateway.ts, being replaced by the durable Postgres `seen_events`
+  // table (spec §4/§5 step 4, milestone M2) — so every replica drops
+  // duplicates consistently no matter which one Slack retried against.
   function logRetry(req: Request, body: any) {
     const retry = req.headers.get("x-slack-retry-num");
     if (retry) {
