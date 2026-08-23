@@ -62,8 +62,34 @@ class PgliteClient implements DbClient {
   }
 }
 
+// PGLite instantiation is the fragile step: a fresh database boots an INNER
+// second wasm instance just to run initdb, so every open briefly doubles the
+// wasm footprint. Under instance churn (test suites, facade resets) an initdb
+// crash ("terminated by signal 1") corrupts shared module state and poisons
+// every later PGLite open in the process. Contain it: collect dead instances
+// before each open, never overlap two instantiations, and retry once.
+let openChain: Promise<unknown> = Promise.resolve();
+
+const gc = () => (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
+
 export async function openPglite(dataDir?: string): Promise<DbClient> {
-  const pg = dataDir ? new PGlite(dataDir) : new PGlite();
-  await pg.waitReady;
+  const mk = async () => {
+    const pg = dataDir ? new PGlite(dataDir) : new PGlite();
+    await pg.waitReady;
+    return pg;
+  };
+  const run = openChain.then(
+    async () => {
+      gc();
+      try {
+        return await mk();
+      } catch {
+        gc();
+        return await mk();
+      }
+    },
+  );
+  openChain = run.catch(() => {});
+  const pg = await run;
   return new PgliteClient(pg, pg);
 }

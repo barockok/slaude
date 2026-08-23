@@ -1,9 +1,16 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../../src/db/client";
 import { exportSqliteToPg, EXPORT_TABLES, main } from "../../src/cli/migrate-sqlite";
+
+// This file churns through several short-lived PGLite instances (each a full
+// WASM Postgres). Their memory frees only on GC; without prompt collection a
+// later PGLite open elsewhere in the suite can fail instantiation and cascade.
+afterEach(() => {
+  Bun.gc(true);
+});
 
 async function seededSqlite() {
   const dir = mkdtempSync(join(tmpdir(), "slaude-mig-"));
@@ -95,13 +102,14 @@ describe("cli/migrate-sqlite", () => {
 
   test("rejects wrong dialects", async () => {
     const a = await openDb({ dialect: "sqlite", path: ":memory:" });
-    const b = await openDb({ dialect: "pg", driver: "pglite" });
+    // Dialect validation fires before any SQL runs — a stub is enough for the
+    // pg side, and skipping a whole PGLite boot keeps wasm churn down.
+    const fakePg = { dialect: "pg" } as any;
     try {
-      await expect(exportSqliteToPg(b, b)).rejects.toThrow(/source must be sqlite/);
+      await expect(exportSqliteToPg(fakePg, fakePg)).rejects.toThrow(/source must be sqlite/);
       await expect(exportSqliteToPg(a, a)).rejects.toThrow(/target must be Postgres/);
     } finally {
       await a.close();
-      await b.close();
     }
   });
 
