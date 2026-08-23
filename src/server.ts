@@ -2,6 +2,8 @@ import { ensureHome } from "./config/home";
 import { seedBundledSkills } from "./skills/seed";
 import { AgentManager } from "./agent/manager";
 import { createSlackApp } from "./gateway/slack/adapter";
+import { createGateway } from "./gateway/core/gateway";
+import { createHttpSlackTransport } from "./gateway/slack/http-transport";
 import { startHealthServer } from "./health";
 import { loadSoulData, setSoulData } from "./soul/extract";
 import { assertOAuthKeyCanary } from "./agent/mcp-oauth/store";
@@ -62,11 +64,32 @@ async function main() {
   }
 
   const agent = new AgentManager();
-  const slack = createSlackApp(agent, { mcpConnectEnabled: mcpOAuthHealthy });
-  const health = startHealthServer({ liveSessions: () => agent.liveCount() });
+
+  // Slack ingress: Socket Mode (default) or the Events API HTTP receiver
+  // (SLAUDE_SLACK_MODE=http, spec §5). In http mode the transport's single
+  // port also serves /healthz /readyz /metrics, so the standalone health
+  // server is not started; apps are resolved per-request from the Postgres
+  // slack_apps registry.
+  const slackMode = env.slack.mode();
+  let slack;
+  let health: ReturnType<typeof startHealthServer> = null;
+  if (slackMode === "http") {
+    if (db.dialect !== "pg") {
+      throw new Error(
+        "SLAUDE_SLACK_MODE=http requires SLAUDE_DB=pg — the slack_apps registry lives in Postgres (register apps with: bun run slack-app add)",
+      );
+    }
+    const transport = createHttpSlackTransport({
+      health: { liveSessions: () => agent.liveCount() },
+    });
+    slack = createGateway(agent, transport, { mcpConnectEnabled: mcpOAuthHealthy });
+  } else {
+    slack = createSlackApp(agent, { mcpConnectEnabled: mcpOAuthHealthy });
+    health = startHealthServer({ liveSessions: () => agent.liveCount() });
+  }
 
   await slack.start();
-  console.log("[slaude] slack socket mode started");
+  console.log(`[slaude] slack ${slackMode} mode started`);
 
   const shutdown = async () => {
     console.log("[slaude] shutting down");
