@@ -34,6 +34,12 @@ export interface DbClient {
   /** Execute one or more statements with no parameters (DDL / migrations). */
   exec(sql: string): Promise<void>;
   transaction<T>(fn: (tx: DbClient) => Promise<T>): Promise<T>;
+  /**
+   * Postgres only: block until a session-level advisory lock (key1, key2) is
+   * held on a dedicated connection; resolves to an unlock function. Undefined
+   * on sqlite. Used to serialize replicas around DDL (migrations).
+   */
+  advisoryLock?(key1: number, key2: number): Promise<() => Promise<void>>;
   close(): Promise<void>;
 }
 

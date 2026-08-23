@@ -18,6 +18,9 @@ import type { DbClient } from "./client";
 
 export const MIGRATIONS_DIR = join(import.meta.dir, "migrations");
 
+/** Advisory-lock key for the migration run: ('SLAU' as int32, 1). */
+export const MIGRATE_LOCK_KEY: [number, number] = [0x534c4155, 1];
+
 /** Seam for a cluster-wide leader lock around the whole migration run. */
 export interface LeaderLock {
   withLock<T>(name: string, fn: () => Promise<T>): Promise<T>;
@@ -61,33 +64,45 @@ export async function runMigrations(
   const log = opts.log ?? ((m) => console.log(`[db] ${m}`));
 
   return lock.withLock("migrate", async () => {
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS schema_migrations (
-        version    TEXT PRIMARY KEY,
-        name       TEXT NOT NULL,
-        applied_at BIGINT NOT NULL
-      )
-    `);
-    const result: MigrateResult = { applied: [], skipped: [] };
-    for (const m of migrations) {
-      const ran = await db.transaction(async (tx) => {
-        const claim = await tx.run(
-          `INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)
-           ON CONFLICT (version) DO NOTHING`,
-          [m.version, m.name, Date.now()],
-        );
-        if (claim.changes === 0) return false;
-        await tx.exec(m.sql);
-        return true;
-      });
-      if (ran) {
-        result.applied.push(m.version);
-        log(`migration ${m.version}_${m.name} applied`);
-      } else {
-        result.skipped.push(m.version);
+    // Serialize replicas BEFORE any DDL: two processes racing the
+    // `CREATE TABLE IF NOT EXISTS schema_migrations` bootstrap on an empty
+    // database crash one of them with a pg_type unique-constraint violation
+    // (IF NOT EXISTS is not concurrency-safe for the create itself). A
+    // session-level advisory lock on a dedicated connection covers the whole
+    // run; the per-file transaction + version-row claim below stays as the
+    // guard for anything not holding the lock.
+    const unlock = db.advisoryLock ? await db.advisoryLock(...MIGRATE_LOCK_KEY) : null;
+    try {
+      await db.exec(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version    TEXT PRIMARY KEY,
+          name       TEXT NOT NULL,
+          applied_at BIGINT NOT NULL
+        )
+      `);
+      const result: MigrateResult = { applied: [], skipped: [] };
+      for (const m of migrations) {
+        const ran = await db.transaction(async (tx) => {
+          const claim = await tx.run(
+            `INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)
+             ON CONFLICT (version) DO NOTHING`,
+            [m.version, m.name, Date.now()],
+          );
+          if (claim.changes === 0) return false;
+          await tx.exec(m.sql);
+          return true;
+        });
+        if (ran) {
+          result.applied.push(m.version);
+          log(`migration ${m.version}_${m.name} applied`);
+        } else {
+          result.skipped.push(m.version);
+        }
       }
+      return result;
+    } finally {
+      await unlock?.();
     }
-    return result;
   });
 }
 

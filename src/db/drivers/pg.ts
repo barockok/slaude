@@ -43,6 +43,28 @@ class BunSqlClient implements DbClient {
     return this.root.begin(async (tx) => fn(new BunSqlClient(tx, this.root, true))) as Promise<T>;
   }
 
+  async advisoryLock(key1: number, key2: number): Promise<() => Promise<void>> {
+    // Session-level advisory locks are tied to one connection, so reserve one
+    // from the pool and keep it out of rotation until unlock.
+    const reserved = await this.root.reserve();
+    try {
+      await reserved.unsafe(`SELECT pg_advisory_lock($1, $2)`, [key1, key2]);
+    } catch (e) {
+      reserved.release();
+      throw e;
+    }
+    let released = false;
+    return async () => {
+      if (released) return;
+      released = true;
+      try {
+        await reserved.unsafe(`SELECT pg_advisory_unlock($1, $2)`, [key1, key2]);
+      } finally {
+        reserved.release();
+      }
+    };
+  }
+
   async close(): Promise<void> {
     if (!this.inTx) await this.root.close();
   }
