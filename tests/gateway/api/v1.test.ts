@@ -122,7 +122,7 @@ describe("/v1/sessions/:id", () => {
     const r = await call(`/v1/sessions/${sessionId}`);
     expect(r.status).toBe(200);
     const body = (await r.json()) as any;
-    expect(body).toEqual({
+    expect(body).toMatchObject({
       id: sessionId,
       model: "test-model",
       working_dir: "/tmp/wd",
@@ -130,7 +130,14 @@ describe("/v1/sessions/:id", () => {
       persona_id: "default",
       engaged: 1,
       claude_started: 0,
+      status: "idle",
     });
+    // Full-row parity fields for the node REST SessionStore.
+    expect(body.slack_team_id).toBe("T1");
+    expect(body.slack_channel_id).toBe("C0TEAM");
+    expect(typeof body.slack_thread_ts).toBe("string");
+    expect(typeof body.created_at).toBe("number");
+    expect(typeof body.updated_at).toBe("number");
   });
 
   test("PATCH updates claude_started, model, permission_mode", async () => {
@@ -153,10 +160,20 @@ describe("/v1/sessions/:id", () => {
   });
 
   test("PATCH rejects unknown fields and bad modes", async () => {
-    const r1 = await call(`/v1/sessions/${sessionId}`, { method: "PATCH", body: JSON.stringify({ status: "hax" }) });
+    const r1 = await call(`/v1/sessions/${sessionId}`, { method: "PATCH", body: JSON.stringify({ bogus: "hax" }) });
     expect(r1.status).toBe(400);
     const r2 = await call(`/v1/sessions/${sessionId}`, { method: "PATCH", body: JSON.stringify({ permission_mode: "yolo" }) });
     expect(r2.status).toBe(400);
+    const r3 = await call(`/v1/sessions/${sessionId}`, { method: "PATCH", body: JSON.stringify({ status: "" }) });
+    expect(r3.status).toBe(400);
+  });
+
+  test("PATCH status flips the row's status", async () => {
+    const r = await call(`/v1/sessions/${sessionId}`, { method: "PATCH", body: JSON.stringify({ status: "running" }) });
+    expect(r.status).toBe(200);
+    expect(((await r.json()) as any).status).toBe("running");
+    expect((await Sessions.findById(sessionId))!.status).toBe("running");
+    await call(`/v1/sessions/${sessionId}`, { method: "PATCH", body: JSON.stringify({ status: "idle" }) });
   });
 
   test("session id must match the JWT claim (403), unknown id under own claim (404)", async () => {

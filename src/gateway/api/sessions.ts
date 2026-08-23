@@ -17,6 +17,16 @@ const view = (row: SessionRow) => ({
   persona_id: row.persona_id,
   engaged: row.engaged,
   claude_started: row.claude_started,
+  // Full-row parity for the node-side REST SessionStore (spec §6): the
+  // AgentManager reads thread coordinates (channel mandate, /1on1 lookup),
+  // status and timestamps off the same row shape the db repo returns.
+  status: row.status,
+  title: row.title,
+  slack_team_id: row.slack_team_id,
+  slack_channel_id: row.slack_channel_id,
+  slack_thread_ts: row.slack_thread_ts,
+  created_at: row.created_at,
+  updated_at: row.updated_at,
 });
 
 const PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"] as const;
@@ -26,6 +36,8 @@ const patchSchema = z
     claude_started: z.union([z.boolean(), z.literal(0), z.literal(1)]).optional(),
     model: z.string().min(1).optional(),
     permission_mode: z.enum(PERMISSION_MODES).optional(),
+    /** Free-form short status ('idle' | 'running' today). */
+    status: z.string().min(1).max(32).optional(),
   })
   .strict();
 
@@ -52,5 +64,6 @@ export async function handleSession(req: Request, id: string, claims: JobClaims)
   }
   if (patch.model !== undefined) await Sessions.setModel(id, patch.model);
   if (patch.permission_mode !== undefined) await Sessions.setPermissionMode(id, patch.permission_mode);
+  if (patch.status !== undefined) await Sessions.setStatus(id, patch.status);
   return json(200, view((await Sessions.findById(id))!));
 }
