@@ -257,6 +257,13 @@ d("gateway↔node E2E (real Redis)", () => {
     expect(counts.completed ?? 0).toBeGreaterThanOrEqual(1);
   }, 30_000);
 
+  test("reload:<tenant> subscription is live before/after the first turn (cache bustable)", async () => {
+    // The worker awaits the reload subscription BEFORE the turn's first
+    // runtime-bundle fetch, so by the time any turn has completed a publish
+    // must reach at least one subscriber — no stale-cache window.
+    expect(await qd.pubsub.publishReload("default")).toBeGreaterThanOrEqual(1);
+  });
+
   test("cold resume: registry entry gone → shared queue, turn still completes", async () => {
     const sessionId = await sessionIdOf(THREAD);
     stub.liveSet.delete(sessionId); // node dropped the warm Query
