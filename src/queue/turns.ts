@@ -110,8 +110,13 @@ export class TurnQueues {
    * Enqueue a turn, coalescing into the session's pending job when one
    * exists. Appenders for the same session serialize on a short Redis lock so
    * two gateway replicas cannot lose each other's read-modify-write.
+   *
+   * `jobId` (optional) pre-assigns the BullMQ job id for a FRESH add — the
+   * dispatcher mints it before the token so the token's `job` claim matches
+   * the job it rides on (token-refresh binding). Ignored when the messages
+   * coalesce into an existing pending job.
    */
-  async enqueueTurn(job: TurnJob, target: TurnTarget = "shared"): Promise<EnqueueResult> {
+  async enqueueTurn(job: TurnJob, target: TurnTarget = "shared", jobId?: string): Promise<EnqueueResult> {
     const ckey = this.keys.coalesce(job.sessionId);
     const lockKey = this.keys.coalesceLock(job.sessionId);
     const lockOwner = randomUUID();
@@ -119,7 +124,7 @@ export class TurnQueues {
     try {
       const appended = await this.#tryAppend(ckey, job);
       if (appended) return appended;
-      return await this.#addFresh(job, this.queueName(target), ckey);
+      return await this.#addFresh(job, this.queueName(target), ckey, jobId);
     } finally {
       await releaseLock(this.#connection, lockKey, lockOwner).catch(() => {});
     }
@@ -142,9 +147,10 @@ export class TurnQueues {
     await pending.updateData({
       ...prev,
       messages: [...prev.messages, ...job.messages],
-      // The newest token has the longest remaining TTL — the turn must outlive
-      // the last message that joined it.
-      jobToken: job.jobToken,
+      // Keep the ORIGINAL job's token: its `job` claim must keep matching the
+      // job id for /v1/jobs/:id/token-refresh, and the worker refreshes an
+      // aging token at claim time anyway — replacing it with the newest
+      // message's token (the pre-refresh design) would break that binding.
     });
     if (this.#afterUpdateData) await this.#afterUpdateData();
     // Claim race: a worker may have claimed the job between updateData and
@@ -157,8 +163,8 @@ export class TurnQueues {
     return null;
   }
 
-  async #addFresh(job: TurnJob, qname: string, ckey: string): Promise<EnqueueResult> {
-    const jobId = randomUUID();
+  async #addFresh(job: TurnJob, qname: string, ckey: string, presetId?: string): Promise<EnqueueResult> {
+    const jobId = presetId ?? randomUUID();
     // Index first: if the add below fails, the index points at a missing job,
     // which the next enqueue detects (getJob → null) and overwrites.
     await this.#connection.set(ckey, JSON.stringify({ queue: qname, jobId }), "PX", COALESCE_TTL_MS);

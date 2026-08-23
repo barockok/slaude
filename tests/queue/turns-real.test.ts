@@ -96,7 +96,7 @@ describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
     expect(seen!.messages[0]!.text).toBe("warm");
   });
 
-  test("pending job coalesces: messages append, token refreshes, still one job", async () => {
+  test("pending job coalesces: messages append, original token kept, still one job", async () => {
     await ready;
     const first = await queues.enqueueTurn(turn("s-coal", ["one"], "tok1"), "shared");
     const second = await queues.enqueueTurn(turn("s-coal", ["two", "three"], "tok2"), "shared");
@@ -106,7 +106,10 @@ describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
     const job = await queues.queue("turns").getJob(first.jobId);
     const data = job!.data as TurnJob;
     expect(data.messages.map((m) => m.text)).toEqual(["one", "two", "three"]);
-    expect(data.jobToken).toBe("tok2");
+    // The ORIGINAL job's token stays: its `job` claim must keep matching the
+    // job id for /v1/jobs/:id/token-refresh; the worker refreshes an aging
+    // token at claim time instead of relying on newest-message tokens.
+    expect(data.jobToken).toBe("tok1");
     // exactly one waiting job on the shared queue (nothing double-enqueued)
     expect(await queues.queue("turns").getWaitingCount()).toBe(1);
     await job!.remove();
