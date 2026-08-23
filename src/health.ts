@@ -4,6 +4,10 @@ import { metrics } from "./metrics";
 export type HealthDeps = {
   /** Number of currently live SDK sessions. */
   liveSessions: () => number;
+  /** Optional node-facing REST /v1 handler (GatewayHandle.fetchV1). Mounted
+   *  only when provided — src/server.ts passes it for mono/gateway roles and
+   *  omits it for nodes. Returns null for paths it doesn't own. */
+  v1?: (req: Request) => Promise<Response | null>;
 };
 
 /**
@@ -14,11 +18,12 @@ export type HealthDeps = {
  *   GET /healthz  → 200 always, JSON {status:"ok", uptime, sessions}
  *   GET /readyz   → 200 if DB reachable, else 503
  *   GET /metrics  → Prometheus text
+ *   /v1/*         → gateway REST for nodes, when `deps.v1` is provided
  *
  * Returns null for any other path so the caller can keep routing.
  */
 export function healthRoutes(deps: HealthDeps, startedAt = Date.now()) {
-  return async (url: URL): Promise<Response | null> => {
+  return async (req: Request, url = new URL(req.url)): Promise<Response | null> => {
     if (url.pathname === "/healthz") {
       return Response.json({
         status: "ok",
@@ -43,6 +48,10 @@ export function healthRoutes(deps: HealthDeps, startedAt = Date.now()) {
         );
       }
     }
+    if (deps.v1 && (url.pathname === "/v1" || url.pathname.startsWith("/v1/"))) {
+      const res = await deps.v1(req);
+      if (res) return res;
+    }
     return null;
   };
 }
@@ -64,7 +73,7 @@ export function startHealthServer(deps: HealthDeps) {
   const server = Bun.serve({
     port,
     async fetch(req) {
-      const r = await routes(new URL(req.url));
+      const r = await routes(req);
       return r ?? new Response("not found", { status: 404 });
     },
   });

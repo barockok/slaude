@@ -139,6 +139,26 @@ export const env = {
     },
   },
 
+  /**
+   * Process role for the horizontal-scale split (spec §7):
+   *   mono    (default) — today's single-process behavior; mounts /v1 for parity
+   *   gateway — Slack ingress + control plane; mounts /v1 for nodes
+   *   node    — queue worker; never mounts /v1 (it *calls* /v1)
+   * Unknown values fall back to mono so existing deploys are unchanged.
+   */
+  role: (): "mono" | "gateway" | "node" => {
+    const raw = opt("SLAUDE_ROLE", "mono").trim().toLowerCase();
+    return raw === "gateway" || raw === "node" ? raw : "mono";
+  },
+  /** Static shared secret nodes present as `Authorization: Bearer <token>` on
+   *  every /v1 request. Empty (default) = /v1 auth refuses all requests, so a
+   *  mono deploy without the var exposes nothing. Rotate via env. */
+  nodeToken: () => opt("SLAUDE_NODE_TOKEN"),
+  /** HS256 secret for the short-lived per-job JWT (`X-Slaude-Job`) minted by
+   *  the gateway enqueue path and verified on tool-plane + session endpoints.
+   *  Empty (default) = job tokens can be neither minted nor verified. */
+  jobSecret: () => opt("SLAUDE_JOB_SECRET"),
+
   provider: {
     apiKey: () => opt("ANTHROPIC_API_KEY"),
     baseUrl: () => opt("ANTHROPIC_BASE_URL"),

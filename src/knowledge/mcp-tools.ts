@@ -8,8 +8,12 @@ import { gather } from "./gather";
 import { gatedBrainCall, type ApprovalReq, type ApprovalRes, type GateInput } from "./gated-dispatch";
 import { SHARED_SOURCE, type BrainScope } from "./scope";
 import { agentIdReady } from "./agent-identity";
+import { kbContract, KB_MEMOIZE_MAX_PAGES } from "../tools/contracts/kb";
 
-export const KB_MCP_NAME = "slaude_kb";
+export const KB_MCP_NAME = kbContract.server;
+// Re-export: the limit is defined in the shared contract (single source of truth)
+// but existing import sites read it from here.
+export { KB_MEMOIZE_MAX_PAGES };
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
@@ -74,10 +78,6 @@ export interface BrainToolDeps {
 }
 
 const asJson = (v: unknown): ToolResult => ok(typeof v === "string" ? v : JSON.stringify(v, null, 2));
-
-/** Max pages a single kb_memoize call may write. Bounds approval-card size and
- *  the work behind one approval. */
-export const KB_MEMOIZE_MAX_PAGES = 20;
 
 /**
  * Map raw brain/Postgres errors to actionable agent-facing text. A leaked
@@ -303,76 +303,23 @@ export const brainHandlers = {
 };
 
 export function createKbMcp(deps?: BrainToolDeps): McpSdkServerConfigWithInstance {
+  const c = kbContract.tools;
   const brainTools = deps && brainEnabled()
     ? [
-        tool(
-          "kb_think",
-          "Ask the knowledge brain a question. Returns a synthesized answer with [Source: ...] citations and explicit gaps. Prefer this over kb_search when you need an answer, not documents.",
-          { question: z.string().describe("The question to answer from the brain.") },
-          (a: { question: string }) => brainHandlers.kb_think(a, deps),
-        ),
-        tool(
-          "kb_search",
-          "Search the knowledge brain (pages across your allowed scopes). Returns ranked chunks with slugs.",
-          {
-            query: z.string().describe("Search query."),
-            limit: z.number().optional().describe("Max results (default 20)."),
-          },
-          (a: { query: string; limit?: number }) => brainHandlers.kb_search(a, deps),
-        ),
-        tool(
-          "kb_get_page",
-          "Read a brain page by slug (e.g. 'people/alice').",
-          { slug: z.string().describe("Page slug.") },
-          (a: { slug: string }) => brainHandlers.kb_get_page(a, deps),
-        ),
-        tool(
-          "kb_list_pages",
-          "List brain pages, optionally filtered by type or tag.",
-          {
-            type: z.string().optional().describe("Filter by page type."),
-            tag: z.string().optional().describe("Filter by tag."),
-            limit: z.number().optional().describe("Max results (default 50)."),
-          },
-          (a: { type?: string; tag?: string; limit?: number }) => brainHandlers.kb_list_pages(a, deps),
-        ),
-        tool(
-          "kb_graph",
-          "Get knowledge-graph edges for a page: outgoing links and backlinks.",
-          { slug: z.string().describe("Page slug.") },
-          (a: { slug: string }) => brainHandlers.kb_graph(a, deps),
-        ),
-        tool(
-          "kb_memoize",
-          `Write/update one or more brain pages in a single call (markdown, optional YAML frontmatter; [[wikilinks]] become graph edges). Pass an array of pages — up to ${KB_MEMOIZE_MAX_PAGES} per call. By default (target:"mine") pages go to YOUR OWN slice — your private agent mind — and are saved without asking. Set target:"shared" ONLY for durable team-common knowledge (decisions, people/project facts everyone needs); shared writes ask the manager for approval. Default to "mine" for your own notes, learnings, and working context; reserve "shared" for the team KB.`,
-          {
-            pages: z
-              .array(
-                z.object({
-                  slug: z.string().describe("Page slug, e.g. 'people/alice' or 'notes/2026-06-10-x'."),
-                  content: z.string().describe("Full markdown content for the page."),
-                  summary: z.string().describe("One-line description of the change, shown on the approval card."),
-                }),
-              )
-              .min(1)
-              .max(KB_MEMOIZE_MAX_PAGES)
-              .describe(`Pages to write (1..${KB_MEMOIZE_MAX_PAGES}).`),
-            target: z
-              .enum(["mine", "shared"])
-              .optional()
-              .describe(`Where to write. "mine" (default) = your own slice, saved without approval. "shared" = the common team KB, requires manager approval.`),
-          },
-          (a: { pages: Array<{ slug: string; content: string; summary: string }>; target?: "mine" | "shared" }) => brainHandlers.kb_memoize(a, deps),
-        ),
-        tool(
-          "kb_delete_page",
-          "Soft-delete a brain page (recoverable). Requires approval.",
-          {
-            slug: z.string().describe("Page slug to delete."),
-            reason: z.string().describe("Why this page should be deleted (shown on the approval card)."),
-          },
-          (a: { slug: string; reason: string }) => brainHandlers.kb_delete_page(a, deps),
-        ),
+        tool(c.kb_think.name, c.kb_think.description, c.kb_think.schema,
+          (a: { question: string }) => brainHandlers.kb_think(a, deps)),
+        tool(c.kb_search.name, c.kb_search.description, c.kb_search.schema,
+          (a: { query: string; limit?: number }) => brainHandlers.kb_search(a, deps)),
+        tool(c.kb_get_page.name, c.kb_get_page.description, c.kb_get_page.schema,
+          (a: { slug: string }) => brainHandlers.kb_get_page(a, deps)),
+        tool(c.kb_list_pages.name, c.kb_list_pages.description, c.kb_list_pages.schema,
+          (a: { type?: string; tag?: string; limit?: number }) => brainHandlers.kb_list_pages(a, deps)),
+        tool(c.kb_graph.name, c.kb_graph.description, c.kb_graph.schema,
+          (a: { slug: string }) => brainHandlers.kb_graph(a, deps)),
+        tool(c.kb_memoize.name, c.kb_memoize.description, c.kb_memoize.schema,
+          (a: { pages: Array<{ slug: string; content: string; summary: string }>; target?: "mine" | "shared" }) => brainHandlers.kb_memoize(a, deps)),
+        tool(c.kb_delete_page.name, c.kb_delete_page.description, c.kb_delete_page.schema,
+          (a: { slug: string; reason: string }) => brainHandlers.kb_delete_page(a, deps)),
       ]
     : [];
 
@@ -381,21 +328,8 @@ export function createKbMcp(deps?: BrainToolDeps): McpSdkServerConfigWithInstanc
     version: "0.2.0",
     tools: [
       ...brainTools,
-      tool(
-        "list_kbs",
-        "List installed knowledge bases. Returns JSON array with label, description, path, and index_file for each KB.",
-        {},
-        kbHandlers.list_kbs,
-      ),
-      tool(
-        "search_kbs",
-        "Search installed knowledge bases by tags or keywords. Returns ranked matching KBs. Use this BEFORE acting when a user query mentions a service, domain, or topic that may have curated documentation.",
-        {
-          query: z.string().describe("Search query — keywords from the user's request (e.g. 'service-a grafana alerts')."),
-          limit: z.number().optional().describe("Max results (default 5)."),
-        },
-        kbHandlers.search_kbs,
-      ),
+      tool(c.list_kbs.name, c.list_kbs.description, c.list_kbs.schema, kbHandlers.list_kbs),
+      tool(c.search_kbs.name, c.search_kbs.description, c.search_kbs.schema, kbHandlers.search_kbs),
     ],
   });
 }

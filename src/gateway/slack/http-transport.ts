@@ -311,7 +311,7 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
   async function serve(req: Request): Promise<Response> {
     const url = new URL(req.url);
     if (health) {
-      const r = await health(url);
+      const r = await health(req, url);
       if (r) return r;
     }
     if (url.pathname === "/slack/events" || url.pathname === "/slack/interactions") {

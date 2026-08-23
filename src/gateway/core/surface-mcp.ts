@@ -1,11 +1,14 @@
 import { z } from "zod";
 import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
+import { surfaceContract } from "../../tools/contracts/surface";
 import type { Surface } from "./surface";
 import { mutateOverride, FIELD_ALIASES, type FieldAlias } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
 import { soulData } from "../../soul/extract";
 
-export const SURFACE_MCP_NAME = "slaude_surface";
+export const SURFACE_MCP_NAME = surfaceContract.server;
+
+const c = surfaceContract.tools;
 
 type ToolResult = { content: Array<{ type: "text"; text: string }> };
 const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
@@ -38,22 +41,14 @@ export interface SurfaceMcpOpts {
 export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): SurfaceToolDef[] {
   const defs: SurfaceToolDef[] = [
     {
-      name: "reply",
-      description:
-        "Send a message to the user in the current conversation. This is the primary way to communicate — plain assistant text is NOT shown to them. Returns a `ref` you can pass to edit later.",
-      schema: { text: z.string().describe("Message body. Markdown supported.") },
+      ...c.reply,
       handler: async ({ text }) => {
         try { const { ref } = await surface.reply({ text }); return ok(`posted ref=${ref}`); }
         catch (e: any) { return fail(`reply failed: ${e?.message ?? String(e)}`); }
       },
     },
     {
-      name: "get_history",
-      description: "Read recent messages from the current conversation for context.",
-      schema: {
-        limit: z.number().optional().describe("Max messages to return."),
-        include_replies: z.boolean().optional().describe("Include nested replies (default true)."),
-      },
+      ...c.get_history,
       handler: async ({ limit, include_replies }) => {
         try {
           const { messages, hasMore } = await surface.getHistory({ limit, includeReplies: include_replies });
@@ -62,16 +57,7 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
       },
     },
     {
-      name: "request_approval",
-      description:
-        "Ask the user to approve a high-level plan before destructive or far-reaching work (file writes, mutating Bash, deploys, deletions, migrations, external POSTs). Blocks until an authorized user responds. Returns approved/denied.",
-      schema: {
-        summary: z.string().describe("One-paragraph plain-language summary of what you're about to do and why."),
-        tools: z.array(z.string()).optional().describe("Tool names you intend to call."),
-        files: z.array(z.string()).optional().describe("Files you intend to create / modify / delete."),
-        risks: z.string().optional().describe("What could go wrong / what's irreversible. Brief."),
-        category: z.string().optional().describe("Optional area hint to route to the right approver(s)."),
-      },
+      ...c.request_approval,
       handler: async ({ summary, tools, files, risks, category }) => {
         try {
           const r = await surface.requestApproval({ summary, tools, files, risks, category });
@@ -83,9 +69,7 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
 
   if (surface.capabilities.has("edit") && surface.edit) {
     defs.push({
-      name: "edit",
-      description: "Edit a previous reply you posted in this conversation. Pass the `ref` returned by reply.",
-      schema: { ref: z.string().describe("ref returned by reply."), text: z.string().describe("Replacement body.") },
+      ...c.edit,
       handler: async ({ ref, text }) => {
         try { await surface.edit!({ ref, text }); return ok("edited"); }
         catch (e: any) { return fail(`edit failed: ${e?.message ?? String(e)}`); }
@@ -95,18 +79,14 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
 
   if (surface.capabilities.has("react") && surface.react) {
     defs.push({
-      name: "react",
-      description: "Add an emoji reaction. Defaults to the user's latest inbound message.",
-      schema: { name: z.string().describe("Emoji name without colons."), ref: z.string().optional().describe("Optional message ref; defaults to the latest inbound message.") },
+      ...c.react,
       handler: async ({ name, ref }) => {
         try { await surface.react!({ name, ref }); return ok(`reacted :${name}:`); }
         catch (e: any) { return fail(`react failed: ${e?.message ?? String(e)}`); }
       },
     });
     defs.push({
-      name: "unreact",
-      description: "Remove an emoji reaction you previously added.",
-      schema: { name: z.string(), ref: z.string().optional() },
+      ...c.unreact,
       handler: async ({ name, ref }) => {
         try { await surface.unreact!({ name, ref }); return ok(`unreacted :${name}:`); }
         catch (e: any) { return fail(`unreact failed: ${e?.message ?? String(e)}`); }
@@ -116,14 +96,7 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
 
   if (surface.capabilities.has("upload") && surface.upload) {
     defs.push({
-      name: "upload",
-      description: "Upload a local file to the current conversation. Use an absolute path under the session working dir.",
-      schema: {
-        path: z.string().describe("Absolute local path to the file to upload."),
-        title: z.string().optional(),
-        initial_comment: z.string().optional().describe("Posts above the file as the bot's text."),
-        alt_text: z.string().optional(),
-      },
+      ...c.upload,
       handler: async ({ path, title, initial_comment, alt_text }) => {
         try { await surface.upload!({ path, title, comment: initial_comment, altText: alt_text }); return ok("uploaded"); }
         catch (e: any) { return fail(`upload failed: ${e?.message ?? String(e)}`); }
@@ -133,9 +106,7 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
 
   if (surface.capabilities.has("typing") && surface.typing) {
     defs.push({
-      name: "typing",
-      description: "Set the typing/presence indicator on or off.",
-      schema: { on: z.boolean().describe("true to show typing, false to clear.") },
+      ...c.typing,
       handler: async ({ on }) => {
         try { await surface.typing!({ on }); return ok(`typing ${on ? "on" : "off"}`); }
         catch (e: any) { return fail(`typing failed: ${e?.message ?? String(e)}`); }
@@ -146,16 +117,7 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
   if (opts.setOneOnOne) {
     const setOneOnOne = opts.setOneOnOne;
     defs.push({
-      name: "set_one_on_one",
-      description:
-        'Adjust an ALREADY-ACTIVE 1on1 session for THIS thread. Cannot initiate 1on1 — use the /1on1 slash command for that.\n' +
-        '• action="open" → admit all participants; use `scope` to describe behavioural constraints for guests (e.g. "read-only, no credentials"). The scope is injected into the session context — interpret and respect it for non-initiator users.\n' +
-        '• action="off" → fully release 1on1; thread is public again.\n' +
-        'Returns a short status to relay.',
-      schema: {
-        action: z.enum(["open", "off"]).describe('"open" = admit guests (add scope if needed); "off" = release entirely.'),
-        scope: z.string().optional().describe('Guest constraint description for action="open". Free text — you interpret and enforce it for non-initiator users.'),
-      },
+      ...c.set_one_on_one,
       handler: async ({ action, scope }) => {
         try { return ok(await setOneOnOne(action, scope)); }
         catch (e: any) { return fail(`set_one_on_one failed: ${e?.message ?? String(e)}`); }
@@ -166,10 +128,7 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
   if (opts.setMentionOnly) {
     const setMentionOnly = opts.setMentionOnly;
     defs.push({
-      name: "set_mention_only",
-      description:
-        "Set whether THIS thread is mention-only. active=true → reply ONLY when @-mentioned (ignore plain follow-ups); active=false → follow the thread normally again. Use when the user asks you to pipe down / only respond when tagged, or to undo it. Returns a short status to relay.",
-      schema: { active: z.boolean().describe("true = mention-only; false = normal following.") },
+      ...c.set_mention_only,
       handler: async ({ active }) => {
         try { return ok(await setMentionOnly(active)); }
         catch (e: any) { return fail(`set_mention_only failed: ${e?.message ?? String(e)}`); }
@@ -180,14 +139,7 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
   if (opts.initiator) {
     const initiator = opts.initiator;
     defs.push({
-      name: "soul_override",
-      description:
-        "MANAGER-ONLY. Runtime override of soul ACLs: add/remove trusted channels (trust), public channels (allow), DM allowlist (dm), blocked users (block). Takes effect on the next message in every session and shadows SOUL.md. Refused unless the current turn was initiated by the manager's own Slack message.",
-      schema: {
-        field: z.enum(["trust", "allow", "dm", "block"]).describe("Which ACL to override."),
-        action: z.enum(["add", "remove", "list", "clear"]).describe("list shows current overrides; clear drops this field's overrides."),
-        value: z.string().optional().describe("Channel (C…/G…/D…) or user (U…/W…) id. Required for add/remove."),
-      },
+      ...c.soul_override,
       handler: async ({ field, action, value }) => {
         const soul = soulData();
         const who = initiator();

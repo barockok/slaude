@@ -67,11 +67,18 @@ async function main() {
 
   // Slack ingress: Socket Mode (default) or the Events API HTTP receiver
   // (SLAUDE_SLACK_MODE=http, spec §5). In http mode the transport's single
-  // port also serves /healthz /readyz /metrics, so the standalone health
-  // server is not started; apps are resolved per-request from the Postgres
-  // slack_apps registry.
+  // port also serves /healthz /readyz /metrics (and /v1, below), so the
+  // standalone health server is not started; apps are resolved per-request
+  // from the Postgres slack_apps registry.
+  //
+  // The node-facing REST /v1 (spec §7) is mounted on whichever server runs —
+  // the standalone health server (socket mode) or the transport's port (http
+  // mode) — for gateway/mono roles. Node processes call /v1, they never
+  // serve it. `slack` is assigned before any request is served, so the v1
+  // closure's late binding is safe.
   const slackMode = env.slack.mode();
-  let slack;
+  const role = env.role();
+  let slack: import("./gateway/core/gateway").GatewayHandle;
   let health: ReturnType<typeof startHealthServer> = null;
   if (slackMode === "http") {
     if (db.dialect !== "pg") {
@@ -80,13 +87,20 @@ async function main() {
       );
     }
     const transport = createHttpSlackTransport({
-      health: { liveSessions: () => agent.liveCount() },
+      health: {
+        liveSessions: () => agent.liveCount(),
+        v1: role !== "node" ? (req: Request) => slack.fetchV1(req) : undefined,
+      },
     });
     slack = createGateway(agent, transport, { mcpConnectEnabled: mcpOAuthHealthy });
   } else {
     slack = createSlackApp(agent, { mcpConnectEnabled: mcpOAuthHealthy });
-    health = startHealthServer({ liveSessions: () => agent.liveCount() });
+    health = startHealthServer({
+      liveSessions: () => agent.liveCount(),
+      v1: role !== "node" ? (req) => slack.fetchV1(req) : undefined,
+    });
   }
+  if (role !== "node") console.log(`[slaude] /v1 REST mounted (role=${role})`);
 
   await slack.start();
   console.log(`[slaude] slack ${slackMode} mode started`);

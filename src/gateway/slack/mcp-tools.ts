@@ -15,6 +15,9 @@ import * as CronJobs from "../../db/cron-jobs";
 import * as OneOnOne from "../../db/one-on-one";
 import { getNextRun } from "./cron-parser";
 import { run as runIngest } from "../../knowledge/ingest";
+import { slackContract } from "../../tools/contracts/slack";
+import { runtimeContract } from "../../tools/contracts/runtime";
+import { connectContract } from "../../tools/contracts/connect";
 
 function format(text: string): string {
   return redactSlack(mdToMrkdwn(text), soulData().redactPatterns);
@@ -61,7 +64,7 @@ export type SlackContext = {
   personaId?: string;
 };
 
-export const SLACK_MCP_NAME = "slaude_slack";
+export const SLACK_MCP_NAME = slackContract.server;
 
 export const slackHandlers = {
   async reply(ctx: SlackContext, { text }: { text: string }): Promise<ToolResult> {
@@ -557,8 +560,10 @@ export const adminHandlers = {
   },
 };
 
-/** Build an SDK MCP server bound to a session's SlackContext. */
+/** Build an SDK MCP server bound to a session's SlackContext. Tool names,
+ *  descriptions and schemas come from the shared contract (src/tools/contracts). */
 export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstance {
+  const c = slackContract.tools;
   return createSdkMcpServer({
     name: SLACK_MCP_NAME,
     version: "0.1.0",
@@ -567,183 +572,57 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
       // get_thread_history) moved to the platform-neutral `mcp__slaude_surface__*` server.
       // This `reply` alias remains for one release so in-flight sessions / personas that
       // reference the old name keep working. Remove next release.
-      tool(
-        "reply",
-        "DEPRECATED — use mcp__slaude_surface__reply. Send a message to the user in the current conversation.",
-        {
-          text: z.string().describe("Message body. Markdown supported."),
-        },
-        (args) => slackHandlers.reply(ctx, args),
-      ),
-
-      tool(
-        "get_user_profile",
-        "Fetch a Slack user's profile. Use this to learn who you're talking to — their name, title, timezone, status, pronouns, etc. Pass a user ID (e.g. U123ABC). This helps you personalize responses and avoid asking info the profile already contains.",
-        {
-          user_id: z.string().describe("Slack user ID (e.g. U123ABC)."),
-        },
-        (args) => slackHandlers.get_user_profile(ctx, args),
-      ),
-
-      tool(
-        "get_channel_info",
-        "Get info about the current Slack channel or DM — name, topic, purpose, member count, creation date, and whether it's archived. Helps you understand the conversational context (e.g. is this #general, a private team channel, or a 1:1 DM?).",
-        {},
-        () => slackHandlers.get_channel_info(ctx),
-      ),
-
-      tool(
-        "list_users_in_channel",
-        "List the members of the current Slack channel. Use this to understand who's in the room, find user IDs to look up profiles, or check if a specific person is present. Returns user IDs — call get_user_profile to resolve names/details.",
-        {
-          limit: z.number().min(1).max(1000).optional().describe("Max members to fetch (1-1000). Default 200."),
-        },
-        (args) => slackHandlers.list_users_in_channel(ctx, args),
-      ),
-
-      tool(
-        "search_messages",
-        "Search Slack messages in the workspace. Use this to find prior discussions, decisions, or context the user is referencing. Supports Slack search syntax (e.g. 'from:@alice deploy', 'in:#engineering outage', 'after:2024-01-01'). Results are ordered by relevance.",
-        {
-          query: z.string().describe("Search query. Slack search syntax supported: from:@user, in:#channel, after:YYYY-MM-DD, before:YYYY-MM-DD, has:link, etc."),
-          count: z.number().min(1).max(20).optional().describe("Max results (1-20). Default 10."),
-        },
-        (args) => slackHandlers.search_messages(ctx, args),
-      ),
-
+      tool(c.reply.name, c.reply.description, c.reply.schema, (args) => slackHandlers.reply(ctx, args)),
+      tool(c.get_user_profile.name, c.get_user_profile.description, c.get_user_profile.schema, (args) => slackHandlers.get_user_profile(ctx, args)),
+      tool(c.get_channel_info.name, c.get_channel_info.description, c.get_channel_info.schema, () => slackHandlers.get_channel_info(ctx)),
+      tool(c.list_users_in_channel.name, c.list_users_in_channel.description, c.list_users_in_channel.schema, (args) => slackHandlers.list_users_in_channel(ctx, args)),
+      tool(c.search_messages.name, c.search_messages.description, c.search_messages.schema, (args) => slackHandlers.search_messages(ctx, args)),
     ],
   });
 }
 
-export const RUNTIME_MCP_NAME = "slaude_runtime";
+export const RUNTIME_MCP_NAME = runtimeContract.server;
 
 /** Build the surface-agnostic control-plane MCP server (`slaude_runtime`): ignore gates,
  *  cron jobs, KB ingest, session reload. These never produce user-visible output; they're
  *  housekeeping. Still ctx-bound today (cron/ignore use the conversation) — fuller
- *  neutralization is deferred with the gateway. */
+ *  neutralization is deferred with the gateway. Tool names, descriptions and schemas
+ *  come from the shared contract (src/tools/contracts). */
 export function createRuntimeMcp(ctx: SlackContext): McpSdkServerConfigWithInstance {
+  const c = runtimeContract.tools;
   return createSdkMcpServer({
     name: RUNTIME_MCP_NAME,
     version: "0.1.0",
     tools: [
-      tool(
-        "ignore_thread",
-        "Temporarily ignore this thread when the conversation drifts out of mandate. Use to prevent infinite loops or unproductive back-and-forth. The thread will be silently dropped until the ignore expires or a manager removes it. Requires manager or approver authorization.",
-        {
-          duration: z
-            .string()
-            .describe("Duration like '5m', '10m', '1h'. Use 'permanent' only as absolute last resort. Max 24h."),
-          reason: z.string().describe("Brief reason why the thread is being ignored."),
-        },
-        (args) => adminHandlers.ignoreThread(ctx, args),
-      ),
-
-      tool(
-        "unignore_thread",
-        "Resume normal processing in this thread after a previous ignore_thread call. Use when the conversation has returned to your mandate, the user explicitly asks to un-ignore, or you previously ignored by mistake. Requires manager or approver authorization.",
-        {},
-        () => adminHandlers.unignoreThread(ctx),
-      ),
-
-      tool(
-        "ignore_user",
-        "Temporarily ignore a specific user across all threads. Use when a user is repeatedly sending off-topic or disruptive messages. The user will be silently dropped until the ignore expires or a manager removes it. Requires manager or approver authorization.",
-        {
-          user_id: z.string().describe("User ID to ignore (e.g. U123ABC)."),
-          duration: z.string().describe("Duration like '5m', '10m', '1h', or 'permanent'. Max 24h."),
-          reason: z.string().describe("Brief reason why the user is being ignored."),
-        },
-        (args) => adminHandlers.ignoreUser(ctx, { userId: args.user_id, duration: args.duration, reason: args.reason }),
-      ),
-
-      tool(
-        "unignore_user",
-        "Stop ignoring a previously ignored user. Requires manager or approver authorization.",
-        {
-          user_id: z.string().describe("User ID to unignore (e.g. U123ABC)."),
-        },
-        (args) => adminHandlers.unignoreUser(ctx, { userId: args.user_id }),
-      ),
-
-      tool(
-        "list_cron_jobs",
-        "List all active scheduled cron jobs. Use when the user asks what recurring tasks are set up, wants to audit scheduled work, or needs a job ID before calling remove_cron_job. Returns job IDs, cron expressions, prompts, and next run times.",
-        {},
-        () => adminHandlers.listCronJobs(ctx),
-      ),
-
-      tool(
-        "add_cron_job",
-        "Schedule a recurring prompt that fires on a cron expression and posts results back to Slack. Use when the user asks for regular check-ins (e.g. 'daily summary'), weekly reports, recurring reminders, or periodic tasks. Requires manager or approver authorization. Use 5-field cron format: minute hour day-of-month month day-of-week (UTC). Examples: '0 9 * * 1-5' = weekdays at 9am UTC; '0 0 * * *' = daily midnight; '*/30 * * * *' = every 30 minutes. By default the result posts in THIS thread; pass target='channel' to broadcast at the channel root instead. By default the job fires even if someone is chatting in the target; pass when_active='skip' to defer that run while a human is active.",
-        {
-          cron_expr: z.string().describe("5-field cron expression in UTC. e.g. '0 9 * * 1-5' for weekdays at 9am."),
-          prompt: z.string().describe("The prompt sent to you each time the job fires. Be specific so future you knows what to do."),
-          target: z.enum(["thread", "channel"]).optional().describe("Where the result posts: 'thread' (default, this thread) or 'channel' (the channel root, a fresh top-level message)."),
-          when_active: z.enum(["fire", "skip"]).optional().describe("Behavior when a human is active in the target: 'fire' (default, run anyway) or 'skip' (defer this run, humans get priority)."),
-        },
-        (args) => adminHandlers.addCronJob(ctx, { cronExpr: args.cron_expr, prompt: args.prompt, target: args.target, whenActive: args.when_active }),
-      ),
-
-      tool(
-        "edit_cron_job",
-        "Update an existing scheduled cron job. Use when the user wants to change the schedule, prompt, posting target, or passive/active behavior without deleting and recreating the job. Requires manager or approver authorization.",
-        {
-          job_id: z.string().describe("Full job ID or 8-character prefix from list_cron_jobs."),
-          cron_expr: z.string().optional().describe("Replacement 5-field cron expression in UTC."),
-          prompt: z.string().optional().describe("Replacement prompt sent each time the job fires."),
-          target: z.enum(["thread", "channel"]).optional().describe("Replacement posting target."),
-          when_active: z.enum(["fire", "skip"]).optional().describe("Replacement active-session behavior."),
-        },
-        (args) => adminHandlers.editCronJob(ctx, { jobId: args.job_id, cronExpr: args.cron_expr, prompt: args.prompt, target: args.target, whenActive: args.when_active }),
-      ),
-
-      tool(
-        "pause_cron_job",
-        "Pause a scheduled cron job without deleting it. Paused jobs stay listed and can be manually run once or resumed later. Requires manager or approver authorization.",
-        {
-          job_id: z.string().describe("Full job ID or 8-character prefix from list_cron_jobs."),
-        },
-        (args) => adminHandlers.pauseCronJob(ctx, { jobId: args.job_id }),
-      ),
-
-      tool(
-        "resume_cron_job",
-        "Resume a paused cron job and recompute its next future run from its stored cron expression. Requires manager or approver authorization.",
-        {
-          job_id: z.string().describe("Full job ID or 8-character prefix from list_cron_jobs."),
-        },
-        (args) => adminHandlers.resumeCronJob(ctx, { jobId: args.job_id }),
-      ),
-
-      tool(
-        "remove_cron_job",
-        "Deactivate a scheduled cron job by its full ID or 8-char prefix. The job is soft-deleted (set inactive) — historical runs remain in the database. Use when a recurring task is no longer needed, the user asks to cancel something scheduled, or a job was created by mistake. Call list_cron_jobs first to find the ID. Requires manager or approver authorization.",
-        {
-          job_id: z.string().describe("Full job ID or 8-character prefix from list_cron_jobs."),
-        },
-        (args) => adminHandlers.removeCronJob(ctx, { jobId: args.job_id }),
-      ),
-
-      tool(
-        "trigger_ingest",
-        "Synchronize raw knowledge-base content into the processed wiki format. Use when new raw files have been added to the KB and the user asks to refresh, rebuild, or update the knowledge base. This can be slow — only trigger when actually needed. Requires manager or approver authorization.",
-        {},
-        () => adminHandlers.triggerIngest(ctx),
-      ),
-
-      tool(
-        "reload_session",
-        "Gracefully reload the current session so newly installed MCP servers, plugins, or skills are picked up on the next turn. Closes the SDK loop cleanly (no scary error messages) and marks the session idle. The next inbound message starts a fresh Query with freshly-resolved MCPs, plugins, and skills. Optionally pass `prompt` to auto-inject a message immediately after reload so the session resumes without waiting for user input. Requires manager or approver authorization.",
-        {
-          prompt: z.string().optional().describe("If provided, injected as the first message of the fresh session so the flow resumes automatically."),
-        },
-        (args) => adminHandlers.reloadSession(ctx, args),
-      ),
+      tool(c.ignore_thread.name, c.ignore_thread.description, c.ignore_thread.schema,
+        (args) => adminHandlers.ignoreThread(ctx, args)),
+      tool(c.unignore_thread.name, c.unignore_thread.description, c.unignore_thread.schema,
+        () => adminHandlers.unignoreThread(ctx)),
+      tool(c.ignore_user.name, c.ignore_user.description, c.ignore_user.schema,
+        (args) => adminHandlers.ignoreUser(ctx, { userId: args.user_id, duration: args.duration, reason: args.reason })),
+      tool(c.unignore_user.name, c.unignore_user.description, c.unignore_user.schema,
+        (args) => adminHandlers.unignoreUser(ctx, { userId: args.user_id })),
+      tool(c.list_cron_jobs.name, c.list_cron_jobs.description, c.list_cron_jobs.schema,
+        () => adminHandlers.listCronJobs(ctx)),
+      tool(c.add_cron_job.name, c.add_cron_job.description, c.add_cron_job.schema,
+        (args) => adminHandlers.addCronJob(ctx, { cronExpr: args.cron_expr, prompt: args.prompt, target: args.target, whenActive: args.when_active })),
+      tool(c.edit_cron_job.name, c.edit_cron_job.description, c.edit_cron_job.schema,
+        (args) => adminHandlers.editCronJob(ctx, { jobId: args.job_id, cronExpr: args.cron_expr, prompt: args.prompt, target: args.target, whenActive: args.when_active })),
+      tool(c.pause_cron_job.name, c.pause_cron_job.description, c.pause_cron_job.schema,
+        (args) => adminHandlers.pauseCronJob(ctx, { jobId: args.job_id })),
+      tool(c.resume_cron_job.name, c.resume_cron_job.description, c.resume_cron_job.schema,
+        (args) => adminHandlers.resumeCronJob(ctx, { jobId: args.job_id })),
+      tool(c.remove_cron_job.name, c.remove_cron_job.description, c.remove_cron_job.schema,
+        (args) => adminHandlers.removeCronJob(ctx, { jobId: args.job_id })),
+      tool(c.trigger_ingest.name, c.trigger_ingest.description, c.trigger_ingest.schema,
+        () => adminHandlers.triggerIngest(ctx)),
+      tool(c.reload_session.name, c.reload_session.description, c.reload_session.schema,
+        (args) => adminHandlers.reloadSession(ctx, args)),
     ],
   });
 }
 
-export const CONNECT_MCP_NAME = "slaude_connect";
+export const CONNECT_MCP_NAME = connectContract.server;
 
 export interface ConnectDeps {
   /** Kick off the deterministic connect engine for `server` and return a short
@@ -757,13 +636,10 @@ export interface ConnectDeps {
  *  `/mcp connect` (loopback + signed-state + URL-safe out-of-band post + redact teardown).
  *  The authorize URL never passes through the model, and no paste is needed. */
 export function connectTools(deps: ConnectDeps) {
+  const c = connectContract.tools;
   return [
-    tool(
-      "connect_mcp",
-      "Connect an external MCP server's OAuth so its tools become available, when the user asks to connect / authorize / log in to a service (e.g. 'connect workbench'). Posts an authorization link into this thread out-of-band and captures the result automatically — you never see or relay the link, and the user does NOT paste anything back. Returns a short status; tell the user you've started it and the link is in the thread. Authorization is scope-gated (your own services in a 1on1, the shared identity is manager-only).",
-      { server: z.string().describe("Name of the MCP server to connect (as shown by /mcp).") },
-      async (args) => ok(await deps.connect(args.server)),
-    ),
+    tool(c.connect_mcp.name, c.connect_mcp.description, c.connect_mcp.schema,
+      async (args) => ok(await deps.connect(args.server))),
   ];
 }
 

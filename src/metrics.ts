@@ -145,4 +145,6 @@ export const m = {
   disengagedSuppressedTotal: metrics.counter("slaude_disengaged_suppressed_total", "Messages recorded into a disengaged thread's session transcript but suppressed by the UserPromptSubmit hook (no model run)."),
   userTurnsTotal: metrics.counter("slaude_user_turns_total", "Inbound user turns, labeled by user_id + user_name (opt-in via SLAUDE_METRICS_PER_USER=1)."),
   httpRequestsTotal: metrics.counter("slaude_http_requests_total", "Slack ingress HTTP responses (/slack/*), labeled by route and status."),
+  v1JobEventsTotal: metrics.counter("slaude_v1_job_events_total", "Node job telemetry received on /v1/jobs/:id (ack|fail), labeled by event."),
+  v1ToolCallsTotal: metrics.counter("slaude_v1_tool_calls_total", "REST tool-plane invocations on /v1/tools/<server>/<tool>, labeled by server + tool."),
 };
