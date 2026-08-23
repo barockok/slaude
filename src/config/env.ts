@@ -31,6 +31,33 @@ function opt(name: string, fallback = ""): string {
 
 export const env = {
   slack: {
+    /**
+     * Slack ingress mode (spec §5 / milestone M3):
+     *   socket (default) — Bolt Socket Mode, single app from SLACK_BOT_TOKEN.
+     *   http             — Events API receiver on SLAUDE_HTTP_PORT, apps
+     *                      resolved per-request from the Postgres slack_apps
+     *                      registry (requires SLAUDE_DB=pg + SLAUDE_MASTER_KEY).
+     */
+    mode: (): "socket" | "http" => {
+      const raw = opt("SLAUDE_SLACK_MODE", "socket").trim().toLowerCase();
+      if (raw !== "socket" && raw !== "http") {
+        throw new Error(`SLAUDE_SLACK_MODE must be 'socket' or 'http' (got '${raw}')`);
+      }
+      return raw;
+    },
+    /**
+     * Listen port for the HTTP Slack transport (default 8080). In http mode
+     * this single port also serves /healthz, /readyz and /metrics — the
+     * standalone SLAUDE_HEALTH_PORT server is not started.
+     */
+    httpPort: (): number => {
+      const raw = opt("SLAUDE_HTTP_PORT", "8080");
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 0 || n > 65535) {
+        throw new Error(`SLAUDE_HTTP_PORT must be a port number (got '${raw}')`);
+      }
+      return n;
+    },
     botToken: () => req("SLACK_BOT_TOKEN"),
     appToken: () => req("SLACK_APP_TOKEN"),
     /**

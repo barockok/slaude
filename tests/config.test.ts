@@ -145,6 +145,30 @@ describe("config/env getters", () => {
     expect(env.slack.approvers()).toEqual([]);
   });
 
+  test("slack.mode defaults to socket, accepts http, rejects junk", () => {
+    delete process.env.SLAUDE_SLACK_MODE;
+    expect(env.slack.mode()).toBe("socket");
+    process.env.SLAUDE_SLACK_MODE = " HTTP ";
+    expect(env.slack.mode()).toBe("http");
+    process.env.SLAUDE_SLACK_MODE = "websocket";
+    expect(() => env.slack.mode()).toThrow(/SLAUDE_SLACK_MODE/);
+    delete process.env.SLAUDE_SLACK_MODE;
+  });
+
+  test("slack.httpPort defaults to 8080, validates range", () => {
+    delete process.env.SLAUDE_HTTP_PORT;
+    expect(env.slack.httpPort()).toBe(8080);
+    process.env.SLAUDE_HTTP_PORT = "3000";
+    expect(env.slack.httpPort()).toBe(3000);
+    process.env.SLAUDE_HTTP_PORT = "0";
+    expect(env.slack.httpPort()).toBe(0);
+    process.env.SLAUDE_HTTP_PORT = "70000";
+    expect(() => env.slack.httpPort()).toThrow(/SLAUDE_HTTP_PORT/);
+    process.env.SLAUDE_HTTP_PORT = "abc";
+    expect(() => env.slack.httpPort()).toThrow(/SLAUDE_HTTP_PORT/);
+    delete process.env.SLAUDE_HTTP_PORT;
+  });
+
   test("skillsRepo returns empty when unset, value when set", () => {
     expect(env.skillsRepo()).toBe("");
     process.env.SLAUDE_SKILLS_REPO = "github:owner/skills-repo";
