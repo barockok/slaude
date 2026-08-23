@@ -676,6 +676,7 @@ export class AgentManager extends EventEmitter {
           console.log(`[mgr] reload session=${sessionId} — suppressing expected exit error`);
         } else if (live?.abort.signal.aborted) {
           console.log(`[mgr] abort session=${sessionId} — suppressing expected abort error`);
+          this.emit("event", { type: "done", sessionId } satisfies AgentEvent);
         } else {
           metric.errorsTotal.inc({ kind: "sdk" });
           this.emit("event", { type: "error", sessionId, error: message } satisfies AgentEvent);
