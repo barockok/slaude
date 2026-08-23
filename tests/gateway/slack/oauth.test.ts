@@ -8,6 +8,7 @@ import {
   handleOAuth,
   mintOAuthState,
   verifyOAuthState,
+  OAUTH_COOKIE,
   OAUTH_STATE_TTL_SEC,
 } from "../../../src/gateway/slack/oauth";
 import { buildManifest, BOT_SCOPES } from "../../../src/cli/manifest";
@@ -36,7 +37,7 @@ afterAll(async () => {
 describe("OAuth state token", () => {
   it("round-trips", () => {
     const s = mintOAuthState({ secret: SECRET });
-    expect(verifyOAuthState(s, { secret: SECRET })).toEqual({ ok: true });
+    expect(verifyOAuthState(s, { secret: SECRET })).toEqual({ ok: true, nonce: expect.any(String) });
   });
 
   it("rejects a tampered payload", () => {
@@ -73,15 +74,24 @@ describe("OAuth state token", () => {
   });
 });
 
-function req(path: string): [Request, URL] {
+function req(path: string, headers: Record<string, string> = {}): [Request, URL] {
   const url = new URL(`http://gw${path}`);
-  return [new Request(url.toString(), { method: "GET" }), url];
+  return [new Request(url.toString(), { method: "GET", headers }), url];
+}
+
+/** Callback request with the browser-binding cookie set to `cookieState`
+ *  (defaults to the state in the query, i.e. the legitimate browser). */
+function cbReq(state: string, cookieState: string = state): [Request, URL] {
+  return req(`/slack/oauth/callback?code=c&state=${encodeURIComponent(state)}`, {
+    cookie: `${OAUTH_COOKIE}=${cookieState}`,
+  });
 }
 
 const baseDeps = () => ({
   clientId: "1234.5678",
   clientSecret: SECRET,
   signingSecret: "app-signing-secret",
+  nonces: null, // replay test injects its own store
   log: () => {},
 });
 
@@ -100,7 +110,7 @@ describe("handleOAuth", () => {
     expect(loc.searchParams.get("client_id")).toBe("1234.5678");
     expect(loc.searchParams.get("scope")).toBe(BOT_SCOPES.join(","));
     const state = loc.searchParams.get("state")!;
-    expect(verifyOAuthState(state, { secret: SECRET })).toEqual({ ok: true });
+    expect(verifyOAuthState(state, { secret: SECRET })).toEqual({ ok: true, nonce: expect.any(String) });
   });
 
   it("start includes redirect_uri only when configured", async () => {
@@ -125,26 +135,136 @@ describe("handleOAuth", () => {
         return Response.json({ ok: true });
       }) as unknown as typeof fetch,
     };
-    for (const state of ["", "garbage", mintOAuthState({ secret: "wrong" })]) {
-      const [r, u] = req(`/slack/oauth/callback?code=c&state=${encodeURIComponent(state)}`);
+    // Cookie matches the (bad) state — the attacker's own browser — so the
+    // rejection below is the SIGNATURE check, not the CSRF binding.
+    for (const state of ["garbage", mintOAuthState({ secret: "wrong" })]) {
+      const [r, u] = cbReq(state);
       const res = await handleOAuth(r, u, deps);
       expect(res!.status).toBe(400);
     }
+    // Empty state: rejected by the binding check (nothing to match).
+    const [r, u] = req(`/slack/oauth/callback?code=c`);
+    expect((await handleOAuth(r, u, deps))!.status).toBe(400);
     expect(fetched).toBe(0);
   });
 
   it("callback 400s on an expired state", async () => {
     const past = Date.now() - (OAUTH_STATE_TTL_SEC + 5) * 1000;
     const state = mintOAuthState({ secret: SECRET, now: past });
-    const [r, u] = req(`/slack/oauth/callback?code=c&state=${encodeURIComponent(state)}`);
+    const [r, u] = cbReq(state);
     const res = await handleOAuth(r, u, baseDeps());
     expect(res!.status).toBe(400);
     expect(await res!.text()).toContain("expired");
   });
 
+  it("callback HTML-escapes reflected values (no raw markup from ?error=)", async () => {
+    const state = mintOAuthState({ secret: SECRET });
+    const payload = `<script>alert(1)</script>`;
+    const [r, u] = req(
+      `/slack/oauth/callback?state=${encodeURIComponent(state)}&error=${encodeURIComponent(payload)}`,
+      { cookie: `${OAUTH_COOKIE}=${state}` },
+    );
+    const res = await handleOAuth(r, u, baseDeps());
+    expect(res!.status).toBe(400);
+    const body = await res!.text();
+    expect(body).not.toContain("<script>");
+    expect(body).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+  });
+
+  it("callback requires the browser-binding cookie (missing → 400, mismatch → 400, match → proceeds)", async () => {
+    const state = mintOAuthState({ secret: SECRET });
+    const exchange = (async () =>
+      Response.json({
+        ok: true,
+        app_id: "A0CSRF",
+        access_token: "xoxb-csrf",
+        team: { id: "T0CSRF" },
+      })) as unknown as typeof fetch;
+    const deps = { ...baseDeps(), fetchFn: exchange, upsert: async (i: any) => SlackApps.upsert(i, dbc) };
+
+    // Missing cookie.
+    const [r1, u1] = req(`/slack/oauth/callback?code=c&state=${encodeURIComponent(state)}`);
+    const res1 = await handleOAuth(r1, u1, deps);
+    expect(res1!.status).toBe(400);
+    expect(await res1!.text()).toContain("did not start the install");
+
+    // Mismatched cookie (a different, even validly-signed, state).
+    const other = mintOAuthState({ secret: SECRET });
+    const [r2, u2] = cbReq(state, other);
+    expect((await handleOAuth(r2, u2, deps))!.status).toBe(400);
+
+    // Matching cookie proceeds to the exchange.
+    const [r3, u3] = cbReq(state);
+    const res3 = await handleOAuth(r3, u3, deps);
+    expect(res3!.status).toBe(200);
+    // Terminal callback responses clear the cookie.
+    expect(res3!.headers.get("set-cookie")).toContain("Max-Age=0");
+  });
+
+  it("start sets the state cookie (HttpOnly, SameSite=Lax, TTL) matching the redirect state", async () => {
+    const [r, u] = req("/slack/oauth/start");
+    const res = await handleOAuth(r, u, baseDeps());
+    const cookie = res!.headers.get("set-cookie")!;
+    const state = new URL(res!.headers.get("location")!).searchParams.get("state")!;
+    expect(cookie).toContain(`${OAUTH_COOKIE}=${state}`);
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("Secure");
+    expect(cookie).toContain("SameSite=Lax");
+    expect(cookie).toContain(`Max-Age=${OAUTH_STATE_TTL_SEC}`);
+    expect(cookie).toContain("Path=/slack/oauth");
+  });
+
+  it("uses the dedicated state secret when provided (client-secret states stop verifying)", async () => {
+    const deps = { ...baseDeps(), stateSecret: "dedicated-state-secret" };
+    const [rs, us] = req("/slack/oauth/start");
+    const started = await handleOAuth(rs, us, deps);
+    const state = new URL(started!.headers.get("location")!).searchParams.get("state")!;
+    expect(verifyOAuthState(state, { secret: "dedicated-state-secret" }).ok).toBe(true);
+    expect(verifyOAuthState(state, { secret: SECRET }).ok).toBe(false);
+    // A state signed with the client secret is rejected by the callback.
+    const legacy = mintOAuthState({ secret: SECRET });
+    const [rc, uc] = cbReq(legacy);
+    expect((await handleOAuth(rc, uc, deps))!.status).toBe(400);
+  });
+
+  it("state is single-use when a nonce store is present (replay → 400)", async () => {
+    const issued = new Map<string, true>();
+    const nonces = {
+      put: async (n: string) => void issued.set(n, true),
+      consume: async (n: string) => issued.delete(n),
+    };
+    const deps = {
+      ...baseDeps(),
+      nonces,
+      fetchFn: (async () =>
+        Response.json({
+          ok: true,
+          app_id: "A0ONCE",
+          access_token: "xoxb-once",
+          team: { id: "T0ONCE" },
+        })) as unknown as typeof fetch,
+      upsert: async (i: any) => SlackApps.upsert(i, dbc),
+    };
+    // Mint through /start so the nonce lands in the store.
+    const [rs, us] = req("/slack/oauth/start");
+    const started = await handleOAuth(rs, us, deps);
+    const state = new URL(started!.headers.get("location")!).searchParams.get("state")!;
+
+    const [r1, u1] = cbReq(state);
+    expect((await handleOAuth(r1, u1, deps))!.status).toBe(200);
+
+    // Replay: same state, second attempt.
+    const [r2, u2] = cbReq(state);
+    const replay = await handleOAuth(r2, u2, deps);
+    expect(replay!.status).toBe(400);
+    expect(await replay!.text()).toContain("already used");
+  });
+
   it("callback exchanges the code and upserts an encrypted slack_apps row", async () => {
     const state = mintOAuthState({ secret: SECRET });
-    const [r, u] = req(`/slack/oauth/callback?code=auth-code-1&state=${encodeURIComponent(state)}`);
+    const [r, u] = req(`/slack/oauth/callback?code=auth-code-1&state=${encodeURIComponent(state)}`, {
+      cookie: `${OAUTH_COOKIE}=${state}`,
+    });
     const calls: Array<{ url: string; body: string }> = [];
     const res = await handleOAuth(r, u, {
       ...baseDeps(),
@@ -183,22 +303,11 @@ describe("handleOAuth", () => {
     expect(row!.bot_user_id).toBe("U0OBOT");
   });
 
-  it("callback HTML-escapes reflected values (no raw markup from ?error=)", async () => {
-    const state = mintOAuthState({ secret: SECRET });
-    const payload = `<script>alert(1)</script>`;
-    const [r, u] = req(
-      `/slack/oauth/callback?state=${encodeURIComponent(state)}&error=${encodeURIComponent(payload)}`,
-    );
-    const res = await handleOAuth(r, u, baseDeps());
-    expect(res!.status).toBe(400);
-    const body = await res!.text();
-    expect(body).not.toContain("<script>");
-    expect(body).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
-  });
-
   it("callback 502s when slack rejects the exchange", async () => {
     const state = mintOAuthState({ secret: SECRET });
-    const [r, u] = req(`/slack/oauth/callback?code=bad&state=${encodeURIComponent(state)}`);
+    const [r, u] = req(`/slack/oauth/callback?code=bad&state=${encodeURIComponent(state)}`, {
+      cookie: `${OAUTH_COOKIE}=${state}`,
+    });
     const res = await handleOAuth(r, u, {
       ...baseDeps(),
       fetchFn: (async () => Response.json({ ok: false, error: "invalid_code" })) as unknown as typeof fetch,
@@ -209,7 +318,7 @@ describe("handleOAuth", () => {
 
   it("callback 503s without a signing secret (nothing stored)", async () => {
     const state = mintOAuthState({ secret: SECRET });
-    const [r, u] = req(`/slack/oauth/callback?code=c&state=${encodeURIComponent(state)}`);
+    const [r, u] = cbReq(state);
     const res = await handleOAuth(r, u, { ...baseDeps(), signingSecret: "" });
     expect(res!.status).toBe(503);
   });
@@ -287,6 +396,7 @@ describe("transport mounting", () => {
     const state = mintOAuthState({ secret: SECRET });
     const res = await fetch(
       `${base}/slack/oauth/callback?code=c&state=${encodeURIComponent(state)}`,
+      { headers: { cookie: `${OAUTH_COOKIE}=${state}` } },
     );
     expect(res.status).toBe(200);
     // The registry reloaded: an event for the new app no longer 404s on the

@@ -91,6 +91,10 @@ export const env = {
     /** Fixed redirect_uri registered on the Slack app. Empty → Slack uses the
      *  app's sole configured redirect URL (and no redirect_uri param is sent). */
     oauthRedirectUrl: () => opt("SLACK_OAUTH_REDIRECT_URL").trim(),
+    /** Dedicated HMAC secret for the OAuth install `state` (must be identical
+     *  on every gateway replica). Empty → the flow falls back to
+     *  SLACK_CLIENT_SECRET with a one-line warning. */
+    oauthStateSecret: () => opt("SLAUDE_OAUTH_STATE_SECRET").trim(),
     /**
      * Optional user token (xoxp). Historically used only for presence
      * (`users.profile.set`). Also the token used for post-as-user when
