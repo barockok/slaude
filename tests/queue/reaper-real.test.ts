@@ -147,4 +147,20 @@ describe.skipIf(!realEnabled)("queue/reaper against real Redis", () => {
     // nothing else is past a huge threshold
     expect(await reaper.moveStalled("busy-1", 60_000)).toBe(0);
   });
+
+  test("moveStalled: a live node with a fresh heartbeat keeps its queue", async () => {
+    await ready;
+    await registry.nodeUp("busy-2");
+    await queues.enqueueTurn(turn("s-keep", "keep"), { node: "busy-2" });
+    await sleep(120);
+    await registry.beatNode("busy-2"); // fresh beat (suite nodeTtl is only 250ms)
+    // Way past the stall threshold, but the node is alive — no churn.
+    expect(await reaper.moveStalled("busy-2", 50)).toBe(0);
+    expect(await queues.queue(nodeQueueName("busy-2")).getWaitingCount()).toBe(1);
+    // Heartbeat gone (process died) → the same job is rescued to shared.
+    await redis.del(keys.node("busy-2"));
+    expect(await reaper.moveStalled("busy-2", 50)).toBe(1);
+    expect(await queues.queue(nodeQueueName("busy-2")).getWaitingCount()).toBe(0);
+    await registry.forgetNode("busy-2");
+  });
 });
