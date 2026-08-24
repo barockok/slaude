@@ -258,8 +258,15 @@ d("gateway↔node E2E (real Redis)", () => {
     await until(async () => (await registryG.lookup(sessionId))?.node === NODE_ID, 10_000);
     await emitSlack("message", msg(THREAD, "9000.2", "warm follow-up"));
     await until(() => posts.filter((p) => String(p.text).includes("node-reply:")).length >= 2, 15_000);
-    const counts = await turnsQ.queue(nodeTurnsQueueFn(NODE_ID)).getJobCounts("completed");
-    expect(counts.completed ?? 0).toBeGreaterThanOrEqual(1);
+    // The reply lands from inside the turn; BullMQ marks the job "completed" a
+    // beat later. Poll for the per-node queue's completed count instead of a
+    // one-shot read that races the completion transition under load. Intact
+    // assertion: a job that (wrongly) rode the SHARED queue never bumps the
+    // per-node count, so this still times out and fails on a routing regression.
+    await until(
+      async () => ((await turnsQ.queue(nodeTurnsQueueFn(NODE_ID)).getJobCounts("completed")).completed ?? 0) >= 1,
+      10_000,
+    );
   }, 30_000);
 
   test("reload:<tenant> subscription is live before/after the first turn (cache bustable)", async () => {
@@ -276,8 +283,13 @@ d("gateway↔node E2E (real Redis)", () => {
     const before = (await turnsQ.queue("turns").getJobCounts("completed")).completed ?? 0;
     await emitSlack("message", msg(THREAD, "9000.3", "cold resume"));
     await until(() => posts.filter((p) => String(p.text).includes("node-reply:")).length >= 3, 15_000);
-    const after = (await turnsQ.queue("turns").getJobCounts("completed")).completed ?? 0;
-    expect(after).toBeGreaterThan(before);
+    // Same settle race as warm-routing: wait for the shared-queue completion to
+    // register rather than reading the count the instant the reply posts. A
+    // turn that never ran on the shared queue leaves the count flat → times out.
+    await until(
+      async () => ((await turnsQ.queue("turns").getJobCounts("completed")).completed ?? 0) > before,
+      10_000,
+    );
   }, 30_000);
 
   test("/abort mid-turn reaches the node over pub/sub", async () => {
@@ -303,8 +315,16 @@ d("gateway↔node E2E (real Redis)", () => {
 
   test("held-by-other: job is delayed + requeued, runs after the lock frees", async () => {
     const sessionId = await sessionIdOf(THREAD);
-    // A foreign holder takes the session lock with a short TTL.
-    expect(await acquireLockFn(redis, keys.sessionLock(sessionId), "someone-else", 2000)).toBe(true);
+    // A foreign holder takes the session lock with a short TTL. Under CI load
+    // the PRIOR test's turn may still hold this session's lock (its extender's
+    // teardown lags behind the done event), so a single acquire can race and
+    // fail. Poll until the lock actually frees and WE grab it as the foreign
+    // holder — acquireLock is an atomic SET NX, so a truthy result means we
+    // hold it. This doesn't weaken the assertion: the real test (a job queued
+    // behind a foreign lock is requeued, then runs) still runs against a lock
+    // we provably hold. TTL stays 2000ms so it frees in time for the requeued
+    // job (500ms requeue cadence) to run well within the 20s until() below.
+    await until(async () => (await acquireLockFn(redis, keys.sessionLock(sessionId), "someone-else", 2000)) === true, 10_000);
     const before = posts.filter((p) => String(p.text).includes("node-reply:")).length;
     await emitSlack("message", msg(THREAD, "9000.6", "queued behind a foreign lock"));
     await until(() => posts.filter((p) => String(p.text).includes("node-reply:")).length > before, 20_000);
