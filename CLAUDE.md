@@ -58,7 +58,7 @@ slaude/
     skills/        # skill discovery + evolution MCP + manifest sync
     knowledge/     # KB loader + brain (gbrain engine: scoped search/think, gated writes) + ingest
     memory/        # memory provider interface (sqlite + markdown)
-    db/            # bun:sqlite schema (sessions, kb_ingest_jobs)
+    db/            # DbClient seam (sqlite | Postgres/PGLite via SLAUDE_DB), repos, migrations/
     config/        # env, $SLAUDE_HOME, mcp.json loader, manifest schema
     cli/           # manifest emitter, dependency installer
     server.ts      # headless entry

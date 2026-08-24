@@ -40,7 +40,7 @@ export class CronScheduler {
 
   async #tick(): Promise<void> {
     const now = Date.now();
-    const due = CronJobs.findDue(now);
+    const due = await CronJobs.findDue(now);
     for (const job of due) {
       if (this.#running.has(job.id)) continue;
       this.#running.add(job.id);
@@ -52,7 +52,7 @@ export class CronScheduler {
     // Legacy jobs without real Slack keys can't post — skip and mark error.
     if (!job.slackTeamId || !job.slackChannelId) {
       console.error(`[cron] job ${job.id} missing Slack keys (legacy job) — skipping`);
-      CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), "error: missing Slack keys");
+      await CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), "error: missing Slack keys");
       this.#running.delete(job.id);
       return;
     }
@@ -70,7 +70,7 @@ export class CronScheduler {
       persona_id: job.personaId,
     };
 
-    const session = this.#agent.ensureSession(threadKey);
+    const session = await this.#agent.ensureSession(threadKey);
 
     // Jobs created inside a /1on1 carry the lock owner. The run keys on a
     // synthetic `cron:<id>` thread with no lock, so hand the initiator to the
@@ -84,7 +84,7 @@ export class CronScheduler {
     // by #running in #tick.)
     if (job.whenActive === "skip" && this.#agent.isLive(session.id)) {
       console.log(`[cron] job ${job.id} skipped — session ${session.id} is live (when_active=skip)`);
-      CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), "skipped: session live");
+      await CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), "skipped: session live");
       this.#running.delete(job.id);
       return;
     }
@@ -96,23 +96,23 @@ export class CronScheduler {
 
     // Wait for completion before clearing #running and updating next_run.
     // AgentManager emits "event" payloads — never raw "done"/"error" events.
-    const onDone = (e: any) => {
+    const onDone = async (e: any) => {
       if (e.sessionId !== session.id) return;
       this.#agent.off("event", onEvent);
       const nextRun = getNextRun(job.cronExpr);
-      CronJobs.updateNextRun(job.id, nextRun, "completed");
+      await CronJobs.updateNextRun(job.id, nextRun, "completed");
       this.#running.delete(job.id);
     };
-    const onError = (e: any) => {
+    const onError = async (e: any) => {
       if (e.sessionId !== session.id) return;
       this.#agent.off("event", onEvent);
       const nextRun = getNextRun(job.cronExpr);
-      CronJobs.updateNextRun(job.id, nextRun, `error: ${e.error ?? "unknown"}`);
+      await CronJobs.updateNextRun(job.id, nextRun, `error: ${e.error ?? "unknown"}`);
       this.#running.delete(job.id);
     };
     const onEvent = (e: any) => {
-      if (e.type === "done") onDone(e);
-      else if (e.type === "error") onError(e);
+      if (e.type === "done") void onDone(e);
+      else if (e.type === "error") void onError(e);
     };
     this.#agent.on("event", onEvent);
 
@@ -121,7 +121,7 @@ export class CronScheduler {
     } catch (e: any) {
       console.error(`[cron] job ${job.id} failed to send:`, e?.message ?? e);
       this.#agent.off("event", onEvent);
-      CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), `error: ${e?.message ?? "unknown"}`);
+      await CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), `error: ${e?.message ?? "unknown"}`);
       this.#running.delete(job.id);
     }
   }

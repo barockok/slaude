@@ -59,6 +59,18 @@ beforeEach(() => {
   if (existsSync(paths.soul)) unlinkSync(paths.soul);
 });
 
+
+// The gate now writes the durable pending_gates row before posting the
+// prompt, so the Block Kit message lands a few microtasks after request()
+// is called — wait for it instead of reading posts[0] synchronously.
+async function firstPost(f: { posts: any[] }): Promise<any> {
+  for (let i = 0; i < 500 && f.posts.length === 0; i++) {
+    await new Promise((r) => setTimeout(r, 1));
+  }
+  if (f.posts.length === 0) throw new Error("no prompt posted");
+  return f.posts[0];
+}
+
 describe("ApprovalGate", () => {
   test("approve flow resolves with decision", async () => {
     writeFileSync(
@@ -78,8 +90,9 @@ describe("ApprovalGate", () => {
       category: "code",
     });
 
+    await firstPost(f);
     expect(f.posts.length).toBe(1);
-    const actionMatch = f.posts[0].blocks
+    const actionMatch = (await firstPost(f)).blocks
       .find((b: any) => b.type === "actions")
       .elements.find((e: any) => e.action_id.includes("approve"));
     await f.fire(actionMatch.action_id, "U001");
@@ -105,7 +118,7 @@ describe("ApprovalGate", () => {
       let resolved = false;
       const p = gate.request({ channel: "C0CHAN0001", threadTs: "T", summary: "x" })
         .then((d) => { resolved = true; return d; });
-      const okId = f.posts[0].blocks
+      const okId = (await firstPost(f)).blocks
         .find((b: any) => b.type === "actions")
         .elements.find((e: any) => e.action_id.includes("approve")).action_id;
       await f.fire(okId, "U0GLOBAL01"); // global approver replaced out of this channel
@@ -123,7 +136,7 @@ describe("ApprovalGate", () => {
     const f = fakeApp();
     const gate = new ApprovalGate(f.app, []);
     const p = gate.request({ channel: "C", threadTs: "T", summary: "x" });
-    const denyId = f.posts[0].blocks
+    const denyId = (await firstPost(f)).blocks
       .find((b: any) => b.type === "actions")
       .elements.find((e: any) => e.action_id.includes("deny")).action_id;
     await f.fire(denyId, "U002");
@@ -139,7 +152,7 @@ describe("ApprovalGate", () => {
       resolved = true;
       return d;
     });
-    const okId = f.posts[0].blocks
+    const okId = (await firstPost(f)).blocks
       .find((b: any) => b.type === "actions")
       .elements.find((e: any) => e.action_id.includes("approve")).action_id;
     await f.fire(okId, "U999"); // not in allowlist
@@ -156,7 +169,7 @@ describe("ApprovalGate", () => {
     const f = fakeApp();
     const gate = new ApprovalGate(f.app, ["U500"]);
     const p = gate.request({ channel: "C", threadTs: "T", summary: "x" });
-    const id = f.posts[0].blocks
+    const id = (await firstPost(f)).blocks
       .find((b: any) => b.type === "actions")
       .elements.find((e: any) => e.action_id.includes("approve")).action_id;
     await f.fire(id, "U500");
@@ -171,7 +184,7 @@ describe("ApprovalGate", () => {
     const f = fakeApp();
     const gate = new ApprovalGate(f.app, []);
     const p = gate.request({ channel: "C", threadTs: "T", summary: "x", category: "code" });
-    const id = f.posts[0].blocks
+    const id = (await firstPost(f)).blocks
       .find((b: any) => b.type === "actions")
       .elements.find((e: any) => e.action_id.includes("approve")).action_id;
     await f.fire(id, "U0XXXXXXXXX");
@@ -186,7 +199,7 @@ describe("ApprovalGate", () => {
     const f = fakeApp();
     const gate = new ApprovalGate(f.app, []);
     const p = gate.request({ channel: "C", threadTs: "T", summary: "x", category: "ops" });
-    const id = f.posts[0].blocks
+    const id = (await firstPost(f)).blocks
       .find((b: any) => b.type === "actions")
       .elements.find((e: any) => e.action_id.includes("approve")).action_id;
     await f.fire(id, "U0XXXXXXXXX");
@@ -219,7 +232,7 @@ describe("ApprovalGate", () => {
       files: ["/a"],
       risks: "irreversible",
     });
-    const blocks = f.posts[0].blocks;
+    const blocks = (await firstPost(f)).blocks;
     expect(JSON.stringify(blocks)).toContain("Tools:");
     expect(JSON.stringify(blocks)).toContain("Files:");
     expect(JSON.stringify(blocks)).toContain("irreversible");
@@ -231,7 +244,7 @@ describe("ApprovalGate", () => {
     const f = fakeApp();
     const gate = new ApprovalGate(f.app, []);
     const p = gate.request({ channel: "C", threadTs: "T", summary: "x" });
-    const id = f.posts[0].blocks
+    const id = (await firstPost(f)).blocks
       .find((b: any) => b.type === "actions")
       .elements.find((e: any) => e.action_id.includes("approve")).action_id;
     await f.fire(id, "U001");
@@ -246,7 +259,7 @@ describe("ApprovalGate", () => {
     const f = fakeApp();
     const gate = new ApprovalGate(f.app, []);
     void gate.request({ channel: "C", threadTs: "T", summary: "" });
-    expect(JSON.stringify(f.posts[0].blocks)).toContain("(no summary)");
+    expect(JSON.stringify((await firstPost(f)).blocks)).toContain("(no summary)");
   });
 
   test("timeout auto-denies + posts update", async () => {
@@ -268,7 +281,7 @@ describe("ApprovalGate", () => {
     const f = fakeApp();
     const gate = new ApprovalGate(f.app, [], { timeoutSeconds: () => 0.1 as any });
     const p = gate.request({ channel: "C", threadTs: "T", summary: "x" });
-    const id = f.posts[0].blocks
+    const id = (await firstPost(f)).blocks
       .find((b: any) => b.type === "actions")
       .elements.find((e: any) => e.action_id.includes("approve")).action_id;
     await f.fire(id, "U001");
@@ -302,7 +315,7 @@ describe("ApprovalGate", () => {
     const f = fakeApp();
     const gate = new ApprovalGate(f.app, []);
     const p = gate.request({ channel: "C", threadTs: "T", summary: "deploy code", category: "code" });
-    const id = f.posts[0].blocks
+    const id = (await firstPost(f)).blocks
       .find((b: any) => b.type === "actions")
       .elements.find((e: any) => e.action_id.includes("approve")).action_id;
     await f.fire(id, "U100");
@@ -317,7 +330,7 @@ describe("ApprovalGate", () => {
     const f = fakeApp();
     const gate = new ApprovalGate(f.app, []);
     const p = gate.request({ channel: "C", threadTs: "T", summary: "deploy to production" });
-    const id = f.posts[0].blocks
+    const id = (await firstPost(f)).blocks
       .find((b: any) => b.type === "actions")
       .elements.find((e: any) => e.action_id.includes("approve")).action_id;
     await f.fire(id, "U200");
@@ -332,7 +345,7 @@ describe("ApprovalGate", () => {
     const f = fakeApp();
     const gate = new ApprovalGate(f.app, ["U400"]);
     const p = gate.request({ channel: "C", threadTs: "T", summary: "deploy frontend", category: "deploy" });
-    const id = f.posts[0].blocks
+    const id = (await firstPost(f)).blocks
       .find((b: any) => b.type === "actions")
       .elements.find((e: any) => e.action_id.includes("approve")).action_id;
     await f.fire(id, "U400");

@@ -1,0 +1,519 @@
+/**
+ * Node worker (spec §6): BullMQ workers on the shared `turns` queue and this
+ * node's per-node queue, running SDK turns through the existing AgentManager
+ * with every gateway dependency swapped for its REST/queue counterpart:
+ *
+ *   sessions    → RestSessionStore over /v1/sessions
+ *   MCP tools   → contract shims POSTing /v1/tools/<server>/<tool>
+ *   permissions → shared policy + runtime/can_use_tool + /v1/pending long-poll
+ *   child env   → tenant runtime bundle creds (ETag-cached), not process env
+ *   events      → appended to the events:<session> Redis stream
+ *
+ * Per job: consume the durable abort flag (a pre-claim /abort skips the turn),
+ * take lock:session:<id> (held elsewhere → delay + requeue, never bounce),
+ * run the turn, then keep the Query warm — registered in sess:<id> with
+ * heartbeats — until the idle TTL closes it. Losing the lock mid-turn or an
+ * abort publish aborts the agent. SIGTERM drains: stop claiming, finish
+ * in-flight turns within the grace, deregister everything, exit.
+ */
+import { hostname } from "node:os";
+import { randomBytes } from "node:crypto";
+import { Worker, DelayedError, type Job } from "bullmq";
+import type { Redis } from "ioredis";
+import { AgentManager, type AgentEvent } from "../agent/manager";
+import { createSessionMcp, SESSION_MCP_NAME } from "../agent/session-mcp";
+import { env } from "../config/env";
+import { m as metric, metrics } from "../metrics";
+import { makeKeys, nodeTurnsQueue, TURNS_QUEUE, type Keys } from "../queue/keys";
+import { createRedis, heartbeatSec as envHeartbeatSec, nodeDrainSec, redisUrl } from "../queue/redis";
+import { makeRegistry, type Registry } from "../queue/registry";
+import { makePubSub, type PubSub } from "../queue/pubsub";
+import { withSessionLock, HELD_BY_OTHER } from "../queue/locks";
+import type { TurnJob } from "../queue/turns";
+import { NodeClient } from "./client";
+import { RestSessionStore } from "./session-store";
+import { buildShimServers } from "./shims";
+import { makeNodePermissionResolver } from "./shims/permission";
+import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Fraction of a job token's lifetime already spent (0..∞; >1 = expired).
+ *  Pure payload parse — the gateway is the verifier; the node only decides
+ *  WHEN to ask for a refresh. null when the token is unparseable. */
+export function tokenAgeFraction(token: string, nowMs: number = Date.now()): number | null {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"));
+    const { iat, exp } = payload as { iat?: number; exp?: number };
+    if (typeof iat !== "number" || typeof exp !== "number" || exp <= iat) return null;
+    return (nowMs / 1000 - iat) / (exp - iat);
+  } catch {
+    return null;
+  }
+}
+
+export interface NodeWorkerOpts {
+  /** Default: `<hostname>-<rand>` (spec §6). */
+  nodeId?: string;
+  client?: NodeClient;
+  redisUrl?: string;
+  keys?: Keys;
+  concurrency?: number;
+  /** Injectable agent (tests use a stub). Default: a fresh AgentManager. */
+  agent?: AgentManager;
+  heartbeatSec?: number;
+  nodeTtlSec?: number;
+  drainSec?: number;
+  /** /healthz + /metrics port. Default env SLAUDE_NODE_PORT (where 0 also
+   *  disables); explicit null = no server; explicit 0 = ephemeral (tests). */
+  port?: number | null;
+  /** How long a BullMQ worker error keeps /healthz unhealthy. Default 30s. */
+  errorWindowMs?: number;
+  /** Session-lock knobs (tests shrink them). */
+  lock?: { ttlMs?: number; extendEveryMs?: number };
+  /** Hard turn deadline in ms. Default: the job-token TTL (max turn duration). */
+  turnTimeoutMs?: number;
+  /** BullMQ Worker tuning (tests shrink stall detection to simulate a killed
+   *  node whose claimed job must be recovered by a surviving worker). */
+  bull?: { lockDuration?: number; stalledInterval?: number; maxStalledCount?: number };
+  /** TEST SEAM: awaited right after the turn-done marker is written and
+   *  before the processor returns (i.e. before any BullMQ ack) — the window
+   *  a kill-after-reply zombie test needs to die in. */
+  hooks?: { afterTurn?: (jobId: string, outcome: "done" | "error") => void | Promise<void> };
+}
+
+/** How long a turn-done marker outlives its job (covers Slack's retry window
+ *  and any realistic BullMQ stall-recovery delay by a wide margin). */
+const TURN_DONE_TTL_SEC = 3600;
+
+export type NodeWorkerState = "starting" | "ready" | "draining" | "stopped";
+
+export interface NodeWorkerHandle {
+  nodeId: string;
+  agent: AgentManager;
+  store: RestSessionStore;
+  /** Sessions this node currently holds warm. */
+  warmSessions(): string[];
+  /** Lifecycle state driving /healthz and /readyz. */
+  state(): NodeWorkerState;
+  /** Port the /healthz+/metrics server bound, or null when disabled. */
+  httpPort(): number | null;
+  /** Graceful drain + full shutdown. */
+  stop(opts?: { drainSec?: number }): Promise<void>;
+  /** SIGKILL emulation (tests): sever every Redis connection abruptly — no
+   *  drain, no deregistration, in-flight turns orphaned. Registry keys and
+   *  session locks are left to expire by TTL, BullMQ job locks stop renewing
+   *  so a surviving worker's stalled checker recovers the claim — exactly the
+   *  failure surface a killed pod leaves behind (spec §6 failure matrix). */
+  kill(): void;
+  /** TEST SEAM: the command Redis connection (break it to probe /healthz). */
+  __cmd: Redis;
+}
+
+export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWorkerHandle> {
+  const nodeId = opts.nodeId ?? `${hostname()}-${randomBytes(3).toString("hex")}`;
+  const keys = opts.keys ?? makeKeys();
+  const url = opts.redisUrl ?? redisUrl();
+  const client = opts.client ?? new NodeClient({ baseUrl: env.gatewayUrl(), token: env.nodeToken() });
+  const concurrency = opts.concurrency ?? env.nodeConcurrency();
+  const hbSec = opts.heartbeatSec ?? envHeartbeatSec();
+  const drainSecDefault = opts.drainSec ?? nodeDrainSec();
+  const turnTimeoutMs = opts.turnTimeoutMs ?? JOB_TOKEN_TTL_SEC * 1000;
+  const errorWindowMs = opts.errorWindowMs ?? 30_000;
+
+  // Lifecycle driving the health endpoints: starting → ready (workers
+  // subscribed) → draining (SIGTERM) → stopped. Probes must pull a draining
+  // node out of rotation, and a node whose queue/Redis plumbing is erroring
+  // must not claim to be healthy.
+  let state: NodeWorkerState = "starting";
+  let lastWorkerError: { at: number; message: string } | null = null;
+
+  // Connections: one command conn (registry/locks/streams), one subscriber,
+  // one per BullMQ worker (blocking claims must never share).
+  const cmd: Redis = createRedis(url);
+  const sub: Redis = createRedis(url);
+  const registry: Registry = makeRegistry({ redis: cmd, keys, heartbeatSec: hbSec, nodeTtlSec: opts.nodeTtlSec });
+  const pubsub: PubSub = makePubSub({ redis: cmd, sub, keys });
+
+  const agent = opts.agent ?? new AgentManager();
+  const store = new RestSessionStore(client);
+  /** sessionId → tenant, for runtime-bundle lookups + reload busting. */
+  const tenants = new Map<string, string>();
+  /** sessionId → the current turn's abort controller (shim long-poll teardown). */
+  const turnAborts = new Map<string, AbortController>();
+  /** Sessions registered warm in the Redis registry by this node. */
+  const warm = new Set<string>();
+  /** tenantId → reload-channel unsubscribe. */
+  const reloadUnsubs = new Map<string, () => Promise<void>>();
+
+  agent.setSessionStore(store);
+  agent.setPermissionResolver(makeNodePermissionResolver({ client, tokenFor: (id) => store.tokenFor(id) }));
+  agent.setMcpResolver((sessionId) => ({
+    ...buildShimServers(sessionId, {
+      client,
+      tokenFor: (id) => store.tokenFor(id),
+      signalFor: (id) => turnAborts.get(id)?.signal,
+    }),
+    // Token budget stays node-local (spec §3): the live Query is here.
+    [SESSION_MCP_NAME]: createSessionMcp({ getSnapshot: () => agent.getTokenSnapshot(sessionId) }),
+  }));
+  agent.setChildEnvResolver(async (sessionId) => {
+    const tenant = tenants.get(sessionId);
+    const token = store.tokenFor(sessionId);
+    if (!tenant || !token) return undefined;
+    const bundle = await client.getRuntime(tenant, token);
+    const creds = bundle.providerCreds ?? {};
+    const out: Record<string, string | undefined> = {};
+    if (creds.apiKey) out.ANTHROPIC_API_KEY = creds.apiKey;
+    if (creds.baseUrl) out.ANTHROPIC_BASE_URL = creds.baseUrl;
+    if (creds.authToken) out.ANTHROPIC_AUTH_TOKEN = creds.authToken;
+    if (creds.oauthToken) out.CLAUDE_CODE_OAUTH_TOKEN = creds.oauthToken;
+    return out;
+  });
+
+  // Turn-end wait: resolved by the first done/error for the session.
+  const turnWaiters = new Map<string, (outcome: "done" | "error") => void>();
+  agent.on("event", (e: AgentEvent) => {
+    // Every AgentEvent also lands on the events:<session> stream (spec §4) so
+    // the gateway can drive Slack reactions/status and surface errors.
+    // Exact trim: at MAXLEN 1000 the cost is negligible and it removes the
+    // approximate-trim overshoot window, keeping the gateway follower's gap
+    // exposure to genuinely >1000-event bursts (which the dispatcher covers
+    // via job-completion authority anyway).
+    void pubsub.appendEvent(e.sessionId, e, { exact: true }).catch(() => {});
+    if (e.type === "done" && !e.autoEvolve) turnWaiters.get(e.sessionId)?.("done");
+    else if (e.type === "error") turnWaiters.get(e.sessionId)?.("error");
+  });
+
+  async function ensureReloadSub(tenantId: string): Promise<void> {
+    if (reloadUnsubs.has(tenantId)) return;
+    try {
+      const unsub = await pubsub.onReload(tenantId, () => client.bustRuntime(tenantId));
+      reloadUnsubs.set(tenantId, unsub);
+    } catch (e) {
+      console.error(`[node] reload subscribe failed tenant=${tenantId}:`, e);
+    }
+  }
+
+  async function runTurn(job: Job, data: TurnJob): Promise<"done" | "error" | "skipped"> {
+    const sessionId = data.sessionId;
+    const ac = new AbortController();
+    turnAborts.set(sessionId, ac);
+    const abortAgent = () => {
+      // Servicing the abort NOW — also consume the durable flag publishAbort
+      // set alongside the publish, or it would linger and silently skip the
+      // session's NEXT turn at claim time.
+      void pubsub.consumeAbortFlag(sessionId).catch(() => {});
+      ac.abort();
+      agent.abort(sessionId);
+    };
+    const unsubAbort = await pubsub.onAbort(sessionId, abortAgent);
+    try {
+      // One prompt per job: coalesced messages arrive as one turn (spec §2).
+      const text = data.messages.map((m) => m.text).join("\n\n");
+      const suppress = data.messages.length > 0 && data.messages.every((m) => (m as any).suppress === true);
+      if (suppress) agent.suppressNextTurn(sessionId);
+
+      const outcome = await new Promise<"done" | "error">((resolve, reject) => {
+        const timer = setTimeout(() => {
+          console.error(`[node] turn timeout session=${sessionId} — aborting`);
+          abortAgent();
+        }, turnTimeoutMs);
+        timer.unref?.();
+        turnWaiters.set(sessionId, (o) => {
+          clearTimeout(timer);
+          turnWaiters.delete(sessionId);
+          resolve(o);
+        });
+        agent.sendMessage(sessionId, text).catch((e) => {
+          clearTimeout(timer);
+          turnWaiters.delete(sessionId);
+          reject(e);
+        });
+      });
+      // Completion marker BEFORE any ack (processor return / /v1 ack): if
+      // this node dies in the ack window, the BullMQ retry finds the marker
+      // and completes the job without re-running the turn — the model ran
+      // and its Slack posts are already out. Residual at-least-once window:
+      // dying between the turn's last Slack post and this write still
+      // replays the turn on retry (docs-new/deployment/multi-node.md).
+      try {
+        await cmd.set(keys.turnDone(String(job.id)), outcome, "EX", TURN_DONE_TTL_SEC, "NX");
+      } catch (e) {
+        console.error(`[node] turn-done marker write failed job=${job.id}:`, e);
+      }
+      if (opts.hooks?.afterTurn) await opts.hooks.afterTurn(String(job.id), outcome);
+      return outcome;
+    } finally {
+      turnAborts.delete(sessionId);
+      await unsubAbort().catch(() => {});
+      // Warm registry: the Query outlives the turn under the idle TTL.
+      try {
+        if (agent.isLive(sessionId)) {
+          await registry.register(sessionId, nodeId);
+          warm.add(sessionId);
+        } else if (warm.delete(sessionId)) {
+          await registry.unregister(sessionId);
+        }
+      } catch (e) {
+        console.error(`[node] registry update failed session=${sessionId}:`, e);
+      }
+    }
+  }
+
+  const processor = async (job: Job, token?: string): Promise<unknown> => {
+    const data = job.data as TurnJob;
+    const claimLatencySec = Math.max(0, (Date.now() - (data.enqueuedAt || job.timestamp)) / 1000);
+    metric.nodeClaimLatency.observe(claimLatencySec);
+    // Turn-done marker: a prior attempt of THIS job already ran its agent
+    // turn but died before BullMQ acked (kill-after-reply zombie). Re-running
+    // would double-post to Slack — complete the job instead. Checked
+    // unconditionally, not on attemptsMade: stall recovery re-delivers with
+    // attemptsMade still 0, and a first attempt can never see its own marker.
+    try {
+      if (await cmd.exists(keys.turnDone(String(job.id)))) {
+        metric.nodeTurnsTotal.inc({ result: "deduped" });
+        void client.ackJob(String(job.id), { sessionId: data.sessionId, result: "done" });
+        return { skipped: "turn-done" };
+      }
+    } catch {
+      // Marker unreadable — proceed with the turn (at-least-once).
+    }
+    // Durable abort flag: /abort published before any node claimed the job.
+    if (await pubsub.consumeAbortFlag(data.sessionId)) {
+      metric.nodeTurnsTotal.inc({ result: "skipped" });
+      return { skipped: "abort-flag" };
+    }
+    // Refresh an aging token at claim: minted at ENQUEUE, but the turn's
+    // deadline starts NOW — a job that sat in the queue would otherwise run
+    // on a mostly-spent (or expired, within the refresh grace) token.
+    let jobToken = data.jobToken;
+    const age = tokenAgeFraction(jobToken);
+    if (age !== null && age > 0.2) {
+      try {
+        jobToken = await client.refreshJobToken(String(job.id), jobToken);
+      } catch (e) {
+        console.warn(`[node] token refresh failed job=${job.id} (continuing with the original):`, e);
+      }
+    }
+    store.bindToken(data.sessionId, jobToken);
+    tenants.set(data.sessionId, data.tenantId);
+    // Subscribe reload:<tenant> BEFORE any runtime-bundle fetch for this
+    // tenant can happen (the child-env resolver during ensureSession) — a
+    // reload published between fetch and a lazy subscribe would leave a
+    // stale cache with nothing to bust it.
+    await ensureReloadSub(data.tenantId);
+
+    const started = Date.now();
+    const res = await withSessionLock(
+      data.sessionId,
+      nodeId,
+      async (lostLock) => {
+        // Lost the lock (TTL lapsed / another holder): stop touching the
+        // session immediately — another node may already be running it.
+        const onLost = () => {
+          console.error(`[node] session lock lost session=${data.sessionId} — aborting turn`);
+          turnAborts.get(data.sessionId)?.abort();
+          agent.abort(data.sessionId);
+        };
+        lostLock.addEventListener("abort", onLost, { once: true });
+        try {
+          return await runTurn(job, data);
+        } finally {
+          lostLock.removeEventListener("abort", onLost);
+        }
+      },
+      { redis: cmd, keys, ...opts.lock },
+    );
+
+    if (res === HELD_BY_OTHER) {
+      // Another node is mid-turn on this session — requeue with a short
+      // delay (spec §2 serialization); never bounce or fail the job.
+      metric.nodeTurnsTotal.inc({ result: "requeued" });
+      await job.moveToDelayed(Date.now() + 500, token);
+      throw new DelayedError();
+    }
+
+    metric.nodeTurnDuration.observe((Date.now() - started) / 1000);
+    metric.nodeTurnsTotal.inc({ result: res });
+    if (res === "error") void client.failJob(String(job.id), { sessionId: data.sessionId });
+    else void client.ackJob(String(job.id), { sessionId: data.sessionId, result: res });
+    return { result: res };
+  };
+
+  // Announce liveness BEFORE claiming anything.
+  await registry.nodeUp(nodeId);
+
+  // Own the BullMQ connections so kill() can sever them abruptly.
+  const bullConns = [createRedis(url), createRedis(url)] as const;
+  const workers = [
+    new Worker(TURNS_QUEUE, processor, {
+      connection: bullConns[0],
+      prefix: keys.bullPrefix,
+      concurrency,
+      ...opts.bull,
+    }),
+    new Worker(nodeTurnsQueue(nodeId), processor, {
+      connection: bullConns[1],
+      prefix: keys.bullPrefix,
+      concurrency,
+      ...opts.bull,
+    }),
+  ];
+  for (const w of workers) {
+    w.on("error", (e) => {
+      lastWorkerError = { at: Date.now(), message: String((e as Error)?.message ?? e) };
+      console.error(`[node] worker error:`, e);
+    });
+  }
+  // Ready once both BullMQ workers have actually subscribed to their queues.
+  void Promise.all(workers.map((w) => w.waitUntilReady()))
+    .then(() => {
+      if (state === "starting") state = "ready";
+    })
+    .catch((e) => console.error(`[node] workers failed to become ready:`, e));
+
+  // Heartbeats: node liveness + every warm session; drop registry entries for
+  // sessions whose Query the idle TTL closed.
+  const hbTimer = setInterval(() => {
+    void (async () => {
+      try {
+        await registry.beatNode(nodeId);
+        metric.nodeSessionsLive.set(agent.liveCount());
+        for (const sessionId of [...warm]) {
+          if (agent.isLive(sessionId)) {
+            if (!(await registry.heartbeat(sessionId))) await registry.register(sessionId, nodeId);
+          } else {
+            warm.delete(sessionId);
+            store.unbindToken(sessionId);
+            tenants.delete(sessionId);
+            await registry.unregister(sessionId);
+          }
+        }
+      } catch (e) {
+        console.error(`[node] heartbeat failed:`, e);
+      }
+    })();
+  }, hbSec * 1000);
+  hbTimer.unref?.();
+
+  // /healthz + /readyz + /metrics (spec §6). Both probes gate on the worker
+  // lifecycle: a draining node must drop out of rotation, and a node whose
+  // BullMQ/Redis plumbing is broken must not report healthy.
+  const workersRunning = () => workers.every((w) => w.isRunning());
+  const redisReady = () => cmd.status === "ready";
+  const recentWorkerError = () => lastWorkerError !== null && Date.now() - lastWorkerError.at < errorWindowMs;
+  const healthBody = () => ({
+    node_id: nodeId,
+    state,
+    sessions_live: agent.liveCount(),
+    redis: cmd.status,
+    workers_running: workersRunning(),
+    ...(lastWorkerError ? { last_worker_error: lastWorkerError } : {}),
+  });
+  const port = opts.port === undefined ? (env.nodePort() || null) : opts.port;
+  const http =
+    port === null
+      ? null
+      : Bun.serve({
+          port,
+          idleTimeout: 0,
+          fetch: async (req) => {
+            const path = new URL(req.url).pathname;
+            if (path === "/healthz") {
+              const healthy = state === "ready" && redisReady() && workersRunning() && !recentWorkerError();
+              return Response.json(
+                { status: healthy ? "ok" : state === "draining" || state === "stopped" ? "draining" : "unhealthy", ...healthBody() },
+                { status: healthy ? 200 : 503 },
+              );
+            }
+            if (path === "/readyz") {
+              // Active check: workers subscribed AND Redis answers a PING now.
+              if (state !== "ready" || !workersRunning()) {
+                return Response.json({ status: "unready", ...healthBody() }, { status: 503 });
+              }
+              try {
+                await cmd.ping();
+              } catch (e) {
+                return Response.json(
+                  { status: "unready", ping_error: String((e as Error)?.message ?? e), ...healthBody() },
+                  { status: 503 },
+                );
+              }
+              return Response.json({ status: "ready", ...healthBody() });
+            }
+            if (path === "/metrics") {
+              return new Response(metrics.render(), {
+                status: 200,
+                headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" },
+              });
+            }
+            return new Response("not found", { status: 404 });
+          },
+        });
+  if (http) console.log(`[node] ${nodeId} healthz/metrics on :${http.port}`);
+
+  let stopped = false;
+  async function stop(o: { drainSec?: number } = {}): Promise<void> {
+    if (stopped) return;
+    stopped = true;
+    state = "draining";
+    const grace = (o.drainSec ?? drainSecDefault) * 1000;
+    console.log(`[node] ${nodeId} draining (grace ${grace}ms)`);
+    clearInterval(hbTimer);
+    // Stop claiming; wait for in-flight turns up to the grace, then force.
+    const closing = Promise.all(workers.map((w) => w.close()));
+    const timedOut = await Promise.race([closing.then(() => false), sleep(grace).then(() => true)]);
+    if (timedOut) {
+      console.error(`[node] ${nodeId} drain grace expired — force-closing`);
+      await Promise.all(workers.map((w) => w.close(true))).catch(() => {});
+    }
+    // Deregister every warm session + the node itself (spec §2 SIGTERM).
+    for (const sessionId of [...warm]) {
+      warm.delete(sessionId);
+      await registry.unregister(sessionId).catch(() => {});
+    }
+    await registry.nodeDown(nodeId).catch(() => {});
+    for (const unsub of reloadUnsubs.values()) await unsub().catch(() => {});
+    reloadUnsubs.clear();
+    await pubsub.close().catch(() => {});
+    http?.stop(true);
+    for (const c of [cmd, sub]) {
+      try {
+        await c.quit();
+      } catch {
+        c.disconnect();
+      }
+    }
+    state = "stopped";
+    console.log(`[node] ${nodeId} stopped`);
+  }
+
+  function kill(): void {
+    if (stopped) return;
+    stopped = true;
+    console.log(`[node] ${nodeId} KILLED (no drain)`);
+    clearInterval(hbTimer);
+    http?.stop(true);
+    // Best-effort quiet-down of the claim loops; deliberately NOT awaited — a
+    // force-close with an in-flight job can wait on it, and a real SIGKILL
+    // waits for nothing.
+    for (const w of workers) void w.close(true).catch(() => {});
+    // Sever every connection: BullMQ job-lock renewal, the session-lock
+    // extender and heartbeats all start failing NOW, like a dead process.
+    for (const c of [...bullConns, cmd, sub]) c.disconnect(false);
+  }
+
+  console.log(`[node] ${nodeId} up — queues: ${TURNS_QUEUE}, ${nodeTurnsQueue(nodeId)} (concurrency ${concurrency})`);
+  return {
+    nodeId,
+    agent,
+    store,
+    warmSessions: () => [...warm],
+    state: () => state,
+    httpPort: () => http?.port ?? null,
+    stop,
+    kill,
+    __cmd: cmd,
+  };
+}

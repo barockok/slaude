@@ -31,8 +31,70 @@ function opt(name: string, fallback = ""): string {
 
 export const env = {
   slack: {
+    /**
+     * Slack ingress mode (spec §5 / milestone M3):
+     *   socket (default) — Bolt Socket Mode, single app from SLACK_BOT_TOKEN.
+     *   http             — Events API receiver on SLAUDE_HTTP_PORT, apps
+     *                      resolved per-request from the Postgres slack_apps
+     *                      registry (requires SLAUDE_DB=pg + SLAUDE_MASTER_KEY).
+     */
+    mode: (): "socket" | "http" => {
+      const raw = opt("SLAUDE_SLACK_MODE", "socket").trim().toLowerCase();
+      if (raw !== "socket" && raw !== "http") {
+        throw new Error(`SLAUDE_SLACK_MODE must be 'socket' or 'http' (got '${raw}')`);
+      }
+      return raw;
+    },
+    /**
+     * Listen port for the HTTP Slack transport (default 8080). In http mode
+     * this single port also serves /healthz, /readyz and /metrics — the
+     * standalone SLAUDE_HEALTH_PORT server is not started.
+     */
+    httpPort: (): number => {
+      const raw = opt("SLAUDE_HTTP_PORT", "8080");
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 0 || n > 65535) {
+        throw new Error(`SLAUDE_HTTP_PORT must be a port number (got '${raw}')`);
+      }
+      return n;
+    },
+    /**
+     * Max accepted request-body size on /slack/* (bytes, default 1_000_000).
+     * Oversize requests are refused with 413 before signature verification.
+     * Slack event payloads are far below 1MB; raise only if a custom proxy
+     * inflates envelopes.
+     */
+    httpMaxBodyBytes: (): number => {
+      const raw = opt("SLAUDE_HTTP_MAX_BODY_BYTES", "1000000");
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1) {
+        throw new Error(`SLAUDE_HTTP_MAX_BODY_BYTES must be a positive integer (got '${raw}')`);
+      }
+      return n;
+    },
     botToken: () => req("SLACK_BOT_TOKEN"),
     appToken: () => req("SLACK_APP_TOKEN"),
+    /**
+     * OAuth install flow (spec §5 model B, one app installed to many
+     * workspaces). Setting SLACK_CLIENT_ID enables GET /slack/oauth/start +
+     * /slack/oauth/callback on the HTTP transport; unset, both 404. The
+     * client secret signs the `state` token (shared across gateway replicas,
+     * so a state minted on one replica verifies on another) and authenticates
+     * the oauth.v2.access code exchange.
+     */
+    clientId: () => opt("SLACK_CLIENT_ID").trim(),
+    clientSecret: () => opt("SLACK_CLIENT_SECRET").trim(),
+    /** App-level signing secret stored on each OAuth-installed slack_apps row
+     *  (oauth.v2.access does not return it — it is app config, identical for
+     *  every workspace the app is installed to). */
+    signingSecret: () => opt("SLACK_SIGNING_SECRET").trim(),
+    /** Fixed redirect_uri registered on the Slack app. Empty → Slack uses the
+     *  app's sole configured redirect URL (and no redirect_uri param is sent). */
+    oauthRedirectUrl: () => opt("SLACK_OAUTH_REDIRECT_URL").trim(),
+    /** Dedicated HMAC secret for the OAuth install `state` (must be identical
+     *  on every gateway replica). Empty → the flow falls back to
+     *  SLACK_CLIENT_SECRET with a one-line warning. */
+    oauthStateSecret: () => opt("SLAUDE_OAUTH_STATE_SECRET").trim(),
     /**
      * Optional user token (xoxp). Historically used only for presence
      * (`users.profile.set`). Also the token used for post-as-user when
@@ -76,6 +138,68 @@ export const env = {
    *                            anthropic-beta: oauth-2025-04-20 header, and the
    *                            SDK child inherits the token for subscription auth.
    */
+  db: {
+    /** Bun.sql connection pool size for SLAUDE_DB=pg (default 10). */
+    pgPool: () => {
+      const raw = opt("SLAUDE_PG_POOL", "10");
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1) {
+        throw new Error(`SLAUDE_PG_POOL must be a positive integer (got '${raw}')`);
+      }
+      return n;
+    },
+    /** Seconds a booting replica waits for the migration advisory lock.
+     *  0 (default) = wait forever; > 0 fails the boot loudly on expiry. */
+    migrateLockTimeoutSec: () => {
+      const raw = opt("SLAUDE_MIGRATE_LOCK_TIMEOUT_SEC", "0");
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 0) {
+        throw new Error(`SLAUDE_MIGRATE_LOCK_TIMEOUT_SEC must be a non-negative integer (got '${raw}')`);
+      }
+      return n;
+    },
+  },
+
+  /**
+   * Process role for the horizontal-scale split (spec §7):
+   *   mono    (default) — today's single-process behavior; mounts /v1 for parity
+   *   gateway — Slack ingress + control plane; mounts /v1 for nodes
+   *   node    — queue worker; never mounts /v1 (it *calls* /v1)
+   * Unknown values fall back to mono so existing deploys are unchanged.
+   */
+  role: (): "mono" | "gateway" | "node" => {
+    const raw = opt("SLAUDE_ROLE", "mono").trim().toLowerCase();
+    return raw === "gateway" || raw === "node" ? raw : "mono";
+  },
+  /** Static shared secret nodes present as `Authorization: Bearer <token>` on
+   *  every /v1 request. Empty (default) = /v1 auth refuses all requests, so a
+   *  mono deploy without the var exposes nothing. Rotate via env. */
+  nodeToken: () => opt("SLAUDE_NODE_TOKEN"),
+  /** HS256 secret for the short-lived per-job JWT (`X-Slaude-Job`) minted by
+   *  the gateway enqueue path and verified on tool-plane + session endpoints.
+   *  Empty (default) = job tokens can be neither minted nor verified. */
+  jobSecret: () => opt("SLAUDE_JOB_SECRET"),
+  /** Gateway base URL a node worker calls for /v1 (spec §6). */
+  gatewayUrl: () => opt("SLAUDE_GATEWAY_URL", "http://localhost:8080"),
+  /** Node /healthz + /metrics port (spec §6). Default 8081; 0 disables. */
+  nodePort: (): number => {
+    const raw = opt("SLAUDE_NODE_PORT", "8081");
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0 || n > 65535) {
+      throw new Error(`SLAUDE_NODE_PORT must be a port number (got '${raw}')`);
+    }
+    return n;
+  },
+  /** BullMQ worker concurrency per node process (spec §6). Default 8. */
+  nodeConcurrency: (): number => {
+    const raw = opt("SLAUDE_NODE_CONCURRENCY", "8");
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 1) {
+      throw new Error(`SLAUDE_NODE_CONCURRENCY must be a positive integer (got '${raw}')`);
+    }
+    return n;
+  },
+
   provider: {
     apiKey: () => opt("ANTHROPIC_API_KEY"),
     baseUrl: () => opt("ANTHROPIC_BASE_URL"),

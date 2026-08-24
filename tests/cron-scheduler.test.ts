@@ -5,13 +5,13 @@ import { parseCron, getNextRun } from "../src/gateway/slack/cron-parser";
 import { CronScheduler } from "../src/gateway/slack/cron-scheduler";
 
 describe("cron-jobs DB", () => {
-  beforeEach(() => {
-    db.run("DELETE FROM cron_jobs");
+  beforeEach(async () => {
+    await db.run("DELETE FROM cron_jobs");
   });
 
-  test("creates and finds due job", () => {
+  test("creates and finds due job", async () => {
     const now = Date.now();
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       channelId: "C123",
       createdBy: "U999",
       cronExpr: "0 9 * * *",
@@ -19,26 +19,26 @@ describe("cron-jobs DB", () => {
       nextRunAt: now - 1000,
     });
     expect(job.id).toBeTruthy();
-    const due = CronJobs.findDue(now);
+    const due = await CronJobs.findDue(now);
     expect(due.length).toBe(1);
     expect(due[0]!.prompt).toBe("summarize");
   });
 
-  test("does not find future job", () => {
+  test("does not find future job", async () => {
     const now = Date.now();
-    CronJobs.create({
+    await CronJobs.create({
       channelId: "C123",
       createdBy: "U999",
       cronExpr: "0 9 * * *",
       prompt: "summarize",
       nextRunAt: now + 600_000,
     });
-    expect(CronJobs.findDue(now).length).toBe(0);
+    expect((await CronJobs.findDue(now)).length).toBe(0);
   });
 
-  test("updates next run", () => {
+  test("updates next run", async () => {
     const now = Date.now();
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       channelId: "C123",
       createdBy: "U999",
       cronExpr: "0 9 * * *",
@@ -46,123 +46,123 @@ describe("cron-jobs DB", () => {
       nextRunAt: now - 1000,
     });
     const next = now + 24 * 60 * 60 * 1000;
-    CronJobs.updateNextRun(job.id, next, "done");
-    const updated = CronJobs.findById(job.id);
+    await CronJobs.updateNextRun(job.id, next, "done");
+    const updated = await CronJobs.findById(job.id);
     expect(updated?.nextRunAt).toBe(next);
     expect(updated?.lastResult).toBe("done");
   });
 
-  test("deactivates job", () => {
-    const job = CronJobs.create({
+  test("deactivates job", async () => {
+    const job = await CronJobs.create({
       channelId: "C123",
       createdBy: "U999",
       cronExpr: "0 9 * * *",
       prompt: "summarize",
       nextRunAt: Date.now(),
     });
-    CronJobs.deactivate(job.id);
-    expect(CronJobs.findDue(Date.now()).length).toBe(0);
+    await CronJobs.deactivate(job.id);
+    expect((await CronJobs.findDue(Date.now())).length).toBe(0);
   });
 
-  test("lists active jobs", () => {
-    CronJobs.create({ channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now() });
-    CronJobs.create({ channelId: "C2", createdBy: "U2", cronExpr: "0 * * * *", prompt: "b", nextRunAt: Date.now() });
-    expect(CronJobs.listActive().length).toBe(2);
+  test("lists active jobs", async () => {
+    await CronJobs.create({ channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now() });
+    await CronJobs.create({ channelId: "C2", createdBy: "U2", cronExpr: "0 * * * *", prompt: "b", nextRunAt: Date.now() });
+    expect((await CronJobs.listActive()).length).toBe(2);
   });
 
-  test("findByPrefix returns job for 8-char prefix", () => {
-    const job = CronJobs.create({ channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now() });
-    const found = CronJobs.findByPrefix(job.id.slice(0, 8));
+  test("findByPrefix returns job for 8-char prefix", async () => {
+    const job = await CronJobs.create({ channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now() });
+    const found = await CronJobs.findByPrefix(job.id.slice(0, 8));
     expect(found?.id).toBe(job.id);
   });
 
-  test("findByPrefix falls back to exact match for non-8-char", () => {
-    const job = CronJobs.create({ channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now() });
-    const found = CronJobs.findByPrefix(job.id);
+  test("findByPrefix falls back to exact match for non-8-char", async () => {
+    const job = await CronJobs.create({ channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now() });
+    const found = await CronJobs.findByPrefix(job.id);
     expect(found?.id).toBe(job.id);
   });
 
-  test("findByPrefix returns null when no match", () => {
-    CronJobs.create({ channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now() });
-    expect(CronJobs.findByPrefix("zzzzzzzz")).toBeNull();
+  test("findByPrefix returns null when no match", async () => {
+    await CronJobs.create({ channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now() });
+    expect(await CronJobs.findByPrefix("zzzzzzzz")).toBeNull();
   });
 
-  test("defaults target to thread", () => {
-    const job = CronJobs.create({
+  test("defaults target to thread", async () => {
+    const job = await CronJobs.create({
       channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now(),
     });
     expect(job.target).toBe("thread");
   });
 
-  test("persists channel target", () => {
-    const job = CronJobs.create({
+  test("persists channel target", async () => {
+    const job = await CronJobs.create({
       channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now(),
       target: "channel",
     });
     expect(job.target).toBe("channel");
-    expect(CronJobs.findById(job.id)!.target).toBe("channel");
+    expect((await CronJobs.findById(job.id))!.target).toBe("channel");
   });
 
-  test("defaults whenActive to fire", () => {
-    const job = CronJobs.create({
+  test("defaults whenActive to fire", async () => {
+    const job = await CronJobs.create({
       channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now(),
     });
     expect(job.whenActive).toBe("fire");
   });
 
-  test("persists whenActive skip", () => {
-    const job = CronJobs.create({
+  test("persists whenActive skip", async () => {
+    const job = await CronJobs.create({
       channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now(),
       whenActive: "skip",
     });
     expect(job.whenActive).toBe("skip");
-    expect(CronJobs.findById(job.id)!.whenActive).toBe("skip");
+    expect((await CronJobs.findById(job.id))!.whenActive).toBe("skip");
   });
 
-  test("pause hides due scheduled job until resume", () => {
+  test("pause hides due scheduled job until resume", async () => {
     const now = Date.now();
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: now - 1000,
     });
-    CronJobs.pause(job.id);
-    expect(CronJobs.findById(job.id)!.paused).toBe(1);
-    expect(CronJobs.findDue(now)).toHaveLength(0);
-    CronJobs.resume(job.id, now + 60_000);
-    const resumed = CronJobs.findById(job.id)!;
+    await CronJobs.pause(job.id);
+    expect((await CronJobs.findById(job.id))!.paused).toBe(1);
+    expect(await CronJobs.findDue(now)).toHaveLength(0);
+    await CronJobs.resume(job.id, now + 60_000);
+    const resumed = (await CronJobs.findById(job.id))!;
     expect(resumed.paused).toBe(0);
     expect(resumed.nextRunAt).toBe(now + 60_000);
   });
 
-  test("defaults oauthUser to null", () => {
-    const job = CronJobs.create({
+  test("defaults oauthUser to null", async () => {
+    const job = await CronJobs.create({
       channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now(),
     });
     expect(job.oauthUser).toBeNull();
-    expect(CronJobs.findById(job.id)!.oauthUser).toBeNull();
+    expect((await CronJobs.findById(job.id))!.oauthUser).toBeNull();
   });
 
-  test("persists oauthUser (1on1 lock owner)", () => {
-    const job = CronJobs.create({
+  test("persists oauthUser (1on1 lock owner)", async () => {
+    const job = await CronJobs.create({
       channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: Date.now(),
       oauthUser: "Uowner",
     });
     expect(job.oauthUser).toBe("Uowner");
-    expect(CronJobs.findById(job.id)!.oauthUser).toBe("Uowner");
+    expect((await CronJobs.findById(job.id))!.oauthUser).toBe("Uowner");
   });
 
-  test("updates editable cron fields", () => {
+  test("updates editable cron fields", async () => {
     const now = Date.now();
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       channelId: "C1", createdBy: "U1", cronExpr: "0 * * * *", prompt: "a", nextRunAt: now,
     });
-    CronJobs.update(job.id, {
+    await CronJobs.update(job.id, {
       cronExpr: "30 9 * * 1",
       prompt: "weekly",
       nextRunAt: now + 60_000,
       target: "channel",
       whenActive: "skip",
     });
-    const updated = CronJobs.findById(job.id)!;
+    const updated = (await CronJobs.findById(job.id))!;
     expect(updated.cronExpr).toBe("30 9 * * 1");
     expect(updated.prompt).toBe("weekly");
     expect(updated.nextRunAt).toBe(now + 60_000);
@@ -174,10 +174,10 @@ describe("cron-jobs DB", () => {
 describe("CronScheduler", () => {
   // Isolate from other test files: a due job left in the shared DB would be picked up
   // by any later gateway construction and fire a stray cron run. Clean before & after.
-  beforeEach(() => db.run("DELETE FROM cron_jobs"));
-  afterEach(() => db.run("DELETE FROM cron_jobs"));
+  beforeEach(async () => { await db.run("DELETE FROM cron_jobs"); });
+  afterEach(async () => { await db.run("DELETE FROM cron_jobs"); });
 
-  test("starts and stops without error", () => {
+  test("starts and stops without error", async () => {
     const scheduler = new CronScheduler({
       agent: { ensureSession: () => ({ id: "test" }), sendMessage: async () => {}, isLive: () => false, on: () => {}, off: () => {} } as any,
       client: { chat: { postMessage: async () => ({}) } } as any,
@@ -191,7 +191,7 @@ describe("CronScheduler", () => {
 
   test("tick no-op when no due jobs", async () => {
     const now = Date.now();
-    CronJobs.create({
+    await CronJobs.create({
       channelId: "C123",
       createdBy: "U999",
       cronExpr: "0 9 * * *",
@@ -211,7 +211,7 @@ describe("CronScheduler", () => {
 
   test("tick skips legacy job without Slack keys", async () => {
     const now = Date.now();
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       channelId: "C123",
       createdBy: "U999",
       cronExpr: "0 9 * * *",
@@ -227,13 +227,13 @@ describe("CronScheduler", () => {
     await new Promise((r) => setTimeout(r, 20));
     scheduler.stop();
     expect(sendMessage).toHaveBeenCalledTimes(0);
-    const updated = CronJobs.findById(job.id);
+    const updated = await CronJobs.findById(job.id);
     expect(updated!.lastResult).toMatch(/^error: missing Slack keys/);
   });
 
   test("tick skips a passive job (when_active=skip) when the session is live", async () => {
     const now = Date.now();
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       slackTeamId: "T1",
       slackChannelId: "C123",
       channelId: "C123",
@@ -252,12 +252,12 @@ describe("CronScheduler", () => {
     await new Promise((r) => setTimeout(r, 20));
     scheduler.stop();
     expect(sendMessage).toHaveBeenCalledTimes(0);
-    expect(CronJobs.findById(job.id)!.lastResult).toBe("skipped: session live");
+    expect((await CronJobs.findById(job.id))!.lastResult).toBe("skipped: session live");
   });
 
   test("tick fires even when the session is live (cron runs by default)", async () => {
     const now = Date.now();
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       slackTeamId: "T1",
       slackChannelId: "C123",
       channelId: "C123",
@@ -276,13 +276,13 @@ describe("CronScheduler", () => {
     scheduler.stop();
     // A live session no longer suppresses the cron — it dispatches regardless.
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    const updated = CronJobs.findById(job.id);
+    const updated = await CronJobs.findById(job.id);
     expect(updated!.lastResult).not.toBe("skipped: session live");
   });
 
   test("tick does not execute paused scheduled job", async () => {
     const now = Date.now();
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       slackTeamId: "T1",
       slackChannelId: "C123",
       channelId: "C123",
@@ -291,7 +291,7 @@ describe("CronScheduler", () => {
       prompt: "paused",
       nextRunAt: now - 1000,
     });
-    CronJobs.pause(job.id);
+    await CronJobs.pause(job.id);
     const sendMessage = mock(async () => {});
     const scheduler = new CronScheduler({
       agent: { ensureSession: () => ({ id: "sess-1" }), sendMessage, isLive: () => false, on: () => {}, off: () => {} } as any,
@@ -305,7 +305,7 @@ describe("CronScheduler", () => {
 
   test("tick executes due job with Slack keys and waits for done event", async () => {
     const now = Date.now();
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       slackTeamId: "T1",
       slackChannelId: "C123",
       channelId: "C123",
@@ -334,18 +334,19 @@ describe("CronScheduler", () => {
     scheduler.stop();
     expect(sendMessage).toHaveBeenCalledTimes(1);
     // next_run not yet updated — waiting for done event
-    const mid = CronJobs.findById(job.id);
+    const mid = await CronJobs.findById(job.id);
     expect(mid!.lastResult).not.toBe("completed");
     // Simulate done event (AgentManager emits "event" payloads)
     for (const fn of eventHandlers.get("event") ?? []) fn({ type: "done", sessionId: "sess-1" });
-    const updated = CronJobs.findById(job.id);
+    await Bun.sleep(20);
+    const updated = await CronJobs.findById(job.id);
     expect(updated!.lastResult).toBe("completed");
     expect(updated!.nextRunAt).toBeGreaterThan(now);
   });
 
   test("tick handles sendMessage error immediately", async () => {
     const now = Date.now();
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       slackTeamId: "T1",
       slackChannelId: "C123",
       channelId: "C123",
@@ -367,13 +368,13 @@ describe("CronScheduler", () => {
     scheduler.start();
     await new Promise((r) => setTimeout(r, 20));
     scheduler.stop();
-    const updated = CronJobs.findById(job.id);
+    const updated = await CronJobs.findById(job.id);
     expect(updated!.lastResult).toMatch(/^error:/);
   });
 
   test("tick handles agent error event", async () => {
     const now = Date.now();
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       slackTeamId: "T1",
       slackChannelId: "C123",
       channelId: "C123",
@@ -401,14 +402,15 @@ describe("CronScheduler", () => {
     scheduler.stop();
     // Simulate error event for this session (AgentManager emits "event" payloads)
     for (const fn of eventHandlers.get("event") ?? []) fn({ type: "error", sessionId: "sess-1", error: "agent crashed" });
-    const updated = CronJobs.findById(job.id);
+    await Bun.sleep(20);
+    const updated = await CronJobs.findById(job.id);
     expect(updated!.lastResult).toMatch(/^error: agent crashed/);
   });
 
   test("channel-target job keys session on cron:id even with slackThreadTs set", async () => {
-    db.run("DELETE FROM cron_jobs");
+    await db.run("DELETE FROM cron_jobs");
     const now = Date.now();
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       slackTeamId: "T1", slackChannelId: "C123", slackThreadTs: "999.999",
       channelId: "C123", createdBy: "U999", cronExpr: "0 9 * * *",
       prompt: "digest", nextRunAt: now - 1000, target: "channel",
@@ -428,9 +430,9 @@ describe("CronScheduler", () => {
   });
 
   test("job created in a 1on1 hands the lock owner to the agent before sending", async () => {
-    db.run("DELETE FROM cron_jobs");
+    await db.run("DELETE FROM cron_jobs");
     const now = Date.now();
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       slackTeamId: "T1", slackChannelId: "C123",
       channelId: "C123", createdBy: "U999", cronExpr: "0 9 * * *",
       prompt: "digest", nextRunAt: now - 1000, target: "channel",
@@ -456,9 +458,9 @@ describe("CronScheduler", () => {
   });
 
   test("job created outside a 1on1 never sets an OAuth override", async () => {
-    db.run("DELETE FROM cron_jobs");
+    await db.run("DELETE FROM cron_jobs");
     const now = Date.now();
-    CronJobs.create({
+    await CronJobs.create({
       slackTeamId: "T1", slackChannelId: "C123",
       channelId: "C123", createdBy: "U999", cronExpr: "0 9 * * *",
       prompt: "digest", nextRunAt: now - 1000, target: "channel",
@@ -480,9 +482,9 @@ describe("CronScheduler", () => {
   });
 
   test("thread-target job keys session on slackThreadTs", async () => {
-    db.run("DELETE FROM cron_jobs");
+    await db.run("DELETE FROM cron_jobs");
     const now = Date.now();
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       slackTeamId: "T1", slackChannelId: "C123", slackThreadTs: "888.888",
       channelId: "C123", createdBy: "U999", cronExpr: "0 9 * * *",
       prompt: "watch", nextRunAt: now - 1000, target: "thread",

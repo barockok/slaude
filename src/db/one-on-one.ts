@@ -11,8 +11,8 @@ export interface OneOnOneLockRow {
 }
 
 /** Lock a thread to a single speaker. Upserts: re-locking the same thread replaces. */
-export function lock(input: { channelId: string; threadTs: string; lockedUser: string; createdBy: string }): void {
-  db.run(
+export async function lock(input: { channelId: string; threadTs: string; lockedUser: string; createdBy: string }): Promise<void> {
+  await db.run(
     `INSERT INTO one_on_one_locks (channel_id, thread_ts, locked_user, created_by, created_at, open_scope)
      VALUES (?, ?, ?, ?, ?, NULL)
      ON CONFLICT(channel_id, thread_ts)
@@ -23,30 +23,32 @@ export function lock(input: { channelId: string; threadTs: string; lockedUser: s
 }
 
 /** Open an existing lock to guests, injecting `scope` as a behavioural constraint. */
-export function setOpen(channelId: string, threadTs: string, scope: string): void {
-  db.run(
+export async function setOpen(channelId: string, threadTs: string, scope: string): Promise<void> {
+  await db.run(
     `UPDATE one_on_one_locks SET open_scope = ? WHERE channel_id = ? AND thread_ts = ?`,
     [scope, channelId, threadTs],
   );
 }
 
 /** Re-lock an open session back to initiator-only (clears open_scope). */
-export function setLocked(channelId: string, threadTs: string): void {
-  db.run(
+export async function setLocked(channelId: string, threadTs: string): Promise<void> {
+  await db.run(
     `UPDATE one_on_one_locks SET open_scope = NULL WHERE channel_id = ? AND thread_ts = ?`,
     [channelId, threadTs],
   );
 }
 
-export function unlock(channelId: string, threadTs: string): void {
-  db.run("DELETE FROM one_on_one_locks WHERE channel_id = ? AND thread_ts = ?", [channelId, threadTs]);
+export async function unlock(channelId: string, threadTs: string): Promise<void> {
+  await db.run("DELETE FROM one_on_one_locks WHERE channel_id = ? AND thread_ts = ?", [channelId, threadTs]);
 }
 
-export function find(channelId: string, threadTs: string): OneOnOneLockRow | null {
-  const row = db.query("SELECT * FROM one_on_one_locks WHERE channel_id = ? AND thread_ts = ?").get(channelId, threadTs) as any;
-  return row ? (row as OneOnOneLockRow) : null;
+export async function find(channelId: string, threadTs: string): Promise<OneOnOneLockRow | null> {
+  return db.one<OneOnOneLockRow>("SELECT * FROM one_on_one_locks WHERE channel_id = ? AND thread_ts = ?", [
+    channelId,
+    threadTs,
+  ]);
 }
 
-export function _wipeForTests(): void {
-  db.run("DELETE FROM one_on_one_locks");
+export async function _wipeForTests(): Promise<void> {
+  await db.run("DELETE FROM one_on_one_locks");
 }

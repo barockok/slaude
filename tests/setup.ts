@@ -29,3 +29,39 @@ process.env.SLAUDE_HEALTH_PORT = "0";
 process.env.SLAUDE_DEFAULT_MODE = "default";
 // Prevent leaked CLAUDE_CODE_OAUTH_TOKEN from operator shell affecting tests.
 delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+
+// Real-PG leg only: unlike the sqlite/PGLite legs (fresh store per run), the
+// test Postgres persists across runs while most tests emit deterministic
+// event ids, thread ts values and gate tokens. Durable rows from a previous
+// run then poison a rerun — seen_events claims lose (events silently
+// dedup-dropped), leftover ignores/locks swallow fixture threads, stale
+// sessions/crons leak into scheduler and engagement paths. Wipe the volatile
+// runtime tables up front, guarded to the case where the run is explicitly
+// pointed at the disposable test database (SLAUDE_PG_URL === the TEST url).
+const pgTest = process.env.SLAUDE_PG_TEST_URL;
+if (pgTest && process.env.SLAUDE_DB === "pg" && process.env.SLAUDE_PG_URL === pgTest) {
+  const { SQL } = await import("bun");
+  const sql = new SQL(pgTest);
+  // Children before parents (memory_* reference sessions). Each delete is
+  // independent: on a fresh database the tables appear only when the first
+  // test boots migrations, so missing relations are fine.
+  for (const table of [
+    "memory_turns",
+    "memory_facts",
+    "pending_gates",
+    "seen_events",
+    "ignores",
+    "cron_jobs",
+    "one_on_one_locks",
+    "mention_only_threads",
+    "soul_overrides",
+    "sessions",
+  ]) {
+    try {
+      await sql.unsafe(`DELETE FROM ${table}`);
+    } catch {
+      // Fresh database — table not created yet.
+    }
+  }
+  await sql.end();
+}

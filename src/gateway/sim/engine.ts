@@ -2,6 +2,7 @@ import { rmSync, writeFileSync } from "node:fs";
 import { createGateway, type GatewayHandle } from "../core/gateway";
 import { SimTransport, type OutboundCard } from "./transport";
 import { StubAgent } from "./stub-agent";
+import { startSimCluster, type SimCluster } from "./cluster";
 import { writeSoulFixture, WORLD, type SoulFixture } from "./soul-fixture";
 import { findLayer, resolveRole, ROLE_NAMES } from "./roles";
 import { AgentManager, type AgentEvent } from "../../agent/manager";
@@ -28,6 +29,9 @@ export class SimSession {
   /** Shared mode runs against the operator's REAL $SLAUDE_HOME — dispose must NOT touch
    *  the real SOUL.md. Set true only by #createShared. */
   #shared = false;
+  /** Multi-node mode (`--nodes N`): the turn runs on a node worker over real
+   *  Redis + the /v1 tool plane; unset → classic in-process mono sim. */
+  #cluster?: SimCluster;
   #drops: { reason: string }[] = [];
   #restoreDropInc: () => void;
 
@@ -39,8 +43,11 @@ export class SimSession {
     this.#restoreDropInc = () => { counter.inc = orig; };
   }
 
-  static async create(opts: { soul?: SoulFixture; agent: "stub" | "real"; behavior?: string; layer?: string; as?: string; soulMd?: string; mode?: "fixture" | "shared" }): Promise<SimSession> {
+  static async create(opts: { soul?: SoulFixture; agent: "stub" | "real"; behavior?: string; layer?: string; as?: string; soulMd?: string; mode?: "fixture" | "shared"; nodes?: number }): Promise<SimSession> {
     if (opts.mode === "shared") return SimSession.#createShared(opts);
+    if (opts.nodes && opts.nodes > 0 && opts.agent === "real") {
+      throw new Error("sim --nodes runs the stub agent on the node side; --real is not supported");
+    }
 
     // A fixture session is the default WORLD soul (or an override) at a chosen layer/role.
     // The three axes — layer (channel zone), role (actor), behavior (stub) — replace the old
@@ -64,6 +71,18 @@ export class SimSession {
     process.env.SLACK_BOT_TOKEN ??= "xoxb-sim";
 
     const transport = new SimTransport({ users: { U0MGR: "Manager", U0APP: "Approver", U0ALICE: "Alice", U0BOB: "Bob", U0BACKUP: "Backup" } });
+
+    // Multi-node: gateway role + N node workers over real Redis; the local
+    // agent is a pure emitter the dispatch follower re-emits node events on.
+    if (opts.nodes && opts.nodes > 0) {
+      const cluster = await startSimCluster({ nodes: opts.nodes, transport });
+      cluster.setBehavior(behavior);
+      const s = new SimSession(transport, cluster.gwAgent, cluster.handle);
+      s.#cluster = cluster;
+      s.actor = actor; s.channel = layer.channel; s.dm = layer.dm; s.behavior = behavior;
+      return s;
+    }
+
     const agent: StubAgent | AgentManager = opts.agent === "real" ? new AgentManager() : new StubAgent();
     const handle = createGateway(agent, transport);
     if (agent instanceof StubAgent) { agent.attachGateway(handle); agent.setBehavior(behavior); }
@@ -106,8 +125,25 @@ export class SimSession {
     const channel = step.channel ?? this.channel;
     const dm = step.dm ?? (step.channel ? false : this.dm);
     if (this.agent instanceof StubAgent) this.agent.setBehavior(this.behavior);
+    if (this.#cluster) this.#cluster.setBehavior(this.behavior);
     // Non-DM channels require an @mention to engage the thread (real engagement gate).
     const text = dm ? step.text : `<@${SIM_BOT}> ${step.text}`;
+
+    // Multi-node: the turn completes asynchronously on a node worker. The
+    // gateway's queue dispatch is awaited inside feedMessage, so afterwards we
+    // know whether this message became a turn (vs a slash command / gate
+    // drop). Dispatched → await the follower-re-emitted done/error (or an
+    // opened approval/permission gate), then let the gateway's async UX
+    // handlers (reactions, status, error posts) settle.
+    if (this.#cluster) {
+      const before = this.#cluster.dispatches();
+      const turn = this.#armTurn(30_000);
+      await this.transport.feedMessage({ channel, user: as, text, channel_type: dm ? "im" : "channel", team: TEAM, thread_ts: step.thread ?? this.thread });
+      if (this.#cluster.dispatches() > before) await turn.done;
+      else turn.cancel();
+      await this.#settleOutbound();
+      return;
+    }
     // `thread` pins messages to a shared thread_ts so multi-message, thread-scoped
     // behaviors (e.g. /1on1 locks) model one real Slack thread. Omitted → each send
     // is its own thread (handleMessage falls back to the message ts).
@@ -133,10 +169,27 @@ export class SimSession {
     const card = [...this.transport.outbound].reverse().find((c) => !c.resolved && c.actionIds.some((id) => id.split(":")[1] === step.action));
     if (!card) throw new Error(`no live card with action ${step.action}`);
     const actionId = card.actionIds.find((id) => id.split(":")[1] === step.action)!;
-    const turn = this.#armTurn();
+    const turn = this.#cluster ? this.#armTurn(30_000) : this.#armTurn();
     await this.transport.feedAction(actionId, as);
     await this.#drain();
     await turn.done;
+    if (this.#cluster) await this.#settleOutbound();
+  }
+
+  /** Cluster mode: after done/error the gateway's UX side effects (✅ reaction,
+   *  status updates, error posts) land asynchronously via the events follower.
+   *  Poll the outbound bus until it stops growing (two quiet 15ms checks),
+   *  bounded — an adaptive settle instead of a fixed sleep. */
+  async #settleOutbound(maxMs = 1500): Promise<void> {
+    const deadline = Date.now() + maxMs;
+    let last = this.transport.outbound.length;
+    let quiet = 0;
+    while (Date.now() < deadline && quiet < 2) {
+      await new Promise((r) => setTimeout(r, 15));
+      const n = this.transport.outbound.length;
+      if (n === last) quiet++;
+      else { quiet = 0; last = n; }
+    }
   }
 
   cards() { return this.transport.outbound; }
@@ -191,7 +244,7 @@ export class SimSession {
   // it after. Resolves on done/error, OR when a permission/approval gate opens —
   // a gate pauses the SDK turn awaiting a human click, so we hand control back to
   // the REPL to prompt inline; resolveGate() re-arms for the continuation.
-  #armTurn(): { done: Promise<void>; cancel: () => void } {
+  #armTurn(timeoutMs = 180_000): { done: Promise<void>; cancel: () => void } {
     if (this.agent instanceof StubAgent) return { done: Promise.resolve(), cancel: () => {} };
     const mgr = this.agent;
     let cleanup = () => {};
@@ -202,7 +255,7 @@ export class SimSession {
       const offCard = this.transport.onCard((c) => {
         if ((c.kind === "permission" || c.kind === "approval") && !c.resolved && c.actionIds.length > 0) { cleanup(); resolve(); }
       });
-      const timer = setTimeout(() => { cleanup(); resolve(); }, 180_000);
+      const timer = setTimeout(() => { cleanup(); resolve(); }, timeoutMs);
       cleanup = () => { clearTimeout(timer); mgr.off("event", onEvent); offCard(); };
       mgr.on("event", onEvent);
     });
@@ -214,6 +267,9 @@ export class SimSession {
 
   async dispose(): Promise<void> {
     this.#restoreDropInc();
+    // Cluster first: node workers drain + the /v1 server and Redis prefix are
+    // torn down before the gateway handle they depend on stops.
+    if (this.#cluster) await this.#cluster.stop();
     await this.handle.stop();
     __resetSoulDataMemo();
     // Fixture mode wrote a synthetic SOUL.md to clean up. Shared mode runs against the

@@ -210,9 +210,9 @@ describe("AgentManager lifecycle", () => {
     const mgr = new AgentManager();
     const events = record(mgr);
 
-    const row = mgr.ensureSession(thread());
+    const row = await mgr.ensureSession(thread());
     // get-or-create: second call returns the same row
-    const again = mgr.ensureSession({
+    const again = await mgr.ensureSession({
       team_id: row.slack_team_id,
       channel_id: row.slack_channel_id,
       thread_ts: row.slack_thread_ts,
@@ -274,7 +274,7 @@ describe("AgentManager lifecycle", () => {
     expect(mgr.isLive(row.id)).toBe(true);
     expect(mgr.liveCount()).toBe(1);
     // assistant message marked the CLI transcript as started
-    expect(Sessions.findById(row.id)!.claude_started).toBe(1);
+    expect((await Sessions.findById(row.id))!.claude_started).toBe(1);
 
     // second message on an already-live session (flush + pushUser path)
     await mgr.sendMessage(row.id, "again");
@@ -305,7 +305,7 @@ describe("AgentManager lifecycle", () => {
     await until(() => !mgr.isLive(row.id), 3000, "session exit");
     expect(mgr.reload(row.id)).toBe(false);
     expect(mgr.liveCount()).toBe(0);
-    expect(Sessions.findById(row.id)!.status).toBe("idle");
+    expect((await Sessions.findById(row.id))!.status).toBe("idle");
     // budget forgotten on session teardown
     expect(mgr.getTokenSnapshot(row.id)).toBeNull();
   });
@@ -313,7 +313,7 @@ describe("AgentManager lifecycle", () => {
   it("suppresses a resume-miss result(is_error) but still surfaces other turn errors", async () => {
     const mgr = new AgentManager();
     const events = record(mgr);
-    const row = mgr.ensureSession(thread());
+    const row = await mgr.ensureSession(thread());
     const fs = plan((s) => {
       s.onUser = (um) => {
         const text = String(um.message.content);
@@ -343,7 +343,7 @@ describe("AgentManager lifecycle", () => {
     const mgr = new AgentManager();
     const events = record(mgr);
     mgr.abort("not-live"); // no-op
-    const row = mgr.ensureSession(thread());
+    const row = await mgr.ensureSession(thread());
     plan();
     await mgr.sendMessage(row.id, "hello");
     await until(() => mgr.isLive(row.id), 3000, "live");
@@ -352,13 +352,13 @@ describe("AgentManager lifecycle", () => {
     // Intentional abort suppresses the error event (no spurious error surfaced to the gateway)
     const err = events.find((e) => e.type === "error");
     expect(err).toBeUndefined();
-    expect(Sessions.findById(row.id)!.status).toBe("idle");
+    expect((await Sessions.findById(row.id))!.status).toBe("idle");
   });
 
   it("reload() suppresses the expected exit error while reloading", async () => {
     const mgr = new AgentManager();
     const events = record(mgr);
-    const row = mgr.ensureSession(thread());
+    const row = await mgr.ensureSession(thread());
     plan((s) => {
       s.throwOnClose = true;
       s.onUser = () => {
@@ -375,11 +375,11 @@ describe("AgentManager lifecycle", () => {
 
   it("setPermissionMode persists, pushes to a live query, and logs rejections", async () => {
     const mgr = new AgentManager();
-    const row = mgr.ensureSession(thread());
+    const row = await mgr.ensureSession(thread());
 
     // not live: persist only
     await mgr.setPermissionMode(row.id, "bypassPermissions");
-    expect(Sessions.findById(row.id)!.permission_mode).toBe("bypassPermissions");
+    expect((await Sessions.findById(row.id))!.permission_mode).toBe("bypassPermissions");
 
     const seen: string[] = [];
     const fs = plan((s) => {
@@ -396,14 +396,14 @@ describe("AgentManager lifecycle", () => {
 
     await mgr.setPermissionMode(row.id, "plan");
     expect(seen).toEqual(["plan"]);
-    expect(Sessions.findById(row.id)!.permission_mode).toBe("plan");
+    expect((await Sessions.findById(row.id))!.permission_mode).toBe("plan");
 
     // rejection path: logged, does not throw
     fs.setPermissionModeImpl = async () => {
       throw new Error("sdk says no");
     };
     await mgr.setPermissionMode(row.id, "acceptEdits");
-    expect(Sessions.findById(row.id)!.permission_mode).toBe("acceptEdits");
+    expect((await Sessions.findById(row.id))!.permission_mode).toBe("acceptEdits");
 
     await shutdown(mgr, row.id);
   });
@@ -412,7 +412,7 @@ describe("AgentManager lifecycle", () => {
     const mgr = new AgentManager();
     expect(await mgr.mcpServerStatus("nope")).toBeNull();
 
-    const row = mgr.ensureSession(thread());
+    const row = await mgr.ensureSession(thread());
     const fs = plan((s) => {
       s.mcpServerStatusImpl = async () => [{ name: "kb", status: "connected" }];
     });
@@ -444,7 +444,7 @@ describe("AgentManager lifecycle", () => {
     let blocks = 0;
     mgr.setStopGuard(() => (blocks++ >= 0 ? "you must reply first" : null));
 
-    const row = mgr.ensureSession(thread());
+    const row = await mgr.ensureSession(thread());
     const fs = plan();
     await mgr.sendMessage(row.id, "hello");
     await until(() => fs.options !== null, 3000, "boot");
@@ -490,8 +490,8 @@ describe("AgentManager lifecycle", () => {
 
   it("retries without resume when the provider lost the session id", async () => {
     const mgr = new AgentManager();
-    const row = mgr.ensureSession(thread());
-    Sessions.markStarted(row.id); // force a resume attempt on first boot
+    const row = await mgr.ensureSession(thread());
+    await Sessions.markStarted(row.id); // force a resume attempt on first boot
 
     plan((s) => {
       s.bootError = "Error: No conversation found with session ID " + row.id;
@@ -509,7 +509,7 @@ describe("AgentManager lifecycle", () => {
     // retried fresh: started flag cleared, --session-id seeded instead of resume
     expect(spawned[1]!.options.resume).toBeUndefined();
     expect(spawned[1]!.options.extraArgs["session-id"]).toBe(row.id);
-    expect(Sessions.findById(row.id)!.claude_started).toBe(0);
+    expect((await Sessions.findById(row.id))!.claude_started).toBe(0);
     // the original first prompt is replayed
     await until(() => spawned[1]!.users.length === 1, 3000, "replayed prompt");
     expect(String(spawned[1]!.users[0].message.content)).toBe("hello");
@@ -519,8 +519,8 @@ describe("AgentManager lifecycle", () => {
 
   it("retries with resume when the seeded session id already has a transcript", async () => {
     const mgr = new AgentManager();
-    const row = mgr.ensureSession(thread());
-    expect(Sessions.findById(row.id)!.claude_started).toBe(0);
+    const row = await mgr.ensureSession(thread());
+    expect((await Sessions.findById(row.id))!.claude_started).toBe(0);
 
     plan((s) => {
       s.bootError = `Session ${row.id} is already in use.`;
@@ -532,7 +532,7 @@ describe("AgentManager lifecycle", () => {
 
     expect(spawned[0]!.options.extraArgs["session-id"]).toBe(row.id);
     expect(spawned[1]!.options.resume).toBe(row.id);
-    expect(Sessions.findById(row.id)!.claude_started).toBe(1);
+    expect((await Sessions.findById(row.id))!.claude_started).toBe(1);
 
     await shutdown(mgr, row.id);
   });
@@ -541,7 +541,7 @@ describe("AgentManager lifecycle", () => {
     process.env.SLAUDE_AUTO_EVOLVE = "1";
     const mgr = new AgentManager();
     const events = record(mgr);
-    const row = mgr.ensureSession(thread());
+    const row = await mgr.ensureSession(thread());
 
     const fs = plan((s) => {
       s.onUser = (um) => {
@@ -575,7 +575,7 @@ describe("AgentManager lifecycle", () => {
     process.env.SLAUDE_AUTO_EVOLVE = "1";
     const mgr = new AgentManager();
     const events = record(mgr);
-    const row = mgr.ensureSession(thread());
+    const row = await mgr.ensureSession(thread());
 
     const fs = plan((s) => {
       s.onUser = () => {
@@ -596,7 +596,7 @@ describe("AgentManager lifecycle", () => {
     process.env.SLAUDE_AUTO_EVOLVE = "1";
     const mgr = new AgentManager();
     const events = record(mgr);
-    const row = mgr.ensureSession(thread());
+    const row = await mgr.ensureSession(thread());
 
     const fs = plan((s) => {
       s.onUser = () => {
@@ -628,7 +628,7 @@ describe("AgentManager lifecycle", () => {
     process.env.SLAUDE_IDLE_MINUTES = "0.0005"; // 30ms
     const mgr = new AgentManager();
     const events = record(mgr);
-    const row = mgr.ensureSession(thread());
+    const row = await mgr.ensureSession(thread());
 
     plan((s) => {
       s.onUser = () => {
@@ -642,7 +642,7 @@ describe("AgentManager lifecycle", () => {
     await until(() => !mgr.isLive(row.id), 3000, "idle close");
 
     expect(events.filter((e) => e.type === "error")).toHaveLength(0);
-    expect(Sessions.findById(row.id)!.status).toBe("idle");
+    expect((await Sessions.findById(row.id))!.status).toBe("idle");
   });
 
   it("throws when sending to an unknown session id", async () => {
@@ -659,7 +659,7 @@ describe("AgentManager lifecycle", () => {
   it("stream_closed: auto-reloads and injects auto-continue prompt on first detection", async () => {
     const mgr = new AgentManager();
     const events = record(mgr);
-    const row = mgr.ensureSession(thread());
+    const row = await mgr.ensureSession(thread());
 
     // Session 1: emits a stream_closed tool error then turn result → triggers reload
     plan((s) => {
@@ -692,7 +692,7 @@ describe("AgentManager lifecycle", () => {
   it("stream_closed: circuit opens and emits error event after three consecutive failures", async () => {
     const mgr = new AgentManager();
     const events = record(mgr);
-    const row = mgr.ensureSession(thread());
+    const row = await mgr.ensureSession(thread());
 
     // Three successive sessions each trigger stream_closed
     for (let i = 0; i < 3; i++) {
@@ -722,7 +722,7 @@ describe("AgentManager lifecycle", () => {
 
   it("stream_closed: detects error text supplied as a content-block array", async () => {
     const mgr = new AgentManager();
-    const row = mgr.ensureSession(thread());
+    const row = await mgr.ensureSession(thread());
 
     // Session 1: error content is an array of blocks, not a plain string
     plan((s) => {
@@ -756,7 +756,7 @@ describe("AgentManager lifecycle", () => {
   it("stream_closed: abort() before turn-end clears pending reload, no auto-continue fires", async () => {
     const mgr = new AgentManager();
     const events = record(mgr);
-    const row = mgr.ensureSession(thread());
+    const row = await mgr.ensureSession(thread());
 
     plan((s) => {
       s.onUser = () => {

@@ -315,6 +315,35 @@ SQLite migrations run automatically on boot — the `db/schema.ts` migrates in p
 
 ---
 
+## Horizontal scale (gateway + nodes)
+
+Everything above deploys slaude as **one process per persona**. For many
+personas / many concurrent threads, the horizontal-scale topology splits it
+into stateless **gateway** replicas (Slack Events API ingress, `/v1` control
+plane) and a pool of **node** workers (BullMQ consumers running the SDK
+turns) over Postgres, Redis, and a shared RWX volume. Roles are selected by
+`SLAUDE_ROLE=mono|gateway|node` — `mono` (the default) is the single-process
+behavior documented on this page, unchanged.
+
+- **[Multi-Node Deployment](multi-node.md)** — topology, local dev loop,
+  `docker-compose.scale.yaml` (gateway + 2 nodes), CI surface.
+- **[Scale Operations](scale-operations.md)** — the full metric surface,
+  what to alert on, sample PromQL, scaling/draining behavior.
+- **`deploy/k8s-scale/`** — Kubernetes manifests: gateway + node Deployments,
+  Service/Ingress, RWX PVC, Secrets template (kubeseal example), KEDA
+  queue-depth autoscaling with a CPU-HPA fallback. See its README for
+  prerequisites (managed Postgres/Redis, RWX StorageClass, KEDA).
+- Slack ingress runs in **http mode** (`SLAUDE_SLACK_MODE=http`, Events API)
+  with per-workspace apps in the encrypted `slack_apps` registry; installs
+  arrive via `bun run slack-app add` or the OAuth flow (`/slack/oauth/start`,
+  enabled by `SLACK_CLIENT_ID`).
+- Architecture and invariants: `docs/superpowers/specs/2026-08-24-horizontal-scale-design.md`.
+
+> The single-Deployment warning above does not apply to this topology:
+> gateway and node Deployments are built to scale by replica count.
+
+---
+
 ## Health & Metrics
 
 The health server is Bun's native `Bun.serve()` — no extra dependency, no sidecar.
@@ -348,6 +377,8 @@ Metrics are hand-rendered — no `prom-client` dependency. Static labels from `S
 | `slaude_slack_drops_total` | counter | `reason` | Inbound Slack events dropped before processing |
 | `slaude_disengaged_suppressed_total` | counter | — | Messages suppressed by the disengaged hook |
 | `slaude_user_turns_total` | counter | `user_id`, `user_name` | Inbound user turns (opt-in via `SLAUDE_METRICS_PER_USER=1`) |
+
+The gateway/node topology adds queue, registry, and per-node metrics (histograms included) — see [Scale Operations](scale-operations.md) for that full surface and alerting guidance.
 
 Example scrape:
 

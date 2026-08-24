@@ -263,6 +263,10 @@ All vars are read via `src/config/env.ts` (`req()` throws on missing, `opt()` re
 | `SLACK_USER_TOKEN` | No | `""` | `xoxp-…` user token. Used for `users.profile.set` presence; also the post-as-user token when `SLACK_POST_AS_USER=true`. |
 | `SLACK_POST_AS_USER` | No | `false` | `true` (case-insensitive) enables posting as the real Slack user. Requires `SLACK_USER_TOKEN`. |
 | `SLAUDE_APPROVERS` | No | `""` | Comma-separated Slack user ids allowed to click **Approve / Deny** on `request_approval` plans. **Fallback only** — used when `SOUL.md` has no `## Approvers` section. Empty means any clicker is accepted (only safe for solo / DM workspaces). Trimmed, comma-split, empty entries dropped. |
+| `SLAUDE_SLACK_MODE` | No | `socket` | Slack ingress: `socket` (Bolt Socket Mode, single app from `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN`) or `http` (Events API receiver — Slack POSTs signed requests to `/slack/events` and `/slack/interactions`). `http` requires `SLAUDE_DB=pg` and `SLAUDE_MASTER_KEY`: apps are resolved per-request from the `slack_apps` registry (`bun run slack-app add`), and `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN` are not read. Emit the matching app manifest with `bun run manifest --mode http --url https://<host>`. |
+| `SLAUDE_HTTP_PORT` | No | `8080` | Listen port for `SLAUDE_SLACK_MODE=http`. This single port serves `/slack/*` **and** `/healthz` `/readyz` `/metrics`; the standalone `SLAUDE_HEALTH_PORT` server is not started in http mode. |
+| `SLAUDE_HTTP_MAX_BODY_BYTES` | No | `1000000` | Max accepted request-body size on `/slack/*` (bytes). Oversize requests get `413` before any buffering completes or signature work runs. Positive integer. |
+| `SLACK_SIGNING_SECRET` | No | `""` | Fallback for `bun run slack-app add` when `--signing-secret` is omitted (**Basic Information → App Credentials**). The runtime never reads it directly — request verification always uses the encrypted copy stored in Postgres. |
 
 ### Home & paths
 
@@ -271,8 +275,32 @@ All vars are read via `src/config/env.ts` (`req()` throws on missing, `opt()` re
 | `SLAUDE_HOME` | No | `~/.slaude` | Runtime home. All state lives beneath it. Overridable for testing or multi-persona hosts. |
 | `SLAUDE_DB_PATH` | No | `$SLAUDE_HOME/db.sqlite` | Override the sqlite file. Accepts absolute path or path relative to `SLAUDE_HOME`. Use when `SLAUDE_HOME` is a read-only image layer and the DB must live on a separately-mounted volume (e.g. k8s `subPath`). |
 | `SLAUDE_WORKSPACES` | No | `$SLAUDE_HOME/workspaces` | Per-session cwd root. Same absolute/relative semantics as `SLAUDE_DB_PATH`. The sim redirects both under `$SLAUDE_HOME/sim/` so it shares config without mutating prod state. |
+| `SLAUDE_DB` | No | `sqlite` | State store dialect: `sqlite` (file at `SLAUDE_DB_PATH`) or `pg` (Postgres). With `pg` and no `SLAUDE_PG_URL`, an in-process PGLite is used (sim and tests; `SLAUDE_PGLITE_DIR` persists it to disk). Schema for `pg` is applied from `src/db/migrations/*.sql` at boot. |
+| `SLAUDE_PG_URL` | With `SLAUDE_DB=pg` | none | Postgres connection URL (`postgres://user:pass@host:5432/db`). Driver is `Bun.sql`. |
+| `SLAUDE_PG_POOL` | No | `10` | Bun.sql connection pool size for `SLAUDE_DB=pg`. Positive integer. |
+| `SLAUDE_MASTER_KEY` | For encrypted columns | none | 32 random bytes, base64 (`openssl rand -base64 32`). Keys AES-256-GCM for the `(enc)` Postgres columns (`slack_apps.bot_token`, `signing_secret`, `provider_creds.value`). Not needed while the monolith runs a single Socket Mode app. |
+| `SLAUDE_ROLE` | No | `mono` | Process role for the gateway/node split: `mono` (single process, today's behavior), `gateway` (Slack ingress + control plane), or `node` (queue worker). `mono` and `gateway` mount the node-facing REST `/v1` on the health server; `node` never does. Unknown values fall back to `mono`. |
+| `SLAUDE_NODE_TOKEN` | For `/v1` | none | Static shared secret nodes present as `Authorization: Bearer <token>` on every `/v1` request (timing-safe compare). Unset = `/v1` refuses all requests. Rotate via env. |
+| `SLAUDE_JOB_SECRET` | For `/v1` tool plane | none | HS256 secret for the short-lived per-job JWT (`X-Slaude-Job`) the gateway mints per turn job and verifies on `/v1/sessions/*` and `/v1/tools/*`. Claims: `{tenant, persona, session, team, channel, thread, initiator, scope, exp}`. Unset = tool-plane and session endpoints refuse. |
 
 See [Filesystem layout](#filesystem) for every file under `SLAUDE_HOME`.
+
+### Queue & Redis — horizontal scale <a id="queue-redis"></a>
+
+Used by the gateway/node split (`src/queue/`): BullMQ turn queues, the warm-session
+registry, session/leader locks, and abort/reload/gate pub-sub. A single-process
+(`mono`) deploy never touches Redis and needs none of these.
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `SLAUDE_REDIS_URL` | For gateway/node roles | `redis://localhost:6379` | The one Redis behind job queues, session registry, node heartbeats, locks, and pub/sub. |
+| `SLAUDE_REDIS_PREFIX` | No | `slaude` | Namespace prefixed to every Redis key, channel, stream, and BullMQ queue this deploy touches. Lets several deploys (or a test run) share one Redis without collisions. |
+| `SLAUDE_HEARTBEAT_SEC` | No | `10` | Cadence at which nodes heartbeat each live session's `sess:<id>` registry entry. Entry TTL is 2× this — an entry older than that means "cold, route to the shared queue". Non-positive or non-numeric falls back to 10. |
+| `SLAUDE_NODE_DRAIN_SEC` | No | `120` | On SIGTERM a node stops claiming jobs and finishes in-flight turns for up to this many seconds before deregistering and exiting. Negative or non-numeric falls back to 120. |
+
+Tests for this layer run only against a real Redis (BullMQ's Lua scripts don't run
+on `ioredis-mock`) and are gated on `SLAUDE_REDIS_TEST_URL`, mirroring the
+`SLAUDE_PG_TEST_URL` gate for Postgres.
 
 ### Sessions & UX
 
@@ -281,7 +309,7 @@ See [Filesystem layout](#filesystem) for every file under `SLAUDE_HOME`.
 | `SLAUDE_IDLE_MINUTES` | No | `15` | Minutes of inactivity after which the SDK `Query` closes. Next inbound message in the same thread resumes via `resume: <session-id>`. Set to `0` to disable (sessions live forever). Non-finite or negative values fall back to `15`. Parsed as `Number(raw) * 60 * 1000` ms. |
 | `SLAUDE_DEFAULT_MODE` | No | `default` | Default permission mode for new sessions. Aliases are normalized. Values: `default` (alias `ask`), `acceptEdits` (aliases `accept-edits`, `acceptedits`, `edits`), `bypassPermissions` (aliases `bypass`, `yolo`), `plan`, `dontAsk` (aliases `dont-ask`, `deny`). Unknown values fall back to `default`. Override per-thread with `/mode`. |
 | `SLAUDE_AUTO_ALLOW_TOOLS` | No | `""` | Comma-separated tool names auto-allowed without prompting. Others post a Block Kit **Allow / Always / Deny** prompt. Empty means ask for every tool. Common default `Read,Grep,Glob,LS`. |
-| `SLAUDE_HEALTH_PORT` | No | `8080` | Health server port. `GET /healthz` → liveness `{status:"ok", uptime_ms, sessions_live}`, `GET /readyz` → DB ping (503 if unreachable), `GET /metrics` → Prometheus exposition. Set to `0` or non-finite to disable. See `src/health.ts`. |
+| `SLAUDE_HEALTH_PORT` | No | `8080` | Health server port (socket mode only — `SLAUDE_SLACK_MODE=http` serves these on `SLAUDE_HTTP_PORT` instead). `GET /healthz` → liveness `{status:"ok", uptime_ms, sessions_live}`, `GET /readyz` → DB ping (503 if unreachable), `GET /metrics` → Prometheus exposition. Set to `0` or non-finite to disable. See `src/health.ts`. |
 | `SLAUDE_TOKEN_WARN_PCT` | No | `0.8` | Fraction of the model's context window at which slaude posts a one-shot warning in the active thread. Edge-triggered — fires once per session. Source window comes from live `modelUsage.contextWindow`. |
 | `SLAUDE_TOKEN_CRITICAL_PCT` | No | `0.92` | Critical threshold sibling of `SLAUDE_TOKEN_WARN_PCT`. Set to `0` to disable the critical tier. |
 
@@ -365,6 +393,9 @@ ANTHROPIC_API_KEY=sk-ant-...
 # --- Home ---
 # SLAUDE_HOME=~/.slaude
 # SLAUDE_DB_PATH=db.sqlite
+# SLAUDE_DB=pg
+# SLAUDE_PG_URL=postgres://slaude:change-me@localhost:5432/slaude
+# SLAUDE_MASTER_KEY=<openssl rand -base64 32>
 # SLAUDE_WORKSPACES=workspaces
 
 # --- Sessions ---
@@ -422,7 +453,7 @@ GRAFANA_API_KEY=
 | `~/.slaude/workspaces/` | Per-session cwd — `workspaces/<team>-<channel>-<thread>[__persona]/`. Each thread gets its own git worktree-like dir. |
 | `~/.slaude/.claude/` | Claude Code config dir (`CLAUDE_CONFIG_DIR`). Holds `installed_plugins.json`, plugin cache, project transcripts (`projects/`). In `/1on1` mode the child is pointed at `$SLAUDE_HOME/oauth/<userId>` for OAuth isolation. |
 | `~/.slaude/personas/` | Multi-persona operator-created directory. Presence means multi-bot mode; each named persona has its own `SOUL.md` and `mcp.json` overlay. |
-| `~/.slaude/db.sqlite` | `bun:sqlite` — `sessions`, `brain`, `soul_overrides`, `kb_ingest_jobs` tables. Override via `SLAUDE_DB_PATH` for PVC `subPath` mounts. |
+| `~/.slaude/db.sqlite` | `bun:sqlite` — `sessions`, `brain`, `soul_overrides`, `kb_ingest_jobs` tables. Override via `SLAUDE_DB_PATH` for PVC `subPath` mounts. Absent when `SLAUDE_DB=pg`; move an existing file with `bun run migrate-sqlite` (idempotent, `--dry-run` to preview). |
 
 ```bash
 ~/.slaude/

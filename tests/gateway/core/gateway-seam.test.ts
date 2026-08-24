@@ -6,6 +6,7 @@ import { db } from "../../../src/db/schema";
 import * as Sessions from "../../../src/db/sessions";
 import * as CronJobs from "../../../src/db/cron-jobs";
 import * as MentionOnly from "../../../src/db/mention-only";
+import * as SO from "../../../src/db/soul-overrides";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 
 function fakeTransport(): Transport {
@@ -59,8 +60,8 @@ describe("createGateway", () => {
   // REJECTION ("Cannot access 'routes' before initialization"), not a sync throw — and
   // a due cron job at boot is normal, so this crashes the agent's cron path on restart.
   it("does not hit a routes TDZ when a due cron job exists at boot", async () => {
-    db.run("DELETE FROM cron_jobs");
-    CronJobs.create({
+    await db.run("DELETE FROM cron_jobs");
+    await CronJobs.create({
       slackTeamId: "T1",
       slackChannelId: "C1",
       channelId: "C1",
@@ -81,7 +82,7 @@ describe("createGateway", () => {
 
     process.off("unhandledRejection", onRej);
     h.stop();
-    db.run("DELETE FROM cron_jobs");
+    await db.run("DELETE FROM cron_jobs");
 
     expect(rejections.find((m) => m.includes("routes"))).toBeUndefined();
   });
@@ -90,7 +91,7 @@ describe("createGateway", () => {
   // message router (a DM) and assert the channel-target wiring: a CronJob is persisted with
   // target "channel", and the confirmation reply says it posts to channel root.
   it("creates a channel-target cron from /cron-add ... channel and confirms channel-root posting", async () => {
-    db.run("DELETE FROM cron_jobs");
+    await db.run("DELETE FROM cron_jobs");
     writeSoulFixture(WORLD); // manager = U0MGR
 
     const { t, posts, emit } = capturingTransport();
@@ -112,7 +113,7 @@ describe("createGateway", () => {
       context: { teamId: "T" },
     });
 
-    const jobs = CronJobs.listActive();
+    const jobs = await CronJobs.listActive();
     expect(jobs.length).toBe(1);
     expect(jobs[0]!.target).toBe("channel");
     expect(jobs[0]!.slackThreadTs).toBeNull();
@@ -131,7 +132,7 @@ describe("createGateway", () => {
     expect(listing).toBeDefined();
     expect(String(listing.text)).toContain("[channel]");
 
-    db.run("DELETE FROM cron_jobs");
+    await db.run("DELETE FROM cron_jobs");
   });
 
   describe("/soul runtime overrides", () => {
@@ -149,8 +150,8 @@ describe("createGateway", () => {
     };
 
     it("manager adds an allowed channel — gate opens on the next message (immediacy)", async () => {
-      db.run("DELETE FROM sessions");
-      db.run("DELETE FROM soul_overrides");
+      await db.run("DELETE FROM sessions");
+      await SO.clear();
       process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
       writeSoulFixture(WORLD);
       const g = newGw();
@@ -177,7 +178,7 @@ describe("createGateway", () => {
     });
 
     it("non-manager /soul refused — backup manager too — store untouched", async () => {
-      db.run("DELETE FROM soul_overrides");
+      await SO.clear();
       writeSoulFixture(WORLD);
       const g = newGw();
 
@@ -185,12 +186,12 @@ describe("createGateway", () => {
       const refusal = g.posts.find((p) => String(p.text).includes("manager-only"));
       expect(refusal).toBeDefined();
       const { list } = await import("../../../src/db/soul-overrides");
-      expect(list().length).toBe(0);
+      expect((await list()).length).toBe(0);
     });
 
     it("/soul block add drops the user's next message; /soul clear reverts", async () => {
-      db.run("DELETE FROM sessions");
-      db.run("DELETE FROM soul_overrides");
+      await db.run("DELETE FROM sessions");
+      await SO.clear();
       writeSoulFixture(WORLD);
       const g = newGw();
 
@@ -246,15 +247,18 @@ describe("createGateway", () => {
       };
       return { ...cap, agent, sends, mention, processed, suppressed };
     };
-    const wipe = () => {
-      db.run("DELETE FROM sessions");
+    const wipe = async () => {
+      await db.run("DELETE FROM sessions");
+      // Dedup is durable now (seen_events) — each test replays its own ts
+      // values in the same channel, so clear claims from earlier tests.
+      await db.run("DELETE FROM seen_events");
       // handleMessage's attachment download resolves the bot token lazily.
       process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
     };
 
     it("mention-only thread: plain follow-up recorded-but-suppressed, @mention still replies", async () => {
-      wipe();
-      MentionOnly._wipeForTests();
+      await wipe();
+      await MentionOnly._wipeForTests();
       writeSoulFixture(WORLD);
       const g = newGateway();
       const thread = "300.1";
@@ -262,7 +266,7 @@ describe("createGateway", () => {
       await g.mention(thread, "<@U_SLAUDE> hello");
       expect(g.processed().length).toBe(1); // engaged, session row exists
 
-      MentionOnly.set({ channelId: CH, threadTs: thread, createdBy: WORLD.manager });
+      await MentionOnly.set({ channelId: CH, threadTs: thread, createdBy: WORLD.manager });
 
       // plain follow-up (no @mention) → recorded-suppressed, NOT processed, no reply
       await g.emit("message", { ...mk("300.2", "just a plain follow-up", thread), client: g.t.client });
@@ -272,19 +276,19 @@ describe("createGateway", () => {
       // an @mention still replies (mention-only stays set)
       await g.mention("300.3", "<@U_SLAUDE> ping", thread);
       expect(g.processed().length).toBe(2);
-      expect(MentionOnly.find(CH, thread)).not.toBeNull();
+      expect(await MentionOnly.find(CH, thread)).not.toBeNull();
 
       // mention-only on a thread with NO session → plain message is dropped
       // outright (nothing to record), not suppressed.
       const fresh = "301.1";
-      MentionOnly.set({ channelId: CH, threadTs: fresh, createdBy: WORLD.manager });
+      await MentionOnly.set({ channelId: CH, threadTs: fresh, createdBy: WORLD.manager });
       const before = g.processed().length + g.suppressed().length;
       await g.emit("message", { ...mk("301.2", "plain, no session", fresh), client: g.t.client });
       expect(g.processed().length + g.suppressed().length).toBe(before); // dropped
     });
 
     it("disengaged messages are recorded-but-suppressed, never processed (no reply)", async () => {
-      wipe();
+      await wipe();
       writeSoulFixture(WORLD);
       const g = newGateway();
 
@@ -305,7 +309,7 @@ describe("createGateway", () => {
     });
 
     it("mention-other with NO session is dropped (never spins one up)", async () => {
-      wipe();
+      await wipe();
       writeSoulFixture(WORLD);
       const g = newGateway();
       // No prior engagement → no session row. A colleague-mention here must not
@@ -315,7 +319,7 @@ describe("createGateway", () => {
     });
 
     it("disengage survives a gateway restart (recorded-suppressed, not processed)", async () => {
-      wipe();
+      await wipe();
       writeSoulFixture(WORLD);
       const g1 = newGateway();
       await g1.mention("300.1", "<@U_SLAUDE> hello");
@@ -330,7 +334,7 @@ describe("createGateway", () => {
     });
 
     it("re-mentioning the bot re-engages durably (plain replies handled again)", async () => {
-      wipe();
+      await wipe();
       writeSoulFixture(WORLD);
       const g = newGateway();
       await g.mention("400.1", "<@U_SLAUDE> hello");
@@ -346,7 +350,7 @@ describe("createGateway", () => {
     });
 
     it("restart restore still works for engaged threads (no re-mention needed)", async () => {
-      wipe();
+      await wipe();
       writeSoulFixture(WORLD);
       const g1 = newGateway();
       await g1.mention("500.1", "<@U_SLAUDE> hello");
@@ -361,7 +365,7 @@ describe("createGateway", () => {
     // suppressed (disengaged) turn — that message was recorded but never
     // processed, so there's no 👀 to clear and stamping ✅ would be wrong.
     it("a suppressed (disengaged) done short-circuits — no ✅ stamped", async () => {
-      wipe();
+      await wipe();
       writeSoulFixture(WORLD);
       const g = newGateway();
       const tick = () => new Promise((r) => setTimeout(r, 20));
@@ -369,7 +373,7 @@ describe("createGateway", () => {
 
       // Engage → route exists with suppress=false. A done event stamps ✅.
       await g.mention("700.1", "<@U_SLAUDE> hello");
-      const row = Sessions.findByThread({ team_id: "T", channel_id: CH, thread_ts: "700.1" });
+      const row = await Sessions.findByThread({ team_id: "T", channel_id: CH, thread_ts: "700.1" });
       expect(row).not.toBeNull();
       g.agent.emit("event", { type: "done", sessionId: row!.id } as any);
       await tick();

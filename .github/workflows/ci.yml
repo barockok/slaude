@@ -6,10 +6,16 @@ on:
   pull_request:
     branches: [main]
 
+# One live run per ref: a new push cancels the superseded run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: typecheck + tests + coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     permissions:
       contents: read
     steps:
@@ -33,13 +39,18 @@ jobs:
         # non-deterministic failures.
         # bun 1.3.11 exits non-zero for this suite even when every test passes and
         # coverage clears — a runner-internal quirk unrelated to coverage (repros
-        # with coverage fully disabled; no test fails, no rejection surfaces). The
-        # exact code tracks suite size: 99 historically, 100 as the suite grew
+        # with coverage fully disabled; no test fails, no rejection surfaces; no
+        # upstream issue filed yet — see https://github.com/oven-sh/bun/issues).
+        # The exact code tracks suite size: 99 historically, 100 as the suite grew
         # (verified: 0 failures, line coverage 98%+, and dropping the statement
         # threshold left the code unchanged — so it is NOT a coverage-threshold
-        # exit). So we gate on the parsed failure count, not bun's raw exit code;
-        # coverage is gated by Codecov (project + patch) on the lcov.info here.
-        # Only a real crash exit (not 0/99/100) fails the job.
+        # exit). Tolerating it is gated HARD: exit must be exactly 99/100, the
+        # parsed pass count must be at or above the expected suite floor, the
+        # parsed fail count must be 0, and the output must carry no crash marker.
+        # Anything else fails the job. Coverage itself is gated by Codecov
+        # (project + patch) on the lcov.info uploaded below.
+        env:
+          SUITE_PASS_FLOOR: "1400"
         run: |
           set +e
           bun test --coverage --parallel=1 2>&1 | tee test-output.txt
@@ -47,14 +58,23 @@ jobs:
           set -e
           fails=$(grep -oE '^[[:space:]]*[0-9]+ fail' test-output.txt | grep -oE '[0-9]+' | tail -1)
           fails=${fails:-0}
-          echo "bun exit code: ${code}; parsed test failures: ${fails}"
+          passes=$(grep -oE '^[[:space:]]*[0-9]+ pass' test-output.txt | grep -oE '[0-9]+' | tail -1)
+          passes=${passes:-0}
+          echo "bun exit code: ${code}; ${passes} passed; ${fails} failed"
           if [ "${fails}" -ne 0 ]; then
             echo "::error::${fails} test(s) failed"; exit 1
           fi
-          if [ "${code}" -ne 0 ] && [ "${code}" -ne 99 ] && [ "${code}" -ne 100 ]; then
+          if [ "${code}" -eq 0 ]; then echo "tests passed"; exit 0; fi
+          if [ "${code}" -ne 99 ] && [ "${code}" -ne 100 ]; then
             echo "::error::bun exited ${code} (not 0/99/100) — treating as a crash"; exit "${code}"
           fi
-          echo "tests passed (${fails} failures; bun exit ${code} tolerated)"
+          if [ "${passes}" -lt "${SUITE_PASS_FLOOR}" ]; then
+            echo "::error::only ${passes} passes (expected >= ${SUITE_PASS_FLOOR}) — suite ran partially, refusing to tolerate exit ${code}"; exit "${code}"
+          fi
+          if grep -qiE 'panic|segmentation fault|SIGSEGV|SIGABRT|illegal instruction|bus error' test-output.txt; then
+            echo "::error::crash marker in test output — refusing to tolerate exit ${code}"; exit "${code}"
+          fi
+          echo "tests passed (${passes} pass, 0 fail; bun exit ${code} tolerated as the known 1.3.11 quirk)"
 
       - name: Upload coverage report (artifact)
         if: always()
@@ -73,9 +93,264 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  pglite:
+    name: tests + sim on PGLite (SLAUDE_DB=pg, in-process)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Unit tests on PGLite (real Redis arms tests/queue, tests/node, tests/integration)
+        # Exit-code tolerance mirrors the sqlite job's hard-gated guard — see
+        # the comment there for the bun 1.3.11 quirk this covers.
+        env:
+          SLAUDE_DB: pg
+          SLAUDE_REDIS_TEST_URL: redis://localhost:6379
+          SUITE_PASS_FLOOR: "1400"
+        run: |
+          set +e
+          bun test --parallel=1 2>&1 | tee test-output-pg.txt
+          code=${PIPESTATUS[0]}
+          set -e
+          fails=$(grep -oE '^[[:space:]]*[0-9]+ fail' test-output-pg.txt | grep -oE '[0-9]+' | tail -1)
+          fails=${fails:-0}
+          passes=$(grep -oE '^[[:space:]]*[0-9]+ pass' test-output-pg.txt | grep -oE '[0-9]+' | tail -1)
+          passes=${passes:-0}
+          echo "bun exit code: ${code}; ${passes} passed; ${fails} failed"
+          if [ "${fails}" -ne 0 ]; then echo "::error::${fails} test(s) failed on pg"; exit 1; fi
+          if [ "${code}" -eq 0 ]; then exit 0; fi
+          if [ "${code}" -ne 99 ] && [ "${code}" -ne 100 ]; then exit "${code}"; fi
+          if [ "${passes}" -lt "${SUITE_PASS_FLOOR}" ]; then
+            echo "::error::only ${passes} passes (expected >= ${SUITE_PASS_FLOOR}) — refusing to tolerate exit ${code}"; exit "${code}"
+          fi
+          if grep -qiE 'panic|segmentation fault|SIGSEGV|SIGABRT|illegal instruction|bus error' test-output-pg.txt; then
+            echo "::error::crash marker in test output — refusing to tolerate exit ${code}"; exit "${code}"
+          fi
+          echo "tests passed (${passes} pass, 0 fail; bun exit ${code} tolerated)"
+      - name: Sim transcripts on PGLite
+        env:
+          SLAUDE_DB: pg
+          SLAUDE_HOME: /tmp/slaude-sim-home
+        run: bun sim run
+
+  postgres:
+    name: db tests + sim on real Postgres ${{ matrix.pg }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [14, 16, 17]
+    services:
+      postgres:
+        image: postgres:${{ matrix.pg }}
+        env:
+          POSTGRES_USER: slaude
+          POSTGRES_PASSWORD: slaude
+          POSTGRES_DB: slaude
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U slaude"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: db + cli + queue + node + scenario tests against real Postgres (Bun.sql driver)
+        # SLAUDE_PG_TEST_URL also arms tests/db/pg-real.test.ts (concurrent
+        # migration race, int8 parity) which creates scratch databases, and
+        # (== SLAUDE_PG_URL) the volatile-table wipe in tests/setup.ts.
+        # SLAUDE_REDIS_TEST_URL arms the real-Redis suites: tests/queue,
+        # the gateway↔node E2E in tests/node, and tests/integration.
+        env:
+          SLAUDE_DB: pg
+          SLAUDE_PG_URL: postgres://slaude:slaude@localhost:5432/slaude
+          SLAUDE_PG_TEST_URL: postgres://slaude:slaude@localhost:5432/slaude
+          SLAUDE_REDIS_TEST_URL: redis://localhost:6379
+        run: bun test ./tests/db ./tests/cli ./tests/queue ./tests/node ./tests/integration
+      - name: Sim transcripts against real Postgres
+        env:
+          SLAUDE_DB: pg
+          SLAUDE_PG_URL: postgres://slaude:slaude@localhost:5432/slaude
+          SLAUDE_HOME: /tmp/slaude-sim-home
+        run: bun sim run
+
+  scale:
+    name: multi-node — gateway + 2 node workers (real PG 16 + Redis 7)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: slaude
+          POSTGRES_PASSWORD: slaude
+          POSTGRES_DB: slaude
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U slaude"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Headline regression: the FULL transcript-fixture suite through the
+      # multi-node path — role=gateway dispatch + 2 node workers over real
+      # Redis, fixtures unchanged. Once on PGLite, once on real Postgres.
+      - name: Multi-node sim — PGLite + real Redis
+        env:
+          SLAUDE_DB: pg
+          SLAUDE_REDIS_URL: redis://localhost:6379
+        run: bun sim run --nodes 2
+
+      - name: Scratch database for the real-PG sim leg
+        # Own database per step: the sim mints deterministic event ts values,
+        # so reusing a database would trip the durable seen_events dedup.
+        run: |
+          bun -e "const { SQL } = await import('bun'); const s = new SQL('postgres://slaude:slaude@localhost:5432/slaude'); await s.unsafe('CREATE DATABASE slaude_simnodes'); await s.end();"
+
+      - name: Multi-node sim — real Postgres + real Redis
+        env:
+          SLAUDE_DB: pg
+          SLAUDE_PG_URL: postgres://slaude:slaude@localhost:5432/slaude_simnodes
+          SLAUDE_REDIS_URL: redis://localhost:6379
+        run: bun sim run --nodes 2
+
+      # The five spec §8 integration scenarios: warm→cold resume, node kill
+      # mid-turn + BullMQ retry, approval click on replica 2, coalescing,
+      # Slack retry dedup across replicas.
+      - name: Scenario tests (real PG + real Redis)
+        env:
+          SLAUDE_DB: pg
+          SLAUDE_PG_URL: postgres://slaude:slaude@localhost:5432/slaude
+          SLAUDE_PG_TEST_URL: postgres://slaude:slaude@localhost:5432/slaude
+          SLAUDE_REDIS_TEST_URL: redis://localhost:6379
+        run: bun test ./tests/integration
+
+      # Multi-node compose topology stays parseable; the image build itself is
+      # covered by docker.yml on every PR and the full boot by compose-smoke.
+      - name: Validate docker-compose.scale.yaml
+        env:
+          SLAUDE_NODE_TOKEN: ci-dummy
+          SLAUDE_JOB_SECRET: ci-dummy
+          SLAUDE_MASTER_KEY: ci-dummy
+        run: docker compose -f docker-compose.scale.yaml config > /dev/null
+
+  compose-smoke:
+    # The one job that boots the REAL multi-process topology: separate
+    # gateway and node containers from the shipped image, wired only through
+    # Postgres, Redis and the shared volume — no in-process shortcuts.
+    name: compose up — gateway + 2 node containers reach healthy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      SLAUDE_NODE_TOKEN: ci-smoke-node
+      SLAUDE_JOB_SECRET: ci-smoke-job
+      # Dummy-but-valid 32-byte base64 key (encrypts the dummy app row only).
+      SLAUDE_MASTER_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      COMPOSE_FILE: docker-compose.scale.yaml
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t slaude:latest .
+
+      - name: Register a dummy Slack app (gateway refuses an empty registry)
+        run: |
+          docker compose up -d --no-build postgres redis
+          docker compose run --rm --no-TTY gateway \
+            bun run slack-app add --api-app-id A0CISMOKE --team-id T0CISMOKE \
+            --bot-token xoxb-ci-smoke --signing-secret ci-smoke-signing
+
+      - name: Boot the full stack
+        run: docker compose up -d --no-build
+
+      - name: Wait for gateway + both nodes to reach healthy
+        run: |
+          ok=0
+          for i in $(seq 1 36); do
+            hs=$(docker compose ps --format '{{.Service}}={{.Health}}' | sort | tr '\n' ' ')
+            echo "[$i] ${hs}"
+            case "${hs}" in
+              *"gateway=healthy"*"node-1=healthy"*"node-2=healthy"*) ok=1; break ;;
+            esac
+            sleep 5
+          done
+          [ "${ok}" -eq 1 ] || { echo "::error::stack did not reach healthy"; exit 1; }
+          # Probe the endpoints themselves, not just docker's healthcheck cache.
+          curl -fsS localhost:8080/healthz
+          for n in node-1 node-2; do
+            docker compose exec -T "$n" curl -fsS localhost:8081/healthz
+            docker compose exec -T "$n" curl -fsS localhost:8081/readyz
+          done
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --tail=120
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
+
   installer:
     name: installer shellcheck + smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       # Every tracked *.sh, not a hardcoded list — a named list silently leaves

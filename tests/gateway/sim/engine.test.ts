@@ -28,6 +28,12 @@ describe("SimSession", () => {
   it("approval flow: wrong approver leaves it pending, manager resolves", async () => {
     s = await SimSession.create({ layer: "trusted", as: "member", behavior: "request_approval", agent: "stub" });
     await s.send({ text: "deploy prod" });
+    // The card posts only after the durable pending_gates insert lands — on a
+    // real Postgres that can be after send() returns, so poll briefly.
+    const deadline = Date.now() + 10_000;
+    while (!s.cards().some((c) => c.kind === "approval") && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
     expect(s.cards().some((c) => c.kind === "approval")).toBe(true);
     await s.click({ as: "U0BOB", action: "approve" });   // U0BOB not an approver -> stays pending
     expect(s.cards().find((c) => c.kind === "approval")!.resolved).toBe(false);

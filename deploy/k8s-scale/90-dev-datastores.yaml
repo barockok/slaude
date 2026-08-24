@@ -1,0 +1,95 @@
+# DEV-ONLY in-cluster Postgres + Redis — single replica, no HA, no backups,
+# no tuning. Production should use managed services (RDS/Cloud SQL/Aiven,
+# ElastiCache/Memorystore/Upstash); see README.md. Apply this file only for
+# a self-contained evaluation cluster, and point 10-secrets.yaml at:
+#   SLAUDE_PG_URL:    postgres://slaude:slaude@postgres:5432/slaude
+#   SLAUDE_REDIS_URL: redis://redis:6379
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: slaude-scale
+spec:
+  selector: { app: dev-postgres }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dev-postgres
+  namespace: slaude-scale
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: dev-postgres }
+  template:
+    metadata:
+      labels: { app: dev-postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          env:
+            - { name: POSTGRES_USER, value: slaude }
+            - { name: POSTGRES_PASSWORD, value: slaude }
+            - { name: POSTGRES_DB, value: slaude }
+          ports: [{ containerPort: 5432 }]
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: dev-postgres-data }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dev-postgres-data
+  namespace: slaude-scale
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: 5Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: slaude-scale
+spec:
+  selector: { app: dev-redis }
+  ports: [{ port: 6379, targetPort: 6379 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dev-redis
+  namespace: slaude-scale
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: dev-redis }
+  template:
+    metadata:
+      labels: { app: dev-redis }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7
+          # BullMQ requirement: never evict queue keys under memory pressure.
+          args: ["redis-server", "--maxmemory-policy", "noeviction"]
+          ports: [{ containerPort: 6379 }]
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: dev-redis-data }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dev-redis-data
+  namespace: slaude-scale
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: 1Gi } }

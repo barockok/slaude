@@ -20,24 +20,24 @@ L("agent .claude.json", existsSync(agentConfigDir() + "/.claude.json"));
 // Simulate a PINNED DM thread (what /thread T1 produces).
 const thread = { team_id: "T0SIM", channel_id: "D0SIM", thread_ts: "T1" };
 const row =
-  Sessions.findByThread(thread) ??
-  Sessions.createForThread({ thread, model: "probe", working_dir: "/tmp/probe", permission_mode: "default" });
+  (await Sessions.findByThread(thread)) ??
+  (await Sessions.createForThread({ thread, model: "probe", working_dir: "/tmp/probe", permission_mode: "default" }));
 console.log("\n--- session ---");
 L("id", row.id);
 L("slack_channel_id", row.slack_channel_id);
 L("slack_thread_ts", row.slack_thread_ts);
 
-const lookup = () =>
-  row.slack_channel_id && row.slack_thread_ts ? OneOnOne.find(row.slack_channel_id, row.slack_thread_ts) : null;
+const lookup = async () =>
+  row.slack_channel_id && row.slack_thread_ts ? await OneOnOne.find(row.slack_channel_id, row.slack_thread_ts) : null;
 
 console.log("\n--- UNLOCKED ---");
-let lock = lookup();
+let lock = await lookup();
 L("lock", lock);
 L("configDir override", resolveSessionConfigDir(lock?.locked_user) ?? "(none → inherit agent dir)");
 
 console.log("\n--- /1on1 LOCK (user U0XXXXXXXXX) ---");
-OneOnOne.lock({ channelId: "D0SIM", threadTs: "T1", lockedUser: "U0XXXXXXXXX", createdBy: "U0XXXXXXXXX" });
-lock = lookup();
+await OneOnOne.lock({ channelId: "D0SIM", threadTs: "T1", lockedUser: "U0XXXXXXXXX", createdBy: "U0XXXXXXXXX" });
+lock = await lookup();
 L("lock", lock);
 const dir = resolveSessionConfigDir(lock?.locked_user);
 L("configDir override", dir);
@@ -48,8 +48,8 @@ L("initiator .claude.json", dir ? existsSync(dir + "/.claude.json") : "n/a");
 L("initiator settings.json (seeded)", dir ? existsSync(dir + "/settings.json") : "n/a");
 
 console.log("\n--- /1on1 OFF ---");
-OneOnOne.unlock("D0SIM", "T1");
-lock = lookup();
+await OneOnOne.unlock("D0SIM", "T1");
+lock = await lookup();
 L("lock", lock);
 L("configDir override", resolveSessionConfigDir(lock?.locked_user) ?? "(none → inherit agent dir)");
 

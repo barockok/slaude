@@ -26,7 +26,7 @@ cp .env.example .env && docker compose up -d --build
 | [**Architecture**](docs-new/architecture.md) | Session lifecycle, trust boundary, gateway ↔ agent ↔ MCP, persistence | 8 min |
 | [**Guides**](docs-new/guides/engagement-and-approvals.md) | Engagement, approvals, `/1on1`, slash commands, cron, attachments | — |
 | [**API Reference**](docs-new/api/reference.md) | `mcp__slaude_*` tools, Markdown→mrkdwn, external MCP, skills, KB | — |
-| [**Deployment**](docs-new/deployment/index.md) | Docker, Kubernetes, health probes, upgrades, backup, troubleshooting | — |
+| [**Deployment**](docs-new/deployment/index.md) | Docker, Kubernetes, scale-out (gateway + node workers), health probes, upgrades, troubleshooting | — |
 | [**Examples**](docs-new/examples.md) | Runnable: first skill, first ingest, custom MCP, sim without Slack | — |
 
 Full site entry: [**docs-new/index.md**](docs-new/index.md) · Sidebar: [**docs-new/_sidebar.md**](docs-new/_sidebar.md)

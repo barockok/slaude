@@ -53,8 +53,8 @@ function makeGw(agent: AgentManager) {
 }
 
 afterEach(async () => {
-  db.run("DELETE FROM cron_jobs");
-  OneOnOne._wipeForTests();
+  await db.run("DELETE FROM cron_jobs");
+  await OneOnOne._wipeForTests();
   try { rmSync(MCP_PATH, { force: true }); } catch {}
 });
 
@@ -66,7 +66,7 @@ describe("cron private-MCP credential scoping honors job.oauthUser", () => {
 
     // Job must exist before the gateway (and its scheduler) is constructed —
     // scheduler.start() fires its first tick synchronously at construction time.
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       slackTeamId: "T",
       slackChannelId: "C0TEAM",
       channelId: "C0TEAM",
@@ -83,12 +83,12 @@ describe("cron private-MCP credential scoping honors job.oauthUser", () => {
     // setCronOAuthUser(session, job.oauthUser).
     await new Promise((r) => setTimeout(r, 80));
 
-    const session = agent.ensureSession({ team_id: "T", channel_id: "C0TEAM", thread_ts: `cron:${job.id}` });
+    const session = await agent.ensureSession({ team_id: "T", channel_id: "C0TEAM", thread_ts: `cron:${job.id}` });
     // No /1on1 lock exists for the synthetic cron thread — only job.oauthUser
     // carries the initiator's identity.
-    expect(OneOnOne.find("C0TEAM", `cron:${job.id}`)).toBeNull();
+    expect(await OneOnOne.find("C0TEAM", `cron:${job.id}`)).toBeNull();
 
-    const servers = h.__resolveMcp(session.id)!;
+    const servers = (await h.__resolveMcp(session.id))!;
     expect((servers.demo as any).env).toEqual({});
     expect((servers.demo as any).command).toBe("demo-server");
   });
@@ -99,7 +99,7 @@ describe("cron private-MCP credential scoping honors job.oauthUser", () => {
     const agent = new AgentManager();
 
     const threadTs = "T-CRON-THREAD";
-    CronJobs.create({
+    await CronJobs.create({
       slackTeamId: "T",
       slackChannelId: "C0TEAM",
       slackThreadTs: threadTs,
@@ -117,10 +117,10 @@ describe("cron private-MCP credential scoping honors job.oauthUser", () => {
 
     // Thread is unlocked live — old code re-derived privacy from OneOnOne.find
     // alone and would have mounted creds unstripped here.
-    expect(OneOnOne.find("C0TEAM", threadTs)).toBeNull();
+    expect(await OneOnOne.find("C0TEAM", threadTs)).toBeNull();
 
-    const session = agent.ensureSession({ team_id: "T", channel_id: "C0TEAM", thread_ts: threadTs });
-    const servers = h.__resolveMcp(session.id)!;
+    const session = await agent.ensureSession({ team_id: "T", channel_id: "C0TEAM", thread_ts: threadTs });
+    const servers = (await h.__resolveMcp(session.id))!;
     expect((servers.demo as any).env).toEqual({});
   });
 
@@ -130,14 +130,14 @@ describe("cron private-MCP credential scoping honors job.oauthUser", () => {
     try {
       s.thread = "T-INTERACTIVE";
       await s.send({ text: "hello" });
-      const row = Sessions.findByThread({ team_id: "T0SIM", channel_id: "C0TEAM", thread_ts: "T-INTERACTIVE" });
+      const row = await Sessions.findByThread({ team_id: "T0SIM", channel_id: "C0TEAM", thread_ts: "T-INTERACTIVE" });
       const sid = row!.id;
 
-      let servers = s.handle.__resolveMcp(sid)!;
+      let servers = (await s.handle.__resolveMcp(sid))!;
       expect((servers.demo as any).env).toEqual({ SECRET: "agent-token" });
 
       await s.send({ text: "/1on1" });
-      servers = s.handle.__resolveMcp(sid)!;
+      servers = (await s.handle.__resolveMcp(sid))!;
       expect((servers.demo as any).env).toEqual({});
     } finally {
       await s.dispose();

@@ -71,4 +71,34 @@ describe("Registry", () => {
     r.counter("c", "h").inc({ x: "1" });
     expect(r.render()).toContain("c{x=\"1\"} 2");
   });
+
+  test("histogram observe + render (cumulative buckets, +Inf, sum, count)", () => {
+    const r = new Registry({ agent: "test" });
+    const h = r.histogram("lat_seconds", "Test histogram.", [0.1, 0.5, 1]);
+    h.observe(0.05);
+    h.observe(0.3);
+    h.observe(0.7);
+    h.observe(4); // over the largest bucket → only +Inf
+    const out = r.render();
+    expect(out).toContain("# TYPE lat_seconds histogram");
+    expect(out).toContain(`lat_seconds_bucket{agent="test",le="0.1"} 1`);
+    expect(out).toContain(`lat_seconds_bucket{agent="test",le="0.5"} 2`);
+    expect(out).toContain(`lat_seconds_bucket{agent="test",le="1"} 3`);
+    expect(out).toContain(`lat_seconds_bucket{agent="test",le="+Inf"} 4`);
+    expect(out).toContain(`lat_seconds_sum{agent="test"} ${0.05 + 0.3 + 0.7 + 4}`);
+    expect(out).toContain(`lat_seconds_count{agent="test"} 4`);
+  });
+
+  test("histogram keeps per-label-set series apart", () => {
+    const r = new Registry();
+    const h = r.histogram("d", "h", [1]);
+    h.observe(0.5, { q: "a" });
+    h.observe(2, { q: "b" });
+    const out = r.render();
+    expect(out).toContain(`d_bucket{le="1",q="a"} 1`);
+    expect(out).toContain(`d_bucket{le="+Inf",q="a"} 1`);
+    expect(out).toContain(`d_bucket{le="1",q="b"} 0`);
+    expect(out).toContain(`d_bucket{le="+Inf",q="b"} 1`);
+    expect(out).toContain(`d_count{q="b"} 1`);
+  });
 });

@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach } from "bun:test";
-import { db } from "../src/db/schema";
 import { SoulDataSchema } from "../src/soul/data";
 import { applyOverrides, mutateOverride, FIELD_ALIASES } from "../src/soul/overrides";
 import * as SO from "../src/db/soul-overrides";
@@ -38,48 +37,48 @@ describe("applyOverrides", () => {
 });
 
 describe("mutateOverride", () => {
-  beforeEach(() => db.run("DELETE FROM soul_overrides"));
+  beforeEach(async () => { await SO.clear(); });
 
-  it("accepts alias fields and strips Slack wrappers", () => {
-    const r = mutateOverride(
+  it("accepts alias fields and strips Slack wrappers", async () => {
+    const r = await mutateOverride(
       { field: "trust", action: "add", value: "<#C0WRAP|general>", by: "U0MGR" },
       { managerId: "U0MGR" },
     );
     expect(r.ok).toBe(true);
-    expect(SO.list()[0]).toMatchObject({ field: "trustedChannels", value: "C0WRAP", action: "add" });
+    expect((await SO.list())[0]).toMatchObject({ field: "trustedChannels", value: "C0WRAP", action: "add" });
   });
 
-  it("rejects malformed ids per field type", () => {
-    const r1 = mutateOverride({ field: "trust", action: "add", value: "U0NOTCHANNEL", by: "U0MGR" }, { managerId: "U0MGR" });
+  it("rejects malformed ids per field type", async () => {
+    const r1 = await mutateOverride({ field: "trust", action: "add", value: "U0NOTCHANNEL", by: "U0MGR" }, { managerId: "U0MGR" });
     expect(r1.ok).toBe(false);
-    const r2 = mutateOverride({ field: "dm", action: "add", value: "C0NOTUSER", by: "U0MGR" }, { managerId: "U0MGR" });
+    const r2 = await mutateOverride({ field: "dm", action: "add", value: "C0NOTUSER", by: "U0MGR" }, { managerId: "U0MGR" });
     expect(r2.ok).toBe(false);
-    expect(SO.list().length).toBe(0);
+    expect((await SO.list()).length).toBe(0);
   });
 
-  it("refuses to block the manager (self-lockout guard)", () => {
-    const r = mutateOverride({ field: "block", action: "add", value: "<@U0MGR>", by: "U0MGR" }, { managerId: "U0MGR" });
+  it("refuses to block the manager (self-lockout guard)", async () => {
+    const r = await mutateOverride({ field: "block", action: "add", value: "<@U0MGR>", by: "U0MGR" }, { managerId: "U0MGR" });
     expect(r.ok).toBe(false);
-    expect(SO.list().length).toBe(0);
+    expect((await SO.list()).length).toBe(0);
   });
 });
 
 describe("soulData() overlay", () => {
-  beforeEach(() => {
-    db.run("DELETE FROM soul_overrides");
+  beforeEach(async () => {
+    await SO.clear();
     setSoulData(base); // memo = base fixture from above
   });
 
-  it("applies overrides on every read — memo path included", () => {
+  it("applies overrides on every read — memo path included", async () => {
     expect(soulData().trustedChannels).toEqual(["C0TEAM"]);
-    SO.upsert({ field: "trustedChannels", value: "C0LIVE", action: "add", created_by: "U0MGR" });
+    await SO.upsert({ field: "trustedChannels", value: "C0LIVE", action: "add", created_by: "U0MGR" });
     expect(soulData().trustedChannels.sort()).toEqual(["C0LIVE", "C0TEAM"]); // no reload needed
-    SO.upsert({ field: "trustedChannels", value: "C0TEAM", action: "remove", created_by: "U0MGR" });
+    await SO.upsert({ field: "trustedChannels", value: "C0TEAM", action: "remove", created_by: "U0MGR" });
     expect(soulData().trustedChannels).toEqual(["C0LIVE"]); // shadows SOUL.md entry
   });
 
-  it("soulDataBase() exposes the un-overlaid view (provenance rendering)", () => {
-    SO.upsert({ field: "trustedChannels", value: "C0LIVE", action: "add", created_by: "U0MGR" });
+  it("soulDataBase() exposes the un-overlaid view (provenance rendering)", async () => {
+    await SO.upsert({ field: "trustedChannels", value: "C0LIVE", action: "add", created_by: "U0MGR" });
     expect(soulDataBase().trustedChannels).toEqual(["C0TEAM"]);
   });
 });

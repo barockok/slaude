@@ -22,14 +22,18 @@
     "link": "chmod +x bin/slaude.ts && ln -sf \"$PWD/bin/slaude.ts\" \"$HOME/.bun/bin/slaude\" && echo linked: $HOME/.bun/bin/slaude",
     "dev": "bun --watch src/server.ts",
     "start": "bun src/server.ts",
+    "worker": "bun src/node/main.ts",
     "sim": "bun src/gateway/sim/cli.ts",
     "typecheck": "tsc --noEmit",
     "manifest": "bun src/cli/manifest.ts",
+    "slack-app": "bun src/cli/slack-app.ts",
     "validate-soul": "bun src/cli/validate.ts",
     "install-deps": "bun src/cli/install.ts",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
-    "brain-backfill": "bun src/cli/brain-backfill.ts"
+    "brain-backfill": "bun src/cli/brain-backfill.ts",
+    "migrate-sqlite": "bun src/cli/migrate-sqlite.ts",
+    "test:pg": "SLAUDE_DB=pg bun test"
   },
   "devDependencies": {
     "@types/bun": "latest",
@@ -39,10 +43,13 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.173",
     "@anthropic-ai/sdk": "^0.104.1",
+    "@electric-sql/pglite": "^0.5.7",
     "@opentui/core": "^0.3.2",
     "@opentui/react": "^0.3.2",
     "@slack/bolt": "^4.1.0",
+    "bullmq": "^6.2.0",
     "gbrain": "github:garrytan/gbrain#03ffc6ebdbc7dd8b29e5bfd0c3a9a6c983b54f01",
+    "ioredis": "^6.0.0",
     "react": "^19.2.7",
     "yaml": "^2.6.0",
     "zod": "^3.23.8"
