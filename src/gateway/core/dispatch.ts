@@ -80,8 +80,15 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
     deadline: number;
     /** Jobs whose outcome this follower still owes the UX pipeline. */
     jobs: Map<string, { queue: string }>;
-    /** A done/error arrived via the stream since the last enqueue. */
-    sawOutcome: boolean;
+    /**
+     * Once-guard: jobIds whose done/error outcome has already been emitted —
+     * by EITHER the stream re-emit OR the job-completion synthesizer, whichever
+     * won the race. A turn's outcome fires exactly once per job. Keyed by the
+     * unique (UUID) jobId, so it never wrongly suppresses a different job's
+     * outcome and needs no per-window reset — the follower (and this Set) is
+     * discarded once its loop ends.
+     */
+    outcomeEmitted: Set<string>;
   };
   const followers = new Map<string, Follower>();
   let closed = false;
@@ -92,10 +99,16 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
     if (existing) {
       existing.deadline = Math.max(existing.deadline, deadline);
       existing.jobs.set(job.jobId, { queue: job.queue });
-      existing.sawOutcome = false;
+      // Do NOT reset the once-guard: it is keyed by unique jobId, so a new
+      // turn's job simply isn't in it yet, and clearing it could let a
+      // still-lagging stream outcome for a prior job re-fire.
       return;
     }
-    const state: Follower = { deadline, jobs: new Map([[job.jobId, { queue: job.queue }]]), sawOutcome: false };
+    const state: Follower = {
+      deadline,
+      jobs: new Map([[job.jobId, { queue: job.queue }]]),
+      outcomeEmitted: new Set(),
+    };
     followers.set(sessionId, state);
     void (async () => {
       let lastId: string | undefined;
@@ -111,12 +124,23 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
               lastId = entry.id;
               const e = entry.event as AgentEvent;
               if (!e || typeof e !== "object" || !("type" in e)) continue;
-              agent.emit("event", e);
               if (e.type === "done" || e.type === "error") {
-                state.sawOutcome = true;
+                // Authoritative turn outcome. Attribute it to a job still
+                // awaiting one (outcomes are FIFO per session — turns are
+                // serialized by the session lock) and emit exactly once. If
+                // every in-flight job's outcome was already emitted — the
+                // job-completion synthesizer beat the stream under lag —
+                // suppress this duplicate re-emit so the user never gets a
+                // second ✅/❌ for one turn.
+                const target = [...state.jobs.keys()].find((id) => !state.outcomeEmitted.has(id));
+                if (target === undefined) continue;
+                state.outcomeEmitted.add(target);
+                agent.emit("event", e);
                 // Turn finished — linger briefly for stragglers, then stop
                 // (unless a new enqueue pushed the deadline out again).
                 state.deadline = Math.min(state.deadline, Date.now() + followLingerMs);
+              } else {
+                agent.emit("event", e);
               }
             }
           } catch (e) {
@@ -135,14 +159,19 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
               if (jstate === "completed" || jstate === "failed" || jstate === "missing") {
                 state.jobs.delete(jobId);
                 state.deadline = Math.min(state.deadline, Date.now() + followLingerMs);
-                if (!state.sawOutcome) {
+                // Synthesize the outcome only if the stream didn't already
+                // deliver (and re-emit) it for THIS job. Same once-guard the
+                // stream path consults+sets, so whichever fires first wins and
+                // the other is suppressed — no double done, double error, or
+                // done+error for one job.
+                if (!state.outcomeEmitted.has(jobId)) {
+                  state.outcomeEmitted.add(jobId);
                   console.warn(
                     `[dispatch] events-stream gap session=${sessionId} job=${jobId} state=${jstate} — synthesizing turn outcome`,
                   );
                   agent.emit("event", (jstate === "failed"
                     ? { type: "error", sessionId, error: "turn failed on the node (job failed; events stream gap)" }
                     : { type: "done", sessionId }) as AgentEvent);
-                  state.sawOutcome = true;
                 }
               }
             } catch {
