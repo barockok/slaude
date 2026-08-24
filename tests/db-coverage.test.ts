@@ -4,12 +4,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { db, ensureCronPauseColumn } from "../src/db/schema";
+import { getSqliteRaw } from "../src/db/client";
 import { findById, findByPrefix } from "../src/db/cron-jobs";
 
 // Covers the ambiguous-prefix guard in src/db/cron-jobs.ts.
 
-afterAll(() => {
-  db.run("DELETE FROM cron_jobs WHERE id LIKE 'abcdef12%'");
+afterAll(async () => {
+  await db.run("DELETE FROM cron_jobs WHERE id LIKE 'abcdef12%'");
 });
 
 describe("cron-jobs findByPrefix", () => {
@@ -20,23 +21,23 @@ describe("cron-jobs findByPrefix", () => {
       [id],
     );
 
-  test("throws on an ambiguous 8-char prefix instead of picking one", () => {
-    insert("abcdef12-aaaa-aaaa");
-    insert("abcdef12-bbbb-bbbb");
-    expect(() => findByPrefix("abcdef12")).toThrow(/matches multiple jobs/);
+  test("throws on an ambiguous 8-char prefix instead of picking one", async () => {
+    await insert("abcdef12-aaaa-aaaa");
+    await insert("abcdef12-bbbb-bbbb");
+    await expect(findByPrefix("abcdef12")).rejects.toThrow(/matches multiple jobs/);
   });
 
-  test("unique 8-char prefix resolves; non-8-char falls back to findById", () => {
-    db.run("DELETE FROM cron_jobs WHERE id = 'abcdef12-bbbb-bbbb'");
-    expect(findByPrefix("abcdef12")?.id).toBe("abcdef12-aaaa-aaaa");
-    expect(findByPrefix("abcdef12-aaaa-aaaa")?.id).toBe("abcdef12-aaaa-aaaa"); // full id path
-    expect(findByPrefix("00000000")).toBeNull(); // 8 chars, no match
-    expect(findById("nope")).toBeNull();
+  test("unique 8-char prefix resolves; non-8-char falls back to findById", async () => {
+    await db.run("DELETE FROM cron_jobs WHERE id = 'abcdef12-bbbb-bbbb'");
+    expect((await findByPrefix("abcdef12"))?.id).toBe("abcdef12-aaaa-aaaa");
+    expect((await findByPrefix("abcdef12-aaaa-aaaa"))?.id).toBe("abcdef12-aaaa-aaaa"); // full id path
+    expect(await findByPrefix("00000000")).toBeNull(); // 8 chars, no match
+    expect(await findById("nope")).toBeNull();
   });
 });
 
 describe("cron_jobs schema migrations", () => {
-  test("ensureCronPauseColumn adds missing paused column", () => {
+  test.skipIf(process.env.SLAUDE_DB === "pg")("ensureCronPauseColumn adds missing paused column", () => {
     const legacy = new Database(":memory:");
     try {
       legacy.run(`
@@ -59,7 +60,8 @@ describe("cron_jobs schema migrations", () => {
     }
   });
 
-  test("adds paused to legacy cron_jobs tables", async () => {
+  test.skipIf(process.env.SLAUDE_DB === "pg")("adds paused to legacy cron_jobs tables", async () => {
+    if (getSqliteRaw() == null) return;
     const home = mkdtempSync(join(tmpdir(), "slaude-schema-migration-"));
     try {
       const script = `
@@ -88,13 +90,14 @@ describe("cron_jobs schema migrations", () => {
           )
         \`);
         seed.close();
-        const { db } = await import("./src/db/schema");
-        const cols = db.query("PRAGMA table_info(cron_jobs)").all().map((c) => c.name);
+        await import("./src/db/schema");
+        const { getSqliteRaw } = await import("./src/db/client");
+        const cols = getSqliteRaw().query("PRAGMA table_info(cron_jobs)").all().map((c) => c.name);
         console.log(JSON.stringify(cols));
       `;
       const proc = Bun.spawn({
         cmd: [process.execPath, "-e", script],
-        env: { ...process.env, SLAUDE_HOME: home, SLAUDE_DB_PATH: "" },
+        env: { ...process.env, SLAUDE_HOME: home, SLAUDE_DB_PATH: "", SLAUDE_DB: "sqlite" },
         stdout: "pipe",
         stderr: "pipe",
       });

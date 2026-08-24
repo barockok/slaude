@@ -22,7 +22,7 @@ function dump(cards: OutboundCard[]): string {
   return JSON.stringify(cards.map((c) => ({ kind: c.kind, channel: c.channel, text: c.text, resolved: c.resolved, actionIds: c.actionIds })), null, 2);
 }
 
-export async function runTranscript(t: Transcript, agent: "stub" | "real" = "stub", soulMd?: string): Promise<void> {
+export async function runTranscript(t: Transcript, agent: "stub" | "real" = "stub", soulMd?: string, nodes = 0): Promise<void> {
   const s = await SimSession.create({
     layer: t.layer,
     as: t.as,
@@ -30,6 +30,7 @@ export async function runTranscript(t: Transcript, agent: "stub" | "real" = "stu
     behavior: t.agent_behavior,
     agent,
     soulMd,
+    nodes,
   });
   try {
     for (const step of t.steps) {

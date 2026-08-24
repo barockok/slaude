@@ -14,7 +14,7 @@ const MCP_PATH = join(paths.home, ".mcp.json");
 let s: SimSession | undefined;
 // The lock table is shared across sim test files in one process — start clean so a
 // stale lock from another file can't pre-strip creds (or mask a missing strip).
-beforeEach(() => OneOnOne._wipeForTests());
+beforeEach(async () => { await OneOnOne._wipeForTests(); });
 afterEach(async () => { await s?.dispose(); s = undefined; try { rmSync(MCP_PATH, { force: true }); } catch {} });
 
 function writeMcp() {
@@ -35,23 +35,23 @@ describe("/1on1 clears credentials of whitelisted .mcp.json services in the reso
     s.thread = "T1"; // pin so the lock and the session share one thread_ts
 
     await s.send({ text: "hello" }); // engage thread T1 → creates session + route, runs resolver
-    const row = Sessions.findByThread({ team_id: "T0SIM", channel_id: "C0TEAM", thread_ts: "T1" });
+    const row = await Sessions.findByThread({ team_id: "T0SIM", channel_id: "C0TEAM", thread_ts: "T1" });
     expect(row).toBeTruthy();
     const sid = row!.id;
 
     // Unlocked: agent identity intact.
-    const before = s.handle.__resolveMcp(sid)!;
+    const before = (await s.handle.__resolveMcp(sid))!;
     expect((before.demo as any).env).toEqual({ SECRET: "agent-token" });
 
     await s.send({ text: "/1on1" }); // lock thread T1
 
     // Locked: whitelisted server mounts anonymous (env emptied).
-    const after = s.handle.__resolveMcp(sid)!;
+    const after = (await s.handle.__resolveMcp(sid))!;
     expect((after.demo as any).env).toEqual({});
     expect((after.demo as any).command).toBe("demo-server"); // still launches, just credless
 
     await s.send({ as: "U0MGR", text: "/1on1 off", thread: "T1" }); // release
-    const restored = s.handle.__resolveMcp(sid)!;
+    const restored = (await s.handle.__resolveMcp(sid))!;
     expect((restored.demo as any).env).toEqual({ SECRET: "agent-token" });
   });
 
@@ -62,8 +62,8 @@ describe("/1on1 clears credentials of whitelisted .mcp.json services in the reso
     await s.send({ text: "/1on1", thread: "TA" }); // lock thread TA
     await s.send({ text: "hello", thread: "TB" }); // chat lands on thread TB
 
-    const rowB = Sessions.findByThread({ team_id: "T0SIM", channel_id: "C0TEAM", thread_ts: "TB" });
-    const after = s.handle.__resolveMcp(rowB!.id)!;
+    const rowB = await Sessions.findByThread({ team_id: "T0SIM", channel_id: "C0TEAM", thread_ts: "TB" });
+    const after = (await s.handle.__resolveMcp(rowB!.id))!;
     // TB has no lock → agent creds NOT stripped. This is the reported symptom:
     // the lock is keyed to a thread the chat session never shares.
     expect((after.demo as any).env).toEqual({ SECRET: "agent-token" });

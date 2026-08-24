@@ -8,6 +8,15 @@ import { SoulDataSchema } from "../../../src/soul/data";
 let r: ReplController | undefined;
 afterEach(async () => { await r?.dispose(); r = undefined; });
 
+// An approval card renders only after the durable pending_gates insert lands;
+// on a real Postgres that outlasts the handled turn, so poll for the output.
+const waitFor = async (pred: () => boolean, ms = 15_000) => {
+  const t0 = Date.now();
+  while (!pred() && Date.now() - t0 < ms) {
+    await new Promise((res) => setTimeout(res, 10));
+  }
+};
+
 describe("REPL controller — gates, clicks, inspection, shared mode", () => {
   it("replCommandNames merges sim-native heads with the agent slash heads", () => {
     const names = replCommandNames();
@@ -22,6 +31,7 @@ describe("REPL controller — gates, clicks, inspection, shared mode", () => {
     await r.startDefault();                       // dm, acting as manager U0MGR
     await r.handle("/behavior request_approval");
     await r.handle("deploy please");              // opens an approval gate
+    await waitFor(() => out.join("\n").toLowerCase().includes("approval"));
     expect(out.join("\n").toLowerCase()).toContain("approval");
 
     // bogus input while the gate is open → usage hint, gate untouched
@@ -47,7 +57,7 @@ describe("REPL controller — gates, clicks, inspection, shared mode", () => {
     const o = out.join("\n");
     expect(o).toContain("(resolved)");
     expect(o).toContain("approved by");
-  });
+  }, 30_000);
 
   it("/click clicks a live card by index (default + explicit verb) and reports a missing one", async () => {
     r = new ReplController();
@@ -56,6 +66,7 @@ describe("REPL controller — gates, clicks, inspection, shared mode", () => {
     await r.startDefault();
     await r.handle("/behavior request_approval");
     await r.handle("ship it");                    // approval card = live card #1
+    await waitFor(() => out.join("\n").toLowerCase().includes("approval"));
 
     out.length = 0;
     await r.handle("/click 9");
@@ -65,7 +76,7 @@ describe("REPL controller — gates, clicks, inspection, shared mode", () => {
     out.length = 0;
     await r.handle("/click 1");                   // default verb = first action id
     expect(out.join("\n")).toContain("[card");    // stub path re-dumps the cards
-  });
+  }, 30_000);
 
   it("/memory on a stub session reports there is no real-agent session", async () => {
     r = new ReplController();

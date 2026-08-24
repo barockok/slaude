@@ -10,6 +10,7 @@ import { paths } from "../../../src/config/home";
 import * as OneOnOne from "../../../src/db/one-on-one";
 import { initiatorConfigDir } from "../../../src/agent/oauth-home";
 import { oauthKey, type OAuthServerConfig } from "../../../src/agent/mcp-oauth/store";
+import { db } from "../../../src/db/schema";
 
 /** Transport that records `chat.postMessage` and captures registered event/action
  *  handlers so a test can drive an inbound Slack message through the gateway. */
@@ -57,9 +58,11 @@ async function sendInbound(emit: (n: string, a: any) => Promise<void>, text: str
 const mcpJsonPath = join(paths.home, ".mcp.json");
 const initiatorDir = initiatorConfigDir(INITIATOR);
 
-beforeEach(() => {
+beforeEach(async () => {
   writeSoulFixture(WORLD);                       // manager = U0MGR, trusted = C0TEAM
   OneOnOne._wipeForTests();
+  // Durable dedup: tests reuse the same channel:ts across cases on purpose.
+  await db.run("DELETE FROM seen_events");
   writeFileSync(mcpJsonPath, JSON.stringify({
     mcpServers: { workbench: { type: "http", url: "https://workbench.example/mcp" } },
   }), "utf8");

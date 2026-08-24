@@ -199,7 +199,7 @@ export function soulDataBase(): SoulData {
 export function soulData(): SoulData {
   const base = soulDataBase();
   try {
-    return applyOverrides(base, SoulOverrides.list());
+    return applyOverrides(base, SoulOverrides.listSync());
   } catch {
     return base; // overlay must never take the gates down
   }

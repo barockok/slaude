@@ -50,9 +50,9 @@ afterAll(() => {
   __resetSoulDataMemo();
 });
 
-beforeEach(() => {
-  db.run("DELETE FROM cron_jobs");
-  db.run("DELETE FROM ignores");
+beforeEach(async () => {
+  await db.run("DELETE FROM cron_jobs");
+  await db.run("DELETE FROM ignores");
 });
 
 describe("slackHandlers error catches", () => {
@@ -238,7 +238,7 @@ describe("adminHandlers cron jobs", () => {
   });
 
   test("listCronJobs denies non-manager/approver", async () => {
-    CronJobs.create({
+    await CronJobs.create({
       channelId: "C1",
       createdBy: MANAGER,
       cronExpr: "0 9 * * *",
@@ -252,7 +252,7 @@ describe("adminHandlers cron jobs", () => {
   });
 
   test("listCronJobs renders passive tag for when_active=skip", async () => {
-    CronJobs.create({
+    await CronJobs.create({
       channelId: "C1",
       createdBy: MANAGER,
       cronExpr: "0 9 * * *",
@@ -267,14 +267,14 @@ describe("adminHandlers cron jobs", () => {
   });
 
   test("listCronJobs renders paused lifecycle flag", async () => {
-    const paused = CronJobs.create({
+    const paused = await CronJobs.create({
       channelId: "C1",
       createdBy: MANAGER,
       cronExpr: "0 9 * * *",
       prompt: "paused digest",
       nextRunAt: Date.now(),
     });
-    CronJobs.pause(paused.id);
+    await CronJobs.pause(paused.id);
     const res = await adminHandlers.listCronJobs(makeCtx());
     expect(res.content[0]!.text).toContain("paused digest");
     expect(res.content[0]!.text).toContain("paused");
@@ -297,7 +297,7 @@ describe("adminHandlers cron jobs", () => {
     expect(res.isError).toBeUndefined();
     expect(res.content[0]!.text).toContain("Cron job created");
     expect(res.content[0]!.text).toContain("[thread, when_active=fire]");
-    const jobs = CronJobs.listActive();
+    const jobs = await CronJobs.listActive();
     expect(jobs).toHaveLength(1);
     expect(jobs[0]!.createdBy).toBe(MANAGER);
     expect(jobs[0]!.slackChannelId).toBe("C0COV001");
@@ -315,7 +315,7 @@ describe("adminHandlers cron jobs", () => {
   });
 
   test("editCronJob updates schedule, prompt, target, and when_active", async () => {
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       channelId: "C1",
       createdBy: MANAGER,
       cronExpr: "0 9 * * *",
@@ -331,7 +331,7 @@ describe("adminHandlers cron jobs", () => {
     });
     expect(res.isError).toBeUndefined();
     expect(res.content[0]!.text).toContain("updated");
-    const updated = CronJobs.findById(job.id)!;
+    const updated = (await CronJobs.findById(job.id))!;
     expect(updated.cronExpr).toBe("30 10 * * 1");
     expect(updated.prompt).toBe("new");
     expect(updated.target).toBe("channel");
@@ -339,7 +339,7 @@ describe("adminHandlers cron jobs", () => {
   });
 
   test("editCronJob rejects empty edits and invalid cron expressions", async () => {
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       channelId: "C1",
       createdBy: MANAGER,
       cronExpr: "0 9 * * *",
@@ -358,7 +358,7 @@ describe("adminHandlers cron jobs", () => {
   });
 
   test("pause/resume cron lifecycle", async () => {
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       channelId: "C1",
       createdBy: MANAGER,
       cronExpr: "0 9 * * *",
@@ -367,10 +367,10 @@ describe("adminHandlers cron jobs", () => {
     });
     const paused = await adminHandlers.pauseCronJob(makeCtx(), { jobId: job.id.slice(0, 8) });
     expect(paused.isError).toBeUndefined();
-    expect(CronJobs.findById(job.id)!.paused).toBe(1);
+    expect((await CronJobs.findById(job.id))!.paused).toBe(1);
     const resumed = await adminHandlers.resumeCronJob(makeCtx(), { jobId: job.id.slice(0, 8) });
     expect(resumed.isError).toBeUndefined();
-    const updated = CronJobs.findById(job.id)!;
+    const updated = (await CronJobs.findById(job.id))!;
     expect(updated.paused).toBe(0);
   });
 
@@ -403,7 +403,7 @@ describe("adminHandlers cron jobs", () => {
   });
 
   test("resumeCronJob rejects invalid stored cron expression", async () => {
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       channelId: "C1",
       createdBy: MANAGER,
       cronExpr: "not a cron",
@@ -428,7 +428,7 @@ describe("adminHandlers cron jobs", () => {
   });
 
   test("removeCronJob deactivates by 8-char prefix", async () => {
-    const job = CronJobs.create({
+    const job = await CronJobs.create({
       channelId: "C1",
       createdBy: MANAGER,
       cronExpr: "0 9 * * *",
@@ -438,7 +438,7 @@ describe("adminHandlers cron jobs", () => {
     const res = await adminHandlers.removeCronJob(makeCtx(), { jobId: job.id.slice(0, 8) });
     expect(res.isError).toBeUndefined();
     expect(res.content[0]!.text).toContain("deactivated");
-    expect(CronJobs.listActive()).toHaveLength(0);
+    expect(await CronJobs.listActive()).toHaveLength(0);
   });
 
   test("removeCronJob surfaces ambiguous-prefix error", async () => {
@@ -448,8 +448,8 @@ describe("adminHandlers cron jobs", () => {
          VALUES (?, NULL, NULL, NULL, 'C1', NULL, ?, '0 9 * * *', 'p', ?, 'thread', 'fire', 1)`,
         [id, MANAGER, Date.now()],
       );
-    insert("aaaabbbb-0000-4000-8000-000000000001");
-    insert("aaaabbbb-0000-4000-8000-000000000002");
+    await insert("aaaabbbb-0000-4000-8000-000000000001");
+    await insert("aaaabbbb-0000-4000-8000-000000000002");
     const res = await adminHandlers.removeCronJob(makeCtx(), { jobId: "aaaabbbb" });
     expect(res.isError).toBe(true);
     expect(res.content[0]!.text).toContain("matches multiple jobs");
@@ -490,7 +490,7 @@ describe("adminHandlers thread ignores", () => {
     const res = await adminHandlers.ignoreThread(ctx, { duration: "5m", reason: "drift" });
     expect(res.isError).toBeUndefined();
     expect(res.content[0]!.text).toContain("ignored for 5m");
-    const rec = Ignores.findActiveForThread(ctx.channel, ctx.threadTs);
+    const rec = await Ignores.findActiveForThread(ctx.channel, ctx.threadTs);
     expect(rec).not.toBeNull();
     expect(rec!.expiresAt).toBeGreaterThan(Date.now());
     expect(rec!.reason).toBe("drift");
@@ -501,7 +501,7 @@ describe("adminHandlers thread ignores", () => {
     await adminHandlers.ignoreThread(ctx, { duration: "5m", reason: "first" });
     const res = await adminHandlers.ignoreThread(ctx, { duration: "permanent", reason: "second" });
     expect(res.content[0]!.text).toContain("ignored permanently");
-    const rec = Ignores.findActiveForThread(ctx.channel, ctx.threadTs);
+    const rec = await Ignores.findActiveForThread(ctx.channel, ctx.threadTs);
     expect(rec!.expiresAt).toBeNull();
     expect(rec!.reason).toBe("second");
   });
@@ -522,7 +522,7 @@ describe("adminHandlers thread ignores", () => {
     await adminHandlers.ignoreThread(ctx, { duration: "1h", reason: "x" });
     const res = await adminHandlers.unignoreThread(ctx);
     expect(res.content[0]!.text).toContain("Thread ignore removed");
-    expect(Ignores.findActiveForThread(ctx.channel, ctx.threadTs)).toBeNull();
+    expect(await Ignores.findActiveForThread(ctx.channel, ctx.threadTs)).toBeNull();
   });
 });
 
@@ -553,7 +553,7 @@ describe("adminHandlers user ignores", () => {
     });
     expect(res.isError).toBeUndefined();
     expect(res.content[0]!.text).toContain("<@U_TARGET> ignored for 1h");
-    const rec = Ignores.findActiveForUser("U_TARGET");
+    const rec = await Ignores.findActiveForUser("U_TARGET");
     expect(rec).not.toBeNull();
     expect(rec!.expiresAt).toBeGreaterThan(Date.now());
   });
@@ -565,7 +565,7 @@ describe("adminHandlers user ignores", () => {
       reason: "blocked",
     });
     expect(res.content[0]!.text).toContain("ignored permanently");
-    expect(Ignores.findActiveForUser("U_TARGET")!.expiresAt).toBeNull();
+    expect((await Ignores.findActiveForUser("U_TARGET"))!.expiresAt).toBeNull();
   });
 
   test("unignoreUser denied for non-manager", async () => {
@@ -587,7 +587,7 @@ describe("adminHandlers user ignores", () => {
     });
     const res = await adminHandlers.unignoreUser(makeCtx(), { userId: "U_TARGET" });
     expect(res.content[0]!.text).toContain("stopped ignoring <@U_TARGET>");
-    expect(Ignores.findActiveForUser("U_TARGET")).toBeNull();
+    expect(await Ignores.findActiveForUser("U_TARGET")).toBeNull();
   });
 });
 

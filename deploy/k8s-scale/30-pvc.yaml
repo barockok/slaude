@@ -1,0 +1,22 @@
+# Shared $SLAUDE_HOME (spec §1): SDK session transcripts, workspaces,
+# personas, skills, knowledge. Mounted by EVERY gateway and node pod, so the
+# access mode must be ReadWriteMany — set storageClassName to an RWX-capable
+# class for your cluster:
+#
+#   AWS   efs-sc            (EFS CSI)
+#   GCP   standard-rwx      (Filestore CSI)
+#   Azure azurefile-csi
+#   self-hosted: longhorn (RWX), cephfs, or an NFS provisioner
+#
+# RWO storage will schedule but strand every pod after the first node.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: slaude-home
+  namespace: slaude-scale
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: REPLACE-rwx-class
+  resources:
+    requests:
+      storage: 20Gi

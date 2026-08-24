@@ -21,7 +21,21 @@ const fixtureRepl = rawArgs.includes("--fixture");
 let soulPath: string | undefined;
 const soulIdx = rawArgs.indexOf("--soul");
 if (soulIdx !== -1) soulPath = rawArgs[soulIdx + 1];
-const consumed = new Set(soulPath ? ["--soul", soulPath] : []);
+// --nodes N (run mode only): boot a role=gateway dispatch + N in-process node
+// workers over real Redis (SLAUDE_REDIS_URL) and run the fixtures through the
+// full multi-node path. Default 0 = classic in-process mono sim.
+let nodes = 0;
+let nodesArg: string | undefined;
+const nodesIdx = rawArgs.indexOf("--nodes");
+if (nodesIdx !== -1) {
+  nodesArg = rawArgs[nodesIdx + 1];
+  nodes = Number.parseInt(nodesArg ?? "", 10);
+  if (!Number.isInteger(nodes) || nodes < 1) {
+    console.error(`--nodes expects a positive integer (got '${nodesArg ?? ""}')`);
+    process.exit(1);
+  }
+}
+const consumed = new Set([...(soulPath ? ["--soul", soulPath] : []), ...(nodesArg ? [nodesArg] : [])]);
 const positional = rawArgs.filter((a) => !a.startsWith("--") && a !== "-v" && !consumed.has(a));
 const mode = positional[0];
 const args = positional.slice(1);
@@ -97,13 +111,18 @@ if (isRun) {
   const { parseTranscript, runTranscript } = await import("./transcript");
   const { readFileSync } = await import("node:fs");
   const { Glob } = await import("bun");
+  if (nodes > 0) {
+    // Fail fast with an actionable message — BullMQ needs a real Redis.
+    const { simRedisUrl } = await import("./cluster");
+    console.log(`[sim] multi-node: ${nodes} node worker(s) over ${simRedisUrl()}`);
+  }
   const patterns = args.length ? args : ["src/gateway/sim/scenarios/*.yaml"];
   let failures = 0;
   let ran = 0;
   for (const pat of patterns) {
     for await (const file of new Glob(pat).scan(".")) {
       ran++;
-      try { await runTranscript(parseTranscript(readFileSync(file, "utf8")), agentMode, soulMd); console.log(`✓ ${file}`); }
+      try { await runTranscript(parseTranscript(readFileSync(file, "utf8")), agentMode, soulMd, nodes); console.log(`✓ ${file}`); }
       catch (e) { failures++; console.error(`✗ ${file}\n  ${(e as Error).message}`); }
     }
   }

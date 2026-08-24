@@ -42,10 +42,10 @@ export type MutateResult =
 
 /** Validated write. Authority (manager check) is the CALLER's job — this layer
  *  enforces id shape + the self-lockout guard, and is shared by slash + MCP. */
-export function mutateOverride(
+export async function mutateOverride(
   i: { field: FieldAlias | OverrideField; action: "add" | "remove"; value: string; by: string },
   opts: { managerId?: string },
-): MutateResult {
+): Promise<MutateResult> {
   const field: OverrideField =
     (FIELD_ALIASES as Record<string, OverrideField>)[i.field] ?? (i.field as OverrideField);
   if (!OVERRIDE_FIELDS.includes(field)) return { ok: false, reason: `unknown field \`${i.field}\`` };
@@ -57,7 +57,7 @@ export function mutateOverride(
   if (field === "blockedUsers" && i.action === "add" && opts.managerId && value === opts.managerId) {
     return { ok: false, reason: "refusing to block the manager (self-lockout guard)" };
   }
-  SO.upsert({ field, value, action: i.action, created_by: i.by });
+  await SO.upsert({ field, value, action: i.action, created_by: i.by });
   console.log(`[soul-override] field=${field} value=${value} action=${i.action} by=${i.by}`);
   return { ok: true, field, value };
 }

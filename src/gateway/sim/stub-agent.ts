@@ -78,7 +78,7 @@ export class StubAgent extends AgentManager {
   lastError(): string | undefined { return this.#errors.at(-1); }
 
   override async sendMessage(sessionId: string, envelope: string): Promise<void> {
-    this.#resolverLocal?.(sessionId);
+    await this.#resolverLocal?.(sessionId);
     const ctx = this.#handle?.__sessionCtx(sessionId);
     const beh = BEHAVIORS[this.#behavior];
     const emit = (e: AgentEvent) => this.emit("event", e);

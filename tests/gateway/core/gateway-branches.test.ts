@@ -9,6 +9,7 @@ import { db } from "../../../src/db/schema";
 import * as CronJobs from "../../../src/db/cron-jobs";
 import * as OneOnOne from "../../../src/db/one-on-one";
 import * as MentionOnly from "../../../src/db/mention-only";
+import * as SO from "../../../src/db/soul-overrides";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 import { __resetModelCache } from "../../../src/agent/models";
 import { paths } from "../../../src/config/home";
@@ -156,15 +157,15 @@ const fakeSurfaceFactory =
     };
   };
 
-afterEach(() => {
+afterEach(async () => {
   rmSync(mcpJsonPath, { force: true });
   delete process.env.SLAUDE_OAUTH_REDIRECT_URL;
   delete process.env.SLAUDE_METRICS_PER_USER;
   delete process.env.SLAUDE_BRAIN_DISABLED;
   setSystemTime(); // reset any time travel
-  OneOnOne._wipeForTests();
-  db.run("DELETE FROM cron_jobs");
-  db.run("DELETE FROM soul_overrides");
+  await OneOnOne._wipeForTests();
+  await db.run("DELETE FROM cron_jobs");
+  await SO.clear();
   // The /mcp connect flows persist OAuth tokens to the agent config dir and to
   // per-initiator config homes. Scrub them so credential residue doesn't leak
   // into other files' tests (e.g. mcp-connect's "no per-initiator leak" assert).
@@ -210,8 +211,8 @@ describe("gateway uncovered branches", () => {
 
   it("cron-session ctx.requestApproval routes through the ApprovalGate", async () => {
     writeSoulFixture(WORLD);
-    db.run("DELETE FROM cron_jobs");
-    const job = CronJobs.create({
+    await db.run("DELETE FROM cron_jobs");
+    const job = await CronJobs.create({
       slackTeamId: "T",
       slackChannelId: "C0TEAM",
       channelId: "C0TEAM",
@@ -224,8 +225,8 @@ describe("gateway uncovered branches", () => {
     const g = makeGw();
     // scheduler.start() runs the due job through onExecute synchronously-ish
     await new Promise((r) => setTimeout(r, 80));
-    const session = g.agent.ensureSession({ team_id: "T", channel_id: "C0TEAM", thread_ts: `cron:${job.id}` });
-    const servers = g.h.__resolveMcp(session.id);
+    const session = await g.agent.ensureSession({ team_id: "T", channel_id: "C0TEAM", thread_ts: `cron:${job.id}` });
+    const servers = await g.h.__resolveMcp(session.id);
     expect(servers).toBeDefined();
     const ctx = g.h.__sessionCtx(session.id)!;
     expect(ctx).toBeDefined();
@@ -255,7 +256,7 @@ describe("gateway uncovered branches", () => {
     const g = makeGw({ agent });
     const ts = nextTs();
     await g.emit("message", dmArgs(g, "hello", { ts }));
-    const session = g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+    const session = await g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
 
     expect(guard!("no-such-session")).toBeNull();
     expect(typeof guard!(session.id)).toBe("string"); // hasn't spoken yet
@@ -277,8 +278,8 @@ describe("gateway uncovered branches", () => {
     const g = makeGw({ gwOpts: { surfaceFactory: fakeSurfaceFactory(sink) } });
     const ts = nextTs();
     await g.emit("message", dmArgs(g, "hello kb", { ts }));
-    const session = g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
-    const servers = g.h.__resolveMcp(session.id)!;
+    const session = await g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+    const servers = (await g.h.__resolveMcp(session.id))!;
     const kb: any = servers[KB_MCP_NAME];
     expect(kb?.instance).toBeDefined();
 
@@ -308,9 +309,9 @@ describe("gateway uncovered branches", () => {
     const g = makeGw();
     const ts = nextTs();
     await g.emit("message", dmArgs(g, "hi", { ts }));
-    const session = g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+    const session = await g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
     process.env.SLAUDE_BRAIN_DISABLED = "1";
-    const servers = g.h.__resolveMcp(session.id)!;
+    const servers = (await g.h.__resolveMcp(session.id))!;
     expect(servers[KB_MCP_NAME]).toBeDefined();
   });
 
@@ -347,7 +348,7 @@ describe("gateway uncovered branches", () => {
 
   it("/soul list renders base + runtime + masked; /soul clear all reverts; empty world says so", async () => {
     writeSoulFixture(WORLD);
-    db.run("DELETE FROM soul_overrides");
+    await SO.clear();
     const g = makeGw();
     await g.emit("message", dmArgs(g, "/soul dm add <@U0EXTRA>"));
     await g.emit("message", dmArgs(g, "/soul allow remove C0PUB"));
@@ -360,7 +361,7 @@ describe("gateway uncovered branches", () => {
     await g.emit("message", dmArgs(g, "/soul clear all"));
     expect(g.posts.some((p) => String(p.text).includes("overrides cleared"))).toBe(true);
     const { list } = await import("../../../src/db/soul-overrides");
-    expect(list().length).toBe(0);
+    expect((await list()).length).toBe(0);
 
     // Empty ACL world → "no overrides, no soul ACL entries"
     writeSoulFixture({ manager: WORLD.manager, approvers: [], trusted: [], allowed: [] });
@@ -496,10 +497,10 @@ describe("gateway uncovered branches", () => {
       await g.emitAction(btn.action_id, "U0RANDO");
       expect(connects).toBe(0);
       // a 1on1 lock appeared on the card's thread → global no longer applies
-      OneOnOne.lock({ channelId: "D_MGR", threadTs: cardTs, lockedUser: "U0SOMEONE", createdBy: "U0SOMEONE" });
+      await OneOnOne.lock({ channelId: "D_MGR", threadTs: cardTs, lockedUser: "U0SOMEONE", createdBy: "U0SOMEONE" });
       await g.emitAction(btn.action_id, WORLD.manager);
       expect(connects).toBe(0);
-      OneOnOne.unlock("D_MGR", cardTs);
+      await OneOnOne.unlock("D_MGR", cardTs);
       // clicker no longer manager → ignored
       writeSoulFixture({ ...WORLD, manager: "U0NEWMGR", backup: "U0NEWBCK" });
       await g.emitAction(btn.action_id, WORLD.manager);
@@ -524,7 +525,7 @@ describe("gateway uncovered branches", () => {
       // boot a manager DM route, then resolve its session id
       const ts = nextTs();
       await g.emit("message", dmArgs(g, "hi", { ts }));
-      const session = g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+      const session = await g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
 
       // happy path (global/manager): returns a started-status, never the URL; same engine fires
       const status = await g.h.__agentConnect(session.id, "svc");
@@ -546,19 +547,19 @@ describe("gateway uncovered branches", () => {
       writeSoulFixture(WORLD);
 
       // initiator scope: caller owns the 1on1 lock → connect runs into their config home
-      OneOnOne.lock({ channelId: "D_MGR", threadTs: ts, lockedUser: WORLD.manager, createdBy: WORLD.manager });
+      await OneOnOne.lock({ channelId: "D_MGR", threadTs: ts, lockedUser: WORLD.manager, createdBy: WORLD.manager });
       const asInitiator = await g.h.__agentConnect(session.id, "svc");
       expect(asInitiator).toContain("Started authorizing");
       await waitFor(() => connects === 2);
       expect(existsSync(join(paths.home, "oauth", WORLD.manager))).toBe(true);
-      OneOnOne.unlock("D_MGR", ts);
+      await OneOnOne.unlock("D_MGR", ts);
 
       // a 1on1 lock owned by someone else → refused (initiator scope, not the owner)
-      OneOnOne.lock({ channelId: "D_MGR", threadTs: ts, lockedUser: "U0OTHER", createdBy: "U0OTHER" });
+      await OneOnOne.lock({ channelId: "D_MGR", threadTs: ts, lockedUser: "U0OTHER", createdBy: "U0OTHER" });
       const notOwner = await g.h.__agentConnect(session.id, "svc");
       expect(notOwner).toContain("belongs to");
       expect(connects).toBe(2);
-      OneOnOne.unlock("D_MGR", ts);
+      await OneOnOne.unlock("D_MGR", ts);
 
       // unknown session → no active thread
       expect(await g.h.__agentConnect("no-such-session", "svc")).toContain("no active thread");
@@ -569,21 +570,21 @@ describe("gateway uncovered branches", () => {
       const g = makeGw();
       const ts = nextTs();
       await g.emit("message", dmArgs(g, "hi", { ts }));
-      const session = g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+      const session = await g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
 
       // release with no active lock → no-op message, still unlocked
       expect(await g.h.__agentOneOnOne(session.id, "off")).toContain("nothing to release");
-      expect(OneOnOne.find("D_MGR", ts)).toBeNull();
+      expect(await OneOnOne.find("D_MGR", ts)).toBeNull();
 
       // lock → locks the thread to the calling user (the DM's manager)
       const locked = await g.h.__agentOneOnOne(session.id, "lock");
       expect(locked).toContain("1on1");
-      expect(OneOnOne.find("D_MGR", ts)?.locked_user).toBe(WORLD.manager);
+      expect((await OneOnOne.find("D_MGR", ts))?.locked_user).toBe(WORLD.manager);
 
       // release → unlocked again
       const released = await g.h.__agentOneOnOne(session.id, "off");
       expect(released).toContain("open again");
-      expect(OneOnOne.find("D_MGR", ts)).toBeNull();
+      expect(await OneOnOne.find("D_MGR", ts)).toBeNull();
 
       // unknown session → no active thread
       expect(await g.h.__agentOneOnOne("no-such-session", "lock")).toContain("no active thread");
@@ -591,23 +592,23 @@ describe("gateway uncovered branches", () => {
 
     it("agent mention-only toggle (agentMentionOnly seam)", async () => {
       writeSoulFixture(WORLD);
-      MentionOnly._wipeForTests();
+      await MentionOnly._wipeForTests();
       const g = makeGw();
       const ts = nextTs();
       await g.emit("message", dmArgs(g, "hi", { ts }));
-      const session = g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+      const session = await g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
 
       // off when not set → no-op
       expect(await g.h.__agentMentionOnly(session.id, false)).toContain("nothing to change");
-      expect(MentionOnly.find("D_MGR", ts)).toBeNull();
+      expect(await MentionOnly.find("D_MGR", ts)).toBeNull();
 
       // on → flag set
       expect(await g.h.__agentMentionOnly(session.id, true)).toContain("Mention-only on");
-      expect(MentionOnly.find("D_MGR", ts)).not.toBeNull();
+      expect(await MentionOnly.find("D_MGR", ts)).not.toBeNull();
 
       // off → cleared
       expect(await g.h.__agentMentionOnly(session.id, false)).toContain("off");
-      expect(MentionOnly.find("D_MGR", ts)).toBeNull();
+      expect(await MentionOnly.find("D_MGR", ts)).toBeNull();
 
       // unknown session
       expect(await g.h.__agentMentionOnly("no-such-session", true)).toContain("no active thread");
@@ -615,7 +616,7 @@ describe("gateway uncovered branches", () => {
 
     it("/mention-only on/off command toggles the thread flag", async () => {
       writeSoulFixture(WORLD);
-      MentionOnly._wipeForTests();
+      await MentionOnly._wipeForTests();
       const g = makeGw();
       const ts = nextTs();
       await g.emit("message", dmArgs(g, "hi", { ts }));
@@ -627,12 +628,12 @@ describe("gateway uncovered branches", () => {
       // on → flag set
       await g.emit("message", dmArgs(g, "/mention-only", { ts: nextTs(), thread_ts: ts }));
       await waitFor(() => g.posts.some((p) => /reply in this thread only when @-mentioned/.test(String(p.text))));
-      expect(MentionOnly.find("D_MGR", ts)).not.toBeNull();
+      expect(await MentionOnly.find("D_MGR", ts)).not.toBeNull();
 
       // off → cleared
       await g.emit("message", dmArgs(g, "/mention-only off", { ts: nextTs(), thread_ts: ts }));
       await waitFor(() => g.posts.some((p) => /follow the thread normally/.test(String(p.text))));
-      expect(MentionOnly.find("D_MGR", ts)).toBeNull();
+      expect(await MentionOnly.find("D_MGR", ts)).toBeNull();
     });
 
     it("agent connect is disabled when the store-format canary failed", async () => {
@@ -641,7 +642,7 @@ describe("gateway uncovered branches", () => {
       const g = makeGw({ gwOpts: { mcpConnectEnabled: false } });
       const ts = nextTs();
       await g.emit("message", dmArgs(g, "hi", { ts }));
-      const session = g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+      const session = await g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
       expect(await g.h.__agentConnect(session.id, "svc")).toContain("disabled");
     });
 
@@ -653,7 +654,7 @@ describe("gateway uncovered branches", () => {
       g.agent.mcpServerStatus = async () => [{ name: "svc", status: "needs-auth" }] as any;
 
       const threadTs = nextTs();
-      OneOnOne.lock({ channelId: "C0TEAM", threadTs, lockedUser: WORLD.manager, createdBy: WORLD.manager });
+      await OneOnOne.lock({ channelId: "C0TEAM", threadTs, lockedUser: WORLD.manager, createdBy: WORLD.manager });
       const args = {
         event: { type: "app_mention", channel: "C0TEAM", channel_type: "channel", user: WORLD.manager, team: "T", ts: nextTs(), thread_ts: threadTs, text: "<@U_SLAUDE> /mcp" },
         client: g.client,
@@ -664,16 +665,16 @@ describe("gateway uncovered branches", () => {
       const btn = card.blocks.find((b: any) => b.type === "actions").elements[0];
 
       // lock dropped → click invalid
-      OneOnOne.unlock("C0TEAM", threadTs);
+      await OneOnOne.unlock("C0TEAM", threadTs);
       await g.emitAction(btn.action_id, WORLD.manager);
       expect(connects).toBe(0);
       // lock now owned by someone else → click invalid
-      OneOnOne.lock({ channelId: "C0TEAM", threadTs, lockedUser: "U0OTHER", createdBy: "U0OTHER" });
+      await OneOnOne.lock({ channelId: "C0TEAM", threadTs, lockedUser: "U0OTHER", createdBy: "U0OTHER" });
       await g.emitAction(btn.action_id, WORLD.manager);
       expect(connects).toBe(0);
       // restore owner → click runs the connect as initiator
-      OneOnOne.unlock("C0TEAM", threadTs);
-      OneOnOne.lock({ channelId: "C0TEAM", threadTs, lockedUser: WORLD.manager, createdBy: WORLD.manager });
+      await OneOnOne.unlock("C0TEAM", threadTs);
+      await OneOnOne.lock({ channelId: "C0TEAM", threadTs, lockedUser: WORLD.manager, createdBy: WORLD.manager });
       await g.emitAction(btn.action_id, WORLD.manager);
       expect(connects).toBe(1);
       expect(existsSync(join(paths.home, "oauth", WORLD.manager))).toBe(true);
@@ -795,7 +796,7 @@ describe("gateway uncovered branches", () => {
 
     it("approved → job created", async () => {
       writeSoulFixture(WORLD);
-      db.run("DELETE FROM cron_jobs");
+      await db.run("DELETE FROM cron_jobs");
       const g = makeGw();
       const done = mention(g, '/cron-add "0 9 * * 1" "weekly check"', WORLD.approvers[0]!);
       await waitFor(() => g.posts.some((p) => String(p.text).includes("Approval needed")));
@@ -804,13 +805,13 @@ describe("gateway uncovered branches", () => {
         .find((e: any) => e.action_id.includes("approve")).action_id;
       await g.emitAction(approveId, WORLD.approvers[0]!);
       await done;
-      expect(CronJobs.listActive().length).toBe(1);
+      expect((await CronJobs.listActive()).length).toBe(1);
       expect(g.posts.some((p) => String(p.text).includes("cron job created"))).toBe(true);
     });
 
     it("denied → no job", async () => {
       writeSoulFixture(WORLD);
-      db.run("DELETE FROM cron_jobs");
+      await db.run("DELETE FROM cron_jobs");
       const g = makeGw();
       const done = mention(g, '/cron-add "0 9 * * 1" "weekly check"', WORLD.approvers[0]!);
       await waitFor(() => g.posts.some((p) => String(p.text).includes("Approval needed")));
@@ -819,7 +820,7 @@ describe("gateway uncovered branches", () => {
         .find((e: any) => e.action_id.includes("deny")).action_id;
       await g.emitAction(denyId, WORLD.approvers[0]!);
       await done;
-      expect(CronJobs.listActive().length).toBe(0);
+      expect((await CronJobs.listActive()).length).toBe(0);
       expect(g.posts.some((p) => String(p.text).includes("cron job denied by manager"))).toBe(true);
     });
   });
@@ -856,8 +857,8 @@ describe("gateway uncovered branches", () => {
 
     it("manager can pause, resume, edit, and remove by 8-char prefix", async () => {
       writeSoulFixture(WORLD);
-      db.run("DELETE FROM cron_jobs");
-      const job = CronJobs.create({
+      await db.run("DELETE FROM cron_jobs");
+      const job = await CronJobs.create({
         slackTeamId: "T",
         slackChannelId: "D_MGR",
         slackThreadTs: "8000.1",
@@ -872,32 +873,32 @@ describe("gateway uncovered branches", () => {
       const g = makeGw();
 
       await g.emit("message", dmArgs(g, `/cron pause ${id}`));
-      expect(CronJobs.findById(job.id)!.paused).toBe(1);
+      expect((await CronJobs.findById(job.id))!.paused).toBe(1);
       expect(g.posts.some((p) => String(p.text).includes("paused"))).toBe(true);
 
       await g.emit("message", dmArgs(g, `/cron resume ${id}`));
-      expect(CronJobs.findById(job.id)!.paused).toBe(0);
+      expect((await CronJobs.findById(job.id))!.paused).toBe(0);
 
       await g.emit("message", dmArgs(g, `/cron edit ${id} "30 10 * * 1" "new digest" channel passive`));
-      const edited = CronJobs.findById(job.id)!;
+      const edited = (await CronJobs.findById(job.id))!;
       expect(edited.cronExpr).toBe("30 10 * * 1");
       expect(edited.prompt).toBe("new digest");
       expect(edited.target).toBe("channel");
       expect(edited.whenActive).toBe("skip");
 
       await g.emit("message", dmArgs(g, `/cron remove ${id}`));
-      expect(CronJobs.listActive()).toHaveLength(0);
+      expect(await CronJobs.listActive()).toHaveLength(0);
     });
 
     it("list renders empty and paused lifecycle states", async () => {
       writeSoulFixture(WORLD);
-      db.run("DELETE FROM cron_jobs");
+      await db.run("DELETE FROM cron_jobs");
       const g = makeGw();
 
       await g.emit("message", dmArgs(g, "/cron list"));
       expect(g.posts.some((p) => String(p.text).includes("No active cron jobs"))).toBe(true);
 
-      const paused = CronJobs.create({
+      const paused = await CronJobs.create({
         slackTeamId: "T",
         slackChannelId: "D_MGR",
         channelId: "D_MGR",
@@ -906,7 +907,7 @@ describe("gateway uncovered branches", () => {
         prompt: "paused digest",
         nextRunAt: Date.now() + 600_000,
       });
-      CronJobs.pause(paused.id);
+      await CronJobs.pause(paused.id);
 
       await g.emit("message", dmArgs(g, "/cron list"));
       const list = g.posts.filter((p) => String(p.text).includes("*Active cron jobs*")).at(-1);
@@ -928,7 +929,7 @@ describe("gateway uncovered branches", () => {
 
     it("missing jobs and invalid expressions reply with warnings", async () => {
       writeSoulFixture(WORLD);
-      db.run("DELETE FROM cron_jobs");
+      await db.run("DELETE FROM cron_jobs");
       const g = makeGw();
 
       await g.emit("message", dmArgs(g, "/cron remove deadbeef"));
@@ -936,7 +937,7 @@ describe("gateway uncovered branches", () => {
       await g.emit("message", dmArgs(g, '/cron edit deadbeef "0 9 * * *" "x"'));
       expect(g.posts.filter((p) => String(p.text).includes("not found")).length).toBeGreaterThanOrEqual(3);
 
-      const bad = CronJobs.create({
+      const bad = await CronJobs.create({
         slackTeamId: "T",
         slackChannelId: "D_MGR",
         channelId: "D_MGR",
@@ -948,7 +949,7 @@ describe("gateway uncovered branches", () => {
       await g.emit("message", dmArgs(g, `/cron resume ${bad.id.slice(0, 8)}`));
       expect(g.posts.some((p) => String(p.text).includes("invalid stored cron expression"))).toBe(true);
 
-      const good = CronJobs.create({
+      const good = await CronJobs.create({
         slackTeamId: "T",
         slackChannelId: "D_MGR",
         channelId: "D_MGR",
@@ -963,15 +964,15 @@ describe("gateway uncovered branches", () => {
 
     it("ambiguous cron ID prefixes reply with the lookup warning", async () => {
       writeSoulFixture(WORLD);
-      db.run("DELETE FROM cron_jobs");
+      await db.run("DELETE FROM cron_jobs");
       const insert = (id: string) =>
         db.run(
           `INSERT INTO cron_jobs (id, slack_team_id, slack_channel_id, slack_thread_ts, channel_id, thread_ts, created_by, cron_expr, prompt, next_run_at, target, when_active, active)
            VALUES (?, 'T', 'D_MGR', NULL, 'D_MGR', NULL, ?, '0 9 * * *', 'p', ?, 'thread', 'fire', 1)`,
           [id, WORLD.manager, Date.now() + 600_000],
         );
-      insert("aaaabbbb-0000-4000-8000-000000000001");
-      insert("aaaabbbb-0000-4000-8000-000000000002");
+      await insert("aaaabbbb-0000-4000-8000-000000000001");
+      await insert("aaaabbbb-0000-4000-8000-000000000002");
       const g = makeGw();
 
       await g.emit("message", dmArgs(g, "/cron remove aaaabbbb"));
@@ -984,8 +985,8 @@ describe("gateway uncovered branches", () => {
 
     it("approver cron edit denial leaves the job unchanged", async () => {
       writeSoulFixture(WORLD);
-      db.run("DELETE FROM cron_jobs");
-      const job = CronJobs.create({
+      await db.run("DELETE FROM cron_jobs");
+      const job = await CronJobs.create({
         slackTeamId: "T",
         slackChannelId: "C0TEAM",
         slackThreadTs: "9000.1",
@@ -1005,7 +1006,7 @@ describe("gateway uncovered branches", () => {
       await g.emitAction(denyId, WORLD.approvers[0]!);
       await done;
 
-      const unchanged = CronJobs.findById(job.id)!;
+      const unchanged = (await CronJobs.findById(job.id))!;
       expect(unchanged.cronExpr).toBe("0 9 * * *");
       expect(unchanged.prompt).toBe("old prompt");
       expect(g.posts.some((p) => String(p.text).includes("cron edit denied by manager"))).toBe(true);

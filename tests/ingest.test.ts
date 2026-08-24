@@ -5,8 +5,8 @@ import { paths, SLAUDE_HOME } from "../src/config/home";
 import { db } from "../src/db/schema";
 import * as ingest from "../src/knowledge/ingest";
 
-beforeEach(() => {
-  db.run("DELETE FROM kb_ingest_jobs");
+beforeEach(async () => {
+  await db.run("DELETE FROM kb_ingest_jobs");
   if (existsSync(paths.knowledge)) rmSync(paths.knowledge, { recursive: true, force: true });
   mkdirSync(paths.knowledge, { recursive: true });
 });
@@ -24,7 +24,10 @@ describe("ingest", () => {
       slaude_knowledge: { label: "wiki", git: "x", ref: "main" },
     }));
     mkdirSync(join(paths.knowledge, "wiki"), { recursive: true });
-    db.run("INSERT INTO kb_ingest_jobs VALUES ('existing', 'wiki', 'running', 'U999', ?, ?)", [Date.now(), Date.now()]);
+    await db.run(
+      "INSERT INTO kb_ingest_jobs (id, label, status, triggered_by, started_at, heartbeat_at) VALUES ('existing', 'wiki', 'running', 'U999', ?, ?)",
+      [Date.now(), Date.now()],
+    );
     const r = await ingest.run({ triggeredBy: "U123" });
     expect(r.ok).toBe(false);
     expect(r.reason).toMatch(/already running/i);
@@ -50,7 +53,7 @@ describe("ingest", () => {
     expect(subqueryMock).toHaveBeenCalledTimes(1);
     expect(pushMock).toHaveBeenCalledTimes(1);
 
-    const remaining = db.query("SELECT status FROM kb_ingest_jobs WHERE status='running'").all();
+    const remaining = await db.query("SELECT status FROM kb_ingest_jobs WHERE status='running'");
     expect(remaining.length).toBe(0);
   });
 
@@ -85,7 +88,7 @@ describe("ingest", () => {
     });
     expect(r.ok).toBe(false);
     expect(r.reason).toMatch(/subq failed/);
-    const remaining = db.query("SELECT status FROM kb_ingest_jobs WHERE status='running'").all();
+    const remaining = await db.query("SELECT status FROM kb_ingest_jobs WHERE status='running'");
     expect(remaining.length).toBe(0);
   });
 

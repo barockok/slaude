@@ -3,7 +3,6 @@ import { surfaceTools, createSurfaceMcp, SURFACE_MCP_NAME } from "../src/gateway
 import { setSoulData } from "../src/soul/extract";
 import { SoulDataSchema } from "../src/soul/data";
 import * as SO from "../src/db/soul-overrides";
-import { db } from "../src/db/schema";
 import type { Surface, SurfaceCapability } from "../src/gateway/core/surface";
 
 // Complements tests/surface-mcp.test.ts (gating) — exercises every handler's
@@ -99,8 +98,8 @@ describe("surface tool handlers — failure paths", () => {
 describe("soul_override — clear and validation branches", () => {
   const soul = SoulDataSchema.parse({ manager: { userId: "U0MGR" } });
 
-  beforeEach(() => {
-    db.run("DELETE FROM soul_overrides");
+  beforeEach(async () => {
+    await SO.clear();
     setSoulData(soul);
   });
 
@@ -111,11 +110,11 @@ describe("soul_override — clear and validation branches", () => {
   }
 
   test("clear drops only the targeted field's overrides", async () => {
-    SO.upsert({ field: "trustedChannels", value: "C0A", action: "add", created_by: "U0MGR" });
-    SO.upsert({ field: "blockedUsers", value: "U0BAD", action: "add", created_by: "U0MGR" });
+    await SO.upsert({ field: "trustedChannels", value: "C0A", action: "add", created_by: "U0MGR" });
+    await SO.upsert({ field: "blockedUsers", value: "U0BAD", action: "add", created_by: "U0MGR" });
     const r: any = await overrideTool().handler({ field: "trust", action: "clear" });
     expect(r.content[0].text).toBe("cleared runtime overrides for trust");
-    expect(SO.list().map((o) => o.field)).toEqual(["blockedUsers"]);
+    expect((await SO.list()).map((o) => o.field)).toEqual(["blockedUsers"]);
   });
 
   test("add without value is refused", async () => {
@@ -125,7 +124,7 @@ describe("soul_override — clear and validation branches", () => {
   });
 
   test("remove flows through mutateOverride", async () => {
-    SO.upsert({ field: "trustedChannels", value: "C0A", action: "add", created_by: "U0MGR" });
+    await SO.upsert({ field: "trustedChannels", value: "C0A", action: "add", created_by: "U0MGR" });
     const r: any = await overrideTool().handler({ field: "trust", action: "remove", value: "C0A" });
     expect(JSON.stringify(r)).toContain("C0A");
   });

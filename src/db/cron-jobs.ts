@@ -30,7 +30,7 @@ export type CronJob = {
   personaId: string;
 };
 
-export function create(args: {
+export async function create(args: {
   slackTeamId?: string;
   slackChannelId?: string;
   slackThreadTs?: string;
@@ -44,9 +44,9 @@ export function create(args: {
   whenActive?: "fire" | "skip";
   oauthUser?: string;
   personaId?: string;
-}): CronJob {
+}): Promise<CronJob> {
   const id = randomUUID();
-  db.run(
+  await db.run(
     `INSERT INTO cron_jobs (id, slack_team_id, slack_channel_id, slack_thread_ts, channel_id, thread_ts, created_by, cron_expr, prompt, next_run_at, target, when_active, oauth_user, persona_id, active)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
     [
@@ -66,19 +66,17 @@ export function create(args: {
       args.personaId && args.personaId !== "default" ? args.personaId : "default",
     ],
   );
-  return findById(id)!;
+  return (await findById(id))!;
 }
 
-export function findById(id: string): CronJob | null {
-  const row = db.query("SELECT * FROM cron_jobs WHERE id = ?").get(id) as any;
+export async function findById(id: string): Promise<CronJob | null> {
+  const row = await db.one<any>("SELECT * FROM cron_jobs WHERE id = ?", [id]);
   return row ? mapRow(row) : null;
 }
 
-export function findByPrefix(prefix: string): CronJob | null {
+export async function findByPrefix(prefix: string): Promise<CronJob | null> {
   if (prefix.length !== 8) return findById(prefix);
-  const rows = db
-    .query("SELECT * FROM cron_jobs WHERE active = 1 AND id LIKE ?")
-    .all(`${prefix}%`) as any[];
+  const rows = await db.query<any>("SELECT * FROM cron_jobs WHERE active = 1 AND id LIKE ?", [`${prefix}%`]);
   if (rows.length === 0) return null;
   if (rows.length > 1) {
     // Ambiguous prefix — don't accidentally deactivate multiple jobs
@@ -88,39 +86,38 @@ export function findByPrefix(prefix: string): CronJob | null {
   return mapRow(rows[0]);
 }
 
-export function findDue(now: number): CronJob[] {
-  const rows = db
-    .query(
-      `SELECT * FROM cron_jobs
-       WHERE active = 1
-         AND paused = 0
-         AND next_run_at <= ?
-       ORDER BY next_run_at`,
-    )
-    .all(now) as any[];
+export async function findDue(now: number): Promise<CronJob[]> {
+  const rows = await db.query<any>(
+    `SELECT * FROM cron_jobs
+     WHERE active = 1
+       AND paused = 0
+       AND next_run_at <= ?
+     ORDER BY next_run_at`,
+    [now],
+  );
   return rows.map(mapRow);
 }
 
-export function updateNextRun(id: string, nextRunAt: number, lastResult: string): void {
-  db.run(
+export async function updateNextRun(id: string, nextRunAt: number, lastResult: string): Promise<void> {
+  await db.run(
     "UPDATE cron_jobs SET next_run_at = ?, last_run_at = ?, last_result = ? WHERE id = ?",
     [nextRunAt, Date.now(), lastResult, id],
   );
 }
 
-export function deactivate(id: string): void {
-  db.run("UPDATE cron_jobs SET active = 0 WHERE id = ?", [id]);
+export async function deactivate(id: string): Promise<void> {
+  await db.run("UPDATE cron_jobs SET active = 0 WHERE id = ?", [id]);
 }
 
-export function pause(id: string): void {
-  db.run("UPDATE cron_jobs SET paused = 1 WHERE id = ?", [id]);
+export async function pause(id: string): Promise<void> {
+  await db.run("UPDATE cron_jobs SET paused = 1 WHERE id = ?", [id]);
 }
 
-export function resume(id: string, nextRunAt: number): void {
-  db.run("UPDATE cron_jobs SET paused = 0, next_run_at = ? WHERE id = ?", [nextRunAt, id]);
+export async function resume(id: string, nextRunAt: number): Promise<void> {
+  await db.run("UPDATE cron_jobs SET paused = 0, next_run_at = ? WHERE id = ?", [nextRunAt, id]);
 }
 
-export function update(
+export async function update(
   id: string,
   args: {
     cronExpr?: string;
@@ -129,7 +126,7 @@ export function update(
     target?: "thread" | "channel";
     whenActive?: "fire" | "skip";
   },
-): void {
+): Promise<void> {
   const sets: string[] = [];
   const values: (string | number)[] = [];
   if (args.cronExpr !== undefined) {
@@ -154,13 +151,11 @@ export function update(
   }
   if (!sets.length) return;
   values.push(id);
-  db.run(`UPDATE cron_jobs SET ${sets.join(", ")} WHERE id = ?`, values);
+  await db.run(`UPDATE cron_jobs SET ${sets.join(", ")} WHERE id = ?`, values);
 }
 
-export function listActive(): CronJob[] {
-  const rows = db
-    .query("SELECT * FROM cron_jobs WHERE active = 1 ORDER BY paused, next_run_at")
-    .all() as any[];
+export async function listActive(): Promise<CronJob[]> {
+  const rows = await db.query<any>("SELECT * FROM cron_jobs WHERE active = 1 ORDER BY paused, next_run_at");
   return rows.map(mapRow);
 }
 

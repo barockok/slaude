@@ -8,8 +8,12 @@ import { gather } from "./gather";
 import { gatedBrainCall, type ApprovalReq, type ApprovalRes, type GateInput } from "./gated-dispatch";
 import { SHARED_SOURCE, type BrainScope } from "./scope";
 import { agentIdReady } from "./agent-identity";
+import { kbContract, KB_MEMOIZE_MAX_PAGES } from "../tools/contracts/kb";
 
-export const KB_MCP_NAME = "slaude_kb";
+export const KB_MCP_NAME = kbContract.server;
+// Re-export: the limit is defined in the shared contract (single source of truth)
+// but existing import sites read it from here.
+export { KB_MEMOIZE_MAX_PAGES };
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
@@ -62,8 +66,8 @@ export const kbHandlers = {
 };
 
 export interface BrainToolDeps {
-  scope: () => BrainScope;
-  gate: () => GateInput;
+  scope: () => BrainScope | Promise<BrainScope>;
+  gate: () => GateInput | Promise<GateInput>;
   /** Manager + backup user ids — hard backstop for kb-admin approvals. */
   managers: () => string[];
   requestApproval: (r: ApprovalReq) => Promise<ApprovalRes>;
@@ -74,10 +78,6 @@ export interface BrainToolDeps {
 }
 
 const asJson = (v: unknown): ToolResult => ok(typeof v === "string" ? v : JSON.stringify(v, null, 2));
-
-/** Max pages a single kb_memoize call may write. Bounds approval-card size and
- *  the work behind one approval. */
-export const KB_MEMOIZE_MAX_PAGES = 20;
 
 /**
  * Map raw brain/Postgres errors to actionable agent-facing text. A leaked
@@ -100,7 +100,7 @@ export function humanizeBrainError(name: string, e: unknown): string {
 async function runRead(name: string, params: Record<string, unknown>, d: BrainToolDeps): Promise<ToolResult> {
   try {
     const call = d.call ?? brainCall;
-    return asJson(await call(name, params, d.scope()));
+    return asJson(await call(name, params, await d.scope()));
   } catch (e) {
     return err(humanizeBrainError(name, e));
   }
@@ -110,11 +110,11 @@ async function runGated(name: string, params: Record<string, unknown>, summary: 
   try {
     const call = d.call ?? brainCall;
     const r = await gatedBrainCall(name, {
-      scope: d.scope(),
-      gate: d.gate(),
+      scope: await d.scope(),
+      gate: await d.gate(),
       managers: d.managers(),
       requestApproval: d.requestApproval,
-      call: () => call(name, params, d.scope()),
+      call: async () => call(name, params, await d.scope()),
       describe: summary,
     });
     return r.ok ? asJson(r.result) : err(r.reason);
@@ -161,7 +161,7 @@ export const brainHandlers = {
     try {
       // SDK-routed synthesis (subscription auth) — not the raw think op.
       const think = d.think ?? brainThink;
-      const result = await think(p.question, d.scope());
+      const result = await think(p.question, await d.scope());
       // Mode B / B′ guard: kb_think's hybrid gather can rank a present,
       // well-titled page below noisier neighbors and then synthesize a
       // confident answer that cites the wrong pages (or none). Always
@@ -175,7 +175,7 @@ export const brainHandlers = {
         // used to surface more junk instead of the present page. gather()
         // guarantees curated sources their own slots, so a strong uncited hit
         // (e.g. the curated page kb_think's gather missed) actually shows up here.
-        const hits = await gather(distillQuery(p.question), d.scope(), { finalLimit: 5, call: d.call });
+        const hits = await gather(distillQuery(p.question), await d.scope(), { finalLimit: 5, call: d.call });
         if (Array.isArray(hits) && hits.length > 0) {
           const cited = citationSlugs(result);
           const missed = hits.filter((h) => {
@@ -235,7 +235,7 @@ export const brainHandlers = {
     // page is never crowded out of the candidate set by a high-volume source
     // (a bulk auto-generated corpus). See src/knowledge/gather.ts.
     try {
-      const hits = await gather(p.query, d.scope(), { finalLimit: p.limit ?? 20, call: d.call });
+      const hits = await gather(p.query, await d.scope(), { finalLimit: p.limit ?? 20, call: d.call });
       return asJson(hits);
     } catch (e) {
       return err(humanizeBrainError("search", e));
@@ -269,7 +269,7 @@ export const brainHandlers = {
     // "mine" (default) writes to the resolved own slice — the agent's private
     // mind outside a 1on1, the user's slice inside one — and auto-passes.
     // "shared" escalates to the common team KB, which requires human approval.
-    const scope = p.target === "shared" ? { ...d.scope(), sourceId: SHARED_SOURCE } : d.scope();
+    const scope = p.target === "shared" ? { ...await d.scope(), sourceId: SHARED_SOURCE } : await d.scope();
     const label = p.target === "shared" ? "→ shared" : "→ mine";
     const describe = pages.length === 1
       ? `KB write ${label}: ${pages[0]!.slug} — ${pages[0]!.summary}`
@@ -281,7 +281,7 @@ export const brainHandlers = {
       // exists first (see docs/findings/2026-06-14-brain-memoize-failure.md).
       const r = await gatedBrainCall("put_page", {
         scope,
-        gate: d.gate(),
+        gate: await d.gate(),
         managers: d.managers(),
         requestApproval: d.requestApproval,
         call: async () => {
@@ -303,76 +303,23 @@ export const brainHandlers = {
 };
 
 export function createKbMcp(deps?: BrainToolDeps): McpSdkServerConfigWithInstance {
+  const c = kbContract.tools;
   const brainTools = deps && brainEnabled()
     ? [
-        tool(
-          "kb_think",
-          "Ask the knowledge brain a question. Returns a synthesized answer with [Source: ...] citations and explicit gaps. Prefer this over kb_search when you need an answer, not documents.",
-          { question: z.string().describe("The question to answer from the brain.") },
-          (a: { question: string }) => brainHandlers.kb_think(a, deps),
-        ),
-        tool(
-          "kb_search",
-          "Search the knowledge brain (pages across your allowed scopes). Returns ranked chunks with slugs.",
-          {
-            query: z.string().describe("Search query."),
-            limit: z.number().optional().describe("Max results (default 20)."),
-          },
-          (a: { query: string; limit?: number }) => brainHandlers.kb_search(a, deps),
-        ),
-        tool(
-          "kb_get_page",
-          "Read a brain page by slug (e.g. 'people/alice').",
-          { slug: z.string().describe("Page slug.") },
-          (a: { slug: string }) => brainHandlers.kb_get_page(a, deps),
-        ),
-        tool(
-          "kb_list_pages",
-          "List brain pages, optionally filtered by type or tag.",
-          {
-            type: z.string().optional().describe("Filter by page type."),
-            tag: z.string().optional().describe("Filter by tag."),
-            limit: z.number().optional().describe("Max results (default 50)."),
-          },
-          (a: { type?: string; tag?: string; limit?: number }) => brainHandlers.kb_list_pages(a, deps),
-        ),
-        tool(
-          "kb_graph",
-          "Get knowledge-graph edges for a page: outgoing links and backlinks.",
-          { slug: z.string().describe("Page slug.") },
-          (a: { slug: string }) => brainHandlers.kb_graph(a, deps),
-        ),
-        tool(
-          "kb_memoize",
-          `Write/update one or more brain pages in a single call (markdown, optional YAML frontmatter; [[wikilinks]] become graph edges). Pass an array of pages — up to ${KB_MEMOIZE_MAX_PAGES} per call. By default (target:"mine") pages go to YOUR OWN slice — your private agent mind — and are saved without asking. Set target:"shared" ONLY for durable team-common knowledge (decisions, people/project facts everyone needs); shared writes ask the manager for approval. Default to "mine" for your own notes, learnings, and working context; reserve "shared" for the team KB.`,
-          {
-            pages: z
-              .array(
-                z.object({
-                  slug: z.string().describe("Page slug, e.g. 'people/alice' or 'notes/2026-06-10-x'."),
-                  content: z.string().describe("Full markdown content for the page."),
-                  summary: z.string().describe("One-line description of the change, shown on the approval card."),
-                }),
-              )
-              .min(1)
-              .max(KB_MEMOIZE_MAX_PAGES)
-              .describe(`Pages to write (1..${KB_MEMOIZE_MAX_PAGES}).`),
-            target: z
-              .enum(["mine", "shared"])
-              .optional()
-              .describe(`Where to write. "mine" (default) = your own slice, saved without approval. "shared" = the common team KB, requires manager approval.`),
-          },
-          (a: { pages: Array<{ slug: string; content: string; summary: string }>; target?: "mine" | "shared" }) => brainHandlers.kb_memoize(a, deps),
-        ),
-        tool(
-          "kb_delete_page",
-          "Soft-delete a brain page (recoverable). Requires approval.",
-          {
-            slug: z.string().describe("Page slug to delete."),
-            reason: z.string().describe("Why this page should be deleted (shown on the approval card)."),
-          },
-          (a: { slug: string; reason: string }) => brainHandlers.kb_delete_page(a, deps),
-        ),
+        tool(c.kb_think.name, c.kb_think.description, c.kb_think.schema,
+          (a: { question: string }) => brainHandlers.kb_think(a, deps)),
+        tool(c.kb_search.name, c.kb_search.description, c.kb_search.schema,
+          (a: { query: string; limit?: number }) => brainHandlers.kb_search(a, deps)),
+        tool(c.kb_get_page.name, c.kb_get_page.description, c.kb_get_page.schema,
+          (a: { slug: string }) => brainHandlers.kb_get_page(a, deps)),
+        tool(c.kb_list_pages.name, c.kb_list_pages.description, c.kb_list_pages.schema,
+          (a: { type?: string; tag?: string; limit?: number }) => brainHandlers.kb_list_pages(a, deps)),
+        tool(c.kb_graph.name, c.kb_graph.description, c.kb_graph.schema,
+          (a: { slug: string }) => brainHandlers.kb_graph(a, deps)),
+        tool(c.kb_memoize.name, c.kb_memoize.description, c.kb_memoize.schema,
+          (a: { pages: Array<{ slug: string; content: string; summary: string }>; target?: "mine" | "shared" }) => brainHandlers.kb_memoize(a, deps)),
+        tool(c.kb_delete_page.name, c.kb_delete_page.description, c.kb_delete_page.schema,
+          (a: { slug: string; reason: string }) => brainHandlers.kb_delete_page(a, deps)),
       ]
     : [];
 
@@ -381,21 +328,8 @@ export function createKbMcp(deps?: BrainToolDeps): McpSdkServerConfigWithInstanc
     version: "0.2.0",
     tools: [
       ...brainTools,
-      tool(
-        "list_kbs",
-        "List installed knowledge bases. Returns JSON array with label, description, path, and index_file for each KB.",
-        {},
-        kbHandlers.list_kbs,
-      ),
-      tool(
-        "search_kbs",
-        "Search installed knowledge bases by tags or keywords. Returns ranked matching KBs. Use this BEFORE acting when a user query mentions a service, domain, or topic that may have curated documentation.",
-        {
-          query: z.string().describe("Search query — keywords from the user's request (e.g. 'service-a grafana alerts')."),
-          limit: z.number().optional().describe("Max results (default 5)."),
-        },
-        kbHandlers.search_kbs,
-      ),
+      tool(c.list_kbs.name, c.list_kbs.description, c.list_kbs.schema, kbHandlers.list_kbs),
+      tool(c.search_kbs.name, c.search_kbs.description, c.search_kbs.schema, kbHandlers.search_kbs),
     ],
   });
 }

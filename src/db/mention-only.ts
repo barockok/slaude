@@ -9,8 +9,8 @@ export interface MentionOnlyRow {
 
 /** Mark a thread mention-only: the agent replies only to messages that @-mention it,
  *  never to plain thread follow-ups. Upsert — re-setting refreshes created_by. */
-export function set(input: { channelId: string; threadTs: string; createdBy: string }): void {
-  db.run(
+export async function set(input: { channelId: string; threadTs: string; createdBy: string }): Promise<void> {
+  await db.run(
     `INSERT INTO mention_only_threads (channel_id, thread_ts, created_by, created_at)
      VALUES (?, ?, ?, ?)
      ON CONFLICT(channel_id, thread_ts)
@@ -19,15 +19,17 @@ export function set(input: { channelId: string; threadTs: string; createdBy: str
   );
 }
 
-export function clear(channelId: string, threadTs: string): void {
-  db.run("DELETE FROM mention_only_threads WHERE channel_id = ? AND thread_ts = ?", [channelId, threadTs]);
+export async function clear(channelId: string, threadTs: string): Promise<void> {
+  await db.run("DELETE FROM mention_only_threads WHERE channel_id = ? AND thread_ts = ?", [channelId, threadTs]);
 }
 
-export function find(channelId: string, threadTs: string): MentionOnlyRow | null {
-  const row = db.query("SELECT * FROM mention_only_threads WHERE channel_id = ? AND thread_ts = ?").get(channelId, threadTs) as any;
-  return row ? (row as MentionOnlyRow) : null;
+export async function find(channelId: string, threadTs: string): Promise<MentionOnlyRow | null> {
+  return db.one<MentionOnlyRow>("SELECT * FROM mention_only_threads WHERE channel_id = ? AND thread_ts = ?", [
+    channelId,
+    threadTs,
+  ]);
 }
 
-export function _wipeForTests(): void {
-  db.run("DELETE FROM mention_only_threads");
+export async function _wipeForTests(): Promise<void> {
+  await db.run("DELETE FROM mention_only_threads");
 }
