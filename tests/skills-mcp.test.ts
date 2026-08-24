@@ -169,11 +169,14 @@ describe("skillHandlers", () => {
     const r = await skillHandlers.delete_skill({ slug: "ghost" });
     expect(r.isError).toBe(true);
   });
+  // Real manifest + KB sync work: comfortably under a second alone, but seen
+  // at 6s+ when the whole suite runs under CPU/memory contention — give it
+  // headroom past the 5s default.
   test("sync_manifest returns result", async () => {
     const r = await skillHandlers.sync_manifest();
     expect(r.isError).toBeUndefined();
     const parsed = JSON.parse(r.content[0]?.text ?? "{}");
     expect(parsed.synced_skills).toBeDefined();
     expect(parsed.synced_kbs).toBeDefined();
-  });
+  }, 30_000);
 });

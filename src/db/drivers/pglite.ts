@@ -90,12 +90,23 @@ export async function openPglite(dataDir?: string): Promise<DbClient> {
   const run = openChain.then(
     async () => {
       gc();
-      try {
-        return await mk();
-      } catch {
-        gc();
-        return await mk();
+      let lastErr: unknown;
+      // A single immediate retry is not always enough under memory pressure:
+      // initdb's inner wasm instance can keep crashing until dead instances
+      // are actually collected. Back off briefly between attempts so GC gets
+      // a quiet tick, and try a few times before giving up.
+      for (let attempt = 0; attempt < 4; attempt++) {
+        if (attempt > 0) {
+          await new Promise((r) => setTimeout(r, 300 * attempt));
+          gc();
+        }
+        try {
+          return await mk();
+        } catch (e) {
+          lastErr = e;
+        }
       }
+      throw lastErr;
     },
   );
   openChain = run.catch(() => {});

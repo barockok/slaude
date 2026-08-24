@@ -124,9 +124,21 @@ describe("cli/migrate-sqlite", () => {
       expect(await main(["--help"])).toBe(0);
       expect(await main(["--from", join(dir, "db.sqlite")])).toBe(2);
       await expect(main(["--bogus"])).rejects.toThrow(/unknown argument/);
-      process.env.SLAUDE_PGLITE_DIR = join(dir, "pglite");
-      expect(await main(["--from", join(dir, "db.sqlite"), "--dry-run"])).toBe(0);
-      expect(await main(["--from", join(dir, "db.sqlite")])).toBe(0);
+      // The PGLite-dir runs go through the real CLI in a SUBPROCESS: booting a
+      // fresh dataDir spins an inner initdb wasm instance, and doing that
+      // in-process on top of a long test run's accumulated wasm footprint is
+      // exactly the fragile moment that crashes instantiation and poisons
+      // every later PGLite open in the suite. A child process is also the
+      // truer e2e for a CLI. The verify `check` open below re-opens the
+      // ALREADY-INITIALIZED dataDir, which skips initdb — the cheap kind.
+      const cliEnv: Record<string, string> = { ...process.env } as any;
+      delete cliEnv.SLAUDE_PG_URL;
+      cliEnv.SLAUDE_PGLITE_DIR = join(dir, "pglite");
+      const cli = join(import.meta.dir, "../../src/cli/migrate-sqlite.ts");
+      const runCli = (...args: string[]) =>
+        Bun.spawnSync(["bun", cli, ...args], { env: cliEnv, stdout: "pipe", stderr: "pipe" }).exitCode;
+      expect(runCli("--from", join(dir, "db.sqlite"), "--dry-run")).toBe(0);
+      expect(runCli("--from", join(dir, "db.sqlite"))).toBe(0);
       const check = await openDb({ dialect: "pg", driver: "pglite", dataDir: join(dir, "pglite") });
       try {
         expect((await check.query("SELECT * FROM cron_jobs")).length).toBe(1);
