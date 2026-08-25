@@ -14,7 +14,7 @@ describe("StubAgent", () => {
     });
     const ctx: SessionMcpCtx = { slack, surface };
     const agent = new StubAgent();
-    agent.attachGateway({ start: async () => {}, stop: async () => {}, fetchV1: async () => null, __pendingSource: () => ({} as any), __sessionCtx: () => ctx, __resolveMcp: async () => undefined, __agentConnect: async () => "", __agentOneOnOne: async () => "", __agentMentionOnly: async () => "" });
+    agent.attachGateway({ start: async () => {}, stop: async () => {}, fetchV1: async () => null, fetchPanel: async () => null, __pendingSource: () => ({} as any), __sessionCtx: () => ctx, __resolveMcp: async () => undefined, __agentConnect: async () => "", __agentOneOnOne: async () => "", __agentMentionOnly: async () => "" });
     agent.setMcpResolver(() => ({}));
     agent.setBehavior("reply");
     const events: any[] = [];
@@ -27,7 +27,7 @@ describe("StubAgent", () => {
 
   it("captures an unknown behavior as an error", async () => {
     const agent = new StubAgent();
-    agent.attachGateway({ start: async () => {}, stop: async () => {}, fetchV1: async () => null, __pendingSource: () => ({} as any), __sessionCtx: () => undefined, __resolveMcp: async () => undefined, __agentConnect: async () => "", __agentOneOnOne: async () => "", __agentMentionOnly: async () => "" });
+    agent.attachGateway({ start: async () => {}, stop: async () => {}, fetchV1: async () => null, fetchPanel: async () => null, __pendingSource: () => ({} as any), __sessionCtx: () => undefined, __resolveMcp: async () => undefined, __agentConnect: async () => "", __agentOneOnOne: async () => "", __agentMentionOnly: async () => "" });
     agent.setMcpResolver(() => ({}));
     agent.setBehavior("nope");
     await agent.sendMessage("S1", "x");

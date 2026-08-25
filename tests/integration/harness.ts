@@ -54,7 +54,7 @@ export interface Replica {
  * Redis through the shared key prefix — exactly the multi-replica topology,
  * minus the network between them and the store.
  */
-export async function bootReplica(keys: any): Promise<Replica> {
+export async function bootReplica(keys: any, opts: { panel?: boolean } = {}): Promise<Replica> {
   const { AgentManager } = await import("../../src/agent/manager");
   const { SimTransport } = await import("../../src/gateway/sim/transport");
   const { createGateway } = await import("../../src/gateway/core/gateway");
@@ -62,6 +62,7 @@ export async function bootReplica(keys: any): Promise<Replica> {
   const { TurnQueues } = await import("../../src/queue/turns");
   const { makeRegistry } = await import("../../src/queue/registry");
   const { makePubSub } = await import("../../src/queue/pubsub");
+  const { makePanelLock } = await import("../../src/queue/panel-lock");
   const { Redis } = await import("ioredis");
 
   const redis = new Redis(REAL_URL, { maxRetriesPerRequest: null });
@@ -84,11 +85,22 @@ export async function bootReplica(keys: any): Promise<Replica> {
       await inner.dispatch(session, text, meta);
     },
   };
-  const handle = createGateway(agent, transport, { queueDispatch: qd });
+  // Panel injected over the SAME redis + key prefix as the dispatcher so the
+  // lock, event stream and warm registry all agree. Short lock TTL so TTL-expiry
+  // scenarios are fast.
+  const panel = opts.panel
+    ? {
+        registry: infra.registry,
+        pubsub: infra.pubsub,
+        panelLock: makePanelLock({ redis, keys, ttlMs: 1500 }),
+      }
+    : undefined;
+  const handle = createGateway(agent, transport, { queueDispatch: qd, panel });
   const server = Bun.serve({
     port: 0,
     idleTimeout: 0,
-    fetch: async (req: Request) => (await handle.fetchV1(req)) ?? new Response("nf", { status: 404 }),
+    fetch: async (req: Request) =>
+      (await handle.fetchV1(req)) ?? (await handle.fetchPanel(req)) ?? new Response("nf", { status: 404 }),
   });
   return {
     agent,
