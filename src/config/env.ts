@@ -278,6 +278,35 @@ export const env = {
     const n = Number(raw);
     return Number.isFinite(n) && n > 0 ? n : 200_000;
   },
+  /**
+   * Session control panel (operator web surface, gateway-tier only). Mounts
+   * `/panel/*` on the gateway Bun.serve when enabled and the role is not
+   * `node`. Operator identity comes from an upstream SSO/ingress header — the
+   * panel never handles passwords and fails closed.
+   */
+  panel: {
+    /** Enable the panel surface. Default off. */
+    enabled: () => {
+      const raw = opt("SLAUDE_PANEL", "0").toLowerCase();
+      return raw === "1" || raw === "true" || raw === "yes";
+    },
+    /** Trusted upstream identity header (lowercased for header lookup). */
+    header: () => opt("SLAUDE_PANEL_HEADER", "x-auth-request-email").toLowerCase(),
+    /** Optional operator allowlist (comma-separated emails/ids). Empty = any
+     *  identity the ingress vouches for is accepted. */
+    allow: () =>
+      opt("SLAUDE_PANEL_ALLOW")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    /** Explicit acknowledgement that an SSO/ingress sits in front. Required to
+     *  boot the panel — without it the panel refuses to serve, so a
+     *  misconfigured deploy can never expose `/panel` open to the internet. */
+    trustHeader: () => {
+      const raw = opt("SLAUDE_PANEL_TRUST_HEADER", "").toLowerCase();
+      return raw === "1" || raw === "true" || raw === "yes";
+    },
+  },
   /** Static Prometheus labels applied to every metric, e.g.
    *  `SLAUDE_METRICS_LABELS="agent=hermes,env=prod"`. Malformed entries are
    *  silently dropped by the metrics registry. */
