@@ -25,5 +25,11 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+
+  // The control-panel browser app (React + DOM) is built by Vite with its own
+  // toolchain/tsconfig — intentionally separate from the Bun-native server
+  // (design §Frontend). Keep it out of the server-side `tsc --noEmit` so DOM
+  // globals here don't fail the backend typecheck.
+  "exclude": ["src/gateway/panel/web", "tests/panel-web"]
 }
