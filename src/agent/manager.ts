@@ -146,6 +146,11 @@ export function makeUserPromptHook(
     if (input.hook_event_name !== "UserPromptSubmit") return { continue: true };
     const dis = disengagedHookDecision(await findById(sessionId));
     if (dis.continue === false) {
+      // Drain any suppress flag set for this same turn (e.g. the disengaging
+      // message itself also passed suppress:true through handleMessage) — if
+      // left unconsumed here it survives to the next turn and wrongly fires
+      // "mention-only" on the message that re-engages the thread.
+      suppressCheck?.();
       metric.disengagedSuppressedTotal.inc();
       return dis; // leave queued notes for the next engaged turn
     }
