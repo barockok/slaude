@@ -1,24 +1,83 @@
 # Single-persona slaude. One compose project = one deployed agent.
 # Copy .env.example -> .env, drop your SOUL.md into ./data/SOUL.md, then `docker compose up -d`.
+#
+# Profiles:
+#   (none)   — mono mode. Single process, all-in-one. Default.
+#   brain    — adds shared Postgres brain (needed for scale mode).
+#   scale    — gateway/node split with Redis queue. Enables horizontal scale.
+#              Requires brain profile too: `docker compose --profile brain --profile scale up -d`
+#              Set SLAUDE_ROLE=gateway in env, add SLAUDE_REDIS_URL + SLAUDE_NODE_TOKEN.
 
 services:
+  brain:
+    image: pgvector/pgvector:pg16
+    profiles: [brain, scale]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: slaude
+      POSTGRES_USER: slaude
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-slaude}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U slaude"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    profiles: [scale]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   slaude:
     build: .
     image: slaude:latest
     container_name: slaude
     restart: unless-stopped
+    # env_file passes vars directly into the container, bypassing shell interpolation.
+    # Set SLAUDE_ENV_FILE to point at your env file, or drop a .env here.
+    env_file:
+      - path: ${SLAUDE_ENV_FILE:-.env}
+        required: false
+    environment:
+      # These override env_file and are interpolated from the host shell / --env-file.
+      # Keep only vars that must be hard-set regardless of what the env file says.
+      SLAUDE_HOME: /data
+      # SLAUDE_BRAIN_ENGINE comes from env_file (postgres | pglite).
+      # Default URL points at the `brain` postgres service on the internal network.
+      SLAUDE_BRAIN_DATABASE_URL: ${SLAUDE_BRAIN_DATABASE_URL:-postgresql://slaude:${POSTGRES_PASSWORD:-slaude}@brain:5432/slaude}
+    volumes:
+      - ${SLAUDE_DATA_DIR:-./data}:/data
+
+  worker:
+    build: .
+    image: slaude:latest
+    profiles: [scale]
+    restart: unless-stopped
+    command: ["bun", "run", "worker"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      slaude:
+        condition: service_started
+    env_file:
+      - path: ${SLAUDE_ENV_FILE:-.env}
+        required: false
     environment:
       SLAUDE_HOME: /data
-      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
-      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN}
-      SLACK_ALLOWED_USERS: ${SLACK_ALLOWED_USERS:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
-      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
-      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
-      SLAUDE_MODEL: ${SLAUDE_MODEL:-claude-sonnet-4-6}
-      # External MCP server creds. Read by ./data/.mcp.json via ${VAR} substitution.
-      GRAFANA_URL: ${GRAFANA_URL:-}
-      GRAFANA_API_KEY: ${GRAFANA_API_KEY:-}
+      SLAUDE_ROLE: node
+      # Redis + gateway URL are docker-network-specific; set here as defaults.
+      # SLAUDE_NODE_TOKEN and SLAUDE_JOB_SECRET come from env_file.
+      SLAUDE_REDIS_URL: ${SLAUDE_REDIS_URL:-redis://redis:6379}
+      SLAUDE_GATEWAY_URL: ${SLAUDE_GATEWAY_URL:-http://slaude:8080}
     volumes:
-      - ./data:/data
+      - ${SLAUDE_DATA_DIR:-./data}:/data
+
+volumes:
+  pgdata:
