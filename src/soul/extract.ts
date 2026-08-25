@@ -43,25 +43,29 @@ async function callExtractor(system: string, prompt: string): Promise<string> {
   const base = process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com";
   const key = process.env.ANTHROPIC_API_KEY;
   const oauth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  const authToken = process.env.ANTHROPIC_AUTH_TOKEN;
   const model = process.env.SLAUDE_SOUL_PARSE_MODEL
     || process.env.SLAUDE_MODEL
     || "claude-haiku-4-5-20251001";
-  if (!key && !oauth) {
-    throw new Error("missing auth: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN");
+  if (!key && !oauth && !authToken) {
+    throw new Error("missing auth: set ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, or ANTHROPIC_AUTH_TOKEN");
   }
 
-  // API-key auth wins when both are present (explicit > subscription). OAuth
-  // requires the anthropic-beta: oauth-2025-04-20 header — without it the API
-  // rejects bearer tokens with 401.
+  // API-key auth wins when present (explicit > subscription > gateway bearer).
+  // OAuth requires the anthropic-beta: oauth-2025-04-20 header — without it
+  // the API rejects bearer tokens with 401. ANTHROPIC_AUTH_TOKEN is a plain
+  // bearer token for gateways that prefer Authorization over x-api-key.
   const headers: Record<string, string> = {
     "content-type": "application/json",
     "anthropic-version": "2023-06-01",
   };
   if (key) {
     headers["x-api-key"] = key;
-  } else {
+  } else if (oauth) {
     headers["authorization"] = `Bearer ${oauth}`;
     headers["anthropic-beta"] = "oauth-2025-04-20";
+  } else {
+    headers["authorization"] = `Bearer ${authToken}`;
   }
 
   const res = await fetch(`${base.replace(/\/$/, "")}/v1/messages`, {

@@ -259,6 +259,54 @@ describe("loadSoulData — extraction + cache", () => {
     expect(captured["anthropic-beta"]).toBeUndefined();
   });
 
+  test("ANTHROPIC_AUTH_TOKEN sets plain Bearer header (no anthropic-beta) when no API key or OAuth", async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_AUTH_TOKEN = "gw-bearer-token";
+    seedPersona("# P\n## Approvers\n- <@U0XXXXXXXXX>: anything\n");
+    let captured: Record<string, string> = {};
+    mockFetch(async (_input: any, init: any) => {
+      captured = init.headers as Record<string, string>;
+      return okResponse(JSON.stringify({
+        approvers: [{ userId: "U0XXXXXXXXX", scope: "anything", catchall: true }],
+      }));
+    });
+    await loadSoulData();
+    expect(captured["authorization"]).toBe("Bearer gw-bearer-token");
+    expect(captured["anthropic-beta"]).toBeUndefined();
+    expect(captured["x-api-key"]).toBeUndefined();
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+  });
+
+  test("CLAUDE_CODE_OAUTH_TOKEN wins over ANTHROPIC_AUTH_TOKEN when both set", async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-oat01-abc";
+    process.env.ANTHROPIC_AUTH_TOKEN = "gw-bearer-token";
+    seedPersona("# P\n## Approvers\n- <@U0XXXXXXXXX>: anything\n");
+    let captured: Record<string, string> = {};
+    mockFetch(async (_input: any, init: any) => {
+      captured = init.headers as Record<string, string>;
+      return okResponse(JSON.stringify({
+        approvers: [{ userId: "U0XXXXXXXXX", scope: "anything", catchall: true }],
+      }));
+    });
+    await loadSoulData();
+    expect(captured["authorization"]).toBe("Bearer sk-ant-oat01-abc");
+    expect(captured["anthropic-beta"]).toBe("oauth-2025-04-20");
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+  });
+
+  test("missing all three auth env vars → regex fallback, no fetch", async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+    seedPersona("# P\n## Approvers\n- <@U0XXXXXXXXX>: anything\n");
+    let called = false;
+    mockFetch(async () => { called = true; return okResponse("{}"); });
+    const d = await loadSoulData();
+    expect(called).toBe(false);
+    expect(d.approvers).toHaveLength(1);
+  });
+
   test("max_tokens defaults to 8192", async () => {
     seedPersona("# P\n## Approvers\n- <@U0XXXXXXXXX>: anything\n");
     let captured: any = null;
