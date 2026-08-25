@@ -41,6 +41,32 @@ const json = (status: number, body: unknown, headers: Record<string, string> = {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Anti-CSRF guard for state-changing requests. The panel authenticates via an
+ * ingress-injected identity header, which the browser attaches to ANY request
+ * to this origin — including one forged by a cross-site page — so the header
+ * alone cannot prove same-origin intent. GET/HEAD are safe (no state change).
+ * For everything else we require BOTH:
+ *   - a custom request header no HTML form or CORS "simple request" can set
+ *     (a cross-origin fetch that sets it is forced into a preflight the panel
+ *     never answers with allow-origin, so the real request is blocked); and
+ *   - a non-cross-site `Sec-Fetch-Site` when the browser sends one (defence in
+ *     depth for clients that omit the custom header).
+ * Note `req.json()` parses `text/plain` bodies too, so content-type is not a
+ * sufficient guard on its own — hence the explicit custom header.
+ */
+function enforceCsrf(req: Request): Response | null {
+  if (req.method === "GET" || req.method === "HEAD") return null;
+  const site = req.headers.get("sec-fetch-site");
+  if (site && site !== "same-origin" && site !== "same-site" && site !== "none") {
+    return json(403, { error: "cross-site request refused" });
+  }
+  if (req.headers.get("x-panel-csrf") !== "1") {
+    return json(403, { error: "missing anti-CSRF header (x-panel-csrf)" });
+  }
+  return null;
+}
+
 const PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"] as const;
 
 const controlSchema = z
@@ -227,6 +253,10 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
     const auth = authenticateOperator(req);
     if (!auth.ok) return auth.response;
     const operatorId = auth.operatorId;
+
+    // CSRF: block forged cross-site state changes before any mutating handler.
+    const csrf = enforceCsrf(req);
+    if (csrf) return csrf;
 
     try {
       // GET /panel/api/sessions

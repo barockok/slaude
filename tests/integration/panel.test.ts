@@ -29,7 +29,7 @@ const d = describe.skipIf(!realEnabled);
 
 const CH = "D0PANEL";
 const T1 = "9100.1";
-const HDR = { "x-auth-request-email": "op@example.com" };
+const HDR = { "x-auth-request-email": "op@example.com", "x-panel-csrf": "1" };
 
 let redis: any;
 let keys: any;
@@ -97,6 +97,31 @@ d("session control panel over real Redis", () => {
     // Fail-closed: no operator identity header → 403.
     const noauth = await fetch(`${gw.url}/panel/api/sessions`);
     expect(noauth.status).toBe(403);
+  }, 30_000);
+
+  test("CSRF: mutating requests need the anti-CSRF header and reject cross-site", async () => {
+    // A valid operator header is NOT enough for a state change without the
+    // custom anti-CSRF header (the header is proxy-injected on forged requests).
+    const noCsrf = await fetch(`${gw.url}/panel/api/sessions/${sessionId}/lock`, {
+      method: "POST",
+      headers: { "x-auth-request-email": "op@example.com" },
+    });
+    expect(noCsrf.status).toBe(403);
+
+    // Cross-site Sec-Fetch-Site is refused even with the header present.
+    const crossSite = await fetch(`${gw.url}/panel/api/sessions/${sessionId}/lock`, {
+      method: "POST",
+      headers: { ...HDR, "sec-fetch-site": "cross-site" },
+    });
+    expect(crossSite.status).toBe(403);
+
+    // Same-origin request carrying the header clears the CSRF gate.
+    const ok = await fetch(`${gw.url}/panel/api/sessions/${sessionId}/lock`, {
+      method: "POST",
+      headers: { ...HDR, "sec-fetch-site": "same-origin" },
+    });
+    expect(ok.status).not.toBe(403);
+    await fetch(`${gw.url}/panel/api/sessions/${sessionId}/release`, { method: "POST", headers: HDR });
   }, 30_000);
 
   test("SSE tails events:<id> for a fresh turn", async () => {
@@ -181,7 +206,7 @@ d("session control panel over real Redis", () => {
 
   test("force-release TRANSFERS the lock to the caller and audits old→new", async () => {
     // A different operator now holds the lock…
-    const other = { "x-auth-request-email": "op2@example.com" };
+    const other = { "x-auth-request-email": "op2@example.com", "x-panel-csrf": "1" };
     const lock2 = await fetch(`${gw.url}/panel/api/sessions/${sessionId}/lock`, { method: "POST", headers: other });
     expect(lock2.status).toBe(200);
     expect(await redis.get(keys.panelLock(sessionId))).toBe("op2@example.com");

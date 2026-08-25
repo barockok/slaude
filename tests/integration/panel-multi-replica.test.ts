@@ -33,7 +33,7 @@ const d = describe.skipIf(!realEnabled);
 
 const CH = "D0MULTI";
 const T1 = "9500.1";
-const OP = { "x-auth-request-email": "op@example.com" };
+const OP = { "x-auth-request-email": "op@example.com", "x-panel-csrf": "1" };
 
 let redis: any;
 let keys: any;

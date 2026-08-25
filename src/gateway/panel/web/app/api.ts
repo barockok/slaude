@@ -40,7 +40,9 @@ function operatorId(): string {
 function realBackend(): Backend {
   const op = operatorId();
   const base = "/panel/api";
-  const headers = { "x-auth-request-email": op, "content-type": "application/json" };
+  // `x-panel-csrf` is the anti-CSRF marker the server requires on mutating
+  // requests; a cross-site page cannot set a custom header without a preflight.
+  const headers = { "x-auth-request-email": op, "content-type": "application/json", "x-panel-csrf": "1" };
   async function req(path: string, init?: RequestInit) {
     const r = await fetch(base + path, { ...init, headers: { ...headers, ...(init?.headers ?? {}) } });
     const body = r.status === 204 ? null : await r.json().catch(() => null);
@@ -65,7 +67,10 @@ function realBackend(): Backend {
     release: (id) => req(`/sessions/${id}/release`, { method: "POST" }),
     forceRelease: (id) => req(`/sessions/${id}/force-release`, { method: "POST" }),
     subscribe(id, onEntry) {
-      const url = `${base}/sessions/${id}/events?email=${encodeURIComponent(op)}`;
+      // No identity in the URL (PII leaks into access logs / history / Referer):
+      // SSE is a GET, so the ingress-injected identity header authenticates it,
+      // and EventSource resends Last-Event-ID via header on reconnect.
+      const url = `${base}/sessions/${id}/events`;
       const es = new EventSource(url);
       es.onmessage = (m) => {
         try {
