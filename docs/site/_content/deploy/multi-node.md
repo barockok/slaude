@@ -100,6 +100,25 @@ Turn delivery is **at-least-once, deduplicated to effectively-once** for the com
 
 ---
 
+## Control panel (`/panel`)
+
+The operator web panel mounts on the gateway tier (`mono`/`gateway` roles, never `node`) when `SLAUDE_PANEL=1`. It has **no password of its own** — it trusts an identity header injected by an SSO/ingress in front of it (oauth2-proxy, Cloudflare Access, …).
+
+```sh
+SLAUDE_PANEL=1                       # mount /panel (gateway/mono only)
+SLAUDE_PANEL_TRUST_HEADER=1          # REQUIRED — asserts an ingress is in front (fail-closed)
+SLAUDE_PANEL_HEADER=x-auth-request-email   # trusted identity header (default shown)
+SLAUDE_PANEL_ALLOW=alice@example.com,bob@example.com   # optional allowlist (case-insensitive)
+```
+
+> **Security requirement — the ingress MUST strip the client-supplied identity header.** `SLAUDE_PANEL_TRUST_HEADER=1` only *asserts* that an authenticating proxy sits in front; slaude cannot verify it. The proxy MUST unconditionally strip any inbound `x-auth-request-email` (or whatever `SLAUDE_PANEL_HEADER` names) from the *client* request and re-inject it only after it has authenticated the operator. **If the header reaches the gateway un-stripped, any caller can set it and impersonate any operator.** With `SLAUDE_PANEL_TRUST_HEADER` unset the panel refuses every request (fail-closed); a missing header is a `403`.
+
+Cross-replica behaviour: the active-surface lock, the deferred-inbound replay, and the once-per-window "handled in ops panel" notice are all coordinated through Redis (the lock key, a `panel-resume` / `panel-hold` pub/sub pair, and a `panel-notice` NX guard), so an operator can drive a session on one replica while Slack traffic and node `/v1` posts land on another without double-posting or losing messages.
+
+The React app under `src/gateway/panel/web/` builds with Vite (`bun run test:web` covers it under Playwright) — a browser toolchain kept separate from the Bun server, excluded from `bun test` and the server `tsc`.
+
+---
+
 ## Load
 
 Spec §8 budgets **p95 queue claim latency under 500ms at 200 concurrent threads**. Two harnesses:

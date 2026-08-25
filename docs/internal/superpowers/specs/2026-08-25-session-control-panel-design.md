@@ -118,6 +118,13 @@ Each unit has one purpose and a defined interface.
 - **Fail-closed:** if the header is absent, respond 403. The panel refuses to
   boot exposed-without-ingress unless `SLAUDE_PANEL_TRUST_HEADER` is explicitly
   set (guards against a misconfigured deploy serving `/panel` open).
+- **Ingress MUST strip the client-supplied identity header (ops requirement).**
+  `SLAUDE_PANEL_TRUST_HEADER=1` only *asserts* that an SSO/ingress sits in
+  front — it cannot verify it. The ingress (oauth2-proxy / Cloudflare Access)
+  MUST unconditionally strip any inbound `x-auth-request-email` (or whatever
+  `SLAUDE_PANEL_HEADER` names) from client requests and re-inject it only after
+  authenticating the operator. If it does not, any caller can set the header
+  and impersonate any operator. The allowlist is matched case-insensitively.
 
 ## Data flow — panel chat turn
 
@@ -194,8 +201,8 @@ App lives in `src/gateway/panel/web/`.
 - **Session detail:** live event tail (SSE) over durable transcript; control bar
   (stop / reset / model / mode / unlock); chat box with take-control / release
   and a lock-owner banner.
-- Style: internal ops tool — legible, function-first. May reuse FunDS tokens for
-  consistency; no marketing polish.
+- Style: internal ops tool — legible, function-first. May reuse the shared brand
+  design tokens for consistency; no marketing polish.
 
 ## Testing
 
