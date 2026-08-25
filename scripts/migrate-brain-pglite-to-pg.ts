@@ -11,6 +11,10 @@
  *   --pglite-db <path>     PGLite db dir (overrides SLAUDE_BRAIN_HOME derivation).
  *   --snap-dir <path>      Where to write the working snapshot (default: /tmp/slaude-brain-migrate-<pid>).
  *   --keep-snap            Don't delete the snapshot after migration (useful for debugging).
+ *   --skip-schema          Skip initSchema() on Postgres (use when schema was already applied by superuser).
+ *                          Avoids the BYPASSRLS privilege requirement from gbrain migration v24.
+ *                          Pre-apply the schema with:
+ *                            psql <pg-url> -f node_modules/gbrain/src/schema.sql
  *
  * Env (all optional except SLAUDE_BRAIN_DATABASE_URL):
  *   SLAUDE_BRAIN_HOME        Brain home dir (default: ~/.slaude/brain); db/ subdir is used as source.
@@ -30,15 +34,17 @@ import { parseArgs } from "node:util";
 
 const { values: flags } = parseArgs({
   options: {
-    "dry-run":   { type: "boolean", default: false },
-    "pglite-db": { type: "string" },
-    "snap-dir":  { type: "string" },
-    "keep-snap": { type: "boolean", default: false },
+    "dry-run":     { type: "boolean", default: false },
+    "pglite-db":   { type: "string" },
+    "snap-dir":    { type: "string" },
+    "keep-snap":   { type: "boolean", default: false },
+    "skip-schema": { type: "boolean", default: false },
   },
   strict: true,
 });
-const DRY_RUN   = flags["dry-run"]   as boolean;
-const KEEP_SNAP = flags["keep-snap"] as boolean;
+const DRY_RUN     = flags["dry-run"]     as boolean;
+const KEEP_SNAP   = flags["keep-snap"]   as boolean;
+const SKIP_SCHEMA = flags["skip-schema"] as boolean;
 
 const BRAIN_HOME = process.env.SLAUDE_BRAIN_HOME ?? join(homedir(), ".slaude", "brain");
 const PG_URL = process.env.SLAUDE_BRAIN_DATABASE_URL;
@@ -122,13 +128,13 @@ type DbEngine = {
   db?: { query: (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> };
 };
 
-async function openEngine(cfg: object): Promise<DbEngine> {
+async function openEngine(cfg: object, skipSchema = false): Promise<DbEngine> {
   const { createEngine } = (await gbrainImport("engine-factory")) as {
     createEngine: (c: object) => Promise<DbEngine>;
   };
   const engine = (await createEngine(cfg)) as DbEngine;
   await engine.connect(cfg);
-  await engine.initSchema();
+  if (!skipSchema) await engine.initSchema();
   return engine;
 }
 
@@ -248,8 +254,8 @@ async function main() {
 
   log("connecting to Postgres...");
   const dstCfg = { engine: "postgres", database_url: PG_URL };
-  const dst = await openEngine(dstCfg);
-  log("Postgres connected + schema initialised");
+  const dst = await openEngine(dstCfg, SKIP_SCHEMA);
+  log(`Postgres connected${SKIP_SCHEMA ? " (schema init skipped)" : " + schema initialised"}`);
 
   log(`migrating ${TABLES.length} tables...`);
   for (const table of TABLES) {
