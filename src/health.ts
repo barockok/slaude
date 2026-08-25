@@ -8,6 +8,11 @@ export type HealthDeps = {
    *  only when provided — src/server.ts passes it for mono/gateway roles and
    *  omits it for nodes. Returns null for paths it doesn't own. */
   v1?: (req: Request) => Promise<Response | null>;
+  /** Optional operator control-panel handler (GatewayHandle.fetchPanel).
+   *  Mounted only when provided — src/server.ts passes it for mono/gateway
+   *  roles with SLAUDE_PANEL enabled, and omits it otherwise. Returns null for
+   *  paths it doesn't own. */
+  panel?: (req: Request) => Promise<Response | null>;
 };
 
 /**
@@ -50,6 +55,10 @@ export function healthRoutes(deps: HealthDeps, startedAt = Date.now()) {
     }
     if (deps.v1 && (url.pathname === "/v1" || url.pathname.startsWith("/v1/"))) {
       const res = await deps.v1(req);
+      if (res) return res;
+    }
+    if (deps.panel && (url.pathname === "/panel" || url.pathname.startsWith("/panel/"))) {
+      const res = await deps.panel(req);
       if (res) return res;
     }
     return null;

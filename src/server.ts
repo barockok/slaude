@@ -78,6 +78,8 @@ async function main() {
   // closure's late binding is safe.
   const slackMode = env.slack.mode();
   const role = env.role();
+  // Control panel: mount /panel only for gateway/mono with SLAUDE_PANEL on.
+  const panelMounted = role !== "node" && env.panel.enabled();
   let slack: import("./gateway/core/gateway").GatewayHandle;
   let health: ReturnType<typeof startHealthServer> = null;
   if (slackMode === "http") {
@@ -90,6 +92,7 @@ async function main() {
       health: {
         liveSessions: () => agent.liveCount(),
         v1: role !== "node" ? (req: Request) => slack.fetchV1(req) : undefined,
+        panel: panelMounted ? (req: Request) => slack.fetchPanel(req) : undefined,
       },
     });
     slack = createGateway(agent, transport, { mcpConnectEnabled: mcpOAuthHealthy });
@@ -98,9 +101,18 @@ async function main() {
     health = startHealthServer({
       liveSessions: () => agent.liveCount(),
       v1: role !== "node" ? (req) => slack.fetchV1(req) : undefined,
+      panel: panelMounted ? (req) => slack.fetchPanel(req) : undefined,
     });
   }
   if (role !== "node") console.log(`[slaude] /v1 REST mounted (role=${role})`);
+  if (panelMounted) {
+    if (!env.panel.trustHeader()) {
+      console.error(
+        "[slaude] SLAUDE_PANEL=1 but SLAUDE_PANEL_TRUST_HEADER is unset — /panel will refuse every request (fail-closed). Set it only behind an SSO/ingress.",
+      );
+    }
+    console.log(`[slaude] /panel control panel mounted (role=${role})`);
+  }
 
   await slack.start();
   console.log(`[slaude] slack ${slackMode} mode started`);
