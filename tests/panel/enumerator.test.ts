@@ -58,11 +58,17 @@ describe("listSessions", () => {
     expect(running[0]!.status).toBe("running");
   });
 
-  it("drops the tenant filter on sqlite (no tenant_id column) rather than erroring", async () => {
-    await seed("default", "C1", "1.0");
-    // sqlite rows have no tenant_id; the filter is silently dropped.
-    const all = await Sessions.listSessions({ tenant: "whatever" });
-    expect(all.length).toBe(1);
+  it("filters by tenant on Postgres; drops the filter on sqlite (no tenant_id column)", async () => {
+    await seed("default", "C1", "1.0"); // tenant_id defaults to "default"
+    if (db.dialect === "pg") {
+      // pg carries a tenant_id column: a non-matching tenant filters the row
+      // out; the matching (default) tenant returns it.
+      expect((await Sessions.listSessions({ tenant: "whatever" })).length).toBe(0);
+      expect((await Sessions.listSessions({ tenant: "default" })).length).toBe(1);
+    } else {
+      // sqlite has no tenant_id column: the filter is silently dropped, not errored.
+      expect((await Sessions.listSessions({ tenant: "whatever" })).length).toBe(1);
+    }
   });
 });
 
