@@ -101,17 +101,27 @@ jobs:
       - name: Installer smoke test
         run: bash tests/installer/smoke.sh
 
-      - name: Create GitHub release
+      # Repo has GitHub's immutable-releases policy on: a non-draft release
+      # publishes (and locks) on creation, so uploading the second asset
+      # (sha256sums.txt) after the first races the publish and 404s. Create
+      # as a draft (assets can still attach) then flip it published once
+      # both files are up, per GitHub's own fix for this error.
+      - name: Create GitHub release (draft)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           body_path: CHANGELOG.md
-          draft: false
+          draft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist/slaude-*.tar.gz
             dist/sha256sums.txt
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --draft=false --repo "${{ github.repository }}"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
