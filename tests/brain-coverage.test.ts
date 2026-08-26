@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { paths } from "../src/config/home";
 import { db } from "../src/db/schema";
 import { clearKbCache } from "../src/knowledge/loader";
+import { ensureGitTracked } from "../src/config/git-track";
 import { closeBrain, embeddingActive, ensureSources, getBrain } from "../src/knowledge/brain";
 import { backfillMemoryTurns, embedStaleChunks } from "../src/knowledge/brain-backfill";
 import { parseCycleTime, runNightlyMaintenance, scheduleNightlyMaintenance } from "../src/knowledge/brain-cycle";
@@ -28,6 +29,9 @@ const kbDir = join(paths.knowledge, "covwiki");
 mkdirSync(join(kbDir, "wiki"), { recursive: true });
 writeFileSync(join(kbDir, "README.md"), "---\ndescription: coverage wiki\n---\n# Cov\n");
 writeFileSync(join(kbDir, "wiki", "page.md"), "# Page\nCoverage fixture.\n");
+// gbrain 0.46+ requires --path sources to be a git repo with committed
+// content — mirrors what install.ts/sync-manifest.ts now do to real KB dirs.
+ensureGitTracked(kbDir);
 clearKbCache();
 
 // Same erased-specifier trick as src/knowledge/brain.ts — tsc must not

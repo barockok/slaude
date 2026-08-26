@@ -26,6 +26,7 @@ import {
 import { discoverSkills } from "./loader";
 import { loadKbs, clearKbCache } from "../knowledge/loader";
 import { env } from "../config/env";
+import { ensureGitTracked } from "../config/git-track";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
@@ -119,6 +120,9 @@ function pullKb(label: string, git: string, ref: string, subpath?: string): { sh
         execSync(`cp -r "${join(src, entry)}" "${join(dir, entry)}"`, { stdio: "pipe" });
       }
       const sha = execSync("git rev-parse HEAD", { cwd: stage, encoding: "utf8" }).trim();
+      // Sparse-checkout promotion drops the .git it staged with — gbrain
+      // 0.46+ needs the KB dir itself to be a git repo with committed content.
+      ensureGitTracked(dir);
       return { sha };
     } finally {
       rmSync(stage, { recursive: true, force: true });
