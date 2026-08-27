@@ -5,7 +5,7 @@ import type { SessionBinding } from "../src/gateway/core/surface";
 function fakeClient(impl: any = {}) {
   return {
     chat: {
-      postMessage: async () => impl.postMessage?.() ?? { ts: "100.0" },
+      postMessage: async (a: any) => impl.postMessage?.(a) ?? { ts: "100.0" },
       update: async (a: any) => impl.chatUpdate?.(a) ?? {},
     },
     reactions: {
@@ -47,6 +47,18 @@ describe("SlackSurface", () => {
   test("reply posts to the bound conversation and returns ts as ref", async () => {
     const s = new SlackSurface(fakeClient({ postMessage: () => ({ ts: "999.0" }) }), binding());
     expect(await s.reply({ text: "hi" })).toEqual({ ref: "999.0" });
+  });
+
+  test("a channel-root reply can become the parent of later replies", async () => {
+    const posts: any[] = [];
+    const s = new SlackSurface(
+      fakeClient({ postMessage: (a: any) => { posts.push(a); return { ts: posts.length === 1 ? "999.0" : "999.1" }; } }),
+      binding({ threadRef: undefined }),
+    );
+    const root = await s.reply({ text: "Summary Testing" });
+    expect(await s.reply({ text: "ticket details", threadRef: root.ref })).toEqual({ ref: "999.1" });
+    expect(posts[0].thread_ts).toBeUndefined();
+    expect(posts[1].thread_ts).toBe("999.0");
   });
 
   test("getHistory maps slack fields and preserves reply_count/thread_ts/has_more", async () => {

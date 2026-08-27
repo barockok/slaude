@@ -7,7 +7,7 @@ function fakeSurface(caps: SurfaceCapability[], calls: string[] = []): Surface {
   const s: any = {
     id: "fake",
     capabilities: cap,
-    reply: async (i: { text: string }) => { calls.push(`reply:${i.text}`); return { ref: "R1" }; },
+    reply: async (i: { text: string; threadRef?: string }) => { calls.push(`reply:${i.text}:${i.threadRef ?? "default"}`); return { ref: "R1" }; },
     getHistory: async () => ({ messages: [], hasMore: false }),
     requestApproval: async () => ({ approved: true, by: "U1" }),
   };
@@ -66,7 +66,14 @@ describe("surfaceTools — capability gating", () => {
     const tools = surfaceTools(fakeSurface([], calls));
     const reply = tools.find((t) => t.name === "reply")!;
     const res = await reply.handler({ text: "hello" });
-    expect(calls).toContain("reply:hello");
+    expect(calls).toContain("reply:hello:default");
     expect(res.content[0]!.text).toContain("R1");
+  });
+
+  test("reply tool forwards thread_ref to the surface", async () => {
+    const calls: string[] = [];
+    const reply = surfaceTools(fakeSurface([], calls)).find((t) => t.name === "reply")!;
+    await reply.handler({ text: "ticket details", thread_ref: "ROOT1" });
+    expect(calls).toContain("reply:ticket details:ROOT1");
   });
 });

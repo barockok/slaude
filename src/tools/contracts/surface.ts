@@ -15,8 +15,11 @@ export const surfaceContract = {
     reply: {
       name: "reply",
       description:
-        "Send a message to the user in the current conversation. This is the primary way to communicate — plain assistant text is NOT shown to them. Returns a `ref` you can pass to edit later.",
-      schema: { text: z.string().describe("Message body. Markdown supported.") },
+        "Send a message to the user in the current conversation. This is the primary way to communicate — plain assistant text is NOT shown to them. Returns a `ref` you can pass to edit later or as `thread_ref` on another reply. For a channel-root summary with threaded details, post the summary first, then pass its returned `ref` as `thread_ref` on each detail reply.",
+      schema: {
+        text: z.string().describe("Message body. Markdown supported."),
+        thread_ref: z.string().optional().describe("Optional parent message ref. Posts this reply in that message's thread instead of the conversation's default destination."),
+      },
     },
     get_history: {
       name: "get_history",

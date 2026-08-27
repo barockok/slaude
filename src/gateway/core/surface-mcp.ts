@@ -42,8 +42,8 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
   const defs: SurfaceToolDef[] = [
     {
       ...c.reply,
-      handler: async ({ text }) => {
-        try { const { ref } = await surface.reply({ text }); return ok(`posted ref=${ref}`); }
+      handler: async ({ text, thread_ref }) => {
+        try { const { ref } = await surface.reply({ text, threadRef: thread_ref }); return ok(`posted ref=${ref}`); }
         catch (e: any) { return fail(`reply failed: ${e?.message ?? String(e)}`); }
       },
     },

@@ -35,7 +35,7 @@ export interface Surface {
   readonly capabilities: ReadonlySet<SurfaceCapability>;
 
   // core — every surface MUST implement:
-  reply(i: { text: string }): Promise<{ ref: string }>;
+  reply(i: { text: string; threadRef?: string }): Promise<{ ref: string }>;
   getHistory(i: { limit?: number; includeReplies?: boolean }): Promise<{ messages: HistoryItem[]; hasMore: boolean }>;
   requestApproval(r: ApprovalRequest): Promise<ApprovalResult>;
 

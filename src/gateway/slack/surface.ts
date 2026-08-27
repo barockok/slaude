@@ -34,10 +34,10 @@ export class SlackSurface implements Surface {
     this.#b = binding;
   }
 
-  async reply({ text }: { text: string }): Promise<{ ref: string }> {
+  async reply({ text, threadRef }: { text: string; threadRef?: string }): Promise<{ ref: string }> {
     const r = await this.#client.chat.postMessage({
       channel: this.#b.conversationId,
-      thread_ts: this.#b.threadRef,
+      thread_ts: threadRef ?? this.#b.threadRef,
       text: format(text),
       mrkdwn: true,
     });
