@@ -9,33 +9,56 @@ import { SoulDataSchema } from "../src/soul/data";
 function fakeCtx(impl: {
   postMessage?: () => any;
   chatUpdate?: () => any;
+  chatDelete?: () => any;
+  chatPostEphemeral?: () => any;
   reactionsAdd?: () => any;
   reactionsRemove?: () => any;
   filesUploadV2?: () => any;
+  filesInfo?: () => any;
   usersInfo?: (uid: string) => any;
   convInfo?: () => any;
   convReplies?: () => any;
   convMembers?: () => any;
+  convSetTopic?: () => any;
+  convSetPurpose?: () => any;
+  convCanvasesCreate?: () => any;
+  canvasesEdit?: () => any;
+  pinsAdd?: () => any;
+  pinsRemove?: () => any;
   searchMessages?: () => any;
   requestApproval?: (req: any) => Promise<any>;
 }): SlackContext {
   return {
     client: {
+      token: "xoxb-test-token",
       chat: {
         postMessage: async () => impl.postMessage?.() ?? { ts: "100.0" },
         update: async () => impl.chatUpdate?.() ?? {},
+        delete: async () => impl.chatDelete?.() ?? {},
+        postEphemeral: async () => impl.chatPostEphemeral?.() ?? { message_ts: "100.0" },
       },
       reactions: {
         add: async () => impl.reactionsAdd?.() ?? {},
         remove: async () => impl.reactionsRemove?.() ?? {},
       },
-      files: { uploadV2: async () => impl.filesUploadV2?.() ?? { files: [{ id: "F1" }] } },
+      pins: {
+        add: async () => impl.pinsAdd?.() ?? {},
+        remove: async () => impl.pinsRemove?.() ?? {},
+      },
+      files: {
+        uploadV2: async () => impl.filesUploadV2?.() ?? { files: [{ id: "F1" }] },
+        info: async () => impl.filesInfo?.() ?? { file: {} },
+      },
       users: { info: async ({ user }: any) => impl.usersInfo?.(user) ?? { user: {} } },
       conversations: {
         info: async () => impl.convInfo?.() ?? { channel: {} },
         replies: async () => impl.convReplies?.() ?? { messages: [] },
         members: async () => impl.convMembers?.() ?? { members: [] },
+        setTopic: async () => impl.convSetTopic?.() ?? {},
+        setPurpose: async () => impl.convSetPurpose?.() ?? {},
+        canvases: { create: async () => impl.convCanvasesCreate?.() ?? { canvas_id: "F_CANVAS1" } },
       },
+      canvases: { edit: async () => impl.canvasesEdit?.() ?? {} },
       search: { messages: async () => impl.searchMessages?.() ?? { messages: { matches: [] } } },
     } as any,
     channel: "C1",
@@ -352,6 +375,306 @@ describe("slackHandlers", () => {
     } as unknown as SlackContext;
     await slackHandlers.reply(ctx, { text: "hi" });
     expect(captured.thread_ts).toBe("123.456");
+  });
+});
+
+describe("slackHandlers — new tools (post_message/delete/ephemeral/pin/topic/canvas)", () => {
+  test("post_message posts to an arbitrary channel", async () => {
+    let captured: any = null;
+    const ctx = fakeCtx({ postMessage: () => ({ channel: "C9", ts: "999.0" }) });
+    (ctx.client as any).chat.postMessage = async (a: any) => {
+      captured = a;
+      return { channel: "C9", ts: "999.0" };
+    };
+    const res = await slackHandlers.post_message(ctx, { channel: "C9", text: "hello" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toBe("posted channel=C9 ts=999.0");
+    expect(captured.channel).toBe("C9");
+    expect(captured.thread_ts).toBeUndefined();
+  });
+
+  test("post_message broadcasts a thread reply when requested", async () => {
+    let captured: any = null;
+    const ctx = fakeCtx({});
+    (ctx.client as any).chat.postMessage = async (a: any) => {
+      captured = a;
+      return { channel: "C9", ts: "999.0" };
+    };
+    await slackHandlers.post_message(ctx, { channel: "C9", text: "hi", thread_ts: "1.0", broadcast: true });
+    expect(captured.thread_ts).toBe("1.0");
+    expect(captured.reply_broadcast).toBe(true);
+  });
+
+  test("post_message surfaces error", async () => {
+    const ctx = fakeCtx({
+      postMessage: () => {
+        const e: any = new Error("fail");
+        e.data = { error: "channel_not_found" };
+        throw e;
+      },
+    });
+    const res = await slackHandlers.post_message(ctx, { channel: "C9", text: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("channel_not_found");
+  });
+
+  test("delete removes a message", async () => {
+    const ctx = fakeCtx({});
+    const res = await slackHandlers.delete(ctx, { ts: "100.0" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toBe("deleted");
+  });
+
+  test("delete surfaces error", async () => {
+    const ctx = fakeCtx({
+      chatDelete: () => {
+        const e: any = new Error("fail");
+        e.data = { error: "cant_delete_message" };
+        throw e;
+      },
+    });
+    const res = await slackHandlers.delete(ctx, { ts: "100.0" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("cant_delete_message");
+  });
+
+  test("post_ephemeral posts to one user", async () => {
+    const ctx = fakeCtx({ chatPostEphemeral: () => ({ message_ts: "101.0" }) });
+    const res = await slackHandlers.post_ephemeral(ctx, { user: "U9", text: "hint" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toContain("101.0");
+  });
+
+  test("post_ephemeral surfaces error", async () => {
+    const ctx = fakeCtx({
+      chatPostEphemeral: () => {
+        const e: any = new Error("fail");
+        e.data = { error: "user_not_in_channel" };
+        throw e;
+      },
+    });
+    const res = await slackHandlers.post_ephemeral(ctx, { user: "U9", text: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("user_not_in_channel");
+  });
+
+  test("pin pins a message", async () => {
+    const ctx = fakeCtx({});
+    const res = await slackHandlers.pin(ctx, { ts: "100.0" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toBe("pinned");
+  });
+
+  test("pin on already_pinned returns ok", async () => {
+    const ctx = fakeCtx({
+      pinsAdd: () => {
+        const e: any = new Error("already pinned");
+        e.data = { error: "already_pinned" };
+        throw e;
+      },
+    });
+    const res = await slackHandlers.pin(ctx, { ts: "100.0" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toBe("already pinned");
+  });
+
+  test("pin surfaces other errors", async () => {
+    const ctx = fakeCtx({
+      pinsAdd: () => {
+        const e: any = new Error("fail");
+        e.data = { error: "no_permission" };
+        throw e;
+      },
+    });
+    const res = await slackHandlers.pin(ctx, { ts: "100.0" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("no_permission");
+  });
+
+  test("unpin removes a pin", async () => {
+    const ctx = fakeCtx({});
+    const res = await slackHandlers.unpin(ctx, { ts: "100.0" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toBe("unpinned");
+  });
+
+  test("unpin surfaces error", async () => {
+    const ctx = fakeCtx({
+      pinsRemove: () => {
+        const e: any = new Error("fail");
+        e.data = { error: "not_pinned" };
+        throw e;
+      },
+    });
+    const res = await slackHandlers.unpin(ctx, { ts: "100.0" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("not_pinned");
+  });
+
+  test("set_topic sets the channel topic", async () => {
+    const ctx = fakeCtx({});
+    const res = await slackHandlers.set_topic(ctx, { topic: "new topic" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toBe("topic set");
+  });
+
+  test("set_topic surfaces error", async () => {
+    const ctx = fakeCtx({
+      convSetTopic: () => {
+        const e: any = new Error("fail");
+        e.data = { error: "not_authed" };
+        throw e;
+      },
+    });
+    const res = await slackHandlers.set_topic(ctx, { topic: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("not_authed");
+  });
+
+  test("set_purpose sets the channel purpose", async () => {
+    const ctx = fakeCtx({});
+    const res = await slackHandlers.set_purpose(ctx, { purpose: "new purpose" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toBe("purpose set");
+  });
+
+  test("set_purpose surfaces error", async () => {
+    const ctx = fakeCtx({
+      convSetPurpose: () => {
+        const e: any = new Error("fail");
+        e.data = { error: "not_authed" };
+        throw e;
+      },
+    });
+    const res = await slackHandlers.set_purpose(ctx, { purpose: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("not_authed");
+  });
+
+  test("create_canvas creates a canvas", async () => {
+    const ctx = fakeCtx({ convCanvasesCreate: () => ({ canvas_id: "F_NEW" }) });
+    const res = await slackHandlers.create_canvas(ctx, { markdown: "# Title" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toContain("F_NEW");
+  });
+
+  test("create_canvas surfaces error", async () => {
+    const ctx = fakeCtx({
+      convCanvasesCreate: () => {
+        const e: any = new Error("fail");
+        e.data = { error: "canvas_already_exists" };
+        throw e;
+      },
+    });
+    const res = await slackHandlers.create_canvas(ctx, { markdown: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("canvas_already_exists");
+  });
+
+  test("append_canvas appends via insert_at_end", async () => {
+    let captured: any = null;
+    const ctx = fakeCtx({
+      convInfo: () => ({ channel: { properties: { canvas: { file_id: "F_C1" } } } }),
+    });
+    (ctx.client as any).canvases.edit = async (a: any) => {
+      captured = a;
+      return {};
+    };
+    const res = await slackHandlers.append_canvas(ctx, { markdown: "more text" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toBe("canvas appended");
+    expect(captured.canvas_id).toBe("F_C1");
+    expect(captured.changes[0].operation).toBe("insert_at_end");
+  });
+
+  test("prepend_canvas prepends via insert_at_start", async () => {
+    let captured: any = null;
+    const ctx = fakeCtx({
+      convInfo: () => ({ channel: { properties: { canvas: { file_id: "F_C1" } } } }),
+    });
+    (ctx.client as any).canvases.edit = async (a: any) => {
+      captured = a;
+      return {};
+    };
+    const res = await slackHandlers.prepend_canvas(ctx, { markdown: "intro text" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0]!.text).toBe("canvas prepended");
+    expect(captured.changes[0].operation).toBe("insert_at_start");
+  });
+
+  test("append_canvas errors when the channel has no canvas yet", async () => {
+    const ctx = fakeCtx({ convInfo: () => ({ channel: {} }) });
+    const res = await slackHandlers.append_canvas(ctx, { markdown: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("no Canvas yet");
+  });
+
+  test("append_canvas surfaces edit error", async () => {
+    const ctx = fakeCtx({
+      convInfo: () => ({ channel: { properties: { canvas: { file_id: "F_C1" } } } }),
+      canvasesEdit: () => {
+        const e: any = new Error("fail");
+        e.data = { error: "section_not_found" };
+        throw e;
+      },
+    });
+    const res = await slackHandlers.append_canvas(ctx, { markdown: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("section_not_found");
+  });
+
+  test("read_canvas downloads and returns markdown", async () => {
+    const originalFetch = global.fetch;
+    let capturedAuth: string | undefined;
+    (global as any).fetch = async (_url: string, opts: any) => {
+      capturedAuth = opts?.headers?.Authorization;
+      return { ok: true, status: 200, text: async () => "# canvas contents" } as any;
+    };
+    try {
+      const ctx = fakeCtx({
+        convInfo: () => ({ channel: { properties: { canvas: { file_id: "F_C1" } } } }),
+        filesInfo: () => ({ file: { url_private_download: "https://files.slack.com/f1" } }),
+      });
+      const res = await slackHandlers.read_canvas(ctx, {});
+      expect(res.isError).toBeUndefined();
+      expect(res.content[0]!.text).toBe("# canvas contents");
+      expect(capturedAuth).toBe("Bearer xoxb-test-token");
+    } finally {
+      (global as any).fetch = originalFetch;
+    }
+  });
+
+  test("read_canvas errors when the channel has no canvas yet", async () => {
+    const ctx = fakeCtx({ convInfo: () => ({ channel: {} }) });
+    const res = await slackHandlers.read_canvas(ctx, {});
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("no Canvas yet");
+  });
+
+  test("read_canvas errors when the canvas has no downloadable content", async () => {
+    const ctx = fakeCtx({
+      convInfo: () => ({ channel: { properties: { canvas: { file_id: "F_C1" } } } }),
+      filesInfo: () => ({ file: {} }),
+    });
+    const res = await slackHandlers.read_canvas(ctx, {});
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("no downloadable content");
+  });
+
+  test("read_canvas surfaces HTTP download failures", async () => {
+    const originalFetch = global.fetch;
+    (global as any).fetch = async () => ({ ok: false, status: 403 }) as any;
+    try {
+      const ctx = fakeCtx({
+        convInfo: () => ({ channel: { properties: { canvas: { file_id: "F_C1" } } } }),
+        filesInfo: () => ({ file: { url_private_download: "https://files.slack.com/f1" } }),
+      });
+      const res = await slackHandlers.read_canvas(ctx, {});
+      expect(res.isError).toBe(true);
+      expect(res.content[0]!.text).toContain("HTTP 403");
+    } finally {
+      (global as any).fetch = originalFetch;
+    }
   });
 });
 
