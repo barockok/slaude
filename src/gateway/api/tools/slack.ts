@@ -32,6 +32,28 @@ export async function executeSlackTool(
       return slackHandlers.list_users_in_channel(ctx, parseToolArgs(c.list_users_in_channel, body));
     case c.search_messages.name:
       return slackHandlers.search_messages(ctx, parseToolArgs(c.search_messages, body));
+    case c.post_message.name:
+      return slackHandlers.post_message(ctx, parseToolArgs(c.post_message, body));
+    case c.delete.name:
+      return slackHandlers.delete(ctx, parseToolArgs(c.delete, body));
+    case c.post_ephemeral.name:
+      return slackHandlers.post_ephemeral(ctx, parseToolArgs(c.post_ephemeral, body));
+    case c.pin.name:
+      return slackHandlers.pin(ctx, parseToolArgs(c.pin, body));
+    case c.unpin.name:
+      return slackHandlers.unpin(ctx, parseToolArgs(c.unpin, body));
+    case c.set_topic.name:
+      return slackHandlers.set_topic(ctx, parseToolArgs(c.set_topic, body));
+    case c.set_purpose.name:
+      return slackHandlers.set_purpose(ctx, parseToolArgs(c.set_purpose, body));
+    case c.create_canvas.name:
+      return slackHandlers.create_canvas(ctx, parseToolArgs(c.create_canvas, body));
+    case c.append_canvas.name:
+      return slackHandlers.append_canvas(ctx, parseToolArgs(c.append_canvas, body));
+    case c.prepend_canvas.name:
+      return slackHandlers.prepend_canvas(ctx, parseToolArgs(c.prepend_canvas, body));
+    case c.read_canvas.name:
+      return slackHandlers.read_canvas(ctx, parseToolArgs(c.read_canvas, body));
     default:
       return null;
   }

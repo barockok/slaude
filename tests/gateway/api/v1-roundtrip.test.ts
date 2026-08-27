@@ -35,12 +35,26 @@ function fakeTransport(): Transport {
   return {
     client: {
       auth: { test: async () => ({ user_id: "U_SLAUDE", bot_id: "B_SLAUDE", team: "T", url: "x" }) },
-      chat: { postMessage: async () => ({ ok: true, ts: "1.1" }), update: async () => ({ ok: true }) },
+      chat: {
+        postMessage: async () => ({ ok: true, ts: "1.1" }),
+        update: async () => ({ ok: true }),
+        delete: async () => ({ ok: true }),
+        postEphemeral: async () => ({ ok: true, message_ts: "1.1" }),
+      },
       reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
-      conversations: { info: async () => ({}), members: async () => ({ members: [] }), replies: async () => ({ messages: [] }) },
+      pins: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
+      conversations: {
+        info: async () => ({ channel: { properties: { canvas: { file_id: "F_ROUNDTRIP" } } } }),
+        members: async () => ({ members: [] }),
+        replies: async () => ({ messages: [] }),
+        setTopic: async () => ({ ok: true }),
+        setPurpose: async () => ({ ok: true }),
+        canvases: { create: async () => ({ canvas_id: "F_ROUNDTRIP" }) },
+      },
+      canvases: { edit: async () => ({ ok: true }) },
       users: { info: async () => ({ user: { real_name: "Test" } }), profile: { set: async () => ({}) } },
       search: { messages: async () => ({ messages: { matches: [], total: 0 } }) },
-      files: { uploadV2: async () => ({ files: [] }) },
+      files: { uploadV2: async () => ({ files: [] }), info: async () => ({ file: {} }) },
     } as any,
     action: () => {}, event: () => {}, use: () => {}, start: async () => {}, stop: async () => {},
   };
@@ -79,6 +93,17 @@ const FIXTURES: Record<string, Record<string, Fixture>> = {
     get_channel_info: { input: {} },
     list_users_in_channel: { input: {} },
     search_messages: { input: { query: "roundtrip" } },
+    post_message: { input: { channel: "C0OTHER", text: "roundtrip broadcast" } },
+    delete: { input: { ts: "1.1" } },
+    post_ephemeral: { input: { user: "U0OTHER", text: "roundtrip hint" } },
+    pin: { input: { ts: "1.1" } },
+    unpin: { input: { ts: "1.1" } },
+    set_topic: { input: { topic: "roundtrip topic" } },
+    set_purpose: { input: { purpose: "roundtrip purpose" } },
+    create_canvas: { input: { markdown: "# roundtrip" } },
+    append_canvas: { input: { markdown: "more" } },
+    prepend_canvas: { input: { markdown: "intro" } },
+    read_canvas: { input: {}, isErrorOk: true }, // fixture files.info has no url_private_download
   },
   runtime: {
     ignore_thread: { input: { duration: "5m", reason: "roundtrip" } },

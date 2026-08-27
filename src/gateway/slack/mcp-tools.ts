@@ -315,7 +315,156 @@ export const slackHandlers = {
       return err(`slack search.messages failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
     }
   },
+
+  async post_message(
+    ctx: SlackContext,
+    { channel, text, thread_ts, broadcast }: { channel: string; text: string; thread_ts?: string; broadcast?: boolean },
+  ): Promise<ToolResult> {
+    try {
+      const replyOpts = thread_ts ? (broadcast ? { thread_ts, reply_broadcast: true as const } : { thread_ts }) : {};
+      const r = await ctx.client.chat.postMessage({
+        channel,
+        text: format(text),
+        mrkdwn: true,
+        ...replyOpts,
+      });
+      return ok(`posted channel=${r.channel} ts=${r.ts}`);
+    } catch (e: any) {
+      return err(`slack chat.postMessage failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
+    }
+  },
+
+  async delete(ctx: SlackContext, { ts, channel }: { ts: string; channel?: string }): Promise<ToolResult> {
+    try {
+      await ctx.client.chat.delete({ channel: channel ?? ctx.channel, ts });
+      return ok("deleted");
+    } catch (e: any) {
+      return err(`slack chat.delete failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
+    }
+  },
+
+  async post_ephemeral(
+    ctx: SlackContext,
+    { user, text, channel, thread_ts }: { user: string; text: string; channel?: string; thread_ts?: string },
+  ): Promise<ToolResult> {
+    try {
+      const r = await ctx.client.chat.postEphemeral({
+        channel: channel ?? ctx.channel,
+        user,
+        thread_ts,
+        text: format(text),
+      });
+      return ok(`posted ephemeral ts=${r.message_ts ?? ""}`);
+    } catch (e: any) {
+      return err(`slack chat.postEphemeral failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
+    }
+  },
+
+  async pin(ctx: SlackContext, { ts, channel }: { ts: string; channel?: string }): Promise<ToolResult> {
+    try {
+      await ctx.client.pins.add({ channel: channel ?? ctx.channel, timestamp: ts });
+      return ok("pinned");
+    } catch (e: any) {
+      const msg = e?.data?.error ?? e?.message ?? String(e);
+      if (msg === "already_pinned") return ok("already pinned");
+      return err(`slack pins.add failed: ${msg}`);
+    }
+  },
+
+  async unpin(ctx: SlackContext, { ts, channel }: { ts: string; channel?: string }): Promise<ToolResult> {
+    try {
+      await ctx.client.pins.remove({ channel: channel ?? ctx.channel, timestamp: ts });
+      return ok("unpinned");
+    } catch (e: any) {
+      return err(`slack pins.remove failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
+    }
+  },
+
+  async set_topic(ctx: SlackContext, { topic, channel }: { topic: string; channel?: string }): Promise<ToolResult> {
+    try {
+      await ctx.client.conversations.setTopic({ channel: channel ?? ctx.channel, topic });
+      return ok("topic set");
+    } catch (e: any) {
+      return err(`slack conversations.setTopic failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
+    }
+  },
+
+  async set_purpose(ctx: SlackContext, { purpose, channel }: { purpose: string; channel?: string }): Promise<ToolResult> {
+    try {
+      await ctx.client.conversations.setPurpose({ channel: channel ?? ctx.channel, purpose });
+      return ok("purpose set");
+    } catch (e: any) {
+      return err(`slack conversations.setPurpose failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
+    }
+  },
+
+  async create_canvas(
+    ctx: SlackContext,
+    { markdown, title, channel }: { markdown: string; title?: string; channel?: string },
+  ): Promise<ToolResult> {
+    try {
+      const r = await ctx.client.conversations.canvases.create({
+        channel_id: channel ?? ctx.channel,
+        title,
+        document_content: { type: "markdown", markdown },
+      });
+      return ok(`canvas created canvas_id=${r.canvas_id}`);
+    } catch (e: any) {
+      return err(`slack conversations.canvases.create failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
+    }
+  },
+
+  async append_canvas(ctx: SlackContext, { markdown, channel }: { markdown: string; channel?: string }): Promise<ToolResult> {
+    return editCanvasEnd(ctx, channel, markdown, "insert_at_end");
+  },
+
+  async prepend_canvas(ctx: SlackContext, { markdown, channel }: { markdown: string; channel?: string }): Promise<ToolResult> {
+    return editCanvasEnd(ctx, channel, markdown, "insert_at_start");
+  },
+
+  async read_canvas(ctx: SlackContext, { channel }: { channel?: string }): Promise<ToolResult> {
+    try {
+      const canvasId = await getCanvasId(ctx, channel);
+      if (typeof canvasId !== "string") return canvasId;
+      const info = await ctx.client.files.info({ file: canvasId });
+      const url = (info.file as any)?.url_private_download;
+      if (!url) return err("canvas has no downloadable content yet (empty canvas?)");
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${ctx.client.token}` } });
+      if (!res.ok) return err(`canvas download failed: HTTP ${res.status}`);
+      return ok(await res.text());
+    } catch (e: any) {
+      return err(`slack read_canvas failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
+    }
+  },
 };
+
+/** Resolve the channel's Canvas id via its file_id (canvas_id and file_id share
+ *  a namespace for channel canvases). Returns a ToolResult error if none exists. */
+async function getCanvasId(ctx: SlackContext, channel?: string): Promise<string | ToolResult> {
+  const r = await ctx.client.conversations.info({ channel: channel ?? ctx.channel });
+  const canvasId = ((r.channel as any)?.properties?.canvas?.file_id) as string | undefined;
+  if (!canvasId) return err("this channel has no Canvas yet — create one with create_canvas first");
+  return canvasId;
+}
+
+async function editCanvasEnd(
+  ctx: SlackContext,
+  channel: string | undefined,
+  markdown: string,
+  operation: "insert_at_start" | "insert_at_end",
+): Promise<ToolResult> {
+  try {
+    const canvasId = await getCanvasId(ctx, channel);
+    if (typeof canvasId !== "string") return canvasId;
+    await ctx.client.canvases.edit({
+      canvas_id: canvasId,
+      changes: [{ operation, document_content: { type: "markdown", markdown } }],
+    });
+    return ok(`canvas ${operation === "insert_at_end" ? "appended" : "prepended"}`);
+  } catch (e: any) {
+    return err(`slack canvases.edit failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
+  }
+}
 
 /** Check whether the current turn's user is manager or approver. When a
  *  channel id is given, approvers are resolved per-channel (a `## Channel`
@@ -577,6 +726,17 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
       tool(c.get_channel_info.name, c.get_channel_info.description, c.get_channel_info.schema, () => slackHandlers.get_channel_info(ctx)),
       tool(c.list_users_in_channel.name, c.list_users_in_channel.description, c.list_users_in_channel.schema, (args) => slackHandlers.list_users_in_channel(ctx, args)),
       tool(c.search_messages.name, c.search_messages.description, c.search_messages.schema, (args) => slackHandlers.search_messages(ctx, args)),
+      tool(c.post_message.name, c.post_message.description, c.post_message.schema, (args) => slackHandlers.post_message(ctx, args)),
+      tool(c.delete.name, c.delete.description, c.delete.schema, (args) => slackHandlers.delete(ctx, args)),
+      tool(c.post_ephemeral.name, c.post_ephemeral.description, c.post_ephemeral.schema, (args) => slackHandlers.post_ephemeral(ctx, args)),
+      tool(c.pin.name, c.pin.description, c.pin.schema, (args) => slackHandlers.pin(ctx, args)),
+      tool(c.unpin.name, c.unpin.description, c.unpin.schema, (args) => slackHandlers.unpin(ctx, args)),
+      tool(c.set_topic.name, c.set_topic.description, c.set_topic.schema, (args) => slackHandlers.set_topic(ctx, args)),
+      tool(c.set_purpose.name, c.set_purpose.description, c.set_purpose.schema, (args) => slackHandlers.set_purpose(ctx, args)),
+      tool(c.create_canvas.name, c.create_canvas.description, c.create_canvas.schema, (args) => slackHandlers.create_canvas(ctx, args)),
+      tool(c.append_canvas.name, c.append_canvas.description, c.append_canvas.schema, (args) => slackHandlers.append_canvas(ctx, args)),
+      tool(c.prepend_canvas.name, c.prepend_canvas.description, c.prepend_canvas.schema, (args) => slackHandlers.prepend_canvas(ctx, args)),
+      tool(c.read_canvas.name, c.read_canvas.description, c.read_canvas.schema, (args) => slackHandlers.read_canvas(ctx, args)),
     ],
   });
 }
