@@ -441,6 +441,19 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       [SKILLS_MCP_NAME]: createSkillsMcp(route.ctx.personaId),
       [SESSION_MCP_NAME]: createSessionMcp({
         getSnapshot: () => agent.getTokenSnapshot(sessionId),
+        ignoreUser: (userId, reason, durationMinutes) => {
+          const expiresAt = durationMinutes ? Date.now() + durationMinutes * 60_000 : undefined;
+          Ignores.remove({ targetType: "user", userId });
+          Ignores.create({ targetType: "user", userId, createdBy: "agent", expiresAt, reason });
+        },
+        notifyManager: async (text) => {
+          const soul = soulData();
+          const managerId = soul.manager.userId;
+          if (!managerId) return;
+          const r = await (t.client as any).conversations.open({ users: managerId });
+          const dmChannel: string | undefined = r?.channel?.id;
+          if (dmChannel) await (t.client as any).chat.postMessage({ channel: dmChannel, text });
+        },
       }),
       [KB_MCP_NAME]: createKbMcp(brainDepsFor(route.ctx, route.surface)),
       // Per-persona MCP isolation: named personas load ~/.slaude/personas/<name>/mcp.json
