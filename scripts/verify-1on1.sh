@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Seed ./verify-data from maria's persona + MCP config, then print the
+# Seed ./verify-data from example agent persona + MCP config, then print the
 # /1on1 OAuth-isolation verification procedure.
 set -euo pipefail
 
-MARIA="${MARIA_DIR:-../deploy/agents/maria}"
+EXAMPLE_AGENT_DIR="${EXAMPLE_AGENT_DIR:-../deploy/agents/example}"
 DATA="./verify-data"
 
-[ -f "$MARIA/soul.md" ]   || { echo "missing $MARIA/soul.md"; exit 1; }
-[ -f "$MARIA/.mcp.json" ] || { echo "missing $MARIA/.mcp.json"; exit 1; }
+[ -f "$EXAMPLE_AGENT_DIR/soul.md" ]   || { echo "missing $EXAMPLE_AGENT_DIR/soul.md"; exit 1; }
+[ -f "$EXAMPLE_AGENT_DIR/.mcp.json" ] || { echo "missing $EXAMPLE_AGENT_DIR/.mcp.json"; exit 1; }
 
 mkdir -p "$DATA/.claude"
-# Loader expects uppercase SOUL.md; Linux is case-sensitive, maria ships soul.md.
-cp "$MARIA/soul.md"   "$DATA/SOUL.md"
-cp "$MARIA/.mcp.json" "$DATA/.mcp.json"
-echo "seeded $DATA  (SOUL.md + .mcp.json from $MARIA)"
+# Loader expects uppercase SOUL.md; Linux is case-sensitive, the example agent ships soul.md.
+cp "$EXAMPLE_AGENT_DIR/soul.md"   "$DATA/SOUL.md"
+cp "$EXAMPLE_AGENT_DIR/.mcp.json" "$DATA/.mcp.json"
+echo "seeded $DATA  (SOUL.md + .mcp.json from $EXAMPLE_AGENT_DIR)"
 echo
 
 CLI="bun /app/node_modules/@anthropic-ai/claude-agent-sdk/cli.js"

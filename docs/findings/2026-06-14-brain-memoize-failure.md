@@ -1,5 +1,7 @@
 # 2026-06-14 — Brain memoize: two failure modes break "remember it"
 
+> Note: internal names redacted for public release.
+
 **Theme:** brain memoize — the remember / think / explore → persist-to-brain →
 recall-it-later loop.
 
@@ -51,10 +53,10 @@ only one leaves the symptom alive.
 
 ## Trigger
 
-staging thread `example.slack.com/C0XXXXXXXXX/1781076888.704939` (hermes-staging, agent
-"Maria"). Manager asked Maria to pull ITGC audit history from GDrive and
+staging thread `example.slack.com/C0XXXXXXXXX/1781076888.704939` (staging, agent
+"example-agent"). Manager asked example-agent to pull ITGC audit history from GDrive and
 "memoize" it into her brain. Later DM (`D0AKKK79DT8/1781412338`) probed recall:
-"who is Manager, purely from brain" → Maria returned a one-line stub. Operator
+"who is Manager, purely from brain" → example-agent returned a one-line stub. Operator
 (barock) flagged the whole remember/think/explore experience as not optimal and
 shipped the session JSONL (61 files, session dir
 `-data-workspaces-T1WTF90DS-C0XXXXXXXXX-1781076888-704939`) for forensics.
@@ -77,7 +79,7 @@ result  → zero brain pages for ITGC → recall is a thin stub
 A separate 06-10 session (`11abec57-…jsonl`) proves the pipeline works when
 driven correctly: `trigger_ingest` → "ingested 2 raw file(s); 3 wiki pages
 changed; pushed 615b33c". So the machinery is sound; this session bypassed/broke
-it and **degraded silently** — neither Maria nor the user got a signal that the
+it and **degraded silently** — neither the assistant nor the user got a signal that the
 brain write hard-failed and the task was incomplete.
 
 The episodic memory layer captured the fallback correctly but recorded
@@ -275,7 +277,7 @@ ArgoCD exec, read-only). This corrected several earlier guesses.
   `EMBEDDING_DIMENSIONS=2560` but the actual column/vectors/index are **1280**
   (zembed-1 native). Works by luck (doc + query both 1280); if any path ever
   honors 2560 for the query, recall breaks. Fix: set `EMBEDDING_DIMENSIONS=1280`
-  in `deploy/agents/maria/staging/values.yaml`.
+  in `deploy/agents/example/staging/values.yaml`.
 - **The real recall bug is `kb_think` ranking, not storage.** `gather.ts`
   already does hybrid (vector + keyword + RRF). A rich (3054-char), well-titled
   (`notes/org-2026-okr` → "Org 2026 OKRs"), embedded,

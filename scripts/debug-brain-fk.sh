@@ -4,7 +4,7 @@
 #
 # SAFE: never opens the live brain. PGLite is single-writer and the running
 # agent holds the lock, so we copy the data dir to /tmp and query the COPY.
-# Read-only w.r.t. live state. Run this INSIDE the maria staging pod.
+# Read-only w.r.t. live state. Run this INSIDE the target pod (e.g. kubectl exec -it <pod> -- bash).
 #
 #   kubectl exec -it <maria-pod> -- bash /path/to/debug-brain-fk.sh
 #   # or: copy file in, then: bash debug-brain-fk.sh

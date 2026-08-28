@@ -147,7 +147,7 @@ export function App({ repl, hint, helpLines, header }: AppProps) {
     <box flexDirection="column" height="100%">
       <scrollbox flexGrow={1} stickyScroll stickyStart="bottom">
         {/* Header lives INSIDE the scroll body (scrolls away as the conversation grows): the
-            acme logo + a plain-text wordmark with name · version · sim meta. */}
+            App logo + a plain-text wordmark with name · version · sim meta. */}
         <box flexDirection="row" alignItems="center" gap={2}>
           <box flexShrink={0}>
             <text content={banner} />
