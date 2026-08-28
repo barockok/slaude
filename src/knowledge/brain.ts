@@ -82,7 +82,7 @@ export function applyEmbeddingEnv(): void {
  * Clear a leftover PGLite lock before connect. gbrain's staleness check is
  * kill(pid, 0) — after a pod restart the previous container's recorded PID
  * usually maps to SOME live process in the new PID namespace, so the lock
- * never looks stale and connect times out (seen on maria staging). slaude's
+ * never looks stale and connect times out (seen in a staging environment). slaude's
  * deploy contract is one process per brain (one container = one persona,
  * Recreate strategy), so a lock present at fresh-process boot is stale by
  * construction. Opt out with SLAUDE_BRAIN_TAKEOVER=0 if you intentionally
@@ -105,7 +105,7 @@ let embeddingActiveFlag = false;
 /** Runtime truth for "may sync attempt embeds": gateway configured AND the
  *  provider's key env present. config.json alone isn't enough — gbrain's
  *  embedding gateway is a process singleton that hard-fails sync (observed:
- *  process exit on maria staging) when an embed step runs unconfigured. */
+ *  process exit in staging) when an embed step runs unconfigured. */
 export function embeddingActive(): boolean {
   return embeddingActiveFlag;
 }
@@ -159,8 +159,8 @@ async function configureEmbeddingGateway(): Promise<void> {
  * persist as rows in gbrain_cycle_locks (30-min TTL, host+pid attributed).
  * A pod killed mid-sync leaves its row on the PVC; the next pod is a
  * different host so gbrain won't steal it until TTL expiry — every KB sync
- * fails "Another sync is in progress" for up to 30 minutes (seen on maria
- * staging). At fresh-process boot we own the brain exclusively, so all lock
+ * fails "Another sync is in progress" for up to 30 minutes (seen in staging
+ * deployment). At fresh-process boot we own the brain exclusively, so all lock
  * rows are stale by construction.
  */
 async function clearStaleDbLocks(engine: Engine): Promise<void> {

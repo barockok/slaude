@@ -17,6 +17,6 @@ test("a combined fg+bg run carries both colors", () => {
   expect(st.chunks[0]!.bg).toBeDefined();
 });
 
-test("the acme logo loads and parses to a non-empty StyledText", () => {
+test("the app logo loads and parses to a non-empty StyledText", () => {
   expect(banner.chunks.length).toBeGreaterThan(50);   // many colored half-block runs
 });
