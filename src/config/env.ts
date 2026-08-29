@@ -29,6 +29,11 @@ function opt(name: string, fallback = ""): string {
   return process.env[name] ?? fallback;
 }
 
+/** Split a comma-separated env list into trimmed, non-empty entries. */
+function csv(raw: string): string[] {
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
 export const env = {
   slack: {
     /**
@@ -281,8 +286,9 @@ export const env = {
   /**
    * Session control panel (operator web surface, gateway-tier only). Mounts
    * `/panel/*` on the gateway Bun.serve when enabled and the role is not
-   * `node`. Operator identity comes from an upstream SSO/ingress header — the
-   * panel never handles passwords and fails closed.
+   * `node`. The panel is its own OIDC relying party: it authenticates the
+   * operator against a single issuer and mints its own session tokens. It
+   * stores no operator records — roles come from `rolesFile` or the env lists.
    */
   panel: {
     /** Enable the panel surface. Default off. */
@@ -290,22 +296,22 @@ export const env = {
       const raw = opt("SLAUDE_PANEL", "0").toLowerCase();
       return raw === "1" || raw === "true" || raw === "yes";
     },
-    /** Trusted upstream identity header (lowercased for header lookup). */
-    header: () => opt("SLAUDE_PANEL_HEADER", "x-auth-request-email").toLowerCase(),
-    /** Optional operator allowlist (comma-separated emails/ids). Empty = any
-     *  identity the ingress vouches for is accepted. */
-    allow: () =>
-      opt("SLAUDE_PANEL_ALLOW")
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean),
-    /** Explicit acknowledgement that an SSO/ingress sits in front. Required to
-     *  boot the panel — without it the panel refuses to serve, so a
-     *  misconfigured deploy can never expose `/panel` open to the internet. */
-    trustHeader: () => {
-      const raw = opt("SLAUDE_PANEL_TRUST_HEADER", "").toLowerCase();
-      return raw === "1" || raw === "true" || raw === "yes";
-    },
+    /** OIDC issuer URL; endpoints are read from its discovery document. */
+    oidcIssuer: () => opt("SLAUDE_PANEL_OIDC_ISSUER").trim().replace(/\/+$/, ""),
+    oidcClientId: () => opt("SLAUDE_PANEL_OIDC_CLIENT_ID").trim(),
+    oidcClientSecret: () => opt("SLAUDE_PANEL_OIDC_CLIENT_SECRET"),
+    /** Public base URL of this panel; the redirect URI is derived from it and
+     *  must match the provider registration exactly. */
+    publicUrl: () => opt("SLAUDE_PANEL_PUBLIC_URL").trim().replace(/\/+$/, ""),
+    /** HMAC key for the session and flow cookies. */
+    secret: () => opt("SLAUDE_PANEL_SECRET"),
+    /** Which ID-token claim becomes the operator identity. */
+    userClaim: () => opt("SLAUDE_PANEL_USER_CLAIM", "email").trim(),
+    /** Role list file; empty string means "use $SLAUDE_HOME/panel-roles.yaml". */
+    rolesFile: () => opt("SLAUDE_PANEL_ROLES_FILE").trim(),
+    /** Env fallbacks used only when the roles file is absent. */
+    superadmins: () => csv(opt("SLAUDE_PANEL_SUPERADMIN")),
+    operators: () => csv(opt("SLAUDE_PANEL_OPERATORS")),
   },
   /** Static Prometheus labels applied to every metric, e.g.
    *  `SLAUDE_METRICS_LABELS="agent=hermes,env=prod"`. Malformed entries are
