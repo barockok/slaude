@@ -3,12 +3,18 @@
 // contract against the shared fixtures (REST + SSE replay of the scripted
 // turn). No Redis, no DB — deterministic. Env STUB_NO_REDIS=1 exercises the
 // degraded 503 path; a preset lock owner drives the 409 path.
+//
+// The auth surface here is a placeholder, not a provider: /panel/auth/me hands
+// back a fixed superadmin so the built client can identify itself, and refresh
+// and logout succeed. Task 10 replaces this with a real stub provider.
 import { join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FIXTURE_SESSIONS, SCRIPT, DETAIL_ID } from "../../src/gateway/panel/web/app/fixtures";
 
 const PORT = Number(process.env.PORT ?? 4319);
 const NO_REDIS = process.env.STUB_NO_REDIS === "1";
+const STUB_OPERATOR = process.env.STUB_OPERATOR ?? "ops@example.com";
+const STUB_ROLE = process.env.STUB_ROLE ?? "superadmin";
 const DIST = join(fileURLToPath(new URL(".", import.meta.url)), "../../src/gateway/panel/web/dist");
 
 const sessions = FIXTURE_SESSIONS.map((s) => ({ ...s }));
@@ -17,8 +23,7 @@ for (const s of sessions) if (s.panel_locked_by) locks.set(s.id, s.panel_locked_
 
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const op = (req: Request) =>
-  req.headers.get("x-auth-request-email") || new URL(req.url).searchParams.get("email") || "anon@stub";
+const op = (req: Request) => new URL(req.url).searchParams.get("email") || STUB_OPERATOR;
 
 async function serveStatic(pathname: string): Promise<Response> {
   let rel = pathname.replace(/^\/panel\/?/, "");
@@ -69,6 +74,15 @@ Bun.serve({
     const url = new URL(req.url);
     const seg = url.pathname.split("/").filter(Boolean);
     if (seg[0] !== "panel") return new Response("not found", { status: 404 });
+
+    if (seg[1] === "auth" && seg.length === 3) {
+      if (seg[2] === "me") return json(200, { email: STUB_OPERATOR, role: STUB_ROLE });
+      if (seg[2] === "refresh") return json(200, { ok: true });
+      if (seg[2] === "logout") return json(200, { ok: true });
+      if (seg[2] === "login") return new Response(null, { status: 302, headers: { location: "/panel/" } });
+      return json(404, { error: "not found" });
+    }
+
     if (seg[1] !== "api") return serveStatic(url.pathname);
 
     // /panel/api/sessions

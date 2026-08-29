@@ -2,6 +2,12 @@
 // src/agent/manager.ts AgentEvent). Kept standalone so the web bundle has no
 // backend import graph.
 
+/** Who the panel session belongs to, as reported by GET /panel/auth/me. */
+export interface Me {
+  email: string;
+  role: "superadmin" | "operator";
+}
+
 export interface SessionSummary {
   id: string;
   persona_id: string;

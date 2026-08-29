@@ -83,3 +83,27 @@ test("503 (no Redis) disables stop with an explanation", async ({ page }) => {
   await expect(page.locator('[data-testid="btn-stop"]')).toBeDisabled();
   await expect(page.locator('[data-testid="notice-503"]')).toBeVisible();
 });
+
+test("retries once through /panel/auth/refresh on a 401", async ({ page }) => {
+  let refreshes = 0;
+  let expired = true;
+  await page.route("**/panel/auth/refresh", async (route) => {
+    refreshes++;
+    expired = false;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+  });
+  await page.route("**/panel/api/sessions*", async (route) => {
+    if (expired) {
+      await route.fulfill({
+        status: 401, contentType: "application/json",
+        body: JSON.stringify({ error: "session expired" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/panel/");
+  await expect(page.locator("tbody tr[data-sid]").first()).toBeVisible();
+  expect(refreshes).toBe(1);
+});

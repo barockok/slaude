@@ -11,6 +11,11 @@ export function ControlBar({ session, onChanged }: { session: any; onChanged: (s
   const [busy, setBusy] = useState(false);
   const [noRedis, setNoRedis] = useState(FORCE_503);
   const [flash, setFlash] = useState<string | null>(null);
+  // Superadmin-gated actions stay rendered but inert: an operator should be able
+  // to see the control exists and why it is closed to them. Presentation only —
+  // the server re-checks the role on every request.
+  const isSuper = api().role === "superadmin";
+  const superOnly = (label: string) => (isSuper ? undefined : `${label} requires the superadmin role`);
 
   async function run(body: Record<string, unknown>) {
     setBusy(true);
@@ -37,8 +42,8 @@ export function ControlBar({ session, onChanged }: { session: any; onChanged: (s
           onClick={() => setPending({ action: "stop", title: "Request stop", body: "This asks the agent to halt its current turn at the next safe point. Work already written to disk is kept. A reason is recorded in the audit log.", confirm: "Request stop", danger: true })}
         >⏹ Request stop</button>
         <button
-          className="btn danger" data-testid="btn-reset" disabled={busy}
-          title="Destructive: kills the running Claude process for this thread on the next message"
+          className="btn danger" data-testid="btn-reset" disabled={busy || !isSuper}
+          title={superOnly("Reset") ?? "Destructive: kills the running Claude process for this thread on the next message"}
           onClick={() => setPending({ action: "reset", title: "Reset session", body: "This clears the started flag so the next message boots a fresh Claude process for this thread. Transcript history is preserved. This is audited.", confirm: "Reset session", danger: true })}
         >↺ Reset</button>
       </div>
@@ -51,7 +56,8 @@ export function ControlBar({ session, onChanged }: { session: any; onChanged: (s
           onChange={(e) => run({ action: "model", model: e.target.value })} aria-label="Model">
           {[...new Set([session.model, ...MODELS])].map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
-        <select className="select" data-testid="sel-mode" defaultValue={session.permission_mode ?? "default"} disabled={busy}
+        <select className="select" data-testid="sel-mode" defaultValue={session.permission_mode ?? "default"}
+          disabled={busy || !isSuper} title={superOnly("Changing the permission mode")}
           onChange={(e) => run({ action: "mode", mode: e.target.value })} aria-label="Permission mode">
           {PERMISSION_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
         </select>

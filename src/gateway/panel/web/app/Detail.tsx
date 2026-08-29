@@ -19,6 +19,9 @@ export function SessionDetail({ id, onBack }: { id: string; onBack: () => void }
   const [err, setErr] = useState<string | null>(null);
   const seen = useRef(new Set<string>());
   const me = api().operator;
+  // force-release steals another operator's lock, so the server gates it to
+  // superadmin. The button stays visible and inert for an operator.
+  const canForceRelease = api().role === "superadmin";
 
   useEffect(() => {
     let alive = true;
@@ -85,7 +88,9 @@ export function SessionDetail({ id, onBack }: { id: string; onBack: () => void }
           </span>
           {hasControl
             ? <button className="btn sm" data-testid="release" onClick={release}>Release control</button>
-            : <button className="btn sm danger" data-testid="take-control-banner" onClick={() => setConfirmSteal(true)}>Take control</button>}
+            : <button className="btn sm danger" data-testid="take-control-banner" disabled={!canForceRelease}
+                title={canForceRelease ? undefined : "Taking control from another operator requires the superadmin role"}
+                onClick={() => setConfirmSteal(true)}>Take control</button>}
         </div>
       )}
 
