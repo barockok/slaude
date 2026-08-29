@@ -132,15 +132,43 @@ function realBackend(): Backend {
       // SSE is a GET, so the same-origin session cookie authenticates it, and
       // EventSource resends Last-Event-ID via header on reconnect.
       const url = `${base}/sessions/${id}/events`;
-      const es = new EventSource(url);
-      es.onmessage = (m) => {
-        try {
-          const event = JSON.parse(m.data) as AgentEvent;
-          onEntry({ id: m.lastEventId || String(Date.now()), ts: Date.now(), event });
-        } catch { /* ignore malformed frame */ }
+      let es: EventSource | null = null;
+      let lastId = "";
+      let stopped = false;
+
+      // The server ends the tail at the access token's expiry with a *named*
+      // `session-expired` event (api.ts). EventSource's own reconnect would run
+      // into the guard's 401, which per spec closes the stream permanently — so
+      // the client has to do the handshake itself: refresh the cookie, then
+      // reopen from the last id it saw, so expiry costs a reconnect and no
+      // events.
+      const open = (u: string) => {
+        if (stopped) return;
+        const src = new EventSource(u);
+        es = src;
+        src.onmessage = (m) => {
+          if (m.lastEventId) lastId = m.lastEventId;
+          try {
+            const event = JSON.parse(m.data) as AgentEvent;
+            onEntry({ id: m.lastEventId || String(Date.now()), ts: Date.now(), event });
+          } catch { /* ignore malformed frame */ }
+        };
+        src.onerror = () => { /* EventSource auto-reconnects; keep the tail open */ };
+        src.addEventListener("session-expired", () => {
+          src.close();
+          void (async () => {
+            if (stopped) return;
+            const r = await fetch(`${authBase}/refresh`, { method: "POST", headers }).catch(() => null);
+            // A failed refresh means the 8h window closed: stop rather than
+            // spin. The next REST call's 401 sends the operator to the provider.
+            if (!r || !r.ok) return;
+            open(lastId ? `${url}?lastId=${encodeURIComponent(lastId)}` : url);
+          })();
+        });
       };
-      es.onerror = () => { /* EventSource auto-reconnects; keep the tail open */ };
-      return () => es.close();
+
+      open(url);
+      return () => { stopped = true; es?.close(); };
     },
   };
   return backend;

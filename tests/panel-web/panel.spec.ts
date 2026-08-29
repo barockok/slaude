@@ -176,3 +176,26 @@ test("an identity dropped from the role lists gets the not-authorized screen", a
     await request.post("/idp/operators?list=alice%40example.com");
   }
 });
+
+test("a mid-session expiry refreshes the cookie and reopens the tail with the last id", async ({ page, request }) => {
+  // The server ends the SSE tail at the access token's expiry with a named
+  // `session-expired` frame. EventSource's own reconnect would hit the guard's
+  // 401 and close for good, so the client must do the handshake: refresh, then
+  // reopen from the last event it saw. 15 minutes compressed into one frame by
+  // the stub's /idp/expire-sse.
+  await page.context().clearCookies();
+  let refreshes = 0;
+  page.on("request", (r) => {
+    if (r.url().includes("/panel/auth/refresh") && r.method() === "POST") refreshes++;
+  });
+
+  await page.goto("/panel?role=operator");
+  await page.locator(row()).first().click();
+  await expect(page.locator('[data-testid="tl-node"]').first()).toBeVisible();
+
+  const reopened = page.waitForRequest((r) => /\/events\?lastId=/.test(r.url()), { timeout: 20_000 });
+  await request.post("/idp/expire-sse");
+  const again = await reopened;
+  expect(again.url()).toMatch(/lastId=stub-\d+/);
+  expect(refreshes).toBeGreaterThanOrEqual(1);
+});

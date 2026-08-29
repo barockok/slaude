@@ -136,6 +136,16 @@ async function idpRoutes(url: URL, req: Request): Promise<Response | null> {
   // live session — how an identity becomes unlisted without a redeploy. The
   // panel re-resolves roles from this env var on every request, so the change
   // lands on the next poll.
+  // Harness-only: arm a one-shot SSE expiry. The next event stream ends the way
+  // the real panel ends one at the access token's expiry — a named
+  // `session-expired` frame, then close — so the browser's refresh-and-reopen
+  // handshake can be observed without waiting 15 minutes. One-shot on purpose:
+  // the stream that consumes it disarms it, so the reopened stream stays live.
+  if (url.pathname === "/idp/expire-sse" && req.method === "POST") {
+    expireNextStream = true;
+    return json(200, { ok: true });
+  }
+
   if (url.pathname === "/idp/operators" && req.method === "POST") {
     process.env.SLAUDE_PANEL_OPERATORS = url.searchParams.get("list") ?? "";
     return json(200, { ok: true, operators: process.env.SLAUDE_PANEL_OPERATORS });
@@ -145,6 +155,9 @@ async function idpRoutes(url: URL, req: Request): Promise<Response | null> {
 }
 
 // ------------------------------------------------------------ fixture data --
+// Armed by POST /idp/expire-sse; consumed by the next stream to open.
+let expireNextStream = false;
+
 function sseReplay(id: string): Response {
   const frames = id === DETAIL_ID ? SCRIPT : SCRIPT.slice(0, 4);
   const enc = new TextEncoder();
@@ -159,6 +172,13 @@ function sseReplay(id: string): Response {
       push(": open\n\n");
       const tick = () => {
         if (closed) return;
+        if (expireNextStream) {
+          expireNextStream = false;
+          push("event: session-expired\ndata: {}\n\n");
+          closed = true;
+          try { c.close(); } catch { /* client already gone */ }
+          return;
+        }
         if (i >= frames.length) { push(": ping\n\n"); setTimeout(tick, 400); return; }
         const f = frames[i++]!;
         push(`id: stub-${++seq}\ndata: ${JSON.stringify(f.event)}\n\n`);
