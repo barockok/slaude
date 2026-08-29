@@ -10,6 +10,7 @@ import { assertOAuthKeyCanary } from "./agent/mcp-oauth/store";
 import { sharedLoopback } from "./agent/mcp-oauth/shared-loopback";
 import { verifyState } from "./agent/mcp-oauth/state";
 import { env } from "./config/env";
+import { assertPanelConfig } from "./gateway/panel/auth/config";
 import { loadPersonaRegistry, setPersonaRegistry } from "./persona/registry";
 import { getDb } from "./db/client";
 import * as SoulOverrides from "./db/soul-overrides";
@@ -106,11 +107,9 @@ async function main() {
   }
   if (role !== "node") console.log(`[slaude] /v1 REST mounted (role=${role})`);
   if (panelMounted) {
-    if (!env.panel.trustHeader()) {
-      console.error(
-        "[slaude] SLAUDE_PANEL=1 but SLAUDE_PANEL_TRUST_HEADER is unset — /panel will refuse every request (fail-closed). Set it only behind an SSO/ingress.",
-      );
-    }
+    // Throws when the panel is enabled but cannot serve safely — a
+    // misconfigured auth surface must never accept a request.
+    assertPanelConfig();
     console.log(`[slaude] /panel control panel mounted (role=${role})`);
   }
 

@@ -28,12 +28,18 @@ import {
   testPrefix,
   type Replica,
 } from "./harness";
+import { mintSession, AT_COOKIE } from "../../src/gateway/panel/auth/session";
 
 const d = describe.skipIf(!realEnabled);
 
 const CH = "D0MULTI";
 const T1 = "9500.1";
-const OP = { "x-auth-request-email": "op@example.com", "x-panel-csrf": "1" };
+const PANEL_SECRET = "t".repeat(32);
+/** Cookie header for an authenticated operator in tests. */
+function opCookie(email = "op@example.com"): string {
+  return `${AT_COOKIE}=${mintSession({ sub: "s", email }, "at", { secret: PANEL_SECRET })}`;
+}
+const OP = { cookie: opCookie(), "x-panel-csrf": "1" };
 
 let redis: any;
 let keys: any;
@@ -50,7 +56,8 @@ const notices = (t: any) =>
 beforeAll(async () => {
   if (!realEnabled) return;
   await setupScenarioEnv();
-  process.env.SLAUDE_PANEL_TRUST_HEADER = "1";
+  process.env.SLAUDE_PANEL_SECRET = PANEL_SECRET;
+  process.env.SLAUDE_PANEL_OPERATORS = "op@example.com";
   const { makeKeys } = await import("../../src/queue/keys");
   const { makePubSub } = await import("../../src/queue/pubsub");
   const { Redis } = await import("ioredis");
@@ -84,7 +91,8 @@ afterAll(async () => {
   try {
     await redis?.quit();
   } catch {}
-  delete process.env.SLAUDE_PANEL_TRUST_HEADER;
+  delete process.env.SLAUDE_PANEL_SECRET;
+  delete process.env.SLAUDE_PANEL_OPERATORS;
   teardownScenarioEnv();
 });
 

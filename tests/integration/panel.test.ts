@@ -24,12 +24,18 @@ import {
   testPrefix,
   type Replica,
 } from "./harness";
+import { mintSession, AT_COOKIE } from "../../src/gateway/panel/auth/session";
 
 const d = describe.skipIf(!realEnabled);
 
 const CH = "D0PANEL";
 const T1 = "9100.1";
-const HDR = { "x-auth-request-email": "op@example.com", "x-panel-csrf": "1" };
+const PANEL_SECRET = "t".repeat(32);
+/** Cookie header for an authenticated operator in tests. */
+function opCookie(email = "op@example.com"): string {
+  return `${AT_COOKIE}=${mintSession({ sub: "s", email }, "at", { secret: PANEL_SECRET })}`;
+}
+const HDR = { cookie: opCookie(), "x-panel-csrf": "1" };
 
 let redis: any;
 let keys: any;
@@ -42,7 +48,8 @@ let node: { agent: any; worker: any };
 beforeAll(async () => {
   if (!realEnabled) return;
   await setupScenarioEnv();
-  process.env.SLAUDE_PANEL_TRUST_HEADER = "1";
+  process.env.SLAUDE_PANEL_SECRET = PANEL_SECRET;
+  process.env.SLAUDE_PANEL_OPERATORS = "op@example.com,op2@example.com";
   const { makeKeys } = await import("../../src/queue/keys");
   const { makeRegistry } = await import("../../src/queue/registry");
   const { makePubSub } = await import("../../src/queue/pubsub");
@@ -68,7 +75,8 @@ afterAll(async () => {
   try {
     await redis?.quit();
   } catch {}
-  delete process.env.SLAUDE_PANEL_TRUST_HEADER;
+  delete process.env.SLAUDE_PANEL_SECRET;
+  delete process.env.SLAUDE_PANEL_OPERATORS;
   teardownScenarioEnv();
 });
 
@@ -78,7 +86,7 @@ const noticeCount = (t: any) =>
 let sessionId: string;
 
 d("session control panel over real Redis", () => {
-  test("list ∩ warm registry, and fail-closed without the SSO header", async () => {
+  test("list ∩ warm registry, and fail-closed without a session cookie", async () => {
     await gw.transport.feedMessage(dm(CH, T1, "hello panel"));
     await until(() => replies(gw.transport, "panel-reply").length >= 1, 20_000);
     const row = await sessions.findByThread({ team_id: "T_SIM", channel_id: CH, thread_ts: T1 });
@@ -94,17 +102,18 @@ d("session control panel over real Redis", () => {
     expect(s.warm).toBe(true);
     expect(s.node).toBe("panel-node-A");
 
-    // Fail-closed: no operator identity header → 403.
+    // Fail-closed: no session cookie → 401.
     const noauth = await fetch(`${gw.url}/panel/api/sessions`);
-    expect(noauth.status).toBe(403);
+    expect(noauth.status).toBe(401);
   }, 30_000);
 
   test("CSRF: mutating requests need the anti-CSRF header and reject cross-site", async () => {
-    // A valid operator header is NOT enough for a state change without the
-    // custom anti-CSRF header (the header is proxy-injected on forged requests).
+    // A valid session cookie is NOT enough for a state change without the
+    // custom anti-CSRF header (the browser attaches the cookie to forged
+    // cross-site requests too).
     const noCsrf = await fetch(`${gw.url}/panel/api/sessions/${sessionId}/lock`, {
       method: "POST",
-      headers: { "x-auth-request-email": "op@example.com" },
+      headers: { cookie: opCookie() },
     });
     expect(noCsrf.status).toBe(403);
 
@@ -206,7 +215,7 @@ d("session control panel over real Redis", () => {
 
   test("force-release TRANSFERS the lock to the caller and audits old→new", async () => {
     // A different operator now holds the lock…
-    const other = { "x-auth-request-email": "op2@example.com", "x-panel-csrf": "1" };
+    const other = { cookie: opCookie("op2@example.com"), "x-panel-csrf": "1" };
     const lock2 = await fetch(`${gw.url}/panel/api/sessions/${sessionId}/lock`, { method: "POST", headers: other });
     expect(lock2.status).toBe(200);
     expect(await redis.get(keys.panelLock(sessionId))).toBe("op2@example.com");
@@ -232,7 +241,7 @@ d("session control panel over real Redis", () => {
     const hbBody = (await hb.json()) as any;
     expect(hbBody.ok).toBe(false);
     expect(
-      logs.some((l) => l.includes("[panel-audit]") && l.includes("action=force-release") && l.includes("operator=op@example.com")),
+      logs.some((l) => l.includes('"action":"force-release"') && l.includes('"operator":"op@example.com"')),
     ).toBe(true);
     // Clean up: hand the session back to Slack.
     await fetch(`${gw.url}/panel/api/sessions/${sessionId}/release`, { method: "POST", headers: HDR });

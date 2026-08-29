@@ -5,9 +5,10 @@
  * live registry / pubsub / dispatch seam; mounted on the gateway Bun.serve for
  * mono / gateway roles (never node).
  *
- * Auth: every request is gated by the SSO/ingress operator header
- * (./auth). Boot guard: without SLAUDE_PANEL_TRUST_HEADER the panel refuses to
- * serve at all (fail-closed against an ingress-less deploy).
+ * Auth: every request is gated by the panel's own session cookie
+ * (./auth/guard); `/panel/auth/*` is the only unauthenticated path, because it
+ * is how a session is obtained. Boot guard: assertPanelConfig() in server.ts
+ * refuses to start a panel that cannot authenticate.
  *
  * Control ops call the db functions directly (Refinement 1) — NOT the `/v1`
  * PATCH, which is job-token-scoped to a single session. Chat routes through the
@@ -25,14 +26,16 @@
  *   POST /panel/api/sessions/:id/force-release   steal + audit
  */
 import { z } from "zod";
-import { env } from "../../config/env";
 import * as Sessions from "../../db/sessions";
 import * as OneOnOne from "../../db/one-on-one";
 import type { SessionRow } from "../../db/schema";
 import type { Registry } from "../../queue/registry";
 import type { PubSub } from "../../queue/pubsub";
 import type { PanelLock } from "../../queue/panel-lock";
-import { authenticateOperator } from "./auth";
+import { guardRequest } from "./auth/guard";
+import { createAuthRoutes } from "./auth/routes";
+import { audit } from "./auth/audit";
+import type { PanelRole } from "./auth/roles";
 import { enumerateSessions } from "./enumerator";
 import { servePanelStatic } from "./static";
 
@@ -42,10 +45,10 @@ const json = (status: number, body: unknown, headers: Record<string, string> = {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Anti-CSRF guard for state-changing requests. The panel authenticates via an
- * ingress-injected identity header, which the browser attaches to ANY request
- * to this origin — including one forged by a cross-site page — so the header
- * alone cannot prove same-origin intent. GET/HEAD are safe (no state change).
+ * Anti-CSRF guard for state-changing requests. The panel authenticates via a
+ * session cookie, which the browser attaches to ANY request to this origin —
+ * including one forged by a cross-site page — so the cookie alone cannot prove
+ * same-origin intent. GET/HEAD are safe (no state change).
  * For everything else we require BOTH:
  *   - a custom request header no HTML form or CORS "simple request" can set
  *     (a cross-origin fetch that sets it is forced into a preflight the panel
@@ -97,14 +100,6 @@ export interface PanelApiDeps {
   eventsPollMs?: number;
 }
 
-/** Structured audit line for every operator action (design §Audit). */
-function audit(operatorId: string, action: string, sessionId: string, extra?: Record<string, unknown>) {
-  console.log(
-    `[panel-audit] operator=${operatorId} action=${action} session=${sessionId} ts=${Date.now()}` +
-      (extra ? ` ${JSON.stringify(extra)}` : ""),
-  );
-}
-
 export interface PanelApi {
   /** Handle a request; null when the path is not under /panel (caller falls through). */
   fetch(req: Request): Promise<Response | null>;
@@ -112,8 +107,9 @@ export interface PanelApi {
 
 export function createPanelApi(deps: PanelApiDeps): PanelApi {
   const pollMs = deps.eventsPollMs ?? 300;
+  const authRoutes = createAuthRoutes();
 
-  async function handleEvents(req: Request, sessionId: string): Promise<Response> {
+  async function handleEvents(req: Request, sessionId: string, expMs: number): Promise<Response> {
     if (!deps.pubsub) return json(503, { error: "event stream unavailable (no Redis)" });
     const pubsub = deps.pubsub;
     const url = new URL(req.url);
@@ -160,6 +156,11 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
               console.error(`[panel] SSE read failed session=${sessionId}:`, e);
             }
             if (closed) break;
+            // The tail must not outlive the access token that authorized it.
+            if (Date.now() >= expMs) {
+              send(`event: session-expired\ndata: {}\n\n`);
+              break;
+            }
             // Heartbeat comment keeps intermediaries from closing an idle stream.
             send(": ping\n\n");
             await sleep(pollMs);
@@ -185,7 +186,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
     });
   }
 
-  async function handleControl(req: Request, row: SessionRow, operatorId: string): Promise<Response> {
+  async function handleControl(req: Request, row: SessionRow, operatorId: string, role: PanelRole): Promise<Response> {
     let body: unknown;
     try {
       body = await req.json();
@@ -222,7 +223,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         break;
       }
     }
-    audit(operatorId, `control:${action}`, row.id, { model, mode });
+    audit({ action: `control.${action}`, operator: operatorId, role, session: row.id, detail: { model, mode } });
     const fresh = await Sessions.findById(row.id);
     return json(200, { ok: true, session: fresh });
   }
@@ -231,28 +232,28 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
     const url = new URL(req.url);
     if (url.pathname !== "/panel" && !url.pathname.startsWith("/panel/")) return null;
 
-    // Boot guard (fail-closed): refuse to serve without an explicit
-    // acknowledgement that an SSO/ingress fronts the panel.
-    if (!env.panel.trustHeader()) {
-      return json(500, {
-        error: "panel refuses to serve: set SLAUDE_PANEL_TRUST_HEADER=1 only behind an SSO/ingress",
-      });
-    }
-
     const seg = url.pathname.split("/").filter(Boolean); // ["panel", ...]
+
+    // Auth routes are the only unauthenticated paths — they are how a session
+    // is obtained. CSRF still applies to their mutating methods.
+    if (seg[1] === "auth") {
+      const csrf = enforceCsrf(req);
+      if (csrf) return csrf;
+      const res = await authRoutes.handle(req, seg);
+      if (res) return res;
+      return json(404, { error: "not found" });
+    }
 
     // Static web app: any /panel path that is not the API.
     if (seg[1] !== "api") {
-      // Even static assets require a vouched operator — the whole surface is
-      // behind ingress.
-      const auth = authenticateOperator(req);
+      const auth = guardRequest(req, { html: true });
       if (!auth.ok) return auth.response;
       return (await servePanelStatic(url.pathname)) ?? json(404, { error: "not found" });
     }
 
-    const auth = authenticateOperator(req);
+    const auth = guardRequest(req, { html: false });
     if (!auth.ok) return auth.response;
-    const operatorId = auth.operatorId;
+    const { operatorId, role } = auth;
 
     // CSRF: block forged cross-site state changes before any mutating handler.
     const csrf = enforceCsrf(req);
@@ -301,7 +302,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         // GET /panel/api/sessions/:id/events  (SSE)
         if (sub === "events") {
           if (req.method !== "GET") return json(405, { error: "method not allowed" });
-          return await handleEvents(req, id);
+          return await handleEvents(req, id, auth.expMs);
         }
 
         // POST /panel/api/sessions/:id/chat
@@ -326,7 +327,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
             if (!got) return json(409, { error: "could not acquire active-surface lock" });
             acquiredHere = true;
             deps.onLockHeld?.(id, operatorId, deps.panelLock.ttlMs);
-            audit(operatorId, "chat", id);
+            audit({ action: "chat", operator: operatorId, role, session: id });
             try {
               await deps.chat(row, parsed.data.text, operatorId);
             } catch (e) {
@@ -342,7 +343,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
             return json(202, { ok: true, locked_by: operatorId });
           }
           // No lock backend (mono without Redis): dispatch without exclusivity.
-          audit(operatorId, "chat", id);
+          audit({ action: "chat", operator: operatorId, role, session: id });
           await deps.chat(row, parsed.data.text, operatorId);
           return json(202, { ok: true });
         }
@@ -350,7 +351,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         // POST /panel/api/sessions/:id/control
         if (sub === "control") {
           if (req.method !== "POST") return json(405, { error: "method not allowed" });
-          return await handleControl(req, row, operatorId);
+          return await handleControl(req, row, operatorId, role);
         }
 
         // POST /panel/api/sessions/:id/lock  (take control without chatting)
@@ -362,7 +363,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           const got = await deps.panelLock.acquire(id, operatorId);
           if (!got) return json(409, { error: "could not acquire lock" });
           deps.onLockHeld?.(id, operatorId, deps.panelLock.ttlMs);
-          audit(operatorId, "lock", id);
+          audit({ action: "lock", operator: operatorId, role, session: id });
           return json(200, { ok: true, locked_by: operatorId, ttl_ms: deps.panelLock.ttlMs });
         }
 
@@ -381,7 +382,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           if (!deps.panelLock) return json(503, { error: "lock unavailable (no Redis)" });
           const released = await deps.panelLock.release(id, operatorId);
           if (released) {
-            audit(operatorId, "release", id);
+            audit({ action: "release", operator: operatorId, role, session: id });
             await deps.onLockReleased?.(id);
           }
           return json(200, { ok: true, released });
@@ -397,7 +398,13 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           // starts failing (they lost control), and the caller drives.
           const displaced = await deps.panelLock.steal(id, operatorId);
           deps.onLockHeld?.(id, operatorId, deps.panelLock.ttlMs);
-          audit(operatorId, "force-release", id, { displaced: displaced ?? null, newOwner: operatorId });
+          audit({
+            action: "force-release",
+            operator: operatorId,
+            role,
+            session: id,
+            detail: { displaced: displaced ?? null, newOwner: operatorId },
+          });
           return json(200, { ok: true, owner: operatorId, displaced: displaced ?? undefined });
         }
       }
