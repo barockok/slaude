@@ -193,6 +193,11 @@ describe("refresh", () => {
       headers: { cookie: `panel_rt=${at}`, "x-panel-csrf": "1" },
     }))!;
     expect(res.status).toBe(401);
+    // Flat body: this route is unauthenticated and its CSRF header is one a
+    // prober can set, so the internal VerifyReason must stay in the log.
+    const body = (await res.json()) as { error: string };
+    expect(body).toEqual({ error: "session ended" });
+    expect(body.error).not.toContain("wrong_type");
   });
 
   it("405s on GET", async () => {

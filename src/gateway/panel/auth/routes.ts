@@ -127,7 +127,13 @@ export function createAuthRoutes(deps: AuthRoutesDeps = {}): AuthRoutes {
     if (req.method !== "POST") return json(405, { error: "method not allowed" });
     const jar = parseCookies(req.headers.get("cookie"));
     const r = verifySession(jar[RT_COOKIE], "rt");
-    if (!r.ok) return withCookies(json(401, { error: `session ended: ${r.reason}` }), clearSession());
+    if (!r.ok) {
+      // Same rule as the guard: this route is unauthenticated and its CSRF
+      // header is one a prober can set, so the VerifyReason goes to the log,
+      // not to the caller — a forged cookie learns nothing about how it failed.
+      console.warn(`[panel] refresh rejected: ${r.reason}`);
+      return withCookies(json(401, { error: "session ended" }), clearSession());
+    }
 
     // Roles are re-resolved here as well as per-request: a demoted operator
     // must not be able to extend their session.
