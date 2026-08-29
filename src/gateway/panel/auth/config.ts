@@ -6,6 +6,7 @@
  * auth surface. Called once from server.ts before the panel is mounted.
  */
 import { env } from "../../../config/env";
+import { loadRoleConfig, type RoleConfig } from "./roles";
 
 /** The redirect URI registered with the identity provider. */
 export function panelRedirectUri(): string {
@@ -42,11 +43,18 @@ export function assertPanelConfig(): void {
   if (env.panel.secret().length < 32) {
     throw new Error("SLAUDE_PANEL_SECRET must be at least 32 characters");
   }
-  // A panel nobody can reach is a misconfiguration, not a safe default. The
-  // roles file is checked in roles.ts at load time; here we only guarantee
-  // that *some* source is configured.
-  const hasFile = env.panel.rolesFile().length > 0;
-  if (!hasFile && env.panel.superadmins().length === 0 && env.panel.operators().length === 0) {
+  // The role source is *read* here, not merely declared: a mistyped path or a
+  // malformed file must stop the process, not surface as a 500 on the first
+  // request (guardRequest runs outside any try, and Bun.serve has no error
+  // handler, so the throw would reach the client as a stack trace).
+  let cfg: RoleConfig;
+  try {
+    cfg = loadRoleConfig();
+  } catch (e) {
+    throw new Error(`panel role config unusable: ${(e as Error).message}`);
+  }
+  // A panel nobody can reach is a misconfiguration, not a safe default.
+  if (cfg.superadmin.length === 0 && cfg.operator.length === 0) {
     throw new Error(
       "no panel operators configured: set SLAUDE_PANEL_SUPERADMIN (and/or SLAUDE_PANEL_OPERATORS), " +
         "or point SLAUDE_PANEL_ROLES_FILE at a role list",

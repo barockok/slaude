@@ -7,10 +7,11 @@
  * provider — and is re-run on every request so a demotion lands immediately
  * rather than at the next token refresh.
  *
- * Failure policy is asymmetric on purpose. A malformed file at boot is fatal
- * (Task 1's guard plus the throw below). A file that *becomes* malformed while
- * running keeps the last good config: a typo mid-shift must not lock every
- * operator out of a live fleet.
+ * Failure policy is asymmetric on purpose. A malformed or unreadable file at
+ * boot is fatal: assertPanelConfig() calls loadRoleConfig() before the panel is
+ * mounted, and the throw below stops the process. A file that *becomes*
+ * malformed while running keeps the last good config: a typo mid-shift must not
+ * lock every operator out of a live fleet.
  */
 import { statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
