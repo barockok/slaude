@@ -36,6 +36,8 @@ function opCookie(email = "op@example.com"): string {
   return `${AT_COOKIE}=${mintSession({ sub: "s", email }, "at", { secret: PANEL_SECRET })}`;
 }
 const HDR = { cookie: opCookie(), "x-panel-csrf": "1" };
+/** Cookie header for a superadmin operator — required for reset/mode/force-release. */
+const SUPER_HDR = { cookie: opCookie("lead@example.com"), "x-panel-csrf": "1" };
 
 let redis: any;
 let keys: any;
@@ -49,7 +51,10 @@ beforeAll(async () => {
   if (!realEnabled) return;
   await setupScenarioEnv();
   process.env.SLAUDE_PANEL_SECRET = PANEL_SECRET;
-  process.env.SLAUDE_PANEL_OPERATORS = "op@example.com,op2@example.com";
+  process.env.SLAUDE_PANEL_OPERATORS = "op@example.com,op2@example.com,alice@example.com";
+  process.env.SLAUDE_PANEL_SUPERADMIN = "lead@example.com";
+  const { __resetRoleCache } = await import("../../src/gateway/panel/auth/roles");
+  __resetRoleCache();
   const { makeKeys } = await import("../../src/queue/keys");
   const { makeRegistry } = await import("../../src/queue/registry");
   const { makePubSub } = await import("../../src/queue/pubsub");
@@ -77,6 +82,7 @@ afterAll(async () => {
   } catch {}
   delete process.env.SLAUDE_PANEL_SECRET;
   delete process.env.SLAUDE_PANEL_OPERATORS;
+  delete process.env.SLAUDE_PANEL_SUPERADMIN;
   teardownScenarioEnv();
 });
 
@@ -220,31 +226,41 @@ d("session control panel over real Redis", () => {
     expect(lock2.status).toBe(200);
     expect(await redis.get(keys.panelLock(sessionId))).toBe("op2@example.com");
 
-    // …op@example.com force-releases (STEALS) it. Capture the audit line.
+    // …lead@example.com (superadmin) force-releases (STEALS) it — force-release
+    // is gated to superadmin. Capture the audit line.
     const logs: string[] = [];
     const orig = console.log;
     console.log = (...a: any[]) => logs.push(a.join(" "));
     let body: any;
     try {
-      const res = await fetch(`${gw.url}/panel/api/sessions/${sessionId}/force-release`, { method: "POST", headers: HDR });
+      const res = await fetch(`${gw.url}/panel/api/sessions/${sessionId}/force-release`, {
+        method: "POST",
+        headers: SUPER_HDR,
+      });
       body = (await res.json()) as any;
       expect(res.status).toBe(200);
     } finally {
       console.log = orig;
     }
     expect(body.displaced).toBe("op2@example.com");
-    expect(body.owner).toBe("op@example.com");
+    expect(body.owner).toBe("lead@example.com");
     // Lock stays HELD, now under the calling operator (Slack still suppressed).
-    expect(await redis.get(keys.panelLock(sessionId))).toBe("op@example.com");
+    expect(await redis.get(keys.panelLock(sessionId))).toBe("lead@example.com");
     // The displaced operator's heartbeat now fails — they lost control.
     const hb = await fetch(`${gw.url}/panel/api/sessions/${sessionId}/heartbeat`, { method: "POST", headers: other });
     const hbBody = (await hb.json()) as any;
     expect(hbBody.ok).toBe(false);
     expect(
-      logs.some((l) => l.includes('"action":"force-release"') && l.includes('"operator":"op@example.com"')),
+      logs.some((l) => l.includes('"action":"force-release"') && l.includes('"operator":"lead@example.com"')),
     ).toBe(true);
+    // An operator (non-superadmin) cannot force-release.
+    const forbidden = await fetch(`${gw.url}/panel/api/sessions/${sessionId}/force-release`, {
+      method: "POST",
+      headers: HDR,
+    });
+    expect(forbidden.status).toBe(403);
     // Clean up: hand the session back to Slack.
-    await fetch(`${gw.url}/panel/api/sessions/${sessionId}/release`, { method: "POST", headers: HDR });
+    await fetch(`${gw.url}/panel/api/sessions/${sessionId}/release`, { method: "POST", headers: SUPER_HDR });
   }, 20_000);
 
   test("control op: stop publishes an abort; reset clears claude_started", async () => {
@@ -256,13 +272,44 @@ d("session control panel over real Redis", () => {
     expect(stop.status).toBe(200);
 
     await sessions.markStarted(sessionId);
-    const reset = await fetch(`${gw.url}/panel/api/sessions/${sessionId}/control`, {
+    // reset is gated to superadmin — an operator is refused…
+    const resetDenied = await fetch(`${gw.url}/panel/api/sessions/${sessionId}/control`, {
       method: "POST",
       headers: { ...HDR, "content-type": "application/json" },
       body: JSON.stringify({ action: "reset" }),
     });
+    expect(resetDenied.status).toBe(403);
+    // …a superadmin succeeds.
+    const reset = await fetch(`${gw.url}/panel/api/sessions/${sessionId}/control`, {
+      method: "POST",
+      headers: { ...SUPER_HDR, "content-type": "application/json" },
+      body: JSON.stringify({ action: "reset" }),
+    });
     expect(reset.status).toBe(200);
     expect((await sessions.findById(sessionId)).claude_started).toBe(0);
+  }, 20_000);
+
+  test("refuses reset from an operator and allows it for a superadmin", async () => {
+    const body = JSON.stringify({ action: "reset" });
+    const headers = (email: string) => ({
+      cookie: opCookie(email),
+      "content-type": "application/json",
+      "x-panel-csrf": "1",
+    });
+
+    const denied = await fetch(`${gw.url}/panel/api/sessions/${sessionId}/control`, {
+      method: "POST",
+      headers: headers("alice@example.com"),
+      body,
+    });
+    expect(denied.status).toBe(403);
+
+    const allowed = await fetch(`${gw.url}/panel/api/sessions/${sessionId}/control`, {
+      method: "POST",
+      headers: headers("lead@example.com"),
+      body,
+    });
+    expect(allowed.status).toBe(200);
   }, 20_000);
 
   test("panel is not mounted on a replica without panel infra (role=node parity)", async () => {

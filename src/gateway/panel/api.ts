@@ -70,6 +70,30 @@ function enforceCsrf(req: Request): Response | null {
   return null;
 }
 
+/**
+ * Actions gated to superadmin (design §Authorization). `reset` discards session
+ * state unrecoverably; `mode` can set bypassPermissions, which lets the agent
+ * act without gates; `force-release` steals another operator's lock.
+ *
+ * superadmin is a superset of operator — no action is operator-only.
+ */
+export const SUPERADMIN_ACTIONS: ReadonlySet<string> = new Set([
+  "control.reset",
+  "control.mode",
+  "force-release",
+]);
+
+/** Returns the 403 to send, or null when the role suffices. */
+export function requireSuperadmin(
+  role: PanelRole,
+  ctx: { action: string; operator: string; session?: string },
+): Response | null {
+  if (!SUPERADMIN_ACTIONS.has(ctx.action)) return null;
+  if (role === "superadmin") return null;
+  audit({ ...ctx, role, outcome: "denied", detail: { required: "superadmin" } });
+  return json(403, { error: `action '${ctx.action}' requires the superadmin role`, required: "superadmin" });
+}
+
 const PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"] as const;
 
 const controlSchema = z
@@ -198,6 +222,12 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
       return json(400, { error: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") });
     }
     const { action, model, mode } = parsed.data;
+    const denied = requireSuperadmin(role, {
+      action: `control.${action}`,
+      operator: operatorId,
+      session: row.id,
+    });
+    if (denied) return denied;
     switch (action) {
       case "stop": {
         if (!deps.pubsub) return json(503, { error: "stop unavailable (no Redis)" });
@@ -392,6 +422,8 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         if (sub === "force-release") {
           if (req.method !== "POST") return json(405, { error: "method not allowed" });
           if (!deps.panelLock) return json(503, { error: "lock unavailable (no Redis)" });
+          const denied = requireSuperadmin(role, { action: "force-release", operator: operatorId, session: id });
+          if (denied) return denied;
           // F4: force-release transfers control to the CALLER — it does not
           // hand the session back to Slack. The lock stays held under the new
           // owner (Slack still suppressed), the displaced operator's heartbeat
