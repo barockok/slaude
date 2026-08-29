@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, it, expect } from "bun:test";
 import { createPanelApi } from "../../src/gateway/panel/api";
 import { __resetRoleCache } from "../../src/gateway/panel/auth/roles";
+import { __resetDiscoveryCache } from "../../src/gateway/panel/auth/oidc";
 
 const PANEL_SECRET = "t".repeat(32);
 
@@ -45,6 +46,28 @@ describe("panel API gate", () => {
     const res = (await get("/panel/auth/me"))!;
     expect(res.status).toBe(401);
     expect(res.headers.get("location")).toBeNull();
+  });
+
+  // The auth routes are unauthenticated and talk to the provider, so a down
+  // IdP is reachable by anyone. It must not become a stack trace.
+  it("502s instead of throwing when the provider is unreachable", async () => {
+    process.env.SLAUDE_PANEL_OIDC_ISSUER = "https://idp.example.com/realms/slaude";
+    process.env.SLAUDE_PANEL_OIDC_CLIENT_ID = "slaude-panel";
+    process.env.SLAUDE_PANEL_OIDC_CLIENT_SECRET = "s3cret";
+    process.env.SLAUDE_PANEL_PUBLIC_URL = "https://panel.example.com";
+    __resetDiscoveryCache();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error("ECONNREFUSED");
+    }) as unknown as typeof fetch;
+    try {
+      const res = (await get("/panel/auth/login"))!;
+      expect(res.status).toBe(502);
+      expect(await res.json()).toEqual({ error: "authentication is temporarily unavailable" });
+    } finally {
+      globalThis.fetch = realFetch;
+      __resetDiscoveryCache();
+    }
   });
 
   it("returns null for a path outside /panel so the caller falls through", async () => {

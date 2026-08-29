@@ -37,6 +37,9 @@ const json = (status: number, body: unknown, headers: Record<string, string> = {
 /** A redirect target is accepted only as a same-origin path under /panel. */
 export function safeReturnTo(raw: string | null): string {
   if (!raw) return "/panel";
+  // Control characters would ride into `new Headers({ location })` — a CRLF in
+  // a query parameter must never become a header split.
+  if (/[\x00-\x1f]/.test(raw)) return "/panel";
   if (!raw.startsWith("/") || raw.startsWith("//")) return "/panel";
   if (raw !== "/panel" && !raw.startsWith("/panel/")) return "/panel";
   return raw;

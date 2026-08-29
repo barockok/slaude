@@ -153,6 +153,11 @@ describe("returnTo", () => {
     expect(safeReturnTo("/v1/sessions")).toBe("/panel");
     expect(safeReturnTo(null)).toBe("/panel");
   });
+  it("rejects control characters so a CRLF cannot split the location header", () => {
+    expect(safeReturnTo("/panel/x\r\nset-cookie: a=b")).toBe("/panel");
+    expect(safeReturnTo("/panel/x\n")).toBe("/panel");
+    expect(safeReturnTo("/panel/x\u0000")).toBe("/panel");
+  });
 });
 
 describe("refresh", () => {

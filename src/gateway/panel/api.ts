@@ -271,8 +271,17 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
     if (seg[1] === "auth") {
       const csrf = enforceCsrf(req);
       if (csrf) return csrf;
-      const res = await authRoutes.handle(req, seg);
-      if (res) return res;
+      try {
+        const res = await authRoutes.handle(req, seg);
+        if (res) return res;
+      } catch (e) {
+        // These routes are unauthenticated and talk to the provider: a down or
+        // misconfigured IdP is an ordinary condition any caller can trigger.
+        // Answer with a flat 502 rather than letting the throw reach Bun.serve,
+        // which has no error handler and would render a stack trace.
+        console.error(`[panel] auth route ${url.pathname} failed:`, e);
+        return json(502, { error: "authentication is temporarily unavailable" });
+      }
       return json(404, { error: "not found" });
     }
 
