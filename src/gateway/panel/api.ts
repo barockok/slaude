@@ -180,13 +180,15 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
               console.error(`[panel] SSE read failed session=${sessionId}:`, e);
             }
             if (closed) break;
-            // The tail must not outlive the access token that authorized it.
             if (Date.now() >= expMs) {
-              send(`event: session-expired\ndata: {}\n\n`);
+              // The tail must not outlive the access token that authorized it.
+              // A failed send just means the client hung up first — either way
+              // this stream is done.
+              if (!send(`event: session-expired\ndata: {}\n\n`)) closed = true;
               break;
             }
             // Heartbeat comment keeps intermediaries from closing an idle stream.
-            send(": ping\n\n");
+            if (!send(": ping\n\n")) break;
             await sleep(pollMs);
           }
         } finally {
