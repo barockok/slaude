@@ -81,6 +81,11 @@ async function main() {
   const role = env.role();
   // Control panel: mount /panel only for gateway/mono with SLAUDE_PANEL on.
   const panelMounted = role !== "node" && env.panel.enabled();
+  // Before the transport is built, not after: this validates the auth surface
+  // — including reading and parsing the roles file — and a panel that cannot
+  // serve safely must never be reachable, not even for the moment between
+  // listening and the check.
+  if (panelMounted) assertPanelConfig();
   let slack: import("./gateway/core/gateway").GatewayHandle;
   let health: ReturnType<typeof startHealthServer> = null;
   if (slackMode === "http") {
@@ -106,12 +111,7 @@ async function main() {
     });
   }
   if (role !== "node") console.log(`[slaude] /v1 REST mounted (role=${role})`);
-  if (panelMounted) {
-    // Throws when the panel is enabled but cannot serve safely — a
-    // misconfigured auth surface must never accept a request.
-    assertPanelConfig();
-    console.log(`[slaude] /panel control panel mounted (role=${role})`);
-  }
+  if (panelMounted) console.log(`[slaude] /panel control panel mounted (role=${role})`);
 
   await slack.start();
   console.log(`[slaude] slack ${slackMode} mode started`);
