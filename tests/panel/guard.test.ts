@@ -41,7 +41,9 @@ describe("guardRequest", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.response.status).toBe(401);
-      expect(((await r.response.json()) as { error: string }).error).toContain("session");
+      // Flat message: the internal VerifyReason stays in the log, so a prober
+      // learns nothing about how their forgery failed.
+      expect(await r.response.json()).toEqual({ error: "session expired" });
     }
   });
 

@@ -39,7 +39,10 @@ export function guardRequest(req: Request, opts: { html: boolean }): GuardResult
   const r = verifySession(jar[AT_COOKIE], "at");
   if (!r.ok) {
     if (opts.html) return { ok: false, response: loginRedirect(req) };
-    return { ok: false, response: json(401, { error: `session expired (${r.reason})` }) };
+    // The reason is for the operator's logs, not the caller: echoing it tells a
+    // prober how their forgery failed. No client reads it.
+    console.warn(`[panel] session rejected: ${r.reason}`);
+    return { ok: false, response: json(401, { error: "session expired" }) };
   }
   const role = resolveRoleForIdentity(r.claims.email);
   if (!role) {
