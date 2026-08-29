@@ -147,6 +147,20 @@ describe("identity extraction", () => {
     expect(r.ok).toBe(false);
   });
 
+  // Roles are keyed on the email string, so an issuer that has not verified it
+  // would let a self-registered account choose a listed identity.
+  it("refuses an email the issuer marked unverified", () => {
+    const r = identityFromIdToken(idToken(baseClaims({ email_verified: false })), CFG, { nonce: "N1" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("email not verified by the issuer");
+  });
+
+  it("accepts a token that omits email_verified (not every issuer sends it)", () => {
+    const r = identityFromIdToken(idToken(baseClaims({ email_verified: true })), CFG, { nonce: "N1" });
+    expect(r.ok).toBe(true);
+    expect(identityFromIdToken(idToken(baseClaims()), CFG, { nonce: "N1" }).ok).toBe(true);
+  });
+
   it("honours a custom user claim", () => {
     const cfg = { ...CFG, userClaim: "preferred_username" };
     const r = identityFromIdToken(idToken(baseClaims({ preferred_username: "Alice" })), cfg, { nonce: "N1" });

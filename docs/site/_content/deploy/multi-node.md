@@ -115,6 +115,8 @@ SLAUDE_PANEL_USER_CLAIM=email                       # default
 SLAUDE_PANEL_ROLES_FILE=/etc/slaude/panel-roles.yaml
 ```
 
+**The identity claim must be one the issuer verifies and the user cannot self-assign.** The panel refuses an ID token whose `email_verified` is `false`, so the default `email` claim is safe against a realm with self-registration enabled; a non-default `SLAUDE_PANEL_USER_CLAIM` gets no such check — pick a claim your provider vouches for (never a user-editable profile attribute), because the role file is keyed on that string.
+
 **Register the redirect URI** with your provider, exactly: `${SLAUDE_PANEL_PUBLIC_URL}/panel/auth/callback`. Scopes required: `openid email profile`. The client must be confidential (it holds a secret).
 
 **Roles** are declared in `panel-roles.yaml` — matched case-insensitively against the identity claim, superadmin winning when an identity appears in both lists:

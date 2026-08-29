@@ -153,5 +153,13 @@ export function identityFromIdToken(
   if (typeof raw !== "string" || !raw.trim()) return { ok: false, reason: `missing identity claim '${cfg.userClaim}'` };
   const sub = typeof claims.sub === "string" ? claims.sub : "";
   if (!sub) return { ok: false, reason: "missing sub" };
+  // The roles file is keyed on this string, so the issuer must vouch for it.
+  // "The issuer minted this token" says nothing about whether the issuer
+  // verified the address inside it: against a realm with self-registration an
+  // unverified email is an identity the attacker chose. Strictly `=== false`,
+  // so an issuer that omits the claim entirely is not broken by this.
+  if (cfg.userClaim === "email" && claims.email_verified === false) {
+    return { ok: false, reason: "email not verified by the issuer" };
+  }
   return { ok: true, sub, identity: raw.trim().toLowerCase() };
 }
