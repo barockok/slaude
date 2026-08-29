@@ -107,3 +107,72 @@ test("retries once through /panel/auth/refresh on a 401", async ({ page }) => {
   await expect(page.locator("tbody tr[data-sid]").first()).toBeVisible();
   expect(refreshes).toBe(1);
 });
+
+// ---------------------------------------------------------------- auth e2e --
+// These drive a real login: the stub server serves /panel/auth/* and the app
+// shell from the production panel handler, and /idp/* is an auto-approving
+// stub provider. `?role=` picks which identity that provider signs in as —
+// alice@ (operator), lead@ (superadmin), eve@ (on no role list).
+
+const row = () => "tbody tr[data-sid]";
+
+test("an unauthenticated visit lands on the fleet list after the provider round trip", async ({ page }) => {
+  await page.context().clearCookies();
+  await page.goto("/panel");
+  // stub provider auto-approves and bounces straight back to the callback
+  await expect(page.locator(row()).first()).toBeVisible();
+  await expect(page.locator(".identity-email")).toHaveText("alice@example.com");
+  await expect(page.locator(".role-badge")).toHaveText(/operator/i);
+});
+
+test("an operator sees superadmin controls disabled", async ({ page }) => {
+  await page.context().clearCookies();
+  await page.goto("/panel?role=operator");
+  await page.locator(row()).first().click();
+  const reset = page.locator('[data-testid="btn-reset"]');
+  await expect(reset).toBeDisabled();
+  await expect(reset).toHaveAttribute("title", /superadmin/i);
+});
+
+test("a superadmin can issue reset", async ({ page }) => {
+  await page.context().clearCookies();
+  await page.goto("/panel?role=superadmin");
+  await expect(page.locator(".role-badge")).toHaveText(/superadmin/i);
+  await page.locator(row()).first().click();
+  const reset = page.locator('[data-testid="btn-reset"]');
+  await expect(reset).toBeEnabled();
+  await reset.click();
+  await page.locator("#reason").fill("stuck session, booting a fresh process");
+  const [res] = await Promise.all([
+    page.waitForResponse((r) => r.url().includes("/control") && r.request().method() === "POST"),
+    page.locator('[data-testid="confirm-action"]').click(),
+  ]);
+  expect(res.status()).toBe(200); // the server's role gate let it through
+  await expect(page.locator(".notice-forbidden")).toHaveCount(0);
+});
+
+test("an unlisted identity is refused and never gets a session", async ({ page }) => {
+  await page.context().clearCookies();
+  await page.goto("/panel?role=unlisted");
+  // The panel denies at the callback, before minting any cookie: the browser
+  // never reaches the app shell, so there is no fleet to see.
+  await expect(page.locator("body")).toContainText(/not authorized/i);
+  await expect(page.locator(row())).toHaveCount(0);
+  const jar = await page.context().cookies();
+  expect(jar.map((c) => c.name)).not.toContain("panel_at");
+});
+
+test("an identity dropped from the role lists gets the not-authorized screen", async ({ page, request }) => {
+  await page.context().clearCookies();
+  await page.goto("/panel?role=operator");
+  await expect(page.locator(row()).first()).toBeVisible();
+  try {
+    // alice loses her operator listing while the page is open; the list's
+    // 3s auto-refresh is the request that comes back 403.
+    await request.post("/idp/operators?list=");
+    await expect(page.locator(".notice-forbidden")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(row())).toHaveCount(0);
+  } finally {
+    await request.post("/idp/operators?list=alice%40example.com");
+  }
+});
