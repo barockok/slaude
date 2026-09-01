@@ -31,21 +31,14 @@ Non-goals:
 
 **Two-service boundary within one container:**
 
-```
-┌─ slaude container ─────────────────────┐
-│                                         │
-│ ┌─ policy-service (port 8081) ────┐   │
-│ │ Policy loader, Chroma, HTTP API  │   │
-│ │ /check, /reload, /stats          │   │
-│ └─────────────────────────────────┘   │
-│           ▲                             │
-│           │ HTTP                        │
-│           │                             │
-│ ┌─ agent (port 3000) ─────────────┐   │
-│ │ SDK loop, hooks, gateway         │   │
-│ │ Calls policy-service on hooks    │   │
-│ └─────────────────────────────────┘   │
-└─────────────────────────────────────────┘
+```mermaid
+flowchart TB
+  subgraph C["slaude container"]
+    direction TB
+    Policy["policy-service — port 8081<br/>Policy loader, Chroma, HTTP API<br/>/check · /reload · /stats"]
+    Agent["agent — port 3000<br/>SDK loop, hooks, gateway<br/>calls policy-service on hooks"]
+    Agent -->|HTTP| Policy
+  end
 ```
 
 **Separation of concerns:**

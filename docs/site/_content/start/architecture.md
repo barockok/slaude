@@ -8,17 +8,34 @@ Slaude is a headless Slack runtime for Claude Code. It binds Slack threads to du
 
 ## System diagram
 
-![slaude architecture](../docs/architecture.png)
+```mermaid
+flowchart LR
+  Slack["Slack workspace<br/>events · threads · buttons"]
+  GW["Gateway<br/>src/gateway/slack"]
+  Mgr["AgentManager<br/>Map&lt;sessionId, LiveSession&gt;"]
+  Child["Claude child<br/>SDK query"]
 
-*Source: [`docs/architecture.html`](https://github.com/barockok/slaude/blob/main/docs/internal/architecture.html) — SVG rendered to PNG via headless Chrome. Regenerate with `bun run docs:architecture`.*
+  subgraph Gates["Gateway-enforced gates"]
+    direction TB
+    Perm["permission-gate<br/>canUseTool"]
+    Appr["approval-gate<br/>request_approval"]
+  end
 
-```
-Slack  ──events──►  Gateway (/gateway/slack)  ──envelope──►  AgentManager  ──SDK query──►  Claude child
-  ▲                    │  │  │  │                           ▲  │  │  │  │                    │
-  │  reply/edit/upload │  │  │  │                           │  │  │  │  └─ MCP surface ──────┘
-  └────────────────────┘  │  │  └─ slaude_slack MCP ────────┘  │  │  └─ skills / KB / memory
-                          │  └──── approval-gate ──────────────┘  │  └─ token-budget
-                          └─────── permission-gate ───────────────┘  └─ session-mcp
+  subgraph Srv["In-process MCP"]
+    direction TB
+    Surface["slaude_surface<br/>reply · edit · upload"]
+    Modules["skills · KB · memory"]
+    Budget["token-budget · session-mcp"]
+  end
+
+  Slack -->|events| GW
+  GW -->|envelope| Mgr
+  Mgr -->|SDK query| Child
+  Child -->|tool calls| Gates
+  Gates --> Srv
+  Surface -->|reply / edit / upload| Slack
+  Modules -.reads.-> Mgr
+  Budget -.reports.-> Mgr
 ```
 
 ### Layers at a glance
@@ -49,19 +66,26 @@ Slack  ──events──►  Gateway (/gateway/slack)  ──envelope──► 
 
 ### Inbound: Slack event → agent turn
 
-```
-Socket Mode (Bolt) ─► dedup (channel:ts) ─► ignore gate ─► blockedUsers ─► channel-mode gate ─► 1on1 gate
-        │
-        ├── app_mention → engage thread, handleMessage
-        └── message     → engagement routing (below) → handleMessage
-                                          │
-                          handleMessage builds <channel> envelope + <attachment> blocks
-                                          │  resolves personaId, session row, Surface binding
-                                          ▼
-                          AgentManager.sendMessage(sessionId, envelope)
-                                          │  re-arms idle timer, emits turnStart
-                                          ▼
-                          LiveSession prompt iterable yields → Claude child (SDK query)
+```mermaid
+flowchart TB
+  Bolt["Socket Mode (Bolt)"]
+  Dedup["dedup<br/>channel:ts"]
+  Ignore["ignore gate"]
+  Blocked["blockedUsers"]
+  Mode["channel-mode gate"]
+  Lock["1on1 gate"]
+  Mention{"event type"}
+  Engage["engage thread"]
+  Route["engagement routing"]
+  Handle["handleMessage<br/>builds &lt;channel&gt; envelope + &lt;attachment&gt; blocks<br/>resolves personaId, session row, Surface binding"]
+  Send["AgentManager.sendMessage(sessionId, envelope)<br/>re-arms idle timer, emits turnStart"]
+  Live["LiveSession prompt iterable yields"]
+  Child["Claude child (SDK query)"]
+
+  Bolt --> Dedup --> Ignore --> Blocked --> Mode --> Lock --> Mention
+  Mention -->|app_mention| Engage --> Handle
+  Mention -->|message| Route --> Handle
+  Handle --> Send --> Live --> Child
 ```
 
 **What the agent sees** per turn is a single wrapped envelope — not raw Slack JSON:
@@ -140,12 +164,22 @@ All five gates live in `src/gateway/slack/*` and run **before or around** the mo
 | **Approver authz** | `approval-gate.ts` + `soul/loader.ts:selectApproversFrom` | `request_approval` keyword-matches the agent's plan summary against each approver's scope tokens. Only matching approvers + catchalls get the Block Kit buttons. Per-channel overrides replace the global approver set but manager/backup are always retained as catchalls (no lockout). |
 | **Per-tool permission** | `permission-gate.ts` (`canUseTool` callback) | SDK `canUseTool` → Block Kit Allow/Always/Deny per tool call. Respects `SLAUDE_AUTO_ALLOW_TOOLS` and per-thread `permission_mode` (`default`/`acceptEdits`/`bypassPermissions`/`plan`/`dontAsk`). |
 
-```
-SOUL.md  ──LLM extract──►  SoulData JSON  ──sha cache──►  gateway gates  ──►  allow / drop / ask
-   │              ▲                │                              │
-   │        grounded ids            │                              └── approval-gate picks eligible approvers
-   │        (verbatim check)        └──── channelOverrides + overrides overlay
-   └── operator edits ──────────────── any gate failure → safe fallback, never open
+```mermaid
+flowchart LR
+  Op["Operator edits<br/>SOUL.md"]
+  Extract["LLM extract<br/>ephemeral, tool-free turn"]
+  Data["SoulData JSON<br/>Zod-validated"]
+  Cache["sha cache<br/>cache/soul.&lt;sha&gt;.json"]
+  Gates["Gateway gates"]
+  Out["allow · drop · ask"]
+  Appr["approval-gate<br/>picks eligible approvers"]
+  Over["channelOverrides<br/>+ runtime overrides overlay"]
+
+  Op --> Extract --> Data --> Cache --> Gates --> Out
+  Data -->|grounded ids<br/>verbatim check against SOUL.md| Extract
+  Over --> Gates
+  Gates --> Appr
+  Op -.->|any gate failure falls back safe, never open| Gates
 ```
 
 > **What the LLM cannot do:** redirect an approval card to a different user, self-approve, bypass the `blockedUsers` hard-drop, or invent a channel allowlist entry. Those checks are pure code in `src/gateway/slack/*` and run on the gateway's `soulData()` — not on model output. A jailbroken persona can mislead an approver with a crafted summary, but it cannot change who gets the button.
@@ -159,26 +193,33 @@ SOUL.md  ──LLM extract──►  SoulData JSON  ──sha cache──►  ga
 
 Trace a single `@slaude fix the flake` through the system. Every box is a file you can open.
 
-```
- 1  Bolt Socket Mode          2  dedup / ignore / blockedUsers / channel-mode / 1on1 gates
- 2  ─────────────────►  ───────────────────────────────────────────────────────────────►
- 3  engagement router          4  <channel> envelope + Surface binding + session row
- 3  ─────────────────►  ───────────────────────────────────────────────────────────────►
- 5  AgentManager.sendMessage   6  SDK Query (prompt iterable)  7  Claude child
- 5  (re-arms idle timer)       ──────────────────────────────►  ─────────────────►
- 8  tool calls ──► canUseTool / request_approval gates ──► Slack surface (reply/edit/upload)
- 9  result ──► TokenBudget.record ──► done → reactions/status cleared, idle TTL re-armed
+```mermaid
+flowchart TB
+  S1["1 · Bolt Socket Mode"]
+  S2["2 · dedup / ignore / blockedUsers<br/>channel-mode / 1on1 gates"]
+  S3["3 · engagement router"]
+  S4["4 · &lt;channel&gt; envelope<br/>+ Surface binding + session row"]
+  S5["5 · AgentManager.sendMessage<br/>re-arms idle timer"]
+  S6["6 · SDK Query<br/>prompt iterable"]
+  S7["7 · Claude child"]
+  S8["8 · tool calls → canUseTool / request_approval gates<br/>→ Slack surface (reply / edit / upload)"]
+  S9["9 · result → TokenBudget.record → done<br/>reactions and status cleared, idle TTL re-armed"]
+
+  S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8 --> S9
 ```
 
 If any gate in step 2 drops the event, the model never runs and no token is spent. If step 4 finds no session row, one is created. If step 8 never calls `reply`/`edit`/`upload`, the `Stop` hook blocks and instructs the model to reply.
 
 ### One thread, one session, one cwd
 
-```
-Slack thread (team:channel:thread_ts × persona_id)  1──1  sessions row  1──1  LiveSession (SDK Query)  1──1  cwd
-                                                          │                                    │
-                                                          │  ~/.slaude/workspaces/<team>-<channel>-<thread>[__persona]
-                                                          │  per-thread git worktree root
+```mermaid
+flowchart LR
+  Thread["Slack thread<br/>team:channel:thread_ts × persona_id"]
+  Row["sessions row"]
+  Live["LiveSession<br/>SDK Query"]
+  Cwd["cwd<br/>~/.slaude/workspaces/&lt;team&gt;-&lt;channel&gt;-&lt;thread&gt;[__persona]<br/>per-thread git worktree root"]
+
+  Thread ---|1:1| Row ---|1:1| Live ---|1:1| Cwd
 ```
 
 - **Create:** first message in a thread → `Sessions.createForThread` allocates a UUID, `working_dir`, model, `permission_mode`, `persona_id`.
@@ -202,12 +243,12 @@ Engagement is cached in-memory (`Set<string>`) **and** persisted on the session 
 
 ### Idle TTL and resume
 
-```
-user msg ──► LiveSession ──► #armIdle(15m default)
-                │                    │
-                ├── new msg ──► re-arm
-                └── timer fires ──► closeIterable() → for-await loop unwinds → status=idle
-                                      next msg → #startSession again with resume: sessionId
+```mermaid
+stateDiagram-v2
+  [*] --> Live: user msg → LiveSession
+  Live --> Live: new msg → #armIdle re-armed
+  Live --> Idle: timer fires (15m default)<br/>closeIterable() → for-await loop unwinds
+  Idle --> Live: next msg → #startSession with resume: sessionId
 ```
 
 - Configured by `SLAUDE_IDLE_MINUTES` (`env.idleMs()`). Default **15 minutes**. `0` disables.
@@ -296,31 +337,15 @@ Health probes hit `GET /healthz` (liveness) and `GET /readyz` (sqlite `SELECT 1`
 
 The system prompt is a composition — not a single file.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  RUNTIME BASELINE  (src/soul/loader.ts:RUNTIME_BASELINE)        │
-│  Hardcoded. Non-negotiable. Ships with the code.                 │
-│  Slack output discipline, formatting, approval discipline,        │
-│  engagement, channel trust, KB-first, skill evolution,            │
-│  harness overrides.                                               │
-│  NOT overridable by SOUL.md. Updated by releasing slaude.        │
-├─────────────────────────────────────────────────────────────────┤
-│  <persona>  SOUL.md  (~/.slaude/SOUL.md)                        │
-│  Operator-authored. Defines WHO the agent is.                    │
-│  Identity, mandate, values, manager, allowlists, approvers,      │
-│  per-channel overrides (## Channel <#Cxxx>).                      │
-│  Seeded as STARTER_PERSONA on first boot if missing.             │
-├─────────────────────────────────────────────────────────────────┤
-│  <channel-mandate>  (when SOUL.md has ## Channel override)      │
-│  Replaces the global mandate for that channel only. Approvers     │
-│  replaced too; manager/backup always retained as catchalls.       │
-├─────────────────────────────────────────────────────────────────┤
-│  <system-reminder>  skills + session mode + memory-context       │
-│  Injected per turn: discovered skills, 1on1 mode block,           │
-│  brain memory recall.                                             │
-└─────────────────────────────────────────────────────────────────┘
-         ▼
-   Claude child system prompt (preset: claude_code + append)
+```mermaid
+flowchart TB
+  Base["<b>RUNTIME BASELINE</b> — src/soul/loader.ts:RUNTIME_BASELINE<br/>Hardcoded, non-negotiable, ships with the code.<br/>Slack output discipline, formatting, approval discipline, engagement,<br/>channel trust, KB-first, skill evolution, harness overrides.<br/>SOUL.md cannot override it. A slaude release updates it."]
+  Persona["<b>&lt;persona&gt;</b> — ~/.slaude/SOUL.md<br/>Operator-authored. Defines who the agent is.<br/>Identity, mandate, values, manager, allowlists, approvers,<br/>per-channel overrides (## Channel &lt;#Cxxx&gt;).<br/>Seeded as STARTER_PERSONA on first boot when missing."]
+  Mandate["<b>&lt;channel-mandate&gt;</b> — when SOUL.md has a ## Channel override<br/>Replaces the global mandate for that channel only.<br/>Approvers are replaced too; manager and backup stay catchalls."]
+  Reminder["<b>&lt;system-reminder&gt;</b> — skills + session mode + memory context<br/>Injected per turn: discovered skills, 1on1 mode block, brain memory recall."]
+  Out["Claude child system prompt<br/>preset: claude_code + append"]
+
+  Base --> Persona --> Mandate --> Reminder --> Out
 ```
 
 | Layer | Where | Can the operator change it? | Can the model ignore it? |
@@ -340,18 +365,21 @@ The system prompt is a composition — not a single file.
 
 `src/server.ts` boots one `AgentManager` + one Slack transport (Socket Mode) + one health server. There is no `/personality` switch inside a running container. The `SOUL.md` at `~/.slaude/SOUL.md` is that container's identity.
 
-```
-Container A                          Container B
-┌─────────────────────────┐          ┌─────────────────────────┐
-│ SOUL.md = "Noah — SRE"  │          │ SOUL.md = "Mira — PM"   │
-│ SLACK_BOT_TOKEN = xoxb-A│          │ SLACK_BOT_TOKEN = xoxb-B│
-│ db.sqlite, workspaces/  │          │ db.sqlite, workspaces/  │
-│ AgentManager (one map)  │          │ AgentManager (one map)  │
-└──────────┬──────────────┘          └──────────┬──────────────┘
-           │ Socket Mode                        │ Socket Mode
-           ▼                                    ▼
-     Slack workspace                      Slack workspace
-     (@Noah)                              (@Mira — different bot user)
+```mermaid
+flowchart TB
+  subgraph A["Container A"]
+    direction TB
+    A1["SOUL.md = &quot;Noah — SRE&quot;<br/>SLACK_BOT_TOKEN = xoxb-A<br/>db.sqlite, workspaces/<br/>AgentManager (one map)"]
+  end
+  subgraph B["Container B"]
+    direction TB
+    B1["SOUL.md = &quot;Mira — PM&quot;<br/>SLACK_BOT_TOKEN = xoxb-B<br/>db.sqlite, workspaces/<br/>AgentManager (one map)"]
+  end
+  WsA["Slack workspace<br/>@Noah"]
+  WsB["Slack workspace<br/>@Mira — a different bot user"]
+
+  A1 -->|Socket Mode| WsA
+  B1 -->|Socket Mode| WsB
 ```
 
 Scale to N agents by deploying N containers — each with its own PVC (or subPath), its own Slack app/bot token, and its own `SOUL.md`. No shared state between them.

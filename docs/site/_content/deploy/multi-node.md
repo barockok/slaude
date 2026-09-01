@@ -7,16 +7,22 @@ description: Run slaude horizontally — gateway replicas + node workers over Po
 
 The horizontal-scale split (spec: `docs/internal/superpowers/specs/2026-08-24-horizontal-scale-design.md`) separates the **gateway** (Slack ingress, `/v1` REST, queue dispatch, reaper leader) from **node workers** (BullMQ consumers running the actual SDK turns). State lives in Postgres (sessions, gates, dedup) and Redis (queues, warm-session registry, locks, pub/sub, event streams); `$SLAUDE_HOME` is a shared volume (SOUL.md, skills, workspaces).
 
-```
-Slack Events API ──► gateway (SLAUDE_ROLE=gateway, :8080)
-                        │  /slack/events /slack/interactions /v1 /healthz /metrics
-                        │
-      Postgres ◄────────┼────────► Redis (turns queues · sess registry · locks · events)
-                        │                    ▲
-                        └── enqueueTurn      │ claim / heartbeat / event streams
-                                             │
-                          node-1 ◄───────────┤            node-2
-                          (SLAUDE_ROLE=node, `bun run worker`, /v1 client)
+```mermaid
+flowchart TB
+  Slack["Slack Events API"]
+  GW["gateway — SLAUDE_ROLE=gateway, :8080<br/>/slack/events · /slack/interactions · /v1 · /healthz · /metrics"]
+  PG[("Postgres")]
+  Redis[("Redis<br/>turn queues · session registry · locks · events")]
+  N1["node-1<br/>SLAUDE_ROLE=node · bun run worker · /v1 client"]
+  N2["node-2<br/>SLAUDE_ROLE=node · bun run worker · /v1 client"]
+
+  Slack --> GW
+  GW <--> PG
+  GW -->|enqueueTurn| Redis
+  Redis -->|claim / heartbeat / event streams| N1
+  Redis -->|claim / heartbeat / event streams| N2
+  N1 -->|/v1| GW
+  N2 -->|/v1| GW
 ```
 
 Roles are env flags. `SLAUDE_ROLE=mono` (the default) keeps the single-process behavior, and nothing here changes the mono deploy.

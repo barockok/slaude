@@ -7,20 +7,18 @@ description: Deploy slaude with Docker Compose, Kubernetes, or bare metal. Healt
 
 Deploy slaude the way you deploy any long-lived bot: one persona per deploy, persistent state on a volume, health probes on `:8080`, and zero-downtime upgrades via symlink swap.
 
-```
-                  Slack (Socket Mode)
-                        │
-                   ┌────┴────┐
-                   │  slaude  │  ←  SOUL.md  +  $SLAUDE_HOME  +  ANTHROPIC_*
-                   │  server  │     (persona)    (state)       (provider)
-                   └────┬────┘
-                        │
-              ┌─────────┼──────────┐
-              │         │          │
-           health    metrics     skills / KB
-           :8080     :8080       (PVC / disk)
-         /healthz   /metrics
-         /readyz
+```mermaid
+flowchart TB
+  Slack["Slack<br/>Socket Mode"]
+  Srv["slaude server<br/>SOUL.md (persona) · $SLAUDE_HOME (state) · ANTHROPIC_* (provider)"]
+  Health["health :8080<br/>/healthz · /readyz"]
+  Metrics["metrics :8080<br/>/metrics"]
+  Store["skills / KB<br/>PVC or disk"]
+
+  Slack --> Srv
+  Srv --> Health
+  Srv --> Metrics
+  Srv --> Store
 ```
 
 > **One deploy = one persona = one `SOUL.md`.** Multi-agent means multi-deploy — each agent gets its own `SOUL.md`, its own volume, and its own Slack identity. See [Multi-agent](#multi-agent-via-multi-deploy) below.
