@@ -63,19 +63,17 @@
       <p class="lede">Deploy slaude with Docker Compose, Kubernetes, or bare metal. Health probes, upgrades, backups, and troubleshooting.</p>
       <h1>Deployment &amp; Operations</h1>
 <p>Deploy slaude the way you deploy any long-lived bot: one persona per deploy, persistent state on a volume, health probes on <code>:8080</code>, and zero-downtime upgrades via symlink swap.</p>
-<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">                  Slack (Socket Mode)
-                        │
-                   ┌────┴────┐
-                   │  slaude  │  ←  SOUL.md  +  $SLAUDE_HOME  +  ANTHROPIC_*
-                   │  server  │     (persona)    (state)       (provider)
-                   └────┬────┘
-                        │
-              ┌─────────┼──────────┐
-              │         │          │
-           health    metrics     skills / KB
-           :8080     :8080       (PVC / disk)
-         /healthz   /metrics
-         /readyz</code></pre></div>
+<div class="mermaid-wrap"><pre class="mermaid">flowchart TB
+  Slack[&quot;Slack&lt;br/&gt;Socket Mode&quot;]
+  Srv[&quot;slaude server&lt;br/&gt;SOUL.md (persona) · $SLAUDE_HOME (state) · ANTHROPIC_* (provider)&quot;]
+  Health[&quot;health :8080&lt;br/&gt;/healthz · /readyz&quot;]
+  Metrics[&quot;metrics :8080&lt;br/&gt;/metrics&quot;]
+  Store[&quot;skills / KB&lt;br/&gt;PVC or disk&quot;]
+
+  Slack --&gt; Srv
+  Srv --&gt; Health
+  Srv --&gt; Metrics
+  Srv --&gt; Store</pre></div>
 <blockquote>
 <p><strong>One deploy = one persona = one <code>SOUL.md</code>.</strong> Multi-agent means multi-deploy — each agent gets its own <code>SOUL.md</code>, its own volume, and its own Slack identity. See <a href="#multi-agent-via-multi-deploy">Multi-agent</a> below.</p>
 </blockquote>
