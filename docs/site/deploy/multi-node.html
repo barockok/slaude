@@ -63,15 +63,21 @@
       <p class="lede">Run slaude horizontally — gateway replicas + node workers over Postgres, Redis and a shared volume. Local dev loop, docker compose topology, and the multi-node test surface.</p>
       <h1>Multi-Node Deployment</h1>
 <p>The horizontal-scale split (spec: <code>docs/internal/superpowers/specs/2026-08-24-horizontal-scale-design.md</code>) separates the <strong>gateway</strong> (Slack ingress, <code>/v1</code> REST, queue dispatch, reaper leader) from <strong>node workers</strong> (BullMQ consumers running the actual SDK turns). State lives in Postgres (sessions, gates, dedup) and Redis (queues, warm-session registry, locks, pub/sub, event streams); <code>$SLAUDE_HOME</code> is a shared volume (SOUL.md, skills, workspaces).</p>
-<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">Slack Events API ──► gateway (SLAUDE_ROLE=gateway, :8080)
-                        │  /slack/events /slack/interactions /v1 /healthz /metrics
-                        │
-      Postgres ◄────────┼────────► Redis (turns queues · sess registry · locks · events)
-                        │                    ▲
-                        └── enqueueTurn      │ claim / heartbeat / event streams
-                                             │
-                          node-1 ◄───────────┤            node-2
-                          (SLAUDE_ROLE=node, `bun run worker`, /v1 client)</code></pre></div>
+<div class="mermaid-wrap"><pre class="mermaid">flowchart TB
+  Slack[&quot;Slack Events API&quot;]
+  GW[&quot;gateway — SLAUDE_ROLE=gateway, :8080&lt;br/&gt;/slack/events · /slack/interactions · /v1 · /healthz · /metrics&quot;]
+  PG[(&quot;Postgres&quot;)]
+  Redis[(&quot;Redis&lt;br/&gt;turn queues · session registry · locks · events&quot;)]
+  N1[&quot;node-1&lt;br/&gt;SLAUDE_ROLE=node · bun run worker · /v1 client&quot;]
+  N2[&quot;node-2&lt;br/&gt;SLAUDE_ROLE=node · bun run worker · /v1 client&quot;]
+
+  Slack --&gt; GW
+  GW &lt;--&gt; PG
+  GW --&gt;|enqueueTurn| Redis
+  Redis --&gt;|claim / heartbeat / event streams| N1
+  Redis --&gt;|claim / heartbeat / event streams| N2
+  N1 --&gt;|/v1| GW
+  N2 --&gt;|/v1| GW</pre></div>
 <p>Roles are env flags. <code>SLAUDE_ROLE=mono</code> (the default) keeps the single-process behavior, and nothing here changes the mono deploy.</p>
 <hr>
 <h2 id="local-dev-loop">Local dev loop<a class="anchor" href="#local-dev-loop" aria-label="Link to Local dev loop">#</a></h2>

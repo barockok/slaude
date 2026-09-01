@@ -88,20 +88,13 @@
 <hr>
 <h2 id="2-architectural-position">2. Architectural Position<a class="anchor" href="#2-architectural-position" aria-label="Link to 2. Architectural Position">#</a></h2>
 <p><strong>Two-service boundary within one container:</strong></p>
-<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">┌─ slaude container ─────────────────────┐
-│                                         │
-│ ┌─ policy-service (port 8081) ────┐   │
-│ │ Policy loader, Chroma, HTTP API  │   │
-│ │ /check, /reload, /stats          │   │
-│ └─────────────────────────────────┘   │
-│           ▲                             │
-│           │ HTTP                        │
-│           │                             │
-│ ┌─ agent (port 3000) ─────────────┐   │
-│ │ SDK loop, hooks, gateway         │   │
-│ │ Calls policy-service on hooks    │   │
-│ └─────────────────────────────────┘   │
-└─────────────────────────────────────────┘</code></pre></div>
+<div class="mermaid-wrap"><pre class="mermaid">flowchart TB
+  subgraph C[&quot;slaude container&quot;]
+    direction TB
+    Policy[&quot;policy-service — port 8081&lt;br/&gt;Policy loader, Chroma, HTTP API&lt;br/&gt;/check · /reload · /stats&quot;]
+    Agent[&quot;agent — port 3000&lt;br/&gt;SDK loop, hooks, gateway&lt;br/&gt;calls policy-service on hooks&quot;]
+    Agent --&gt;|HTTP| Policy
+  end</pre></div>
 <p><strong>Separation of concerns:</strong></p>
 <ul>
 <li><strong>Policy authoring</strong> (prose, YAML) — human writes <code>POLICY.md</code>. LLM never authors policy.</li>
