@@ -21,21 +21,21 @@ cp .env.example .env && docker compose up -d --build
 
 | Section | What you will find | Time |
 |---|---|---|
-| [**Getting Started**](docs-new/getting-started/index.md) | 5-min quickstart, prerequisites, first DM test | 5 min |
-| [**Configuration**](docs-new/configuration.md) | Env vars, Slack tokens, Anthropic auth, `SOUL.md` schema, `slaude.json` | 10 min |
-| [**Architecture**](docs-new/architecture.md) | Session lifecycle, trust boundary, gateway ↔ agent ↔ MCP, persistence | 8 min |
-| [**Guides**](docs-new/guides/engagement-and-approvals.md) | Engagement, approvals, `/1on1`, slash commands, cron, attachments | — |
-| [**API Reference**](docs-new/api/reference.md) | `mcp__slaude_*` tools, Markdown→mrkdwn, external MCP, skills, KB | — |
-| [**Deployment**](docs-new/deployment/index.md) | Docker, Kubernetes, scale-out (gateway + node workers), health probes, upgrades, troubleshooting | — |
-| [**Examples**](docs-new/examples.md) | Runnable: first skill, first ingest, custom MCP, sim without Slack | — |
+| [**Getting Started**](https://barockok.github.io/slaude/start/getting-started.html) | 5-min quickstart, prerequisites, first DM test | 5 min |
+| [**Configuration**](https://barockok.github.io/slaude/reference/configuration.html) | Env vars, Slack tokens, Anthropic auth, `SOUL.md` schema, `slaude.json` | 10 min |
+| [**Architecture**](https://barockok.github.io/slaude/start/architecture.html) | Session lifecycle, trust boundary, gateway ↔ agent ↔ MCP, persistence | 8 min |
+| [**Guides**](https://barockok.github.io/slaude/guides/engagement.html) | Engagement, approvals, `/1on1`, slash commands, cron, attachments | — |
+| [**API Reference**](https://barockok.github.io/slaude/reference/api.html) | `mcp__slaude_*` tools, Markdown→mrkdwn, external MCP, skills, KB | — |
+| [**Deployment**](https://barockok.github.io/slaude/deploy/index.html) | Docker, Kubernetes, scale-out (gateway + node workers), health probes, upgrades, troubleshooting | — |
+| [**Examples**](https://barockok.github.io/slaude/guides/examples.html) | Runnable: first skill, first ingest, custom MCP, sim without Slack | — |
 
-Full site entry: [**docs-new/index.md**](docs-new/index.md) · Sidebar: [**docs-new/_sidebar.md**](docs-new/_sidebar.md)
+Full site: **<https://barockok.github.io/slaude/>** — source in [`docs/site/_content/`](docs/site/_content/), built by [`docs/site/build.mjs`](docs/site/build.mjs).
 
 ## At a glance
 
-![slaude architecture](docs/architecture.png)
+![slaude architecture](docs/site/assets/img/architecture.png)
 
-<sub>Source: [`docs/architecture.html`](docs/architecture.html) — regenerate PNG via headless Chrome (see file header).</sub>
+<sub>Source: [`docs/internal/architecture.html`](docs/internal/architecture.html) — regenerate PNG via headless Chrome (see file header).</sub>
 
 | Feature | What it means |
 |---|---|
@@ -47,7 +47,7 @@ Full site entry: [**docs-new/index.md**](docs-new/index.md) · Sidebar: [**docs-
 | **Skills & KB** | `~/.slaude/skills/<slug>/SKILL.md` hot-reloads; `knowledge/` wikis compound via `raw/` → `wiki/` `/ingest`. |
 | **Simulation** | `bun run sim` verifies gates with no Slack — same `createGateway`, in-memory transport. |
 
-**Trust boundary:** LLM extracts `SOUL.md` → typed JSON → sha-cached; gateway verifies every Slack ID against raw text before any gate. Enforcement lives in gateway, never model. See [Architecture](docs-new/architecture.md#trust-boundary).
+**Trust boundary:** LLM extracts `SOUL.md` → typed JSON → sha-cached; gateway verifies every Slack ID against raw text before any gate. Enforcement lives in gateway, never model. See [Architecture](https://barockok.github.io/slaude/start/architecture.html#trust-boundary).
 
 ## Quickstart
 
@@ -66,12 +66,12 @@ docker compose up -d --build
 curl localhost:8080/healthz   # {"status":"ok"}
 ```
 
-Next: [Getting Started](docs-new/getting-started/index.md) → [Configuration](docs-new/configuration.md) → [Deployment](docs-new/deployment/index.md)
+Next: [Getting Started](https://barockok.github.io/slaude/start/getting-started.html) → [Configuration](https://barockok.github.io/slaude/reference/configuration.html) → [Deployment](https://barockok.github.io/slaude/deploy/index.html)
 
 ## Project
 
-- **Releases:** [`docs/releases/`](docs/releases/) — hand-written notes per tag (Features / Fixes / Docs)
-- **Findings:** [`docs/findings/`](docs/findings/) — decisions & incident lore
+- **Releases:** [`docs/site/_content/releases/`](docs/site/_content/releases/) — hand-written notes per tag (Features / Fixes / Docs)
+- **Findings:** [`docs/site/_content/field-notes/`](docs/site/_content/field-notes/) — decisions & incident lore
 - **Contributing:** [`CONTRIBUTING.md`](CONTRIBUTING.md) · **Security:** [`SECURITY.md`](SECURITY.md) · **License:** MIT
 
 ---

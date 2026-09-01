@@ -5,7 +5,7 @@ name: load
 # over real Postgres + Redis, 200 concurrent threads, p95 queue claim
 # latency budgeted at 500ms. The k6 variant (scripts/load/k6-turns.js)
 # drives a compose stack over real HTTP instead — see
-# docs-new/deployment/multi-node.md for the local runbook.
+# docs/site/_content/deploy/multi-node.md for the local runbook.
 
 on:
   workflow_dispatch:
