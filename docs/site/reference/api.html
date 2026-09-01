@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API reference — slaude Docs</title>
+<meta name="description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:title" content="API reference — slaude">
+<meta property="og:description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20width%3D'32'%20height%3D'32'%20rx%3D'8'%20fill%3D'%2523853291'%2F%3E%3Ctext%20x%3D'16'%20y%3D'23'%20font-family%3D'Helvetica%2CArial%2Csans-serif'%20font-size%3D'19'%20font-weight%3D'700'%20fill%3D'white'%20text-anchor%3D'middle'%3Es%3C%2Ftext%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/docs.css?v=377763e4">
+<script>(function(){try{var t=localStorage.getItem('slaude-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+    </button>
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true">s</span>
+      <span class="brand-name">slaude</span>
+      <span class="brand-sub">Docs</span>
+    </a>
+    <button class="search-btn" type="button" data-search-open>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <span>Search</span><kbd>⌘K</kbd>
+    </button>
+    <div class="topbar-actions">
+      <a class="ghost" href="https://github.com/barockok/slaude" target="_blank" rel="noopener">GitHub</a>
+      <button class="theme-btn" type="button" aria-label="Toggle theme">
+        <svg class="i-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1M12.9 12.9l-1.1-1.1M4.2 4.2 3.1 3.1"/></svg>
+        <svg class="i-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="topnav" aria-label="Sections"><div class="topnav-inner"><a class="topnav-tab" href="../index.html">Get started</a><a class="topnav-tab" href="../guides/index.html">Guides</a><a class="topnav-tab active" href="configuration.html">Reference</a><a class="topnav-tab" href="../deploy/index.html">Deploy</a><a class="topnav-tab" href="../field-notes/2026-08-23-release-candidate-pipeline.html">Field notes</a><a class="topnav-tab" href="../releases/v0.42.0.html">Releases</a></div></nav>
+</header>
+
+<div class="shell">
+  <aside class="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-inner"><div class="nav-group"><p class="nav-group-title">Reference</p><ul><li><a class="" href="configuration.html">Configuration</a></li><li><a class="active" href="api.html">API reference</a></li><li><a class="" href="guardrails.html">Guardrails design</a></li></ul></div></div>
+  </aside>
+
+  <main id="main" class="content">
+    <article class="prose">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Reference</p>
+          <h1>API reference</h1>
+        </div>
+        <button class="copy-page" type="button" title="Copy this page as Markdown for an agent">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 4 12h1.5"/></svg>
+          <span>Copy page</span>
+        </button>
+      </div>
+      
+      <h1>API &amp; Skills Reference</h1>
+<blockquote>
+<p>Complete surface for the slaude agent runtime: in-process MCP tools, Slack↔mrkdwn conversion, external MCP wiring, the <code>slaude.json</code> dependency manifest, writable knowledge bases, and the simulation gateway. Every tool is tabled with typed params and runnable examples.</p>
+</blockquote>
+<h2 id="contents">Contents<a class="anchor" href="#contents" aria-label="Link to Contents">#</a></h2>
+<ul>
+<li><a href="#in-process-mcp-servers">In-process MCP servers</a><ul>
+<li><a href="#slaude_surface--conversation-surface"><code>slaude_surface</code> — conversation surface</a></li>
+<li><a href="#slaude_slack--slack-context-helpers"><code>slaude_slack</code> — Slack context helpers</a></li>
+<li><a href="#slaude_runtime--control-plane"><code>slaude_runtime</code> — control plane</a></li>
+<li><a href="#slaude_skills--skill-evolution"><code>slaude_skills</code> — skill evolution</a></li>
+<li><a href="#slaude_kb--knowledge-brain"><code>slaude_kb</code> — knowledge brain</a></li>
+<li><a href="#slaude_connect--brokered-oauth"><code>slaude_connect</code> — brokered OAuth</a></li>
+</ul>
+</li>
+<li><a href="#markdown-to-mrkdwn-conversion">Markdown to mrkdwn conversion</a></li>
+<li><a href="#external-mcp-servers">External MCP servers</a></li>
+<li><a href="#dependency-manifest--slaudejson--slaudelock">Dependency manifest — <code>slaude.json</code> + <code>slaude.lock</code></a></li>
+<li><a href="#writable-kb--raw-to-wiki-via-ingest">Writable KB — <code>raw/</code> to <code>wiki/</code> via <code>/ingest</code></a></li>
+<li><a href="#simulation-gateway--running-without-slack">Simulation gateway — running without Slack</a></li>
+</ul>
+<hr>
+<h2 id="in-process-mcp-servers">In-process MCP servers<a class="anchor" href="#in-process-mcp-servers" aria-label="Link to In-process MCP servers">#</a></h2>
+<p>All in-process servers are mounted via <code>createSdkMcpServer</code> from <code>@anthropic-ai/claude-agent-sdk</code>. Tool names are namespaced by the server name. For example <code>mcp__slaude_surface__reply</code> calls <code>reply</code> on the <code>slaude_surface</code> server. The legacy <code>mcp__slaude_slack__reply</code> alias still resolves for one release but is deprecated — prefer <code>slaude_surface</code>.</p>
+<p>Capabilities are derived from the <code>Surface</code> abstraction (<code>src/gateway/core/surface.ts</code>). A capability like <code>edit</code> or <code>react</code> is only mounted when the underlying Surface declares it. Tests can call <code>surfaceTools(surface, opts)</code> without standing up the SDK server.</p>
+<h3 id="slaude_surface-conversation-surface"><code>slaude_surface</code> — conversation surface<a class="anchor" href="#slaude_surface-conversation-surface" aria-label="Link to slaude_surface — conversation surface">#</a></h3>
+<p>Source: <code>src/gateway/core/surface-mcp.ts</code> · SDK name <code>slaude_surface</code></p>
+<div class="table-wrap"><table><thead><tr><th>Tool</th><th>Params</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>reply</code></td><td><code>text: string</code></td><td>Send a message to the current conversation. Markdown is converted to mrkdwn + redacted. Returns <code>posted ref=&lt;id&gt;</code> for later <code>edit</code>. This is the only way to show output to the user — plain assistant text is not displayed.</td></tr>
+<tr><td><code>get_history</code></td><td><code>limit?: number</code>, <code>include_replies?: boolean</code> <em>(default true)</em></td><td>Read recent messages from the current conversation. Returns <code>{ messages, has_more }</code> JSON.</td></tr>
+<tr><td><code>request_approval</code></td><td><code>summary: string</code>, <code>tools?: string[]</code>, <code>files?: string[]</code>, <code>risks?: string</code>, <code>category?: string</code></td><td>Ask the manager/approver to approve a plan before destructive work. Blocks until the user responds. Returns <code>approved by &lt;@U…&gt;</code> or <code>denied</code>.</td></tr>
+<tr><td><code>edit</code></td><td><code>ref: string</code>, <code>text: string</code></td><td>Edit a previous <code>reply</code>. Requires <code>edit</code> capability. <code>ref</code> is the value returned by <code>reply</code>.</td></tr>
+<tr><td><code>react</code></td><td><code>name: string</code> <em>(emoji without colons)</em>, <code>ref?: string</code></td><td>Add an emoji reaction. Defaults to the latest inbound user message. Requires <code>react</code> capability. Idempotent on <code>already_reacted</code>.</td></tr>
+<tr><td><code>unreact</code></td><td><code>name: string</code>, <code>ref?: string</code></td><td>Remove a reaction previously added by the agent.</td></tr>
+<tr><td><code>upload</code></td><td><code>path: string</code> <em>(absolute, inside session cwd)</em>, <code>title?: string</code>, <code>initial_comment?: string</code>, <code>alt_text?: string</code></td><td>Upload a local file into the current thread. <code>initial_comment</code> is rendered as mrkdwn above the file. Returns <code>uploaded file_id=…</code>. Requires <code>upload</code> capability.</td></tr>
+<tr><td><code>typing</code></td><td><code>on: boolean</code></td><td>Show or clear the typing indicator. Requires <code>typing</code> capability.</td></tr>
+<tr><td><code>set_one_on_one</code></td><td><code>action: &quot;open&quot; | &quot;off&quot;</code>, <code>scope?: string</code></td><td>Adjust an already-active <code>/1on1</code> session for this thread. <code>open</code> admits guests with an optional behavioral scope; <code>off</code> releases. Cannot initiate 1on1 — use the slash command.</td></tr>
+<tr><td><code>set_mention_only</code></td><td><code>active: boolean</code></td><td>Toggle mention-only mode for this thread. <code>true</code> = only respond when @-mentioned.</td></tr>
+<tr><td><code>soul_override</code></td><td><code>field: &quot;trust&quot; | &quot;allow&quot; | &quot;dm&quot; | &quot;block&quot;</code>, <code>action: &quot;add&quot; | &quot;remove&quot; | &quot;list&quot; | &quot;clear&quot;</code>, <code>value?: string</code></td><td>Manager-only runtime ACL override. Takes effect next message and shadows <code>SOUL.md</code>. Gated on the live initiator id matching <code>manager.userId</code>.</td></tr>
+</tbody></table></div>
+<p>Example — reply and edit:</p>
+<div class="code" data-lang="ts"><div class="code-bar"><span class="code-lang">ts</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-ts">// inside an agent turn
+await call(&quot;mcp__slaude_surface__reply&quot;, { text: &quot;Deployed `api@2.4.1` to staging.&quot; })
+// → { content: [{ type: &quot;text&quot;, text: &quot;posted ref=msg_01H...&quot; }] }
+
+await call(&quot;mcp__slaude_surface__edit&quot;, { ref: &quot;msg_01H...&quot;, text: &quot;Deployed `api@2.4.1` — smoke OK.&quot; })</code></pre></div>
+<p>Example — gated destructive work:</p>
+<div class="code" data-lang="ts"><div class="code-bar"><span class="code-lang">ts</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-ts">const r = await call(&quot;mcp__slaude_surface__request_approval&quot;, {
+  summary: &quot;Run DB migration add_users_email_idx on prod (migration 023).&quot;,
+  tools: [&quot;Bash&quot;, &quot;Write&quot;],
+  files: [&quot;migrations/023_add_idx.sql&quot;],
+  risks: &quot;Locks users table for ~30s; reversible via rollback.&quot;,
+  category: &quot;db&quot;
+})
+// → &quot;approved by &lt;@U01MANAGER&gt;&quot;  or  &quot;denied by &lt;@U01MANAGER&gt; (not now)&quot;
+if (!r.content[0].text.startsWith(&quot;approved&quot;)) throw new Error(&quot;blocked&quot;)</code></pre></div>
+<hr>
+<h3 id="slaude_slack-slack-context-helpers"><code>slaude_slack</code> — Slack context helpers<a class="anchor" href="#slaude_slack-slack-context-helpers" aria-label="Link to slaude_slack — Slack context helpers">#</a></h3>
+<p>Source: <code>src/gateway/slack/mcp-tools.ts</code> · SDK name <code>slaude_slack</code></p>
+<p><code>reply</code> remains as a deprecated alias to <code>slaude_surface.reply</code>. The remaining tools read Slack identity without posting:</p>
+<div class="table-wrap"><table><thead><tr><th>Tool</th><th>Params</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>reply</code> <em>(deprecated)</em></td><td><code>text: string</code></td><td>Alias to <code>slaude_surface.reply</code>. Remove next release.</td></tr>
+<tr><td><code>get_user_profile</code></td><td><code>user_id: string</code> <em>(e.g. <code>U123ABC</code>)</em></td><td>Fetch <code>users.info</code> — name, real_name, display_name, title, email, phone, status, timezone, pronouns, is_admin/is_owner/is_bot. Use to personalize and avoid asking for known info.</td></tr>
+<tr><td><code>get_channel_info</code></td><td>—</td><td>Fetch <code>conversations.info</code> for the current channel — name, topic, purpose, <code>num_members</code>, <code>is_private</code>/<code>is_archived</code>/<code>is_im</code>, etc.</td></tr>
+<tr><td><code>list_users_in_channel</code></td><td><code>limit?: number</code> <em>(1–1000, default 200)</em></td><td>List <code>conversations.members</code> user ids in the current channel. Resolve via <code>get_user_profile</code>. Returns <code>{ members, has_more }</code>.</td></tr>
+<tr><td><code>search_messages</code></td><td><code>query: string</code>, <code>count?: number</code> <em>(1–20, default 10)</em></td><td>Workspace-wide <code>search.messages</code>. Supports Slack query syntax: <code>from:@alice</code>, <code>in:#engineering</code>, <code>after:2024-01-01</code>, <code>has:link</code>. Returns <code>{ total, matches: [{ ts, channel, user, text, permalink, score }] }</code>.</td></tr>
+</tbody></table></div>
+<div class="code" data-lang="ts"><div class="code-bar"><span class="code-lang">ts</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-ts">await call(&quot;mcp__slaude_slack__get_user_profile&quot;, { user_id: &quot;U08F1ABCD&quot; })
+// → { id, name: &quot;alice&quot;, real_name: &quot;Alice Doe&quot;, title: &quot;Staff Eng&quot;, tz: &quot;Asia/Jakarta&quot;, ... }
+
+await call(&quot;mcp__slaude_slack__search_messages&quot;, { query: &quot;from:@alice deploy after:2026-06-01&quot;, count: 5 })</code></pre></div>
+<hr>
+<h3 id="slaude_runtime-control-plane"><code>slaude_runtime</code> — control plane<a class="anchor" href="#slaude_runtime-control-plane" aria-label="Link to slaude_runtime — control plane">#</a></h3>
+<p>Source: <code>src/gateway/slack/mcp-tools.ts</code> · SDK name <code>slaude_runtime</code></p>
+<p>Housekeeping that never posts user-visible output. Most tools require manager or approver; channel overrides are respected (global <code>approvers</code> replaced per <code>## Channel &lt;#C…&gt;</code> block; <code>manager</code>/<code>backup</code> always honored).</p>
+<div class="table-wrap"><table><thead><tr><th>Tool</th><th>Params</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>ignore_thread</code></td><td><code>duration: string</code>, <code>reason: string</code></td><td>Silence this thread. <code>duration</code> is <code>5m</code>/<code>1h</code>/<code>permanent</code> (max 24h).</td></tr>
+<tr><td><code>unignore_thread</code></td><td>—</td><td>Resume a previously ignored thread.</td></tr>
+<tr><td><code>ignore_user</code></td><td><code>user_id: string</code>, <code>duration: string</code>, <code>reason: string</code></td><td>Silence a user globally.</td></tr>
+<tr><td><code>unignore_user</code></td><td><code>user_id: string</code></td><td>Remove a user ignore.</td></tr>
+<tr><td><code>list_cron_jobs</code></td><td>—</td><td>List active cron jobs — <code>id</code> prefix, 5-field UTC cron expr, <code>target</code>, <code>whenActive</code>, <code>nextRun</code>.</td></tr>
+<tr><td><code>add_cron_job</code></td><td><code>cron_expr: string</code>, <code>prompt: string</code>, <code>target?: &quot;thread&quot; | &quot;channel&quot;</code>, <code>when_active?: &quot;fire&quot; | &quot;skip&quot;</code></td><td>Schedule a recurring prompt. <code>cron_expr</code> is UTC 5-field (<code>0 9 * * 1-5</code> = weekdays 09:00). Default <code>target=thread</code>, <code>when_active=fire</code>.</td></tr>
+<tr><td><code>edit_cron_job</code></td><td><code>job_id: string</code>, <code>cron_expr?: string</code>, <code>prompt?: string</code>, <code>target?: &quot;thread&quot;|&quot;channel&quot;</code>, <code>when_active?: &quot;fire&quot;|&quot;skip&quot;</code></td><td>Patch an existing job; <code>job_id</code> accepts 8-char prefix.</td></tr>
+<tr><td><code>pause_cron_job</code></td><td><code>job_id: string</code></td><td>Pause without deleting; stays listed.</td></tr>
+<tr><td><code>resume_cron_job</code></td><td><code>job_id: string</code></td><td>Resume and recompute <code>nextRun</code> from stored expr.</td></tr>
+<tr><td><code>remove_cron_job</code></td><td><code>job_id: string</code></td><td>Soft-deactivate; history retained.</td></tr>
+<tr><td><code>trigger_ingest</code></td><td>—</td><td>Run the <code>raw/</code>→<code>wiki/</code> ingest now (can be slow).</td></tr>
+<tr><td><code>reload_session</code></td><td><code>prompt?: string</code></td><td>Gracefully reload the session so new MCPs/plugins/skills are picked up. If <code>prompt</code> is given it is auto-injected on the fresh session.</td></tr>
+</tbody></table></div>
+<div class="code" data-lang="ts"><div class="code-bar"><span class="code-lang">ts</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-ts">await call(&quot;mcp__slaude_runtime__add_cron_job&quot;, {
+  cron_expr: &quot;0 9 * * 1-5&quot;,
+  prompt: &quot;Post the daily incidents digest from #incidents.&quot;,
+  target: &quot;channel&quot;,
+  when_active: &quot;skip&quot;
+})
+// → &quot;Cron job created (`a1b2c3d4`) [channel, when_active=skip]. Next run: 2026-08-25T09:00:00.000Z&quot;
+
+await call(&quot;mcp__slaude_runtime__list_cron_jobs&quot;, {})
+// → &quot;*Active cron jobs*\n• `a1b2c3d4` `0 9 * * 1-5` [channel] → Post the daily… (next: …)&quot;</code></pre></div>
+<hr>
+<h3 id="slaude_skills-skill-evolution"><code>slaude_skills</code> — skill evolution<a class="anchor" href="#slaude_skills-skill-evolution" aria-label="Link to slaude_skills — skill evolution">#</a></h3>
+<p>Source: <code>src/skills/mcp-tools.ts</code> · SDK name <code>slaude_skills</code> · Hot-reload per inbound message via <code>discoverSkills()</code></p>
+<p>Skills are <code>~/.slaude/skills/&lt;slug&gt;/SKILL.md</code> (YAML frontmatter <code>name</code> + <code>description</code>, then markdown body). Body supports <code>${SLAUDE_SKILL_DIR}</code>, <code>${SLAUDE_SESSION_ID}</code>, <code>${SLAUDE_SKILL_ARGS}</code>. Persona overlays shadow the base skill: reads merge base+overlay, writes go to the persona overlay only.</p>
+<div class="table-wrap"><table><thead><tr><th>Tool</th><th>Params</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>list_skills</code></td><td>—</td><td>List installed skills as <code>/-slug — Name: description</code>. Prefer refining over duplicating.</td></tr>
+<tr><td><code>read_skill</code></td><td><code>slug: string</code></td><td>Read the full <code>SKILL.md</code> for the slug. Read before refining.</td></tr>
+<tr><td><code>write_skill</code></td><td><code>slug: string</code> <em>(slug <code>[a-z0-9][a-z0-9-]{0,63}</code> invoked as <code>/slug</code>)</em>, <code>name: string</code>, <code>description: string</code>, <code>body: string</code></td><td>Create or overwrite <code>SKILL.md</code>. <code>body</code> is markdown executed on <code>/slug</code>.</td></tr>
+<tr><td><code>delete_skill</code></td><td><code>slug: string</code></td><td>Delete the skill dir. Irreversible. Persona can only delete its overlay.</td></tr>
+<tr><td><code>sync_manifest</code></td><td>—</td><td>Sync runtime-created skills and KBs back to <code>slaude.json</code> + <code>slaude.lock</code>. If <code>SLAUDE_SKILLS_REPO</code> / <code>manifest.slaude_skills</code> is configured, pushes to git; otherwise records as local entries. Returns <code>{ synced_skills, synced_kbs, pulled_kbs, warnings, skills_in_git }</code>. Call sparingly — after creating multiple skills/KBs.</td></tr>
+</tbody></table></div>
+<p>Helpers exported for testing:</p>
+<div class="code" data-lang="ts"><div class="code-bar"><span class="code-lang">ts</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-ts">import { resolveSkillDir, buildSkillMd, skillOps } from &quot;./src/skills/mcp-tools&quot;
+
+resolveSkillDir(&quot;release-notes&quot;)          // → ~/.slaude/skills/release-notes
+resolveSkillDir(&quot;release-notes&quot;, &quot;alice&quot;) // → ~/.slaude/personas/alice/skills/release-notes
+buildSkillMd(&quot;Release Notes&quot;, &quot;Cut release notes&quot;, &quot;# Do the thing&quot;)
+skillOps.list()            // Skill[]
+skillOps.read(&quot;deploy&quot;)    // string (SKILL.md)
+skillOps.write(&quot;deploy&quot;, &quot;Deploy&quot;, &quot;Run deploy&quot;, &quot;# steps…&quot;)
+skillOps.delete(&quot;deploy&quot;)</code></pre></div>
+<p>Example — evolve a skill at runtime:</p>
+<div class="code" data-lang="ts"><div class="code-bar"><span class="code-lang">ts</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-ts">await call(&quot;mcp__slaude_skills__read_skill&quot;, { slug: &quot;release-notes&quot; })
+await call(&quot;mcp__slaude_skills__write_skill&quot;, {
+  slug: &quot;release-notes&quot;,
+  name: &quot;Release Notes&quot;,
+  description: &quot;Cut release notes grouped by Features/Fixes/Docs.&quot;,
+  body: &quot;# Release Notes\n\n1. Group commits by …\n2. Link findings docs.\n\nArgs: ${SLAUDE_SKILL_ARGS}&quot;
+})
+await call(&quot;mcp__slaude_skills__sync_manifest&quot;, {})
+// → { synced_skills: [&quot;release-notes&quot;], synced_kbs: [], skills_in_git: true }</code></pre></div>
+<p>Skill file format:</p>
+<div class="code" data-lang="markdown"><div class="code-bar"><span class="code-lang">markdown</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-markdown">---
+name: &quot;Release Notes&quot;
+description: &quot;Cut release notes grouped by Features/Fixes/Docs.&quot;
+---
+# Release Notes
+
+1. Collect commits since last tag.
+2. Group by Features / Fixes / Docs / Internal.
+3. Explain why, not just subject. Link findings.
+
+Invoke as: /release-notes v0.28.0
+Args available as ${SLAUDE_SKILL_ARGS}</code></pre></div>
+<hr>
+<h3 id="slaude_kb-knowledge-brain"><code>slaude_kb</code> — knowledge brain<a class="anchor" href="#slaude_kb-knowledge-brain" aria-label="Link to slaude_kb — knowledge brain">#</a></h3>
+<p>Source: <code>src/knowledge/mcp-tools.ts</code> · SDK name <code>slaude_kb</code> · Backed by gbrain (local or remote OAuth MCP)</p>
+<p>Per-source <code>gather()</code> fan-out prevents bulk corpora from drowning curated pages. Scope-aware: each call carries a <code>BrainScope</code> (<code>agent-&lt;id&gt;</code> private slice + <code>shared</code>).</p>
+<div class="table-wrap"><table><thead><tr><th>Tool</th><th>Params</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>list_kbs</code></td><td>—</td><td>List installed KBs — <code>{ label, description, path, index_file }[]</code>.</td></tr>
+<tr><td><code>search_kbs</code></td><td><code>query: string</code>, <code>limit?: number</code> <em>(default 5)</em></td><td>Ranked KB search by tag/label/description token score. Call before acting on service/domain queries to discover curated documentation.</td></tr>
+<tr><td><code>kb_think</code></td><td><code>question: string</code></td><td>Synthesized answer with <code>[Source: slug]</code> citations and explicit gaps. Prefer over <code>kb_search</code> when you need an answer. Includes per-source cross-check + rescue synthesis when initial gather returns 0.</td></tr>
+<tr><td><code>kb_search</code></td><td><code>query: string</code>, <code>limit?: number</code> <em>(default 20)</em></td><td>Raw ranked chunks <code>{ slug, score, snippet }</code> via per-source gather (not pooled gbrain search).</td></tr>
+<tr><td><code>kb_get_page</code></td><td><code>slug: string</code></td><td>Read a single brain page by slug (<code>people/alice</code>).</td></tr>
+<tr><td><code>kb_list_pages</code></td><td><code>type?: string</code>, <code>tag?: string</code>, <code>limit?: number</code> <em>(default 50)</em></td><td>List pages optionally filtered by type/tag.</td></tr>
+<tr><td><code>kb_graph</code></td><td><code>slug: string</code></td><td>Outgoing <code>[[wikilinks]]</code> and backlinks for a page.</td></tr>
+<tr><td><code>kb_memoize</code></td><td><code>pages: { slug: string, content: string, summary: string }[]</code> <em>(1–N, max <code>KB_MEMOIZE_MAX_PAGES</code> per call)</em>, <code>target?: &quot;mine&quot; | &quot;shared&quot;</code></td><td>Write/update pages. Default <code>mine</code> = private agent slice, no approval. <code>shared</code> = team KB, requires manager approval (gated via <code>gatedBrainCall</code>). Content is markdown with optional YAML frontmatter; <code>[[wikilinks]]</code> become graph edges.</td></tr>
+<tr><td><code>kb_delete_page</code></td><td><code>slug: string</code>, <code>reason: string</code></td><td>Soft-delete (recoverable). Gated, requires approval.</td></tr>
+</tbody></table></div>
+<p>Examples:</p>
+<div class="code" data-lang="ts"><div class="code-bar"><span class="code-lang">ts</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-ts">// Discover relevant KB before answering
+await call(&quot;mcp__slaude_kb__search_kbs&quot;, { query: &quot;service-a grafana alerts&quot; })
+// → ranked KBs with label &quot;service-a&quot;
+
+// Answer with citations
+await call(&quot;mcp__slaude_kb__kb_think&quot;, { question: &quot;How does service-a handle on-call rotation?&quot; })
+// → synthesized answer + [Source: service-a/oncall.md] + Gaps: …
+
+// Bulk curated write — mine vs shared
+await call(&quot;mcp__slaude_kb__kb_memoize&quot;, {
+  pages: [
+    { slug: &quot;people/alice&quot;, content: &quot;# Alice\nBackend, on-call DRI.\n&quot;, summary: &quot;Add Alice profile&quot; },
+    { slug: &quot;decisions/2026-06-14-x&quot;, content: &quot;# Decision …&quot;, summary: &quot;Record x decision&quot; }
+  ],
+  target: &quot;mine&quot; // private slice, no approval card
+})
+
+await call(&quot;mcp__slaude_kb__kb_memoize&quot;, {
+  pages: [{ slug: &quot;runbooks/service-a-deploy&quot;, content: &quot;# Deploy …&quot;, summary: &quot;Publish deploy runbook&quot; }],
+  target: &quot;shared&quot; // team KB — approval gate
+})
+
+// Graph
+await call(&quot;mcp__slaude_kb__kb_graph&quot;, { slug: &quot;service-a/oncall&quot; })
+// → { out: [&quot;people/alice&quot;, &quot;pagerduty/rotation&quot;], backlinks: [&quot;incidents/2026-05-01&quot;] }</code></pre></div>
+<hr>
+<h3 id="slaude_connect-brokered-oauth"><code>slaude_connect</code> — brokered OAuth<a class="anchor" href="#slaude_connect-brokered-oauth" aria-label="Link to slaude_connect — brokered OAuth">#</a></h3>
+<p>Source: <code>src/gateway/slack/mcp-tools.ts</code> · SDK name <code>slaude_connect</code> · Backed by <code>ConnectDeps.connect(server)</code></p>
+<p>Single-tool broker for external MCP OAuth. The agent declares intent; the gateway owns the flow (signed-state loopback + out-of-band authorize URL + redaction on settle). The URL never passes through the model and no paste-back is needed. Scope-gated: private services in a <code>/1on1</code> run as the initiator; the shared identity is manager-only.</p>
+<div class="table-wrap"><table><thead><tr><th>Tool</th><th>Params</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>connect_mcp</code></td><td><code>server: string</code> <em>(name shown by <code>/mcp</code>)</em></td><td>Start the deterministic connect engine for <code>server</code>. Posts the authorize link into the thread out-of-band and captures the result automatically. Returns a short status line for the agent to relay.</td></tr>
+</tbody></table></div>
+<div class="code" data-lang="ts"><div class="code-bar"><span class="code-lang">ts</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-ts">await call(&quot;mcp__slaude_connect__connect_mcp&quot;, { server: &quot;workbench&quot; })
+// → &quot;Started OAuth for workbench — authorize link is in the thread.&quot;
+// (link is posted by the gateway, not returned to the model)</code></pre></div>
+<p>Related slash commands: <code>/mcp</code> (list), <code>/mcp connect &lt;server&gt;</code> (same engine, surface-aware), <code>/mcp disconnect</code>.</p>
+<hr>
+<h2 id="markdown-to-mrkdwn-conversion">Markdown to mrkdwn conversion<a class="anchor" href="#markdown-to-mrkdwn-conversion" aria-label="Link to Markdown to mrkdwn conversion">#</a></h2>
+<p>Source: <code>src/gateway/slack/format.ts</code> · <code>mdToMrkdwn(md: string) =&gt; string</code></p>
+<p>Slack <code>mrkdwn</code> is not CommonMark. Slaude converts what LLMs emit (markdown) to what Slack renders (mrkdwn) before <code>chat.postMessage</code>/<code>chat.update</code>/<code>files.uploadV2</code>. The converter also chunks oversized payloads (<code>SLACK_MAX_TEXT = 39000</code>).</p>
+<div class="table-wrap"><table><thead><tr><th>Markdown</th><th>mrkdwn</th><th>Notes</th></tr></thead><tbody>
+<tr><td><code>**bold**</code> or <code>__bold__</code></td><td><code>*bold*</code></td><td>Inner padding trimmed; Slack ignores <code>* x *</code>. Carried via sentinels so emphasis rules do not re-nest.</td></tr>
+<tr><td><code>*italic*</code> or <code>_italic_</code></td><td><code>_italic_</code></td><td>Single-star italic requires non-<code>*</code> on both sides. <code>***X***</code> → <code>_*X*_</code>.</td></tr>
+<tr><td><code>~~strike~~</code></td><td><code>~strike~</code></td><td></td></tr>
+<tr><td><code>[text](url)</code></td><td><code>&lt;url|text&gt;</code></td><td>Optional title <code> &quot;…&quot;</code> stripped.</td></tr>
+<tr><td><code>https://example.com/path</code> (bare)</td><td><code>&lt;https://example.com/path|example.com&gt;</code></td><td>Host-only label; skipped when already <code>[t](url)</code> or <code>&lt;url|t&gt;</code> or <code>&lt;url&gt;</code>; skipped inside code.</td></tr>
+<tr><td><code>#</code> / <code>##</code> / <code>###</code> heading</td><td><code>*heading*</code> (bold line)</td><td>Trailing <code>#</code> stripped.</td></tr>
+<tr><td><code>`code`</code></td><td><code>`code`</code></td><td>Preserved verbatim (carved before emphasis).</td></tr>
+<tr><td><code>```lang …```</code></td><td><code>```…```</code></td><td>Language hint dropped; block carved before emphasis.</td></tr>
+<tr><td><code>* item</code> / <code>- item</code> at line start</td><td><code>• item</code></td><td>Bullet canonicalized.</td></tr>
+<tr><td>Markdown table</td><td>Monospace code block</td><td>Column-padded with <code>  </code> gutters; emphasis stripped inside code context.</td></tr>
+</tbody></table></div>
+<p>Processing order (load-bearing for correctness):</p>
+<ol>
+<li>Table pass — <code>| a | b |</code> blocks rendered via <code>renderTable</code> first so pipes do not interfere with emphasis.</li>
+<li>Carve fenced blocks → <code>C1</code> sentinel.</li>
+<li>Carve inline spans → <code>C2</code> sentinel.</li>
+<li>Bare-URL labeling — <code>https://…</code> → <code>[host](url)</code> <em>(skipped inside <code>&lt;url&gt;</code>/already-linked)</em>.</li>
+<li>Carve URLs (<code>&lt;https://…&gt;</code> and remaining bare) → <code>C5</code> sentinel so <code>_</code>/<code>*</code> inside URLs never triggers emphasis.</li>
+<li>Link rewrite <code>[t](url)</code> → <code>&lt;url|t&gt;</code>.</li>
+<li>Heading → <code>*…*</code>.</li>
+<li><code>***X***</code> / <code>**X***</code> triple-star normalization.</li>
+<li>Italic, then bold (separate sentinel phases).</li>
+<li>Strikethrough, bullet rewrite.</li>
+<li>Restore sentinels (<code>*</code> for bold, original code blocks/spans/URLs).</li>
+</ol>
+<p>Edge fixes:</p>
+<ul>
+<li>URLs are carved before emphasis so <code>_</code> in <code>https://example.com/a_b</code> does not become italic.</li>
+<li>Bare URLs are host-labeled so long links do not eat the 39k budget visually.</li>
+<li><code>C3…C4</code> sentinel pair avoids mistaking converted links for emphasis.</li>
+</ul>
+<p>Table rendering:</p>
+<div class="code" data-lang="ts"><div class="code-bar"><span class="code-lang">ts</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-ts">mdToMrkdwn(`
+| Name  | Owner |
+|-------|-------|
+| deploy | alice |
+| oncall | bob   |
+`)
+// → &quot;\n```\nName    Owner\n------  -----\ndeploy  alice\noncall  bob  \n```\n&quot;</code></pre></div>
+<p>Chunking:</p>
+<div class="code" data-lang="ts"><div class="code-bar"><span class="code-lang">ts</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-ts">import { chunkText, SLACK_MAX_TEXT } from &quot;./src/gateway/slack/format&quot;
+chunkText(longReply) // → string[] each ≤ 39000 chars; caller posts sequentially</code></pre></div>
+<hr>
+<h2 id="external-mcp-servers">External MCP servers<a class="anchor" href="#external-mcp-servers" aria-label="Link to External MCP servers">#</a></h2>
+<p>External servers are user- or operator-configured extensions that the slaude gateway merges into the agent&#39;s tool list alongside the in-process servers. They run outside slaude and speak the MCP protocol over stdio, SSE, or streamable HTTP.</p>
+<h3 id="mcpjson-shape"><code>mcp.json</code> shape<a class="anchor" href="#mcpjson-shape" aria-label="Link to mcp.json shape">#</a></h3>
+<p>Location: <code>~/.slaude/mcp.json</code> (also <code>~/.slaude/.mcp.json</code> via <code>src/config/mcp.ts</code>; plugins contribute <code>.mcp.json</code> per plugin dir — see <code>src/config/plugins.ts</code> with <code>npx</code>→<code>bunx</code> shim). Top-level key <code>mcpServers</code>:</p>
+<div class="code" data-lang="json"><div class="code-bar"><span class="code-lang">json</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-json">{
+  &quot;mcpServers&quot;: {
+    &quot;workbench&quot;: {
+      &quot;command&quot;: &quot;node&quot;,
+      &quot;args&quot;: [&quot;./dist/server.js&quot;],
+      &quot;env&quot;: { &quot;WORKBENCH_TOKEN&quot;: &quot;${WORKBENCH_TOKEN}&quot; }
+    },
+    &quot;linear&quot;: {
+      &quot;type&quot;: &quot;sse&quot;,
+      &quot;url&quot;: &quot;https://mcp.linear.app/sse&quot;,
+      &quot;headers&quot;: { &quot;Authorization&quot;: &quot;Bearer ${LINEAR_TOKEN}&quot; }
+    },
+    &quot;graph&quot;: {
+      &quot;type&quot;: &quot;http&quot;,
+      &quot;url&quot;: &quot;https://mcp.example.com/mcp&quot;,
+      &quot;headers&quot;: { &quot;Authorization&quot;: &quot;Bearer ${EXAMPLE_TOKEN}&quot; }
+    }
+  }
+}</code></pre></div>
+<h3 id="transports">Transports<a class="anchor" href="#transports" aria-label="Link to Transports">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Type</th><th>Config shape</th><th>When to use</th></tr></thead><tbody>
+<tr><td><code>stdio</code></td><td><code>{ command: string, args?: string[], env?: Record&lt;string,string&gt; }</code> <em>(omit <code>type</code> or set <code>type:&quot;stdio&quot;</code>)</em></td><td>Local subprocess. Plugin <code>.mcp.json</code> entries that use <code>npx &lt;pkg&gt;</code> are auto-rewritten to <code>bunx</code> under slaude&#39;s bun-only image.</td></tr>
+<tr><td><code>sse</code></td><td><code>{ type: &quot;sse&quot;, url: string, headers?: Record&lt;string,string&gt; }</code></td><td>Legacy server-sent events transport.</td></tr>
+<tr><td><code>http</code> / <code>streamable-http</code></td><td><code>{ type: &quot;http&quot;, url: string, headers?: Record&lt;string,string&gt; }</code></td><td>Streamable HTTP (preferred for hosted MCP). <code>type:&quot;streamableHttp&quot;</code> is also accepted where the SDK normalizes it.</td></tr>
+</tbody></table></div>
+<p>Minimal stdio example:</p>
+<div class="code" data-lang="json"><div class="code-bar"><span class="code-lang">json</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-json">{ &quot;mcpServers&quot;: { &quot;fs&quot;: { &quot;command&quot;: &quot;npx&quot;, &quot;args&quot;: [&quot;-y&quot;, &quot;@modelcontextprotocol/server-filesystem&quot;, &quot;/data&quot;] } } }</code></pre></div>
+<p>Minimal hosted example:</p>
+<div class="code" data-lang="json"><div class="code-bar"><span class="code-lang">json</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-json">{ &quot;mcpServers&quot;: { &quot;linear&quot;: { &quot;type&quot;: &quot;sse&quot;, &quot;url&quot;: &quot;https://mcp.linear.app/sse&quot; } } }</code></pre></div>
+<h3 id="first-call-approval-gate">First-call approval gate<a class="anchor" href="#first-call-approval-gate" aria-label="Link to First-call approval gate">#</a></h3>
+<p>External MCP tools are not auto-authorized. The gateway enforces a first-call approval gate per server: the first time the agent attempts to call any tool from an external server in a session, slaude posts an approval card in Slack. The turn blocks on <code>request_approval</code> semantics (same approver resolution as the in-process <code>request_approval</code> — per-channel override if present, manager/backup always retained). Subsequent calls in the same session proceed without re-approval. Revoke by restarting the session or via <code>/mcp disconnect</code>.</p>
+<p>Flow:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">agent → call external tool (e.g. linear.createIssue)
+      → gateway intercepts first call → posts approval card in thread
+      → waits for manager/approver to approve/deny
+      → on approve: tool executes; future calls skip gate
+      → on deny: tool returns isError with denial reason</code></pre></div>
+<p>Per-channel nuance: if <code>SOUL.md</code> contains a <code>## Channel &lt;#C…&gt;</code> override, its <code>approvers</code> list replaces the global list for that channel. Manager and backup remain fallbacks so the gate is never lockout-prone. Runtime overrides via <code>soul_override</code> take effect next message.</p>
+<p>OAuth helper for external MCPs: prefer <code>mcp__slaude_connect__connect_mcp</code> (or <code>/mcp connect &lt;server&gt;</code>) over pasting URLs. The gateway&#39;s shared loopback handles signed state, URL-safe posting, and scope gating; the authorize URL is redacted on settle (<code>docs/findings/2026-06-19-…md</code>).</p>
+<hr>
+<h2 id="dependency-manifest-slaudejson-slaudelock">Dependency manifest — <code>slaude.json</code> + <code>slaude.lock</code><a class="anchor" href="#dependency-manifest-slaudejson-slaudelock" aria-label="Link to Dependency manifest — slaude.json + slaude.lock">#</a></h2>
+<p>The manifest is the declarative source of truth for everything the agent can grow: plugins, skills, and knowledge bases. It mirrors <code>package.json</code>/<code>package-lock.json</code>.</p>
+<h3 id="slaudejson"><code>slaude.json</code><a class="anchor" href="#slaudejson" aria-label="Link to slaude.json">#</a></h3>
+<p>Location: <code>~/.slaude/slaude.json</code> (validated by <code>src/config/manifest-schema.ts</code>). All arrays are optional; absent → empty.</p>
+<div class="code" data-lang="json"><div class="code-bar"><span class="code-lang">json</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-json">{
+  &quot;plugins&quot;: [
+    { &quot;marketplace&quot;: &quot;github:owner/repo&quot;, &quot;plugin&quot;: &quot;my-plugin&quot;, &quot;ref&quot;: &quot;v1.2.0&quot; }
+  ],
+  &quot;skills&quot;: [
+    { &quot;git&quot;: &quot;github:owner/skills&quot;, &quot;ref&quot;: &quot;main&quot;, &quot;slug&quot;: &quot;release-notes&quot;, &quot;path&quot;: &quot;release-notes&quot; },
+    { &quot;source&quot;: &quot;owner/repo/skill-path@main&quot; },
+    { &quot;slug&quot;: &quot;local-only-skill&quot; }
+  ],
+  &quot;knowledge&quot;: [
+    { &quot;label&quot;: &quot;service-a&quot;, &quot;git&quot;: &quot;github:owner/docs&quot;, &quot;ref&quot;: &quot;main&quot;, &quot;path&quot;: &quot;docs/service-a&quot; },
+    { &quot;label&quot;: &quot;local-kb&quot; }
+  ],
+  &quot;slaude_skills&quot;: { &quot;git&quot;: &quot;github:owner/skills&quot;, &quot;ref&quot;: &quot;main&quot; },
+  &quot;slaude_knowledge&quot;: { &quot;label&quot;: &quot;team-wiki&quot;, &quot;git&quot;: &quot;github:owner/wiki&quot;, &quot;ref&quot;: &quot;main&quot; }
+}</code></pre></div>
+<p>Field reference:</p>
+<div class="table-wrap"><table><thead><tr><th>Field</th><th>Shape</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>plugins[]</code></td><td><code>{ marketplace: github:…, plugin: string, ref: string }</code></td><td>Claude Code plugins. Installer writes <code>installed_plugins.json</code> and <code>settings</code> patches; <code>src/config/plugins.ts</code> transpiles them into SDK <code>Options.plugins</code> and merges each plugin&#39;s <code>.mcp.json</code> into <code>Options.mcpServers</code>.</td></tr>
+<tr><td><code>skills[]</code></td><td><code>SkillEntry</code> — one of: <code>source</code> (Vercel-style <code>owner/repo[/path][@ref]</code>), <code>git+ref+slug(+path)</code> (git-backed), or <code>slug</code> (local)</td><td>Local entries live at <code>~/.slaude/skills/&lt;slug&gt;/</code>. Mixed <code>source</code>+<code>git</code>/<code>ref</code> is invalid. <code>resolveSkillSlug</code> / <code>resolveSkillSource</code> normalize both forms.</td></tr>
+<tr><td><code>knowledge[]</code></td><td><code>{ label: string, git?: string, ref?: string, path?: string }</code> <em>(git/ref paired)</em></td><td>Git-backed entries support sparse checkout when <code>path</code> is set (only that subpath is promoted to <code>~/.slaude/knowledge/&lt;label&gt;/</code>). <code>path</code> missing → full clone. Local entries have no <code>git</code>/<code>ref</code>.</td></tr>
+<tr><td><code>slaude_skills</code></td><td><code>{ git: string, ref: string }</code></td><td>Push target for <code>sync_manifest</code> when new skills/KBs should land in git instead of as local entries. Falls back to <code>SLAUDE_SKILLS_REPO</code> env.</td></tr>
+<tr><td><code>slaude_knowledge</code></td><td><code>{ label, git, ref }</code></td><td>Writable KB remote: raw back-sync target (see next section).</td></tr>
+</tbody></table></div>
+<h3 id="slaudelock"><code>slaude.lock</code><a class="anchor" href="#slaudelock" aria-label="Link to slaude.lock">#</a></h3>
+<p>Location: <code>~/.slaude/slaude.lock</code>. Generated by <code>slaude install</code>. Shape:</p>
+<div class="code" data-lang="json"><div class="code-bar"><span class="code-lang">json</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-json">{
+  &quot;version&quot;: 1,
+  &quot;generated_at&quot;: &quot;2026-08-23T00:00:00.000Z&quot;,
+  &quot;marketplaces&quot;: { &quot;github:owner/repo&quot;: { &quot;sha&quot;: &quot;abc…&quot; } },
+  &quot;skills&quot;: { &quot;release-notes&quot;: { &quot;git&quot;: &quot;github:owner/skills&quot;, &quot;ref&quot;: &quot;main&quot;, &quot;sha&quot;: &quot;abc…&quot;, &quot;path&quot;: &quot;release-notes&quot; } },
+  &quot;knowledge&quot;: { &quot;service-a&quot;: { &quot;git&quot;: &quot;github:owner/docs&quot;, &quot;ref&quot;: &quot;main&quot;, &quot;sha&quot;: &quot;abc…&quot;, &quot;path&quot;: &quot;docs/service-a&quot; } },
+  &quot;slaude_knowledge&quot;: { &quot;label&quot;: &quot;team-wiki&quot;, &quot;git&quot;: &quot;github:owner/wiki&quot;, &quot;ref&quot;: &quot;main&quot;, &quot;raw_sha&quot;: &quot;…&quot;, &quot;wiki_sha&quot;: &quot;…&quot; }
+}</code></pre></div>
+<p>Each value records the content-addressed <code>sha</code> of the cloned commit so installs are reproducible.</p>
+<h3 id="slaude-install"><code>slaude install</code><a class="anchor" href="#slaude-install" aria-label="Link to slaude install">#</a></h3>
+<p>Source: <code>src/cli/install.ts</code> · Usage <code>bun src/cli/install.ts [--update] [--frozen] [--check]</code> · Exit codes <code>0 ok / 1 --check drift / 2 schema error / 3 git/net / 4 marketplace</code></p>
+<div class="table-wrap"><table><thead><tr><th>Flag</th><th>Effect</th></tr></thead><tbody>
+<tr><td><em>(none)</em></td><td>Install per <code>slaude.json</code>; write/refresh <code>slaude.lock</code>. Uses stage-then-rename inside sibling <code>.tmp</code> dirs so container PVC subPath mounts do not hit <code>EXDEV</code>.</td></tr>
+<tr><td><code>--update</code></td><td>Re-resolve refs to newest commit before locking (bump).</td></tr>
+<tr><td><code>--frozen</code></td><td>Require <code>slaude.lock</code> to match <code>slaude.json</code> exactly; exit 1 on drift. Use in CI and production deploys.</td></tr>
+<tr><td><code>--check</code></td><td>Like <code>--frozen</code> but read-only; never mutates. Suitable for a lint step.</td></tr>
+</tbody></table></div>
+<div class="code" data-lang="sh"><div class="code-bar"><span class="code-lang">sh</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sh">bun src/cli/install.ts              # install / refresh lock
+bun src/cli/install.ts --frozen     # CI: fail if manifest drifted
+bun src/cli/install.ts --update     # bump all refs
+bun src/cli/install.ts --check      # lint without writing
+
+SLAUDE_HOME=~/.slaude bun src/cli/install.ts --frozen</code></pre></div>
+<p>Marketplace/plugin lineage: installed plugins are tracked in <code>$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json</code>. Slaude&#39;s loader reads that file, emits <code>SdkPluginPath[]</code> for the SDK, and separately loads each plugin&#39;s <code>.mcp.json</code> because the 0.1.x CLI only forwards <code>--plugin-dir</code> for skills/commands, not MCP servers.</p>
+<h3 id="sync_manifest-push-target"><code>sync_manifest</code> push target<a class="anchor" href="#sync_manifest-push-target" aria-label="Link to sync_manifest push target">#</a></h3>
+<p><code>mcp__slaude_skills__sync_manifest</code> (and <code>syncManifest()</code> in <code>src/skills/sync-manifest.ts</code>) reconciles the live filesystem (<code>~/.slaude/skills/*</code>, <code>~/.slaude/knowledge/*</code>) with the manifest:</p>
+<ol>
+<li>Normalizes <code>source</code> entries to <code>git+ref+path</code>.</li>
+<li>Pulls every git-backed <code>knowledge</code> entry (sparse when <code>path</code> present) and records its <code>sha</code> in <code>slaude.lock</code>.</li>
+<li>If <code>slaude_knowledge</code> is configured and <code>raw/</code> changed, pushes <code>raw/</code> back to that remote and updates <code>raw_sha</code>.</li>
+<li>Discovers unregistered skills/KBs. If a push target exists — <code>manifest.slaude_skills</code> or <code>SLAUDE_SKILLS_REPO</code> — clones the repo shallow, copies each new skill dir and each new KB&#39;s <code>knowledge/&lt;label&gt;/</code> tree, commits with <code>slaude@local</code>, pushes, and records <code>manifest.skills</code>/<code>manifest.knowledge</code> plus <code>lock.skills</code>/<code>lock.knowledge</code> as git-backed. If no target or push fails, records them as local <code>slug</code>/<code>label</code> entries and appends a warning.</li>
+<li>Writes <code>slaude.json</code> + <code>slaude.lock</code> atomically via <code>*.tmp</code> + <code>renameSync</code>.</li>
+</ol>
+<p>Configure the target once:</p>
+<div class="code" data-lang="json"><div class="code-bar"><span class="code-lang">json</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-json">// slaude.json
+{ &quot;slaude_skills&quot;: { &quot;git&quot;: &quot;github:acme/slaude-catalog&quot;, &quot;ref&quot;: &quot;main&quot; } }</code></pre></div>
+<div class="code" data-lang="sh"><div class="code-bar"><span class="code-lang">sh</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sh"># or via env
+SLAUDE_SKILLS_REPO=github:acme/slaude-catalog slaude start</code></pre></div>
+<p>After the agent evolves a skill, it should call <code>sync_manifest</code> so the next <code>slaude install --frozen</code> reproduces the new skill.</p>
+<hr>
+<h2 id="writable-kb-raw-to-wiki-via-ingest">Writable KB — <code>raw/</code> to <code>wiki/</code> via <code>/ingest</code><a class="anchor" href="#writable-kb-raw-to-wiki-via-ingest" aria-label="Link to Writable KB — raw/ to wiki/ via /ingest">#</a></h2>
+<p>Knowledge bases are wikis with a durable source→derived split. Operators edit the source; slaude derives the retrievable wiki.</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">~/.slaude/knowledge/&lt;label&gt;/
+  raw/        # operator-authored markdown — the durable source of truth
+  wiki/       # agent-derived, indexed pages — what kb_search/kb_think retrieve
+  README.md   # KB description + tags used by search_kbs scoring</code></pre></div>
+<p>Source: <code>src/knowledge/ingest.ts</code> · <code>src/db/ingest-jobs.ts</code> (deprecated job row now superseded by brain, retained for reap logic) · <code>src/knowledge/loader.ts</code></p>
+<h3 id="ingest-flow"><code>/ingest</code> flow<a class="anchor" href="#ingest-flow" aria-label="Link to /ingest flow">#</a></h3>
+<ol>
+<li>Trigger: <code>mcp__slaude_runtime__trigger_ingest</code>, <code>/ingest</code> slash command, or <code>runIngest({ triggeredBy })</code> programmatically. Requires manager/approver.</li>
+<li>Ingest scans <code>raw/</code> across all installed KBs, chunks, and writes normalized pages into <code>wiki/</code> (and the gbrain store when enabled). The wiki is what <code>kb_*</code> tools serve.</li>
+<li>After ingest completes, <code>brainSync</code> / <code>brainBackfill</code> propagate to the shared slice.</li>
+</ol>
+<p>Manual invocation:</p>
+<div class="code" data-lang="ts"><div class="code-bar"><span class="code-lang">ts</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-ts">await call(&quot;mcp__slaude_runtime__trigger_ingest&quot;, {})
+// → &quot;Ingest complete — 12 files → 48 pages (2 warnings)&quot;  or  &quot;Ingest failed: …&quot;</code></pre></div>
+<p>CLI equivalent where available:</p>
+<div class="code" data-lang="sh"><div class="code-bar"><span class="code-lang">sh</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sh"># from inside the slaude session workspace
+/ingest</code></pre></div>
+<h3 id="sqlite-mutex">SQLite mutex<a class="anchor" href="#sqlite-mutex" aria-label="Link to SQLite mutex">#</a></h3>
+<p>Concurrent ingests are unsafe. The mutex is a single-row guard in <code>db.sqlite</code> (<code>kb_ingest_jobs</code>):</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">CREATE TABLE kb_ingest_jobs (
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  status TEXT CHECK(status IN ('running','completed','failed','crashed')),
+  triggered_by TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  heartbeat_at INTEGER NOT NULL,
+  UNIQUE(status) WHERE status='running'  -- at most one running job
+);</code></pre></div>
+<p>API (<code>src/db/ingest-jobs.ts</code>):</p>
+<div class="table-wrap"><table><thead><tr><th>Function</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>tryAcquire(label, triggeredBy): IngestJob | null</code></td><td><code>INSERT … status=&#39;running&#39;</code>; returns <code>null</code> on unique-violation (another ingest is running). Calls <code>reapStale()</code> first.</td></tr>
+<tr><td><code>heartbeat(id)</code></td><td>Bump <code>heartbeat_at</code> for a running job; caller should heartbeat periodically for long ingests.</td></tr>
+<tr><td><code>release(id, &quot;completed&quot;|&quot;failed&quot;|&quot;crashed&quot;)</code></td><td>Mark terminal status.</td></tr>
+<tr><td><code>runningJob(): IngestJob | null</code></td><td>Current holder, if any.</td></tr>
+<tr><td><code>reapStale(): string[]</code></td><td>Mark any <code>running</code> job whose <code>heartbeat_at &lt; now - 10m</code> as <code>crashed</code>; returns their ids. <code>STALE_AFTER_MS = 10 * 60 * 1000</code>.</td></tr>
+</tbody></table></div>
+<p>Typical use:</p>
+<div class="code" data-lang="ts"><div class="code-bar"><span class="code-lang">ts</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-ts">import * as IngestJobs from &quot;./src/db/ingest-jobs&quot;
+
+const job = IngestJobs.tryAcquire(&quot;team-wiki&quot;, triggeredByUserId)
+if (!job) throw new Error(&quot;Ingest already running — try again shortly.&quot;)
+try {
+  const t = setInterval(() =&gt; IngestJobs.heartbeat(job.id), 30_000)
+  await doIngest()
+  clearInterval(t)
+  IngestJobs.release(job.id, &quot;completed&quot;)
+} catch (e) {
+  IngestJobs.release(job.id, &quot;failed&quot;)
+  throw e
+}</code></pre></div>
+<blockquote>
+<p>Note: <code>kb_ingest_jobs</code> is marked <code>@deprecated</code> in favor of gbrain&#39;s incremental <code>kb_memoize</code> path. New code should write via <code>kb_memoize</code> instead of bulk <code>/ingest</code>; the mutex row is retained until removal so in-flight <code>/ingest</code> calls remain safe.</p>
+</blockquote>
+<hr>
+<h2 id="simulation-gateway-running-without-slack">Simulation gateway — running without Slack<a class="anchor" href="#simulation-gateway-running-without-slack" aria-label="Link to Simulation gateway — running without Slack">#</a></h2>
+<p>Slaude can be driven without a Slack workspace. The simulation gateway (<code>src/gateway/sim/</code>) is a headless Surface plus a TUI that speaks the same protocol as the Slack adapter, wired for tests, CI, and local verification. Findings docs <code>docs/findings/2026-05-29-simulation-gateway.md</code>, <code>2026-06-03-sim-interactive-real-agent.md</code>, and <code>2026-06-04-repl-claude-code-ux.md</code> document the evolution.</p>
+<h3 id="what-it-is">What it is<a class="anchor" href="#what-it-is" aria-label="Link to What it is">#</a></h3>
+<ul>
+<li>A <code>Surface</code> implementation backed by an in-memory transport (<code>src/gateway/sim/transport.ts</code>) instead of <code>@slack/bolt</code>.</li>
+<li>A deterministic engine (<code>engine.ts</code>) that replays scripted scenarios and a live harness (<code>--real</code>) that mounts the actual <code>AgentManager</code> loop.</li>
+<li>An OpenTUI REPL (<code>src/gateway/sim/tui/</code>) with a pinned bordered input box, live status, and gate-box grouping — superseding the earlier raw-mode TUI.</li>
+</ul>
+<h3 id="running">Running<a class="anchor" href="#running" aria-label="Link to Running">#</a></h3>
+<div class="code" data-lang="sh"><div class="code-bar"><span class="code-lang">sh</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sh"># Interactive REPL against the live agent (Slack-free) — mirrors `slaude start --sim`
+bun src/gateway/sim/cli.ts --real
+
+# Deterministic scenario run (CI)
+bun src/gateway/sim/cli.ts --scenario onboarding
+
+# With a fixture soul
+bun src/gateway/sim/cli.ts --real --soul src/gateway/sim/soul-fixture.ts</code></pre></div>
+<p>Flags (<code>src/gateway/sim/cli.ts</code>):</p>
+<div class="table-wrap"><table><thead><tr><th>Flag</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>--real</code></td><td>Mount the real <code>AgentManager</code> + SDK loop instead of the stub agent. Use to verify live tool wiring (<code>reply</code>/<code>react</code>/<code>request_approval</code>/<code>kb_*</code>/external MCP) without Slack.</td></tr>
+<tr><td><code>--scenario &lt;name&gt;</code></td><td>Run a named deterministic scenario from <code>src/gateway/sim/scenarios/</code> or <code>scenarios-real/</code>.</td></tr>
+<tr><td><code>--soul &lt;path&gt;</code></td><td>Load a fixture <code>SOUL.md</code> instead of <code>~/.slaude/SOUL.md</code>.</td></tr>
+<tr><td><code>--headless</code></td><td>No TUI — pipe transcript to stdout; useful in CI.</td></tr>
+</tbody></table></div>
+<p>Preflight checks (<code>src/gateway/sim/preflight.ts</code>) validate Node/Bun version, <code>SOUL.md</code> presence, and <code>$SLAUDE_HOME</code> layout before the session starts. The transcript layer (<code>transcript.ts</code>) persists every turn to <code>~/.slaude/workspaces/&lt;session&gt;/transcript.jsonl</code> so a sim session can be re-opened exactly like a Slack thread.</p>
+<h3 id="when-to-use-it">When to use it<a class="anchor" href="#when-to-use-it" aria-label="Link to When to use it">#</a></h3>
+<ul>
+<li>Verifying a new MCP server or skill without spamming a Slack channel.</li>
+<li>CI regression: <code>bun test</code> mounts the sim transport; scenarios assert tool call sequences and approval gates without network.</li>
+<li>Local soul iteration: edit <code>SOUL.md</code>, run <code>--real</code>, converse, tweak, repeat.</li>
+</ul>
+<div class="code" data-lang="ts"><div class="code-bar"><span class="code-lang">ts</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-ts">// src/gateway/sim/scenarios/onboarding.ts (sketch)
+import { defineScenario } from &quot;../engine&quot;
+export default defineScenario({
+  name: &quot;onboarding&quot;,
+  steps: [
+    { user: &quot;hello, I'm Alice&quot;, expect: { tool: &quot;get_user_profile&quot; } },
+    { user: &quot;deploy service-a&quot;,  expect: { tool: &quot;request_approval&quot; } },
+  ]
+})</code></pre></div>
+<hr>
+<h2 id="see-also">See also<a class="anchor" href="#see-also" aria-label="Link to See also">#</a></h2>
+<ul>
+<li><code>src/gateway/core/surface-mcp.ts</code> — Surface tool definitions + gating</li>
+<li><code>src/gateway/slack/mcp-tools.ts</code> — Slack + runtime + connect MCPs</li>
+<li><code>src/gateway/slack/format.ts</code> — <code>mdToMrkdwn</code> / <code>chunkText</code> / <code>renderTable</code></li>
+<li><code>src/skills/mcp-tools.ts</code> + <code>src/skills/sync-manifest.ts</code> — Skill evolution and manifest sync</li>
+<li><code>src/knowledge/mcp-tools.ts</code> + <code>src/knowledge/gather.ts</code> + <code>src/knowledge/ingest.ts</code> — Brain tools, per-source gather, ingest</li>
+<li><code>src/config/manifest-schema.ts</code> + <code>src/cli/install.ts</code> — Manifest schema and installer</li>
+<li><code>src/config/plugins.ts</code> — Plugin → SDK loader + <code>npx</code>→<code>bunx</code> shim</li>
+<li><code>src/db/ingest-jobs.ts</code> — SQLite ingest mutex</li>
+<li><code>src/gateway/sim/</code> — Simulation gateway (transport, engine, TUI, scenarios)</li>
+</ul>
+
+    </article>
+    <nav class="prevnext"><a class="pn pn-prev" href="configuration.html"><span class="pn-dir">Previous</span><span class="pn-label">Configuration</span></a><a class="pn pn-next" href="guardrails.html"><span class="pn-dir">Next</span><span class="pn-label">Guardrails design</span></a></nav>
+    <footer class="page-foot">
+      <a href="https://github.com/barockok/slaude/edit/main/docs/site/_content/reference/api.md" target="_blank" rel="noopener">Edit this page on GitHub</a>
+      <span>slaude v0.42.0</span>
+    </footer>
+  </main>
+
+  <div class="toc-col"><nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul><li class="toc-h2"><a href="#contents">Contents</a></li><li class="toc-h2"><a href="#in-process-mcp-servers">In-process MCP servers</a></li><li class="toc-h3"><a href="#slaude_surface-conversation-surface">slaude_surface — conversation surface</a></li><li class="toc-h3"><a href="#slaude_slack-slack-context-helpers">slaude_slack — Slack context helpers</a></li><li class="toc-h3"><a href="#slaude_runtime-control-plane">slaude_runtime — control plane</a></li><li class="toc-h3"><a href="#slaude_skills-skill-evolution">slaude_skills — skill evolution</a></li><li class="toc-h3"><a href="#slaude_kb-knowledge-brain">slaude_kb — knowledge brain</a></li><li class="toc-h3"><a href="#slaude_connect-brokered-oauth">slaude_connect — brokered OAuth</a></li><li class="toc-h2"><a href="#markdown-to-mrkdwn-conversion">Markdown to mrkdwn conversion</a></li><li class="toc-h2"><a href="#external-mcp-servers">External MCP servers</a></li><li class="toc-h3"><a href="#mcpjson-shape">mcp.json shape</a></li><li class="toc-h3"><a href="#transports">Transports</a></li><li class="toc-h3"><a href="#first-call-approval-gate">First-call approval gate</a></li><li class="toc-h2"><a href="#dependency-manifest-slaudejson-slaudelock">Dependency manifest — slaude.json + slaude.lock</a></li><li class="toc-h3"><a href="#slaudejson">slaude.json</a></li><li class="toc-h3"><a href="#slaudelock">slaude.lock</a></li><li class="toc-h3"><a href="#slaude-install">slaude install</a></li><li class="toc-h3"><a href="#sync_manifest-push-target">sync_manifest push target</a></li><li class="toc-h2"><a href="#writable-kb-raw-to-wiki-via-ingest">Writable KB — raw/ to wiki/ via /ingest</a></li><li class="toc-h3"><a href="#ingest-flow">/ingest flow</a></li><li class="toc-h3"><a href="#sqlite-mutex">SQLite mutex</a></li><li class="toc-h2"><a href="#simulation-gateway-running-without-slack">Simulation gateway — running without Slack</a></li><li class="toc-h3"><a href="#what-it-is">What it is</a></li><li class="toc-h3"><a href="#running">Running</a></li><li class="toc-h3"><a href="#when-to-use-it">When to use it</a></li><li class="toc-h2"><a href="#see-also">See also</a></li></ul></nav></div>
+</div>
+
+<div class="search-overlay" hidden>
+  <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search documentation">
+    <div class="search-input-row">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <input type="search" placeholder="Search the docs…" aria-label="Search" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="search-results" role="listbox"></div>
+  </div>
+</div>
+
+<script>window.__SLAUDE_BASE__="../";</script>
+<script src="../assets/docs.js?v=a084ede1" defer></script>
+</body>
+</html>

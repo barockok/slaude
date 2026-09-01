@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v0.42.0 — slaude Docs</title>
+<meta name="description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:title" content="v0.42.0 — slaude">
+<meta property="og:description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20width%3D'32'%20height%3D'32'%20rx%3D'8'%20fill%3D'%2523853291'%2F%3E%3Ctext%20x%3D'16'%20y%3D'23'%20font-family%3D'Helvetica%2CArial%2Csans-serif'%20font-size%3D'19'%20font-weight%3D'700'%20fill%3D'white'%20text-anchor%3D'middle'%3Es%3C%2Ftext%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/docs.css?v=377763e4">
+<script>(function(){try{var t=localStorage.getItem('slaude-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+    </button>
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true">s</span>
+      <span class="brand-name">slaude</span>
+      <span class="brand-sub">Docs</span>
+    </a>
+    <button class="search-btn" type="button" data-search-open>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <span>Search</span><kbd>⌘K</kbd>
+    </button>
+    <div class="topbar-actions">
+      <a class="ghost" href="https://github.com/barockok/slaude" target="_blank" rel="noopener">GitHub</a>
+      <button class="theme-btn" type="button" aria-label="Toggle theme">
+        <svg class="i-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1M12.9 12.9l-1.1-1.1M4.2 4.2 3.1 3.1"/></svg>
+        <svg class="i-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="topnav" aria-label="Sections"><div class="topnav-inner"><a class="topnav-tab" href="../index.html">Get started</a><a class="topnav-tab" href="../guides/index.html">Guides</a><a class="topnav-tab" href="../reference/configuration.html">Reference</a><a class="topnav-tab" href="../deploy/index.html">Deploy</a><a class="topnav-tab" href="../field-notes/2026-08-23-release-candidate-pipeline.html">Field notes</a><a class="topnav-tab active" href="v0.42.0.html">Releases</a></div></nav>
+</header>
+
+<div class="shell">
+  <aside class="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-inner"><div class="nav-group"><p class="nav-group-title">Release notes</p><ul><li><a class="active" href="v0.42.0.html">v0.42.0</a></li><li><a class="" href="v0.41.0.html">v0.41.0</a></li><li><a class="" href="v0.40.3.html">v0.40.3</a></li><li><a class="" href="v0.40.2.html">v0.40.2</a></li><li><a class="" href="v0.40.1.html">v0.40.1</a></li><li><a class="" href="v0.40.0.html">v0.40.0</a></li><li><a class="" href="v0.39.1.html">v0.39.1</a></li><li><a class="" href="v0.39.0.html">v0.39.0</a></li><li><a class="" href="v0.38.0.html">v0.38.0</a></li><li><a class="" href="v0.37.0.html">v0.37.0</a></li><li><a class="" href="v0.36.0.html">v0.36.0</a></li><li><a class="" href="v0.35.0.html">v0.35.0</a></li><li><a class="" href="v0.34.0.html">v0.34.0</a></li><li><a class="" href="v0.33.1.html">v0.33.1</a></li><li><a class="" href="v0.33.0.html">v0.33.0</a></li><li><a class="" href="v0.32.0.html">v0.32.0</a></li><li><a class="" href="v0.31.0.html">v0.31.0</a></li><li><a class="" href="v0.30.2.html">v0.30.2</a></li><li><a class="" href="v0.30.1.html">v0.30.1</a></li><li><a class="" href="v0.30.0.html">v0.30.0</a></li><li><a class="" href="v0.29.0.html">v0.29.0</a></li><li><a class="" href="v0.28.0.html">v0.28.0</a></li><li><a class="" href="v0.27.0.html">v0.27.0</a></li><li><a class="" href="v0.26.1.html">v0.26.1</a></li><li><a class="" href="v0.26.0.html">v0.26.0</a></li><li><a class="" href="v0.25.1.html">v0.25.1</a></li><li><a class="" href="v0.25.0.html">v0.25.0</a></li><li><a class="" href="v0.24.0.html">v0.24.0</a></li><li><a class="" href="v0.23.5.html">v0.23.5</a></li><li><a class="" href="v0.23.4.html">v0.23.4</a></li><li><a class="" href="v0.23.3.html">v0.23.3</a></li><li><a class="" href="v0.23.2.html">v0.23.2</a></li><li><a class="" href="v0.23.1.html">v0.23.1</a></li><li><a class="" href="v0.23.0.html">v0.23.0</a></li><li><a class="" href="v0.22.0.html">v0.22.0</a></li><li><a class="" href="v0.21.0.html">v0.21.0</a></li><li><a class="" href="v0.20.1.html">v0.20.1 — resume fixed + baseline indexing awareness</a></li><li><a class="" href="v0.20.0.html">v0.20.0 — dream the backlog</a></li><li><a class="" href="v0.19.4.html">v0.19.4 — fix: embedding gateway bootstrap</a></li><li><a class="" href="v0.19.3.html">v0.19.3 — fix: stale sync-lock rows after unclean shutdown</a></li><li><a class="" href="v0.19.2.html">v0.19.2 — fix: brain boot after unclean pod shutdown</a></li><li><a class="" href="v0.19.1.html">v0.19.1 — fix: KB sync on content-only installs</a></li><li><a class="" href="v0.19.0.html">v0.19.0 — subscription-friendly kb_think + native embedding providers</a></li><li><a class="" href="v0.18.0.html">v0.18.0 — the brain: gbrain-powered knowledge layer</a></li><li><a class="" href="v0.17.0.html">v0.17.0</a></li><li><a class="" href="v0.16.1.html">v0.16.1</a></li><li><a class="" href="v0.16.0.html">v0.16.0</a></li><li><a class="" href="v0.15.0.html">v0.15.0</a></li><li><a class="" href="v0.14.0.html">v0.14.0</a></li><li><a class="" href="v0.13.0.html">v0.13.0</a></li><li><a class="" href="v0.12.0.html">v0.12.0</a></li><li><a class="" href="v0.11.0.html">v0.11.0</a></li><li><a class="" href="v0.10.0.html">v0.10.0</a></li><li><a class="" href="v0.9.0.html">v0.9.0</a></li><li><a class="" href="v0.8.11.html">v0.8.11</a></li></ul></div></div>
+  </aside>
+
+  <main id="main" class="content">
+    <article class="prose">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Release notes</p>
+          <h1>v0.42.0</h1>
+        </div>
+        <button class="copy-page" type="button" title="Copy this page as Markdown for an agent">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 4 12h1.5"/></svg>
+          <span>Copy page</span>
+        </button>
+      </div>
+      
+      <h2 id="v0420-horizontal-scale-gatewaynode-split">v0.42.0 — Horizontal scale: gateway/node split<a class="anchor" href="#v0420-horizontal-scale-gatewaynode-split" aria-label="Link to v0.42.0 — Horizontal scale: gateway/node split">#</a></h2>
+<p>The centrepiece of this release is the horizontal-scale architecture (spec §7):
+slaude can now run as more than one process. A <code>gateway</code> process holds Slack
+ingress and the control plane; one or more <code>node</code> (worker) processes pull jobs
+off a Redis queue and call back into the gateway&#39;s <code>/v1</code> API to do the actual
+work. Existing single-process deploys are unaffected — <code>SLAUDE_ROLE</code> defaults
+to <code>mono</code>, today&#39;s behavior, and unknown values fall back to <code>mono</code> too.</p>
+<p>The database layer also gained a driver seam: <code>SLAUDE_DB=sqlite|pg</code> switches
+between the legacy embedded sqlite and Postgres (<code>Bun.sql</code> for a real server,
+PGLite for sim/tests), with numbered migrations covering every table in the
+horizontal-scale spec plus a one-shot <code>migrate-sqlite</code> exporter.</p>
+<p>Because this release touches the DB schema, the driver seam, and the agent
+dispatch path, it ships as a release candidate first per the project&#39;s RC
+policy — soak before promoting to stable.</p>
+<h3 id="features">Features<a class="anchor" href="#features" aria-label="Link to Features">#</a></h3>
+<ul>
+<li><p><strong>Horizontal scale: gateway/node split (M1–M5).</strong> <code>SLAUDE_ROLE=gateway|node</code> (default <code>mono</code>) splits Slack ingress/control-plane from queue workers. Nodes call the gateway&#39;s <code>/v1</code> API over a static bearer token (<code>SLAUDE_NODE_TOKEN</code>) plus a short-lived per-job HS256 JWT (<code>SLAUDE_JOB_SECRET</code>, header <code>X-Slaude-Job</code>) minted on enqueue and verified on the tool-plane and session endpoints. Redis-backed queue (BullMQ-style locks, pubsub, reaper, turn dispatch) with per-node <code>/healthz</code> + <code>/metrics</code> (<code>SLAUDE_NODE_PORT</code>, default 8081) and configurable concurrency (<code>SLAUDE_NODE_CONCURRENCY</code>, default 8). (<a href="https://github.com/barockok/slaude/pull/95" target="_blank" rel="noopener">#95<span class="ext" aria-hidden="true">↗</span></a>)</p>
+</li>
+<li><p><strong>Postgres driver seam (<code>SLAUDE_DB=sqlite|pg</code>).</strong> <code>src/db/client.ts</code> exposes a dialect-agnostic <code>DbClient</code> (query/one/run/exec/transaction). sqlite stays the default; <code>pg</code> uses <code>Bun.sql</code> against a real server (<code>SLAUDE_PG_URL</code>) or an in-process PGLite for sim/tests. Numbered migrations under <code>src/db/migrations/*.sql</code> cover every table in the horizontal-scale spec (tenants, slack_apps, personas, provider_creds, sessions+tenant_id, pending_gates, seen_events, gateway state, memory_*). The repository layer is now fully async across both dialects.</p>
+</li>
+<li><p><strong>AES-256-GCM column encryption.</strong> <code>src/db/crypto.ts</code> encrypts sensitive Postgres columns keyed by <code>SLAUDE_MASTER_KEY</code> (32-byte base64), using a versioned <code>v1:iv:tag:ct</code> envelope so key rotation can land later without a data migration.</p>
+</li>
+<li><p><strong><code>migrate-sqlite</code> one-shot exporter.</strong> <code>bun run migrate-sqlite</code> copies an existing <code>db.sqlite</code> into the Postgres target (<code>SLAUDE_PG_URL</code>, or a PGLite dir for rehearsal), applying target migrations first. Idempotent via <code>ON CONFLICT DO NOTHING</code>; only columns present on both sides are copied.</p>
+</li>
+<li><p><strong><code>--skip-schema</code> migration flag.</strong> Bypasses <code>initSchema()</code> on Postgres for write roles that lack <code>BYPASSRLS</code> — a superuser pre-applies <code>schema.sql</code>, then the data copy runs with <code>--skip-schema</code> under the restricted role.</p>
+</li>
+<li><p><strong><code>ANTHROPIC_AUTH_TOKEN</code> support in extractor/model-listing auth.</strong> Gateways authenticated solely via bearer token (no API key, no OAuth) previously failed soul extraction even though the main agent loop already accepted that token. Precedence: API key &gt; OAuth &gt; auth token.</p>
+</li>
+<li><p><strong>Profile-based docker-compose.</strong> Replaces the flat single-service compose file with <code>brain</code> (pgvector/pgvector:pg16 + healthcheck), <code>scale</code> (redis + worker), and <code>slaude</code> (env_file-based secrets, <code>SLAUDE_DATA_DIR</code> for the host volume mount) profiles.</p>
+</li>
+<li><p><strong><code>slaude_slack</code>: generic post/moderation and Canvas tools.</strong> Capabilities that don&#39;t fit the platform-neutral <code>slaude_surface</code> abstraction — <code>post_message</code> (any channel/DM the bot token can reach, not bound to the session&#39;s thread), <code>delete</code>, <code>post_ephemeral</code>, <code>pin</code>/<code>unpin</code>, <code>set_topic</code>/<code>set_purpose</code>, and a Canvas MVP (<code>create_canvas</code>/<code>append_canvas</code>/<code>prepend_canvas</code>/<code>read_canvas</code>, the last resolving the channel&#39;s canvas via <code>conversations.info</code> → <code>files.info</code> then an authenticated download). Wired into both the MCP server and the REST tool plane. (<a href="https://github.com/barockok/slaude/pull/100" target="_blank" rel="noopener">#100<span class="ext" aria-hidden="true">↗</span></a>)</p>
+</li>
+</ul>
+<h3 id="fixes">Fixes<a class="anchor" href="#fixes" aria-label="Link to Fixes">#</a></h3>
+<ul>
+<li><p><strong><code>fix(agent)</code>: drain suppress flag on disengaged hook.</strong> When a disengaged thread suppresses a turn, the suppress flag for that turn is now consumed immediately instead of surviving to the next turn, where it was incorrectly firing the mention-only guard on re-engage.</p>
+</li>
+<li><p><strong><code>fix(db)</code>: harden <code>toPositional</code> against escapes, comments, and dollar quotes.</strong> The <code>?</code>-placeholder rewriter for Postgres now correctly skips single-quoted strings, double-quoted identifiers, line/block comments, and <code>$tag$</code>-quoted strings, instead of miscounting placeholders inside them. Repo SQL must use <code>jsonb_exists(_any/_all)</code> instead of the JSONB <code>?</code>/<code>?|</code>/<code>?&amp;</code> operators as a result.</p>
+</li>
+<li><p><strong><code>fix(db)</code>: advisory lock serializes concurrent migration boots.</strong> Two processes racing <code>runMigrations</code> against an empty Postgres could both attempt the <code>schema_migrations</code> bootstrap and crash on a duplicate-key error. The runner now holds <code>pg_advisory_lock(&#39;SLAU&#39;, 1)</code> before any DDL.</p>
+</li>
+<li><p><strong><code>fix(db)</code>: int8 rows as numbers on <code>Bun.sql</code>.</strong> <code>Bun.sql</code> returns int8 columns as strings by default, causing real-Postgres rows to diverge from PGLite/sqlite. The driver now opens with <code>bigint: true</code> and normalizes BigInts to JS numbers.</p>
+</li>
+</ul>
+<h3 id="internal">Internal<a class="anchor" href="#internal" aria-label="Link to Internal">#</a></h3>
+<ul>
+<li><strong>Cross-dialect schema drift test.</strong> Diffs the sqlite bootstrap against applied Postgres migrations — a column added on only one side fails CI until mirrored or explicitly allowlisted.</li>
+<li><strong><code>tests/db/pg-real.test.ts</code>.</strong> Runs the driver contract, concurrent-migration race, and int8 shape parity against a live Postgres server when <code>SLAUDE_PG_TEST_URL</code>/<code>SLAUDE_PG_URL</code> is set, in throwaway scratch databases.</li>
+<li>New <code>tests/queue/*</code> and <code>tests/node/*</code> suites covering locks, pubsub, the reaper, turn dispatch, dispatch authority, worker e2e, and shims.</li>
+<li>Docs restructured into a multi-page site; README slimmed to a gateway pointer. (<a href="https://github.com/barockok/slaude/pull/94" target="_blank" rel="noopener">#94<span class="ext" aria-hidden="true">↗</span></a>)</li>
+</ul>
+<h3 id="commits">Commits<a class="anchor" href="#commits" aria-label="Link to Commits">#</a></h3>
+<ul>
+<li><code>docs: restructure into multi-page site, slim README to gateway</code> (61d1dad) (#94)</li>
+<li><code>feat: horizontal scale — gateway/node split (M1-M5)</code> (7c541d4) (#95)</li>
+<li><code>scripts(migrate): add --skip-schema flag to bypass BYPASSRLS requirement</code> (08d80af)</li>
+<li><code>feat(soul): support ANTHROPIC_AUTH_TOKEN in extractor auth</code> (98c7683)</li>
+<li><code>feat(compose): add brain/redis/worker services for horizontal scale</code> (cc62a4d)</li>
+<li><code>fix(agent): drain suppress flag on disengaged hook to prevent next-turn bleed</code> (e52e082)</li>
+<li><code>feat(slack): add generic post/moderation and Canvas tools</code> (77843aa) (#100)</li>
+</ul>
+<p><strong>Full diff:</strong> <a href="https://github.com/barockok/slaude/compare/v0.41.0...v0.42.0" target="_blank" rel="noopener">https://github.com/barockok/slaude/compare/v0.41.0...v0.42.0<span class="ext" aria-hidden="true">↗</span></a></p>
+
+    </article>
+    <nav class="prevnext"><a class="pn pn-prev" href="../field-notes/2026-05-08-mvp-bootstrap.html"><span class="pn-dir">Previous</span><span class="pn-label">2026-05-08 — MVP bootstrap</span></a><a class="pn pn-next" href="v0.41.0.html"><span class="pn-dir">Next</span><span class="pn-label">v0.41.0</span></a></nav>
+    <footer class="page-foot">
+      <a href="https://github.com/barockok/slaude/edit/main/docs/site/_content/releases/v0.42.0.md" target="_blank" rel="noopener">Edit this page on GitHub</a>
+      <span>slaude v0.42.0</span>
+    </footer>
+  </main>
+
+  <div class="toc-col"><nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul><li class="toc-h2"><a href="#v0420-horizontal-scale-gatewaynode-split">v0.42.0 — Horizontal scale: gateway/node split</a></li><li class="toc-h3"><a href="#features">Features</a></li><li class="toc-h3"><a href="#fixes">Fixes</a></li><li class="toc-h3"><a href="#internal">Internal</a></li><li class="toc-h3"><a href="#commits">Commits</a></li></ul></nav></div>
+</div>
+
+<div class="search-overlay" hidden>
+  <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search documentation">
+    <div class="search-input-row">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <input type="search" placeholder="Search the docs…" aria-label="Search" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="search-results" role="listbox"></div>
+  </div>
+</div>
+
+<script>window.__SLAUDE_BASE__="../";</script>
+<script src="../assets/docs.js?v=a084ede1" defer></script>
+</body>
+</html>

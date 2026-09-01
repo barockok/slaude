@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scale Operations — slaude Docs</title>
+<meta name="description" content="Operating the gateway + node topology — the full metric surface, what to alert on, sample PromQL, and scaling behavior.">
+<meta property="og:title" content="Scale Operations — slaude">
+<meta property="og:description" content="Operating the gateway + node topology — the full metric surface, what to alert on, sample PromQL, and scaling behavior.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20width%3D'32'%20height%3D'32'%20rx%3D'8'%20fill%3D'%2523853291'%2F%3E%3Ctext%20x%3D'16'%20y%3D'23'%20font-family%3D'Helvetica%2CArial%2Csans-serif'%20font-size%3D'19'%20font-weight%3D'700'%20fill%3D'white'%20text-anchor%3D'middle'%3Es%3C%2Ftext%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/docs.css?v=377763e4">
+<script>(function(){try{var t=localStorage.getItem('slaude-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+    </button>
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true">s</span>
+      <span class="brand-name">slaude</span>
+      <span class="brand-sub">Docs</span>
+    </a>
+    <button class="search-btn" type="button" data-search-open>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <span>Search</span><kbd>⌘K</kbd>
+    </button>
+    <div class="topbar-actions">
+      <a class="ghost" href="https://github.com/barockok/slaude" target="_blank" rel="noopener">GitHub</a>
+      <button class="theme-btn" type="button" aria-label="Toggle theme">
+        <svg class="i-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1M12.9 12.9l-1.1-1.1M4.2 4.2 3.1 3.1"/></svg>
+        <svg class="i-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="topnav" aria-label="Sections"><div class="topnav-inner"><a class="topnav-tab" href="../index.html">Get started</a><a class="topnav-tab" href="../guides/index.html">Guides</a><a class="topnav-tab" href="../reference/configuration.html">Reference</a><a class="topnav-tab active" href="index.html">Deploy</a><a class="topnav-tab" href="../field-notes/2026-08-23-release-candidate-pipeline.html">Field notes</a><a class="topnav-tab" href="../releases/v0.42.0.html">Releases</a></div></nav>
+</header>
+
+<div class="shell">
+  <aside class="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-inner"><div class="nav-group"><p class="nav-group-title">Deployment and operations</p><ul><li><a class="" href="index.html">Deployment overview</a></li><li><a class="" href="multi-node.html">Multi-node scale-out</a></li><li><a class="active" href="scale-operations.html">Scale operations</a></li></ul></div></div>
+  </aside>
+
+  <main id="main" class="content">
+    <article class="prose">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Deployment and operations</p>
+          <h1>Scale Operations</h1>
+        </div>
+        <button class="copy-page" type="button" title="Copy this page as Markdown for an agent">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 4 12h1.5"/></svg>
+          <span>Copy page</span>
+        </button>
+      </div>
+      <p class="lede">Operating the gateway + node topology — the full metric surface, what to alert on, sample PromQL, and scaling behavior.</p>
+      <h1>Scale Operations</h1>
+<p>Runbook for the horizontal-scale topology (<a href="multi-node.html">multi-node.md</a>,
+manifests in <code>deploy/k8s-scale/</code>). Everything here is scrapeable from
+<code>/metrics</code> on gateway <code>:8080</code> and node <code>:8081</code> (Prometheus text format; no
+prom-client dependency). Static labels via <code>SLAUDE_METRICS_LABELS</code> — set at
+least <code>role=gateway|node</code> per Deployment so the series below are separable.</p>
+<h2 id="metric-surface">Metric surface<a class="anchor" href="#metric-surface" aria-label="Link to Metric surface">#</a></h2>
+<h3 id="gateway">Gateway<a class="anchor" href="#gateway" aria-label="Link to Gateway">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>slaude_gateway_events_total</code></td><td>counter</td><td><code>type</code></td><td>Slack events accepted + dispatched (post-signature, post-app-lookup)</td></tr>
+<tr><td><code>slaude_http_requests_total</code></td><td>counter</td><td><code>route</code>, <code>status</code></td><td>Every <code>/slack/*</code> ingress response, 200s and rejects</td></tr>
+<tr><td><code>slaude_slack_drops_total</code></td><td>counter</td><td><code>reason</code></td><td>Events dropped by gates before a turn</td></tr>
+<tr><td><code>slaude_queue_depth</code></td><td>gauge</td><td><code>queue</code></td><td>Turn jobs waiting + delayed + prioritized on the shared queue †</td></tr>
+<tr><td><code>slaude_nodes_alive</code></td><td>gauge</td><td>—</td><td>Live node heartbeat keys †</td></tr>
+<tr><td><code>slaude_sessions_warm</code></td><td>gauge</td><td>—</td><td>Sessions registered warm on some node †</td></tr>
+<tr><td><code>slaude_reaper_last_run_timestamp_seconds</code></td><td>gauge</td><td>—</td><td>Unix time of the last completed reaper pass †</td></tr>
+<tr><td><code>slaude_v1_tool_calls_total</code></td><td>counter</td><td><code>server</code>, <code>tool</code></td><td>REST tool-plane invocations from nodes</td></tr>
+<tr><td><code>slaude_v1_job_events_total</code></td><td>counter</td><td><code>event</code></td><td>Node job telemetry (<code>ack</code>|<code>fail</code>)</td></tr>
+</tbody></table></div>
+<p>† Exported only by the current <strong>reaper leader</strong> replica. Aggregate with
+<code>max()</code> across gateway pods; a replica that loses leadership keeps its last
+values, so never <code>sum()</code> these.</p>
+<h3 id="node">Node<a class="anchor" href="#node" aria-label="Link to Node">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><code>slaude_node_sessions_live</code></td><td>gauge</td><td>—</td><td>Warm SDK <code>Query</code> sessions held by this node</td></tr>
+<tr><td><code>slaude_node_turns_total</code></td><td>counter</td><td><code>result</code></td><td>Turn jobs processed (<code>done</code>|<code>error</code>|<code>skipped</code>|<code>requeued</code>)</td></tr>
+<tr><td><code>slaude_node_turn_duration_seconds</code></td><td>histogram</td><td>—</td><td>Wall-clock turn duration</td></tr>
+<tr><td><code>slaude_node_queue_claim_latency_seconds</code></td><td>histogram</td><td>—</td><td>enqueue→claim latency (SLO: p95 &lt; 500ms, spec §8)</td></tr>
+</tbody></table></div>
+<h3 id="agent-runtime-emitted-wherever-the-agentmanager-runs-nodes-in-this-topology-the-single-process-in-mono">Agent runtime (emitted wherever the <code>AgentManager</code> runs — nodes in this topology, the single process in mono)<a class="anchor" href="#agent-runtime-emitted-wherever-the-agentmanager-runs-nodes-in-this-topology-the-single-process-in-mono" aria-label="Link to Agent runtime (emitted wherever the AgentManager runs — nodes in this topology, the single process in mono)">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Metric</th><th>Type</th><th>Labels</th></tr></thead><tbody>
+<tr><td><code>slaude_sessions_live</code></td><td>gauge</td><td>—</td></tr>
+<tr><td><code>slaude_turns_total</code></td><td>counter</td><td><code>result</code></td></tr>
+<tr><td><code>slaude_tool_calls_total</code></td><td>counter</td><td><code>tool</code></td></tr>
+<tr><td><code>slaude_tokens_total</code></td><td>counter</td><td><code>kind</code>, <code>channel_id</code>, <code>model</code></td></tr>
+<tr><td><code>slaude_context_window_pct</code></td><td>gauge</td><td>—</td></tr>
+<tr><td><code>slaude_errors_total</code></td><td>counter</td><td><code>kind</code></td></tr>
+<tr><td><code>slaude_stop_guard_blocked_total</code> / <code>slaude_stop_guard_failed_total</code></td><td>counter</td><td>—</td></tr>
+<tr><td><code>slaude_disengaged_suppressed_total</code></td><td>counter</td><td>—</td></tr>
+<tr><td><code>slaude_user_turns_total</code></td><td>counter</td><td><code>user_id</code>, <code>user_name</code> (opt-in <code>SLAUDE_METRICS_PER_USER=1</code>)</td></tr>
+</tbody></table></div>
+<h2 id="what-to-alert-on">What to alert on<a class="anchor" href="#what-to-alert-on" aria-label="Link to What to alert on">#</a></h2>
+<p><strong>No workers</strong> — turns queue but nothing runs. Page immediately.</p>
+<div class="code" data-lang="promql"><div class="code-bar"><span class="code-lang">promql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-promql">max(slaude_nodes_alive) == 0</code></pre></div>
+<p><strong>Queue depth growing</strong> — arrival rate exceeds drain rate. Check node
+health/scaling before the backlog turns into user-visible latency.</p>
+<div class="code" data-lang="promql"><div class="code-bar"><span class="code-lang">promql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-promql">max(slaude_queue_depth{queue=&quot;turns&quot;}) &gt; 25
+and deriv(max(slaude_queue_depth{queue=&quot;turns&quot;})[10m:1m]) &gt; 0</code></pre></div>
+<p><strong>Claim latency SLO</strong> — spec §8: p95 enqueue→claim under 500ms.</p>
+<div class="code" data-lang="promql"><div class="code-bar"><span class="code-lang">promql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-promql">histogram_quantile(0.95,
+  sum by (le) (rate(slaude_node_queue_claim_latency_seconds_bucket[5m]))) &gt; 0.5</code></pre></div>
+<p><strong>Reaper leader missing</strong> — the leader gauges stop being exported entirely
+(every gateway replica down, or leadership stuck). This is also the
+<strong>per-node queue blind spot</strong>: <code>turns:&lt;nodeId&gt;</code> queues are not covered by
+<code>slaude_queue_depth</code>, and only the reaper rescues their stalled/orphaned
+jobs — with no leader, a dead node&#39;s backlog strands invisibly until the
+leader returns. Alert on both total absence and staleness (an ex-leader
+keeps exporting its last values, so <code>absent()</code> alone can stay silent while
+no replica is actually reaping):</p>
+<div class="code" data-lang="promql"><div class="code-bar"><span class="code-lang">promql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-promql">absent(slaude_nodes_alive)</code></pre></div>
+<div class="code" data-lang="promql"><div class="code-bar"><span class="code-lang">promql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-promql"># Staleness: no replica completed a reaper pass recently. Catches the case
+# absent() misses — an ex-leader still scraping its stale last values.
+time() - max(slaude_reaper_last_run_timestamp_seconds) &gt; 120</code></pre></div>
+<p><strong>Turn error rate</strong> — provider failures, lock losses, resume misses.</p>
+<div class="code" data-lang="promql"><div class="code-bar"><span class="code-lang">promql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-promql">sum(rate(slaude_node_turns_total{result=&quot;error&quot;}[10m]))
+  / sum(rate(slaude_node_turns_total[10m])) &gt; 0.05</code></pre></div>
+<p><strong>Ingress rejects</strong> — a spike of 401s means a signing-secret mismatch (rotated
+in Slack but not in <code>slack_apps</code>). A 404 means events from an unregistered app.</p>
+<div class="code" data-lang="promql"><div class="code-bar"><span class="code-lang">promql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-promql">sum by (status) (rate(slaude_http_requests_total{route=&quot;/slack/events&quot;,status!=&quot;200&quot;}[5m])) &gt; 0</code></pre></div>
+<p>Useful non-alert panels: mean turn duration
+(<code>rate(..._duration_seconds_sum[5m]) / rate(..._duration_seconds_count[5m])</code>),
+warm-session ratio (<code>max(slaude_sessions_warm)</code> vs <code>sum(slaude_node_sessions_live)</code>),
+token spend by model/channel (<code>rate(slaude_tokens_total[1h])</code>).</p>
+<h2 id="scrape-config">Scrape config<a class="anchor" href="#scrape-config" aria-label="Link to Scrape config">#</a></h2>
+<p>Gateway pods expose <code>/metrics</code> on the <code>http</code> port (8080), nodes on <code>health</code>
+(8081). With the Prometheus Operator, use one PodMonitor per Deployment. Plain
+Prometheus:</p>
+<div class="code" data-lang="yaml"><div class="code-bar"><span class="code-lang">yaml</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-yaml">scrape_configs:
+  - job_name: slaude-scale
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces: { names: [slaude-scale] }
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        regex: slaude
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_container_port_name]
+        regex: http|health
+        action: keep</code></pre></div>
+<h2 id="scaling-behavior">Scaling behavior<a class="anchor" href="#scaling-behavior" aria-label="Link to Scaling behavior">#</a></h2>
+<ul>
+<li><strong>Nodes</strong> scale on queue depth via KEDA (<code>deploy/k8s-scale/70-autoscale.yaml</code>
+— redis list-length trigger on the BullMQ wait list. Prometheus and CPU-HPA
+variants documented in the file). Scale-down is deliberately slow: a reaped
+node&#39;s warm sessions cold-resume elsewhere from the shared volume, but the
+warmth is lost.</li>
+<li><strong>Gateways</strong> are stateless. Scale <code>replicas</code> manually on ingress volume.
+Leaders (cron, reaper) elect via Redis locks — any replica count is safe.</li>
+<li><strong>Draining</strong>: node SIGTERM stops claiming, finishes in-flight turns within
+<code>SLAUDE_NODE_DRAIN_SEC</code> (120s), deregisters. <code>terminationGracePeriodSeconds</code>
+(150) must stay above the drain window.</li>
+</ul>
+
+    </article>
+    <nav class="prevnext"><a class="pn pn-prev" href="multi-node.html"><span class="pn-dir">Previous</span><span class="pn-label">Multi-node scale-out</span></a><a class="pn pn-next" href="../field-notes/2026-08-23-release-candidate-pipeline.html"><span class="pn-dir">Next</span><span class="pn-label">Release candidate pipeline</span></a></nav>
+    <footer class="page-foot">
+      <a href="https://github.com/barockok/slaude/edit/main/docs/site/_content/deploy/scale-operations.md" target="_blank" rel="noopener">Edit this page on GitHub</a>
+      <span>slaude v0.42.0</span>
+    </footer>
+  </main>
+
+  <div class="toc-col"><nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul><li class="toc-h2"><a href="#metric-surface">Metric surface</a></li><li class="toc-h3"><a href="#gateway">Gateway</a></li><li class="toc-h3"><a href="#node">Node</a></li><li class="toc-h3"><a href="#agent-runtime-emitted-wherever-the-agentmanager-runs-nodes-in-this-topology-the-single-process-in-mono">Agent runtime (emitted wherever the AgentManager runs — nodes in this topology, the single process in mono)</a></li><li class="toc-h2"><a href="#what-to-alert-on">What to alert on</a></li><li class="toc-h2"><a href="#scrape-config">Scrape config</a></li><li class="toc-h2"><a href="#scaling-behavior">Scaling behavior</a></li></ul></nav></div>
+</div>
+
+<div class="search-overlay" hidden>
+  <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search documentation">
+    <div class="search-input-row">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <input type="search" placeholder="Search the docs…" aria-label="Search" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="search-results" role="listbox"></div>
+  </div>
+</div>
+
+<script>window.__SLAUDE_BASE__="../";</script>
+<script src="../assets/docs.js?v=a084ede1" defer></script>
+</body>
+</html>

@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Getting started — slaude Docs</title>
+<meta name="description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:title" content="Getting started — slaude">
+<meta property="og:description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20width%3D'32'%20height%3D'32'%20rx%3D'8'%20fill%3D'%2523853291'%2F%3E%3Ctext%20x%3D'16'%20y%3D'23'%20font-family%3D'Helvetica%2CArial%2Csans-serif'%20font-size%3D'19'%20font-weight%3D'700'%20fill%3D'white'%20text-anchor%3D'middle'%3Es%3C%2Ftext%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/docs.css?v=377763e4">
+<script>(function(){try{var t=localStorage.getItem('slaude-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+    </button>
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true">s</span>
+      <span class="brand-name">slaude</span>
+      <span class="brand-sub">Docs</span>
+    </a>
+    <button class="search-btn" type="button" data-search-open>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <span>Search</span><kbd>⌘K</kbd>
+    </button>
+    <div class="topbar-actions">
+      <a class="ghost" href="https://github.com/barockok/slaude" target="_blank" rel="noopener">GitHub</a>
+      <button class="theme-btn" type="button" aria-label="Toggle theme">
+        <svg class="i-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1M12.9 12.9l-1.1-1.1M4.2 4.2 3.1 3.1"/></svg>
+        <svg class="i-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="topnav" aria-label="Sections"><div class="topnav-inner"><a class="topnav-tab active" href="../index.html">Get started</a><a class="topnav-tab" href="../guides/index.html">Guides</a><a class="topnav-tab" href="../reference/configuration.html">Reference</a><a class="topnav-tab" href="../deploy/index.html">Deploy</a><a class="topnav-tab" href="../field-notes/2026-08-23-release-candidate-pipeline.html">Field notes</a><a class="topnav-tab" href="../releases/v0.42.0.html">Releases</a></div></nav>
+</header>
+
+<div class="shell">
+  <aside class="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-inner"><div class="nav-group"><p class="nav-group-title">Introduction</p><ul><li><a class="" href="../index.html">What is slaude?</a></li><li><a class="active" href="getting-started.html">Getting started</a></li><li><a class="" href="architecture.html">Architecture</a></li></ul></div></div>
+  </aside>
+
+  <main id="main" class="content">
+    <article class="prose">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Introduction</p>
+          <h1>Getting started</h1>
+        </div>
+        <button class="copy-page" type="button" title="Copy this page as Markdown for an agent">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 4 12h1.5"/></svg>
+          <span>Copy page</span>
+        </button>
+      </div>
+      
+      <h1>Getting Started</h1>
+<p>Deploy a Claude Code agent as a teammate in your Slack workspace. One Slack thread equals one persistent Claude session — with a durable persona you define.</p>
+<h2 id="what-is-slaude">What is Slaude?<a class="anchor" href="#what-is-slaude" aria-label="Link to What is Slaude?">#</a></h2>
+<p>Slaude is a Slack-native runtime for <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code<span class="ext" aria-hidden="true">↗</span></a>. It bridges Slack Socket Mode to the <code>@anthropic-ai/claude-agent-sdk</code> so your team can <code>@mention</code> an agent that remembers context, writes skills, and asks for approval before mutating anything.</p>
+<p><strong>Core model:</strong></p>
+<div class="table-wrap"><table><thead><tr><th>Concept</th><th>What it means</th></tr></thead><tbody>
+<tr><td><strong>1 thread = 1 session</strong></td><td>Each Slack thread maps to a persistent Claude session. The SDK <code>resume</code> flag keeps conversation history across idle restarts (default TTL: 15 min).</td></tr>
+<tr><td><strong>Two-layer persona</strong></td><td>A hardcoded runtime baseline (Slack output rules, approval discipline, engagement model) + your operator-defined <code>SOUL.md</code> (name, role, voice, manager, mandate, approvers). You only author the second layer.</td></tr>
+<tr><td><strong>Slack output via MCP</strong></td><td>The agent never streams raw text to Slack. All output goes through an in-process MCP server (<code>mcp__slaude_slack__reply</code> / <code>edit</code> / <code>upload</code> / <code>request_approval</code>). Tables, code blocks, and links are auto-converted to Slack mrkdwn.</td></tr>
+<tr><td><strong>Headless, single-container</strong></td><td>One container = one persona = one <code>SOUL.md</code>. Run it on any host that can reach Slack via Socket Mode. Scale to more agents by deploying more containers.</td></tr>
+</tbody></table></div>
+<blockquote>
+<p><strong>Note:</strong> Slaude is inspired by <a href="https://github.com/NousResearch/hermes-agent" target="_blank" rel="noopener">NousResearch/hermes-agent<span class="ext" aria-hidden="true">↗</span></a> but is Slack-only and powered by the official Claude Agent SDK.</p>
+</blockquote>
+<h2 id="prerequisites">Prerequisites<a class="anchor" href="#prerequisites" aria-label="Link to Prerequisites">#</a></h2>
+<div class="table-wrap"><table><thead><tr><th>Requirement</th><th>Version / Details</th><th>Check</th></tr></thead><tbody>
+<tr><td><strong>Bun</strong></td><td><code>&gt;= 1.3</code> (runtime + package manager)</td><td><code>bun --version</code> — install: `curl -fsSL <a href="https://bun.sh/install" target="_blank" rel="noopener">https://bun.sh/install<span class="ext" aria-hidden="true">↗</span></a></td></tr>
+<tr><td><strong>Docker</strong></td><td><code>&gt;= 24</code> with Compose v2</td><td><code>docker compose version</code></td></tr>
+<tr><td><strong>Slack workspace</strong></td><td>Admin rights to create apps, or permission to install from manifest</td><td>—</td></tr>
+<tr><td><strong>Anthropic-compatible provider</strong></td><td>One of the auth options below</td><td>—</td></tr>
+<tr><td><strong>Git</strong></td><td>Any recent version</td><td><code>git --version</code></td></tr>
+</tbody></table></div>
+<h3 id="auth-options-pick-one">Auth options (pick one)<a class="anchor" href="#auth-options-pick-one" aria-label="Link to Auth options (pick one)">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Option</th><th>When to use</th><th>Env vars</th></tr></thead><tbody>
+<tr><td><strong>API key</strong></td><td>Metered usage, any Anthropic-compatible gateway</td><td><code>ANTHROPIC_API_KEY=sk-ant-...</code></td></tr>
+<tr><td><strong>Claude Pro / Max subscription</strong></td><td>Run on your Claude subscription instead of API credits</td><td><code>CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...</code> (from <code>claude setup-token</code>)</td></tr>
+<tr><td><strong>Third-party gateway</strong></td><td>OpenRouter, Z.ai, self-hosted</td><td><code>ANTHROPIC_BASE_URL</code> + <code>ANTHROPIC_API_KEY</code> + <code>SLAUDE_MODEL</code> (required)</td></tr>
+</tbody></table></div>
+<blockquote>
+<p><strong>Tip:</strong> When using <code>CLAUDE_CODE_OAUTH_TOKEN</code>, leave <code>SLAUDE_MODEL</code> unset to inherit the subscription&#39;s default model. Set <code>SLAUDE_MODEL</code> only to pin a specific model or when pointing <code>ANTHROPIC_BASE_URL</code> at a non-Anthropic gateway.</p>
+</blockquote>
+<h2 id="quickstart-5-minutes">Quickstart (5 minutes)<a class="anchor" href="#quickstart-5-minutes" aria-label="Link to Quickstart (5 minutes)">#</a></h2>
+<h3 id="1-clone-and-install">1. Clone and install<a class="anchor" href="#1-clone-and-install" aria-label="Link to 1. Clone and install">#</a></h3>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">git clone https://github.com/barockok/slaude.git
+cd slaude
+bun install</code></pre></div>
+<h3 id="2-generate-the-slack-app-manifest">2. Generate the Slack app manifest<a class="anchor" href="#2-generate-the-slack-app-manifest" aria-label="Link to 2. Generate the Slack app manifest">#</a></h3>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">bun run manifest &gt; manifest.json
+cat manifest.json</code></pre></div>
+<p>This prints the JSON that declares required scopes (<code>chat:write</code>, <code>app_mentions:read</code>, <code>assistant:write</code>, etc.), Socket Mode, and event subscriptions.</p>
+<h3 id="3-create-the-slack-app">3. Create the Slack app<a class="anchor" href="#3-create-the-slack-app" aria-label="Link to 3. Create the Slack app">#</a></h3>
+<ol>
+<li>Go to <strong><a href="https://api.slack.com/apps" target="_blank" rel="noopener">https://api.slack.com/apps<span class="ext" aria-hidden="true">↗</span></a></strong> → <strong>Create New App</strong> → <strong>From manifest</strong> → paste the contents of <code>manifest.json</code> → select your workspace → <strong>Create</strong>.</li>
+<li><strong>Basic Information</strong> → <strong>App-Level Tokens</strong> → <strong>Generate Token</strong> → scope <code>connections:write</code> → copy the token (<code>xapp-...</code>). This is <code>SLACK_APP_TOKEN</code>.</li>
+<li><strong>OAuth &amp; Permissions</strong> → <strong>Install to Workspace</strong> → <strong>Allow</strong> → copy the Bot Token (<code>xoxb-...</code>). This is <code>SLACK_BOT_TOKEN</code>.</li>
+<li><strong>Agents &amp; AI Apps</strong> <em>(optional but recommended)</em> → enable <strong>Assistant view</strong> to unlock the animated <code>assistant.threads.setStatus</code> indicator (&quot;thinking...&quot;, &quot;running <code>cmd</code>&quot;).</li>
+<li><strong>Socket Mode</strong> → confirm it is <strong>Enabled</strong>.</li>
+</ol>
+<blockquote>
+<p><strong>Warning:</strong> Reinstall the app to your workspace whenever you regenerate the manifest with changed scopes — otherwise the bot token will lack the new permissions.</p>
+</blockquote>
+<h3 id="4-configure-environment">4. Configure environment<a class="anchor" href="#4-configure-environment" aria-label="Link to 4. Configure environment">#</a></h3>
+<p>Slaude loads env from <code>~/.slaude/.env</code> (host) or <code>./.env</code> (repo root / Docker). For local dev, copy the example:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">cp .env.example .env
+# or for a persistent home:
+mkdir -p ~/.slaude &amp;&amp; cp .env.example ~/.slaude/.env</code></pre></div>
+<p>Edit <code>.env</code> and set at minimum:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash"># Slack — from step 3
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+
+# LLM — pick one auth mode
+ANTHROPIC_API_KEY=sk-ant-...
+# OR
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+
+# Optional: only needed for non-Anthropic gateways
+# ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1
+# SLAUDE_MODEL=claude-sonnet-4-6
+
+# Sensible defaults — change as needed
+SLAUDE_DEFAULT_MODE=bypass
+SLAUDE_AUTO_ALLOW_TOOLS=Read,Grep,Glob,LS
+SLAUDE_IDLE_MINUTES=15
+SLAUDE_HEALTH_PORT=8080</code></pre></div>
+<p>Key environment variables:</p>
+<div class="table-wrap"><table><thead><tr><th>Variable</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>SLACK_BOT_TOKEN</code></td><td><strong>Yes</strong></td><td>—</td><td>Bot token <code>xoxb-...</code> from OAuth install</td></tr>
+<tr><td><code>SLACK_APP_TOKEN</code></td><td><strong>Yes</strong></td><td>—</td><td>App-level token <code>xapp-...</code> with <code>connections:write</code></td></tr>
+<tr><td><code>ANTHROPIC_API_KEY</code></td><td>One of this / <code>CLAUDE_CODE_OAUTH_TOKEN</code></td><td>—</td><td>Metered API key</td></tr>
+<tr><td><code>CLAUDE_CODE_OAUTH_TOKEN</code></td><td>One of this / <code>ANTHROPIC_API_KEY</code></td><td>—</td><td>Subscription OAuth token (<code>sk-ant-oat01-...</code>)</td></tr>
+<tr><td><code>ANTHROPIC_BASE_URL</code></td><td>No</td><td><code>https://api.anthropic.com</code></td><td>Gateway URL for OpenRouter / Z.ai / self-hosted</td></tr>
+<tr><td><code>SLAUDE_MODEL</code></td><td>Only with <code>ANTHROPIC_BASE_URL</code></td><td>SDK default</td><td>Provider-qualified model id (e.g. <code>claude-sonnet-4-6</code>)</td></tr>
+<tr><td><code>SLAUDE_DEFAULT_MODE</code></td><td>No</td><td><code>bypass</code> (Docker) / <code>ask</code> (env.example)</td><td>Default permission mode for new threads</td></tr>
+<tr><td><code>SLAUDE_AUTO_ALLOW_TOOLS</code></td><td>No</td><td><code>Read,Grep,Glob,LS</code></td><td>Tools auto-approved without Block Kit prompt</td></tr>
+<tr><td><code>SLAUDE_IDLE_MINUTES</code></td><td>No</td><td><code>15</code></td><td>Minutes before SDK Query closes; next message resumes</td></tr>
+<tr><td><code>SLAUDE_HEALTH_PORT</code></td><td>No</td><td><code>8080</code></td><td>Health/metrics port; <code>0</code> disables</td></tr>
+</tbody></table></div>
+<blockquote>
+<p><strong>Note:</strong> <code>SLAUDE_DEFAULT_MODE</code> values: <code>ask</code> (prompt per tool), <code>accept-edits</code> (auto-allow reads/writes), <code>bypass</code> (YOLO — rely on approval gate + persona mandate), <code>plan</code> (read-only), <code>dont-ask</code> (deny unapproved).</p>
+</blockquote>
+<h3 id="5-seed-the-persona-soulmd">5. Seed the persona (SOUL.md)<a class="anchor" href="#5-seed-the-persona-soulmd" aria-label="Link to 5. Seed the persona (SOUL.md)">#</a></h3>
+<p>On first boot Slaude auto-seeds <code>~/.slaude/SOUL.md</code> with a starter scaffold. To customize before first boot:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">mkdir -p ~/.slaude   # or ./data for Docker
+cat &gt; ~/.slaude/SOUL.md &lt;&lt;'MD'
+## Identity
+- Name: slaude
+- Role: senior platform engineer
+- Voice: concise, direct
+
+## Reporting
+- Manager: U0XXXXXXXXX
+- Manager handle: @you
+
+## Mandate
+- Help the team ship; refuse destructive ops without explicit approval.
+MD</code></pre></div>
+<p>Validate at any time:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">bun run validate-soul
+# exit 0 = ok, 1 = missing required fields, 2 = extraction failure</code></pre></div>
+<p>Required fields: <code>identity.name</code>, <code>manager.userId</code>, <code>mandate</code>. See <a href="../reference/configuration.html">SOUL Guide</a> for the full schema.</p>
+<h3 id="6-run">6. Run<a class="anchor" href="#6-run" aria-label="Link to 6. Run">#</a></h3>
+<p><strong>Local dev</strong> (with watch):</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">bun run dev
+# or without watch:
+bun run start</code></pre></div>
+<p><strong>Docker</strong> (recommended for persistent deploys):</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash"># Place persona + env where compose expects them
+mkdir -p ./data
+cp .env ./data/.env        # or ensure SLACK_* / ANTHROPIC_* are exported
+cp ~/.slaude/SOUL.md ./data/SOUL.md  # if you customized it
+
+docker compose up -d --build
+docker compose logs -f</code></pre></div>
+<p>Docker mounts <code>./data</code> → <code>/data</code> (<code>SLAUDE_HOME</code>) as a persistent volume holding <code>SOUL.md</code>, <code>mcp.json</code>, <code>slaude.json</code>, <code>db.sqlite</code>, skills, and knowledge bases.</p>
+<blockquote>
+<p><strong>Note:</strong> <code>docker compose</code> reads env from <code>./.env</code> on the host and forwards it into the container. <code>~/.slaude/.env</code> and <code>./data/.env</code> are also loaded inside the container via <code>SLAUDE_HOME</code>. Any one location works — <code>./.env</code> is simplest for Docker.</p>
+</blockquote>
+<h2 id="verify-installation">Verify Installation<a class="anchor" href="#verify-installation" aria-label="Link to Verify Installation">#</a></h2>
+<h3 id="1-health-endpoints">1. Health endpoints<a class="anchor" href="#1-health-endpoints" aria-label="Link to 1. Health endpoints">#</a></h3>
+<p>Slaude exposes three endpoints on <code>SLAUDE_HEALTH_PORT</code> (default <code>8080</code>):</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">curl -s http://localhost:8080/healthz | jq .
+# {&quot;status&quot;:&quot;ok&quot;}
+
+curl -s http://localhost:8080/readyz | jq .
+# {&quot;status&quot;:&quot;ok&quot;}
+
+curl -s http://localhost:8080/metrics | head -n 20
+# # HELP slaude_sessions_live Current live sessions
+# # TYPE slaude_sessions_live gauge
+# slaude_sessions_live 1</code></pre></div>
+<div class="table-wrap"><table><thead><tr><th>Endpoint</th><th>Success</th><th>Failure indicates</th></tr></thead><tbody>
+<tr><td><code>GET /healthz</code></td><td><code>200 {&quot;status&quot;:&quot;ok&quot;}</code></td><td>Process not running</td></tr>
+<tr><td><code>GET /readyz</code></td><td><code>200 {&quot;status&quot;:&quot;ok&quot;}</code></td><td>sqlite unreachable</td></tr>
+<tr><td><code>GET /metrics</code></td><td><code>200</code> Prometheus text</td><td>Metrics registry error</td></tr>
+</tbody></table></div>
+<blockquote>
+<p><strong>Tip:</strong> For Docker, map or expose the health port if you changed it. The default <code>docker-compose.yaml</code> relies on the container&#39;s <code>8080</code>.</p>
+</blockquote>
+<h3 id="2-slack-dm-test">2. Slack DM test<a class="anchor" href="#2-slack-dm-test" aria-label="Link to 2. Slack DM test">#</a></h3>
+<ol>
+<li><p>Invite the bot to any channel or just open a <strong>DM</strong> with it.</p>
+</li>
+<li><p>Send:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">hello — are you there?</code></pre></div>
+<p>The bot should reply in-thread. DMs are always engaged (no <code>@mention</code> needed).</p>
+</li>
+<li><p>In a public channel, <code>@mention</code> it:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">@slaude what is 2+2?</code></pre></div>
+<p>The thread should engage and reply. Mentioning someone else in the same thread disengages the bot.</p>
+</li>
+<li><p>Check logs if nothing happens:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash"># local
+# logs print to stdout — look for &quot;[slaude] slack socket mode started&quot; and no &quot;missing env&quot; errors
+
+# docker
+docker compose logs --tail 100 slaude</code></pre></div>
+</li>
+</ol>
+<p>Common first-run issues:</p>
+<div class="table-wrap"><table><thead><tr><th>Symptom</th><th>Fix</th></tr></thead><tbody>
+<tr><td><code>missing env SLACK_BOT_TOKEN</code></td><td><code>.env</code> not loaded — confirm it is at <code>~/.slaude/.env</code> or <code>./.env</code> (local) or <code>./data/.env</code> (Docker)</td></tr>
+<tr><td><code>invalid_auth</code> from Slack</td><td>Reinstall the app after manifest changes; confirm <code>xoxb-</code> and <code>xapp-</code> are not swapped</td></tr>
+<tr><td><code>Socket Mode</code> connection fails</td><td>Verify <code>SLACK_APP_TOKEN</code> has <code>connections:write</code> and Socket Mode is enabled</td></tr>
+<tr><td><code>ANTHROPIC_API_KEY</code> / OAuth errors</td><td>Confirm exactly one auth mode is set; gateways need <code>SLAUDE_MODEL</code></td></tr>
+<tr><td>No DM reply but <code>/healthz</code> ok</td><td>Check <code>SOUL.md</code> <code>## Reporting</code> → <code>Manager</code> is your Slack user ID (<code>U...</code>), not your handle</td></tr>
+</tbody></table></div>
+<h2 id="next-steps">Next Steps<a class="anchor" href="#next-steps" aria-label="Link to Next Steps">#</a></h2>
+<div class="table-wrap"><table><thead><tr><th>Topic</th><th>What you will learn</th></tr></thead><tbody>
+<tr><td><a href="../reference/configuration.html">Installation &amp; Configuration</a></td><td>Full env reference, <code>ANTHROPIC_BASE_URL</code> gateways, model selection, Docker vs Kubernetes</td></tr>
+<tr><td><a href="architecture.html">Architecture</a></td><td>Session lifecycle, gateway ↔ agent ↔ MCP flow, sqlite + PVC layout</td></tr>
+<tr><td><a href="../reference/configuration.html">SOUL &amp; Persona</a></td><td>Persona schema, approvers, channel trust tiers, redaction</td></tr>
+<tr><td><a href="../guides/engagement.html">Engagement &amp; Approvals</a></td><td>Mention model, <code>@mention</code> to engage/disengage, Block Kit approval gate</td></tr>
+<tr><td><a href="../reference/api.html">Skills &amp; Knowledge</a></td><td><code>slaude.json</code> / <code>slaude.lock</code>, installing skills and KB wikis, <code>sync_manifest</code></td></tr>
+<tr><td><a href="../deploy/index.html">Deployment &amp; Operations</a></td><td>Kubernetes single-replica deploy, health probes, Prometheus metrics, log tailing</td></tr>
+<tr><td><a href="../guides/examples.html">Examples</a></td><td>Runnable end-to-end: first skill, first KB ingest, custom MCP server</td></tr>
+</tbody></table></div>
+<blockquote>
+<p><strong>Next:</strong> If you just finished quickstart, go to <a href="../reference/configuration.html">Installation &amp; Configuration</a> for the complete environment reference, then <a href="../reference/configuration.html">SOUL &amp; Persona</a> to make the agent yours.</p>
+</blockquote>
+
+    </article>
+    <nav class="prevnext"><a class="pn pn-prev" href="../index.html"><span class="pn-dir">Previous</span><span class="pn-label">What is slaude?</span></a><a class="pn pn-next" href="architecture.html"><span class="pn-dir">Next</span><span class="pn-label">Architecture</span></a></nav>
+    <footer class="page-foot">
+      <a href="https://github.com/barockok/slaude/edit/main/docs/site/_content/start/getting-started.md" target="_blank" rel="noopener">Edit this page on GitHub</a>
+      <span>slaude v0.42.0</span>
+    </footer>
+  </main>
+
+  <div class="toc-col"><nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul><li class="toc-h2"><a href="#what-is-slaude">What is Slaude?</a></li><li class="toc-h2"><a href="#prerequisites">Prerequisites</a></li><li class="toc-h3"><a href="#auth-options-pick-one">Auth options (pick one)</a></li><li class="toc-h2"><a href="#quickstart-5-minutes">Quickstart (5 minutes)</a></li><li class="toc-h3"><a href="#1-clone-and-install">1. Clone and install</a></li><li class="toc-h3"><a href="#2-generate-the-slack-app-manifest">2. Generate the Slack app manifest</a></li><li class="toc-h3"><a href="#3-create-the-slack-app">3. Create the Slack app</a></li><li class="toc-h3"><a href="#4-configure-environment">4. Configure environment</a></li><li class="toc-h3"><a href="#5-seed-the-persona-soulmd">5. Seed the persona (SOUL.md)</a></li><li class="toc-h3"><a href="#6-run">6. Run</a></li><li class="toc-h2"><a href="#verify-installation">Verify Installation</a></li><li class="toc-h3"><a href="#1-health-endpoints">1. Health endpoints</a></li><li class="toc-h3"><a href="#2-slack-dm-test">2. Slack DM test</a></li><li class="toc-h2"><a href="#next-steps">Next Steps</a></li></ul></nav></div>
+</div>
+
+<div class="search-overlay" hidden>
+  <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search documentation">
+    <div class="search-input-row">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <input type="search" placeholder="Search the docs…" aria-label="Search" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="search-results" role="listbox"></div>
+  </div>
+</div>
+
+<script>window.__SLAUDE_BASE__="../";</script>
+<script src="../assets/docs.js?v=a084ede1" defer></script>
+</body>
+</html>
