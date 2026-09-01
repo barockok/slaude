@@ -26,7 +26,7 @@ run() {
   || die "'$RC_TAG' is not a vX.Y.Z-rc.N tag"
 STABLE_VERSION="${BASH_REMATCH[1]}"
 STABLE_TAG="v${STABLE_VERSION}"
-NOTES="docs/releases/${STABLE_TAG}.md"
+NOTES="docs/site/_content/releases/${STABLE_TAG}.md"
 
 git fetch --tags --quiet origin
 

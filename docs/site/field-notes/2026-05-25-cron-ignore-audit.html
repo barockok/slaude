@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cron &amp; Ignore System Audit — slaude Docs</title>
+<meta name="description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:title" content="Cron &amp; Ignore System Audit — slaude">
+<meta property="og:description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20width%3D'32'%20height%3D'32'%20rx%3D'8'%20fill%3D'%2523853291'%2F%3E%3Ctext%20x%3D'16'%20y%3D'23'%20font-family%3D'Helvetica%2CArial%2Csans-serif'%20font-size%3D'19'%20font-weight%3D'700'%20fill%3D'white'%20text-anchor%3D'middle'%3Es%3C%2Ftext%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/docs.css?v=377763e4">
+<script>(function(){try{var t=localStorage.getItem('slaude-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+    </button>
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true">s</span>
+      <span class="brand-name">slaude</span>
+      <span class="brand-sub">Docs</span>
+    </a>
+    <button class="search-btn" type="button" data-search-open>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <span>Search</span><kbd>⌘K</kbd>
+    </button>
+    <div class="topbar-actions">
+      <a class="ghost" href="https://github.com/barockok/slaude" target="_blank" rel="noopener">GitHub</a>
+      <button class="theme-btn" type="button" aria-label="Toggle theme">
+        <svg class="i-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1M12.9 12.9l-1.1-1.1M4.2 4.2 3.1 3.1"/></svg>
+        <svg class="i-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="topnav" aria-label="Sections"><div class="topnav-inner"><a class="topnav-tab" href="../index.html">Get started</a><a class="topnav-tab" href="../guides/index.html">Guides</a><a class="topnav-tab" href="../reference/configuration.html">Reference</a><a class="topnav-tab" href="../deploy/index.html">Deploy</a><a class="topnav-tab active" href="2026-08-23-release-candidate-pipeline.html">Field notes</a><a class="topnav-tab" href="../releases/v0.42.0.html">Releases</a></div></nav>
+</header>
+
+<div class="shell">
+  <aside class="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-inner"><div class="nav-group"><p class="nav-group-title">Field notes</p><ul><li><a class="" href="2026-08-23-release-candidate-pipeline.html">Release candidate pipeline</a></li><li><a class="" href="2026-07-27-kb-think-gather-miss.html">kb_think gather miss — runThink vs gather() source scoping</a></li><li><a class="" href="2026-07-24-per-agent-brain-slices.html">Per-agent brain slices: private minds, deliberate sharing</a></li><li><a class="" href="2026-07-08-per-channel-metrics.html">2026-07-08 — Per-channel token and model metrics</a></li><li><a class="" href="2026-07-03-cron-private-mcp-scoping-drift.html">Cron private-MCP credential scoping is decoupled from `oauth_user`</a></li><li><a class="" href="2026-06-20-channel-soul-overrides.html">Channel-specific soul mandate &amp; approvers</a></li><li><a class="" href="2026-06-20-brain-remote-mcp.html">Brain as a remote, OAuth-protected MCP process (configurable)</a></li><li><a class="" href="2026-06-19-shared-oauth-loopback-surface-connect.html">Shared OAuth loopback + surface-aware connect + URL-safe mrkdwn (#51)</a></li><li><a class="" href="2026-06-16-reengage-hook-suppress.html">Re-engage via in-session suppression (hook-only), not Slack backfill</a></li><li><a class="" href="2026-06-15-per-source-gather.html">2026-06-15 — Per-source `gather()`: fix bulk-corpus retrieval noise drowning curated pages</a></li><li><a class="" href="2026-06-14-model-switch-command.html">2026-06-14 — `/model` per-thread model switch</a></li><li><a class="" href="2026-06-14-brain-memoize-failure.html">2026-06-14 — Brain memoize: two failure modes break &quot;remember it&quot;</a></li><li><a class="" href="2026-06-13-kb-first-enforcement.html">KB-first enforcement — from prose to teeth (2026-06-13)</a></li><li><a class="" href="2026-06-11-soul-runtime-overrides.html">Soul runtime overrides — manager-editable ACLs without redeploy (2026-06-11)</a></li><li><a class="" href="2026-06-11-engagement-disengage-durability.html">Engagement review — disengage lasted zero messages (2026-06-11)</a></li><li><a class="" href="2026-06-11-1on1-transcript-sharding.html">/1on1 transcript sharding — resume breaks on lock flips (2026-06-11)</a></li><li><a class="" href="2026-06-10-mcp-global-connect.html">2026-06-10 — `/mcp` global connect (manager wires the agent's shared identity)</a></li><li><a class="" href="2026-06-10-gbrain-slaude-kb.html">gbrain × slaude — powering slaude_kb with a real brain</a></li><li><a class="" href="2026-06-09-post-as-slack-user.html">Post as the agent's real Slack user (opt-in xoxp)</a></li><li><a class="" href="2026-06-09-mcp-oauth-connect-1on1.html">2026-06-09 — /mcp OAuth connect in /1on1 (write CLI mcpOAuth store, CLI owns lifecycle)</a></li><li><a class="" href="2026-06-08-private-services-1on1.html">2026-06-08 — Private services in /1on1 (run as the initiator)</a></li><li><a class="" href="2026-06-08-orchestration-evolution-retro.html">2026-06-08 — Retro: orchestration, gating &amp; continuous evolution</a></li><li><a class="" href="2026-06-08-oauth-config-dir-1on1.html">2026-06-08 — /1on1 OAuth isolation via per-initiator CLAUDE_CONFIG_DIR</a></li><li><a class="" href="2026-06-08-cron-on-channel.html">cron-on-channel + a latent scheduler-boot crash</a></li><li><a class="" href="2026-06-05-sim-tui-opentui.html">Sim REPL on OpenTUI (React)</a></li><li><a class="" href="2026-06-05-pinned-input-box.html">Pinned bordered input box (sim REPL)</a></li><li><a class="" href="2026-06-04-repl-claude-code-ux.html">Sim REPL — claude-code-grade UX</a></li><li><a class="" href="2026-06-03-surface-abstraction.html">2026-06-03 — Surface abstraction (agent interaction decoupled from Slack)</a></li><li><a class="" href="2026-06-03-sim-interactive-real-agent.html">2026-06-03 — Interactive sim against the live agent (`--real`)</a></li><li><a class="" href="2026-05-29-simulation-gateway.html">2026-05-29 — Simulation gateway (Slack-free verification)</a></li><li><a class="" href="2026-05-29-one-on-one-mode.html">2026-05-29 — /1on1 mode (per-thread engagement lock)</a></li><li><a class="" href="2026-05-29-contextual-mcp-connections.html">2026-05-29 — Contextual per-user MCP connections</a></li><li><a class="active" href="2026-05-25-cron-ignore-audit.html">Cron &amp; Ignore System Audit</a></li><li><a class="" href="2026-05-22-plugin-loader-chain.html">2026-05-22 — Plugin loader chain (install → SDK → MCP)</a></li><li><a class="" href="2026-05-21-writable-kb-ingest.html">2026-05-21 — Writable KB + /ingest</a></li><li><a class="" href="2026-05-21-policy-guardrails.html">2026-05-21 — Policy Guardrails (Tier 2 / Tier 3 Design)</a></li><li><a class="" href="2026-05-21-dependency-manifest.html">2026-05-21 — Dependency Manifest Design</a></li><li><a class="" href="2026-05-13-metrics-stop-guard.html">2026-05-13 — fallback ctx, table emphasis, metrics, stop-guard</a></li><li><a class="" href="2026-05-11-structured-soul-channel-mode.html">2026-05-11 — structured-soul + channel-mode gate</a></li><li><a class="" href="2026-05-11-skill-evolution.html">2026-05-11 — skill evolution</a></li><li><a class="" href="2026-05-11-external-mcp.html">2026-05-11 — external MCP via mcp.json</a></li><li><a class="" href="2026-05-11-context-budget-tracking.html">2026-05-11 — context budget tracking</a></li><li><a class="" href="2026-05-11-claude-subscription-oauth.html">2026-05-11 — Claude subscription OAuth</a></li><li><a class="" href="2026-05-09-slack-ux-engagement.html">2026-05-09 / 2026-05-10 — Slack UX, engagement, approval, CI</a></li><li><a class="" href="2026-05-08-mvp-bootstrap.html">2026-05-08 — MVP bootstrap</a></li></ul></div></div>
+  </aside>
+
+  <main id="main" class="content">
+    <article class="prose">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Field notes</p>
+          <h1>Cron &amp; Ignore System Audit</h1>
+        </div>
+        <button class="copy-page" type="button" title="Copy this page as Markdown for an agent">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 4 12h1.5"/></svg>
+          <span>Copy page</span>
+        </button>
+      </div>
+      
+      <p>Full audit of <code>CronScheduler</code> and ignore-gate MCP tools before refactor.</p>
+<h2 id="cron-execution-silent-failure">Cron Execution — Silent Failure<a class="anchor" href="#cron-execution-silent-failure" aria-label="Link to Cron Execution — Silent Failure">#</a></h2>
+<p><strong>Root cause chain:</strong></p>
+<ol>
+<li><code>CronScheduler.#execute()</code> creates synthetic session: <code>team_id=&quot;cron&quot;</code>, <code>channel_id=&quot;cron:${job.id}&quot;</code>. <code>src/gateway/slack/cron-scheduler.ts:48-52</code></li>
+<li>No route registered in adapter&#39;s <code>routes</code> Map. <code>src/gateway/slack/adapter.ts:119</code></li>
+<li>Agent event handler: <code>routes.get(e.sessionId)</code> returns undefined → early return. <code>adapter.ts:158-159</code></li>
+<li>All agent events (<code>done</code>, <code>error</code>, <code>toolCall</code>) silently dropped for cron sessions.</li>
+<li>MCP resolver returns undefined for no-route → cron session has <strong>zero Slack tools</strong>. <code>adapter.ts:142-154</code></li>
+<li>Agent can&#39;t call <code>mcp__slaude_slack__reply</code> → response vanishes.</li>
+<li><code>postResult()</code> dead code — zero call sites. <code>cron-scheduler.ts:71</code></li>
+<li><code>next_run</code> updates with &quot;dispatched&quot; status <strong>before</strong> agent finishes. <code>cron-scheduler.ts:61</code></li>
+</ol>
+<p><strong>Impact:</strong> Cron jobs fire, agent runs, but zero Slack output. DB looks healthy (next_run advances) but user sees nothing.</p>
+<h2 id="cron-session-reuse-amp-race-condition">Cron Session Reuse &amp; Race Condition<a class="anchor" href="#cron-session-reuse-amp-race-condition" aria-label="Link to Cron Session Reuse &amp;amp; Race Condition">#</a></h2>
+<ul>
+<li><code>ensureSession</code> uses deterministic thread key → same session row across all runs. <code>src/agent/manager.ts:112-126</code></li>
+<li>Working dir shared across runs → files from run 1 persist for run 2.</li>
+<li><code>#running</code> Set cleared in <code>finally</code> block after <code>sendMessage</code> resolves, <strong>not</strong> after agent completes. <code>cron-scheduler.ts:46-66</code></li>
+<li>If agent turn duration &gt; cron interval, overlapping execution possible. Second run flushes prior live turn or starts overlapping session.</li>
+</ul>
+<h2 id="remove_cron_job-mcp-tool-bugs">remove_cron_job MCP Tool Bugs<a class="anchor" href="#remove_cron_job-mcp-tool-bugs" aria-label="Link to remove_cron_job MCP Tool Bugs">#</a></h2>
+<ol>
+<li><strong>Description lies:</strong> says &quot;8-char prefix&quot; accepted, but <code>findById()</code> does exact UUID match. Prefix → &quot;Job not found&quot; error. <code>db/cron-jobs.ts:34</code></li>
+<li><strong>Soft delete only:</strong> <code>deactivate()</code> sets <code>active = 0</code>. Row stays forever. Tool says &quot;deactivated&quot; not &quot;deleted&quot;.</li>
+</ol>
+<h2 id="ignore_thread-unignore_thread-mcp-tool-bugs">ignore_thread / unignore_thread MCP Tool Bugs<a class="anchor" href="#ignore_thread-unignore_thread-mcp-tool-bugs" aria-label="Link to ignore_thread / unignore_thread MCP Tool Bugs">#</a></h2>
+<ol>
+<li><strong>No auth check:</strong> <code>ignore_thread</code> / <code>unignore_thread</code> have zero permission validation. Any agent can ignore any thread. Compare: slash command <code>/ignore</code> requires manager/approver. <code>mcp-tools.ts:499-538</code> vs <code>adapter.ts:372-376</code></li>
+<li><strong>Duration parsing bugs:</strong><ul>
+<li>Invalid suffix silently accepted: <code>&quot;5x&quot;</code> → parsed as 5 minutes.</li>
+<li>Decimal silently truncated: <code>&quot;1.5h&quot;</code> → parsed as 1 hour.</li>
+<li>No max duration limit.</li>
+</ul>
+</li>
+<li><strong>DM broken:</strong> <code>threadTs = event.ts</code> for regular DM messages (no <code>event.thread_ts</code>) → unique per message. <code>ignore_thread</code> only ignores that exact message; next DM flows through. <code>adapter.ts:261</code></li>
+<li><strong>Silent no-op:</strong> <code>unignore_thread</code> returns &quot;removed&quot; even if no active ignore existed.</li>
+<li><strong>createdBy hardcoded:</strong> <code>&quot;agent&quot;</code> instead of actual user ID. <code>mcp-tools.ts:526</code></li>
+<li><strong>Missing tools:</strong> No <code>ignore_user</code> / <code>unignore_user</code> MCP tools. DB supports user-level ignore; only slash commands can create them.</li>
+</ol>
+<h2 id="design-decision-cron-as-regular-thread-session">Design Decision: Cron as Regular Thread Session<a class="anchor" href="#design-decision-cron-as-regular-thread-session" aria-label="Link to Design Decision: Cron as Regular Thread Session">#</a></h2>
+<p><strong>Current model:</strong> Synthetic isolated session. Cron and human conversation are separate worlds.</p>
+<p><strong>New model:</strong> One thread = one session. Cron uses real Slack thread key.</p>
+<ul>
+<li><code>/cron-add</code> in thread #123 → job stores real <code>(team_id, channel_id, thread_ts)</code></li>
+<li>All cron runs resume same session, post to same thread</li>
+<li>Humans reply in same thread → same session, shared history</li>
+<li>Cron skips if session live (humans get priority, no interruption)</li>
+</ul>
+<p><strong>Benefits:</strong></p>
+<ul>
+<li>Natural human engagement — people can refine, query, adjust cron tasks</li>
+<li>No synthetic session complexity</li>
+<li>Single conversation history</li>
+</ul>
+<p><strong>Tradeoff:</strong> Cron and human are mutually exclusive on same thread. If humans actively chatting, cron waits next interval.</p>
+<p><strong>Migration:</strong></p>
+<ul>
+<li><code>cron_jobs</code> table: store real <code>slack_team_id</code>, <code>slack_channel_id</code>, <code>slack_thread_ts</code></li>
+<li>Remove synthetic key usage from <code>CronScheduler</code></li>
+<li><code>postResult()</code> becomes unnecessary — agent uses normal MCP reply</li>
+<li>Adapter registers route for cron sessions same as human messages</li>
+</ul>
+<h2 id="files-to-touch">Files to Touch<a class="anchor" href="#files-to-touch" aria-label="Link to Files to Touch">#</a></h2>
+<ul>
+<li><code>src/db/schema.ts</code> — add real Slack keys to <code>cron_jobs</code></li>
+<li><code>src/db/cron-jobs.ts</code> — read/write real keys, prefix lookup for remove</li>
+<li><code>src/gateway/slack/cron-scheduler.ts</code> — use real keys, skip-if-live, remove postResult</li>
+<li><code>src/gateway/slack/adapter.ts</code> — wire cron routes into normal flow</li>
+<li><code>src/gateway/slack/mcp-tools.ts</code> — auth checks, duration validation, ignore_user tools</li>
+<li><code>src/gateway/slack/ignore-gate.ts</code> — DM handling (if fixing)</li>
+</ul>
+
+    </article>
+    <nav class="prevnext"><a class="pn pn-prev" href="2026-05-29-contextual-mcp-connections.html"><span class="pn-dir">Previous</span><span class="pn-label">2026-05-29 — Contextual per-user MCP connections</span></a><a class="pn pn-next" href="2026-05-22-plugin-loader-chain.html"><span class="pn-dir">Next</span><span class="pn-label">2026-05-22 — Plugin loader chain (install → SDK → MCP)</span></a></nav>
+    <footer class="page-foot">
+      <a href="https://github.com/barockok/slaude/edit/main/docs/site/_content/field-notes/2026-05-25-cron-ignore-audit.md" target="_blank" rel="noopener">Edit this page on GitHub</a>
+      <span>slaude v0.42.0</span>
+    </footer>
+  </main>
+
+  <div class="toc-col"><nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul><li class="toc-h2"><a href="#cron-execution-silent-failure">Cron Execution — Silent Failure</a></li><li class="toc-h2"><a href="#cron-session-reuse-amp-race-condition">Cron Session Reuse &amp;amp; Race Condition</a></li><li class="toc-h2"><a href="#remove_cron_job-mcp-tool-bugs">remove_cron_job MCP Tool Bugs</a></li><li class="toc-h2"><a href="#ignore_thread-unignore_thread-mcp-tool-bugs">ignore_thread / unignore_thread MCP Tool Bugs</a></li><li class="toc-h2"><a href="#design-decision-cron-as-regular-thread-session">Design Decision: Cron as Regular Thread Session</a></li><li class="toc-h2"><a href="#files-to-touch">Files to Touch</a></li></ul></nav></div>
+</div>
+
+<div class="search-overlay" hidden>
+  <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search documentation">
+    <div class="search-input-row">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <input type="search" placeholder="Search the docs…" aria-label="Search" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="search-results" role="listbox"></div>
+  </div>
+</div>
+
+<script>window.__SLAUDE_BASE__="../";</script>
+<script src="../assets/docs.js?v=a084ede1" defer></script>
+</body>
+</html>

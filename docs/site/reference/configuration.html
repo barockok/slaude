@@ -1,0 +1,866 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configuration — slaude Docs</title>
+<meta name="description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:title" content="Configuration — slaude">
+<meta property="og:description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20width%3D'32'%20height%3D'32'%20rx%3D'8'%20fill%3D'%2523853291'%2F%3E%3Ctext%20x%3D'16'%20y%3D'23'%20font-family%3D'Helvetica%2CArial%2Csans-serif'%20font-size%3D'19'%20font-weight%3D'700'%20fill%3D'white'%20text-anchor%3D'middle'%3Es%3C%2Ftext%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/docs.css?v=377763e4">
+<script>(function(){try{var t=localStorage.getItem('slaude-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+    </button>
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true">s</span>
+      <span class="brand-name">slaude</span>
+      <span class="brand-sub">Docs</span>
+    </a>
+    <button class="search-btn" type="button" data-search-open>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <span>Search</span><kbd>⌘K</kbd>
+    </button>
+    <div class="topbar-actions">
+      <a class="ghost" href="https://github.com/barockok/slaude" target="_blank" rel="noopener">GitHub</a>
+      <button class="theme-btn" type="button" aria-label="Toggle theme">
+        <svg class="i-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1M12.9 12.9l-1.1-1.1M4.2 4.2 3.1 3.1"/></svg>
+        <svg class="i-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="topnav" aria-label="Sections"><div class="topnav-inner"><a class="topnav-tab" href="../index.html">Get started</a><a class="topnav-tab" href="../guides/index.html">Guides</a><a class="topnav-tab active" href="configuration.html">Reference</a><a class="topnav-tab" href="../deploy/index.html">Deploy</a><a class="topnav-tab" href="../field-notes/2026-08-23-release-candidate-pipeline.html">Field notes</a><a class="topnav-tab" href="../releases/v0.42.0.html">Releases</a></div></nav>
+</header>
+
+<div class="shell">
+  <aside class="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-inner"><div class="nav-group"><p class="nav-group-title">Reference</p><ul><li><a class="active" href="configuration.html">Configuration</a></li><li><a class="" href="api.html">API reference</a></li><li><a class="" href="guardrails.html">Guardrails design</a></li></ul></div></div>
+  </aside>
+
+  <main id="main" class="content">
+    <article class="prose">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Reference</p>
+          <h1>Configuration</h1>
+        </div>
+        <button class="copy-page" type="button" title="Copy this page as Markdown for an agent">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 4 12h1.5"/></svg>
+          <span>Copy page</span>
+        </button>
+      </div>
+      
+      <h1>Configuration &amp; SOUL</h1>
+<blockquote>
+<p>Every variable, file, and manifest slaude reads at boot — with types, defaults, and copy-paste examples. One page to go from zero env to a validated deploy.</p>
+</blockquote>
+<p>This page is the single source of truth for runtime configuration. It mirrors <code>src/config/env.ts</code>, <code>src/config/home.ts</code>, <code>src/soul/*</code>, and <code>src/cli/validate.ts</code> — if code and this page disagree, code wins and this page has a bug.</p>
+<p>On this page:</p>
+<ul>
+<li><a href="#slack">Slack tokens &amp; app setup</a></li>
+<li><a href="#anthropic">Anthropic auth &amp; model selection</a></li>
+<li><a href="#runtime-env">Runtime environment variables</a></li>
+<li><a href="#filesystem">Filesystem layout — SLAUDE_HOME</a></li>
+<li><a href="#connect-broker">Connect broker</a></li>
+<li><a href="#soul">SOUL.md — persona schema</a></li>
+<li><a href="#manifests">Dependency manifests — slaude.json &amp; slaude.lock</a></li>
+<li><a href="#external-mcp">External MCP — .mcp.json</a></li>
+<li><a href="#validation">Validation — bun run validate-soul</a></li>
+</ul>
+<hr>
+<h2 id="slack">Slack <a id="slack"></a><a class="anchor" href="#slack" aria-label="Link to Slack ">#</a></h2>
+<p>slaude speaks to Slack exclusively through <strong>Socket Mode</strong> (no public HTTP endpoint). Two tokens and one app-level scope make that work.</p>
+<h3 id="tokens">Tokens<a class="anchor" href="#tokens" aria-label="Link to Tokens">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Required</th><th>Example</th><th>Where it comes from</th></tr></thead><tbody>
+<tr><td><code>SLACK_BOT_TOKEN</code></td><td>Yes</td><td><code>xoxb-…</code></td><td><strong>OAuth &amp; Permissions → Install to workspace → Bot User OAuth Token</strong>. Reinstall whenever <code>manifest.json</code> scopes change.</td></tr>
+<tr><td><code>SLACK_APP_TOKEN</code></td><td>Yes</td><td><code>xapp-…</code></td><td><strong>Basic Information → App-Level Tokens → Generate</strong> with scope <code>connections:write</code>. This is the Socket Mode pipe.</td></tr>
+<tr><td><code>SLACK_USER_TOKEN</code></td><td>No</td><td><code>xoxp-…</code></td><td>Optional user token for presence (<code>users.profile.set</code>) and — only when <code>SLACK_POST_AS_USER=true</code> — posting as your real Slack user instead of the bot.</td></tr>
+</tbody></table></div>
+<blockquote>
+<p><strong>Callout — Do not commit tokens.</strong> <code>.env</code> and <code>~/.slaude/.env</code> are gitignored. If a token appears in <code>git diff --cached</code>, <code>git reset</code> immediately and rotate it in Slack. Treat <code>xoxb</code>/<code>xapp</code>/<code>xoxp</code> with the same care as <code>sk-ant</code>.</p>
+</blockquote>
+<h3 id="socket-mode-amp-required-scopes">Socket Mode &amp; required scopes<a class="anchor" href="#socket-mode-amp-required-scopes" aria-label="Link to Socket Mode &amp;amp; required scopes">#</a></h3>
+<p>slaude is Socket Mode-only. The manifest at <code>src/cli/manifest.ts</code> declares these bot scopes — install will fail if any are missing:</p>
+<div class="code" data-lang="json"><div class="code-bar"><span class="code-lang">json</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-json">{
+  &quot;oauth_config&quot;: {
+    &quot;scopes&quot;: {
+      &quot;bot&quot;: [
+        &quot;app_mentions:read&quot;,
+        &quot;channels:history&quot;,
+        &quot;channels:read&quot;,
+        &quot;chat:write&quot;,
+        &quot;chat:write.public&quot;,
+        &quot;files:read&quot;,
+        &quot;files:write&quot;,
+        &quot;groups:history&quot;,
+        &quot;groups:read&quot;,
+        &quot;im:history&quot;,
+        &quot;im:read&quot;,
+        &quot;im:write&quot;,
+        &quot;mpim:history&quot;,
+        &quot;mpim:read&quot;,
+        &quot;mpim:write&quot;,
+        &quot;reactions:read&quot;,
+        &quot;reactions:write&quot;,
+        &quot;users:read&quot;,
+        &quot;users.profile:write&quot;,
+        &quot;assistant:write&quot;
+      ]
+    }
+  },
+  &quot;settings&quot;: {
+    &quot;socket_mode_enabled&quot;: true,
+    &quot;interactivity&quot;: { &quot;is_enabled&quot;: true },
+    &quot;event_subscriptions&quot;: {
+      &quot;bot_events&quot;: [
+        &quot;app_mention&quot;,
+        &quot;assistant_thread_started&quot;,
+        &quot;message.channels&quot;,
+        &quot;message.groups&quot;,
+        &quot;message.im&quot;,
+        &quot;message.mpim&quot;
+      ]
+    },
+    &quot;org_deploy_enabled&quot;: false
+  }
+}</code></pre></div>
+<h3 id="app-level-scopes-amp-setup-checklist">App-level scopes &amp; setup checklist<a class="anchor" href="#app-level-scopes-amp-setup-checklist" aria-label="Link to App-level scopes &amp;amp; setup checklist">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Scope</th><th>Where</th><th>Why slaude needs it</th></tr></thead><tbody>
+<tr><td><code>connections:write</code></td><td><strong>App-Level Token</strong> (<code>xapp-…</code>)</td><td>Opens the Socket Mode websocket. Without it Bolt never connects.</td></tr>
+<tr><td><code>assistant:write</code></td><td><strong>Bot scopes</strong></td><td>Unlocks <code>assistant.threads.setStatus</code> — the animated &quot;thinking…&quot; / &quot;running tool…&quot; indicator next to the bot name.</td></tr>
+<tr><td><code>channels:history</code>, <code>groups:history</code>, <code>im:history</code>, <code>mpim:history</code></td><td>Bot scopes</td><td>Read thread history; required for <code>SLACK_POST_AS_USER=true</code> reads as well.</td></tr>
+</tbody></table></div>
+<p><strong>Setup checklist (api.slack.com/apps):</strong></p>
+<ol>
+<li><code>bun run manifest &gt; manifest.json</code> → <strong>Create New App → From manifest</strong> → paste.</li>
+<li><strong>Basic Information → App-Level Tokens</strong> → create token → enable <code>connections:write</code> → copy <code>xapp-…</code> as <code>SLACK_APP_TOKEN</code>.</li>
+<li><strong>OAuth &amp; Permissions → Install to workspace</strong> → copy <code>xoxb-…</code> as <code>SLACK_BOT_TOKEN</code>. Reinstall after any manifest change.</li>
+<li><strong>Agents &amp; AI Apps</strong> → enable assistant view (unlocks status indicator, requires <code>assistant:write</code>).</li>
+<li><strong>Socket Mode</strong> → enable (must be on; no HTTP Events URL needed).</li>
+</ol>
+<h3 id="agents-amp-ai-status">Agents &amp; AI status<a class="anchor" href="#agents-amp-ai-status" aria-label="Link to Agents &amp;amp; AI status">#</a></h3>
+<p>When <code>assistant:write</code> is granted, slaude calls <code>assistant.threads.setStatus</code> to show live status in the thread header: <code>is thinking…</code>, <code>running Read …</code>, <code>writing file …</code>. No extra env needed — if the scope is missing the call is silently skipped and threads still work, just without the animation.</p>
+<h3 id="optional-post-as-the-real-user">Optional — post as the real user<a class="anchor" href="#optional-post-as-the-real-user" aria-label="Link to Optional — post as the real user">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>SLACK_USER_TOKEN</code></td><td>No</td><td><code>&quot;&quot;</code></td><td><code>xoxp-…</code> user token for <code>users.profile.set</code> and optional post-as-user.</td></tr>
+<tr><td><code>SLACK_POST_AS_USER</code></td><td>No</td><td><code>false</code></td><td>When <code>true</code> <strong>and</strong> <code>SLACK_USER_TOKEN</code> is set, the agent posts/edits/reacts/uploads as the real Slack user account instead of the bot. App-bound interactivity (Approve/Deny gate buttons) always stays on the bot token. Accepts <code>true</code> case-insensitively; anything else is <code>false</code>.</td></tr>
+</tbody></table></div>
+<blockquote>
+<p><strong>Security note for <code>SLACK_POST_AS_USER</code></strong> — reads also route through the user token in this mode, so the <code>xoxp</code> must carry both write scopes (<code>chat:write</code>, <code>reactions:write</code>, <code>files:write</code>) and read scopes (<code>channels:history</code>, <code>groups:history</code>, <code>im:history</code>, <code>users:read</code>). The agent&#39;s read reach equals the human account&#39;s (private channels and DMs included). Only enable for accounts whose full scope you are comfortable exposing to tool use.</p>
+</blockquote>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash"># .env — bot-only (default, recommended)
+SLACK_BOT_TOKEN=xoxb-1234567890-XXXXXXXXXXXX
+SLACK_APP_TOKEN=xapp-1-A111-abc123def456
+
+# .env — post as your real Slack user (opt-in)
+SLACK_USER_TOKEN=xoxp-1234567890-XXXXXXXXXXXX
+SLACK_POST_AS_USER=true</code></pre></div>
+<hr>
+<h2 id="anthropic-auth-amp-model-selection">Anthropic auth &amp; model selection <a id="anthropic"></a><a class="anchor" href="#anthropic-auth-amp-model-selection" aria-label="Link to Anthropic auth &amp;amp; model selection ">#</a></h2>
+<p>slaude talks to any <strong>Anthropic-compatible Messages API</strong>. That includes <code>api.anthropic.com</code>, OpenRouter, Z.ai, or a self-hosted gateway — same wire format, different base URL.</p>
+<h3 id="auth-modes-pick-one">Auth modes — pick one<a class="anchor" href="#auth-modes-pick-one" aria-label="Link to Auth modes — pick one">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Mode</th><th>Env vars</th><th>When to use</th><th>What slaude sends</th></tr></thead><tbody>
+<tr><td><strong>(a) API key</strong></td><td><code>ANTHROPIC_API_KEY</code> + optional <code>ANTHROPIC_BASE_URL</code>, <code>ANTHROPIC_AUTH_TOKEN</code></td><td>Metered API credits; any compatible gateway</td><td><code>x-api-key: sk-ant-…</code> (or <code>Authorization: Bearer &lt;ANTHROPIC_AUTH_TOKEN&gt;</code> for gateways that prefer bearer)</td></tr>
+<tr><td><strong>(b) Claude subscription OAuth</strong></td><td><code>CLAUDE_CODE_OAUTH_TOKEN</code></td><td>Run on your Claude Pro/Max subscription instead of metered credits</td><td><code>Authorization: Bearer sk-ant-oat01-…</code> + <code>anthropic-beta: oauth-2025-04-20</code></td></tr>
+</tbody></table></div>
+<p>Rules:</p>
+<ul>
+<li><strong>API key wins when both are set.</strong> Explicit <code>ANTHROPIC_API_KEY</code> beats <code>CLAUDE_CODE_OAUTH_TOKEN</code>.</li>
+<li><strong><code>ANTHROPIC_AUTH_TOKEN</code></strong> — alternative bearer token for gateways that expect <code>Authorization: Bearer</code> instead of <code>x-api-key</code>. Rarely needed; <code>ANTHROPIC_API_KEY</code> covers Anthropic and most gateways.</li>
+<li><strong>Generate the OAuth token:</strong> on a machine already logged into Claude Code, run <code>claude setup-token</code>, paste the <code>sk-ant-oat01-…</code> value into slaude&#39;s env. Both the SDK child and the soul extractor (<code>src/soul/extract.ts</code>) auto-detect it.</li>
+</ul>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash"># Gateway matrix — same .env shape for every provider
+# Anthropic direct (default base URL)
+ANTHROPIC_API_KEY=sk-ant-...
+
+# OpenRouter / Z.ai / self-hosted — point the base URL, pin a provider-qualified model (required)
+ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1
+ANTHROPIC_API_KEY=sk-or-...          # OpenRouter key
+SLAUDE_MODEL=anthropic/claude-sonnet-4-6
+
+# Claude Pro / Max subscription — no API key, inherits subscription default model
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+# leave SLAUDE_MODEL unset to inherit the subscription default — set it only to pin a tier-allowed model</code></pre></div>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash"># .env — auth validation errors you will see
+# missing both keys:
+#   Error: missing env SLACK_BOT_TOKEN          (startup, from src/config/env.ts req())
+#   Error: missing auth: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN   (soul extractor / model listing)</code></pre></div>
+<h3 id="anthropic_base_url-gateways">ANTHROPIC_BASE_URL — gateways<a class="anchor" href="#anthropic_base_url-gateways" aria-label="Link to ANTHROPIC_BASE_URL — gateways">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>ANTHROPIC_BASE_URL</code></td><td>No</td><td><code>https://api.anthropic.com</code></td><td>Base URL for the Messages API. Set to any compatible gateway. When pointing at a <strong>non-Anthropic</strong> gateway you <strong>must</strong> set <code>SLAUDE_MODEL</code> to a provider-qualified id — those endpoints do not recognise Anthropic&#39;s default model id.</td></tr>
+<tr><td><code>ANTHROPIC_AUTH_TOKEN</code></td><td>No</td><td><code>&quot;&quot;</code></td><td>Bearer token for gateways that prefer <code>Authorization: Bearer</code> over <code>x-api-key</code>.</td></tr>
+</tbody></table></div>
+<p>Additional provider env forwarded to the SDK child (and scrubbed from telemetry paths) by <code>src/agent/manager.ts</code>:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN,
+CLAUDE_CODE_OAUTH_TOKEN
+→ forwarded as providerEnv
+DISABLE_TELEMETRY=1, DISABLE_AUTOUPDATER=1,
+DISABLE_BUG_COMMAND=1, DISABLE_ERROR_REPORTING=1,
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+→ forced to 1 so non-Anthropic gateways do not crash on telemetry</code></pre></div>
+<h3 id="model-selection-precedence-amp-the-smallfast-model">Model selection — precedence &amp; the small/fast model<a class="anchor" href="#model-selection-precedence-amp-the-smallfast-model" aria-label="Link to Model selection — precedence &amp;amp; the small/fast model">#</a></h3>
+<p>There is <strong>no</strong> per-tier var like <code>ANTHROPIC_OPUS_MODEL</code> / <code>ANTHROPIC_SONNET_MODEL</code>. Only two vars are honoured:</p>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>SLAUDE_MODEL</code></td><td>Conditionally</td><td><code>&quot;&quot;</code> (empty)</td><td>slaude-side override. Provider-qualified model id (e.g. <code>claude-sonnet-4-6</code>, <code>anthropic/claude-sonnet-4-6</code> on OpenRouter). <strong>Required when <code>ANTHROPIC_BASE_URL</code> points at a non-Anthropic gateway.</strong> Empty means &quot;do not pass <code>--model</code> to the SDK child — let the CLI pick its own default.&quot;</td></tr>
+<tr><td><code>ANTHROPIC_MODEL</code></td><td>No</td><td><code>&quot;&quot;</code></td><td>Claude Code CLI-native fallback for the main-session model when <code>SLAUDE_MODEL</code> is unset. Same semantics, just CLI-native. Forwarded transparently — slaude never reads it directly.</td></tr>
+<tr><td><code>ANTHROPIC_SMALL_FAST_MODEL</code></td><td>No</td><td>CLI default</td><td>Haiku-class model for compaction, tool routing, and sub-tasks. Orthogonal to the main model. Pin only to override the fast-tier default.</td></tr>
+</tbody></table></div>
+<p><strong>Precedence in the SDK child (from <code>src/agent/manager.ts</code>):</strong></p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">1. options.model  (= SLAUDE_MODEL, when non-empty)   ← highest, set per-session at boot + via /model
+2. ANTHROPIC_MODEL  (CLI-native env, when SLAUDE_MODEL empty)
+3. CLI built-in default for the active auth mode
+     • under CLAUDE_CODE_OAUTH_TOKEN → subscription default (leave both unset)
+     • under ANTHROPIC_API_KEY       → Anthropic default model</code></pre></div>
+<blockquote>
+<p><strong>When to leave <code>SLAUDE_MODEL</code> unset.</strong> With <code>CLAUDE_CODE_OAUTH_TOKEN</code> you usually want to inherit the subscription default — the SDK chooses a tier-allowed model automatically. Set <code>SLAUDE_MODEL</code> only to pin a specific model, or when using <code>ANTHROPIC_BASE_URL</code>.</p>
+</blockquote>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash"># Model selection examples
+
+# 1. Subscription — inherit default (recommended for CLAUDE_CODE_OAUTH_TOKEN)
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+# (no SLAUDE_MODEL, no ANTHROPIC_MODEL)
+
+# 2. Subscription — pin a tier-allowed model
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+SLAUDE_MODEL=claude-sonnet-4-6
+
+# 3. Non-Anthropic gateway — SLAUDE_MODEL is required
+ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1
+ANTHROPIC_API_KEY=sk-or-...
+SLAUDE_MODEL=anthropic/claude-sonnet-4-6
+# If SLAUDE_MODEL is missing on OpenRouter/Z.ai the request fails:
+#   extractor http 400 / SDK model-not-found — provider does not recognise the default model id
+
+# 4. CLI-native fallback (SLAUDE_MODEL unset, ANTHROPIC_MODEL set)
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-haiku-4-5
+
+# 5. Fast-tier override (independent of main model)
+ANTHROPIC_SMALL_FAST_MODEL=claude-haiku-4-5</code></pre></div>
+<p>Per-thread model switching is also available at runtime via <code>/model</code> (and <code>slaude model</code> MCP) — it calls <code>Query.setModel()</code> live and persists to <code>sessions.model</code> for resume. The env vars above are the boot default.</p>
+<hr>
+<h2 id="runtime-environment-variables">Runtime environment variables <a id="runtime-env"></a><a class="anchor" href="#runtime-environment-variables" aria-label="Link to Runtime environment variables ">#</a></h2>
+<p>All vars are read via <code>src/config/env.ts</code> (<code>req()</code> throws on missing, <code>opt()</code> returns <code>&quot;&quot;</code> or a fallback). <code>SLAUDE_HOME</code> and its derived paths live in <code>src/config/home.ts</code>.</p>
+<h3 id="required">Required<a class="anchor" href="#required" aria-label="Link to Required">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>SLACK_BOT_TOKEN</code></td><td>Yes</td><td>—</td><td><code>xoxb-…</code> bot token. <code>req()</code> throws <code>missing env SLACK_BOT_TOKEN</code> if empty.</td></tr>
+<tr><td><code>SLACK_APP_TOKEN</code></td><td>Yes</td><td>—</td><td><code>xapp-…</code> app-level token with <code>connections:write</code>. <code>req()</code> throws if empty.</td></tr>
+</tbody></table></div>
+<h3 id="anthropic-provider">Anthropic / provider<a class="anchor" href="#anthropic-provider" aria-label="Link to Anthropic / provider">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>ANTHROPIC_API_KEY</code></td><td>Conditionally</td><td><code>&quot;&quot;</code></td><td>Required when not using <code>CLAUDE_CODE_OAUTH_TOKEN</code>. API-key auth (<code>x-api-key</code> header).</td></tr>
+<tr><td><code>CLAUDE_CODE_OAUTH_TOKEN</code></td><td>Conditionally</td><td><code>&quot;&quot;</code></td><td>Claude Pro/Max subscription token (<code>sk-ant-oat01-…</code>). Requires <code>anthropic-beta: oauth-2025-04-20</code> header — handled automatically. At least one of <code>ANTHROPIC_API_KEY</code> or <code>CLAUDE_CODE_OAUTH_TOKEN</code> must be set.</td></tr>
+<tr><td><code>ANTHROPIC_BASE_URL</code></td><td>No</td><td><code>https://api.anthropic.com</code></td><td>Any compatible gateway. Non-Anthropic gateways require <code>SLAUDE_MODEL</code>.</td></tr>
+<tr><td><code>ANTHROPIC_AUTH_TOKEN</code></td><td>No</td><td><code>&quot;&quot;</code></td><td>Bearer token for gateways that prefer <code>Authorization: Bearer</code> over <code>x-api-key</code>.</td></tr>
+<tr><td><code>SLAUDE_MODEL</code></td><td>Conditionally</td><td><code>&quot;&quot;</code></td><td>Provider-qualified model id. See <a href="#anthropic">Model selection</a> for precedence. <strong>Required when <code>ANTHROPIC_BASE_URL</code> is non-Anthropic.</strong></td></tr>
+<tr><td><code>ANTHROPIC_MODEL</code></td><td>No</td><td><code>&quot;&quot;</code></td><td>CLI-native fallback when <code>SLAUDE_MODEL</code> is unset. Forwarded to SDK child.</td></tr>
+<tr><td><code>ANTHROPIC_SMALL_FAST_MODEL</code></td><td>No</td><td>CLI default</td><td>Haiku-class model for compaction and sub-tasks.</td></tr>
+</tbody></table></div>
+<h3 id="slack-optional">Slack — optional<a class="anchor" href="#slack-optional" aria-label="Link to Slack — optional">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>SLACK_USER_TOKEN</code></td><td>No</td><td><code>&quot;&quot;</code></td><td><code>xoxp-…</code> user token. Used for <code>users.profile.set</code> presence; also the post-as-user token when <code>SLACK_POST_AS_USER=true</code>.</td></tr>
+<tr><td><code>SLACK_POST_AS_USER</code></td><td>No</td><td><code>false</code></td><td><code>true</code> (case-insensitive) enables posting as the real Slack user. Requires <code>SLACK_USER_TOKEN</code>.</td></tr>
+<tr><td><code>SLAUDE_APPROVERS</code></td><td>No</td><td><code>&quot;&quot;</code></td><td>Comma-separated Slack user ids allowed to click <strong>Approve / Deny</strong> on <code>request_approval</code> plans. <strong>Fallback only</strong> — used when <code>SOUL.md</code> has no <code>## Approvers</code> section. Empty means any clicker is accepted (only safe for solo / DM workspaces). Trimmed, comma-split, empty entries dropped.</td></tr>
+<tr><td><code>SLAUDE_SLACK_MODE</code></td><td>No</td><td><code>socket</code></td><td>Slack ingress: <code>socket</code> (Bolt Socket Mode, single app from <code>SLACK_BOT_TOKEN</code>/<code>SLACK_APP_TOKEN</code>) or <code>http</code> (Events API receiver — Slack POSTs signed requests to <code>/slack/events</code> and <code>/slack/interactions</code>). <code>http</code> requires <code>SLAUDE_DB=pg</code> and <code>SLAUDE_MASTER_KEY</code>: apps are resolved per-request from the <code>slack_apps</code> registry (<code>bun run slack-app add</code>), and <code>SLACK_BOT_TOKEN</code>/<code>SLACK_APP_TOKEN</code> are not read. Emit the matching app manifest with <code>bun run manifest --mode http --url https://&lt;host&gt;</code>.</td></tr>
+<tr><td><code>SLAUDE_HTTP_PORT</code></td><td>No</td><td><code>8080</code></td><td>Listen port for <code>SLAUDE_SLACK_MODE=http</code>. This single port serves <code>/slack/*</code> <strong>and</strong> <code>/healthz</code> <code>/readyz</code> <code>/metrics</code>; the standalone <code>SLAUDE_HEALTH_PORT</code> server is not started in http mode.</td></tr>
+<tr><td><code>SLAUDE_HTTP_MAX_BODY_BYTES</code></td><td>No</td><td><code>1000000</code></td><td>Max accepted request-body size on <code>/slack/*</code> (bytes). Oversize requests get <code>413</code> before any buffering completes or signature work runs. Positive integer.</td></tr>
+<tr><td><code>SLACK_SIGNING_SECRET</code></td><td>No</td><td><code>&quot;&quot;</code></td><td>Fallback for <code>bun run slack-app add</code> when <code>--signing-secret</code> is omitted (<strong>Basic Information → App Credentials</strong>). The runtime never reads it directly — request verification always uses the encrypted copy stored in Postgres.</td></tr>
+</tbody></table></div>
+<h3 id="home-amp-paths">Home &amp; paths<a class="anchor" href="#home-amp-paths" aria-label="Link to Home &amp;amp; paths">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>SLAUDE_HOME</code></td><td>No</td><td><code>~/.slaude</code></td><td>Runtime home. All state lives beneath it. Overridable for testing or multi-persona hosts.</td></tr>
+<tr><td><code>SLAUDE_DB_PATH</code></td><td>No</td><td><code>$SLAUDE_HOME/db.sqlite</code></td><td>Override the sqlite file. Accepts absolute path or path relative to <code>SLAUDE_HOME</code>. Use when <code>SLAUDE_HOME</code> is a read-only image layer and the DB must live on a separately-mounted volume (e.g. k8s <code>subPath</code>).</td></tr>
+<tr><td><code>SLAUDE_WORKSPACES</code></td><td>No</td><td><code>$SLAUDE_HOME/workspaces</code></td><td>Per-session cwd root. Same absolute/relative semantics as <code>SLAUDE_DB_PATH</code>. The sim redirects both under <code>$SLAUDE_HOME/sim/</code> so it shares config without mutating prod state.</td></tr>
+<tr><td><code>SLAUDE_DB</code></td><td>No</td><td><code>sqlite</code></td><td>State store dialect: <code>sqlite</code> (file at <code>SLAUDE_DB_PATH</code>) or <code>pg</code> (Postgres). With <code>pg</code> and no <code>SLAUDE_PG_URL</code>, an in-process PGLite is used (sim and tests; <code>SLAUDE_PGLITE_DIR</code> persists it to disk). Schema for <code>pg</code> is applied from <code>src/db/migrations/*.sql</code> at boot.</td></tr>
+<tr><td><code>SLAUDE_PG_URL</code></td><td>With <code>SLAUDE_DB=pg</code></td><td>none</td><td>Postgres connection URL (<code>postgres://user:pass@host:5432/db</code>). Driver is <code>Bun.sql</code>.</td></tr>
+<tr><td><code>SLAUDE_PG_POOL</code></td><td>No</td><td><code>10</code></td><td>Bun.sql connection pool size for <code>SLAUDE_DB=pg</code>. Positive integer.</td></tr>
+<tr><td><code>SLAUDE_MASTER_KEY</code></td><td>For encrypted columns</td><td>none</td><td>32 random bytes, base64 (<code>openssl rand -base64 32</code>). Keys AES-256-GCM for the <code>(enc)</code> Postgres columns (<code>slack_apps.bot_token</code>, <code>signing_secret</code>, <code>provider_creds.value</code>). Not needed while the monolith runs a single Socket Mode app.</td></tr>
+<tr><td><code>SLAUDE_ROLE</code></td><td>No</td><td><code>mono</code></td><td>Process role for the gateway/node split: <code>mono</code> (single process, today&#39;s behavior), <code>gateway</code> (Slack ingress + control plane), or <code>node</code> (queue worker). <code>mono</code> and <code>gateway</code> mount the node-facing REST <code>/v1</code> on the health server; <code>node</code> never does. Unknown values fall back to <code>mono</code>.</td></tr>
+<tr><td><code>SLAUDE_NODE_TOKEN</code></td><td>For <code>/v1</code></td><td>none</td><td>Static shared secret nodes present as <code>Authorization: Bearer &lt;token&gt;</code> on every <code>/v1</code> request (timing-safe compare). Unset = <code>/v1</code> refuses all requests. Rotate via env.</td></tr>
+<tr><td><code>SLAUDE_JOB_SECRET</code></td><td>For <code>/v1</code> tool plane</td><td>none</td><td>HS256 secret for the short-lived per-job JWT (<code>X-Slaude-Job</code>) the gateway mints per turn job and verifies on <code>/v1/sessions/*</code> and <code>/v1/tools/*</code>. Claims: <code>{tenant, persona, session, team, channel, thread, initiator, scope, exp}</code>. Unset = tool-plane and session endpoints refuse.</td></tr>
+</tbody></table></div>
+<p>See <a href="#filesystem">Filesystem layout</a> for every file under <code>SLAUDE_HOME</code>.</p>
+<h3 id="queue-amp-redis-horizontal-scale">Queue &amp; Redis — horizontal scale <a id="queue-redis"></a><a class="anchor" href="#queue-amp-redis-horizontal-scale" aria-label="Link to Queue &amp;amp; Redis — horizontal scale ">#</a></h3>
+<p>Used by the gateway/node split (<code>src/queue/</code>): BullMQ turn queues, the warm-session
+registry, session/leader locks, and abort/reload/gate pub-sub. A single-process
+(<code>mono</code>) deploy never touches Redis and needs none of these.</p>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>SLAUDE_REDIS_URL</code></td><td>For gateway/node roles</td><td><code>redis://localhost:6379</code></td><td>The one Redis behind job queues, session registry, node heartbeats, locks, and pub/sub.</td></tr>
+<tr><td><code>SLAUDE_REDIS_PREFIX</code></td><td>No</td><td><code>slaude</code></td><td>Namespace prefixed to every Redis key, channel, stream, and BullMQ queue this deploy touches. Lets several deploys (or a test run) share one Redis without collisions.</td></tr>
+<tr><td><code>SLAUDE_HEARTBEAT_SEC</code></td><td>No</td><td><code>10</code></td><td>Cadence at which nodes heartbeat each live session&#39;s <code>sess:&lt;id&gt;</code> registry entry. Entry TTL is 2× this — an entry older than that means &quot;cold, route to the shared queue&quot;. Non-positive or non-numeric falls back to 10.</td></tr>
+<tr><td><code>SLAUDE_NODE_DRAIN_SEC</code></td><td>No</td><td><code>120</code></td><td>On SIGTERM a node stops claiming jobs and finishes in-flight turns for up to this many seconds before deregistering and exiting. Negative or non-numeric falls back to 120.</td></tr>
+</tbody></table></div>
+<p>Tests for this layer run only against a real Redis (BullMQ&#39;s Lua scripts don&#39;t run
+on <code>ioredis-mock</code>) and are gated on <code>SLAUDE_REDIS_TEST_URL</code>, mirroring the
+<code>SLAUDE_PG_TEST_URL</code> gate for Postgres.</p>
+<h3 id="sessions-amp-ux">Sessions &amp; UX<a class="anchor" href="#sessions-amp-ux" aria-label="Link to Sessions &amp;amp; UX">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>SLAUDE_IDLE_MINUTES</code></td><td>No</td><td><code>15</code></td><td>Minutes of inactivity after which the SDK <code>Query</code> closes. Next inbound message in the same thread resumes via <code>resume: &lt;session-id&gt;</code>. Set to <code>0</code> to disable (sessions live forever). Non-finite or negative values fall back to <code>15</code>. Parsed as <code>Number(raw) * 60 * 1000</code> ms.</td></tr>
+<tr><td><code>SLAUDE_DEFAULT_MODE</code></td><td>No</td><td><code>default</code></td><td>Default permission mode for new sessions. Aliases are normalized. Values: <code>default</code> (alias <code>ask</code>), <code>acceptEdits</code> (aliases <code>accept-edits</code>, <code>acceptedits</code>, <code>edits</code>), <code>bypassPermissions</code> (aliases <code>bypass</code>, <code>yolo</code>), <code>plan</code>, <code>dontAsk</code> (aliases <code>dont-ask</code>, <code>deny</code>). Unknown values fall back to <code>default</code>. Override per-thread with <code>/mode</code>.</td></tr>
+<tr><td><code>SLAUDE_AUTO_ALLOW_TOOLS</code></td><td>No</td><td><code>&quot;&quot;</code></td><td>Comma-separated tool names auto-allowed without prompting. Others post a Block Kit <strong>Allow / Always / Deny</strong> prompt. Empty means ask for every tool. Common default <code>Read,Grep,Glob,LS</code>.</td></tr>
+<tr><td><code>SLAUDE_HEALTH_PORT</code></td><td>No</td><td><code>8080</code></td><td>Health server port (socket mode only — <code>SLAUDE_SLACK_MODE=http</code> serves these on <code>SLAUDE_HTTP_PORT</code> instead). <code>GET /healthz</code> → liveness <code>{status:&quot;ok&quot;, uptime_ms, sessions_live}</code>, <code>GET /readyz</code> → DB ping (503 if unreachable), <code>GET /metrics</code> → Prometheus exposition. Set to <code>0</code> or non-finite to disable. See <code>src/health.ts</code>.</td></tr>
+<tr><td><code>SLAUDE_TOKEN_WARN_PCT</code></td><td>No</td><td><code>0.8</code></td><td>Fraction of the model&#39;s context window at which slaude posts a one-shot warning in the active thread. Edge-triggered — fires once per session. Source window comes from live <code>modelUsage.contextWindow</code>.</td></tr>
+<tr><td><code>SLAUDE_TOKEN_CRITICAL_PCT</code></td><td>No</td><td><code>0.92</code></td><td>Critical threshold sibling of <code>SLAUDE_TOKEN_WARN_PCT</code>. Set to <code>0</code> to disable the critical tier.</td></tr>
+</tbody></table></div>
+<h3 id="metrics-amp-context-budget">Metrics &amp; context budget<a class="anchor" href="#metrics-amp-context-budget" aria-label="Link to Metrics &amp;amp; context budget">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>SLAUDE_FALLBACK_CONTEXT_WINDOW</code></td><td>No</td><td><code>200000</code></td><td>Fallback context-window size (tokens) when the SDK <code>result</code> message has no <code>modelUsage</code> entry to source the cap from. Non-positive or non-finite values fall back to <code>200000</code>.</td></tr>
+<tr><td><code>SLAUDE_METRICS_LABELS</code></td><td>No</td><td><code>&quot;&quot;</code></td><td>Static Prometheus labels applied to every metric, e.g. <code>agent=hermes,env=prod</code>. Malformed entries are silently dropped by the metrics registry (<code>src/metrics.ts</code>).</td></tr>
+<tr><td><code>SLAUDE_METRICS_PER_USER</code></td><td>No</td><td><code>0</code></td><td>Opt in to per-user turn counters <code>slaude_user_turns_total</code>. Off by default to avoid high-cardinality blow-up in public channels. Accepts <code>1</code>, <code>true</code>, or <code>yes</code> (case-insensitive).</td></tr>
+</tbody></table></div>
+<h3 id="mcp-oauth-loopback-vs-paste-back">MCP OAuth — loopback vs paste-back<a class="anchor" href="#mcp-oauth-loopback-vs-paste-back" aria-label="Link to MCP OAuth — loopback vs paste-back">#</a></h3>
+<p>Two modes for the authorization-code callback when connecting HTTP MCP servers via <code>/mcp connect</code> in <code>/1on1</code>:</p>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>SLAUDE_OAUTH_REDIRECT_URL</code></td><td>No</td><td><code>&quot;&quot;</code></td><td>Fixed <code>redirect_uri</code> for paste-back mode. When set, slaude does <strong>not</strong> bind a loopback listener — it registers this URL, the IdP redirects the browser to an operator-hosted static page that shows the <code>code</code> + <code>state</code> with a &quot;paste this back into Slack&quot; instruction, and the initiator pastes the callback URL into the locked thread. Required for k8s / remote deploys where an ephemeral loopback port is not reachable. Empty → loopback mode.</td></tr>
+<tr><td><code>SLAUDE_OAUTH_PUBLIC_URL</code></td><td>No</td><td><code>&quot;&quot;</code></td><td>Public base URL the shared loopback advertises as its <code>redirect_uri</code> (e.g. <code>https://slaude.example.com</code>). In-cluster the listener binds a private port but the IdP must redirect the user&#39;s browser to a publicly routable host fronted by ingress — this is that host. The callback path is appended. Empty → loopback falls back to <code>http://localhost:&lt;port&gt;</code>.</td></tr>
+<tr><td><code>SLAUDE_OAUTH_LOOPBACK_HOST</code></td><td>No</td><td><code>127.0.0.1</code></td><td>Loopback bind host. <code>127.0.0.1</code> locally; <code>0.0.0.0</code> in-container so a <code>docker -p</code> mapped port is reachable from the host.</td></tr>
+<tr><td><code>SLAUDE_OAUTH_LOOPBACK_PORTS</code></td><td>No</td><td><code>&quot;&quot;</code> (ephemeral)</td><td>Inclusive range <code>a-b</code> the container pre-maps with <code>-p</code> (e.g. <code>40100-40110</code>). The connect flow picks the first free port in the range; empty → <code>port 0</code> (ephemeral).</td></tr>
+<tr><td><code>SLAUDE_OAUTH_SHARED_LOOPBACK</code></td><td>No</td><td><code>false</code></td><td>Use the always-on shared loopback (one fixed port, flows demuxed by signed <code>state</code>) instead of a fresh ephemeral listener per connect. Lets many sessions authorize concurrently behind a single pre-mapped port. Accepts <code>1</code>/<code>true</code>/<code>yes</code> (case-insensitive).</td></tr>
+<tr><td><code>SLAUDE_OAUTH_SHARED_LOOPBACK_PORT</code></td><td>No</td><td><code>3118</code></td><td>Fixed port for the shared loopback callback server (same port the Claude CLI uses). Only meaningful when <code>SLAUDE_OAUTH_SHARED_LOOPBACK</code> is on. Non-finite values fall back to <code>3118</code>.</td></tr>
+<tr><td><code>SLAUDE_OAUTH_STATE_SECRET</code></td><td>No</td><td>random per-process</td><td>HMAC secret signing the session id inside the OAuth <code>state</code>. Empty → <code>randomBytes(32).base64url</code> per process (fine: the shared listener lives for the process lifetime, so in-flight states stay verifiable; a restart invalidates pending flows).</td></tr>
+</tbody></table></div>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash"># MCP OAuth examples
+
+# Loopback (default, local / same-host container) — no extra env; ephemeral port
+# SLAUDE_OAUTH_LOOPBACK_HOST=0.0.0.0 in-container so docker -p mapping is reachable
+
+# Paste-back (k8s / remote)
+SLAUDE_OAUTH_REDIRECT_URL=https://slaude.example.com/oauth/paste
+# That static page must display `code` and `state` and instruct the user to paste the full callback URL back into the locked Slack thread.
+
+# Shared always-on loopback (multi-session concurrency behind one port)
+SLAUDE_OAUTH_SHARED_LOOPBACK=true
+SLAUDE_OAUTH_SHARED_LOOPBACK_PORT=3118
+SLAUDE_OAUTH_PUBLIC_URL=https://slaude.example.com
+SLAUDE_OAUTH_LOOPBACK_HOST=0.0.0.0
+SLAUDE_OAUTH_LOOPBACK_PORTS=40100-40110</code></pre></div>
+<h3 id="skills-repo-amp-evolution">Skills repo &amp; evolution<a class="anchor" href="#skills-repo-amp-evolution" aria-label="Link to Skills repo &amp;amp; evolution">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>SLAUDE_SKILLS_REPO</code></td><td>No</td><td><code>&quot;&quot;</code></td><td>Git repo URL where runtime-created skills are pushed by <code>sync_manifest</code>. Accepts <code>github:owner/repo</code> shorthand or full <code>https</code>/SSH URL. When unset, <code>sync_manifest</code> records skills as local-only entries (survive on PVC only).</td></tr>
+<tr><td><code>SLAUDE_AUTO_EVOLVE</code></td><td>No</td><td><code>1</code></td><td>Auto-evolve after each substantial user turn. When <code>1</code>, the manager injects an internal <code>&lt;auto-evolve&gt;</code> prompt so the agent decides whether to save or refine a skill. Set to <code>0</code> to disable.</td></tr>
+<tr><td><code>SLAUDE_SOUL_PARSE_MAX_TOKENS</code></td><td>No</td><td><code>8192</code></td><td><code>max_tokens</code> budget for the soul extractor LLM call. Raise when a slower model needs more headroom (thinking-mode providers emit thinking + text blocks that both count). Non-positive or non-finite values fall back to <code>8192</code>.</td></tr>
+<tr><td><code>SLAUDE_SOUL_PARSE_MODEL</code></td><td>No</td><td><code>SLAUDE_MODEL</code> or <code>claude-haiku-4-5-20251001</code></td><td>Model used for the SOUL.md → JSON extraction pass. Defaults to <code>SLAUDE_MODEL</code> when set, otherwise <code>claude-haiku-4-5-20251001</code>.</td></tr>
+</tbody></table></div>
+<h3 id="external-mcp-env-references">External MCP env references<a class="anchor" href="#external-mcp-env-references" aria-label="Link to External MCP env references">#</a></h3>
+<p>Any env var referenced via <code>${VAR}</code> inside <code>~/.slaude/.mcp.json</code> is expanded at load time (see <a href="#external-mcp">External MCP</a>). Common examples:</p>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>GRAFANA_URL</code></td><td>No</td><td><code>&quot;&quot;</code></td><td>Example external MCP server URL, referenced as <code>${GRAFANA_URL}</code> in <code>.mcp.json</code>.</td></tr>
+<tr><td><code>GRAFANA_API_KEY</code></td><td>No</td><td><code>&quot;&quot;</code></td><td>Companion secret, referenced as <code>${GRAFANA_API_KEY}</code>.</td></tr>
+</tbody></table></div>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash"># Full .env example — copy to ~/.slaude/.env and fill in
+# --- Slack (required) ---
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+
+# --- Slack optional ---
+# SLACK_USER_TOKEN=xoxp-...       # presence / post-as-user
+# SLACK_POST_AS_USER=false
+
+# --- Provider (pick ONE auth mode) ---
+ANTHROPIC_API_KEY=sk-ant-...
+# CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+# ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1
+# ANTHROPIC_AUTH_TOKEN=...
+# SLAUDE_MODEL=claude-sonnet-4-6
+# ANTHROPIC_MODEL=claude-sonnet-4-6
+# ANTHROPIC_SMALL_FAST_MODEL=claude-haiku-4-5
+
+# --- Home ---
+# SLAUDE_HOME=~/.slaude
+# SLAUDE_DB_PATH=db.sqlite
+# SLAUDE_DB=pg
+# SLAUDE_PG_URL=postgres://slaude:change-me@localhost:5432/slaude
+# SLAUDE_MASTER_KEY=&lt;openssl rand -base64 32&gt;
+# SLAUDE_WORKSPACES=workspaces
+
+# --- Sessions ---
+SLAUDE_DEFAULT_MODE=ask
+SLAUDE_AUTO_ALLOW_TOOLS=Read,Grep,Glob,LS
+SLAUDE_IDLE_MINUTES=15
+SLAUDE_HEALTH_PORT=8080
+# SLAUDE_TOKEN_WARN_PCT=0.8
+# SLAUDE_TOKEN_CRITICAL_PCT=0.92
+# SLAUDE_FALLBACK_CONTEXT_WINDOW=200000
+
+# --- Approvers fallback (SOUL.md wins when present) ---
+SLAUDE_APPROVERS=
+
+# --- Metrics ---
+# SLAUDE_METRICS_LABELS=agent=hermes,env=prod
+# SLAUDE_METRICS_PER_USER=0
+
+# --- MCP OAuth (loopback by default; set redirect for k8s paste-back) ---
+# SLAUDE_OAUTH_REDIRECT_URL=https://slaude.example.com/oauth/paste
+# SLAUDE_OAUTH_LOOPBACK_HOST=127.0.0.1
+# SLAUDE_OAUTH_LOOPBACK_PORTS=40100-40110
+# SLAUDE_OAUTH_SHARED_LOOPBACK=
+# SLAUDE_OAUTH_SHARED_LOOPBACK_PORT=3118
+# SLAUDE_OAUTH_PUBLIC_URL=
+# SLAUDE_OAUTH_STATE_SECRET=
+
+# --- Skills evolution ---
+# SLAUDE_SKILLS_REPO=github:owner/repo
+# SLAUDE_AUTO_EVOLVE=1
+# SLAUDE_SOUL_PARSE_MAX_TOKENS=8192
+# SLAUDE_SOUL_PARSE_MODEL=claude-haiku-4-5-20251001
+
+# --- External MCP vars referenced from .mcp.json ---
+GRAFANA_URL=
+GRAFANA_API_KEY=</code></pre></div>
+<hr>
+<h2 id="filesystem-layout-slaude_home">Filesystem layout — SLAUDE_HOME <a id="filesystem"></a><a class="anchor" href="#filesystem-layout-slaude_home" aria-label="Link to Filesystem layout — SLAUDE_HOME ">#</a></h2>
+<p><code>SLAUDE_HOME</code> defaults to <code>~/.slaude</code> (<code>src/config/home.ts</code> → <code>process.env.SLAUDE_HOME || join(homedir(), &quot;.slaude&quot;)</code>). Every path below is resolved against it — see overrides <code>SLAUDE_DB_PATH</code> and <code>SLAUDE_WORKSPACES</code> above.</p>
+<div class="table-wrap"><table><thead><tr><th>Path</th><th>What it holds</th></tr></thead><tbody>
+<tr><td><code>~/.slaude/SOUL.md</code></td><td>Persona — the operator-authored identity file. Auto-seeded with the starter scaffold on first boot if missing. See <a href="#soul">SOUL.md</a>.</td></tr>
+<tr><td><code>~/.slaude/.env</code></td><td>Env file auto-loaded by <code>src/config/env.ts</code> (<code>loadDotenv(paths.env)</code>) without overriding existing <code>process.env</code>. Docker compose also reads <code>./.env</code> from the repo root.</td></tr>
+<tr><td><code>~/.slaude/.mcp.json</code></td><td>External MCP servers. Mounted into the container at <code>/data/.mcp.json</code> (discovered via session cwd parent chain). See <a href="#external-mcp">External MCP</a>.</td></tr>
+<tr><td><code>~/.slaude/slaude.json</code></td><td>Dependency manifest — plugins, skills, knowledge bases. See <a href="#manifests">Manifests</a>.</td></tr>
+<tr><td><code>~/.slaude/slaude.lock</code></td><td>Pinned shas for every manifest entry. See <a href="#manifests">Manifests</a>.</td></tr>
+<tr><td><code>~/.slaude/skills/</code></td><td>Installed skills — one dir per slug containing <code>SKILL.md</code>. Hot-reloaded each turn; mounted as a local plugin (<code>paths.home</code> with <code>skipMcpDiscovery: true</code>).</td></tr>
+<tr><td><code>~/.slaude/knowledge/</code></td><td>Installed KB wikis — one dir per label. Indexed into the brain at boot and nightly maintenance.</td></tr>
+<tr><td><code>~/.slaude/cache/</code></td><td>Extracted <code>SoulData</code> JSON keyed by <code>sha256(SOUL.md)</code>, policy embeddings. Safe to delete — re-extracted on next boot.</td></tr>
+<tr><td><code>~/.slaude/workspaces/</code></td><td>Per-session cwd — <code>workspaces/&lt;team&gt;-&lt;channel&gt;-&lt;thread&gt;[__persona]/</code>. Each thread gets its own git worktree-like dir.</td></tr>
+<tr><td><code>~/.slaude/.claude/</code></td><td>Claude Code config dir (<code>CLAUDE_CONFIG_DIR</code>). Holds <code>installed_plugins.json</code>, plugin cache, project transcripts (<code>projects/</code>). In <code>/1on1</code> mode the child is pointed at <code>$SLAUDE_HOME/oauth/&lt;userId&gt;</code> for OAuth isolation.</td></tr>
+<tr><td><code>~/.slaude/personas/</code></td><td>Multi-persona operator-created directory. Presence means multi-bot mode; each named persona has its own <code>SOUL.md</code> and <code>mcp.json</code> overlay.</td></tr>
+<tr><td><code>~/.slaude/db.sqlite</code></td><td><code>bun:sqlite</code> — <code>sessions</code>, <code>brain</code>, <code>soul_overrides</code>, <code>kb_ingest_jobs</code> tables. Override via <code>SLAUDE_DB_PATH</code> for PVC <code>subPath</code> mounts. Absent when <code>SLAUDE_DB=pg</code>; move an existing file with <code>bun run migrate-sqlite</code> (idempotent, <code>--dry-run</code> to preview).</td></tr>
+</tbody></table></div>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">~/.slaude/
+├── SOUL.md              # persona (you author this)
+├── .env                 # env — never commit
+├── .mcp.json            # external MCP servers
+├── slaude.json          # dependency manifest
+├── slaude.lock          # pinned shas
+├── db.sqlite            # sessions + overrides + jobs
+├── cache/
+│   └── soul.&lt;sha&gt;.json  # LLM-extracted SoulData cache
+├── skills/
+│   └── &lt;slug&gt;/SKILL.md
+├── knowledge/
+│   └── &lt;label&gt;/         # markdown wiki per KB
+├── workspaces/
+│   └── T111-C222-1700000000.000000/
+├── .claude/
+│   ├── plugins/
+│   │   └── installed_plugins.json
+│   └── projects/        # per-session transcripts
+└── personas/            # multi-persona (optional)
+    └── &lt;name&gt;/
+        ├── SOUL.md
+        └── mcp.json</code></pre></div>
+<blockquote>
+<p><strong>Container note.</strong> When <code>SLAUDE_HOME</code> is mounted from a read-only image layer, use <code>SLAUDE_DB_PATH</code> and <code>SLAUDE_WORKSPACES</code> to place mutable state on a separately-mounted volume. <code>install.ts</code> stages clones inside a sibling of the eventual destination (not <code>$SLAUDE_HOME/.tmp</code>) so <code>renameSync</code> stays on the same filesystem across PVC <code>subPath</code> volumes.</p>
+</blockquote>
+<hr>
+<h2 id="connect-broker">Connect broker <a id="connect-broker"></a><a class="anchor" href="#connect-broker" aria-label="Link to Connect broker ">#</a></h2>
+<p>slaude ships two connection models. Understanding which you need avoids over-configuring.</p>
+<h3 id="1on1-mode-shipped-no-extra-env">/1on1 mode (shipped, no extra env)<a class="anchor" href="#1on1-mode-shipped-no-extra-env" aria-label="Link to /1on1 mode (shipped, no extra env)">#</a></h3>
+<p><code>/1on1</code> locks a thread to you + manager and isolates the Claude child&#39;s <code>CLAUDE_CONFIG_DIR</code> per initiator (<code>$SLAUDE_HOME/oauth/&lt;userId&gt;</code>). This is slaude&#39;s per-thread contextual MCP story — it works with no broker env. Most teams only need this.</p>
+<h3 id="connect-broker-when-you-need-it">Connect broker — when you need it<a class="anchor" href="#connect-broker-when-you-need-it" aria-label="Link to Connect broker — when you need it">#</a></h3>
+<p>The connect broker exposes <strong>per-user OAuth&#39;d MCP connections</strong> as slaude tools scoped to the calling thread. It is <strong>off by default</strong>. When disabled, no <code>slaude_connect</code> tools mount at all — <code>/1on1</code> still works but there is no cross-user MCP brokering.</p>
+<blockquote>
+<p><strong>Current code:</strong> the broker gate is documented in <code>README.md</code> as <code>SLAUDE_ENABLE_CONNECT_BROKER</code> + <code>SLAUDE_ENCRYPTION_KEY</code>. At the time this page was written those two vars are referenced as the broker&#39;s mount condition and the encryption secret (32-byte base64, e.g. <code>openssl rand -base64 32</code>), and <code>src/agent/child-env.ts</code> scrubs <code>SLAUDE_ENCRYPTION_KEY</code> from the SDK child env so it never leaks to the model. If you enable the broker you <strong>must</strong> set both — one without the other leaves the tool unmounted.</p>
+</blockquote>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Required</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>SLAUDE_ENABLE_CONNECT_BROKER</code></td><td>No</td><td><code>&quot;&quot;</code> (off)</td><td>Truthy value mounts the <code>slaude_connect</code> broker tools. Empty means no broker — no connection tools exposed.</td></tr>
+<tr><td><code>SLAUDE_ENCRYPTION_KEY</code></td><td>No</td><td><code>&quot;&quot;</code></td><td>32-byte base64 encryption key for broker-held OAuth tokens/secrets at rest. Generate with <code>openssl rand -base64 32</code>. Scrubbed from the SDK child env (<code>src/agent/child-env.ts</code>) — the model never sees it. Required when the broker is enabled.</td></tr>
+</tbody></table></div>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash"># Connect broker — OFF by default (no tools mounted)
+# SLAUDE_ENABLE_CONNECT_BROKER=
+# SLAUDE_ENCRYPTION_KEY=
+
+# Enable (both required):
+SLAUDE_ENABLE_CONNECT_BROKER=1
+SLAUDE_ENCRYPTION_KEY=$(openssl rand -base64 32)   # 32 random bytes, base64</code></pre></div>
+<blockquote>
+<p><strong>Key hygiene.</strong> <code>SLAUDE_ENCRYPTION_KEY</code> is the encryption-at-rest key for broker-held secrets. Rotate by re-encrypting stored credentials; do not reuse a development key in production. The child-env scrub guarantees the model cannot exfiltrate it via tool args.</p>
+</blockquote>
+<hr>
+<h2 id="soulmd-persona-schema">SOUL.md — persona schema <a id="soul"></a><a class="anchor" href="#soulmd-persona-schema" aria-label="Link to SOUL.md — persona schema ">#</a></h2>
+<p><code>SOUL.md</code> is the operator-authored file at <code>~/.slaude/SOUL.md</code> (or <code>~/.slaude/personas/&lt;name&gt;/SOUL.md</code> in multi-persona mode). On first boot if the file is missing, slaude seeds the <strong>starter scaffold</strong> from <code>src/soul/loader.ts</code> — fill it in before going live.</p>
+<p>The runtime enforces two layers:</p>
+<ul>
+<li><strong>Runtime baseline</strong> (in code, <code>RUNTIME_BASELINE</code> in <code>loader.ts</code>) — non-negotiable rules about Slack output discipline, formatting, approval, engagement, channel trust, KB-first, skill evolution, and harness overrides. You never author this; a new release can tighten it without touching your persona.</li>
+<li><strong>Persona</strong> (your <code>SOUL.md</code>) — who the agent is: name, role, voice, manager, mandate, values, channels, approvers, redaction. This is what the agent&#39;s system prompt renders inside <code>&lt;persona&gt;…&lt;/persona&gt;</code>.</li>
+</ul>
+<p>Structured extraction (<code>src/soul/extract.ts</code>) calls the configured provider with <code>EXTRACTION_PROMPT</code> (<code>src/soul/data.ts</code>), validates the JSON with <code>SoulDataSchema</code> (zod), checks that every extracted Slack id appears verbatim in the raw persona (hallucinated ids are rejected), and caches the result at <code>~/.slaude/cache/soul.&lt;sha&gt;.json</code> keyed by <code>sha256(SOUL.md)</code>. On any extraction failure it falls back to a regex parser that only fills <code>approvers</code>.</p>
+<h3 id="validated-schema-what-extraction-looks-for">Validated schema — what extraction looks for<a class="anchor" href="#validated-schema-what-extraction-looks-for" aria-label="Link to Validated schema — what extraction looks for">#</a></h3>
+<p>Every field below is optional in the markdown (the extractor omits what it cannot find), but three are <strong>required</strong> for <code>bun run validate-soul</code> to pass: <code>identity.name</code>, <code>manager.userId</code>, <code>mandate</code>.</p>
+<div class="table-wrap"><table><thead><tr><th>Field</th><th>Source section in SOUL.md</th><th>Type</th><th>Required</th><th>What to write</th></tr></thead><tbody>
+<tr><td><code>identity.name</code></td><td><code>## Identity</code></td><td>string</td><td><strong>Yes</strong></td><td>Agent display name</td></tr>
+<tr><td><code>identity.role</code></td><td><code>## Identity</code></td><td>string</td><td>No</td><td>One line — e.g. <code>engineering teammate in #platform</code></td></tr>
+<tr><td><code>identity.voice</code></td><td><code>## Identity</code></td><td>string</td><td>No</td><td>e.g. <code>terse, direct, no filler. fragments OK.</code></td></tr>
+<tr><td><code>manager.userId</code></td><td><code>## Reporting</code></td><td><code>U…</code> / <code>W…</code></td><td><strong>Yes</strong></td><td>Slack user id of the person the agent reports to</td></tr>
+<tr><td><code>manager.handle</code></td><td><code>## Reporting</code></td><td>string</td><td>No</td><td>e.g. <code>@barock</code></td></tr>
+<tr><td><code>backupManager.userId</code></td><td><code>## Reporting</code> (Backup manager)</td><td><code>U…</code> / <code>W…</code></td><td>No</td><td>Fallback manager — same engagement authority as primary</td></tr>
+<tr><td><code>backupManager.handle</code></td><td><code>## Reporting</code></td><td>string</td><td>No</td><td>e.g. <code>@deputy</code></td></tr>
+<tr><td><code>allowedChannels</code></td><td><code>## Allowed channels</code> / <code>## Public channels</code></td><td><code>C…</code> / <code>G…</code> / <code>D…</code> ids</td><td>No</td><td>Public-interaction zones — anyone in the channel can address slaude (public eyes, avoid unsolicited internal dumps)</td></tr>
+<tr><td><code>trustedChannels</code></td><td><code>## Trusted channels</code> / <code>## Team channel</code> / <code>## Home channel</code></td><td><code>C…</code> / <code>G…</code> / <code>D…</code> ids</td><td>No</td><td>Internal team channels where slaude operates as a member — engagement identical to allowed, but agent gets <code>trust=&quot;trusted&quot;</code> and may show MCP servers, skill names, internals</td></tr>
+<tr><td><code>blockedUsers</code></td><td><code>## Blocked</code> / <code>## Blacklist</code> / <code>## Ignore</code></td><td><code>U…</code> / <code>W…</code> ids</td><td>No</td><td>Inbound messages from these users are dropped at the adapter gate — no logs leaked to the agent, no token spend</td></tr>
+<tr><td><code>dmAllowedUsers</code></td><td><code>## DM allowlist</code> / <code>## Allowed DMs</code></td><td><code>U…</code> / <code>W…</code> ids</td><td>No</td><td>Users allowed to DM slaude besides manager/backup. Grants DM chat only — not admin authority</td></tr>
+<tr><td><code>approvers</code></td><td><code>## Approvers</code></td><td><code>{userId, scope, catchall}</code> entries</td><td>No</td><td>Who may approve <code>request_approval</code> — see <a href="#approvers">Approvers</a></td></tr>
+<tr><td><code>redactPatterns</code></td><td><code>## Redaction</code></td><td>regex strings</td><td>No</td><td>JS regex sources (without <code>/…/</code> wrappers, without flags) matched global + case-insensitive; substrings replaced with <code>[REDACTED]</code> in outbound <code>reply</code>/<code>edit</code>/upload comments</td></tr>
+<tr><td><code>approvalTimeoutSeconds</code></td><td><code>## Approval timeout</code></td><td>integer ≥ 0</td><td>No</td><td>Auto-deny <code>request_approval</code> blocks after N seconds with no click. <code>0</code> or omitted = wait forever</td></tr>
+<tr><td><code>mandate</code></td><td><code>## Mandate</code></td><td>string</td><td><strong>Yes</strong></td><td>What the agent is meant to accomplish — drives every turn</td></tr>
+<tr><td><code>values</code></td><td><code>## Values</code></td><td>string[]</td><td>No</td><td>1–2 lines of operating principles unique to the persona</td></tr>
+<tr><td><code>channelOverrides</code></td><td><code>## Channel &lt;#Cxxx|name&gt;</code> blocks</td><td><code>{channel, mandate?, approvers}</code> per block</td><td>No</td><td>Per-channel replacement of <code>mandate</code> and <code>approvers</code> — see <a href="#channel-overrides">Channel overrides</a></td></tr>
+</tbody></table></div>
+<h3 id="required-vs-warnings-what-validate-soul-checks">Required vs warnings — what <code>validate-soul</code> checks<a class="anchor" href="#required-vs-warnings-what-validate-soul-checks" aria-label="Link to Required vs warnings — what validate-soul checks">#</a></h3>
+<p><code>src/soul/validate.ts</code> implements <code>validateSoul(data)</code>:</p>
+<ul>
+<li><strong>Missing (blocks <code>ok</code>):</strong> <code>identity.name</code>, <code>manager.userId</code>, <code>mandate</code> — any empty/absent → <code>missing: [...]</code>, exit 1.</li>
+<li><strong>Warnings (do not block <code>ok</code>, but review):</strong><ul>
+<li><code>approvers</code> empty → <code>request_approval</code> falls back to <code>SLAUDE_APPROVERS</code> env or accepts anyone.</li>
+<li><code>allowedChannels</code> + <code>trustedChannels</code> both empty → only manager/backup can chat outside DMs.</li>
+<li><code>backupManager.userId === manager.userId</code> → backup is redundant.</li>
+<li>Any <code>redactPatterns</code> entry that fails <code>new RegExp(p, &quot;gi&quot;)</code> → rejected as invalid regex.</li>
+</ul>
+</li>
+</ul>
+<h3 id="writing-soulmd-section-cookbook">Writing SOUL.md — section cookbook<a class="anchor" href="#writing-soulmd-section-cookbook" aria-label="Link to Writing SOUL.md — section cookbook">#</a></h3>
+<p>Every list below is <strong>one id per line</strong>, in any of these forms: <code>&lt;@U0XXXXXXXXX&gt;</code>, <code>&lt;#C0123456789|name&gt;</code>, raw <code>U0XXXXXXXXX</code> / <code>C0123456789</code>. Trailing <code>;</code> starts an inline comment.</p>
+<div class="code" data-lang="markdown"><div class="code-bar"><span class="code-lang">markdown</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-markdown"># Persona
+
+## Identity
+- Name: Slaude
+- Role: engineering teammate in #platform
+- Voice: terse, direct, no filler. fragments OK.
+
+## Reporting
+- Manager: U0MANAGER123
+- Manager handle: @you
+- Backup manager: U0DEPUTY456
+- Backup manager handle: @deputy
+
+## DM allowlist
+- &lt;@U0TEAMMATE1&gt;
+- &lt;@U0TEAMMATE2&gt;
+
+## Redaction
+- AKIA[0-9A-Z]{16}                  ; AWS access keys
+- ghp_[0-9A-Za-z]{36}               ; GitHub personal tokens
+- xox[baprs]-[0-9A-Za-z-]{10,}      ; Slack tokens
+
+## Approval timeout
+- 600
+
+## Allowed channels
+- &lt;#C0123456789|engineering&gt;
+- &lt;#G0123456789|private-ops&gt;
+
+## Trusted channels
+- &lt;#C0711111111|squadron-team&gt;
+
+## Values
+- Ownership over ceremony. Ship the smallest thing that proves the idea.
+- Prefer explicit defaults over clever inference.
+
+## Mandate
+- Own the #platform Slack surface. Triage threads, ship fixes, keep context warm so humans can delegate async.
+
+## Approvers
+- &lt;@U0MANAGER123&gt;:    anything                ; catchall, always eligible
+- &lt;@U0REVIEWER123&gt;:   code changes, repo writes, refactors, dependency bumps
+- &lt;@U0DBA123&gt;:        database migrations, schema changes, prod data, SQL
+- &lt;@U0SRE123&gt;:        deploys, infra, kubernetes, rollbacks, ingress, CI/CD
+- &lt;@U0SECURITY123&gt;:   secrets, credentials, IAM, env vars, OAuth scopes
+- &lt;@U0COMMS123&gt;:      external comms, customer messages, emails, social</code></pre></div>
+<h3 id="approvers">Approvers <a id="approvers"></a><a class="anchor" href="#approvers" aria-label="Link to Approvers ">#</a></h3>
+<p>Each approver line is <code>&lt;id-or-mention&gt;: &lt;scope description&gt;</code> — one per person.</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">- &lt;@U123&gt;: anything                                    → catchall — always eligible
+- &lt;@U456&gt;: database migrations, schema changes, SQL    → keyword-matched against the agent's plan summary
+- &lt;@U777&gt;: production deploys, infra, kubernetes
+- &lt;@U888&gt;: external comms — emails, customer messages</code></pre></div>
+<p><strong>Catchall keywords</strong> (case-insensitive, tested at start of scope): <code>anything</code>, <code>any</code>, <code>all</code>, <code>*</code>, <code>default</code>, <code>catchall</code>, <code>everything</code> — marked <code>catchall: true</code>, always included.</p>
+<p><strong>Keyword matching</strong> (<code>src/soul/loader.ts</code> → <code>selectApprovers</code> / <code>tokenize</code>): the runtime tokenizes the plan summary and each approver&#39;s scope (lowercased, split on <code>[^a-z0-9]</code>, crude-stemmed <code>s|es|ing|ed</code>, stopword-filtered, minimum 3 chars), then selects every approver whose scope tokens overlap with summary tokens, plus all catchalls. If nothing matches, it falls back to every listed approver so the request is not undeliverable. Comma, dash, and <code>and</code> are equivalent separators in scope text.</p>
+<p>Fallback chain:</p>
+<ol>
+<li><code>## Approvers</code> exists → keyword-matched entries from SOUL.md (or channel override when in that channel).</li>
+<li>No <code>## Approvers</code> → <code>SLAUDE_APPROVERS</code> env (comma-separated ids, no scopes — all treated as catchalls).</li>
+<li>Neither → any clicker accepted (only safe for solo / DM workspaces).</li>
+</ol>
+<blockquote>
+<p><strong>Grounding guard.</strong> The extractor verifies every id it returns appears verbatim in the raw <code>SOUL.md</code> text (<code>assertIdsGroundedInPersona</code> in <code>extract.ts</code>). A hallucinated id is thrown rather than widening the allowlist.</p>
+</blockquote>
+<h3 id="channel-overrides">Channel overrides <a id="channel-overrides"></a><a class="anchor" href="#channel-overrides" aria-label="Link to Channel overrides ">#</a></h3>
+<p>Repeatable <code>## Channel &lt;#Cxxx|name&gt;</code> (or raw <code>Cxxx</code>/<code>Gxxx</code>/<code>Dxxx</code>) blocks replace the global <code>Mandate</code> and/or <code>Approvers</code> when slaude operates in that channel. Replace semantics — absent subsection falls back to global.</p>
+<p>The manager and backup manager are always retained as catchall approvers in every channel override (<code>withManagerApprover</code> in <code>extract.ts</code>) — a channel block can only <em>add</em> approvers, never lock the operator out.</p>
+<div class="code" data-lang="markdown"><div class="code-bar"><span class="code-lang">markdown</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-markdown">## Channel &lt;#C0999999999|incidents&gt;
+
+### Mandate
+- Own incident triage in #incidents — acknowledge within 2 minutes, keep the timeline, page on-call if needed.
+
+### Approvers
+- &lt;@U0INCIDENTLEAD&gt;: anything             ; catchall for this channel
+- &lt;@U0DBA123&gt;:       migrations, SQL, schema changes</code></pre></div>
+<p>Resolution at runtime: <code>effectiveSoulForChannel(channelId)</code> in <code>extract.ts</code> starts from the global <code>soulData()</code> (runtime overlays preserved), looks up the matching <code>channelOverrides</code> entry, and applies: <code>mandate</code> replaced when the override sets one (non-empty after trim), <code>approvers</code> replaced when the override lists ≥ 1. The channel mandate is injected as <code>&lt;channel-mandate&gt;</code> directive that supersedes the global Mandate for that channel.</p>
+<blockquote>
+<p><strong>Template stub block.</strong> The seeded <code>SOUL.md</code> contains a <code>## Channel &lt;#C0123456789|example-channel&gt;</code> stub with a placeholder id — the extractor skips it (placeholder ids like <code>C0123456789</code> and <code>&lt;@manager-id&gt;</code> are ignored). Delete the stub or fill it with a real channel id.</p>
+</blockquote>
+<h3 id="minimal-valid-soulmd">Minimal valid SOUL.md<a class="anchor" href="#minimal-valid-soulmd" aria-label="Link to Minimal valid SOUL.md">#</a></h3>
+<p>This is the smallest file that passes <code>bun run validate-soul</code>:</p>
+<div class="code" data-lang="markdown"><div class="code-bar"><span class="code-lang">markdown</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-markdown"># Persona
+
+## Identity
+- Name: Slaude
+
+## Reporting
+- Manager: U0MANAGER123
+
+## Mandate
+- Own the #engineering Slack surface — triage, ship, keep context warm.</code></pre></div>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">bun run validate-soul
+# [validate] ok                        → exit 0
+# [validate] missing required fields:  → exit 1
+#   - identity.name
+#   - manager.userId
+#   - mandate
+# [validate] warnings:                 → exit 0, but review
+#   - approvers is empty — request_approval blocks will fall back to env or accept anyone
+#   - allowedChannels + trustedChannels both empty — only manager/backup can chat outside DMs</code></pre></div>
+<p>Add the optional sections above as your workspace grows. Update <code>SOUL.md</code> without a restart — <code>soulData()</code> re-reads overrides on every call, and the extractor cache is keyed by <code>sha256(SOUL.md)</code> so an edit triggers a fresh extraction on next boot.</p>
+<h3 id="runtime-overrides-without-redeploy">Runtime overrides without redeploy <a id="runtime-overrides"></a><a class="anchor" href="#runtime-overrides-without-redeploy" aria-label="Link to Runtime overrides without redeploy ">#</a></h3>
+<p>Managers can mutate ACLs at runtime without editing <code>SOUL.md</code> or restarting. The <code>soul_overrides</code> sqlite table (effective view = <code>(base ∪ adds) − removes</code> per field) backs two surfaces:</p>
+<ul>
+<li>Slash: <code>/soul trust &lt;#Cxxx&gt;</code> / <code>/soul allow &lt;#Cxxx&gt;</code> / <code>/soul block &lt;@Uxxx&gt;</code> / <code>/soul dm &lt;@Uxxx&gt;</code> and their remove counterparts.</li>
+<li>MCP: <code>slaude_soul_override</code> with the same <code>FIELD_ALIASES</code> (<code>trust</code>→<code>trustedChannels</code>, <code>allow</code>→<code>allowedChannels</code>, <code>dm</code>→<code>dmAllowedUsers</code>, <code>block</code>→<code>blockedUsers</code>).</li>
+</ul>
+<p>Validation (<code>src/soul/overrides.ts</code> → <code>mutateOverride</code>): id shape (<code>^[CGD][A-Z0-9]+$</code> for channels, <code>^[UW][A-Z0-9]+$</code> for users), self-lockout guard (refusing to block the manager), authority check performed by the caller.</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash"># Runtime ACL examples (Slack slash)
+/soul trust &lt;#C0711111111|squadron-team&gt;   # add to trustedChannels
+/soul block &lt;@U0NOISY999&gt;                  # block a noisy user in an otherwise trusted channel
+/soul dm &lt;@U0TEAMMATE1&gt;                    # allow DM from a teammate</code></pre></div>
+<hr>
+<h2 id="dependency-manifests-slaudejson-amp-slaudelock">Dependency manifests — slaude.json &amp; slaude.lock <a id="manifests"></a><a class="anchor" href="#dependency-manifests-slaudejson-amp-slaudelock" aria-label="Link to Dependency manifests — slaude.json &amp;amp; slaude.lock ">#</a></h2>
+<p><code>slaude.json</code> and <code>slaude.lock</code> live at <code>~/.slaude/slaude.json</code> and <code>~/.slaude/slaude.lock</code>. They are the declarative dependency surfaces for <strong>plugins, skills, and knowledge bases</strong> — MCP is deliberately excluded and stays in <code>.mcp.json</code>.</p>
+<p>Schema lives in <code>src/config/manifest-schema.ts</code>; installer is <code>src/cli/install.ts</code> (<code>bun run install-deps</code> / <code>slaude install</code>).</p>
+<h3 id="slaudejson">slaude.json<a class="anchor" href="#slaudejson" aria-label="Link to slaude.json">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>plugins</code></td><td><code>PluginEntry[]</code></td><td>No</td><td>CC plugins — marketplace git + plugin name + ref.</td></tr>
+<tr><td><code>skills</code></td><td><code>SkillEntry[]</code></td><td>No</td><td>Skills — <code>source</code> (Vercel-style), or <code>git</code>+<code>ref</code>, or local <code>slug</code>. Mixed modes are invalid.</td></tr>
+<tr><td><code>knowledge</code></td><td><code>KnowledgeEntry[]</code></td><td>No</td><td>KB wikis — <code>label</code> + optional <code>git</code>+<code>ref</code>. Mixed <code>git</code>/<code>ref</code> invalid.</td></tr>
+<tr><td><code>slaude_skills</code></td><td><code>SlaudeSkillsTarget</code></td><td>No</td><td>Reserved target for slaude-owned skills manifest (optional).</td></tr>
+<tr><td><code>slaude_knowledge</code></td><td><code>SlaudeKnowledgeTarget</code></td><td>No</td><td>Reserved target for slaude-owned knowledge manifest (optional).</td></tr>
+</tbody></table></div>
+<p><strong>Entry shapes:</strong></p>
+<div class="code" data-lang="typescript"><div class="code-bar"><span class="code-lang">typescript</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-typescript">// Plugin — explicit marketplace git + plugin name + ref
+{ marketplace: &quot;github:owner/repo&quot; | &quot;https://…&quot;, plugin: &quot;my-plugin&quot;, ref: &quot;v1.2.3&quot; }
+
+// Skill — three mutually exclusive modes
+{ source: &quot;owner/repo&quot; }                          // vercel-style, ref defaults to &quot;main&quot;
+{ source: &quot;owner/repo/skill-path&quot; }               // path inside repo
+{ source: &quot;owner/repo@ref&quot; }                      // pinned ref
+{ source: &quot;owner/repo/skill-path@ref&quot; }
+{ git: &quot;github:owner/repo&quot;, ref: &quot;main&quot; }         // git-backed
+{ slug: &quot;local-skill&quot; }                           // local (no git)
+
+// Knowledge — label + optional git
+{ label: &quot;my-kb&quot;, git: &quot;github:owner/repo&quot;, ref: &quot;main&quot;, path: &quot;wiki&quot; }
+{ label: &quot;local-kb&quot; }                             // local</code></pre></div>
+<p>Source → git resolution (<code>resolveSkillSource</code>): <code>owner/repo[/path][@ref]</code> → <code>{ git: &quot;github:owner/repo&quot;, ref: &quot;&lt;ref or main&gt;&quot;, path?: &quot;&lt;path&gt;&quot; }</code>. Slug resolution falls back to last path segment or repo name lowercased.</p>
+<p><strong>Full example:</strong></p>
+<div class="code" data-lang="json"><div class="code-bar"><span class="code-lang">json</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-json">{
+  &quot;plugins&quot;: [
+    { &quot;marketplace&quot;: &quot;github:example/marketplace&quot;, &quot;plugin&quot;: &quot;my-plugin&quot;, &quot;ref&quot;: &quot;v1.2.3&quot; }
+  ],
+  &quot;skills&quot;: [
+    { &quot;source&quot;: &quot;example/repo/my-skill@v1.0.0&quot; },
+    { &quot;git&quot;: &quot;github:example/other-repo&quot;, &quot;ref&quot;: &quot;main&quot; },
+    { &quot;slug&quot;: &quot;local-helper&quot; }
+  ],
+  &quot;knowledge&quot;: [
+    { &quot;label&quot;: &quot;team-wiki&quot;, &quot;git&quot;: &quot;github:example/team-wiki&quot;, &quot;ref&quot;: &quot;main&quot; }
+  ]
+}</code></pre></div>
+<h3 id="slaudelock">slaude.lock<a class="anchor" href="#slaudelock" aria-label="Link to slaude.lock">#</a></h3>
+<p>Pinned shas produced by <code>bun run install-deps</code>. Every entry records the resolved 40-char <code>sha</code> so builds are reproducible.</p>
+<div class="table-wrap"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>version</code></td><td><code>1</code></td><td>Lockfile version literal.</td></tr>
+<tr><td><code>generated_at</code></td><td>ISO datetime</td><td>When the lock was written.</td></tr>
+<tr><td><code>marketplaces</code></td><td><code>Record&lt;string, {sha, plugins}&gt;</code></td><td>Deduped by <code>marketplace@ref</code> — plugin versions come from <code>marketplace.json</code>, not the git ref.</td></tr>
+<tr><td><code>skills</code></td><td><code>Record&lt;slug, {git, ref, sha, path?}&gt;</code></td><td>40-char sha per skill.</td></tr>
+<tr><td><code>knowledge</code></td><td><code>Record&lt;label, {git, ref, sha, path?}&gt;</code></td><td>40-char sha per KB.</td></tr>
+</tbody></table></div>
+<p><strong>Installer flags:</strong></p>
+<div class="table-wrap"><table><thead><tr><th>Flag</th><th>What it does</th><th>Exit codes</th></tr></thead><tbody>
+<tr><td><code>bun run install-deps</code></td><td>Install missing entries, respect lock shas for existing</td><td><code>0</code> ok, <code>2</code> schema error, <code>3</code> git/net error, <code>4</code> marketplace error</td></tr>
+<tr><td><code>bun run install-deps --update</code></td><td>Re-resolve branch refs to latest shas</td><td>same</td></tr>
+<tr><td><code>bun run install-deps --frozen</code></td><td>Fail if any manifest entry is not in the lock (no network at image build)</td><td><code>0</code> satisfied, error otherwise</td></tr>
+<tr><td><code>bun run install-deps --check</code></td><td>Exit <code>0</code> if lock satisfies manifest, <code>1</code> if drift (no writes)</td><td><code>0</code>/<code>1</code></td></tr>
+</tbody></table></div>
+<p><strong>Install layout inside <code>SLAUDE_HOME</code>:</strong></p>
+<div class="table-wrap"><table><thead><tr><th>Source</th><th>Destination</th></tr></thead><tbody>
+<tr><td>Plugins</td><td><code>$CLAUDE_CONFIG_DIR/plugins/cache/&lt;marketplace&gt;/&lt;plugin&gt;/&lt;version&gt;/</code></td></tr>
+<tr><td>Skills</td><td><code>$SLAUDE_HOME/skills/&lt;slug&gt;/</code></td></tr>
+<tr><td>KBs</td><td><code>$SLAUDE_HOME/knowledge/&lt;label&gt;/</code></td></tr>
+</tbody></table></div>
+<blockquote>
+<p><strong>Dockerfile pattern.</strong> Run <code>slaude install --frozen</code> inside the Dockerfile before the runtime stage so the image ships self-contained with no network at boot. Stage clones inside a sibling of the eventual destination (not <code>$SLAUDE_HOME/.tmp</code>) so <code>renameSync</code> stays on the same filesystem across PVC <code>subPath</code> volumes.</p>
+</blockquote>
+<p><strong>No slaude.json → no-op.</strong> If <code>~/.slaude/slaude.json</code> is missing the installer logs <code>no slaude.json — nothing to install</code> and exits <code>0</code>.</p>
+<hr>
+<h2 id="external-mcp-mcpjson">External MCP — .mcp.json <a id="external-mcp"></a><a class="anchor" href="#external-mcp-mcpjson" aria-label="Link to External MCP — .mcp.json ">#</a></h2>
+<p>External MCP servers are declared in <code>~/.slaude/.mcp.json</code> (global) or <code>~/.slaude/personas/&lt;name&gt;/mcp.json</code> (per-persona overlay in multi-persona mode). Missing file → empty result — slaude still boots.</p>
+<p>Loader: <code>src/gateway/core/external-mcp.ts</code> → <code>loadExternalMcp(personaName?)</code> + <code>parseExternalMcp(parsed, env)</code>.</p>
+<h3 id="file-shape">File shape<a class="anchor" href="#file-shape" aria-label="Link to File shape">#</a></h3>
+<div class="code" data-lang="json"><div class="code-bar"><span class="code-lang">json</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-json">{
+  &quot;mcpServers&quot;: {
+    &quot;workbench&quot;: {
+      &quot;type&quot;: &quot;http&quot;,
+      &quot;url&quot;: &quot;https://workbench.example.com/mcp&quot;,
+      &quot;headers&quot;: { &quot;Authorization&quot;: &quot;Bearer ${GRAFANA_API_KEY}&quot; }
+    },
+    &quot;local-tool&quot;: {
+      &quot;command&quot;: &quot;node&quot;,
+      &quot;args&quot;: [&quot;./server.js&quot;, &quot;--port&quot;, &quot;${PORT}&quot;],
+      &quot;env&quot;: { &quot;API_KEY&quot;: &quot;${MY_API_KEY}&quot; }
+    }
+  },
+  &quot;privateServices&quot;: [&quot;workbench&quot;]
+}</code></pre></div>
+<div class="table-wrap"><table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>mcpServers</code></td><td><code>Record&lt;string, McpServerConfig&gt;</code></td><td>No</td><td>Map of server name → config. <code>type</code> is <code>stdio</code> (requires <code>command</code>), <code>http</code>, or <code>sse</code> (requires <code>url</code>). <code>headers</code>/<code>env</code>/<code>args</code> are optional. Bare object without <code>mcpServers</code> key is also accepted (parsed as <code>parsed.mcpServers ?? parsed</code>).</td></tr>
+<tr><td><code>privateServices</code></td><td><code>string[]</code></td><td>No</td><td>Names that are <strong>credential-stripped</strong> when running inside a <code>/1on1</code> locked thread. Entries not in <code>mcpServers</code> are warned and dropped.</td></tr>
+</tbody></table></div>
+<p><strong>Env substitution:</strong> every <code>${VAR}</code> placeholder across <code>env</code> values, <code>headers</code> values, <code>url</code>, and <code>args</code> entries is expanded via <code>env[VAR] ?? &quot;&quot;</code>. Use it to keep secrets out of the file:</p>
+<div class="code" data-lang="json"><div class="code-bar"><span class="code-lang">json</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-json">{
+  &quot;mcpServers&quot;: {
+    &quot;grafana&quot;: {
+      &quot;type&quot;: &quot;http&quot;,
+      &quot;url&quot;: &quot;${GRAFANA_URL}&quot;,
+      &quot;headers&quot;: { &quot;Authorization&quot;: &quot;Bearer ${GRAFANA_API_KEY}&quot; }
+    }
+  }
+}</code></pre></div>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash"># .env companions for the .mcp.json above
+GRAFANA_URL=https://grafana.example.com/mcp
+GRAFANA_API_KEY=eyJrIjoi…</code></pre></div>
+<p><strong>Trust boundary for private services:</strong> inside a <code>/1on1</code> locked thread, each <code>privateServices</code> entry is mounted as a <code>clearCredentials</code> copy — <code>env</code> and <code>headers</code> emptied, URL <code>username</code>/<code>password</code>/<code>search</code>/<code>hash</code> stripped. Host/path preserved so the server still launches and reaches its endpoint — just anonymous. Source map is never mutated.</p>
+<p><strong>Plugin <code>.mcp.json</code> landmine:</strong> <code>claude-agent-sdk</code> 0.1.x handles <code>--plugin-dir</code> (skills/commands/hooks/agents) but does <strong>not</strong> mount the plugin&#39;s <code>.mcp.json</code> MCP servers. slaude works around this by loading each installed plugin&#39;s <code>.mcp.json</code> in <code>src/config/plugins.ts</code> (<code>loadInstalledPluginMcps</code>) and merging them into <code>Options.mcpServers</code>. <code>npx</code> is also rewritten to <code>bunx</code> so plugins authored for Node still work on slaude&#39;s bun-only base image.</p>
+<p><strong>Per-session mount:</strong> the gateway&#39;s <code>McpResolver</code> resolves <code>mcpServers</code> fresh per session; the private-services override is applied when the thread is <code>/1on1</code>-locked. <code>GET /readyz</code> and <code>POST /mcp</code> style flows use this same resolver.</p>
+<hr>
+<h2 id="validation-bun-run-validate-soul">Validation — bun run validate-soul <a id="validation"></a><a class="anchor" href="#validation-bun-run-validate-soul" aria-label="Link to Validation — bun run validate-soul ">#</a></h2>
+<p>Validate <code>~/.slaude/SOUL.md</code> against the required schema at any time — locally, in CI, or before a deploy.</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">bun run validate-soul
+# alias: bun src/cli/validate.ts
+
+# Exit codes
+#   0 — ok (all required fields present; warnings may still print)
+#   1 — missing required fields (identity.name, manager.userId, or mandate)
+#   2 — extraction failure (missing auth: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN, or provider unreachable)</code></pre></div>
+<p><strong>What it does (<code>src/cli/validate.ts</code> + <code>src/soul/validate.ts</code>):</strong></p>
+<ol>
+<li><code>loadSoulData()</code> — cache hit (<code>~/.slaude/cache/soul.&lt;sha&gt;.json</code>) → return; otherwise call the provider&#39;s <code>/v1/messages</code> with <code>EXTRACTION_PROMPT</code>, validate with <code>SoulDataSchema</code>, assert every extracted Slack id appears verbatim in <code>SOUL.md</code>, cache, return. On any failure → regex fallback (<code>approvers</code> only).</li>
+<li><code>validateSoul(data)</code> — check the three required fields; emit warnings for empty <code>approvers</code>, empty channels, redundant backup manager, invalid <code>redactPatterns</code> regexes.</li>
+<li>Print <code>missing</code> to stderr, <code>warnings</code> to stderr, and <code>ok</code> to stdout; exit with the code above.</li>
+</ol>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash"># Success
+$ bun run validate-soul
+[validate] ok
+
+# Missing required fields — still exits 1
+$ bun run validate-soul
+[validate] missing required fields:
+  - identity.name
+  - mandate
+[validate] warnings:
+  - approvers is empty — request_approval blocks will fall back to env or accept anyone
+  - allowedChannels + trustedChannels both empty — only manager/backup can chat outside DMs
+
+# Extraction failure — no auth configured (exit 2)
+$ bun run validate-soul
+[validate] failed to load SOUL.md: missing auth: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN
+
+# Warnings only — still exit 0 (review but deploy is not blocked)
+$ bun run validate-soul
+[validate] warnings:
+  - approvers is empty — request_approval blocks will fall back to env or accept anyone
+[validate] ok</code></pre></div>
+<blockquote>
+<p><strong>CI recipe.</strong> Fail the build on <code>exit 1</code> (missing identity), allow <code>exit 0</code> with warnings (triage later), and treat <code>exit 2</code> as a provider/config error — distinct from a bad <code>SOUL.md</code>.</p>
+</blockquote>
+<div class="code" data-lang="yaml"><div class="code-bar"><span class="code-lang">yaml</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-yaml"># .github/workflows/validate.yml
+- run: bun run validate-soul
+# exit 0 → green (warnings are non-blocking)
+# exit 1 → red — SOUL.md missing required fields
+# exit 2 → red — extraction failure (check ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN)</code></pre></div>
+<blockquote>
+<p><strong>When to re-validate.</strong> <code>SOUL.md</code> is re-read on every inbound message (<code>soulData()</code> applies runtime overlays per call and the extractor cache is keyed by <code>sha256(SOUL.md)</code>), but running <code>validate-soul</code> explicitly surfaces the <code>missing</code>/<code>warnings</code> breakdown and the exit code — useful after editing <code>SOUL.md</code>, after a <code>/soul</code> runtime override, or in a preflight check before <code>docker build</code>.</p>
+</blockquote>
+<hr>
+<h2 id="quick-reference-copy-paste-starters">Quick reference — copy-paste starters<a class="anchor" href="#quick-reference-copy-paste-starters" aria-label="Link to Quick reference — copy-paste starters">#</a></h2>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash"># 1. Tokens — .env
+SLACK_BOT_TOKEN=xoxb-1234567890-XXXXXXXXXXXX
+SLACK_APP_TOKEN=xapp-1-A111-abc123def456
+ANTHROPIC_API_KEY=sk-ant-...
+
+# 2. Minimal SOUL.md → validate → boot
+cat &gt; ~/.slaude/SOUL.md &lt;&lt; 'MD'
+# Persona
+## Identity
+- Name: Slaude
+## Reporting
+- Manager: U0MANAGER123
+## Mandate
+- Own the #engineering Slack surface — triage, ship, keep context warm.
+MD
+bun run validate-soul   # → [validate] ok
+bun run dev
+
+# 3. Full SOUL.md once the team grows — add trusted channels, redaction, approvers
+#    See the section cookbook above and the minimal valid example.
+
+# 4. External MCP — .mcp.json with env substitution
+cat &gt; ~/.slaude/.mcp.json &lt;&lt; 'JSON'
+{
+  &quot;mcpServers&quot;: {
+    &quot;grafana&quot;: { &quot;type&quot;: &quot;http&quot;, &quot;url&quot;: &quot;${GRAFANA_URL}&quot;, &quot;headers&quot;: { &quot;Authorization&quot;: &quot;Bearer ${GRAFANA_API_KEY}&quot; } }
+  },
+  &quot;privateServices&quot;: [&quot;grafana&quot;]
+}
+JSON
+
+# 5. Dependencies — slaude.json + lock + frozen install (Dockerfile)
+cat &gt; ~/.slaude/slaude.json &lt;&lt; 'JSON'
+{ &quot;skills&quot;: [{ &quot;source&quot;: &quot;example/repo/my-skill@v1.0.0&quot; }], &quot;knowledge&quot;: [{ &quot;label&quot;: &quot;team-wiki&quot;, &quot;git&quot;: &quot;github:example/wiki&quot;, &quot;ref&quot;: &quot;main&quot; }] }
+JSON
+bun run install-deps          # resolve shas → slaude.lock
+bun run install-deps --frozen # verify at build time (fails if lock is stale)</code></pre></div>
+<p>Related pages: <a href="../start/getting-started.html">Getting Started</a> · <a href="../start/architecture.html">Architecture</a> · <a href="../guides/index.html">Guides</a> · <a href="../deploy/index.html">Deployment &amp; Ops</a></p>
+
+    </article>
+    <nav class="prevnext"><a class="pn pn-prev" href="../guides/examples.html"><span class="pn-dir">Previous</span><span class="pn-label">Examples</span></a><a class="pn pn-next" href="api.html"><span class="pn-dir">Next</span><span class="pn-label">API reference</span></a></nav>
+    <footer class="page-foot">
+      <a href="https://github.com/barockok/slaude/edit/main/docs/site/_content/reference/configuration.md" target="_blank" rel="noopener">Edit this page on GitHub</a>
+      <span>slaude v0.42.0</span>
+    </footer>
+  </main>
+
+  <div class="toc-col"><nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul><li class="toc-h2"><a href="#slack">Slack </a></li><li class="toc-h3"><a href="#tokens">Tokens</a></li><li class="toc-h3"><a href="#socket-mode-amp-required-scopes">Socket Mode &amp;amp; required scopes</a></li><li class="toc-h3"><a href="#app-level-scopes-amp-setup-checklist">App-level scopes &amp;amp; setup checklist</a></li><li class="toc-h3"><a href="#agents-amp-ai-status">Agents &amp;amp; AI status</a></li><li class="toc-h3"><a href="#optional-post-as-the-real-user">Optional — post as the real user</a></li><li class="toc-h2"><a href="#anthropic-auth-amp-model-selection">Anthropic auth &amp;amp; model selection </a></li><li class="toc-h3"><a href="#auth-modes-pick-one">Auth modes — pick one</a></li><li class="toc-h3"><a href="#anthropic_base_url-gateways">ANTHROPIC_BASE_URL — gateways</a></li><li class="toc-h3"><a href="#model-selection-precedence-amp-the-smallfast-model">Model selection — precedence &amp;amp; the small/fast model</a></li><li class="toc-h2"><a href="#runtime-environment-variables">Runtime environment variables </a></li><li class="toc-h3"><a href="#required">Required</a></li><li class="toc-h3"><a href="#anthropic-provider">Anthropic / provider</a></li><li class="toc-h3"><a href="#slack-optional">Slack — optional</a></li><li class="toc-h3"><a href="#home-amp-paths">Home &amp;amp; paths</a></li><li class="toc-h3"><a href="#queue-amp-redis-horizontal-scale">Queue &amp;amp; Redis — horizontal scale </a></li><li class="toc-h3"><a href="#sessions-amp-ux">Sessions &amp;amp; UX</a></li><li class="toc-h3"><a href="#metrics-amp-context-budget">Metrics &amp;amp; context budget</a></li><li class="toc-h3"><a href="#mcp-oauth-loopback-vs-paste-back">MCP OAuth — loopback vs paste-back</a></li><li class="toc-h3"><a href="#skills-repo-amp-evolution">Skills repo &amp;amp; evolution</a></li><li class="toc-h3"><a href="#external-mcp-env-references">External MCP env references</a></li><li class="toc-h2"><a href="#filesystem-layout-slaude_home">Filesystem layout — SLAUDE_HOME </a></li><li class="toc-h2"><a href="#connect-broker">Connect broker </a></li><li class="toc-h3"><a href="#1on1-mode-shipped-no-extra-env">/1on1 mode (shipped, no extra env)</a></li><li class="toc-h3"><a href="#connect-broker-when-you-need-it">Connect broker — when you need it</a></li><li class="toc-h2"><a href="#soulmd-persona-schema">SOUL.md — persona schema </a></li><li class="toc-h3"><a href="#validated-schema-what-extraction-looks-for">Validated schema — what extraction looks for</a></li><li class="toc-h3"><a href="#required-vs-warnings-what-validate-soul-checks">Required vs warnings — what validate-soul checks</a></li><li class="toc-h3"><a href="#writing-soulmd-section-cookbook">Writing SOUL.md — section cookbook</a></li><li class="toc-h3"><a href="#approvers">Approvers </a></li><li class="toc-h3"><a href="#channel-overrides">Channel overrides </a></li><li class="toc-h3"><a href="#minimal-valid-soulmd">Minimal valid SOUL.md</a></li><li class="toc-h3"><a href="#runtime-overrides-without-redeploy">Runtime overrides without redeploy </a></li><li class="toc-h2"><a href="#dependency-manifests-slaudejson-amp-slaudelock">Dependency manifests — slaude.json &amp;amp; slaude.lock </a></li><li class="toc-h3"><a href="#slaudejson">slaude.json</a></li><li class="toc-h3"><a href="#slaudelock">slaude.lock</a></li><li class="toc-h2"><a href="#external-mcp-mcpjson">External MCP — .mcp.json </a></li><li class="toc-h3"><a href="#file-shape">File shape</a></li><li class="toc-h2"><a href="#validation-bun-run-validate-soul">Validation — bun run validate-soul </a></li><li class="toc-h2"><a href="#quick-reference-copy-paste-starters">Quick reference — copy-paste starters</a></li></ul></nav></div>
+</div>
+
+<div class="search-overlay" hidden>
+  <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search documentation">
+    <div class="search-input-row">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <input type="search" placeholder="Search the docs…" aria-label="Search" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="search-results" role="listbox"></div>
+  </div>
+</div>
+
+<script>window.__SLAUDE_BASE__="../";</script>
+<script src="../assets/docs.js?v=a084ede1" defer></script>
+</body>
+</html>

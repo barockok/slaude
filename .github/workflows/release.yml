@@ -69,7 +69,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          NOTES_FILE="docs/releases/${REF_NAME}.md"
+          NOTES_FILE="docs/site/_content/releases/${REF_NAME}.md"
           if [ -f "$NOTES_FILE" ]; then
             echo "Using hand-written notes from $NOTES_FILE"
             cp "$NOTES_FILE" CHANGELOG.md

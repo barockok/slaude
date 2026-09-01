@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2026-06-08 — Retro: orchestration, gating &amp; continuous evolution — slaude Docs</title>
+<meta name="description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:title" content="2026-06-08 — Retro: orchestration, gating &amp; continuous evolution — slaude">
+<meta property="og:description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20width%3D'32'%20height%3D'32'%20rx%3D'8'%20fill%3D'%2523853291'%2F%3E%3Ctext%20x%3D'16'%20y%3D'23'%20font-family%3D'Helvetica%2CArial%2Csans-serif'%20font-size%3D'19'%20font-weight%3D'700'%20fill%3D'white'%20text-anchor%3D'middle'%3Es%3C%2Ftext%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/docs.css?v=377763e4">
+<script>(function(){try{var t=localStorage.getItem('slaude-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+    </button>
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true">s</span>
+      <span class="brand-name">slaude</span>
+      <span class="brand-sub">Docs</span>
+    </a>
+    <button class="search-btn" type="button" data-search-open>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <span>Search</span><kbd>⌘K</kbd>
+    </button>
+    <div class="topbar-actions">
+      <a class="ghost" href="https://github.com/barockok/slaude" target="_blank" rel="noopener">GitHub</a>
+      <button class="theme-btn" type="button" aria-label="Toggle theme">
+        <svg class="i-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1M12.9 12.9l-1.1-1.1M4.2 4.2 3.1 3.1"/></svg>
+        <svg class="i-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="topnav" aria-label="Sections"><div class="topnav-inner"><a class="topnav-tab" href="../index.html">Get started</a><a class="topnav-tab" href="../guides/index.html">Guides</a><a class="topnav-tab" href="../reference/configuration.html">Reference</a><a class="topnav-tab" href="../deploy/index.html">Deploy</a><a class="topnav-tab active" href="2026-08-23-release-candidate-pipeline.html">Field notes</a><a class="topnav-tab" href="../releases/v0.42.0.html">Releases</a></div></nav>
+</header>
+
+<div class="shell">
+  <aside class="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-inner"><div class="nav-group"><p class="nav-group-title">Field notes</p><ul><li><a class="" href="2026-08-23-release-candidate-pipeline.html">Release candidate pipeline</a></li><li><a class="" href="2026-07-27-kb-think-gather-miss.html">kb_think gather miss — runThink vs gather() source scoping</a></li><li><a class="" href="2026-07-24-per-agent-brain-slices.html">Per-agent brain slices: private minds, deliberate sharing</a></li><li><a class="" href="2026-07-08-per-channel-metrics.html">2026-07-08 — Per-channel token and model metrics</a></li><li><a class="" href="2026-07-03-cron-private-mcp-scoping-drift.html">Cron private-MCP credential scoping is decoupled from `oauth_user`</a></li><li><a class="" href="2026-06-20-channel-soul-overrides.html">Channel-specific soul mandate &amp; approvers</a></li><li><a class="" href="2026-06-20-brain-remote-mcp.html">Brain as a remote, OAuth-protected MCP process (configurable)</a></li><li><a class="" href="2026-06-19-shared-oauth-loopback-surface-connect.html">Shared OAuth loopback + surface-aware connect + URL-safe mrkdwn (#51)</a></li><li><a class="" href="2026-06-16-reengage-hook-suppress.html">Re-engage via in-session suppression (hook-only), not Slack backfill</a></li><li><a class="" href="2026-06-15-per-source-gather.html">2026-06-15 — Per-source `gather()`: fix bulk-corpus retrieval noise drowning curated pages</a></li><li><a class="" href="2026-06-14-model-switch-command.html">2026-06-14 — `/model` per-thread model switch</a></li><li><a class="" href="2026-06-14-brain-memoize-failure.html">2026-06-14 — Brain memoize: two failure modes break &quot;remember it&quot;</a></li><li><a class="" href="2026-06-13-kb-first-enforcement.html">KB-first enforcement — from prose to teeth (2026-06-13)</a></li><li><a class="" href="2026-06-11-soul-runtime-overrides.html">Soul runtime overrides — manager-editable ACLs without redeploy (2026-06-11)</a></li><li><a class="" href="2026-06-11-engagement-disengage-durability.html">Engagement review — disengage lasted zero messages (2026-06-11)</a></li><li><a class="" href="2026-06-11-1on1-transcript-sharding.html">/1on1 transcript sharding — resume breaks on lock flips (2026-06-11)</a></li><li><a class="" href="2026-06-10-mcp-global-connect.html">2026-06-10 — `/mcp` global connect (manager wires the agent's shared identity)</a></li><li><a class="" href="2026-06-10-gbrain-slaude-kb.html">gbrain × slaude — powering slaude_kb with a real brain</a></li><li><a class="" href="2026-06-09-post-as-slack-user.html">Post as the agent's real Slack user (opt-in xoxp)</a></li><li><a class="" href="2026-06-09-mcp-oauth-connect-1on1.html">2026-06-09 — /mcp OAuth connect in /1on1 (write CLI mcpOAuth store, CLI owns lifecycle)</a></li><li><a class="" href="2026-06-08-private-services-1on1.html">2026-06-08 — Private services in /1on1 (run as the initiator)</a></li><li><a class="active" href="2026-06-08-orchestration-evolution-retro.html">2026-06-08 — Retro: orchestration, gating &amp; continuous evolution</a></li><li><a class="" href="2026-06-08-oauth-config-dir-1on1.html">2026-06-08 — /1on1 OAuth isolation via per-initiator CLAUDE_CONFIG_DIR</a></li><li><a class="" href="2026-06-08-cron-on-channel.html">cron-on-channel + a latent scheduler-boot crash</a></li><li><a class="" href="2026-06-05-sim-tui-opentui.html">Sim REPL on OpenTUI (React)</a></li><li><a class="" href="2026-06-05-pinned-input-box.html">Pinned bordered input box (sim REPL)</a></li><li><a class="" href="2026-06-04-repl-claude-code-ux.html">Sim REPL — claude-code-grade UX</a></li><li><a class="" href="2026-06-03-surface-abstraction.html">2026-06-03 — Surface abstraction (agent interaction decoupled from Slack)</a></li><li><a class="" href="2026-06-03-sim-interactive-real-agent.html">2026-06-03 — Interactive sim against the live agent (`--real`)</a></li><li><a class="" href="2026-05-29-simulation-gateway.html">2026-05-29 — Simulation gateway (Slack-free verification)</a></li><li><a class="" href="2026-05-29-one-on-one-mode.html">2026-05-29 — /1on1 mode (per-thread engagement lock)</a></li><li><a class="" href="2026-05-29-contextual-mcp-connections.html">2026-05-29 — Contextual per-user MCP connections</a></li><li><a class="" href="2026-05-25-cron-ignore-audit.html">Cron &amp; Ignore System Audit</a></li><li><a class="" href="2026-05-22-plugin-loader-chain.html">2026-05-22 — Plugin loader chain (install → SDK → MCP)</a></li><li><a class="" href="2026-05-21-writable-kb-ingest.html">2026-05-21 — Writable KB + /ingest</a></li><li><a class="" href="2026-05-21-policy-guardrails.html">2026-05-21 — Policy Guardrails (Tier 2 / Tier 3 Design)</a></li><li><a class="" href="2026-05-21-dependency-manifest.html">2026-05-21 — Dependency Manifest Design</a></li><li><a class="" href="2026-05-13-metrics-stop-guard.html">2026-05-13 — fallback ctx, table emphasis, metrics, stop-guard</a></li><li><a class="" href="2026-05-11-structured-soul-channel-mode.html">2026-05-11 — structured-soul + channel-mode gate</a></li><li><a class="" href="2026-05-11-skill-evolution.html">2026-05-11 — skill evolution</a></li><li><a class="" href="2026-05-11-external-mcp.html">2026-05-11 — external MCP via mcp.json</a></li><li><a class="" href="2026-05-11-context-budget-tracking.html">2026-05-11 — context budget tracking</a></li><li><a class="" href="2026-05-11-claude-subscription-oauth.html">2026-05-11 — Claude subscription OAuth</a></li><li><a class="" href="2026-05-09-slack-ux-engagement.html">2026-05-09 / 2026-05-10 — Slack UX, engagement, approval, CI</a></li><li><a class="" href="2026-05-08-mvp-bootstrap.html">2026-05-08 — MVP bootstrap</a></li></ul></div></div>
+  </aside>
+
+  <main id="main" class="content">
+    <article class="prose">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Field notes</p>
+          <h1>2026-06-08 — Retro: orchestration, gating &amp; continuous evolution</h1>
+        </div>
+        <button class="copy-page" type="button" title="Copy this page as Markdown for an agent">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 4 12h1.5"/></svg>
+          <span>Copy page</span>
+        </button>
+      </div>
+      
+      <p>External AI-engineer review of slaude as a &quot;team-member agent&quot; runtime on top of
+<code>claude-agent-sdk</code>. Four axes audited: <strong>gating</strong>, <strong>engine</strong>, <strong>evolution/learning</strong>,
+<strong>architecture seams</strong>. This is a snapshot retro — findings reflect the codebase at
+commit <code>027a263</code> (sim REPL / surface abstraction merged).</p>
+<h2 id="tldr">TL;DR<a class="anchor" href="#tldr" aria-label="Link to TL;DR">#</a></h2>
+<p>Engineering quality is high, test discipline is real (666 tests, 25 sim transcripts),
+gating is thoughtfully layered. <strong>But there is a premise mismatch.</strong> The north star
+(&quot;skills grow over time, episodic+semantic memory, runs unattended, evolves like
+hermes-agent / OpenClaw&quot;) is the <em>least-built</em> part of the system. Today slaude is a
+well-managed Claude Code instance in Slack — not a self-improving, long-running agent.</p>
+<p>The two things that <em>define</em> the premise — <strong>autonomous evolution</strong> and <strong>unattended
+longevity</strong> — are the two weakest areas. Close the reflection loop and the
+context-survival gap, or restate the north star.</p>
+<hr>
+<h2 id="1-gating-strongest-area-but-the-floor-is-soft">1. Gating — strongest area, but the floor is soft<a class="anchor" href="#1-gating-strongest-area-but-the-floor-is-soft" aria-label="Link to 1. Gating — strongest area, but the floor is soft">#</a></h2>
+<p>Six gates stack in <code>handleMessage</code>: channel-mode → blocked-user → ignore → 1on1-lock →
+engagement → permission (SDK <code>canUseTool</code>) → approval (agent-initiated). Genuine
+defense-in-depth. Output is MCP-tool-only (no raw assistant text leaks to Slack),
+approver identity is resolved server-side, channel allowlist is SOUL-grounded.</p>
+<h3 id="problems">Problems<a class="anchor" href="#problems" aria-label="Link to Problems">#</a></h3>
+<ul>
+<li><strong>Gating is advisory, not enforced.</strong> <code>request_approval</code> is an <em>agent-initiated</em> MCP
+tool (<code>approval-gate.ts</code>), not an SDK hook. The agent decides <em>when</em> a checkpoint
+fires. <code>RUNTIME_BASELINE</code> (<code>soul/loader.ts</code>) <em>mandates</em> it, but nothing in code forces
+it. A misaligned agent in <code>/mode bypass</code> can skip every checkpoint. The boundary is
+model alignment, not code.</li>
+<li><strong>Timeout auto-denies, but the agent must honor it.</strong> On timeout the decision resolves
+<code>approved=false</code> — the agent is trusted to check it and stop. No hard gate. An
+implementation bug (or willful agent) proceeds unapproved.</li>
+<li><strong>Approver selection is manipulable.</strong> Approvers are keyword-matched against the
+agent-authored <code>summary</code> (<code>approval-gate.ts:131</code>). The agent writes the summary <em>and</em>
+triggers the selection — rewording widens scope. No adversarial test covers this.</li>
+<li><strong><code>mcp__slaude_slack__*</code> is blanket auto-allowed</strong> (<code>permission-gate.ts:145</code>). Fine
+today (output-only) but large blast radius if any of those tools become stateful.</li>
+<li><strong>No audit log anywhere.</strong> The only record of approve/deny decisions is mutable Slack
+messages. Not compliance-ready.</li>
+</ul>
+<h3 id="recommendations">Recommendations<a class="anchor" href="#recommendations" aria-label="Link to Recommendations">#</a></h3>
+<ol>
+<li>Move the high-risk gate into an SDK <code>PreToolUse</code> hook (deterministic, code-side)
+instead of an agent-called MCP tool. The Tier-3 policy-service design already exists
+in <code>docs/findings/2026-05-21-policy-guardrails.md</code> — ship it.</li>
+<li>Add an append-only decision log table to sqlite (who/what/when/verdict).</li>
+<li>Add an adversarial test: reworded summary must not widen approver scope.</li>
+</ol>
+<hr>
+<h2 id="2-engine-clean-wrap-no-long-run-survival">2. Engine — clean wrap, no long-run survival<a class="anchor" href="#2-engine-clean-wrap-no-long-run-survival" aria-label="Link to 2. Engine — clean wrap, no long-run survival">#</a></h2>
+<p><code>AgentManager</code> over SDK <code>query()</code>: push-based async-generator prompt, per-session
+fire-and-forget loop, event fanout (<code>assistantText|thinking|toolCall|toolResult|done</code>).
+Idiomatic and clean. <code>manager.ts</code> is the core.</p>
+<h3 id="fatal-gaps-vs-the-quotruns-unattendedquot-premise">Fatal gaps vs the &quot;runs unattended&quot; premise<a class="anchor" href="#fatal-gaps-vs-the-quotruns-unattendedquot-premise" aria-label="Link to Fatal gaps vs the &amp;quot;runs unattended&amp;quot; premise">#</a></h3>
+<ul>
+<li><strong>Context exhaustion is tracked but unmanaged.</strong> <code>TokenBudget</code> fires warn/critical
+edge-triggered alerts, then does <em>nothing</em>. No auto-summarize, no turn-drop, no
+rollback. SDK compaction is opaque (<code>PreCompact</code> only emits a UI event;
+<code>manager.ts:263</code>). A long-running agent hits the wall with no recovery path.</li>
+<li><strong>No cross-restart recovery.</strong> Resume is best-effort: provider drops the session →
+one retry → fresh session, history gone (<code>manager.ts:386</code>). A crash mid-turn loses the
+turn. No conversation journal to replay. Disqualifying for a 24/7 agent.</li>
+<li><strong>Unbounded concurrency.</strong> 100 threads → 100 parallel <code>query()</code> loops, no backpressure,
+no fairness, no queue. A runaway thread starves the rest. The connect-broker child pool
+leases are unbounded too (vendor rate-limit risk).</li>
+<li><strong>No cost tracking.</strong> Tokens counted; dollars not. Cost drift is invisible.</li>
+</ul>
+<h3 id="recommendations-priority-order">Recommendations (priority order)<a class="anchor" href="#recommendations-priority-order" aria-label="Link to Recommendations (priority order)">#</a></h3>
+<ol>
+<li>Context-management strategy: an agent-invokable compaction/summarize tool <strong>and</strong> an
+automatic summarize-at-threshold fallback.</li>
+<li>Durable per-turn journal → replay-resume after crash/restart.</li>
+<li>Per-session concurrency cap + a simple scheduler / backpressure.</li>
+<li>Track model cost alongside tokens.</li>
+</ol>
+<hr>
+<h2 id="3-evolution-the-biggest-gap-vs-the-premise">3. Evolution — the biggest gap vs the premise<a class="anchor" href="#3-evolution-the-biggest-gap-vs-the-premise" aria-label="Link to 3. Evolution — the biggest gap vs the premise">#</a></h2>
+<p>North star: skills grow, memory is episodic+semantic, the agent reflects like hermes.</p>
+<h3 id="reality">Reality<a class="anchor" href="#reality" aria-label="Link to Reality">#</a></h3>
+<ul>
+<li><strong>Skills:</strong> the agent <em>can</em> <code>write_skill</code>, and an auto-evolve prompt is injected after
+≥2 substantive tools (<code>manager.ts</code> <code>AUTO_EVOLVE_PROMPT</code>). But writes are
+<strong>approval-gated</strong> — a human must click. Not autonomous. The trigger is a crude
+tool-count heuristic; silent turns that taught a lesson never reflect.</li>
+<li><strong>Memory:</strong> write-only per turn + read-only prefetch (last 5 turns, 50 facts;
+<code>sqlite-provider.ts</code>). <strong>No retrieval tool</strong> — the agent cannot query its own memory
+mid-turn. <strong>No embeddings</strong> — flat SQL, no semantic recall. This is a chat log, not
+hermes memory.</li>
+<li><strong>Soul:</strong> static, operator-owned, immutable at runtime. The agent cannot propose
+identity/mandate refinement.</li>
+<li><strong>Knowledge:</strong> the agent stages <code>raw/</code>, but <code>/ingest</code> is <strong>operator-only</strong>. The agent
+cannot grow its own KB.</li>
+<li><strong>No reflection loop at all.</strong> No &quot;what did I learn&quot; pass, no outcome measurement, no
+feedback. <code>skill_usage</code> is collected but never used to refine.</li>
+</ul>
+<h3 id="what-it-takes-to-match-the-premise">What it takes to match the premise<a class="anchor" href="#what-it-takes-to-match-the-premise" aria-label="Link to What it takes to match the premise">#</a></h3>
+<ol>
+<li>A memory <strong>retrieval tool</strong> (agent-invoked) + embeddings for semantic recall.</li>
+<li>A <strong>reflection pass</strong> every N turns / at session-end — not tool-count gated.</li>
+<li>Agent-triggered ingest (gated by approval, not operator-only).</li>
+<li>A skill-outcome feedback loop — wire <code>skill_usage</code> into refinement.</li>
+<li>Let the agent <em>propose</em> soul deltas for operator review (PR-style).</li>
+</ol>
+<p>Without these, &quot;evolution&quot; is the operator editing markdown.</p>
+<hr>
+<h2 id="4-architecture-honest-seams-slack-still-leaks">4. Architecture — honest seams, Slack still leaks<a class="anchor" href="#4-architecture-honest-seams-slack-still-leaks" aria-label="Link to 4. Architecture — honest seams, Slack still leaks">#</a></h2>
+<p>Surface abstraction is good (≈7/10). The <code>Surface</code> port is clean, MCP tools are
+capability-gated, and the sim runs the <strong>real</strong> <code>SlackSurface</code> over a fake transport —
+a genuine verification harness, not a toy.</p>
+<p>But the premise (&quot;multi-agent, each = own Slack identity&quot;; scope hints at multi-surface)
+is not reflected in the core:</p>
+<ul>
+<li><code>gateway.ts</code> is a 931-line god-object; <code>handleMessage</code> (~410 lines) is deeply
+Slack-specific (engagement, command parse, redaction). A new surface means rewriting it.</li>
+<li>DB schema hardcodes <code>slack_team_id/channel_id/thread_ts</code> — no <code>platform_id</code>/<code>source_id</code>.</li>
+<li><code>SlackContext</code> leaks through <code>SessionMcpCtx</code>; approval rendering is Block-Kit-hardcoded,
+not in the <code>Surface</code> contract.</li>
+</ul>
+<p>The spec honestly defers &quot;gateway neutralization.&quot; Fair. Know that the current
+abstraction decouples <em>agent↔surface</em>, not <em>core↔Slack</em>. Ready to ship; expensive for a
+second surface.</p>
+<hr>
+<h2 id="priority-stack">Priority stack<a class="anchor" href="#priority-stack" aria-label="Link to Priority stack">#</a></h2>
+<div class="table-wrap"><table><thead><tr><th>P</th><th>Item</th><th>Why</th></tr></thead><tbody>
+<tr><td>P0</td><td>Context-window management (self-compact + journal-resume)</td><td>Premise = unattended; today dies at the context wall and on crash</td></tr>
+<tr><td>P0</td><td>Move high-risk gate to an SDK hook, not an agent-called MCP tool</td><td>Gating is bypassable by design</td></tr>
+<tr><td>P1</td><td>Memory retrieval tool + embeddings + reflection pass</td><td>&quot;Evolution&quot; is currently aspirational</td></tr>
+<tr><td>P1</td><td>Append-only audit log</td><td>No compliance trail</td></tr>
+<tr><td>P2</td><td>Concurrency cap + backpressure</td><td>Unbounded parallel loops</td></tr>
+<tr><td>P2</td><td>Skill-outcome feedback loop</td><td><code>skill_usage</code> collected, unused</td></tr>
+<tr><td>P3</td><td>Generalize session identity (<code>platform_id</code>)</td><td>Multi-surface future</td></tr>
+</tbody></table></div>
+<h2 id="highest-leverage-next-steps">Highest-leverage next steps<a class="anchor" href="#highest-leverage-next-steps" aria-label="Link to Highest-leverage next steps">#</a></h2>
+<p>The <strong>reflection loop</strong> (axis 3) and <strong>context-survival</strong> (axis 2) are the two changes
+that move slaude from &quot;managed Claude Code in Slack&quot; toward the stated hermes/OpenClaw
+north star. Everything else is hardening.</p>
+
+    </article>
+    <nav class="prevnext"><a class="pn pn-prev" href="2026-06-08-private-services-1on1.html"><span class="pn-dir">Previous</span><span class="pn-label">2026-06-08 — Private services in /1on1 (run as the initiator)</span></a><a class="pn pn-next" href="2026-06-08-oauth-config-dir-1on1.html"><span class="pn-dir">Next</span><span class="pn-label">2026-06-08 — /1on1 OAuth isolation via per-initiator CLAUDE_CONFIG_DIR</span></a></nav>
+    <footer class="page-foot">
+      <a href="https://github.com/barockok/slaude/edit/main/docs/site/_content/field-notes/2026-06-08-orchestration-evolution-retro.md" target="_blank" rel="noopener">Edit this page on GitHub</a>
+      <span>slaude v0.42.0</span>
+    </footer>
+  </main>
+
+  <div class="toc-col"><nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul><li class="toc-h2"><a href="#tldr">TL;DR</a></li><li class="toc-h2"><a href="#1-gating-strongest-area-but-the-floor-is-soft">1. Gating — strongest area, but the floor is soft</a></li><li class="toc-h3"><a href="#problems">Problems</a></li><li class="toc-h3"><a href="#recommendations">Recommendations</a></li><li class="toc-h2"><a href="#2-engine-clean-wrap-no-long-run-survival">2. Engine — clean wrap, no long-run survival</a></li><li class="toc-h3"><a href="#fatal-gaps-vs-the-quotruns-unattendedquot-premise">Fatal gaps vs the &amp;quot;runs unattended&amp;quot; premise</a></li><li class="toc-h3"><a href="#recommendations-priority-order">Recommendations (priority order)</a></li><li class="toc-h2"><a href="#3-evolution-the-biggest-gap-vs-the-premise">3. Evolution — the biggest gap vs the premise</a></li><li class="toc-h3"><a href="#reality">Reality</a></li><li class="toc-h3"><a href="#what-it-takes-to-match-the-premise">What it takes to match the premise</a></li><li class="toc-h2"><a href="#4-architecture-honest-seams-slack-still-leaks">4. Architecture — honest seams, Slack still leaks</a></li><li class="toc-h2"><a href="#priority-stack">Priority stack</a></li><li class="toc-h2"><a href="#highest-leverage-next-steps">Highest-leverage next steps</a></li></ul></nav></div>
+</div>
+
+<div class="search-overlay" hidden>
+  <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search documentation">
+    <div class="search-input-row">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <input type="search" placeholder="Search the docs…" aria-label="Search" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="search-results" role="listbox"></div>
+  </div>
+</div>
+
+<script>window.__SLAUDE_BASE__="../";</script>
+<script src="../assets/docs.js?v=a084ede1" defer></script>
+</body>
+</html>

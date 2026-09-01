@@ -7,7 +7,7 @@ description: Use when cutting a new slaude release, bumping version, or writing 
 
 ## Overview
 
-Slaude release workflow. Granular commits, hand-written release notes, automated verification. Follows `docs/releases/<tag>.md` convention from `CLAUDE.md`.
+Slaude release workflow. Granular commits, hand-written release notes, automated verification. Follows `docs/site/_content/releases/<tag>.md` convention from `CLAUDE.md`.
 
 Two paths:
 
@@ -63,7 +63,7 @@ chore(release): bump version to X.Y.Z
 
 ### 4. Write release notes
 
-Create `docs/releases/vX.Y.Z.md`. Structure:
+Create `docs/site/_content/releases/vX.Y.Z.md`. Structure:
 
 ```markdown
 ## vX.Y.Z — <one-line summary>
@@ -128,7 +128,7 @@ Use when the change touches `install.sh`, the dist/version layout, the DB schema
 
 ### 1. Cut the RC
 
-Write `docs/releases/vX.Y.Z.md` **first** — under the *stable* name. `promote-rc.sh` requires it, and the RC build reuses it.
+Write `docs/site/_content/releases/vX.Y.Z.md` **first** — under the *stable* name. `promote-rc.sh` requires it, and the RC build reuses it.
 
 ```bash
 # package.json version must be the full RC string, tag and all
@@ -161,7 +161,7 @@ scripts/promote-rc.sh vX.Y.Z-rc.2 --dry-run   # inspect first
 scripts/promote-rc.sh vX.Y.Z-rc.2
 ```
 
-The script refuses to run unless: the tag is `vX.Y.Z-rc.N`, the RC tag exists, the stable tag does *not*, you are on a clean `main`, the RC is an ancestor of HEAD, and `docs/releases/vX.Y.Z.md` exists. It prints any commits that landed after the RC — those ship **unsoaked**, so re-cut an RC if that list is non-trivial. Then it bumps `package.json`, commits, tags, and pushes on confirmation.
+The script refuses to run unless: the tag is `vX.Y.Z-rc.N`, the RC tag exists, the stable tag does *not*, you are on a clean `main`, the RC is an ancestor of HEAD, and `docs/site/_content/releases/vX.Y.Z.md` exists. It prints any commits that landed after the RC — those ship **unsoaked**, so re-cut an RC if that list is non-trivial. Then it bumps `package.json`, commits, tags, and pushes on confirmation.
 
 ## Release Note Anti-Patterns
 
@@ -175,4 +175,4 @@ The script refuses to run unless: the tag is `vX.Y.Z-rc.N`, the RC tag exists, t
 
 ## Example
 
-See `docs/releases/v0.9.0.md` for complete example of multi-feature release with ignore gate, cron routing, info-capture tools, and KB search.
+See `docs/site/_content/releases/v0.9.0.md` for complete example of multi-feature release with ignore gate, cron routing, info-capture tools, and KB search.

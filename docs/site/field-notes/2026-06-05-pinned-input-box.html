@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pinned bordered input box (sim REPL) — slaude Docs</title>
+<meta name="description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:title" content="Pinned bordered input box (sim REPL) — slaude">
+<meta property="og:description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20width%3D'32'%20height%3D'32'%20rx%3D'8'%20fill%3D'%2523853291'%2F%3E%3Ctext%20x%3D'16'%20y%3D'23'%20font-family%3D'Helvetica%2CArial%2Csans-serif'%20font-size%3D'19'%20font-weight%3D'700'%20fill%3D'white'%20text-anchor%3D'middle'%3Es%3C%2Ftext%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/docs.css?v=377763e4">
+<script>(function(){try{var t=localStorage.getItem('slaude-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+    </button>
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true">s</span>
+      <span class="brand-name">slaude</span>
+      <span class="brand-sub">Docs</span>
+    </a>
+    <button class="search-btn" type="button" data-search-open>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <span>Search</span><kbd>⌘K</kbd>
+    </button>
+    <div class="topbar-actions">
+      <a class="ghost" href="https://github.com/barockok/slaude" target="_blank" rel="noopener">GitHub</a>
+      <button class="theme-btn" type="button" aria-label="Toggle theme">
+        <svg class="i-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1M12.9 12.9l-1.1-1.1M4.2 4.2 3.1 3.1"/></svg>
+        <svg class="i-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="topnav" aria-label="Sections"><div class="topnav-inner"><a class="topnav-tab" href="../index.html">Get started</a><a class="topnav-tab" href="../guides/index.html">Guides</a><a class="topnav-tab" href="../reference/configuration.html">Reference</a><a class="topnav-tab" href="../deploy/index.html">Deploy</a><a class="topnav-tab active" href="2026-08-23-release-candidate-pipeline.html">Field notes</a><a class="topnav-tab" href="../releases/v0.42.0.html">Releases</a></div></nav>
+</header>
+
+<div class="shell">
+  <aside class="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-inner"><div class="nav-group"><p class="nav-group-title">Field notes</p><ul><li><a class="" href="2026-08-23-release-candidate-pipeline.html">Release candidate pipeline</a></li><li><a class="" href="2026-07-27-kb-think-gather-miss.html">kb_think gather miss — runThink vs gather() source scoping</a></li><li><a class="" href="2026-07-24-per-agent-brain-slices.html">Per-agent brain slices: private minds, deliberate sharing</a></li><li><a class="" href="2026-07-08-per-channel-metrics.html">2026-07-08 — Per-channel token and model metrics</a></li><li><a class="" href="2026-07-03-cron-private-mcp-scoping-drift.html">Cron private-MCP credential scoping is decoupled from `oauth_user`</a></li><li><a class="" href="2026-06-20-channel-soul-overrides.html">Channel-specific soul mandate &amp; approvers</a></li><li><a class="" href="2026-06-20-brain-remote-mcp.html">Brain as a remote, OAuth-protected MCP process (configurable)</a></li><li><a class="" href="2026-06-19-shared-oauth-loopback-surface-connect.html">Shared OAuth loopback + surface-aware connect + URL-safe mrkdwn (#51)</a></li><li><a class="" href="2026-06-16-reengage-hook-suppress.html">Re-engage via in-session suppression (hook-only), not Slack backfill</a></li><li><a class="" href="2026-06-15-per-source-gather.html">2026-06-15 — Per-source `gather()`: fix bulk-corpus retrieval noise drowning curated pages</a></li><li><a class="" href="2026-06-14-model-switch-command.html">2026-06-14 — `/model` per-thread model switch</a></li><li><a class="" href="2026-06-14-brain-memoize-failure.html">2026-06-14 — Brain memoize: two failure modes break &quot;remember it&quot;</a></li><li><a class="" href="2026-06-13-kb-first-enforcement.html">KB-first enforcement — from prose to teeth (2026-06-13)</a></li><li><a class="" href="2026-06-11-soul-runtime-overrides.html">Soul runtime overrides — manager-editable ACLs without redeploy (2026-06-11)</a></li><li><a class="" href="2026-06-11-engagement-disengage-durability.html">Engagement review — disengage lasted zero messages (2026-06-11)</a></li><li><a class="" href="2026-06-11-1on1-transcript-sharding.html">/1on1 transcript sharding — resume breaks on lock flips (2026-06-11)</a></li><li><a class="" href="2026-06-10-mcp-global-connect.html">2026-06-10 — `/mcp` global connect (manager wires the agent's shared identity)</a></li><li><a class="" href="2026-06-10-gbrain-slaude-kb.html">gbrain × slaude — powering slaude_kb with a real brain</a></li><li><a class="" href="2026-06-09-post-as-slack-user.html">Post as the agent's real Slack user (opt-in xoxp)</a></li><li><a class="" href="2026-06-09-mcp-oauth-connect-1on1.html">2026-06-09 — /mcp OAuth connect in /1on1 (write CLI mcpOAuth store, CLI owns lifecycle)</a></li><li><a class="" href="2026-06-08-private-services-1on1.html">2026-06-08 — Private services in /1on1 (run as the initiator)</a></li><li><a class="" href="2026-06-08-orchestration-evolution-retro.html">2026-06-08 — Retro: orchestration, gating &amp; continuous evolution</a></li><li><a class="" href="2026-06-08-oauth-config-dir-1on1.html">2026-06-08 — /1on1 OAuth isolation via per-initiator CLAUDE_CONFIG_DIR</a></li><li><a class="" href="2026-06-08-cron-on-channel.html">cron-on-channel + a latent scheduler-boot crash</a></li><li><a class="" href="2026-06-05-sim-tui-opentui.html">Sim REPL on OpenTUI (React)</a></li><li><a class="active" href="2026-06-05-pinned-input-box.html">Pinned bordered input box (sim REPL)</a></li><li><a class="" href="2026-06-04-repl-claude-code-ux.html">Sim REPL — claude-code-grade UX</a></li><li><a class="" href="2026-06-03-surface-abstraction.html">2026-06-03 — Surface abstraction (agent interaction decoupled from Slack)</a></li><li><a class="" href="2026-06-03-sim-interactive-real-agent.html">2026-06-03 — Interactive sim against the live agent (`--real`)</a></li><li><a class="" href="2026-05-29-simulation-gateway.html">2026-05-29 — Simulation gateway (Slack-free verification)</a></li><li><a class="" href="2026-05-29-one-on-one-mode.html">2026-05-29 — /1on1 mode (per-thread engagement lock)</a></li><li><a class="" href="2026-05-29-contextual-mcp-connections.html">2026-05-29 — Contextual per-user MCP connections</a></li><li><a class="" href="2026-05-25-cron-ignore-audit.html">Cron &amp; Ignore System Audit</a></li><li><a class="" href="2026-05-22-plugin-loader-chain.html">2026-05-22 — Plugin loader chain (install → SDK → MCP)</a></li><li><a class="" href="2026-05-21-writable-kb-ingest.html">2026-05-21 — Writable KB + /ingest</a></li><li><a class="" href="2026-05-21-policy-guardrails.html">2026-05-21 — Policy Guardrails (Tier 2 / Tier 3 Design)</a></li><li><a class="" href="2026-05-21-dependency-manifest.html">2026-05-21 — Dependency Manifest Design</a></li><li><a class="" href="2026-05-13-metrics-stop-guard.html">2026-05-13 — fallback ctx, table emphasis, metrics, stop-guard</a></li><li><a class="" href="2026-05-11-structured-soul-channel-mode.html">2026-05-11 — structured-soul + channel-mode gate</a></li><li><a class="" href="2026-05-11-skill-evolution.html">2026-05-11 — skill evolution</a></li><li><a class="" href="2026-05-11-external-mcp.html">2026-05-11 — external MCP via mcp.json</a></li><li><a class="" href="2026-05-11-context-budget-tracking.html">2026-05-11 — context budget tracking</a></li><li><a class="" href="2026-05-11-claude-subscription-oauth.html">2026-05-11 — Claude subscription OAuth</a></li><li><a class="" href="2026-05-09-slack-ux-engagement.html">2026-05-09 / 2026-05-10 — Slack UX, engagement, approval, CI</a></li><li><a class="" href="2026-05-08-mvp-bootstrap.html">2026-05-08 — MVP bootstrap</a></li></ul></div></div>
+  </aside>
+
+  <main id="main" class="content">
+    <article class="prose">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Field notes</p>
+          <h1>Pinned bordered input box (sim REPL)</h1>
+        </div>
+        <button class="copy-page" type="button" title="Copy this page as Markdown for an agent">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 4 12h1.5"/></svg>
+          <span>Copy page</span>
+        </button>
+      </div>
+      
+      <p><strong>Date:</strong> 2026-06-05</p>
+<p>Replaced the sim REPL&#39;s <code>node:readline</code> input with a claude-code-style rounded box
+pinned to the terminal bottom via a DECSTBM scroll region. Output scrolls in the
+region above; the box (and a status spinner above it) stay fixed at the bottom and
+track terminal width on resize.</p>
+<h2 id="what-shipped">What shipped<a class="anchor" href="#what-shipped" aria-label="Link to What shipped">#</a></h2>
+<ul>
+<li><code>keys.ts</code> — <code>decodeKeys(s)</code> decodes a raw stdin chunk → key tokens (printable runs,
+arrows/home/end/delete, C0 controls, lone ESC, bracketed-paste markers). Pure + stateless.</li>
+<li><code>editor.ts</code> — <code>LineEditor</code>, a pure reducer (no I/O) with readline parity: insert/erase,
+cursor movement, Ctrl-A/E/U/W, ↑/↓ history with draft stash, trailing-<code>\</code> multiline
+continuation, bracketed-paste (newlines inserted literally, no auto-submit), Tab → complete.
+State is private; <code>view()</code> is the only read path.</li>
+<li><code>screen.ts</code> — pure <code>layoutFooter(model)</code> (footer lines + absolute cursor position) plus the
+<code>Screen</code> class (scroll region + footer painting, I/O injected for tests).</li>
+<li><code>cli.ts</code> — REPL branch rewritten as a raw-mode loop driving the three modules.</li>
+<li>Removed <code>term.ts</code> (<code>LiveTerminal</code>) + its test — superseded by <code>Screen</code>.</li>
+</ul>
+<h2 id="why-readline-had-to-go">Why readline had to go<a class="anchor" href="#why-readline-had-to-go" aria-label="Link to Why readline had to go">#</a></h2>
+<p>readline owns a single line at the cursor and can&#39;t live inside a fixed bottom region.
+A pinned box needs absolute-positioned redraws on every keystroke, so the line editor is custom.</p>
+<h2 id="decisions-limits">Decisions / limits<a class="anchor" href="#decisions-limits" aria-label="Link to Decisions / limits">#</a></h2>
+<ul>
+<li><strong>Bottom-anchored footer:</strong> <code>regionBottom = rows − height</code>, footer occupies the last <code>height</code>
+rows. A status line slots in <em>above</em> the box without moving the box/cursor. The first naive
+attempt anchored to a &quot;core height&quot; so the box moved when status toggled — that overflowed the
+footer below the last row. Bottom-anchoring is the invariant: <code>regionBottom + height === rows</code>.</li>
+<li><strong>Region reset on resize:</strong> the region must be re-set whenever <code>regionBottom</code> moves — not only
+on height change. A terminal resize changes <code>rows</code> (hence <code>regionBottom</code>) at constant height; a
+height-only guard left a stale region and corrupted scrollback.</li>
+<li><strong>Multi-line cap:</strong> input box capped at 10 visible rows (windowed to keep the cursor line
+visible); no soft-wrap — long lines clip horizontally around the cursor.</li>
+<li><strong>↑/↓ = history recall</strong> (not in-buffer line navigation) — simpler, matches the old REPL.</li>
+<li><strong>Bracketed paste</strong> (<code>ESC[?2004h</code>) frames pastes, replacing the old 8 ms burst-debounce; ancient
+terminals fall back to literal char insertion.</li>
+<li><strong>Picker is modal:</strong> while a <code>/layer</code>·<code>/as</code> picker is open, a <code>modal</code> flag stops the main editor
+handler from also consuming the arrow keys (they would otherwise drive menu <em>and</em> buffer at once).</li>
+<li><strong>In-place bottom-sheet panels:</strong> <code>Screen.setPanel(lines|null)</code> renders a modal block in the footer
+<em>above</em> the input box, redrawn in place on each keystroke — no scrollback writes. Pickers (<code>/layer</code>·
+<code>/as</code>) and <code>/help</code> (scrollable, ↑/↓) use it, matching claude-code&#39;s <code>/mcp</code> feel. <code>layoutFooter</code> clips
+a tall panel to fit and reserves one scroll row so the box stays pinned (bottom-anchor preserved).
+Closing a panel shrinks the footer; the band-clear wipes the freed rows (no ghost), though the
+bottom-most scrollback lines the panel covered are left blank until the next output (no scrollback
+model to redraw them).</li>
+<li><strong>Terminal restore on any exit:</strong> <code>process.on(&quot;exit&quot;)</code> runs an idempotent <code>cleanup()</code> so a crash
+never leaves the user in raw mode with a stuck scroll region.</li>
+</ul>
+<h2 id="tests">Tests<a class="anchor" href="#tests" aria-label="Link to Tests">#</a></h2>
+<p>Pure units cover the correctness surface: <code>keys.test.ts</code> (decoder), <code>editor.test.ts</code> (reducer
+parity), <code>screen.test.ts</code> (<code>layoutFooter</code> math + <code>Screen</code> region/footer emission, incl. resize and
+status-clear ghost). The raw-mode <code>cli.ts</code> loop has no unit test (real TTY); verified by a headless
+boot smoke and the interactive checklist below.</p>
+<h2 id="interactive-smoke-checklist-real-tty-bun-run-sim---stub-or-slaude-sim">Interactive smoke checklist (real TTY — <code>bun run sim --stub</code> or <code>slaude sim</code>)<a class="anchor" href="#interactive-smoke-checklist-real-tty-bun-run-sim---stub-or-slaude-sim" aria-label="Link to Interactive smoke checklist (real TTY — bun run sim --stub or slaude sim)">#</a></h2>
+<ul>
+<li>Box pinned at bottom, full width, rounded corners; output scrolls above it.</li>
+<li>Editing: L/R/Home/End/Ctrl-A/E move; Backspace/Delete/Ctrl-U/Ctrl-W erase.</li>
+<li>↑/↓ recall history; Tab completes <code>/lay</code> → <code>/layer </code>.</li>
+<li>Trailing <code>\</code> + Enter → second line (box grows, capped at 10); Enter submits the multi-line.</li>
+<li>Multi-line paste arrives as one message (not N submits).</li>
+<li>Resize the window → box redraws at the new width, stays pinned, scrollback intact.</li>
+<li>Open a gate → <code>a</code>/<code>d</code>/<code>A</code> answers it. <code>/layer</code> (no arg) → in-place picker panel; arrows + Enter
+select, Esc cancels (no scrollback spam). <code>/help</code> → scrollable bottom-sheet (↑/↓, Esc/Enter/q close).</li>
+<li>Ctrl-C clears a typed line; Ctrl-C twice on empty → exit; Ctrl-D on empty → clean exit (cursor
+restored, no stuck scroll region).</li>
+</ul>
+<p>Spec: <code>docs/superpowers/specs/2026-06-05-pinned-input-box-design.md</code>
+Plan: <code>docs/superpowers/plans/2026-06-05-pinned-input-box.md</code></p>
+
+    </article>
+    <nav class="prevnext"><a class="pn pn-prev" href="2026-06-05-sim-tui-opentui.html"><span class="pn-dir">Previous</span><span class="pn-label">Sim REPL on OpenTUI (React)</span></a><a class="pn pn-next" href="2026-06-04-repl-claude-code-ux.html"><span class="pn-dir">Next</span><span class="pn-label">Sim REPL — claude-code-grade UX</span></a></nav>
+    <footer class="page-foot">
+      <a href="https://github.com/barockok/slaude/edit/main/docs/site/_content/field-notes/2026-06-05-pinned-input-box.md" target="_blank" rel="noopener">Edit this page on GitHub</a>
+      <span>slaude v0.42.0</span>
+    </footer>
+  </main>
+
+  <div class="toc-col"><nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul><li class="toc-h2"><a href="#what-shipped">What shipped</a></li><li class="toc-h2"><a href="#why-readline-had-to-go">Why readline had to go</a></li><li class="toc-h2"><a href="#decisions-limits">Decisions / limits</a></li><li class="toc-h2"><a href="#tests">Tests</a></li><li class="toc-h2"><a href="#interactive-smoke-checklist-real-tty-bun-run-sim---stub-or-slaude-sim">Interactive smoke checklist (real TTY — bun run sim --stub or slaude sim)</a></li></ul></nav></div>
+</div>
+
+<div class="search-overlay" hidden>
+  <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search documentation">
+    <div class="search-input-row">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <input type="search" placeholder="Search the docs…" aria-label="Search" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="search-results" role="listbox"></div>
+  </div>
+</div>
+
+<script>window.__SLAUDE_BASE__="../";</script>
+<script src="../assets/docs.js?v=a084ede1" defer></script>
+</body>
+</html>

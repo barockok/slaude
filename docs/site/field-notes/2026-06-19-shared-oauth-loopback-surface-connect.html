@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shared OAuth loopback + surface-aware connect + URL-safe mrkdwn (#51) — slaude Docs</title>
+<meta name="description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:title" content="Shared OAuth loopback + surface-aware connect + URL-safe mrkdwn (#51) — slaude">
+<meta property="og:description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20width%3D'32'%20height%3D'32'%20rx%3D'8'%20fill%3D'%2523853291'%2F%3E%3Ctext%20x%3D'16'%20y%3D'23'%20font-family%3D'Helvetica%2CArial%2Csans-serif'%20font-size%3D'19'%20font-weight%3D'700'%20fill%3D'white'%20text-anchor%3D'middle'%3Es%3C%2Ftext%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/docs.css?v=377763e4">
+<script>(function(){try{var t=localStorage.getItem('slaude-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+    </button>
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true">s</span>
+      <span class="brand-name">slaude</span>
+      <span class="brand-sub">Docs</span>
+    </a>
+    <button class="search-btn" type="button" data-search-open>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <span>Search</span><kbd>⌘K</kbd>
+    </button>
+    <div class="topbar-actions">
+      <a class="ghost" href="https://github.com/barockok/slaude" target="_blank" rel="noopener">GitHub</a>
+      <button class="theme-btn" type="button" aria-label="Toggle theme">
+        <svg class="i-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1M12.9 12.9l-1.1-1.1M4.2 4.2 3.1 3.1"/></svg>
+        <svg class="i-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="topnav" aria-label="Sections"><div class="topnav-inner"><a class="topnav-tab" href="../index.html">Get started</a><a class="topnav-tab" href="../guides/index.html">Guides</a><a class="topnav-tab" href="../reference/configuration.html">Reference</a><a class="topnav-tab" href="../deploy/index.html">Deploy</a><a class="topnav-tab active" href="2026-08-23-release-candidate-pipeline.html">Field notes</a><a class="topnav-tab" href="../releases/v0.42.0.html">Releases</a></div></nav>
+</header>
+
+<div class="shell">
+  <aside class="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-inner"><div class="nav-group"><p class="nav-group-title">Field notes</p><ul><li><a class="" href="2026-08-23-release-candidate-pipeline.html">Release candidate pipeline</a></li><li><a class="" href="2026-07-27-kb-think-gather-miss.html">kb_think gather miss — runThink vs gather() source scoping</a></li><li><a class="" href="2026-07-24-per-agent-brain-slices.html">Per-agent brain slices: private minds, deliberate sharing</a></li><li><a class="" href="2026-07-08-per-channel-metrics.html">2026-07-08 — Per-channel token and model metrics</a></li><li><a class="" href="2026-07-03-cron-private-mcp-scoping-drift.html">Cron private-MCP credential scoping is decoupled from `oauth_user`</a></li><li><a class="" href="2026-06-20-channel-soul-overrides.html">Channel-specific soul mandate &amp; approvers</a></li><li><a class="" href="2026-06-20-brain-remote-mcp.html">Brain as a remote, OAuth-protected MCP process (configurable)</a></li><li><a class="active" href="2026-06-19-shared-oauth-loopback-surface-connect.html">Shared OAuth loopback + surface-aware connect + URL-safe mrkdwn (#51)</a></li><li><a class="" href="2026-06-16-reengage-hook-suppress.html">Re-engage via in-session suppression (hook-only), not Slack backfill</a></li><li><a class="" href="2026-06-15-per-source-gather.html">2026-06-15 — Per-source `gather()`: fix bulk-corpus retrieval noise drowning curated pages</a></li><li><a class="" href="2026-06-14-model-switch-command.html">2026-06-14 — `/model` per-thread model switch</a></li><li><a class="" href="2026-06-14-brain-memoize-failure.html">2026-06-14 — Brain memoize: two failure modes break &quot;remember it&quot;</a></li><li><a class="" href="2026-06-13-kb-first-enforcement.html">KB-first enforcement — from prose to teeth (2026-06-13)</a></li><li><a class="" href="2026-06-11-soul-runtime-overrides.html">Soul runtime overrides — manager-editable ACLs without redeploy (2026-06-11)</a></li><li><a class="" href="2026-06-11-engagement-disengage-durability.html">Engagement review — disengage lasted zero messages (2026-06-11)</a></li><li><a class="" href="2026-06-11-1on1-transcript-sharding.html">/1on1 transcript sharding — resume breaks on lock flips (2026-06-11)</a></li><li><a class="" href="2026-06-10-mcp-global-connect.html">2026-06-10 — `/mcp` global connect (manager wires the agent's shared identity)</a></li><li><a class="" href="2026-06-10-gbrain-slaude-kb.html">gbrain × slaude — powering slaude_kb with a real brain</a></li><li><a class="" href="2026-06-09-post-as-slack-user.html">Post as the agent's real Slack user (opt-in xoxp)</a></li><li><a class="" href="2026-06-09-mcp-oauth-connect-1on1.html">2026-06-09 — /mcp OAuth connect in /1on1 (write CLI mcpOAuth store, CLI owns lifecycle)</a></li><li><a class="" href="2026-06-08-private-services-1on1.html">2026-06-08 — Private services in /1on1 (run as the initiator)</a></li><li><a class="" href="2026-06-08-orchestration-evolution-retro.html">2026-06-08 — Retro: orchestration, gating &amp; continuous evolution</a></li><li><a class="" href="2026-06-08-oauth-config-dir-1on1.html">2026-06-08 — /1on1 OAuth isolation via per-initiator CLAUDE_CONFIG_DIR</a></li><li><a class="" href="2026-06-08-cron-on-channel.html">cron-on-channel + a latent scheduler-boot crash</a></li><li><a class="" href="2026-06-05-sim-tui-opentui.html">Sim REPL on OpenTUI (React)</a></li><li><a class="" href="2026-06-05-pinned-input-box.html">Pinned bordered input box (sim REPL)</a></li><li><a class="" href="2026-06-04-repl-claude-code-ux.html">Sim REPL — claude-code-grade UX</a></li><li><a class="" href="2026-06-03-surface-abstraction.html">2026-06-03 — Surface abstraction (agent interaction decoupled from Slack)</a></li><li><a class="" href="2026-06-03-sim-interactive-real-agent.html">2026-06-03 — Interactive sim against the live agent (`--real`)</a></li><li><a class="" href="2026-05-29-simulation-gateway.html">2026-05-29 — Simulation gateway (Slack-free verification)</a></li><li><a class="" href="2026-05-29-one-on-one-mode.html">2026-05-29 — /1on1 mode (per-thread engagement lock)</a></li><li><a class="" href="2026-05-29-contextual-mcp-connections.html">2026-05-29 — Contextual per-user MCP connections</a></li><li><a class="" href="2026-05-25-cron-ignore-audit.html">Cron &amp; Ignore System Audit</a></li><li><a class="" href="2026-05-22-plugin-loader-chain.html">2026-05-22 — Plugin loader chain (install → SDK → MCP)</a></li><li><a class="" href="2026-05-21-writable-kb-ingest.html">2026-05-21 — Writable KB + /ingest</a></li><li><a class="" href="2026-05-21-policy-guardrails.html">2026-05-21 — Policy Guardrails (Tier 2 / Tier 3 Design)</a></li><li><a class="" href="2026-05-21-dependency-manifest.html">2026-05-21 — Dependency Manifest Design</a></li><li><a class="" href="2026-05-13-metrics-stop-guard.html">2026-05-13 — fallback ctx, table emphasis, metrics, stop-guard</a></li><li><a class="" href="2026-05-11-structured-soul-channel-mode.html">2026-05-11 — structured-soul + channel-mode gate</a></li><li><a class="" href="2026-05-11-skill-evolution.html">2026-05-11 — skill evolution</a></li><li><a class="" href="2026-05-11-external-mcp.html">2026-05-11 — external MCP via mcp.json</a></li><li><a class="" href="2026-05-11-context-budget-tracking.html">2026-05-11 — context budget tracking</a></li><li><a class="" href="2026-05-11-claude-subscription-oauth.html">2026-05-11 — Claude subscription OAuth</a></li><li><a class="" href="2026-05-09-slack-ux-engagement.html">2026-05-09 / 2026-05-10 — Slack UX, engagement, approval, CI</a></li><li><a class="" href="2026-05-08-mvp-bootstrap.html">2026-05-08 — MVP bootstrap</a></li></ul></div></div>
+  </aside>
+
+  <main id="main" class="content">
+    <article class="prose">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Field notes</p>
+          <h1>Shared OAuth loopback + surface-aware connect + URL-safe mrkdwn (#51)</h1>
+        </div>
+        <button class="copy-page" type="button" title="Copy this page as Markdown for an agent">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 4 12h1.5"/></svg>
+          <span>Copy page</span>
+        </button>
+      </div>
+      
+      <p>2026-06-19. Shipped in PR #51 (<code>09eeeae</code>). Three intertwined threads, all driven by the
+same realization: the <code>/mcp connect</code> OAuth flow had Slack and a per-flow listener baked
+into it, and the markdown→mrkdwn converter quietly corrupted the auth URL.</p>
+<h2 id="1-the-runtime-synthesizes-the-oauth-authenticate-tools-the-server-never-ships-them">1. The runtime synthesizes the OAuth <code>authenticate</code> tools — the server never ships them<a class="anchor" href="#1-the-runtime-synthesizes-the-oauth-authenticate-tools-the-server-never-ships-them" aria-label="Link to 1. The runtime synthesizes the OAuth authenticate tools — the server never ships them">#</a></h2>
+<p>Investigating how <code>mcp__workbench__authenticate</code> / <code>…__complete_authentication</code> appear: they
+are <strong>not</strong> declared by the workbench MCP server (its real tools are <code>whoami</code>, <code>connect</code>,
+<code>list_integrations</code>, …). The server returns <code>401</code> + <code>WWW-Authenticate: Bearer resource_metadata=…</code> (RFC 9728); the Claude Code <strong>runtime</strong> sees that and <em>fabricates</em> the
+auth tool pair to drive the OAuth bootstrap, then drops them once a token is in hand. The
+redirect_uri (<code>http://localhost:3118/callback</code>) is owned entirely by the runtime&#39;s loopback
+client — host+path hardcoded, only the port configurable. Nothing in the prompt or the SDK
+sets it. This is why slaude can&#39;t &quot;override&quot; the synthesized tool: in the SDK path it never
+exists; slaude must own the flow itself (which it already did via <code>src/agent/mcp-oauth/</code>).</p>
+<h2 id="2-shared-always-on-loopback-demuxed-by-hmac-signed-state">2. Shared always-on loopback, demuxed by HMAC-signed state<a class="anchor" href="#2-shared-always-on-loopback-demuxed-by-hmac-signed-state" aria-label="Link to 2. Shared always-on loopback, demuxed by HMAC-signed state">#</a></h2>
+<p>Goal: let many sessions authorize concurrently behind <strong>one</strong> fixed callback port (so a
+container maps a single port) instead of a fresh ephemeral listener per connect.</p>
+<ul>
+<li><code>state.ts</code> — <code>state = b64u(sid).b64u(nonce).HMAC(secret,&quot;&lt;sid&gt;.&lt;nonce&gt;&quot;)</code>. The session id
+rides in the OAuth <code>state</code> (RFC 6749&#39;s client-set, echoed-back slot). The <strong>nonce</strong> makes
+each flow&#39;s state unique (the registry key) and is the effective capability/CSRF guard; the
+<strong>HMAC</strong> makes the sid tamper-evident.</li>
+<li><code>shared-loopback.ts</code> — one listener (default port 3118), routes each callback to its flow by
+exact <code>state</code> match. Always-on singleton, started at boot, opt-in via
+<code>SLAUDE_OAUTH_SHARED_LOOPBACK</code>.</li>
+<li>Workbench&#39;s auth server exact-matches <code>redirect_uri</code> (full path+query) <strong>but</strong> supports open
+dynamic registration (RFC 7591) — so a fixed state-independent redirect_uri works: register
+it once, route by state. (Verified in <code>../workbench</code>: <code>oauth-routes.ts</code> <code>.includes()</code> match +
+<code>clients.ts registerClient</code>.)</li>
+</ul>
+<p><strong>Security-review correction (<code>7163116</code>):</strong> routing was pure registry string-match — the nonce
+guarded it and the HMAC was dead. A future change trusting a sid decoded from the returned
+state <em>without</em> verifying would open a forgery surface. Fix: a <code>verify(state)</code> gate runs on the
+inbound state <strong>before</strong> registry lookup, wired to <code>verifyState(s, secret)</code>. Now any routed
+state provably bears a valid HMAC. Defense-in-depth; nonce still the capability.</p>
+<h2 id="3-the-converter-corrupted-the-auth-url-the-connect-flow-ignored-the-surface">3. The converter corrupted the auth URL; the connect flow ignored the Surface<a class="anchor" href="#3-the-converter-corrupted-the-auth-url-the-connect-flow-ignored-the-surface" aria-label="Link to 3. The converter corrupted the auth URL; the connect flow ignored the Surface">#</a></h2>
+<p>Two coupled bugs surfaced from &quot;is the posted URL markdown-friendly?&quot;:</p>
+<ul>
+<li><strong><code>mdToMrkdwn</code> was not URL-safe.</strong> Emphasis rules rewrote <code>_</code>/<code>__</code>/<code>*</code> <em>inside</em> URLs.
+base64url query params (<code>code_challenge</code>, <code>state</code>) contain <code>__</code>, so <code>…U__.mac…</code> → <code>…U*.mac…</code>.
+Fix: carve <code>&lt;…&gt;</code> autolinks and bare <code>http(s)://</code> tokens like code spans (protect+restore),
+before the <code>[text](url)</code> link rule. Fixes <strong>any</strong> agent-emitted URL, not just OAuth.</li>
+<li><strong>The connect flow hardcoded <code>t.client.chat.postMessage</code></strong> — a Slack leak in a
+channel-agnostic path. Routed it through the session&#39;s <strong>Surface</strong> (<code>connectSurface()</code> mints
+one from the gateway&#39;s <code>surfaceFactory</code>; works outside a live turn). Because <code>surface.reply()</code>
+runs the converter, the URL-safe fix was a prerequisite.</li>
+</ul>
+<p><strong>Redact, don&#39;t delete.</strong> On settle (success, failure, <strong>or loopback timeout</strong>) the auth-URL
+message is edited in place to strip the live link — keeps the breadcrumb, kills a stale
+clickable secret. Reuses the existing <code>edit</code> capability; best-effort. <code>authMsgRef</code> threaded
+through <code>PendingPaste</code> so paste-back redacts too.</p>
+<h2 id="also-flanking-fix-0f69a3a">Also flanking-fix (<code>0f69a3a</code>)<a class="anchor" href="#also-flanking-fix-0f69a3a" aria-label="Link to Also flanking-fix (0f69a3a)">#</a></h2>
+<p>Slack mrkdwn rejects emphasis when a space hugs the marker and has no triple-star. <code>***x***</code>
+→ <code>_*x*_</code>; <code>** x **</code> → <code>*x*</code> (trim inner padding). Intra-word bold (<code>word**b**word</code>) is a
+Slack-renderer limit, left as-is.</p>
+<h2 id="4-two-front-doors-one-engine-natural-language-connect-deny-the-synthesized-path">4. Two front doors, one engine: natural-language connect + deny the synthesized path<a class="anchor" href="#4-two-front-doors-one-engine-natural-language-connect-deny-the-synthesized-path" aria-label="Link to 4. Two front doors, one engine: natural-language connect + deny the synthesized path">#</a></h2>
+<p>Follow-up: keep <code>/mcp connect</code> deterministic but also let the agent connect on request
+(&quot;connect workbench&quot;) — and make <em>both</em> go through the same engine, with the security
+properties intact.</p>
+<ul>
+<li>New in-process tool <code>mcp__slaude_connect__connect_mcp(server)</code> (<code>mcp-tools.ts createConnectMcp</code>). The agent decides <em>when</em>; the tool is a thin trigger that calls
+<code>agentConnect()</code> in the gateway and returns only a status line — <strong>never the URL</strong>.</li>
+<li><code>agentConnect()</code> reuses the exact <code>/mcp connect</code> scope gate (initiator owns the
+<code>/1on1</code> lock; global is manager/backup-only), then fires the <strong>same <code>connectServer</code></strong>
+fire-and-forget. The authorize link is posted out-of-band by the engine, the shared
+loopback captures the code (no paste), and redaction runs on settle. The model never
+sees the URL → no prompt-injection laundering; the turn isn&#39;t held while the user clicks.</li>
+<li><code>canUseTool</code> (permission-gate) <strong>hard-denies</strong> <code>mcp__*__authenticate</code> /
+<code>__complete_authentication</code> — the runtime/SDK-synthesized OAuth tools use an
+uncontrolled redirect and would launder the URL. Denying them (before the approval
+prompt) forces every connect through our engine. (Whether the headless SDK actually
+exposes them is uncertain; the deny is harmless if not, load-bearing if so.)</li>
+</ul>
+<p>Key property: OAuth connect is never an LLM-couriered string. The agent triggers; the
+deterministic gateway owns URL generation, emission, capture, and teardown.</p>
+<h2 id="takeaways">Takeaways<a class="anchor" href="#takeaways" aria-label="Link to Takeaways">#</a></h2>
+<ul>
+<li>Security-sensitive control strings (auth URLs, tokens) must go <strong>out-of-band of the LLM</strong>,
+verbatim. The connect flow is gateway-deterministic for exactly this reason — and that also
+sidesteps the converter. Don&#39;t &quot;tidy&quot; it onto <code>SlackSurface.reply()</code> without the URL-safe carve.</li>
+<li>When a signed value is only ever string-matched, the signature is dead weight — wire the
+verify before anything trusts the decoded payload, or it&#39;s a latent forgery surface.</li>
+<li>Whole-file coverage numbers (gateway.ts, surface.ts) are dominated by pre-existing code;
+judge a PR by its diff&#39;s coverage, not the file&#39;s.</li>
+</ul>
+
+    </article>
+    <nav class="prevnext"><a class="pn pn-prev" href="2026-06-20-brain-remote-mcp.html"><span class="pn-dir">Previous</span><span class="pn-label">Brain as a remote, OAuth-protected MCP process (configurable)</span></a><a class="pn pn-next" href="2026-06-16-reengage-hook-suppress.html"><span class="pn-dir">Next</span><span class="pn-label">Re-engage via in-session suppression (hook-only), not Slack backfill</span></a></nav>
+    <footer class="page-foot">
+      <a href="https://github.com/barockok/slaude/edit/main/docs/site/_content/field-notes/2026-06-19-shared-oauth-loopback-surface-connect.md" target="_blank" rel="noopener">Edit this page on GitHub</a>
+      <span>slaude v0.42.0</span>
+    </footer>
+  </main>
+
+  <div class="toc-col"><nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul><li class="toc-h2"><a href="#1-the-runtime-synthesizes-the-oauth-authenticate-tools-the-server-never-ships-them">1. The runtime synthesizes the OAuth authenticate tools — the server never ships them</a></li><li class="toc-h2"><a href="#2-shared-always-on-loopback-demuxed-by-hmac-signed-state">2. Shared always-on loopback, demuxed by HMAC-signed state</a></li><li class="toc-h2"><a href="#3-the-converter-corrupted-the-auth-url-the-connect-flow-ignored-the-surface">3. The converter corrupted the auth URL; the connect flow ignored the Surface</a></li><li class="toc-h2"><a href="#also-flanking-fix-0f69a3a">Also flanking-fix (0f69a3a)</a></li><li class="toc-h2"><a href="#4-two-front-doors-one-engine-natural-language-connect-deny-the-synthesized-path">4. Two front doors, one engine: natural-language connect + deny the synthesized path</a></li><li class="toc-h2"><a href="#takeaways">Takeaways</a></li></ul></nav></div>
+</div>
+
+<div class="search-overlay" hidden>
+  <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search documentation">
+    <div class="search-input-row">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <input type="search" placeholder="Search the docs…" aria-label="Search" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="search-results" role="listbox"></div>
+  </div>
+</div>
+
+<script>window.__SLAUDE_BASE__="../";</script>
+<script src="../assets/docs.js?v=a084ede1" defer></script>
+</body>
+</html>

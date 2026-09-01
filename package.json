@@ -25,6 +25,7 @@
     "worker": "bun src/node/main.ts",
     "sim": "bun src/gateway/sim/cli.ts",
     "typecheck": "tsc --noEmit",
+    "docs": "bun docs/site/build.mjs",
     "manifest": "bun src/cli/manifest.ts",
     "slack-app": "bun src/cli/slack-app.ts",
     "validate-soul": "bun src/cli/validate.ts",
@@ -38,6 +39,7 @@
   "devDependencies": {
     "@types/bun": "latest",
     "@types/react": "^19",
+    "marked": "^18.0.11",
     "typescript": "^5"
   },
   "dependencies": {

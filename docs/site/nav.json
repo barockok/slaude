@@ -1,0 +1,92 @@
+{
+  "site": {
+    "name": "slaude",
+    "description": "Slack-native Claude Code runtime. One Slack thread is one persistent session.",
+    "repo": "https://github.com/barockok/slaude",
+    "domain": "github.io",
+    "version": "0.42.0",
+    "mark": "s",
+    "favicon": "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23853291'/><text x='16' y='23' font-family='Helvetica,Arial,sans-serif' font-size='19' font-weight='700' fill='white' text-anchor='middle'>s</text></svg>"
+  },
+  "tabs": [
+    {
+      "id": "start",
+      "label": "Get started",
+      "groups": [
+        {
+          "label": "Introduction",
+          "items": [
+            { "path": "index", "label": "What is slaude?", "layout": "landing" },
+            { "path": "start/getting-started", "label": "Getting started" },
+            { "path": "start/architecture", "label": "Architecture" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "guides",
+      "label": "Guides",
+      "groups": [
+        {
+          "label": "Operate the agent",
+          "items": [
+            { "path": "guides/index", "label": "Guides overview" },
+            { "path": "guides/engagement", "label": "Engagement and approvals" },
+            { "path": "guides/examples", "label": "Examples" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reference",
+      "label": "Reference",
+      "groups": [
+        {
+          "label": "Reference",
+          "items": [
+            { "path": "reference/configuration", "label": "Configuration" },
+            { "path": "reference/api", "label": "API reference" },
+            { "path": "reference/guardrails", "label": "Guardrails design" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "deploy",
+      "label": "Deploy",
+      "groups": [
+        {
+          "label": "Deployment and operations",
+          "items": [
+            { "path": "deploy/index", "label": "Deployment overview" },
+            { "path": "deploy/multi-node", "label": "Multi-node scale-out" },
+            { "path": "deploy/scale-operations", "label": "Scale operations" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "field-notes",
+      "label": "Field notes",
+      "groups": [
+        {
+          "label": "Field notes",
+          "from": "_content/field-notes",
+          "pathPrefix": "field-notes"
+        }
+      ]
+    },
+    {
+      "id": "releases",
+      "label": "Releases",
+      "groups": [
+        {
+          "label": "Release notes",
+          "from": "_content/releases",
+          "pathPrefix": "releases",
+          "sort": "semver"
+        }
+      ]
+    }
+  ]
+}

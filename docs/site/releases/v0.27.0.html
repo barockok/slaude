@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v0.27.0 — slaude Docs</title>
+<meta name="description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:title" content="v0.27.0 — slaude">
+<meta property="og:description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20width%3D'32'%20height%3D'32'%20rx%3D'8'%20fill%3D'%2523853291'%2F%3E%3Ctext%20x%3D'16'%20y%3D'23'%20font-family%3D'Helvetica%2CArial%2Csans-serif'%20font-size%3D'19'%20font-weight%3D'700'%20fill%3D'white'%20text-anchor%3D'middle'%3Es%3C%2Ftext%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/docs.css?v=377763e4">
+<script>(function(){try{var t=localStorage.getItem('slaude-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+    </button>
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true">s</span>
+      <span class="brand-name">slaude</span>
+      <span class="brand-sub">Docs</span>
+    </a>
+    <button class="search-btn" type="button" data-search-open>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <span>Search</span><kbd>⌘K</kbd>
+    </button>
+    <div class="topbar-actions">
+      <a class="ghost" href="https://github.com/barockok/slaude" target="_blank" rel="noopener">GitHub</a>
+      <button class="theme-btn" type="button" aria-label="Toggle theme">
+        <svg class="i-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1M12.9 12.9l-1.1-1.1M4.2 4.2 3.1 3.1"/></svg>
+        <svg class="i-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="topnav" aria-label="Sections"><div class="topnav-inner"><a class="topnav-tab" href="../index.html">Get started</a><a class="topnav-tab" href="../guides/index.html">Guides</a><a class="topnav-tab" href="../reference/configuration.html">Reference</a><a class="topnav-tab" href="../deploy/index.html">Deploy</a><a class="topnav-tab" href="../field-notes/2026-08-23-release-candidate-pipeline.html">Field notes</a><a class="topnav-tab active" href="v0.42.0.html">Releases</a></div></nav>
+</header>
+
+<div class="shell">
+  <aside class="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-inner"><div class="nav-group"><p class="nav-group-title">Release notes</p><ul><li><a class="" href="v0.42.0.html">v0.42.0</a></li><li><a class="" href="v0.41.0.html">v0.41.0</a></li><li><a class="" href="v0.40.3.html">v0.40.3</a></li><li><a class="" href="v0.40.2.html">v0.40.2</a></li><li><a class="" href="v0.40.1.html">v0.40.1</a></li><li><a class="" href="v0.40.0.html">v0.40.0</a></li><li><a class="" href="v0.39.1.html">v0.39.1</a></li><li><a class="" href="v0.39.0.html">v0.39.0</a></li><li><a class="" href="v0.38.0.html">v0.38.0</a></li><li><a class="" href="v0.37.0.html">v0.37.0</a></li><li><a class="" href="v0.36.0.html">v0.36.0</a></li><li><a class="" href="v0.35.0.html">v0.35.0</a></li><li><a class="" href="v0.34.0.html">v0.34.0</a></li><li><a class="" href="v0.33.1.html">v0.33.1</a></li><li><a class="" href="v0.33.0.html">v0.33.0</a></li><li><a class="" href="v0.32.0.html">v0.32.0</a></li><li><a class="" href="v0.31.0.html">v0.31.0</a></li><li><a class="" href="v0.30.2.html">v0.30.2</a></li><li><a class="" href="v0.30.1.html">v0.30.1</a></li><li><a class="" href="v0.30.0.html">v0.30.0</a></li><li><a class="" href="v0.29.0.html">v0.29.0</a></li><li><a class="" href="v0.28.0.html">v0.28.0</a></li><li><a class="active" href="v0.27.0.html">v0.27.0</a></li><li><a class="" href="v0.26.1.html">v0.26.1</a></li><li><a class="" href="v0.26.0.html">v0.26.0</a></li><li><a class="" href="v0.25.1.html">v0.25.1</a></li><li><a class="" href="v0.25.0.html">v0.25.0</a></li><li><a class="" href="v0.24.0.html">v0.24.0</a></li><li><a class="" href="v0.23.5.html">v0.23.5</a></li><li><a class="" href="v0.23.4.html">v0.23.4</a></li><li><a class="" href="v0.23.3.html">v0.23.3</a></li><li><a class="" href="v0.23.2.html">v0.23.2</a></li><li><a class="" href="v0.23.1.html">v0.23.1</a></li><li><a class="" href="v0.23.0.html">v0.23.0</a></li><li><a class="" href="v0.22.0.html">v0.22.0</a></li><li><a class="" href="v0.21.0.html">v0.21.0</a></li><li><a class="" href="v0.20.1.html">v0.20.1 — resume fixed + baseline indexing awareness</a></li><li><a class="" href="v0.20.0.html">v0.20.0 — dream the backlog</a></li><li><a class="" href="v0.19.4.html">v0.19.4 — fix: embedding gateway bootstrap</a></li><li><a class="" href="v0.19.3.html">v0.19.3 — fix: stale sync-lock rows after unclean shutdown</a></li><li><a class="" href="v0.19.2.html">v0.19.2 — fix: brain boot after unclean pod shutdown</a></li><li><a class="" href="v0.19.1.html">v0.19.1 — fix: KB sync on content-only installs</a></li><li><a class="" href="v0.19.0.html">v0.19.0 — subscription-friendly kb_think + native embedding providers</a></li><li><a class="" href="v0.18.0.html">v0.18.0 — the brain: gbrain-powered knowledge layer</a></li><li><a class="" href="v0.17.0.html">v0.17.0</a></li><li><a class="" href="v0.16.1.html">v0.16.1</a></li><li><a class="" href="v0.16.0.html">v0.16.0</a></li><li><a class="" href="v0.15.0.html">v0.15.0</a></li><li><a class="" href="v0.14.0.html">v0.14.0</a></li><li><a class="" href="v0.13.0.html">v0.13.0</a></li><li><a class="" href="v0.12.0.html">v0.12.0</a></li><li><a class="" href="v0.11.0.html">v0.11.0</a></li><li><a class="" href="v0.10.0.html">v0.10.0</a></li><li><a class="" href="v0.9.0.html">v0.9.0</a></li><li><a class="" href="v0.8.11.html">v0.8.11</a></li></ul></div></div>
+  </aside>
+
+  <main id="main" class="content">
+    <article class="prose">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Release notes</p>
+          <h1>v0.27.0</h1>
+        </div>
+        <button class="copy-page" type="button" title="Copy this page as Markdown for an agent">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 4 12h1.5"/></svg>
+          <span>Copy page</span>
+        </button>
+      </div>
+      
+      <h2 id="v0270-mcp-oauth-connect-one-engine-two-front-doors-slack-safe">v0.27.0 — MCP OAuth connect: one engine, two front doors, Slack-safe<a class="anchor" href="#v0270-mcp-oauth-connect-one-engine-two-front-doors-slack-safe" aria-label="Link to v0.27.0 — MCP OAuth connect: one engine, two front doors, Slack-safe">#</a></h2>
+<p>This release reworks how the agent connects OAuth-backed MCP servers. The old
+<code>/mcp connect</code> flow had Slack hard-coded into it and a fresh per-flow loopback
+listener; the markdown→mrkdwn converter quietly corrupted the authorize URL. All
+three are fixed, and the agent can now connect a service from natural language —
+without ever weakening the security model: the authorize URL never passes through
+the LLM, no paste is needed, and every flow tears down cleanly.</p>
+<p>See <code>docs/findings/2026-06-19-shared-oauth-loopback-surface-connect.md</code> for the
+full investigation (including why the runtime <em>synthesizes</em> the OAuth tools the
+server never ships, and why exact-match <code>redirect_uri</code> + open dynamic registration
+makes a single shared callback port work).</p>
+<h3 id="features">Features<a class="anchor" href="#features" aria-label="Link to Features">#</a></h3>
+<ul>
+<li><strong>MCP OAuth: shared always-on loopback, demuxed by signed state.</strong> A single
+callback listener (fixed port, default 3118) serves every session&#39;s OAuth
+callback, routing each by an HMAC-signed <code>state</code> that carries the session id
+(RFC 6749&#39;s client-set, echoed-back slot). Many sessions can authorize
+concurrently behind one pre-mapped port, instead of a fresh ephemeral listener
+per connect. Opt-in via <code>SLAUDE_OAUTH_SHARED_LOOPBACK</code> (+ <code>_PORT</code>,
+<code>SLAUDE_OAUTH_STATE_SECRET</code>); the per-flow path remains the default. New modules
+in <code>src/agent/mcp-oauth/</code>: <code>state.ts</code>, <code>shared-loopback.ts</code>, <code>shared-client.ts</code>,
+<code>token-exchange.ts</code>.</li>
+<li><strong>MCP OAuth: natural-language connect.</strong> A new agent-facing tool
+<code>mcp__slaude_connect__connect_mcp(server)</code> lets the agent connect a service when
+a user asks (&quot;connect workbench&quot;). It routes into the <em>same</em> deterministic
+<code>connectServer</code> engine as <code>/mcp connect</code> — scope-gated (you connect your own
+services in a <code>/1on1</code>; the agent&#39;s shared identity is manager-only),
+fire-and-forget, returning only a status line. The authorize URL is posted
+out-of-band by the gateway and the loopback captures the result, so the model
+never sees the link and the user never pastes anything.</li>
+<li><strong>Surface-aware connect.</strong> <code>/mcp connect</code> (loopback, paste-back, and button)
+now posts through the session&#39;s Surface instead of a hard-coded Slack client —
+channel-agnostic (Slack, sim, future surfaces), and it runs even outside a live
+turn.</li>
+</ul>
+<h3 id="fixes">Fixes<a class="anchor" href="#fixes" aria-label="Link to Fixes">#</a></h3>
+<ul>
+<li><strong>Slack mrkdwn: emphasis flanking.</strong> The converter did a pure <code>**</code>→<code>*</code> swap that
+Slack&#39;s renderer rejects. <code>***x***</code> → <code>_*x*_</code> (Slack nests bold+italic, has no
+triple-star), <code>** x **</code> → <code>*x*</code> (inner padding trimmed — Slack won&#39;t emphasize
+with a space hugging the marker). Intra-word bold (<code>word**b**word</code>) is a
+Slack-renderer limit, left as-is.</li>
+<li><strong>Slack mrkdwn: URLs corrupted by emphasis rules.</strong> Base64url query params
+(OAuth <code>code_challenge</code>/<code>state</code>) contain <code>__</code>, so a posted authorize URL got
+rewritten mid-string. <code>mdToMrkdwn</code> now carves <code>&lt;…&gt;</code> autolinks and bare
+<code>http(s)://</code> tokens (protect + restore, like code spans) before the link rule —
+fixing any agent-emitted URL, not just OAuth.</li>
+</ul>
+<h3 id="security">Security<a class="anchor" href="#security" aria-label="Link to Security">#</a></h3>
+<ul>
+<li><strong>Auth-URL redaction on teardown.</strong> Once a connect flow settles — success,
+failure, <em>or</em> loopback timeout — the authorize-URL message is edited in place to
+strip the live link (redact, not delete), so no stale clickable secret lingers
+in the thread.</li>
+<li><strong>State HMAC verified before routing.</strong> The shared loopback verifies the
+inbound <code>state</code>&#39;s HMAC <em>before</em> registry lookup (wired to <code>verifyState</code>), so a
+tampered/forged state is rejected before it can match a pending flow — closing a
+latent forgery surface flagged in security review.</li>
+<li><strong>Synthesized OAuth tools denied.</strong> The permission gate hard-denies
+<code>mcp__*__authenticate</code> / <code>__complete_authentication</code> (the runtime/SDK-synthesized
+tools that use an uncontrolled redirect and would launder the URL through the
+model) — before the approval prompt, so they can&#39;t run and aren&#39;t even offered.
+Every connect is forced through our engine.</li>
+</ul>
+<h3 id="internal">Internal<a class="anchor" href="#internal" aria-label="Link to Internal">#</a></h3>
+<ul>
+<li>New test suites: <code>tests/mcp-oauth/</code> (state, shared-loopback, shared-client),
+<code>tests/connect-mcp.test.ts</code>, plus expanded gateway/permission-gate/format coverage.</li>
+<li>Dropped an unreachable decode <code>try/catch</code> in <code>verifyState</code> (base64url decode is
+lenient and the MAC verifies first) → <code>state.ts</code> 100%.</li>
+</ul>
+<h3 id="commits">Commits<a class="anchor" href="#commits" aria-label="Link to Commits">#</a></h3>
+<ul>
+<li><code>feat(slack/mcp-oauth): mrkdwn fixes + shared OAuth loopback + surface-aware connect</code> (09eeeae, #51)</li>
+<li><code>feat(mcp-oauth): natural-language connect + deny synthesized OAuth tools</code> (4d99cad, #52)</li>
+</ul>
+<p><strong>Full diff:</strong> <a href="https://github.com/barockok/slaude/compare/v0.26.1...v0.27.0" target="_blank" rel="noopener">https://github.com/barockok/slaude/compare/v0.26.1...v0.27.0<span class="ext" aria-hidden="true">↗</span></a></p>
+
+    </article>
+    <nav class="prevnext"><a class="pn pn-prev" href="v0.28.0.html"><span class="pn-dir">Previous</span><span class="pn-label">v0.28.0</span></a><a class="pn pn-next" href="v0.26.1.html"><span class="pn-dir">Next</span><span class="pn-label">v0.26.1</span></a></nav>
+    <footer class="page-foot">
+      <a href="https://github.com/barockok/slaude/edit/main/docs/site/_content/releases/v0.27.0.md" target="_blank" rel="noopener">Edit this page on GitHub</a>
+      <span>slaude v0.42.0</span>
+    </footer>
+  </main>
+
+  <div class="toc-col"><nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul><li class="toc-h2"><a href="#v0270-mcp-oauth-connect-one-engine-two-front-doors-slack-safe">v0.27.0 — MCP OAuth connect: one engine, two front doors, Slack-safe</a></li><li class="toc-h3"><a href="#features">Features</a></li><li class="toc-h3"><a href="#fixes">Fixes</a></li><li class="toc-h3"><a href="#security">Security</a></li><li class="toc-h3"><a href="#internal">Internal</a></li><li class="toc-h3"><a href="#commits">Commits</a></li></ul></nav></div>
+</div>
+
+<div class="search-overlay" hidden>
+  <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search documentation">
+    <div class="search-input-row">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <input type="search" placeholder="Search the docs…" aria-label="Search" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="search-results" role="listbox"></div>
+  </div>
+</div>
+
+<script>window.__SLAUDE_BASE__="../";</script>
+<script src="../assets/docs.js?v=a084ede1" defer></script>
+</body>
+</html>

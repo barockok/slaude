@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sim REPL on OpenTUI (React) — slaude Docs</title>
+<meta name="description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:title" content="Sim REPL on OpenTUI (React) — slaude">
+<meta property="og:description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20width%3D'32'%20height%3D'32'%20rx%3D'8'%20fill%3D'%2523853291'%2F%3E%3Ctext%20x%3D'16'%20y%3D'23'%20font-family%3D'Helvetica%2CArial%2Csans-serif'%20font-size%3D'19'%20font-weight%3D'700'%20fill%3D'white'%20text-anchor%3D'middle'%3Es%3C%2Ftext%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/docs.css?v=377763e4">
+<script>(function(){try{var t=localStorage.getItem('slaude-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+    </button>
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true">s</span>
+      <span class="brand-name">slaude</span>
+      <span class="brand-sub">Docs</span>
+    </a>
+    <button class="search-btn" type="button" data-search-open>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <span>Search</span><kbd>⌘K</kbd>
+    </button>
+    <div class="topbar-actions">
+      <a class="ghost" href="https://github.com/barockok/slaude" target="_blank" rel="noopener">GitHub</a>
+      <button class="theme-btn" type="button" aria-label="Toggle theme">
+        <svg class="i-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1M12.9 12.9l-1.1-1.1M4.2 4.2 3.1 3.1"/></svg>
+        <svg class="i-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="topnav" aria-label="Sections"><div class="topnav-inner"><a class="topnav-tab" href="../index.html">Get started</a><a class="topnav-tab" href="../guides/index.html">Guides</a><a class="topnav-tab" href="../reference/configuration.html">Reference</a><a class="topnav-tab" href="../deploy/index.html">Deploy</a><a class="topnav-tab active" href="2026-08-23-release-candidate-pipeline.html">Field notes</a><a class="topnav-tab" href="../releases/v0.42.0.html">Releases</a></div></nav>
+</header>
+
+<div class="shell">
+  <aside class="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-inner"><div class="nav-group"><p class="nav-group-title">Field notes</p><ul><li><a class="" href="2026-08-23-release-candidate-pipeline.html">Release candidate pipeline</a></li><li><a class="" href="2026-07-27-kb-think-gather-miss.html">kb_think gather miss — runThink vs gather() source scoping</a></li><li><a class="" href="2026-07-24-per-agent-brain-slices.html">Per-agent brain slices: private minds, deliberate sharing</a></li><li><a class="" href="2026-07-08-per-channel-metrics.html">2026-07-08 — Per-channel token and model metrics</a></li><li><a class="" href="2026-07-03-cron-private-mcp-scoping-drift.html">Cron private-MCP credential scoping is decoupled from `oauth_user`</a></li><li><a class="" href="2026-06-20-channel-soul-overrides.html">Channel-specific soul mandate &amp; approvers</a></li><li><a class="" href="2026-06-20-brain-remote-mcp.html">Brain as a remote, OAuth-protected MCP process (configurable)</a></li><li><a class="" href="2026-06-19-shared-oauth-loopback-surface-connect.html">Shared OAuth loopback + surface-aware connect + URL-safe mrkdwn (#51)</a></li><li><a class="" href="2026-06-16-reengage-hook-suppress.html">Re-engage via in-session suppression (hook-only), not Slack backfill</a></li><li><a class="" href="2026-06-15-per-source-gather.html">2026-06-15 — Per-source `gather()`: fix bulk-corpus retrieval noise drowning curated pages</a></li><li><a class="" href="2026-06-14-model-switch-command.html">2026-06-14 — `/model` per-thread model switch</a></li><li><a class="" href="2026-06-14-brain-memoize-failure.html">2026-06-14 — Brain memoize: two failure modes break &quot;remember it&quot;</a></li><li><a class="" href="2026-06-13-kb-first-enforcement.html">KB-first enforcement — from prose to teeth (2026-06-13)</a></li><li><a class="" href="2026-06-11-soul-runtime-overrides.html">Soul runtime overrides — manager-editable ACLs without redeploy (2026-06-11)</a></li><li><a class="" href="2026-06-11-engagement-disengage-durability.html">Engagement review — disengage lasted zero messages (2026-06-11)</a></li><li><a class="" href="2026-06-11-1on1-transcript-sharding.html">/1on1 transcript sharding — resume breaks on lock flips (2026-06-11)</a></li><li><a class="" href="2026-06-10-mcp-global-connect.html">2026-06-10 — `/mcp` global connect (manager wires the agent's shared identity)</a></li><li><a class="" href="2026-06-10-gbrain-slaude-kb.html">gbrain × slaude — powering slaude_kb with a real brain</a></li><li><a class="" href="2026-06-09-post-as-slack-user.html">Post as the agent's real Slack user (opt-in xoxp)</a></li><li><a class="" href="2026-06-09-mcp-oauth-connect-1on1.html">2026-06-09 — /mcp OAuth connect in /1on1 (write CLI mcpOAuth store, CLI owns lifecycle)</a></li><li><a class="" href="2026-06-08-private-services-1on1.html">2026-06-08 — Private services in /1on1 (run as the initiator)</a></li><li><a class="" href="2026-06-08-orchestration-evolution-retro.html">2026-06-08 — Retro: orchestration, gating &amp; continuous evolution</a></li><li><a class="" href="2026-06-08-oauth-config-dir-1on1.html">2026-06-08 — /1on1 OAuth isolation via per-initiator CLAUDE_CONFIG_DIR</a></li><li><a class="" href="2026-06-08-cron-on-channel.html">cron-on-channel + a latent scheduler-boot crash</a></li><li><a class="active" href="2026-06-05-sim-tui-opentui.html">Sim REPL on OpenTUI (React)</a></li><li><a class="" href="2026-06-05-pinned-input-box.html">Pinned bordered input box (sim REPL)</a></li><li><a class="" href="2026-06-04-repl-claude-code-ux.html">Sim REPL — claude-code-grade UX</a></li><li><a class="" href="2026-06-03-surface-abstraction.html">2026-06-03 — Surface abstraction (agent interaction decoupled from Slack)</a></li><li><a class="" href="2026-06-03-sim-interactive-real-agent.html">2026-06-03 — Interactive sim against the live agent (`--real`)</a></li><li><a class="" href="2026-05-29-simulation-gateway.html">2026-05-29 — Simulation gateway (Slack-free verification)</a></li><li><a class="" href="2026-05-29-one-on-one-mode.html">2026-05-29 — /1on1 mode (per-thread engagement lock)</a></li><li><a class="" href="2026-05-29-contextual-mcp-connections.html">2026-05-29 — Contextual per-user MCP connections</a></li><li><a class="" href="2026-05-25-cron-ignore-audit.html">Cron &amp; Ignore System Audit</a></li><li><a class="" href="2026-05-22-plugin-loader-chain.html">2026-05-22 — Plugin loader chain (install → SDK → MCP)</a></li><li><a class="" href="2026-05-21-writable-kb-ingest.html">2026-05-21 — Writable KB + /ingest</a></li><li><a class="" href="2026-05-21-policy-guardrails.html">2026-05-21 — Policy Guardrails (Tier 2 / Tier 3 Design)</a></li><li><a class="" href="2026-05-21-dependency-manifest.html">2026-05-21 — Dependency Manifest Design</a></li><li><a class="" href="2026-05-13-metrics-stop-guard.html">2026-05-13 — fallback ctx, table emphasis, metrics, stop-guard</a></li><li><a class="" href="2026-05-11-structured-soul-channel-mode.html">2026-05-11 — structured-soul + channel-mode gate</a></li><li><a class="" href="2026-05-11-skill-evolution.html">2026-05-11 — skill evolution</a></li><li><a class="" href="2026-05-11-external-mcp.html">2026-05-11 — external MCP via mcp.json</a></li><li><a class="" href="2026-05-11-context-budget-tracking.html">2026-05-11 — context budget tracking</a></li><li><a class="" href="2026-05-11-claude-subscription-oauth.html">2026-05-11 — Claude subscription OAuth</a></li><li><a class="" href="2026-05-09-slack-ux-engagement.html">2026-05-09 / 2026-05-10 — Slack UX, engagement, approval, CI</a></li><li><a class="" href="2026-05-08-mvp-bootstrap.html">2026-05-08 — MVP bootstrap</a></li></ul></div></div>
+  </aside>
+
+  <main id="main" class="content">
+    <article class="prose">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Field notes</p>
+          <h1>Sim REPL on OpenTUI (React)</h1>
+        </div>
+        <button class="copy-page" type="button" title="Copy this page as Markdown for an agent">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 4 12h1.5"/></svg>
+          <span>Copy page</span>
+        </button>
+      </div>
+      
+      <p><strong>Date:</strong> 2026-06-05</p>
+<p>Replaced the hand-rolled raw-mode TUI (the <code>keys</code>/<code>editor</code>/<code>screen</code>/<code>menu</code> stack built earlier the
+same day) with <strong>OpenTUI</strong>&#39;s React binding. <code>ReplController</code> and the <code>sim run</code> CI/transcript path are
+unchanged — the React app is a new <em>view</em> over the controller&#39;s <code>onOutput</code>/<code>onStatus</code> streams.</p>
+<blockquote>
+<p>Supersedes the same-day <a href="2026-06-05-pinned-input-box.html">pinned input box</a> work — those modules
+(custom key decoder, line editor, scroll-region painter, modal panels) are deleted. That finding
+stays as history; this is the live design.</p>
+</blockquote>
+<h2 id="what-shipped">What shipped<a class="anchor" href="#what-shipped" aria-label="Link to What shipped">#</a></h2>
+<ul>
+<li><code>tui/</code> (React, <code>@opentui/react</code>): <code>app.tsx</code> (root: <code>scrollbox</code> output + status + <code>input</code>/overlays),
+<code>picker.tsx</code> (<code>&lt;select&gt;</code> for <code>/layer</code>·<code>/as</code>), <code>help.tsx</code> (scrollable <code>&lt;scrollbox&gt;</code> sheet),
+<code>use-repl.ts</code> (subscribe controller → state), <code>mount.tsx</code> (<code>createRoot(createCliRenderer()).render</code>).</li>
+<li>Pure + unit-tested: <code>route.ts</code> (submit → action), <code>ansi.ts</code> (<code>forText</code> strips ANSI for <code>&lt;text&gt;</code>).</li>
+<li>Removed: <code>keys.ts</code>, <code>editor.ts</code>, <code>screen.ts</code>, <code>menu.ts</code>, <code>interrupt.ts</code> + their tests. Kept:
+<code>repl.ts</code>, <code>render.ts</code>, <code>complete.ts</code>, <code>roles.ts</code>, <code>stub-agent.ts</code>, <code>transcript.ts</code>.</li>
+<li>Deps: <code>@opentui/core</code>, <code>@opentui/react</code>, <code>react</code>, <code>@types/react</code>. tsconfig <code>jsx: react-jsx</code>; each
+<code>.tsx</code> carries a <code>/** @jsxImportSource @opentui/react */</code> pragma (the binding augments JSX there,
+not globally).</li>
+</ul>
+<h2 id="why-opentui-react">Why OpenTUI / React<a class="anchor" href="#why-opentui-react" aria-label="Link to Why OpenTUI / React">#</a></h2>
+<p>Real flexbox + <code>scrollbox</code> + <code>input</code>/<code>select</code> with built-in focus/keyboard handling beat bespoke
+ANSI bookkeeping. <strong>React, not Solid</strong>, because Bun transpiles plain JSX natively; Solid needs its
+compile-time <code>jsx-dom-expressions</code> transform (extra Bun plugin plumbing). The heavier React dep is
+irrelevant for a dev-only sim.</p>
+<h2 id="spike-findings-the-gate-see-srcgatewaysimtuiapi-notesmd">Spike findings (the gate) — see <code>src/gateway/sim/tui/API-NOTES.md</code><a class="anchor" href="#spike-findings-the-gate-see-srcgatewaysimtuiapi-notesmd" aria-label="Link to Spike findings (the gate) — see src/gateway/sim/tui/API-NOTES.md">#</a></h2>
+<ul>
+<li>Native lib loads and the React reconciler renders <strong>under Bun</strong>.</li>
+<li>The view is <strong>headlessly unit-testable</strong> via <code>@opentui/react/test-utils</code> <code>testRender</code> +
+<code>waitForFrame</code> + <code>mockInput</code> — so <code>app</code>/<code>picker</code>/<code>help</code> have real frame-assertion tests, not just
+manual smoke.</li>
+<li><code>&lt;text&gt;</code> does <strong>not</strong> parse raw ANSI → strip with core <code>stripAnsiSequences</code>. Color is dropped in
+MVP; future enhancement: convert ANSI → <code>StyledText</code> to restore it.</li>
+<li><code>&lt;select&gt;</code> inside a borderless flex box collapses to 0 rows — give it an explicit height.</li>
+<li><code>exitOnCtrlC</code> may <code>process.exit</code> before <code>CliRenderEvents.DESTROY</code>, so <code>mountTui</code> also disposes the
+controller on a <code>process.once(&quot;exit&quot;)</code> fallback.</li>
+</ul>
+<h2 id="caveats-accepted">Caveats (accepted)<a class="anchor" href="#caveats-accepted" aria-label="Link to Caveats (accepted)">#</a></h2>
+<ul>
+<li>OpenTUI is pre-1.0 (&quot;not for production&quot;) + native FFI — fine for a dev-only sim; <code>bun run start</code>
+(the Slack runtime) never imports it, so production images are unaffected. Pin the version.</li>
+<li>Single-line <code>&lt;input&gt;</code> flattens pasted newlines; multi-line authoring would need <code>&lt;textarea&gt;</code>
+(deferred). Color fidelity from <code>render.ts</code> is lost until the StyledText enhancement.</li>
+</ul>
+<h2 id="verification">Verification<a class="anchor" href="#verification" aria-label="Link to Verification">#</a></h2>
+<ul>
+<li><code>bun test</code> — 736 pass (route/ansi/view tests + ReplController transcripts). <code>bun run typecheck</code> clean.</li>
+<li><code>sim run</code> (CI) — 25/25 transcripts, no TUI mounted.</li>
+<li>Interactive TTY smoke is the remaining manual check (see checklist in the plan, Task 8).</li>
+</ul>
+<p>Spec: <code>docs/superpowers/specs/2026-06-05-sim-tui-opentui-design.md</code>
+Plan: <code>docs/superpowers/plans/2026-06-05-sim-tui-opentui.md</code></p>
+
+    </article>
+    <nav class="prevnext"><a class="pn pn-prev" href="2026-06-08-cron-on-channel.html"><span class="pn-dir">Previous</span><span class="pn-label">cron-on-channel + a latent scheduler-boot crash</span></a><a class="pn pn-next" href="2026-06-05-pinned-input-box.html"><span class="pn-dir">Next</span><span class="pn-label">Pinned bordered input box (sim REPL)</span></a></nav>
+    <footer class="page-foot">
+      <a href="https://github.com/barockok/slaude/edit/main/docs/site/_content/field-notes/2026-06-05-sim-tui-opentui.md" target="_blank" rel="noopener">Edit this page on GitHub</a>
+      <span>slaude v0.42.0</span>
+    </footer>
+  </main>
+
+  <div class="toc-col"><nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul><li class="toc-h2"><a href="#what-shipped">What shipped</a></li><li class="toc-h2"><a href="#why-opentui-react">Why OpenTUI / React</a></li><li class="toc-h2"><a href="#spike-findings-the-gate-see-srcgatewaysimtuiapi-notesmd">Spike findings (the gate) — see src/gateway/sim/tui/API-NOTES.md</a></li><li class="toc-h2"><a href="#caveats-accepted">Caveats (accepted)</a></li><li class="toc-h2"><a href="#verification">Verification</a></li></ul></nav></div>
+</div>
+
+<div class="search-overlay" hidden>
+  <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search documentation">
+    <div class="search-input-row">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <input type="search" placeholder="Search the docs…" aria-label="Search" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="search-results" role="listbox"></div>
+  </div>
+</div>
+
+<script>window.__SLAUDE_BASE__="../";</script>
+<script src="../assets/docs.js?v=a084ede1" defer></script>
+</body>
+</html>

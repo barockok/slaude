@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Architecture — slaude Docs</title>
+<meta name="description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:title" content="Architecture — slaude">
+<meta property="og:description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20width%3D'32'%20height%3D'32'%20rx%3D'8'%20fill%3D'%2523853291'%2F%3E%3Ctext%20x%3D'16'%20y%3D'23'%20font-family%3D'Helvetica%2CArial%2Csans-serif'%20font-size%3D'19'%20font-weight%3D'700'%20fill%3D'white'%20text-anchor%3D'middle'%3Es%3C%2Ftext%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/docs.css?v=377763e4">
+<script>(function(){try{var t=localStorage.getItem('slaude-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+    </button>
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true">s</span>
+      <span class="brand-name">slaude</span>
+      <span class="brand-sub">Docs</span>
+    </a>
+    <button class="search-btn" type="button" data-search-open>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <span>Search</span><kbd>⌘K</kbd>
+    </button>
+    <div class="topbar-actions">
+      <a class="ghost" href="https://github.com/barockok/slaude" target="_blank" rel="noopener">GitHub</a>
+      <button class="theme-btn" type="button" aria-label="Toggle theme">
+        <svg class="i-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1M12.9 12.9l-1.1-1.1M4.2 4.2 3.1 3.1"/></svg>
+        <svg class="i-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="topnav" aria-label="Sections"><div class="topnav-inner"><a class="topnav-tab active" href="../index.html">Get started</a><a class="topnav-tab" href="../guides/index.html">Guides</a><a class="topnav-tab" href="../reference/configuration.html">Reference</a><a class="topnav-tab" href="../deploy/index.html">Deploy</a><a class="topnav-tab" href="../field-notes/2026-08-23-release-candidate-pipeline.html">Field notes</a><a class="topnav-tab" href="../releases/v0.42.0.html">Releases</a></div></nav>
+</header>
+
+<div class="shell">
+  <aside class="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-inner"><div class="nav-group"><p class="nav-group-title">Introduction</p><ul><li><a class="" href="../index.html">What is slaude?</a></li><li><a class="" href="getting-started.html">Getting started</a></li><li><a class="active" href="architecture.html">Architecture</a></li></ul></div></div>
+  </aside>
+
+  <main id="main" class="content">
+    <article class="prose">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Introduction</p>
+          <h1>Architecture</h1>
+        </div>
+        <button class="copy-page" type="button" title="Copy this page as Markdown for an agent">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 4 12h1.5"/></svg>
+          <span>Copy page</span>
+        </button>
+      </div>
+      
+      <h1>Architecture</h1>
+<blockquote>
+<p>One Slack thread = one persistent Claude session. One container = one persona.</p>
+</blockquote>
+<p>Slaude is a headless Slack runtime for Claude Code. It binds Slack threads to durable agent sessions, wraps every side effect behind gateway-enforced gates, and keeps all state on a single PVC. This page explains how the pieces fit — in about 10 minutes.</p>
+<hr>
+<h2 id="system-diagram">System diagram<a class="anchor" href="#system-diagram" aria-label="Link to System diagram">#</a></h2>
+<p><img src="../docs/architecture.png" alt="slaude architecture"></p>
+<p><em>Source: <a href="https://github.com/barockok/slaude/blob/main/docs/internal/architecture.html" target="_blank" rel="noopener"><code>docs/architecture.html</code><span class="ext" aria-hidden="true">↗</span></a> — SVG rendered to PNG via headless Chrome. Regenerate with <code>bun run docs:architecture</code>.</em></p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">Slack  ──events──►  Gateway (/gateway/slack)  ──envelope──►  AgentManager  ──SDK query──►  Claude child
+  ▲                    │  │  │  │                           ▲  │  │  │  │                    │
+  │  reply/edit/upload │  │  │  │                           │  │  │  │  └─ MCP surface ──────┘
+  └────────────────────┘  │  │  └─ slaude_slack MCP ────────┘  │  │  └─ skills / KB / memory
+                          │  └──── approval-gate ──────────────┘  │  └─ token-budget
+                          └─────── permission-gate ───────────────┘  └─ session-mcp</code></pre></div>
+<h3 id="layers-at-a-glance">Layers at a glance<a class="anchor" href="#layers-at-a-glance" aria-label="Link to Layers at a glance">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Layer</th><th>Lives in</th><th>Responsibility</th></tr></thead><tbody>
+<tr><td><strong>Slack surface</strong></td><td>Slack workspace</td><td>Socket Mode events, threads, DMs, Block Kit buttons, reactions, presence</td></tr>
+<tr><td><strong>Gateway</strong></td><td><code>src/gateway/slack/*</code></td><td>Trust boundary. Ingest, dedup, channel-mode, engagement, slash commands, MCP + OAuth wiring, stop guard</td></tr>
+<tr><td><strong>AgentManager</strong></td><td><code>src/agent/manager.ts</code></td><td><code>Map&lt;sessionId, LiveSession&gt;</code> over <code>@anthropic-ai/claude-agent-sdk</code>. Prompt iterable, resume, idle TTL, token budget, hooks</td></tr>
+<tr><td><strong>Modules</strong></td><td><code>src/{soul,skills,knowledge,memory,persona}</code></td><td>Persona (two-layer prompt), skills, KB brain, episodic memory, persona registry</td></tr>
+<tr><td><strong>Persistence</strong></td><td><code>bun:sqlite</code> + <code>~/.slaude/</code> PVC</td><td>Per-thread sqlite rows + markdown on disk (SOUL.md, mcp.json, slaude.json/lock, wikis)</td></tr>
+<tr><td><strong>Observability</strong></td><td><code>src/health.ts</code>, <code>src/metrics.ts</code></td><td><code>/healthz</code>, <code>/readyz</code>, <code>/metrics</code> (Prometheus), per-channel + per-model labels</td></tr>
+</tbody></table></div>
+<blockquote>
+<p><strong>Next.js parity check:</strong> Next.js docs put the diagram first, then explain each layer top-to-bottom with a table. We do the same. If you only read the diagram and this table, you can navigate the codebase.</p>
+</blockquote>
+<p><strong>Concepts you will see on every page</strong></p>
+<div class="table-wrap"><table><thead><tr><th>Term</th><th>Meaning</th></tr></thead><tbody>
+<tr><td><strong>Surface</strong></td><td>Platform-neutral <code>reply</code>/<code>edit</code>/<code>upload</code> contract (<code>src/gateway/core/surface.ts</code>). Slack adapter is one implementation; the sim drives the same surface over a fake transport.</td></tr>
+<tr><td><strong>SoulData</strong></td><td>Typed JSON projection of <code>SOUL.md</code> (<code>src/soul/data.ts</code>). Gateway reads it; the model never decides policy.</td></tr>
+<tr><td><strong>LiveSession</strong></td><td>One <code>SDK Query</code> loop in <code>AgentManager</code> (<code>Map&lt;sessionId, LiveSession&gt;</code>). Holds the prompt iterable, abort, idle timer, turn buffer.</td></tr>
+<tr><td><strong>Engagement</strong></td><td>Per-thread boolean (<code>sessions.engaged</code>) — is this thread &quot;talking to slaude&quot; right now? Controls whether plain replies are handled.</td></tr>
+</tbody></table></div>
+<hr>
+<h2 id="request-lifecycle">Request lifecycle<a class="anchor" href="#request-lifecycle" aria-label="Link to Request lifecycle">#</a></h2>
+<h3 id="inbound-slack-event-agent-turn">Inbound: Slack event → agent turn<a class="anchor" href="#inbound-slack-event-agent-turn" aria-label="Link to Inbound: Slack event → agent turn">#</a></h3>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">Socket Mode (Bolt) ─► dedup (channel:ts) ─► ignore gate ─► blockedUsers ─► channel-mode gate ─► 1on1 gate
+        │
+        ├── app_mention → engage thread, handleMessage
+        └── message     → engagement routing (below) → handleMessage
+                                          │
+                          handleMessage builds &lt;channel&gt; envelope + &lt;attachment&gt; blocks
+                                          │  resolves personaId, session row, Surface binding
+                                          ▼
+                          AgentManager.sendMessage(sessionId, envelope)
+                                          │  re-arms idle timer, emits turnStart
+                                          ▼
+                          LiveSession prompt iterable yields → Claude child (SDK query)</code></pre></div>
+<p><strong>What the agent sees</strong> per turn is a single wrapped envelope — not raw Slack JSON:</p>
+<div class="code" data-lang="xml"><div class="code-bar"><span class="code-lang">xml</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-xml">&lt;channel source=&quot;slack&quot; channel_id=&quot;C0123&quot; thread_ts=&quot;1716000000.000100&quot;
+         inbound_ts=&quot;1716000001.000200&quot; user_id=&quot;U0MANAGER&quot; user_name=&quot;Barock&quot;
+         trust=&quot;trusted&quot; one_on_one=&quot;false&quot; locked_user=&quot;&quot;&gt;
+  the user's text
+  &lt;attachment name=&quot;screenshot.png&quot; mimetype=&quot;image/png&quot; size=&quot;48211&quot;
+              path=&quot;/home/slaude/.slaude/workspaces/C0123-1716000000.000100/screenshot.png&quot; /&gt;
+&lt;/channel&gt;
+
+Reply to the user by calling the mcp__slaude_surface__reply tool.
+Plain assistant text is not delivered to Slack — only tool calls reach the user.</code></pre></div>
+<p>Trust, 1on1, attachments, and the reply discipline are all injected here — the model never has to infer them.</p>
+<h3 id="outbound-agent-slack-mcp-surface-only">Outbound: agent → Slack (MCP surface only)<a class="anchor" href="#outbound-agent-slack-mcp-surface-only" aria-label="Link to Outbound: agent → Slack (MCP surface only)">#</a></h3>
+<p>Plain assistant text is <strong>invisible</strong>. The only path to Slack is the in-process MCP server <code>slaude_surface</code>:</p>
+<div class="table-wrap"><table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody>
+<tr><td><code>reply</code></td><td>Post a message in the bound thread (markdown → mrkdwn at post time)</td></tr>
+<tr><td><code>edit</code></td><td>Edit a prior reply by <code>ref</code></td></tr>
+<tr><td><code>upload</code></td><td>Upload a file from the session <code>cwd</code></td></tr>
+<tr><td><code>react</code> / <code>unreact</code></td><td>Emoji reactions</td></tr>
+<tr><td><code>request_approval</code></td><td>Block Kit Approve/Deny card — see <a href="#trust-boundary">Trust boundary</a></td></tr>
+</tbody></table></div>
+<p>The gateway also drives ambient UI outside the surface: <code>eyes</code> on receive, <code>gear</code> while working, <code>white_check_mark</code>/<code>x</code> on done/error, animated <code>thinking…</code> / <code>running &lt;cmd&gt;</code> status via Slack Agents API, and a live TodoWrite/TaskCreate tracker posted mid-turn.</p>
+<hr>
+<h2 id="trust-boundary">Trust boundary<a class="anchor" href="#trust-boundary" aria-label="Link to Trust boundary">#</a></h2>
+<blockquote>
+<p><strong>Rule:</strong> the LLM extracts policy, the gateway enforces it. Never the reverse.</p>
+</blockquote>
+<h3 id="extraction-soulmd-typed-souldata">Extraction: SOUL.md → typed SoulData<a class="anchor" href="#extraction-soulmd-typed-souldata" aria-label="Link to Extraction: SOUL.md → typed SoulData">#</a></h3>
+<p>At boot (and on every <code>sha256(SOUL.md)</code> change) an <strong>ephemeral, tool-free Claude turn</strong> projects the operator&#39;s free-form <code>SOUL.md</code> into a typed JSON validated by Zod:</p>
+<div class="code" data-lang="ts"><div class="code-bar"><span class="code-lang">ts</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-ts">// src/soul/data.ts — SoulDataSchema (abridged)
+{
+  identity:        { name?, role?, voice? },
+  manager:        { userId?, handle? },
+  backupManager:  { userId?, handle? },
+  allowedChannels: string[],   // C/G/D ids — anyone may chat
+  trustedChannels: string[],   // team channel — same gate, richer context hint
+  blockedUsers:   string[],    // hard drop before Claude is invoked
+  dmAllowedUsers: string[],    // DM allowlist beyond manager/backup
+  approvers:      ApproverEntry[],  // { userId, scope, catchall }
+  channelOverrides: ChannelOverride[], // per-channel mandate/approver replace
+  mandate?:       string,
+  values:         string[],
+}</code></pre></div>
+<p>Caching: <code>~/.slaude/cache/soul.&lt;sha&gt;.json</code>. Any extraction failure falls back to a regex parser that only recovers <code>approvers</code> — the gateway never breaks open.</p>
+<p><strong>Id grounding check</strong> — every Slack id the extractor returns must appear verbatim in <code>SOUL.md</code> (<code>src/soul/extract.ts:assertIdsGroundedInPersona</code>). This blocks the LLM from inventing approvers or whitelisting channels the operator never authorized.</p>
+<p>Runtime overlays (<code>/soul</code> slash command) apply on top via <code>soul_overrides</code> sqlite table and are read per-message — no restart needed. Overlay failures never take the gates down (fallback to <code>SOUL.md</code> base).</p>
+<h3 id="enforcement-gateway-only">Enforcement: gateway only<a class="anchor" href="#enforcement-gateway-only" aria-label="Link to Enforcement: gateway only">#</a></h3>
+<p>All five gates live in <code>src/gateway/slack/*</code> and run <strong>before or around</strong> the model — never inside it:</p>
+<div class="table-wrap"><table><thead><tr><th>Gate</th><th>File</th><th>What it enforces</th></tr></thead><tbody>
+<tr><td><strong>Blocked-user</strong></td><td><code>adapter.ts</code> (handleMessage)</td><td>Drop before token spend. No logs leaked to the agent.</td></tr>
+<tr><td><strong>Channel-mode</strong></td><td><code>adapter.ts</code> (channel-mode gate)</td><td><code>trusted</code>/<code>allowed</code> → anyone may chat. Unlisted + DM → manager/backup/<code>dmAllowedUsers</code> only. Approvers can still click Approve/Deny but cannot chat outside allowed channels.</td></tr>
+<tr><td><strong>Engagement</strong></td><td><code>adapter.ts</code> (engagement router) + <code>db/sessions.engaged</code></td><td><code>@mention</code> engages a thread, <code>@mention other</code> disengages, plain replies only handled when engaged. Persisted per-thread so disengage survives restarts.</td></tr>
+<tr><td><strong>Approver authz</strong></td><td><code>approval-gate.ts</code> + <code>soul/loader.ts:selectApproversFrom</code></td><td><code>request_approval</code> keyword-matches the agent&#39;s plan summary against each approver&#39;s scope tokens. Only matching approvers + catchalls get the Block Kit buttons. Per-channel overrides replace the global approver set but manager/backup are always retained as catchalls (no lockout).</td></tr>
+<tr><td><strong>Per-tool permission</strong></td><td><code>permission-gate.ts</code> (<code>canUseTool</code> callback)</td><td>SDK <code>canUseTool</code> → Block Kit Allow/Always/Deny per tool call. Respects <code>SLAUDE_AUTO_ALLOW_TOOLS</code> and per-thread <code>permission_mode</code> (<code>default</code>/<code>acceptEdits</code>/<code>bypassPermissions</code>/<code>plan</code>/<code>dontAsk</code>).</td></tr>
+</tbody></table></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">SOUL.md  ──LLM extract──►  SoulData JSON  ──sha cache──►  gateway gates  ──►  allow / drop / ask
+   │              ▲                │                              │
+   │        grounded ids            │                              └── approval-gate picks eligible approvers
+   │        (verbatim check)        └──── channelOverrides + overrides overlay
+   └── operator edits ──────────────── any gate failure → safe fallback, never open</code></pre></div>
+<blockquote>
+<p><strong>What the LLM cannot do:</strong> redirect an approval card to a different user, self-approve, bypass the <code>blockedUsers</code> hard-drop, or invent a channel allowlist entry. Those checks are pure code in <code>src/gateway/slack/*</code> and run on the gateway&#39;s <code>soulData()</code> — not on model output. A jailbroken persona can mislead an approver with a crafted summary, but it cannot change who gets the button.</p>
+</blockquote>
+<hr>
+<h2 id="session-lifecycle">Session lifecycle<a class="anchor" href="#session-lifecycle" aria-label="Link to Session lifecycle">#</a></h2>
+<h3 id="one-inbound-message-end-to-end">One inbound message, end to end<a class="anchor" href="#one-inbound-message-end-to-end" aria-label="Link to One inbound message, end to end">#</a></h3>
+<p>Trace a single <code>@slaude fix the flake</code> through the system. Every box is a file you can open.</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext"> 1  Bolt Socket Mode          2  dedup / ignore / blockedUsers / channel-mode / 1on1 gates
+ 2  ─────────────────►  ───────────────────────────────────────────────────────────────►
+ 3  engagement router          4  &lt;channel&gt; envelope + Surface binding + session row
+ 3  ─────────────────►  ───────────────────────────────────────────────────────────────►
+ 5  AgentManager.sendMessage   6  SDK Query (prompt iterable)  7  Claude child
+ 5  (re-arms idle timer)       ──────────────────────────────►  ─────────────────►
+ 8  tool calls ──► canUseTool / request_approval gates ──► Slack surface (reply/edit/upload)
+ 9  result ──► TokenBudget.record ──► done → reactions/status cleared, idle TTL re-armed</code></pre></div>
+<p>If any gate in step 2 drops the event, the model never runs and no token is spent. If step 4 finds no session row, one is created. If step 8 never calls <code>reply</code>/<code>edit</code>/<code>upload</code>, the <code>Stop</code> hook blocks and instructs the model to reply.</p>
+<h3 id="one-thread-one-session-one-cwd">One thread, one session, one cwd<a class="anchor" href="#one-thread-one-session-one-cwd" aria-label="Link to One thread, one session, one cwd">#</a></h3>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">Slack thread (team:channel:thread_ts × persona_id)  1──1  sessions row  1──1  LiveSession (SDK Query)  1──1  cwd
+                                                          │                                    │
+                                                          │  ~/.slaude/workspaces/&lt;team&gt;-&lt;channel&gt;-&lt;thread&gt;[__persona]
+                                                          │  per-thread git worktree root</code></pre></div>
+<ul>
+<li><strong>Create:</strong> first message in a thread → <code>Sessions.createForThread</code> allocates a UUID, <code>working_dir</code>, model, <code>permission_mode</code>, <code>persona_id</code>.</li>
+<li><strong>Bind:</strong> <code>AgentManager.ensureSession</code> creates the row if absent; <code>handleMessage</code> builds a <code>Surface</code> binding (<code>conversationId</code>, <code>threadRef</code>, <code>inboundRef</code>, <code>userId</code>) and a <code>SlackContext</code> that every MCP tool closes over. Subsequent turns mutate the same context object so the SDK&#39;s mounted MCP servers stay valid without re-mounting.</li>
+<li><strong>Resume:</strong> <code>sessionIdOpts(row)</code> — first boot seeds the Claude CLI with <code>extraArgs: { &quot;session-id&quot;: row.id }</code> so both sides share one id. Later boots use <code>resume: row.id</code>. Resume-miss and id-collision are self-healed (clear <code>claude_started</code> or flip to resume and retry).</li>
+</ul>
+<h3 id="engagement-how-a-thread-becomes-quotyoursquot">Engagement: how a thread becomes &quot;yours&quot;<a class="anchor" href="#engagement-how-a-thread-becomes-quotyoursquot" aria-label="Link to Engagement: how a thread becomes &amp;quot;yours&amp;quot;">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Event</th><th>Effect</th></tr></thead><tbody>
+<tr><td><code>app_mention</code> (<code>@slaude …</code>)</td><td>Engage thread (<code>engaged</code> Set + <code>sessions.engaged = 1</code>). Persisted.</td></tr>
+<tr><td><code>message</code> with <code>@slaude</code></td><td>Same — engage + handle</td></tr>
+<tr><td><code>message</code> with <code>@other-user</code> (no <code>@slaude</code>)</td><td>Disengage (<code>engaged = 0</code>). If a session exists, the message is <strong>recorded suppressed</strong> (hook <code>continue:false</code> — persists to transcript, no model run) so re-engage resumes with the gap in history. If no session, drop.</td></tr>
+<tr><td>Plain reply while engaged</td><td>Handle normally</td></tr>
+<tr><td>Plain reply while disengaged + session exists</td><td>Record suppressed — no model run, no Slack feedback</td></tr>
+<tr><td>Plain reply while disengaged + no session</td><td>Drop (never start a session for an unrelated thread)</td></tr>
+<tr><td><code>mention-only</code> mode on</td><td>Plain messages never trigger the model (even when engaged). Only <code>@mention</code> triggers a turn. Messages still recorded suppressed when a session exists.</td></tr>
+<tr><td><code>1on1</code> lock on</td><td>Only <code>locked_user</code> + manager/backup are heard. Others dropped before slash parsing so they cannot <code>/1on1 off</code> someone else&#39;s lock.</td></tr>
+</tbody></table></div>
+<p>Engagement is cached in-memory (<code>Set&lt;string&gt;</code>) <strong>and</strong> persisted on the session row. Without persistence, a disengage lasted zero messages — the next plain reply hit the restore path and re-engaged.</p>
+<h3 id="idle-ttl-and-resume">Idle TTL and resume<a class="anchor" href="#idle-ttl-and-resume" aria-label="Link to Idle TTL and resume">#</a></h3>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">user msg ──► LiveSession ──► #armIdle(15m default)
+                │                    │
+                ├── new msg ──► re-arm
+                └── timer fires ──► closeIterable() → for-await loop unwinds → status=idle
+                                      next msg → #startSession again with resume: sessionId</code></pre></div>
+<ul>
+<li>Configured by <code>SLAUDE_IDLE_MINUTES</code> (<code>env.idleMs()</code>). Default <strong>15 minutes</strong>. <code>0</code> disables.</li>
+<li>On expiry the SDK <code>Query</code> closes silently — no Slack message. The transcript is already persisted by the CLI.</li>
+<li><code>TokenBudget</code> is forgotten on idle; <code>stopBlocked</code> cleared; <code>sessions</code> status → <code>idle</code>.</li>
+<li>Cron, <code>/mcp</code>, and OAuth flows can synthesize a session without an inbound message — they register a route synthetically so the next real user message resumes cleanly.</li>
+</ul>
+<h3 id="failure-and-recovery">Failure and recovery<a class="anchor" href="#failure-and-recovery" aria-label="Link to Failure and recovery">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Failure</th><th>Detection</th><th>Recovery</th></tr></thead><tbody>
+<tr><td><strong>Resume miss</strong> (<code>No conversation found with session ID</code>) — provider has no transcript for this id (cross-provider <code>ANTHROPIC_BASE_URL</code> swap, stale row)</td><td><code>stderr</code> match + <code>result(is_error)</code></td><td>Clear <code>claude_started</code>, reboot with <code>extraArgs: { session-id }</code> — silent, no Slack warning</td></tr>
+<tr><td><strong>Session id already exists</strong> — flag lost between CLI persist and <code>markStarted</code></td><td><code>stderr</code> match <code>session already in use</code></td><td>Flip to <code>resume: sessionId</code> and retry</td></tr>
+<tr><td><strong>MCP stream closed</strong> — external MCP disconnect tears down the shared transport pool, all <code>slaude_*</code> tools fail with <code>Stream closed</code></td><td><code>tool_use_result</code> string match <code>stream closed</code></td><td>Auto-reload at turn end (<code>reload</code> + synthetic <code>continue</code>); circuit breaker after 2 consecutive reloads — surfaces error instead</td></tr>
+<tr><td><strong>Token budget critical</strong> (≥ 92% of context window)</td><td><code>TokenBudget.evaluateThreshold</code> (edge-triggered, one-shot per session)</td><td>Transport can surface a warning / trigger cooperative resume; <code>fallback 200k</code> when <code>modelUsage</code> absent</td></tr>
+<tr><td><strong>Extraction failure</strong></td><td>Any throw in <code>loadSoulData</code></td><td>Regex fallback (approvers only), gateway gates stay on safe base</td></tr>
+</tbody></table></div>
+<p>All recovery is <strong>silent to the user</strong> except the circuit-open case — Next.js-style, the happy path never mentions errors; a dedicated section does.</p>
+<h3 id="hooks-that-shape-every-turn">Hooks that shape every turn<a class="anchor" href="#hooks-that-shape-every-turn" aria-label="Link to Hooks that shape every turn">#</a></h3>
+<div class="table-wrap"><table><thead><tr><th>Hook</th><th>When</th><th>What it does</th></tr></thead><tbody>
+<tr><td><code>UserPromptSubmit</code> (disengage)</td><td>Every turn, before the model</td><td><code>disengagedHookDecision</code> returns <code>continue:false</code> when <code>sessions.engaged = 0</code> — message persists, model halted</td></tr>
+<tr><td><code>UserPromptSubmit</code> (notes)</td><td>Next engaged turn</td><td>Drains <code>#sessionNotes</code> (mcp connect/disconnect, <code>/model</code>/<code>/mode</code>/<code>/soul</code>/<code>/cron</code> events) into <code>additionalContext</code> once</td></tr>
+<tr><td><code>UserPromptSubmit</code> (mention-only)</td><td>Every turn</td><td><code>suppressNextTurn</code> check — <code>continue:false</code> for plain messages in mention-only threads</td></tr>
+<tr><td><code>PreCompact</code></td><td>SDK context compaction</td><td>Emits <code>compacting</code> event → status indicator. <code>manual</code> trigger remembered to show <code>wasCompacting</code></td></tr>
+<tr><td><code>Stop</code></td><td>Turn wants to stop</td><td><code>setStopGuard</code> blocks once if <code>!route.spoke &amp;&amp; !route.silent</code> with instruction to call <code>reply</code> — forces at least one user-visible Slack tool per turn</td></tr>
+</tbody></table></div>
+<hr>
+<h2 id="persistence">Persistence<a class="anchor" href="#persistence" aria-label="Link to Persistence">#</a></h2>
+<p>Two tiers. Both live under <code>~/.slaude/</code> (or <code>$SLAUDE_HOME</code>), typically a Kubernetes <code>PersistentVolume</code>.</p>
+<h3 id="tier-1-sqlite-per-thread-state">Tier 1 — SQLite (per-thread state)<a class="anchor" href="#tier-1-sqlite-per-thread-state" aria-label="Link to Tier 1 — SQLite (per-thread state)">#</a></h3>
+<p><code>bun:sqlite</code> WAL mode, single file at <code>~/.slaude/db.sqlite</code> (overridable via <code>SLAUDE_DB_PATH</code>).</p>
+<div class="table-wrap"><table><thead><tr><th>Table</th><th>Key</th><th>What it stores</th></tr></thead><tbody>
+<tr><td><code>sessions</code></td><td><code>(team, channel, thread_ts, persona_id)</code> unique</td><td>UUID, <code>claude_started</code>, <code>status</code>, <code>model</code>, <code>working_dir</code>, <code>permission_mode</code>, <code>engaged</code>, <code>persona_id</code></td></tr>
+<tr><td><code>one_on_one_locks</code></td><td><code>(channel, thread_ts)</code></td><td><code>locked_user</code>, <code>open_scope</code> (null = locked, string = open to guests)</td></tr>
+<tr><td><code>mention_only_threads</code></td><td><code>(channel, thread_ts)</code></td><td><code>created_by</code> — receive-time routing flag, no session reboot needed</td></tr>
+<tr><td><code>ignores</code></td><td><code>id</code> + partial indexes on user/thread</td><td><code>target_type</code>, <code>expires_at</code>, <code>reason</code> — 5-min sweeper cleans expired</td></tr>
+<tr><td><code>cron_jobs</code></td><td><code>id</code> + <code>next_run_at</code> index</td><td><code>channel_id</code>, <code>thread_ts</code>, <code>target</code> (thread vs channel root), <code>when_active</code> (fire vs skip), <code>paused</code>, <code>persona_id</code>, <code>oauth_user</code></td></tr>
+<tr><td><code>soul_overrides</code></td><td><code>(field, value)</code></td><td>Runtime ACL overlay (<code>trustedChannels</code>/<code>allowedChannels</code>/<code>dmAllowedUsers</code>/<code>blockedUsers</code>)</td></tr>
+<tr><td><code>kb_ingest_jobs</code></td><td><code>id</code> + partial unique on <code>running</code></td><td>One ingest at a time (mutex)</td></tr>
+</tbody></table></div>
+<p>Migrations are inline in <code>src/db/schema.ts</code> — checked via <code>PRAGMA table_info</code> and applied transactionally (sessions rebuild wraps the rename-copy-drop in a transaction).</p>
+<h3 id="tier-2-pvc-markdown-caches-slaude">Tier 2 — PVC markdown + caches (<code>~/.slaude/</code>)<a class="anchor" href="#tier-2-pvc-markdown-caches-slaude" aria-label="Link to Tier 2 — PVC markdown + caches (~/.slaude/)">#</a></h3>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">~/.slaude/
+├── SOUL.md                         # operator-authored persona (seeded if missing)
+├── mcp.json                        # external MCP servers (stdio/http/sse)
+├── slaude.json                     # dependency manifest (plugins, skills, KBs)
+├── slaude.lock                     # pinned shas
+├── .env                            # provider + Slack tokens (loaded via loadDotenv)
+├── db.sqlite                       # ← Tier 1
+├── cache/
+│   └── soul.&lt;sha&gt;.json             # SoulData extraction cache, keyed by sha256(SOUL.md)
+├── skills/&lt;slug&gt;/SKILL.md          # installed skills (also mounted as a local CC plugin)
+├── knowledge/&lt;label&gt;/{raw,wiki}/   # installed KB wikis
+├── workspaces/&lt;team&gt;-&lt;channel&gt;-&lt;thread&gt;[__persona]/  # per-session cwd (git worktree root)
+├── personas/&lt;name&gt;/{config.json, SOUL.md}  # multi-persona mode (each has its own Slack user)
+├── .claude/plugins/cache/          # CC marketplace plugins (slaude install --frozen)
+└── .claude/projects/               # per-session transcript shards (CLI-owned, via CLAUDE_CONFIG_DIR)</code></pre></div>
+<div class="table-wrap"><table><thead><tr><th>Artifact</th><th>Source of truth</th><th>How it gets there</th></tr></thead><tbody>
+<tr><td><code>SOUL.md</code></td><td>Operator edits or <code>seed STARTER_PERSONA</code></td><td>Manual; re-extracted on change</td></tr>
+<tr><td><code>mcp.json</code></td><td>Operator</td><td>Manual; loaded by <code>loadExternalMcp</code>, merged into <code>mcpServers</code> per session</td></tr>
+<tr><td><code>slaude.json</code> / <code>slaude.lock</code></td><td><code>bun run install-deps</code></td><td>Declares <code>plugins</code>/<code>skills</code>/<code>knowledge</code> git sources; <code>--frozen</code> for Docker/CI</td></tr>
+<tr><td><code>skills/*/SKILL.md</code></td><td>Git repos + runtime <code>write_skill</code></td><td>Hot-reloaded via <code>discoverSkills</code> each turn; synced back via <code>sync_manifest</code></td></tr>
+<tr><td><code>knowledge/*/wiki/*</code></td><td>Git repos + <code>brain</code> indexing</td><td>Indexed into brain at boot + nightly maintenance (03:00)</td></tr>
+<tr><td><code>workspaces/*</code></td><td>Session creation</td><td>Per-thread cwd; files attached in Slack land here</td></tr>
+</tbody></table></div>
+<p>Health probes hit <code>GET /healthz</code> (liveness) and <code>GET /readyz</code> (sqlite <code>SELECT 1</code> ping) on <code>SLAUDE_HEALTH_PORT</code> (default <code>8080</code>) — wired as K8s <code>livenessProbe</code>/<code>readinessProbe</code> in <code>deploy/k8s/slaude.yaml</code>.</p>
+<hr>
+<h2 id="two-layer-persona">Two-layer persona<a class="anchor" href="#two-layer-persona" aria-label="Link to Two-layer persona">#</a></h2>
+<p>The system prompt is a composition — not a single file.</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">┌─────────────────────────────────────────────────────────────────┐
+│  RUNTIME BASELINE  (src/soul/loader.ts:RUNTIME_BASELINE)        │
+│  Hardcoded. Non-negotiable. Ships with the code.                 │
+│  Slack output discipline, formatting, approval discipline,        │
+│  engagement, channel trust, KB-first, skill evolution,            │
+│  harness overrides.                                               │
+│  NOT overridable by SOUL.md. Updated by releasing slaude.        │
+├─────────────────────────────────────────────────────────────────┤
+│  &lt;persona&gt;  SOUL.md  (~/.slaude/SOUL.md)                        │
+│  Operator-authored. Defines WHO the agent is.                    │
+│  Identity, mandate, values, manager, allowlists, approvers,      │
+│  per-channel overrides (## Channel &lt;#Cxxx&gt;).                      │
+│  Seeded as STARTER_PERSONA on first boot if missing.             │
+├─────────────────────────────────────────────────────────────────┤
+│  &lt;channel-mandate&gt;  (when SOUL.md has ## Channel override)      │
+│  Replaces the global mandate for that channel only. Approvers     │
+│  replaced too; manager/backup always retained as catchalls.       │
+├─────────────────────────────────────────────────────────────────┤
+│  &lt;system-reminder&gt;  skills + session mode + memory-context       │
+│  Injected per turn: discovered skills, 1on1 mode block,           │
+│  brain memory recall.                                             │
+└─────────────────────────────────────────────────────────────────┘
+         ▼
+   Claude child system prompt (preset: claude_code + append)</code></pre></div>
+<div class="table-wrap"><table><thead><tr><th>Layer</th><th>Where</th><th>Can the operator change it?</th><th>Can the model ignore it?</th></tr></thead><tbody>
+<tr><td>Runtime baseline</td><td><code>src/soul/loader.ts</code></td><td>No — code change + release</td><td>No — outside <code>&lt;persona&gt;</code>, prompt says non-negotiable</td></tr>
+<tr><td><code>SOUL.md</code> persona</td><td><code>~/.slaude/SOUL.md</code></td><td>Yes — edit file, re-extracted on next sha change</td><td>Persona can drift, but gates still enforce allowlists</td></tr>
+<tr><td>Channel override</td><td><code>## Channel</code> block in <code>SOUL.md</code></td><td>Yes</td><td>Replaces mandate/approvers for that channel</td></tr>
+<tr><td>Runtime overlay</td><td><code>soul_overrides</code> sqlite</td><td>Yes — <code>/soul add/remove</code> (manager-only)</td><td>Effective immediately, all sessions</td></tr>
+</tbody></table></div>
+<blockquote>
+<p><strong>Why two layers?</strong> The baseline lets the project tighten guardrails (output discipline, approval rules, KB-first) in a release without touching any operator&#39;s persona. The persona stays focused on identity and mandate — not mechanical rules.</p>
+</blockquote>
+<hr>
+<h2 id="headless-and-multi-agent">Headless and multi-agent<a class="anchor" href="#headless-and-multi-agent" aria-label="Link to Headless and multi-agent">#</a></h2>
+<h3 id="one-container-one-persona">One container = one persona<a class="anchor" href="#one-container-one-persona" aria-label="Link to One container = one persona">#</a></h3>
+<p><code>src/server.ts</code> boots one <code>AgentManager</code> + one Slack transport (Socket Mode) + one health server. There is no <code>/personality</code> switch inside a running container. The <code>SOUL.md</code> at <code>~/.slaude/SOUL.md</code> is that container&#39;s identity.</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">Container A                          Container B
+┌─────────────────────────┐          ┌─────────────────────────┐
+│ SOUL.md = &quot;Noah — SRE&quot;  │          │ SOUL.md = &quot;Mira — PM&quot;   │
+│ SLACK_BOT_TOKEN = xoxb-A│          │ SLACK_BOT_TOKEN = xoxb-B│
+│ db.sqlite, workspaces/  │          │ db.sqlite, workspaces/  │
+│ AgentManager (one map)  │          │ AgentManager (one map)  │
+└──────────┬──────────────┘          └──────────┬──────────────┘
+           │ Socket Mode                        │ Socket Mode
+           ▼                                    ▼
+     Slack workspace                      Slack workspace
+     (@Noah)                              (@Mira — different bot user)</code></pre></div>
+<p>Scale to N agents by deploying N containers — each with its own PVC (or subPath), its own Slack app/bot token, and its own <code>SOUL.md</code>. No shared state between them.</p>
+<h3 id="multi-persona-inside-one-container-opt-in">Multi-persona inside one container (opt-in)<a class="anchor" href="#multi-persona-inside-one-container-opt-in" aria-label="Link to Multi-persona inside one container (opt-in)">#</a></h3>
+<p>When <code>~/.slaude/personas/&lt;name&gt;/</code> exists, slaude enters <strong>multi-persona mode</strong> (<code>src/persona/registry.ts</code>):</p>
+<ul>
+<li>Each persona has <code>config.json</code> (<code>{ slackUserId, name, userToken? }</code>) + <code>SOUL.md</code>.</li>
+<li>Sessions are keyed by <code>(team, channel, thread_ts, persona_id)</code> — named personas sharing a thread get isolated rows, isolated <code>workspaces/&lt;thread&gt;__&lt;persona&gt;</code> dirs, isolated <code>CLAUDE_CONFIG_DIR</code> transcripts, and isolated brain slices (<code>SLAUDE_AGENT_ID = persona.slackUserId</code>).</li>
+<li>Mention routing: <code>@Noah</code> / <code>@Mira</code> is resolved via <code>registry.lookupByUserId</code> — the mentioned persona handles the turn. The default bot <code>@slaude</code> still works as before.</li>
+<li>Posting identity: a persona with <code>userToken</code> (xoxp) posts as its own Slack user via <code>outClient</code>; without it, posts as the bot.</li>
+<li>The global <code>SOUL.md</code> + single <code>db.sqlite</code> remain — default-persona sessions are unchanged.</li>
+</ul>
+<blockquote>
+<p>Multi-persona is a single-process convenience for small teams. For hard isolation (separate PVCs, deploys, rate limits), prefer multi-deploy.</p>
+</blockquote>
+<hr>
+<h2 id="external-integrations">External integrations<a class="anchor" href="#external-integrations" aria-label="Link to External integrations">#</a></h2>
+<h3 id="external-mcp-servers-mcpjson">External MCP servers (<code>mcp.json</code>)<a class="anchor" href="#external-mcp-servers-mcpjson" aria-label="Link to External MCP servers (mcp.json)">#</a></h3>
+<p>Declared in <code>~/.slaude/mcp.json</code> (same shape as Claude Code&#39;s <code>mcp.json</code>). Three transports: <code>stdio</code>, <code>http</code> (streamable), <code>sse</code>.</p>
+<ul>
+<li>Tools surface as <code>mcp__&lt;server&gt;__&lt;tool&gt;</code> and route through the same <code>canUseTool</code> gate as in-process MCPs — first call per server posts a Block Kit Approve/Deny (approval gate).</li>
+<li><code>${VAR}</code> substitution in <code>args</code>/<code>env</code>/<code>url</code>.</li>
+<li><code>/mcp</code> slash command supports OAuth flows for <code>http</code> servers: loopback listener (ephemeral or shared <code>SLAUDE_OAUTH_SHARED_LOOPBACK</code> on <code>:3118</code>) or paste-back (<code>SLAUDE_OAUTH_REDIRECT_URL</code> for k8s). Scope is <code>initiator</code> (per-user isolated <code>CLAUDE_CONFIG_DIR</code>) vs <code>global</code> (manager wires the agent&#39;s shared identity).</li>
+<li><code>/1on1</code> private services: servers listed in <code>privateServices</code> mount with stubbed credentials outside a 1on1, real credentials only inside the initiator&#39;s lock.</li>
+</ul>
+<h3 id="claude-code-plugins-slaudejson">Claude Code plugins (<code>slaude.json</code>)<a class="anchor" href="#claude-code-plugins-slaudejson" aria-label="Link to Claude Code plugins (slaude.json)">#</a></h3>
+<p>Marketplace git → pinned sha via <code>slaude install</code>. Mounted as SDK <code>plugins: [{ type: &quot;local&quot;, path, skipMcpDiscovery }]</code>. The SDK&#39;s <code>--plugin-dir</code> path does not auto-mount a plugin&#39;s <code>.mcp.json</code> — slaude merges <code>loadInstalledPluginMcps()</code> into <code>mcpServers</code> explicitly. <code>slaude install --frozen</code> is the CI/Docker path (lockfile must match).</p>
+<p><code>~/.slaude/</code> itself is always mounted as a local plugin so <code>~/.slaude/skills/&lt;slug&gt;/SKILL.md</code> is discovered each turn without a manifest entry.</p>
+<hr>
+<h2 id="observability">Observability<a class="anchor" href="#observability" aria-label="Link to Observability">#</a></h2>
+<div class="table-wrap"><table><thead><tr><th>Signal</th><th>Where</th><th>Labels</th></tr></thead><tbody>
+<tr><td>Prometheus metrics</td><td><code>GET /metrics</code> (text)</td><td><code>channel_id</code>, <code>model</code>, <code>kind</code> (input/output/cache_read/cache_creation), <code>tool</code>, <code>result</code></td></tr>
+<tr><td>Token budget</td><td><code>TokenBudget</code> per session</td><td>Warn <code>0.80</code>, critical <code>0.92</code> (one-shot per session), fallback <code>200k</code> (override <code>SLAUDE_FALLBACK_CONTEXT_WINDOW</code>)</td></tr>
+<tr><td>Health</td><td><code>GET /healthz</code> / <code>GET /readyz</code></td><td><code>readyz</code> pings sqlite</td></tr>
+<tr><td>Logs</td><td>stdout</td><td><code>[slack-rx]</code>, <code>[slack-auth]</code>, <code>[mgr]</code>, <code>[soul]</code>, <code>[brain]</code>, <code>[mcp]</code> prefixes; <code>stderr</code> carries <code>[claude-cli]</code> child logs</td></tr>
+<tr><td>Static labels</td><td><code>SLAUDE_METRICS_LABELS</code></td><td>Applied to every metric, e.g. <code>agent=noah,env=prod</code></td></tr>
+</tbody></table></div>
+<hr>
+<h2 id="further-reading">Further reading<a class="anchor" href="#further-reading" aria-label="Link to Further reading">#</a></h2>
+<ul>
+<li><a href="../guides/engagement.html">SOUL and approvals</a> — authoring SOUL.md, approver scopes, channel overrides, <code>/soul</code> overlays</li>
+<li><a href="../guides/engagement.html">Engagement and sessions</a> — threading, 1on1, mention-only, slash commands</li>
+<li><a href="../reference/api.html">Skills and KB</a> — skill lifecycle, brain memoize, KB sync</li>
+<li><a href="../deploy/index.html">Deployment</a> — Docker, K8s PVC, env reference, health probes</li>
+<li><a href="https://github.com/barockok/slaude/tree/main/docs/site/_content/field-notes" target="_blank" rel="noopener">Gateway findings<span class="ext" aria-hidden="true">↗</span></a> — design rationale and incident notes behind each gate</li>
+</ul>
+<hr>
+<p><em>Diagram source: <a href="https://github.com/barockok/slaude/blob/main/docs/internal/architecture.html" target="_blank" rel="noopener"><code>docs/architecture.html</code><span class="ext" aria-hidden="true">↗</span></a>. Gateway enforcement: <a href="https://github.com/barockok/slaude/blob/main/src/gateway/slack/adapter.ts" target="_blank" rel="noopener"><code>src/gateway/slack/adapter.ts</code><span class="ext" aria-hidden="true">↗</span></a>. Session lifecycle: <a href="https://github.com/barockok/slaude/blob/main/src/agent/manager.ts" target="_blank" rel="noopener"><code>src/agent/manager.ts</code><span class="ext" aria-hidden="true">↗</span></a>. Soul extraction: <a href="https://github.com/barockok/slaude/blob/main/src/soul/extract.ts" target="_blank" rel="noopener"><code>src/soul/extract.ts</code><span class="ext" aria-hidden="true">↗</span></a>. Persistence: <a href="https://github.com/barockok/slaude/blob/main/src/db/schema.ts" target="_blank" rel="noopener"><code>src/db/schema.ts</code><span class="ext" aria-hidden="true">↗</span></a>. Persona: <a href="https://github.com/barockok/slaude/blob/main/src/soul/loader.ts" target="_blank" rel="noopener"><code>src/soul/loader.ts</code><span class="ext" aria-hidden="true">↗</span></a> + <a href="https://github.com/barockok/slaude/blob/main/src/persona/registry.ts" target="_blank" rel="noopener"><code>src/persona/registry.ts</code><span class="ext" aria-hidden="true">↗</span></a>. Headless entry: <a href="https://github.com/barockok/slaude/blob/main/src/server.ts" target="_blank" rel="noopener"><code>src/server.ts</code><span class="ext" aria-hidden="true">↗</span></a>.</em></p>
+
+    </article>
+    <nav class="prevnext"><a class="pn pn-prev" href="getting-started.html"><span class="pn-dir">Previous</span><span class="pn-label">Getting started</span></a><a class="pn pn-next" href="../guides/index.html"><span class="pn-dir">Next</span><span class="pn-label">Guides overview</span></a></nav>
+    <footer class="page-foot">
+      <a href="https://github.com/barockok/slaude/edit/main/docs/site/_content/start/architecture.md" target="_blank" rel="noopener">Edit this page on GitHub</a>
+      <span>slaude v0.42.0</span>
+    </footer>
+  </main>
+
+  <div class="toc-col"><nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul><li class="toc-h2"><a href="#system-diagram">System diagram</a></li><li class="toc-h3"><a href="#layers-at-a-glance">Layers at a glance</a></li><li class="toc-h2"><a href="#request-lifecycle">Request lifecycle</a></li><li class="toc-h3"><a href="#inbound-slack-event-agent-turn">Inbound: Slack event → agent turn</a></li><li class="toc-h3"><a href="#outbound-agent-slack-mcp-surface-only">Outbound: agent → Slack (MCP surface only)</a></li><li class="toc-h2"><a href="#trust-boundary">Trust boundary</a></li><li class="toc-h3"><a href="#extraction-soulmd-typed-souldata">Extraction: SOUL.md → typed SoulData</a></li><li class="toc-h3"><a href="#enforcement-gateway-only">Enforcement: gateway only</a></li><li class="toc-h2"><a href="#session-lifecycle">Session lifecycle</a></li><li class="toc-h3"><a href="#one-inbound-message-end-to-end">One inbound message, end to end</a></li><li class="toc-h3"><a href="#one-thread-one-session-one-cwd">One thread, one session, one cwd</a></li><li class="toc-h3"><a href="#engagement-how-a-thread-becomes-quotyoursquot">Engagement: how a thread becomes &amp;quot;yours&amp;quot;</a></li><li class="toc-h3"><a href="#idle-ttl-and-resume">Idle TTL and resume</a></li><li class="toc-h3"><a href="#failure-and-recovery">Failure and recovery</a></li><li class="toc-h3"><a href="#hooks-that-shape-every-turn">Hooks that shape every turn</a></li><li class="toc-h2"><a href="#persistence">Persistence</a></li><li class="toc-h3"><a href="#tier-1-sqlite-per-thread-state">Tier 1 — SQLite (per-thread state)</a></li><li class="toc-h3"><a href="#tier-2-pvc-markdown-caches-slaude">Tier 2 — PVC markdown + caches (~/.slaude/)</a></li><li class="toc-h2"><a href="#two-layer-persona">Two-layer persona</a></li><li class="toc-h2"><a href="#headless-and-multi-agent">Headless and multi-agent</a></li><li class="toc-h3"><a href="#one-container-one-persona">One container = one persona</a></li><li class="toc-h3"><a href="#multi-persona-inside-one-container-opt-in">Multi-persona inside one container (opt-in)</a></li><li class="toc-h2"><a href="#external-integrations">External integrations</a></li><li class="toc-h3"><a href="#external-mcp-servers-mcpjson">External MCP servers (mcp.json)</a></li><li class="toc-h3"><a href="#claude-code-plugins-slaudejson">Claude Code plugins (slaude.json)</a></li><li class="toc-h2"><a href="#observability">Observability</a></li><li class="toc-h2"><a href="#further-reading">Further reading</a></li></ul></nav></div>
+</div>
+
+<div class="search-overlay" hidden>
+  <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search documentation">
+    <div class="search-input-row">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <input type="search" placeholder="Search the docs…" aria-label="Search" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="search-results" role="listbox"></div>
+  </div>
+</div>
+
+<script>window.__SLAUDE_BASE__="../";</script>
+<script src="../assets/docs.js?v=a084ede1" defer></script>
+</body>
+</html>

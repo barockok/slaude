@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2026-05-09 / 2026-05-10 — Slack UX, engagement, approval, CI — slaude Docs</title>
+<meta name="description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:title" content="2026-05-09 / 2026-05-10 — Slack UX, engagement, approval, CI — slaude">
+<meta property="og:description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20width%3D'32'%20height%3D'32'%20rx%3D'8'%20fill%3D'%2523853291'%2F%3E%3Ctext%20x%3D'16'%20y%3D'23'%20font-family%3D'Helvetica%2CArial%2Csans-serif'%20font-size%3D'19'%20font-weight%3D'700'%20fill%3D'white'%20text-anchor%3D'middle'%3Es%3C%2Ftext%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/docs.css?v=377763e4">
+<script>(function(){try{var t=localStorage.getItem('slaude-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+    </button>
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true">s</span>
+      <span class="brand-name">slaude</span>
+      <span class="brand-sub">Docs</span>
+    </a>
+    <button class="search-btn" type="button" data-search-open>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <span>Search</span><kbd>⌘K</kbd>
+    </button>
+    <div class="topbar-actions">
+      <a class="ghost" href="https://github.com/barockok/slaude" target="_blank" rel="noopener">GitHub</a>
+      <button class="theme-btn" type="button" aria-label="Toggle theme">
+        <svg class="i-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1M12.9 12.9l-1.1-1.1M4.2 4.2 3.1 3.1"/></svg>
+        <svg class="i-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="topnav" aria-label="Sections"><div class="topnav-inner"><a class="topnav-tab" href="../index.html">Get started</a><a class="topnav-tab" href="../guides/index.html">Guides</a><a class="topnav-tab" href="../reference/configuration.html">Reference</a><a class="topnav-tab" href="../deploy/index.html">Deploy</a><a class="topnav-tab active" href="2026-08-23-release-candidate-pipeline.html">Field notes</a><a class="topnav-tab" href="../releases/v0.42.0.html">Releases</a></div></nav>
+</header>
+
+<div class="shell">
+  <aside class="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-inner"><div class="nav-group"><p class="nav-group-title">Field notes</p><ul><li><a class="" href="2026-08-23-release-candidate-pipeline.html">Release candidate pipeline</a></li><li><a class="" href="2026-07-27-kb-think-gather-miss.html">kb_think gather miss — runThink vs gather() source scoping</a></li><li><a class="" href="2026-07-24-per-agent-brain-slices.html">Per-agent brain slices: private minds, deliberate sharing</a></li><li><a class="" href="2026-07-08-per-channel-metrics.html">2026-07-08 — Per-channel token and model metrics</a></li><li><a class="" href="2026-07-03-cron-private-mcp-scoping-drift.html">Cron private-MCP credential scoping is decoupled from `oauth_user`</a></li><li><a class="" href="2026-06-20-channel-soul-overrides.html">Channel-specific soul mandate &amp; approvers</a></li><li><a class="" href="2026-06-20-brain-remote-mcp.html">Brain as a remote, OAuth-protected MCP process (configurable)</a></li><li><a class="" href="2026-06-19-shared-oauth-loopback-surface-connect.html">Shared OAuth loopback + surface-aware connect + URL-safe mrkdwn (#51)</a></li><li><a class="" href="2026-06-16-reengage-hook-suppress.html">Re-engage via in-session suppression (hook-only), not Slack backfill</a></li><li><a class="" href="2026-06-15-per-source-gather.html">2026-06-15 — Per-source `gather()`: fix bulk-corpus retrieval noise drowning curated pages</a></li><li><a class="" href="2026-06-14-model-switch-command.html">2026-06-14 — `/model` per-thread model switch</a></li><li><a class="" href="2026-06-14-brain-memoize-failure.html">2026-06-14 — Brain memoize: two failure modes break &quot;remember it&quot;</a></li><li><a class="" href="2026-06-13-kb-first-enforcement.html">KB-first enforcement — from prose to teeth (2026-06-13)</a></li><li><a class="" href="2026-06-11-soul-runtime-overrides.html">Soul runtime overrides — manager-editable ACLs without redeploy (2026-06-11)</a></li><li><a class="" href="2026-06-11-engagement-disengage-durability.html">Engagement review — disengage lasted zero messages (2026-06-11)</a></li><li><a class="" href="2026-06-11-1on1-transcript-sharding.html">/1on1 transcript sharding — resume breaks on lock flips (2026-06-11)</a></li><li><a class="" href="2026-06-10-mcp-global-connect.html">2026-06-10 — `/mcp` global connect (manager wires the agent's shared identity)</a></li><li><a class="" href="2026-06-10-gbrain-slaude-kb.html">gbrain × slaude — powering slaude_kb with a real brain</a></li><li><a class="" href="2026-06-09-post-as-slack-user.html">Post as the agent's real Slack user (opt-in xoxp)</a></li><li><a class="" href="2026-06-09-mcp-oauth-connect-1on1.html">2026-06-09 — /mcp OAuth connect in /1on1 (write CLI mcpOAuth store, CLI owns lifecycle)</a></li><li><a class="" href="2026-06-08-private-services-1on1.html">2026-06-08 — Private services in /1on1 (run as the initiator)</a></li><li><a class="" href="2026-06-08-orchestration-evolution-retro.html">2026-06-08 — Retro: orchestration, gating &amp; continuous evolution</a></li><li><a class="" href="2026-06-08-oauth-config-dir-1on1.html">2026-06-08 — /1on1 OAuth isolation via per-initiator CLAUDE_CONFIG_DIR</a></li><li><a class="" href="2026-06-08-cron-on-channel.html">cron-on-channel + a latent scheduler-boot crash</a></li><li><a class="" href="2026-06-05-sim-tui-opentui.html">Sim REPL on OpenTUI (React)</a></li><li><a class="" href="2026-06-05-pinned-input-box.html">Pinned bordered input box (sim REPL)</a></li><li><a class="" href="2026-06-04-repl-claude-code-ux.html">Sim REPL — claude-code-grade UX</a></li><li><a class="" href="2026-06-03-surface-abstraction.html">2026-06-03 — Surface abstraction (agent interaction decoupled from Slack)</a></li><li><a class="" href="2026-06-03-sim-interactive-real-agent.html">2026-06-03 — Interactive sim against the live agent (`--real`)</a></li><li><a class="" href="2026-05-29-simulation-gateway.html">2026-05-29 — Simulation gateway (Slack-free verification)</a></li><li><a class="" href="2026-05-29-one-on-one-mode.html">2026-05-29 — /1on1 mode (per-thread engagement lock)</a></li><li><a class="" href="2026-05-29-contextual-mcp-connections.html">2026-05-29 — Contextual per-user MCP connections</a></li><li><a class="" href="2026-05-25-cron-ignore-audit.html">Cron &amp; Ignore System Audit</a></li><li><a class="" href="2026-05-22-plugin-loader-chain.html">2026-05-22 — Plugin loader chain (install → SDK → MCP)</a></li><li><a class="" href="2026-05-21-writable-kb-ingest.html">2026-05-21 — Writable KB + /ingest</a></li><li><a class="" href="2026-05-21-policy-guardrails.html">2026-05-21 — Policy Guardrails (Tier 2 / Tier 3 Design)</a></li><li><a class="" href="2026-05-21-dependency-manifest.html">2026-05-21 — Dependency Manifest Design</a></li><li><a class="" href="2026-05-13-metrics-stop-guard.html">2026-05-13 — fallback ctx, table emphasis, metrics, stop-guard</a></li><li><a class="" href="2026-05-11-structured-soul-channel-mode.html">2026-05-11 — structured-soul + channel-mode gate</a></li><li><a class="" href="2026-05-11-skill-evolution.html">2026-05-11 — skill evolution</a></li><li><a class="" href="2026-05-11-external-mcp.html">2026-05-11 — external MCP via mcp.json</a></li><li><a class="" href="2026-05-11-context-budget-tracking.html">2026-05-11 — context budget tracking</a></li><li><a class="" href="2026-05-11-claude-subscription-oauth.html">2026-05-11 — Claude subscription OAuth</a></li><li><a class="active" href="2026-05-09-slack-ux-engagement.html">2026-05-09 / 2026-05-10 — Slack UX, engagement, approval, CI</a></li><li><a class="" href="2026-05-08-mvp-bootstrap.html">2026-05-08 — MVP bootstrap</a></li></ul></div></div>
+  </aside>
+
+  <main id="main" class="content">
+    <article class="prose">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Field notes</p>
+          <h1>2026-05-09 / 2026-05-10 — Slack UX, engagement, approval, CI</h1>
+        </div>
+        <button class="copy-page" type="button" title="Copy this page as Markdown for an agent">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 4 12h1.5"/></svg>
+          <span>Copy page</span>
+        </button>
+      </div>
+      
+      <ul>
+<li>Slack Agents API status indicator shipped: <code>assistant.threads.setStatus</code>-backed <code>Status</code> helper drives the animated &quot;thinking…&quot; / &quot;running <verb> <target>…&quot; text next to the bot name in threads. Pattern stolen from hermes (<code>gateway/platforms/slack.py:send_typing</code>). Auto-disables on <code>missing_scope</code>/<code>not_in_assistant_thread</code>. Manifest now declares <code>assistant_view</code> + <code>assistant:write</code> scope so fresh installs unlock it. Status text is humanized in the adapter (<code>humanizeToolStatus</code>) — Bash → &quot;running <code>&lt;cmd&gt;</code>&quot;, Read → &quot;reading <file>&quot;, Grep/Glob/Edit/Write/TodoWrite/WebFetch all mapped, mcp__slaude_slack__* mapped to &quot;replying&quot;/&quot;editing reply&quot;/&quot;uploading <file>&quot;/&quot;reacting :name:&quot;/&quot;requesting approval&quot;.</li>
+<li>Presence + reactions degrade gracefully on missing scope/wrong-token-type (auto-disabled after first failure with a single log line) so an under-provisioned install boots without log spam. Presence requires <code>xoxp</code> (user token) — disabled by default; opt-in via <code>SLACK_USER_TOKEN</code>. <code>Reactions</code> printed <code>needed</code>/<code>provided</code> scopes on failure for fast diagnosis.</li>
+<li>Diagnostic firehose: <code>app.use</code> middleware logs every Bolt event (<code>[slack-evt] type/subtype ch=… ts=…</code>); <code>auth.test</code> runs at startup and prints granted scopes next to the manifest&#39;s declared scopes — caught more than one mismatch during testing. SDK child stderr piped to console as <code>[claude-cli] …</code>.</li>
+<li>Provider-swap landmine fix (already noted) + transparent <code>resume</code> retry: after <code>Sessions.clearStarted</code>, manager re-boots the same prompt with <code>resume=false</code> so the user doesn&#39;t see the failure. A <code>retried</code> guard prevents the outer <code>finally</code> from tearing down the fresh session.</li>
+<li>Engagement model (channels/groups): per-thread <code>engaged</code> set. <code>@mention slaude</code> engages → handle this msg + plain follow-ups. <code>@mention someone else</code> disengages → drop. Plain msg in disengaged thread → drop. DMs always engaged. Replaces the prior &quot;always require @mention in channels&quot; rule, which lost flow once a conversation was going. The earlier &quot;auto-handle every in-thread reply once a session exists&quot; was wrong (intrusive — grabbed messages clearly aimed at human colleagues).</li>
+<li>Markdown → Slack mrkdwn converter (<code>format.ts:mdToMrkdwn</code>) applied in <code>mcp__slaude_slack__reply</code> / <code>edit</code>. Carves out fenced/inline code via control-char sentinels first, then transforms the rest: <code>**X**</code>/<code>__X__</code> → <code>*X*</code>; single <code>*X*</code>/<code>_X_</code> → <code>_X_</code>; <code>~~X~~</code> → <code>~X~</code>; <code>[t](u)</code> → <code>&lt;u|t&gt;</code>; <code># heading</code> → <code>*heading*</code>; <code>- /  *</code> → <code>• </code>. Italic pass runs FIRST (while bold markers are still <code>**</code>) to avoid eating bold. Tables (<code>| … | --- | …</code>) render as either a padded monospace block (total width ≤ 60) or a bold-keyed definition list (wider — Slack thread panel wraps long rows otherwise). Legacy operator-style trap: model wraps reply in <code>fence</code> and then bold/italic inside shows literal — soul mandate now bans whole-reply fences.</li>
+<li>Files attachment from agent: <code>mcp__slaude_slack__upload</code> wraps <code>WebClient.files.uploadV2</code> to post a local file (image/PDF/log) to the active thread. Optional <code>initial_comment</code> runs through <code>mdToMrkdwn</code>. Auto-allowed via the <code>mcp__slaude_slack__*</code> permission-gate prefix; underlying API call needs <code>files:write</code> scope.</li>
+<li>Approval gate (manager-style, agent-driven): new <code>mcp__slaude_slack__request_approval(summary, tools?, files?, risks?, category?)</code> pairs with running the session in <code>bypass</code>/YOLO mode. Posts Block Kit Approve/Deny; resolves via the click&#39;s <code>response_url</code> so buttons clear instantly (PermissionGate updated to do the same). Returns <code>{approved, by, note?}</code>. The agent self-organizes the high-level checkpoint per soul mandate; per-tool gating disabled.</li>
+<li>Approver allowlist sources, in priority order: persona scope-described entries → legacy persona &quot;category: ids&quot; / fenced JSON → env <code>SLAUDE_APPROVERS</code> → env <code>SLACK_ALLOWED_USERS</code> → anyone. Modern format under <code>## Approvers</code> is <code>&lt;id-or-mention&gt;: &lt;scope description&gt;</code> per line; runtime tokenizes both scope and the agent&#39;s plan summary (lowercase, simple stem, stopword-stripped) and selects approvers whose tokens overlap. Catchall keywords (<code>anything</code>/<code>any</code>/<code>all</code>/<code>default</code>/<code>*</code>/<code>catchall</code>/<code>everything</code>) make an entry always eligible. The agent does NOT pass user IDs — security boundary: parsing happens server-side at click time, so a buggy/jailbroken model can&#39;t redirect approval to a friendlier user.</li>
+<li>Permission gate fixes: (1) &quot;Always allow&quot; without SDK suggestions used to do nothing; now falls back to a session-scoped <code>addRules:[{toolName}]</code> PermissionUpdate so Bash etc. stop prompting after the first approval; (2) <code>chat.update</code> lagged behind <code>ack()</code> so users double-clicked; switched to <code>respond({replace_original: true})</code> which fires against the click&#39;s response_url and is much faster.</li>
+<li>Adapter <code>route.spoke</code> now flips on <code>reply</code> / <code>edit</code> / <code>upload</code> (any user-visible tool), not just <code>reply</code> — turns that upload a file no longer trigger the &quot;(no reply emitted)&quot; fallback.</li>
+<li>Soul split: <code>RUNTIME_BASELINE</code> (immutable, in code) defines slack output discipline, formatting, approval discipline, engagement; <code>&lt;persona&gt;</code> (operator&#39;s <code>~/.slaude/SOUL.md</code>) defines identity (name, role, voice, manager, audience, mandate). <code>STARTER_PERSONA</code> is now a scaffold operators must fill — no behavioral defaults baked in. Baseline is intentionally identity-neutral (&quot;you operate as a Claude Code agent reachable through Slack&quot;) so it doesn&#39;t fight a persona that names the agent something else.</li>
+<li>Slack workspace pivot: company workspace had restricted scope and admin-gated re-install; moved to a personal <code>personal-workspace</code> workspace where full scopes (chat:write, files:write, reactions:write, message.* histories, etc.) install cleanly. <code>assistant:write</code> and <code>users.profile:write</code> still missing on that install (status falls back to disabled gracefully).</li>
+<li>CI / Docker / release shipped: <code>bun test --coverage</code> runs 137 tests across <code>tests/*.test.ts</code> covering every pure module + Slack helper (format, commands, soul/loader, skills, db/sessions, memory, attachments, status, reactions, presence, users, approval-gate, permission-gate, health, env, home). <code>bunfig.toml</code> enforces <code>coverageThreshold = 0.97</code>; current run hits <strong>99.55%</strong> lines / 98.29% funcs. Untested integration glue (server, adapter, manager, mcp-tools, manifest CLI) is excluded by virtue of not being imported from any test — Bun coverage only counts touched modules. <code>.github/workflows/ci.yml</code> runs typecheck + coverage on push/PR. <code>.github/workflows/docker.yml</code> builds linux/amd64+arm64 and pushes to GHCR (<code>ghcr.io/&lt;owner&gt;/slaude</code>) on main + <code>v*.*.*</code> tag with semver/sha/latest tag matrix; PRs build but don&#39;t push. <code>.github/workflows/release.yml</code> fires on <code>v*.*.*</code> tag, runs the test suite, generates a changelog from <code>git log &lt;prev&gt;..&lt;tag&gt;</code>, and creates a GitHub release (auto-prerelease when tag contains <code>-</code>). Cutting a release: <code>git tag v0.1.0 &amp;&amp; git push --tags</code>.</li>
+<li>Test isolation pattern: <code>tests/setup.ts</code> is preloaded via <code>bunfig.toml</code> and creates a fresh <code>$SLAUDE_HOME</code> per <code>bun test</code> run via <code>mkdtempSync</code>, so <code>db/schema</code> bootstrap, <code>soul/loader</code> writes, and the <code>~/.slaude/.env</code> dotenv loader all hit a tmp dir instead of the operator&#39;s real home. Same setup seeds a <code>.env</code> with quoted/single/plain entries so the dotenv branches get covered on first import.</li>
+<li>AbortSignal abort tests need a microtask between <code>gate.request()</code> and <code>controller.abort()</code> — the async <code>await postMessage</code> in the gate hasn&#39;t reached the <code>addEventListener</code> line yet at the moment we synchronously call abort. Without the <code>await new Promise(setTimeout, 5)</code> interleave, the abort fires with no listener registered, and the request hangs forever (caught: 5s timeout in CI).</li>
+</ul>
+
+    </article>
+    <nav class="prevnext"><a class="pn pn-prev" href="2026-05-11-claude-subscription-oauth.html"><span class="pn-dir">Previous</span><span class="pn-label">2026-05-11 — Claude subscription OAuth</span></a><a class="pn pn-next" href="2026-05-08-mvp-bootstrap.html"><span class="pn-dir">Next</span><span class="pn-label">2026-05-08 — MVP bootstrap</span></a></nav>
+    <footer class="page-foot">
+      <a href="https://github.com/barockok/slaude/edit/main/docs/site/_content/field-notes/2026-05-09-slack-ux-engagement.md" target="_blank" rel="noopener">Edit this page on GitHub</a>
+      <span>slaude v0.42.0</span>
+    </footer>
+  </main>
+
+  <div class="toc-col"></div>
+</div>
+
+<div class="search-overlay" hidden>
+  <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search documentation">
+    <div class="search-input-row">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <input type="search" placeholder="Search the docs…" aria-label="Search" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="search-results" role="listbox"></div>
+  </div>
+</div>
+
+<script>window.__SLAUDE_BASE__="../";</script>
+<script src="../assets/docs.js?v=a084ede1" defer></script>
+</body>
+</html>

@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2026-06-14 — Brain memoize: two failure modes break &quot;remember it&quot; — slaude Docs</title>
+<meta name="description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:title" content="2026-06-14 — Brain memoize: two failure modes break &quot;remember it&quot; — slaude">
+<meta property="og:description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20width%3D'32'%20height%3D'32'%20rx%3D'8'%20fill%3D'%2523853291'%2F%3E%3Ctext%20x%3D'16'%20y%3D'23'%20font-family%3D'Helvetica%2CArial%2Csans-serif'%20font-size%3D'19'%20font-weight%3D'700'%20fill%3D'white'%20text-anchor%3D'middle'%3Es%3C%2Ftext%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/docs.css?v=377763e4">
+<script>(function(){try{var t=localStorage.getItem('slaude-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+    </button>
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true">s</span>
+      <span class="brand-name">slaude</span>
+      <span class="brand-sub">Docs</span>
+    </a>
+    <button class="search-btn" type="button" data-search-open>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <span>Search</span><kbd>⌘K</kbd>
+    </button>
+    <div class="topbar-actions">
+      <a class="ghost" href="https://github.com/barockok/slaude" target="_blank" rel="noopener">GitHub</a>
+      <button class="theme-btn" type="button" aria-label="Toggle theme">
+        <svg class="i-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1M12.9 12.9l-1.1-1.1M4.2 4.2 3.1 3.1"/></svg>
+        <svg class="i-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="topnav" aria-label="Sections"><div class="topnav-inner"><a class="topnav-tab" href="../index.html">Get started</a><a class="topnav-tab" href="../guides/index.html">Guides</a><a class="topnav-tab" href="../reference/configuration.html">Reference</a><a class="topnav-tab" href="../deploy/index.html">Deploy</a><a class="topnav-tab active" href="2026-08-23-release-candidate-pipeline.html">Field notes</a><a class="topnav-tab" href="../releases/v0.42.0.html">Releases</a></div></nav>
+</header>
+
+<div class="shell">
+  <aside class="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-inner"><div class="nav-group"><p class="nav-group-title">Field notes</p><ul><li><a class="" href="2026-08-23-release-candidate-pipeline.html">Release candidate pipeline</a></li><li><a class="" href="2026-07-27-kb-think-gather-miss.html">kb_think gather miss — runThink vs gather() source scoping</a></li><li><a class="" href="2026-07-24-per-agent-brain-slices.html">Per-agent brain slices: private minds, deliberate sharing</a></li><li><a class="" href="2026-07-08-per-channel-metrics.html">2026-07-08 — Per-channel token and model metrics</a></li><li><a class="" href="2026-07-03-cron-private-mcp-scoping-drift.html">Cron private-MCP credential scoping is decoupled from `oauth_user`</a></li><li><a class="" href="2026-06-20-channel-soul-overrides.html">Channel-specific soul mandate &amp; approvers</a></li><li><a class="" href="2026-06-20-brain-remote-mcp.html">Brain as a remote, OAuth-protected MCP process (configurable)</a></li><li><a class="" href="2026-06-19-shared-oauth-loopback-surface-connect.html">Shared OAuth loopback + surface-aware connect + URL-safe mrkdwn (#51)</a></li><li><a class="" href="2026-06-16-reengage-hook-suppress.html">Re-engage via in-session suppression (hook-only), not Slack backfill</a></li><li><a class="" href="2026-06-15-per-source-gather.html">2026-06-15 — Per-source `gather()`: fix bulk-corpus retrieval noise drowning curated pages</a></li><li><a class="" href="2026-06-14-model-switch-command.html">2026-06-14 — `/model` per-thread model switch</a></li><li><a class="active" href="2026-06-14-brain-memoize-failure.html">2026-06-14 — Brain memoize: two failure modes break &quot;remember it&quot;</a></li><li><a class="" href="2026-06-13-kb-first-enforcement.html">KB-first enforcement — from prose to teeth (2026-06-13)</a></li><li><a class="" href="2026-06-11-soul-runtime-overrides.html">Soul runtime overrides — manager-editable ACLs without redeploy (2026-06-11)</a></li><li><a class="" href="2026-06-11-engagement-disengage-durability.html">Engagement review — disengage lasted zero messages (2026-06-11)</a></li><li><a class="" href="2026-06-11-1on1-transcript-sharding.html">/1on1 transcript sharding — resume breaks on lock flips (2026-06-11)</a></li><li><a class="" href="2026-06-10-mcp-global-connect.html">2026-06-10 — `/mcp` global connect (manager wires the agent's shared identity)</a></li><li><a class="" href="2026-06-10-gbrain-slaude-kb.html">gbrain × slaude — powering slaude_kb with a real brain</a></li><li><a class="" href="2026-06-09-post-as-slack-user.html">Post as the agent's real Slack user (opt-in xoxp)</a></li><li><a class="" href="2026-06-09-mcp-oauth-connect-1on1.html">2026-06-09 — /mcp OAuth connect in /1on1 (write CLI mcpOAuth store, CLI owns lifecycle)</a></li><li><a class="" href="2026-06-08-private-services-1on1.html">2026-06-08 — Private services in /1on1 (run as the initiator)</a></li><li><a class="" href="2026-06-08-orchestration-evolution-retro.html">2026-06-08 — Retro: orchestration, gating &amp; continuous evolution</a></li><li><a class="" href="2026-06-08-oauth-config-dir-1on1.html">2026-06-08 — /1on1 OAuth isolation via per-initiator CLAUDE_CONFIG_DIR</a></li><li><a class="" href="2026-06-08-cron-on-channel.html">cron-on-channel + a latent scheduler-boot crash</a></li><li><a class="" href="2026-06-05-sim-tui-opentui.html">Sim REPL on OpenTUI (React)</a></li><li><a class="" href="2026-06-05-pinned-input-box.html">Pinned bordered input box (sim REPL)</a></li><li><a class="" href="2026-06-04-repl-claude-code-ux.html">Sim REPL — claude-code-grade UX</a></li><li><a class="" href="2026-06-03-surface-abstraction.html">2026-06-03 — Surface abstraction (agent interaction decoupled from Slack)</a></li><li><a class="" href="2026-06-03-sim-interactive-real-agent.html">2026-06-03 — Interactive sim against the live agent (`--real`)</a></li><li><a class="" href="2026-05-29-simulation-gateway.html">2026-05-29 — Simulation gateway (Slack-free verification)</a></li><li><a class="" href="2026-05-29-one-on-one-mode.html">2026-05-29 — /1on1 mode (per-thread engagement lock)</a></li><li><a class="" href="2026-05-29-contextual-mcp-connections.html">2026-05-29 — Contextual per-user MCP connections</a></li><li><a class="" href="2026-05-25-cron-ignore-audit.html">Cron &amp; Ignore System Audit</a></li><li><a class="" href="2026-05-22-plugin-loader-chain.html">2026-05-22 — Plugin loader chain (install → SDK → MCP)</a></li><li><a class="" href="2026-05-21-writable-kb-ingest.html">2026-05-21 — Writable KB + /ingest</a></li><li><a class="" href="2026-05-21-policy-guardrails.html">2026-05-21 — Policy Guardrails (Tier 2 / Tier 3 Design)</a></li><li><a class="" href="2026-05-21-dependency-manifest.html">2026-05-21 — Dependency Manifest Design</a></li><li><a class="" href="2026-05-13-metrics-stop-guard.html">2026-05-13 — fallback ctx, table emphasis, metrics, stop-guard</a></li><li><a class="" href="2026-05-11-structured-soul-channel-mode.html">2026-05-11 — structured-soul + channel-mode gate</a></li><li><a class="" href="2026-05-11-skill-evolution.html">2026-05-11 — skill evolution</a></li><li><a class="" href="2026-05-11-external-mcp.html">2026-05-11 — external MCP via mcp.json</a></li><li><a class="" href="2026-05-11-context-budget-tracking.html">2026-05-11 — context budget tracking</a></li><li><a class="" href="2026-05-11-claude-subscription-oauth.html">2026-05-11 — Claude subscription OAuth</a></li><li><a class="" href="2026-05-09-slack-ux-engagement.html">2026-05-09 / 2026-05-10 — Slack UX, engagement, approval, CI</a></li><li><a class="" href="2026-05-08-mvp-bootstrap.html">2026-05-08 — MVP bootstrap</a></li></ul></div></div>
+  </aside>
+
+  <main id="main" class="content">
+    <article class="prose">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Field notes</p>
+          <h1>2026-06-14 — Brain memoize: two failure modes break &quot;remember it&quot;</h1>
+        </div>
+        <button class="copy-page" type="button" title="Copy this page as Markdown for an agent">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 4 12h1.5"/></svg>
+          <span>Copy page</span>
+        </button>
+      </div>
+      
+      <blockquote>
+<p>Note: internal names redacted for public release.</p>
+</blockquote>
+<p><strong>Theme:</strong> brain memoize — the remember / think / explore → persist-to-brain →
+recall-it-later loop.</p>
+<p><strong>Status:</strong> RESOLVED (2026-06-15). All ranked work shipped to <code>main</code> + security-
+reviewed; see &quot;Shipped&quot; below. Two items deferred by decision (durability
+DB-backup; per-source ownership RBAC) — captured as design direction, not bugs.</p>
+<h2 id="shipped-merged-to-main">Shipped (merged to <code>main</code>)<a class="anchor" href="#shipped-merged-to-main" aria-label="Link to Shipped (merged to main)">#</a></h2>
+<div class="table-wrap"><table><thead><tr><th>Item</th><th>What</th><th>PR</th></tr></thead><tbody>
+<tr><td>Mode A</td><td><code>kb_put_page</code> FK in <code>/1on1</code> → <code>ensureSource</code> before write</td><td>v0.23.1</td></tr>
+<tr><td>Mode B/B′</td><td><code>kb_think</code> always cross-checks a distilled <code>kb_search</code>, surfaces uncited hits</td><td>#38</td></tr>
+<tr><td>open_kb</td><td>removed the last markdown-reading KB tool (all KB tools now pure gbrain DB)</td><td>#34</td></tr>
+<tr><td>soul</td><td><code>kb_memoize</code> is the one write path; dropped <code>/ingest</code>/<code>raw/</code> steering</td><td>#38</td></tr>
+<tr><td>standing grant</td><td>per-thread, per-writer, 8h, in-memory approval grant</td><td>#36</td></tr>
+<tr><td>grant security</td><td>bound grant to <code>(thread, writer)</code> — fixes cross-user approval bypass</td><td>#40</td></tr>
+<tr><td>#7a</td><td><code>humanizeBrainError</code> — actionable brain-write errors</td><td>#39</td></tr>
+<tr><td>#7b</td><td>soul baseline: a failed brain write is reported, never papered over</td><td>#39</td></tr>
+<tr><td>EMBEDDING_DIMENSIONS</td><td>2560→1280 to match zembed-1</td><td>deploy (Bitbucket)</td></tr>
+</tbody></table></div>
+<p><strong>Mode C (<code>/1on1</code> scope silo):</strong> resolved as <strong>by-design</strong> — <code>/1on1</code> memoize is
+personal (<code>user-&lt;id&gt;</code>); team knowledge goes via a shared channel. No code change.</p>
+<p>Historical investigation detail (Cases 1–2, live-DB forensics, ruled-out
+hypotheses) is preserved below as the record.</p>
+<h2 id="summary">Summary<a class="anchor" href="#summary" aria-label="Link to Summary">#</a></h2>
+<p>Three staging cases, <strong>two distinct failure modes</strong>, same user-visible symptom
+(&quot;I told you to remember this, but you don&#39;t know it&quot;):</p>
+<ul>
+<li><strong>Mode A — write never lands (Case 1).</strong> <code>kb_put_page</code> FK-fails on an
+un-bootstrapped source; agent silently degrades to file writes; <code>trigger_ingest</code>
+never runs. The lesson is genuinely absent from the brain.</li>
+<li><strong>Mode B — write lands, recall misses (Case 2).</strong> <code>kb_put_page</code> succeeds and
+the page is indexed, non-stale, in the right scope — but <code>kb_think</code> returns a
+zero-citation &quot;not captured&quot; on a verbose NL query, while a tight-keyword
+<code>kb_search</code> finds it at rank 1. The lesson is present but the agent reports it
+missing.</li>
+</ul>
+<p>Mode A is a write defect (<code>src/knowledge</code> source bootstrap). Mode B is a
+retrieval defect (gbrain <code>kb_think</code> recall + no think→search fallback). Fixing
+only one leaves the symptom alive.</p>
+<hr>
+<h1>Case 1 — Mode A: ingest silently fails, recall stays thin</h1>
+<h2 id="trigger">Trigger<a class="anchor" href="#trigger" aria-label="Link to Trigger">#</a></h2>
+<p>staging thread <code>example.slack.com/C0XXXXXXXXX/1781076888.704939</code> (staging, agent
+&quot;example-agent&quot;). Manager asked example-agent to pull ITGC audit history from GDrive and
+&quot;memoize&quot; it into her brain. Later DM (<code>D0AKKK79DT8/1781412338</code>) probed recall:
+&quot;who is Manager, purely from brain&quot; → example-agent returned a one-line stub. Operator
+(barock) flagged the whole remember/think/explore experience as not optimal and
+shipped the session JSONL (61 files, session dir
+<code>-data-workspaces-T1WTF90DS-C0XXXXXXXXX-1781076888-704939</code>) for forensics.</p>
+<h2 id="what-happened-traced-from-jsonl-not-the-slack-surface">What happened (traced from JSONL, not the Slack surface)<a class="anchor" href="#what-happened-traced-from-jsonl-not-the-slack-surface" aria-label="Link to What happened (traced from JSONL, not the Slack surface)">#</a></h2>
+<p>The 06-14 ingest session (<code>50555749-…jsonl</code>) ran this chain:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">gather  → workbench google_sheets_read ×2   (only 2 ranges — thin coverage)
+store   → kb_put_page ×4   →  ALL FAILED
+          &quot;insert or update on table \&quot;pages\&quot; violates foreign key
+           constraint \&quot;pages_source_id_fkey\&quot;&quot;
+fallback→ Write raw/*.md + episodic memo project_itgc-ingestion.md
+          (&quot;NOT yet ingested into brain — manager to decide&quot;)
+ingest  → trigger_ingest NEVER CALLED
+result  → zero brain pages for ITGC → recall is a thin stub</code></pre></div>
+<p>A separate 06-10 session (<code>11abec57-…jsonl</code>) proves the pipeline works when
+driven correctly: <code>trigger_ingest</code> → &quot;ingested 2 raw file(s); 3 wiki pages
+changed; pushed 615b33c&quot;. So the machinery is sound; this session bypassed/broke
+it and <strong>degraded silently</strong> — neither the assistant nor the user got a signal that the
+brain write hard-failed and the task was incomplete.</p>
+<p>The episodic memory layer captured the fallback correctly but recorded
+&quot;NOT yet ingested&quot; as if it were a clean checkpoint, masking the failure.</p>
+<h2 id="why-recall-is-thin-the-user-visible-symptom">Why recall is thin (the user-visible symptom)<a class="anchor" href="#why-recall-is-thin-the-user-visible-symptom" aria-label="Link to Why recall is thin (the user-visible symptom)">#</a></h2>
+<p>The facts about Manager/ITGC never became queryable knowledge. They live in:</p>
+<ul>
+<li><code>raw/itgc-*.md</code> (staged, never ingested into the wiki index), and</li>
+<li>a <em>status memo about pending work</em> (<code>project_itgc-ingestion.md</code>),</li>
+</ul>
+<p>not as <code>entities/*</code> or <code>concepts/*</code> pages the brain can <code>kb_think</code> over. &quot;Who is
+Manager&quot; therefore returns one stub line after a whole session about him.</p>
+<h2 id="mode-a-defect-write-side-root-cause-confirmed">Mode-A defect (write side) — ROOT CAUSE CONFIRMED<a class="anchor" href="#mode-a-defect-write-side-root-cause-confirmed" aria-label="Link to Mode-A defect (write side) — ROOT CAUSE CONFIRMED">#</a></h2>
+<p><strong>Every <code>kb_put_page</code> inside a <code>/1on1</code>-locked thread FK-fails, because per-user
+brain sources are never created.</strong></p>
+<p>Confirmed against the live staging brain (PGLite snapshot, 2026-06-14):</p>
+<ul>
+<li>The <code>sources</code> table holds exactly <code>agent</code>, <code>default</code>, <code>public</code>, <code>shared</code>, and
+one <code>kb-&lt;label&gt;</code> per installed KB (incl. <code>kb-maria-memory</code>, 5 pages — so the
+KB source bootstrap is <em>fine</em>; the earlier &quot;missing maria-memory source&quot;
+hypothesis was <strong>wrong</strong>). There are <strong>no <code>user-*</code> rows</strong>.</li>
+<li><code>resolveBrainScope</code> (<code>src/knowledge/scope.ts:56-63</code>): when a thread is
+<code>/1on1</code>-locked and the lock owner is the caller, write scope becomes
+<code>sourceId = userSourceId(userId)</code> → e.g. <code>user-u06ensb6pv0…</code>.</li>
+<li><code>userSourceId()</code> is only ever used to <em>set the write target</em> (<code>scope.ts:58</code>)
+and <em>classify the gate</em> (<code>gated-dispatch.ts:41</code>). <strong>Nothing inserts that
+source.</strong> <code>ensureSources()</code> (<code>brain.ts:275</code>) only bootstraps
+<code>baselineSources()</code> = agent/shared/public + <code>kb-*</code> (<code>brain.ts:263</code>); no
+per-user source is registered at boot, at lock time, or on write.</li>
+<li>The 06-14 ITGC thread was <code>/1on1</code>-locked (lock + engage markers in the
+session JSONL). So the write hit <code>user-&lt;barock&gt;</code> → not in <code>sources</code> →
+<code>pages_source_id_fkey</code> violation, ×4.</li>
+</ul>
+<p><strong>Control:</strong> the Case 2 jot lesson (06-11) was <em>not</em> locked, so it scoped to
+<code>shared</code> (which exists) and wrote cleanly. Same agent, same channel — the only
+difference is the <code>/1on1</code> lock. That isolates the cause precisely.</p>
+<p>So <code>kb_put_page</code> works in normal channels and breaks in exactly the place you&#39;d
+most want durable memory — a focused 1:1 &quot;remember this&quot; session.</p>
+<p>Compounding (same as before): the raw Postgres FK error leaks to the agent
+(<code>src/knowledge/mcp-tools.ts:138</code>), and no stop-guard catches &quot;intent was a
+brain write, zero pages changed&quot; — so Maria degraded to file writes and reported
+a clean checkpoint.</p>
+<h3 id="fix-mode-a">Fix (Mode A)<a class="anchor" href="#fix-mode-a" aria-label="Link to Fix (Mode A)">#</a></h3>
+<p>Register the user source before it&#39;s written. Cleanest options, in order:</p>
+<ol>
+<li>In <code>gatedBrainCall</code>/<code>kb_put_page</code>, ensure <code>scope.sourceId</code> exists before the
+op (lazy <code>sources_add</code> for <code>user-*</code>), then insert. Covers every path.</li>
+<li>On <code>/1on1</code> lock acquisition, call <code>ensureSources([userSourceId(owner)])</code>.</li>
+<li>Have <code>resolveBrainScope</code>&#39;s user-source branch be backed by a guaranteed
+registration step.
+Plus: map FK/brain errors to actionable text; stop-guard for failed-intent
+brain writes.</li>
+</ol>
+<hr>
+<h1>Case 2 — Mode B: write lands, retrieval misses</h1>
+<h2 id="trigger-1">Trigger<a class="anchor" href="#trigger-1" aria-label="Link to Trigger">#</a></h2>
+<p>Same lesson, two threads, three days apart:</p>
+<ul>
+<li><p><strong>Thread <code>C0XXXXXXXXX/1781143233</code> (2026-06-11) — write confirmed.</strong> Operator:
+&quot;patri ini in your brain, do&#39;t make the same mistake in the future&quot; (etch this
+in). Maria wrote it via a single <code>kb_put_page</code>:</p>
+<ul>
+<li>slug <code>lessons/jot-deployment-pattern</code>, KB <code>lending-business</code></li>
+<li>tool_result: <code>{status:&quot;created_or_updated&quot;, chunks:2, write_through:{written:true, path:&quot;.../lending-business/.sources/shared/lessons/jot-deployment-pattern.md&quot;}}</code></li>
+<li><strong>No FK error, no <code>trigger_ingest</code> needed</strong> (synchronous write-through),
+no fallback. Maria: &quot;Sudah diukir tajam di brain.&quot; Mode A did not occur here.</li>
+</ul>
+</li>
+<li><p><strong>Thread <code>C0XXXXXXXXX/1781168759</code> (2026-06-14) — retrieval missed it.</strong>
+Operator: &quot;what lesson you learn on deploying dashboard with jot to workbench?&quot;
+Maria ran <code>kb_think</code> (&quot;What lessons were learned about deploying dashboards
+with jot to workbench?&quot;) → result: <em>&quot;The brain does not contain information
+about lessons learned…&quot;</em>, diagnostics <code>pagesGathered:40, takesGathered:0, graphHits:0, citations:[]</code>. Maria replied <strong>&quot;Not captured yet.&quot;</strong> User: 😞.
+Only when the operator explicitly said &quot;kb search jot deployment&quot; did Maria run
+<code>kb_search &quot;jot deployment&quot;</code> → <strong>1 hit, rank 1, score 1.083</strong>, slug
+<code>lessons/jot-deployment-pattern</code>, page_id 2443, <code>stale:false</code> → <strong>&quot;Found it!&quot;</strong></p>
+</li>
+</ul>
+<h2 id="what-this-proves">What this proves<a class="anchor" href="#what-this-proves" aria-label="Link to What this proves">#</a></h2>
+<p>The page was present the whole time — indexed, non-stale, in the <code>shared</code> scope
+both tools hit. Not ingest lag, not wrong KB, not slug mismatch, not an
+unopened KB. The defect is <strong>retrieval</strong>:</p>
+<ul>
+<li><code>kb_think</code>&#39;s hybrid retriever gathered 40 candidate pages on a verbose NL query
+(&quot;deploying <strong>dashboards</strong> with jot to workbench&quot;) and the target page
+(&quot;Jot Deployment <strong>Pattern</strong>&quot;, about web artifacts) <strong>didn&#39;t make the top-40
+set</strong> — swamped by dbt-stub noise; <code>takesGathered:0, graphHits:0</code> so graph and
+takes paths contributed nothing. The synthesizer then <em>truthfully</em> answered
+&quot;not in the brain&quot; from an impoverished candidate set.</li>
+<li><code>kb_search</code> with the tight keyword &quot;jot deployment&quot; lexically matched the title
+and hit rank 1 instantly.</li>
+</ul>
+<h2 id="mode-b-defect-retrieval-side">Mode-B defect (retrieval side)<a class="anchor" href="#mode-b-defect-retrieval-side" aria-label="Link to Mode-B defect (retrieval side)">#</a></h2>
+<ol>
+<li><strong><code>kb_think</code> recall miss → false &quot;not captured.&quot;</strong> A zero-citation think
+result is reported to the user as authoritative absence. The page exists and
+is trivially findable by keyword. (gbrain <code>kb_think</code> retrieval — candidate-set
+truncation / ranking on long NL queries.)</li>
+<li><strong>No think→search fallback.</strong> When <code>kb_think</code> returns empty/zero-citation, the
+agent should auto-retry with extracted keywords via <code>kb_search</code> before
+declaring absence. Today it gives up. <code>src/knowledge/brain-think.ts</code> +
+<code>src/knowledge/mcp-tools.ts</code> (<code>kb_think</code> handler).</li>
+<li><strong><code>kb_think</code> is the default recall verb but has worse recall than <code>kb_search</code>
+for known-item lookup.</strong> The tool description steers the agent to <code>kb_think</code>
+(&quot;prefer this over kb_search when you need an answer&quot;), which is exactly wrong
+for &quot;do I have a note on X&quot; — a known-item query where keyword search wins.</li>
+</ol>
+<hr>
+<h1>Cross-cutting</h1>
+<h2 id="brainmemory-tool-surface-observed">Brain/memory tool surface (observed)<a class="anchor" href="#brainmemory-tool-surface-observed" aria-label="Link to Brain/memory tool surface (observed)">#</a></h2>
+<ul>
+<li><code>mcp__slaude_kb__</code>: <code>list_kbs</code>, <code>open_kb</code>, <code>kb_list_pages</code>, <code>kb_get_page</code>,
+<code>kb_put_page</code>, <code>kb_delete_page</code>, <code>kb_search</code>, <code>kb_think</code>, <code>kb_graph</code></li>
+<li><code>mcp__slaude_runtime__trigger_ingest</code> (raw → wiki pipeline)</li>
+<li>episodic memory = plain <code>Write</code> to <code>…/memory/*.md</code></li>
+<li>write-through: <code>kb_put_page</code> writes synchronously to
+<code>…/&lt;kb&gt;/.sources/&lt;scope&gt;/&lt;slug&gt;.md</code> (no separate ingest when it works)</li>
+</ul>
+<h2 id="fix-direction-not-yet-implemented-collecting-cases">Fix direction (NOT yet implemented — collecting cases)<a class="anchor" href="#fix-direction-not-yet-implemented-collecting-cases" aria-label="Link to Fix direction (NOT yet implemented — collecting cases)">#</a></h2>
+<p><strong>Write side (Mode A):</strong></p>
+<ul>
+<li><code>kb_put_page</code> lazily ensures its source exists and retries once on FK error
+after re-running <code>ensureSources</code>.</li>
+<li>Map brain/Postgres errors to actionable text; never let a raw FK message reach
+the agent.</li>
+<li>Stop-guard: a turn whose intent was a brain write but changed zero pages must
+not exit reporting success.</li>
+</ul>
+<p><strong>Retrieval side (Mode B):</strong></p>
+<ul>
+<li><code>kb_think</code> zero-citation → automatic <code>kb_search</code> keyword fallback before the
+agent reports &quot;not captured.&quot;</li>
+<li>Reconsider the <code>kb_think</code>-first steer for known-item lookups; route
+&quot;do I have X / what did I learn about X&quot; to <code>kb_search</code> (or a hybrid that runs
+both and merges).</li>
+<li>Investigate <code>kb_think</code> candidate-set truncation (top-40 gather + ranking) so a
+present page isn&#39;t crowded out by stub noise.</li>
+</ul>
+<h2 id="open-questions">Open questions<a class="anchor" href="#open-questions" aria-label="Link to Open questions">#</a></h2>
+<ul>
+<li>Mode A: RESOLVED — reproducible on every <code>kb_put_page</code> inside a <code>/1on1</code> lock
+(per-user source never registered). Decide which fix layer (lazy-ensure in the
+write path vs. ensure-on-lock).</li>
+<li>Mode B: is the recall miss query-phrasing-specific, or does <code>kb_think</code>
+systematically under-rank <code>lessons/*</code> and <code>entities/*</code> pages vs dbt stubs?</li>
+<li>Provenance: tag pages <code>source: ingested|explored|seeded</code> so the operator can
+audit what was actually learned vs seeded.</li>
+</ul>
+<h2 id="fix-landed-2026-06-14">Fix landed (2026-06-14)<a class="anchor" href="#fix-landed-2026-06-14" aria-label="Link to Fix landed (2026-06-14)">#</a></h2>
+<ul>
+<li><strong>Mode A</strong> — <code>brainCall</code> now calls <code>ensureSource(scope.sourceId)</code> before any
+scope-write op (<code>src/knowledge/brain.ts</code>; <code>isScopeWriteOp</code> added to
+<code>src/knowledge/gated-dispatch.ts</code>). <code>ensureSource</code> idempotently <code>sources_add</code>s
+the source (swallows source_id_taken / duplicate), cached per id. A <code>/1on1</code>
+write to <code>user-&lt;id&gt;</code> now self-registers instead of FK-failing. Verified live:
+<code>sources</code> confirmed to hold no <code>user-*</code> rows; control = unlocked write to
+<code>shared</code> already worked.</li>
+<li><strong>Mode B</strong> — <code>kb_think</code> falls back to keyword <code>kb_search</code> when synthesis
+returns zero citations, attaching <code>search_fallback</code> hits, so a present page is
+never reported &quot;not captured&quot; (<code>src/knowledge/mcp-tools.ts</code>).</li>
+<li>Tests: <code>tests/brain.test.ts</code> (Mode A: put_page auto-ensures an un-bootstrapped
+user source), <code>tests/brain-mcp-tools.test.ts</code> (Mode B: zero-citation →
+fallback; citations present → no fallback). Full suite 987 pass, tsc clean.</li>
+<li><em>(This section captured the first two fixes on 2026-06-14; the remaining
+items — actionable errors, no-silent-success, kb_think ranking — all shipped
+by 2026-06-15. See the &quot;Shipped&quot; table at the top.)</em></li>
+</ul>
+<h2 id="2026-06-15-update-deeper-investigation-live-staging-brain">2026-06-15 update — deeper investigation (live staging brain)<a class="anchor" href="#2026-06-15-update-deeper-investigation-live-staging-brain" aria-label="Link to 2026-06-15 update — deeper investigation (live staging brain)">#</a></h2>
+<p>Followed three more recall complaints to the live staging brain (PGLite snapshot +
+ArgoCD exec, read-only). This corrected several earlier guesses.</p>
+<h3 id="confirmed-via-live-db">Confirmed via live DB<a class="anchor" href="#confirmed-via-live-db" aria-label="Link to Confirmed via live DB">#</a></h3>
+<ul>
+<li><strong>Mode C (scope silo) is real:</strong> a <code>/1on1</code> memoize lands in <code>user-&lt;id&gt;</code>, which
+a normal-channel recall (scope = <code>shared</code>+<code>public</code>+<code>kb-*</code>) cannot read. The
+OKR pages existed in BOTH <code>user-u0xxxxxxxxx</code> (from the <code>/1on1</code>) and <code>shared</code>
+(from a later manual re-memoize). The operator had to re-memoize to get them
+recallable — friction worth removing (default <code>/1on1</code> memoize to <code>shared</code>?).</li>
+<li><strong>Mode D (embedding gap) RULED OUT:</strong> every chunk is embedded
+(<code>zeroentropyai:zembed-1</code>, 3442/3442, <code>missing=0</code>), vectors are a consistent
+<strong>1280-dim</strong>, and an HNSW cosine index exists. Embeddings are healthy.</li>
+<li><strong>Embedding config bug (latent):</strong> <code>values.yaml</code> sets
+<code>EMBEDDING_DIMENSIONS=2560</code> but the actual column/vectors/index are <strong>1280</strong>
+(zembed-1 native). Works by luck (doc + query both 1280); if any path ever
+honors 2560 for the query, recall breaks. Fix: set <code>EMBEDDING_DIMENSIONS=1280</code>
+in <code>deploy/agents/example/staging/values.yaml</code>.</li>
+<li><strong>The real recall bug is <code>kb_think</code> ranking, not storage.</strong> <code>gather.ts</code>
+already does hybrid (vector + keyword + RRF). A rich (3054-char), well-titled
+(<code>notes/org-2026-okr</code> → &quot;Org 2026 OKRs&quot;), embedded,
+in-scope page still lost the rank race to many BU/dbt OKR pages, and the LLM
+produced a confident non-empty answer from neighbors — so the zero-citation
+fallback (above) never fired. Verbose query dilutes; the jot case proved a
+tight <code>kb_search</code> keyword hits rank 1 where full-question <code>kb_think</code> misses.
+Levers: query distillation (verbose → keywords) [highest-confidence],
+title/slug match boost, larger <code>gather_limit</code>. Decide retrieval-fix vs
+synthesis-fix once the recall jsonl confirms gathered-but-ignored vs
+not-gathered.</li>
+<li><strong>Maria misdescribes her own mechanics.</strong> She told the operator memoize
+&quot;writes a local file, not indexed, needs <code>/ingest</code>.&quot; False — <code>kb_memoize</code> →
+<code>put_page</code> upserts the gbrain DB (chunk+embed) directly; the <code>.sources/*.md</code>
+write-through is an inert byproduct. Worth a soul/skill note so she stops
+asserting the wrong model.</li>
+</ul>
+<h3 id="storage-model-confirmed">Storage model (confirmed)<a class="anchor" href="#storage-model-confirmed" aria-label="Link to Storage model (confirmed)">#</a></h3>
+<p>gbrain DB is the single retrieval source. Boot/nightly <code>syncKbWikis</code> index the
+git <code>wiki/</code> dirs into <code>kb-*</code> sources; runtime memoize writes <code>shared</code>/<code>user-*</code>
+sources directly; all recall reads the DB. Nightly sync targets <code>kb-*</code> only, so
+it never reconciles/wipes memoized pages, and it reads <code>wiki/</code>, never the
+<code>.sources/</code> write-through mirror.</p>
+<h3 id="follow-ups">Follow-ups<a class="anchor" href="#follow-ups" aria-label="Link to Follow-ups">#</a></h3>
+<ul>
+<li><strong>Durability gap (memoized knowledge has no git backup).</strong> Seed KBs survive a
+DB wipe (re-sync from git <code>wiki/</code>). Memoized <code>shared</code>/<code>user-*</code> pages live ONLY
+in the PVC gbrain DB — the <code>.sources/*.md</code> write-through is <strong>never
+re-imported</strong> by sync (sync reads <code>wiki/</code>), so it is not a real backup. If PVC
+durability is insufficient, add a real backup path: nightly export memoized
+<code>shared</code>/<code>user-*</code> pages into a git-backed writable-KB <code>wiki/</code> so sync
+round-trips them. (This also reframes the &quot;remove write-through&quot; request:
+removing the mirror loses nothing for recovery — it was already inert.)</li>
+<li><strong><code>open_kb</code> removed</strong> (2026-06-15, branch <code>refactor/remove-open-kb</code>): it was
+the last KB tool that <code>readFileSync</code>&#39;d local markdown at runtime; capability
+covered by DB-backed <code>kb_list_pages</code>/<code>kb_get_page</code>/<code>kb_search</code>. Every KB tool
+now sources purely from the gbrain DB.</li>
+<li>Memoize DB-only (drop write-through): cosmetic now that the mirror is known
+inert; needs gbrain <code>write_through:false</code> (SHA-pinned dep → fork/patch).</li>
+<li><code>EMBEDDING_DIMENSIONS</code> 2560 → 1280 in deploy values.</li>
+</ul>
+<h2 id="decisions-amp-current-model-2026-06-15">Decisions &amp; current model (2026-06-15)<a class="anchor" href="#decisions-amp-current-model-2026-06-15" aria-label="Link to Decisions &amp;amp; current model (2026-06-15)">#</a></h2>
+<p>After tracing the write/read paths end-to-end, the design intent is settled:</p>
+<p><strong>One opinionated write path: <code>kb_memoize → gbrain DB.</code></strong></p>
+<ul>
+<li><code>kb_memoize</code> (→ <code>put_page</code>) upserts the gbrain DB directly (chunk + embed),
+searchable immediately. The <code>.sources/*.md</code> write-through is an <strong>inert
+mirror</strong> — never re-read by sync (sync reads <code>wiki/</code>), not a backup.</li>
+<li>The pre-gbrain writable-KB path (<code>slaude_knowledge</code> + <code>/ingest</code> +
+<code>raw/→wiki→git</code>) is <strong>redundant</strong> with this. Three ways to &quot;remember&quot;
+(memoize / <code>/ingest</code> / drop a raw file) is the confusion that misled both the
+agent and the operator.</li>
+</ul>
+<p><strong><code>slaude_knowledge</code> / <code>/ingest</code> — kept in code, left dormant.</strong> Decided NOT to
+rip them out for now. Instead: the operator configures <strong>all</strong> KBs as read-only
+(<code>knowledge[]</code>); nothing is set under <code>slaude_knowledge</code>. With no writable KB
+configured, <code>kb_memoize → gbrain</code> is the effective sole write path — the &quot;one
+opinionated way&quot; achieved operationally, zero code surgery. (Full removal —
+<code>/ingest</code> command, <code>ingest.ts</code>, <code>trigger_ingest</code>, <code>ingest-jobs</code>, the config key
+— remains an option later if we want to delete the dead path outright.)</p>
+<p><strong><code>/ingest</code> is NOT a step in memoize.</strong> It&#39;s a separate, manager-gated, git-
+backed curation pipeline for a <em>writable</em> KB. Memoize already indexed to the DB;
+&quot;ready for <code>/ingest</code>&quot; after a memoize (what Maria said) is wrong. With
+<code>slaude_knowledge</code> dormant, <code>/ingest</code> has no target and shouldn&#39;t be referenced.</p>
+<p><strong>Storage model (confirmed):</strong> gbrain DB is the single retrieval source. Boot/
+nightly index read-only seed <code>wiki/</code> dirs → <code>kb-*</code> sources; runtime memoize →
+<code>agent</code>/<code>shared</code>/<code>user-*</code> sources; all recall reads the DB. No KB tool reads
+markdown at runtime (after <code>open_kb</code> removal).</p>
+<p><strong>Durability:</strong> PVC-only accepted. Memoized <code>shared</code>/<code>user-*</code> pages live only in
+the gbrain DB on the PVC (no git backup; the <code>.sources/</code> mirror is never
+re-imported). A DB snapshot/export is the future option if git-grade durability
+is ever needed — not blocking.</p>
+<h2 id="open-work-ranked-2026-06-15-all-shipped">Open work (ranked, 2026-06-15) — ALL SHIPPED<a class="anchor" href="#open-work-ranked-2026-06-15-all-shipped" aria-label="Link to Open work (ranked, 2026-06-15) — ALL SHIPPED">#</a></h2>
+<p>The ranked list below is kept for the record; every item resolved (see &quot;Shipped&quot;
+table at top for PR refs).</p>
+<ol>
+<li>✅ <strong><code>kb_think</code> ranking (Mode B′)</strong> — shipped (#38). <code>kb_think</code> always runs a
+cross-check <code>kb_search</code> on a <strong>distilled</strong> keyword query (verbose NL →
+keywords, proven by the jot case) and surfaces any strong hit the synthesis
+didn&#39;t cite (<code>search_fallback</code>). Implemented slaude-side (the always-search +
+distill approach catches both gathered-but-ignored and not-gathered, so the
+recall-jsonl branch decision was moot).</li>
+<li>✅ <strong><code>open_kb</code> removal</strong> — shipped (#34).</li>
+<li>✅ <strong><code>EMBEDDING_DIMENSIONS</code> 2560 → 1280</strong> — shipped (deploy, Bitbucket).</li>
+<li>✅ <strong>Standing grant for <code>put_page</code></strong> — shipped (#36), then hardened (#40) to be
+per-(thread, writer) after a security review found the thread-only key let one
+user&#39;s approval cover another user&#39;s writes in a trusted multi-user thread.</li>
+<li>✅ <strong>Mode C</strong> — resolved <strong>by-design</strong>: <code>/1on1</code> memoize stays personal
+(<code>user-&lt;id&gt;</code>); team knowledge goes via a shared channel. No re-routing.</li>
+<li>✅ <strong>Soul prompt</strong> — shipped (#38).</li>
+<li>✅ <strong>#7a/#7b</strong> — shipped (#39): <code>humanizeBrainError</code> actionable errors; soul
+baseline forbids papering over a failed brain write. (A gateway stop-guard was
+considered and rejected — <code>toolResult</code> events carry no tool name / <code>isError</code>,
+so the prompt layer is the right seam.)</li>
+</ol>
+<h2 id="design-direction-per-source-ownership-amp-owner-routed-approval-future">Design direction — per-source ownership &amp; owner-routed approval (future)<a class="anchor" href="#design-direction-per-source-ownership-amp-owner-routed-approval-future" aria-label="Link to Design direction — per-source ownership &amp;amp; owner-routed approval (future)">#</a></h2>
+<p>Today&#39;s write gate keys on <strong>caller + channel trust</strong>, not on the source. The
+writable sources a user-context resolves to are only: <code>agent</code> (auto, cron),
+<code>user-&lt;id&gt;</code> (auto, private own slice), and <code>shared</code> (approval). <code>kb-*</code> sources
+(one per KB in slaude.json) are <strong>read-only</strong> at runtime — they change only via
+their git wiki — and <code>public</code> writes are denied. So &quot;contributing to a KB
+source&quot; isn&#39;t possible today; <code>shared</code> is the single common writable bucket,
+and its approval routes to the global SOUL.md <code>&lt;approvers&gt;</code> (category <code>kb</code> →
+manager), <strong>not</strong> to any per-source owner.</p>
+<p>Gaps if we want real per-source governance:</p>
+<ul>
+<li><strong>No <code>owner</code> on sources.</strong> Nothing records who is responsible for a source.</li>
+<li><strong>Approval is global, not per-source.</strong> A <code>shared</code> write routes by category,
+not to &quot;the owner of this source.&quot;</li>
+<li><strong>Only one shared writable target.</strong> No way to stand up a named, contributable
+domain/team source distinct from <code>shared</code>.</li>
+<li><strong>Source creation is manager-tier, owner-less</strong> (<code>sources_add</code>).</li>
+</ul>
+<p>Proposed model (net-new RBAC, its own design — not part of the memoize fixes):</p>
+<ol>
+<li><strong>Owner metadata per source</strong> — <code>owner:</code> in slaude.json per KB, and an
+<code>owner</code> column on the <code>sources</code> table for runtime-created sources.</li>
+<li><strong>Named contributable sources</strong> — make designated sources user-writable
+(beyond the single <code>shared</code>), each with an owner.</li>
+<li><strong>Owner-routed approval</strong> — the gate passes the <em>target source&#39;s owner</em> as the
+eligible approver: anyone may contribute, the source&#39;s owner approves. The
+per-thread standing grant (shipped) then still absorbs repeat cards per
+contributor.</li>
+</ol>
+<p>This generalizes the current model: <code>user-&lt;id&gt;</code> is just &quot;a source owned by one
+person, auto-approved for that owner&quot;; <code>shared</code> is &quot;a source the manager owns.&quot;
+Per-source ownership makes that explicit and lets domains/teams own their slice
+of the brain. Captured as direction; not scheduled.</p>
+<h2 id="artifacts">Artifacts<a class="anchor" href="#artifacts" aria-label="Link to Artifacts">#</a></h2>
+<p>Session JSONL retained locally (gitignored, not committed):</p>
+<ul>
+<li><code>jsonl/thread-1781076888/</code> — Case 1 (Mode A). <code>50555749-…</code> = the FK failure,
+<code>11abec57-…</code> = a working ingest reference.</li>
+<li><code>jsonl/thread-1781143233/</code> — Case 2 write. <code>26ecbaef-…</code> = the successful
+<code>kb_put_page</code> of <code>lessons/jot-deployment-pattern</code>.</li>
+<li><code>jsonl/thread-1781168759/</code> — Case 2 retrieval. <code>52b01ab2-…</code> = <code>kb_think</code> miss
+then <code>kb_search</code> hit.</li>
+</ul>
+
+    </article>
+    <nav class="prevnext"><a class="pn pn-prev" href="2026-06-14-model-switch-command.html"><span class="pn-dir">Previous</span><span class="pn-label">2026-06-14 — `/model` per-thread model switch</span></a><a class="pn pn-next" href="2026-06-13-kb-first-enforcement.html"><span class="pn-dir">Next</span><span class="pn-label">KB-first enforcement — from prose to teeth (2026-06-13)</span></a></nav>
+    <footer class="page-foot">
+      <a href="https://github.com/barockok/slaude/edit/main/docs/site/_content/field-notes/2026-06-14-brain-memoize-failure.md" target="_blank" rel="noopener">Edit this page on GitHub</a>
+      <span>slaude v0.42.0</span>
+    </footer>
+  </main>
+
+  <div class="toc-col"><nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul><li class="toc-h2"><a href="#shipped-merged-to-main">Shipped (merged to main)</a></li><li class="toc-h2"><a href="#summary">Summary</a></li><li class="toc-h2"><a href="#trigger">Trigger</a></li><li class="toc-h2"><a href="#what-happened-traced-from-jsonl-not-the-slack-surface">What happened (traced from JSONL, not the Slack surface)</a></li><li class="toc-h2"><a href="#why-recall-is-thin-the-user-visible-symptom">Why recall is thin (the user-visible symptom)</a></li><li class="toc-h2"><a href="#mode-a-defect-write-side-root-cause-confirmed">Mode-A defect (write side) — ROOT CAUSE CONFIRMED</a></li><li class="toc-h3"><a href="#fix-mode-a">Fix (Mode A)</a></li><li class="toc-h2"><a href="#trigger-1">Trigger</a></li><li class="toc-h2"><a href="#what-this-proves">What this proves</a></li><li class="toc-h2"><a href="#mode-b-defect-retrieval-side">Mode-B defect (retrieval side)</a></li><li class="toc-h2"><a href="#brainmemory-tool-surface-observed">Brain/memory tool surface (observed)</a></li><li class="toc-h2"><a href="#fix-direction-not-yet-implemented-collecting-cases">Fix direction (NOT yet implemented — collecting cases)</a></li><li class="toc-h2"><a href="#open-questions">Open questions</a></li><li class="toc-h2"><a href="#fix-landed-2026-06-14">Fix landed (2026-06-14)</a></li><li class="toc-h2"><a href="#2026-06-15-update-deeper-investigation-live-staging-brain">2026-06-15 update — deeper investigation (live staging brain)</a></li><li class="toc-h3"><a href="#confirmed-via-live-db">Confirmed via live DB</a></li><li class="toc-h3"><a href="#storage-model-confirmed">Storage model (confirmed)</a></li><li class="toc-h3"><a href="#follow-ups">Follow-ups</a></li><li class="toc-h2"><a href="#decisions-amp-current-model-2026-06-15">Decisions &amp;amp; current model (2026-06-15)</a></li><li class="toc-h2"><a href="#open-work-ranked-2026-06-15-all-shipped">Open work (ranked, 2026-06-15) — ALL SHIPPED</a></li><li class="toc-h2"><a href="#design-direction-per-source-ownership-amp-owner-routed-approval-future">Design direction — per-source ownership &amp;amp; owner-routed approval (future)</a></li><li class="toc-h2"><a href="#artifacts">Artifacts</a></li></ul></nav></div>
+</div>
+
+<div class="search-overlay" hidden>
+  <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search documentation">
+    <div class="search-input-row">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <input type="search" placeholder="Search the docs…" aria-label="Search" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="search-results" role="listbox"></div>
+  </div>
+</div>
+
+<script>window.__SLAUDE_BASE__="../";</script>
+<script src="../assets/docs.js?v=a084ede1" defer></script>
+</body>
+</html>

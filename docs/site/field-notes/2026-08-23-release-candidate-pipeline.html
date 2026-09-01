@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Release candidate pipeline — slaude Docs</title>
+<meta name="description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:title" content="Release candidate pipeline — slaude">
+<meta property="og:description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20width%3D'32'%20height%3D'32'%20rx%3D'8'%20fill%3D'%2523853291'%2F%3E%3Ctext%20x%3D'16'%20y%3D'23'%20font-family%3D'Helvetica%2CArial%2Csans-serif'%20font-size%3D'19'%20font-weight%3D'700'%20fill%3D'white'%20text-anchor%3D'middle'%3Es%3C%2Ftext%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/docs.css?v=377763e4">
+<script>(function(){try{var t=localStorage.getItem('slaude-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+    </button>
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true">s</span>
+      <span class="brand-name">slaude</span>
+      <span class="brand-sub">Docs</span>
+    </a>
+    <button class="search-btn" type="button" data-search-open>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <span>Search</span><kbd>⌘K</kbd>
+    </button>
+    <div class="topbar-actions">
+      <a class="ghost" href="https://github.com/barockok/slaude" target="_blank" rel="noopener">GitHub</a>
+      <button class="theme-btn" type="button" aria-label="Toggle theme">
+        <svg class="i-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1M12.9 12.9l-1.1-1.1M4.2 4.2 3.1 3.1"/></svg>
+        <svg class="i-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="topnav" aria-label="Sections"><div class="topnav-inner"><a class="topnav-tab" href="../index.html">Get started</a><a class="topnav-tab" href="../guides/index.html">Guides</a><a class="topnav-tab" href="../reference/configuration.html">Reference</a><a class="topnav-tab" href="../deploy/index.html">Deploy</a><a class="topnav-tab active" href="2026-08-23-release-candidate-pipeline.html">Field notes</a><a class="topnav-tab" href="../releases/v0.42.0.html">Releases</a></div></nav>
+</header>
+
+<div class="shell">
+  <aside class="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-inner"><div class="nav-group"><p class="nav-group-title">Field notes</p><ul><li><a class="active" href="2026-08-23-release-candidate-pipeline.html">Release candidate pipeline</a></li><li><a class="" href="2026-07-27-kb-think-gather-miss.html">kb_think gather miss — runThink vs gather() source scoping</a></li><li><a class="" href="2026-07-24-per-agent-brain-slices.html">Per-agent brain slices: private minds, deliberate sharing</a></li><li><a class="" href="2026-07-08-per-channel-metrics.html">2026-07-08 — Per-channel token and model metrics</a></li><li><a class="" href="2026-07-03-cron-private-mcp-scoping-drift.html">Cron private-MCP credential scoping is decoupled from `oauth_user`</a></li><li><a class="" href="2026-06-20-channel-soul-overrides.html">Channel-specific soul mandate &amp; approvers</a></li><li><a class="" href="2026-06-20-brain-remote-mcp.html">Brain as a remote, OAuth-protected MCP process (configurable)</a></li><li><a class="" href="2026-06-19-shared-oauth-loopback-surface-connect.html">Shared OAuth loopback + surface-aware connect + URL-safe mrkdwn (#51)</a></li><li><a class="" href="2026-06-16-reengage-hook-suppress.html">Re-engage via in-session suppression (hook-only), not Slack backfill</a></li><li><a class="" href="2026-06-15-per-source-gather.html">2026-06-15 — Per-source `gather()`: fix bulk-corpus retrieval noise drowning curated pages</a></li><li><a class="" href="2026-06-14-model-switch-command.html">2026-06-14 — `/model` per-thread model switch</a></li><li><a class="" href="2026-06-14-brain-memoize-failure.html">2026-06-14 — Brain memoize: two failure modes break &quot;remember it&quot;</a></li><li><a class="" href="2026-06-13-kb-first-enforcement.html">KB-first enforcement — from prose to teeth (2026-06-13)</a></li><li><a class="" href="2026-06-11-soul-runtime-overrides.html">Soul runtime overrides — manager-editable ACLs without redeploy (2026-06-11)</a></li><li><a class="" href="2026-06-11-engagement-disengage-durability.html">Engagement review — disengage lasted zero messages (2026-06-11)</a></li><li><a class="" href="2026-06-11-1on1-transcript-sharding.html">/1on1 transcript sharding — resume breaks on lock flips (2026-06-11)</a></li><li><a class="" href="2026-06-10-mcp-global-connect.html">2026-06-10 — `/mcp` global connect (manager wires the agent's shared identity)</a></li><li><a class="" href="2026-06-10-gbrain-slaude-kb.html">gbrain × slaude — powering slaude_kb with a real brain</a></li><li><a class="" href="2026-06-09-post-as-slack-user.html">Post as the agent's real Slack user (opt-in xoxp)</a></li><li><a class="" href="2026-06-09-mcp-oauth-connect-1on1.html">2026-06-09 — /mcp OAuth connect in /1on1 (write CLI mcpOAuth store, CLI owns lifecycle)</a></li><li><a class="" href="2026-06-08-private-services-1on1.html">2026-06-08 — Private services in /1on1 (run as the initiator)</a></li><li><a class="" href="2026-06-08-orchestration-evolution-retro.html">2026-06-08 — Retro: orchestration, gating &amp; continuous evolution</a></li><li><a class="" href="2026-06-08-oauth-config-dir-1on1.html">2026-06-08 — /1on1 OAuth isolation via per-initiator CLAUDE_CONFIG_DIR</a></li><li><a class="" href="2026-06-08-cron-on-channel.html">cron-on-channel + a latent scheduler-boot crash</a></li><li><a class="" href="2026-06-05-sim-tui-opentui.html">Sim REPL on OpenTUI (React)</a></li><li><a class="" href="2026-06-05-pinned-input-box.html">Pinned bordered input box (sim REPL)</a></li><li><a class="" href="2026-06-04-repl-claude-code-ux.html">Sim REPL — claude-code-grade UX</a></li><li><a class="" href="2026-06-03-surface-abstraction.html">2026-06-03 — Surface abstraction (agent interaction decoupled from Slack)</a></li><li><a class="" href="2026-06-03-sim-interactive-real-agent.html">2026-06-03 — Interactive sim against the live agent (`--real`)</a></li><li><a class="" href="2026-05-29-simulation-gateway.html">2026-05-29 — Simulation gateway (Slack-free verification)</a></li><li><a class="" href="2026-05-29-one-on-one-mode.html">2026-05-29 — /1on1 mode (per-thread engagement lock)</a></li><li><a class="" href="2026-05-29-contextual-mcp-connections.html">2026-05-29 — Contextual per-user MCP connections</a></li><li><a class="" href="2026-05-25-cron-ignore-audit.html">Cron &amp; Ignore System Audit</a></li><li><a class="" href="2026-05-22-plugin-loader-chain.html">2026-05-22 — Plugin loader chain (install → SDK → MCP)</a></li><li><a class="" href="2026-05-21-writable-kb-ingest.html">2026-05-21 — Writable KB + /ingest</a></li><li><a class="" href="2026-05-21-policy-guardrails.html">2026-05-21 — Policy Guardrails (Tier 2 / Tier 3 Design)</a></li><li><a class="" href="2026-05-21-dependency-manifest.html">2026-05-21 — Dependency Manifest Design</a></li><li><a class="" href="2026-05-13-metrics-stop-guard.html">2026-05-13 — fallback ctx, table emphasis, metrics, stop-guard</a></li><li><a class="" href="2026-05-11-structured-soul-channel-mode.html">2026-05-11 — structured-soul + channel-mode gate</a></li><li><a class="" href="2026-05-11-skill-evolution.html">2026-05-11 — skill evolution</a></li><li><a class="" href="2026-05-11-external-mcp.html">2026-05-11 — external MCP via mcp.json</a></li><li><a class="" href="2026-05-11-context-budget-tracking.html">2026-05-11 — context budget tracking</a></li><li><a class="" href="2026-05-11-claude-subscription-oauth.html">2026-05-11 — Claude subscription OAuth</a></li><li><a class="" href="2026-05-09-slack-ux-engagement.html">2026-05-09 / 2026-05-10 — Slack UX, engagement, approval, CI</a></li><li><a class="" href="2026-05-08-mvp-bootstrap.html">2026-05-08 — MVP bootstrap</a></li></ul></div></div>
+  </aside>
+
+  <main id="main" class="content">
+    <article class="prose">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Field notes</p>
+          <h1>Release candidate pipeline</h1>
+        </div>
+        <button class="copy-page" type="button" title="Copy this page as Markdown for an agent">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 4 12h1.5"/></svg>
+          <span>Copy page</span>
+        </button>
+      </div>
+      
+      <p><strong>Date:</strong> 2026-08-23
+<strong>Status:</strong> shipped</p>
+<h2 id="context">Context<a class="anchor" href="#context" aria-label="Link to Context">#</a></h2>
+<p>Releases went straight from <code>main</code> to a stable <code>vX.Y.Z</code> tag. Anything that broke
+the install path broke it for every user at once, and the only recovery was a
+follow-up patch release. We wanted a soak stage.</p>
+<h2 id="what-already-worked">What already worked<a class="anchor" href="#what-already-worked" aria-label="Link to What already worked">#</a></h2>
+<p><code>release.yml</code> had <code>prerelease: ${{ contains(github.ref_name, &#39;-&#39;) }}</code> — a tag with
+a hyphen already published as a GitHub pre-release. And <code>install.sh</code> resolves the
+version from <code>releases/latest</code>, which GitHub <em>excludes pre-releases from</em>. So the
+&quot;don&#39;t hand an RC to normal users&quot; half was free: no new workflow, no new trigger.</p>
+<p>The gap was everything around it.</p>
+<h2 id="three-latent-bugs-the-rc-path-exposed">Three latent bugs the RC path exposed<a class="anchor" href="#three-latent-bugs-the-rc-path-exposed" aria-label="Link to Three latent bugs the RC path exposed">#</a></h2>
+<p>Cutting a fake <code>0.41.0-rc.1</code> locally surfaced bugs that had been dormant because
+no version string had ever contained a non-numeric character.</p>
+<ol>
+<li><p><strong><code>tests/installer/smoke.sh</code> version parse.</strong> Used
+<code>sed -E &#39;s/.*&quot;([0-9.]+)&quot;.*/\1/&#39;</code>. On <code>&quot;version&quot;: &quot;0.41.0-rc.1&quot;</code> there is no
+<code>&quot;</code>-delimited run of pure <code>[0-9.]</code>, so the pattern <strong>did not match at all</strong> and
+sed passed the line through unchanged — <code>VERSION</code> became the whole JSON line.
+A silent no-match, not an error. Fixed to the capture <code>package-release.sh</code>
+already used: <code>s/.*&quot;version&quot;: *&quot;([^&quot;]+)&quot;.*/\1/</code>.</p>
+</li>
+<li><p><strong><code>src/cli/dist.ts</code> <code>SEMVER = /^\d+\.\d+\.\d+$/</code>.</strong> This gates
+<code>currentVersion()</code>, <code>installedVersions()</code>, <code>previousVersion()</code>, and
+<code>pruneVersions()</code>. An installed RC failed the test, so <code>slaude version</code>
+reported <code>(none)</code> and rollback/prune could not see the directory. An RC was
+installable but not <em>operable</em> — precisely the thing an RC is supposed to
+prove. Regex widened to accept a prerelease suffix, and <code>cmpSemver</code> extended
+to sort per spec: prerelease below its own stable, numeric identifiers
+compared numerically so <code>rc.10 &gt; rc.2</code>.</p>
+</li>
+<li><p><strong>Tag / <code>package.json</code> drift was unguarded.</strong> <code>install.sh</code> builds the asset URL
+from the <em>tag</em>; <code>package-release.sh</code> names the tarball from <em><code>package.json</code></em>.
+Disagreement ships a release whose download 404s, and nothing checked. Added a
+fail-fast step at the top of <code>release.yml</code>.</p>
+</li>
+</ol>
+<p>The lesson: the RC pipeline paid for itself before its first real RC. A format
+that has only ever been exercised with one shape (<code>\d+\.\d+\.\d+</code>) accumulates
+parsers that assume that shape, and a <em>silent</em> non-match is the common failure —
+neither the sed nor the regex threw.</p>
+<h2 id="what-shipped">What shipped<a class="anchor" href="#what-shipped" aria-label="Link to What shipped">#</a></h2>
+<ul>
+<li><code>scripts/promote-rc.sh</code> — strips <code>-rc.N</code>, bumps <code>package.json</code>, commits, tags,
+pushes. Refuses unless: tag is well-formed, RC tag exists, stable tag does not,
+clean <code>main</code>, RC is an ancestor of HEAD, stable notes file exists. Prints
+commits that landed after the RC (those would ship unsoaked). <code>--dry-run</code>.</li>
+<li><code>release.yml</code> — tag/version guard; installer smoke test against the packaged
+tarball on every tag (<code>ci.yml</code> only smoked on main/PRs, so tag builds shipped
+the install path unverified).</li>
+<li><code>dist.ts</code> prerelease-aware version handling + test coverage.</li>
+<li>Flow documented in <code>CLAUDE.md</code> and <code>.claude/skills/release-prep/SKILL.md</code>.</li>
+</ul>
+<h2 id="deliberately-not-done">Deliberately not done<a class="anchor" href="#deliberately-not-done" aria-label="Link to Deliberately not done">#</a></h2>
+<ul>
+<li><strong>No auto-promotion on a soak timer.</strong> Promotion is a judgment call; the script
+is a guard rail, not a scheduler.</li>
+<li><strong><code>slaude update</code> still pulls an RC user back to stable.</strong> Falls out of
+<code>releases/latest</code> semantics. Correct: an RC is a deliberate pin, and a user who
+runs <code>update</code> is asking for the supported version.</li>
+<li><strong>No <code>cut-rc.sh</code>.</strong> Cutting is a version bump and a tag; the CI guard catches
+the one mistake that matters (drift). Add it if cutting turns out to be error-prone
+in practice.</li>
+</ul>
+
+    </article>
+    <nav class="prevnext"><a class="pn pn-prev" href="../deploy/scale-operations.html"><span class="pn-dir">Previous</span><span class="pn-label">Scale operations</span></a><a class="pn pn-next" href="2026-07-27-kb-think-gather-miss.html"><span class="pn-dir">Next</span><span class="pn-label">kb_think gather miss — runThink vs gather() source scoping</span></a></nav>
+    <footer class="page-foot">
+      <a href="https://github.com/barockok/slaude/edit/main/docs/site/_content/field-notes/2026-08-23-release-candidate-pipeline.md" target="_blank" rel="noopener">Edit this page on GitHub</a>
+      <span>slaude v0.42.0</span>
+    </footer>
+  </main>
+
+  <div class="toc-col"><nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul><li class="toc-h2"><a href="#context">Context</a></li><li class="toc-h2"><a href="#what-already-worked">What already worked</a></li><li class="toc-h2"><a href="#three-latent-bugs-the-rc-path-exposed">Three latent bugs the RC path exposed</a></li><li class="toc-h2"><a href="#what-shipped">What shipped</a></li><li class="toc-h2"><a href="#deliberately-not-done">Deliberately not done</a></li></ul></nav></div>
+</div>
+
+<div class="search-overlay" hidden>
+  <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search documentation">
+    <div class="search-input-row">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <input type="search" placeholder="Search the docs…" aria-label="Search" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="search-results" role="listbox"></div>
+  </div>
+</div>
+
+<script>window.__SLAUDE_BASE__="../";</script>
+<script src="../assets/docs.js?v=a084ede1" defer></script>
+</body>
+</html>

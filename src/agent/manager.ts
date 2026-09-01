@@ -597,7 +597,7 @@ export class AgentManager extends EventEmitter {
     // so on re-engage the model resumes with the gap already in conversation
     // history — no Slack re-fetch, no synthetic preamble. (decision:"block"
     // discards the prompt *before* it persists — verified against the pinned
-    // SDK; see docs/findings/2026-06-16-reengage-hook-suppress.md.)
+    // SDK; see docs/site/_content/field-notes/2026-06-16-reengage-hook-suppress.md.)
     const userPromptHook = makeUserPromptHook(
       sessionId,
       this.#sessionNotes,
