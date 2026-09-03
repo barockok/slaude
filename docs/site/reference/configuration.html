@@ -97,7 +97,9 @@
     &quot;scopes&quot;: {
       &quot;bot&quot;: [
         &quot;app_mentions:read&quot;,
+        &quot;canvases:write&quot;,
         &quot;channels:history&quot;,
+        &quot;channels:manage&quot;,
         &quot;channels:read&quot;,
         &quot;chat:write&quot;,
         &quot;chat:write.public&quot;,
@@ -105,12 +107,14 @@
         &quot;files:write&quot;,
         &quot;groups:history&quot;,
         &quot;groups:read&quot;,
+        &quot;groups:write&quot;,
         &quot;im:history&quot;,
         &quot;im:read&quot;,
         &quot;im:write&quot;,
         &quot;mpim:history&quot;,
         &quot;mpim:read&quot;,
         &quot;mpim:write&quot;,
+        &quot;pins:write&quot;,
         &quot;reactions:read&quot;,
         &quot;reactions:write&quot;,
         &quot;users:read&quot;,
@@ -157,7 +161,7 @@
 <tr><td><code>SLACK_POST_AS_USER</code></td><td>No</td><td><code>false</code></td><td>When <code>true</code> <strong>and</strong> <code>SLACK_USER_TOKEN</code> is set, the agent posts/edits/reacts/uploads as the real Slack user account instead of the bot. App-bound interactivity (Approve/Deny gate buttons) always stays on the bot token. Accepts <code>true</code> case-insensitively; anything else is <code>false</code>.</td></tr>
 </tbody></table></div>
 <blockquote>
-<p><strong>Security note for <code>SLACK_POST_AS_USER</code></strong> — reads also route through the user token in this mode, so the <code>xoxp</code> must carry both write scopes (<code>chat:write</code>, <code>reactions:write</code>, <code>files:write</code>) and read scopes (<code>channels:history</code>, <code>groups:history</code>, <code>im:history</code>, <code>users:read</code>). The agent&#39;s read reach equals the human account&#39;s (private channels and DMs included). Only enable for accounts whose full scope you are comfortable exposing to tool use.</p>
+<p><strong>Security note for <code>SLACK_POST_AS_USER</code></strong> — reads also route through the user token in this mode, so the <code>xoxp</code> must carry both write scopes (<code>chat:write</code>, <code>reactions:write</code>, <code>files:write</code>, plus <code>canvases:write</code>, <code>pins:write</code>, <code>channels:manage</code> and <code>groups:write</code> for the Canvas, pin and topic tools) and read scopes (<code>channels:history</code>, <code>groups:history</code>, <code>im:history</code>, <code>users:read</code>, and <code>search:read</code> for <code>search_messages</code>). The agent&#39;s read reach equals the human account&#39;s (private channels and DMs included). Only enable for accounts whose full scope you are comfortable exposing to tool use.</p>
 </blockquote>
 <div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">bash</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash"># .env — bot-only (default, recommended)
 SLACK_BOT_TOKEN=xoxb-1234567890-XXXXXXXXXXXX
