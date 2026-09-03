@@ -267,7 +267,7 @@ All vars are read via `src/config/env.ts` (`req()` throws on missing, `opt()` re
 | `SLACK_USER_TOKEN` | No | `""` | `xoxp-…` user token. Used for `users.profile.set` presence; also the post-as-user token when `SLACK_POST_AS_USER=true`. |
 | `SLACK_POST_AS_USER` | No | `false` | `true` (case-insensitive) enables posting as the real Slack user. Requires `SLACK_USER_TOKEN`. |
 | `SLAUDE_APPROVERS` | No | `""` | Comma-separated Slack user ids allowed to click **Approve / Deny** on `request_approval` plans. **Fallback only** — used when `SOUL.md` has no `## Approvers` section. Empty means any clicker is accepted (only safe for solo / DM workspaces). Trimmed, comma-split, empty entries dropped. |
-| `SLAUDE_SLACK_MODE` | No | `socket` | Slack ingress: `socket` (Bolt Socket Mode, single app from `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN`) or `http` (Events API receiver — Slack POSTs signed requests to `/slack/events` and `/slack/interactions`). `http` requires `SLAUDE_DB=pg` and `SLAUDE_MASTER_KEY`: apps are resolved per-request from the `slack_apps` registry (`bun run slack-app add`), and `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN` are not read. Emit the matching app manifest with `bun run manifest --mode http --url https://<host>`. |
+| `SLAUDE_SLACK_MODE` | No | `socket` | Slack ingress: `socket` (Bolt Socket Mode, single app from `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN`) or `http` (Events API receiver — Slack POSTs signed requests to `/slack/events` and `/slack/interactions`). `http` requires `SLAUDE_DB=pg` and `SLAUDE_MASTER_KEY`: apps are resolved per-request from the `slack_apps` registry (`bun run slack-app add`), and `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN` are not read. Emit the matching app manifest with `bun run manifest --mode http --url https://<host>`. Setup walkthrough: [Webhook (Events API) mode](../deploy/webhook-mode.md). |
 | `SLAUDE_HTTP_PORT` | No | `8080` | Listen port for `SLAUDE_SLACK_MODE=http`. This single port serves `/slack/*` **and** `/healthz` `/readyz` `/metrics`; the standalone `SLAUDE_HEALTH_PORT` server is not started in http mode. |
 | `SLAUDE_HTTP_MAX_BODY_BYTES` | No | `1000000` | Max accepted request-body size on `/slack/*` (bytes). Oversize requests get `413` before any buffering completes or signature work runs. Positive integer. |
 | `SLACK_SIGNING_SECRET` | No | `""` | Fallback for `bun run slack-app add` when `--signing-secret` is omitted (**Basic Information → App Credentials**). The runtime never reads it directly — request verification always uses the encrypted copy stored in Postgres. |
@@ -307,6 +307,8 @@ on `ioredis-mock`) and are gated on `SLAUDE_REDIS_TEST_URL`, mirroring the
 `SLAUDE_PG_TEST_URL` gate for Postgres.
 
 ### Control panel — operator web console <a id="panel"></a>
+
+What it does and how to enable it: [Control panel](../deploy/panel.md).
 
 The panel mounts at `/panel` on the gateway's HTTP server for the `mono` and
 `gateway` roles (never `node`). It is its own OIDC relying party: it
