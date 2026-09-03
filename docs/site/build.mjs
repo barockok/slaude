@@ -470,8 +470,18 @@ for (const page of pages) {
   const { data, body } = parseFrontMatter(src);
   const { marked, headings } = buildRenderer(page);
 
-  // Discovered pages keep their own H1; drop it so the template's title isn't doubled.
-  let md = page.source ? body.replace(/^#\s+.+\n+/, '') : body;
+  // Every page's H1 is rendered by the template, above the body. Drop a leading
+  // H1 from the Markdown so it is not shown twice, and prefer it over the nav
+  // label as the page title: the nav label is written to fit a sidebar, the H1
+  // is what the author called the page. This is what discovered pages already
+  // do to derive their label (see the `from:` group loader above).
+  // Unanchored by `m` on purpose: only the first heading in the body counts, so
+  // a `#` further down (a page that mis-levels its sections) is left alone. The
+  // leading `\s*` skips the blank line front matter leaves behind, and `#\s+`
+  // will not match a `##` there.
+  const leadingH1 = body.match(/^\s*#\s+(.+?)\s*(?:\n|$)/);
+  const ownTitle = leadingH1 ? leadingH1[1] : '';
+  let md = ownTitle ? body.replace(/^\s*#\s+.+\n+/, '') : body;
 
   // Rewrite intra-doc links (path.md → relative .html) BEFORE the block
   // extensions run: extractCards emits raw <a href>, which the rewrite can no
@@ -490,7 +500,7 @@ for (const page of pages) {
   let html = marked.parse(md);
   html = postprocess(html, marked);
 
-  const title = data.title || page.label;
+  const title = data.title || ownTitle || page.label;
   const out = layout({ page, title, description: data.description, content: html, headings });
 
   const file = join(OUT, page.path === 'index' ? 'index.html' : `${page.path}.html`);
