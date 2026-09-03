@@ -2,10 +2,15 @@
 // Static docs generator for slaude.
 //
 // Reads Markdown from _content/, the nav tree from nav.json, and writes plain
-// static HTML into this directory. No server, no framework: GitHub Pages can
-// serve docs/site/ as-is.
+// static HTML into _site/. No server, no framework: GitHub Pages serves the
+// _site/ artifact as-is.
 //
 //   node docs/site/build.mjs
+//
+// _site/ is generated and gitignored — the Pages workflow is its only author,
+// so what is published is always a build of the Markdown at that commit and
+// can never drift from it. Nothing else reads _site/; to preview locally,
+// build and serve it (`bun run docs && python3 -m http.server -d docs/site/_site`).
 //
 // Authoring extensions on top of CommonMark:
 //   > [!NOTE] / [!TIP] / [!WARNING] / [!DANGER]   → callout blocks
@@ -21,9 +26,19 @@ import { Marked } from 'marked';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const CONTENT = join(ROOT, '_content');
+/** Build output. Wiped and rewritten on every run; never committed. */
+const OUT = join(ROOT, '_site');
 const nav = JSON.parse(readFileSync(join(ROOT, 'nav.json'), 'utf8'));
 
 const SITE = nav.site;
+
+// Start from an empty tree so a renamed or deleted page cannot survive as a
+// stale file, then copy the static passthrough: the assets the pages link to,
+// and .nojekyll (without it Pages runs Jekyll, which drops _-prefixed paths).
+rmSync(OUT, { recursive: true, force: true });
+mkdirSync(OUT, { recursive: true });
+cpSync(join(ROOT, 'assets'), join(OUT, 'assets'), { recursive: true });
+cpSync(join(ROOT, '.nojekyll'), join(OUT, '.nojekyll'));
 
 /* ------------------------------------------------------------------ *
  * Front matter
@@ -455,8 +470,18 @@ for (const page of pages) {
   const { data, body } = parseFrontMatter(src);
   const { marked, headings } = buildRenderer(page);
 
-  // Discovered pages keep their own H1; drop it so the template's title isn't doubled.
-  let md = page.source ? body.replace(/^#\s+.+\n+/, '') : body;
+  // Every page's H1 is rendered by the template, above the body. Drop a leading
+  // H1 from the Markdown so it is not shown twice, and prefer it over the nav
+  // label as the page title: the nav label is written to fit a sidebar, the H1
+  // is what the author called the page. This is what discovered pages already
+  // do to derive their label (see the `from:` group loader above).
+  // Unanchored by `m` on purpose: only the first heading in the body counts, so
+  // a `#` further down (a page that mis-levels its sections) is left alone. The
+  // leading `\s*` skips the blank line front matter leaves behind, and `#\s+`
+  // will not match a `##` there.
+  const leadingH1 = body.match(/^\s*#\s+(.+?)\s*(?:\n|$)/);
+  const ownTitle = leadingH1 ? leadingH1[1] : '';
+  let md = ownTitle ? body.replace(/^\s*#\s+.+\n+/, '') : body;
 
   // Rewrite intra-doc links (path.md → relative .html) BEFORE the block
   // extensions run: extractCards emits raw <a href>, which the rewrite can no
@@ -475,10 +500,10 @@ for (const page of pages) {
   let html = marked.parse(md);
   html = postprocess(html, marked);
 
-  const title = data.title || page.label;
+  const title = data.title || ownTitle || page.label;
   const out = layout({ page, title, description: data.description, content: html, headings });
 
-  const file = join(ROOT, page.path === 'index' ? 'index.html' : `${page.path}.html`);
+  const file = join(OUT, page.path === 'index' ? 'index.html' : `${page.path}.html`);
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, out);
   built++;
@@ -497,14 +522,14 @@ for (const page of pages) {
   });
 }
 
-writeFileSync(join(ROOT, 'search-index.json'), JSON.stringify(searchIndex));
+writeFileSync(join(OUT, 'search-index.json'), JSON.stringify(searchIndex));
 
 /* ---- link check: a 404 in docs is a bug, so fail the build on one ---- */
 
 const broken = [];
 for (const page of pages) {
   const file = page.path === 'index' ? 'index.html' : `${page.path}.html`;
-  const html = readFileSync(join(ROOT, file), 'utf8');
+  const html = readFileSync(join(OUT, file), 'utf8');
   const fromDir = file.includes('/') ? file.slice(0, file.lastIndexOf('/')) : '';
   for (const m of html.matchAll(/href="([^"#][^"]*?)"/g)) {
     const target = m[1];
@@ -512,11 +537,11 @@ for (const page of pages) {
     // Strip the fragment and the query: asset URLs carry a ?v=<hash> cache
     // buster, which is not part of the path on disk.
     const resolved = normalize(join(fromDir, target.split(/[#?]/)[0]));
-    if (!existsSync(join(ROOT, resolved))) broken.push(`${file} → ${target}`);
+    if (!existsSync(join(OUT, resolved))) broken.push(`${file} → ${target}`);
   }
 }
 
-console.log(`built ${built} pages → docs/site/`);
+console.log(`built ${built} pages → docs/site/_site/`);
 if (broken.length) {
   console.error(`\n${broken.length} broken internal link(s):`);
   for (const b of broken) console.error(`  ${b}`);

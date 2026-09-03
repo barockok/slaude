@@ -26,3 +26,6 @@ jsonl/
 .mcp.json
 .playwright/
 test-results/
+
+# Generated docs site (built by docs/site/build.mjs; published by .github/workflows/pages.yml)
+docs/site/_site/
