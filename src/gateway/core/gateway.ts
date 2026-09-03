@@ -28,6 +28,16 @@ import { createV1Api } from "../api";
 import type { PendingSource } from "../api/pending-source";
 import { defaultGateBus } from "../../queue/gate-bus";
 import { makeQueueDispatch, type QueueDispatch } from "./dispatch";
+import { getRedis, getSubRedis } from "../../queue/redis";
+import { makeKeys } from "../../queue/keys";
+import type { SessionRow } from "../../db/schema";
+import { makeRegistry, type Registry } from "../../queue/registry";
+import { makePubSub, type PubSub } from "../../queue/pubsub";
+import { makePanelLock, type PanelLock } from "../../queue/panel-lock";
+import { createPanelApi } from "../panel/api";
+import { makeDeferQueue } from "../panel/defer-queue";
+import { suppressibleSurface } from "../panel/suppress";
+import type { DispatchMeta } from "./dispatch";
 import { brainEnabled, ensureSources } from "../../knowledge/brain";
 import { brainMode } from "../../knowledge/brain-config";
 import { syncKbWikis } from "../../knowledge/brain-sync";
@@ -71,6 +81,11 @@ export interface GatewayHandle {
    *  the caller (health server) can fall through. Mounted only when
    *  SLAUDE_ROLE is mono/gateway — see src/server.ts. */
   fetchV1(req: Request): Promise<Response | null>;
+  /** Operator control-panel handler (design §Session control panel). Returns
+   *  null for non-/panel paths so the caller (health server) can fall through.
+   *  Mounted only when SLAUDE_PANEL is enabled and the role is mono/gateway —
+   *  see src/server.ts. */
+  fetchPanel(req: Request): Promise<Response | null>;
   /** TEST/SIM SEAM ONLY. The pending-gate source behind /v1/pending. */
   __pendingSource(): PendingSource;
   /** TEST/SIM SEAM ONLY. Live per-session MCP contexts built by the resolver.
@@ -160,6 +175,20 @@ export interface GatewayOptions {
    *  in-process as today. Tests inject one with stub infra; explicit null
    *  forces the in-process path regardless of role. */
   queueDispatch?: QueueDispatch | null;
+  /** Control-panel infra override (design §Session control panel). Default:
+   *  built from the queue dispatcher's Redis (gateway role) or the process
+   *  Redis singletons (mono) when SLAUDE_PANEL is enabled and the role is not
+   *  node. Tests inject one over their key prefix; explicit null forces the
+   *  panel off regardless of env. */
+  panel?: PanelInfra | null;
+}
+
+/** Redis-backed primitives the control panel needs — injected together so a
+ *  test drives them over one connection + key prefix. */
+export interface PanelInfra {
+  registry: Registry;
+  pubsub: PubSub;
+  panelLock: PanelLock;
 }
 
 /** Render a TaskCreate/TaskUpdate tasks map as a compact markdown task list. */
@@ -214,6 +243,159 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         ? makeQueueDispatch(agent)
         : null;
   if (queueDispatch) console.log("[slaude] gateway role: turns dispatch to the node queue");
+
+  // ── Session control panel (design §Session control panel) ────────────────
+  // Redis-backed active-surface lock + event tail + warm registry. Reuses the
+  // queue dispatcher's pubsub/registry when present (same connection + prefix),
+  // else builds them off the process Redis singletons. Built only for
+  // mono/gateway roles with SLAUDE_PANEL on; a test injects opts.panel.
+  const panelInfra: PanelInfra | null =
+    opts.panel !== undefined
+      ? opts.panel
+      : env.panel.enabled() && env.role() !== "node"
+        ? (() => {
+            const redis = getRedis();
+            const keys = queueDispatch?.pubsub.keys ?? makeKeys();
+            return {
+              registry: queueDispatch?.registry ?? makeRegistry({ redis, keys }),
+              pubsub: queueDispatch?.pubsub ?? makePubSub({ redis, sub: getSubRedis(), keys }),
+              panelLock: makePanelLock({ redis, keys }),
+            } satisfies PanelInfra;
+          })()
+        : null;
+  if (panelInfra) console.log("[slaude] control panel enabled (/panel)");
+
+  // Cross-replica active-surface state. The Redis lock (`panel:<id>`) is the
+  // sole source of truth about WHO holds a session — per-process maps only
+  // cache it or hold this replica's own deferred inbound. A session can be
+  // locked on replica A while Slack traffic and the node's /v1 posts land on
+  // replica B, so every "is it held?" check ultimately consults Redis.
+  const panelHeldLocal = new Map<string, number>(); // sessionId -> local expiresAt (fast path on the owning replica)
+  const panelOwnerCache = new Map<string, { owner: string | null; at: number }>();
+  const panelDefer = makeDeferQueue(); // THIS replica's deferred inbound only
+  const OWNER_CACHE_MS = 1_000;
+
+  const panelMarkHeld = (sessionId: string, ttlMs: number) => {
+    panelHeldLocal.set(sessionId, Date.now() + ttlMs);
+    // Prime the owner cache optimistically so suppression is immediate on the
+    // replica that just took/refreshed the lock.
+    panelOwnerCache.set(sessionId, { owner: "self", at: Date.now() });
+    // Broadcast the acquisition so OTHER replicas invalidate any stale
+    // "unlocked" cache for this session — otherwise a negative lookup cached
+    // (e.g. during an earlier turn) could mask a lock taken here for up to the
+    // cache window, letting inbound through / outbound double-post.
+    void panelInfra?.pubsub.publishPanelHold(sessionId).catch(() => {});
+  };
+
+  // Authoritative (async) held check: local fast-path OR Redis owner present,
+  // cached ~1s so it is not a per-event GET. Used by the inbound gate and by
+  // the outbound surface suppression (both already async).
+  const panelHeldAsync = async (sessionId: string): Promise<boolean> => {
+    const exp = panelHeldLocal.get(sessionId);
+    if (exp !== undefined && Date.now() <= exp) return true;
+    if (!panelInfra) return false;
+    const cached = panelOwnerCache.get(sessionId);
+    if (cached && Date.now() - cached.at < OWNER_CACHE_MS) return cached.owner !== null;
+    try {
+      const owner = await panelInfra.panelLock.owner(sessionId);
+      panelOwnerCache.set(sessionId, { owner, at: Date.now() });
+      return owner !== null;
+    } catch {
+      // Redis hiccup: fall back to the last cached value, else not-held.
+      return cached ? cached.owner !== null : false;
+    }
+  };
+
+  // Synchronous best-effort held check for the (sync) agent event handler:
+  // local fast-path OR a fresh cache hit; a stale/missing cache kicks an async
+  // refresh and returns the last known value. The authoritative reply-echo
+  // suppression is the async surface path above; this only gates
+  // reactions/status, which tolerate a sub-second lag.
+  const panelHeldSync = (sessionId: string): boolean => {
+    const exp = panelHeldLocal.get(sessionId);
+    if (exp !== undefined && Date.now() <= exp) return true;
+    if (!panelInfra) return false;
+    const cached = panelOwnerCache.get(sessionId);
+    if (cached && Date.now() - cached.at < OWNER_CACHE_MS) return cached.owner !== null;
+    void panelHeldAsync(sessionId); // refresh for next time
+    return cached ? cached.owner !== null : false;
+  };
+
+  // Drain THIS replica's deferred inbound for a session and clear local held.
+  async function drainPanelDefer(sessionId: string): Promise<void> {
+    panelHeldLocal.delete(sessionId);
+    panelOwnerCache.delete(sessionId);
+    const thunks = panelDefer.drain(sessionId);
+    for (const run of thunks) {
+      try {
+        await run();
+      } catch (e) {
+        console.error(`[panel] deferred replay failed session=${sessionId}:`, e);
+      }
+    }
+  }
+
+  // Resume broadcast: a lock released (explicit / TTL / not-force). Clear the
+  // Redis notice guard + drain locally, then PUBLISH so EVERY replica drains
+  // its own queue — a Slack message deferred on a non-owning replica is
+  // replayed, never orphaned.
+  async function broadcastPanelResume(sessionId: string): Promise<void> {
+    if (!panelInfra) return;
+    await panelInfra.panelLock.clearNotice(sessionId).catch(() => {});
+    await drainPanelDefer(sessionId);
+    await panelInfra.pubsub.publishPanelResume(sessionId).catch(() => {});
+  }
+
+  // Subscribe once: another replica released a lock → drain our own queue;
+  // another replica acquired/transferred a lock → invalidate our owner cache so
+  // the next held-check reads the fresh Redis lock.
+  let panelResumeUnsub: (() => Promise<void>) | null = null;
+  let panelHoldUnsub: (() => Promise<void>) | null = null;
+  if (panelInfra) {
+    panelInfra.pubsub
+      .onPanelResume((sessionId) => void drainPanelDefer(sessionId))
+      .then((unsub) => {
+        panelResumeUnsub = unsub;
+      })
+      .catch((e) => console.error("[panel] resume subscribe failed:", e));
+    panelInfra.pubsub
+      .onPanelHold((sessionId) => panelOwnerCache.delete(sessionId))
+      .then((unsub) => {
+        panelHoldUnsub = unsub;
+      })
+      .catch((e) => console.error("[panel] hold subscribe failed:", e));
+  }
+
+  // Sweeper: drain-driven off the deferred queue, not a local held map — so a
+  // TTL-expiry (or a release we missed the broadcast for) still resumes on
+  // whichever replica is holding the deferred messages. For each session with
+  // pending inbound, if Redis says the lock is gone, broadcast a resume.
+  const panelSweeper = panelInfra
+    ? setInterval(() => {
+        void (async () => {
+          for (const sessionId of panelDefer.heldSessions()) {
+            try {
+              if ((await panelInfra.panelLock.owner(sessionId)) === null) {
+                await broadcastPanelResume(sessionId);
+              }
+            } catch {
+              /* transient — retry next tick */
+            }
+          }
+          // Expire stale local held marks so panelHeldSync stops lying.
+          for (const [sessionId, exp] of [...panelHeldLocal]) {
+            if (Date.now() > exp) panelHeldLocal.delete(sessionId);
+          }
+        })();
+      }, 1_000)
+    : null;
+  panelSweeper?.unref?.();
+
+  // Wrap a session's Surface so its user-visible writes are suppressed while
+  // the panel lock is held (design §Active-surface lock, outbound gate). No-op
+  // passthrough when the panel is off, so non-panel deploys are byte-identical.
+  const wrapSurface = (surface: Surface, sessionId: string): Surface =>
+    panelInfra ? suppressibleSurface(surface, sessionId, panelHeldAsync) : surface;
 
   // Outbound content client. When SLACK_USER_TOKEN (xoxp) is set, agent replies,
   // edits, reactions and uploads go out AS the real Slack user account rather than
@@ -773,6 +955,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     console.log(`[agent-evt] ${e.type} session=${e.sessionId}${"tool" in e ? ` tool=${e.tool}` : ""}${"error" in e ? ` err=${e.error}` : ""}`);
     const route = routes.get(e.sessionId);
     if (!route) return;
+
+    // Active-surface lock (design §Active-surface lock, outbound gate): while an
+    // operator drives this session from the panel, suppress the Slack-facing
+    // reactions/status here (the authoritative reply-echo suppression is the
+    // async surface path). Best-effort sync check — Redis-owner-backed so it
+    // holds on a non-owning replica too, tolerating a sub-second cache lag.
+    if (panelHeldSync(e.sessionId)) return;
 
     switch (e.type) {
       case "toolCall": {
@@ -1839,38 +2028,85 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           ...req,
         });
       ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
-      routes.set(session.id, { ctx, surface: surfaceFactoryFor(dispatch?.personaId)(bindingFor(ctx)), spoke: false, suppress });
+      routes.set(session.id, { ctx, surface: wrapSurface(surfaceFactoryFor(dispatch?.personaId)(bindingFor(ctx)), session.id), spoke: false, suppress });
     }
 
-    if (queueDispatch) {
-      // Gateway role: the turn runs on a node (spec §2). Suppression rides on
-      // the message so the node's suppress hook records without running the
-      // model; the dispatcher's stream follower replays the node's events
-      // into the local handler for reactions/status/errors.
-      console.log(`[slaude] dispatch session=${session.id} model=${session.model}`);
-      try {
-        await queueDispatch.dispatch(session, envelope, {
-          teamId,
-          channelId,
-          threadTs,
-          eventTs,
-          userId,
-          personaId: dispatch?.personaId,
-          suppress,
-        });
-      } catch (e: any) {
-        console.error("[slaude] dispatch threw:", e?.message ?? e, e?.stack);
+    // The dispatch tail (queue enqueue in gateway role, in-process
+    // AgentManager in mono). Extracted so the active-surface lock can defer
+    // and later replay it verbatim.
+    const runDispatch = async () => {
+      if (queueDispatch) {
+        // Gateway role: the turn runs on a node (spec §2). Suppression rides on
+        // the message so the node's suppress hook records without running the
+        // model; the dispatcher's stream follower replays the node's events
+        // into the local handler for reactions/status/errors.
+        console.log(`[slaude] dispatch session=${session.id} model=${session.model}`);
+        try {
+          await queueDispatch.dispatch(session, envelope, {
+            teamId,
+            channelId,
+            threadTs,
+            eventTs,
+            userId,
+            personaId: dispatch?.personaId,
+            suppress,
+          });
+        } catch (e: any) {
+          console.error("[slaude] dispatch threw:", e?.message ?? e, e?.stack);
+        }
+        return;
       }
-      return;
+
+      console.log(`[slaude] sendMessage session=${session.id} cwd=${session.working_dir} model=${session.model}`);
+      if (suppress) agent.suppressNextTurn(session.id);
+      try {
+        await agent.sendMessage(session.id, envelope);
+      } catch (e: any) {
+        console.error("[slaude] sendMessage threw:", e?.message ?? e, e?.stack);
+      }
+    };
+
+    // Active-surface lock (design §Active-surface lock, inbound gate): while an
+    // operator drives this session from the panel, defer the inbound Slack
+    // message (hold + replay on release) and post ONE thread notice so the
+    // Slack user isn't silently ignored. The lock owner is authoritative in
+    // Redis, so a lock taken on another replica is honoured here too.
+    if (panelInfra) {
+      let held = false;
+      try {
+        held = await panelHeldAsync(session.id);
+      } catch {
+        /* Redis hiccup — fall through and dispatch rather than wedge Slack */
+      }
+      if (held) {
+        panelDefer.hold(session.id, runDispatch);
+        // Cross-replica notice dedup: only the replica that wins the Redis NX
+        // posts the "handled in ops panel" notice, so the Slack user sees it
+        // exactly once regardless of which replica each message lands on.
+        let shouldNotice = false;
+        try {
+          shouldNotice = await panelInfra.panelLock.noticeOnce(session.id);
+        } catch {
+          /* Redis hiccup — skip the notice rather than risk a duplicate */
+        }
+        if (shouldNotice) {
+          try {
+            await outClientForPersona(dispatch?.personaId).chat.postMessage({
+              channel: channelId,
+              thread_ts: threadTs,
+              text: "⏸ handled in ops panel — I'll catch up on your messages here when the operator hands back.",
+              mrkdwn: true,
+            });
+          } catch (e: any) {
+            console.error("[panel] defer notice post failed:", e?.message ?? e);
+          }
+        }
+        console.log(`[panel] deferred inbound session=${session.id} (operator driving)`);
+        return;
+      }
     }
 
-    console.log(`[slaude] sendMessage session=${session.id} cwd=${session.working_dir} model=${session.model}`);
-    if (suppress) agent.suppressNextTurn(session.id);
-    try {
-      await agent.sendMessage(session.id, envelope);
-    } catch (e: any) {
-      console.error("[slaude] sendMessage threw:", e?.message ?? e, e?.stack);
-    }
+    await runDispatch();
   }
 
   function escapeAttr(s: string) {
@@ -2116,13 +2352,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           userId: claims.initiator,
           teamId: claims.team,
           personaId,
+          sessionId: claims.session,
         };
         ctx.requestApproval = (req) =>
           approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, ...req });
         ctx.reloadSession = (prompt?) => agent.reload(claims.session, prompt);
         return ctx;
       },
-      surfaceFor: (ctx) => surfaceFactoryFor(ctx.personaId)(bindingFor(ctx)),
+      surfaceFor: (ctx) =>
+        wrapSurface(surfaceFactoryFor(ctx.personaId)(bindingFor(ctx)), ctx.sessionId ?? ""),
       surfaceOpts: (claims, ctx) => ({
         initiator: () => ctx.userId,
         setOneOnOne: (action, scope) => agentOneOnOne(claims.session, ctx, action, scope),
@@ -2163,10 +2401,54 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     },
   });
 
+  // Unified panel-chat enqueue (design Refinement 2): build a panel-sourced
+  // channel envelope + DispatchMeta from the session row, then route it through
+  // the SAME seam Slack uses — the node queue in the gateway role, the
+  // in-process AgentManager in mono. The operator identity rides as the turn
+  // initiator/userId.
+  async function panelEnqueue(session: SessionRow, text: string, operatorId: string): Promise<void> {
+    const channelId = session.slack_channel_id ?? "";
+    const threadTs = session.slack_thread_ts ?? "";
+    const teamId = session.slack_team_id ?? "";
+    const eventTs = `${Date.now() / 1000}`;
+    const personaId = session.persona_id && session.persona_id !== "default" ? session.persona_id : undefined;
+    const envelope =
+      `<channel source="panel" channel_id="${channelId}" thread_ts="${threadTs}" ` +
+      `inbound_ts="${eventTs}" user_id="${operatorId}" user_name="${escapeAttr(operatorId)}" ` +
+      `trust="restricted" one_on_one="false" locked_user="">\n${text}\n</channel>\n\n` +
+      `Reply to the user by calling the \`mcp__${SLACK_MCP_NAME}__reply\` tool. ` +
+      `Plain assistant text is not delivered — only tool calls reach the operator.`;
+    const meta: DispatchMeta = { teamId, channelId, threadTs, eventTs, userId: operatorId, personaId };
+    if (queueDispatch) {
+      await queueDispatch.dispatch(session, envelope, meta);
+    } else {
+      await agent.sendMessage(session.id, envelope);
+    }
+  }
+
+  const panelApi = panelInfra
+    ? createPanelApi({
+        registry: panelInfra.registry,
+        pubsub: panelInfra.pubsub,
+        panelLock: panelInfra.panelLock,
+        chat: panelEnqueue,
+        onLockHeld: (sessionId, _operatorId, ttlMs) => panelMarkHeld(sessionId, ttlMs),
+        // Release (give control back to Slack): drain locally + broadcast so
+        // every replica replays its own deferred inbound.
+        onLockReleased: (sessionId) => broadcastPanelResume(sessionId),
+      })
+    : null;
+
   return {
     start: () => t.start(),
-    stop: () => t.stop(),
+    stop: async () => {
+      if (panelSweeper) clearInterval(panelSweeper);
+      await panelResumeUnsub?.().catch(() => {});
+      await panelHoldUnsub?.().catch(() => {});
+      await t.stop();
+    },
     fetchV1: (req: Request) => v1.fetch(req),
+    fetchPanel: (req: Request) => (panelApi ? panelApi.fetch(req) : Promise.resolve(null)),
     __pendingSource: () => v1.pendingSource,
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),

@@ -26,6 +26,10 @@
     "sim": "bun src/gateway/sim/cli.ts",
     "typecheck": "tsc --noEmit",
     "docs": "bun docs/site/build.mjs",
+    "panel:dev": "vite --config src/gateway/panel/web/vite.config.ts",
+    "panel:build": "vite build --config src/gateway/panel/web/vite.config.ts",
+    "panel:shots": "node tests/panel-web/shoot.mjs",
+    "test:web": "playwright test -c tests/panel-web/playwright.config.ts",
     "manifest": "bun src/cli/manifest.ts",
     "slack-app": "bun src/cli/slack-app.ts",
     "validate-soul": "bun src/cli/validate.ts",
@@ -37,10 +41,15 @@
     "test:pg": "SLAUDE_DB=pg bun test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/bun": "latest",
     "@types/react": "^19",
+    "@types/react-dom": "^19.2.5",
+    "@vitejs/plugin-react": "^6.1.0",
     "marked": "^18.0.11",
-    "typescript": "^5"
+    "react-dom": "19.2.7",
+    "typescript": "^5",
+    "vite": "^8.2.2"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.173",

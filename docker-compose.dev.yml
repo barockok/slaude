@@ -1,0 +1,24 @@
+# Local development identity provider for the control panel.
+# The panel has no auth bypass — local runs use the real OIDC code path.
+#
+#   docker compose -f docker-compose.dev.yml up -d keycloak
+#   SLAUDE_PANEL=1 \
+#   SLAUDE_PANEL_OIDC_ISSUER=http://localhost:8081/realms/slaude-dev \
+#   SLAUDE_PANEL_OIDC_CLIENT_ID=slaude-panel \
+#   SLAUDE_PANEL_OIDC_CLIENT_SECRET=dev-secret \
+#   SLAUDE_PANEL_PUBLIC_URL=http://localhost:8080 \
+#   SLAUDE_PANEL_SECRET=dev-secret-dev-secret-dev-secret! \
+#   SLAUDE_PANEL_SUPERADMIN=lead@example.com \
+#   SLAUDE_PANEL_OPERATORS=alice@example.com \
+#   bun run dev
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm", "--http-port=8081"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./dev/keycloak:/opt/keycloak/data/import:ro

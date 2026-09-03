@@ -68,6 +68,51 @@ export async function findById(id: string): Promise<SessionRow | null> {
   return db.one<SessionRow>(`SELECT * FROM sessions WHERE id = ?`, [id]);
 }
 
+export interface ListSessionsOpts {
+  persona?: string;
+  status?: string;
+  /** Postgres-only column (P1 migration); ignored on sqlite where it is absent. */
+  tenant?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * List sessions newest-first for the operator control panel — the one
+ * list-all accessor (the rest of this repo is single-row lookups). Optional
+ * equality filters on persona / status / tenant. `tenant` filters only when
+ * the dialect actually carries a `tenant_id` column (Postgres); on sqlite the
+ * filter is dropped rather than erroring on an unknown column.
+ *
+ * Rows come back as `SessionRow` plus any extra columns the driver returns
+ * (e.g. `tenant_id` on Postgres) — the panel passes those through dynamically,
+ * mirroring the `/v1` session view.
+ */
+export async function listSessions(o: ListSessionsOpts = {}): Promise<SessionRow[]> {
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (o.persona) {
+    where.push("persona_id = ?");
+    params.push(o.persona);
+  }
+  if (o.status) {
+    where.push("status = ?");
+    params.push(o.status);
+  }
+  if (o.tenant && db.dialect === "pg") {
+    where.push("tenant_id = ?");
+    params.push(o.tenant);
+  }
+  const limit = Number.isInteger(o.limit) && o.limit! > 0 ? Math.min(o.limit!, 500) : 100;
+  const offset = Number.isInteger(o.offset) && o.offset! >= 0 ? o.offset! : 0;
+  const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  params.push(limit, offset);
+  return db.query<SessionRow>(
+    `SELECT * FROM sessions ${clause} ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
+    params,
+  );
+}
+
 export async function markStarted(id: string): Promise<void> {
   await db.run(`UPDATE sessions SET claude_started = 1, updated_at = ? WHERE id = ?`, [
     Date.now(),

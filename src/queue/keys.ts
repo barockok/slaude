@@ -59,6 +59,25 @@ export interface Keys {
   gateChannel(pendingId: string): string;
   /** `events:<sessionId>` capped stream of serialized AgentEvents. */
   eventsStream(sessionId: string): string;
+  /** `panel:<sessionId>` — active-surface exclusivity lock owned by the
+   *  control-panel operator currently driving the session (SET NX PX, short
+   *  TTL + heartbeat). While held, Slack inbound is deferred and outbound
+   *  suppressed. */
+  panelLock(sessionId: string): string;
+  /** `panel-notice:<sessionId>` — cross-replica once-guard for the "handled in
+   *  ops panel" thread notice (SET NX PX per lock window). Only the replica
+   *  that wins the NX posts the notice; cleared on resume. */
+  panelNotice(sessionId: string): string;
+  /** Pub/sub channel (one, global): a session's active-surface lock released —
+   *  every replica drains its own deferred-inbound queue for the published
+   *  sessionId. Payload = sessionId. */
+  panelResumeChannel(): string;
+  /** Pub/sub channel (one, global): a session's active-surface lock was
+   *  acquired / transferred — every replica invalidates its cached owner
+   *  lookup so the next held-check reads the fresh lock from Redis (avoids a
+   *  stale "unlocked" cache masking a lock taken on another replica). Payload =
+   *  sessionId. */
+  panelHoldChannel(): string;
   /** `turn-done:<jobId>` — completion marker written the moment a job's agent
    *  turn finishes, BEFORE any ack. A BullMQ retry of the same job (stall
    *  recovery or failure retry) that finds it must not re-run the turn —
@@ -84,6 +103,10 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     reloadChannel: (tenantId) => `${prefix}:reload:${tenantId}`,
     gateChannel: (pendingId) => `${prefix}:gate:${pendingId}`,
     eventsStream: (sessionId) => `${prefix}:events:${sessionId}`,
+    panelLock: (sessionId) => `${prefix}:panel:${sessionId}`,
+    panelNotice: (sessionId) => `${prefix}:panel-notice:${sessionId}`,
+    panelResumeChannel: () => `${prefix}:panel-resume`,
+    panelHoldChannel: () => `${prefix}:panel-hold`,
     turnDone: (jobId) => `${prefix}:turn-done:${jobId}`,
   };
 }

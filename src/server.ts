@@ -10,6 +10,7 @@ import { assertOAuthKeyCanary } from "./agent/mcp-oauth/store";
 import { sharedLoopback } from "./agent/mcp-oauth/shared-loopback";
 import { verifyState } from "./agent/mcp-oauth/state";
 import { env } from "./config/env";
+import { assertPanelConfig } from "./gateway/panel/auth/config";
 import { loadPersonaRegistry, setPersonaRegistry } from "./persona/registry";
 import { getDb } from "./db/client";
 import * as SoulOverrides from "./db/soul-overrides";
@@ -78,6 +79,13 @@ async function main() {
   // closure's late binding is safe.
   const slackMode = env.slack.mode();
   const role = env.role();
+  // Control panel: mount /panel only for gateway/mono with SLAUDE_PANEL on.
+  const panelMounted = role !== "node" && env.panel.enabled();
+  // Before the transport is built, not after: this validates the auth surface
+  // — including reading and parsing the roles file — and a panel that cannot
+  // serve safely must never be reachable, not even for the moment between
+  // listening and the check.
+  if (panelMounted) assertPanelConfig();
   let slack: import("./gateway/core/gateway").GatewayHandle;
   let health: ReturnType<typeof startHealthServer> = null;
   if (slackMode === "http") {
@@ -90,6 +98,7 @@ async function main() {
       health: {
         liveSessions: () => agent.liveCount(),
         v1: role !== "node" ? (req: Request) => slack.fetchV1(req) : undefined,
+        panel: panelMounted ? (req: Request) => slack.fetchPanel(req) : undefined,
       },
     });
     slack = createGateway(agent, transport, { mcpConnectEnabled: mcpOAuthHealthy });
@@ -98,9 +107,11 @@ async function main() {
     health = startHealthServer({
       liveSessions: () => agent.liveCount(),
       v1: role !== "node" ? (req) => slack.fetchV1(req) : undefined,
+      panel: panelMounted ? (req) => slack.fetchPanel(req) : undefined,
     });
   }
   if (role !== "node") console.log(`[slaude] /v1 REST mounted (role=${role})`);
+  if (panelMounted) console.log(`[slaude] /panel control panel mounted (role=${role})`);
 
   await slack.start();
   console.log(`[slaude] slack ${slackMode} mode started`);

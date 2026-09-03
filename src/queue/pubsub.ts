@@ -105,6 +105,34 @@ export function makePubSub(opts: PubSubOpts) {
       return on(keys.reloadChannel(tenantId), () => cb());
     },
 
+    /**
+     * Any gateway replica → every gateway replica: a session's active-surface
+     * panel lock released (explicit release, force-release, or TTL expiry).
+     * On receipt each replica drains its OWN deferred-inbound queue for the
+     * session, so a Slack message deferred on a non-owning replica is not
+     * orphaned when the lock is released elsewhere. Payload = sessionId.
+     */
+    async publishPanelResume(sessionId: string): Promise<number> {
+      return await redis.publish(keys.panelResumeChannel(), sessionId);
+    },
+    onPanelResume(cb: (sessionId: string) => void) {
+      return on(keys.panelResumeChannel(), (payload) => cb(payload));
+    },
+
+    /**
+     * Any gateway replica → every gateway replica: a session's panel lock was
+     * acquired or transferred. Each replica invalidates its cached owner
+     * lookup so the next held-check reads the fresh lock from Redis rather than
+     * a stale "unlocked" value cached before the lock existed. Payload =
+     * sessionId.
+     */
+    async publishPanelHold(sessionId: string): Promise<number> {
+      return await redis.publish(keys.panelHoldChannel(), sessionId);
+    },
+    onPanelHold(cb: (sessionId: string) => void) {
+      return on(keys.panelHoldChannel(), (payload) => cb(payload));
+    },
+
     /** Any gateway replica → the long-polling node: gate resolved. */
     async publishGate(pendingId: string): Promise<number> {
       return await redis.publish(keys.gateChannel(pendingId), "1");

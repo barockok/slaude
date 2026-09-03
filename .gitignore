@@ -26,6 +26,10 @@ jsonl/
 .mcp.json
 .playwright/
 test-results/
+bar/
+shots/
+src/gateway/panel/web/dist/
+**/playwright-report/
 
 # Generated docs site (built by docs/site/build.mjs; published by .github/workflows/pages.yml)
 docs/site/_site/

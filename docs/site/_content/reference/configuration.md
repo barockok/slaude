@@ -306,6 +306,44 @@ Tests for this layer run only against a real Redis (BullMQ's Lua scripts don't r
 on `ioredis-mock`) and are gated on `SLAUDE_REDIS_TEST_URL`, mirroring the
 `SLAUDE_PG_TEST_URL` gate for Postgres.
 
+### Control panel — operator web console <a id="panel"></a>
+
+The panel mounts at `/panel` on the gateway's HTTP server for the `mono` and
+`gateway` roles (never `node`). It is its own OIDC relying party: it
+authenticates the operator against a single issuer and mints its own session
+cookies. It stores no operator records — identity comes from an ID-token claim
+and roles come from a file or the env lists below.
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `SLAUDE_PANEL` | No | `0` | `1` mounts the panel. Off by default. Every variable below marked *Required* is required **only when this is `1`** — a missing one stops the process at boot rather than serving a half-configured auth surface. |
+| `SLAUDE_PANEL_OIDC_ISSUER` | Yes¹ | `""` | Issuer URL, resolved through OIDC discovery (e.g. `https://accounts.google.com`, or a Keycloak realm URL). Trailing slashes are trimmed. |
+| `SLAUDE_PANEL_OIDC_CLIENT_ID` | Yes¹ | `""` | Client id registered with the issuer. The client must be **confidential** — it holds a secret. |
+| `SLAUDE_PANEL_OIDC_CLIENT_SECRET` | Yes¹ | `""` | Client secret for the token exchange. |
+| `SLAUDE_PANEL_PUBLIC_URL` | Yes¹ | `""` | Public origin of the panel. The redirect URI is derived as `${SLAUDE_PANEL_PUBLIC_URL}/panel/auth/callback` — register that exact string with the provider. Required scopes: `openid email profile`. |
+| `SLAUDE_PANEL_SECRET` | Yes¹ | `""` | HMAC key for the session cookies. **Minimum 32 characters** — shorter fails at boot. Rotating it invalidates every outstanding session. |
+| `SLAUDE_PANEL_USER_CLAIM` | No | `email` | ID-token claim used as the operator identity, and the key the role lists are matched against. On the default `email`, the panel refuses a token whose `email_verified` is `false`. **A non-default claim gets no such check** — pick one the issuer vouches for, never a user-editable profile attribute. |
+| `SLAUDE_PANEL_ROLES_FILE` | No | `""` | Path to a YAML role list (`superadmin:` / `operator:`), matched case-insensitively, superadmin winning when an identity is in both. Read at boot and re-read per request, so edits apply without a redeploy. |
+| `SLAUDE_PANEL_SUPERADMIN` | No | `""` | Comma-separated superadmin identities — the fallback when no role file is mounted. Superadmin gates the destructive controls (reset, mode, force-release). |
+| `SLAUDE_PANEL_OPERATORS` | No | `""` | Comma-separated operator identities. An identity in neither list authenticates but is not authorized (`403`). |
+
+¹ Required when `SLAUDE_PANEL=1`; ignored otherwise.
+
+Boot also fails if both role lists resolve empty (a panel nobody can reach is a
+misconfiguration, not a safe default), or if the removed `SLAUDE_PANEL_ALLOW` is
+still set — a leftover allowlist would silently stop granting the access its
+operator believes it grants.
+
+Sessions are a 15-minute access token and an 8-hour refresh token, both
+`HttpOnly; Secure; SameSite=Lax`. The refresh window is absolute — after 8 hours
+the operator re-authenticates at the provider. There is no revocation: removing
+someone from the role list blocks them at their next request, but a stolen
+cookie stays valid until it expires. Serve the panel over TLS; the cookies are
+`Secure` and browsers will not send them over plain HTTP.
+
+Deployment walkthrough, role-file example and cross-replica behaviour:
+[Multi-node scale-out](../deploy/multi-node.md).
+
 ### Sessions & UX
 
 | Name | Required | Default | Description |

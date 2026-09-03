@@ -1,0 +1,32 @@
+{
+  "realm": "slaude-dev",
+  "enabled": true,
+  "clients": [
+    {
+      "clientId": "slaude-panel",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "dev-secret",
+      "standardFlowEnabled": true,
+      "redirectUris": ["http://localhost:8080/panel/auth/callback"],
+      "webOrigins": ["http://localhost:8080"]
+    }
+  ],
+  "users": [
+    {
+      "username": "lead",
+      "email": "lead@example.com",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [{ "type": "password", "value": "dev", "temporary": false }]
+    },
+    {
+      "username": "alice",
+      "email": "alice@example.com",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [{ "type": "password", "value": "dev", "temporary": false }]
+    }
+  ]
+}

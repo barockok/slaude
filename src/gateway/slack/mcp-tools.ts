@@ -62,6 +62,9 @@ export type SlackContext = {
   reloadSession?: (prompt?: string) => boolean;
   /** Which persona owns this session. 'default' = single-bot mode. */
   personaId?: string;
+  /** Session id, when known — used by the control panel to key outbound Slack
+   *  suppression while an operator drives the session. */
+  sessionId?: string;
 };
 
 export const SLACK_MCP_NAME = slackContract.server;
