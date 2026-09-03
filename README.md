@@ -29,7 +29,7 @@ cp .env.example .env && docker compose up -d --build
 | [**Deployment**](https://barockok.github.io/slaude/deploy/index.html) | Docker, Kubernetes, scale-out (gateway + node workers), health probes, upgrades, troubleshooting | — |
 | [**Examples**](https://barockok.github.io/slaude/guides/examples.html) | Runnable: first skill, first ingest, custom MCP, sim without Slack | — |
 
-Full site: **<https://barockok.github.io/slaude/>** — source in [`docs/site/_content/`](docs/site/_content/), built by [`docs/site/build.mjs`](docs/site/build.mjs).
+Full site: **<https://barockok.github.io/slaude/>** — source in [`docs/site/_content/`](docs/site/_content/), built by [`docs/site/build.mjs`](docs/site/build.mjs) and published from `main` by CI. The generated HTML is not committed; run `bun run docs` to build it into `docs/site/_site/`.
 
 ## At a glance
 
