@@ -151,6 +151,6 @@ for role rejections. Never recorded: tokens, cookie values, the authorization
   RP-initiated logout, multiple issuers, group-claim role mapping, domain
   wildcards, a read-only `viewer` role.
 
-Spec: `docs/superpowers/specs/2026-08-29-panel-oidc-auth-design.md` (supersedes
-§6 of `docs/superpowers/specs/2026-08-25-session-control-panel-design.md`).
-Plan: `docs/superpowers/plans/2026-08-29-panel-oidc-auth.md`.
+Spec: `docs/internal/superpowers/specs/2026-08-29-panel-oidc-auth-design.md` (supersedes
+§6 of `docs/internal/superpowers/specs/2026-08-25-session-control-panel-design.md`).
+Plan: `docs/internal/superpowers/plans/2026-08-29-panel-oidc-auth.md`.

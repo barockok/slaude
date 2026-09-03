@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel OIDC auth: replacing an unverifiable trust boundary — slaude Docs</title>
+<meta name="description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:title" content="Panel OIDC auth: replacing an unverifiable trust boundary — slaude">
+<meta property="og:description" content="Slack-native Claude Code runtime. One Slack thread is one persistent session.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2032%2032'%3E%3Crect%20width%3D'32'%20height%3D'32'%20rx%3D'8'%20fill%3D'%2523853291'%2F%3E%3Ctext%20x%3D'16'%20y%3D'23'%20font-family%3D'Helvetica%2CArial%2Csans-serif'%20font-size%3D'19'%20font-weight%3D'700'%20fill%3D'white'%20text-anchor%3D'middle'%3Es%3C%2Ftext%3E%3C%2Fsvg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/docs.css?v=377763e4">
+<script>(function(){try{var t=localStorage.getItem('slaude-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="menu-btn" type="button" aria-label="Open navigation" aria-expanded="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/></svg>
+    </button>
+    <a class="brand" href="../index.html">
+      <span class="brand-mark" aria-hidden="true">s</span>
+      <span class="brand-name">slaude</span>
+      <span class="brand-sub">Docs</span>
+    </a>
+    <button class="search-btn" type="button" data-search-open>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <span>Search</span><kbd>⌘K</kbd>
+    </button>
+    <div class="topbar-actions">
+      <a class="ghost" href="https://github.com/barockok/slaude" target="_blank" rel="noopener">GitHub</a>
+      <button class="theme-btn" type="button" aria-label="Toggle theme">
+        <svg class="i-sun" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1M12.9 12.9l-1.1-1.1M4.2 4.2 3.1 3.1"/></svg>
+        <svg class="i-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="topnav" aria-label="Sections"><div class="topnav-inner"><a class="topnav-tab" href="../index.html">Get started</a><a class="topnav-tab" href="../guides/index.html">Guides</a><a class="topnav-tab" href="../reference/configuration.html">Reference</a><a class="topnav-tab" href="../deploy/index.html">Deploy</a><a class="topnav-tab active" href="2026-08-29-panel-oidc-auth.html">Field notes</a><a class="topnav-tab" href="../releases/v0.42.0.html">Releases</a></div></nav>
+</header>
+
+<div class="shell">
+  <aside class="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-inner"><div class="nav-group"><p class="nav-group-title">Field notes</p><ul><li><a class="active" href="2026-08-29-panel-oidc-auth.html">Panel OIDC auth: replacing an unverifiable trust boundary</a></li><li><a class="" href="2026-08-23-release-candidate-pipeline.html">Release candidate pipeline</a></li><li><a class="" href="2026-07-27-kb-think-gather-miss.html">kb_think gather miss — runThink vs gather() source scoping</a></li><li><a class="" href="2026-07-24-per-agent-brain-slices.html">Per-agent brain slices: private minds, deliberate sharing</a></li><li><a class="" href="2026-07-08-per-channel-metrics.html">2026-07-08 — Per-channel token and model metrics</a></li><li><a class="" href="2026-07-03-cron-private-mcp-scoping-drift.html">Cron private-MCP credential scoping is decoupled from `oauth_user`</a></li><li><a class="" href="2026-06-20-channel-soul-overrides.html">Channel-specific soul mandate &amp; approvers</a></li><li><a class="" href="2026-06-20-brain-remote-mcp.html">Brain as a remote, OAuth-protected MCP process (configurable)</a></li><li><a class="" href="2026-06-19-shared-oauth-loopback-surface-connect.html">Shared OAuth loopback + surface-aware connect + URL-safe mrkdwn (#51)</a></li><li><a class="" href="2026-06-16-reengage-hook-suppress.html">Re-engage via in-session suppression (hook-only), not Slack backfill</a></li><li><a class="" href="2026-06-15-per-source-gather.html">2026-06-15 — Per-source `gather()`: fix bulk-corpus retrieval noise drowning curated pages</a></li><li><a class="" href="2026-06-14-model-switch-command.html">2026-06-14 — `/model` per-thread model switch</a></li><li><a class="" href="2026-06-14-brain-memoize-failure.html">2026-06-14 — Brain memoize: two failure modes break &quot;remember it&quot;</a></li><li><a class="" href="2026-06-13-kb-first-enforcement.html">KB-first enforcement — from prose to teeth (2026-06-13)</a></li><li><a class="" href="2026-06-11-soul-runtime-overrides.html">Soul runtime overrides — manager-editable ACLs without redeploy (2026-06-11)</a></li><li><a class="" href="2026-06-11-engagement-disengage-durability.html">Engagement review — disengage lasted zero messages (2026-06-11)</a></li><li><a class="" href="2026-06-11-1on1-transcript-sharding.html">/1on1 transcript sharding — resume breaks on lock flips (2026-06-11)</a></li><li><a class="" href="2026-06-10-mcp-global-connect.html">2026-06-10 — `/mcp` global connect (manager wires the agent's shared identity)</a></li><li><a class="" href="2026-06-10-gbrain-slaude-kb.html">gbrain × slaude — powering slaude_kb with a real brain</a></li><li><a class="" href="2026-06-09-post-as-slack-user.html">Post as the agent's real Slack user (opt-in xoxp)</a></li><li><a class="" href="2026-06-09-mcp-oauth-connect-1on1.html">2026-06-09 — /mcp OAuth connect in /1on1 (write CLI mcpOAuth store, CLI owns lifecycle)</a></li><li><a class="" href="2026-06-08-private-services-1on1.html">2026-06-08 — Private services in /1on1 (run as the initiator)</a></li><li><a class="" href="2026-06-08-orchestration-evolution-retro.html">2026-06-08 — Retro: orchestration, gating &amp; continuous evolution</a></li><li><a class="" href="2026-06-08-oauth-config-dir-1on1.html">2026-06-08 — /1on1 OAuth isolation via per-initiator CLAUDE_CONFIG_DIR</a></li><li><a class="" href="2026-06-08-cron-on-channel.html">cron-on-channel + a latent scheduler-boot crash</a></li><li><a class="" href="2026-06-05-sim-tui-opentui.html">Sim REPL on OpenTUI (React)</a></li><li><a class="" href="2026-06-05-pinned-input-box.html">Pinned bordered input box (sim REPL)</a></li><li><a class="" href="2026-06-04-repl-claude-code-ux.html">Sim REPL — claude-code-grade UX</a></li><li><a class="" href="2026-06-03-surface-abstraction.html">2026-06-03 — Surface abstraction (agent interaction decoupled from Slack)</a></li><li><a class="" href="2026-06-03-sim-interactive-real-agent.html">2026-06-03 — Interactive sim against the live agent (`--real`)</a></li><li><a class="" href="2026-05-29-simulation-gateway.html">2026-05-29 — Simulation gateway (Slack-free verification)</a></li><li><a class="" href="2026-05-29-one-on-one-mode.html">2026-05-29 — /1on1 mode (per-thread engagement lock)</a></li><li><a class="" href="2026-05-29-contextual-mcp-connections.html">2026-05-29 — Contextual per-user MCP connections</a></li><li><a class="" href="2026-05-25-cron-ignore-audit.html">Cron &amp; Ignore System Audit</a></li><li><a class="" href="2026-05-22-plugin-loader-chain.html">2026-05-22 — Plugin loader chain (install → SDK → MCP)</a></li><li><a class="" href="2026-05-21-writable-kb-ingest.html">2026-05-21 — Writable KB + /ingest</a></li><li><a class="" href="2026-05-21-policy-guardrails.html">2026-05-21 — Policy Guardrails (Tier 2 / Tier 3 Design)</a></li><li><a class="" href="2026-05-21-dependency-manifest.html">2026-05-21 — Dependency Manifest Design</a></li><li><a class="" href="2026-05-13-metrics-stop-guard.html">2026-05-13 — fallback ctx, table emphasis, metrics, stop-guard</a></li><li><a class="" href="2026-05-11-structured-soul-channel-mode.html">2026-05-11 — structured-soul + channel-mode gate</a></li><li><a class="" href="2026-05-11-skill-evolution.html">2026-05-11 — skill evolution</a></li><li><a class="" href="2026-05-11-external-mcp.html">2026-05-11 — external MCP via mcp.json</a></li><li><a class="" href="2026-05-11-context-budget-tracking.html">2026-05-11 — context budget tracking</a></li><li><a class="" href="2026-05-11-claude-subscription-oauth.html">2026-05-11 — Claude subscription OAuth</a></li><li><a class="" href="2026-05-09-slack-ux-engagement.html">2026-05-09 / 2026-05-10 — Slack UX, engagement, approval, CI</a></li><li><a class="" href="2026-05-08-mvp-bootstrap.html">2026-05-08 — MVP bootstrap</a></li></ul></div></div>
+  </aside>
+
+  <main id="main" class="content">
+    <article class="prose">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Field notes</p>
+          <h1>Panel OIDC auth: replacing an unverifiable trust boundary</h1>
+        </div>
+        <button class="copy-page" type="button" title="Copy this page as Markdown for an agent">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="9" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 4 12h1.5"/></svg>
+          <span>Copy page</span>
+        </button>
+      </div>
+      
+      <p><strong>Date:</strong> 2026-08-29</p>
+<p>The session control panel shipped with no authentication of its own. It read an
+identity from a request header (<code>SLAUDE_PANEL_HEADER</code>, default
+<code>x-auth-request-email</code>) that an SSO/ingress was supposed to inject, gated behind
+an explicit <code>SLAUDE_PANEL_TRUST_HEADER=1</code> acknowledgement. The panel is now its
+own OIDC <strong>relying party</strong>: Authorization Code + PKCE against one configured
+issuer, identity from an ID-token claim, roles from operator-authored config, and
+session credentials the panel mints for itself.</p>
+<h2 id="why-the-header-had-to-go">Why the header had to go<a class="anchor" href="#why-the-header-had-to-go" aria-label="Link to Why the header had to go">#</a></h2>
+<p><code>SLAUDE_PANEL_TRUST_HEADER=1</code> is an <em>assertion</em>, not a check. It says &quot;an
+authenticating proxy sits in front of me&quot; and slaude has no way to confirm it.
+The whole scheme rests on a step that happens in someone else&#39;s config file: the
+proxy must unconditionally strip any client-supplied identity header before
+re-injecting its own. Forget that one line — or route around the proxy at all —
+and every caller sets the header and becomes any operator they like, with full
+session control: stop, reset, chat as the agent.</p>
+<p>The failure is silent. There is no request that looks wrong, no log line, no
+boot-time symptom. A correctly configured deploy and a catastrophically broken
+one are byte-identical from inside the process. That is the property that made it
+unfixable rather than merely risky: a security control you cannot verify from the
+side that depends on it is not a control.</p>
+<p>The second problem was reach. With no ingress there was no way to run the panel
+at all — local development, a single-node deploy. The obvious relief valve is a
+bypass flag, and a bypass flag is exactly the thing that gets left on in
+production. <strong>There is no bypass flag anywhere in the codebase.</strong> Local
+development runs the real code path against a dev identity provider in a
+container (<code>docker-compose.dev.yml</code>, realm in <code>dev/keycloak/</code>).</p>
+<h2 id="the-no-user-table-constraint">The no-user-table constraint<a class="anchor" href="#the-no-user-table-constraint" aria-label="Link to The no-user-table constraint">#</a></h2>
+<p>The design keeps a hard constraint from the original panel: slaude stores <strong>no
+operator records</strong>. No user table, no session table, no anything. That single
+constraint determines most of what follows.</p>
+<p><strong>Self-contained session tokens.</strong> With nowhere to store a server-side session,
+the session <em>is</em> the token: HS256 over <code>node:crypto</code>, keyed by
+<code>SLAUDE_PANEL_SECRET</code>, carried in cookies. <code>panel_at</code> (15 min, <code>Path=/panel</code>)
+authorizes ordinary requests; <code>panel_rt</code> (8 h, <code>Path=/panel/auth/refresh</code>) buys a
+new access token. The narrow refresh path keeps that cookie off every request
+that does not need it. Both are <code>HttpOnly; Secure; SameSite=Lax</code> — <code>Lax</code> and not
+<code>Strict</code>, because the provider&#39;s callback is a top-level cross-site GET and
+<code>Strict</code> would withhold the flow cookie at precisely the moment it is needed.</p>
+<p><strong>No revocation.</strong> This is the honest cost, not an oversight. A denylist needs
+storage. The bounds that remain are time and scope: the access token dies in 15
+minutes, and the refresh window is <strong>absolute, not sliding</strong> — after eight hours
+the operator goes back to the provider, whatever they were doing. Rotating
+<code>SLAUDE_PANEL_SECRET</code> invalidates every outstanding session at once and is the
+break-glass. A stolen cookie is good for at most its remaining TTL.</p>
+<p><strong>No server-side flow state either.</strong> The login flow needs <code>state</code>, <code>nonce</code>, a
+PKCE verifier and a <code>returnTo</code> to survive a round trip through the provider, and
+there is no store to park them in. They travel in a signed 10-minute <code>panel_flow</code>
+cookie scoped to <code>/panel/auth</code>, verified and cleared at the callback. The same
+trick as the session tokens, applied to a much shorter-lived secret.</p>
+<p><strong>Roles from config, not from the provider.</strong> Group claims would mean coupling
+admission to whatever the provider&#39;s directory happens to say, and mapping code
+per provider. Instead a YAML file the deployment operator owns
+(<code>$SLAUDE_HOME/panel-roles.yaml</code>, or env fallbacks) lists two roles. Matching is
+exact and case-insensitive; in both lists ⇒ <code>superadmin</code>; in neither ⇒ <code>null</code>,
+which is a 403 — <em>authenticated, not authorized</em>, a distinct outcome from <em>not
+signed in</em>. The file is re-read on mtime change, so granting access is an edit,
+not a redeploy. Malformed YAML at boot is fatal; malformed at runtime keeps the
+last good config and records an error, because a typo must not lock every
+operator out of a live fleet.</p>
+<p>This shape — discovery-based provider config, one nominated claim as the
+identity, admission by declared rules, a self-contained token with a TTL and a
+renewal endpoint — is the same one used by operator-facing secret-management
+systems that authenticate through OIDC without keeping a user directory. Those
+systems also offer a stateful, revocable server-side token; that variant needs
+storage, so it is deliberately not adopted here.</p>
+<h2 id="why-the-id-token39s-signature-is-not-verified">Why the ID token&#39;s signature is not verified<a class="anchor" href="#why-the-id-token39s-signature-is-not-verified" aria-label="Link to Why the ID token&amp;#39;s signature is not verified">#</a></h2>
+<p>The panel never fetches a JWKS and never handles provider key rotation.</p>
+<p>The ID token is only ever obtained as the direct response to the server-to-server
+code exchange: the panel&#39;s own request, to the discovered <code>token_endpoint</code>, over
+TLS, authenticated with the client secret. OIDC Core §3.1.3.7 explicitly permits
+treating a token acquired that way as verified without checking its signature —
+TLS plus client authentication already establishes that the issuer produced it.
+Discovery is still used, for the endpoint URLs.</p>
+<p><strong>The precondition is the whole argument, so state it plainly:</strong> this is sound
+<em>only</em> because the panel never accepts a provider token from a client. The moment
+some future route takes a bearer ID token off an inbound request, signature
+verification against the issuer&#39;s JWKS becomes mandatory — the claims are then
+attacker-supplied and nothing but the signature stands between them and
+impersonation. That pattern already exists in the tree
+(<code>src/knowledge/server/oauth-guard.ts</code>, <code>jose</code> + remote JWKS) and should be
+reused rather than re-derived. The precondition is recorded in the code, not only
+here.</p>
+<p>The provider&#39;s <code>id_token</code>, <code>access_token</code> and <code>refresh_token</code> are all discarded
+at the end of the callback. After login the provider is never contacted again.</p>
+<h2 id="why-the-role-is-not-a-token-claim">Why the role is not a token claim<a class="anchor" href="#why-the-role-is-not-a-token-claim" aria-label="Link to Why the role is not a token claim">#</a></h2>
+<p>Authentication and authorization are deliberately split. The session token
+carries <strong>identity only</strong> — <code>sub</code>, <code>email</code>, <code>iat</code>, <code>exp</code>, <code>jti</code>. The role is
+resolved from config on <strong>every request</strong>.</p>
+<p>The alternative — baking <code>role: superadmin</code> into the access token at login — is
+cheaper by one config read, and wrong in the way that matters. Demoting someone
+would then take effect at their next token refresh, not their next request: up to
+fifteen minutes of retained superadmin during exactly the incident where you are
+trying to take it away. Since there is no revocation, a role stamped into a token
+is a privilege you cannot withdraw for the life of that token.</p>
+<p>Re-resolving per request buys back the one thing the no-storage design otherwise
+gives up. Remove an identity from the file and the next request is a 403. Delete
+them from both lists and they are 403 everywhere, immediately, without waiting
+for anything to expire. The cost is a read served from the mtime cache.</p>
+<p>The role matrix is small and enforced server-side in <code>api.ts</code>: <code>superadmin</code> gates
+<code>reset</code> (discards session state, unrecoverable), permission-<code>mode</code> changes
+(<code>bypassPermissions</code> lets the agent act without gates — privilege escalation),
+and <code>force-release</code> (steals another operator&#39;s lock). Everything else is open to
+any listed operator. <code>superadmin</code> is a strict superset; no route requires
+&quot;operator but not superadmin&quot;. The web app disables controls the current role
+cannot use, which is presentation only — the server is the sole authority, and
+the tests assert the server refuses regardless of what the client renders.</p>
+<h2 id="audit">Audit<a class="anchor" href="#audit" aria-label="Link to Audit">#</a></h2>
+<p>With no database, stdout is the only record of operator action. <code>audit.ts</code> emits
+one JSON object per line — no pretty-printing, so log pipelines can split on
+newlines — for every mutating route and every authentication decision, including
+<code>auth.denied</code> for an authenticated-but-unlisted identity and <code>outcome: &quot;denied&quot;</code>
+for role rejections. Never recorded: tokens, cookie values, the authorization
+<code>code</code>, the client secret, or chat content.</p>
+<h2 id="consequences">Consequences<a class="anchor" href="#consequences" aria-label="Link to Consequences">#</a></h2>
+<ul>
+<li>The panel cannot run without an identity provider. That is the point; the
+fallback was the impersonation footgun this replaced.</li>
+<li>Google and Keycloak differ only in the issuer URL. There is no
+provider-specific code — discovery absorbs the difference.</li>
+<li>With <code>SLAUDE_PANEL=1</code>, any missing required variable refuses the boot, keeping
+the fail-closed posture the trust-header guard had.</li>
+<li>Deferred to a follow-up, each additive: a <code>jti</code> denylist for real revocation,
+RP-initiated logout, multiple issuers, group-claim role mapping, domain
+wildcards, a read-only <code>viewer</code> role.</li>
+</ul>
+<p>Spec: <code>docs/internal/superpowers/specs/2026-08-29-panel-oidc-auth-design.md</code> (supersedes
+§6 of <code>docs/internal/superpowers/specs/2026-08-25-session-control-panel-design.md</code>).
+Plan: <code>docs/internal/superpowers/plans/2026-08-29-panel-oidc-auth.md</code>.</p>
+
+    </article>
+    <nav class="prevnext"><a class="pn pn-prev" href="../deploy/scale-operations.html"><span class="pn-dir">Previous</span><span class="pn-label">Scale operations</span></a><a class="pn pn-next" href="2026-08-23-release-candidate-pipeline.html"><span class="pn-dir">Next</span><span class="pn-label">Release candidate pipeline</span></a></nav>
+    <footer class="page-foot">
+      <a href="https://github.com/barockok/slaude/edit/main/docs/site/_content/field-notes/2026-08-29-panel-oidc-auth.md" target="_blank" rel="noopener">Edit this page on GitHub</a>
+      <span>slaude v0.42.0</span>
+    </footer>
+  </main>
+
+  <div class="toc-col"><nav class="toc" aria-label="On this page"><p class="toc-title">On this page</p><ul><li class="toc-h2"><a href="#why-the-header-had-to-go">Why the header had to go</a></li><li class="toc-h2"><a href="#the-no-user-table-constraint">The no-user-table constraint</a></li><li class="toc-h2"><a href="#why-the-id-token39s-signature-is-not-verified">Why the ID token&amp;#39;s signature is not verified</a></li><li class="toc-h2"><a href="#why-the-role-is-not-a-token-claim">Why the role is not a token claim</a></li><li class="toc-h2"><a href="#audit">Audit</a></li><li class="toc-h2"><a href="#consequences">Consequences</a></li></ul></nav></div>
+</div>
+
+<div class="search-overlay" hidden>
+  <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search documentation">
+    <div class="search-input-row">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+      <input type="search" placeholder="Search the docs…" aria-label="Search" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="search-results" role="listbox"></div>
+  </div>
+</div>
+
+<script>window.__SLAUDE_BASE__="../";</script>
+<script src="../assets/docs.js?v=a084ede1" defer></script>
+</body>
+</html>

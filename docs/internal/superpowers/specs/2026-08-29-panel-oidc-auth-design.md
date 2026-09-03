@@ -112,7 +112,7 @@ tested without any of them.
 
 `SLAUDE_PANEL_TRUST_HEADER`, `SLAUDE_PANEL_HEADER`, the header-trust code path
 and its tests, and the "ingress MUST strip the identity header" requirement in
-`docs-new/deployment/multi-node.md` (the class of bug no longer exists).
+`docs/site/_content/deploy/multi-node.md` (the class of bug no longer exists).
 
 `SLAUDE_PANEL_ALLOW` is superseded by the role lists. It is not silently
 repurposed: if it is still set at boot, the panel refuses to start with a
@@ -398,7 +398,7 @@ PR #96 has not merged and no deployment runs header-trust auth, so this lands as
 a follow-up commit series on `feat/session-control-panel` rather than as a
 migration.
 
-The panel section of `docs-new/deployment/multi-node.md` is rewritten: the
+The panel section of `docs/site/_content/deploy/multi-node.md` is rewritten: the
 header-stripping requirement is removed, replaced by provider registration steps
 for Google and Keycloak (redirect URI, scopes, client type) and the role file
 format.

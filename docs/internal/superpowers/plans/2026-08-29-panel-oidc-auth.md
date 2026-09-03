@@ -8,7 +8,7 @@
 
 **Tech Stack:** Bun + TypeScript, `node:crypto` (HS256, hand-rolled — no JWT library), `yaml` (already a dependency), Zod for body schemas, React 19 + Vite for the web app, Playwright for e2e, Docker Compose + Keycloak for the dev provider.
 
-**Spec:** `docs/superpowers/specs/2026-08-29-panel-oidc-auth-design.md`
+**Spec:** `docs/internal/superpowers/specs/2026-08-29-panel-oidc-auth-design.md`
 
 ## Global Constraints
 
@@ -2647,8 +2647,8 @@ not-authorized screen for an unlisted identity."
 **Files:**
 - Create: `docker-compose.dev.yml`
 - Create: `dev/keycloak/slaude-dev-realm.json`
-- Modify: `docs-new/deployment/multi-node.md:99-110` (the panel section)
-- Create: `docs/findings/2026-08-29-panel-oidc-auth.md`
+- Modify: `docs/site/_content/deploy/multi-node.md:99-110` (the panel section)
+- Create: `docs/site/_content/field-notes/2026-08-29-panel-oidc-auth.md`
 - Modify: `CLAUDE.md` (Findings Log index — add the new entry at the top of the list)
 
 **Interfaces:**
@@ -2730,7 +2730,7 @@ curl -fsS http://localhost:8081/realms/slaude-dev/.well-known/openid-configurati
 
 Expected: a JSON discovery document naming `authorization_endpoint` and `token_endpoint`. Then start the panel with the env block from the compose file's header comment, open `http://localhost:8080/panel`, sign in as `alice` / `dev`, and confirm the fleet list renders with an `operator` badge. Sign out, sign in as `lead` / `dev`, and confirm the badge reads `superadmin` and the reset control is enabled.
 
-- [ ] **Step 4: Rewrite the panel section of `docs-new/deployment/multi-node.md`**
+- [ ] **Step 4: Rewrite the panel section of `docs/site/_content/deploy/multi-node.md`**
 
 Replace lines 99-110 with:
 
@@ -2770,14 +2770,14 @@ Any missing required variable with `SLAUDE_PANEL=1` stops the process at boot ra
 
 - [ ] **Step 5: Write the findings doc**
 
-Create `docs/findings/2026-08-29-panel-oidc-auth.md` covering: why the header-trust boundary was unverifiable; the no-user-table constraint and what it forces (self-contained tokens, no revocation, roles from config); why the ID token's signature is not verified and the precondition that makes that sound; and why the role is re-resolved per request rather than carried as a token claim. Describe the mechanism only — no deployment specifics, no real identities.
+Create `docs/site/_content/field-notes/2026-08-29-panel-oidc-auth.md` covering: why the header-trust boundary was unverifiable; the no-user-table constraint and what it forces (self-contained tokens, no revocation, roles from config); why the ID token's signature is not verified and the precondition that makes that sound; and why the role is re-resolved per request rather than carried as a token claim. Describe the mechanism only — no deployment specifics, no real identities.
 
 - [ ] **Step 6: Index the finding in `CLAUDE.md`**
 
 Add as the first entry under `## Findings Log`:
 
 ```markdown
-- [2026-08-29 — Panel OIDC auth: the ingress-header trust boundary was unverifiable (a proxy that forgets to strip the identity header hands any caller full session control), so the panel became its own relying party — Auth Code + PKCE, login-flow state in a signed cookie instead of a store, self-issued 15m/8h tokens, and roles re-resolved from config per request rather than baked into the token](docs/findings/2026-08-29-panel-oidc-auth.md)
+- [2026-08-29 — Panel OIDC auth: the ingress-header trust boundary was unverifiable (a proxy that forgets to strip the identity header hands any caller full session control), so the panel became its own relying party — Auth Code + PKCE, login-flow state in a signed cookie instead of a store, self-issued 15m/8h tokens, and roles re-resolved from config per request rather than baked into the token](docs/site/_content/field-notes/2026-08-29-panel-oidc-auth.md)
 ```
 
 - [ ] **Step 7: Run the leak scan before staging**
@@ -2841,7 +2841,7 @@ with `const expMs = auth.expMs;`. To supply it, extend `GuardOk` in `guard.ts` w
 
 ## Execution Handoff
 
-Plan complete and saved to `docs/superpowers/plans/2026-08-29-panel-oidc-auth.md`. Two execution options:
+Plan complete and saved to `docs/internal/superpowers/plans/2026-08-29-panel-oidc-auth.md`. Two execution options:
 
 **1. Subagent-Driven (recommended)** — a fresh subagent per task, review between tasks, fast iteration.
 
