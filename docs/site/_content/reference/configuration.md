@@ -42,7 +42,9 @@ slaude is Socket Mode-only. The manifest at `src/cli/manifest.ts` declares these
     "scopes": {
       "bot": [
         "app_mentions:read",
+        "canvases:write",
         "channels:history",
+        "channels:manage",
         "channels:read",
         "chat:write",
         "chat:write.public",
@@ -50,12 +52,14 @@ slaude is Socket Mode-only. The manifest at `src/cli/manifest.ts` declares these
         "files:write",
         "groups:history",
         "groups:read",
+        "groups:write",
         "im:history",
         "im:read",
         "im:write",
         "mpim:history",
         "mpim:read",
         "mpim:write",
+        "pins:write",
         "reactions:read",
         "reactions:write",
         "users:read",
@@ -109,7 +113,7 @@ When `assistant:write` is granted, slaude calls `assistant.threads.setStatus` to
 | `SLACK_USER_TOKEN` | No | `""` | `xoxp-…` user token for `users.profile.set` and optional post-as-user. |
 | `SLACK_POST_AS_USER` | No | `false` | When `true` **and** `SLACK_USER_TOKEN` is set, the agent posts/edits/reacts/uploads as the real Slack user account instead of the bot. App-bound interactivity (Approve/Deny gate buttons) always stays on the bot token. Accepts `true` case-insensitively; anything else is `false`. |
 
-> **Security note for `SLACK_POST_AS_USER`** — reads also route through the user token in this mode, so the `xoxp` must carry both write scopes (`chat:write`, `reactions:write`, `files:write`) and read scopes (`channels:history`, `groups:history`, `im:history`, `users:read`). The agent's read reach equals the human account's (private channels and DMs included). Only enable for accounts whose full scope you are comfortable exposing to tool use.
+> **Security note for `SLACK_POST_AS_USER`** — reads also route through the user token in this mode, so the `xoxp` must carry both write scopes (`chat:write`, `reactions:write`, `files:write`, plus `canvases:write`, `pins:write`, `channels:manage` and `groups:write` for the Canvas, pin and topic tools) and read scopes (`channels:history`, `groups:history`, `im:history`, `users:read`, and `search:read` for `search_messages`). The agent's read reach equals the human account's (private channels and DMs included). Only enable for accounts whose full scope you are comfortable exposing to tool use.
 
 ```bash
 # .env — bot-only (default, recommended)
