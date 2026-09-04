@@ -4,7 +4,7 @@
     "description": "Slack-native Claude Code runtime. One Slack thread is one persistent session.",
     "repo": "https://github.com/barockok/slaude",
     "domain": "github.io",
-    "version": "0.42.0",
+    "version": "0.43.0",
     "mark": "s",
     "favicon": "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23853291'/><text x='16' y='23' font-family='Helvetica,Arial,sans-serif' font-size='19' font-weight='700' fill='white' text-anchor='middle'>s</text></svg>"
   },
