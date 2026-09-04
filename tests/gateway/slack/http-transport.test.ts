@@ -563,11 +563,45 @@ describe("http slack transport — body-size cap", () => {
 });
 
 describe("http slack transport — lifecycle and client proxy", () => {
-  it("start() throws when the registry is empty", async () => {
-    const t = createHttpSlackTransport({ port: 0, loadApps: async () => [] });
-    await expect(t.start()).rejects.toThrow(/slack_apps registry is empty/);
-    expect(t.port).toBeNull();
-    await t.stop(); // no-op on an unstarted transport
+  it("start() boots (does not throw) when the registry is empty, and logs it", async () => {
+    const logs: string[] = [];
+    const t = createHttpSlackTransport({ port: 0, loadApps: async () => [], log: (m) => logs.push(m) });
+    booted.push(t);
+    await t.start();
+    expect(t.port).toBeGreaterThan(0);
+    expect(logs.some((l) => l.includes("registry is empty") && l.includes("slack-app add"))).toBe(true);
+  });
+
+  it("picks up an app registered after boot on the next request, without a restart", async () => {
+    let rows: SlackAppRow[] = [];
+    const logs: string[] = [];
+    const t = createHttpSlackTransport({
+      port: 0,
+      loadApps: async () => rows,
+      makeClient: (token) => fakeClient(token),
+      log: (m) => logs.push(m),
+    });
+    booted.push(t);
+    await t.start();
+
+    const seen: any[] = [];
+    t.event("message", async (a) => {
+      seen.push(a);
+    });
+    const base = `http://127.0.0.1:${t.port}`;
+
+    // Registry still empty: unsigned/unknown-app request 404s, no dispatch.
+    const before = await postEvents(base, SECRET_A, eventEnvelope());
+    expect(before.status).toBe(404);
+    expect(seen.length).toBe(0);
+
+    // `bun run slack-app add` from a separate process — the running
+    // transport's in-memory `rows` capture is stale until it re-queries.
+    rows = [appRow()];
+    const after = await postEvents(base, SECRET_A, eventEnvelope());
+    expect(after.status).toBe(200);
+    await settle();
+    expect(seen.length).toBe(1);
   });
 
   it("transport.client parks until start() then proxies every method to the primary app", async () => {

@@ -357,10 +357,13 @@ describe("transport mounting", () => {
       log: () => {},
     });
     booted.push(t);
-    // No oauth flow AND empty registry → boot must still refuse.
-    await expect(t.start()).rejects.toThrow(/registry is empty/);
-    // Restart with a row-less registry is not possible here; assert the 404
-    // path through handleOAuth directly instead (covered above).
+    // No oauth flow AND empty registry: boots anyway (bun run slack-app add
+    // can register an app against the running process — see
+    // http-transport.test.ts's "picks up an app registered after boot").
+    // The oauth endpoints stay 404 since the flow itself is disabled.
+    await t.start();
+    const res = await fetch(`http://127.0.0.1:${t.port}/slack/oauth/start`);
+    expect(res.status).toBe(404);
   });
 
   it("installs via callback and serves the new workspace without restart", async () => {

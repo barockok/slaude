@@ -106,6 +106,12 @@ serves `/slack/events`, `/slack/interactions`, `/healthz`, `/readyz`,
 `/metrics`, and `/v1` — the standalone `SLAUDE_HEALTH_PORT` server does not
 start in http mode.
 
+Registering the app is only a prerequisite for *receiving* events, not for
+booting — the gateway starts with an empty registry too (logging that it's
+waiting), and picks up an app registered afterward with `bun run slack-app
+add` on the next inbound request, no restart needed. Useful when you'd rather
+bring the process up first and register once it's reachable.
+
 Full variable reference, including `SLAUDE_HTTP_MAX_BODY_BYTES` and the
 registry-vs-env token precedence: [Configuration → Slack —
 optional](../reference/configuration.md#slack).
@@ -116,5 +122,5 @@ optional](../reference/configuration.md#slack).
 |---|---|
 | `SLAUDE_SLACK_MODE=http requires SLAUDE_DB=pg` at boot | sqlite can't hold the registry — set `SLAUDE_DB=pg`. |
 | Slack shows the request URL as unverified | The gateway wasn't reachable at `--url` when Slack sent `url_verification`, or the URL in the manifest doesn't match where the gateway is actually listening. |
-| `404` on every event | No `slack_apps` row matches the incoming `(api_app_id, team_id)` — check `bun run slack-app list`, or that the OAuth install actually completed. |
+| `404` on every event | No `slack_apps` row matches the incoming `(api_app_id, team_id)` — check `bun run slack-app list`, or that the OAuth install actually completed. If you booted before registering, the very next request after `slack-app add` should resolve; a 404 after that points at an `api_app_id`/`team_id` mismatch instead. |
 | Signature verification failing | The signing secret registered for that app doesn't match the one in your Slack app's **Basic Information** page — re-run `slack-app add` with the current secret, or reinstall via OAuth. |
