@@ -19,6 +19,7 @@
  * historical "call and forget" behaviour of the sqlite repo layer intact.
  */
 import { paths } from "../config/home";
+import { env } from "../config/env";
 
 export type Dialect = "sqlite" | "pg";
 export type Row = Record<string, any>;
@@ -216,7 +217,8 @@ export function dbDialect(): Dialect {
   return config().dialect;
 }
 
-/** Open (once) and return the process-wide client. Postgres: migrations applied first. */
+/** Open (once) and return the process-wide client. Postgres: migrations
+ *  applied first, unless SLAUDE_MIGRATE_ON_BOOT=0 opts out (env.db.migrateOnBoot). */
 export function getDb(): Promise<DbClient> {
   if (activeSync) return Promise.resolve(activeSync);
   if (!activePromise) {
@@ -224,8 +226,10 @@ export function getDb(): Promise<DbClient> {
     activePromise = (async () => {
       if (cfg.dialect === "sqlite") return openSqliteSync(cfg.path);
       const client = await openDb(cfg);
-      const { runMigrations } = await import("./migrate");
-      await runMigrations(client);
+      if (env.db.migrateOnBoot()) {
+        const { runMigrations } = await import("./migrate");
+        await runMigrations(client);
+      }
       return client;
     })();
     activePromise.catch(() => {
