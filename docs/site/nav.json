@@ -59,6 +59,8 @@
           "label": "Deployment and operations",
           "items": [
             { "path": "deploy/index", "label": "Deployment overview" },
+            { "path": "deploy/webhook-mode", "label": "Webhook (Events API) mode" },
+            { "path": "deploy/panel", "label": "Control panel" },
             { "path": "deploy/multi-node", "label": "Multi-node scale-out" },
             { "path": "deploy/scale-operations", "label": "Scale operations" }
           ]

@@ -102,47 +102,9 @@ Turn delivery is **at-least-once, deduplicated to effectively-once** for the com
 
 ## Control panel (`/panel`)
 
-The operator web panel mounts on the gateway tier (`mono`/`gateway` roles, never `node`) when `SLAUDE_PANEL=1`. It authenticates operators itself, as an OIDC relying party against a single issuer — Google or Keycloak, configured identically through discovery. It keeps no user records: identity comes from an ID-token claim, and roles come from a file you control.
+The operator web panel mounts on the gateway tier (`mono`/`gateway` roles, never `node`) when `SLAUDE_PANEL=1` — see [Control panel](panel.md) for what it does, how to enable it, and OIDC setup.
 
-```sh
-SLAUDE_PANEL=1
-SLAUDE_PANEL_OIDC_ISSUER=https://idp.example.com/realms/slaude   # or https://accounts.google.com
-SLAUDE_PANEL_OIDC_CLIENT_ID=slaude-panel
-SLAUDE_PANEL_OIDC_CLIENT_SECRET=...
-SLAUDE_PANEL_PUBLIC_URL=https://panel.example.com   # derives the redirect URI
-SLAUDE_PANEL_SECRET=...                             # >= 32 chars, HMAC key for session cookies
-SLAUDE_PANEL_USER_CLAIM=email                       # default
-SLAUDE_PANEL_ROLES_FILE=/etc/slaude/panel-roles.yaml
-```
-
-**The identity claim must be one the issuer verifies and the user cannot self-assign.** The panel refuses an ID token whose `email_verified` is `false`, so the default `email` claim is safe against a realm with self-registration enabled; a non-default `SLAUDE_PANEL_USER_CLAIM` gets no such check — pick a claim your provider vouches for (never a user-editable profile attribute), because the role file is keyed on that string.
-
-**Register the redirect URI** with your provider, exactly: `${SLAUDE_PANEL_PUBLIC_URL}/panel/auth/callback`. Scopes required: `openid email profile`. The client must be confidential (it holds a secret).
-
-**Roles** are declared in `panel-roles.yaml` — matched case-insensitively against the identity claim, superadmin winning when an identity appears in both lists:
-
-```yaml
-superadmin:
-  - lead@example.com
-operator:
-  - alice@example.com
-```
-
-An identity in neither list is authenticated but not authorized: `403`. Edits take effect on the next request — no redeploy. As a fallback for deployments without a mounted file, `SLAUDE_PANEL_SUPERADMIN` and `SLAUDE_PANEL_OPERATORS` accept comma-separated lists.
-
-`superadmin` gates `reset`, permission-`mode` changes, and `force-release` (stealing another operator's lock). Everything else is open to any listed operator.
-
-**Sessions** are the panel's own: a 15-minute access token and an 8-hour refresh token, both in `HttpOnly; Secure; SameSite=Lax` cookies. The refresh window is absolute — after 8 hours the operator re-authenticates at the provider. There is no revocation: removing someone from the role file blocks them at their next request, but a stolen cookie stays valid until it expires. `SLAUDE_PANEL_SECRET` rotation invalidates every outstanding session.
-
-Any missing required variable with `SLAUDE_PANEL=1` stops the process at boot rather than serving a half-configured auth surface. Serve the panel over TLS — the session cookies are `Secure` and browsers will not send them over plain HTTP.
-
-For local development there is a Keycloak container with a preloaded `slaude-dev` realm — `docker compose -f docker-compose.dev.yml up -d keycloak`, then the env block in that file's header comment. There is no authentication bypass flag; local runs exercise the real code path.
-
-> **Unverified end to end.** The compose file and realm JSON have been checked only statically — they parse, and the realm's registered redirect URI, client id and user emails match what the panel derives and what this section tells you to set. The container has never actually been started: the machine they were authored on could not pull the image. Nobody has yet seen Keycloak boot, import the realm, serve its discovery document, or complete a sign-in. Treat the first run as a smoke test — confirm `curl -fsS http://localhost:8081/realms/slaude-dev/.well-known/openid-configuration` returns a document naming `authorization_endpoint` and `token_endpoint` before assuming the setup is good, and delete this note once someone has.
-
-Cross-replica behaviour: the active-surface lock, the deferred-inbound replay, and the once-per-window "handled in ops panel" notice are all coordinated through Redis (the lock key, a `panel-resume` / `panel-hold` pub/sub pair, and a `panel-notice` NX guard), so an operator can drive a session on one replica while Slack traffic and node `/v1` posts land on another without double-posting or losing messages.
-
-The React app under `src/gateway/panel/web/` builds with Vite (`bun run test:web` covers it under Playwright) — a browser toolchain kept separate from the Bun server, excluded from `bun test` and the server `tsc`.
+Cross-replica behaviour specific to this topology: the active-surface lock, the deferred-inbound replay, and the once-per-window "handled in ops panel" notice are all coordinated through Redis (the lock key, a `panel-resume` / `panel-hold` pub/sub pair, and a `panel-notice` NX guard), so an operator can drive a session on one replica while Slack traffic and node `/v1` posts land on another without double-posting or losing messages.
 
 ---
 

@@ -248,6 +248,8 @@ Common first-run issues:
 | [Engagement & Approvals](../guides/engagement.md) | Mention model, `@mention` to engage/disengage, Block Kit approval gate |
 | [Skills & Knowledge](../reference/api.md) | `slaude.json` / `slaude.lock`, installing skills and KB wikis, `sync_manifest` |
 | [Deployment & Operations](../deploy/index.md) | Kubernetes single-replica deploy, health probes, Prometheus metrics, log tailing |
+| [Webhook (Events API) mode](../deploy/webhook-mode.md) | Slack ingress over HTTP instead of Socket Mode |
+| [Control panel](../deploy/panel.md) | Operator web console — fleet view, session control, take control from Slack |
 | [Examples](../guides/examples.md) | Runnable end-to-end: first skill, first KB ingest, custom MCP server |
 
 > **Next:** If you just finished quickstart, go to [Installation & Configuration](../reference/configuration.md) for the complete environment reference, then [SOUL & Persona](../reference/configuration.md) to make the agent yours.
