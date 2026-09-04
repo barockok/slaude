@@ -123,6 +123,15 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
     return rows;
   }
 
+  /** Cheap lazy pickup for `bun run slack-app add` run against a live process
+   *  with no OAuth install to trigger the reload above: re-query the registry
+   *  once when it's empty (a boot-transient state, not a steady one) so the
+   *  first inbound request after registration finds the app instead of 404ing
+   *  forever until a restart. No-ops once at least one app has loaded. */
+  async function ensureRegistryLoaded(): Promise<void> {
+    if (entries.size === 0) await reloadRegistry().catch(() => {});
+  }
+
   async function runMiddlewares(payload: any): Promise<void> {
     let i = 0;
     const next = async (): Promise<void> => {
@@ -245,6 +254,8 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
       return new Response("bad request", { status: 400 });
     }
 
+    await ensureRegistryLoaded();
+
     // url_verification carries no team id — try every install of the app
     // (or every registered app when api_app_id is absent).
     if (body.type === "url_verification") {
@@ -290,6 +301,8 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
     } catch {
       return new Response("bad request", { status: 400 });
     }
+
+    await ensureRegistryLoaded();
 
     const teamId = payload?.team?.id ?? payload?.user?.team_id;
     const entry = entries.get(`${payload?.api_app_id}:${teamId}`);
@@ -417,13 +430,19 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
       const oauthEnabled = Boolean(opts.oauth?.clientId ?? env.slack.clientId());
       if (rows.length === 0) {
         if (!oauthEnabled) {
-          throw new Error(
-            "SLAUDE_SLACK_MODE=http but the slack_apps registry is empty — register the app: bun run slack-app add",
+          // Boot anyway rather than crash-looping a container: `bun run
+          // slack-app add` runs against the same Postgres from a separate
+          // process, and ensureRegistryLoaded() below picks up the new row
+          // on the next inbound request — no restart needed.
+          log(
+            "[slack-http] slack_apps registry is empty — waiting for an app " +
+              "to be registered (bun run slack-app add); requests 404 until then",
           );
+        } else {
+          // OAuth install flow enabled: an empty registry is the expected state
+          // of a fresh deploy — the first /slack/oauth/start install populates it.
+          log("[slack-http] slack_apps registry is empty — awaiting OAuth install (/slack/oauth/start)");
         }
-        // OAuth install flow enabled: an empty registry is the expected state
-        // of a fresh deploy — the first /slack/oauth/start install populates it.
-        log("[slack-http] slack_apps registry is empty — awaiting OAuth install (/slack/oauth/start)");
       }
       const port = opts.port ?? env.slack.httpPort();
       // idleTimeout 0: /v1/pending long-polls (mounted on this port in http
