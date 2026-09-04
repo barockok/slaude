@@ -19,10 +19,10 @@ async function main() {
   ensureHome();
   seedBundledSkills();
 
-  // Open the DB first: on Postgres this applies pending migrations, and a
-  // bad SLAUDE_PG_URL fails the boot here instead of on the first message.
-  // Priming the soul-overrides cache keeps the synchronous gate path
-  // (soulData) correct from the first inbound event.
+  // Open the DB first: on Postgres this applies pending migrations (unless
+  // SLAUDE_MIGRATE_ON_BOOT=0), and a bad SLAUDE_PG_URL fails the boot here
+  // instead of on the first message. Priming the soul-overrides cache keeps
+  // the synchronous gate path (soulData) correct from the first inbound event.
   const db = await getDb();
   console.log(`[db] ${db.dialect} (${db.driver}) ready`);
   await SoulOverrides.refresh();

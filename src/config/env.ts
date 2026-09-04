@@ -163,6 +163,15 @@ export const env = {
       }
       return n;
     },
+    /** Run pending src/db/migrations/*.sql on every boot. Default on — this
+     *  is what makes a fresh Postgres usable with no separate migrate step.
+     *  Turn off only where migrations are applied out-of-band (a dedicated
+     *  migrate job ahead of the rollout) and every replica skipping the
+     *  advisory-lock wait on boot is worth the coordination it removes. */
+    migrateOnBoot: () => {
+      const raw = opt("SLAUDE_MIGRATE_ON_BOOT", "1").trim().toLowerCase();
+      return raw === "1" || raw === "true" || raw === "yes";
+    },
   },
 
   /**
