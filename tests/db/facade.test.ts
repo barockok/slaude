@@ -116,12 +116,18 @@ describe(`db facade (flipped to ${flipTo})`, () => {
 
 describe("SLAUDE_MIGRATE_ON_BOOT=0", () => {
   const originalDb = process.env.SLAUDE_DB;
+  const originalUrl = process.env.SLAUDE_PG_URL;
+  const originalDir = process.env.SLAUDE_PGLITE_DIR;
   const originalMigrate = process.env.SLAUDE_MIGRATE_ON_BOOT;
 
   afterAll(async () => {
     await __resetDbForTests();
     if (originalDb === undefined) delete process.env.SLAUDE_DB;
     else process.env.SLAUDE_DB = originalDb;
+    if (originalUrl === undefined) delete process.env.SLAUDE_PG_URL;
+    else process.env.SLAUDE_PG_URL = originalUrl;
+    if (originalDir === undefined) delete process.env.SLAUDE_PGLITE_DIR;
+    else process.env.SLAUDE_PGLITE_DIR = originalDir;
     if (originalMigrate === undefined) delete process.env.SLAUDE_MIGRATE_ON_BOOT;
     else process.env.SLAUDE_MIGRATE_ON_BOOT = originalMigrate;
   });
@@ -129,9 +135,17 @@ describe("SLAUDE_MIGRATE_ON_BOOT=0", () => {
   test("opts a pg boot out of applying migrations", async () => {
     await __resetDbForTests();
     process.env.SLAUDE_DB = "pg";
+    // Force an isolated in-memory PGLite regardless of the outer run's real
+    // Postgres — that DB is a shared, persistent service across the whole CI
+    // job, so schema_migrations already exists there from earlier tests and
+    // its absence can only prove anything against a database this test knows
+    // is untouched.
+    delete process.env.SLAUDE_PG_URL;
+    delete process.env.SLAUDE_PGLITE_DIR;
     process.env.SLAUDE_MIGRATE_ON_BOOT = "0";
     const client = await getDb();
     expect(client.dialect).toBe("pg");
+    expect(client.driver).toBe("pglite");
     // schema_migrations is only created by runMigrations — its absence proves
     // the run was skipped, not merely that it applied zero files.
     await expect(appliedVersions(client)).rejects.toThrow();
