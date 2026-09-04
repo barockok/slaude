@@ -145,7 +145,9 @@ export async function bootNode(
     nodeTtlSec: 3,
     drainSec: 5,
     port: null,
-    lock: { ttlMs: 2000, extendEveryMs: 300 },
+    // See src/gateway/sim/cluster.ts's bootNode for why this isn't 2000/300
+    // anymore (issue #111) — same tight-margin session lock, same fix.
+    lock: { ttlMs: 10_000, extendEveryMs: 1_500 },
     turnTimeoutMs: 30_000,
     ...(opts.worker as object),
   });
