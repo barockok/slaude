@@ -39,6 +39,9 @@ rmSync(OUT, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
 cpSync(join(ROOT, 'assets'), join(OUT, 'assets'), { recursive: true });
 cpSync(join(ROOT, '.nojekyll'), join(OUT, '.nojekyll'));
+// Marketing surface (Folks): plain static HTML, passed through untouched. It
+// has its own stylesheet and does not use the docs shell. See folks/README.md.
+cpSync(join(ROOT, 'folks'), join(OUT, 'folks'), { recursive: true, filter: (src) => !src.endsWith('README.md') });
 
 /* ------------------------------------------------------------------ *
  * Front matter
