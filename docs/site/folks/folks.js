@@ -1,17 +1,16 @@
 /*
  * Folks — particle scenes.
  *
- * One engine, three uses:
- *   1. Assembly  (hero)     — a thousand outlined triangles drift in and settle
- *                             into the silhouette of a Folk. Pointer repels.
- *   2. Roll-call (personas) — the same field scatters and re-forms as the next
- *                             persona; colour and eyes change, silhouette stays.
- *   3. Fleet     (gateway)  — packets travel Slack → gateway → node along
- *                             wires measured from the DOM; the node that
- *                             receives one lights up and "types".
- *
- * The login page reuses Assembly and adds an orbit mode (the field collapses
- * into a ring while the identity provider redirect is in flight).
+ * Three scenes:
+ *   1. FolksMark (hero, login) — the three-head mark; every head's eyes follow
+ *                                 the cursor from their own socket and blink
+ *                                 on their own clock.
+ *   2. Roll-call (personas)    — a field of outlined triangles forms one round
+ *                                 head, then scatters and re-forms with the
+ *                                 next persona's eyes and colours.
+ *   3. Fleet     (gateway)     — packets travel Slack → gateway → node along
+ *                                 wires measured from the DOM; the node that
+ *                                 receives one lights up and "types".
  *
  * Everything is plain Canvas 2D + a little SVG. No libraries.
  */
@@ -21,17 +20,17 @@
 
   const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  /* The Folk silhouette, in its 64×64 frame. Same path as brand/folks-mark.svg. */
-  const FOLK_PATH =
-    "M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z";
+  /* One round head in the 64×64 frame. The particle scenes form a single folk;
+     the three-head mark itself is plain SVG (see FolksMark below). */
+  const FOLK_PATH = "M32 4A28 28 0 1 1 32 60A28 28 0 1 1 32 4Z";
 
   /* Eye sets, in the same 64-frame. The sampler cuts these out of the field so the
      eyes read as negative space and the SVG overlay paints them solid. */
   const EYE_SHAPES = {
-    bars:   (c) => { c.roundRect(23, 18, 6, 14, 3); c.roundRect(35, 18, 6, 14, 3); },
-    dots:   (c) => { c.moveTo(29.8, 25); c.arc(26, 25, 3.8, 0, Math.PI * 2); c.moveTo(41.8, 25); c.arc(38, 25, 3.8, 0, Math.PI * 2); },
-    dash:   (c) => { c.roundRect(21, 23, 10, 4.5, 2.25); c.roundRect(33, 23, 10, 4.5, 2.25); },
-    arrows: (c) => { c.moveTo(21, 20.5); c.lineTo(30, 25); c.lineTo(21, 29.5); c.closePath(); c.moveTo(43, 20.5); c.lineTo(34, 25); c.lineTo(43, 29.5); c.closePath(); },
+    bar:  (c) => { c.roundRect(24.5, 21.4, 4.9, 13, 2.45); c.roundRect(34.6, 21.4, 4.9, 13, 2.45); },
+    dot:  (c) => { c.moveTo(28.7, 27.9); c.arc(24, 27.9, 4.7, 0, Math.PI * 2); c.moveTo(44.7, 27.9); c.arc(40, 27.9, 4.7, 0, Math.PI * 2); },
+    dash: (c) => { c.roundRect(22.4, 26.3, 7.9, 3.3, 1.65); c.roundRect(33.7, 26.3, 7.9, 3.3, 1.65); },
+    tri:  (c) => { c.moveTo(22.1, 24.1); c.lineTo(29.8, 27.9); c.lineTo(22.1, 31.7); c.closePath(); c.moveTo(41.9, 24.1); c.lineTo(34.2, 27.9); c.lineTo(41.9, 31.7); c.closePath(); },
   };
 
   const PALETTES = {
@@ -57,7 +56,7 @@
       this.count = opts.count ?? (innerWidth < 700 ? 620 : 1100);
       this.colors = opts.colors;
       this.eyes = opts.eyes ?? null;
-      this.eyeSet = opts.eyeSet ?? "bars";
+      this.eyeSet = opts.eyeSet ?? "bar";
       this.repel = opts.repel ?? true;
       this.parts = [];
       this.pointer = { x: -1e9, y: -1e9 };
@@ -425,21 +424,84 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * FolksMark: the three heads watch the cursor
+   * ------------------------------------------------------------------ */
+
+  class FolksMark {
+    /** @param {SVGSVGElement} svg  an inline copy of the mark (not a <use>; the eyes must be reachable) */
+    constructor(svg) {
+      this.svg = svg;
+      this.groups = [...svg.querySelectorAll("g.eyes[data-cx]")].map((g) => ({
+        g,
+        cx: +g.dataset.cx,
+        cy: +g.dataset.cy,
+        range: +g.dataset.range,
+        x: 0, y: 0, tx: 0, ty: 0,       // current / target offset, frame units
+        sy: 1, nextBlink: 2 + Math.random() * 4, blinkT: 0,
+      }));
+      this.t = 0;
+      this.pointer = null;
+      document.addEventListener("pointermove", (e) => { this.pointer = { x: e.clientX, y: e.clientY }; this.aim(); }, { passive: true });
+      document.addEventListener("pointerleave", () => { this.pointer = null; this.groups.forEach((s) => { s.tx = s.ty = 0; }); });
+      if (REDUCED) { this.draw(); return; }
+      this.loop();
+    }
+
+    /** Each head looks at the pointer from its own eye centre, so the three gazes converge. */
+    aim() {
+      if (!this.pointer) return;
+      const r = this.svg.getBoundingClientRect();
+      const s = Math.min(r.width, r.height) / 64;
+      const ox = r.left + (r.width - 64 * s) / 2;
+      const oy = r.top + (r.height - 64 * s) / 2;
+      for (const e of this.groups) {
+        const ex = ox + e.cx * s;
+        const ey = oy + e.cy * s;
+        const dx = this.pointer.x - ex;
+        const dy = this.pointer.y - ey;
+        const d = Math.hypot(dx, dy) || 1;
+        // saturate: eyes reach the rim of their socket at about one mark-width away
+        const k = Math.min(1, d / (64 * s * 0.9));
+        e.tx = (dx / d) * k * e.range;
+        e.ty = (dy / d) * k * e.range;
+      }
+    }
+
+    draw() {
+      for (const e of this.groups) {
+        e.g.setAttribute("transform", `translate(${(e.cx + e.x).toFixed(2)} ${(e.cy + e.y).toFixed(2)}) scale(1 ${e.sy.toFixed(3)}) translate(${(-e.cx).toFixed(2)} ${(-e.cy).toFixed(2)})`);
+      }
+    }
+
+    loop() {
+      const dt = 1 / 60;
+      this.t += dt;
+      for (const e of this.groups) {
+        e.x += (e.tx - e.x) * 0.18;
+        e.y += (e.ty - e.y) * 0.18;
+        // blink: quick close, quick open, each head on its own clock
+        if (this.t > e.nextBlink) { e.blinkT += dt; const p = e.blinkT / 0.16; e.sy = p < 0.5 ? 1 - p * 2 * 0.92 : 0.08 + (p - 0.5) * 2 * 0.92; if (p >= 1) { e.sy = 1; e.blinkT = 0; e.nextBlink = this.t + 2.5 + Math.random() * 4.5; } }
+      }
+      this.draw();
+      requestAnimationFrame(() => this.loop());
+    }
+  }
+
+  /* ------------------------------------------------------------------ *
    * Wire-up
    * ------------------------------------------------------------------ */
 
-  const EYES = { ops: "bars", docs: "dots", data: "dash", sec: "arrows" };
+  const EYES = { ops: "bar", docs: "dot", data: "dash", sec: "tri" };
 
   function heroScene(el, paletteName = "ops") {
     const canvas = el.querySelector("canvas");
     const eyes = el.querySelector(".eyes");
-    el.dataset.eyes = EYES[paletteName] || "bars";
-    return new Constellation(canvas, { colors: PALETTES[paletteName], eyes, eyeSet: EYES[paletteName] || "bars" });
+    el.dataset.eyes = EYES[paletteName] || "bar";
+    return new Constellation(canvas, { colors: PALETTES[paletteName], eyes, eyeSet: EYES[paletteName] || "bar" });
   }
 
   document.addEventListener("DOMContentLoaded", () => {
-    const hero = document.querySelector("[data-scene='hero']");
-    if (hero) heroScene(hero, hero.dataset.palette || "ops");
+    document.querySelectorAll("[data-scene='hero-mark'] svg.folks-mark, [data-scene='login-mark'] svg.folks-mark").forEach((svg) => new FolksMark(svg));
 
     const roll = document.querySelector("[data-scene='roll']");
     if (roll) {
@@ -464,23 +526,16 @@
     const fleet = document.querySelector(".fleet-stage");
     if (fleet) new Fleet(fleet);
 
-    const login = document.querySelector("[data-scene='login']");
-    if (login) {
-      const scene = heroScene(login, "night");
-      // The eyes follow the cursor anywhere on the page, and glance at the form on focus.
-      document.addEventListener("pointermove", (e) => scene.look(e.clientX, e.clientY));
-      const btn = document.querySelector(".sso .btn");
-      const form = document.querySelector(".login-form");
-      form?.addEventListener("focusin", () => { const r = form.getBoundingClientRect(); scene.look(r.left + r.width / 2, r.top + r.height / 2); });
-      btn?.addEventListener("click", (e) => {
+    const btn = document.querySelector(".sso .btn");
+    if (btn) {
+      btn.addEventListener("click", (e) => {
         if (btn.dataset.demo === "1") e.preventDefault();
         btn.classList.add("busy");
         btn.querySelector(".label").textContent = "Redirecting to your identity provider";
-        scene.orbit();
-        if (btn.dataset.demo === "1") setTimeout(() => { btn.classList.remove("busy"); btn.querySelector(".label").textContent = "Continue with single sign-on"; scene.retarget("scatter"); }, 3200);
+        if (btn.dataset.demo === "1") setTimeout(() => { btn.classList.remove("busy"); btn.querySelector(".label").textContent = "Continue with single sign-on"; }, 3200);
       });
     }
   });
 
-  window.Folks = { Constellation, Fleet, PALETTES, FOLK_PATH };
+  window.Folks = { Constellation, Fleet, FolksMark, PALETTES, FOLK_PATH };
 })();

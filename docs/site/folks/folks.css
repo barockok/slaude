@@ -33,6 +33,7 @@
   --night-text-60: rgba(247, 245, 242, 0.62);
 
   --eye: #f7f5f2;
+  --cut: #f7f5f2; /* gaps and eyes of the mark: the ground it sits on */
 
   --r-card: 12px;
   --r-btn: 8px;
@@ -64,9 +65,11 @@
     --coral-tint: #331a16;
     --blue-tint: #132339;
     --eye: #0e0c13;
+    --cut: #0e0c13;
   }
 }
 :root[data-theme="dark"] {
+  --cut: #0e0c13;
   --paper: #0e0c13;
   --paper-2: #151219;
   --card: #17141f;
@@ -114,7 +117,7 @@ p { margin: 0; }
 
 /* --- Wordmark ------------------------------------------------------------- */
 .wordmark { display: inline-flex; align-items: center; gap: 10px; font-family: var(--display); font-weight: 700; letter-spacing: -0.03em; font-size: 26px; line-height: 1; }
-.wordmark .folk { width: 1.2em; height: 1.2em; flex: none; }
+.wordmark .folk { width: 1.25em; height: 1.25em; flex: none; color: var(--plum); --cut: var(--paper); }
 .wordmark .sub { white-space: nowrap; font: 500 12px/1 var(--mono); color: var(--ink-40); letter-spacing: 0; margin-left: 2px; align-self: flex-end; padding-bottom: 2px; }
 
 /* --- Buttons -------------------------------------------------------------- */
@@ -169,11 +172,23 @@ p { margin: 0; }
 .scene canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .scene .eyes { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
 .scene .eyes g { transform: translate(var(--lx, 0px), var(--ly, 0px)); transition: transform 240ms var(--ease); }
-.scene .eyes .eye { fill: var(--ink); transform-box: fill-box; transform-origin: center; animation: blink 4.6s infinite; }
+.scene .eyes .eye { fill: var(--cut); transform-box: fill-box; transform-origin: center; animation: blink 4.6s infinite; }
 .scene .eyes .eye:nth-of-type(2) { animation-delay: 60ms; }
 .scene[data-eyes] .eyeset { display: none; }
-.scene[data-eyes="bars"] .eyeset-bars, .scene[data-eyes="dots"] .eyeset-dots, .scene[data-eyes="dash"] .eyeset-dash, .scene[data-eyes="arrows"] .eyeset-arrows { display: block; }
+.scene[data-eyes="bar"] .eyeset-bar, .scene[data-eyes="dot"] .eyeset-dot, .scene[data-eyes="dash"] .eyeset-dash, .scene[data-eyes="tri"] .eyeset-tri { display: block; }
 @keyframes blink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(0.08); } }
+/* The mark itself, large. Heads are currentColor; gaps and eyes are --cut. */
+.scene-mark { display: grid; place-items: center; }
+.scene-mark .folks-mark { width: 100%; height: 100%; color: var(--plum); overflow: visible; }
+.scene-mark .folks-mark .eyes { will-change: transform; }
+.roll .chip svg, .persona-row .face, .node .face, .msg .av svg { color: var(--plum); }
+.roll .chip:nth-child(2) svg, .persona-row[data-persona="docs"] .face, .node:nth-of-type(3) .face { color: var(--marigold); }
+.roll .chip:nth-child(3) svg, .persona-row[data-persona="data"] .face, .node:nth-of-type(2) .face { color: var(--blue); }
+.roll .chip:nth-child(4) svg, .persona-row[data-persona="sec"] .face { color: var(--coral); }
+.roll .chip svg, .persona-row .face, .node .face, .msg .av svg { --cut: var(--card); }
+.roll .chip { background: var(--card); }
+.thread .msg .av { --cut: var(--paper-2); }
+.node .face { --cut: var(--night-2); }
 .scene .caption { position: absolute; left: 50%; bottom: -8px; transform: translateX(-50%); font: 500 12px/1 var(--mono); color: var(--ink-40); white-space: nowrap; }
 
 /* --- Sections ------------------------------------------------------------- */
@@ -292,10 +307,12 @@ p { margin: 0; }
 .login-body { min-height: 100vh; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(360px, 0.9fr); }
 @media (max-width: 860px) { .login-body { grid-template-columns: 1fr; } .login-stage { min-height: 46vh; } }
 .login-stage { position: relative; background: var(--night); color: var(--night-text); display: grid; grid-template-rows: auto 1fr auto; padding: 28px 32px; overflow: hidden; }
+.login-stage { --cut: var(--night); }
 .login-stage .wordmark { color: var(--night-text); }
+.login-stage .wordmark .folk { color: var(--night-text); }
+.login-stage .scene-mark .folks-mark { color: var(--night-text); }
 .login-stage .wordmark .sub { color: var(--night-text-60); }
 .login-stage .scene { width: min(72%, 520px); align-self: center; }
-.login-stage .scene .eyes .eye { fill: var(--night-text); }
 .login-stage .status { display: flex; flex-wrap: wrap; gap: 8px 22px; font: 500 12px/1.4 var(--mono); color: var(--night-text-60); }
 .login-stage .status b { color: var(--night-text); font-weight: 600; }
 .login-stage .status .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--marigold); margin-right: 8px; vertical-align: 1px; animation: pulse 2s var(--ease) infinite; }
