@@ -14,16 +14,226 @@
 </head>
 <body class="login-body">
 
+<!-- The 3D Folk marks. One silhouette, one lighting rig, five finishes. Generated; see README. -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
-    <path id="folk-head" d="M26 4H38A20 20 0 0 1 58 24V32A20 20 0 0 1 38 52H30L10 62C13 59 15.5 54 16 49.3A20 20 0 0 1 6 32V24A20 20 0 0 1 26 4Z"/>
+    <path id="folk-head" d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z"/>
+    <symbol id="ico-check" viewBox="0 0 20 20"><path d="M4 10.5l4 4 8-9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="folk-plum" viewBox="0 0 64 64"><defs>
+        <linearGradient id="f3-plum-face" x1="0" y1="0" x2="0.25" y2="1">
+          <stop offset="0" stop-color="#B565C2"/><stop offset="0.45" stop-color="#7A2E86"/><stop offset="1" stop-color="#521C5B"/>
+        </linearGradient>
+        <radialGradient id="f3-plum-spec" cx="0.3" cy="0.18" r="0.55">
+          <stop offset="0" stop-color="#fff" stop-opacity="0.55"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.12"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
+        </radialGradient>
+        <linearGradient id="f3-plum-rim" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#fff" stop-opacity="0.7"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.08"/><stop offset="1" stop-color="#B565C2" stop-opacity="0.35"/>
+        </linearGradient>
+        <linearGradient id="f3-plum-ao" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.28"/>
+        </linearGradient>
+        <linearGradient id="f3-plum-eye" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#1A0A1E"/><stop offset="1" stop-color="#3D1445"/>
+        </linearGradient>
+        <linearGradient id="f3-plum-eyeshade" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#000" stop-opacity="0.55"/><stop offset="1" stop-color="#000" stop-opacity="0"/>
+        </linearGradient>
+        <clipPath id="f3-plum-clip"><path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z"/></clipPath>
+        <filter id="f3-plum-soft" x="-20%" y="-20%" width="140%" height="160%"><feGaussianBlur stdDeviation="1.6"/></filter>
+      </defs>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#33103A" transform="translate(0.28 0.40)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#33103A" transform="translate(0.56 0.80)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#33103A" transform="translate(0.84 1.20)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#33103A" transform="translate(1.12 1.60)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#33103A" transform="translate(1.40 2.00)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#33103A" transform="translate(1.68 2.40)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#33103A" transform="translate(1.96 2.80)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#33103A" transform="translate(2.24 3.20)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="url(#f3-plum-face)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="url(#f3-plum-spec)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="url(#f3-plum-ao)"/>
+        <g clip-path="url(#f3-plum-clip)"><path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="none" stroke="url(#f3-plum-rim)" stroke-width="2.2"/></g>
+        <rect fill="#B565C2" fill-opacity="0.55" x="23" y="18.9" width="6" height="14" rx="3"/>
+        <rect fill="url(#f3-plum-eye)" x="23" y="18" width="6" height="14" rx="3"/>
+        <rect x="23" y="18" width="6" height="4" rx="3" fill="url(#f3-plum-eyeshade)"/>
+        <ellipse cx="26.72" cy="20.4" rx="0.9" ry="1.3" fill="#fff" fill-opacity="0.75"/>
+        <rect fill="#B565C2" fill-opacity="0.55" x="35" y="18.9" width="6" height="14" rx="3"/>
+        <rect fill="url(#f3-plum-eye)" x="35" y="18" width="6" height="14" rx="3"/>
+        <rect x="35" y="18" width="6" height="4" rx="3" fill="url(#f3-plum-eyeshade)"/>
+        <ellipse cx="38.72" cy="20.4" rx="0.9" ry="1.3" fill="#fff" fill-opacity="0.75"/></symbol>
+    <symbol id="folk-marigold" viewBox="0 0 64 64"><defs>
+        <linearGradient id="f3-marigold-face" x1="0" y1="0" x2="0.25" y2="1">
+          <stop offset="0" stop-color="#FFD46A"/><stop offset="0.45" stop-color="#F5B31B"/><stop offset="1" stop-color="#C98600"/>
+        </linearGradient>
+        <radialGradient id="f3-marigold-spec" cx="0.3" cy="0.18" r="0.55">
+          <stop offset="0" stop-color="#fff" stop-opacity="0.55"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.12"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
+        </radialGradient>
+        <linearGradient id="f3-marigold-rim" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#fff" stop-opacity="0.7"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.08"/><stop offset="1" stop-color="#FFD46A" stop-opacity="0.35"/>
+        </linearGradient>
+        <linearGradient id="f3-marigold-ao" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.28"/>
+        </linearGradient>
+        <linearGradient id="f3-marigold-eye" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#3A2600"/><stop offset="1" stop-color="#6E4A00"/>
+        </linearGradient>
+        <linearGradient id="f3-marigold-eyeshade" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#000" stop-opacity="0.55"/><stop offset="1" stop-color="#000" stop-opacity="0"/>
+        </linearGradient>
+        <clipPath id="f3-marigold-clip"><path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z"/></clipPath>
+        <filter id="f3-marigold-soft" x="-20%" y="-20%" width="140%" height="160%"><feGaussianBlur stdDeviation="1.6"/></filter>
+      </defs>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#7A5000" transform="translate(0.28 0.40)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#7A5000" transform="translate(0.56 0.80)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#7A5000" transform="translate(0.84 1.20)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#7A5000" transform="translate(1.12 1.60)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#7A5000" transform="translate(1.40 2.00)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#7A5000" transform="translate(1.68 2.40)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#7A5000" transform="translate(1.96 2.80)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#7A5000" transform="translate(2.24 3.20)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="url(#f3-marigold-face)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="url(#f3-marigold-spec)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="url(#f3-marigold-ao)"/>
+        <g clip-path="url(#f3-marigold-clip)"><path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="none" stroke="url(#f3-marigold-rim)" stroke-width="2.2"/></g>
+        <circle fill="#FFD46A" fill-opacity="0.55" cx="26" cy="25.9" r="3.8"/>
+        <circle fill="url(#f3-marigold-eye)" cx="26" cy="25" r="3.8"/>
+        <circle cx="26" cy="25" r="3.8" fill="url(#f3-marigold-eyeshade)"/>
+        <circle cx="27.2" cy="23.6" r="0.9" fill="#fff" fill-opacity="0.75"/>
+        <circle fill="#FFD46A" fill-opacity="0.55" cx="38" cy="25.9" r="3.8"/>
+        <circle fill="url(#f3-marigold-eye)" cx="38" cy="25" r="3.8"/>
+        <circle cx="38" cy="25" r="3.8" fill="url(#f3-marigold-eyeshade)"/>
+        <circle cx="39.2" cy="23.6" r="0.9" fill="#fff" fill-opacity="0.75"/></symbol>
+    <symbol id="folk-blue" viewBox="0 0 64 64"><defs>
+        <linearGradient id="f3-blue-face" x1="0" y1="0" x2="0.25" y2="1">
+          <stop offset="0" stop-color="#6FAFF3"/><stop offset="0.45" stop-color="#1B7BE0"/><stop offset="1" stop-color="#0F56A6"/>
+        </linearGradient>
+        <radialGradient id="f3-blue-spec" cx="0.3" cy="0.18" r="0.55">
+          <stop offset="0" stop-color="#fff" stop-opacity="0.55"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.12"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
+        </radialGradient>
+        <linearGradient id="f3-blue-rim" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#fff" stop-opacity="0.7"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.08"/><stop offset="1" stop-color="#6FAFF3" stop-opacity="0.35"/>
+        </linearGradient>
+        <linearGradient id="f3-blue-ao" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.28"/>
+        </linearGradient>
+        <linearGradient id="f3-blue-eye" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#041B36"/><stop offset="1" stop-color="#0B3A6E"/>
+        </linearGradient>
+        <linearGradient id="f3-blue-eyeshade" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#000" stop-opacity="0.55"/><stop offset="1" stop-color="#000" stop-opacity="0"/>
+        </linearGradient>
+        <clipPath id="f3-blue-clip"><path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z"/></clipPath>
+        <filter id="f3-blue-soft" x="-20%" y="-20%" width="140%" height="160%"><feGaussianBlur stdDeviation="1.6"/></filter>
+      </defs>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#083566" transform="translate(0.28 0.40)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#083566" transform="translate(0.56 0.80)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#083566" transform="translate(0.84 1.20)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#083566" transform="translate(1.12 1.60)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#083566" transform="translate(1.40 2.00)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#083566" transform="translate(1.68 2.40)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#083566" transform="translate(1.96 2.80)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#083566" transform="translate(2.24 3.20)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="url(#f3-blue-face)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="url(#f3-blue-spec)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="url(#f3-blue-ao)"/>
+        <g clip-path="url(#f3-blue-clip)"><path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="none" stroke="url(#f3-blue-rim)" stroke-width="2.2"/></g>
+        <rect fill="#6FAFF3" fill-opacity="0.55" x="21" y="23.9" width="10" height="4.5" rx="2.25"/>
+        <rect fill="url(#f3-blue-eye)" x="21" y="23" width="10" height="4.5" rx="2.25"/>
+        <rect x="21" y="23" width="10" height="4" rx="2.25" fill="url(#f3-blue-eyeshade)"/>
+        <ellipse cx="27.2" cy="25.4" rx="0.9" ry="1.3" fill="#fff" fill-opacity="0.75"/>
+        <rect fill="#6FAFF3" fill-opacity="0.55" x="33" y="23.9" width="10" height="4.5" rx="2.25"/>
+        <rect fill="url(#f3-blue-eye)" x="33" y="23" width="10" height="4.5" rx="2.25"/>
+        <rect x="33" y="23" width="10" height="4" rx="2.25" fill="url(#f3-blue-eyeshade)"/>
+        <ellipse cx="39.2" cy="25.4" rx="0.9" ry="1.3" fill="#fff" fill-opacity="0.75"/></symbol>
+    <symbol id="folk-coral" viewBox="0 0 64 64"><defs>
+        <linearGradient id="f3-coral-face" x1="0" y1="0" x2="0.25" y2="1">
+          <stop offset="0" stop-color="#FF8F78"/><stop offset="0.45" stop-color="#F0553B"/><stop offset="1" stop-color="#B8341F"/>
+        </linearGradient>
+        <radialGradient id="f3-coral-spec" cx="0.3" cy="0.18" r="0.55">
+          <stop offset="0" stop-color="#fff" stop-opacity="0.55"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.12"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
+        </radialGradient>
+        <linearGradient id="f3-coral-rim" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#fff" stop-opacity="0.7"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.08"/><stop offset="1" stop-color="#FF8F78" stop-opacity="0.35"/>
+        </linearGradient>
+        <linearGradient id="f3-coral-ao" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.28"/>
+        </linearGradient>
+        <linearGradient id="f3-coral-eye" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#3A0D06"/><stop offset="1" stop-color="#6B1A0E"/>
+        </linearGradient>
+        <linearGradient id="f3-coral-eyeshade" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#000" stop-opacity="0.55"/><stop offset="1" stop-color="#000" stop-opacity="0"/>
+        </linearGradient>
+        <clipPath id="f3-coral-clip"><path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z"/></clipPath>
+        <filter id="f3-coral-soft" x="-20%" y="-20%" width="140%" height="160%"><feGaussianBlur stdDeviation="1.6"/></filter>
+      </defs>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#6E1B0E" transform="translate(0.28 0.40)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#6E1B0E" transform="translate(0.56 0.80)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#6E1B0E" transform="translate(0.84 1.20)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#6E1B0E" transform="translate(1.12 1.60)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#6E1B0E" transform="translate(1.40 2.00)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#6E1B0E" transform="translate(1.68 2.40)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#6E1B0E" transform="translate(1.96 2.80)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#6E1B0E" transform="translate(2.24 3.20)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="url(#f3-coral-face)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="url(#f3-coral-spec)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="url(#f3-coral-ao)"/>
+        <g clip-path="url(#f3-coral-clip)"><path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="none" stroke="url(#f3-coral-rim)" stroke-width="2.2"/></g>
+        <path fill="#FF8F78" fill-opacity="0.55" d="M21 20.5l9 4.5-9 4.5z" transform="translate(0 0.9)"/>
+        <path fill="url(#f3-coral-eye)" d="M21 20.5l9 4.5-9 4.5z"/>
+        <path d="M21 20.5l9 4.5-9 4.5z" fill="url(#f3-coral-eyeshade)"/>
+        <path fill="#FF8F78" fill-opacity="0.55" d="M43 20.5l-9 4.5 9 4.5z" transform="translate(0 0.9)"/>
+        <path fill="url(#f3-coral-eye)" d="M43 20.5l-9 4.5 9 4.5z"/>
+        <path d="M43 20.5l-9 4.5 9 4.5z" fill="url(#f3-coral-eyeshade)"/></symbol>
+    <symbol id="folk-ink" viewBox="0 0 64 64"><defs>
+        <linearGradient id="f3-ink-face" x1="0" y1="0" x2="0.25" y2="1">
+          <stop offset="0" stop-color="#4A4457"/><stop offset="0.45" stop-color="#1E1B26"/><stop offset="1" stop-color="#0F0D14"/>
+        </linearGradient>
+        <radialGradient id="f3-ink-spec" cx="0.3" cy="0.18" r="0.55">
+          <stop offset="0" stop-color="#fff" stop-opacity="0.55"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.12"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
+        </radialGradient>
+        <linearGradient id="f3-ink-rim" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#fff" stop-opacity="0.7"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.08"/><stop offset="1" stop-color="#4A4457" stop-opacity="0.35"/>
+        </linearGradient>
+        <linearGradient id="f3-ink-ao" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.28"/>
+        </linearGradient>
+        <linearGradient id="f3-ink-eye" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#000000"/><stop offset="1" stop-color="#2A2633"/>
+        </linearGradient>
+        <linearGradient id="f3-ink-eyeshade" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#000" stop-opacity="0.55"/><stop offset="1" stop-color="#000" stop-opacity="0"/>
+        </linearGradient>
+        <clipPath id="f3-ink-clip"><path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z"/></clipPath>
+        <filter id="f3-ink-soft" x="-20%" y="-20%" width="140%" height="160%"><feGaussianBlur stdDeviation="1.6"/></filter>
+      </defs>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#06050A" transform="translate(0.28 0.40)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#06050A" transform="translate(0.56 0.80)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#06050A" transform="translate(0.84 1.20)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#06050A" transform="translate(1.12 1.60)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#06050A" transform="translate(1.40 2.00)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#06050A" transform="translate(1.68 2.40)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#06050A" transform="translate(1.96 2.80)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="#06050A" transform="translate(2.24 3.20)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="url(#f3-ink-face)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="url(#f3-ink-spec)"/>
+        <path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="url(#f3-ink-ao)"/>
+        <g clip-path="url(#f3-ink-clip)"><path d="M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z" fill="none" stroke="url(#f3-ink-rim)" stroke-width="2.2"/></g>
+        <rect fill="#4A4457" fill-opacity="0.55" x="23" y="18.9" width="6" height="14" rx="3"/>
+        <rect fill="url(#f3-ink-eye)" x="23" y="18" width="6" height="14" rx="3"/>
+        <rect x="23" y="18" width="6" height="4" rx="3" fill="url(#f3-ink-eyeshade)"/>
+        <ellipse cx="26.72" cy="20.4" rx="0.9" ry="1.3" fill="#fff" fill-opacity="0.75"/>
+        <rect fill="#4A4457" fill-opacity="0.55" x="35" y="18.9" width="6" height="14" rx="3"/>
+        <rect fill="url(#f3-ink-eye)" x="35" y="18" width="6" height="14" rx="3"/>
+        <rect x="35" y="18" width="6" height="4" rx="3" fill="url(#f3-ink-eyeshade)"/>
+        <ellipse cx="38.72" cy="20.4" rx="0.9" ry="1.3" fill="#fff" fill-opacity="0.75"/></symbol>
   </defs>
 </svg>
 
 <!-- Left: the folk waits on the dark side and watches the cursor. -->
 <aside class="login-stage">
   <a class="wordmark" href="./" aria-label="Folks home">
-    <svg class="folk" viewBox="0 0 64 64" aria-hidden="true"><use href="#folk-head"/><rect x="23" y="21" width="5" height="13" rx="2.5"/><rect x="36" y="21" width="5" height="13" rx="2.5"/></svg>
+    <svg class="folk" viewBox="0 0 64 64" aria-hidden="true"><use href="#folk-plum"/></svg>
     <span>Folks</span>
     <span class="sub">panel</span>
   </a>
@@ -31,7 +241,7 @@
     <canvas></canvas>
     <svg class="eyes" viewBox="0 0 64 64" aria-hidden="true">
       <g>
-        <g class="eyeset eyeset-bars"><rect class="eye" x="23" y="21" width="5" height="13" rx="2.5"/><rect class="eye" x="36" y="21" width="5" height="13" rx="2.5"/></g>
+        <g class="eyeset eyeset-bars"><rect class="eye" x="23" y="18" width="6" height="14" rx="3"/><rect class="eye" x="35" y="18" width="6" height="14" rx="3"/></g>
       </g>
     </svg>
   </div>

@@ -23,15 +23,15 @@
 
   /* The Folk silhouette, in its 64×64 frame. Same path as brand/folks-mark.svg. */
   const FOLK_PATH =
-    "M26 4H38A20 20 0 0 1 58 24V32A20 20 0 0 1 38 52H30L10 62C13 59 15.5 54 16 49.3A20 20 0 0 1 6 32V24A20 20 0 0 1 26 4Z";
+    "M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6C11.2 55.2 13.8 51 14.8 45.4A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z";
 
   /* Eye sets, in the same 64-frame. The sampler cuts these out of the field so the
      eyes read as negative space and the SVG overlay paints them solid. */
   const EYE_SHAPES = {
-    bars:   (c) => { c.roundRect(23, 21, 5, 13, 2.5); c.roundRect(36, 21, 5, 13, 2.5); },
-    dots:   (c) => { c.moveTo(29, 27); c.arc(25.5, 27, 3.4, 0, Math.PI * 2); c.moveTo(42, 27); c.arc(38.5, 27, 3.4, 0, Math.PI * 2); },
-    dash:   (c) => { c.roundRect(21, 25, 9, 4, 2); c.roundRect(34, 25, 9, 4, 2); },
-    arrows: (c) => { c.moveTo(21, 23); c.lineTo(29, 27); c.lineTo(21, 31); c.closePath(); c.moveTo(43, 23); c.lineTo(35, 27); c.lineTo(43, 31); c.closePath(); },
+    bars:   (c) => { c.roundRect(23, 18, 6, 14, 3); c.roundRect(35, 18, 6, 14, 3); },
+    dots:   (c) => { c.moveTo(29.8, 25); c.arc(26, 25, 3.8, 0, Math.PI * 2); c.moveTo(41.8, 25); c.arc(38, 25, 3.8, 0, Math.PI * 2); },
+    dash:   (c) => { c.roundRect(21, 23, 10, 4.5, 2.25); c.roundRect(33, 23, 10, 4.5, 2.25); },
+    arrows: (c) => { c.moveTo(21, 20.5); c.lineTo(30, 25); c.lineTo(21, 29.5); c.closePath(); c.moveTo(43, 20.5); c.lineTo(34, 25); c.lineTo(43, 29.5); c.closePath(); },
   };
 
   const PALETTES = {

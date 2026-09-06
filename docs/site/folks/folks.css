@@ -115,8 +115,6 @@ p { margin: 0; }
 /* --- Wordmark ------------------------------------------------------------- */
 .wordmark { display: inline-flex; align-items: center; gap: 10px; font-family: var(--display); font-weight: 700; letter-spacing: -0.03em; font-size: 26px; line-height: 1; }
 .wordmark .folk { width: 1.2em; height: 1.2em; flex: none; }
-.wordmark .folk path { fill: var(--plum); }
-.wordmark .folk rect { fill: var(--eye); }
 .wordmark .sub { white-space: nowrap; font: 500 12px/1 var(--mono); color: var(--ink-40); letter-spacing: 0; margin-left: 2px; align-self: flex-end; padding-bottom: 2px; }
 
 /* --- Buttons -------------------------------------------------------------- */
@@ -154,7 +152,7 @@ p { margin: 0; }
 /* The four persona marks, Notion-style: round faces in thin circles, popping in. */
 .roll { display: flex; gap: 10px; }
 .roll .chip { width: 48px; height: 48px; border-radius: 50%; border: 2px solid var(--ink); display: grid; place-items: center; background: var(--card); animation: pop 600ms var(--spring) both; animation-delay: calc(var(--i) * 90ms); }
-.roll .chip svg { width: 30px; height: 30px; }
+.roll .chip svg { width: 32px; height: 32px; }
 .roll .chip:nth-child(1) { border-color: var(--plum); }
 .roll .chip:nth-child(2) { border-color: var(--marigold); }
 .roll .chip:nth-child(3) { border-color: var(--blue); }
@@ -295,7 +293,6 @@ p { margin: 0; }
 @media (max-width: 860px) { .login-body { grid-template-columns: 1fr; } .login-stage { min-height: 46vh; } }
 .login-stage { position: relative; background: var(--night); color: var(--night-text); display: grid; grid-template-rows: auto 1fr auto; padding: 28px 32px; overflow: hidden; }
 .login-stage .wordmark { color: var(--night-text); }
-.login-stage .wordmark .folk rect { fill: var(--night); }
 .login-stage .wordmark .sub { color: var(--night-text-60); }
 .login-stage .scene { width: min(72%, 520px); align-self: center; }
 .login-stage .scene .eyes .eye { fill: var(--night-text); }
