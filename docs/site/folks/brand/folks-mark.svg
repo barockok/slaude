@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Folks">
+  <title>Folks mark</title>
+  <!-- The Folk: a thread-bubble head. No mouth; the tail is the voice. -->
+  <path fill="#7A2E86" d="M26 4H38A20 20 0 0 1 58 24V32A20 20 0 0 1 38 52H30L10 62C13 59 15.5 54 16 49.3A20 20 0 0 1 6 32V24A20 20 0 0 1 26 4Z"/>
+  <rect x="23" y="21" width="5" height="13" rx="2.5" fill="#F7F5F2"/>
+  <rect x="36" y="21" width="5" height="13" rx="2.5" fill="#F7F5F2"/>
+</svg>
