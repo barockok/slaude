@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Folks panel</title>
+  <meta name="description" content="Sign in to the Folks operator panel with your identity provider." />
+  <link rel="icon" href="brand/favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,400..800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="folks.css" />
+</head>
+<body class="login-body">
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <path id="folk-head" d="M26 4H38A20 20 0 0 1 58 24V32A20 20 0 0 1 38 52H30L10 62C13 59 15.5 54 16 49.3A20 20 0 0 1 6 32V24A20 20 0 0 1 26 4Z"/>
+  </defs>
+</svg>
+
+<!-- Left: the folk waits on the dark side and watches the cursor. -->
+<aside class="login-stage">
+  <a class="wordmark" href="./" aria-label="Folks home">
+    <svg class="folk" viewBox="0 0 64 64" aria-hidden="true"><use href="#folk-head"/><rect x="23" y="21" width="5" height="13" rx="2.5"/><rect x="36" y="21" width="5" height="13" rx="2.5"/></svg>
+    <span>Folks</span>
+    <span class="sub">panel</span>
+  </a>
+  <div class="scene" data-scene="login" aria-label="A Folk made of a constellation of triangles">
+    <canvas></canvas>
+    <svg class="eyes" viewBox="0 0 64 64" aria-hidden="true">
+      <g>
+        <g class="eyeset eyeset-bars"><rect class="eye" x="23" y="21" width="5" height="13" rx="2.5"/><rect class="eye" x="36" y="21" width="5" height="13" rx="2.5"/></g>
+      </g>
+    </svg>
+  </div>
+  <div class="status" aria-label="Fleet status">
+    <span><span class="dot" aria-hidden="true"></span><b>gateway</b> up · 2 nodes</span>
+    <span><b>3</b> personas</span>
+    <span><b>11</b> live threads</span>
+    <span><b>1</b> approval waiting</span>
+  </div>
+</aside>
+
+<!-- Right: one action. The panel is its own OIDC relying party, so there is no password field here. -->
+<main class="login-form">
+  <div>
+    <p class="eyebrow">Operator panel</p>
+    <h1 style="margin-top:12px">Sign in to see your folks.</h1>
+  </div>
+  <p class="lede">The panel signs you in through your organisation's identity provider. Your role is resolved from the operator config on every request, so nothing you can do here is baked into a token.</p>
+  <form class="sso" action="/panel/auth/login" method="get">
+    <input type="hidden" name="returnTo" value="/panel" />
+    <button class="btn btn-fill btn-lg" type="submit" data-demo="1">
+      <span class="spin" aria-hidden="true"></span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      <span class="label">Continue with single sign-on</span>
+    </button>
+    <p class="fine">Authorization Code with PKCE. The session lasts 15 minutes and refreshes silently for up to 8 hours.</p>
+  </form>
+  <div>
+    <p class="eyebrow" style="margin-bottom:10px">Roles</p>
+    <div class="roles" aria-label="Panel roles">
+      <span class="role me">operator</span>
+      <span class="role">approver</span>
+      <span class="role">viewer</span>
+    </div>
+  </div>
+  <a class="back" href="./">← Back to Folks</a>
+</main>
+
+<script src="folks.js"></script>
+</body>
+</html>
