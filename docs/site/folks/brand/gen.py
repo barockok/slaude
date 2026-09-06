@@ -1,155 +1,118 @@
 #!/usr/bin/env python3
-"""Generate the 3D Folk mark. One geometry, one lighting rig, many finishes.
+"""Generate the Folks mark: three overlapping heads, one fill, flat.
 
-The silhouette (HEAD) is the identity. The finish is a six-colour ramp:
-light, base, dark, extrusion side, eye-top, eye-bottom. Everything else is
-derived: extrusion as eight stacked copies toward the lower right, a lit face
-gradient, a top-left specular, a rim light, a bottom ambient-occlusion band,
-recessed eyes with a bevel lip and a glint."""
+Geometry lives here once. Everything else (brand SVGs, the inline <symbol>
+block, the favicon, the lockup) is emitted from it, so the page, the favicon
+and the print file can never drift apart.
+
+  python3 gen.py <brand-dir> brand   → rewrites every SVG in brand/ and emits
+                                        ../_symbols.html for the pages' <defs>
+
+Heads (64-frame), back to front:
+  back   c(40,27) r19  eyes: two solid triangles pointing at each other (fierce)
+  left   c(21,33) r14  eyes: two dashes (steady)
+  front  c(31,45) r11  eyes: two dots (curious)
+Each nearer head is separated from the one behind it by a gap of GAP units.
+Standalone files cut gaps and eyes with a mask (transparent, any background);
+inline symbols paint them in a CSS colour so the eyes can be animated.
+"""
 import sys, os
 
-# Stronger silhouette: wider head, bigger radius, heavy comma tail.
-HEAD = ("M22 5H42A17 17 0 0 1 59 22V30A17 17 0 0 1 42 47H29"
-        "C25 52.5 18.5 58.5 10.5 61.5C7.5 62.6 6.6 60.8 8.4 58.6"
-        "C11.2 55.2 13.8 51 14.8 45.4"
-        "A17 17 0 0 1 5 30V22A17 17 0 0 1 22 5Z")
+GAP = 1.6
+HEADS = [  # name, cx, cy, r, eye kind
+  ("back",  40, 27, 19, "tri"),
+  ("left",  21, 33, 14, "dash"),
+  ("front", 31, 45, 11, "dot"),
+]
+EYE_DX = {"back": 5.5, "left": -0.5, "front": 0}  # where each head looks, in frame units
 
-EYES = {
-  "bars":   [("rect", dict(x=23, y=18, width=6, height=14, rx=3)), ("rect", dict(x=35, y=18, width=6, height=14, rx=3))],
-  "dots":   [("circle", dict(cx=26, cy=25, r=3.8)), ("circle", dict(cx=38, cy=25, r=3.8))],
-  "dash":   [("rect", dict(x=21, y=23, width=10, height=4.5, rx=2.25)), ("rect", dict(x=33, y=23, width=10, height=4.5, rx=2.25))],
-  "arrows": [("path", dict(d="M21 20.5l9 4.5-9 4.5z")), ("path", dict(d="M43 20.5l-9 4.5 9 4.5z"))],
-}
+def kind_head_lookup(cx, cy):
+  for name, hx, hy, _, _ in HEADS:
+    if hx == cx and hy == cy: return name
+  return None
 
-FINISH = {
-  # name: (light, base, dark, side, eye_top, eye_bottom)
-  "plum":     ("#B565C2", "#7A2E86", "#521C5B", "#33103A", "#1A0A1E", "#3D1445"),
-  "ink":      ("#4A4457", "#1E1B26", "#0F0D14", "#06050A", "#000000", "#2A2633"),
-  "marigold": ("#FFD46A", "#F5B31B", "#C98600", "#7A5000", "#3A2600", "#6E4A00"),
-  "blue":     ("#6FAFF3", "#1B7BE0", "#0F56A6", "#083566", "#041B36", "#0B3A6E"),
-  "coral":    ("#FF8F78", "#F0553B", "#B8341F", "#6E1B0E", "#3A0D06", "#6B1A0E"),
-}
+def eye_shapes(kind, cx, cy, r, fill):
+  """Eye geometry for a head of radius r centred on (cx, cy). Returns (svg, centres)."""
+  s = r / 19.0  # scale relative to the back head
+  ey = cy - 3 * s
+  cx = cx + EYE_DX.get(kind_head_lookup(cx, cy), 0)
+  if kind == "tri":
+    w, h, gap = 5.6 * s, 5.6 * s, 1.6 * s
+    l = f'<path d="M{cx-gap-w:.2f} {ey-h/2:.2f}L{cx-gap:.2f} {ey:.2f}L{cx-gap-w:.2f} {ey+h/2:.2f}Z" fill="{fill}"/>'
+    rr = f'<path d="M{cx+gap+w:.2f} {ey-h/2:.2f}L{cx+gap:.2f} {ey:.2f}L{cx+gap+w:.2f} {ey+h/2:.2f}Z" fill="{fill}"/>'
+    return l + rr
+  if kind == "dash":
+    w, h, gap = 5.8 * s, 2.4 * s, 1.4 * s
+    return (f'<rect x="{cx-gap-w:.2f}" y="{ey-h/2:.2f}" width="{w:.2f}" height="{h:.2f}" rx="{h/2:.2f}" fill="{fill}"/>'
+            f'<rect x="{cx+gap:.2f}" y="{ey-h/2:.2f}" width="{w:.2f}" height="{h:.2f}" rx="{h/2:.2f}" fill="{fill}"/>')
+  if kind == "dot":
+    rad, gap = 2.3 * s * 1.5, 3.9 * s * 1.5
+    return f'<circle cx="{cx-gap:.2f}" cy="{ey:.2f}" r="{rad:.2f}" fill="{fill}"/><circle cx="{cx+gap:.2f}" cy="{ey:.2f}" r="{rad:.2f}" fill="{fill}"/>'
+  if kind == "bar":
+    w, h, gap = 3.6 * s, 9.5 * s, 1.9 * s
+    return (f'<rect x="{cx-gap-w:.2f}" y="{ey-h/2:.2f}" width="{w:.2f}" height="{h:.2f}" rx="{w/2:.2f}" fill="{fill}"/>'
+            f'<rect x="{cx+gap:.2f}" y="{ey-h/2:.2f}" width="{w:.2f}" height="{h:.2f}" rx="{w/2:.2f}" fill="{fill}"/>')
+  raise ValueError(kind)
 
-def el(tag, **a):
-  return "<%s %s/>" % (tag, " ".join('%s="%s"' % (k.replace("_","-"), v) for k, v in a.items()))
+def mark_masked(fill="#7A2E86", uid="fm"):
+  """Standalone: gaps and eyes are transparent via masks."""
+  defs, body = [], []
+  for i, (name, cx, cy, r, kind) in enumerate(HEADS):
+    cuts = "".join(f'<circle cx="{fcx}" cy="{fcy}" r="{fr + GAP}" fill="#000"/>' for (_, fcx, fcy, fr, _) in HEADS[i+1:])
+    cuts += eye_shapes(kind, cx, cy, r, "#000")
+    defs.append(f'<mask id="{uid}-{name}"><rect width="64" height="64" fill="#fff"/>{cuts}</mask>')
+    body.append(f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="{fill}" mask="url(#{uid}-{name})"/>')
+  return "<defs>" + "".join(defs) + "</defs>" + "".join(body)
 
-def eyes_svg(kind, uid, eye_top, eye_bottom, light):
-  out = []
-  for i, (tag, a) in enumerate(EYES[kind]):
-    # bevel lip: a lighter copy nudged down, behind the socket
-    b = dict(a); 
-    if tag == "rect": b["y"] = a["y"] + 0.9
-    elif tag == "circle": b["cy"] = a["cy"] + 0.9
-    else: b["transform"] = "translate(0 0.9)"
-    out.append(el(tag, fill=light, fill_opacity="0.55", **b))
-    out.append(el(tag, fill="url(#%s-eye)" % uid, **a))
-    # inner top shadow of the socket
-    c = dict(a)
-    if tag == "rect": c["height"] = min(a["height"], 4); c["fill"] = "url(#%s-eyeshade)" % uid
-    elif tag == "circle": c["r"] = a["r"]; c["fill"] = "url(#%s-eyeshade)" % uid
-    else: c["fill"] = "url(#%s-eyeshade)" % uid
-    out.append(el(tag, **c))
-    # glint
-    if tag == "rect":
-      out.append(el("ellipse", cx=a["x"]+a["width"]*0.62, cy=a["y"]+2.4, rx=0.9, ry=1.3, fill="#fff", fill_opacity="0.75"))
-    elif tag == "circle":
-      out.append(el("circle", cx=a["cx"]+1.2, cy=a["cy"]-1.4, r=0.9, fill="#fff", fill_opacity="0.75"))
-  return "\n    ".join(out)
+def mark_inline(cut="var(--cut, #F7F5F2)", uid="fi", track=True):
+  """Inline: gaps and eyes painted in a CSS colour; each eye pair in a movable group."""
+  layers = []
+  for i, (name, cx, cy, r, kind) in enumerate(HEADS):
+    if i > 0:
+      layers.append(f'<circle cx="{cx}" cy="{cy}" r="{r + GAP}" fill="{cut}"/>')
+    layers.append(f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="currentColor"/>')
+    s = r / 19.0
+    ey = cy - 3 * s
+    rng = f' data-range="{2.4*s:.2f}" data-cx="{cx + EYE_DX[name]:.2f}" data-cy="{ey:.2f}"' if track else ""
+    layers.append(f'<g class="eyes eyes-{name}"{rng}>{eye_shapes(kind, cx, cy, r, cut)}</g>')
+  return "".join(layers)
 
-def mark(finish="plum", eyes="bars", uid=None, size=64, depth=3.2, standalone=True, ground=True):
-  light, base, dark, side, eye_top, eye_bottom = FINISH[finish]
-  uid = uid or f"f-{finish}-{eyes}"
-  steps = 8
-  ext = "\n    ".join(
-    f'<path d="{HEAD}" fill="{side}" transform="translate({depth*(i+1)/steps*0.7:.2f} {depth*(i+1)/steps:.2f})"/>'
-    for i in range(steps))
-  defs = f'''<defs>
-    <linearGradient id="{uid}-face" x1="0" y1="0" x2="0.25" y2="1">
-      <stop offset="0" stop-color="{light}"/><stop offset="0.45" stop-color="{base}"/><stop offset="1" stop-color="{dark}"/>
-    </linearGradient>
-    <radialGradient id="{uid}-spec" cx="0.3" cy="0.18" r="0.55">
-      <stop offset="0" stop-color="#fff" stop-opacity="0.55"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.12"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
-    </radialGradient>
-    <linearGradient id="{uid}-rim" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#fff" stop-opacity="0.7"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.08"/><stop offset="1" stop-color="{light}" stop-opacity="0.35"/>
-    </linearGradient>
-    <linearGradient id="{uid}-ao" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.28"/>
-    </linearGradient>
-    <linearGradient id="{uid}-eye" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="{eye_top}"/><stop offset="1" stop-color="{eye_bottom}"/>
-    </linearGradient>
-    <linearGradient id="{uid}-eyeshade" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#000" stop-opacity="0.55"/><stop offset="1" stop-color="#000" stop-opacity="0"/>
-    </linearGradient>
-    <clipPath id="{uid}-clip"><path d="{HEAD}"/></clipPath>
-    <filter id="{uid}-soft" x="-20%" y="-20%" width="140%" height="160%"><feGaussianBlur stdDeviation="1.6"/></filter>
-  </defs>'''
-  groundel = f'<ellipse cx="34" cy="62.2" rx="20" ry="1.8" fill="{side}" fill-opacity="0.28" filter="url(#{uid}-soft)"/>' if ground else ""
-  body = f'''{groundel}
-    {ext}
-    <path d="{HEAD}" fill="url(#{uid}-face)"/>
-    <path d="{HEAD}" fill="url(#{uid}-spec)"/>
-    <path d="{HEAD}" fill="url(#{uid}-ao)"/>
-    <g clip-path="url(#{uid}-clip)"><path d="{HEAD}" fill="none" stroke="url(#{uid}-rim)" stroke-width="2.2"/></g>
-    {eyes_svg(eyes, uid, eye_top, eye_bottom, light)}'''
-  if not standalone:
-    return defs, body
-  return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="{size}" height="{size}" role="img" aria-label="Folks">
-  <title>Folks mark ({finish}, {eyes})</title>
-  {defs}
-  <g>
-    {body}
-  </g>
-</svg>
-'''
+def head_single(kind, fill="#7A2E86", uid="fh", cut=None):
+  """One head, centred, for persona chips and avatars. cut=None → masked (transparent eyes)."""
+  cx, cy, r = 32, 32, 26
+  if cut is None:
+    return (f'<defs><mask id="{uid}"><rect width="64" height="64" fill="#fff"/>{eye_shapes(kind, cx, cy, r, "#000")}</mask></defs>'
+            f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="{fill}" mask="url(#{uid})"/>')
+  return f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="currentColor"/><g class="eyes">{eye_shapes(kind, cx, cy, r, cut)}</g>'
 
-# Usage:  python3 gen.py <brand-dir> brand     — rewrite every SVG in brand/ and
-#         emit ../_symbols.html (the inline <symbol> block to paste into the pages).
+def svg(inner, vb="0 0 64 64", w=64, h=64, label="Folks"):
+  return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{vb}" width="{w}" height="{h}" role="img" aria-label="{label}">\n  {inner}\n</svg>\n'
 
-# ---------------------------------------------------------------- emitters
-PERSONAS = [("plum","bars","ops"),("marigold","dots","docs"),("blue","dash","data"),("coral","arrows","sec")]
+PERSONAS = [("ops", "bar", "#7A2E86"), ("docs", "dot", "#F5B31B"), ("data", "dash", "#1B7BE0"), ("sec", "tri", "#F0553B")]
 
 def symbols():
-  """<symbol> block for inline use. Gradient ids are namespaced per finish."""
-  out = []
-  for finish, eyes, _ in PERSONAS + [("ink","bars","ink")]:
-    defs, body = mark(finish, eyes, uid=f"f3-{finish}", standalone=False, ground=False)
-    out.append(f'<symbol id="folk-{finish}" viewBox="0 0 64 64">{defs}{body}</symbol>')
+  out = [f'<symbol id="folks-mark" viewBox="0 0 64 64">{mark_inline()}</symbol>']
+  for slug, kind, _ in PERSONAS:
+    out.append(f'<symbol id="folk-{slug}" viewBox="0 0 64 64">{head_single(kind, cut="var(--cut, #F7F5F2)")}</symbol>')
   return "\n".join(out)
 
-def flat(color="#17141F"):
-  return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Folks">
-  <title>Folks mark, flat (single colour: print, favicons, monochrome contexts)</title>
-  <path fill="{color}" d="{HEAD}"/>
-  <rect x="23" y="18" width="6" height="14" rx="3" fill="#F7F5F2"/><rect x="35" y="18" width="6" height="14" rx="3" fill="#F7F5F2"/>
-</svg>
-'''
+def favicon():
+  return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#F7F5F2"/>'
+          f'<g transform="translate(3 3) scale(0.9)">{mark_masked(uid="fav")}</g></svg>\n')
 
 def lockup():
-  parts = []
-  for i, (finish, eyes, _) in enumerate([("blue","dash",0),("marigold","dots",0),("plum","bars",0)]):
-    defs, body = mark(finish, eyes, uid=f"lk-{finish}", standalone=False, ground=False)
-    sc = [0.72, 0.86, 1.0][i]; tx = [96, 50, 0][i]; ty = [(64-64*sc)/2, (64-64*sc)/2, 0][i]
-    parts.append(f'{defs}<g transform="translate({tx} {ty:.1f}) scale({sc})"><path d="{HEAD}" fill="#F7F5F2" transform="translate(-3.5 -3) scale(1.11)"/>{body}</g>')
-  return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 176 68" width="176" height="68" role="img" aria-label="Folks">
-  <title>Folks lockup: three folks stacked like thread participants</title>
-  {"".join(parts)}
-</svg>
-'''
+  # mark + wordmark placeholder rendered in the page's display face; SVG file uses a system fallback stack
+  return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 64" width="200" height="64" role="img" aria-label="Folks">'
+          f'<g>{mark_masked(uid="lk")}</g>'
+          f'<text x="72" y="45" font-family="Bricolage Grotesque, Avenir Next, Segoe UI, system-ui, sans-serif" font-weight="700" font-size="38" letter-spacing="-1.2" fill="#7A2E86">Folks</text></svg>\n')
 
-def favicon():
-  defs, body = mark("plum", "bars", uid="fav", standalone=False, ground=False)
-  return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">{defs}<rect width="64" height="64" rx="14" fill="#F7F5F2"/><g transform="translate(4 3) scale(0.88)">{body}</g></svg>
-'''
-
-if __name__ == "__main__" and len(sys.argv) > 2 and sys.argv[2] == "brand":  # noqa
+if __name__ == "__main__" and len(sys.argv) > 2 and sys.argv[2] == "brand":
   b = sys.argv[1]
-  open(os.path.join(b, "folks-mark.svg"), "w").write(mark("plum", "bars", uid="folks"))
-  open(os.path.join(b, "folks-mark-ink.svg"), "w").write(mark("ink", "bars", uid="folks-ink"))
-  open(os.path.join(b, "folks-mark-flat.svg"), "w").write(flat())
-  for finish, eyes, slug in PERSONAS:
-    open(os.path.join(b, f"persona-{slug}.svg"), "w").write(mark(finish, eyes, uid=f"p-{slug}"))
+  open(os.path.join(b, "folks-mark.svg"), "w").write(svg(mark_masked(), label="Folks mark"))
+  open(os.path.join(b, "folks-mark-ink.svg"), "w").write(svg(mark_masked("#17141F", "fmi"), label="Folks mark, ink"))
+  open(os.path.join(b, "folks-mark-paper.svg"), "w").write(svg(mark_masked("#F7F5F2", "fmp"), label="Folks mark, paper (for dark grounds)"))
+  for slug, kind, col in PERSONAS:
+    open(os.path.join(b, f"persona-{slug}.svg"), "w").write(svg(head_single(kind, col, f"p-{slug}"), label=f"Folks persona: {slug}"))
   open(os.path.join(b, "folks-lockup.svg"), "w").write(lockup())
   open(os.path.join(b, "favicon.svg"), "w").write(favicon())
   open(os.path.join(b, "..", "_symbols.html"), "w").write(symbols())
