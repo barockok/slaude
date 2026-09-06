@@ -1,3 +1,3 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Folks persona: data">
-  <defs><mask id="p-data"><rect width="64" height="64" fill="#fff"/><rect x="16.34" y="24.67" width="12.61" height="5.65" rx="2.83" fill="#000"/><rect x="35.05" y="24.67" width="12.61" height="5.65" rx="2.83" fill="#000"/></mask></defs><circle cx="32" cy="32" r="28.5" fill="#1B7BE0" mask="url(#p-data)"/>
+  <defs><mask id="p-data"><rect width="64" height="64" fill="#fff"/><rect x="16.88" y="24.02" width="12.18" height="5.46" rx="2.73" fill="#000"/><rect x="34.94" y="24.02" width="12.18" height="5.46" rx="2.73" fill="#000"/></mask></defs><circle cx="32" cy="32" r="28.5" fill="#1B7BE0" mask="url(#p-data)"/>
 </svg>

@@ -85,7 +85,7 @@ ships as a size ladder, all from the same geometry in `gen.py`:
 Every tier is fitted so the union of its heads fills the 64-frame with a
 1.5-unit margin. Wasted margin was the first thing that killed the 24 px read.
 An interactive bench for these values is linked from the session that made
-them; the shipped constants are `GAP = 2.4` and `EYE_SCALE = 1.45`.
+them; the shipped constants are `GAP = 3.4`, `EYE_SCALE = 1.4`, `EYE_Y = -3.5`, a zero margin on the full tier, and head radii 21 / 16.5 / 12 (back / left / front).
 
 ### Lockup and favicon
 

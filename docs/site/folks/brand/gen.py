@@ -24,10 +24,14 @@ import sys, os
 #   tiny  (1 head)  reads at 16 px           → favicon, tab, 16 px UI
 # Every tier is fitted so the union of its heads fills the 64-frame with a
 # 1.5-unit margin; wasted margin was the first thing that killed the 24 px read.
-GAP = 2.4
-EYE_SCALE = 1.45
+GAP = 3.4
+EYE_SCALE = 1.4
+EYE_Y = -3.5  # eye line, in 19-unit-head units above centre
+# Tuned 2026-09-06 on the interactive bench: spread 1.25 around the frame
+# centre is folded into the full-tier positions below; margin 0 for full.
+MARGIN = {"full": 0, "small": 1.5, "tiny": 1.5}
 TIERS = {
-  "full":  [("back", 41, 26, 18.5, "tri"), ("left", 20, 34, 14, "dash"), ("front", 31, 46.5, 11.5, "dot")],
+  "full":  [("back", 43.25, 24.5, 21, "tri"), ("left", 17, 34.5, 16.5, "dash"), ("front", 30.75, 50.125, 12, "dot")],
   "small": [("back", 38, 27, 21, "tri"), ("front", 25, 43, 15, "dot")],
   "tiny":  [("front", 32, 32, 28, "dot")],
 }
@@ -42,12 +46,12 @@ def fit(heads, margin=1.5):
   ox, oy = min(xs) + w / 2, min(ys) + h / 2
   return [(n, round(32 + (cx - ox) * k, 2), round(32 + (cy - oy) * k, 2), round(r * k, 2), kind) for n, cx, cy, r, kind in heads]
 
-HEADS = fit(TIERS["full"])
+HEADS = fit(TIERS["full"], MARGIN["full"])
 EYE_DX = dict(EYE_DX_BY_TIER["full"])
 
 def use_tier(name):
   global HEADS, EYE_DX
-  HEADS = fit(TIERS[name])
+  HEADS = fit(TIERS[name], MARGIN[name])
   EYE_DX = dict(EYE_DX_BY_TIER[name])
 
 def kind_head_lookup(cx, cy):
@@ -58,7 +62,7 @@ def kind_head_lookup(cx, cy):
 def eye_shapes(kind, cx, cy, r, fill):
   """Eye geometry for a head of radius r centred on (cx, cy). Returns (svg, centres)."""
   s0 = r / 19.0  # scale relative to a 19-unit head
-  ey = cy - 3 * s0
+  ey = cy + EYE_Y * s0
   s = s0 * EYE_SCALE
   cx = cx + EYE_DX.get(kind_head_lookup(cx, cy), 0) * s0
   if kind == "tri":
@@ -97,7 +101,7 @@ def mark_inline(cut="var(--cut, #F7F5F2)", uid="fi", track=True):
       layers.append(f'<circle cx="{cx}" cy="{cy}" r="{r + GAP}" fill="{cut}"/>')
     layers.append(f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="currentColor"/>')
     s = r / 19.0
-    ey = cy - 3 * s
+    ey = cy + EYE_Y * s
     rng = f' data-range="{2.4*s:.2f}" data-cx="{cx + EYE_DX[name]:.2f}" data-cy="{ey:.2f}"' if track else ""
     layers.append(f'<g class="eyes eyes-{name}"{rng}>{eye_shapes(kind, cx, cy, r, cut)}</g>')
   return "".join(layers)
