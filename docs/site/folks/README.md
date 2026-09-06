@@ -70,6 +70,23 @@ one colour. The persona is a *role*, never a person.
 The mark carries three of the four eye sets; Ops (bars) is the one it leaves
 out. A new persona is a new eye set in `eye_shapes()` and a new colour.
 
+### Small sizes
+
+Tested pixel by pixel (1× raster, magnified): three heads read down to 24 px,
+two heads hold at 20 px, one head is all that survives at 16 px. So the mark
+ships as a size ladder, all from the same geometry in `gen.py`:
+
+| Tier | Heads | Use at | File · symbol |
+|---|---|---|---|
+| full | 3 | 24 px and up: hero, nav, lockup, avatars | `folks-mark.svg` · `#folks-mark` |
+| small | 2 | 20 to 23 px: dense lists, compact avatars | `folks-mark-small.svg` · `#folks-mark-small` |
+| tiny | 1 | 16 px: favicon, tab, tiny UI | `folks-mark-tiny.svg` (this is `favicon.svg`) |
+
+Every tier is fitted so the union of its heads fills the 64-frame with a
+1.5-unit margin. Wasted margin was the first thing that killed the 24 px read.
+An interactive bench for these values is linked from the session that made
+them; the shipped constants are `GAP = 2.4` and `EYE_SCALE = 1.45`.
+
 ### Lockup and favicon
 
 `brand/folks-lockup.svg` is the mark plus the word set in Bricolage Grotesque

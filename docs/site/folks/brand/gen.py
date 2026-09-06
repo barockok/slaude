@@ -18,13 +18,37 @@ inline symbols paint them in a CSS colour so the eyes can be animated.
 """
 import sys, os
 
-GAP = 1.6
-HEADS = [  # name, cx, cy, r, eye kind
-  ("back",  40, 27, 19, "tri"),
-  ("left",  21, 33, 14, "dash"),
-  ("front", 31, 45, 11, "dot"),
-]
-EYE_DX = {"back": 5.5, "left": -0.5, "front": 0}  # where each head looks, in frame units
+# Size ladder. Tested pixel-by-pixel (docs/site/folks/README.md, "Small sizes"):
+#   full  (3 heads) reads down to 24 px      → mark, lockup, hero, nav
+#   small (2 heads) reads at 20–23 px        → compact avatars, list icons
+#   tiny  (1 head)  reads at 16 px           → favicon, tab, 16 px UI
+# Every tier is fitted so the union of its heads fills the 64-frame with a
+# 1.5-unit margin; wasted margin was the first thing that killed the 24 px read.
+GAP = 2.4
+EYE_SCALE = 1.45
+TIERS = {
+  "full":  [("back", 41, 26, 18.5, "tri"), ("left", 20, 34, 14, "dash"), ("front", 31, 46.5, 11.5, "dot")],
+  "small": [("back", 38, 27, 21, "tri"), ("front", 25, 43, 15, "dot")],
+  "tiny":  [("front", 32, 32, 28, "dot")],
+}
+EYE_DX_BY_TIER = {"full": {"back": 5.0, "left": -0.5, "front": 0}, "small": {"back": 6.0, "front": 0}, "tiny": {"front": 0}}
+
+def fit(heads, margin=1.5):
+  """Scale and centre a head list so its bounding box fills the frame."""
+  xs = [cx - r for _, cx, _, r, _ in heads] + [cx + r for _, cx, _, r, _ in heads]
+  ys = [cy - r for _, _, cy, r, _ in heads] + [cy + r for _, _, cy, r, _ in heads]
+  w, h = max(xs) - min(xs), max(ys) - min(ys)
+  k = (64 - 2 * margin) / max(w, h)
+  ox, oy = min(xs) + w / 2, min(ys) + h / 2
+  return [(n, round(32 + (cx - ox) * k, 2), round(32 + (cy - oy) * k, 2), round(r * k, 2), kind) for n, cx, cy, r, kind in heads]
+
+HEADS = fit(TIERS["full"])
+EYE_DX = dict(EYE_DX_BY_TIER["full"])
+
+def use_tier(name):
+  global HEADS, EYE_DX
+  HEADS = fit(TIERS[name])
+  EYE_DX = dict(EYE_DX_BY_TIER[name])
 
 def kind_head_lookup(cx, cy):
   for name, hx, hy, _, _ in HEADS:
@@ -33,16 +57,17 @@ def kind_head_lookup(cx, cy):
 
 def eye_shapes(kind, cx, cy, r, fill):
   """Eye geometry for a head of radius r centred on (cx, cy). Returns (svg, centres)."""
-  s = r / 19.0  # scale relative to the back head
-  ey = cy - 3 * s
-  cx = cx + EYE_DX.get(kind_head_lookup(cx, cy), 0)
+  s0 = r / 19.0  # scale relative to a 19-unit head
+  ey = cy - 3 * s0
+  s = s0 * EYE_SCALE
+  cx = cx + EYE_DX.get(kind_head_lookup(cx, cy), 0) * s0
   if kind == "tri":
-    w, h, gap = 5.6 * s, 5.6 * s, 1.6 * s
+    w, h, gap = 5.6 * s, 5.4 * s, 1.6 * s
     l = f'<path d="M{cx-gap-w:.2f} {ey-h/2:.2f}L{cx-gap:.2f} {ey:.2f}L{cx-gap-w:.2f} {ey+h/2:.2f}Z" fill="{fill}"/>'
     rr = f'<path d="M{cx+gap+w:.2f} {ey-h/2:.2f}L{cx+gap:.2f} {ey:.2f}L{cx+gap+w:.2f} {ey+h/2:.2f}Z" fill="{fill}"/>'
     return l + rr
   if kind == "dash":
-    w, h, gap = 5.8 * s, 2.4 * s, 1.4 * s
+    w, h, gap = 5.8 * s, 2.6 * s, 1.4 * s
     return (f'<rect x="{cx-gap-w:.2f}" y="{ey-h/2:.2f}" width="{w:.2f}" height="{h:.2f}" rx="{h/2:.2f}" fill="{fill}"/>'
             f'<rect x="{cx+gap:.2f}" y="{ey-h/2:.2f}" width="{w:.2f}" height="{h:.2f}" rx="{h/2:.2f}" fill="{fill}"/>')
   if kind == "dot":
@@ -79,7 +104,7 @@ def mark_inline(cut="var(--cut, #F7F5F2)", uid="fi", track=True):
 
 def head_single(kind, fill="#7A2E86", uid="fh", cut=None):
   """One head, centred, for persona chips and avatars. cut=None → masked (transparent eyes)."""
-  cx, cy, r = 32, 32, 26
+  cx, cy, r = 32, 32, 28.5
   if cut is None:
     return (f'<defs><mask id="{uid}"><rect width="64" height="64" fill="#fff"/>{eye_shapes(kind, cx, cy, r, "#000")}</mask></defs>'
             f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="{fill}" mask="url(#{uid})"/>')
@@ -91,14 +116,21 @@ def svg(inner, vb="0 0 64 64", w=64, h=64, label="Folks"):
 PERSONAS = [("ops", "bar", "#7A2E86"), ("docs", "dot", "#F5B31B"), ("data", "dash", "#1B7BE0"), ("sec", "tri", "#F0553B")]
 
 def symbols():
+  use_tier("full")
   out = [f'<symbol id="folks-mark" viewBox="0 0 64 64">{mark_inline()}</symbol>']
+  use_tier("small")
+  out.append(f'<symbol id="folks-mark-small" viewBox="0 0 64 64">{mark_inline(track=False)}</symbol>')
+  use_tier("full")
   for slug, kind, _ in PERSONAS:
     out.append(f'<symbol id="folk-{slug}" viewBox="0 0 64 64">{head_single(kind, cut="var(--cut, #F7F5F2)")}</symbol>')
   return "\n".join(out)
 
 def favicon():
-  return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#F7F5F2"/>'
-          f'<g transform="translate(3 3) scale(0.9)">{mark_masked(uid="fav")}</g></svg>\n')
+  """Tabs render at 16–32 px: the one-head tier, no tile (a tile steals pixels)."""
+  use_tier("tiny")
+  out = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">{mark_masked(uid="fav")}</svg>\n'
+  use_tier("full")
+  return out
 
 def lockup():
   # mark + wordmark placeholder rendered in the page's display face; SVG file uses a system fallback stack
@@ -108,9 +140,15 @@ def lockup():
 
 if __name__ == "__main__" and len(sys.argv) > 2 and sys.argv[2] == "brand":
   b = sys.argv[1]
+  use_tier("full")
   open(os.path.join(b, "folks-mark.svg"), "w").write(svg(mark_masked(), label="Folks mark"))
   open(os.path.join(b, "folks-mark-ink.svg"), "w").write(svg(mark_masked("#17141F", "fmi"), label="Folks mark, ink"))
   open(os.path.join(b, "folks-mark-paper.svg"), "w").write(svg(mark_masked("#F7F5F2", "fmp"), label="Folks mark, paper (for dark grounds)"))
+  use_tier("small")
+  open(os.path.join(b, "folks-mark-small.svg"), "w").write(svg(mark_masked(uid="fms"), label="Folks mark, small (20–23 px)"))
+  use_tier("tiny")
+  open(os.path.join(b, "folks-mark-tiny.svg"), "w").write(svg(mark_masked(uid="fmt"), label="Folks mark, tiny (16 px)"))
+  use_tier("full")
   for slug, kind, col in PERSONAS:
     open(os.path.join(b, f"persona-{slug}.svg"), "w").write(svg(head_single(kind, col, f"p-{slug}"), label=f"Folks persona: {slug}"))
   open(os.path.join(b, "folks-lockup.svg"), "w").write(lockup())
