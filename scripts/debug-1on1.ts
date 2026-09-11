@@ -1,7 +1,7 @@
 // Deterministic probe of the /1on1 OAuth-isolation path — run INSIDE the Linux
 // container against /data. No LLM, no REPL: exercises the exact lock lookup +
 // config-dir resolution the AgentManager does at session boot.
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync, readlinkSync, readdirSync } from "node:fs";
 import { paths } from "../src/config/home";
 import * as Sessions from "../src/db/sessions";
 import * as OneOnOne from "../src/db/one-on-one";
@@ -47,6 +47,30 @@ L("initiator .credentials.json", dir ? existsSync(dir + "/.credentials.json") : 
 L("initiator .claude.json", dir ? existsSync(dir + "/.claude.json") : "n/a");
 L("initiator settings.json (seeded)", dir ? existsSync(dir + "/settings.json") : "n/a");
 
+// Transcript home: the dimension that decides whether `resume` finds anything.
+// The CLI keys transcripts off $CLAUDE_CONFIG_DIR/projects/<cwd-slug>/<id>.jsonl,
+// so a locked thread only keeps its history while the initiator home's projects/
+// resolves to the SAME tree an unlocked turn writes to.
+console.log("\n--- TRANSCRIPT HOME (resume depends on this) ---");
+const agentProjects = agentConfigDir() + "/projects";
+const initProjects = dir ? dir + "/projects" : null;
+L("agent projects/", agentProjects);
+L("agent projects/ exists", existsSync(agentProjects));
+if (initProjects) {
+  const st = (() => { try { return lstatSync(initProjects); } catch { return null; } })();
+  const kind = !st ? "MISSING" : st.isSymbolicLink() ? "symlink" : "REAL DIR (legacy shard)";
+  L("initiator projects/", initProjects);
+  L("  kind", kind);
+  if (st?.isSymbolicLink()) {
+    const target = readlinkSync(initProjects);
+    L("  -> target", target);
+    L("  target resolves", existsSync(initProjects) ? "yes" : "NO — DANGLING (resume always misses)");
+    L("  points at agent home", target === agentProjects);
+  }
+  const parked = (() => { try { return readdirSync(dir!).filter((n) => n.startsWith("projects.legacy-")); } catch { return []; } })();
+  if (parked.length) L("  parked legacy dirs", parked.join(", "));
+}
+
 console.log("\n--- /1on1 OFF ---");
 await OneOnOne.unlock("D0SIM", "T1");
 lock = await lookup();
@@ -55,3 +79,5 @@ L("configDir override", resolveSessionConfigDir(lock?.locked_user) ?? "(none →
 
 console.log("\nVERDICT: locked → override points at initiator dir with NO .credentials.json");
 console.log("         → on Linux the CLI has no workbench token there → disconnected. Mechanism OK.");
+console.log("         projects/ must be a symlink that RESOLVES onto the agent tree —");
+console.log("         MISSING / DANGLING / REAL DIR all mean every locked resume cold-starts.");
