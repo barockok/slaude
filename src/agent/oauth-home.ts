@@ -14,7 +14,20 @@
  * initiator's tokens instead of the agent's. Unlocked sessions inherit the
  * agent's config dir unchanged.
  */
-import { mkdirSync, existsSync, lstatSync, readlinkSync, unlinkSync, copyFileSync, symlinkSync } from "node:fs";
+import {
+  mkdirSync,
+  existsSync,
+  lstatSync,
+  readlinkSync,
+  unlinkSync,
+  copyFileSync,
+  symlinkSync,
+  readdirSync,
+  renameSync,
+  cpSync,
+  rmSync,
+  type Stats,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { paths } from "../config/home";
@@ -24,6 +37,115 @@ import { paths } from "../config/home";
  *  symlink in initiator dirs always targets the same location as unlocked sessions. */
 export function agentConfigDir(): string {
   return process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+}
+
+/** lstat that reports the LINK itself (never its target) and never throws.
+ *  null = nothing at this path. */
+function lstatOrNull(p: string): Stats | null {
+  try {
+    return lstatSync(p);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Idempotently point `link` at `target`. Returns false when the path is
+ * occupied by a real file/dir (the caller owns that decision).
+ *
+ * Deliberately lstat-based, NOT existsSync-based: existsSync follows symlinks,
+ * so a link whose target no longer exists (an agent home that moved — e.g. the
+ * old `$SLAUDE_HOME/.claude` from before agentConfigDir() was fixed to
+ * `~/.claude`) reads as "missing". The old code then took the create branch,
+ * symlinkSync threw EEXIST on the link that WAS there, the error was swallowed,
+ * and the dangling link survived every subsequent boot. For `projects/` that
+ * means a locked thread has nowhere to write its transcript, so every /1on1
+ * resume cold-starts with no history — silently, since a resume miss is a
+ * suppressed, self-healing condition upstream.
+ */
+function ensureSymlink(target: string, link: string): boolean {
+  const st = lstatOrNull(link);
+  if (st?.isSymbolicLink()) {
+    let current: string | null = null;
+    try {
+      current = readlinkSync(link);
+    } catch {
+      /* unreadable link — replace it */
+    }
+    if (current === target) return true;
+    try {
+      unlinkSync(link);
+    } catch (e) {
+      console.warn(`[1on1] could not unlink stale ${link}:`, (e as Error).message);
+      return false;
+    }
+  } else if (st) {
+    return false; // real file/dir — not ours to replace
+  }
+  try {
+    symlinkSync(target, link, "dir");
+    return true;
+  } catch (e) {
+    console.warn(`[1on1] could not link ${link} -> ${target}:`, (e as Error).message);
+    return false;
+  }
+}
+
+/** rename, falling back to copy+remove across devices (SLAUDE_HOME and the
+ *  agent config home can sit on different mounts). */
+function moveNode(from: string, to: string): void {
+  try {
+    renameSync(from, to);
+    return;
+  } catch {
+    /* EXDEV / busy — copy instead */
+  }
+  cpSync(from, to, { recursive: true });
+  rmSync(from, { recursive: true, force: true });
+}
+
+/** Merge `srcDir` into `dstDir` without ever overwriting. Directories present on
+ *  both sides are merged recursively; a leaf that already exists in `dstDir`
+ *  keeps the dst copy and the src copy is parked under `parked` rather than
+ *  dropped. */
+function mergeInto(srcDir: string, dstDir: string, parked: string): void {
+  mkdirSync(dstDir, { recursive: true });
+  for (const name of readdirSync(srcDir)) {
+    const from = join(srcDir, name);
+    const to = join(dstDir, name);
+    const fromSt = lstatOrNull(from);
+    const toSt = lstatOrNull(to);
+    if (toSt && fromSt?.isDirectory() && toSt.isDirectory()) {
+      mergeInto(from, to, join(parked, name));
+      continue;
+    }
+    if (toSt) {
+      // Same session id in both homes: the base home is the one unlocked turns
+      // read, so it wins — but the legacy copy is parked, never deleted.
+      mkdirSync(parked, { recursive: true });
+      moveNode(from, join(parked, name));
+      continue;
+    }
+    moveNode(from, to);
+  }
+}
+
+/** Fold a legacy REAL projects/ dir in an initiator home into the base
+ *  transcript home so resume finds those transcripts after a lock flip, then
+ *  clear the path for the symlink. Leaves everything in place on failure —
+ *  the caller's ensureSymlink then declines and behavior is as before. */
+function migrateLegacyProjects(dstProjects: string, srcProjects: string, dir: string): void {
+  const parked = join(dir, `projects.legacy-${Date.now()}`);
+  try {
+    mergeInto(dstProjects, srcProjects, parked);
+    rmSync(dstProjects, { recursive: true, force: true });
+    console.log(`[1on1] migrated legacy transcripts ${dstProjects} -> ${srcProjects}`);
+    if (existsSync(parked)) {
+      console.warn(`[1on1] conflicting legacy transcripts parked at ${parked} (base home kept)`);
+    }
+  } catch (e) {
+    console.warn(`[1on1] legacy projects/ migration failed for ${dir}:`, (e as Error).message);
+  }
 }
 
 /** Seed a config dir with the non-secret settings + plugins from `src` (copy
@@ -38,11 +160,11 @@ function seedConfigDir(dir: string, src: string): void {
     if (existsSync(s) && !existsSync(d)) copyFileSync(s, d);
   }
   // plugins/ — symlink (read-only share; plugin code lives in the agent home).
+  // Repaired on every call for the same reason projects/ is: a link left
+  // dangling by a moved agent home would otherwise cost the locked session its
+  // skills and plugins for good.
   const srcPlugins = join(src, "plugins");
-  const dstPlugins = join(dir, "plugins");
-  if (existsSync(srcPlugins) && !existsSync(dstPlugins)) {
-    try { symlinkSync(srcPlugins, dstPlugins, "dir"); } catch { /* best-effort */ }
-  }
+  if (existsSync(srcPlugins)) ensureSymlink(srcPlugins, join(dir, "plugins"));
 }
 
 /** A named persona's config home: personas/<name>/.claude. Carries the persona's
@@ -96,34 +218,23 @@ export function ensureInitiatorConfigDir(userId: string, personaName?: string): 
   // CLAUDE_CONFIG_DIR, so without this a /1on1 lock (or unlock) flips the config
   // dir and `resume` searches the wrong home: cold start at lock, stale pre-lock
   // context at unlock. Isolation is for credential stores only — within a persona,
-  // its 1on1 transcripts must stay in the persona's one transcript tree. Created
-  // even when the base has no projects/ yet, so the CLI never writes transcripts
-  // into the initiator dir. A pre-existing real projects/ dir is left as-is.
+  // its 1on1 transcripts must stay in the persona's one transcript tree. The base
+  // projects/ dir is created first so a thread that starts life locked still
+  // writes through the link.
   const srcProjects = join(base, "projects");
   const dstProjects = join(dir, "projects");
-  // Determine whether we need to (re)create the symlink.
-  // Skip if it's already a correct symlink; skip if it's a real dir (legacy
-  // initiator home with transcripts inside — replacing it would orphan them).
-  // Re-create if it's a symlink pointing at the wrong target (stale from before
-  // agentConfigDir() was fixed to return ~/.claude instead of paths.claudeConfig).
-  let needsLink = false;
-  if (!existsSync(dstProjects)) {
-    needsLink = true;
-  } else {
-    try {
-      const st = lstatSync(dstProjects);
-      if (st.isSymbolicLink() && readlinkSync(dstProjects) !== srcProjects) {
-        unlinkSync(dstProjects);
-        needsLink = true;
-      }
-    } catch { /* leave as-is */ }
+  try {
+    mkdirSync(srcProjects, { recursive: true });
+  } catch (e) {
+    console.warn(`[1on1] could not create ${srcProjects}:`, (e as Error).message);
   }
-  if (needsLink) {
-    try {
-      mkdirSync(srcProjects, { recursive: true });
-      symlinkSync(srcProjects, dstProjects, "dir");
-    } catch { /* best-effort */ }
-  }
+  // A REAL projects/ dir here is a legacy initiator home (transcripts written
+  // before the link existed). Fold it into the base home instead of leaving it
+  // as a permanent shard — an operator who used /1on1 before the fix would
+  // otherwise never heal, which reads exactly like the bug being back.
+  const dstSt = lstatOrNull(dstProjects);
+  if (dstSt && !dstSt.isSymbolicLink()) migrateLegacyProjects(dstProjects, srcProjects, dir);
+  ensureSymlink(srcProjects, dstProjects);
   return dir;
 }
 

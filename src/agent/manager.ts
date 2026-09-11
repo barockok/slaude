@@ -712,7 +712,16 @@ export class AgentManager extends EventEmitter {
         // doesn't have to retry manually.
         if (RESUME_MISS_RE.test(stderrBuf)) {
           retried = true;
-          console.log(`[mgr] clearing stale claude_started + retrying session=${sessionId}`);
+          // Loud on purpose: the user-facing error is suppressed (the reboot
+          // self-heals by reseeding --session-id), so this line is the ONLY
+          // trace that a thread just lost its history. It names the transcript
+          // home because that is where the misses come from — a /1on1 lock
+          // flips CLAUDE_CONFIG_DIR, and a broken projects/ link there means
+          // every locked resume cold-starts in silence.
+          console.warn(
+            `[mgr] RESUME MISS — no transcript for session=${sessionId}; cold-starting. ` +
+              `cfg=${providerEnv.CLAUDE_CONFIG_DIR ?? "(agent default)"} cwd=${row.working_dir}`,
+          );
           await this.#store.clearStarted(sessionId);
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
