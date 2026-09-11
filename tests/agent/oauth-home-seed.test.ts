@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "bun:test";
-import { mkdirSync, writeFileSync, existsSync, rmSync, lstatSync, realpathSync, symlinkSync, readlinkSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, lstatSync, realpathSync, symlinkSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../../src/config/home";
 import { ensureInitiatorConfigDir } from "../../src/agent/oauth-home";
@@ -69,13 +69,66 @@ describe("ensureInitiatorConfigDir", () => {
     expect(realpathSync(linked)).toBe(realpathSync(agentProjects));
   });
 
-  it("leaves a pre-existing real projects/ dir untouched (legacy initiator home)", () => {
-    mkdirSync(join(dir, "projects"), { recursive: true });
-    writeFileSync(join(dir, "projects", "legacy.jsonl"), "{}");
+  it("repairs a DANGLING symlink whose target has gone away", () => {
+    // Regression: existsSync() follows symlinks, so a link pointing at a config
+    // home that no longer exists read as "missing", symlinkSync then threw
+    // EEXIST into a swallowed catch, and the dangling link survived every boot
+    // — locked threads had nowhere to write a transcript, so every /1on1 resume
+    // silently cold-started. See the 2026-09-11 field note.
+    const agentDir = process.env.CLAUDE_CONFIG_DIR || paths.claudeConfig;
+    const agentProjects = join(agentDir, "projects");
+    mkdirSync(agentProjects, { recursive: true });
+    mkdirSync(dir, { recursive: true });
+    const goneTarget = join(dir, "_gone_target");
+    mkdirSync(goneTarget, { recursive: true });
+    const linked = join(dir, "projects");
+    symlinkSync(goneTarget, linked, "dir");
+    rmSync(goneTarget, { recursive: true, force: true });
+    expect(existsSync(linked)).toBe(false); // dangling: the trap the old guard fell into
 
     ensureInitiatorConfigDir(userId);
 
-    expect(lstatSync(join(dir, "projects")).isSymbolicLink()).toBe(false);
-    expect(existsSync(join(dir, "projects", "legacy.jsonl"))).toBe(true);
+    expect(lstatSync(linked).isSymbolicLink()).toBe(true);
+    expect(realpathSync(linked)).toBe(realpathSync(agentProjects));
   });
+
+  it("migrates a pre-existing real projects/ dir into the base home, then links", () => {
+    // A home that predates the symlink fix must HEAL, not stay sharded forever:
+    // leaving it real meant every later lock flip lost context for that user,
+    // which reads exactly like the original bug never having been fixed.
+    const agentDir = process.env.CLAUDE_CONFIG_DIR || paths.claudeConfig;
+    const agentProjects = join(agentDir, "projects");
+    mkdirSync(agentProjects, { recursive: true });
+    mkdirSync(join(dir, "projects", "-slug"), { recursive: true });
+    writeFileSync(join(dir, "projects", "-slug", "legacy.jsonl"), "LEGACY");
+
+    ensureInitiatorConfigDir(userId);
+
+    const linked = join(dir, "projects");
+    expect(lstatSync(linked).isSymbolicLink()).toBe(true);
+    expect(realpathSync(linked)).toBe(realpathSync(agentProjects));
+    // the legacy transcript moved into the base home — reachable through the link
+    expect(readFileSync(join(agentProjects, "-slug", "legacy.jsonl"), "utf8")).toBe("LEGACY");
+    expect(readFileSync(join(linked, "-slug", "legacy.jsonl"), "utf8")).toBe("LEGACY");
+  });
+
+  it("never overwrites on migration: a colliding transcript is parked, not dropped", () => {
+    const agentDir = process.env.CLAUDE_CONFIG_DIR || paths.claudeConfig;
+    const agentProjects = join(agentDir, "projects");
+    mkdirSync(join(agentProjects, "-slug"), { recursive: true });
+    writeFileSync(join(agentProjects, "-slug", "dup.jsonl"), "BASE");
+    mkdirSync(join(dir, "projects", "-slug"), { recursive: true });
+    writeFileSync(join(dir, "projects", "-slug", "dup.jsonl"), "LEGACY");
+
+    ensureInitiatorConfigDir(userId);
+
+    // base copy wins (it is what unlocked turns read)...
+    expect(readFileSync(join(agentProjects, "-slug", "dup.jsonl"), "utf8")).toBe("BASE");
+    // ...and the legacy copy is parked next to the link, never deleted
+    const parked = readdirSync(dir).find((n) => n.startsWith("projects.legacy-"));
+    expect(parked).toBeDefined();
+    expect(readFileSync(join(dir, parked!, "-slug", "dup.jsonl"), "utf8")).toBe("LEGACY");
+    expect(lstatSync(join(dir, "projects")).isSymbolicLink()).toBe(true);
+  });
+
 });
