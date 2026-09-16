@@ -506,7 +506,9 @@ export async function _wipeForTests(): Promise<void> {
 }
 ```
 
-Check the `RunResult` shape in `src/db/client.ts` before relying on `r.changes`; if the field is named differently, use the real name.
+`RunResult` carries `changes`; the migration runner relies on it at `src/db/migrate.ts:113` (`if (claim.changes === 0) return false;`).
+
+Two conventions this migration follows, confirmed against the existing files: the numbered filename must match `^(\d{4})_([a-z0-9_-]+)\.sql$` or `loadMigrations` silently skips it (`src/db/migrate.ts:36`), and epoch-millisecond columns are `BIGINT` on Postgres. Migrations run on the Postgres path only, which is exactly why the sqlite DDL above is not optional.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1470,20 +1472,31 @@ and add to `AGENT_COMMANDS`:
   { usage: "/link", summary: "connect your account so any agent can use your integrations (replies privately)" },
 ```
 
-In `src/gateway/core/gateway.ts`, add a handler branch beside the `/mcp` branch.
+In `src/gateway/core/gateway.ts`, add a handler branch beside the `/mcp` branch at line 1463. Both branches sit inside `if (slash)` at line 1315, inside `handleMessage` at line 1147, with no intervening function boundary, so every local of `handleMessage` is visible. Two facts settle how to write it:
 
-**Check what is in scope at that branch before writing it.** The `/mcp` branch has `reply`, `userId`, `channelId`, `threadTs`, `session` and `dispatch`. It does not obviously have `surface` or `teamId`. Read the enclosing function and resolve each of the two:
+**`teamId` is already in scope and is already the real workspace id.** It is bound at `gateway.ts:1150` as `context.teamId ?? event.team` and narrowed to `string` by the guard at `:1161` (`if (!teamId || !userId) return;`). It is the same value passed to `agent.ensureSession({ team_id: teamId, ... })`. Use it directly. Do not default it: a wrong team id would mint a token that binds in the wrong workspace, which is exactly what binding the team into the token prevents.
 
-- For the surface, either use the one the enclosing handler already built, or mint one the way the connect flow does with `connectSurface(channelId, threadTs, userId)` near `gateway.ts:752`. Do not construct a second Slack client.
-- For the team id, take it from the same place the dispatch meta does. If it is not in scope, thread it in rather than defaulting it — a wrong team id would mint a token that binds in the wrong workspace, and the token is team-bound precisely to stop that.
+**There is no `surface` in scope,** so build one. Do **not** reuse `connectSurface` at `:749`: it closes over the default `surfaceFactory`, so a named persona would post as the wrong identity, and its `requestApproval` throws by design. Use the persona-aware factory the rest of the file uses:
+
+```ts
+        const linkSurface = surfaceFactoryFor(dispatch?.personaId)({
+          conversationId: channelId,
+          threadRef: threadTs,
+          inboundRef: threadTs,
+          userId,
+          teamId,
+          requestApproval: async () => { throw new Error("approval is not part of /link"); },
+          reloadSession: () => false,
+        });
+```
 
 Reply ephemerally in every path, because both the link and the bound email address are the user's own business:
 
 ```ts
       if (slash.kind === "link") {
         const sayPrivately = async (text: string) => {
-          if (surface.capabilities.has("ephemeral") && surface.sayEphemeral) {
-            await surface.sayEphemeral({ text, userId });
+          if (linkSurface.capabilities.has("ephemeral") && linkSurface.sayEphemeral) {
+            await linkSurface.sayEphemeral({ text, userId });
             return;
           }
           // A surface that cannot keep it private must not leak it: say nothing
