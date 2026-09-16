@@ -139,6 +139,9 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   const store = new RestSessionStore(client);
   /** sessionId → tenant, for runtime-bundle lookups + reload busting. */
   const tenants = new Map<string, string>();
+  /** sessionId → persona. The runtime bundle is per (tenant, persona), so the
+   *  child-env resolver needs both or it would fetch another agent's bundle. */
+  const personas = new Map<string, string>();
   /** sessionId → the current turn's abort controller (shim long-poll teardown). */
   const turnAborts = new Map<string, AbortController>();
   /** Sessions registered warm in the Redis registry by this node. */
@@ -161,7 +164,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     const tenant = tenants.get(sessionId);
     const token = store.tokenFor(sessionId);
     if (!tenant || !token) return undefined;
-    const bundle = await client.getRuntime(tenant, token);
+    const bundle = await client.getRuntime(tenant, personas.get(sessionId) ?? "default", token);
     const creds = bundle.providerCreds ?? {};
     const out: Record<string, string | undefined> = {};
     if (creds.apiKey) out.ANTHROPIC_API_KEY = creds.apiKey;
@@ -298,6 +301,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     }
     store.bindToken(data.sessionId, jobToken);
     tenants.set(data.sessionId, data.tenantId);
+    personas.set(data.sessionId, data.personaId ?? "default");
     // Subscribe reload:<tenant> BEFORE any runtime-bundle fetch for this
     // tenant can happen (the child-env resolver during ensureSession) — a
     // reload published between fetch and a lazy subscribe would leave a
@@ -387,6 +391,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
             warm.delete(sessionId);
             store.unbindToken(sessionId);
             tenants.delete(sessionId);
+            personas.delete(sessionId);
             await registry.unregister(sessionId);
           }
         }

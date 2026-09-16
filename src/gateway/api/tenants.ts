@@ -12,6 +12,8 @@
  * cache it (spec §6).
  */
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { getPersonaRegistry } from "../../persona/registry";
 import { db } from "../../db/schema";
 import { decrypt } from "../../db/crypto";
 import { env } from "../../config/env";
@@ -49,7 +51,30 @@ type PersonaRow = {
 
 type CredRow = { persona_id: string | null; kind: string; value: string };
 
-async function buildBundle(tenantId: string): Promise<RuntimeBundle | null> {
+/** Provider credentials from the process environment — the single-bot fallback,
+ *  shared by the filesystem-persona tier and the default tier. */
+function envProviderCreds(): RuntimeBundle["providerCreds"] {
+  const creds: RuntimeBundle["providerCreds"] = {};
+  if (env.provider.apiKey()) creds.apiKey = env.provider.apiKey();
+  if (env.provider.baseUrl()) creds.baseUrl = env.provider.baseUrl();
+  if (env.provider.authToken()) creds.authToken = env.provider.authToken();
+  if (env.provider.oauthToken()) creds.oauthToken = env.provider.oauthToken();
+  return creds;
+}
+
+/**
+ * Resolve the bundle for one (tenant, persona) pair, in three tiers:
+ *
+ *   1. the persona row in the DB — the eventual source of truth;
+ *   2. the persona directory on disk — what actually drives multi-persona
+ *      deploys today, since nothing populates the persona tables yet;
+ *   3. the env/file fallback, for the implicit `default` persona.
+ *
+ * Selecting the REQUESTED persona is the fix: this previously took whichever
+ * persona sorted first in the tenant, so a second persona could never get its
+ * own bundle.
+ */
+async function buildBundle(tenantId: string, personaId: string): Promise<RuntimeBundle | null> {
   // The tenancy tables exist only on Postgres (P1 migrations). On sqlite the
   // queries throw "no such table" — treat that exactly like an empty registry
   // so the implicit 'default' tenant still serves from the file/env fallback.
@@ -57,11 +82,9 @@ async function buildBundle(tenantId: string): Promise<RuntimeBundle | null> {
   let personas: PersonaRow[] = [];
   try {
     tenant = await db.one<{ id: string }>(`SELECT id FROM tenants WHERE id = ?`, [tenantId]);
-    // Prefer the persona registry: the 'default'-named persona, else the first
-    // by name (single-persona tenants).
     personas = await db.query<PersonaRow>(
-      `SELECT * FROM personas WHERE tenant_id = ? ORDER BY CASE WHEN name = 'default' THEN 0 ELSE 1 END, name LIMIT 1`,
-      [tenantId],
+      `SELECT * FROM personas WHERE tenant_id = ? AND name = ?`,
+      [tenantId, personaId],
     );
   } catch {
     /* sqlite: no tenancy tables */
@@ -98,13 +121,34 @@ async function buildBundle(tenantId: string): Promise<RuntimeBundle | null> {
     };
   }
 
-  // Fallback (today's monolith): env + SOUL.md + mcp.json file loaders for the
+  // Tier 2: the persona directory on disk. Nothing populates the persona tables
+  // yet, so without this a named persona would fall through to the default
+  // bundle and silently run on another agent's soul and skills overlay.
+  if (personaId !== "default") {
+    const fsPersona = getPersonaRegistry().lookupByName(personaId);
+    if (!fsPersona) return null;
+    let personaSoul = "";
+    try {
+      personaSoul = readFileSync(fsPersona.soulPath, "utf8");
+    } catch {
+      /* persona has no readable SOUL.md — bundle ships an empty soul */
+    }
+    return {
+      tenantId,
+      personaId,
+      providerCreds: envProviderCreds(),
+      soulMd: personaSoul,
+      soulJson: null,
+      mcpJson: loadExternalMcp(),
+      skillsPaths: [paths.skills, personaSkillsRoot(personaId)],
+      defaultModel: env.model(),
+    };
+  }
+
+  // Tier 3 (today's monolith): env + SOUL.md + mcp.json file loaders for the
   // default tenant. Non-default tenants must be registered in the tables.
   if (tenantId !== "default") return null;
-  if (env.provider.apiKey()) providerCreds.apiKey = env.provider.apiKey();
-  if (env.provider.baseUrl()) providerCreds.baseUrl = env.provider.baseUrl();
-  if (env.provider.authToken()) providerCreds.authToken = env.provider.authToken();
-  if (env.provider.oauthToken()) providerCreds.oauthToken = env.provider.oauthToken();
+  Object.assign(providerCreds, envProviderCreds());
   let soulMd = "";
   try {
     soulMd = loadSoul();
@@ -129,9 +173,13 @@ async function buildBundle(tenantId: string): Promise<RuntimeBundle | null> {
   };
 }
 
-export async function handleTenantRuntime(req: Request, tenantId: string): Promise<Response> {
-  const bundle = await buildBundle(tenantId);
-  if (!bundle) return notFound("unknown tenant");
+export async function handleTenantRuntime(
+  req: Request,
+  tenantId: string,
+  personaId: string,
+): Promise<Response> {
+  const bundle = await buildBundle(tenantId, personaId);
+  if (!bundle) return notFound("unknown tenant or persona");
   const body = JSON.stringify(bundle);
   const etag = `"${createHash("sha256").update(body).digest("hex")}"`;
   const inm = req.headers.get("if-none-match");

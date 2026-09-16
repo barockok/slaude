@@ -64,7 +64,8 @@ export function createV1Api(opts: V1Options): V1Api {
         return await handleSession(req, seg[2]!, job.claims);
       }
 
-      // /v1/tenants/:id/runtime
+      // /v1/tenants/:id/runtime — legacy alias for the default persona. Kept so
+      // gateway and nodes can roll independently in either order.
       if (seg.length === 4 && seg[1] === "tenants" && seg[3] === "runtime") {
         if (req.method !== "GET") return methodNotAllowed();
         const job = requireJobToken(req);
@@ -72,7 +73,22 @@ export function createV1Api(opts: V1Options): V1Api {
         if (job.claims.tenant !== seg[2]!) {
           return json(403, { error: "job token is not scoped to this tenant" });
         }
-        return await handleTenantRuntime(req, seg[2]!);
+        return await handleTenantRuntime(req, seg[2]!, "default");
+      }
+
+      // /v1/tenants/:id/personas/:persona/runtime — the bundle is per persona,
+      // so the token must be scoped to BOTH dimensions, not just the tenant.
+      if (seg.length === 6 && seg[1] === "tenants" && seg[3] === "personas" && seg[5] === "runtime") {
+        if (req.method !== "GET") return methodNotAllowed();
+        const job = requireJobToken(req);
+        if ("response" in job) return job.response;
+        if (job.claims.tenant !== seg[2]!) {
+          return json(403, { error: "job token is not scoped to this tenant" });
+        }
+        if (job.claims.persona !== seg[4]!) {
+          return json(403, { error: "job token is not scoped to this persona" });
+        }
+        return await handleTenantRuntime(req, seg[2]!, seg[4]!);
       }
 
       // /v1/pending/:id

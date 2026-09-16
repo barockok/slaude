@@ -39,7 +39,7 @@ beforeAll(() => {
         return Response.json({ id: "s1", model: "m", status: "idle" });
       }
       if (url.pathname === "/v1/sessions/missing") return new Response("{}", { status: 404 });
-      if (url.pathname === "/v1/tenants/default/runtime") {
+      if (url.pathname === "/v1/tenants/default/personas/default/runtime") {
         const etag = `"v${runtimeVersion}"`;
         if (req.headers.get("if-none-match") === etag) {
           return new Response(null, { status: 304, headers: { etag } });
@@ -119,20 +119,20 @@ describe("NodeClient", () => {
   test("runtime bundle: ETag cache serves 304 from cache; bust refetches", async () => {
     seen.length = 0;
     const c = client();
-    const b1 = (await c.getRuntime("default", "j")) as any;
+    const b1 = (await c.getRuntime("default", "default", "j")) as any;
     expect(b1.version).toBe(1);
-    const b2 = (await c.getRuntime("default", "j")) as any;
+    const b2 = (await c.getRuntime("default", "default", "j")) as any;
     expect(b2.version).toBe(1); // served via 304 + cache
-    const reqs = seen.filter((s) => s.path === "/v1/tenants/default/runtime");
+    const reqs = seen.filter((s) => s.path === "/v1/tenants/default/personas/default/runtime");
     expect(reqs[1]!.inm).toBe('"v1"');
     // Gateway config changed → new etag → fresh bundle.
     runtimeVersion = 2;
-    const b3 = (await c.getRuntime("default", "j")) as any;
+    const b3 = (await c.getRuntime("default", "default", "j")) as any;
     expect(b3.version).toBe(2);
     // bust drops the cache → next request sends no If-None-Match.
     c.bustRuntime("default");
     seen.length = 0;
-    await c.getRuntime("default", "j");
+    await c.getRuntime("default", "default", "j");
     expect(seen[0]!.inm).toBeNull();
   });
 
@@ -150,5 +150,71 @@ describe("NodeClient", () => {
     const nf = await c.postTool("surface", "unknown", {}, "j");
     expect(nf.isError).toBe(true);
     expect(nf.content[0]!.text).toContain("tool unavailable");
+  });
+});
+
+/**
+ * Caching on the tenant alone handed every session on a node whichever persona
+ * was fetched first — the multi-persona horizontal-scale defect.
+ */
+describe("NodeClient runtime cache keying", () => {
+  function personaClient() {
+    const served: string[] = [];
+    const c = new NodeClient({
+      baseUrl: "http://gw",
+      token: "t",
+      fetchImpl: (async (url: any, init?: any) => {
+        const m = String(url).match(/\/v1\/tenants\/([^/]+)\/personas\/([^/]+)\/runtime/);
+        if (!m) return new Response("not found", { status: 404 });
+        const [, tenant, persona] = m as unknown as [string, string, string];
+        served.push(`${tenant}/${persona}`);
+        const etag = `"${tenant}:${persona}"`;
+        if (init?.headers?.["if-none-match"] === etag) return new Response(null, { status: 304, headers: { etag } });
+        return new Response(
+          JSON.stringify({ tenantId: tenant, personaId: persona, providerCreds: { apiKey: `key-${persona}` } }),
+          { status: 200, headers: { "content-type": "application/json", etag } },
+        );
+      }) as any,
+    });
+    return { c, served };
+  }
+
+  test("two personas of one tenant each get their own bundle", async () => {
+    const { c } = personaClient();
+    expect((await c.getRuntime("default", "aria", "j")).providerCreds.apiKey).toBe("key-aria");
+    expect((await c.getRuntime("default", "other", "j")).providerCreds.apiKey).toBe("key-other");
+  });
+
+  test("two tenants never share a cache entry for the same persona name", async () => {
+    const { c } = personaClient();
+    expect((await c.getRuntime("tenant-one", "aria", "j")).tenantId).toBe("tenant-one");
+    expect((await c.getRuntime("tenant-two", "aria", "j")).tenantId).toBe("tenant-two");
+  });
+
+  test("bust without a persona drops every persona of that tenant", async () => {
+    const { c, served } = personaClient();
+    await c.getRuntime("default", "aria", "j");
+    await c.getRuntime("default", "other", "j");
+    const before = served.length;
+
+    c.bustRuntime("default");
+    await c.getRuntime("default", "aria", "j");
+    await c.getRuntime("default", "other", "j");
+
+    expect(served.length).toBe(before + 2);
+  });
+
+  test("bust with a persona leaves its sibling cached", async () => {
+    const { c, served } = personaClient();
+    await c.getRuntime("default", "aria", "j");
+    await c.getRuntime("default", "other", "j");
+
+    c.bustRuntime("default", "aria");
+    served.length = 0;
+    await c.getRuntime("default", "other", "j");
+
+    // 'other' is still cached, so this is a revalidation that 304s, not a cold fetch.
+    expect(served).toEqual(["default/other"]);
+    expect((await c.getRuntime("default", "other", "j")).providerCreds.apiKey).toBe("key-other");
   });
 });
