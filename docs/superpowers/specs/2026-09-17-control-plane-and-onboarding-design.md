@@ -159,6 +159,16 @@ validated against the `persona` claim already present in the job token. The old
 route is kept as an alias that resolves to the `default` persona, so nodes and
 gateway can be rolled independently.
 
+Implementation note, established by a mutation test rather than by reading: the
+two halves are not equally serious. The **gateway-side resolution** is the
+correctness defect, because a route that carries no persona cannot return the
+right bundle. The **node-side cache key** is an efficiency property. Every fetch
+sends an entity tag and revalidates, so a colliding key still returns the
+correct bundle; what it costs is thrash, since alternating personas evict each
+other and every read pays a full body instead of a not-modified. The acceptance
+test for the key therefore asserts revalidation counts, because an assertion on
+correctness passes with the key deliberately broken.
+
 The bundle then starts carrying what it already computes: soul text, structured
 soul, skills paths, MCP definitions and model become consumed rather than
 discarded, replacing the node's filesystem reads. This is where the persona
