@@ -64,8 +64,13 @@ export function createV1Api(opts: V1Options): V1Api {
         return await handleSession(req, seg[2]!, job.claims);
       }
 
-      // /v1/tenants/:id/runtime — legacy alias for the default persona. Kept so
-      // gateway and nodes can roll independently in either order.
+      // /v1/tenants/:id/runtime — legacy route, kept so gateway and nodes can
+      // roll independently in either order. The persona comes from the token's
+      // own claim rather than a hardcoded "default": a node that predates the
+      // persona route still gets the bundle its job is actually scoped to, and
+      // once persona rows carry their own provider credentials this stops being
+      // a way to read the default persona's credentials with another persona's
+      // token. A default-persona token resolves exactly as it did before.
       if (seg.length === 4 && seg[1] === "tenants" && seg[3] === "runtime") {
         if (req.method !== "GET") return methodNotAllowed();
         const job = requireJobToken(req);
@@ -73,7 +78,7 @@ export function createV1Api(opts: V1Options): V1Api {
         if (job.claims.tenant !== seg[2]!) {
           return json(403, { error: "job token is not scoped to this tenant" });
         }
-        return await handleTenantRuntime(req, seg[2]!, "default");
+        return await handleTenantRuntime(req, seg[2]!, job.claims.persona || "default");
       }
 
       // /v1/tenants/:id/personas/:persona/runtime — the bundle is per persona,

@@ -67,6 +67,17 @@ describe("per-persona runtime route", () => {
     expect(((await res!.json()) as any).personaId).toBe("default");
   });
 
+  // Before: the legacy route hardcoded "default", so a token scoped to a named
+  // persona could read the default persona's bundle. Harmless while every
+  // persona resolves the same env credentials; a cross-persona credential read
+  // once persona rows carry their own.
+  test("the legacy route honours the token's persona claim", async () => {
+    const res = await api().fetch(
+      get("/v1/tenants/default/runtime", token({ persona: "no-such-persona" })),
+    );
+    expect(res!.status).toBe(404);
+  });
+
   test("an unknown persona is a 404 rather than a silent fallback to another one", async () => {
     const res = await api().fetch(
       get("/v1/tenants/default/personas/no-such-persona/runtime", token({ persona: "no-such-persona" })),
