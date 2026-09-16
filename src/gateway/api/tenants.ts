@@ -125,6 +125,13 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
   // yet, so without this a named persona would fall through to the default
   // bundle and silently run on another agent's soul and skills overlay.
   if (personaId !== "default") {
+    // NOTE: the filesystem registry is deploy-global — it has no tenant
+    // dimension, so this tier cannot check that the persona belongs to the
+    // REQUESTED tenant. Safe today because one deploy owns one workspace and a
+    // persona name can only be one this deploy already loaded from disk, but it
+    // becomes a cross-tenant read the moment two tenants share a deploy. The DB
+    // tier above is tenant-scoped; this tier must be removed, or gain a tenant
+    // column, before multi-tenant deploys are supported.
     const fsPersona = getPersonaRegistry().lookupByName(personaId);
     if (!fsPersona) return null;
     let personaSoul = "";

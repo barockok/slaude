@@ -329,6 +329,13 @@ by a test in the plan.
   mount with its own guard, and the existing operator guard is not relaxed.
 - Approval and allowlist enforcement stay in the gateway, never in the model.
   Nothing in this design moves that boundary.
+- The filesystem persona tier in the runtime bundle is deploy-global and has no
+  tenant dimension, so it cannot verify that a persona belongs to the requested
+  tenant. Harmless while one deploy owns one workspace, and unreachable today
+  because a persona name can only be one the deploy already loaded from disk.
+  It becomes a cross-tenant read as soon as two tenants share a deploy, so that
+  tier must be removed once the database tier is populated. Tracked as a
+  precondition of section 4.2, not a separate task.
 
 ## 10. Delivery order
 
