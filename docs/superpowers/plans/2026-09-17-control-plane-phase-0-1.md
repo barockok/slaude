@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Runtime is Bun. Tests run with `bun test <path>`; the whole suite is `bun test`.
-- Public repository. No real names, employers, workspace names, channel IDs or tokens in code, tests, comments or commit messages. Use placeholders such as `#team-channel`, `Jane Doe`, `U000TEST001`.
+- Public repository. No real names, employers, workspace names, channel IDs or tokens in code, tests, comments or commit messages. Use placeholders such as `#team-channel`, `Jane Doe`, `UTESTUSER1`.
 - No AI co-authorship trailers on any commit.
 - One logical change per commit.
 - `"default"` remains the fallback tenant and the fallback persona everywhere. No deployment may change behaviour by upgrading without configuration changes.
@@ -48,15 +48,15 @@ test("loopback connect writes the token under the persona directory", async () =
     sessionId: "S1",
     channelId: "C1",
     threadTs: "1.1",
-    userId: "U000TEST001",
+    userId: "UTESTUSER1",
     serverName: "workbench",
     serverCfg: { url: "https://mcp.example.com/sse", headers: {} },
     scope: "initiator",
     personaName: "rina",
   });
 
-  const nested = join(home, "oauth", "rina", "U000TEST001", ".credentials.json");
-  const flat = join(home, "oauth", "U000TEST001", ".credentials.json");
+  const nested = join(home, "oauth", "rina", "UTESTUSER1", ".credentials.json");
+  const flat = join(home, "oauth", "UTESTUSER1", ".credentials.json");
   expect(existsSync(nested)).toBe(true);
   expect(existsSync(flat)).toBe(false);
 });
@@ -115,10 +115,10 @@ test("disconnect removes the token stored under a named persona", () => {
   const home = mkdtempSync(join(tmpdir(), "slaude-disconnect-"));
   process.env.SLAUDE_HOME = home;
   const cfg = { type: "http" as const, url: "https://mcp.example.com/sse", headers: {} };
-  const dir = ensureInitiatorConfigDir("U000TEST001", "rina");
+  const dir = ensureInitiatorConfigDir("UTESTUSER1", "rina");
   writeEntry(dir, "workbench", cfg, { accessToken: "at", expiresIn: 3600 });
 
-  const removed = removeEntry(ensureInitiatorConfigDir("U000TEST001", "rina"), "workbench", cfg);
+  const removed = removeEntry(ensureInitiatorConfigDir("UTESTUSER1", "rina"), "workbench", cfg);
 
   expect(removed).toBe(true);
   expect(readEntry(dir, "workbench", cfg)).toBeUndefined();
@@ -131,8 +131,8 @@ This test pins the storage contract. It passes already. The behaviour that is br
 test("initiator config dir for a named persona is persona-nested", () => {
   const home = mkdtempSync(join(tmpdir(), "slaude-dir-"));
   process.env.SLAUDE_HOME = home;
-  expect(initiatorConfigDir("U000TEST001", "rina")).toBe(join(home, "oauth", "rina", "U000TEST001"));
-  expect(initiatorConfigDir("U000TEST001")).toBe(join(home, "oauth", "U000TEST001"));
+  expect(initiatorConfigDir("UTESTUSER1", "rina")).toBe(join(home, "oauth", "rina", "UTESTUSER1"));
+  expect(initiatorConfigDir("UTESTUSER1")).toBe(join(home, "oauth", "UTESTUSER1"));
 });
 ```
 
@@ -156,8 +156,8 @@ And the failing test:
 test("mcp disconnect scope resolves to the persona-nested home", () => {
   const home = mkdtempSync(join(tmpdir(), "slaude-scope-"));
   process.env.SLAUDE_HOME = home;
-  expect(mcpScopeConfigDir("initiator", "U000TEST001", "rina"))
-    .toBe(join(home, "oauth", "rina", "U000TEST001"));
+  expect(mcpScopeConfigDir("initiator", "UTESTUSER1", "rina"))
+    .toBe(join(home, "oauth", "rina", "UTESTUSER1"));
 });
 ```
 
@@ -346,7 +346,7 @@ test("dispatch carries the meta tenant into the job and its token", async () => 
 
   await dispatch.dispatch({ id: "S1" } as any, "hello", {
     tenantId: "tenant-one",
-    teamId: "T1", channelId: "C1", threadTs: "1.1", eventTs: "1.1", userId: "U000TEST001",
+    teamId: "T1", channelId: "C1", threadTs: "1.1", eventTs: "1.1", userId: "UTESTUSER1",
   });
 
   expect(enqueued[0].tenantId).toBe("tenant-one");
@@ -368,7 +368,7 @@ test("dispatch falls back to the default tenant when meta omits one", async () =
   });
 
   await dispatch.dispatch({ id: "S1" } as any, "hello", {
-    teamId: "T1", channelId: "C1", threadTs: "1.1", eventTs: "1.1", userId: "U000TEST001",
+    teamId: "T1", channelId: "C1", threadTs: "1.1", eventTs: "1.1", userId: "UTESTUSER1",
   });
 
   expect(enqueued[0].tenantId).toBe("default");
@@ -454,7 +454,7 @@ import { makeV1Router } from "../../../src/gateway/api/index";
 
 const token = (persona: string) => mintJobToken({
   tenant: "default", persona, session: "S1", team: "T1",
-  channel: "C1", thread: "1.1", initiator: "U000TEST001", scope: "turn",
+  channel: "C1", thread: "1.1", initiator: "UTESTUSER1", scope: "turn",
 });
 
 test("the bundle route is scoped to the persona in the job token", async () => {
@@ -922,7 +922,7 @@ Add one line at the top of the Findings Log list, matching the existing format.
 Run: `bun test && git diff --cached -U0 | grep -nIiE 'acme|\.slack\.com|\b[CUTGW]0[A-Z0-9]{8,}\b|xox[baprs]-|ghp_|sk-[A-Za-z0-9]{20,}|vault' || echo clean`
 Expected: tests PASS and the leak scan prints `clean`.
 
-Note: keep test fixture names generic (`tenant-one`, `U000TEST001`); never use a real organisation name, or the leak scan will trip.
+Note: keep test fixture names generic (`tenant-one`, `UTESTUSER1`); never use a real organisation name, or the leak scan will trip.
 
 - [ ] **Step 5: Commit**
 
