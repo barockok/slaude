@@ -24,6 +24,7 @@
  *   POST /panel/api/sessions/:id/heartbeat       refresh lock TTL
  *   POST /panel/api/sessions/:id/release         release control
  *   POST /panel/api/sessions/:id/force-release   steal + audit
+ *   POST /panel/api/reload                       re-read persona config (superadmin)
  */
 import { z } from "zod";
 import * as Sessions from "../../db/sessions";
@@ -38,6 +39,7 @@ import { audit } from "./auth/audit";
 import type { PanelRole } from "./auth/roles";
 import { enumerateSessions } from "./enumerator";
 import { servePanelStatic } from "./static";
+import { publishConfigReload } from "../core/config-reload";
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -78,6 +80,7 @@ function enforceCsrf(req: Request): Response | null {
  * superadmin is a superset of operator — no action is operator-only.
  */
 export const SUPERADMIN_ACTIONS: ReadonlySet<string> = new Set([
+  "reload",
   "control.reset",
   "control.mode",
   "force-release",
@@ -301,6 +304,19 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
     if (csrf) return csrf;
 
     try {
+      // POST /panel/api/reload — re-read persona configuration without a restart.
+      // The persona registry is memoized at boot on the gateway AND on every
+      // node, so adding an agent otherwise means restarting all of them.
+      if (seg.length === 3 && seg[2] === "reload") {
+        if (req.method !== "POST") return json(405, { error: "method not allowed" });
+        const denied = requireSuperadmin(role, { action: "reload", operator: operatorId });
+        if (denied) return denied;
+        const tenantId = url.searchParams.get("tenant") ?? "default";
+        const result = await publishConfigReload(deps.pubsub, tenantId);
+        audit({ action: "reload", operator: operatorId, role, outcome: "ok", detail: { tenantId, ...result } });
+        return json(200, { tenant: tenantId, ...result });
+      }
+
       // GET /panel/api/sessions
       if (seg.length === 3 && seg[2] === "sessions") {
         if (req.method !== "GET") return json(405, { error: "method not allowed" });
