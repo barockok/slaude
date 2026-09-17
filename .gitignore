@@ -33,3 +33,7 @@ src/gateway/panel/web/dist/
 
 # Generated docs site (built by docs/site/build.mjs; published by .github/workflows/pages.yml)
 docs/site/_site/
+
+# Local minikube overlay: generated secrets, never committed.
+deploy/k8s-local/secrets.env
+deploy/k8s-local/provider.env
