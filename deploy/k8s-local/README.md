@@ -13,7 +13,7 @@ deploy/k8s-local/down.sh        # delete the cluster (add --purge to drop secret
 
 ## Prerequisites
 
-- `minikube`, `kubectl` and `openssl`.
+- `minikube`, `kubectl`, `openssl` and `python3`.
 - A Docker runtime with about **3.5 GB** free for the minikube node. On macOS
   with colima, `colima ssh -- free -m` shows what is actually available; other
   containers you run share that memory.

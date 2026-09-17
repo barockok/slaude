@@ -35,7 +35,7 @@ PROVIDER_KEYS=(ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 
-for bin in minikube kubectl openssl; do
+for bin in minikube kubectl openssl python3; do
   command -v "$bin" >/dev/null || die "$bin is required"
 done
 
@@ -47,8 +47,14 @@ else
   # fixed six minutes, and on a slow link the ~480 MB base image alone can take
   # longer — the start then times out, retries, and can leave an orphaned node
   # container holding its memory reservation. A cached download is a no-op.
+  #
+  # The sizing flags MUST be passed here too. --download-only still writes the
+  # profile, and a later start refuses to resize an existing profile — it warns
+  # and silently keeps whatever this call recorded, which is minikube's default
+  # (4000 MB here): more than intended, and on a swapless Docker VM enough to
+  # push other containers into the OOM killer.
   log "fetching minikube base image and Kubernetes preload (skipped when cached)"
-  minikube start -p "$PROFILE" --driver=docker --download-only
+  minikube start -p "$PROFILE" --driver=docker --cpus="$CPUS" --memory="$MEMORY" --download-only
 
   log "starting minikube profile '$PROFILE' (${CPUS} CPU, ${MEMORY} MB)"
   if ! minikube start -p "$PROFILE" --driver=docker --cpus="$CPUS" --memory="$MEMORY" \
@@ -60,6 +66,19 @@ else
   fi
 fi
 kubectl config use-context "$PROFILE" >/dev/null
+
+# Refuse to continue on a node sized differently from what was asked for. An
+# existing profile keeps its original size no matter what flags are passed, so
+# without this check a stale profile silently wins.
+actual="$(minikube profile list -o json 2>/dev/null | PROFILE="$PROFILE" python3 -c '
+import json, os, sys
+for p in json.load(sys.stdin).get("valid", []):
+    if p["Name"] == os.environ["PROFILE"]:
+        print(p["Config"]["CPUs"], p["Config"]["Memory"])
+')"
+if [[ "$actual" != "$CPUS $MEMORY" ]]; then
+  die "profile '$PROFILE' is sized '${actual:-unknown}' (CPUs MB), not '$CPUS $MEMORY'. Run ./down.sh and re-run."
+fi
 
 # --- 2. Secrets ------------------------------------------------------------
 # Generated once. Regenerating SLAUDE_MASTER_KEY would orphan every encrypted
