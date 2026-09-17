@@ -164,6 +164,14 @@ export function makePubSub(opts: PubSubOpts) {
       return id!;
     },
 
+    /** Id of the newest event on the stream, or null when it is empty. One
+     *  XREVRANGE COUNT 1 — unlike readEvents() with no cursor, it neither
+     *  transfers nor parses the rest of the stream. */
+    async lastEventId(sessionId: string): Promise<string | null> {
+      const rows = await redis.xrevrange(keys.eventsStream(sessionId), "+", "-", "COUNT", 1);
+      return rows[0]?.[0] ?? null;
+    },
+
     /** Read events after `fromId` (exclusive), oldest first; omit for all. */
     async readEvents(sessionId: string, fromId?: string): Promise<StreamEvent[]> {
       const rows = await redis.xrange(keys.eventsStream(sessionId), fromId ? `(${fromId}` : "-", "+");
