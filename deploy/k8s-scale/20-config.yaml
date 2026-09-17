@@ -7,6 +7,11 @@ metadata:
   namespace: slaude-scale
 data:
   SLAUDE_DB: "pg"
+  # A gateway refuses to boot on embedded storage, including the brain's
+  # default PGLite engine (single-writer, and it clears locks at boot, so two
+  # replicas on the shared volume would corrupt it). The brain runs on
+  # Postgres instead; SLAUDE_BRAIN_DATABASE_URL is in 10-secrets.yaml.
+  SLAUDE_BRAIN_ENGINE: "postgres"
   SLAUDE_SLACK_MODE: "http"
   SLAUDE_MODEL: "claude-sonnet-4-6"
   # Redis key namespace — lets several slaude deploys share one Redis.

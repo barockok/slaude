@@ -12,12 +12,29 @@ import { verifyState } from "./agent/mcp-oauth/state";
 import { env } from "./config/env";
 import { assertPanelConfig } from "./gateway/panel/auth/config";
 import { loadPersonaRegistry, setPersonaRegistry } from "./persona/registry";
-import { getDb } from "./db/client";
+import { getDb, resolveDbConfig } from "./db/client";
+import { assertGatewayRequirements } from "./config/gateway-requirements";
+import { brainEnabled, brainEngineConfig } from "./knowledge/brain";
+import { brainMode } from "./knowledge/brain-config";
 import * as SoulOverrides from "./db/soul-overrides";
 
 async function main() {
   ensureHome();
   seedBundledSkills();
+
+  // A gateway refuses anything that only works as a single process — Socket
+  // Mode ingress, or embedded storage for slaude data or the brain — BEFORE
+  // anything is opened, since opening PGLite on the shared volume is itself the
+  // harm. Resolved from env alone; nothing is connected yet.
+  const dbCfg = resolveDbConfig();
+  assertGatewayRequirements({
+    role: env.role(),
+    slackMode: env.slack.mode(),
+    dbDriver: dbCfg.dialect === "sqlite" ? "bun-sqlite" : dbCfg.driver,
+    brainEnabled: brainEnabled(),
+    brainMode: brainMode(),
+    brainEngine: () => brainEngineConfig().engine,
+  });
 
   // Open the DB first: on Postgres this applies pending migrations (unless
   // SLAUDE_MIGRATE_ON_BOOT=0), and a bad SLAUDE_PG_URL fails the boot here

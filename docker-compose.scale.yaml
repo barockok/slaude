@@ -1,5 +1,8 @@
 # Horizontal-scale slaude (spec §1): one gateway replica + two node workers
 # against Postgres 16 and Redis 7, sharing $SLAUDE_HOME through a named volume.
+# Postgres carries pgvector because the brain runs there too: a gateway refuses
+# to boot on embedded storage, so the brain uses a separate slaude_brain database
+# (created by deploy/postgres-init on first initialisation) instead of PGLite.
 #
 #   docker compose -f docker-compose.scale.yaml up --build
 #
@@ -35,13 +38,17 @@
 
 services:
   postgres:
-    image: postgres:16
+    # pgvector: the brain runs on this server (a gateway may not use the brain's
+    # embedded PGLite engine), and gbrain needs the vector extension.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: slaude
       POSTGRES_PASSWORD: slaude
       POSTGRES_DB: slaude
     volumes:
       - pg-data:/var/lib/postgresql/data
+      # Creates the separate slaude_brain database on first initialisation.
+      - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U slaude -d slaude"]
       interval: 5s
@@ -74,6 +81,9 @@ services:
       SLAUDE_HTTP_PORT: "8080"
       SLAUDE_DB: pg
       SLAUDE_PG_URL: postgres://slaude:slaude@postgres:5432/slaude
+      # A gateway refuses to boot with the brain on its embedded PGLite engine.
+      SLAUDE_BRAIN_ENGINE: postgres
+      SLAUDE_BRAIN_DATABASE_URL: postgres://slaude:slaude@postgres:5432/slaude_brain
       SLAUDE_REDIS_URL: redis://redis:6379
       SLAUDE_NODE_TOKEN: ${SLAUDE_NODE_TOKEN:?set SLAUDE_NODE_TOKEN in .env}
       SLAUDE_JOB_SECRET: ${SLAUDE_JOB_SECRET:?set SLAUDE_JOB_SECRET in .env}
