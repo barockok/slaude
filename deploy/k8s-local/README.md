@@ -62,6 +62,7 @@ the old one.
 | Gateway readiness reaches Postgres | `/readyz` through the Service, from inside the cluster |
 | Internal API refuses unauthenticated callers | `/v1` without the node bearer returns 401 |
 | One reaper leader is elected | Redis lock key holds an owner |
+| The brain runs on Postgres, not embedded PGLite | gbrain's tables exist in the separate `slaude_brain` database |
 | The shared volume is shared | a write on one gateway is read back on every app pod |
 | A gateway can be lost while serving | 30 s of traffic through the Service while a pod is deleted; longest outage must stay under one second |
 | A crashed leader is replaced | SIGKILL through the container runtime, then the lock owner must change within the TTL |
@@ -75,11 +76,12 @@ out says nothing about what happens when a process actually dies.
 
 - **Datastore HA.** Postgres and Redis are single replicas here by design.
   Production uses managed services.
-- **Brain HA.** The gateways run with the embedded brain disabled. Its PGLite
-  database lives on the shared volume and allows one writer, but every process
-  clears any lock it finds at boot, so two gateway replicas would be two writers
-  on one database. `deploy/k8s-scale` runs two replicas with the brain on, so
-  this is an open production issue, not a local simplification.
+- **The brain under concurrent writes.** A gateway refuses to boot on embedded
+  storage, so the brain runs on the Postgres server in its own `slaude_brain`
+  database, and the check above confirms it is there. Every gateway replica
+  still bootstraps knowledge sources at boot and schedules nightly
+  maintenance; those rely on gbrain's cycle-lock table to take turns, which
+  this script does not exercise.
 - **Losing a whole Kubernetes node.** minikube's hostpath storage honours
   `ReadWriteMany` only because every pod shares one node. A multi-node cluster
   needs real RWX storage (NFS, Longhorn, CephFS) before this check means

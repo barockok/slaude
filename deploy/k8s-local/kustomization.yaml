@@ -83,19 +83,6 @@ patches:
               - name: gateway
                 image: slaude:local
                 imagePullPolicy: Never
-                env:
-                  # KNOWN ISSUE, NOT A FIX. The brain is an embedded PGLite
-                  # database whose home is $SLAUDE_HOME/brain — on the shared
-                  # RWX volume. PGLite is single-writer, and at boot each
-                  # process deletes any lock it finds as "stale". With two
-                  # gateway replicas that is two writers on one database, each
-                  # clearing the other's live lock. deploy/k8s-scale ships
-                  # exactly that. Disabled here so the gateway/node HA
-                  # machinery can be verified; brain HA is unverified and
-                  # needs a single-writer design before production runs >1
-                  # gateway with the brain enabled.
-                  - name: SLAUDE_BRAIN_DISABLED
-                    value: "1"
                 resources:
                   requests: { cpu: 100m, memory: 256Mi }
                   limits: { cpu: "1", memory: 768Mi }

@@ -107,6 +107,23 @@ expect "exactly one reaper leader elected" \
   "no reaper leader holds $LEADER_KEY" \
   [ -n "$owner0" ]
 
+# A gateway refuses to boot on embedded storage, so the brain must be on the
+# Postgres server. Prove it from the database itself: gbrain's tables exist in
+# the separate brain database. Polled, because gateways bootstrap the brain in
+# the background after they report ready.
+brain_tables=""
+deadline=$(($(date +%s) + 90))
+while (($(date +%s) < deadline)); do
+  brain_tables="$(k exec deploy/dev-postgres -c postgres -- psql -U slaude -d slaude_brain -tAc \
+    "select count(*) from information_schema.tables where table_schema = 'public' and table_name in ('pages', 'gbrain_cycle_locks')" \
+    2>/dev/null | tr -d '[:space:]')"
+  [[ "$brain_tables" == 2 ]] && break
+  sleep 3
+done
+expect "the brain runs on the Postgres server, in its own database" \
+  "brain tables found in slaude_brain: ${brain_tables:-none}, want 2" \
+  [ "$brain_tables" = 2 ]
+
 # --- 2. shared volume ------------------------------------------------------
 section "shared \$SLAUDE_HOME across every pod"
 token="ha-$(date +%s)-$RANDOM"

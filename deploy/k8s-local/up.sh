@@ -94,6 +94,12 @@ if [[ ! -s "$SECRETS" ]]; then
     echo "SLAUDE_REDIS_URL=redis://redis:6379"
   } >"$SECRETS"
 fi
+# Non-secret connection settings added after a secrets.env was first generated.
+# Appended when missing, never rewritten: the file is otherwise left alone.
+ensure_secret() { grep -q "^$1=" "$SECRETS" || echo "$1=$2" >>"$SECRETS"; }
+# A gateway refuses to boot with the brain on embedded PGLite; the brain uses its
+# own database on the in-cluster Postgres (created by the dev datastores init).
+ensure_secret SLAUDE_BRAIN_DATABASE_URL "postgres://slaude:slaude@postgres:5432/slaude_brain"
 
 # Provider credentials are rewritten every run, so rotating a key is a re-run.
 # Values are never printed.
