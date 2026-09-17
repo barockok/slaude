@@ -13,7 +13,7 @@ import { env } from "./config/env";
 import { assertPanelConfig } from "./gateway/panel/auth/config";
 import { loadPersonaRegistry, setPersonaRegistry } from "./persona/registry";
 import { getDb, resolveDbConfig } from "./db/client";
-import { assertGatewayStorage } from "./config/gateway-storage";
+import { assertGatewayRequirements } from "./config/gateway-requirements";
 import { brainEnabled, brainEngineConfig } from "./knowledge/brain";
 import { brainMode } from "./knowledge/brain-config";
 import * as SoulOverrides from "./db/soul-overrides";
@@ -22,12 +22,14 @@ async function main() {
   ensureHome();
   seedBundledSkills();
 
-  // A gateway refuses embedded storage — for slaude data and for the brain —
-  // BEFORE either is opened, since opening PGLite on the shared volume is
-  // itself the harm. Resolved from env alone; nothing is connected yet.
+  // A gateway refuses anything that only works as a single process — Socket
+  // Mode ingress, or embedded storage for slaude data or the brain — BEFORE
+  // anything is opened, since opening PGLite on the shared volume is itself the
+  // harm. Resolved from env alone; nothing is connected yet.
   const dbCfg = resolveDbConfig();
-  assertGatewayStorage({
+  assertGatewayRequirements({
     role: env.role(),
+    slackMode: env.slack.mode(),
     dbDriver: dbCfg.dialect === "sqlite" ? "bun-sqlite" : dbCfg.driver,
     brainEnabled: brainEnabled(),
     brainMode: brainMode(),

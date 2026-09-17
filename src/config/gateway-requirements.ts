@@ -1,8 +1,14 @@
 /**
- * A gateway may not run on an embedded database — neither for slaude's own
- * data nor for the brain. Enforced at boot, before anything opens either one.
+ * What a gateway requires to run as one of several interchangeable replicas.
+ * Gateways and nodes both scale horizontally, so anything that only works for a
+ * single process is refused at boot, before anything is opened or connected.
  *
- * Gateways are replicas, and an embedded database lives in one process's files.
+ * Slack ingress must be the Events API webhook. Socket Mode delivers events over
+ * a websocket whose consumer is single-leader: replicas would both consume
+ * events and send duplicate responses.
+ *
+ * No embedded database, for slaude's own data or for the brain. An embedded
+ * database lives in one process's files.
  * Replicas on per-pod storage each get a private copy that silently diverges.
  * Replicas on the shared volume are two writers on a single-writer database,
  * and the brain's PGLite makes that worse: it treats any lock it finds at boot
@@ -12,8 +18,10 @@
  * no database and no brain (spec §1).
  */
 
-export interface GatewayStorageInput {
+export interface GatewayRequirementsInput {
   role: "mono" | "gateway" | "node";
+  /** env.slack.mode(): socket (the default) | http (Events API webhook). */
+  slackMode: "socket" | "http";
   /** DbClient.driver: bun-sql (Postgres server) | bun-sqlite | pglite. */
   dbDriver: string;
   brainEnabled: boolean;
@@ -28,9 +36,17 @@ export interface GatewayStorageInput {
 /** The only app database driver that is a server shared by all replicas. */
 const SERVER_DRIVER = "bun-sql";
 
-export function gatewayStorageViolations(i: GatewayStorageInput): string[] {
+export function gatewayRequirementViolations(i: GatewayRequirementsInput): string[] {
   if (i.role !== "gateway") return [];
   const out: string[] = [];
+
+  if (i.slackMode !== "http") {
+    out.push(
+      `Slack ingress is Socket Mode. A gateway must take Slack over the Events API webhook: set ` +
+        `SLAUDE_SLACK_MODE=http. Socket Mode's websocket consumer is single-leader, so gateway replicas ` +
+        `would both consume events and send duplicate responses. Socket Mode is the default when unset.`,
+    );
+  }
 
   if (i.dbDriver !== SERVER_DRIVER) {
     out.push(
@@ -63,11 +79,11 @@ export function gatewayStorageViolations(i: GatewayStorageInput): string[] {
   return out;
 }
 
-export function assertGatewayStorage(i: GatewayStorageInput): void {
-  const violations = gatewayStorageViolations(i);
+export function assertGatewayRequirements(i: GatewayRequirementsInput): void {
+  const violations = gatewayRequirementViolations(i);
   if (violations.length === 0) return;
   throw new Error(
-    `SLAUDE_ROLE=gateway refuses to start on embedded storage:\n` +
+    `SLAUDE_ROLE=gateway refuses to start:\n` +
       violations.map((v) => `  - ${v}`).join("\n"),
   );
 }
