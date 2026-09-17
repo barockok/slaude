@@ -12,12 +12,25 @@ import { verifyState } from "./agent/mcp-oauth/state";
 import { env } from "./config/env";
 import { assertPanelConfig } from "./gateway/panel/auth/config";
 import { loadPersonaRegistry, setPersonaRegistry } from "./persona/registry";
-import { getDb } from "./db/client";
+import { getDb, resolveDbConfig } from "./db/client";
+import { assertGatewayStorage } from "./config/gateway-storage";
+import { brainEnabled, brainEngineConfig } from "./knowledge/brain";
 import * as SoulOverrides from "./db/soul-overrides";
 
 async function main() {
   ensureHome();
   seedBundledSkills();
+
+  // A gateway refuses embedded storage — for slaude data and for the brain —
+  // BEFORE either is opened, since opening PGLite on the shared volume is
+  // itself the harm. Resolved from env alone; nothing is connected yet.
+  const dbCfg = resolveDbConfig();
+  assertGatewayStorage({
+    role: env.role(),
+    dbDriver: dbCfg.dialect === "sqlite" ? "bun-sqlite" : dbCfg.driver,
+    brainEnabled: brainEnabled(),
+    brainEngine: () => brainEngineConfig().engine,
+  });
 
   // Open the DB first: on Postgres this applies pending migrations (unless
   // SLAUDE_MIGRATE_ON_BOOT=0), and a bad SLAUDE_PG_URL fails the boot here
