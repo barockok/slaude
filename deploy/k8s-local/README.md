@@ -14,9 +14,14 @@ deploy/k8s-local/down.sh        # delete the cluster (add --purge to drop secret
 ## Prerequisites
 
 - `minikube`, `kubectl`, `openssl` and `python3`.
-- A Docker runtime with about **3.5 GB** free for the minikube node. On macOS
-  with colima, `colima ssh -- free -m` shows what is actually available; other
-  containers you run share that memory.
+- A Docker runtime with about **3.5 GB** of free memory for the minikube node.
+  On macOS with colima, `colima ssh -- free -m` shows what is actually
+  available; other containers you run share that memory.
+- At least **5 GB** of free disk on the Docker host once the cluster is up.
+  `up.sh` checks this before building and refuses below it
+  (`SLAUDE_LOCAL_MIN_BUILD_FREE_MB` overrides the floor). The node's storage
+  lives on the same disk as every other container on that host, so running it
+  out of space is not contained to this cluster.
 
 Tune the node with `SLAUDE_LOCAL_CPUS` and `SLAUDE_LOCAL_MEMORY` (MB). The
 defaults are 3 CPUs and 3500 MB.
@@ -131,11 +136,24 @@ fails; why the agent's invocation fails was not established.
 
 ### Docker is nearly out of disk space
 
-The image build needs a couple of gigabytes of free space on the Docker VM's
-disk, and minikube builds inside a node whose storage lives on that same disk.
+minikube builds the image inside its node, and the node's storage is a volume on
+the Docker host's disk, shared with every other container there. An observed
+build consumed more than 2.7 GB and was still running when that disk reached
+100%, which is why `up.sh` now requires 5 GB free before it starts.
+
 Check with `colima ssh -- df -h /` and `docker system df`. Build cache is the
-least disruptive thing to reclaim (`docker builder prune`); growing colima's
-disk requires restarting it.
+least disruptive thing to reclaim (`docker builder prune`). Removing one of two
+tags of the same image frees only the layers they do not share, which can be far
+less than the listed size. Growing colima's disk requires restarting colima,
+which stops its running containers.
+
+**Stopping the build client does not stop the build.** Killing `minikube image
+build` only disconnects the client; BuildKit inside the node keeps writing. If a
+build is filling the disk, delete the node, which removes its storage at once:
+
+```sh
+minikube delete -p slaude-local
+```
 
 ## Differences from `deploy/k8s-scale`
 

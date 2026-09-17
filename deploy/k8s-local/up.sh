@@ -119,6 +119,26 @@ else
 fi
 
 # --- 3. Image --------------------------------------------------------------
+# Refuse to build without disk headroom, BEFORE starting. The node's storage is
+# a volume on the Docker host's disk, shared with every other container there.
+#
+# This has to be a precondition, not a watchdog: killing `minikube image build`
+# only disconnects the client, and BuildKit inside the node keeps writing. An
+# observed build consumed more than 2.7 GB and was still going when the host
+# disk hit 100%. The default floor is set above that, and is overridable.
+MIN_FREE_MB="${SLAUDE_LOCAL_MIN_BUILD_FREE_MB:-5000}"
+free_mb="$(minikube -p "$PROFILE" ssh -- df -m /var 2>/dev/null | tr -d '\r' | awk 'NR==2 {print $4}')"
+if [[ ! "$free_mb" =~ ^[0-9]+$ ]]; then
+  die "could not read free disk space on the minikube node; refusing to build blind"
+fi
+if ((free_mb < MIN_FREE_MB)); then
+  die "only ${free_mb} MB free on the Docker host disk; the image build needs at least ${MIN_FREE_MB} MB.
+Filling that disk can break every other container sharing it. Free space or grow
+the disk, then re-run. See the README's disk space section.
+(Override with SLAUDE_LOCAL_MIN_BUILD_FREE_MB at your own risk.)"
+fi
+log "disk headroom ok: ${free_mb} MB free (floor ${MIN_FREE_MB} MB)"
+
 # Built inside minikube so imagePullPolicy: Never finds it. The first build is
 # slow; later builds reuse the layer cache.
 log "building $IMAGE from $ROOT inside minikube"
