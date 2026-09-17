@@ -32,6 +32,13 @@ export interface DispatchMeta {
   eventTs: string;
   userId: string;
   personaId?: string;
+  /**
+   * Identity the turn runs as, when it is not the thread's own /1on1 lock: a
+   * cron job created inside a /1on1 carries its lock owner, and the cron run
+   * keys on a synthetic thread that has no lock of its own. The node cannot
+   * derive this, so it travels with the job.
+   */
+  oauthUser?: string;
   /** Tenant that owns this conversation. Resolved by the transport from the
    *  slack_apps row; when absent the session row's own column is used, and
    *  'default' is the last resort (sqlite carries no tenant_id column). */
@@ -247,6 +254,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           sessionId: session.id,
           tenantId,
           personaId,
+          ...(meta.oauthUser ? { oauthUser: meta.oauthUser } : {}),
           messages: [
             { ts: meta.eventTs, user: meta.userId, text, ...(meta.suppress ? { suppress: true } : {}) },
           ],

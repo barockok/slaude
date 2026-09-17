@@ -546,3 +546,105 @@ describe("cron-parser", () => {
     expect(() => getNextRun("0 0 31 2 *", Date.now())).toThrow(/could not find next run/);
   });
 });
+
+/**
+ * In the gateway/node split a cron turn must run on a node, like every other
+ * turn, and "is this session busy?" must be answered for the cluster rather than
+ * for the gateway process that happens to hold the scheduler.
+ */
+describe("CronScheduler under the gateway/node split", () => {
+  beforeEach(async () => { await db.run("DELETE FROM cron_jobs"); });
+  afterEach(async () => { await db.run("DELETE FROM cron_jobs"); });
+
+  const dueJob = (over: Record<string, unknown> = {}) =>
+    CronJobs.create({
+      slackTeamId: "TTESTTEAM1",
+      slackChannelId: "CTESTCHAN1",
+      channelId: "CTESTCHAN1",
+      createdBy: "UTESTUSER1",
+      cronExpr: "* * * * *",
+      prompt: "scheduled work",
+      nextRunAt: Date.now() - 1000,
+      ...over,
+    });
+
+  const agentStub = (over: Record<string, unknown> = {}) => ({
+    ensureSession: async () => ({ id: "s-cron" }),
+    sendMessage: mock(async () => {}),
+    isLive: () => false,
+    setCronOAuthUser: () => {},
+    on: () => {},
+    off: () => {},
+    ...over,
+  });
+
+  const settle = async (scheduler: CronScheduler) => {
+    await new Promise((r) => setTimeout(r, 40));
+    scheduler.stop();
+  };
+
+  test("delivers the turn through the injected send, not the local agent", async () => {
+    await dueJob();
+    const agent = agentStub();
+    const send = mock(async () => {});
+    const scheduler = new CronScheduler({
+      agent: agent as any,
+      client: {} as any,
+      send: send as any,
+    });
+
+    scheduler.start();
+    await settle(scheduler);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(agent.sendMessage).toHaveBeenCalledTimes(0);
+  });
+
+  // A job created inside a /1on1 carries the lock owner, and the turn must run
+  // under that person's credentials on whichever node picks it up.
+  test("send carries the job's captured 1on1 identity", async () => {
+    await dueJob({ oauthUser: "UTESTOWNER1" });
+    let seen: any;
+    const scheduler = new CronScheduler({
+      agent: agentStub() as any,
+      client: {} as any,
+      send: (async (i: any) => { seen = i; }) as any,
+    });
+
+    scheduler.start();
+    await settle(scheduler);
+
+    expect(seen?.job?.oauthUser).toBe("UTESTOWNER1");
+    expect(seen?.session?.id).toBe("s-cron");
+    expect(String(seen?.envelope)).toContain("scheduled work");
+  });
+
+  test("when_active=skip consults the injected liveness check", async () => {
+    await dueJob({ whenActive: "skip" });
+    const send = mock(async () => {});
+    // Local process says idle; the cluster says a turn is in flight.
+    const scheduler = new CronScheduler({
+      agent: agentStub({ isLive: () => false }) as any,
+      client: {} as any,
+      send: send as any,
+      isLive: async () => true,
+    });
+
+    scheduler.start();
+    await settle(scheduler);
+
+    expect(send).toHaveBeenCalledTimes(0);
+    expect((await CronJobs.findDue(Date.now() + 1)).length).toBe(0); // rescheduled, not left due
+  });
+
+  test("without the seams it still uses the local agent (mono)", async () => {
+    await dueJob();
+    const agent = agentStub();
+    const scheduler = new CronScheduler({ agent: agent as any, client: {} as any });
+
+    scheduler.start();
+    await settle(scheduler);
+
+    expect(agent.sendMessage).toHaveBeenCalledTimes(1);
+  });
+});

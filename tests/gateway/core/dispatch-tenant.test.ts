@@ -91,6 +91,30 @@ describe("dispatch tenant propagation", () => {
     await dispatch.close();
   });
 
+  // A cron job created inside a /1on1 carries the lock owner. The turn runs on a
+  // node, so the identity has to travel with the job: the node has no other way
+  // to know it (the cron session's thread is synthetic and carries no lock).
+  test("an explicit oauth user rides with the job", async () => {
+    const { enqueued, dispatch } = harness();
+
+    await dispatch.dispatch({ id: "S1" } as unknown as SessionRow, "[scheduled] work", {
+      ...META,
+      oauthUser: "UTESTOWNER1",
+    });
+
+    expect(enqueued[0].oauthUser).toBe("UTESTOWNER1");
+    await dispatch.close();
+  });
+
+  test("no oauth user means the field is absent, not empty", async () => {
+    const { enqueued, dispatch } = harness();
+
+    await dispatch.dispatch({ id: "S1" } as unknown as SessionRow, "hello", META);
+
+    expect(enqueued[0].oauthUser).toBeUndefined();
+    await dispatch.close();
+  });
+
   test("the persona still rides alongside the tenant", async () => {
     const { enqueued, dispatch } = harness();
 

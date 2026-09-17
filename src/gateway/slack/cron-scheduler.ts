@@ -1,4 +1,5 @@
 import type { AgentManager } from "../../agent/manager";
+import type { SessionRow } from "../../db/schema";
 import type { WebClient } from "@slack/web-api";
 import * as CronJobs from "../../db/cron-jobs";
 import { getNextRun } from "./cron-parser";
@@ -6,6 +7,24 @@ import { getNextRun } from "./cron-parser";
 export type CronSchedulerDeps = {
   agent: AgentManager;
   client: WebClient;
+  /**
+   * How a cron turn is delivered. The gateway role injects the queue dispatch
+   * so the turn runs on a node like every other turn; without it the scheduler
+   * runs the turn in this process, which is what mono wants.
+   */
+  send?: (i: {
+    session: SessionRow;
+    envelope: string;
+    job: CronJobs.CronJob;
+    /** Thread the run's session is keyed on — synthetic for channel targets. */
+    threadTs: string;
+  }) => Promise<void>;
+  /**
+   * Whether a turn for this session is already in flight. Defaults to this
+   * process's own agent, which is only the whole truth in mono: under the split
+   * the turn runs on a node, so the gateway injects a cluster-wide check.
+   */
+  isLive?: (sessionId: string) => Promise<boolean>;
   /** Called before sendMessage so the adapter can register a route + SlackContext
    *  for this cron session. Without a route, agent events are silently dropped. */
   onExecute?: (job: CronJobs.CronJob, sessionId: string) => void;
@@ -15,6 +34,8 @@ export class CronScheduler {
   #agent: AgentManager;
   #client: WebClient;
   #onExecute?: (job: CronJobs.CronJob, sessionId: string) => void;
+  #send?: CronSchedulerDeps["send"];
+  #isLive?: CronSchedulerDeps["isLive"];
   #timer: ReturnType<typeof setInterval> | null = null;
   #running = new Set<string>(); // job ids currently executing
 
@@ -22,6 +43,8 @@ export class CronScheduler {
     this.#agent = deps.agent;
     this.#client = deps.client;
     this.#onExecute = deps.onExecute;
+    this.#send = deps.send;
+    this.#isLive = deps.isLive;
   }
 
   start(): void {
@@ -82,7 +105,8 @@ export class CronScheduler {
     // opt into passive mode (when_active='skip') to defer the run while a human is
     // active — they get priority for that tick. (Same-job re-entry is still guarded
     // by #running in #tick.)
-    if (job.whenActive === "skip" && this.#agent.isLive(session.id)) {
+    const live = this.#isLive ? await this.#isLive(session.id) : this.#agent.isLive(session.id);
+    if (job.whenActive === "skip" && live) {
       console.log(`[cron] job ${job.id} skipped — session ${session.id} is live (when_active=skip)`);
       await CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), "skipped: session live");
       this.#running.delete(job.id);
@@ -117,7 +141,8 @@ export class CronScheduler {
     this.#agent.on("event", onEvent);
 
     try {
-      await this.#agent.sendMessage(session.id, envelope);
+      if (this.#send) await this.#send({ session, envelope, job, threadTs });
+      else await this.#agent.sendMessage(session.id, envelope);
     } catch (e: any) {
       console.error(`[cron] job ${job.id} failed to send:`, e?.message ?? e);
       this.#agent.off("event", onEvent);

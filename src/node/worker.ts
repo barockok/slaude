@@ -302,6 +302,11 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     store.bindToken(data.sessionId, jobToken);
     tenants.set(data.sessionId, data.tenantId);
     personas.set(data.sessionId, data.personaId ?? "default");
+    // A cron job created inside a /1on1 carries its lock owner. The cron run
+    // keys on a synthetic thread with no lock, so this is the only way the node
+    // learns whose credentials the turn runs under; without it the turn would
+    // silently run as the agent instead.
+    if (data.oauthUser) agent.setCronOAuthUser(data.sessionId, data.oauthUser);
     // Subscribe reload:<tenant> BEFORE any runtime-bundle fetch for this
     // tenant can happen (the child-env resolver during ensureSession) — a
     // reload published between fetch and a lazy subscribe would leave a
