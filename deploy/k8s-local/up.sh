@@ -43,9 +43,21 @@ done
 if minikube -p "$PROFILE" status --format '{{.Host}}' 2>/dev/null | grep -q Running; then
   log "minikube profile '$PROFILE' already running"
 else
+  # Download first, outside the start timer. minikube gives host creation a
+  # fixed six minutes, and on a slow link the ~480 MB base image alone can take
+  # longer — the start then times out, retries, and can leave an orphaned node
+  # container holding its memory reservation. A cached download is a no-op.
+  log "fetching minikube base image and Kubernetes preload (skipped when cached)"
+  minikube start -p "$PROFILE" --driver=docker --download-only
+
   log "starting minikube profile '$PROFILE' (${CPUS} CPU, ${MEMORY} MB)"
-  minikube start -p "$PROFILE" --driver=docker --cpus="$CPUS" --memory="$MEMORY" \
-    --addons=metrics-server
+  if ! minikube start -p "$PROFILE" --driver=docker --cpus="$CPUS" --memory="$MEMORY" \
+    --addons=metrics-server; then
+    # A failed start can leave a half-created node container running. Remove it
+    # rather than leave it reserving memory on the Docker host.
+    minikube delete -p "$PROFILE" >/dev/null 2>&1 || true
+    die "minikube failed to start; the partial cluster was removed. Re-run to retry — downloads are cached."
+  fi
 fi
 kubectl config use-context "$PROFILE" >/dev/null
 
