@@ -75,6 +75,11 @@ out says nothing about what happens when a process actually dies.
 
 - **Datastore HA.** Postgres and Redis are single replicas here by design.
   Production uses managed services.
+- **Brain HA.** The gateways run with the embedded brain disabled. Its PGLite
+  database lives on the shared volume and allows one writer, but every process
+  clears any lock it finds at boot, so two gateway replicas would be two writers
+  on one database. `deploy/k8s-scale` runs two replicas with the brain on, so
+  this is an open production issue, not a local simplification.
 - **Losing a whole Kubernetes node.** minikube's hostpath storage honours
   `ReadWriteMany` only because every pod shares one node. A multi-node cluster
   needs real RWX storage (NFS, Longhorn, CephFS) before this check means
