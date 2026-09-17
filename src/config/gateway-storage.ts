@@ -17,6 +17,9 @@ export interface GatewayStorageInput {
   /** DbClient.driver: bun-sql (Postgres server) | bun-sqlite | pglite. */
   dbDriver: string;
   brainEnabled: boolean;
+  /** local = this process opens the brain database; remote = the brain lives in
+   *  a separate brain-server and this process never opens one. */
+  brainMode: "local" | "remote";
   /** Resolves the brain engine name. Called only when it matters, and allowed
    *  to throw — a misconfigured engine is reported as a violation. */
   brainEngine: () => string;
@@ -37,7 +40,9 @@ export function gatewayStorageViolations(i: GatewayStorageInput): string[] {
     );
   }
 
-  if (i.brainEnabled) {
+  // Remote mode: the brain-server owns the brain database, so the gateway's own
+  // engine setting is irrelevant and must not be consulted.
+  if (i.brainEnabled && i.brainMode === "local") {
     let engine: string;
     try {
       engine = i.brainEngine();

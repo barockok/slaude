@@ -15,6 +15,7 @@ import { loadPersonaRegistry, setPersonaRegistry } from "./persona/registry";
 import { getDb, resolveDbConfig } from "./db/client";
 import { assertGatewayStorage } from "./config/gateway-storage";
 import { brainEnabled, brainEngineConfig } from "./knowledge/brain";
+import { brainMode } from "./knowledge/brain-config";
 import * as SoulOverrides from "./db/soul-overrides";
 
 async function main() {
@@ -29,6 +30,7 @@ async function main() {
     role: env.role(),
     dbDriver: dbCfg.dialect === "sqlite" ? "bun-sqlite" : dbCfg.driver,
     brainEnabled: brainEnabled(),
+    brainMode: brainMode(),
     brainEngine: () => brainEngineConfig().engine,
   });
 

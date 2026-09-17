@@ -19,6 +19,7 @@ const server: GatewayStorageInput = {
   role: "gateway",
   dbDriver: "bun-sql",
   brainEnabled: true,
+  brainMode: "local",
   brainEngine: () => "postgres",
 };
 
@@ -32,7 +33,7 @@ describe("gatewayStorageViolations", () => {
   });
 
   test("the rule does not apply outside the gateway role", () => {
-    const embedded = { dbDriver: "bun-sqlite", brainEnabled: true, brainEngine: () => "pglite" };
+    const embedded = { dbDriver: "bun-sqlite", brainEnabled: true, brainMode: "local" as const, brainEngine: () => "pglite" };
     expect(gatewayStorageViolations({ ...embedded, role: "mono" })).toEqual([]);
     expect(gatewayStorageViolations({ ...embedded, role: "node" })).toEqual([]);
   });
@@ -67,6 +68,25 @@ describe("gatewayStorageViolations", () => {
     });
     expect(v).toHaveLength(1);
     expect(v[0]).toContain("SLAUDE_BRAIN_DATABASE_URL");
+  });
+
+  // In remote mode the brain lives in a separate brain-server process and the
+  // gateway never opens a brain database, so its engine setting is irrelevant.
+  test("a remote-mode brain is allowed whatever the local engine setting says", () => {
+    const v = gatewayStorageViolations({
+      ...server,
+      brainMode: "remote",
+      brainEngine: () => {
+        throw new Error("must not be consulted in remote mode");
+      },
+    });
+    expect(v).toEqual([]);
+  });
+
+  test("remote mode does not excuse embedded storage for slaude data", () => {
+    const v = gatewayStorageViolations({ ...server, brainMode: "remote", dbDriver: "pglite" });
+    expect(v).toHaveLength(1);
+    expect(v[0]).toContain("SLAUDE_PG_URL");
   });
 
   test("an unknown app database driver is refused rather than assumed safe", () => {
