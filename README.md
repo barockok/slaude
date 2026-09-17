@@ -76,4 +76,4 @@ Next: [Getting Started](https://barockok.github.io/slaude/start/getting-started.
 
 ---
 
-<sub>slaude v0.41.0 · [GitHub](https://github.com/barockok/slaude) · Built with Bun + TypeScript + claude-agent-sdk</sub>
+<sub>slaude v0.44.0 · [GitHub](https://github.com/barockok/slaude) · Built with Bun + TypeScript + claude-agent-sdk</sub>

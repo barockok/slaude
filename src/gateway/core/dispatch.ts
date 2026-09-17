@@ -32,6 +32,10 @@ export interface DispatchMeta {
   eventTs: string;
   userId: string;
   personaId?: string;
+  /** Tenant that owns this conversation. Resolved by the transport from the
+   *  slack_apps row; when absent the session row's own column is used, and
+   *  'default' is the last resort (sqlite carries no tenant_id column). */
+  tenantId?: string;
   suppress?: boolean;
 }
 
@@ -207,12 +211,17 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       // not silently kill THIS turn at claim time.
       await pubsub.consumeAbortFlag(session.id).catch(() => {});
       const personaId = meta.personaId ?? "default";
+      // The tenant reaches the node through the job payload AND the token claim,
+      // which /v1 checks against the requested tenant. Explicit meta wins (the
+      // transport resolved it from slack_apps); otherwise fall back to the
+      // session's own column, absent on sqlite, and finally to 'default'.
+      const tenantId = meta.tenantId ?? (session as { tenant_id?: string }).tenant_id ?? "default";
       // Pre-mint the BullMQ job id so the token's `job` claim matches the job
       // it rides on — /v1/jobs/:id/token-refresh binds on it. On coalesce the
       // messages join an EXISTING job which keeps its own (matching) token.
       const jobId = randomUUID();
       const jobToken = mintJobToken({
-        tenant: "default",
+        tenant: tenantId,
         persona: personaId,
         session: session.id,
         team: meta.teamId,
@@ -236,7 +245,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       const res = await turns.enqueueTurn(
         {
           sessionId: session.id,
-          tenantId: "default",
+          tenantId,
           personaId,
           messages: [
             { ts: meta.eventTs, user: meta.userId, text, ...(meta.suppress ? { suppress: true } : {}) },

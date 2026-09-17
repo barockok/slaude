@@ -78,6 +78,13 @@ export function setPersonaRegistry(r: PersonaRegistry) {
   registry = r;
 }
 
+/** Drop the memoized registry so the next access rebuilds it from disk. The
+ *  registry is loaded once at boot, so without this adding a persona requires
+ *  restarting the gateway and every node. Called on a config-reload signal. */
+export function invalidatePersonaRegistry() {
+  registry = null;
+}
+
 export function getPersonaRegistry(): PersonaRegistry {
   if (!registry) {
     // Lazy init for call sites that run before server boot (e.g. tests).

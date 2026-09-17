@@ -56,6 +56,7 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { loadExternalMcp, privateOverrides } from "./external-mcp";
 import { randomBytes } from "node:crypto";
 import { ensureInitiatorConfigDir, agentConfigDir } from "../../agent/oauth-home";
+import { scopeConfigDir, personaKey } from "../../agent/mcp-oauth/scope-home";
 import { writeEntry, removeEntry, type OAuthServerConfig, type OAuthTokens } from "../../agent/mcp-oauth/store";
 import { discover } from "../../agent/mcp-oauth/discovery";
 import { beginConnect, prepareConnect } from "../../agent/mcp-oauth/client";
@@ -734,7 +735,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // initiator: ensureInitiatorConfigDir seeds + creates the dir (the connect flow
     // may run before any locked session has booted). global: the agent config dir is
     // the live CLAUDE_CONFIG_DIR — already present, just write into it.
-    const configDir = a.scope === "global" ? agentConfigDir() : ensureInitiatorConfigDir(a.userId, a.personaName);
+    const configDir = scopeConfigDir(a.scope, a.userId, a.personaName);
     writeEntry(configDir, a.serverName, a.serverConfig, tokens);
     agent.noteSessionEvent(a.sessionId, `Connected MCP server \`${a.serverName}\`${a.scope === "global" ? " (agent's shared identity)" : ""}.`);
     agent.reload(a.sessionId);
@@ -811,7 +812,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           authMsgRef = ref;
         },
       });
-      await persistTokens({ sessionId: a.sessionId, userId: a.userId, serverName: a.serverName, serverConfig, scope: a.scope }, tokens);
+      await persistTokens({ sessionId: a.sessionId, userId: a.userId, serverName: a.serverName, serverConfig, scope: a.scope, personaName: a.personaName }, tokens);
       await redactAuthMessage(surface, authMsgRef, a.serverName);
       await post(`:white_check_mark: \`${a.serverName}\` connected. Next message will use it.`);
     } catch (e) {
@@ -874,7 +875,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       return `unknown MCP server \`${serverName}\`.` +
         (names.length ? ` Connectable: ${names.map((n) => `\`${n}\``).join(", ")}.` : " None are configured.");
     }
-    const personaName = ctx.personaId && ctx.personaId !== "default" ? ctx.personaId : undefined;
+    const personaName = personaKey(ctx.personaId);
     void connectServer({ sessionId, channelId: ctx.channel, threadTs, userId, serverName, serverCfg: cfg, scope, personaName })
       .catch(() => { /* connectServer posts its own failure out-of-band */ });
     return `Started authorizing \`${serverName}\` — I've posted the authorization link in this thread. Open it to approve; I'll confirm here once it's connected. You won't need to paste anything back.`;
@@ -1493,7 +1494,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await reply(`:warning: unknown HTTP MCP server \`${name ?? ""}\`. Run \`/mcp\` to list connectable servers.`);
             return;
           }
-          await connectServer({ sessionId: session.id, channelId, threadTs, userId, serverName: name, serverCfg: httpServers[name], scope, personaName: dispatch?.personaId && dispatch.personaId !== "default" ? dispatch.personaId : undefined });
+          await connectServer({ sessionId: session.id, channelId, threadTs, userId, serverName: name, serverCfg: httpServers[name], scope, personaName: personaKey(dispatch?.personaId) });
           return;
         }
 
@@ -1507,7 +1508,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // their own config home, global (manager) removes the agent's shared
           // identity. Removing the stored grant means no token at next session
           // boot — the agent reconnects only if re-connected.
-          const configDir = scope === "global" ? agentConfigDir() : ensureInitiatorConfigDir(userId);
+          const configDir = scopeConfigDir(scope, userId, dispatch?.personaId);
           // Reconstruct the SAME OAuthServerConfig shape connectServer wrote with
           // ({type:"http", url, headers}) — httpExternalServers drops `type`, so
           // passing its bare {url,headers} would compute a different oauthKey and
@@ -1538,7 +1539,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           const elements = [];
           for (const s of connectable) {
             const token = randomBytes(8).toString("hex");
-            const payload: McpGatePayload = { channelId, threadTs, userId, serverName: s.name, scope, personaName: dispatch?.personaId && dispatch.personaId !== "default" ? dispatch.personaId : undefined };
+            const payload: McpGatePayload = { channelId, threadTs, userId, serverName: s.name, scope, personaName: personaKey(dispatch?.personaId) };
             await PendingGates.create({
               id: token, kind: "mcp_connect", sessionId: session.id, payload,
               ...(mcpCardTtlMs !== null ? { expiresAt: Date.now() + mcpCardTtlMs } : {}),

@@ -73,8 +73,15 @@ export class NodeClient {
   #attempts: number;
   #baseDelayMs: number;
   #fetch: typeof fetch;
-  /** tenantId → cached runtime bundle + its ETag. */
+  /** `tenantId\0personaId` → cached runtime bundle + its ETag. The bundle is
+   *  per persona, so caching on the tenant alone handed every session on this
+   *  node whichever persona was fetched first. The NUL separator cannot appear
+   *  in either identifier, so no pair can collide on one key. */
   #runtimeCache = new Map<string, { etag: string; bundle: RuntimeBundle }>();
+
+  static runtimeKey(tenantId: string, personaId: string): string {
+    return `${tenantId}\u0000${personaId}`;
+  }
 
   constructor(opts: NodeClientOpts = {}) {
     this.#base = (opts.baseUrl ?? process.env.SLAUDE_GATEWAY_URL ?? "http://localhost:8080").replace(/\/+$/, "");
@@ -145,21 +152,31 @@ export class NodeClient {
    * 304 serves the cached copy. `bust()` drops a tenant's cache (reload
    * pub/sub, spec §3 "Direction").
    */
-  async getRuntime(tenantId: string, jobToken: string): Promise<RuntimeBundle> {
-    const cached = this.#runtimeCache.get(tenantId);
-    const res = await this.request(`/v1/tenants/${tenantId}/runtime`, {
-      jobToken,
-      headers: cached ? { "if-none-match": cached.etag } : {},
-    });
+  async getRuntime(tenantId: string, personaId: string, jobToken: string): Promise<RuntimeBundle> {
+    const key = NodeClient.runtimeKey(tenantId, personaId);
+    const cached = this.#runtimeCache.get(key);
+    const res = await this.request(
+      `/v1/tenants/${encodeURIComponent(tenantId)}/personas/${encodeURIComponent(personaId)}/runtime`,
+      { jobToken, headers: cached ? { "if-none-match": cached.etag } : {} },
+    );
     if (res.status === 304 && cached) return cached.bundle;
     const bundle = await this.#json<RuntimeBundle>(res);
     const etag = res.headers.get("etag");
-    if (etag) this.#runtimeCache.set(tenantId, { etag, bundle });
+    if (etag) this.#runtimeCache.set(key, { etag, bundle });
     return bundle;
   }
 
-  bustRuntime(tenantId: string): void {
-    this.#runtimeCache.delete(tenantId);
+  /** Drop a cached bundle. Omitting the persona drops every persona of that
+   *  tenant, which is what a tenant-scoped reload signal means. */
+  bustRuntime(tenantId: string, personaId?: string): void {
+    if (personaId !== undefined) {
+      this.#runtimeCache.delete(NodeClient.runtimeKey(tenantId, personaId));
+      return;
+    }
+    const prefix = `${tenantId}\u0000`;
+    for (const key of [...this.#runtimeCache.keys()]) {
+      if (key.startsWith(prefix)) this.#runtimeCache.delete(key);
+    }
   }
 
   /**
