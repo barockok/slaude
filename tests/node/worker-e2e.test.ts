@@ -252,6 +252,29 @@ d("gateway↔node E2E (real Redis)", () => {
     await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9000.1"), 10_000);
   }, 30_000);
 
+  // A cron job created inside a /1on1 carries its lock owner. The cron run keys
+  // on a synthetic thread with no lock, so the node can only learn the identity
+  // from the job itself — and it must, or the turn runs as the agent instead of
+  // as that person.
+  test("a job's oauth user is applied on the node before the turn", async () => {
+    const CRON_THREAD = "9100.0";
+    await emitSlack("message", msg(CRON_THREAD, "9100.1", "<@USLAUDE> seed the session"));
+    await until(async () => !!(await sessionIdOf(CRON_THREAD).catch(() => null)), 15_000);
+    const sid = await sessionIdOf(CRON_THREAD);
+
+    await qd.dispatch({ id: sid } as any, "[scheduled] work", {
+      teamId: "T",
+      channelId: "C0TEAM",
+      threadTs: CRON_THREAD,
+      eventTs: String(Date.now() / 1000),
+      userId: "U0MGR",
+      oauthUser: "UTESTOWNER1",
+    });
+
+    await until(async () => (await stub.resolveEffectiveIdentity(sid)) === "UTESTOWNER1", 15_000);
+    expect(await stub.resolveEffectiveIdentity(sid)).toBe("UTESTOWNER1");
+  }, 40_000);
+
   test("warm routing: second message rides the per-node queue", async () => {
     const sessionId = await sessionIdOf(THREAD);
     // The worker registered the session warm after the first turn.

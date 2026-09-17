@@ -71,6 +71,8 @@ import * as CronJobs from "../../db/cron-jobs";
 import * as OneOnOne from "../../db/one-on-one";
 import * as MentionOnly from "../../db/mention-only";
 import { CronScheduler } from "../slack/cron-scheduler";
+import { startCronLeader } from "./cron-leader";
+import type { LeaderHandle } from "../../queue/locks";
 import { getNextRun } from "../slack/cron-parser";
 import type { Transport } from "./transport";
 
@@ -480,6 +482,31 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const cronScheduler = new CronScheduler({
     agent,
     client: t.client as any,
+    // Queue mode: a cron turn is a turn like any other — it runs on a node, not
+    // in the gateway, which is sized and drained on the assumption that it holds
+    // none. mono keeps running it in process (no send/isLive injected).
+    ...(queueDispatch
+      ? {
+          send: async ({ session, envelope, job, threadTs }) => {
+            await queueDispatch.dispatch(session, envelope, {
+              teamId: job.slackTeamId!,
+              channelId: job.slackChannelId!,
+              threadTs,
+              eventTs: String(Date.now() / 1000),
+              userId: job.createdBy,
+              personaId: job.personaId !== "default" ? job.personaId : undefined,
+              // A job created inside a /1on1 runs as its lock owner wherever it lands.
+              ...(job.oauthUser ? { oauthUser: job.oauthUser } : {}),
+            });
+          },
+          // when_active=skip asks whether a turn is already running. Under the
+          // split that happens on a node, so the gateway's own agent knows
+          // nothing about it: the session lock is held for exactly the turn's
+          // duration, so its presence is the cluster-wide answer.
+          isLive: async (sessionId: string) =>
+            (await getRedis().exists(makeKeys().sessionLock(sessionId))) > 0,
+        }
+      : {}),
     onExecute: (job, sessionId) => {
       // Register a route so cron sessions get Slack MCP tools + event handling.
       const jobPersonaId = job.personaId !== "default" ? job.personaId : undefined;
@@ -524,7 +551,20 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // Start the cron scheduler only after `routes` exists: start() synchronously runs any
   // due job through onExecute, which registers into `routes`. Starting earlier would hit
   // a temporal-dead-zone ReferenceError when a cron job is already due at boot.
-  cronScheduler.start();
+  // Every gateway builds a scheduler, but only one may run it: the scheduler's
+  // re-entry guard is in-process, and a due job is claimed nowhere, so N
+  // replicas would fire every job N times. mono has no Redis to elect with and
+  // is a single process anyway.
+  let cronLeader: LeaderHandle | undefined;
+  if (queueDispatch) {
+    cronLeader = startCronLeader(cronScheduler, {
+      redis: getRedis(),
+      onError: (e) => console.error("[cron] leader loop:", e),
+    });
+    console.log("[slaude] cron scheduler contending for leadership");
+  } else {
+    cronScheduler.start();
+  }
 
   // MCP resolver — first-call-per-session wires the slack MCP server bound to
   // the session's SlackContext object. We mutate fields on the same context
@@ -2443,6 +2483,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   return {
     start: () => t.start(),
     stop: async () => {
+      await cronLeader?.stop().catch(() => {});
+      cronScheduler.stop();
       if (panelSweeper) clearInterval(panelSweeper);
       await panelResumeUnsub?.().catch(() => {});
       await panelHoldUnsub?.().catch(() => {});

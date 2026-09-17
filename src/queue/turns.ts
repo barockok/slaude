@@ -39,6 +39,10 @@ export interface TurnJob {
   tenantId: string;
   personaId: string;
   messages: TurnMessage[];
+  /** Identity the turn runs as when it is not the thread's /1on1 lock owner —
+   *  currently a cron job's captured initiator. The node applies it before the
+   *  turn so credential scoping matches an interactive 1on1. */
+  oauthUser?: string;
   /** Short-lived JWT minted by the gateway; nodes present it on tool calls. */
   jobToken: string;
   enqueuedAt: number;
