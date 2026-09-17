@@ -165,7 +165,25 @@ fi
 
 # --- 5. Wait ---------------------------------------------------------------
 log "waiting for rollouts"
-for d in dev-postgres dev-redis slaude-gateway slaude-node; do
+kubectl -n "$NS" rollout status deploy/dev-postgres --timeout=600s
+
+# Postgres creates the brain database from its init script, but only when its
+# data directory is first initialised. A volume created before that script
+# existed never gets it, and minikube's hostpath storage names directories
+# after the claim, so deleting and recreating the claim reattaches the old
+# data. Without the database a gateway exits and is restarted in a loop.
+log "ensuring the brain database exists"
+for _ in $(seq 1 30); do
+  kubectl -n "$NS" exec deploy/dev-postgres -c postgres -- pg_isready -U slaude >/dev/null 2>&1 && break
+  sleep 2
+done
+psql_pg() { kubectl -n "$NS" exec deploy/dev-postgres -c postgres -- psql -U slaude -v ON_ERROR_STOP=1 "$@"; }
+if ! psql_pg -d postgres -tAc "select 1 from pg_database where datname = 'slaude_brain'" | grep -q 1; then
+  psql_pg -d postgres -c "CREATE DATABASE slaude_brain" >/dev/null
+fi
+psql_pg -d slaude_brain -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm; CREATE EXTENSION IF NOT EXISTS pgcrypto;" >/dev/null
+
+for d in dev-redis slaude-gateway slaude-node; do
   kubectl -n "$NS" rollout status "deploy/$d" --timeout=600s
 done
 

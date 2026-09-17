@@ -162,6 +162,20 @@ build is filling the disk, delete the node, which removes its storage at once:
 minikube delete -p slaude-local
 ```
 
+### Deleting a claim does not reset its data
+
+minikube's hostpath storage names each volume's directory after its claim, and
+the directory can outlive the claim. Deleting and recreating `dev-postgres-data`
+reattaches the old data, so Postgres skips its init scripts and the brain
+database is never created. `up.sh` creates the brain database if it is missing.
+To truly reset local Postgres, empty the directory while it is scaled down:
+
+```sh
+kubectl -n slaude-scale scale deploy dev-postgres --replicas=0
+minikube -p slaude-local ssh -- "sudo sh -c 'rm -rf /tmp/hostpath-provisioner/slaude-scale/dev-postgres-data/*'"
+kubectl -n slaude-scale scale deploy dev-postgres --replicas=1
+```
+
 ## Differences from `deploy/k8s-scale`
 
 | Production | Local |
