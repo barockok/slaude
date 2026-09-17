@@ -82,6 +82,61 @@ out says nothing about what happens when a process actually dies.
 - **Failover of a turn in flight.** That needs a message source and model
   credentials; the checks above cover the machinery a turn depends on.
 
+## Troubleshooting
+
+### `minikube start` times out creating the host (colima)
+
+Symptom: `Exiting due to DRV_CREATE_TIMEOUT: create host timed out in 360
+seconds`, with the verbose log (`--alsologtostderr -v=5`) looping on:
+
+```
+libmachine: Error dialing TCP: dial tcp 127.0.0.1:<port>: connect: connection refused
+```
+
+The node container is fine. minikube runs on macOS and dials the node's SSH on
+a port Docker published inside the colima VM, and colima is failing to forward
+new ports from the VM to the Mac. Confirm it layer by layer:
+
+```sh
+P=$(docker port slaude-local 22 | awk -F: '{print $NF}')
+colima ssh -- bash -c "</dev/tcp/127.0.0.1/$P" && echo "open inside the VM"
+nc -z -G 3 127.0.0.1 "$P" || echo "refused on the Mac"
+grep -a "failed to set up forwarding" ~/.colima/_lima/colima/ha.stderr.log | tail -3
+```
+
+If the port is open inside the VM, refused on the Mac, and the colima host agent
+log shows `failed to set up forwarding ... exit status 255`, this is the cause.
+It affects every container that publishes a new port, not just minikube.
+
+Restarting colima re-establishes forwarding, but stops every running container.
+The non-disruptive workaround is to add the forwards through colima's own SSH
+control socket while `minikube start` is waiting:
+
+```sh
+S=~/.colima/_lima/colima/ssh.sock
+SSH_PORT=$(grep -aoE -- '-p [0-9]+ 127\.0\.0\.1' ~/.colima/_lima/colima/ha.stderr.log | tail -1 | awk '{print $2}')
+for p in $(docker port slaude-local | awk -F: '{print $NF}' | sort -u); do
+  ssh -F /dev/null -o IdentityFile="$HOME/.colima/_lima/_config/user" \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes \
+    -o User="$USER" -o ControlPath="$S" -T -O forward \
+    -L "127.0.0.1:$p:127.0.0.1:$p" -N -f -p "$SSH_PORT" 127.0.0.1
+done
+```
+
+These forwards are loopback-only and disappear when colima restarts. A new
+minikube node publishes new ports, so repeat this after `down.sh` and `up.sh`.
+
+Running the same forward by hand succeeds while the host agent's own attempt
+fails; why the agent's invocation fails was not established.
+
+### Docker is nearly out of disk space
+
+The image build needs a couple of gigabytes of free space on the Docker VM's
+disk, and minikube builds inside a node whose storage lives on that same disk.
+Check with `colima ssh -- df -h /` and `docker system df`. Build cache is the
+least disruptive thing to reclaim (`docker builder prune`); growing colima's
+disk requires restarting it.
+
 ## Differences from `deploy/k8s-scale`
 
 | Production | Local |
