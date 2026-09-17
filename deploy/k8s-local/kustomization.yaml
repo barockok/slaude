@@ -45,9 +45,9 @@ generatorOptions:
   disableNameSuffixHash: true
 
 patches:
-  # Slack ingress stays on the Events API: http mode boots with an empty
-  # slack_apps registry, so the whole cluster comes up healthy with no Slack
-  # credentials at all. Socket Mode would refuse to start without real tokens.
+  # Slack ingress is the Events API, inherited from deploy/k8s-scale. It is the
+  # only mode a gateway accepts, and it boots with an empty slack_apps registry,
+  # so the whole cluster comes up healthy with no Slack credentials at all.
   - patch: |-
       apiVersion: v1
       kind: ConfigMap

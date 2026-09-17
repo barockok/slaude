@@ -90,7 +90,8 @@ out says nothing about what happens when a process actually dies.
   Events API in HTTP mode, which boots with an empty app registry, so nothing
   here needs Slack credentials. To receive real events, put a tunnel in front
   of `svc/slaude-gateway` and register the app with `bun run slack-app add`.
-  Socket Mode avoids the tunnel but refuses to start without real tokens.
+  Socket Mode is not an option: a gateway refuses to boot on it, because its
+  websocket consumer is single-leader and replicas would duplicate responses.
 - **Failover of a turn in flight.** That needs a message source and model
   credentials; the checks above cover the machinery a turn depends on.
 
