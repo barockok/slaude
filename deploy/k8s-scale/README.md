@@ -16,6 +16,15 @@ scaling): `docs-new/deployment/scale-operations.md`.
   Upstash). Redis must run with `maxmemory-policy noeviction` (BullMQ
   requirement). For a self-contained dev cluster only, `90-dev-datastores.yaml`
   provides single-replica in-cluster stand-ins.
+- **The Postgres server needs pgvector, and a second database for the brain.**
+  A gateway refuses to boot on embedded storage: `SLAUDE_DB=pg` with a real
+  `SLAUDE_PG_URL` for slaude's data, and `SLAUDE_BRAIN_ENGINE=postgres` for the
+  brain. The brain's default PGLite engine is single-writer and clears locks it
+  finds at boot, so on the shared volume two gateway replicas would corrupt it.
+  Create the brain database with the `vector`, `pg_trgm` and `pgcrypto`
+  extensions, as in `deploy/postgres-init/10-brain-database.sql`, and set
+  `SLAUDE_BRAIN_DATABASE_URL` (`10-secrets.yaml`). Managed services that
+  support pgvector: RDS, Cloud SQL, Azure Flexible Server, Aiven.
 - **An RWX-capable StorageClass** for the shared `$SLAUDE_HOME` PVC
   (`30-pvc.yaml`): EFS, Filestore, Azure Files, Longhorn RWX, CephFS, NFS.
 - **KEDA** for queue-depth autoscaling (`70-autoscale.yaml`); a CPU-based

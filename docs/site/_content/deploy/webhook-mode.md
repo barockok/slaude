@@ -16,8 +16,10 @@ for it when:
 
 - your network blocks long-lived outbound WebSockets but allows inbound HTTPS
   behind a load balancer,
-- you're running the [horizontal-scale topology](multi-node.md) — gateway
-  replicas need a shared ingress, not one Socket Mode connection per replica,
+- you're running the [horizontal-scale topology](multi-node.md). There it is
+  **required**, not a choice: `SLAUDE_ROLE=gateway` refuses to boot on Socket
+  Mode, because its websocket consumer is single-leader and gateway replicas
+  would both consume events and send duplicate responses,
 - you want to install the same app into more than one workspace without
   hand-editing tokens per deploy.
 

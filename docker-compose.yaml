@@ -4,9 +4,13 @@
 # Profiles:
 #   (none)   — mono mode. Single process, all-in-one. Default.
 #   brain    — adds shared Postgres brain (needed for scale mode).
-#   scale    — gateway/node split with Redis queue. Enables horizontal scale.
-#              Requires brain profile too: `docker compose --profile brain --profile scale up -d`
+#   scale    — gateway/node split with Redis queue, ONE gateway (container_name
+#              pins it). Requires brain profile too:
+#              `docker compose --profile brain --profile scale up -d`
 #              Set SLAUDE_ROLE=gateway in env, add SLAUDE_REDIS_URL + SLAUDE_NODE_TOKEN.
+#              A gateway refuses to boot unless it also has SLAUDE_SLACK_MODE=http,
+#              SLAUDE_DB=pg + SLAUDE_PG_URL, and SLAUDE_BRAIN_ENGINE=postgres.
+#              For horizontally scaled gateways use docker-compose.scale.yaml.
 
 services:
   brain:

@@ -23,6 +23,8 @@ function harness() {
       registry: { lookup: async () => null, close: async () => {} } as any,
       pubsub: {
         consumeAbortFlag: async () => null,
+        // dispatch() captures the follower's cursor before enqueueing (#118).
+        lastEventId: async () => null,
         appendEvent: async () => {},
         readEvents: async () => [],
         close: async () => {},

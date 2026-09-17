@@ -97,7 +97,17 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
   const followers = new Map<string, Follower>();
   let closed = false;
 
-  function followEvents(sessionId: string, job: { jobId: string; queue: string }): void {
+  /**
+   * @param startAfter Stream id to read after when this call starts a new
+   *   follower. It MUST be captured before the job was enqueued: see dispatch().
+   *   Ignored when a follower for the session is already running, since that
+   *   follower's own cursor is already earlier.
+   */
+  function followEvents(
+    sessionId: string,
+    job: { jobId: string; queue: string },
+    startAfter: string | undefined,
+  ): void {
     const existing = followers.get(sessionId);
     const deadline = Date.now() + followMaxMs;
     if (existing) {
@@ -115,12 +125,12 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
     };
     followers.set(sessionId, state);
     void (async () => {
-      let lastId: string | undefined;
-      try {
-        // Skip the backlog: events already on the stream belong to earlier
-        // turns whose UX was already rendered (possibly by another replica).
-        lastId = (await pubsub.readEvents(sessionId)).at(-1)?.id;
-      } catch {}
+      // Events before startAfter belong to earlier turns whose UX was already
+      // rendered (possibly by another replica), so they are skipped. The cursor
+      // is NOT read here: by the time this runs the job is already enqueued, and
+      // a fast node can have appended this turn's events, which would then be
+      // skipped as backlog too.
+      let lastId = startAfter;
       try {
         while (!closed && Date.now() < state.deadline) {
           try {
@@ -226,6 +236,12 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       // cold-resumes locally — it never bounces.
       const loc = await registry.lookup(session.id);
       const target: TurnTarget = loc && loc.fresh ? { node: loc.node } : "shared";
+      // Capture the follower's cursor BEFORE the job becomes claimable. Once it
+      // is enqueued a node can claim it and append the whole turn before the
+      // follower starts; a cursor read after that point would treat this
+      // turn's events as backlog and skip them. A failed read falls back to
+      // following from the start of the stream, as a failed read did before.
+      const startAfter = (await pubsub.lastEventId(session.id).catch(() => null)) ?? undefined;
       const res = await turns.enqueueTurn(
         {
           sessionId: session.id,
@@ -243,7 +259,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       console.log(
         `[dispatch] session=${session.id} queue=${res.queue} job=${res.jobId} coalesced=${res.coalesced}`,
       );
-      followEvents(session.id, { jobId: res.jobId, queue: res.queue });
+      followEvents(session.id, { jobId: res.jobId, queue: res.queue }, startAfter);
     },
 
     async abort(sessionId: string): Promise<void> {
