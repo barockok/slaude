@@ -4,6 +4,38 @@
 # a self-contained evaluation cluster, and point 10-secrets.yaml at:
 #   SLAUDE_PG_URL:    postgres://slaude:slaude@postgres:5432/slaude
 #   SLAUDE_REDIS_URL: redis://redis:6379
+#   SLAUDE_BRAIN_DATABASE_URL: postgres://slaude:slaude@postgres:5432/slaude_brain
+---
+# Same content as deploy/postgres-init/10-brain-database.sql, which
+# docker-compose.scale.yaml mounts. Keep the two in step.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dev-postgres-init
+  namespace: slaude-scale
+data:
+  10-brain-database.sql: |
+    -- The brain (gbrain) gets its own database on the same Postgres server.
+    --
+    -- gbrain creates roughly seventy tables, several with generic names such as
+    -- config, files, sources and oauth_tokens. None collide with slaude's tables
+    -- today, but sharing one database would make every future slaude migration a
+    -- potential collision, so the two schemas evolve apart.
+    --
+    -- A gateway may not run the brain on its embedded PGLite engine (it is
+    -- single-writer), so SLAUDE_BRAIN_ENGINE=postgres points it here.
+    --
+    -- Runs only when the Postgres data directory is first initialised.
+    CREATE DATABASE slaude_brain;
+
+    \connect slaude_brain
+
+    -- gbrain also runs these itself, but only a sufficiently privileged role can.
+    -- Creating them here lets the brain connect as an ordinary application role.
+    CREATE EXTENSION IF NOT EXISTS vector;
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -29,7 +61,8 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:16
+          # pgvector: the brain runs on this server, not on embedded PGLite.
+          image: pgvector/pgvector:pg16
           env:
             - { name: POSTGRES_USER, value: slaude }
             - { name: POSTGRES_PASSWORD, value: slaude }
@@ -37,9 +70,13 @@ spec:
           ports: [{ containerPort: 5432 }]
           volumeMounts:
             - { name: data, mountPath: /var/lib/postgresql/data }
+            # Runs only when the data directory is first initialised.
+            - { name: init, mountPath: /docker-entrypoint-initdb.d, readOnly: true }
       volumes:
         - name: data
           persistentVolumeClaim: { claimName: dev-postgres-data }
+        - name: init
+          configMap: { name: dev-postgres-init }
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
