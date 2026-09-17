@@ -64,7 +64,13 @@ They gate on `SLAUDE_REDIS_TEST_URL` (skipped without it), run under random Redi
 
 ## docker compose (gateway + 2 nodes)
 
-`docker-compose.scale.yaml` runs the full topology from the existing Dockerfile: `postgres:16`, `redis:7`, one gateway (Slack **http** mode — Events API on `:8080`), two node workers, `$SLAUDE_HOME` on a shared named volume, healthchecks throughout.
+`docker-compose.scale.yaml` runs the full topology from the existing Dockerfile: Postgres 16 with pgvector, `redis:7`, one gateway (Slack **http** mode — Events API on `:8080`), two node workers, `$SLAUDE_HOME` on a shared named volume, healthchecks throughout.
+
+> **Gateway requirements.** Gateways and nodes both scale horizontally, so every gateway replica must be interchangeable. `SLAUDE_ROLE=gateway` refuses to boot unless all three hold, and lists every violation at once:
+>
+> - **Slack over the Events API webhook** (`SLAUDE_SLACK_MODE=http`). Socket Mode's websocket consumer is single-leader, so replicas would duplicate responses. Socket Mode is the default when unset.
+> - **slaude data on a Postgres server** (`SLAUDE_DB=pg` and `SLAUDE_PG_URL`). `SLAUDE_DB=pg` without a URL selects in-process PGLite, which each replica would hold privately.
+> - **The brain on Postgres** (`SLAUDE_BRAIN_ENGINE=postgres` and `SLAUDE_BRAIN_DATABASE_URL`), or disabled, or in remote mode. The default PGLite engine is single-writer and clears locks it finds at boot, so replicas on the shared volume would corrupt it. The brain gets its own `slaude_brain` database with the `vector`, `pg_trgm` and `pgcrypto` extensions; `deploy/postgres-init` creates it on a fresh volume.
 
 ```sh
 cat > .env <<EOF
