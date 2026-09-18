@@ -180,6 +180,14 @@ already happened in a merged plan document. All are fixed, and the refresher
 now builds its keys with `JSON.stringify`, so it needs no control characters
 in source at all.
 
+**The token endpoint was re-discovered on every refresh.** Found in the
+security pass. Refresh ran OAuth discovery from the MCP server's own metadata
+and then posted the stored refresh token and client secret to whatever token
+endpoint it named. A third-party MCP server that later turned hostile could
+repoint it and collect both. The endpoint a connect exchanged its code at is
+now pinned with the grant, and refresh posts only there. An entry imported from
+disk discovers once on its first refresh and pins what it found.
+
 ## Verified on the local scale cluster
 
 Two gateways and two nodes on real Postgres and Redis, with a stub OAuth
@@ -194,6 +202,7 @@ provider and MCP server whose refresh tokens rotate and are single-use:
 | Recovery through the gateway | one refresh, file rewritten, server `connected`, next call succeeds |
 | Eight concurrent refreshes across both gateway replicas | one provider call, zero rejected grants, one token |
 | Credentials written to the shared volume | none |
+| Unpinned entry's token endpoint after its first refresh | pinned in the store |
 
 Run on both node pods. `verify-ha.sh`, extended with credential-placement
 checks, passed 23 of 23.

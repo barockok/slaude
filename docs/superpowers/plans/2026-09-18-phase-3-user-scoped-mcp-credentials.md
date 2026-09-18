@@ -992,6 +992,7 @@ Expected: no hits. Any hit is a bug to fix before the pull request.
 13. A node never receives a refresh token or a client secret, never talks to an identity provider, and has no endpoint that writes a credential.
 14. The import never overwrites a credential rotated after it last ran.
 16. Concurrent refreshes for one owner and server make exactly one call to the provider, and a spent refresh token is never presented twice.
+17. A refresh posts the refresh token and client secret only to the token endpoint pinned at connect, never to one re-discovered from the MCP server's metadata. *(Added during the security pass.)*
 15. A pod-local session directory never inherits a credentials file from the persona home.
 
 - [ ] **Step 4: Index the field note** in `CLAUDE.md`.
