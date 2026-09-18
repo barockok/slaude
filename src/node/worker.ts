@@ -16,7 +16,9 @@
  * abort publish aborts the agent. SIGTERM drains: stop claiming, finish
  * in-flight turns within the grace, deregister everything, exit.
  */
-import { hostname } from "node:os";
+import { hostname, tmpdir } from "node:os";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Worker, DelayedError, type Job } from "bullmq";
 import type { Redis } from "ioredis";
@@ -31,6 +33,8 @@ import { makePubSub, type PubSub } from "../queue/pubsub";
 import { withSessionLock, HELD_BY_OTHER } from "../queue/locks";
 import type { TurnJob } from "../queue/turns";
 import { NodeClient } from "./client";
+import { makeSessionSeeder } from "./credentials";
+import { nodeConfigRoot, sessionConfigDir, existingSessionConfigDir } from "../agent/config-root";
 import { RestSessionStore } from "./session-store";
 import { buildShimServers } from "./shims";
 import { makeNodePermissionResolver } from "./shims/permission";
@@ -53,6 +57,9 @@ export function tokenAgeFraction(token: string, nowMs: number = Date.now()): num
 }
 
 export interface NodeWorkerOpts {
+  /** Root for pod-local session config homes. Default: SLAUDE_NODE_CONFIG_ROOT /
+   *  /config-home in the node role, else a per-process temp directory. */
+  configRoot?: string;
   /** Default: `<hostname>-<rand>` (spec §6). */
   nodeId?: string;
   client?: NodeClient;
@@ -160,6 +167,22 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     // Token budget stays node-local (spec §3): the live Query is here.
     [SESSION_MCP_NAME]: createSessionMcp({ getSnapshot: () => agent.getTokenSnapshot(sessionId) }),
   }));
+  // Every session's CLAUDE_CONFIG_DIR is pod-local, seeded from the gateway
+  // with the access tokens for the turn's owner (the gateway resolves the owner
+  // from the job token's runAs). Outside the node role — the simulator and the
+  // in-process integration harness — a per-process temp root stands in for the
+  // pod's emptyDir.
+  const configRoot = opts.configRoot ?? nodeConfigRoot() ?? mkdtempSync(join(tmpdir(), `slaude-node-${nodeId}-`));
+  const seeder = makeSessionSeeder({
+    fetch: (tenant, token) => client.getMcpCredentials(tenant, token),
+    tenantFor: (id) => tenants.get(id),
+    tokenFor: (id) => store.tokenFor(id),
+  });
+  agent.setSessionConfigDirResolver(async (sessionId, persona) => {
+    const dir = sessionConfigDir(sessionId, persona, configRoot);
+    await seeder.atBoot(sessionId, dir);
+    return dir;
+  });
   agent.setChildEnvResolver(async (sessionId) => {
     const tenant = tenants.get(sessionId);
     const token = store.tokenFor(sessionId);
@@ -216,6 +239,12 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       const text = data.messages.map((m) => m.text).join("\n\n");
       const suppress = data.messages.length > 0 && data.messages.every((m) => (m as any).suppress === true);
       if (suppress) agent.suppressNextTurn(sessionId);
+
+      // A warm session picks up tokens the gateway refreshed since it booted:
+      // the agent reads the file on every call. A session that is not booted
+      // yet is seeded by the config-dir resolver instead.
+      const warmDir = existingSessionConfigDir(sessionId, configRoot);
+      if (warmDir) await seeder.atTurn(sessionId, warmDir);
 
       const outcome = await new Promise<"done" | "error">((resolve, reject) => {
         const timer = setTimeout(() => {

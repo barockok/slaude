@@ -19,6 +19,7 @@
  * Keyed on the session, not the owner: two sessions running as the agent can
  * run on one node at once, and they must not share a working copy either.
  */
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { env } from "../config/env";
 import { agentConfigDir, ensurePersonaConfigDir, prepareConfigHome } from "./oauth-home";
@@ -40,8 +41,7 @@ const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
  * `persona` is the session's persona name; "default" or absent means the agent's
  * own home is the base for settings, plugins and transcripts.
  */
-export function sessionConfigDir(sessionId: string, persona?: string): string {
-  const root = nodeConfigRoot();
+export function sessionConfigDir(sessionId: string, persona?: string, root: string | null = nodeConfigRoot()): string {
   if (!root) throw new Error("pod-local config homes exist only in the node role");
   if (!SAFE_SEGMENT.test(sessionId) || sessionId === "." || sessionId === "..") {
     throw new Error("refusing a session id that is not a single safe path segment");
@@ -51,4 +51,11 @@ export function sessionConfigDir(sessionId: string, persona?: string): string {
   const dir = join(root, "sessions", sessionId);
   prepareConfigHome(dir, base, 0o700);
   return dir;
+}
+
+/** The session's pod-local home if it already exists, without creating it. */
+export function existingSessionConfigDir(sessionId: string, root: string | null = nodeConfigRoot()): string | null {
+  if (!root || !SAFE_SEGMENT.test(sessionId) || sessionId === "." || sessionId === "..") return null;
+  const dir = join(root, "sessions", sessionId);
+  return existsSync(dir) ? dir : null;
 }

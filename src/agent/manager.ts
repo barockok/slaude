@@ -187,6 +187,10 @@ export class AgentManager extends EventEmitter {
     | ((sessionId: string) => Promise<Record<string, string | undefined> | undefined> | Record<string, string | undefined> | undefined)
     | undefined;
   #resolver: PermissionResolver | undefined;
+  /** Optional per-session CLAUDE_CONFIG_DIR override. Node workers install one
+   *  to give every session a pod-local home seeded from the gateway; unset =
+   *  today's resolution (persona home / per-initiator home / inherited). */
+  #configDirResolver: ((sessionId: string, persona: string | undefined) => Promise<string>) | undefined;
   #mcpResolver: McpResolver | undefined;
   #stopGuard: StopGuard | undefined;
   /** Sessions whose Stop hook already blocked once this turn — cleared on user msg. */
@@ -237,6 +241,16 @@ export class AgentManager extends EventEmitter {
       | undefined,
   ) {
     this.#childEnvResolver = resolver;
+  }
+
+  /** Install a per-session CLAUDE_CONFIG_DIR resolver, called at session boot
+   *  with the session's persona name. It REPLACES the default resolution, and a
+   *  failure fails the boot: falling back would run the session out of a
+   *  config home that is not the one its credentials were seeded into. */
+  setSessionConfigDirResolver(
+    resolver: ((sessionId: string, persona: string | undefined) => Promise<string>) | undefined,
+  ) {
+    this.#configDirResolver = resolver;
   }
 
   /** Install a transport-level permission resolver (e.g. Slack approval gate). */
@@ -540,7 +554,9 @@ export class AgentManager extends EventEmitter {
     // (isolated .credentials.json + projects/ transcripts); a /1on1 lock nests
     // its per-initiator home INSIDE that persona boundary. Default persona +
     // unlocked → undefined → inherit the agent's config dir (unchanged).
-    const sessionConfigDir = resolveSessionConfigDir(oauthUser, persona?.name);
+    const sessionConfigDir = this.#configDirResolver
+      ? await this.#configDirResolver(sessionId, persona?.name)
+      : resolveSessionConfigDir(oauthUser, persona?.name);
     if (sessionConfigDir) providerEnv.CLAUDE_CONFIG_DIR = sessionConfigDir;
 
     const resolver = this.#resolver;

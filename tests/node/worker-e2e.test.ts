@@ -24,6 +24,7 @@ const d = describe.skipIf(!realEnabled);
 // Everything queue-touching is imported dynamically inside beforeAll so the
 // redis-less leg loads none of it (tests/queue/real.ts pattern).
 let redis: any;
+const nodeConfigRoot = require("node:fs").mkdtempSync(require("node:path").join(require("node:os").tmpdir(), "we2e-config-"));
 let keys: any;
 let turnsQ: any;
 let posts: any[] = [];
@@ -61,6 +62,7 @@ beforeAll(async () => {
   process.env.SLAUDE_NODE_TOKEN = NODE_TOKEN;
   process.env.SLAUDE_JOB_SECRET = JOB_SECRET;
   process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
+  process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 5).toString("base64");
 
   const { ensureHome } = await import("../../src/config/home");
   const { writeSoulFixture, WORLD } = await import("../../src/gateway/sim/soul-fixture");
@@ -155,9 +157,14 @@ beforeAll(async () => {
     liveSet = new Set<string>();
     aborts = new Map<string, AbortController>();
     abortedSessions: string[] = [];
+    configDirResolver?: (sessionId: string, persona: string | undefined) => Promise<string>;
     override setMcpResolver(r: any) {
       super.setMcpResolver(r);
       this.mcp = r;
+    }
+    override setSessionConfigDirResolver(r: any) {
+      super.setSessionConfigDirResolver(r);
+      this.configDirResolver = r;
     }
     override isLive(id: string) {
       return this.liveSet.has(id);
@@ -204,6 +211,7 @@ beforeAll(async () => {
     port: null,
     lock: { ttlMs: 2000, extendEveryMs: 300 },
     turnTimeoutMs: 30_000,
+    configRoot: nodeConfigRoot,
   });
 });
 
@@ -222,6 +230,7 @@ afterAll(async () => {
   delete process.env.SLAUDE_NODE_TOKEN;
   delete process.env.SLAUDE_JOB_SECRET;
   delete process.env.SLAUDE_BRAIN_DISABLED;
+  require("node:fs").rmSync(nodeConfigRoot, { recursive: true, force: true });
 });
 
 const msg = (thread: string, ts: string, text: string) => ({
@@ -372,6 +381,58 @@ d("gateway↔node E2E (real Redis)", () => {
     behavior = async ({ servers, text }) => {
       await callShim(servers["slaude_surface"], "reply", { text: `node-reply: ${text.slice(0, 40)}` });
     };
+  }, 30_000);
+
+  // Phase 3: the node's session config home is pod-local and seeded from the
+  // gateway's credential store with the access tokens for the turn's runAs
+  // owner. Runs the real /v1 endpoint, the real dispatcher-minted runAs, and
+  // the worker's real resolver; only the model turn is stubbed.
+  test("an agent turn's pod-local home is seeded with the agent's access token only", async () => {
+    const Creds = await import("../../src/db/mcp-credentials");
+    const { readFileSync, statSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    await Creds.putCredential({ kind: "agent", tenant: "default", persona: "default" }, "workbench|e2e", {
+      serverName: "workbench", serverUrl: "https://mcp.example.com", clientId: "c1", clientSecret: "secret-e2e",
+      accessToken: "tok-agent-e2e", refreshToken: "refresh-e2e", expiresAt: Date.now() + 3600_000,
+    });
+    const T = "9500.0";
+    await emitSlack("message", msg(T, "9500.1", "<@USLAUDE> seed me"));
+    await until(() => posts.some((p) => p.thread_ts === T && String(p.text).includes("node-reply:")), 15_000);
+    const sid = await sessionIdOf(T);
+
+    const dir = await stub.configDirResolver!(sid, undefined);
+
+    expect(dir.startsWith(nodeConfigRoot)).toBe(true);
+    const file = join(dir, ".credentials.json");
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    const text = readFileSync(file, "utf8");
+    expect(JSON.parse(text).mcpOAuth["workbench|e2e"].accessToken).toBe("tok-agent-e2e");
+    expect(text).not.toContain("refresh-e2e");
+    expect(text).not.toContain("secret-e2e");
+  }, 30_000);
+
+  test("a 1:1 turn's home is seeded with the lock owner's credentials, not the agent's", async () => {
+    const Creds = await import("../../src/db/mcp-credentials");
+    const Accounts = await import("../../src/db/accounts");
+    const OneOnOne = await import("../../src/db/one-on-one");
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const a = await Accounts.upsertAccount({ issuer: "https://idp.example.com", subject: "sub-e2e", email: "e2e@example.com" });
+    await Accounts.linkSlackIdentity({ teamId: "T", slackUserId: "U0MGR", accountId: a.id, via: "signed-link" });
+    await Creds.putCredential({ kind: "account", accountId: a.id }, "workbench|e2e", {
+      serverName: "workbench", serverUrl: "https://mcp.example.com", accessToken: "tok-person-e2e", expiresAt: Date.now() + 3600_000,
+    });
+    const T = "9600.0";
+    await OneOnOne.lock({ channelId: "C0TEAM", threadTs: T, lockedUser: "U0MGR", createdBy: "U0MGR" });
+    await emitSlack("message", msg(T, "9600.1", "<@USLAUDE> seed me as a person"));
+    await until(() => posts.some((p) => p.thread_ts === T && String(p.text).includes("node-reply:")), 15_000);
+    const sid = await sessionIdOf(T);
+
+    const dir = await stub.configDirResolver!(sid, undefined);
+
+    const text = readFileSync(join(dir, ".credentials.json"), "utf8");
+    expect(JSON.parse(text).mcpOAuth["workbench|e2e"].accessToken).toBe("tok-person-e2e");
+    expect(text).not.toContain("tok-agent-e2e");
   }, 30_000);
 
   test("SIGTERM drain: in-flight turn finishes, node + session keys deregistered", async () => {
