@@ -14,8 +14,13 @@
  * and the brain's PGLite makes that worse: it treats any lock it finds at boot
  * as stale and deletes it, so each replica clears the other's live lock.
  *
+ * A usable SLAUDE_MASTER_KEY. The gateway holds every MCP credential in its
+ * store, encrypted under that key; without it the gateway would accept an
+ * /mcp connect and then fail to store it. Any working gateway already has one,
+ * since webhook mode decrypts the Slack app registry with it.
+ *
  * mono and node are exempt. mono is one process by definition, and a node holds
- * no database and no brain (spec §1).
+ * no database, no brain and no credential store (spec §1).
  */
 
 export interface GatewayRequirementsInput {
@@ -31,6 +36,9 @@ export interface GatewayRequirementsInput {
   /** Resolves the brain engine name. Called only when it matters, and allowed
    *  to throw — a misconfigured engine is reported as a violation. */
   brainEngine: () => string;
+  /** Validates SLAUDE_MASTER_KEY; throws when it is absent or malformed. Its
+   *  message names the variable, never the value. */
+  masterKey: () => void;
 }
 
 /** The only app database driver that is a server shared by all replicas. */
@@ -53,6 +61,15 @@ export function gatewayRequirementViolations(i: GatewayRequirementsInput): strin
       `slaude data is on an embedded database (driver ${i.dbDriver}). A gateway needs a Postgres server ` +
         `every replica shares: set SLAUDE_DB=pg and SLAUDE_PG_URL. Note SLAUDE_DB=pg without SLAUDE_PG_URL ` +
         `selects in-process PGLite.`,
+    );
+  }
+
+  try {
+    i.masterKey();
+  } catch (e) {
+    out.push(
+      `MCP credentials cannot be encrypted: ${e instanceof Error ? e.message : String(e)}. A gateway stores every ` +
+        `MCP credential encrypted under SLAUDE_MASTER_KEY.`,
     );
   }
 
