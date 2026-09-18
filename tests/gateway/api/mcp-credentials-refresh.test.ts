@@ -158,3 +158,37 @@ describe("refresh endpoint", () => {
     expect(res!.status).toBe(405);
   });
 });
+
+// Turn start fetches credentials; handing out a token that is already expired
+// would guarantee the turn's first MCP call fails. The gateway refreshes such
+// entries before answering, so most turns never reach the failure path at all.
+describe("GET refreshes what is about to expire", () => {
+  const get = () =>
+    api().fetch(
+      new Request("http://gw/v1/tenants/t1/mcp-credentials", {
+        headers: { authorization: `Bearer ${NODE_TOKEN}`, [JOB_HEADER]: tokenFor("agent") },
+      }),
+    );
+
+  test("an expired entry is refreshed before it is handed out", async () => {
+    await Creds.putCredential(AGENT, KEY, stored("tok-expired", Date.now() - 1));
+    const body = (await (await get())!.json()) as any;
+    expect(body.entries[KEY].accessToken).toBe("tok-new-1");
+    expect(grants).toBe(1);
+  });
+
+  test("a fresh entry is handed out without calling the provider", async () => {
+    await Creds.putCredential(AGENT, KEY, stored("tok-fresh", Date.now() + 3600_000));
+    const body = (await (await get())!.json()) as any;
+    expect(body.entries[KEY].accessToken).toBe("tok-fresh");
+    expect(grants).toBe(0);
+  });
+
+  test("when the refresh fails the stored entry is still served", async () => {
+    await Creds.putCredential(AGENT, KEY, stored("tok-expired", Date.now() - 1));
+    grantBehaviour = "down";
+    const res = await get();
+    expect(res!.status).toBe(200);
+    expect(((await res!.json()) as any).entries[KEY].accessToken).toBe("tok-expired");
+  });
+});

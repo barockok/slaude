@@ -57,15 +57,44 @@ export function toNodeCredential(e: StoredEntry): NodeCredential {
   };
 }
 
-export async function handleMcpCredentials(_req: Request, claims: JobClaims): Promise<Response> {
+/** An entry this close to expiry is refreshed before it is handed to a node. */
+const HAND_OUT_SKEW_MS = 60_000;
+
+export async function handleMcpCredentials(
+  _req: Request,
+  claims: JobClaims,
+  refresher?: CredentialRefresher,
+): Promise<Response> {
   const resolved = await resolveOwner(claims);
   if (!resolved.ok) return resolved.response;
   const { owner } = resolved;
   // No account and no credentials look the same from outside: telling them
   // apart would reveal whether a person has an account.
   if (!owner) return json(200, { entries: {} });
+
+  const entries = await credentialsFor(owner);
+  // A node fetches at turn start. Handing out a token that is already expired
+  // would make the turn's first MCP call fail, so refresh those first. The
+  // refresher's own freshness check makes a concurrent refresh a no-op, and a
+  // failure here just serves what is stored: the node's failure path remains.
+  if (refresher) {
+    const now = Date.now();
+    await Promise.all(
+      Object.entries(entries)
+        .filter(([, e]) => e.refreshToken && e.expiresAt - now <= HAND_OUT_SKEW_MS)
+        .map(async ([key]) => {
+          try {
+            const out = await refresher.refresh(owner, key, undefined);
+            if (out.ok) entries[key] = out.entry;
+          } catch {
+            /* serve the stored entry */
+          }
+        }),
+    );
+  }
+
   const out: Record<string, NodeCredential> = {};
-  for (const [key, e] of Object.entries(await credentialsFor(owner))) out[key] = toNodeCredential(e);
+  for (const [key, e] of Object.entries(entries)) out[key] = toNodeCredential(e);
   return json(200, { entries: out });
 }
 

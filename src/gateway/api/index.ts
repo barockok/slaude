@@ -110,7 +110,7 @@ export function createV1Api(opts: V1Options): V1Api {
         if (job.claims.tenant !== seg[2]!) {
           return json(403, { error: "job token is not scoped to this tenant" });
         }
-        return await handleMcpCredentials(req, job.claims);
+        return await handleMcpCredentials(req, job.claims, credentialRefresher());
       }
 
       // /v1/tenants/:id/mcp-credentials/refresh — refresh one server for the
