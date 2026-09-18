@@ -102,10 +102,98 @@ state is correct. The gateway performs every refresh; a node never holds a
 client secret or talks to an identity provider.
 
 This bounds a mid-turn expiry to the single call that hit it, rather than the
-rest of the turn. It also narrows the accepted cost of the design: a lost
-rotation on pod death still costs a reconnect, but an ordinary expiry no longer
-does.
+rest of the turn. Once nodes were given access tokens only (below), no rotation
+can happen on a node at all, so a pod dying mid-turn loses nothing either.
 
 Lever C makes a proactive variant possible — refreshing in the permission
 callback when a token is inside its expiry window, so the model never sees the
 failure at all. It is not needed for correctness and is left as a follow-up.
+
+## What was built
+
+**One store for every MCP credential.** The agent's own shared identity per
+tenant and persona, and each person's per account, sit in one Postgres table,
+AES-256-GCM under `SLAUDE_MASTER_KEY`. Exactly one owner per row is enforced by
+`CHECK` constraints rather than by code, and a person's rows cascade away with
+their account through a real foreign key.
+
+**Whose credentials a turn gets is signed, not inferred.** The dispatcher
+computes it with the same rule the node uses for its config directory and signs
+it into the job token as `runAs`. The existing `initiator` claim was the wrong
+key: it is whoever sent the message, which in a channel thread is a colleague
+while the session runs as the agent. The credential endpoints take no owner in
+the URL, so there is nothing to tamper with, and a token without `runAs` is
+refused rather than read as the agent. A failed lock lookup fails the dispatch,
+because defaulting would run a 1:1 turn with the agent's credentials.
+
+**Nodes hold access tokens only.** The node-facing endpoint returns an
+allowlisted projection. Refresh tokens and client secrets never leave the
+gateway, which makes it the only refresher by construction: the agent cannot
+rotate what it does not hold. That removed the turn-end write-back the plan had
+called for, the write path a compromised node could have planted credentials
+through, and the accepted cost of losing a rotation when a pod died.
+
+**Refresh is single-flight across replicas.** A rotating refresh token can be
+spent once, and many sessions share the agent's owner. Callers in one process
+share a promise, replicas serialise on a Redis lock, and under the lock the
+stored entry is re-read so a caller whose token was already replaced gets the
+new one without the provider being called. A fresh token skips the lock
+entirely. Under the lock the result is written unconditionally: a refreshed
+token can expire sooner than the old one's nominal expiry, and a newer-wins
+guard there would hand back the very token just rejected.
+
+**Two refresh triggers.** A node fetches its owner's tokens at the start of
+each turn, and the gateway refreshes anything inside its expiry window before
+answering, so most turns never meet an expired token. Mid-turn, Branch R above
+takes over.
+
+**Every node session gets a pod-local home**, an `emptyDir`, seeded from the
+gateway. The file is written by temp-file rename, which replaces a planted
+symlink rather than writing through it.
+
+**The boot import is insert-only.** Once the store holds a row it is
+authoritative; an old file with a later nominal expiry must never replace a
+grant refreshed since. That also makes it safe on every replica with no lock. A
+person's on-disk directory carries no workspace, so their Slack id imports only
+when it maps to exactly one account.
+
+## Found along the way
+
+**Default-persona transcripts never reached the shared volume.** Node pods run
+with no `CLAUDE_CONFIG_DIR`, so the agent's own home resolved to `~/.claude` on
+the pod's filesystem, and a session resumed on another node started cold. This
+predated phase 3. The node's default-persona base is now `$SLAUDE_HOME/.claude`.
+
+**A stub provider with incomplete metadata broke recovery, and a real one
+would too.** A 401 that advertises `resource_metadata` makes the SDK run its own
+OAuth discovery. Against authorization-server metadata missing
+`response_types_supported`, that discovery throws a schema error, the server
+stays `connected`, and the needs-auth signal Branch R keys on never appears.
+Against conformant metadata the server goes `needs-auth` as measured. So
+mid-turn recovery depends on the provider publishing valid RFC 8414 metadata.
+The turn-start refresh does not, and still covers ordinary expiry.
+
+**Literal NUL bytes, twice more.** Writing the JavaScript NUL escape sequence
+into source through the editing tooling produced real NUL bytes, in a test and
+in the refresher, making git treat the files as binary. The same thing had
+already happened in a merged plan document. All are fixed, and the refresher
+now builds its keys with `JSON.stringify`, so it needs no control characters
+in source at all.
+
+## Verified on the local scale cluster
+
+Two gateways and two nodes on real Postgres and Redis, with a stub OAuth
+provider and MCP server whose refresh tokens rotate and are single-use:
+
+| Check | Result |
+| --- | --- |
+| Expired stored token refreshed as a node fetched it at turn start | one provider call |
+| Node session home | pod-local, `0700`; file `0600` |
+| Fields in the node's file | `accessToken`, `clientId`, `expiresAt`, `serverName`, `serverUrl` only |
+| Mid-session expiry | tool error, status `needs-auth` |
+| Recovery through the gateway | one refresh, file rewritten, server `connected`, next call succeeds |
+| Eight concurrent refreshes across both gateway replicas | one provider call, zero rejected grants, one token |
+| Credentials written to the shared volume | none |
+
+Run on both node pods. `verify-ha.sh`, extended with credential-placement
+checks, passed 23 of 23.
