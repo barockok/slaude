@@ -155,4 +155,40 @@ describe("mcp credential store", () => {
       console.error = orig;
     }
   });
+
+  // Write-back from nodes and the boot import both use this. The ordering rule
+  // lives in the upsert itself, so two concurrent writers cannot interleave a
+  // read-compare-write and let an older token win.
+  describe("putCredentialIfNewer", () => {
+    test("writes when there is nothing stored", async () => {
+      expect(await Creds.putCredentialIfNewer(AGENT, KEY, entry("tok-1"))).toBe(true);
+      expect((await Creds.credentialsFor(AGENT))[KEY]!.accessToken).toBe("tok-1");
+    });
+
+    test("a later expiry replaces the stored entry", async () => {
+      await Creds.putCredential(AGENT, KEY, entry("old", Date.now() + 60_000));
+      expect(await Creds.putCredentialIfNewer(AGENT, KEY, entry("new", Date.now() + 7200_000))).toBe(true);
+      expect((await Creds.credentialsFor(AGENT))[KEY]!.accessToken).toBe("new");
+    });
+
+    test("an earlier expiry never replaces the stored entry", async () => {
+      await Creds.putCredential(AGENT, KEY, entry("newer", Date.now() + 7200_000));
+      expect(await Creds.putCredentialIfNewer(AGENT, KEY, entry("older", Date.now() + 60_000))).toBe(false);
+      expect((await Creds.credentialsFor(AGENT))[KEY]!.accessToken).toBe("newer");
+    });
+
+    test("the ordering is per owner", async () => {
+      await Creds.putCredential(person, KEY, entry("person-newer", Date.now() + 7200_000));
+      expect(await Creds.putCredentialIfNewer(AGENT, KEY, entry("agent", Date.now() + 60_000))).toBe(true);
+      expect((await Creds.credentialsFor(person))[KEY]!.accessToken).toBe("person-newer");
+    });
+
+    test("concurrent writers settle on the latest expiry", async () => {
+      const base = Date.now() + 60_000;
+      await Promise.all(
+        Array.from({ length: 12 }, (_, i) => Creds.putCredentialIfNewer(AGENT, KEY, entry(`tok-${i}`, base + i * 1000))),
+      );
+      expect((await Creds.credentialsFor(AGENT))[KEY]!.accessToken).toBe("tok-11");
+    });
+  });
 });

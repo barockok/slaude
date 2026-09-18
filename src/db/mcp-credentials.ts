@@ -67,6 +67,42 @@ export async function putCredential(owner: CredentialOwner, serverKey: string, e
 }
 
 /**
+ * Write only if this entry expires no earlier than what is stored. Used by node
+ * write-back and the boot import, where an older token must never replace a
+ * newer one — for instance a rotation made on another node since this one
+ * seeded.
+ *
+ * The comparison lives in the upsert's own WHERE, so the database performs the
+ * read-compare-write atomically. Two nodes finishing turns for the same owner
+ * cannot interleave, and nothing needs a distributed lock to guarantee it.
+ * Returns whether a row was written.
+ */
+export async function putCredentialIfNewer(owner: CredentialOwner, serverKey: string, entry: StoredEntry): Promise<boolean> {
+  const now = Date.now();
+  const payload = encrypt(JSON.stringify(entry));
+  const guard = "WHERE mcp_credentials.expires_at <= excluded.expires_at";
+  const r =
+    owner.kind === "account"
+      ? await db.run(
+          `INSERT INTO mcp_credentials (id, account_id, server_key, payload, expires_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (account_id, server_key)
+           DO UPDATE SET payload = excluded.payload, expires_at = excluded.expires_at, updated_at = excluded.updated_at
+           ${guard}`,
+          [randomUUID(), owner.accountId, serverKey, payload, entry.expiresAt, now],
+        )
+      : await db.run(
+          `INSERT INTO mcp_credentials (id, agent_tenant, agent_persona, server_key, payload, expires_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (agent_tenant, agent_persona, server_key)
+           DO UPDATE SET payload = excluded.payload, expires_at = excluded.expires_at, updated_at = excluded.updated_at
+           ${guard}`,
+          [randomUUID(), owner.tenant, owner.persona, serverKey, payload, entry.expiresAt, now],
+        );
+  return (r.changes ?? 0) > 0;
+}
+
+/**
  * Every credential one owner holds, keyed by server key. A row that fails to
  * decrypt or does not have the expected shape is omitted and reported without
  * its contents: returning a half-decoded entry would hand the agent a token
