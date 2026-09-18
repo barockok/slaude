@@ -85,11 +85,16 @@ export function makeCredentialRefresher(deps: RefresherDeps) {
 
     if (!stored.refreshToken || !stored.clientId) return { ok: false, reason: "reconnect" };
 
+    // The refresh token and client secret go to this endpoint. It is the one
+    // pinned at connect; re-discovering it from the MCP server's metadata on
+    // every refresh would let a server that later turned hostile repoint it
+    // and collect them. A legacy entry with none discovers once and pins.
     let tokens;
+    let tokenEndpoint = stored.tokenEndpoint;
     try {
-      const meta = await discover(stored.serverUrl);
+      tokenEndpoint ??= (await discover(stored.serverUrl)).tokenEndpoint;
       tokens = await grant({
-        tokenEndpoint: meta.tokenEndpoint,
+        tokenEndpoint,
         clientId: stored.clientId,
         clientSecret: stored.clientSecret,
         refreshToken: stored.refreshToken,
@@ -108,6 +113,7 @@ export function makeCredentialRefresher(deps: RefresherDeps) {
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken ?? stored.refreshToken,
       expiresAt: now() + (tokens.expiresIn ?? 3600) * 1000,
+      tokenEndpoint,
     };
     await putCredential(owner, serverKey, entry);
     console.log(`[credential-refresh] refreshed owner=${owner.kind} server=${serverKey}`);

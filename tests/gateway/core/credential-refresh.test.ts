@@ -174,3 +174,31 @@ describe("the fast path", () => {
     expect(locks).toBe(0);
   });
 });
+
+// The refresh token and client secret are posted to the token endpoint. If that
+// endpoint were re-discovered from the MCP server's metadata on every refresh,
+// a server that later turned hostile could repoint it and collect them. The
+// endpoint learned at connect is pinned; a legacy entry without one discovers
+// once and pins what it found.
+describe("token endpoint pinning", () => {
+  test("a pinned endpoint is used without asking the MCP server again", async () => {
+    await Creds.putCredential(AGENT, KEY, stored("tok-old", NOW - 1, { tokenEndpoint: "https://pinned.example.com/token" }));
+    const { r, grants, discovered } = refresher();
+    await r.refresh(AGENT, KEY, hash("tok-old"));
+    expect(discovered).toEqual([]);
+    expect(grants[0].tokenEndpoint).toBe("https://pinned.example.com/token");
+  });
+
+  test("an entry without a pinned endpoint discovers once, then pins it", async () => {
+    await Creds.putCredential(AGENT, KEY, stored("tok-old", NOW - 1));
+    const { r, discovered } = refresher();
+    await r.refresh(AGENT, KEY, hash("tok-old"));
+    expect(discovered).toHaveLength(1);
+    expect((await Creds.credentialsFor(AGENT))[KEY]!.tokenEndpoint).toBe("https://idp.example.com/token");
+
+    const again = (await Creds.credentialsFor(AGENT))[KEY]!;
+    await Creds.putCredential(AGENT, KEY, { ...again, expiresAt: NOW - 1 });
+    await r.refresh(AGENT, KEY, hash(again.accessToken));
+    expect(discovered).toHaveLength(1);
+  });
+});

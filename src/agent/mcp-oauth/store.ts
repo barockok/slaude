@@ -47,6 +47,10 @@ export interface OAuthTokens {
   refreshToken?: string;
   /** Seconds; defaults to 3600 when undefined (matches the CLI). */
   expiresIn?: number;
+  /** The token endpoint these tokens were exchanged at. Pinned in the gateway's
+   *  store so a refresh never re-asks the MCP server where to send the refresh
+   *  token; never written to the CLI's own file. */
+  tokenEndpoint?: string;
 }
 
 /** Replica of the CLI's `a2A`: `${name}|sha256(JSON.stringify({type,url,headers||{}})).hex[0:16]`.
@@ -81,6 +85,7 @@ export function toStoredEntry(
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken,
     expiresAt: now() + (tokens.expiresIn ?? 3600) * 1000,
+    ...(tokens.tokenEndpoint ? { tokenEndpoint: tokens.tokenEndpoint } : {}),
   };
 }
 
@@ -103,7 +108,9 @@ export function writeEntry(
     ...current,
     mcpOAuth: {
       ...(current.mcpOAuth || {}),
-      [key]: toStoredEntry(serverName, cfg, tokens, now),
+      // The CLI owns this file's format: a pinned endpoint belongs to the
+      // gateway's store, not here.
+      [key]: (({ tokenEndpoint: _pinned, ...fileEntry }) => fileEntry)(toStoredEntry(serverName, cfg, tokens, now)),
     },
   };
   // Atomic write so a concurrent CLI refresh-write can't observe a torn file.
@@ -123,6 +130,8 @@ export interface StoredEntry {
   refreshToken?: string;
   /** Epoch ms. */
   expiresAt: number;
+  /** Pinned token endpoint (gateway store only; see OAuthTokens.tokenEndpoint). */
+  tokenEndpoint?: string;
 }
 
 /** Read the stored entry for a server (or undefined if absent / unreadable). */

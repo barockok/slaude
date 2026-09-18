@@ -119,3 +119,26 @@ describe("persistDisconnect", () => {
     expect(r).toEqual({ ok: true, removed: false });
   });
 });
+
+describe("token endpoint", () => {
+  test("the endpoint the connect exchanged against is pinned in the store", async () => {
+    await persistConnect({
+      ...base, scope: "global", persona: "default", slackUserId: "UMANAGER1",
+      tokens: { ...tokens("tok-agent"), tokenEndpoint: "https://idp.example.com/token" },
+    });
+    const e = (await Creds.credentialsFor({ kind: "agent", tenant: "t1", persona: "default" }))[KEY]!;
+    expect(e.tokenEndpoint).toBe("https://idp.example.com/token");
+  });
+
+  // The CLI owns the on-disk format; a field it does not know stays out of it.
+  test("the on-disk CLI file never receives it", async () => {
+    const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { writeEntry } = await import("../../src/agent/mcp-oauth/store");
+    const dir = mkdtempSync(join(tmpdir(), "cli-file-"));
+    writeEntry(dir, "workbench", cfg, { ...tokens("tok-1"), tokenEndpoint: "https://idp.example.com/token" });
+    expect(readFileSync(join(dir, ".credentials.json"), "utf8")).not.toContain("tokenEndpoint");
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
