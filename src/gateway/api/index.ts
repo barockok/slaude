@@ -19,10 +19,14 @@
  *   GET   /v1/pending/:id             30s long-poll, 204 timeout (bearer)
  *   POST  /v1/jobs/:id/ack|fail       telemetry only             (bearer)
  *   POST  /v1/tools/:server/:tool     contract-validated tool call (bearer + job token)
+ *   GET   /v1/tenants/:id/mcp-credentials   the runAs owner's MCP credentials  (bearer + job token;
+ *   POST  /v1/tenants/:id/mcp-credentials   write back what a turn changed      owner from the signed
+ *                                                                               runAs claim only)
  */
 import { requireBearer, requireJobToken } from "./auth";
 import { handleSession } from "./sessions";
 import { handleTenantRuntime } from "./tenants";
+import { handleMcpCredentials } from "./mcp-credentials";
 import { handlePending, type PendingOptions } from "./pending";
 import { handleJobEvent, handleTokenRefresh } from "./jobs";
 import { executeToolCall } from "./tools";
@@ -79,6 +83,20 @@ export function createV1Api(opts: V1Options): V1Api {
           return json(403, { error: "job token is not scoped to this tenant" });
         }
         return await handleTenantRuntime(req, seg[2]!, job.claims.persona || "default");
+      }
+
+      // /v1/tenants/:id/mcp-credentials — the owner is the token's signed runAs
+      // claim and nothing else: there is no owner in the path to tamper with.
+      // Deliberately not part of the runtime bundle, which is keyed on (tenant,
+      // persona) and ETag-cached on the node.
+      if (seg.length === 4 && seg[1] === "tenants" && seg[3] === "mcp-credentials") {
+        if (req.method !== "GET" && req.method !== "POST") return methodNotAllowed();
+        const job = requireJobToken(req);
+        if ("response" in job) return job.response;
+        if (job.claims.tenant !== seg[2]!) {
+          return json(403, { error: "job token is not scoped to this tenant" });
+        }
+        return await handleMcpCredentials(req, job.claims);
       }
 
       // /v1/tenants/:id/personas/:persona/runtime — the bundle is per persona,
