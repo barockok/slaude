@@ -13,6 +13,10 @@ export type HealthDeps = {
    *  roles with SLAUDE_PANEL enabled, and omits it otherwise. Returns null for
    *  paths it doesn't own. */
   panel?: (req: Request) => Promise<Response | null>;
+  /** Optional end-user portal handler (GatewayHandle.fetchPortal). Mounted for
+   *  mono/gateway roles; it returns null for every request while SLAUDE_PORTAL
+   *  is off, so mounting it costs nothing when disabled. */
+  portal?: (req: Request) => Promise<Response | null>;
 };
 
 /**
@@ -59,6 +63,10 @@ export function healthRoutes(deps: HealthDeps, startedAt = Date.now()) {
     }
     if (deps.panel && (url.pathname === "/panel" || url.pathname.startsWith("/panel/"))) {
       const res = await deps.panel(req);
+      if (res) return res;
+    }
+    if (deps.portal && (url.pathname === "/portal" || url.pathname.startsWith("/portal/"))) {
+      const res = await deps.portal(req);
       if (res) return res;
     }
     return null;

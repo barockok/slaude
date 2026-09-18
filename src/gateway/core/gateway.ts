@@ -35,6 +35,9 @@ import { makeRegistry, type Registry } from "../../queue/registry";
 import { makePubSub, type PubSub } from "../../queue/pubsub";
 import { makePanelLock, type PanelLock } from "../../queue/panel-lock";
 import { createPanelApi } from "../panel/api";
+import { createPortalApi } from "../portal/api";
+import { mintLinkToken } from "../portal/link-token";
+import { accountForSlackUser } from "../../db/accounts";
 import { makeDeferQueue } from "../panel/defer-queue";
 import { suppressibleSurface } from "../panel/suppress";
 import type { DispatchMeta } from "./dispatch";
@@ -89,6 +92,8 @@ export interface GatewayHandle {
    *  Mounted only when SLAUDE_PANEL is enabled and the role is mono/gateway —
    *  see src/server.ts. */
   fetchPanel(req: Request): Promise<Response | null>;
+  /** `/portal/*` — end-user onboarding. Null when SLAUDE_PORTAL is off. */
+  fetchPortal(req: Request): Promise<Response | null>;
   /** TEST/SIM SEAM ONLY. The pending-gate source behind /v1/pending. */
   __pendingSource(): PendingSource;
   /** TEST/SIM SEAM ONLY. Live per-session MCP contexts built by the resolver.
@@ -1500,6 +1505,44 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         await reply(lines.join("\n"));
         return;
       }
+      if (slash.kind === "link") {
+        // `teamId` here is the real workspace id (context.teamId ?? event.team,
+        // narrowed above), and it is bound into the token: a wrong team id would
+        // mint a link that binds in the wrong workspace.
+        const linkSurface = surfaceFactoryFor(dispatch?.personaId)({
+          conversationId: channelId,
+          threadRef: threadTs,
+          inboundRef: threadTs,
+          userId,
+          teamId,
+          requestApproval: async () => { throw new Error("approval is not part of /link"); },
+          reloadSession: () => false,
+        });
+        const sayPrivately = async (text: string) => {
+          if (linkSurface.capabilities.has("ephemeral") && linkSurface.sayEphemeral) {
+            await linkSurface.sayEphemeral({ text, userId });
+            return;
+          }
+          // A surface that cannot keep it private must not leak it: say nothing
+          // useful rather than posting an onboarding link into a channel.
+          await reply(":warning: `/link` needs a surface that supports private replies.");
+        };
+        if (!env.portal.enabled()) {
+          await sayPrivately(":information_source: the onboarding portal is not enabled on this deployment.");
+          return;
+        }
+        const existing = await accountForSlackUser(teamId, userId);
+        if (existing) {
+          await sayPrivately(`:white_check_mark: already connected as \`${existing.email}\`.`);
+          return;
+        }
+        const token = mintLinkToken({ teamId, slackUserId: userId });
+        await sayPrivately(
+          `:link: Connect your account: ${env.panel.publicUrl()}/portal/link?t=${token}\n` +
+            `Only you can see this message. The link expires in 15 minutes.`,
+        );
+        return;
+      }
       if (slash.kind === "mcp") {
         // Two scopes:
         //   inside a /1on1 lock → "initiator": the connect writes into THIS user's
@@ -2467,6 +2510,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
   }
 
+  // The end-user portal is its own mount with its own guard: an ordinary user
+  // never reaches an operator route, and the panel's guard is not relaxed.
+  // createPortalApi returns null for every request while SLAUDE_PORTAL is off.
+  const portalApi = createPortalApi();
+
   const panelApi = panelInfra
     ? createPanelApi({
         registry: panelInfra.registry,
@@ -2492,6 +2540,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     },
     fetchV1: (req: Request) => v1.fetch(req),
     fetchPanel: (req: Request) => (panelApi ? panelApi.fetch(req) : Promise.resolve(null)),
+    fetchPortal: (req: Request) => portalApi.fetch(req),
     __pendingSource: () => v1.pendingSource,
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),

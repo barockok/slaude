@@ -322,6 +322,15 @@ export const env = {
     superadmins: () => csv(opt("SLAUDE_PANEL_SUPERADMIN")),
     operators: () => csv(opt("SLAUDE_PANEL_OPERATORS")),
   },
+  portal: {
+    /** Enable the end-user onboarding portal. Default off. It reuses the
+     *  panel's OIDC client, public URL and signing secret on purpose: one
+     *  deployment, one provider registration, one secret. */
+    enabled: () => {
+      const raw = opt("SLAUDE_PORTAL", "0").toLowerCase();
+      return raw === "1" || raw === "true" || raw === "yes";
+    },
+  },
   /** Static Prometheus labels applied to every metric, e.g.
    *  `SLAUDE_METRICS_LABELS="agent=hermes,env=prod"`. Malformed entries are
    *  silently dropped by the metrics registry. */

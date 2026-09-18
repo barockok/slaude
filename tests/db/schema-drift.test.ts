@@ -22,7 +22,14 @@ const PG_ONLY_TABLES = new Set([
 // Shared tables that intentionally carry no tenant_id on Postgres: dedup and
 // gate rows are keyed by globally-unique ids (Slack event ids, toolUseIDs)
 // and are purged/resolved too fast to need tenant scoping (spec §4).
-const NO_TENANT_TABLES = new Set(["pending_gates", "seen_events"]);
+// accounts + slack_identities join this list on purpose. An account is a
+// person's identity at the deployment's own identity provider, so it is
+// deployment-global rather than tenant-scoped: the design has one account
+// holding several Slack identities, one per workspace the person is in. The
+// binding row already carries team_id, which IS the workspace dimension, so a
+// tenant_id beside it would be a second copy of the same fact and a fresh
+// source of drift.
+const NO_TENANT_TABLES = new Set(["pending_gates", "seen_events", "accounts", "slack_identities"]);
 
 // Tables that exist only on sqlite (legacy; dropped from the pg schema).
 const SQLITE_ONLY_TABLES = new Set(["skill_usage"]);

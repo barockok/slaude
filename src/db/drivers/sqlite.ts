@@ -109,6 +109,28 @@ CREATE TABLE IF NOT EXISTS one_on_one_locks (
   PRIMARY KEY (channel_id, thread_ts)
 );
 
+CREATE TABLE IF NOT EXISTS accounts (
+  id         TEXT PRIMARY KEY,
+  issuer     TEXT    NOT NULL,
+  subject    TEXT    NOT NULL,
+  email      TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (issuer, subject)
+);
+
+CREATE TABLE IF NOT EXISTS slack_identities (
+  team_id       TEXT    NOT NULL,
+  slack_user_id TEXT    NOT NULL,
+  account_id    TEXT    NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
+  linked_at     INTEGER NOT NULL,
+  linked_via    TEXT    NOT NULL,
+  PRIMARY KEY (team_id, slack_user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_slack_identities_account
+  ON slack_identities (account_id);
+
 CREATE TABLE IF NOT EXISTS mention_only_threads (
   channel_id TEXT    NOT NULL,
   thread_ts  TEXT    NOT NULL,

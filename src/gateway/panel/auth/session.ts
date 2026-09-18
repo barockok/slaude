@@ -12,8 +12,11 @@
  * `alg` is ignored and HS256 is always enforced, mirroring
  * src/gateway/api/auth.ts.
  */
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { env } from "../../../config/env";
+import { encodeJwt, decodeJwt, type VerifyReason } from "../../auth/jwt";
+
+export type { VerifyReason };
 
 export const AT_COOKIE = "panel_at";
 export const RT_COOKIE = "panel_rt";
@@ -46,48 +49,6 @@ export interface FlowPayload {
   returnTo: string;
 }
 
-export type VerifyReason = "missing" | "malformed" | "bad_signature" | "expired" | "wrong_type" | "unconfigured";
-
-const b64uJson = (v: unknown): string => Buffer.from(JSON.stringify(v)).toString("base64url");
-
-function sign(headerAndPayload: string, secret: string): string {
-  return createHmac("sha256", secret).update(headerAndPayload).digest("base64url");
-}
-
-/** Constant-time equality; hashing first equalizes lengths. */
-function timingSafeStringEqual(a: string, b: string): boolean {
-  const ha = createHash("sha256").update(a, "utf8").digest();
-  const hb = createHash("sha256").update(b, "utf8").digest();
-  return timingSafeEqual(ha, hb);
-}
-
-function encode(payload: object, secret: string): string {
-  const head = b64uJson({ alg: "HS256", typ: "JWT" });
-  const body = b64uJson(payload);
-  return `${head}.${body}.${sign(`${head}.${body}`, secret)}`;
-}
-
-function decode<T>(
-  token: string | null | undefined,
-  secret: string | undefined,
-  nowMs: number,
-): { ok: true; payload: T & { exp: number } } | { ok: false; reason: VerifyReason } {
-  if (!secret) return { ok: false, reason: "unconfigured" };
-  if (!token) return { ok: false, reason: "missing" };
-  const parts = token.split(".");
-  if (parts.length !== 3) return { ok: false, reason: "malformed" };
-  const [head, body, sig] = parts as [string, string, string];
-  if (!timingSafeStringEqual(sign(`${head}.${body}`, secret), sig)) return { ok: false, reason: "bad_signature" };
-  let payload: T & { exp: number };
-  try {
-    payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
-  } catch {
-    return { ok: false, reason: "malformed" };
-  }
-  if (typeof payload.exp !== "number" || payload.exp * 1000 <= nowMs) return { ok: false, reason: "expired" };
-  return { ok: true, payload };
-}
-
 const ttlFor = (typ: "at" | "rt") => (typ === "at" ? AT_TTL_SEC : RT_TTL_SEC);
 
 export function mintSession(
@@ -106,7 +67,7 @@ export function mintSession(
     exp: iat + (opts.ttlSec ?? ttlFor(typ)),
     ...(typ === "at" ? { jti: randomBytes(9).toString("base64url") } : {}),
   };
-  return encode(claims, secret);
+  return encodeJwt(claims, secret);
 }
 
 export function verifySession(
@@ -114,7 +75,7 @@ export function verifySession(
   expect: "at" | "rt",
   opts: { secret?: string; now?: number } = {},
 ): { ok: true; claims: SessionClaims } | { ok: false; reason: VerifyReason } {
-  const r = decode<SessionClaims>(token, opts.secret ?? env.panel.secret(), opts.now ?? Date.now());
+  const r = decodeJwt<SessionClaims>(token, opts.secret ?? env.panel.secret(), opts.now ?? Date.now());
   if (!r.ok) return r;
   const claims = r.payload as SessionClaims;
   if (typeof claims.email !== "string" || typeof claims.sub !== "string") return { ok: false, reason: "malformed" };
@@ -126,14 +87,14 @@ export function mintFlow(payload: FlowPayload, opts: { secret?: string; now?: nu
   const secret = opts.secret ?? env.panel.secret();
   if (!secret) throw new Error("SLAUDE_PANEL_SECRET is not set — cannot mint panel sessions");
   const iat = Math.floor((opts.now ?? Date.now()) / 1000);
-  return encode({ ...payload, typ: "flow" as const, iat, exp: iat + FLOW_TTL_SEC }, secret);
+  return encodeJwt({ ...payload, typ: "flow" as const, iat, exp: iat + FLOW_TTL_SEC }, secret);
 }
 
 export function verifyFlow(
   token: string | null | undefined,
   opts: { secret?: string; now?: number } = {},
 ): { ok: true; payload: FlowPayload } | { ok: false; reason: VerifyReason } {
-  const r = decode<FlowPayload & { typ: TokenType }>(token, opts.secret ?? env.panel.secret(), opts.now ?? Date.now());
+  const r = decodeJwt<FlowPayload & { typ: TokenType }>(token, opts.secret ?? env.panel.secret(), opts.now ?? Date.now());
   if (!r.ok) return r;
   const p = r.payload;
   if (p.typ !== "flow") return { ok: false, reason: "wrong_type" };
