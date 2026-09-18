@@ -19,10 +19,11 @@
  * Keyed on the session, not the owner: two sessions running as the agent can
  * run on one node at once, and they must not share a working copy either.
  */
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { env } from "../config/env";
-import { agentConfigDir, ensurePersonaConfigDir, prepareConfigHome } from "./oauth-home";
+import { paths } from "../config/home";
+import { ensurePersonaConfigDir, prepareConfigHome } from "./oauth-home";
 
 const DEFAULT_ROOT = "/config-home";
 
@@ -31,6 +32,21 @@ const DEFAULT_ROOT = "/config-home";
 export function nodeConfigRoot(): string | null {
   if (env.role() !== "node") return null;
   return process.env.SLAUDE_NODE_CONFIG_ROOT?.trim() || DEFAULT_ROOT;
+}
+
+/**
+ * The default persona's base home on a node: CLAUDE_CONFIG_DIR when an operator
+ * set one, otherwise $SLAUDE_HOME/.claude on the shared volume.
+ *
+ * Not agentConfigDir(): nodes run with no CLAUDE_CONFIG_DIR, so that falls back
+ * to ~/.claude on the pod's own filesystem, and the projects/ link would put the
+ * default persona's transcripts there — lost to any other node that resumes the
+ * session. Named personas already live under $SLAUDE_HOME/personas.
+ */
+function sharedAgentHome(): string {
+  const dir = process.env.CLAUDE_CONFIG_DIR?.trim() || paths.claudeConfig;
+  mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 /** A session id is used as one path segment; refuse anything that is not. */
@@ -47,7 +63,7 @@ export function sessionConfigDir(sessionId: string, persona?: string, root: stri
     throw new Error("refusing a session id that is not a single safe path segment");
   }
   const named = persona && persona !== "default" ? persona : null;
-  const base = named ? ensurePersonaConfigDir(named) : agentConfigDir();
+  const base = named ? ensurePersonaConfigDir(named) : sharedAgentHome();
   const dir = join(root, "sessions", sessionId);
   prepareConfigHome(dir, base, 0o700);
   return dir;

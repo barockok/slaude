@@ -89,6 +89,23 @@ describe("sessionConfigDir", () => {
     expect(readlinkSync(join(dir, "projects"))).toBe(join(agentConfigDir(), "projects"));
   });
 
+  // Found while wiring the manifests: nodes run with no CLAUDE_CONFIG_DIR, so
+  // the agent's own home resolved to ~/.claude on the pod's filesystem. The
+  // default persona's transcripts therefore never reached the shared volume,
+  // and a session resumed on another node started cold. The base must be the
+  // shared home under SLAUDE_HOME.
+  test("with no CLAUDE_CONFIG_DIR, the default persona's transcripts still land on the shared volume", () => {
+    const saved = process.env.CLAUDE_CONFIG_DIR;
+    delete process.env.CLAUDE_CONFIG_DIR;
+    try {
+      const dir = sessionConfigDir("sess-shared");
+      expect(readlinkSync(join(dir, "projects"))).toBe(join(paths.claudeConfig, "projects"));
+      expect(join(paths.claudeConfig, "projects").startsWith(paths.home)).toBe(true);
+    } finally {
+      if (saved !== undefined) process.env.CLAUDE_CONFIG_DIR = saved;
+    }
+  });
+
   test("settings are seeded from the persona's home", () => {
     mkdirSync(personaConfigDir("ana"), { recursive: true });
     writeFileSync(join(personaConfigDir("ana"), "settings.json"), '{"x":1}');
