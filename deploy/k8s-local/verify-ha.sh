@@ -134,10 +134,12 @@ expect "the brain runs on the Postgres server, in its own database" \
 # on purpose by the import, for rollback, and must not trip it.
 section "credential placement"
 for pod in $(pods app.kubernetes.io/component=node); do
+  # shellcheck disable=SC2016  # expands inside the node pod, not here
   root="$(k exec "$pod" -- sh -c 'printf %s "$SLAUDE_NODE_CONFIG_ROOT"' 2>/dev/null | tr -d '\r')"
   expect "$pod keeps session config homes pod-local" \
     "$pod SLAUDE_NODE_CONFIG_ROOT='$root', want /config-home" \
     [ "$root" = /config-home ]
+  # shellcheck disable=SC2016  # expands inside the node pod, not here
   writable="$(k exec "$pod" -- sh -c 't=/config-home/.verify-probe; touch "$t" && rm -f "$t" && echo yes' 2>/dev/null | tr -d '\r')"
   expect "$pod can write its pod-local root" \
     "$pod cannot write /config-home (volume missing or read-only)" \
