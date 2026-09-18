@@ -20,7 +20,7 @@ These bind every task that touches a credential. A task that violates one is not
 - **The owner comes only from a signed claim.** The credential endpoint takes no owner in its path or body. It serves the job token's `runAs` owner and nothing else. A token without `runAs` is refused, never defaulted.
 - **`runAs` is decided once, at dispatch, by `resolveEffectiveIdentity`** (`src/agent/manager.ts:269-276`). The node uses the claim; it never re-derives the owner independently.
 - **Per-owner data never rides in the runtime bundle.** That bundle is keyed on (tenant, persona) and ETag-cached on the node.
-- **A node never holds a client secret and never talks to an identity provider.** Refresh happens at the gateway.
+- **A node holds access tokens only.** The node-facing endpoint returns an allowlisted projection; the refresh token and client secret never leave the gateway. A node never talks to an identity provider, and has no endpoint through which to write a credential.
 - Public repo: no real names, employer names, internal channel names, or real Slack/team identifiers. Placeholders only (`UTESTUSER1`, `TTESTTEAM1`).
 - Granular commits, one logical change each. No AI co-authorship trailers. Leak-scan every staged diff per `CLAUDE.md`.
 
@@ -43,7 +43,7 @@ These bind every task that touches a credential. A task that violates one is not
 
 ## Task order
 
-Task 1 gates Task 10. Tasks 2–6 make the gateway the authority and populate it before anything reads from it; Task 6's import in particular must land in the same release as Task 8's seeding, or an upgrade seeds empty sets. Tasks 7–10 move the node. Tasks 11–13 finish the edges.
+Task 1 gates Task 10. Tasks 2–6 make the gateway the authority and populate it before anything reads from it; Task 6's import in particular must land in the same release as Task 8's seeding, or an upgrade seeds empty sets. Tasks 7–8 move the node, Task 9 gives the gateway its refresh, and Task 10 has the node use it. Tasks 11–13 finish the edges.
 
 ---
 
@@ -838,92 +838,51 @@ git commit -m "feat(node): seed a session's MCP credentials from the gateway"
 
 ---
 
-### Task 9: Write back at turn end
+### Task 9: Gateway-side refresh
+
+> **Revised during execution.** The plan originally had a node write back whatever the agent changed at turn end. Task 4 was then tightened so nodes receive access tokens only: the store keeps the full grant, and the node-facing endpoint returns an allowlisted projection. A node therefore cannot rotate anything and has nothing to write back, the write path is gone, and so is the accepted cost of losing a rotation on pod death. This task replaces the write-back with the refresh it made necessary.
 
 **Files:**
-- Modify: `src/node/credentials.ts`, `src/node/worker.ts` (beside `turnWaiters` at `:176-190`)
-- Test: `tests/node/credentials-writeback.test.ts`
+- Create: `src/agent/mcp-oauth/refresh.ts` (the `refresh_token` grant)
+- Create: `src/gateway/core/credential-refresh.ts` (single-flight, owner-scoped)
+- Modify: `src/gateway/api/mcp-credentials.ts`, `src/gateway/api/index.ts` (`POST …/mcp-credentials/refresh`)
+- Test: `tests/mcp-oauth/refresh-grant.test.ts`, `tests/gateway/api/mcp-credentials-refresh.test.ts`
 
 **Interfaces:**
-- Consumes: Task 4's `POST`; Task 8's `snapshotCredentials`.
-- Produces: `changedEntries(before, after): Record<string, StoredEntry>` — entries new, or with a different `accessToken` or `expiresAt`.
+- Consumes: `discover` from `src/agent/mcp-oauth/discovery.ts`; Task 2's store including `putCredentialIfNewer`; Task 4's owner resolution and projection.
+- Produces: `POST /v1/tenants/:tenant/mcp-credentials/refresh` ← `{ serverKey, failedAccessTokenHash? }` → `200 { entry: NodeCredential }` or `409 { reconnect: true }`.
 
-At **turn end, not session end**, which is what bounds a lost rotation to one turn. For the agent that bound is what keeps a pod crash from breaking an integration for every channel.
+Requirements, each with a test:
 
-- [ ] **Step 1: Write the failing test**
-
-```ts
-test("an unchanged turn posts nothing", () => {
-  const seeded = { [key]: entry("tok-1") };
-  expect(changedEntries(seeded, { ...seeded })).toEqual({});
-});
-
-test("a rotated token is detected", () => {
-  expect(Object.keys(changedEntries({ [key]: entry("tok-1") }, { [key]: entry("tok-2") }))).toEqual([key]);
-});
-
-test("a newly connected server is detected", () => {
-  expect(Object.keys(changedEntries({}, { "gh|xyz": entry("tok-1") }))).toEqual(["gh|xyz"]);
-});
-
-test("a turn that rotates a token posts it back once", async () => {
-  const posts = await runTurnWith({ rotateTo: "tok-2" });
-  expect(posts).toHaveLength(1);
-  expect(posts[0].entries[key].accessToken).toBe("tok-2");
-});
-
-// A failed write-back must never fail the turn, and must never log the token.
-test("a failing write-back is logged without the token, not thrown", async () => {
-  const { errors, turnOutcome } = await runTurnWith({ rotateTo: "tok-2", postFails: true });
-  expect(turnOutcome).toBe("done");
-  expect(errors.join("\n")).not.toContain("tok-2");
-});
-```
-
-- [ ] **Step 2: Run to verify it fails**
-
-Run: `bun test tests/node/credentials-writeback.test.ts`
-Expected: FAIL — `changedEntries` is not exported.
-
-- [ ] **Step 3: Implement.** Compare on `accessToken` and `expiresAt` only; that identifies a rotation without posting on irrelevant churn. Await the write-back but catch and log: the turn has already succeeded.
-
-- [ ] **Step 4: Run tests and typecheck**
-
-Run: `bun test tests/node && bunx tsc --noEmit`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/node/credentials.ts src/node/worker.ts tests/node/credentials-writeback.test.ts
-git commit -m "feat(node): post a turn's credential changes back to the gateway"
-```
+1. The owner is the token's `runAs`, exactly as for GET. A node can only refresh a credential its own turn is entitled to read.
+2. **Already-refreshed check first.** If the stored access token differs from the one that failed (the node sends a SHA-256 of it, never the token itself) and is not near expiry, return it without calling the provider. This is what stops a second concurrent refresher from presenting an already-spent refresh token.
+3. **Single-flight** per owner and server key across gateway replicas: a Redis lock in the gateway role, an in-process mutex otherwise. Twelve concurrent requests cause exactly one call to the provider.
+4. The write uses `putCredentialIfNewer`, so a lost lock still cannot let an older token win.
+5. A provider rejection (`invalid_grant`, revoked) answers 409 with `reconnect: true` and does not delete the stored entry.
+6. The response is the node projection. The new refresh token is stored, never returned.
+7. The client secret is sent to the provider only as the grant requires, and never logged.
 
 ---
 
-### Task 10: Refresh — branch chosen by Task 1
+### Task 10: The node reacts to needs-auth (Branch R)
 
-**Files:** depend on the branch. Test either way: `tests/node/credentials-refresh.test.ts`
+**Files:**
+- Modify: `src/node/credentials.ts`, `src/node/worker.ts`
+- Modify: `src/agent/manager.ts` if the live query's `mcpServerStatus()` / `reconnectMcpServer()` are not already reachable by session id
+- Test: `tests/node/credentials-refresh.test.ts`
 
 **Interfaces:**
-- Consumes: Tasks 4, 8 and 9, plus Task 1's recorded decision.
+- Consumes: Task 9's endpoint; Task 8's seeding; Task 1's recorded failure shape.
 
-**Do not start until Task 1's field note names a branch.** Implement only that branch, and name it in the commit message and the pull request.
+Task 1 measured the mechanism: after a 401 the server's status is `needs-auth`, a rewritten credentials file is used by the very next call, and `reconnectMcpServer` restores the reported status.
 
-In every branch the gateway performs the refresh, for both owner kinds. A node never holds a client secret and never talks to an identity provider.
+1. On a `toolResult` error for a tool named `mcp__<server>__…`, confirm with `mcpServerStatus()` that `<server>` is `needs-auth`. The structured status decides, not the error text.
+2. Ask the gateway to refresh that server key, sending a hash of the token that failed.
+3. Rewrite the pod-local file with the returned access token, then `reconnectMcpServer(<server>)`.
+4. Coalesce: several failures for one server in one turn cause one refresh.
+5. On 409, stop. Leave the server `needs-auth` so the owner sees the reconnect prompt; do not loop.
 
-- **Branch R — reactive.** The node watches `AgentEvent` for the failure shape Task 1 recorded verbatim, asks the gateway to refresh that server key for its `runAs` owner, and rewrites the pod-local file. Tests: one failure triggers exactly one refresh; two failures in one turn for one server coalesce; a server with no refresh token surfaces a reconnect prompt rather than looping.
-- **Branch P — proactive.** Before a tool call, or on a timer no shorter than the agent's poll interval, the node refreshes anything inside its expiry window through the gateway. Tests: near-expiry refreshes once; far-from-expiry is untouched; the refresh goes through the gateway.
-- **Branch S — seed only.** No new code. A test pinning that a mid-turn expiry surfaces as a normal tool failure and the next turn seeds a refreshed credential, plus the retry cost stated in the deploy docs.
-
-For R and P, the gateway-side refresh for the agent owner runs under the same per-owner lock as write-back, because many sessions share the agent owner and several may ask at once. Test that concurrent refresh requests for one agent owner cause exactly one call to the provider.
-
-- [ ] **Step 1:** Re-read Task 1's note and state the branch.
-- [ ] **Step 2:** Write that branch's failing tests.
-- [ ] **Step 3:** Run them and confirm they fail.
-- [ ] **Step 4:** Implement.
-- [ ] **Step 5:** `bun test && bunx tsc --noEmit`.
-- [ ] **Step 6:** Commit, naming the branch.
+Tests cover each point, plus that nothing in the node path ever logs a token.
 
 ---
 
@@ -1030,8 +989,9 @@ Expected: no hits. Any hit is a bug to fix before the pull request.
 10. No credential file is written under the shared volume on any node, for either owner kind.
 11. Credential files are mode `0600`.
 12. Deleting an account deletes its credentials through the database cascade.
-13. A node never holds a client secret and never talks to an identity provider.
+13. A node never receives a refresh token or a client secret, never talks to an identity provider, and has no endpoint that writes a credential.
 14. The import never overwrites a credential rotated after it last ran.
+16. Concurrent refreshes for one owner and server make exactly one call to the provider, and a spent refresh token is never presented twice.
 15. A pod-local session directory never inherits a credentials file from the persona home.
 
 - [ ] **Step 4: Index the field note** in `CLAUDE.md`.

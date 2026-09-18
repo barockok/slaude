@@ -37,7 +37,8 @@ cluster and silently break in another.
 refresh path, including 401 recovery with refresh-token rotation. Whatever we
 hand it can be replaced underneath us during a turn. Any design that names an
 external component "the only refresher" is asserting something it cannot
-enforce.
+enforce — unless the agent is never handed a refresh token at all, which is
+what §4 does.
 
 ## 2. Decision
 
@@ -50,9 +51,9 @@ kinds of owner today, and they were handled by two different mechanisms:
 | **A person** — per account | that person, `/mcp connect` inside their 1:1 | `$SLAUDE_HOME/oauth/<userId>`, on the shared volume |
 
 Both move to the same place, under the same rules. The gateway is the
-**durable authority** for all of them. A node holds only a working copy, in a
-**pod-local** config directory that nothing else can see, and hands changes
-back when a turn ends.
+**durable authority** for all of them and the **only party that refreshes**. A
+node holds only an access token, in a **pod-local** config directory that
+nothing else can see.
 
 Unifying is not only tidier. Leaving the agent's identity on the shared volume
 would leave the exact hazard §1 measured in place for the credentials every
@@ -120,18 +121,31 @@ not exist on this surface.
               │   (runAs signed        │
               │    into job token)     │
               │                        │
-              │  (1) seed              │  (3) write back
+              │  (1) seed              │  (3) needs-auth → refresh
               └──────────────────▶ pod-local config dir
                     control plane        (emptyDir)
 ```
 
-1. **Seed.** At session start the node fetches the credentials for the token's
-   `runAs` owner and writes them into a pod-local config directory.
-2. **Run.** The turn executes. The agent may refresh, rotate and rewrite that
-   file. It owns the file for the duration.
-3. **Write back.** At turn end the node compares the `mcpOAuth` subtree with
-   what it seeded. If it changed, it posts the change to the gateway, which
-   persists it for the same owner.
+1. **Seed.** At session start the node fetches the access tokens for the
+   token's `runAs` owner and writes them into a pod-local config directory.
+2. **Run.** The turn executes. The agent calls MCP servers with those tokens.
+   It holds no refresh token, so it cannot rotate anything.
+3. **Refresh.** When a token expires mid-turn the agent reports that server as
+   `needs-auth`. The node asks the gateway to refresh it, rewrites the file with
+   the new access token, and reconnects the server. The next call succeeds.
+
+**Why nodes hold access tokens only.** The store keeps the full grant, because
+the gateway refreshes with it. Handing that whole grant to a node would put a
+refresh token and a client secret on every pod that ran a turn. Instead the
+node-facing endpoint returns a projection built from an allowlist of fields.
+Three things follow:
+
+- The gateway is the only refresher **by construction**. The agent cannot
+  rotate what it does not hold, which the §1 probe confirmed: with no refresh
+  token it reports `needs-auth` rather than rotating.
+- A compromised node leaks only short-lived access tokens.
+- A node has nothing to write back, so there is no write path for a
+  compromised node to plant a credential through.
 
 On a node, **every** session gets a pod-local config directory, not only 1:1
 sessions. Today an unlocked session on the default persona inherits the
@@ -178,15 +192,15 @@ matching how the runtime bundle already resolves an agent's identity.
 
 ## 6. Control-plane surface
 
-A **separate endpoint**, not the runtime bundle. The bundle is per (tenant,
+**Separate endpoints**, not the runtime bundle. The bundle is per (tenant,
 persona), shared across sessions and ETag-cached on the node. A person's
 credentials must never ride in a cache keyed more coarsely than the person, and
 putting the agent's there would mean one owner model inside the bundle and
 another outside it.
 
 ```
-GET  /v1/tenants/:tenant/mcp-credentials   → { entries: {...} }
-POST /v1/tenants/:tenant/mcp-credentials   ← { entries: {...} }
+GET  /v1/tenants/:tenant/mcp-credentials            → { entries: { <key>: <access-token projection> } }
+POST /v1/tenants/:tenant/mcp-credentials/refresh    ← { serverKey }  → { entry } | 409 reconnect
 ```
 
 Both are job-token authenticated. The tenant in the path must match the
@@ -194,9 +208,14 @@ token's `tenant` claim. The owner comes **only** from the token's `runAs`
 claim. A token without `runAs` is refused rather than defaulted, so an older
 gateway's token can never be read as "the agent".
 
-The POST is last-write-wins per server key on the entry's own expiry, under a
-Redis lock per owner, so two nodes finishing turns for the same owner cannot
-interleave. The lock is the one the reaper and cron leaders already use.
+Refresh is single-flight per owner and server key across every gateway
+replica. For the agent this is the normal case, not an edge: many sessions on
+many nodes share the agent's owner and can hit the same expiry together, and
+with rotating refresh tokens a second, concurrent refresh would present an
+already-spent refresh token and be refused. So a refresh request first checks
+whether the stored token is already newer than the one that failed, and only
+then refreshes, under a Redis lock. The write uses the store's conditional
+upsert, so even a lost lock cannot let an older token replace a newer one.
 
 ## 7. The pod-local config directory
 
@@ -244,30 +263,17 @@ the new path has soaked.
 
 ## 10. Failure modes
 
-**Pod dies mid-turn, after the agent rotated a token.** The rotated token is
-lost and the gateway's copy may already be invalid, because rotation
-invalidates the old refresh token at the provider. The owner reconnects — a
-person with `/mcp connect` in their 1:1, the agent by a manager.
+**A pod dies mid-turn.** Nothing is lost. A node never held anything that
+could change a credential, so there is no rotation to lose. An earlier revision
+of this design accepted losing a rotation on pod death; making the gateway the
+only refresher removed that cost.
 
-This is the accepted cost of the design, and it is bounded by writing back at
-**turn end rather than session end**, so the exposure is one turn rather than
-one conversation. It cannot be eliminated while the agent is the MCP client and
-rotates tokens itself.
+**The grant was revoked at the provider.** The gateway's refresh fails, the
+endpoint answers 409, and the failure surfaces as a normal reconnect prompt —
+a person with `/mcp connect` in their 1:1, the agent by a manager.
 
-It matters more for the agent than for a person. The agent's credentials are
-used by every channel conversation, so a lost rotation there breaks the
-integration for everyone until a manager reconnects. That is the strongest
-argument for measuring whether a refresh can be driven mid-turn at all; the
-plan does that first.
-
-**The seeded credential is already dead.** The node cannot distinguish this
-from a revoked grant, so it does not try: the failure surfaces as a normal
-connect prompt.
-
-**Two nodes run turns for one owner at once.** For the agent this is the normal
-case, not an edge: any two channel conversations on two nodes share the agent's
-owner. Both seed from the same state and both may write back. The per-owner
-lock serialises the writes and expiry decides the winner.
+**Many sessions hit one expiry at once.** Single-flight refresh on the gateway,
+as §6 describes: one call to the provider, every waiter gets its result.
 
 ## 11. What does not change
 
@@ -289,10 +295,11 @@ lock serialises the writes and expiry decides the winner.
    as the agent cannot read a person's, a 1:1 cannot read the agent's, and one
    person cannot read another's.
 3. A token without `runAs` is refused.
-4. An agent-side rewrite of the credentials file during a turn is written back
-   to the gateway and visible to the next turn on a different node.
-5. Two concurrent write-backs for one owner serialise, and the later expiry
-   wins.
+4. A node never receives a refresh token or a client secret, for either owner
+   kind, and has no endpoint through which to write a credential.
+5. A token that expires mid-turn is refreshed by the gateway and the turn's
+   next call succeeds; concurrent refreshes for one owner and server make one
+   call to the provider.
 6. No node has a `.credentials.json` anywhere under the shared volume after a
    turn, for either owner kind.
 7. An upgrade from on-disk credentials loses nothing that has an owner, and
