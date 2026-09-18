@@ -11,6 +11,7 @@ import { sharedLoopback } from "./agent/mcp-oauth/shared-loopback";
 import { verifyState } from "./agent/mcp-oauth/state";
 import { env } from "./config/env";
 import { assertPanelConfig } from "./gateway/panel/auth/config";
+import { assertPortalConfig } from "./gateway/portal/config";
 import { loadPersonaRegistry, setPersonaRegistry } from "./persona/registry";
 import { getDb, resolveDbConfig } from "./db/client";
 import { assertGatewayRequirements } from "./config/gateway-requirements";
@@ -103,6 +104,9 @@ async function main() {
   // serve safely must never be reachable, not even for the moment between
   // listening and the check.
   if (panelMounted) assertPanelConfig();
+  // Same rule for the portal: it rides on the panel's provider settings, so a
+  // portal that cannot authenticate must stop the process rather than serve.
+  assertPortalConfig();
   let slack: import("./gateway/core/gateway").GatewayHandle;
   let health: ReturnType<typeof startHealthServer> = null;
   if (slackMode === "http") {
