@@ -36,6 +36,8 @@ import { makePubSub, type PubSub } from "../../queue/pubsub";
 import { makePanelLock, type PanelLock } from "../../queue/panel-lock";
 import { createPanelApi } from "../panel/api";
 import { createPortalApi } from "../portal/api";
+import { mintLinkToken } from "../portal/link-token";
+import { accountForSlackUser } from "../../db/accounts";
 import { makeDeferQueue } from "../panel/defer-queue";
 import { suppressibleSurface } from "../panel/suppress";
 import type { DispatchMeta } from "./dispatch";
@@ -1501,6 +1503,44 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         }
         if (lines.length === 1) lines.push("_no overrides, no soul ACL entries_");
         await reply(lines.join("\n"));
+        return;
+      }
+      if (slash.kind === "link") {
+        // `teamId` here is the real workspace id (context.teamId ?? event.team,
+        // narrowed above), and it is bound into the token: a wrong team id would
+        // mint a link that binds in the wrong workspace.
+        const linkSurface = surfaceFactoryFor(dispatch?.personaId)({
+          conversationId: channelId,
+          threadRef: threadTs,
+          inboundRef: threadTs,
+          userId,
+          teamId,
+          requestApproval: async () => { throw new Error("approval is not part of /link"); },
+          reloadSession: () => false,
+        });
+        const sayPrivately = async (text: string) => {
+          if (linkSurface.capabilities.has("ephemeral") && linkSurface.sayEphemeral) {
+            await linkSurface.sayEphemeral({ text, userId });
+            return;
+          }
+          // A surface that cannot keep it private must not leak it: say nothing
+          // useful rather than posting an onboarding link into a channel.
+          await reply(":warning: `/link` needs a surface that supports private replies.");
+        };
+        if (!env.portal.enabled()) {
+          await sayPrivately(":information_source: the onboarding portal is not enabled on this deployment.");
+          return;
+        }
+        const existing = await accountForSlackUser(teamId, userId);
+        if (existing) {
+          await sayPrivately(`:white_check_mark: already connected as \`${existing.email}\`.`);
+          return;
+        }
+        const token = mintLinkToken({ teamId, slackUserId: userId });
+        await sayPrivately(
+          `:link: Connect your account: ${env.panel.publicUrl()}/portal/link?t=${token}\n` +
+            `Only you can see this message. The link expires in 15 minutes.`,
+        );
         return;
       }
       if (slash.kind === "mcp") {
