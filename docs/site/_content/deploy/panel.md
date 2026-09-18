@@ -125,6 +125,38 @@ authentication bypass flag; local runs exercise the real code path.
 > returns a document naming `authorization_endpoint` and `token_endpoint`
 > before assuming the setup is good, and delete this note once someone has.
 
+## The user portal
+
+The portal is a second surface on the same process, mounted at `/portal` for
+the `mono` and `gateway` roles. It is for end users rather than operators:
+someone signs in, and their account is bound to their Slack user so later
+phases can run a session as them rather than as the agent.
+
+Enabling it is two steps, and the second is easy to miss:
+
+1. Set `SLAUDE_PORTAL=1`.
+2. **Register `${SLAUDE_PANEL_PUBLIC_URL}/portal/auth/callback` as a second
+   redirect URI on the identity-provider client you already created for the
+   panel.** Without it every portal login fails at the provider, and slaude
+   never sees the request — there is nothing in its logs to explain it.
+
+There is no step three. The portal reuses the panel's issuer, client id,
+client secret, public URL and signing secret.
+
+**Any identity the provider authenticates gets a portal account**, with no
+role check. That is intended. An account grants nothing on its own: it becomes
+useful only once a Slack identity is bound to it, and binding requires an
+onboarding link that only that Slack user can see. A portal session is never
+an operator session — different token type, different cookie path — so the
+panel's role check is untouched.
+
+**Binding is user-driven.** A person types `/link` in a thread with the agent
+and gets a private, 15-minute link; opening it while signed in to the portal
+binds the two identities. Replies to `/link` are always ephemeral, and a
+surface that cannot reply privately gets a refusal rather than a public post.
+A Slack user already bound to one account cannot be rebound to another; the
+person unlinks from the portal first.
+
 ## Running across replicas
 
 On the [horizontal-scale topology](multi-node.md), the active-surface lock, the
