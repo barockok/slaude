@@ -157,6 +157,13 @@ surface that cannot reply privately gets a refusal rather than a public post.
 A Slack user already bound to one account cannot be rebound to another; the
 person unlinks from the portal first.
 
+`/link` reaches exactly the people the agent already answers: it runs after the
+usual engagement rules, so a DM from someone outside the soul's DM allowlist is
+dropped before the command is seen, and in a channel the agent must be engaged
+or mentioned. Someone brand new therefore cannot self-onboard by DMing the
+agent cold — add them to the allowlist, or have them ask in a channel where the
+agent is active.
+
 ## Running across replicas
 
 On the [horizontal-scale topology](multi-node.md), the active-surface lock, the

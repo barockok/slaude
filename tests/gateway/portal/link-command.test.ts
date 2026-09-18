@@ -40,12 +40,12 @@ function harness() {
   agent.sendMessage = async () => {};
   createGateway(agent, t);
 
-  const send = async (text: string, who: { userId: string; teamId?: string }) =>
+  const send = async (text: string, who: { userId: string; teamId?: string; channel?: string }) =>
     handlers.get("message")?.({
       event: {
         type: "message",
-        channel: "D_MGR",
-        channel_type: "im",
+        channel: who.channel ?? "D_MGR",
+        channel_type: who.channel ? "channel" : "im",
         user: who.userId,
         team: who.teamId ?? TEAM,
         ts: `${Date.now()}.1`,
