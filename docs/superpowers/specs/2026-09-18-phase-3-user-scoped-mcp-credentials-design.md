@@ -1,4 +1,4 @@
-# Phase 3 — user-scoped MCP credentials
+# Phase 3 — unified MCP credentials
 
 **Date:** 2026-09-18
 **Supersedes:** §6 of `2026-09-17-control-plane-and-onboarding-design.md` (the shared-file-plus-symlink design and its reconciliation fallback).
@@ -41,9 +41,23 @@ enforce.
 
 ## 2. Decision
 
-The gateway is the **durable authority** for a person's MCP credentials. A node
-holds only a working copy, in a **pod-local** config directory that nothing else
-can see, and hands changes back when a turn ends.
+**One store for every MCP credential**, whoever it belongs to. There are two
+kinds of owner today, and they were handled by two different mechanisms:
+
+| Owner | Who connects it | Where it lives today |
+| --- | --- | --- |
+| **The agent** — its shared identity, per persona | a manager, `/mcp connect` outside a 1:1 | the persona's config home, or the process's own, on the shared volume |
+| **A person** — per account | that person, `/mcp connect` inside their 1:1 | `$SLAUDE_HOME/oauth/<userId>`, on the shared volume |
+
+Both move to the same place, under the same rules. The gateway is the
+**durable authority** for all of them. A node holds only a working copy, in a
+**pod-local** config directory that nothing else can see, and hands changes
+back when a turn ends.
+
+Unifying is not only tidier. Leaving the agent's identity on the shared volume
+would leave the exact hazard §1 measured in place for the credentials every
+ordinary channel conversation uses — the most-used credentials in the system
+would be the ones still exposed to it.
 
 Three properties follow, and they are the point of the design:
 
@@ -52,8 +66,8 @@ Three properties follow, and they are the point of the design:
   points at it.
 - **No filesystem coordination.** Nothing needs locking on ReadWriteMany
   storage, which does not offer usable locking anyway.
-- **One place to look.** A person's credentials are a row the gateway owns, not
-  a file whose contents depend on which pod last ran their turn.
+- **One place to look.** A credential is a row the gateway owns, not a file
+  whose contents depend on which pod last ran a turn.
 
 ### 2.1 Why the gateway is not an MCP proxy
 
@@ -72,133 +86,216 @@ turns executed in the gateway instead of on a node. Reintroducing it for every
 MCP call trades a storage problem for an availability one. Stdio MCP servers
 cannot be proxied this way at all.
 
-## 3. Architecture
+## 3. Whose credentials a turn gets
+
+This is the security core of the design, so it is decided in exactly one place:
+**the gateway, at dispatch, from the session's lock state.** It is never
+inferred on the node and never taken from a request.
+
+A new job-token claim, `runAs`, carries the answer:
+
+| Session | `runAs` |
+| --- | --- |
+| a thread with no 1:1 lock | `agent` |
+| a 1:1 locked to a person | `user:<slackUserId>` of the lock owner |
+| a cron job created inside a 1:1 | `user:<slackUserId>` it carries (the identity cron already threads through, since #120) |
+| any other cron job | `agent` |
+
+**Why a new claim instead of the existing `initiator`.** `initiator` is whoever
+sent the message. In a channel thread the session runs as the agent while
+`initiator` is a colleague who happened to speak, so authorizing on it would
+hand that colleague's credentials to a session that is not running as them. It
+coincides with the lock owner only inside a 1:1, which is exactly the case where
+getting it wrong is invisible in testing.
+
+Because the claim is signed, the credential endpoint takes **no owner in its
+path**. It serves the token's `runAs` owner and nothing else. There is no path
+parameter to tamper with, so the class of "change the id in the URL" bugs does
+not exist on this surface.
+
+## 4. Architecture
 
 ```
   Slack ──▶ gateway ──▶ queue ──▶ node ──▶ agent child
-              │                     │
-              │  (1) seed           │  (3) write back
-              └──────────────▶ pod-local config dir
+              │   (runAs signed        │
+              │    into job token)     │
+              │                        │
+              │  (1) seed              │  (3) write back
+              └──────────────────▶ pod-local config dir
                     control plane        (emptyDir)
 ```
 
-1. **Seed.** At session start the node fetches the person's MCP credentials
-   from the gateway and writes them into a pod-local config directory.
+1. **Seed.** At session start the node fetches the credentials for the token's
+   `runAs` owner and writes them into a pod-local config directory.
 2. **Run.** The turn executes. The agent may refresh, rotate and rewrite that
    file. It owns the file for the duration.
 3. **Write back.** At turn end the node compares the `mcpOAuth` subtree with
    what it seeded. If it changed, it posts the change to the gateway, which
-   persists it as the new authority.
+   persists it for the same owner.
 
-Transcripts are unaffected: the pod-local config directory keeps the existing
-`projects/` symlink into the shared volume, which is already how per-initiator
-config homes are built.
+On a node, **every** session gets a pod-local config directory, not only 1:1
+sessions. Today an unlocked session on the default persona inherits the
+process's config directory and a named persona uses its config home on the
+shared volume; both hold the agent's credentials, so both move.
 
-## 4. Storage
+What stays on the shared volume is everything that is not a credential: the
+persona's soul, skills and settings, and the transcripts. The pod-local
+directory is seeded from the persona home and keeps the existing `projects/`
+symlink into it, which is already how per-initiator config homes are built.
+
+## 5. Storage
 
 Credentials become gateway-owned state, encrypted at rest with the mechanism
-already used for provider credentials (`provider_creds.kind` + `decrypt`).
+already used for provider credentials: AES-256-GCM under `SLAUDE_MASTER_KEY`,
+versioned envelope `v1:iv:tag:ct` (`src/db/crypto.ts`).
 
 ```
 mcp_credentials
-  account_id   TEXT NOT NULL REFERENCES accounts (id) ON DELETE CASCADE
-  server_key   TEXT NOT NULL      -- oauthKey(serverName, cfg), as today
-  payload      TEXT NOT NULL      -- encrypted StoredEntry
-  expires_at   BIGINT NOT NULL    -- plaintext, for expiry queries only
-  updated_at   BIGINT NOT NULL
-  PRIMARY KEY (account_id, server_key)
+  id              TEXT PRIMARY KEY
+  account_id      TEXT NULL REFERENCES accounts (id) ON DELETE CASCADE
+  agent_tenant    TEXT NULL
+  agent_persona   TEXT NULL
+  server_key      TEXT NOT NULL      -- oauthKey(serverName, cfg), as today
+  payload         TEXT NOT NULL      -- encrypted StoredEntry
+  expires_at      BIGINT NOT NULL    -- plaintext, for expiry queries only
+  updated_at      BIGINT NOT NULL
+  CHECK ((account_id IS NOT NULL) <> (agent_tenant IS NOT NULL))
+  CHECK ((agent_tenant IS NULL) = (agent_persona IS NULL))
+  UNIQUE (account_id, server_key)
+  UNIQUE (agent_tenant, agent_persona, server_key)
 ```
 
-Keyed on **account**, not Slack user id. Phase 2 made that possible, and it is
-the right key: one person with two Slack workspaces has one set of
-integrations. The Slack user id remains the lookup path, resolved through
-`accountForSlackUser`.
+Exactly one owner per row, enforced by the database rather than by the
+application. Two nullable owner columns rather than a polymorphic
+`owner_kind`/`owner_id` pair, for one reason: it keeps a real foreign key on
+`account_id`, so deleting an account deletes that person's credentials through
+the database's own cascade instead of through code someone has to remember to
+call.
 
-Deleting an account takes the credentials with it, which is the behaviour a
-person expects when they disconnect.
+A person is keyed on **account**, not Slack user id. One person with two Slack
+workspaces has one set of integrations. The agent is keyed on (tenant, persona),
+matching how the runtime bundle already resolves an agent's identity.
 
-## 5. Control-plane surface
+## 6. Control-plane surface
 
 A **separate endpoint**, not the runtime bundle. The bundle is per (tenant,
-persona), shared across sessions and ETag-cached on the node; per-user
-credentials must never ride in a cache keyed on something coarser than the
-user. Mixing them would be the phase-1 per-persona cache bug again, with a
-worse blast radius.
+persona), shared across sessions and ETag-cached on the node. A person's
+credentials must never ride in a cache keyed more coarsely than the person, and
+putting the agent's there would mean one owner model inside the bundle and
+another outside it.
 
 ```
-GET  /v1/tenants/:tenant/users/:slackUserId/mcp-credentials   → { entries: {...} }
-POST /v1/tenants/:tenant/users/:slackUserId/mcp-credentials   ← { entries: {...} }
+GET  /v1/tenants/:tenant/mcp-credentials   → { entries: {...} }
+POST /v1/tenants/:tenant/mcp-credentials   ← { entries: {...} }
 ```
 
-Both are job-token authenticated, and the token's claims must cover the tenant
-**and** the user. A node holding a job token for one person must not be able to
-read another person's credentials; that check is the entire authorization
-story for this surface, so it gets its own test.
+Both are job-token authenticated. The tenant in the path must match the
+token's `tenant` claim. The owner comes **only** from the token's `runAs`
+claim. A token without `runAs` is refused rather than defaulted, so an older
+gateway's token can never be read as "the agent".
 
-The POST is last-write-wins per `server_key` on the entry's own expiry, under a
-Redis lock per account, so two nodes finishing turns for the same person cannot
+The POST is last-write-wins per server key on the entry's own expiry, under a
+Redis lock per owner, so two nodes finishing turns for the same owner cannot
 interleave. The lock is the one the reaper and cron leaders already use.
 
-## 6. The pod-local config directory
-
-Today `initiatorConfigDir` resolves under `$SLAUDE_HOME`, which is the shared
-volume. Node processes move to a local root:
+## 7. The pod-local config directory
 
 - `SLAUDE_NODE_CONFIG_ROOT`, default `/config-home`, mounted as an `emptyDir`
   in the node manifest. Gateway and mono are unchanged.
-- `initiatorConfigDir` gains the root as its base rather than `paths.home`.
-  One accessor, so there is one place to change if this moves again.
+- One accessor resolves the per-session directory under that root for both
+  owner kinds, so there is one place to change if this moves again.
 - The `projects/` symlink still targets the shared volume, so transcripts stay
-  durable across pod restarts. Only credentials and settings are local.
+  durable across pod restarts. Settings and plugins are seeded from the persona
+  home as they are today for 1:1 homes.
 
 An `emptyDir` dies with the pod, which is the intent: nothing durable lives
 there, and a lost pod costs at most the write-back of one turn.
 
-## 7. Failure modes
+## 8. The brain
+
+The remote brain backend authenticates with an MCP OAuth token read from the
+agent's config directory (`src/knowledge/remote/brain-client.ts`). That is an
+agent-owned credential like any other, and it moves too: the brain client reads
+it from the store for the agent owner. Leaving it on disk would keep one
+credential on the old mechanism and make "unified" untrue.
+
+## 9. Migration
+
+Existing deployments have credentials on disk in both places. Without an
+import, every connected integration — the agent's and every person's —
+disappears on upgrade.
+
+The gateway imports on boot, once, under a leader lock so replicas do not race:
+
+- The agent's config directory and each persona's config home → agent owner.
+- Each `$SLAUDE_HOME/oauth/<userId>` and `oauth/<persona>/<userId>` → the
+  account bound to that Slack user.
+
+A person's on-disk credentials with **no bound account** cannot be imported,
+because there is no owner to key them on. They stay on disk untouched, the
+import logs how many were skipped without naming anyone, and the person's
+next `/mcp connect` after `/link` recreates them. Deleting them would destroy
+something that cannot be recovered; importing them under a guessed owner would
+be worse.
+
+Imported files are left in place, not deleted. A rollback to the previous
+version then still finds them. Removing them is a later, separate change once
+the new path has soaked.
+
+## 10. Failure modes
 
 **Pod dies mid-turn, after the agent rotated a token.** The rotated token is
 lost and the gateway's copy may already be invalid, because rotation
-invalidates the old refresh token at the provider. The person sees the
-integration fail and reconnects with `/mcp connect`.
+invalidates the old refresh token at the provider. The owner reconnects — a
+person with `/mcp connect` in their 1:1, the agent by a manager.
 
 This is the accepted cost of the design, and it is bounded by writing back at
 **turn end rather than session end**, so the exposure is one turn rather than
 one conversation. It cannot be eliminated while the agent is the MCP client and
-rotates tokens itself — the proxy design would move the problem, not remove it,
-and would pay for that with the gateway on the data path.
+rotates tokens itself.
 
-**The seeded credential is already dead.** The gateway holds an entry whose
-refresh token was rotated away in a turn whose write-back never landed. The
-node cannot distinguish this from a revoked grant, so it does not try: the
-failure surfaces as a normal connect prompt.
+It matters more for the agent than for a person. The agent's credentials are
+used by every channel conversation, so a lost rotation there breaks the
+integration for everyone until a manager reconnects. That is the strongest
+argument for measuring whether a refresh can be driven mid-turn at all; the
+plan does that first.
 
-**Two nodes run turns for one person at once.** Both seed from the same state,
-both may write back. The per-account lock serialises the writes and expiry
-decides the winner. A rotation lost this way behaves as the first case.
+**The seeded credential is already dead.** The node cannot distinguish this
+from a revoked grant, so it does not try: the failure surfaces as a normal
+connect prompt.
 
-## 8. What does not change
+**Two nodes run turns for one owner at once.** For the agent this is the normal
+case, not an edge: any two channel conversations on two nodes share the agent's
+owner. Both seed from the same state and both may write back. The per-owner
+lock serialises the writes and expiry decides the winner.
 
-- `/mcp connect` and `/mcp disconnect` stay gateway-side. The gateway already
-  runs the OAuth flows, and it is now also the store they write to.
-- Default sessions keep using the agent's own shared identity. A 1:1 still
-  swaps to the locked person's credentials. What changes is only that those
-  credentials are the same ones across every persona, and that they no longer
-  live on shared storage.
-- The Anthropic provider credentials that the agent uses for the model itself
-  are out of scope here. They reach the node through the runtime bundle as
-  environment variables today, and that path is untouched.
+## 11. What does not change
 
-## 9. Acceptance criteria
+- `/mcp connect` and `/mcp disconnect` stay gateway-side, and keep their
+  existing gates: a manager for the agent's identity, the lock owner inside a
+  1:1. Only the destination changes.
+- A 1:1 still runs as the locked person and gets only their credentials. It
+  does not also receive the agent's, which is today's behaviour and is now
+  enforced by `runAs` rather than by which directory happened to be mounted.
+- The Anthropic provider credentials the agent uses for the model are out of
+  scope. They reach the node through the runtime bundle as environment
+  variables today, and that path is untouched.
 
-1. A person's credentials resolve identically on two different nodes, with no
-   shared file between them.
-2. A node holding a job token for one person is refused the credentials of
-   another, on both the read and the write endpoint.
-3. An agent-side rewrite of the credentials file during a turn is written back
+## 12. Acceptance criteria
+
+1. An owner's credentials resolve identically on two different nodes, with no
+   shared file between them. Tested for both owner kinds.
+2. A job token receives only its `runAs` owner's credentials. A session running
+   as the agent cannot read a person's, a 1:1 cannot read the agent's, and one
+   person cannot read another's.
+3. A token without `runAs` is refused.
+4. An agent-side rewrite of the credentials file during a turn is written back
    to the gateway and visible to the next turn on a different node.
-4. Two concurrent write-backs for one account serialise, and the later expiry
+5. Two concurrent write-backs for one owner serialise, and the later expiry
    wins.
-5. The node's config directory contains no symlink at `.credentials.json`, and
-   `projects/` still resolves onto the shared volume.
-6. With the feature off, a single-process `mono` deployment behaves exactly as
+6. No node has a `.credentials.json` anywhere under the shared volume after a
+   turn, for either owner kind.
+7. An upgrade from on-disk credentials loses nothing that has an owner, and
+   leaves the unowned ones in place.
+8. With the feature off, a single-process `mono` deployment behaves exactly as
    it does today.
