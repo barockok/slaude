@@ -9,6 +9,7 @@
  *     4xx (those are contract violations or auth failures — retrying lies).
  *   - ETag cache for the tenant runtime bundle (If-None-Match / 304).
  */
+import type { NodeCredential } from "../gateway/api/mcp-credentials";
 import { JOB_HEADER } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
 
@@ -164,6 +165,19 @@ export class NodeClient {
     const etag = res.headers.get("etag");
     if (etag) this.#runtimeCache.set(key, { etag, bundle });
     return bundle;
+  }
+
+  /**
+   * The MCP access tokens for this turn's owner. The gateway decides the owner
+   * from the job token's signed runAs claim; nothing here names one.
+   *
+   * Deliberately uncached, unlike the runtime bundle: a credential that changed
+   * is exactly what must not be served stale.
+   */
+  async getMcpCredentials(tenantId: string, jobToken: string): Promise<Record<string, NodeCredential>> {
+    const res = await this.request(`/v1/tenants/${encodeURIComponent(tenantId)}/mcp-credentials`, { jobToken });
+    const body = await this.#json<{ entries?: Record<string, NodeCredential> }>(res);
+    return body.entries ?? {};
   }
 
   /** Drop a cached bundle. Omitting the persona drops every persona of that
