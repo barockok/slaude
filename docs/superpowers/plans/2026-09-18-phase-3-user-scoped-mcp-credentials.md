@@ -1,10 +1,10 @@
-# Phase 3 — user-scoped MCP credentials Implementation Plan
+# Phase 3 — unified MCP credentials Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A person's MCP credentials are owned by the gateway, stored encrypted, and handed to a node as a pod-local working copy for the duration of a turn.
+**Goal:** Every MCP credential — the agent's own shared identity and each person's — is owned by the gateway, stored encrypted, and handed to a node as a pod-local working copy for the duration of a turn.
 
-**Architecture:** The gateway is the durable authority. A node seeds a pod-local config directory at session start, runs the turn, and posts back any change the agent made at turn end. No credentials file is ever shared between processes.
+**Architecture:** The gateway decides at dispatch whose identity a turn runs as and signs it into the job token as `runAs`. The node seeds a pod-local config directory with that owner's credentials, runs the turn, and posts back any change the agent made. No credentials file is ever shared between processes, and no owner is ever taken from a request path.
 
 **Tech Stack:** Bun + TypeScript, `bun test`, `bunx tsc --noEmit`, AES-256-GCM via `src/db/crypto.ts`, BullMQ over Redis, kustomize manifests.
 
@@ -12,30 +12,38 @@
 
 ## Global Constraints
 
-- **Credentials are never written in plaintext to any durable store.** Persist only through `encrypt()` from `src/db/crypto.ts` (AES-256-GCM, `SLAUDE_MASTER_KEY`, envelope `v1:iv:tag:ct`). The only plaintext column is `expires_at`, and only because expiry queries need it.
-- **Credentials are never logged, and never appear in an error message, a thrown string, a metric label, or an HTTP error body.** Log the account id and the server key. Nothing else.
-- **Credential files are mode `0600`** and live only under the node's pod-local config root. Nothing credential-bearing is written under `$SLAUDE_HOME`.
-- **Per-user data never rides in the runtime bundle.** That bundle is keyed on (tenant, persona) and ETag-cached on the node.
-- **Authorization is two-dimensional.** A job token grants access to one tenant *and* one initiator. Both are checked on every credential request.
+These bind every task that touches a credential. A task that violates one is not done, whatever its tests say.
+
+- **Never plaintext at rest.** Persist only through `encrypt()` from `src/db/crypto.ts` (AES-256-GCM, `SLAUDE_MASTER_KEY`, envelope `v1:iv:tag:ct`). The only plaintext column is `expires_at`, and only because expiry queries need it.
+- **Never in a log, an error, or a response it does not belong in.** No token in a log line, a thrown message, a metric label, or an HTTP error body. Log the owner kind, an owner id and the server key. Nothing else.
+- **Mode `0600`, pod-local only.** Credential files live only under the node's pod-local config root. Nothing credential-bearing is written under `$SLAUDE_HOME` on a node.
+- **The owner comes only from a signed claim.** The credential endpoint takes no owner in its path or body. It serves the job token's `runAs` owner and nothing else. A token without `runAs` is refused, never defaulted.
+- **`runAs` is decided once, at dispatch, by `resolveEffectiveIdentity`** (`src/agent/manager.ts:269-276`). The node uses the claim; it never re-derives the owner independently.
+- **Per-owner data never rides in the runtime bundle.** That bundle is keyed on (tenant, persona) and ETag-cached on the node.
+- **A node never holds a client secret and never talks to an identity provider.** Refresh happens at the gateway.
 - Public repo: no real names, employer names, internal channel names, or real Slack/team identifiers. Placeholders only (`UTESTUSER1`, `TTESTTEAM1`).
-- Granular commits, one logical change each. No AI co-authorship trailers.
-- Leak-scan every staged diff before committing, per `CLAUDE.md`.
+- Granular commits, one logical change each. No AI co-authorship trailers. Leak-scan every staged diff per `CLAUDE.md`.
 
 ## File Structure
 
 | File | Responsibility |
 | --- | --- |
-| `docs/site/_content/field-notes/2026-09-18-mcp-credential-ownership.md` | Task 1 findings, then extended in Task 10 |
+| `docs/site/_content/field-notes/2026-09-18-mcp-credential-ownership.md` | Task 1 findings, extended in Task 13 |
 | `src/db/migrations/0008_mcp_credentials.sql` + `src/db/drivers/sqlite.ts` | The `mcp_credentials` table, both dialects |
-| `src/db/mcp-credentials.ts` | Encrypted repo. The only module that calls `encrypt`/`decrypt` for these rows |
-| `src/gateway/api/mcp-credentials.ts` | `GET`/`POST` handlers plus their authorization |
-| `src/gateway/api/index.ts` | Route wiring |
-| `src/gateway/core/gateway.ts`, `src/agent/mcp-oauth/*` | `/mcp connect` and `/mcp disconnect` persist to the store |
-| `src/agent/config-root.ts` | `nodeConfigRoot()` — the one accessor for the pod-local root |
-| `src/agent/oauth-home.ts` | `initiatorConfigDir` resolves under that root |
-| `src/node/credentials.ts` | Seed, diff, write-back. All node-side credential handling |
-| `src/node/worker.ts` | Calls seed at session start and write-back at turn end |
-| `deploy/k8s-scale/50-node.yaml` | The `emptyDir` config volume |
+| `src/db/mcp-credentials.ts` | Encrypted repo, both owner kinds. The only module that calls `encrypt`/`decrypt` for these rows |
+| `src/agent/credential-owner.ts` | The `CredentialOwner` type and the `runAs` encode/parse pair |
+| `src/gateway/api/auth.ts`, `src/gateway/core/dispatch.ts` | The `runAs` claim, minted at dispatch |
+| `src/gateway/api/mcp-credentials.ts` + `src/gateway/api/index.ts` | `GET`/`POST` handlers and routing |
+| `src/gateway/core/gateway.ts`, `src/agent/mcp-oauth/store.ts` | `/mcp connect` and `/mcp disconnect` persist to the store, both scopes |
+| `src/gateway/core/credential-import.ts` | One-time import of on-disk credentials |
+| `src/agent/config-root.ts`, `src/agent/oauth-home.ts` | Pod-local config directory for every node session |
+| `src/node/credentials.ts`, `src/node/client.ts`, `src/node/worker.ts` | Seed, diff, write-back |
+| `src/knowledge/remote/brain-client.ts` | The brain's token comes from the store |
+| `deploy/k8s-scale/50-node.yaml`, `deploy/k8s-local/verify-ha.sh` | The `emptyDir`, and a guard against credentials on the shared volume |
+
+## Task order
+
+Task 1 gates Task 10. Tasks 2–6 make the gateway the authority and populate it before anything reads from it; Task 6's import in particular must land in the same release as Task 8's seeding, or an upgrade seeds empty sets. Tasks 7–10 move the node. Tasks 11–13 finish the edges.
 
 ---
 
@@ -43,29 +51,29 @@
 
 **Files:**
 - Create: `docs/site/_content/field-notes/2026-09-18-mcp-credential-ownership.md`
-- Probe scripts are throwaway; put them in the scratchpad, not the repo.
+- Probe scripts are throwaway; keep them in the scratchpad, not the repo.
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: a written answer to the two questions below, and a decision recorded in the field note. **Task 8 cannot be written until this is answered.**
+- Produces: a written answer to two questions and a recorded decision. **Task 10 cannot be written until this is answered.**
 
-This task runs first because its outcome changes what Task 8 builds. Do not start it by writing code.
+This runs first because its outcome decides what Task 10 builds, and it matters more now that the agent's own credentials are in scope. A person's lost rotation costs that person a reconnect. The agent's costs every channel conversation its integration until a manager reconnects. Do not start this task by writing code.
 
-The design in the spec is seed-then-write-back, which handles refresh only between turns. If the agent's auth failures are observable, and if the agent notices a rewritten credentials file, a much better lever exists: refresh at the gateway and let the running turn pick it up. Two questions decide it.
+The design is seed-then-write-back, which handles refresh only between turns. If auth failures are observable and the agent notices a rewritten credentials file, a better lever exists: refresh at the gateway and let the running turn pick it up.
 
-**Question A — does a 401/403 from an MCP server reach slaude?** `AgentEvent` (`src/agent/manager.ts:65-74`) has `toolResult` with `result: unknown` and a generic `error`. Find out whether an MCP tool call that fails authorization surfaces there, and whether the payload is distinguishable from an ordinary tool error. If it is not distinguishable, say so plainly — a heuristic on error text is not an answer.
+**Question A — does a 401/403 from an MCP server reach slaude, distinguishably?** `AgentEvent` (`src/agent/manager.ts:65-74`) has `toolResult` with `result: unknown` and a generic `error`. Find out whether an MCP call that fails authorization surfaces there and whether it can be told apart from an ordinary tool error. A heuristic on error text is not an answer; say so plainly if that is all there is.
 
-**Question B — does the agent re-read the credentials file mid-session?** There is strong evidence it polls: the binary contains a function that stats `.credentials.json`, compares `mtimeMs` against a cached value, and clears caches on change, plus a poller with a ~2000ms default interval. Confirm whether that path covers the `mcpOAuth` subtree or only the Anthropic user credentials.
+**Question B — does the agent re-read the credentials file mid-session?** The binary contains a function that stats `.credentials.json`, compares `mtimeMs` against a cached value and clears caches on change, and a poller with a ~2000ms default interval. Confirm whether that covers the `mcpOAuth` subtree or only the Anthropic user credentials.
 
-**A third lever, worth checking while you are in there:** the permission resolver (`PermissionResolver`, `src/agent/manager.ts:77-82`) runs *before* every tool use. If MCP tool names are identifiable there, a node can check expiry and refresh proactively, which beats reacting to a failure.
+**A third lever:** the permission resolver (`PermissionResolver`, `src/agent/manager.ts:77-82`) runs *before* every tool use. If MCP tool names are identifiable there, the node can refresh proactively, which beats reacting to a failure.
 
-- [ ] **Step 1: Read the two code paths before touching a pod**
+- [ ] **Step 1: Read what the node can see before measuring anything**
 
-Read `src/agent/manager.ts:60-110` for the event union and the resolver signature, and `src/node/worker.ts:140-200` for how the node already observes events and resolves child env. You need to know what the node can see before deciding what to measure.
+Read `src/agent/manager.ts:60-110` for the event union and resolver signature, and `src/node/worker.ts:140-200` for how the node observes events and resolves child env.
 
 - [ ] **Step 2: Extract the agent's credential-polling code**
 
-The binary is at `/app/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude` inside a node pod. `strings` is not installed; `grep -a` works.
+The binary is at `/app/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude` in a node pod. `strings` is not installed; `grep -a` works.
 
 ```sh
 POD=$(kubectl -n slaude-scale get pod -l app.kubernetes.io/component=node -o name | head -1)
@@ -73,25 +81,23 @@ kubectl -n slaude-scale exec "$POD" -- sh -c \
   'grep -a -o -E ".{200}mtimeMs.{400}" /app/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude' | head -5
 ```
 
-Trace outward from the cache-clearing function to see which caches it clears, and whether the MCP credential lookup reads through one of them.
+Trace outward from the cache-clearing function to which caches it clears, and whether the MCP credential lookup reads through one of them.
 
 - [ ] **Step 3: Measure the mtime pickup directly**
 
-Do not reason about it from the decompiled source alone. In a pod, seed a config directory with an MCP entry, start a session against a stub HTTP MCP server that returns 401 for a known-bad token and 200 for a known-good one, rewrite `.credentials.json` with the good token mid-session, and see whether the next tool call succeeds without restarting the session.
+Do not conclude from decompiled source alone. In a pod, seed a config directory with an MCP entry, start a session against a stub HTTP MCP server that returns 401 for a known-bad token and 200 for a known-good one, rewrite `.credentials.json` with the good token mid-session, and see whether the next tool call succeeds without restarting the session. Run it on the pod-local filesystem, not the shared volume.
 
-Run it on the pod-local filesystem, not the shared volume, because that is where the file will live.
+- [ ] **Step 4: Record what the failure looks like to slaude**
 
-- [ ] **Step 4: Measure what the failure looks like to slaude**
-
-With the stub server returning 401, capture every `AgentEvent` the node emits for that turn. Record the exact `toolResult` payload shape verbatim in the field note. If the status code is absent, say that.
+With the stub returning 401, capture every `AgentEvent` the node emits for that turn. Put the exact `toolResult` payload shape in the field note verbatim. If the status code is absent, say that.
 
 - [ ] **Step 5: Write the field note and record the decision**
 
-Write `docs/site/_content/field-notes/2026-09-18-mcp-credential-ownership.md` covering: the rename-replaces-symlink measurement from the spec, the agent's own rotation behaviour, and both answers from this task. State the chosen Task 8 branch explicitly:
+Cover the rename-replaces-symlink measurement from the spec, the agent's own rotation behaviour, and both answers. Name the Task 10 branch:
 
-- **Branch R (reactive)** if A is yes: on an identifiable auth failure the node asks the gateway to refresh, rewrites the local file, and the turn recovers. Requires B to be yes as well, otherwise the running agent never sees the new token.
-- **Branch P (proactive)** if A is no but B is yes: before a tool call, or on a short timer, the node refreshes anything near expiry through the gateway and rewrites the file.
-- **Branch S (seed only)** if both are no: the spec's design stands unchanged, refresh happens only between turns, and the field note states that a mid-turn expiry costs the person a retry.
+- **Branch R (reactive)** — A and B both yes. On an identifiable auth failure the node asks the gateway to refresh, rewrites the local file, and the agent picks it up.
+- **Branch P (proactive)** — A no, B yes. Before a tool call or on a timer, the node refreshes anything near expiry through the gateway and rewrites the file.
+- **Branch S (seed only)** — B no. Refresh happens only between turns; a mid-turn expiry costs a retry.
 
 - [ ] **Step 6: Commit**
 
@@ -102,9 +108,10 @@ git commit -m "docs(findings): whether an MCP auth failure can reach slaude"
 
 ---
 
-### Task 2: The encrypted credential store
+### Task 2: The encrypted store, for both owner kinds
 
 **Files:**
+- Create: `src/agent/credential-owner.ts`
 - Create: `src/db/migrations/0008_mcp_credentials.sql`
 - Modify: `src/db/drivers/sqlite.ts` (bootstrap DDL, beside `slack_identities`)
 - Modify: `tests/db/schema-drift.test.ts` (`NO_TENANT_TABLES`)
@@ -112,14 +119,12 @@ git commit -m "docs(findings): whether an MCP auth failure can reach slaude"
 - Test: `tests/db/mcp-credentials.test.ts`
 
 **Interfaces:**
-- Consumes: `encrypt`, `decrypt` from `src/db/crypto.ts`; `AccountRow` from `src/db/accounts.ts`.
+- Consumes: `encrypt`, `decrypt` from `src/db/crypto.ts`; `StoredEntry` from `src/agent/mcp-oauth/store.ts:105-116` (import it, never redeclare it, so the wire and file formats cannot drift).
 - Produces:
-  - `interface McpCredential { serverKey: string; entry: StoredEntry; expiresAt: number; updatedAt: number }`
-  - `putCredential(accountId: string, serverKey: string, entry: StoredEntry): Promise<void>`
-  - `credentialsForAccount(accountId: string): Promise<McpCredential[]>`
-  - `deleteCredential(accountId: string, serverKey: string): Promise<boolean>`
-
-`StoredEntry` is the existing shape from `src/agent/mcp-oauth/store.ts:105-116`. Import it rather than redeclaring it, so the wire format and the file format cannot drift.
+  - `type CredentialOwner = { kind: "agent"; tenant: string; persona: string } | { kind: "account"; accountId: string }`
+  - `putCredential(owner: CredentialOwner, serverKey: string, entry: StoredEntry): Promise<void>`
+  - `credentialsFor(owner: CredentialOwner): Promise<Record<string, StoredEntry>>`
+  - `deleteCredential(owner: CredentialOwner, serverKey: string): Promise<boolean>`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -128,77 +133,97 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { db } from "../../src/db/schema";
 import * as Accounts from "../../src/db/accounts";
 import * as Creds from "../../src/db/mcp-credentials";
+import type { CredentialOwner } from "../../src/agent/credential-owner";
 
 const ISS = "https://idp.example.com";
 const entry = (token: string, expiresAt = Date.now() + 3600_000) => ({
-  serverName: "workbench",
-  serverUrl: "https://mcp.example.com",
-  accessToken: token,
-  refreshToken: "r-1",
-  expiresAt,
+  serverName: "workbench", serverUrl: "https://mcp.example.com",
+  accessToken: token, refreshToken: "r-1", expiresAt,
 });
-
-let accountId: string;
+const AGENT: CredentialOwner = { kind: "agent", tenant: "t1", persona: "default" };
+let person: CredentialOwner;
 
 beforeEach(async () => {
   process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
   await db.run("DELETE FROM mcp_credentials");
   await Accounts._wipeForTests();
-  accountId = (await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "a@example.com" })).id;
+  const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "a@example.com" });
+  person = { kind: "account", accountId: a.id };
 });
 
 describe("mcp credential store", () => {
-  test("round-trips an entry", async () => {
-    await Creds.putCredential(accountId, "workbench|abc", entry("tok-1"));
-    const rows = await Creds.credentialsForAccount(accountId);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.entry.accessToken).toBe("tok-1");
+  test("round-trips an entry for a person", async () => {
+    await Creds.putCredential(person, "workbench|abc", entry("tok-1"));
+    expect((await Creds.credentialsFor(person))["workbench|abc"]!.accessToken).toBe("tok-1");
   });
 
-  // The property that matters: a database dump must not contain the token.
+  test("round-trips an entry for the agent", async () => {
+    await Creds.putCredential(AGENT, "workbench|abc", entry("tok-agent"));
+    expect((await Creds.credentialsFor(AGENT))["workbench|abc"]!.accessToken).toBe("tok-agent");
+  });
+
+  // The ownership boundary, in every direction that matters.
+  test("the agent's credentials are never returned for a person, or the reverse", async () => {
+    await Creds.putCredential(AGENT, "workbench|abc", entry("tok-agent"));
+    await Creds.putCredential(person, "workbench|abc", entry("tok-person"));
+    expect((await Creds.credentialsFor(AGENT))["workbench|abc"]!.accessToken).toBe("tok-agent");
+    expect((await Creds.credentialsFor(person))["workbench|abc"]!.accessToken).toBe("tok-person");
+  });
+
+  test("one persona's agent credentials are not another's", async () => {
+    await Creds.putCredential(AGENT, "workbench|abc", entry("tok-default"));
+    expect(await Creds.credentialsFor({ kind: "agent", tenant: "t1", persona: "ana" })).toEqual({});
+  });
+
+  test("one tenant's agent credentials are not another's", async () => {
+    await Creds.putCredential(AGENT, "workbench|abc", entry("tok-t1"));
+    expect(await Creds.credentialsFor({ kind: "agent", tenant: "t2", persona: "default" })).toEqual({});
+  });
+
   test("the token is not stored in plaintext", async () => {
-    await Creds.putCredential(accountId, "workbench|abc", entry("tok-super-secret"));
-    const raw = await db.one<{ payload: string }>(
-      "SELECT payload FROM mcp_credentials WHERE account_id = ?", [accountId],
-    );
+    await Creds.putCredential(AGENT, "workbench|abc", entry("tok-super-secret"));
+    const raw = await db.one<{ payload: string }>("SELECT payload FROM mcp_credentials");
     expect(raw!.payload).not.toContain("tok-super-secret");
     expect(raw!.payload.startsWith("v1:")).toBe(true);
   });
 
   test("expiry is queryable without decrypting", async () => {
     const at = Date.now() + 1234;
-    await Creds.putCredential(accountId, "workbench|abc", entry("tok-1", at));
-    const raw = await db.one<{ expires_at: number }>(
-      "SELECT expires_at FROM mcp_credentials WHERE account_id = ?", [accountId],
-    );
+    await Creds.putCredential(person, "workbench|abc", entry("tok-1", at));
+    const raw = await db.one<{ expires_at: number }>("SELECT expires_at FROM mcp_credentials");
     expect(Number(raw!.expires_at)).toBe(at);
   });
 
-  test("writing the same server key replaces, never duplicates", async () => {
-    await Creds.putCredential(accountId, "workbench|abc", entry("tok-1"));
-    await Creds.putCredential(accountId, "workbench|abc", entry("tok-2"));
-    const rows = await Creds.credentialsForAccount(accountId);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.entry.accessToken).toBe("tok-2");
+  test("writing the same key for the same owner replaces, never duplicates", async () => {
+    await Creds.putCredential(AGENT, "workbench|abc", entry("tok-1"));
+    await Creds.putCredential(AGENT, "workbench|abc", entry("tok-2"));
+    const n = await db.one<{ n: number }>("SELECT COUNT(*) AS n FROM mcp_credentials");
+    expect(Number(n!.n)).toBe(1);
   });
 
-  test("one account's credentials are never returned for another", async () => {
-    const other = (await Accounts.upsertAccount({ issuer: ISS, subject: "sub-2", email: "b@example.com" })).id;
-    await Creds.putCredential(accountId, "workbench|abc", entry("mine"));
-    expect(await Creds.credentialsForAccount(other)).toHaveLength(0);
+  test("deleting an account takes its credentials through the database cascade", async () => {
+    await Creds.putCredential(person, "workbench|abc", entry("tok-1"));
+    await db.run("DELETE FROM accounts WHERE id = ?", [(person as any).accountId]);
+    expect(await Creds.credentialsFor(person)).toEqual({});
   });
 
-  test("deleting the account takes the credentials with it", async () => {
-    await Creds.putCredential(accountId, "workbench|abc", entry("tok-1"));
-    await db.run("DELETE FROM accounts WHERE id = ?", [accountId]);
-    const left = await db.query("SELECT * FROM mcp_credentials WHERE account_id = ?", [accountId]);
-    expect(left).toHaveLength(0);
+  // Enforced by the schema, not by the repo, so a future caller cannot bypass it.
+  test("a row with no owner, or both owners, is refused by the database", async () => {
+    const insert = (acct: string | null, tenant: string | null, persona: string | null) =>
+      db.run(
+        `INSERT INTO mcp_credentials (id, account_id, agent_tenant, agent_persona, server_key, payload, expires_at, updated_at)
+         VALUES (?, ?, ?, ?, 'k', 'v1:a:b:c', 0, 0)`,
+        [crypto.randomUUID(), acct, tenant, persona],
+      );
+    await expect(insert(null, null, null)).rejects.toThrow();
+    await expect(insert((person as any).accountId, "t1", "default")).rejects.toThrow();
+    await expect(insert(null, "t1", null)).rejects.toThrow();
   });
 
-  test("a corrupt payload is reported, not returned as a usable entry", async () => {
-    await Creds.putCredential(accountId, "workbench|abc", entry("tok-1"));
-    await db.run("UPDATE mcp_credentials SET payload = ? WHERE account_id = ?", ["v1:aa:bb:cc", accountId]);
-    expect(await Creds.credentialsForAccount(accountId)).toHaveLength(0);
+  test("a corrupt payload is skipped and reported, not returned", async () => {
+    await Creds.putCredential(AGENT, "workbench|abc", entry("tok-1"));
+    await db.run("UPDATE mcp_credentials SET payload = 'v1:aa:bb:cc'");
+    expect(await Creds.credentialsFor(AGENT)).toEqual({});
   });
 });
 ```
@@ -206,188 +231,292 @@ describe("mcp credential store", () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bun test tests/db/mcp-credentials.test.ts`
-Expected: FAIL — no such table `mcp_credentials`.
+Expected: FAIL — module `credential-owner` not found.
 
-- [ ] **Step 3: Write the migration**
+- [ ] **Step 3: Write the owner type**
+
+`src/agent/credential-owner.ts`:
+
+```ts
+/** Whose MCP credentials a turn uses. Decided once, at dispatch; see
+ *  resolveEffectiveIdentity. The agent is keyed on (tenant, persona), matching
+ *  how the runtime bundle resolves an agent's identity. A person is keyed on
+ *  their account, so one person in two workspaces has one set of integrations. */
+export type CredentialOwner =
+  | { kind: "agent"; tenant: string; persona: string }
+  | { kind: "account"; accountId: string };
+```
+
+- [ ] **Step 4: Write the migration**
 
 `src/db/migrations/0008_mcp_credentials.sql`:
 
 ```sql
--- A person's MCP OAuth credentials, owned by the gateway.
+-- Every MCP OAuth credential, whoever owns it, held by the gateway.
 --
--- Keyed on the account rather than the Slack user id: one person with two
--- workspaces has one set of integrations. Payload is AES-256-GCM (src/db/crypto.ts);
--- expires_at is the only plaintext field, and only so expiry is queryable
--- without decrypting every row.
+-- Exactly one owner per row, enforced here rather than in application code.
+-- Two nullable owner columns instead of a polymorphic owner_kind/owner_id pair,
+-- so account_id can carry a real foreign key and deleting an account deletes
+-- that person's credentials through the database's own cascade.
+--
+-- payload is AES-256-GCM (src/db/crypto.ts). expires_at is the only plaintext
+-- field, and only so expiry is queryable without decrypting every row.
 CREATE TABLE IF NOT EXISTS mcp_credentials (
-  account_id TEXT   NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
-  server_key TEXT   NOT NULL,
-  payload    TEXT   NOT NULL,
-  expires_at BIGINT NOT NULL,
-  updated_at BIGINT NOT NULL,
-  PRIMARY KEY (account_id, server_key)
+  id            TEXT   PRIMARY KEY,
+  account_id    TEXT   REFERENCES accounts (id) ON DELETE CASCADE,
+  agent_tenant  TEXT,
+  agent_persona TEXT,
+  server_key    TEXT   NOT NULL,
+  payload       TEXT   NOT NULL,
+  expires_at    BIGINT NOT NULL,
+  updated_at    BIGINT NOT NULL,
+  CHECK ((account_id IS NOT NULL) <> (agent_tenant IS NOT NULL)),
+  CHECK ((agent_tenant IS NULL) = (agent_persona IS NULL)),
+  UNIQUE (account_id, server_key),
+  UNIQUE (agent_tenant, agent_persona, server_key)
 );
 ```
 
-Add the same DDL to `src/db/drivers/sqlite.ts` beside the `slack_identities` block, with `INTEGER` in place of `BIGINT` to match that file's convention.
+Both `UNIQUE` constraints are safe with the nullable columns: in Postgres and SQLite alike, NULLs are distinct in a unique constraint, so an agent row never collides on `(account_id, server_key)` and a person's row never collides on the agent triple.
 
-Add `"mcp_credentials"` to `NO_TENANT_TABLES` in `tests/db/schema-drift.test.ts`, with a comment: the account is deployment-global, so tenancy is reached through `accounts`, not a column here.
+Mirror the DDL in `src/db/drivers/sqlite.ts` with `INTEGER` for `BIGINT`. Add `"mcp_credentials"` to `NO_TENANT_TABLES` in `tests/db/schema-drift.test.ts` with a comment: a person's row reaches tenancy through `accounts`, which is deployment-global, and an agent's row carries its tenant explicitly in `agent_tenant`.
 
-- [ ] **Step 4: Write the repo**
+- [ ] **Step 5: Write the repo**
 
-`src/db/mcp-credentials.ts`. Every function parameterises its SQL. `credentialsForAccount` wraps `decrypt` in try/catch per row and, on failure, logs the account id and server key — never the payload — and omits the row.
+Upsert needs one statement per owner kind, because each `ON CONFLICT` target must name the unique constraint that applies:
 
 ```ts
-export async function putCredential(accountId: string, serverKey: string, entry: StoredEntry): Promise<void> {
+export async function putCredential(owner: CredentialOwner, serverKey: string, entry: StoredEntry): Promise<void> {
   const now = Date.now();
+  const payload = encrypt(JSON.stringify(entry));
+  if (owner.kind === "account") {
+    await db.run(
+      `INSERT INTO mcp_credentials (id, account_id, server_key, payload, expires_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (account_id, server_key)
+       DO UPDATE SET payload = excluded.payload, expires_at = excluded.expires_at, updated_at = excluded.updated_at`,
+      [randomUUID(), owner.accountId, serverKey, payload, entry.expiresAt, now],
+    );
+    return;
+  }
   await db.run(
-    `INSERT INTO mcp_credentials (account_id, server_key, payload, expires_at, updated_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(account_id, server_key)
+    `INSERT INTO mcp_credentials (id, agent_tenant, agent_persona, server_key, payload, expires_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (agent_tenant, agent_persona, server_key)
      DO UPDATE SET payload = excluded.payload, expires_at = excluded.expires_at, updated_at = excluded.updated_at`,
-    [accountId, serverKey, encrypt(JSON.stringify(entry)), entry.expiresAt, now],
+    [randomUUID(), owner.tenant, owner.persona, serverKey, payload, entry.expiresAt, now],
   );
 }
 ```
 
-- [ ] **Step 5: Run tests and typecheck**
+`credentialsFor` selects by the owner's columns, decrypts each row inside its own try/catch, and on failure logs `owner.kind`, the row id and the server key — never the payload — and omits the row. Every query is parameterised.
 
-Run: `bun test tests/db && bunx tsc --noEmit`
-Expected: PASS.
+- [ ] **Step 6: Run tests on both dialects and typecheck**
 
-- [ ] **Step 6: Commit**
+Run: `bun test tests/db && bunx tsc --noEmit`, then the same `tests/db` run with `SLAUDE_DB=pg` against a disposable Postgres database (the local scale cluster's Postgres works; create and drop a throwaway database around the run).
+Expected: PASS on both. The `CHECK` test is the one most likely to differ between dialects, so it must be seen passing on Postgres, not assumed.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/db/migrations/0008_mcp_credentials.sql src/db/drivers/sqlite.ts src/db/mcp-credentials.ts tests/db/mcp-credentials.test.ts tests/db/schema-drift.test.ts
-git commit -m "feat(db): encrypted store for a person's MCP credentials"
+git add src/agent/credential-owner.ts src/db/migrations/0008_mcp_credentials.sql src/db/drivers/sqlite.ts src/db/mcp-credentials.ts tests/db/mcp-credentials.test.ts tests/db/schema-drift.test.ts
+git commit -m "feat(db): encrypted MCP credential store for the agent and for people"
 ```
 
 ---
 
-### Task 3: The control-plane endpoints
+### Task 3: Sign whose identity a turn runs as
 
 **Files:**
-- Create: `src/gateway/api/mcp-credentials.ts`
-- Modify: `src/gateway/api/index.ts` (routes, beside the runtime routes at `:75-96`)
-- Test: `tests/gateway/api/mcp-credentials.test.ts`
+- Modify: `src/agent/credential-owner.ts` (encode/parse for the claim)
+- Modify: `src/gateway/api/auth.ts:21-36` (`JobClaims.runAs`)
+- Modify: `src/gateway/core/dispatch.ts:230-240` (mint it)
+- Modify: `src/gateway/core/gateway.ts` (pass the resolved identity into `DispatchMeta` for ordinary turns, beside `:2129-2137`, and for cron at `:496-505`)
+- Test: `tests/gateway/core/dispatch-run-as.test.ts`
 
 **Interfaces:**
-- Consumes: Task 2's repo; `requireJobToken` and `JobClaims` from `src/gateway/api/auth.ts:21-36`; `accountForSlackUser` from `src/db/accounts.ts`.
+- Consumes: `resolveEffectiveIdentity` (`src/agent/manager.ts:269-276`) — the existing single rule: a cron job's carried identity, else the thread's 1:1 lock owner, else none.
 - Produces:
-  - `GET  /v1/tenants/:tenant/users/:slackUserId/mcp-credentials` → `{ entries: Record<string, StoredEntry> }`
-  - `POST /v1/tenants/:tenant/users/:slackUserId/mcp-credentials` ← `{ entries: Record<string, StoredEntry> }`
+  - `JobClaims.runAs?: string` — `"agent"` or `"user:<slackUserId>"`
+  - `encodeRunAs(slackUserId: string | undefined): string`
+  - `parseRunAs(raw: unknown): { kind: "agent" } | { kind: "user"; slackUserId: string } | null` — `null` for anything malformed
 
-The authorization is the whole security story for this surface, so it gets its own tests. A job token carries both `tenant` and `initiator` (`JobClaims`, `src/gateway/api/auth.ts:21-36`). Both must match, following the pattern the per-persona runtime route already set at `src/gateway/api/index.ts:85-96`.
+**Why not the existing `initiator` claim.** `initiator` is `meta.userId`, whoever sent the message. In a channel thread the session runs as the agent while `initiator` is a colleague who happened to speak. It equals the lock owner only inside a 1:1, which is exactly the case where a bug built on it would pass every test.
 
-A person with no account, or with no credentials, gets `{ entries: {} }` and a 200. That is not an error, and distinguishing the two cases in the response would tell a caller whether an account exists.
+**Why the gateway calls the same function the node uses.** The node already calls `resolveEffectiveIdentity` to pick its config directory. If the gateway computed `runAs` by its own rule, the token's credential scope and the node's directory could disagree. One function agrees by construction. Task 8 then makes the node use the claim instead of calling it again.
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-test("a node reads the credentials for the user its token is scoped to", async () => {
-  const token = jobToken({ tenant: "t1", initiator: "UTESTUSER1" });
-  const res = await api.fetch(get("/v1/tenants/t1/users/UTESTUSER1/mcp-credentials", token));
-  expect(res!.status).toBe(200);
-  expect((await res!.json()).entries["workbench|abc"].accessToken).toBe("tok-1");
+test("an ordinary thread runs as the agent, whoever sent the message", async () => {
+  const claims = await dispatchAndDecode({ userId: "UTESTUSER2", lock: null });
+  expect(claims.runAs).toBe("agent");
+  expect(claims.initiator).toBe("UTESTUSER2"); // unchanged, and not the owner
 });
 
-// The one that matters. A node running a turn for one person must not be able
-// to read another person's credentials by changing the path.
-test("a token for one user is refused another user's credentials", async () => {
-  const token = jobToken({ tenant: "t1", initiator: "UTESTUSER1" });
-  const res = await api.fetch(get("/v1/tenants/t1/users/UTESTUSER2/mcp-credentials", token));
-  expect(res!.status).toBe(403);
-  expect(await res!.text()).not.toContain("tok-");
+test("a thread locked to a person runs as the lock owner", async () => {
+  const claims = await dispatchAndDecode({ userId: "UTESTUSER1", lock: "UTESTUSER1" });
+  expect(claims.runAs).toBe("user:UTESTUSER1");
+});
+
+test("a cron job created in a 1:1 runs as its carried identity", async () => {
+  const claims = await dispatchAndDecode({ userId: "UTESTUSER3", oauthUser: "UTESTUSER1" });
+  expect(claims.runAs).toBe("user:UTESTUSER1");
+});
+
+test("parseRunAs refuses anything it did not mint", () => {
+  expect(parseRunAs(undefined)).toBeNull();
+  expect(parseRunAs("")).toBeNull();
+  expect(parseRunAs("user:")).toBeNull();
+  expect(parseRunAs("admin")).toBeNull();
+  expect(parseRunAs("user:UTESTUSER1")).toEqual({ kind: "user", slackUserId: "UTESTUSER1" });
+  expect(parseRunAs("agent")).toEqual({ kind: "agent" });
+});
+```
+
+Build `dispatchAndDecode` on the harness in `tests/gateway/core/dispatch-tenant.test.ts`, which already captures and decodes the minted job token.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `bun test tests/gateway/core/dispatch-run-as.test.ts`
+Expected: FAIL — `runAs` is undefined.
+
+- [ ] **Step 3: Implement**
+
+Add `runAs?: string` to `JobClaims`. It stays optional in the type so tokens minted by an older gateway still decode; the credential endpoint in Task 4 is what refuses its absence.
+
+In `DispatchMeta` add `runAsUser?: string`. In the gateway's ordinary-turn dispatch, resolve it with `agent.resolveEffectiveIdentity(session.id, channelId, threadTs)`; in the cron dispatch, pass `job.oauthUser`. At the `mintJobToken` call in `dispatch.ts`, add `runAs: encodeRunAs(meta.runAsUser ?? meta.oauthUser)`.
+
+- [ ] **Step 4: Run tests and typecheck**
+
+Run: `bun test tests/gateway tests/queue tests/node && bunx tsc --noEmit`
+Expected: PASS. The node suites run because the claim set they decode has grown.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/agent/credential-owner.ts src/gateway/api/auth.ts src/gateway/core/dispatch.ts src/gateway/core/gateway.ts tests/gateway/core/dispatch-run-as.test.ts
+git commit -m "feat(dispatch): sign whose identity a turn runs as into its job token"
+```
+
+---
+
+### Task 4: The credential endpoint
+
+**Files:**
+- Create: `src/gateway/api/mcp-credentials.ts`
+- Modify: `src/gateway/api/index.ts` (beside the runtime routes at `:75-96`)
+- Test: `tests/gateway/api/mcp-credentials.test.ts`
+
+**Interfaces:**
+- Consumes: Task 2's repo; Task 3's `parseRunAs`; `requireJobToken` from `src/gateway/api/auth.ts`; `accountForSlackUser` from `src/db/accounts.ts`.
+- Produces:
+  - `GET  /v1/tenants/:tenant/mcp-credentials` → `{ entries: Record<string, StoredEntry> }`
+  - `POST /v1/tenants/:tenant/mcp-credentials` ← `{ entries: Record<string, StoredEntry> }`
+
+The owner is resolved **only** from the token:
+
+- `runAs = agent` → `{ kind: "agent", tenant: claims.tenant, persona: claims.persona }`
+- `runAs = user:X` → the account bound to `(claims.team, X)`; none bound → empty set on GET, 409 on POST
+- anything else, including absent → 403
+
+A person with no account gets `{ entries: {} }` and a 200 on GET. Distinguishing "no account" from "no credentials" in the response would tell a caller whether an account exists.
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+test("an agent-scoped token gets the agent's credentials for its persona", async () => {
+  const res = await get(tokenFor({ tenant: "t1", persona: "default", runAs: "agent" }));
+  expect((await res.json()).entries["workbench|abc"].accessToken).toBe("tok-agent");
+});
+
+test("a user-scoped token gets that person's credentials", async () => {
+  const res = await get(tokenFor({ tenant: "t1", team: "TTESTTEAM1", runAs: "user:UTESTUSER1" }));
+  expect((await res.json()).entries["workbench|abc"].accessToken).toBe("tok-person");
+});
+
+// The boundaries. Each is a way one owner could read another's credentials.
+test("a session running as the agent cannot read a person's credentials", async () => {
+  const body = await (await get(tokenFor({ tenant: "t1", persona: "default", runAs: "agent", initiator: "UTESTUSER1" }))).text();
+  expect(body).not.toContain("tok-person");
+});
+
+test("a 1:1 cannot read the agent's credentials", async () => {
+  const body = await (await get(tokenFor({ tenant: "t1", team: "TTESTTEAM1", runAs: "user:UTESTUSER1" }))).text();
+  expect(body).not.toContain("tok-agent");
+});
+
+test("one person cannot read another's", async () => {
+  const body = await (await get(tokenFor({ tenant: "t1", team: "TTESTTEAM1", runAs: "user:UTESTUSER2" }))).text();
+  expect(body).not.toContain("tok-person");
 });
 
 test("a token for one tenant is refused another tenant's path", async () => {
-  const token = jobToken({ tenant: "t1", initiator: "UTESTUSER1" });
-  const res = await api.fetch(get("/v1/tenants/t2/users/UTESTUSER1/mcp-credentials", token));
-  expect(res!.status).toBe(403);
+  const res = await getPath("/v1/tenants/t2/mcp-credentials", tokenFor({ tenant: "t1", persona: "default", runAs: "agent" }));
+  expect(res.status).toBe(403);
+});
+
+test("a token with no runAs is refused, never treated as the agent", async () => {
+  const res = await get(tokenFor({ tenant: "t1", persona: "default" }));
+  expect(res.status).toBe(403);
+  expect(await res.text()).not.toContain("tok-agent");
 });
 
 test("an unauthenticated request is refused", async () => {
-  const res = await api.fetch(new Request("https://gw/v1/tenants/t1/users/UTESTUSER1/mcp-credentials"));
-  expect(res!.status).toBe(401);
+  expect((await getPath("/v1/tenants/t1/mcp-credentials")).status).toBe(401);
 });
 
-test("a user with no account gets an empty set, not an error", async () => {
-  const token = jobToken({ tenant: "t1", initiator: "UTESTUSER9" });
-  const res = await api.fetch(get("/v1/tenants/t1/users/UTESTUSER9/mcp-credentials", token));
-  expect(res!.status).toBe(200);
-  expect((await res!.json()).entries).toEqual({});
+test("write-back persists to the token's owner and no other", async () => {
+  await post(tokenFor({ tenant: "t1", persona: "default", runAs: "agent" }), { entries: { "workbench|abc": entry("tok-rotated") } });
+  expect((await Creds.credentialsFor(AGENT))["workbench|abc"]!.accessToken).toBe("tok-rotated");
+  expect((await Creds.credentialsFor(PERSON))["workbench|abc"]!.accessToken).toBe("tok-person");
 });
 
-test("write-back persists under the caller's own account", async () => {
-  const token = jobToken({ tenant: "t1", initiator: "UTESTUSER1" });
-  const res = await api.fetch(post("/v1/tenants/t1/users/UTESTUSER1/mcp-credentials", token, {
-    entries: { "workbench|abc": entry("tok-rotated") },
-  }));
-  expect(res!.status).toBe(200);
-  const rows = await Creds.credentialsForAccount(accountId);
-  expect(rows[0]!.entry.accessToken).toBe("tok-rotated");
-});
-
-test("write-back cannot target another user", async () => {
-  const token = jobToken({ tenant: "t1", initiator: "UTESTUSER1" });
-  const res = await api.fetch(post("/v1/tenants/t1/users/UTESTUSER2/mcp-credentials", token, {
-    entries: { "workbench|abc": entry("planted") },
-  }));
-  expect(res!.status).toBe(403);
-  expect(await Creds.credentialsForAccount(otherAccountId)).toHaveLength(0);
-});
-
-// A stale write must not undo a newer rotation from another node.
 test("an older entry does not overwrite a newer one", async () => {
-  const token = jobToken({ tenant: "t1", initiator: "UTESTUSER1" });
-  await Creds.putCredential(accountId, "workbench|abc", entry("newer", Date.now() + 7200_000));
-  await api.fetch(post("/v1/tenants/t1/users/UTESTUSER1/mcp-credentials", token, {
-    entries: { "workbench|abc": entry("older", Date.now() + 60_000) },
-  }));
-  const rows = await Creds.credentialsForAccount(accountId);
-  expect(rows[0]!.entry.accessToken).toBe("newer");
+  await Creds.putCredential(AGENT, "workbench|abc", entry("newer", Date.now() + 7200_000));
+  await post(tokenFor({ tenant: "t1", persona: "default", runAs: "agent" }), { entries: { "workbench|abc": entry("older", Date.now() + 60_000) } });
+  expect((await Creds.credentialsFor(AGENT))["workbench|abc"]!.accessToken).toBe("newer");
 });
 
-test("a malformed entry is rejected without writing anything", async () => {
-  const token = jobToken({ tenant: "t1", initiator: "UTESTUSER1" });
-  const res = await api.fetch(post("/v1/tenants/t1/users/UTESTUSER1/mcp-credentials", token, {
-    entries: { "workbench|abc": { serverName: "workbench" } },
-  }));
-  expect(res!.status).toBe(400);
-  expect(await Creds.credentialsForAccount(accountId)).toHaveLength(0);
+test("a malformed entry is rejected and nothing is written", async () => {
+  const res = await post(tokenFor({ tenant: "t1", persona: "default", runAs: "agent" }), { entries: { "workbench|abc": { serverName: "workbench" } } });
+  expect(res.status).toBe(400);
+});
+
+test("no error response ever carries a token", async () => {
+  const res = await post(tokenFor({ tenant: "t1", persona: "default", runAs: "agent" }), { entries: { "k": { ...entry("tok-leak"), expiresAt: "soon" } } });
+  expect(await res.text()).not.toContain("tok-leak");
 });
 ```
+
+Build `tokenFor` on `mintJobToken` from `src/gateway/api/auth.ts`, the way `tests/gateway/api/runtime-persona.test.ts` already does.
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bun test tests/gateway/api/mcp-credentials.test.ts`
 Expected: FAIL — the route returns 404.
 
-- [ ] **Step 3: Write the handler and wire the routes**
+- [ ] **Step 3: Implement**
 
-In `src/gateway/api/index.ts`, beside the runtime routes:
+Route in `src/gateway/api/index.ts`:
 
 ```ts
-      // /v1/tenants/:id/users/:slackUserId/mcp-credentials — per-user, so the
-      // token must be scoped to BOTH the tenant and the initiator. Deliberately
-      // not part of the runtime bundle: that bundle is keyed on (tenant, persona)
-      // and ETag-cached on the node, and per-user credentials must never sit in
-      // a cache keyed more coarsely than the user.
-      if (seg.length === 6 && seg[1] === "tenants" && seg[3] === "users" && seg[5] === "mcp-credentials") {
+      // /v1/tenants/:id/mcp-credentials — the owner is the token's signed runAs
+      // claim and nothing else: there is no owner in the path to tamper with.
+      // Deliberately not part of the runtime bundle, which is keyed on (tenant,
+      // persona) and ETag-cached on the node.
+      if (seg.length === 4 && seg[1] === "tenants" && seg[3] === "mcp-credentials") {
         if (req.method !== "GET" && req.method !== "POST") return methodNotAllowed();
         const job = requireJobToken(req);
         if ("response" in job) return job.response;
         if (job.claims.tenant !== seg[2]!) {
           return json(403, { error: "job token is not scoped to this tenant" });
         }
-        if (job.claims.initiator !== seg[4]!) {
-          return json(403, { error: "job token is not scoped to this user" });
-        }
-        return await handleMcpCredentials(req, seg[2]!, seg[4]!);
+        return await handleMcpCredentials(req, job.claims);
       }
 ```
 
-In `src/gateway/api/mcp-credentials.ts`, validate every entry before writing: `serverName`, `serverUrl` and `accessToken` must be non-empty strings and `expiresAt` a number. Reject the whole request on the first bad entry so a partial write cannot happen. Take the per-account Redis lock around the write.
+In the handler, validate every POSTed entry before writing any — `serverName`, `serverUrl` and `accessToken` non-empty strings, `expiresAt` a finite number — and reject the whole request on the first failure. Error bodies name the server key and the failing field, never a value. Take a Redis lock keyed on the owner around the write, and skip any entry whose `expiresAt` is older than the stored one.
 
 - [ ] **Step 4: Run tests and typecheck**
 
@@ -398,78 +527,67 @@ Expected: PASS.
 
 ```bash
 git add src/gateway/api/mcp-credentials.ts src/gateway/api/index.ts tests/gateway/api/mcp-credentials.test.ts
-git commit -m "feat(api): per-user MCP credential endpoints, scoped to tenant and initiator"
+git commit -m "feat(api): MCP credential endpoint that serves only the token's own owner"
 ```
 
 ---
 
-### Task 4: /mcp connect and disconnect write to the store
+### Task 5: /mcp connect and disconnect write to the store, both scopes
 
 **Files:**
-- Modify: `src/gateway/core/gateway.ts` (the `/mcp` handler branch — `connectServer` and the disconnect path)
-- Modify: `src/agent/mcp-oauth/store.ts` (a seam so the caller chooses the destination)
+- Modify: `src/agent/mcp-oauth/store.ts` (`persistConnect`, `persistDisconnect`)
+- Modify: `src/gateway/core/gateway.ts` (the `/mcp` branch — `connectServer` and the disconnect path)
 - Test: `tests/mcp-oauth/connect-persists.test.ts`
 
 **Interfaces:**
-- Consumes: Task 2's `putCredential` / `deleteCredential`; `accountForSlackUser` from `src/db/accounts.ts`.
-- Produces: nothing new for later tasks to import. This task makes the store the authority in fact rather than only on paper.
+- Consumes: Task 2's repo; `accountForSlackUser`.
+- Produces: `persistConnect(i: { scope: ConnectScope; tenant: string; persona: string; teamId: string; slackUserId: string; serverName: string; cfg: OAuthServerConfig; entry: StoredEntry }): Promise<{ ok: true } | { ok: false; reason: "no-account" }>` and `persistDisconnect` with the same shape minus `entry`.
 
-Without this, the gateway would serve credentials it never receives: `/mcp connect` runs on the gateway and writes the token to a config directory on disk, while Task 3's endpoint reads from the database. Task 6 would seed an empty set for everyone.
+Without this the gateway would serve credentials it never receives: `/mcp connect` runs on the gateway and writes to a config directory, while Task 4 reads from the database. Every seed would come back empty.
 
-Connect stays on the gateway. Only its destination changes.
+The scope maps to an owner exactly as the gates already decide it: `global` → the agent for this tenant and persona (a manager-only action, unchanged); `initiator` → the lock owner's account. The gates themselves do not change.
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-test("a completed connect lands in the credential store, keyed on the account", async () => {
-  const account = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "a@example.com" });
-  await Accounts.linkSlackIdentity({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1", accountId: account.id, via: "signed-link" });
-
-  await persistConnect({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1", serverName: "workbench", cfg, entry: entry("tok-1") });
-
-  const rows = await Creds.credentialsForAccount(account.id);
-  expect(rows[0]!.entry.accessToken).toBe("tok-1");
+test("a manager's global connect lands under the agent owner for that persona", async () => {
+  await persistConnect({ scope: "global", tenant: "t1", persona: "ana", teamId: "TTESTTEAM1", slackUserId: "UMANAGER1", serverName: "workbench", cfg, entry: entry("tok-agent") });
+  expect((await Creds.credentialsFor({ kind: "agent", tenant: "t1", persona: "ana" }))[key]!.accessToken).toBe("tok-agent");
 });
 
-// Someone can connect before they have onboarded. That must not throw, and it
-// must not silently drop the token either.
-test("a slack user with no account gets a told-you-so, not a silent drop", async () => {
-  const r = await persistConnect({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER9", serverName: "workbench", cfg, entry: entry("tok-1") });
-  expect(r.ok).toBe(false);
-  expect(r.reason).toBe("no-account");
+// The manager ran the command, but it is the agent's credential, not theirs.
+test("a global connect is never stored under the manager's own account", async () => {
+  await persistConnect({ scope: "global", tenant: "t1", persona: "default", teamId: "TTESTTEAM1", slackUserId: "UMANAGER1", serverName: "workbench", cfg, entry: entry("tok-agent") });
+  expect(await Creds.credentialsFor({ kind: "account", accountId: managerAccountId })).toEqual({});
 });
 
-test("disconnect removes the row", async () => {
-  const account = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "a@example.com" });
-  await Accounts.linkSlackIdentity({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1", accountId: account.id, via: "signed-link" });
-  await persistConnect({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1", serverName: "workbench", cfg, entry: entry("tok-1") });
-
-  await persistDisconnect({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1", serverName: "workbench", cfg });
-
-  expect(await Creds.credentialsForAccount(account.id)).toHaveLength(0);
+test("a 1:1 connect lands under the person's account", async () => {
+  await persistConnect({ scope: "initiator", tenant: "t1", persona: "default", teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1", serverName: "workbench", cfg, entry: entry("tok-person") });
+  expect((await Creds.credentialsFor({ kind: "account", accountId }))[key]!.accessToken).toBe("tok-person");
 });
 
-test("the global scope still writes the agent's own shared identity to disk", async () => {
-  // Unchanged behaviour: a manager wiring the agent's shared identity is not a
-  // per-user credential and does not belong in the per-account store.
-  await connectServer({ scope: "global", serverName: "workbench", serverCfg: cfg, /* … */ });
-  expect(readEntry(agentConfigDir(), "workbench", cfg)?.accessToken).toBe("tok-1");
-  expect(await Creds.credentialsForAccount(account.id)).toHaveLength(0);
+test("a 1:1 connect with no bound account is refused, not silently dropped", async () => {
+  const r = await persistConnect({ scope: "initiator", tenant: "t1", persona: "default", teamId: "TTESTTEAM1", slackUserId: "UTESTUSER9", serverName: "workbench", cfg, entry: entry("tok-1") });
+  expect(r).toEqual({ ok: false, reason: "no-account" });
+});
+
+test("a global disconnect removes the agent's row and leaves a person's intact", async () => {
+  await persistConnect({ scope: "global", tenant: "t1", persona: "default", teamId: "TTESTTEAM1", slackUserId: "UMANAGER1", serverName: "workbench", cfg, entry: entry("tok-agent") });
+  await persistConnect({ scope: "initiator", tenant: "t1", persona: "default", teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1", serverName: "workbench", cfg, entry: entry("tok-person") });
+  await persistDisconnect({ scope: "global", tenant: "t1", persona: "default", teamId: "TTESTTEAM1", slackUserId: "UMANAGER1", serverName: "workbench", cfg });
+  expect(await Creds.credentialsFor({ kind: "agent", tenant: "t1", persona: "default" })).toEqual({});
+  expect((await Creds.credentialsFor({ kind: "account", accountId }))[key]!.accessToken).toBe("tok-person");
 });
 ```
-
-The last test is the boundary that keeps this from over-reaching: `/mcp connect` outside a 1:1 wires the *agent's* shared identity, which is not anyone's personal credential and stays exactly where it is.
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bun test tests/mcp-oauth/connect-persists.test.ts`
 Expected: FAIL — `persistConnect` does not exist.
 
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 3: Implement**
 
-Add `persistConnect` and `persistDisconnect` alongside the existing store functions. They resolve the account through `accountForSlackUser(teamId, slackUserId)` and call Task 2's repo. When there is no account, return `{ ok: false, reason: "no-account" }` so the gateway can tell the person to run `/link` first, rather than writing a credential nobody can later resolve.
-
-In the gateway's `/mcp` branch, the initiator scope calls these; the global scope is untouched.
+On `no-account`, the gateway's reply tells the person to run `/link` first, ephemerally through `sayEphemeral` from phase 2, since it concerns only them.
 
 - [ ] **Step 4: Run tests and typecheck**
 
@@ -479,166 +597,232 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/gateway/core/gateway.ts src/agent/mcp-oauth/store.ts tests/mcp-oauth/connect-persists.test.ts
-git commit -m "feat(mcp): a personal connect persists to the credential store"
+git add src/agent/mcp-oauth/store.ts src/gateway/core/gateway.ts tests/mcp-oauth/connect-persists.test.ts
+git commit -m "feat(mcp): connect and disconnect persist to the credential store, for the agent and for people"
 ```
 
 ---
 
-### Task 5: The pod-local config root
+### Task 6: Import existing on-disk credentials
 
 **Files:**
-- Create: `src/agent/config-root.ts`
-- Modify: `src/agent/oauth-home.ts:70-78` (`initiatorConfigDir`)
-- Test: `tests/agent/config-root.test.ts`, and extend `tests/oauth-home.test.ts`
+- Create: `src/gateway/core/credential-import.ts`
+- Modify: `src/gateway/core/gateway.ts` (run it once at boot under a leader lock)
+- Test: `tests/gateway/core/credential-import.test.ts`
 
 **Interfaces:**
-- Consumes: `env.role()` from `src/config/env.ts`; `paths` from `src/config/home.ts` (the module `oauth-home.ts` already imports).
-- Produces: `nodeConfigRoot(): string` — the base for per-initiator config homes. `$SLAUDE_NODE_CONFIG_ROOT` when set, else `/config-home` in the node role, else `paths.home` (unchanged for mono and gateway).
+- Consumes: Task 2's repo; `agentConfigDir`, `personaConfigDir` from `src/agent/oauth-home.ts`; `accountForSlackUser`; the existing `leaderLoop` helper for the lock.
+- Produces: `importOnDiskCredentials(): Promise<{ imported: number; skippedNoAccount: number; skippedUnreadable: number }>`
 
-One accessor, so there is one place to change if this moves again. `initiatorConfigDir` is the only caller.
+Without this, an upgrade loses every connected integration, the agent's and every person's. It must ship in the same release as Task 8.
+
+| On-disk source | Owner |
+| --- | --- |
+| `agentConfigDir()/.credentials.json` | agent, default persona |
+| `personaConfigDir(p)/.credentials.json` for each persona | agent, persona `p` |
+| `$SLAUDE_HOME/oauth/<userId>/.credentials.json` | the account bound to that Slack user |
+| `$SLAUDE_HOME/oauth/<persona>/<userId>/.credentials.json` | the account bound to that Slack user |
+
+Only the `mcpOAuth` subtree is read. The agent's Anthropic credentials in the same file are never touched.
+
+A person's credentials with **no bound account** cannot be imported, because there is no owner to key them on. They stay on disk untouched and the person's next `/mcp connect` after `/link` recreates them. Deleting them would destroy something unrecoverable; importing them under a guessed owner would be worse.
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-test("the node role defaults to the pod-local root", () => {
-  process.env.SLAUDE_ROLE = "node";
-  delete process.env.SLAUDE_NODE_CONFIG_ROOT;
-  expect(nodeConfigRoot()).toBe("/config-home");
+test("the agent's and a person's on-disk credentials are both imported", async () => {
+  writeCreds(join(agentHome, ".credentials.json"), { [key]: entry("tok-agent") });
+  writeCreds(join(home, "oauth", "UTESTUSER1", ".credentials.json"), { [key]: entry("tok-person") });
+  const r = await importOnDiskCredentials();
+  expect(r.imported).toBe(2);
+  expect((await Creds.credentialsFor(AGENT))[key]!.accessToken).toBe("tok-agent");
+  expect((await Creds.credentialsFor(PERSON))[key]!.accessToken).toBe("tok-person");
 });
 
-test("an explicit root wins", () => {
-  process.env.SLAUDE_ROLE = "node";
-  process.env.SLAUDE_NODE_CONFIG_ROOT = "/tmp/elsewhere";
-  expect(nodeConfigRoot()).toBe("/tmp/elsewhere");
+test("a person with no bound account is skipped, and the file is left in place", async () => {
+  writeCreds(join(home, "oauth", "UTESTUSER9", ".credentials.json"), { [key]: entry("tok-orphan") });
+  const r = await importOnDiskCredentials();
+  expect(r.skippedNoAccount).toBe(1);
+  expect(existsSync(join(home, "oauth", "UTESTUSER9", ".credentials.json"))).toBe(true);
 });
 
-test("mono and gateway keep using SLAUDE_HOME, so single-process deploys are untouched", () => {
-  process.env.SLAUDE_ROLE = "mono";
-  delete process.env.SLAUDE_NODE_CONFIG_ROOT;
-  expect(nodeConfigRoot()).toBe(paths.home);
+// Rollback safety: the previous version must still find its files.
+test("imported files are left in place, not deleted", async () => {
+  writeCreds(join(agentHome, ".credentials.json"), { [key]: entry("tok-agent") });
+  await importOnDiskCredentials();
+  expect(existsSync(join(agentHome, ".credentials.json"))).toBe(true);
 });
 
-// The point of the whole task: no credential-bearing path under the shared volume.
-test("a node's initiator config dir is not under SLAUDE_HOME", () => {
-  process.env.SLAUDE_ROLE = "node";
-  process.env.SLAUDE_NODE_CONFIG_ROOT = "/tmp/pod-local";
-  expect(initiatorConfigDir("UTESTUSER1")).not.toContain(paths.home);
+test("running twice overwrites nothing rotated since", async () => {
+  writeCreds(join(agentHome, ".credentials.json"), { [key]: entry("tok-agent", Date.now() + 60_000) });
+  await importOnDiskCredentials();
+  await Creds.putCredential(AGENT, key, entry("rotated-since", Date.now() + 9e6));
+  await importOnDiskCredentials();
+  expect((await Creds.credentialsFor(AGENT))[key]!.accessToken).toBe("rotated-since");
+});
+
+test("the import logs counts, never a user id or a token", async () => {
+  const logs = await captureLogs(() => importOnDiskCredentials());
+  expect(logs.join("\n")).not.toMatch(/UTESTUSER|tok-/);
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+The fourth test matters most: the import must never undo a rotation that happened after its first run, which the same expiry rule as Task 4's write-back guarantees.
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `bun test tests/gateway/core/credential-import.test.ts`
+Expected: FAIL — module not found.
+
+- [ ] **Step 3: Implement**, reusing the expiry-wins rule from Task 4 so there is one definition of "newer".
+
+- [ ] **Step 4: Run tests and typecheck**
+
+Run: `bun test tests/gateway && bunx tsc --noEmit`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/gateway/core/credential-import.ts src/gateway/core/gateway.ts tests/gateway/core/credential-import.test.ts
+git commit -m "feat(gateway): import on-disk MCP credentials into the store at boot"
+```
+
+---
+
+### Task 7: A pod-local config directory for every node session
+
+**Files:**
+- Create: `src/agent/config-root.ts`
+- Modify: `src/agent/oauth-home.ts` (`resolveSessionConfigDir` at `:143-159`, and generalise `ensureInitiatorConfigDir` at `:86-128`)
+- Test: `tests/agent/config-root.test.ts`, extend `tests/oauth-home.test.ts`
+
+**Interfaces:**
+- Consumes: `env.role()` from `src/config/env.ts`; `paths` from `src/config/home.ts`; Task 3's `parseRunAs` result type.
+- Produces:
+  - `nodeConfigRoot(): string` — `$SLAUDE_NODE_CONFIG_ROOT`, else `/config-home` on a node, else `paths.home`
+  - `sessionConfigDir(sessionId: string, owner: { kind: "agent" } | { kind: "user"; slackUserId: string }, persona?: string): string`
+
+Today an unlocked default-persona session returns `undefined` from `resolveSessionConfigDir` and inherits the process's own config directory, and a named persona uses its config home on the shared volume. Both hold the agent's credentials, so on a node **every** session gets a pod-local directory. Mono and gateway keep today's behaviour exactly.
+
+The directory is keyed on the session, not only the owner. Two sessions running as the agent can run concurrently on one node, and they must not share a working copy either — the same one-owner rule, one level down.
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+test("a node's agent session gets a pod-local directory, not the persona home", () => {
+  process.env.SLAUDE_ROLE = "node";
+  process.env.SLAUDE_NODE_CONFIG_ROOT = tmpRoot;
+  const dir = sessionConfigDir("s1", { kind: "agent" }, "ana");
+  expect(dir.startsWith(tmpRoot)).toBe(true);
+  expect(dir).not.toContain(paths.home);
+});
+
+test("two agent sessions on one node do not share a directory", () => {
+  expect(sessionConfigDir("s1", { kind: "agent" })).not.toBe(sessionConfigDir("s2", { kind: "agent" }));
+});
+
+test("transcripts still resolve onto the shared volume", () => {
+  const dir = sessionConfigDir("s1", { kind: "agent" }, "ana");
+  expect(readlinkSync(join(dir, "projects"))).toBe(join(personaConfigDir("ana"), "projects"));
+});
+
+test("settings and plugins are seeded from the persona home", () => {
+  writeFileSync(join(personaConfigDir("ana"), "settings.json"), '{"x":1}');
+  const dir = sessionConfigDir("s1", { kind: "agent" }, "ana");
+  expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe('{"x":1}');
+});
+
+test("the persona home's own credentials are never copied into the pod-local dir", () => {
+  writeFileSync(join(personaConfigDir("ana"), ".credentials.json"), '{"mcpOAuth":{"k":{"accessToken":"on-disk"}}}');
+  const dir = sessionConfigDir("s1", { kind: "agent" }, "ana");
+  expect(existsSync(join(dir, ".credentials.json"))).toBe(false);
+});
+
+test("mono keeps today's resolution byte for byte", () => {
+  process.env.SLAUDE_ROLE = "mono";
+  delete process.env.SLAUDE_NODE_CONFIG_ROOT;
+  expect(resolveSessionConfigDir(null, undefined)).toBeUndefined();
+});
+```
+
+The fifth test pins that the only source of credentials on a node is the gateway. `seedConfigDir` copies selected files from the base home; if it ever copied the credentials file, a stale on-disk token would shadow the store.
+
+- [ ] **Step 2: Run to verify it fails**
 
 Run: `bun test tests/agent/config-root.test.ts`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 3: Implement**
 
-```ts
-/** Base for per-initiator config homes.
- *
- *  Credentials must not live on the shared volume: the agent's own credential
- *  write renames over the path, which replaces a symlink with a regular file and
- *  silently un-shares it (measured — see the field note). A pod-local root gives
- *  the file exactly one owner, which makes that rename harmless.
- *
- *  Only the node role moves. mono and gateway keep $SLAUDE_HOME, so a
- *  single-process deployment is byte-identical to today. */
-export function nodeConfigRoot(): string {
-  const explicit = process.env.SLAUDE_NODE_CONFIG_ROOT?.trim();
-  if (explicit) return explicit;
-  return env.role() === "node" ? "/config-home" : paths.home;
-}
-```
+Generalise `ensureInitiatorConfigDir` rather than writing a second function: it already seeds settings and plugins and maintains the `projects/` symlink, which is exactly what every session needs. `seedConfigDir` (`src/agent/oauth-home.ts:30-45`) copies only `settings.json` and `settings.local.json` and symlinks `plugins/`; it never copies a credentials file. The fifth test exists to keep it that way.
 
-In `initiatorConfigDir`, replace `paths.home` with `nodeConfigRoot()`. Leave `personaConfigDir` and `agentConfigDir` alone: the persona home holds soul and skills, not credentials, and must stay shared.
-
-- [ ] **Step 4: Verify the transcript symlink still lands on the shared volume**
-
-`ensureInitiatorConfigDir` (`src/agent/oauth-home.ts:86-128`) symlinks `projects/` at the base config home. Confirm with a test that with a pod-local root the symlink target is still the persona or agent home under `$SLAUDE_HOME`, so transcripts stay durable.
-
-```ts
-test("transcripts still resolve onto the shared volume", () => {
-  process.env.SLAUDE_ROLE = "node";
-  process.env.SLAUDE_NODE_CONFIG_ROOT = tmpRoot;
-  const dir = ensureInitiatorConfigDir("UTESTUSER1");
-  expect(readlinkSync(join(dir, "projects"))).toContain(paths.home);
-});
-```
-
-- [ ] **Step 5: Run tests and typecheck**
+- [ ] **Step 4: Run tests and typecheck**
 
 Run: `bun test tests/agent tests/oauth-home.test.ts && bunx tsc --noEmit`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/agent/config-root.ts src/agent/oauth-home.ts tests/agent/config-root.test.ts tests/oauth-home.test.ts
-git commit -m "feat(agent): per-initiator config homes move off the shared volume on nodes"
+git commit -m "feat(agent): every node session gets a pod-local config directory"
 ```
 
 ---
 
-### Task 6: Seed at session start
+### Task 8: Seed at session start
 
 **Files:**
 - Create: `src/node/credentials.ts`
-- Modify: `src/node/client.ts` (a `getMcpCredentials` method beside `getRuntime` at `:151-166`)
-- Modify: `src/node/worker.ts` (call the seed where the session's config dir is prepared)
+- Modify: `src/node/client.ts` (`getMcpCredentials` beside `getRuntime` at `:151-166`)
+- Modify: `src/node/worker.ts`
 - Test: `tests/node/credentials-seed.test.ts`
 
 **Interfaces:**
-- Consumes: Task 3's `GET` endpoint, Task 5's `nodeConfigRoot`, `writeEntry` from `src/agent/mcp-oauth/store.ts`.
-- Produces:
-  - `seedCredentials(i: { configDir: string; entries: Record<string, StoredEntry> }): Promise<void>`
-  - `snapshotCredentials(configDir: string): Record<string, StoredEntry>`
+- Consumes: Task 4's `GET`; Task 7's `sessionConfigDir`; Task 3's `parseRunAs`.
+- Produces: `seedCredentials(configDir: string, entries: Record<string, StoredEntry>): Promise<void>` and `snapshotCredentials(configDir: string): Record<string, StoredEntry>`.
 
-The node's cache for these is keyed on the user and is **not** shared with the runtime-bundle cache. Do not add an ETag here: a credential that changed is exactly the case that must not be served from cache.
+The node reads `runAs` from its own job token to pick the directory. It no longer calls `resolveEffectiveIdentity` for this, so its directory and the token's credential scope cannot disagree.
+
+No ETag cache on `getMcpCredentials`. A credential that changed is exactly what must not be served stale.
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-test("seeding writes the entries into the config dir at 0600", async () => {
-  await seedCredentials({ configDir: dir, entries: { "workbench|abc": entry("tok-1") } });
-  const st = statSync(join(dir, ".credentials.json"));
-  expect(st.mode & 0o777).toBe(0o600);
-  expect(snapshotCredentials(dir)["workbench|abc"]!.accessToken).toBe("tok-1");
+test("seeding writes the entries at 0600", async () => {
+  await seedCredentials(dir, { [key]: entry("tok-1") });
+  expect(statSync(join(dir, ".credentials.json")).mode & 0o777).toBe(0o600);
 });
 
-test("seeding preserves entries the agent owns", async () => {
+// The file is shared with the agent's own Anthropic credentials, so seeding
+// must be a read-modify-write of mcpOAuth only, never a whole-file replace.
+test("seeding preserves everything outside mcpOAuth", async () => {
   writeFileSync(join(dir, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "agent-own" } }), { mode: 0o600 });
-  await seedCredentials({ configDir: dir, entries: { "workbench|abc": entry("tok-1") } });
+  await seedCredentials(dir, { [key]: entry("tok-1") });
   const raw = JSON.parse(readFileSync(join(dir, ".credentials.json"), "utf8"));
   expect(raw.claudeAiOauth.accessToken).toBe("agent-own");
-  expect(raw.mcpOAuth["workbench|abc"].accessToken).toBe("tok-1");
 });
 
-test("an empty set leaves no credentials behind from a previous session", async () => {
-  await seedCredentials({ configDir: dir, entries: { "workbench|abc": entry("tok-1") } });
-  await seedCredentials({ configDir: dir, entries: {} });
+test("an empty set leaves nothing behind from an earlier seed", async () => {
+  await seedCredentials(dir, { [key]: entry("tok-1") });
+  await seedCredentials(dir, {});
   expect(snapshotCredentials(dir)).toEqual({});
 });
 
-test("the seeded path is pod-local, never under the shared volume", async () => {
-  expect(dir).not.toContain(paths.home);
+test("the worker picks the directory from runAs, not from a fresh lock lookup", async () => {
+  const lookups = spyOn(OneOnOne, "find");
+  await startSessionWithToken({ runAs: "user:UTESTUSER1" });
+  expect(lookups).not.toHaveBeenCalled();
 });
 ```
 
-The second test is the one to get right: the file is shared with the agent's own Anthropic credentials, so seeding is a read-modify-write of the `mcpOAuth` subtree only, never a whole-file replace.
-
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run to verify it fails**
 
 Run: `bun test tests/node/credentials-seed.test.ts`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Write the implementation**
-
-`seedCredentials` reads the existing file when present, replaces only `mcpOAuth`, and writes through the same symlink-resolving atomic write that `writeEntry` already uses (`resolveCredentialTarget`, from phase 0). `snapshotCredentials` returns the `mcpOAuth` subtree or `{}`.
-
-In `src/node/client.ts`, add `getMcpCredentials(tenant, slackUserId, jobToken)` following the shape of `getRuntime` but with no ETag cache.
-
-In `src/node/worker.ts`, call the seed at session start, after the config dir is resolved and before the first turn runs. The Slack user comes from the job's initiator, which the worker already has.
+- [ ] **Step 3: Implement.** `seedCredentials` reads the existing file when present, replaces only `mcpOAuth`, and writes through the phase 0 symlink-resolving atomic write at `0600`.
 
 - [ ] **Step 4: Run tests and typecheck**
 
@@ -654,31 +838,28 @@ git commit -m "feat(node): seed a session's MCP credentials from the gateway"
 
 ---
 
-### Task 7: Write back at turn end
+### Task 9: Write back at turn end
 
 **Files:**
-- Modify: `src/node/credentials.ts` (diff + write-back)
-- Modify: `src/node/worker.ts` (call it on turn end, beside the existing `turnWaiters` handling at `:176-190`)
+- Modify: `src/node/credentials.ts`, `src/node/worker.ts` (beside `turnWaiters` at `:176-190`)
 - Test: `tests/node/credentials-writeback.test.ts`
 
 **Interfaces:**
-- Consumes: Task 3's `POST`, Task 6's `snapshotCredentials`.
-- Produces: `changedEntries(before, after): Record<string, StoredEntry>` — entries that are new or whose `accessToken` or `expiresAt` differ.
+- Consumes: Task 4's `POST`; Task 8's `snapshotCredentials`.
+- Produces: `changedEntries(before, after): Record<string, StoredEntry>` — entries new, or with a different `accessToken` or `expiresAt`.
 
-Write back at **turn end, not session end**. That is what bounds a lost rotation to one turn when a pod dies.
+At **turn end, not session end**, which is what bounds a lost rotation to one turn. For the agent that bound is what keeps a pod crash from breaking an integration for every channel.
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-test("an unchanged turn posts nothing", async () => {
-  const before = { "workbench|abc": entry("tok-1") };
-  expect(changedEntries(before, { ...before })).toEqual({});
+test("an unchanged turn posts nothing", () => {
+  const seeded = { [key]: entry("tok-1") };
+  expect(changedEntries(seeded, { ...seeded })).toEqual({});
 });
 
 test("a rotated token is detected", () => {
-  const before = { "workbench|abc": entry("tok-1") };
-  const after = { "workbench|abc": entry("tok-2") };
-  expect(Object.keys(changedEntries(before, after))).toEqual(["workbench|abc"]);
+  expect(Object.keys(changedEntries({ [key]: entry("tok-1") }, { [key]: entry("tok-2") }))).toEqual([key]);
 });
 
 test("a newly connected server is detected", () => {
@@ -688,28 +869,23 @@ test("a newly connected server is detected", () => {
 test("a turn that rotates a token posts it back once", async () => {
   const posts = await runTurnWith({ rotateTo: "tok-2" });
   expect(posts).toHaveLength(1);
-  expect(posts[0].entries["workbench|abc"].accessToken).toBe("tok-2");
+  expect(posts[0].entries[key].accessToken).toBe("tok-2");
 });
 
-// A failed write-back must never take the turn down with it.
-test("a failing write-back is logged, not thrown", async () => {
-  const { errors } = await runTurnWith({ rotateTo: "tok-2", postFails: true });
-  expect(errors.some((e) => e.includes("tok-2"))).toBe(false);
+// A failed write-back must never fail the turn, and must never log the token.
+test("a failing write-back is logged without the token, not thrown", async () => {
+  const { errors, turnOutcome } = await runTurnWith({ rotateTo: "tok-2", postFails: true });
+  expect(turnOutcome).toBe("done");
+  expect(errors.join("\n")).not.toContain("tok-2");
 });
 ```
 
-The last test also pins the no-logging rule: the failure is reported without the token in it.
-
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run to verify it fails**
 
 Run: `bun test tests/node/credentials-writeback.test.ts`
 Expected: FAIL — `changedEntries` is not exported.
 
-- [ ] **Step 3: Write the implementation**
-
-Compare on `accessToken` and `expiresAt` only. A deep comparison would post back on irrelevant churn; comparing tokens is what identifies a rotation.
-
-The write-back is fire-and-forget with respect to the turn: `await` it, but catch and log rather than propagate. The turn has already succeeded, and failing it because a credential could not be persisted would be a worse outcome than a lost rotation.
+- [ ] **Step 3: Implement.** Compare on `accessToken` and `expiresAt` only; that identifies a rotation without posting on irrelevant churn. Await the write-back but catch and log: the turn has already succeeded.
 
 - [ ] **Step 4: Run tests and typecheck**
 
@@ -725,41 +901,62 @@ git commit -m "feat(node): post a turn's credential changes back to the gateway"
 
 ---
 
-### Task 8: Refresh — branch chosen by Task 1
+### Task 10: Refresh — branch chosen by Task 1
 
 **Files:** depend on the branch. Test either way: `tests/node/credentials-refresh.test.ts`
 
 **Interfaces:**
-- Consumes: Tasks 3, 6 and 7, plus Task 1's recorded decision.
+- Consumes: Tasks 4, 8 and 9, plus Task 1's recorded decision.
 
-**Do not start this task until Task 1's field note names a branch.** Implement only that branch, and open the pull request describing which one and why.
+**Do not start until Task 1's field note names a branch.** Implement only that branch, and name it in the commit message and the pull request.
 
-**Branch R — reactive.** The node watches `AgentEvent` for the auth-failure shape Task 1 recorded verbatim, asks the gateway to refresh that server key, rewrites the pod-local file, and lets the agent's file poll pick it up. Tests: an auth failure triggers exactly one refresh; two failures in the same turn for one server coalesce into one; a failure for a server with no refresh token surfaces a reconnect prompt rather than looping.
+In every branch the gateway performs the refresh, for both owner kinds. A node never holds a client secret and never talks to an identity provider.
 
-**Branch P — proactive.** Before a tool call, or on a timer no shorter than the agent's own poll interval, the node refreshes anything inside its expiry window through the gateway and rewrites the file. Tests: an entry near expiry is refreshed once; an entry far from expiry is not touched; the refresh happens through the gateway, never in the node.
+- **Branch R — reactive.** The node watches `AgentEvent` for the failure shape Task 1 recorded verbatim, asks the gateway to refresh that server key for its `runAs` owner, and rewrites the pod-local file. Tests: one failure triggers exactly one refresh; two failures in one turn for one server coalesce; a server with no refresh token surfaces a reconnect prompt rather than looping.
+- **Branch P — proactive.** Before a tool call, or on a timer no shorter than the agent's poll interval, the node refreshes anything inside its expiry window through the gateway. Tests: near-expiry refreshes once; far-from-expiry is untouched; the refresh goes through the gateway.
+- **Branch S — seed only.** No new code. A test pinning that a mid-turn expiry surfaces as a normal tool failure and the next turn seeds a refreshed credential, plus the retry cost stated in the deploy docs.
 
-**Branch S — seed only.** No new code. Add a test pinning that a mid-turn expiry surfaces as a normal tool failure and that the next turn seeds a refreshed credential, and state the retry cost in the deploy docs.
+For R and P, the gateway-side refresh for the agent owner runs under the same per-owner lock as write-back, because many sessions share the agent owner and several may ask at once. Test that concurrent refresh requests for one agent owner cause exactly one call to the provider.
 
-In every branch the gateway performs the refresh. A node never holds a client secret and never talks to the identity provider.
-
-- [ ] **Step 1: Re-read Task 1's field note and state the branch in this task's commit message**
-- [ ] **Step 2: Write the failing tests for that branch**
-- [ ] **Step 3: Run them and confirm they fail**
-- [ ] **Step 4: Implement**
-- [ ] **Step 5: Run `bun test && bunx tsc --noEmit`**
-- [ ] **Step 6: Commit**
+- [ ] **Step 1:** Re-read Task 1's note and state the branch.
+- [ ] **Step 2:** Write that branch's failing tests.
+- [ ] **Step 3:** Run them and confirm they fail.
+- [ ] **Step 4:** Implement.
+- [ ] **Step 5:** `bun test && bunx tsc --noEmit`.
+- [ ] **Step 6:** Commit, naming the branch.
 
 ---
 
-### Task 9: Manifests and deployment
+### Task 11: The brain reads its token from the store
 
 **Files:**
-- Modify: `deploy/k8s-scale/50-node.yaml` (the `emptyDir` volume and its mount)
-- Modify: `docs/site/_content/deploy/multi-node.md`
-- Test: `deploy/k8s-local/verify-ha.sh` (extend)
+- Modify: `src/knowledge/remote/brain-client.ts:13,48`
+- Test: `tests/knowledge/brain-client-credentials.test.ts`
 
 **Interfaces:**
-- Consumes: Task 5's `SLAUDE_NODE_CONFIG_ROOT`.
+- Consumes: Task 2's `credentialsFor` with the agent owner.
+
+The remote brain backend reads its MCP token with `readEntry(agentConfigDir(), BRAIN_SERVER_NAME, …)`. That is an agent-owned credential like any other. Leaving it on disk would keep one credential on the old mechanism and make "unified" untrue.
+
+- [ ] **Step 1: Write the failing test** — the client authenticates with the store's agent entry for the brain server, and makes no filesystem read for it.
+- [ ] **Step 2:** Run it and confirm it fails.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** `bun test tests/knowledge && bunx tsc --noEmit`.
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/knowledge/remote/brain-client.ts tests/knowledge/brain-client-credentials.test.ts
+git commit -m "feat(brain): the remote brain's token comes from the credential store"
+```
+
+---
+
+### Task 12: Manifests and the shared-volume guard
+
+**Files:**
+- Modify: `deploy/k8s-scale/50-node.yaml`
+- Modify: `deploy/k8s-local/verify-ha.sh`
+- Modify: `docs/site/_content/deploy/multi-node.md`
 
 - [ ] **Step 1: Add the volume**
 
@@ -768,30 +965,31 @@ In every branch the gateway performs the refresh. A node never holds a client se
               mountPath: /config-home
         # Pod-local, never the shared volume: the agent's credential write
         # renames over the path, and a shared file would be silently un-shared.
-        # Nothing durable lives here — transcripts stay on slaude-home through
+        # Nothing durable lives here; transcripts stay on slaude-home through
         # the projects/ symlink.
         - name: config-home
           emptyDir: {}
 ```
 
-- [ ] **Step 2: Extend the HA verification**
+- [ ] **Step 2: Guard against the regression this phase exists to prevent**
 
-Add a check to `deploy/k8s-local/verify-ha.sh` asserting that no node pod has a `.credentials.json` anywhere under `/data`. That is the regression this whole phase exists to prevent, and it is cheap to check:
+Create a marker file, drive a turn in an ordinary thread and in a 1:1, then assert no node wrote a credentials file under the shared volume after the marker:
 
 ```sh
-kubectl -n "$NS" exec "$pod" -- sh -c 'find /data -name ".credentials.json" | head -1'
+kubectl -n "$NS" exec "$pod" -- touch /tmp/verify-marker
+# … drive the two turns …
+found=$(kubectl -n "$NS" exec "$pod" -- sh -c 'find /data -name ".credentials.json" -newer /tmp/verify-marker 2>/dev/null | head -1')
+[ -z "$found" ] || { echo "FAIL: credentials written to the shared volume: $found"; exit 1; }
 ```
 
-Expected: empty. Fail the script if anything is found.
+`-newer` matters: on an upgraded cluster the pre-existing files Task 6 imported are still present by design, and must not fail the check.
 
-- [ ] **Step 3: Document it**
-
-In the multi-node deploy page: nodes need a writable pod-local path for `SLAUDE_NODE_CONFIG_ROOT`, an `emptyDir` is the intended shape, the shared volume must stay ReadWriteMany for transcripts, and `SLAUDE_MASTER_KEY` is now required on the gateway for credential storage. State plainly that losing a node pod mid-turn can cost a token rotation and the person reconnects.
+- [ ] **Step 3: Document it.** Nodes need a writable pod-local path; an `emptyDir` is the intended shape; the shared volume stays ReadWriteMany for transcripts; `SLAUDE_MASTER_KEY` is now required on the gateway; losing a node mid-turn can cost a token rotation, and for the agent's identity a manager reconnects.
 
 - [ ] **Step 4: Run it**
 
 Run: `./deploy/k8s-local/up.sh && ./deploy/k8s-local/verify-ha.sh`
-Expected: PASS, including the new check.
+Expected: PASS including the new check.
 
 - [ ] **Step 5: Commit**
 
@@ -802,61 +1000,57 @@ git commit -m "feat(deploy): pod-local config volume for nodes, and a guard agai
 
 ---
 
-### Task 10: Documentation and the security pass
+### Task 13: Documentation and the security pass
 
 **Files:**
-- Modify: `docs/site/_content/field-notes/2026-09-18-mcp-credential-ownership.md` (extend Task 1's note)
+- Modify: `docs/site/_content/field-notes/2026-09-18-mcp-credential-ownership.md`
 - Modify: `CLAUDE.md` (Findings Log index, newest first)
 
-- [ ] **Step 1: Finish the field note**
+- [ ] **Step 1: Finish the field note** — one store for both owner kinds, `runAs` as the single signed answer and why `initiator` was the wrong key, pod-local working copies, write-back at turn end, the import, and the accepted cost. Mechanism only.
 
-Extend it with what was built and why: gateway as authority, pod-local working copy, write-back at turn end, and the accepted cost. Mechanism only — no deployment specifics.
-
-- [ ] **Step 2: Run the credential-leak check**
-
-Grep the whole diff for anything that could put a token into a log or an error:
+- [ ] **Step 2: Grep the diff for any path that could carry a token into a log or an error**
 
 ```sh
-git diff main...HEAD -U0 | grep -nE '(console\.(log|warn|error)|throw new Error).*(accessToken|refreshToken|payload|entry\b)'
+git diff main...HEAD -U0 | grep -nE '(console\.(log|warn|error|info)|throw new Error|json\([0-9]+).*(accessToken|refreshToken|payload|entry\b|entries)'
 ```
 
-Expected: no hits. Any hit is a bug to fix before the pull request, not a finding to note.
+Expected: no hits. Any hit is a bug to fix before the pull request.
 
-- [ ] **Step 3: Confirm the security properties hold**
-
-Walk this list and confirm each with a test that exists:
+- [ ] **Step 3: Confirm each property against a test that exists**
 
 1. No token is stored in plaintext anywhere durable.
-2. No token reaches a log line, an error message or an HTTP error body.
-3. A job token for one user cannot read or write another user's credentials.
-4. A job token for one tenant cannot reach another tenant's path.
-5. Credentials never enter the runtime bundle or its ETag cache.
-6. No credential-bearing file exists under the shared volume on any node.
-7. The credentials file is mode `0600`.
-8. Deleting an account deletes its credentials.
-9. A node never holds a client secret and never talks to the identity provider.
+2. No token reaches a log line, a thrown message, or an HTTP error body.
+3. A session running as the agent cannot read a person's credentials.
+4. A 1:1 cannot read the agent's credentials.
+5. One person cannot read another's.
+6. A token for one tenant cannot reach another tenant's path, and one persona's agent credentials are not another's.
+7. A token without `runAs` is refused, never treated as the agent.
+8. The database refuses a row with no owner or two owners.
+9. Credentials never enter the runtime bundle or its ETag cache.
+10. No credential file is written under the shared volume on any node, for either owner kind.
+11. Credential files are mode `0600`.
+12. Deleting an account deletes its credentials through the database cascade.
+13. A node never holds a client secret and never talks to an identity provider.
+14. The import never overwrites a credential rotated after it last ran.
+15. A pod-local session directory never inherits a credentials file from the persona home.
 
-- [ ] **Step 4: Index the field note**
+- [ ] **Step 4: Index the field note** in `CLAUDE.md`.
 
-One line at the top of the Findings Log list in `CLAUDE.md`, matching the existing format.
-
-- [ ] **Step 5: Full verification**
-
-Run: `bun test && bunx tsc --noEmit`, then the repository leak scan over the staged diff.
-Expected: tests PASS, scan prints `clean`.
+- [ ] **Step 5: Full verification** — `bun test && bunx tsc --noEmit`, the Postgres run from Task 2, and the leak scan over the staged diff.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add docs/site/_content/field-notes/2026-09-18-mcp-credential-ownership.md CLAUDE.md
-git commit -m "docs: field note on gateway-owned MCP credentials"
+git commit -m "docs: field note on unified MCP credential ownership"
 ```
 
 ---
 
 ## Out of scope
 
-- The Anthropic provider credentials the agent uses for the model. Those reach the node through the runtime bundle as environment variables, and that path is untouched.
-- Key rotation for `SLAUDE_MASTER_KEY`. The ciphertext envelope is versioned so a `v2:` can be introduced later without a data migration.
-- An operator view of who has connected what. Self-service in the portal covers the common case.
-- Phase 4's automatic onboarding prompt on 1:1 entry.
+- The Anthropic provider credentials the agent uses for the model. They reach the node through the runtime bundle as environment variables; that path is untouched.
+- Key rotation for `SLAUDE_MASTER_KEY`. The envelope is versioned so `v2:` can arrive without a data migration.
+- Deleting the on-disk files Task 6 imported. They stay for rollback until the new path has soaked, then go in a separate change.
+- An operator view of who has connected what.
+- Phase 4's onboarding prompt on 1:1 entry.
