@@ -64,6 +64,26 @@ export function assertOAuthKeyCanary(): boolean {
     === "workbench|c17ea65c6b709142";
 }
 
+/** The CLI's credential-entry shape for freshly exchanged tokens. The single
+ *  definition, shared by the on-disk store and the gateway's database store, so
+ *  the two formats cannot drift. `expiresIn` defaults to 3600s, matching the CLI. */
+export function toStoredEntry(
+  serverName: string,
+  cfg: OAuthServerConfig,
+  tokens: OAuthTokens,
+  now: () => number = Date.now,
+): StoredEntry {
+  return {
+    serverName,
+    serverUrl: cfg.url,
+    clientId: tokens.clientId,
+    clientSecret: tokens.clientSecret,
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
+    expiresAt: now() + (tokens.expiresIn ?? 3600) * 1000,
+  };
+}
+
 /** Read-modify-write the credential file: set mcpOAuth[key], preserve every other
  *  key, write atomically (temp + rename) at 0600. `now` is injectable for tests. */
 export function writeEntry(
@@ -79,20 +99,11 @@ export function writeEntry(
     try { current = JSON.parse(readFileSync(path, "utf8")) || {}; } catch { current = {}; }
   }
   const key = oauthKey(serverName, cfg);
-  const expiresAt = now() + (tokens.expiresIn ?? 3600) * 1000;
   const next = {
     ...current,
     mcpOAuth: {
       ...(current.mcpOAuth || {}),
-      [key]: {
-        serverName,
-        serverUrl: cfg.url,
-        clientId: tokens.clientId,
-        clientSecret: tokens.clientSecret,
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken,
-        expiresAt,
-      },
+      [key]: toStoredEntry(serverName, cfg, tokens, now),
     },
   };
   // Atomic write so a concurrent CLI refresh-write can't observe a torn file.
