@@ -120,6 +120,7 @@ async function main() {
         liveSessions: () => agent.liveCount(),
         v1: role !== "node" ? (req: Request) => slack.fetchV1(req) : undefined,
         panel: panelMounted ? (req: Request) => slack.fetchPanel(req) : undefined,
+        portal: role !== "node" ? (req: Request) => slack.fetchPortal(req) : undefined,
       },
     });
     slack = createGateway(agent, transport, { mcpConnectEnabled: mcpOAuthHealthy });
@@ -129,6 +130,7 @@ async function main() {
       liveSessions: () => agent.liveCount(),
       v1: role !== "node" ? (req) => slack.fetchV1(req) : undefined,
       panel: panelMounted ? (req) => slack.fetchPanel(req) : undefined,
+      portal: role !== "node" ? (req) => slack.fetchPortal(req) : undefined,
     });
   }
   if (role !== "node") console.log(`[slaude] /v1 REST mounted (role=${role})`);

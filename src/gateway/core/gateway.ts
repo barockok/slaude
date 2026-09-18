@@ -35,6 +35,7 @@ import { makeRegistry, type Registry } from "../../queue/registry";
 import { makePubSub, type PubSub } from "../../queue/pubsub";
 import { makePanelLock, type PanelLock } from "../../queue/panel-lock";
 import { createPanelApi } from "../panel/api";
+import { createPortalApi } from "../portal/api";
 import { makeDeferQueue } from "../panel/defer-queue";
 import { suppressibleSurface } from "../panel/suppress";
 import type { DispatchMeta } from "./dispatch";
@@ -89,6 +90,8 @@ export interface GatewayHandle {
    *  Mounted only when SLAUDE_PANEL is enabled and the role is mono/gateway —
    *  see src/server.ts. */
   fetchPanel(req: Request): Promise<Response | null>;
+  /** `/portal/*` — end-user onboarding. Null when SLAUDE_PORTAL is off. */
+  fetchPortal(req: Request): Promise<Response | null>;
   /** TEST/SIM SEAM ONLY. The pending-gate source behind /v1/pending. */
   __pendingSource(): PendingSource;
   /** TEST/SIM SEAM ONLY. Live per-session MCP contexts built by the resolver.
@@ -2467,6 +2470,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
   }
 
+  // The end-user portal is its own mount with its own guard: an ordinary user
+  // never reaches an operator route, and the panel's guard is not relaxed.
+  // createPortalApi returns null for every request while SLAUDE_PORTAL is off.
+  const portalApi = createPortalApi();
+
   const panelApi = panelInfra
     ? createPanelApi({
         registry: panelInfra.registry,
@@ -2492,6 +2500,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     },
     fetchV1: (req: Request) => v1.fetch(req),
     fetchPanel: (req: Request) => (panelApi ? panelApi.fetch(req) : Promise.resolve(null)),
+    fetchPortal: (req: Request) => portalApi.fetch(req),
     __pendingSource: () => v1.pendingSource,
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),
