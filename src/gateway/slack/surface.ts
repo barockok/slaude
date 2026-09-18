@@ -24,7 +24,7 @@ function format(text: string): string {
  *  identical Surface in sim and prod. */
 export class SlackSurface implements Surface {
   readonly id = "slack";
-  readonly capabilities: ReadonlySet<SurfaceCapability> = new Set<SurfaceCapability>(["edit", "react", "upload"]);
+  readonly capabilities: ReadonlySet<SurfaceCapability> = new Set<SurfaceCapability>(["edit", "react", "upload", "ephemeral"]);
 
   #client: WebClient;
   #b: SessionBinding;
@@ -65,6 +65,19 @@ export class SlackSurface implements Surface {
 
   requestApproval(req: ApprovalRequest): Promise<ApprovalResult> {
     return this.#b.requestApproval(req);
+  }
+
+  /** Refuses rather than degrading: a silent fallback to chat.postMessage would
+   *  broadcast an onboarding link to the whole channel. */
+  async sayEphemeral(i: { text: string; userId?: string }): Promise<void> {
+    const user = i.userId ?? this.#b.userId;
+    if (!user) throw new Error("sayEphemeral needs a user: refusing to post publicly");
+    await this.#client.chat.postEphemeral({
+      channel: this.#b.conversationId,
+      user,
+      text: format(i.text),
+      ...(this.#b.threadRef ? { thread_ts: this.#b.threadRef } : {}),
+    });
   }
 
   async edit({ ref, text }: { ref: string; text: string }): Promise<void> {
