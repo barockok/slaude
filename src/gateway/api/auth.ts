@@ -30,6 +30,12 @@ export interface JobClaims {
   /** BullMQ job id this token was minted for. Binds token-refresh to its
    *  job; optional for tokens minted outside the queue path (tests, tools). */
   job?: string;
+  /** Whose identity the turn runs as: "agent" or "user:<slackUserId>". Decided
+   *  once at dispatch (see credential-owner.ts). Distinct from `initiator`,
+   *  which is merely whoever sent the message. Optional in the type so tokens
+   *  from an older gateway still decode; the credential endpoint refuses its
+   *  absence rather than defaulting. */
+  runAs?: string;
   /** Unix seconds. */
   exp: number;
   iat?: number;
