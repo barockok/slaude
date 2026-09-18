@@ -29,10 +29,7 @@ import { requireBearer, requireJobToken } from "./auth";
 import { handleSession } from "./sessions";
 import { handleTenantRuntime } from "./tenants";
 import { handleMcpCredentials, handleMcpCredentialRefresh, type CredentialRefresher } from "./mcp-credentials";
-import { makeCredentialRefresher, localLock, redisLock } from "../core/credential-refresh";
-import { env } from "../../config/env";
-import { getRedis } from "../../queue/redis";
-import { redisPrefix } from "../../queue/keys";
+import { defaultCredentialRefresher } from "../core/credential-refresh";
 import { handlePending, type PendingOptions } from "./pending";
 import { handleJobEvent, handleTokenRefresh } from "./jobs";
 import { executeToolCall } from "./tools";
@@ -58,11 +55,7 @@ export interface V1Options {
 
 export function createV1Api(opts: V1Options): V1Api {
   const pendingSource = opts.pendingSource ?? defaultPendingSource();
-  let refresher = opts.credentialRefresher;
-  const credentialRefresher = (): CredentialRefresher =>
-    (refresher ??= makeCredentialRefresher({
-      lock: env.role() === "gateway" ? redisLock(getRedis(), { prefix: redisPrefix() }) : localLock(),
-    }));
+  const credentialRefresher = (): CredentialRefresher => opts.credentialRefresher ?? defaultCredentialRefresher();
 
   async function fetch(req: Request): Promise<Response | null> {
     const url = new URL(req.url);

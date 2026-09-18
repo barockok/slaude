@@ -29,6 +29,9 @@ import type { StoredEntry } from "../../agent/mcp-oauth/store";
 import type { CredentialOwner } from "../../agent/credential-owner";
 import { credentialsFor, putCredential } from "../../db/mcp-credentials";
 import { acquireLock, releaseLock } from "../../queue/locks";
+import { env } from "../../config/env";
+import { getRedis } from "../../queue/redis";
+import { redisPrefix } from "../../queue/keys";
 
 /** Treat a token this close to expiry as already expired. */
 const EXPIRY_SKEW_MS = 60_000;
@@ -60,6 +63,14 @@ export function makeCredentialRefresher(deps: RefresherDeps) {
   const grant = deps.grant ?? refreshGrant;
   const inflight = new Map<string, Promise<RefreshOutcome>>();
 
+  /** The stored entry if it can be handed out as is: fresh, and not the token
+   *  the caller reported as failed. */
+  function usable(stored: StoredEntry, failedHash: string | undefined): boolean {
+    const fresh = stored.expiresAt - now() > EXPIRY_SKEW_MS;
+    const replaced = failedHash !== undefined && sha256Hex(stored.accessToken) !== failedHash;
+    return fresh && (replaced || failedHash === undefined);
+  }
+
   async function refreshLocked(
     owner: CredentialOwner,
     serverKey: string,
@@ -68,12 +79,9 @@ export function makeCredentialRefresher(deps: RefresherDeps) {
     const stored = (await credentialsFor(owner))[serverKey];
     if (!stored) return { ok: false, reason: "unknown-server" };
 
-    const fresh = stored.expiresAt - now() > EXPIRY_SKEW_MS;
-    const replaced = failedHash !== undefined && sha256Hex(stored.accessToken) !== failedHash;
-    // Someone refreshed since the caller's token failed; or, with no failed
-    // token named, the stored one is still good. Either way: do not spend the
-    // refresh token.
-    if (fresh && (replaced || failedHash === undefined)) return { ok: true, entry: stored };
+    // Re-checked under the lock: someone may have refreshed while we waited.
+    // Either way, do not spend the refresh token.
+    if (usable(stored, failedHash)) return { ok: true, entry: stored };
 
     if (!stored.refreshToken || !stored.clientId) return { ok: false, reason: "reconnect" };
 
@@ -109,10 +117,17 @@ export function makeCredentialRefresher(deps: RefresherDeps) {
   return {
     /** Refresh `serverKey` for `owner`. `failedHash` is the SHA-256 of the
      *  access token that was rejected, if the caller has one — never the token. */
-    refresh(owner: CredentialOwner, serverKey: string, failedHash: string | undefined): Promise<RefreshOutcome> {
+    async refresh(owner: CredentialOwner, serverKey: string, failedHash: string | undefined): Promise<RefreshOutcome> {
       const k = flightKey(owner, serverKey);
       const running = inflight.get(k);
       if (running) return running;
+      // Lock-free fast path: the common case is a fresh token, and it must not
+      // cost a cross-replica lock on every credential read.
+      const current = (await credentialsFor(owner))[serverKey];
+      if (!current) return { ok: false, reason: "unknown-server" };
+      if (usable(current, failedHash)) return { ok: true, entry: current };
+      const again = inflight.get(k);
+      if (again) return again;
       const p = deps
         .lock(`mcp-refresh:${sha256Hex(k)}`, () => refreshLocked(owner, serverKey, failedHash))
         .finally(() => inflight.delete(k));
@@ -161,4 +176,20 @@ export function redisLock(redis: Redis, opts: { prefix: string; ttlMs?: number; 
       await releaseLock(redis, lockKey, owner).catch(() => {});
     }
   };
+}
+
+let shared: ReturnType<typeof makeCredentialRefresher> | undefined;
+
+/** The process-wide refresher: one in-flight map for everything in this process
+ *  that refreshes (the node endpoint, the brain client), and a Redis lock across
+ *  replicas in the gateway role. */
+export function defaultCredentialRefresher(): ReturnType<typeof makeCredentialRefresher> {
+  return (shared ??= makeCredentialRefresher({
+    lock: env.role() === "gateway" ? redisLock(getRedis(), { prefix: redisPrefix() }) : localLock(),
+  }));
+}
+
+/** Test hook: forget the shared refresher so a changed role is re-read. */
+export function __resetDefaultCredentialRefresher(): void {
+  shared = undefined;
 }

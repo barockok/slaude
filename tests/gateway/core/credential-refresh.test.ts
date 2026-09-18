@@ -158,3 +158,19 @@ describe("refresh", () => {
     expect(grants).toHaveLength(2);
   });
 });
+
+describe("the fast path", () => {
+  test("a fresh token is returned without taking the lock", async () => {
+    await Creds.putCredential(AGENT, KEY, stored("tok-fresh", NOW + 3600_000));
+    let locks = 0;
+    const r = makeCredentialRefresher({
+      now: () => NOW,
+      lock: async (_k, fn) => { locks++; return fn(); },
+      discover: async () => ({ tokenEndpoint: "x" }),
+      grant: async () => { throw new Error("must not be called"); },
+    });
+    const out = await r.refresh(AGENT, KEY, undefined);
+    expect(out.ok && out.entry.accessToken).toBe("tok-fresh");
+    expect(locks).toBe(0);
+  });
+});
