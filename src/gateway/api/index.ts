@@ -22,11 +22,17 @@
  *   GET   /v1/tenants/:id/mcp-credentials   the runAs owner's MCP access tokens (bearer + job token;
  *                                           owner from the signed runAs claim only; never a
  *                                           refresh token or client secret)
+ *   POST  /v1/tenants/:id/mcp-credentials/refresh   gateway refreshes one server for that
+ *                                           owner; returns the same projection
  */
 import { requireBearer, requireJobToken } from "./auth";
 import { handleSession } from "./sessions";
 import { handleTenantRuntime } from "./tenants";
-import { handleMcpCredentials } from "./mcp-credentials";
+import { handleMcpCredentials, handleMcpCredentialRefresh, type CredentialRefresher } from "./mcp-credentials";
+import { makeCredentialRefresher, localLock, redisLock } from "../core/credential-refresh";
+import { env } from "../../config/env";
+import { getRedis } from "../../queue/redis";
+import { redisPrefix } from "../../queue/keys";
 import { handlePending, type PendingOptions } from "./pending";
 import { handleJobEvent, handleTokenRefresh } from "./jobs";
 import { executeToolCall } from "./tools";
@@ -45,10 +51,18 @@ export interface V1Options {
   tools: ToolPlaneDeps;
   pendingSource?: PendingSource;
   pending?: PendingOptions;
+  /** MCP credential refresher. Default: single-flight across replicas on Redis
+   *  in the gateway role, in-process otherwise. */
+  credentialRefresher?: CredentialRefresher;
 }
 
 export function createV1Api(opts: V1Options): V1Api {
   const pendingSource = opts.pendingSource ?? defaultPendingSource();
+  let refresher = opts.credentialRefresher;
+  const credentialRefresher = (): CredentialRefresher =>
+    (refresher ??= makeCredentialRefresher({
+      lock: env.role() === "gateway" ? redisLock(getRedis(), { prefix: redisPrefix() }) : localLock(),
+    }));
 
   async function fetch(req: Request): Promise<Response | null> {
     const url = new URL(req.url);
@@ -97,6 +111,19 @@ export function createV1Api(opts: V1Options): V1Api {
           return json(403, { error: "job token is not scoped to this tenant" });
         }
         return await handleMcpCredentials(req, job.claims);
+      }
+
+      // /v1/tenants/:id/mcp-credentials/refresh — refresh one server for the
+      // token's own runAs owner. The gateway is the only refresher: nodes hold
+      // access tokens only.
+      if (seg.length === 5 && seg[1] === "tenants" && seg[3] === "mcp-credentials" && seg[4] === "refresh") {
+        if (req.method !== "POST") return methodNotAllowed();
+        const job = requireJobToken(req);
+        if ("response" in job) return job.response;
+        if (job.claims.tenant !== seg[2]!) {
+          return json(403, { error: "job token is not scoped to this tenant" });
+        }
+        return await handleMcpCredentialRefresh(req, job.claims, credentialRefresher());
       }
 
       // /v1/tenants/:id/personas/:persona/runtime — the bundle is per persona,

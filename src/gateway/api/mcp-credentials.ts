@@ -15,10 +15,11 @@
  * credential through.
  */
 import type { JobClaims } from "./auth";
-import { json } from "./http";
+import { json, readJson } from "./http";
 import { parseRunAs, type CredentialOwner } from "../../agent/credential-owner";
 import { accountForSlackUser } from "../../db/accounts";
 import { credentialsFor } from "../../db/mcp-credentials";
+import type { makeCredentialRefresher } from "../core/credential-refresh";
 import type { StoredEntry } from "../../agent/mcp-oauth/store";
 
 type Resolved = { ok: true; owner: CredentialOwner | null } | { ok: false; response: Response };
@@ -66,4 +67,50 @@ export async function handleMcpCredentials(_req: Request, claims: JobClaims): Pr
   const out: Record<string, NodeCredential> = {};
   for (const [key, e] of Object.entries(await credentialsFor(owner))) out[key] = toNodeCredential(e);
   return json(200, { entries: out });
+}
+
+export type CredentialRefresher = ReturnType<typeof makeCredentialRefresher>;
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+const MAX_KEY_LEN = 512;
+
+/**
+ * POST /v1/tenants/:tenant/mcp-credentials/refresh — refresh one server's
+ * credential for the token's own runAs owner. The body names the server key and,
+ * optionally, a SHA-256 of the access token that failed; never a token. The
+ * response is the same access-token projection GET returns.
+ *
+ * 404 for a server the owner never connected AND for a person with no account,
+ * so the two are indistinguishable. 409 means the grant is unusable and the
+ * owner must reconnect. 503 is transient; the node may try again later.
+ */
+export async function handleMcpCredentialRefresh(
+  req: Request,
+  claims: JobClaims,
+  refresher: CredentialRefresher,
+): Promise<Response> {
+  const resolved = await resolveOwner(claims);
+  if (!resolved.ok) return resolved.response;
+
+  const body = (await readJson(req)) as { serverKey?: unknown; failedAccessTokenHash?: unknown } | null;
+  const serverKey = body?.serverKey;
+  const failed = body?.failedAccessTokenHash;
+  if (typeof serverKey !== "string" || serverKey.length === 0 || serverKey.length > MAX_KEY_LEN) {
+    return json(400, { error: "serverKey must be a non-empty string" });
+  }
+  if (failed !== undefined && (typeof failed !== "string" || !SHA256_HEX.test(failed))) {
+    return json(400, { error: "failedAccessTokenHash must be a lowercase hex SHA-256" });
+  }
+
+  if (!resolved.owner) return json(404, { error: "no such credential" });
+  try {
+    const out = await refresher.refresh(resolved.owner, serverKey, failed as string | undefined);
+    if (out.ok) return json(200, { entry: toNodeCredential(out.entry) });
+    if (out.reason === "reconnect") return json(409, { reconnect: true });
+    return json(404, { error: "no such credential" });
+  } catch (e) {
+    // Transient: the provider or the lock. Named by class only.
+    console.warn(`[mcp-credentials] refresh failed owner=${resolved.owner.kind} server=${serverKey} error=${e instanceof Error ? e.name : typeof e}`);
+    return json(503, { error: "refresh unavailable, try again" });
+  }
 }
