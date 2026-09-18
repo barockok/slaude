@@ -58,6 +58,20 @@ export async function accountForSlackUser(teamId: string, slackUserId: string): 
 }
 
 /**
+ * Every distinct account a Slack user id is bound to, across all workspaces.
+ * Only for callers that genuinely have no workspace in hand — the on-disk
+ * credential import, whose paths predate workspaces. Anyone with a team id must
+ * use accountForSlackUser: the same id in two workspaces can be two people.
+ */
+export async function accountIdsForSlackUserAnyTeam(slackUserId: string): Promise<string[]> {
+  const rows = await db.query<{ account_id: string }>(
+    "SELECT DISTINCT account_id FROM slack_identities WHERE slack_user_id = ?",
+    [slackUserId],
+  );
+  return rows.map((r) => r.account_id);
+}
+
+/**
  * Bind a Slack identity to an account.
  *
  * Rebinding to a DIFFERENT account is refused rather than overwritten. That

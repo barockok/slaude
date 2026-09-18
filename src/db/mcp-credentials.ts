@@ -27,7 +27,7 @@ function ownerWhere(owner: CredentialOwner): { sql: string; params: unknown[] } 
 }
 
 /** A decrypted payload is trusted only if it has the shape the agent reads. */
-function isEntry(v: unknown): v is StoredEntry {
+export function isEntry(v: unknown): v is StoredEntry {
   const e = v as StoredEntry;
   return (
     !!e &&
@@ -97,6 +97,32 @@ export async function putCredentialIfNewer(owner: CredentialOwner, serverKey: st
            ON CONFLICT (agent_tenant, agent_persona, server_key)
            DO UPDATE SET payload = excluded.payload, expires_at = excluded.expires_at, updated_at = excluded.updated_at
            ${guard}`,
+          [randomUUID(), owner.tenant, owner.persona, serverKey, payload, entry.expiresAt, now],
+        );
+  return (r.changes ?? 0) > 0;
+}
+
+/**
+ * Write only if this owner holds nothing for this server yet. For one-time
+ * migration: once the store has a row it is authoritative, and an old file with
+ * a later nominal expiry must never replace a grant refreshed since. Idempotent
+ * and safe for concurrent callers. Returns whether a row was written.
+ */
+export async function putCredentialIfAbsent(owner: CredentialOwner, serverKey: string, entry: StoredEntry): Promise<boolean> {
+  const now = Date.now();
+  const payload = encrypt(JSON.stringify(entry));
+  const r =
+    owner.kind === "account"
+      ? await db.run(
+          `INSERT INTO mcp_credentials (id, account_id, server_key, payload, expires_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT (account_id, server_key) DO NOTHING`,
+          [randomUUID(), owner.accountId, serverKey, payload, entry.expiresAt, now],
+        )
+      : await db.run(
+          `INSERT INTO mcp_credentials (id, agent_tenant, agent_persona, server_key, payload, expires_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (agent_tenant, agent_persona, server_key) DO NOTHING`,
           [randomUUID(), owner.tenant, owner.persona, serverKey, payload, entry.expiresAt, now],
         );
   return (r.changes ?? 0) > 0;

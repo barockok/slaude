@@ -37,6 +37,7 @@ import { makePanelLock, type PanelLock } from "../../queue/panel-lock";
 import { createPanelApi } from "../panel/api";
 import { createPortalApi } from "../portal/api";
 import { persistConnect, persistDisconnect } from "../../agent/mcp-oauth/persist";
+import { importOnDiskCredentials } from "./credential-import";
 import { mintLinkToken } from "../portal/link-token";
 import { accountForSlackUser } from "../../db/accounts";
 import { makeDeferQueue } from "../panel/defer-queue";
@@ -184,6 +185,9 @@ export interface GatewayOptions {
    *  in-process as today. Tests inject one with stub infra; explicit null
    *  forces the in-process path regardless of role. */
   queueDispatch?: QueueDispatch | null;
+  /** Import on-disk MCP credentials into the store at boot (gateway role only).
+   *  Default true; tests that construct a gateway turn it off. */
+  importCredentials?: boolean;
   /** Control-panel infra override (design §Session control panel). Default:
    *  built from the queue dispatcher's Redis (gateway role) or the process
    *  Redis singletons (mono) when SLAUDE_PANEL is enabled and the role is not
@@ -252,6 +256,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         ? makeQueueDispatch(agent)
         : null;
   if (queueDispatch) console.log("[slaude] gateway role: turns dispatch to the node queue");
+
+  // Nodes seed MCP credentials only from the gateway's store, so credentials
+  // still on disk from before the store existed are imported once. Insert-only
+  // and idempotent, so every replica can run it at boot without coordinating.
+  // Never awaited: a slow volume must not hold up Slack ingress. The message
+  // logged on failure comes from our own code and names no credential.
+  if (env.role() === "gateway" && opts.importCredentials !== false) {
+    void importOnDiskCredentials().catch((e) =>
+      console.error(`[credential-import] failed: ${e instanceof Error ? e.message : String(e)}`),
+    );
+  }
 
   // ── Session control panel (design §Session control panel) ────────────────
   // Redis-backed active-surface lock + event tail + warm registry. Reuses the
