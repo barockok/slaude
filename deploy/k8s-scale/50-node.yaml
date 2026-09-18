@@ -44,6 +44,9 @@ spec:
               value: http://slaude-gateway:8080
             - name: SLAUDE_NODE_PORT
               value: "8081"
+            # Pod-local session config homes (see the config-home volume).
+            - name: SLAUDE_NODE_CONFIG_ROOT
+              value: /config-home
           ports:
             - name: health
               containerPort: 8081
@@ -66,6 +69,8 @@ spec:
           volumeMounts:
             - name: slaude-home
               mountPath: /data
+            - name: config-home
+              mountPath: /config-home
           resources:
             # Turns spawn Claude Code SDK child processes — size for
             # SLAUDE_NODE_CONCURRENCY (default 8) concurrent children.
@@ -79,6 +84,15 @@ spec:
         - name: slaude-home
           persistentVolumeClaim:
             claimName: slaude-home
+        # Each session's CLAUDE_CONFIG_DIR, holding only that session's MCP
+        # access tokens, seeded from the gateway. Pod-local, never the shared
+        # volume: the agent writes its credentials file with a temp-file rename,
+        # which silently un-shares any file shared between processes. Nothing
+        # durable lives here; transcripts reach slaude-home through a projects/
+        # symlink, and a lost pod loses nothing the gateway does not hold.
+        - name: config-home
+          emptyDir:
+            sizeLimit: 1Gi
 ---
 # Voluntary disruptions may take nodes one at a time — never all at once —
 # so warm sessions migrate via drain + cold resume instead of being orphaned.
