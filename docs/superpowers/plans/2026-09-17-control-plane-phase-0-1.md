@@ -612,11 +612,11 @@ In `src/gateway/api/index.ts`, keep the existing four-segment route and add the 
 In `src/node/client.ts`, key the cache on the pair:
 
 ```ts
-  /** `${tenantId} ${personaId}` → cached runtime bundle + its ETag. */
+  /** `${tenantId}\u0000${personaId}` → cached runtime bundle + its ETag. */
   #runtimeCache = new Map<string, { etag: string; bundle: RuntimeBundle }>();
 
   async getRuntime(tenantId: string, personaId: string, jobToken: string): Promise<RuntimeBundle> {
-    const key = `${tenantId} ${personaId}`;
+    const key = `${tenantId}\u0000${personaId}`;
     const cached = this.#runtimeCache.get(key);
     const res = await this.request(`/v1/tenants/${tenantId}/personas/${personaId}/runtime`, {
       jobToken,
@@ -631,11 +631,11 @@ In `src/node/client.ts`, key the cache on the pair:
 
   bustRuntime(tenantId: string, personaId?: string): void {
     if (personaId !== undefined) {
-      this.#runtimeCache.delete(`${tenantId} ${personaId}`);
+      this.#runtimeCache.delete(`${tenantId}\u0000${personaId}`);
       return;
     }
     for (const key of this.#runtimeCache.keys()) {
-      if (key.startsWith(`${tenantId} `)) this.#runtimeCache.delete(key);
+      if (key.startsWith(`${tenantId}\u0000`)) this.#runtimeCache.delete(key);
     }
   }
 ```
