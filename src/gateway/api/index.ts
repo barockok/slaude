@@ -19,9 +19,9 @@
  *   GET   /v1/pending/:id             30s long-poll, 204 timeout (bearer)
  *   POST  /v1/jobs/:id/ack|fail       telemetry only             (bearer)
  *   POST  /v1/tools/:server/:tool     contract-validated tool call (bearer + job token)
- *   GET   /v1/tenants/:id/mcp-credentials   the runAs owner's MCP credentials  (bearer + job token;
- *   POST  /v1/tenants/:id/mcp-credentials   write back what a turn changed      owner from the signed
- *                                                                               runAs claim only)
+ *   GET   /v1/tenants/:id/mcp-credentials   the runAs owner's MCP access tokens (bearer + job token;
+ *                                           owner from the signed runAs claim only; never a
+ *                                           refresh token or client secret)
  */
 import { requireBearer, requireJobToken } from "./auth";
 import { handleSession } from "./sessions";
@@ -90,7 +90,7 @@ export function createV1Api(opts: V1Options): V1Api {
       // Deliberately not part of the runtime bundle, which is keyed on (tenant,
       // persona) and ETag-cached on the node.
       if (seg.length === 4 && seg[1] === "tenants" && seg[3] === "mcp-credentials") {
-        if (req.method !== "GET" && req.method !== "POST") return methodNotAllowed();
+        if (req.method !== "GET") return methodNotAllowed();
         const job = requireJobToken(req);
         if ("response" in job) return job.response;
         if (job.claims.tenant !== seg[2]!) {

@@ -1,5 +1,10 @@
 /**
- * GET/POST /v1/tenants/:tenant/mcp-credentials.
+ * GET /v1/tenants/:tenant/mcp-credentials.
+ *
+ * Nodes receive the access token and nothing that could mint another: the
+ * refresh token and client secret stay in the gateway's store. The agent
+ * cannot rotate what it does not hold, so the gateway is the only refresher by
+ * construction, and a compromised node leaks only short-lived access tokens.
  *
  * The owner comes ONLY from the job token's signed runAs claim. There is no
  * owner in the path or the body, so there is nothing a caller can change to
@@ -55,14 +60,6 @@ const headers = (jobToken?: string): Record<string, string> => ({
   ...(jobToken ? { [JOB_HEADER]: jobToken } : {}),
 });
 const get = (jobToken: string, path = PATH) => api().fetch(new Request(`http://gw${path}`, { headers: headers(jobToken) }));
-const post = (jobToken: string, body: unknown, path = PATH) =>
-  api().fetch(
-    new Request(`http://gw${path}`, {
-      method: "POST",
-      headers: { ...headers(jobToken), "content-type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  );
 
 beforeAll(() => {
   process.env.SLAUDE_NODE_TOKEN = NODE_TOKEN;
@@ -164,73 +161,40 @@ describe("reading credentials", () => {
   });
 });
 
-describe("writing credentials back", () => {
-  test("write-back persists to the token's owner and no other", async () => {
-    const res = await post(tokenFor({ runAs: "agent" }), { entries: { [KEY]: entry("tok-rotated", Date.now() + 7200_000) } });
-    expect(res!.status).toBe(200);
-    expect((await Creds.credentialsFor(AGENT))[KEY]!.accessToken).toBe("tok-rotated");
-    expect((await Creds.credentialsFor(PERSON))[KEY]!.accessToken).toBe("tok-person");
+describe("what a node is allowed to hold", () => {
+  test("the refresh token never leaves the gateway", async () => {
+    const body = await (await get(tokenFor({ runAs: "agent" })))!.text();
+    expect(body).toContain("tok-agent");
+    expect(body).not.toContain("refresh-tok-agent");
+    expect(body).not.toContain("refreshToken");
   });
 
-  test("a person's write-back lands on their own account", async () => {
-    await post(tokenFor({ runAs: "user:UTESTUSER1" }), { entries: { [KEY]: entry("tok-person-2", Date.now() + 7200_000) } });
-    expect((await Creds.credentialsFor(PERSON))[KEY]!.accessToken).toBe("tok-person-2");
-    expect((await Creds.credentialsFor(OTHER))[KEY]!.accessToken).toBe("tok-other");
-    expect((await Creds.credentialsFor(AGENT))[KEY]!.accessToken).toBe("tok-agent");
+  test("the client secret never leaves the gateway", async () => {
+    await Creds.putCredential(AGENT, KEY, { ...entry("tok-agent"), clientId: "client-1", clientSecret: "secret-must-stay" });
+    const body = await (await get(tokenFor({ runAs: "agent" })))!.text();
+    expect(body).not.toContain("secret-must-stay");
+    expect(body).not.toContain("clientSecret");
   });
 
-  test("an older entry does not overwrite a newer one", async () => {
-    await Creds.putCredential(AGENT, KEY, entry("newer", Date.now() + 7200_000));
-    await post(tokenFor({ runAs: "agent" }), { entries: { [KEY]: entry("older", Date.now() + 60_000) } });
-    expect((await Creds.credentialsFor(AGENT))[KEY]!.accessToken).toBe("newer");
+  test("a node gets exactly the fields the agent needs to call the server", async () => {
+    await Creds.putCredential(AGENT, KEY, { ...entry("tok-agent"), clientId: "client-1", clientSecret: "s" });
+    const e = ((await (await get(tokenFor({ runAs: "agent" })))!.json()) as any).entries[KEY];
+    expect(Object.keys(e).sort()).toEqual(["accessToken", "clientId", "expiresAt", "serverName", "serverUrl"]);
   });
 
-  test("a user with no account cannot write, and nothing is created", async () => {
-    const before = await db.one<{ n: number }>("SELECT COUNT(*) AS n FROM mcp_credentials");
-    const res = await post(tokenFor({ runAs: "user:UTESTUSER9" }), { entries: { [KEY]: entry("orphan") } });
-    expect(res!.status).toBe(409);
-    const after = await db.one<{ n: number }>("SELECT COUNT(*) AS n FROM mcp_credentials");
-    expect(Number(after!.n)).toBe(Number(before!.n));
-  });
-
-  test("a token with no runAs cannot write", async () => {
-    const res = await post(tokenFor({}), { entries: { [KEY]: entry("planted", Date.now() + 9e6) } });
-    expect(res!.status).toBe(403);
-    expect((await Creds.credentialsFor(AGENT))[KEY]!.accessToken).toBe("tok-agent");
-  });
-
-  test("one malformed entry rejects the whole request and writes nothing", async () => {
-    const res = await post(tokenFor({ runAs: "agent" }), {
-      entries: {
-        "good|1": entry("tok-good", Date.now() + 9e6),
-        "bad|2": { serverName: "workbench" },
-      },
-    });
-    expect(res!.status).toBe(400);
-    expect((await Creds.credentialsFor(AGENT))["good|1"]).toBeUndefined();
-  });
-
-  test("a body that is not an entries object is rejected", async () => {
-    for (const body of [null, [], { entries: [] }, { entries: "x" }, {}]) {
-      const res = await post(tokenFor({ runAs: "agent" }), body);
-      expect(res!.status).toBe(400);
+  // Nothing a node holds can change a credential, so there is nothing for it
+  // to write back, and no write surface for a compromised node to plant one.
+  test("there is no write path from a node", async () => {
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      const res = await api().fetch(
+        new Request(`http://gw${PATH}`, {
+          method,
+          headers: { ...headers(tokenFor({ runAs: "agent" })), "content-type": "application/json" },
+          body: JSON.stringify({ entries: { [KEY]: entry("planted", Date.now() + 9e6) } }),
+        }),
+      );
+      expect(res!.status).toBe(405);
     }
-  });
-
-  test("no error response ever carries a token", async () => {
-    const res = await post(tokenFor({ runAs: "agent" }), {
-      entries: { [KEY]: { ...entry("tok-leak"), expiresAt: "soon" } },
-    });
-    expect(res!.status).toBe(400);
-    const body = await res!.text();
-    expect(body).not.toContain("tok-leak");
-    expect(body).not.toContain("refresh-tok-leak");
-  });
-
-  test("only GET and POST are accepted", async () => {
-    const res = await api().fetch(
-      new Request(`http://gw${PATH}`, { method: "DELETE", headers: headers(tokenFor({ runAs: "agent" })) }),
-    );
-    expect(res!.status).toBe(405);
+    expect((await Creds.credentialsFor(AGENT))[KEY]!.accessToken).toBe("tok-agent");
   });
 });
