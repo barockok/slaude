@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { createPortalApi } from "../../../src/gateway/portal/api";
 import { mintPortalSession, PORTAL_AT_COOKIE } from "../../../src/gateway/portal/session";
 import { mintLinkToken } from "../../../src/gateway/portal/link-token";
+import { mintSession } from "../../../src/gateway/panel/auth/session";
 import * as Accounts from "../../../src/db/accounts";
 
 const ISS = "https://idp.example.com";
@@ -112,6 +113,44 @@ describe("redeeming an onboarding link", () => {
     const loc = res!.headers.get("location")!;
     expect(loc).toStartWith("/portal/auth/login?returnTo=");
     expect(decodeURIComponent(loc)).toContain(t);
+  });
+});
+
+// The two surfaces share an issuer, a signing secret and a process. What keeps
+// them apart is the token type plus the cookie name — not the panel's role
+// lookup, which the portal deliberately does not perform.
+describe("an operator's panel credential on the portal", () => {
+  test("a panel access token in the portal cookie is refused", async () => {
+    const panelToken = mintSession({ sub: "sub-1", email: "alice@example.com" }, "at");
+    const res = await createPortalApi().fetch(
+      new Request("https://slaude.example.com/portal/api/me", {
+        headers: { cookie: `${PORTAL_AT_COOKIE}=${panelToken}` },
+      }),
+    );
+
+    expect(res!.status).toBe(401);
+  });
+
+  test("it cannot redeem an onboarding link either", async () => {
+    const t = mintLinkToken({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1" });
+    const panelToken = mintSession({ sub: "sub-1", email: "alice@example.com" }, "at");
+
+    const res = await createPortalApi().fetch(post({ token: t }, `${PORTAL_AT_COOKIE}=${panelToken}`));
+
+    expect(res!.status).toBe(401);
+    expect(await Accounts.accountForSlackUser("TTESTTEAM1", "UTESTUSER1")).toBeNull();
+  });
+
+  // The mirror direction: an onboarding link is signed with the same secret and
+  // must not be presentable as a session.
+  test("an onboarding link token is not a portal session", async () => {
+    const t = mintLinkToken({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1" });
+
+    const res = await createPortalApi().fetch(
+      new Request("https://slaude.example.com/portal/api/me", { headers: { cookie: `${PORTAL_AT_COOKIE}=${t}` } }),
+    );
+
+    expect(res!.status).toBe(401);
   });
 });
 
