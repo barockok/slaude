@@ -33,7 +33,7 @@ import { makePubSub, type PubSub } from "../queue/pubsub";
 import { withSessionLock, HELD_BY_OTHER } from "../queue/locks";
 import type { TurnJob } from "../queue/turns";
 import { NodeClient } from "./client";
-import { makeSessionSeeder } from "./credentials";
+import { makeAuthRecovery, makeSessionSeeder } from "./credentials";
 import { nodeConfigRoot, sessionConfigDir, existingSessionConfigDir } from "../agent/config-root";
 import { RestSessionStore } from "./session-store";
 import { buildShimServers } from "./shims";
@@ -183,6 +183,16 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     await seeder.atBoot(sessionId, dir);
     return dir;
   });
+  // Branch R: when a tool call fails, refresh any needs-auth server this
+  // session holds a credential for, through the gateway.
+  const recovery = makeAuthRecovery({
+    status: (sid) => agent.mcpServerStatus(sid),
+    reconnect: (sid, server) => agent.reconnectMcpServer(sid, server),
+    refresh: (tenant, token, key, failedHash) => client.refreshMcpCredential(tenant, token, key, failedHash),
+    dirFor: (sid) => existingSessionConfigDir(sid, configRoot),
+    tenantFor: (id) => tenants.get(id),
+    tokenFor: (id) => store.tokenFor(id),
+  });
   agent.setChildEnvResolver(async (sessionId) => {
     const tenant = tenants.get(sessionId);
     const token = store.tokenFor(sessionId);
@@ -207,6 +217,9 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     // exposure to genuinely >1000-event bursts (which the dispatcher covers
     // via job-completion authority anyway).
     void pubsub.appendEvent(e.sessionId, e, { exact: true }).catch(() => {});
+    if (e.type === "toolResult" && (e.result as { is_error?: unknown } | undefined)?.is_error) {
+      void recovery.onToolError(e.sessionId).catch(() => {});
+    }
     if (e.type === "done" && !e.autoEvolve) turnWaiters.get(e.sessionId)?.("done");
     else if (e.type === "error") turnWaiters.get(e.sessionId)?.("error");
   });
@@ -245,6 +258,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       // yet is seeded by the config-dir resolver instead.
       const warmDir = existingSessionConfigDir(sessionId, configRoot);
       if (warmDir) await seeder.atTurn(sessionId, warmDir);
+      recovery.resetTurn(sessionId);
 
       const outcome = await new Promise<"done" | "error">((resolve, reject) => {
         const timer = setTimeout(() => {

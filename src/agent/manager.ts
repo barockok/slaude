@@ -455,6 +455,23 @@ export class AgentManager extends EventEmitter {
     }
   }
 
+  /** Re-run the MCP handshake for one server of a live session, so it picks up
+   *  a credential rewritten under it. False if the session is not live or the
+   *  SDK refused. Measured (Task 1 field note): after a rewrite the next call
+   *  already uses the new token, but only a reconnect returns the reported
+   *  status from needs-auth to connected. */
+  async reconnectMcpServer(sessionId: string, serverName: string): Promise<boolean> {
+    const live = this.#live.get(sessionId);
+    if (!live?.query) return false;
+    try {
+      await live.query.reconnectMcpServer(serverName);
+      return true;
+    } catch (e) {
+      console.warn(`[agent] reconnectMcpServer failed session=${sessionId} server=${serverName}: ${e instanceof Error ? e.name : typeof e}`);
+      return false;
+    }
+  }
+
   async #startSession(sessionId: string, firstText: string) {
     const row = await this.#store.findById(sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);

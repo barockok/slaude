@@ -180,6 +180,30 @@ export class NodeClient {
     return body.entries ?? {};
   }
 
+  /**
+   * Ask the gateway to refresh one server's credential for this turn's owner.
+   * Sends the server key and a SHA-256 of the token that failed, never a token.
+   * Returns the new access-token projection; "reconnect" when the grant is
+   * unusable and the owner must reconnect (409); null when the gateway knows no
+   * such credential (404). A transient failure throws.
+   */
+  async refreshMcpCredential(
+    tenantId: string,
+    jobToken: string,
+    serverKey: string,
+    failedAccessTokenHash: string,
+  ): Promise<NodeCredential | "reconnect" | null> {
+    const res = await this.request(`/v1/tenants/${encodeURIComponent(tenantId)}/mcp-credentials/refresh`, {
+      method: "POST",
+      body: { serverKey, failedAccessTokenHash },
+      jobToken,
+    });
+    if (res.status === 409) return "reconnect";
+    if (res.status === 404) return null;
+    const body = await this.#json<{ entry: NodeCredential }>(res);
+    return body.entry;
+  }
+
   /** Drop a cached bundle. Omitting the persona drops every persona of that
    *  tenant, which is what a tenant-scoped reload signal means. */
   bustRuntime(tenantId: string, personaId?: string): void {

@@ -13,7 +13,7 @@
  */
 import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { NodeCredential } from "../gateway/api/mcp-credentials";
 
 const FILE = ".credentials.json";
@@ -108,6 +108,115 @@ export function makeSessionSeeder(deps: SessionSeederDeps) {
     async atTurn(sessionId: string, configDir: string): Promise<void> {
       const entries = await fetchFor(sessionId);
       if (entries) await seedCredentials(configDir, entries);
+    },
+  };
+}
+
+/** How many times one server may be refreshed within one turn. A provider that
+ *  keeps rejecting fresh tokens would otherwise cost a refresh per failed call. */
+const MAX_REFRESHES_PER_TURN = 2;
+
+export interface AuthRecoveryDeps {
+  /** The live session's MCP server statuses (AgentManager.mcpServerStatus), or
+   *  null when the session is not live on this node. */
+  status: (sessionId: string) => Promise<Array<{ name: string; status: string }> | null>;
+  /** Re-run one server's MCP handshake (AgentManager.reconnectMcpServer). */
+  reconnect: (sessionId: string, serverName: string) => Promise<unknown>;
+  /** Ask the gateway to refresh one server key for this turn's owner. Returns
+   *  the new projection, "reconnect" when the grant is unusable, null when the
+   *  gateway knows no such credential. Throws on a transient failure. */
+  refresh: (
+    tenantId: string,
+    jobToken: string,
+    serverKey: string,
+    failedAccessTokenHash: string,
+  ) => Promise<NodeCredential | "reconnect" | null>;
+  dirFor: (sessionId: string) => string | null;
+  tenantFor: (sessionId: string) => string | undefined;
+  tokenFor: (sessionId: string) => string | undefined;
+  log?: (message: string) => void;
+}
+
+/**
+ * Branch R of the Task 1 field note. When a tool call fails, ask the SDK which
+ * servers are needs-auth — a closed set of statuses, not an error string — and
+ * for each one this session holds a credential for: have the gateway refresh
+ * it, rewrite the pod-local file, and reconnect the server. The measured
+ * behaviour is that the very next call then uses the new token.
+ *
+ * The node proves which token failed by its SHA-256, never by the token. The
+ * gateway is the one that refreshes; the node cannot, holding no refresh token.
+ */
+export function makeAuthRecovery(deps: AuthRecoveryDeps) {
+  const log = deps.log ?? ((m: string) => console.warn(m));
+  const inflight = new Map<string, Promise<void>>();
+  /** sessionId → server → refreshes this turn, or Infinity once told to reconnect. */
+  const attempts = new Map<string, Map<string, number>>();
+
+  function spent(sessionId: string, server: string): number {
+    return attempts.get(sessionId)?.get(server) ?? 0;
+  }
+  function record(sessionId: string, server: string, n: number) {
+    const m = attempts.get(sessionId) ?? new Map<string, number>();
+    m.set(server, n);
+    attempts.set(sessionId, m);
+  }
+
+  async function recover(sessionId: string, server: string): Promise<void> {
+    const dir = deps.dirFor(sessionId);
+    const tenant = deps.tenantFor(sessionId);
+    const token = deps.tokenFor(sessionId);
+    if (!dir || !tenant || !token) return;
+    const creds = snapshotCredentials(dir);
+    const key = Object.keys(creds).find((k) => creds[k]!.serverName === server);
+    if (!key) return; // not a credential this session was given
+
+    record(sessionId, server, spent(sessionId, server) + 1);
+    const failed = createHash("sha256").update(creds[key]!.accessToken).digest("hex");
+    let out: NodeCredential | "reconnect" | null;
+    try {
+      out = await deps.refresh(tenant, token, key, failed);
+    } catch (e) {
+      log(`[node] MCP credential refresh failed session=${sessionId} server=${server} ${describeFailure(e)}`);
+      return;
+    }
+    if (out === "reconnect") {
+      record(sessionId, server, Infinity);
+      log(`[node] MCP server needs reconnecting by its owner session=${sessionId} server=${server}`);
+      return;
+    }
+    if (!out) return;
+    // Re-read: another recovery for a different server may have written since.
+    const now = snapshotCredentials(dir);
+    now[key] = out;
+    await seedCredentials(dir, now);
+    await deps.reconnect(sessionId, server);
+  }
+
+  return {
+    /** Call on any failed tool result. Cheap when nothing is needs-auth. */
+    async onToolError(sessionId: string): Promise<void> {
+      const statuses = await deps.status(sessionId);
+      if (!statuses) return;
+      const work: Promise<void>[] = [];
+      for (const s of statuses) {
+        if (s.status !== "needs-auth") continue;
+        const flight = `${sessionId}/${s.name}`;
+        const running = inflight.get(flight);
+        if (running) {
+          work.push(running);
+          continue;
+        }
+        if (spent(sessionId, s.name) >= MAX_REFRESHES_PER_TURN) continue;
+        const p = recover(sessionId, s.name).finally(() => inflight.delete(flight));
+        inflight.set(flight, p);
+        work.push(p);
+      }
+      await Promise.all(work);
+    },
+    /** A new turn: lift the per-turn refresh limit. */
+    resetTurn(sessionId: string): void {
+      attempts.delete(sessionId);
     },
   };
 }
