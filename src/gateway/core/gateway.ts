@@ -260,12 +260,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // Nodes seed MCP credentials only from the gateway's store, so credentials
   // still on disk from before the store existed are imported once. Insert-only
   // and idempotent, so every replica can run it at boot without coordinating.
-  // Never awaited: a slow volume must not hold up Slack ingress. The message
-  // logged on failure comes from our own code and names no credential.
+  // Never awaited: a slow volume must not hold up Slack ingress. On failure
+  // only the error's class and code are logged: a filesystem error's message
+  // carries a path, and a person's path carries their Slack user id.
   if (env.role() === "gateway" && opts.importCredentials !== false) {
-    void importOnDiskCredentials().catch((e) =>
-      console.error(`[credential-import] failed: ${e instanceof Error ? e.message : String(e)}`),
-    );
+    void importOnDiskCredentials().catch((e) => {
+      const code = (e as { code?: unknown })?.code;
+      console.error(
+        `[credential-import] failed: ${e instanceof Error ? e.name : typeof e}${typeof code === "string" ? ` code=${code}` : ""}`,
+      );
+    });
   }
 
   // ── Session control panel (design §Session control panel) ────────────────
