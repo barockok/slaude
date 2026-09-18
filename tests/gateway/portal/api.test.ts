@@ -115,6 +115,33 @@ describe("redeeming an onboarding link", () => {
   });
 });
 
+// A still-valid cookie must stop working the moment the account is gone: the
+// guard re-resolves (issuer, subject) per request instead of trusting the
+// token's claims, the same way the panel re-resolves roles.
+describe("an account deleted mid-session", () => {
+  test("its cookie stops working at the very next request", async () => {
+    const cookie = signedIn("sub-1", "alice@example.com");
+    const api = createPortalApi();
+    const me = () => api.fetch(new Request("https://slaude.example.com/portal/api/me", { headers: { cookie } }));
+    expect((await me())!.status).toBe(200);
+
+    await Accounts._wipeForTests();
+
+    expect((await me())!.status).toBe(401);
+  });
+
+  test("it cannot redeem an onboarding link", async () => {
+    const t = mintLinkToken({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1" });
+    const cookie = signedIn("sub-1", "alice@example.com");
+    await Accounts._wipeForTests();
+
+    const res = await createPortalApi().fetch(post({ token: t }, cookie));
+
+    expect(res!.status).toBe(401);
+    expect(await Accounts.accountForSlackUser("TTESTTEAM1", "UTESTUSER1")).toBeNull();
+  });
+});
+
 describe("unlinking", () => {
   test("a user can remove their own binding", async () => {
     const a = await Accounts.findAccountBySubject(ISS, "sub-1");
