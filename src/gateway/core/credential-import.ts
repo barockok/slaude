@@ -38,6 +38,10 @@ import type { CredentialOwner } from "../../agent/credential-owner";
 export interface ImportRoots {
   /** The agent's own config home (default persona). */
   agentHome: string;
+  /** Further homes that may hold the default persona's credentials. A process
+   *  without CLAUDE_CONFIG_DIR resolves agentHome to ~/.claude, while the shared
+   *  $SLAUDE_HOME/.claude is where a deployment may actually have kept them. */
+  extraAgentHomes?: string[];
   /** Directory holding `<persona>/.claude` homes. */
   personasRoot: string;
   /** `$SLAUDE_HOME/oauth`: `<userId>/` and `<persona>/<userId>/` homes. */
@@ -54,7 +58,12 @@ export interface ImportResult {
 const TENANT = "default";
 
 function defaultRoots(): ImportRoots {
-  return { agentHome: agentConfigDir(), personasRoot: paths.personas, oauthRoot: join(paths.home, "oauth") };
+  return {
+    agentHome: agentConfigDir(),
+    extraAgentHomes: [paths.claudeConfig],
+    personasRoot: paths.personas,
+    oauthRoot: join(paths.home, "oauth"),
+  };
 }
 
 const isDir = (p: string) => {
@@ -112,7 +121,10 @@ export async function importOnDiskCredentials(roots: ImportRoots = defaultRoots(
   }
 
   // The agent: default persona, then each named persona's home.
-  await importDir(roots.agentHome, { kind: "agent", tenant: TENANT, persona: "default" });
+  const agentHomes = [...new Set([roots.agentHome, ...(roots.extraAgentHomes ?? [])])];
+  for (const home of agentHomes) {
+    await importDir(home, { kind: "agent", tenant: TENANT, persona: "default" });
+  }
   for (const persona of children(roots.personasRoot)) {
     await importDir(join(roots.personasRoot, persona, ".claude"), { kind: "agent", tenant: TENANT, persona });
   }

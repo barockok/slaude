@@ -72,6 +72,14 @@ describe("importOnDiskCredentials", () => {
     expect((await Creds.credentialsFor({ kind: "account", accountId: personId }))[KEY]!.accessToken).toBe("tok-person");
   });
 
+  test("the agent's credentials are found in the shared home too, when the process home differs", async () => {
+    const shared = join(root, "shared-claude");
+    writeCreds(shared, { [KEY]: entry("tok-shared") });
+    const r = await importOnDiskCredentials({ agentHome, extraAgentHomes: [shared, agentHome], personasRoot, oauthRoot });
+    expect(r.imported).toBe(1);
+    expect((await Creds.credentialsFor(AGENT))[KEY]!.accessToken).toBe("tok-shared");
+  });
+
   test("a person's credentials nested under a persona import to their account", async () => {
     writeCreds(join(oauthRoot, "ana", "UTESTUSER1"), { [KEY]: entry("tok-person-ana") });
     const r = await run();
