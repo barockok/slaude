@@ -37,5 +37,6 @@ export async function exchangeAuthCode(params: {
     accessToken: j.access_token,
     refreshToken: j.refresh_token,
     expiresIn: j.expires_in,
+    tokenEndpoint: params.tokenEndpoint,
   };
 }

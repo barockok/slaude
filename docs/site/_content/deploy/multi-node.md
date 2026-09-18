@@ -92,9 +92,23 @@ docker compose -f docker-compose.scale.yaml ps    # all five services → health
 
 Point your Slack app's Events API request URL at the gateway's `:8080/slack/events` (interactions at `/slack/interactions`). The stack boots and reports healthy without ANTHROPIC creds — turns just won't run until the nodes have them. Scale nodes by adding services (or `docker compose … up --scale`-style tooling of your choice); each worker names itself `<hostname>-<rand>` and registers its own per-node queue.
 
-> **`SLAUDE_MASTER_KEY` is not rotatable in place.** It encrypts the Slack app secrets in the `slack_apps` registry at rest. Regenerating it orphans every existing row — the old ciphertext can no longer be decrypted, and the gateway will fail to resolve those apps. Keep the key stable across restarts; if you must rotate, re-register every app afterwards.
+> **`SLAUDE_MASTER_KEY` is not rotatable in place.** It encrypts the Slack app secrets in the `slack_apps` registry and every MCP credential at rest. Regenerating it orphans every existing row — the old ciphertext can no longer be decrypted, the gateway will fail to resolve those apps, and every connected MCP integration has to be reconnected. Keep the key stable across restarts. A gateway refuses to boot without a usable key.
 
 The single-process deployment stays in `docker-compose.yaml` — the scale file never touches it.
+
+### MCP credentials
+
+Every MCP credential — the agent's own shared identity per persona, and each person's own from their 1:1 — is held by the gateway in Postgres, encrypted under `SLAUDE_MASTER_KEY`. `/mcp connect` and `/mcp disconnect` write there; on a gateway they no longer write files to the shared volume.
+
+A node never holds the grant itself. At the start of each turn it fetches the **access tokens** for the identity the turn runs as, and writes them into a config directory that belongs to that session on that pod. Refresh tokens and client secrets never leave the gateway. When a token expires the gateway refreshes it, either as the node fetches at turn start or when the agent reports the server as needing authorization mid-turn, and the node's next call uses the new one.
+
+What a deployment needs:
+
+- **A writable pod-local path on every node**, `SLAUDE_NODE_CONFIG_ROOT` (default `/config-home`). The Kubernetes manifests mount an `emptyDir` there. In docker compose each container's own filesystem already is one. It must not be on the shared volume: the agent writes its credentials file by renaming over it, which silently un-shares any file two processes share.
+- **The shared volume stays ReadWriteMany** for transcripts. Session config homes link their `projects/` directory back onto it, so a session resumed on another node still finds its history.
+- **Nothing to migrate by hand.** On boot each gateway imports credentials still on disk from before this existed. It is insert-only and never overwrites anything already stored, so every replica can run it. It leaves the files in place so a rollback still works. A person's credentials import only once their Slack user is linked to an account with `/link`. Until then they stay on disk, and the person reconnects after linking.
+
+Losing a node pod loses nothing: a node holds no credential the gateway does not. If a provider revokes a grant, the owner reconnects. For a person that happens in their 1:1. For the agent's shared identity a manager reconnects it.
 
 ### Delivery semantics under node failure
 

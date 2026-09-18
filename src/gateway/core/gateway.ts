@@ -36,6 +36,8 @@ import { makePubSub, type PubSub } from "../../queue/pubsub";
 import { makePanelLock, type PanelLock } from "../../queue/panel-lock";
 import { createPanelApi } from "../panel/api";
 import { createPortalApi } from "../portal/api";
+import { persistConnect, persistDisconnect } from "../../agent/mcp-oauth/persist";
+import { importOnDiskCredentials } from "./credential-import";
 import { mintLinkToken } from "../portal/link-token";
 import { accountForSlackUser } from "../../db/accounts";
 import { makeDeferQueue } from "../panel/defer-queue";
@@ -183,6 +185,9 @@ export interface GatewayOptions {
    *  in-process as today. Tests inject one with stub infra; explicit null
    *  forces the in-process path regardless of role. */
   queueDispatch?: QueueDispatch | null;
+  /** Import on-disk MCP credentials into the store at boot (gateway role only).
+   *  Default true; tests that construct a gateway turn it off. */
+  importCredentials?: boolean;
   /** Control-panel infra override (design §Session control panel). Default:
    *  built from the queue dispatcher's Redis (gateway role) or the process
    *  Redis singletons (mono) when SLAUDE_PANEL is enabled and the role is not
@@ -251,6 +256,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         ? makeQueueDispatch(agent)
         : null;
   if (queueDispatch) console.log("[slaude] gateway role: turns dispatch to the node queue");
+
+  // Nodes seed MCP credentials only from the gateway's store, so credentials
+  // still on disk from before the store existed are imported once. Insert-only
+  // and idempotent, so every replica can run it at boot without coordinating.
+  // Never awaited: a slow volume must not hold up Slack ingress. On failure
+  // only the error's class and code are logged: a filesystem error's message
+  // carries a path, and a person's path carries their Slack user id.
+  if (env.role() === "gateway" && opts.importCredentials !== false) {
+    void importOnDiskCredentials().catch((e) => {
+      const code = (e as { code?: unknown })?.code;
+      console.error(
+        `[credential-import] failed: ${e instanceof Error ? e.name : typeof e}${typeof code === "string" ? ` code=${code}` : ""}`,
+      );
+    });
+  }
 
   // ── Session control panel (design §Session control panel) ────────────────
   // Redis-backed active-surface lock + event tail + warm registry. Reuses the
@@ -773,10 +793,41 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return out;
   };
 
-  /** Persist freshly-exchanged tokens into the CLI store and reboot the session so
-   *  the CLI picks them up. "initiator" scope writes the per-user config home;
-   *  "global" scope writes the agent's own config dir. Shared by loopback + paste. */
+  /** Tenant and workspace that own a session's credentials, resolved exactly as
+   *  the queue dispatcher resolves them, so a connect and the turns that later
+   *  read it agree on the owner. */
+  async function credentialTarget(sessionId: string): Promise<{ tenant: string; teamId: string }> {
+    const row = await Sessions.findById(sessionId);
+    if (!row) throw new Error("session not found — send a message in this thread first, then connect");
+    return {
+      tenant: (row as { tenant_id?: string }).tenant_id ?? "default",
+      teamId: row.slack_team_id ?? "",
+    };
+  }
+
+  /** Persist freshly-exchanged tokens and reboot the session so the next turn
+   *  uses them. Shared by loopback + paste.
+   *
+   *  gateway role: the credential store, never a file. Nodes seed from the store
+   *  into pod-local directories; a file on the shared volume would be read by
+   *  nothing and would reintroduce the hazard the store exists to remove.
+   *  mono: the config directory on disk, as before — the agent runs in this
+   *  process and reads that file, and a mono deployment need not have a master
+   *  key for the store at all. */
   async function persistTokens(a: { sessionId: string; userId: string; serverName: string; serverConfig: OAuthServerConfig; scope: ConnectScope; personaName?: string }, tokens: OAuthTokens) {
+    if (env.role() === "gateway") {
+      const { tenant, teamId } = await credentialTarget(a.sessionId);
+      const r = await persistConnect({
+        scope: a.scope, tenant, persona: a.personaName ?? "default", teamId,
+        slackUserId: a.userId, serverName: a.serverName, cfg: a.serverConfig, tokens,
+      });
+      if (!r.ok) {
+        throw new Error("your Slack user isn't connected to an account yet — run `/link`, sign in, then connect again");
+      }
+      agent.noteSessionEvent(a.sessionId, `Connected MCP server \`${a.serverName}\`${a.scope === "global" ? " (agent's shared identity)" : ""}.`);
+      agent.reload(a.sessionId);
+      return;
+    }
     // initiator: ensureInitiatorConfigDir seeds + creates the dir (the connect flow
     // may run before any locked session has booted). global: the agent config dir is
     // the live CLAUDE_CONFIG_DIR — already present, just write into it.
@@ -1591,13 +1642,25 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // their own config home, global (manager) removes the agent's shared
           // identity. Removing the stored grant means no token at next session
           // boot — the agent reconnects only if re-connected.
-          const configDir = scopeConfigDir(scope, userId, dispatch?.personaId);
           // Reconstruct the SAME OAuthServerConfig shape connectServer wrote with
           // ({type:"http", url, headers}) — httpExternalServers drops `type`, so
           // passing its bare {url,headers} would compute a different oauthKey and
           // never match the stored grant.
           const cfg: OAuthServerConfig = { type: "http", url: httpServers[name]!.url, headers: httpServers[name]!.headers };
-          const removed = removeEntry(configDir, name, cfg);
+          let removed: boolean;
+          if (env.role() === "gateway") {
+            // The store is the authority on a gateway; see persistTokens.
+            const { tenant, teamId: sessionTeam } = await credentialTarget(session.id);
+            const r = await persistDisconnect({
+              scope, tenant, persona: personaKey(dispatch?.personaId) ?? "default", teamId: sessionTeam,
+              slackUserId: userId, serverName: name, cfg,
+            });
+            removed = r.ok && r.removed;
+          } else {
+            // Resolved only here: for a 1:1 it creates the config home, which a
+            // gateway must not do on the shared volume.
+            removed = removeEntry(scopeConfigDir(scope, userId, dispatch?.personaId), name, cfg);
+          }
           if (removed) agent.noteSessionEvent(session.id, `Disconnected MCP server \`${name}\`${scope === "global" ? " (agent's shared identity)" : ""}.`);
           await reply(
             removed

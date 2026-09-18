@@ -124,6 +124,36 @@ expect "the brain runs on the Postgres server, in its own database" \
   "brain tables found in slaude_brain: ${brain_tables:-none}, want 2" \
   [ "$brain_tables" = 2 ]
 
+
+# --- credential placement --------------------------------------------------
+# Phase 3: MCP credentials live in the gateway's store; a node holds only a
+# pod-local working copy per session. A credentials file on the shared volume
+# is the hazard the design removes (the agent's rename-over-path write silently
+# un-shares it), so none may be written there. `-newer /proc/1` scopes the
+# check to this pod's lifetime: files from before an upgrade are left in place
+# on purpose by the import, for rollback, and must not trip it.
+section "credential placement"
+for pod in $(pods app.kubernetes.io/component=node); do
+  # shellcheck disable=SC2016  # expands inside the node pod, not here
+  root="$(k exec "$pod" -- sh -c 'printf %s "$SLAUDE_NODE_CONFIG_ROOT"' 2>/dev/null | tr -d '\r')"
+  expect "$pod keeps session config homes pod-local" \
+    "$pod SLAUDE_NODE_CONFIG_ROOT='$root', want /config-home" \
+    [ "$root" = /config-home ]
+  # shellcheck disable=SC2016  # expands inside the node pod, not here
+  writable="$(k exec "$pod" -- sh -c 't=/config-home/.verify-probe; touch "$t" && rm -f "$t" && echo yes' 2>/dev/null | tr -d '\r')"
+  expect "$pod can write its pod-local root" \
+    "$pod cannot write /config-home (volume missing or read-only)" \
+    [ "$writable" = yes ]
+  onvol="$(k exec "$pod" -- sh -c 'find /data -name .credentials.json -newer /proc/1 2>/dev/null | head -1' | tr -d '\r')"
+  expect "no credentials file written to the shared volume since $pod started" \
+    "credentials written to the shared volume: $onvol" \
+    [ -z "$onvol" ]
+done
+imports="$(k logs deploy/slaude-gateway --tail=-1 2>/dev/null | grep -c '\[credential-import\] imported=' || true)"
+expect "the gateway imported on-disk credentials at boot" \
+  "no [credential-import] line in the gateway log" \
+  [ "${imports:-0}" -ge 1 ]
+
 # --- 2. shared volume ------------------------------------------------------
 section "shared \$SLAUDE_HOME across every pod"
 token="ha-$(date +%s)-$RANDOM"
