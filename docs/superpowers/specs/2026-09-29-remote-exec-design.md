@@ -46,11 +46,13 @@ handled after the lock filter in `src/gateway/core/gateway.ts`.
 
 When the user has no key yet, slaude generates an ed25519 keypair, stores it
 in the gateway credential store under owner `user:<id>`, and replies
-**ephemerally** with the public key and the exact setup:
+**ephemerally** with the exact setup. `--ssh-authorized-keys` accepts a literal
+key, so no file is needed; a saved tailcat server key keeps the address stable
+across restarts:
 
 ```sh
-echo '<pubkey>' > ~/.slaude-remote.pub
-tailcat serve ssh --ssh-authorized-keys=~/.slaude-remote.pub
+tailcat genkey --key=default        # once; stable address
+tailcat serve --key=default --ssh-authorized-keys="ssh-ed25519 AAAA… slaude:<user>" ssh
 ```
 
 The same message states the security boundary (§5.3): commands run as the
@@ -118,21 +120,38 @@ In `AgentManager.#startSession` (`src/agent/manager.ts`), when the session has
 a remote target:
 
 ```ts
-disallowedTools: [...existing, 'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep'],
+// Built-ins stay ENABLED so the model sees their native schemas;
+// the alias reroutes every model-emitted call to the remote tool.
 mcpServers: { ...existing, remote: remoteToolsServer(helper, target) },
 toolAliases: {
   Bash: 'mcp__remote__bash',   Read: 'mcp__remote__read',
   Write: 'mcp__remote__write', Edit: 'mcp__remote__edit',
   Glob: 'mcp__remote__glob',   Grep: 'mcp__remote__grep',
 },
+hooks: { PreToolUse: [denyLocalBuiltins] },  // belt and braces, see below
 ```
 
 `toolAliases` (SDK ≥ 0.3.173) routes model-emitted built-in names to the MCP
 tools, so skills that say "use Bash" and transcripts containing earlier `Bash`
-calls keep working. Built-ins are **disallowed**, not merely aliased:
-`disallowedTools` also blocks harness-internal direct calls, which an alias
-alone does not. Other built-ins (WebFetch, Agent/Task, TodoWrite, Skill) and
-all MCP servers stay local.
+calls keep working.
+
+**Enabled + alias, not disallowed + alias** (changed by the spike, §8). With
+the built-ins disallowed the model never sees a `Bash` tool: with tool search
+on it looped on `ToolSearch` looking for one and hit the turn limit; with it
+off it called `mcp__remote__bash` directly, which works but loses the native
+schema. With the built-ins enabled plus the alias, the model emits `Bash` and
+the call reaches the remote handler; a local marker file proved the local
+Bash never ran.
+
+**Guard against internal direct calls.** The SDK docs say an alias does not
+cover harness-internal calls that hold the tool object. A `PreToolUse` hook
+denies any call whose `tool_name` is a built-in in the aliased set. The spike
+showed hooks see the **post-alias** name (`mcp__remote__bash`), so the guard
+never fires for routed calls and fires only if something reaches a local
+built-in directly. `canUseTool` applies the same deny as a second layer.
+
+Other built-ins (WebFetch, Agent/Task, TodoWrite, Skill) and all MCP servers
+stay local.
 
 `TaskOutput` / `TaskStop` are **not** aliased — they also manage local
 background subagents.
@@ -177,12 +196,20 @@ paths resolve against `<dir>`.
 | `read` | `cat -- <path>`; line slicing and `cat -n` formatting done locally; default 2000 lines, `offset`/`limit` | PNG/JPG returned as image blocks; PDF/ipynb rejected in v1 |
 | `write` | `mkdir -p <parent> && cat > <path>` with content on stdin | existing file must have been read in this session |
 | `edit` | read, exact `old_string` match (unique unless `replace_all`), write back | must have been read first; refused if remote mtime changed since the read |
-| `glob` | `rg --files -g <pattern>`, fallback `find` | sorted newest first, capped at 100 |
-| `grep` | `rg` with built-in flags (`-i -n -A/-B/-C`, `glob`, `type`, `output_mode`, `head_limit`, `multiline`) | fallback `grep -rn` without `type`/`multiline` |
+| `glob` | `find` (portable BSD/GNU subset); `rg --files -g` when present | sorted newest first, capped at 100 |
+| `grep` | `grep -rn` (portable BSD/GNU flags: `-i -n -A/-B/-C`, `--include`; no `-P`); `rg` when present for `type`/`multiline` | without `rg`, `type` maps to `--include` globs and `multiline` is rejected |
 | `bash_output(id)` | `tail -c +<offset>` of the job log; exit code once `.exit` exists | not aliased |
 | `bash_kill(id)` | kill the job's process group, TERM then KILL after 5 s | not aliased |
 
-Non-bash tools use plain `sh -c` (no login profile) for latency.
+tailcat's SSH server runs every exec as `$SHELL -c <cmd>` (non-login) in the
+user's home directory with a minimal PATH — on macOS it lacks
+`/opt/homebrew/bin`. So `bash` must wrap in a login shell to get the user's
+tools, and the other tools must work with the base OS utilities only: `grep`
+and `find` are the primary path, `rg` an optional accelerator (it is not
+installed on a stock Mac). Non-bash tools skip the login profile for latency.
+
+Every path and argument is shell-quoted by the adapter; all tools go through a
+shell string.
 
 **Background jobs** (`bash` with `run_in_background: true`):
 
@@ -192,8 +219,10 @@ mkdir -p ~/.slaude-bg/<session> && cd <cwd> && \
   > ~/.slaude-bg/<session>/<id>.log 2>&1 < /dev/null & echo $!
 ```
 
-`<newpgrp>` is `setsid` on Linux; macOS has no `setsid`, so the spike picks a
-fallback (`perl -e 'setpgrp; exec @ARGV'` or `set -m`). The job survives
+`<newpgrp>` is `setsid` on Linux and `perl -e 'setpgrp(0,0); exec @ARGV'` on
+macOS, which has no `setsid` (spike-verified: own process group, killed by
+`kill -TERM -<pgid>`). Foreground `bash` uses the same wrapper, because
+closing an exec channel without a pty leaves the process running (spike-verified). The job survives
 channel and connection loss. The job registry lives on the remote under
 `~/.slaude-bg/<session>/`, so a restarted helper rebuilds it.
 
@@ -240,8 +269,9 @@ Fix, which also covers `/1on1`'s stale mode block on nodes:
 
 ## 5. Failure modes
 
-**Rule: remote mode never falls back to local tools.** Built-ins are
-disallowed while it is on.
+**Rule: remote mode never falls back to local tools.** Every built-in in the
+aliased set is rerouted, and the `PreToolUse` guard denies any call that
+reaches a local one.
 
 ### 5.1 Table
 
@@ -293,19 +323,25 @@ spike.
 - SSH certificates instead of a long-lived key on nodes.
 - PDF / ipynb over remote.
 
-## 8. Spike (before the implementation plan)
+## 8. Spike results (2026-09-29)
 
-Throwaway; each result can change this spec.
+Throwaway code, run on macOS arm64 against tailcat v0.6.0, SDK 0.3.173, and a
+third-party Anthropic-compatible provider.
 
-1. `toolAliases` routes `Bash` to the MCP tool when `Bash` is disallowed; also
-   observe behaviour with `Bash` enabled plus an alias.
-2. Resume across the flip: a transcript with `Bash` tool_use blocks resumes
-   with `Bash` disallowed, and the reverse, without API errors.
-3. tailcat stdio client subcommand as the `ssh2` `sock`; `serve ssh
-   --ssh-authorized-keys` accepts an ed25519 key.
-4. Latency p50/p95, direct and relayed.
-5. macOS process-group fallback for background and timed-out jobs.
-6. `rg` absence on stock macOS: fallback behaviour of `glob`/`grep`.
+| # | Question | Result |
+|---|---|---|
+| 1 | `toolAliases` routing | Disallowed + alias: the model never emits `Bash` (tool search on → `ToolSearch` loop to max turns; off → calls `mcp__remote__bash` directly). **Enabled + alias: `Bash` routed to the remote handler; local marker never created.** A `PreToolUse` hook sees the post-alias name. → §4.1 changed. |
+| 2 | Resume across the flip | local → remote (disallowed) → local and local → remote (enabled + alias) → local all resumed without API errors. **Provider-specific:** re-check on the Anthropic API during the RC soak. |
+| 3 | Transport | `tailcat <addr> 22` stdio works as the `ssh2` `sock`. Connect ≈ 555 ms once. Stdin writes work. Five parallel `sleep 0.2` finished in 247 ms (channels are concurrent). `--ssh-authorized-keys` accepts a literal ed25519 key. |
+| 4 | Latency | Direct LAN path (ping 0.23 ms): exec p50 21 ms / p95 28 ms; `bash -lc` p50 27 ms — fixed cost, well inside the 150 ms budget. Relayed path **not measured** (tailcat cannot force DERP); expected ≈ 21 ms + 3 × relay RTT. Measure on the RC with a real remote. |
+| 5 | macOS process groups | `perl setpgrp` wrapper gives the job its own group; group kill works. Closing a foreground channel orphaned the process. → §4.3. |
+| 6 | Tooling on a stock Mac | `rg` absent; exec PATH has no `/opt/homebrew/bin`. → `grep`/`find` primary. |
+
+Extra observations folded into the spec: exec runs as `$SHELL -c` in `$HOME`;
+`tailcat genkey` + `--key` gives a stable address; `tailcat ping` reports
+direct vs DERP for `/remote` status. The two background tools (`bash_output`,
+`bash_kill`) are called by their MCP names, so with tool search on they may be
+deferred; the mode block names them explicitly.
 
 ## 9. Testing
 
@@ -321,6 +357,9 @@ Throwaway; each result can change this spec.
 - **Fingerprint reload:** assert the reload count, not only end state.
 - **Key endpoint:** refused on `runAs` mismatch, missing `remote` claim, or
   wrong owner.
+- **No local fallback:** with remote active, an aliased call reaches the
+  remote handler and a direct built-in call is denied by the guard (local
+  marker file never appears) — the spike's check, kept as a regression test.
 - **Gating parity:** iterate every gated built-in name and assert the
   `mcp__remote__*` equivalent is gated identically.
 - **Manual end-to-end** on the RC: real `tailcat serve` on macOS, real Slack
