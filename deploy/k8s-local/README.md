@@ -8,6 +8,7 @@ are referenced, not copied, so what you run locally is what ships.
 ```sh
 deploy/k8s-local/up.sh          # create the cluster, build the image, deploy, wait
 deploy/k8s-local/verify-ha.sh   # prove failover against real Kubernetes and Redis state
+deploy/k8s-local/verify-turns.sh # prove a turn survives losing the node running it
 deploy/k8s-local/down.sh        # delete the cluster (add --purge to drop secrets)
 ```
 
@@ -72,6 +73,29 @@ Crashes use SIGKILL from the container runtime on purpose. `kubectl delete
 --force` still delivers SIGTERM, and a leader that releases its lock on the way
 out says nothing about what happens when a process actually dies.
 
+## What `verify-turns.sh` proves
+
+`verify-ha.sh` proves the infrastructure survives; this proves a **turn** does.
+
+| Check | How |
+|---|---|
+| Turns reach nodes through the real queue | enqueued from inside a gateway pod, with the deployment's own Redis, Postgres and key prefix |
+| A turn survives losing the node running it | SIGKILL the node mid-flight; every turn must still carry a completion marker, with nothing left waiting, active, delayed or failed |
+| A turn is never run twice | the completion marker is per job, so a re-delivered turn cannot be double-counted |
+| Delivery works with a node already down | a second batch, enqueued while one node is gone, must complete on the survivor |
+| One cron occurrence fires once across two gateways | the occurrence is claimed before dispatch, so exactly one turn job exists for it, and the schedule has already moved on |
+
+The turns are **suppressed**: the node runs the whole lifecycle — claim, session
+lock, completion marker, ack — while the prompt hook stops the model. So the
+script needs no model credentials and costs no provider tokens.
+
+Recovery is not instant. A killed node never releases its `lock:session:<id>`,
+so the re-delivered turn waits for that lock's TTL before another node can run
+it. Production defaults to **10 minutes**; this overlay sets
+`SLAUDE_SESSION_LOCK_TTL_MS=45000` so the takeover happens in under a minute and
+the script stays quick. The run prints how long it actually took (50 s on a
+45 s TTL, last measured).
+
 ## What it cannot prove
 
 - **Datastore HA.** Postgres and Redis are single replicas here by design.
@@ -92,8 +116,9 @@ out says nothing about what happens when a process actually dies.
   of `svc/slaude-gateway` and register the app with `bun run slack-app add`.
   Socket Mode is not an option: a gateway refuses to boot on it, because its
   websocket consumer is single-leader and replicas would duplicate responses.
-- **Failover of a turn in flight.** That needs a message source and model
-  credentials; the checks above cover the machinery a turn depends on.
+- **Slack-driven turns.** `verify-turns.sh` drives turns through the queue
+  directly, which is the path a Slack message reaches after the gateway has
+  handled it. The Slack leg itself still needs a tunnel.
 
 ## Troubleshooting
 
