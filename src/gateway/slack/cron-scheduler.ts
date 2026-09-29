@@ -65,17 +65,25 @@ export class CronScheduler {
     const now = Date.now();
     const due = await CronJobs.findDue(now);
     for (const job of due) {
+      // Cheap local short-circuit; the claim below is what holds across replicas.
       if (this.#running.has(job.id)) continue;
+      // Claim the occurrence BEFORE dispatching it. Advancing the schedule only
+      // at completion left the row due for the whole turn, so a leader dying
+      // mid-turn handed the same occurrence to its successor. Exactly one
+      // claimer wins the compare-and-set.
+      const claimed = getNextRun(job.cronExpr);
+      if (!(await CronJobs.claimDue(job.id, job.nextRunAt, claimed))) continue;
       this.#running.add(job.id);
-      void this.#execute(job);
+      void this.#execute(job, claimed);
     }
   }
 
-  async #execute(job: CronJobs.CronJob): Promise<void> {
+  /** `claimedNextRun` is the schedule this run already advanced the row to. */
+  async #execute(job: CronJobs.CronJob, claimedNextRun: number): Promise<void> {
     // Legacy jobs without real Slack keys can't post — skip and mark error.
     if (!job.slackTeamId || !job.slackChannelId) {
       console.error(`[cron] job ${job.id} missing Slack keys (legacy job) — skipping`);
-      await CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), "error: missing Slack keys");
+      await CronJobs.recordRun(job.id, "error: missing Slack keys");
       this.#running.delete(job.id);
       return;
     }
@@ -108,7 +116,7 @@ export class CronScheduler {
     const live = this.#isLive ? await this.#isLive(session.id) : this.#agent.isLive(session.id);
     if (job.whenActive === "skip" && live) {
       console.log(`[cron] job ${job.id} skipped — session ${session.id} is live (when_active=skip)`);
-      await CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), "skipped: session live");
+      await CronJobs.recordRun(job.id, "skipped: session live");
       this.#running.delete(job.id);
       return;
     }
@@ -123,15 +131,13 @@ export class CronScheduler {
     const onDone = async (e: any) => {
       if (e.sessionId !== session.id) return;
       this.#agent.off("event", onEvent);
-      const nextRun = getNextRun(job.cronExpr);
-      await CronJobs.updateNextRun(job.id, nextRun, "completed");
+      await CronJobs.recordRun(job.id, "completed");
       this.#running.delete(job.id);
     };
     const onError = async (e: any) => {
       if (e.sessionId !== session.id) return;
       this.#agent.off("event", onEvent);
-      const nextRun = getNextRun(job.cronExpr);
-      await CronJobs.updateNextRun(job.id, nextRun, `error: ${e.error ?? "unknown"}`);
+      await CronJobs.recordRun(job.id, `error: ${e.error ?? "unknown"}`);
       this.#running.delete(job.id);
     };
     const onEvent = (e: any) => {
@@ -146,7 +152,10 @@ export class CronScheduler {
     } catch (e: any) {
       console.error(`[cron] job ${job.id} failed to send:`, e?.message ?? e);
       this.#agent.off("event", onEvent);
-      await CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), `error: ${e?.message ?? "unknown"}`);
+      await CronJobs.recordRun(job.id, `error: ${e?.message ?? "unknown"}`);
+      // Nothing was dispatched, so give the occurrence back rather than drop
+      // it. Once a turn IS enqueued the queue owns its redelivery.
+      await CronJobs.releaseClaim(job.id, claimedNextRun, job.nextRunAt);
       this.#running.delete(job.id);
     }
   }
