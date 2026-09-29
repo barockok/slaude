@@ -11,7 +11,7 @@ import type { SessionRow } from "../../../src/db/schema";
  */
 function harness() {
   const enqueued: any[] = [];
-  const dispatch = makeQueueDispatch({ emit: () => false } as any, {
+  const dispatch = makeQueueDispatch({ emit: () => false, resolveEffectiveIdentity: async () => undefined } as any, {
     infra: {
       turns: {
         enqueueTurn: async (job: any) => {

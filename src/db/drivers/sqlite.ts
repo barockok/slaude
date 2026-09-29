@@ -131,6 +131,22 @@ CREATE TABLE IF NOT EXISTS slack_identities (
 CREATE INDEX IF NOT EXISTS idx_slack_identities_account
   ON slack_identities (account_id);
 
+-- Gateway-owned MCP credentials, one owner per row (see 0008_mcp_credentials.sql).
+CREATE TABLE IF NOT EXISTS mcp_credentials (
+  id            TEXT    PRIMARY KEY,
+  account_id    TEXT    REFERENCES accounts (id) ON DELETE CASCADE,
+  agent_tenant  TEXT,
+  agent_persona TEXT,
+  server_key    TEXT    NOT NULL,
+  payload       TEXT    NOT NULL,
+  expires_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  CHECK ((account_id IS NOT NULL) <> (agent_tenant IS NOT NULL)),
+  CHECK ((agent_tenant IS NULL) = (agent_persona IS NULL)),
+  UNIQUE (account_id, server_key),
+  UNIQUE (agent_tenant, agent_persona, server_key)
+);
+
 CREATE TABLE IF NOT EXISTS mention_only_threads (
   channel_id TEXT    NOT NULL,
   thread_ts  TEXT    NOT NULL,

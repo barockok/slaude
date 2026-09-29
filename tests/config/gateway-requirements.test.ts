@@ -28,6 +28,7 @@ const server: GatewayRequirementsInput = {
   brainEnabled: true,
   brainMode: "local",
   brainEngine: () => "postgres",
+  masterKey: () => {},
 };
 
 describe("gatewayRequirementViolations: storage", () => {
@@ -46,6 +47,7 @@ describe("gatewayRequirementViolations: storage", () => {
       brainEnabled: true,
       brainMode: "local" as const,
       brainEngine: () => "pglite",
+      masterKey: () => { throw new Error("SLAUDE_MASTER_KEY is not set"); },
     };
     expect(gatewayRequirementViolations({ ...embedded, role: "mono" })).toEqual([]);
     expect(gatewayRequirementViolations({ ...embedded, role: "node" })).toEqual([]);
@@ -152,5 +154,26 @@ describe("assertGatewayRequirements", () => {
     expect(message).toContain("SLAUDE_PG_URL");
     expect(message).toContain("SLAUDE_BRAIN_ENGINE=postgres");
     expect(message).toContain("SLAUDE_SLACK_MODE=http");
+  });
+});
+
+// The gateway keeps every MCP credential in its store, encrypted under
+// SLAUDE_MASTER_KEY. Without the key it could accept an /mcp connect and then
+// fail to store it; refusing at boot makes that a configuration error, not a
+// surprise at the first connect.
+describe("gatewayRequirementViolations: credential encryption", () => {
+  test("a gateway without a usable master key refuses to start", () => {
+    const v = gatewayRequirementViolations({
+      ...server,
+      masterKey: () => { throw new Error("SLAUDE_MASTER_KEY is not set (32 random bytes, base64)"); },
+    });
+    expect(v).toHaveLength(1);
+    expect(v[0]).toContain("SLAUDE_MASTER_KEY");
+  });
+
+  test("mono and node do not need one", () => {
+    const noKey = { ...server, masterKey: () => { throw new Error("SLAUDE_MASTER_KEY is not set"); } };
+    expect(gatewayRequirementViolations({ ...noKey, role: "mono" })).toEqual([]);
+    expect(gatewayRequirementViolations({ ...noKey, role: "node" })).toEqual([]);
   });
 });

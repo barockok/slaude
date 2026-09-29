@@ -9,6 +9,7 @@
  *     4xx (those are contract violations or auth failures — retrying lies).
  *   - ETag cache for the tenant runtime bundle (If-None-Match / 304).
  */
+import type { NodeCredential } from "../gateway/api/mcp-credentials";
 import { JOB_HEADER } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
 
@@ -164,6 +165,43 @@ export class NodeClient {
     const etag = res.headers.get("etag");
     if (etag) this.#runtimeCache.set(key, { etag, bundle });
     return bundle;
+  }
+
+  /**
+   * The MCP access tokens for this turn's owner. The gateway decides the owner
+   * from the job token's signed runAs claim; nothing here names one.
+   *
+   * Deliberately uncached, unlike the runtime bundle: a credential that changed
+   * is exactly what must not be served stale.
+   */
+  async getMcpCredentials(tenantId: string, jobToken: string): Promise<Record<string, NodeCredential>> {
+    const res = await this.request(`/v1/tenants/${encodeURIComponent(tenantId)}/mcp-credentials`, { jobToken });
+    const body = await this.#json<{ entries?: Record<string, NodeCredential> }>(res);
+    return body.entries ?? {};
+  }
+
+  /**
+   * Ask the gateway to refresh one server's credential for this turn's owner.
+   * Sends the server key and a SHA-256 of the token that failed, never a token.
+   * Returns the new access-token projection; "reconnect" when the grant is
+   * unusable and the owner must reconnect (409); null when the gateway knows no
+   * such credential (404). A transient failure throws.
+   */
+  async refreshMcpCredential(
+    tenantId: string,
+    jobToken: string,
+    serverKey: string,
+    failedAccessTokenHash: string,
+  ): Promise<NodeCredential | "reconnect" | null> {
+    const res = await this.request(`/v1/tenants/${encodeURIComponent(tenantId)}/mcp-credentials/refresh`, {
+      method: "POST",
+      body: { serverKey, failedAccessTokenHash },
+      jobToken,
+    });
+    if (res.status === 409) return "reconnect";
+    if (res.status === 404) return null;
+    const body = await this.#json<{ entry: NodeCredential }>(res);
+    return body.entry;
   }
 
   /** Drop a cached bundle. Omitting the persona drops every persona of that

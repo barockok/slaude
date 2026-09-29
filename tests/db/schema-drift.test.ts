@@ -29,7 +29,10 @@ const PG_ONLY_TABLES = new Set([
 // binding row already carries team_id, which IS the workspace dimension, so a
 // tenant_id beside it would be a second copy of the same fact and a fresh
 // source of drift.
-const NO_TENANT_TABLES = new Set(["pending_gates", "seen_events", "accounts", "slack_identities"]);
+// mcp_credentials joins for the same reason in both of its owner kinds: a
+// person's row reaches tenancy through accounts, which is deployment-global,
+// and an agent's row already carries its tenant explicitly in agent_tenant.
+const NO_TENANT_TABLES = new Set(["pending_gates", "seen_events", "accounts", "slack_identities", "mcp_credentials"]);
 
 // Tables that exist only on sqlite (legacy; dropped from the pg schema).
 const SQLITE_ONLY_TABLES = new Set(["skill_usage"]);

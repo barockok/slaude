@@ -1,3 +1,4 @@
+import { masterKey } from "./db/crypto";
 import { ensureHome } from "./config/home";
 import { seedBundledSkills } from "./skills/seed";
 import { AgentManager } from "./agent/manager";
@@ -35,6 +36,7 @@ async function main() {
     brainEnabled: brainEnabled(),
     brainMode: brainMode(),
     brainEngine: () => brainEngineConfig().engine,
+    masterKey: () => { masterKey(); },
   });
 
   // Open the DB first: on Postgres this applies pending migrations (unless

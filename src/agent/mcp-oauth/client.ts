@@ -90,6 +90,7 @@ export async function prepareConnect(opts: PrepareConnectOpts): Promise<Prepared
       clientSecret: client.clientSecret,
       accessToken: j.access_token,
       refreshToken: j.refresh_token,
+      tokenEndpoint: opts.meta.tokenEndpoint,
       expiresIn: j.expires_in,
     };
   }
@@ -155,6 +156,7 @@ export async function beginConnect(opts: BeginConnectOpts): Promise<ConnectHandl
       clientSecret: client.clientSecret,
       accessToken: j.access_token,
       refreshToken: j.refresh_token,
+      tokenEndpoint: opts.meta.tokenEndpoint,
       expiresIn: j.expires_in,
     };
   }

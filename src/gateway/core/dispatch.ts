@@ -16,6 +16,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentManager, AgentEvent } from "../../agent/manager";
 import type { SessionRow } from "../../db/schema";
+import { encodeRunAs } from "../../agent/credential-owner";
 import { mintJobToken } from "../api/auth";
 import { makeKeys, type Keys } from "../../queue/keys";
 import { getRedis, getSubRedis } from "../../queue/redis";
@@ -227,6 +228,12 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       // it rides on — /v1/jobs/:id/token-refresh binds on it. On coalesce the
       // messages join an EXISTING job which keeps its own (matching) token.
       const jobId = randomUUID();
+      // Whose credentials this turn gets, decided here and nowhere else, by the
+      // same rule the node uses for its config directory. A cron job's carried
+      // identity wins: it keys on a synthetic thread with no lock of its own.
+      // A failed lookup throws rather than defaulting to the agent, because
+      // defaulting would run a 1:1 turn with the agent's shared credentials.
+      const runAsUser = meta.oauthUser ?? (await agent.resolveEffectiveIdentity(session.id, meta.channelId, meta.threadTs));
       const jobToken = mintJobToken({
         tenant: tenantId,
         persona: personaId,
@@ -237,6 +244,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
         initiator: meta.userId,
         scope: "turn",
         job: jobId,
+        runAs: encodeRunAs(runAsUser),
       });
       // Routing (spec §2): warm + fresh → the holding node's queue; anything
       // else → shared. A node receiving a per-node job it no longer holds

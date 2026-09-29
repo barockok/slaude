@@ -77,7 +77,7 @@ describe("dispatch follower cursor", () => {
   let dispatch: ReturnType<typeof makeQueueDispatch>;
 
   const build = (infra: ReturnType<typeof fakeInfra>) =>
-    makeQueueDispatch({ emit: (_: string, e: unknown) => (events.push(e), true) } as any, {
+    makeQueueDispatch({ emit: (_: string, e: unknown) => (events.push(e), true), resolveEffectiveIdentity: async () => undefined } as any, {
       infra: infra as any,
       followPollMs: 5,
       followLingerMs: 30,

@@ -14,7 +14,7 @@
  * initiator's tokens instead of the agent's. Unlocked sessions inherit the
  * agent's config dir unchanged.
  */
-import { mkdirSync, existsSync, lstatSync, readlinkSync, unlinkSync, copyFileSync, symlinkSync } from "node:fs";
+import { mkdirSync, existsSync, lstatSync, readlinkSync, unlinkSync, copyFileSync, symlinkSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { paths } from "../config/home";
@@ -87,27 +87,39 @@ export function ensureInitiatorConfigDir(userId: string, personaName?: string): 
   const persona = personaName && personaName !== "default" ? personaName : null;
   const base = persona ? ensurePersonaConfigDir(persona) : agentConfigDir();
   const dir = initiatorConfigDir(userId, persona ?? undefined);
-  mkdirSync(dir, { recursive: true });
+  prepareConfigHome(dir, base);
+  return dir;
+}
 
+/**
+ * Make `dir` a usable CLAUDE_CONFIG_DIR that shares everything with `base`
+ * except its credentials: settings copied once, plugins linked read-only, and
+ * projects/ linked to base's transcript tree. Shared by per-initiator homes and
+ * a node's pod-local session homes.
+ *
+ * projects/ is a symlink because the CLI keys transcripts off CLAUDE_CONFIG_DIR:
+ * without it a /1on1 lock (or unlock), or a session landing on another node,
+ * would flip the config dir and `resume` would search the wrong home — cold
+ * start at lock, stale pre-lock context at unlock. Isolation is for credential
+ * stores only; within a persona, transcripts stay in its one tree. Created even
+ * when base has no projects/ yet, so the CLI never writes transcripts into dir.
+ * A pre-existing real projects/ dir is left as-is (a legacy home with
+ * transcripts inside — replacing it would orphan them). A symlink pointing at
+ * the wrong target is re-created.
+ */
+export function prepareConfigHome(dir: string, base: string, mode?: number): void {
+  mkdirSync(dir, { recursive: true });
+  // mkdir's mode applies only on creation and is masked by umask; set it
+  // explicitly so an existing directory is tightened too.
+  if (mode !== undefined) chmodSync(dir, mode);
   seedConfigDir(dir, base);
 
-  // projects/ — symlink to the base transcript home (persona home for a named
-  // persona, else the global agent home). The CLI keys transcripts off
-  // CLAUDE_CONFIG_DIR, so without this a /1on1 lock (or unlock) flips the config
-  // dir and `resume` searches the wrong home: cold start at lock, stale pre-lock
-  // context at unlock. Isolation is for credential stores only — within a persona,
-  // its 1on1 transcripts must stay in the persona's one transcript tree. Created
-  // even when the base has no projects/ yet, so the CLI never writes transcripts
-  // into the initiator dir. A pre-existing real projects/ dir is left as-is.
   const srcProjects = join(base, "projects");
   const dstProjects = join(dir, "projects");
-  // Determine whether we need to (re)create the symlink.
-  // Skip if it's already a correct symlink; skip if it's a real dir (legacy
-  // initiator home with transcripts inside — replacing it would orphan them).
-  // Re-create if it's a symlink pointing at the wrong target (stale from before
-  // agentConfigDir() was fixed to return ~/.claude instead of paths.claudeConfig).
   let needsLink = false;
   if (!existsSync(dstProjects)) {
+    // existsSync follows links: a dangling link reads as absent. Clear it first.
+    try { if (lstatSync(dstProjects).isSymbolicLink()) unlinkSync(dstProjects); } catch { /* absent */ }
     needsLink = true;
   } else {
     try {
@@ -124,7 +136,6 @@ export function ensureInitiatorConfigDir(userId: string, personaName?: string): 
       symlinkSync(srcProjects, dstProjects, "dir");
     } catch { /* best-effort */ }
   }
-  return dir;
 }
 
 let warnedMacKeychain = false;
