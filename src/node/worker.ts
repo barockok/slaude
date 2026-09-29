@@ -172,6 +172,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // from the job token's runAs). Outside the node role — the simulator and the
   // in-process integration harness — a per-process temp root stands in for the
   // pod's emptyDir.
+  const sessionLockOpts = env.sessionLock();
   const configRoot = opts.configRoot ?? nodeConfigRoot() ?? mkdtempSync(join(tmpdir(), `slaude-node-${nodeId}-`));
   const seeder = makeSessionSeeder({
     fetch: (tenant, token) => client.getMcpCredentials(tenant, token),
@@ -375,7 +376,9 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           lostLock.removeEventListener("abort", onLost);
         }
       },
-      { redis: cmd, keys, ...opts.lock },
+      // The TTL is also the takeover delay when this node dies: it never gets to
+      // release the lock, so the re-delivered turn waits the lock out.
+      { redis: cmd, keys, ...sessionLockOpts, ...opts.lock },
     );
 
     if (res === HELD_BY_OTHER) {

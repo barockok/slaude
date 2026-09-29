@@ -57,6 +57,12 @@ patches:
       data:
         SLAUDE_NODE_CONCURRENCY: "2"
         SLAUDE_NODE_DRAIN_SEC: "30"
+        # Takeover after a node dies is bounded by the session-lock TTL: the
+        # dead node never releases it. Production defaults to 10 minutes, which
+        # tolerates a long stall inside a live node. Locally the short TTL keeps
+        # verify-turns.sh quick, and makes the takeover visible in seconds.
+        SLAUDE_SESSION_LOCK_TTL_MS: "45000"
+        SLAUDE_SESSION_LOCK_EXTEND_MS: "5000"
 
   - patch: |-
       apiVersion: v1
