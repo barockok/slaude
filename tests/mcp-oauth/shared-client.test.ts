@@ -100,7 +100,10 @@ describe("beginConnectShared", () => {
       serverConfig: { type: "http", url: "https://mcp.example.com/sse" },
       meta: META, loopback: lb, fetchImpl: failFetch,
     });
-    await expect(h.exchange("bad")).rejects.toThrow(/token exchange failed.*invalid_grant/i);
+    // The status, not the provider's body: this message is posted into the
+    // Slack thread on a failed connect (see tests/mcp-oauth/exchange-errors).
+    await expect(h.exchange("bad")).rejects.toThrow(/token exchange failed \(status 400\)/i);
+    await expect(h.exchange("bad")).rejects.not.toThrow(/invalid_grant/i);
   });
 
   test("rejects metadata without a registration endpoint", async () => {
