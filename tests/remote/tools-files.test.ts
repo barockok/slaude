@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, readFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ReadState, readTool, writeTool, editTool, resolveRemotePath } from "../../src/remote/tools/files";
+import { MTIME } from "../../src/remote/shell";
 import { localExec } from "./local-exec";
 
 let root: string;
@@ -122,5 +123,69 @@ describe("edit", () => {
     await editTool(ctx, { file_path: "c.ts", old_string: "a = 1", new_string: "a = 2" });
     const r = await editTool(ctx, { file_path: "c.ts", old_string: "b = 1", new_string: "b = 2" });
     expect(r.isError).toBeFalsy();
+  });
+  it("refuses when the file changed after the read (user edited it)", async () => {
+    await readTool(ctx, { file_path: "c.ts" });
+    writeFileSync(join(root, "c.ts"), "user change a = 1\n");
+    utimesSync(join(root, "c.ts"), new Date(), new Date(Date.now() + 5000));
+    const r = await editTool(ctx, { file_path: "c.ts", old_string: "a = 1", new_string: "a = 2" });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toContain("modified since read");
+    expect(readFileSync(join(root, "c.ts"), "utf8")).toBe("user change a = 1\n");
+  });
+  it("refuses a file that is not valid UTF-8 and leaves its bytes unchanged", async () => {
+    const bytes = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x20, 0x61, 0x0a]); // latin1 "caf\xe9 a\n"
+    writeFileSync(join(root, "l.txt"), bytes);
+    await readTool(ctx, { file_path: "l.txt" });
+    const r = await editTool(ctx, { file_path: "l.txt", old_string: "a", new_string: "b" });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toContain("not valid UTF-8");
+    expect(Buffer.compare(readFileSync(join(root, "l.txt")), bytes)).toBe(0);
+  });
+  it("edits valid non-ASCII UTF-8 and preserves the characters", async () => {
+    writeFileSync(join(root, "u.txt"), "café € one\n");
+    await readTool(ctx, { file_path: "u.txt" });
+    const r = await editTool(ctx, { file_path: "u.txt", old_string: "one", new_string: "two" });
+    expect(r.isError).toBeFalsy();
+    expect(readFileSync(join(root, "u.txt"), "utf8")).toBe("café € two\n");
+  });
+});
+
+describe("fail closed without an mtime (no perl / stat failure)", () => {
+  // Simulates a host where the mtime probe prints nothing.
+  const noMtime: typeof localExec = (cmd, opts) => localExec(cmd.split(MTIME).join(":"), opts);
+  it("read errors and records no state", async () => {
+    writeFileSync(join(root, "e.txt"), "old");
+    const bad = { ...ctx, exec: noMtime };
+    const r = await readTool(bad, { file_path: "e.txt" });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toContain("modification time");
+    expect(bad.state.get(join(root, "e.txt"))).toBeUndefined();
+  });
+  it("image read errors too", async () => {
+    writeFileSync(join(root, "p.png"), Buffer.from([0x89, 0x50]));
+    const r = await readTool({ ...ctx, exec: noMtime }, { file_path: "p.png" });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toContain("modification time");
+  });
+  it("write of an existing unread file fails closed and leaves it unchanged", async () => {
+    writeFileSync(join(root, "e.txt"), "old");
+    const r = await writeTool({ ...ctx, exec: noMtime }, { file_path: "e.txt", content: "new" });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toContain("modification time");
+    expect(readFileSync(join(root, "e.txt"), "utf8")).toBe("old");
+  });
+  it("write of a new file still works", async () => {
+    const r = await writeTool({ ...ctx, exec: noMtime }, { file_path: "fresh.txt", content: "hi" });
+    expect(r.isError).toBeFalsy();
+    expect(readFileSync(join(root, "fresh.txt"), "utf8")).toBe("hi");
+  });
+  it("edit errors when the mtime is empty", async () => {
+    writeFileSync(join(root, "c.ts"), "const a = 1;\n");
+    ctx.state.set(join(root, "c.ts"), "");
+    const r = await editTool({ ...ctx, exec: noMtime }, { file_path: "c.ts", old_string: "a = 1", new_string: "a = 2" });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toContain("modification time");
+    expect(readFileSync(join(root, "c.ts"), "utf8")).toBe("const a = 1;\n");
   });
 });

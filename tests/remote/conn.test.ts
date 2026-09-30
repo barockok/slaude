@@ -53,6 +53,16 @@ describe("RemoteConn", () => {
     c.close();
   });
 
+  it("decodes multibyte characters split across chunks without U+FFFD", async () => {
+    const c = mk();
+    // 300 KB of a 3-byte character: chunk boundaries cannot all fall on character boundaries.
+    const r = await c.exec(`perl -e 'print "\\xe2\\x82\\xac" x 100000; print STDERR "\\xe2\\x82\\xac" x 100000'`, { timeoutMs: 10000, maxOutput: 10_000_000 });
+    expect(r.truncated).toBe(false);
+    expect(r.stdout).toBe("€".repeat(100000));
+    expect(r.stderr).toBe("€".repeat(100000));
+    c.close();
+  });
+
   it("on timeout kills the whole process group (no orphan) and marks timedOut", async () => {
     const c = mk();
     const tag = `slaude-orphan-${process.pid}-${Date.now()}`;

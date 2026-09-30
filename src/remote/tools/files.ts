@@ -39,8 +39,10 @@ const ext = (p: string) => (p.split(".").pop() ?? "").toLowerCase();
 
 /** `P=...; exists/dir checks; print mtime then a newline, then <body>`. Missing → exit 2 + marker. */
 function withFile(path: string, body: string): string {
-  return `P=${shq(path)}; if [ ! -e "$P" ]; then echo __ENOENT__ >&2; exit 2; fi; if [ -d "$P" ]; then echo __EISDIR__ >&2; exit 2; fi; ${MTIME} "$P"; printf '\\n'; ${body}`;
+  return `P=${shq(path)}; if [ ! -e "$P" ]; then echo __ENOENT__ >&2; exit 2; fi; if [ -d "$P" ]; then echo __EISDIR__ >&2; exit 2; fi; M=$(${MTIME} "$P"); if [ -z "$M" ]; then echo __NOMTIME__ >&2; exit 4; fi; printf '%s\\n' "$M"; ${body}`;
 }
+
+const NO_MTIME = "Could not read the file's modification time on the remote machine (is perl installed?), so it cannot be edited safely.";
 
 function splitMtime(stdout: string): { mtime: string; body: string } {
   const i = stdout.indexOf("\n");
@@ -50,6 +52,7 @@ function splitMtime(stdout: string): { mtime: string; body: string } {
 function fileError(path: string, stderr: string): string {
   if (stderr.includes("__ENOENT__")) return `File does not exist: ${path}`;
   if (stderr.includes("__EISDIR__")) return `${path} is a directory, not a file`;
+  if (stderr.includes("__NOMTIME__")) return NO_MTIME;
   return stderr.trim() || "remote command failed";
 }
 
@@ -83,7 +86,7 @@ export async function readTool(ctx: FileCtx, i: { file_path: string; offset?: nu
 
 /** Write guarded by the mtime seen at read time: "" = must not exist. Prints the new mtime. */
 function guardedWrite(path: string, expected: string): string {
-  return `P=${shq(path)}; EXP=${shq(expected)}; if [ -e "$P" ]; then M=$(${MTIME} "$P"); [ "$M" = "$EXP" ] || { echo __STALE__ >&2; exit 3; }; fi; mkdir -p "$(dirname "$P")" && cat > "$P" && ${MTIME} "$P"`;
+  return `P=${shq(path)}; EXP=${shq(expected)}; if [ -e "$P" ]; then M=$(${MTIME} "$P"); [ -n "$M" ] || { echo __NOMTIME__ >&2; exit 4; }; [ "$M" = "$EXP" ] || { echo __STALE__ >&2; exit 3; }; fi; mkdir -p "$(dirname "$P")" && cat > "$P" && ${MTIME} "$P"`;
 }
 
 function staleMessage(neverRead: boolean): string {
@@ -98,6 +101,7 @@ export async function writeTool(ctx: FileCtx, i: { file_path: string; content: s
   const seen = ctx.state.get(path);
   const r = await ctx.exec(guardedWrite(path, seen ?? ""), { stdin: i.content, timeoutMs: IO_TIMEOUT });
   if (r.stderr.includes("__STALE__")) return fail(staleMessage(seen === undefined));
+  if (r.stderr.includes("__NOMTIME__")) return fail(NO_MTIME);
   if (r.code !== 0) return fail(r.stderr.trim() || "write failed");
   ctx.state.set(path, r.stdout.trim());
   return ok(`File ${seen === undefined ? "created" : "updated"} successfully at: ${path}`);
@@ -117,6 +121,9 @@ export async function editTool(
   if (r.truncated) return fail(`${i.file_path} is too large to edit in remote mode.`);
   const { mtime, body } = splitMtime(r.stdout);
   if (mtime !== seen) return fail(staleMessage(false));
+  if (body.includes("�")) {
+    return fail(`${i.file_path} is not valid UTF-8, so it can't be edited safely here; edit it with a shell command instead.`);
+  }
   const count = i.old_string === "" ? 0 : body.split(i.old_string).length - 1;
   if (count === 0) return fail(`String to replace not found in file.\nString: ${i.old_string}`);
   if (count > 1 && !i.replace_all) {
@@ -125,6 +132,7 @@ export async function editTool(
   const next = i.replace_all ? body.split(i.old_string).join(i.new_string) : body.replace(i.old_string, () => i.new_string);
   const w = await ctx.exec(guardedWrite(path, mtime), { stdin: next, timeoutMs: IO_TIMEOUT });
   if (w.stderr.includes("__STALE__")) return fail(staleMessage(false));
+  if (w.stderr.includes("__NOMTIME__")) return fail(NO_MTIME);
   if (w.code !== 0) return fail(w.stderr.trim() || "edit failed");
   ctx.state.set(path, w.stdout.trim());
   return ok(`The file ${path} has been updated.`);

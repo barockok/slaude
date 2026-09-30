@@ -1,5 +1,6 @@
 import { Client, type ClientChannel } from "ssh2";
 import type { Duplex } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import { PGRP_MARKER, wrapCommand } from "./shell";
 import { RemoteError, type ExecOpts, type ExecResult } from "./types";
 
@@ -232,9 +233,12 @@ export class RemoteConn {
             if (pre) errOut.push(pre);
             pre = null;
           };
-          channel.on("data", (d: Buffer) => out.push(d.toString("utf8")));
+          // Per-stream decoders: a multibyte character split across chunks must not become U+FFFD.
+          const outDec = new StringDecoder("utf8");
+          const errDec = new StringDecoder("utf8");
+          channel.on("data", (d: Buffer) => out.push(outDec.write(d)));
           channel.stderr.on("data", (d: Buffer) => {
-            const s = d.toString("utf8");
+            const s = errDec.write(d);
             if (pre === null) return errOut.push(s);
             pre += s;
             const m = pre.match(MARKER_RE);
@@ -251,6 +255,10 @@ export class RemoteConn {
           let exited = false;
           channel.on("exit", (c: number | null) => { exited = true; code = typeof c === "number" ? c : null; });
           const finish = () => done(() => {
+            const outTail = outDec.end();
+            if (outTail) out.push(outTail);
+            const errTail = errDec.end();
+            if (errTail) { if (pre === null) errOut.push(errTail); else pre += errTail; }
             flushPre();
             const note = timedOut ? `\n[timed out after ${opts.timeoutMs}ms; process group killed]` : "";
             resolve({
