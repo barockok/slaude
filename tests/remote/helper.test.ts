@@ -57,6 +57,29 @@ describe("HelperClient", () => {
     await h.dispose();
   });
 
+  it("a late exit of a released helper does not fail the new helper's exec", async () => {
+    const h = mk();
+    await h.exec("true", { timeoutMs: 5000 });
+    const old = h.__childForTests()!;
+    const oldExit = new Promise((r) => old.once("exit", r));
+    await h.release();
+    const next = h.exec("echo fresh", { timeoutMs: 5000 });
+    await oldExit;
+    expect((await next).stdout).toBe("fresh\n");
+    await h.dispose();
+  });
+
+  it("exec racing release rejects with a typed error and leaks no pending entry", async () => {
+    const h = mk();
+    const p = h.exec("true", { timeoutMs: 5000 });
+    const seen = p.then(() => null, (e) => e);
+    await h.release();
+    const err = await seen;
+    expect(err).toMatchObject({ name: "RemoteError", code: "REMOTE_UNREACHABLE", started: false });
+    expect(h.__pendingCountForTests()).toBe(0);
+    await h.dispose();
+  });
+
   it("release stops the helper without cleanup; the next exec respawns it", async () => {
     let cleaned = 0;
     const h = new HelperClient({
