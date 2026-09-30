@@ -1,6 +1,9 @@
 import { describe, it, expect } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { shq, wrapCommand, isTailcatAddr, isRemoteDir, sanitizeKey, PGRP_MARKER } from "../../src/remote/shell";
+import { shq, wrapCommand, isTailcatAddr, isRemoteDir, sanitizeKey, PGRP_MARKER, MTIME } from "../../src/remote/shell";
+import { mkdtempSync, writeFileSync, utimesSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { sessionConfigFp } from "../../src/remote/fingerprint";
 
 const sh = (cmd: string) => spawnSync("/bin/sh", ["-c", cmd], { encoding: "utf8" });
@@ -11,6 +14,23 @@ describe("shq", () => {
       expect(sh(`printf %s ${shq(s)}`).stdout).toBe(s);
     });
   }
+});
+
+describe("MTIME", () => {
+  it("prints a stable sub-second mtime that changes when the file's mtime does", () => {
+    const dir = mkdtempSync(join(tmpdir(), "slaude-mtime-"));
+    const f = join(dir, "f.txt");
+    writeFileSync(f, "x");
+    utimesSync(f, 1_700_000_000.25, 1_700_000_000.25);
+    const a = sh(`${MTIME} ${shq(f)}`).stdout;
+    expect(a).toBe(sh(`${MTIME} ${shq(f)}`).stdout);
+    expect(a).toBe("1700000000.25");
+    utimesSync(f, 1_700_000_000.5, 1_700_000_000.5);
+    expect(sh(`${MTIME} ${shq(f)}`).stdout).toBe("1700000000.5");
+  });
+  it("prints nothing for a missing file", () => {
+    expect(sh(`${MTIME} ${shq("/nonexistent/slaude-x")}`).stdout).toBe("");
+  });
 });
 
 describe("wrapCommand", () => {
