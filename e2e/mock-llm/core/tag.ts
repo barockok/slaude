@@ -14,7 +14,10 @@ export function parseTag(text: string): Tag | null {
   return m ? toTag(m[1]!, m[2] ?? "") : null;
 }
 
-/** Last tag in free text. Raw request bodies carry one tag per turn. */
+/**
+ * Last tag in free text. A resumed thread's raw body carries every earlier turn's tag, so
+ * use findTag on the parsed messages; this is only the fallback for an unparseable body.
+ */
 export function lastTagIn(text: string): Tag | null {
   let last: Tag | null = null;
   for (const m of text.matchAll(new RegExp(TAG_SRC, "g"))) last = toTag(m[1]!, m[2] ?? "");

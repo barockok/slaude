@@ -6,8 +6,8 @@ import type { FixtureResponse } from "@copilotkit/aimock";
 import { errorBody, planFaults } from "./core/faults";
 import type { FaultPlan } from "./core/faults";
 import { resolveReply } from "./core/registry";
-import { lastTagIn } from "./core/tag";
-import type { MockReply, MockRequest } from "./core/types";
+import { findTag, lastTagIn } from "./core/tag";
+import type { MockMessage, MockReply, MockRequest, Tag } from "./core/types";
 
 interface JournalRow {
   ts: number;
@@ -65,31 +65,31 @@ async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<stri
 
 const HOP_HEADERS = new Set(["content-length", "content-encoding", "transfer-encoding", "connection", "keep-alive"]);
 
-function hash(body: string): string {
-  let messages: unknown = body;
-  try {
-    messages = (JSON.parse(body) as { messages?: unknown }).messages ?? body;
-  } catch {}
-  return createHash("sha256").update(JSON.stringify(messages)).digest("hex").slice(0, 16);
+interface ParsedBody {
+  system?: unknown;
+  messages?: unknown;
 }
 
-/** Attempt-counter key: the system prompt plus the history, so each persona counts on its own. */
-function attemptKey(body: string): string {
-  let basis: unknown = body;
+/** Parse once; null when the body is not a JSON object. */
+function parseBody(text: string): ParsedBody | null {
   try {
-    const b = JSON.parse(body) as { system?: unknown; messages?: unknown };
-    basis = { system: b.system ?? null, messages: b.messages ?? null };
-  } catch {}
-  return createHash("sha256").update(JSON.stringify(basis)).digest("hex").slice(0, 16);
-}
-
-function messageCount(body: string): number {
-  try {
-    const m = (JSON.parse(body) as { messages?: unknown }).messages;
-    return Array.isArray(m) ? m.length : 0;
+    const v: unknown = JSON.parse(text);
+    return v && typeof v === "object" ? (v as ParsedBody) : null;
   } catch {
-    return 0;
+    return null;
   }
+}
+
+function sha(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
+}
+
+/** The one tag for a request: the same one aimock-side scenarios see (findTag on the messages). */
+function tagOf(parsed: ParsedBody | null, text: string): Tag | null {
+  if (!parsed) return lastTagIn(text);
+  if (!Array.isArray(parsed.messages)) return null;
+  const messages = parsed.messages.filter((m): m is MockMessage => !!m && typeof m === "object");
+  return findTag({ messages })?.tag ?? null;
 }
 
 export async function startServer(port: number): Promise<{ port: number; stop(): Promise<void> }> {
@@ -170,10 +170,12 @@ export async function startServer(port: number): Promise<{ port: number; stop():
       return;
     }
     const text = body.toString("utf8");
-    const tag = lastTagIn(text);
+    const parsed = parseBody(text);
+    const tag = tagOf(parsed, text);
     const clientRetryCount = Number.parseInt(String(req.headers["x-stainless-retry-count"] ?? "0"), 10) || 0;
-    const historyHash = hash(text);
-    const key = attemptKey(text);
+    const historyHash = sha(parsed ? (parsed.messages ?? text) : text);
+    // Attempt-counter key: system prompt plus history, so each persona counts on its own.
+    const key = sha(parsed ? { system: parsed.system ?? null, messages: parsed.messages ?? null } : text);
     const retryCount = attempts.get(key) ?? 0;
     const plan = planFaults(tag, retryCount);
     attempts.delete(key);
@@ -187,7 +189,7 @@ export async function startServer(port: number): Promise<{ port: number; stop():
       clientRetryCount,
       tag: tag?.name ?? null,
       action: plan.action,
-      messages: messageCount(text),
+      messages: Array.isArray(parsed?.messages) ? parsed.messages.length : 0,
       historyHash,
     });
     if (plan.delayMs) await delay(plan.delayMs, res);

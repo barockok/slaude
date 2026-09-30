@@ -138,6 +138,21 @@ describe("mock-llm server", () => {
     await again.text();
   });
 
+  test("the user message's tag governs content and faults, not one in the system prompt", async () => {
+    const a = await post(request("[[mock:echo]] hi", { system: "Persona-ID: alpha [[mock:echo fail=529]]" }));
+    expect(a.status).toBe(200);
+    expect(textOf(await events(a))).toBe("[alpha] hi");
+    const b = await post(request("[[mock:echo fail=529]] hi2", { system: "Persona-ID: alpha [[mock:echo]]" }));
+    expect(b.status).toBe(529);
+    await b.text();
+  });
+
+  test("with two tags in one user message the first governs both content and faults", async () => {
+    const res = await post(request("[[mock:echo]] x [[mock:echo fail=529]]"));
+    expect(res.status).toBe(200);
+    expect(textOf(await events(res))).toBe("[unknown] x");
+  });
+
   test("until-retry=2 keeps failing twice, then succeeds", async () => {
     const body = request("[[mock:echo fail=529 until-retry=2]] ur");
     expect((await post(body)).status).toBe(529);
