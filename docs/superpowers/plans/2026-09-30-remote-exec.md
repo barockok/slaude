@@ -23,12 +23,14 @@
 - Latency budget: warm exec overhead p50 < 150 ms on a direct path.
 - Public repo: no real names, org names, internal channels or deployment identifiers in code, tests, comments or commits. Run the CLAUDE.md leak-scan grep on every staged diff before committing. No AI co-author trailers.
 - Tests live under `tests/` mirroring `src/`; run with `bun test <path>`.
+- Tests that use `bash -l` (Task 2 `wrapCommand` login test, Task 6 bash tests) assume the developer's login profile prints nothing to stdout; if one fails locally with extra output, check `~/.bash_profile` before touching the code. CI is clean.
+- The helper is spawned from source (`src/remote/helper-main.ts` next to `helper-client.ts`). Both the Docker image (`COPY src`) and the release tarball ship `src/`; keep it that way — a bundling step would need to emit the helper entry too.
 
 ## Review Focus
 
 1. **Paths with spaces, quotes, `$`, or leading `-`** in `file_path`, `dir`, `pattern`, and commands — expected: handled literally, never shell-interpreted. Pinned in Task 2 (`shq` table) and Task 5 (read/write a file named `a b'$(x).txt`).
 2. **The user edits a file between the agent's Read and Edit/Write** — expected: the edit is refused with "modified since read", not a silent overwrite. Pinned in Task 5.
-3. **The laptop goes to sleep mid-turn** (connection dies) — expected: one reconnect, then `REMOTE_UNREACHABLE` returned as a tool error; the node does not crash; the next call after wake reconnects. Pinned in Task 3 (server killed, then restarted).
+3. **The laptop goes to sleep mid-turn** (connection dies) — expected: between commands, one reconnect then `REMOTE_UNREACHABLE`; *during* a command, `REMOTE_UNREACHABLE` immediately with no automatic re-run; the node does not crash; the next call after wake reconnects. Pinned in Task 3 (server killed between and during commands, then restarted).
 4. **A long-running foreground command exceeds its timeout** — expected: the whole process group is killed on the remote (no orphan), partial output returned with a timeout note. Pinned in Task 3.
 5. **A manager (not the lock owner) types `/remote <addr> <dir>`, or someone runs `/1on1 open` while remote is on** — expected: the manager cannot point the thread at their own machine under someone else's lock; opening the 1on1 ends remote mode. Pinned in Task 9 and Task 10.
 
@@ -356,12 +358,12 @@ git commit -m "feat(remote): SLAUDE_REMOTE flag and remote_targets/remote_keys s
 - Produces (`types.ts`):
   ```ts
   export type RemoteErrorCode = "REMOTE_UNREACHABLE" | "REMOTE_AUTH_FAILED";
-  export class RemoteError extends Error { readonly code: RemoteErrorCode }
+  export class RemoteError extends Error { readonly code: RemoteErrorCode; readonly started: boolean }
   export interface ExecOpts { stdin?: string; timeoutMs: number; login?: boolean; maxOutput?: number }
   export interface ExecResult { stdout: string; stderr: string; code: number | null; truncated: boolean; timedOut: boolean }
   export type Exec = (cmd: string, opts: ExecOpts) => Promise<ExecResult>;
   export interface RemoteTarget { teamId: string; userId: string; addr: string; dir: string }
-  export interface RemoteHandle { exec: Exec; dispose(): Promise<void> }
+  export interface RemoteHandle { exec: Exec; release(): Promise<void>; dispose(): Promise<void> }
   ```
 - Produces (`shell.ts`): `shq(s)`, `PGRP_MARKER = "__SLAUDE_PGID__"`, `wrapCommand(cmd, login)`, `MTIME`, `isTailcatAddr(s)`, `isRemoteDir(s)`, `sanitizeKey(s)`
 - Produces (`fingerprint.ts`): `sessionConfigFp(lockUser: string | null, remote: { addr: string; dir: string } | null): string`
@@ -447,9 +449,10 @@ Expected: FAIL — module not found.
 export type RemoteErrorCode = "REMOTE_UNREACHABLE" | "REMOTE_AUTH_FAILED";
 
 /** Transport-level failure. Tool-level failures (non-zero exit, missing file)
- *  are ordinary ExecResults, not RemoteErrors. */
+ *  are ordinary ExecResults, not RemoteErrors. `started` = the command may
+ *  already have run on the remote, so it must not be retried automatically. */
 export class RemoteError extends Error {
-  constructor(readonly code: RemoteErrorCode, message: string) {
+  constructor(readonly code: RemoteErrorCode, message: string, readonly started = false) {
     super(`${code}: ${message}`);
     this.name = "RemoteError";
   }
@@ -483,7 +486,10 @@ export interface RemoteTarget {
 
 export interface RemoteHandle {
   exec: Exec;
-  /** Kill this session's background jobs and release the connection. */
+  /** Release the connection only (session reboot / idle). Background jobs keep
+   *  running; a later exec reconnects lazily. */
+  release(): Promise<void>;
+  /** Remote mode ended for this session: kill its background jobs, then release. */
   dispose(): Promise<void>;
 }
 ```
@@ -589,8 +595,9 @@ import { timingSafeEqual } from "node:crypto";
 import type { AddressInfo } from "node:net";
 
 export async function startTestSshServer(opts: { authorizedPublicKey: string }) {
-  const allowed = utils.parseKey(opts.authorizedPublicKey);
-  if (allowed instanceof Error) throw allowed;
+  const parsed = utils.parseKey(opts.authorizedPublicKey);
+  if (parsed instanceof Error) throw parsed;
+  const allowed = Array.isArray(parsed) ? parsed[0]! : parsed;
   const hostKey = utils.generateKeyPairSync("ed25519").private;
   const clients = new Set<any>();
   const server = new Server({ hostKeys: [hostKey] }, (client) => {
@@ -724,6 +731,24 @@ describe("RemoteConn", () => {
     c.close();
   });
 
+  it("a drop DURING a command is REMOTE_UNREACHABLE and the command is not re-run", async () => {
+    let port = srv.port;
+    const c = mk(pair.private, () => port);
+    const marker = `/tmp/slaude-conn-${process.pid}-${Date.now()}`;
+    const running = c.exec(`echo ran >> ${marker}; sleep 5`, { timeoutMs: 10_000 });
+    await Bun.sleep(500);
+    await srv.stop();
+    const err = await running.catch((e) => e);
+    expect(err).toBeInstanceOf(RemoteError);
+    expect(err.code).toBe("REMOTE_UNREACHABLE");
+    expect(err.started).toBe(true);
+    srv = await startTestSshServer({ authorizedPublicKey: pair.public });
+    port = srv.port;
+    await Bun.sleep(5000);
+    expect((await Bun.file(marker).text()).trim().split("\n")).toEqual(["ran"]);
+    c.close();
+  });
+
   it("reconnects after the server restarts (laptop slept and woke)", async () => {
     let port = srv.port;
     const c = mk(pair.private, () => port);
@@ -806,7 +831,9 @@ export class RemoteConn {
     try {
       return await this.#run(cmd, opts);
     } catch (e) {
-      if (!(e instanceof RemoteError) || e.code !== "REMOTE_UNREACHABLE") throw e;
+      // Retry only failures before the command could have started: re-running a
+      // half-executed, non-idempotent command is worse than reporting the drop.
+      if (!(e instanceof RemoteError) || e.code !== "REMOTE_UNREACHABLE" || e.started) throw e;
       this.#drop();
       await new Promise((r) => setTimeout(r, this.o.reconnectDelayMs ?? 1000));
       return await this.#run(cmd, opts);
@@ -906,9 +933,16 @@ export class RemoteConn {
           }
         });
         let code: number | null = null;
-        ch.on("exit", (c: number | null) => { code = typeof c === "number" ? c : null; });
+        let exited = false;
+        ch.on("exit", (c: number | null) => { exited = true; code = typeof c === "number" ? c : null; });
         ch.on("close", () => {
           clearTimeout(timer);
+          if (!exited && !timedOut) {
+            // Channel closed without an exit status: the connection dropped
+            // mid-command (laptop slept, tailcat stopped). Not a command result.
+            this.#drop();
+            return reject(new RemoteError("REMOTE_UNREACHABLE", "connection lost while the command was running; it may or may not have completed", true));
+          }
           const stderr = errBuf.replace(new RegExp(`${PGRP_MARKER}\\d+\\n`), "");
           const note = timedOut ? `\n[timed out after ${opts.timeoutMs}ms; process group killed]` : "";
           resolve({ stdout: out.text(), stderr: stderr + note, code: timedOut ? null : code, truncated: out.truncated, timedOut });
@@ -967,7 +1001,7 @@ export async function tailcatPing(addr: string, bin = "tailcat"): Promise<"direc
 - [ ] **Step 6: Run tests**
 
 Run: `bun test tests/remote/conn.test.ts`
-Expected: PASS (8 tests). If the orphan test flakes on CI load, raise its `Bun.sleep` to 3000 — do not weaken the assertion.
+Expected: PASS (9 tests). If the orphan test flakes on CI load, raise its `Bun.sleep` to 3000 — do not weaken the assertion.
 
 - [ ] **Step 7: Commit**
 
@@ -989,8 +1023,8 @@ git commit -m "feat(remote): ssh exec over a pluggable socket with group-kill ti
 - Produces:
   - Wire protocol (JSON lines):
     - parent → helper: `{ t: "init", transport: { kind: "tailcat"; addr: string } | { kind: "tcp"; host: string; port: number }, privateKey: string }`, then `{ t: "exec", id: number, cmd: string, opts: ExecOpts }`
-    - helper → parent: `{ t: "ready" }`, `{ t: "result", id, ok: true, res: ExecResult }` or `{ t: "result", id, ok: false, code: RemoteErrorCode | "INTERNAL", message: string }`
-  - `class HelperClient implements RemoteHandle { constructor(o: { transport; privateKey: string; onDispose?: (exec: Exec) => Promise<void> }); exec: Exec; dispose(): Promise<void> }`
+    - helper → parent: `{ t: "ready" }`, `{ t: "result", id, ok: true, res: ExecResult }` or `{ t: "result", id, ok: false, code: RemoteErrorCode | "INTERNAL", started: boolean, message: string }`
+  - `class HelperClient implements RemoteHandle { constructor(o: { transport; privateKey: string; onDispose?: (exec: Exec) => Promise<void> }); exec: Exec; release(): Promise<void>; dispose(): Promise<void> }` — `release` stops the helper (a later `exec` respawns it); `dispose` runs `onDispose` first, then releases.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1041,6 +1075,21 @@ describe("HelperClient", () => {
     expect(argv.join(" ")).not.toContain("PRIVATE KEY");
     expect(JSON.stringify(env)).not.toContain("PRIVATE KEY");
     await h.dispose();
+  });
+
+  it("release stops the helper without cleanup; the next exec respawns it", async () => {
+    let cleaned = 0;
+    const h = new HelperClient({
+      transport: { kind: "tcp", host: "127.0.0.1", port: srv.port },
+      privateKey: pair.private,
+      onDispose: async () => { cleaned++; },
+    });
+    await h.exec("true", { timeoutMs: 5000 });
+    await h.release();
+    expect(cleaned).toBe(0);
+    expect((await h.exec("echo back", { timeoutMs: 5000 })).stdout).toBe("back\n");
+    await h.dispose();
+    expect(cleaned).toBe(1);
   });
 
   it("dispose runs the cleanup hook before stopping the helper", async () => {
@@ -1104,6 +1153,7 @@ rl.on("line", (line) => {
       (e) => send({
         t: "result", id: msg.id, ok: false,
         code: e instanceof RemoteError ? e.code : "INTERNAL",
+        started: e instanceof RemoteError ? e.started : false,
         message: e instanceof RemoteError ? e.message.replace(/^[A-Z_]+: /, "") : String(e?.message ?? e),
       }),
     );
@@ -1147,6 +1197,10 @@ export class HelperClient implements RemoteHandle {
     if (this.o.onDispose) {
       try { await this.o.onDispose(this.exec); } catch (e) { console.error(`[remote] cleanup failed: ${(e as Error).message}`); }
     }
+    await this.release();
+  }
+
+  async release(): Promise<void> {
     const c = this.#child;
     this.#child = null;
     this.#ready = null;
@@ -1173,7 +1227,7 @@ export class HelperClient implements RemoteHandle {
         if (!p) return;
         this.#pending.delete(m.id);
         if (m.ok) p.resolve(m.res);
-        else if (m.code === "REMOTE_UNREACHABLE" || m.code === "REMOTE_AUTH_FAILED") p.reject(new RemoteError(m.code, m.message));
+        else if (m.code === "REMOTE_UNREACHABLE" || m.code === "REMOTE_AUTH_FAILED") p.reject(new RemoteError(m.code, m.message, !!m.started));
         else p.reject(new Error(m.message));
       });
       child.once("exit", () => {
@@ -1196,7 +1250,7 @@ export class HelperClient implements RemoteHandle {
 - [ ] **Step 5: Run tests**
 
 Run: `bun test tests/remote/helper.test.ts`
-Expected: PASS (5 tests).
+Expected: PASS (6 tests).
 
 - [ ] **Step 6: Commit**
 
@@ -1401,6 +1455,8 @@ import type { Exec } from "../types";
 export type ToolText = {
   content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
   isError?: boolean;
+  /** Remote exit code, for the audit line only; stripped before returning to the SDK. */
+  exitCode?: number | null;
 };
 export const ok = (text: string): ToolText => ({ content: [{ type: "text", text }] });
 export const fail = (text: string): ToolText => ({ content: [{ type: "text", text }], isError: true });
@@ -1687,6 +1743,17 @@ describe("bash", () => {
 });
 
 describe("background jobs", () => {
+  it("the pid file holds the job's own process group, even for a session's first job", async () => {
+    const start = await bashTool(ctx, { command: "sleep 30", run_in_background: true });
+    const id = text(start).match(/ID: ([0-9a-f]+)/)![1]!;
+    const r = await localExec(
+      `P=$(cat "$HOME"/.slaude-bg/${ctx.sessionKey}/${id}.pid); [ "$(ps -o pgid= -p "$P" | tr -d ' ')" = "$P" ] && echo own-group`,
+      { timeoutMs: 5000 },
+    );
+    expect(r.stdout.trim()).toBe("own-group");
+    expect(text(await bashOutputTool(ctx, { bash_id: id }))).toContain("running");
+  });
+
   it("start → output (incremental) → exit status", async () => {
     const start = await bashTool(ctx, { command: "echo one; sleep 1; echo two", run_in_background: true });
     const id = text(start).match(/ID: ([0-9a-f]+)/)![1]!;
@@ -1871,17 +1938,20 @@ export async function bashTool(
     stdout = stdout.slice(0, at);
   }
   const body = [stdout.replace(/\n$/, ""), r.stderr.replace(/\n$/, "")].filter(Boolean).join("\n");
-  if (r.timedOut) return fail(`${body}\nCommand timed out after ${timeoutMs}ms`.trim());
-  if (r.code !== 0) return fail(`Exit code ${r.code}\n${body}`.trim());
-  return ok(body || "(no output)");
+  if (r.timedOut) return { ...fail(`${body}\nCommand timed out after ${timeoutMs}ms`.trim()), exitCode: null };
+  if (r.code !== 0) return { ...fail(`Exit code ${r.code}\n${body}`.trim()), exitCode: r.code };
+  return { ...ok(body || "(no output)"), exitCode: 0 };
 }
 
 async function startBackground(ctx: BashCtx, enter: string, command: string): Promise<ToolText> {
   const id = randomBytes(4).toString("hex");
   const d = bgDir(ctx.sessionKey);
   const inner = `${command}\n__rc=$?; echo $__rc > ${d}/${id}.exit`;
+  // Only the `nohup perl …` simple command may be backgrounded: `a && b && c &`
+  // would background the whole AND-list, racing mkdir and making $! the
+  // subshell's pid instead of the job's process group.
   const cmd =
-    `D=${d}; mkdir -p "$D" && ${enter} && ` +
+    `D=${d}; mkdir -p "$D" || exit 2; ${enter} || exit 2; ` +
     `nohup perl -e 'setpgrp(0,0); exec @ARGV' bash -lc ${shq(inner)} > "$D/${id}.log" 2>&1 < /dev/null & ` +
     `echo $! > "$D/${id}.pid"; cat "$D/${id}.pid"`;
   const r = await ctx.exec(cmd, { timeoutMs: 30_000 });
@@ -1960,7 +2030,7 @@ git commit -m "feat(remote): glob/grep with portable fallbacks, bash with cwd an
   export const REMOTE_BUILTINS: readonly ["Bash", "Read", "Write", "Edit", "Glob", "Grep"];
   export const REMOTE_TOOL_ALIASES: Record<string, string>;   // Bash → mcp__remote__bash, …
   export function builtinFor(toolName: string): string | null; // mcp__remote__bash|bash_kill → "Bash", write → "Write", …; null for others
-  export function remotePermission(toolName: string, mode: string): "allow" | "ask" | null;
+  export function remotePermission(toolName: string, mode: string): "allow" | "ask" | "deny" | null;
   export const denyLocalBuiltins: HookCallback;
   export function createRemoteMcp(o: { exec: Exec; root: string; sessionKey: string }): McpSdkServerConfigWithInstance;
   export function makeRemoteCanUseTool(base: CanUseTool | undefined, getMode: () => string): CanUseTool;
@@ -2003,11 +2073,15 @@ describe("remotePermission — parity with how the SDK treats each built-in", ()
     ["mcp__remote__bash", "acceptEdits", "ask"],
     ["mcp__remote__bash_kill", "default", "ask"],
     ["mcp__remote__bash", "bypassPermissions", "allow"],
-    ["mcp__remote__write", "plan", "ask"],
+    ["mcp__remote__write", "plan", "deny"],
+    ["mcp__remote__edit", "plan", "deny"],
+    ["mcp__remote__bash", "plan", "deny"],
+    ["mcp__remote__bash_kill", "plan", "deny"],
+    ["mcp__remote__read", "plan", "allow"],
     ["mcp__slaude_kb__search", "default", null],
     ["Bash", "default", null],
   ];
-  for (const [tool, mode, want] of cases) {
+  for (const [tool, mode, want] of cases as Array<[string, string, "allow" | "ask" | "deny" | null]>) {
     it(`${tool} in ${mode} → ${want}`, () => expect(remotePermission(tool, mode)).toBe(want));
   }
   it("builtinFor maps remote tools to the built-in an approver recognises", () => {
@@ -2032,6 +2106,33 @@ describe("makeRemoteCanUseTool", () => {
     const can = makeRemoteCanUseTool(undefined, () => "default");
     expect((await can("mcp__remote__bash", { command: "ls" }, sig)).behavior).toBe("deny");
   });
+  it("plan mode denies remote changes without asking anyone", async () => {
+    const asked: string[] = [];
+    const can = makeRemoteCanUseTool((async (n: string, input: any) => { asked.push(n); return { behavior: "allow", updatedInput: input }; }) as any, () => "plan");
+    expect((await can("mcp__remote__write", { file_path: "a", content: "" }, sig)).behavior).toBe("deny");
+    expect(asked).toEqual([]);
+  });
+});
+
+describe("gating parity with the real permission policy (spec §9)", () => {
+  // The gateway and node both gate with permissionPolicy (src/gateway/slack/permission-gate.ts);
+  // remote tools must get exactly the decision their built-in gets, incl. SLAUDE_AUTO_ALLOW_TOOLS.
+  const { permissionPolicy } = require("../../src/gateway/slack/permission-gate");
+  const inputs: Record<string, any> = {
+    Bash: { command: "ls -la" }, Write: { file_path: "/r/a", content: "x" }, Edit: { file_path: "/r/a", old_string: "a", new_string: "b" },
+  };
+  for (const autoAllow of [new Set<string>(), new Set(["Bash", "Write", "Edit"])]) {
+    for (const builtin of ["Bash", "Write", "Edit"]) {
+      it(`${builtin} with autoAllow=[${[...autoAllow]}] → same decision remotely`, async () => {
+        const base = async (name: string, input: any) =>
+          permissionPolicy(name, input, autoAllow) ?? { behavior: "deny", message: "APPROVAL_CARD" };
+        const can = makeRemoteCanUseTool(base as any, () => "default");
+        const local = await base(builtin, inputs[builtin]);
+        const remote = await can(REMOTE_TOOL_ALIASES[builtin]!, inputs[builtin], sig);
+        expect(remote.behavior).toBe(local.behavior);
+      });
+    }
+  }
 });
 
 describe("denyLocalBuiltins", () => {
@@ -2058,6 +2159,21 @@ describe("createRemoteMcp", () => {
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toContain("REMOTE_UNREACHABLE");
     expect(r.content[0].text).toContain("tell the user");
+    expect(r.content[0].text).toContain("/remote <new-address>");
+  });
+  it("audit line carries the exit code and never the command args; exitCode is not returned to the SDK", async () => {
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (m: string) => { lines.push(String(m)); };
+    try {
+      const s = createRemoteMcp({ exec: localExec, root: "/tmp", sessionKey: "k" });
+      const r = await (s.instance as any)._registeredTools.bash.callback({ command: "sh -c 'exit 3' --secret-token=abc" }, {});
+      expect(r.exitCode).toBeUndefined();
+    } finally { console.log = orig; }
+    const line = lines.find((l) => l.startsWith("[remote] tool=bash"))!;
+    expect(line).toContain("subject=sh");
+    expect(line).toContain("code=3");
+    expect(line).not.toContain("secret-token");
   });
 });
 ```
@@ -2099,13 +2215,15 @@ export function builtinFor(toolName: string): string | null {
 }
 
 /** Mirror the SDK's own treatment of the built-in each remote tool replaces:
- *  read-only tools never prompt; edits auto-allow in acceptEdits; shell asks
- *  unless bypassPermissions. null = not a remote tool (caller's normal path). */
-export function remotePermission(toolName: string, mode: string): "allow" | "ask" | null {
+ *  read-only tools never prompt; plan mode denies changes; edits auto-allow in
+ *  acceptEdits; shell asks unless bypassPermissions. null = not a remote tool
+ *  (caller's normal path). */
+export function remotePermission(toolName: string, mode: string): "allow" | "ask" | "deny" | null {
   if (!toolName.startsWith(PREFIX)) return null;
   const t = toolName.slice(PREFIX.length);
-  if (mode === "bypassPermissions") return "allow";
   if (READ_ONLY.has(t)) return "allow";
+  if (mode === "plan") return "deny";
+  if (mode === "bypassPermissions") return "allow";
   if (EDITS.has(t)) return mode === "acceptEdits" ? "allow" : "ask";
   return "ask";
 }
@@ -2114,6 +2232,7 @@ export function makeRemoteCanUseTool(base: CanUseTool | undefined, getMode: () =
   return async (toolName, input, ctx) => {
     const d = remotePermission(toolName, getMode());
     if (d === "allow") return { behavior: "allow", updatedInput: input };
+    if (d === "deny") return { behavior: "deny", message: "Plan mode: no changes to the remote machine." };
     const name = d === "ask" ? builtinFor(toolName)! : toolName;
     if (!base) {
       return d === "ask"
@@ -2138,29 +2257,31 @@ export const denyLocalBuiltins: HookCallback = async (input) => {
   };
 };
 
-const GUIDANCE = "Stop and tell the user their machine is not reachable (they can check with `/remote`). Do not retry in a loop or work around it.";
+const GUIDANCE =
+  "Stop and tell the user their machine is not reachable. They can check with `/remote`; if they restarted `tailcat serve` and got a new address, `/remote <new-address>` re-points this thread. Do not retry in a loop or work around it.";
 
 function guarded<I>(name: string, fn: (i: I) => Promise<ToolText>) {
   return async (i: I): Promise<ToolText> => {
     const t = performance.now();
     try {
-      const r = await fn(i);
-      audit(name, i, r.isError ? "error" : "ok", t);
+      const { exitCode, ...r } = await fn(i);
+      audit(name, i, r.isError ? "error" : "ok", exitCode, t);
       return r;
     } catch (e) {
-      audit(name, i, e instanceof RemoteError ? e.code : "exception", t);
+      audit(name, i, e instanceof RemoteError ? e.code : "exception", undefined, t);
       if (e instanceof RemoteError) return fail(`${e.message}\n${GUIDANCE}`);
       return fail(`remote ${name} failed: ${(e as Error).message}`);
     }
   };
 }
 
-/** One line per call. Program name / basename only — no content, no address. */
-function audit(name: string, input: any, outcome: string, t0: number) {
+/** One line per call (spec §4.6): tool, program name or path basename, exit code,
+ *  duration. No content, no address. */
+function audit(name: string, input: any, outcome: string, code: number | null | undefined, t0: number) {
   const subject = name === "bash"
     ? (String(input?.command ?? "").trim().split(/\s+/)[0] ?? "").split("/").pop()
     : String(input?.file_path ?? input?.path ?? input?.bash_id ?? input?.shell_id ?? "").split("/").pop();
-  console.log(`[remote] tool=${name} subject=${subject || "-"} outcome=${outcome} ms=${Math.round(performance.now() - t0)}`);
+  console.log(`[remote] tool=${name} subject=${subject || "-"} outcome=${outcome} code=${code === undefined ? "-" : code} ms=${Math.round(performance.now() - t0)}`);
 }
 
 export function createRemoteMcp(o: { exec: Exec; root: string; sessionKey: string }): McpSdkServerConfigWithInstance {
@@ -2219,6 +2340,17 @@ export function createRemoteMcp(o: { exec: Exec; root: string; sessionKey: strin
   });
 }
 ```
+
+**Gating sites (spec §4.6 enumeration)** — every place that matches tool names, and why remote parity holds:
+
+| Site | What it matches | Remote parity |
+|---|---|---|
+| `src/gateway/slack/permission-gate.ts:47` `permissionPolicy` (gateway resolver + REST `openPermission`) | `SLAUDE_AUTO_ALLOW_TOOLS` names, `mcp__slaude_*` prefixes | `makeRemoteCanUseTool` calls the resolver with the **built-in** name (`Bash`/`Write`/`Edit`), so the policy sees exactly what it sees locally; pinned by the parity test above |
+| `src/node/shims/permission.ts:26` node resolver | same `permissionPolicy`, then gateway `can_use_tool` | same renaming, same result |
+| `src/gateway/slack/permission-gate.ts:144` approval card | raw input preview | card shows `Bash` + the command, as for a local call |
+| `src/gateway/core/status-text.ts` / `manager.ts` `turnTools` / `AUTO_EVOLVE_IGNORE` | model-emitted `block.name` | model emits `Bash`/`Read`… (aliases resolve later), so unchanged |
+| `src/knowledge/ingest.ts:118` | `Write`/`Edit` in a separate ingest query | not a remote session — untouched |
+| SDK mode handling (`plan`, `acceptEdits`, `bypassPermissions`) | built-in names only | reproduced by `remotePermission` |
 
 - [ ] **Step 4: Run tests**
 
@@ -2319,6 +2451,7 @@ git commit -m "feat(remote): remote-mode block in the session system prompt"
 - Produces:
   - `activeRemoteTarget(channelId: string, threadTs: string): Promise<RemoteTarget | null>` — non-null only when a target exists **and** a lock exists, is locked (`open_scope === null`), and its `locked_user === target.user_id`.
   - `preflight(i: { addr: string; dir: string; privateKey: string }): Promise<{ ok: true; dir: string } | { ok: false; error: string }>`
+  - `remoteCleanup(i: { addr: string; privateKey: string; sessionKey: string }): Promise<void>` (best-effort, never throws)
   - `AgentManager.setRemote(resolver: ((sessionId: string) => Promise<RemoteTarget | null>) | undefined, factory: ((sessionId: string, t: RemoteTarget) => Promise<RemoteHandle> | RemoteHandle) | undefined): void`
   - `AgentManager.ensureConfigFp(sessionId: string, fp: string | undefined): Promise<void>`
   - `LiveSession.mode: PermissionMode` (kept current by `setPermissionMode`)
@@ -2411,7 +2544,24 @@ export async function preflight(i: { addr: string; dir: string; privateKey: stri
     conn.close();
   }
 }
+
+/** Best-effort: kill a session's background jobs on the remote when remote mode
+ *  ends (spec §5.2). Runs from the gateway so it works in split deploys even if
+ *  no further turn ever reaches a node. Never throws. */
+export async function remoteCleanup(i: { addr: string; privateKey: string; sessionKey: string }): Promise<void> {
+  let conn: RemoteConn | undefined;
+  try {
+    conn = new RemoteConn({ socket: tailcatSocket(i.addr), privateKey: i.privateKey, reconnectDelayMs: 0, readyTimeoutMs: 15_000 });
+    await conn.exec(cleanupCommand(i.sessionKey), { timeoutMs: 30_000 });
+  } catch (e) {
+    console.error(`[remote] cleanup skipped: ${e instanceof RemoteError ? e.code : "error"}`);
+  } finally {
+    conn?.close();
+  }
+}
 ```
+
+(add `import { cleanupCommand } from "./tools/bash";` to `preflight.ts`.)
 
 Run: `bun test tests/remote/active.test.ts` → PASS.
 
@@ -2423,10 +2573,9 @@ Run: `bun test tests/remote/active.test.ts` → PASS.
 describe("remote wiring", () => {
   it("with a target: remote MCP server, aliases, PreToolUse guard, remote mode block", async () => {
     const mgr = new AgentManager();
-    const disposed: string[] = [];
     mgr.setRemote(
       async () => ({ teamId: "T1", userId: "U_A", addr: "tcA", dir: "/home/a/repo" }),
-      (sid) => ({ exec: async () => ({ stdout: "", stderr: "", code: 0, truncated: false, timedOut: false }), dispose: async () => { disposed.push(sid); } }),
+      () => ({ exec: async () => ({ stdout: "", stderr: "", code: 0, truncated: false, timedOut: false }), release: async () => {}, dispose: async () => {} }),
     );
     const row = await mgr.ensureSession(thread());
     const fs = plan();
@@ -2438,8 +2587,34 @@ describe("remote wiring", () => {
     expect(fs.options.systemPrompt.append).toContain("<remote-mode>");
     expect(fs.options.disallowedTools ?? []).not.toContain("Bash"); // enabled + alias (spike §8)
     await shutdown(mgr, row.id);
-    await until(() => disposed.length === 1, 3000, "dispose on session end");
-    expect(disposed).toEqual([row.id]);
+  });
+
+  it("a reboot releases but keeps the handle (jobs survive); a changed or ended target disposes it", async () => {
+    const mgr = new AgentManager();
+    let target: any = { teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r" };
+    const log: string[] = [];
+    let opened = 0;
+    mgr.setRemote(async () => target, () => {
+      const n = ++opened;
+      return {
+        exec: async () => ({ stdout: "", stderr: "", code: 0, truncated: false, timedOut: false }),
+        release: async () => { log.push(`release${n}`); },
+        dispose: async () => { log.push(`dispose${n}`); },
+      };
+    });
+    const row = await mgr.ensureSession(thread());
+    const boot = async () => { const fs = plan(); await mgr.sendMessage(row.id, "hi"); await until(() => fs.options !== null, 3000, "boot"); await shutdown(mgr, row.id); };
+    await boot();                       // open #1
+    await boot();                       // same target: reuse #1
+    expect(opened).toBe(1);
+    expect(log.filter((l) => l.startsWith("dispose"))).toEqual([]);
+    target = { ...target, addr: "tcB" }; // re-pointed
+    await boot();
+    expect(log).toContain("dispose1");
+    expect(opened).toBe(2);
+    target = null;                      // /remote off
+    await boot();
+    expect(log).toContain("dispose2");
   });
 
   it("without a target: no remote server, no aliases, no guard", async () => {
@@ -2459,7 +2634,7 @@ describe("remote wiring", () => {
     const mgr = new AgentManager();
     const asked: string[] = [];
     mgr.setPermissionResolver(async (_sid, toolName, input) => { asked.push(toolName); return { behavior: "allow", updatedInput: input } as any; });
-    mgr.setRemote(async () => ({ teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r" }), () => ({ exec: async () => ({ stdout: "", stderr: "", code: 0, truncated: false, timedOut: false }), dispose: async () => {} }));
+    mgr.setRemote(async () => ({ teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r" }), () => ({ exec: async () => ({ stdout: "", stderr: "", code: 0, truncated: false, timedOut: false }), release: async () => {}, dispose: async () => {} }));
     const row = await mgr.ensureSession(thread());
     const fs = plan();
     await mgr.sendMessage(row.id, "hello");
@@ -2516,7 +2691,9 @@ Fields (after `#stopGuard`):
 ```ts
   #remoteResolver: ((sessionId: string) => Promise<RemoteTarget | null>) | undefined;
   #remoteFactory: ((sessionId: string, t: RemoteTarget) => Promise<RemoteHandle> | RemoteHandle) | undefined;
-  #remoteHandles = new Map<string, RemoteHandle>();
+  /** Per session: the open remote handle and the target it was opened for.
+   *  Survives reboots (jobs keep running); disposed only when the target ends/changes. */
+  #remoteHandles = new Map<string, { handle: RemoteHandle; key: string }>();
   /** Latest session-config fingerprint seen per session (node: from job claims). */
   #configFp = new Map<string, string>();
 ```
@@ -2546,11 +2723,20 @@ Setters (after `setStopGuard`):
     while (this.isLive(sessionId) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
   }
 
-  async #disposeRemote(sessionId: string) {
-    const h = this.#remoteHandles.get(sessionId);
-    if (!h) return;
-    this.#remoteHandles.delete(sessionId);
-    try { await h.dispose(); } catch (e) { console.error(`[mgr] remote dispose failed session=${sessionId}:`, e); }
+  /** Reuse the session's handle when the target is unchanged; otherwise dispose
+   *  the old one (kills its background jobs — remote ended or moved) and open anew. */
+  async #remoteHandleFor(sessionId: string, target: RemoteTarget | null): Promise<RemoteHandle | undefined> {
+    const key = target ? `${target.userId}|${target.addr}|${target.dir}` : "";
+    const prev = this.#remoteHandles.get(sessionId);
+    if (prev && prev.key === key) return prev.handle;
+    if (prev) {
+      this.#remoteHandles.delete(sessionId);
+      try { await prev.handle.dispose(); } catch (e) { console.error(`[mgr] remote dispose failed session=${sessionId}:`, e); }
+    }
+    if (!target || !this.#remoteFactory) return undefined;
+    const handle = await this.#remoteFactory(sessionId, target);
+    this.#remoteHandles.set(sessionId, { handle, key });
+    return handle;
   }
 ```
 
@@ -2564,13 +2750,8 @@ Setters (after `setStopGuard`):
 
 ```ts
     // Remote mode: tools for this session run on the lock owner's machine.
-    await this.#disposeRemote(sessionId); // a retry/reboot must not leak the previous handle
     const remoteTarget = this.#remoteResolver ? await this.#remoteResolver(sessionId) : null;
-    let remoteHandle: RemoteHandle | undefined;
-    if (remoteTarget && this.#remoteFactory) {
-      remoteHandle = await this.#remoteFactory(sessionId, remoteTarget);
-      this.#remoteHandles.set(sessionId, remoteHandle);
-    }
+    const remoteHandle = await this.#remoteHandleFor(sessionId, remoteTarget);
 ```
 
 Replace the `canUseTool` construction (lines 579–582) so it runs **after** the block above (move it down) and wraps for remote:
@@ -2624,10 +2805,11 @@ and change `sessionModeBlock(lock),` to:
 
 `live` object literal (line ~704) — add `mode,`.
 
-`finally` block (line ~778) — after `this.#live.delete(sessionId);`:
+`finally` block (line ~778) — after `this.#live.delete(sessionId);`. Release the connection only: a reboot (reload, `stream_closed`, idle TTL, `/mcp connect`) must not kill the user's background jobs (spec §5.2 cleanup happens when remote ends — `/remote off`, see Task 10, or a changed target at next boot):
 
 ```ts
-        void this.#disposeRemote(sessionId);
+        void this.#remoteHandles.get(sessionId)?.handle.release().catch((e) =>
+          console.error(`[mgr] remote release failed session=${sessionId}:`, e));
 ```
 
 - [ ] **Step 6: Run tests**
@@ -2658,9 +2840,9 @@ git commit -m "feat(remote): boot remote sessions with aliased tools, guard, and
 - Produces:
   - `SlashHit` variants: `{ kind: "remote"; action: "on"; addr: string; dir?: string } | { kind: "remote"; action: "off" | "status" | "key" }`
   - `handleRemoteCommand(hit, ctx: RemoteCommandCtx, deps?: RemoteCommandDeps): Promise<void>`
-  - `interface RemoteCommandCtx { teamId; channelId; threadTs; userId; isManager: boolean; reply(t: string): Promise<void>; sayPrivately(t: string): Promise<void>; reload(): void }`
-  - `interface RemoteCommandDeps { preflight: typeof preflight; ping: typeof tailcatPing; generateKeyPair(comment: string): { privateKey: string; publicKey: string } }`
-  - `endRemoteForThread(channelId, threadTs): Promise<{ ended: boolean; lockByRemote: boolean }>` — clears the target and reports whether `/remote` had created the lock; it never unlocks by itself (callers decide: `/remote off` unlocks when `lockByRemote`, `/1on1 off` unlocks anyway)
+  - `interface RemoteCommandCtx { teamId; channelId; threadTs; userId; sessionId: string; isManager: boolean; reply(t: string): Promise<void>; sayPrivately(t: string): Promise<void>; reload(): void }`
+  - `interface RemoteCommandDeps { preflight: typeof preflight; ping: typeof tailcatPing; cleanup: typeof remoteCleanup; generateKeyPair(comment: string): { privateKey: string; publicKey: string } }`
+  - `endRemoteForThread(channelId, threadTs, opts?: { sessionId?: string; cleanup?: typeof remoteCleanup }): Promise<{ ended: boolean; lockByRemote: boolean }>` — clears the target, starts best-effort job cleanup when `sessionId` is given (not awaited), and reports whether `/remote` had created the lock; it never unlocks by itself (callers decide: `/remote off` unlocks when `lockByRemote`, `/1on1 off` unlocks anyway)
   - `humanizeToolStatus(tool, input, opts?: { remote?: boolean })`
 
 - [ ] **Step 1: Write the failing parse test**
@@ -2728,9 +2910,9 @@ import * as Remote from "../../../src/db/remote";
 import { __resetMasterKeyCache } from "../../../src/db/crypto";
 import { handleRemoteCommand, endRemoteForThread, type RemoteCommandDeps } from "../../../src/gateway/core/remote-command";
 
-let replies: string[], privately: string[], reloads: number, preflights: any[];
+let replies: string[], privately: string[], reloads: number, preflights: any[], cleanups: any[];
 const ctx = (over: Partial<{ userId: string; isManager: boolean }> = {}) => ({
-  teamId: "T1", channelId: "C1", threadTs: "1.0", userId: over.userId ?? "U_A", isManager: over.isManager ?? false,
+  teamId: "T1", channelId: "C1", threadTs: "1.0", userId: over.userId ?? "U_A", sessionId: "S1", isManager: over.isManager ?? false,
   reply: async (t: string) => { replies.push(t); },
   sayPrivately: async (t: string) => { privately.push(t); },
   reload: () => { reloads++; },
@@ -2738,6 +2920,7 @@ const ctx = (over: Partial<{ userId: string; isManager: boolean }> = {}) => ({
 const deps = (ok = true): RemoteCommandDeps => ({
   preflight: async (i) => { preflights.push(i); return ok ? { ok: true, dir: "/abs/repo" } : { ok: false, error: "REMOTE_UNREACHABLE: no route" }; },
   ping: async () => "direct",
+  cleanup: async (i) => { cleanups.push(i); },
   generateKeyPair: (c) => ({ privateKey: `PRIV-${c}`, publicKey: `ssh-ed25519 AAAA ${c}` }),
 });
 const allOut = () => [...replies, ...privately].join("\n");
@@ -2748,7 +2931,7 @@ beforeEach(async () => {
   __resetMasterKeyCache();
   await OneOnOne._wipeForTests();
   await Remote._wipeForTests();
-  replies = []; privately = []; reloads = 0; preflights = [];
+  replies = []; privately = []; reloads = 0; preflights = []; cleanups = [];
 });
 afterEach(() => { delete process.env.SLAUDE_REMOTE; });
 
@@ -2825,11 +3008,24 @@ describe("/remote", () => {
     expect(reloads).toBe(2);
   });
 
-  it("off releases a lock that /remote created", async () => {
+  it("off releases a lock that /remote created and cleans up the session's jobs", async () => {
     await Remote.putKeyIfAbsent("T1", "U_A", { privateKey: "PRIV", publicKey: "PUB" });
     await handleRemoteCommand({ kind: "remote", action: "on", addr: "tcAddr1", dir: "/r" }, ctx(), deps());
     await handleRemoteCommand({ kind: "remote", action: "off" }, ctx(), deps());
     expect(await OneOnOne.find("C1", "1.0")).toBeNull();
+    await Bun.sleep(0);
+    expect(cleanups).toEqual([{ addr: "tcAddr1", privateKey: "PRIV", sessionKey: "S1" }]);
+  });
+
+  it("a stale row from another user never makes this user's lock look /remote-created", async () => {
+    // U_A's leftover target (lock_by_remote=1) remains after the lock moved to U_B.
+    await Remote.setTarget({ channelId: "C1", threadTs: "1.0", teamId: "T1", userId: "U_A", addr: "tcOld", dir: "/r", lockByRemote: true });
+    await OneOnOne.lock({ channelId: "C1", threadTs: "1.0", lockedUser: "U_B", createdBy: "U_B" });
+    await Remote.putKeyIfAbsent("T1", "U_B", { privateKey: "PRIV-B", publicKey: "PUB-B" });
+    await handleRemoteCommand({ kind: "remote", action: "on", addr: "tcAddr1", dir: "/r" }, ctx({ userId: "U_B" }), deps());
+    expect((await Remote.findTarget("C1", "1.0"))?.lock_by_remote).toBe(0);
+    await handleRemoteCommand({ kind: "remote", action: "off" }, ctx({ userId: "U_B" }), deps());
+    expect((await OneOnOne.find("C1", "1.0"))?.locked_user).toBe("U_B");
   });
 
   it("re-point with address only keeps the stored dir", async () => {
@@ -2858,9 +3054,12 @@ describe("/remote", () => {
     expect(replies.join("")).not.toContain("KEEP");
   });
 
-  it("endRemoteForThread clears the target and reports whether it unlocked", async () => {
+  it("endRemoteForThread clears the target, cleans up when given a session, and reports lock origin", async () => {
     await Remote.setTarget({ channelId: "C1", threadTs: "1.0", teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r", lockByRemote: true });
-    expect(await endRemoteForThread("C1", "1.0")).toEqual({ ended: true, lockByRemote: true });
+    await Remote.putKeyIfAbsent("T1", "U_A", { privateKey: "PRIV", publicKey: "PUB" });
+    const seen: any[] = [];
+    expect(await endRemoteForThread("C1", "1.0", { sessionId: "S9", cleanup: async (i) => { seen.push(i); } })).toEqual({ ended: true, lockByRemote: true });
+    expect(seen).toEqual([{ addr: "tcA", privateKey: "PRIV", sessionKey: "S9" }]);
     expect(await endRemoteForThread("C1", "1.0")).toEqual({ ended: false, lockByRemote: false });
   });
 });
@@ -2873,7 +3072,7 @@ import { utils } from "ssh2";
 import { env } from "../../config/env";
 import * as OneOnOne from "../../db/one-on-one";
 import * as Remote from "../../db/remote";
-import { preflight } from "../../remote/preflight";
+import { preflight, remoteCleanup } from "../../remote/preflight";
 import { isRemoteDir, isTailcatAddr } from "../../remote/shell";
 import { tailcatPing } from "../../remote/tailcat";
 import type { SlashHit } from "../slack/commands";
@@ -2885,6 +3084,8 @@ export interface RemoteCommandCtx {
   channelId: string;
   threadTs: string;
   userId: string;
+  /** The thread's session id — the key of its remote background-job directory. */
+  sessionId: string;
   isManager: boolean;
   reply(text: string): Promise<void>;
   sayPrivately(text: string): Promise<void>;
@@ -2894,12 +3095,14 @@ export interface RemoteCommandCtx {
 export interface RemoteCommandDeps {
   preflight: typeof preflight;
   ping: typeof tailcatPing;
+  cleanup: typeof remoteCleanup;
   generateKeyPair(comment: string): { privateKey: string; publicKey: string };
 }
 
 const defaultDeps: RemoteCommandDeps = {
   preflight,
   ping: tailcatPing,
+  cleanup: remoteCleanup,
   generateKeyPair: (comment) => {
     const k = utils.generateKeyPairSync("ed25519", { comment });
     return { privateKey: k.private, publicKey: k.public };
@@ -2921,9 +3124,20 @@ function setupText(publicKey: string): string {
   ].join("\n");
 }
 
-/** Clear the thread's remote target. `lockByRemote` tells the caller whether /remote had created the lock. */
-export async function endRemoteForThread(channelId: string, threadTs: string): Promise<{ ended: boolean; lockByRemote: boolean }> {
+/** Clear the thread's remote target. With a sessionId, also start best-effort
+ *  cleanup of that session's background jobs on the remote (not awaited: the
+ *  laptop may be asleep). `lockByRemote` tells the caller whether /remote had
+ *  created the lock. */
+export async function endRemoteForThread(
+  channelId: string,
+  threadTs: string,
+  opts: { sessionId?: string; cleanup?: typeof remoteCleanup } = {},
+): Promise<{ ended: boolean; lockByRemote: boolean }> {
   const gone = await Remote.clearTarget(channelId, threadTs);
+  if (gone && opts.sessionId) {
+    const key = await Remote.getKey(gone.team_id, gone.user_id);
+    if (key) void (opts.cleanup ?? remoteCleanup)({ addr: gone.addr, privateKey: key.privateKey, sessionKey: opts.sessionId });
+  }
   return { ended: !!gone, lockByRemote: gone?.lock_by_remote === 1 };
 }
 
@@ -2962,7 +3176,7 @@ export async function handleRemoteCommand(hit: RemoteHit, ctx: RemoteCommandCtx,
       await ctx.reply(`Only <@${t.user_id}> or the manager can turn remote mode off.`);
       return;
     }
-    const { lockByRemote } = await endRemoteForThread(channelId, threadTs);
+    const { lockByRemote } = await endRemoteForThread(channelId, threadTs, { sessionId: ctx.sessionId, cleanup: deps.cleanup });
     if (lockByRemote) await OneOnOne.unlock(channelId, threadTs);
     ctx.reload();
     await ctx.reply(`:house: Remote mode *off* — tools run on the server again.${lockByRemote ? " 1on1 released." : ""}`);
@@ -3005,7 +3219,9 @@ export async function handleRemoteCommand(hit: RemoteHit, ctx: RemoteCommandCtx,
     await ctx.reply(`:x: Couldn't use your machine: ${pf.error}`);
     return;
   }
-  let lockByRemote = existing?.lock_by_remote === 1;
+  // Inherit "we created the lock" only from this user's own row: a stale row from
+  // someone else must never make another person's lock releasable by /remote off.
+  let lockByRemote = existing?.user_id === userId && existing.lock_by_remote === 1;
   if (!lock) {
     await OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId });
     lockByRemote = true;
@@ -3041,7 +3257,7 @@ import { cleanupCommand } from "../../remote/tools/bash";
         });
         const soul = soulData();
         await handleRemoteCommand(slash, {
-          teamId, channelId, threadTs, userId,
+          teamId, channelId, threadTs, userId, sessionId: session.id,
           isManager: userId === soul.manager.userId || userId === soul.backupManager.userId,
           reply,
           sayPrivately: async (text) => {
@@ -3057,22 +3273,22 @@ import { cleanupCommand } from "../../remote/tools/bash";
       }
 ```
 
-(b) `/1on1` invariants — in the `/1on1` handler:
+(b) `/1on1` invariants — every path that ends remote passes `{ sessionId }` so the session's remote jobs are cleaned up. In the `/1on1` handler:
 - `action === "on"`: before `OneOnOne.lock(...)`, add
   ```ts
           const prevTarget = await Remote.findTarget(channelId, threadTs);
-          if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(channelId, threadTs);
+          if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(channelId, threadTs, { sessionId: session.id });
   ```
 - the release path (after `const existing = … if (!existing) …`): before `OneOnOne.unlock(...)`, add
   ```ts
-        const r = await endRemoteForThread(channelId, threadTs);
+        const r = await endRemoteForThread(channelId, threadTs, { sessionId: session.id });
   ```
   and change its reply to `":unlock: 1on1 released — the thread is open again." + (r.ended ? " Remote mode ended." : "")`.
 
-In `agentOneOnOne`:
-- `"lock"` branch: before `OneOnOne.lock`, same `prevTarget` check as above using `ctx.channel`/`threadTs`.
-- `"open"` branch: before `OneOnOne.setOpen`, add `await endRemoteForThread(ctx.channel, threadTs);` (open mode forbids remote).
-- `"off"` branch: before `OneOnOne.unlock`, add `await endRemoteForThread(ctx.channel, threadTs);`.
+In `agentOneOnOne` (its first parameter is `sessionId`):
+- `"lock"` branch: before `OneOnOne.lock`, same `prevTarget` check as above using `ctx.channel`/`threadTs` and `{ sessionId }`.
+- `"open"` branch: before `OneOnOne.setOpen`, add `await endRemoteForThread(ctx.channel, threadTs, { sessionId });` (open mode forbids remote).
+- `"off"` branch: before `OneOnOne.unlock`, add `await endRemoteForThread(ctx.channel, threadTs, { sessionId });`.
 
 (c) Mono wiring — next to `agent.setPermissionResolver(permissions.resolver);` (line ~559):
 
@@ -3134,7 +3350,7 @@ and change the call to:
 
 In the `/remote` handler's `reload` callback also call `remoteStatusCache.delete(session.id)`.
 
-(e) Add a test in `tests/gateway/core/status-text.test.ts` (or the existing status-text test file):
+(e) Create `tests/gateway/core/status-text.test.ts` (no such file exists today) with `import { describe, it, expect } from "bun:test"; import { humanizeToolStatus } from "../../../src/gateway/core/status-text";` and:
 
 ```ts
 it("appends a remote marker without leaking args", () => {
@@ -3278,46 +3494,67 @@ Run: `bun test tests/gateway/api/remote-key.test.ts` → PASS.
 
 - [ ] **Step 3: Write the failing dispatch test**
 
-`tests/gateway/core/dispatch-remote.test.ts` — copy the harness from `tests/gateway/core/dispatch-run-as.test.ts` lines 15–51 (fake `turns.enqueueTurn` capturing jobs; `verifyJobToken` to read claims), then:
+`tests/gateway/core/dispatch-remote.test.ts` — copy the imports (lines 1–6) and `function harness(lockOwner)` (lines 15–51) **verbatim** from `tests/gateway/core/dispatch-run-as.test.ts`. The harness stubs `agent.resolveEffectiveIdentity` to return `lockOwner`, which is where dispatch gets `runAsUser`; the DB lock rows below must agree with it because `activeRemoteTarget` reads the real tables. Then:
 
 ```ts
+import { afterEach } from "bun:test";
 import * as OneOnOne from "../../../src/db/one-on-one";
 import * as Remote from "../../../src/db/remote";
 import { sessionConfigFp } from "../../../src/remote/fingerprint";
 
+const META = { teamId: "TTESTTEAM1", channelId: "C1", threadTs: "1.1", eventTs: "1.1" };
+const SESSION = { id: "S1" } as unknown as SessionRow;
+
 describe("dispatch remote claims", () => {
   beforeEach(async () => {
+    process.env.SLAUDE_JOB_SECRET = "test-secret";
     process.env.SLAUDE_REMOTE = "1";
     await OneOnOne._wipeForTests();
     await Remote._wipeForTests();
   });
+  afterEach(() => { delete process.env.SLAUDE_REMOTE; });
 
   it("adds remote + fp when the target belongs to the lock owner", async () => {
-    await OneOnOne.lock({ channelId: "C1", threadTs: "1.0", lockedUser: "U_A", createdBy: "U_A" });
-    await Remote.setTarget({ channelId: "C1", threadTs: "1.0", teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r", lockByRemote: true });
-    const claims = await dispatchAndReadClaims({ channelId: "C1", threadTs: "1.0", userId: "U_A" });
-    expect(claims.remote).toEqual({ addr: "tcA", dir: "/r" });
-    expect(claims.sessionConfigFp).toBe(sessionConfigFp("U_A", { addr: "tcA", dir: "/r" }));
+    await OneOnOne.lock({ channelId: "C1", threadTs: "1.1", lockedUser: "UTESTA", createdBy: "UTESTA" });
+    await Remote.setTarget({ channelId: "C1", threadTs: "1.1", teamId: "TTESTTEAM1", userId: "UTESTA", addr: "tcA", dir: "/r", lockByRemote: true });
+    const h = harness("UTESTA");
+    await h.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTA" });
+    expect(h.claims().runAs).toBe("user:UTESTA");
+    expect(h.claims().remote).toEqual({ addr: "tcA", dir: "/r" });
+    expect(h.claims().sessionConfigFp).toBe(sessionConfigFp("UTESTA", { addr: "tcA", dir: "/r" }));
+    await h.dispatch.close();
   });
 
-  it("no remote claim when the lock owner changed; fp still minted", async () => {
-    await OneOnOne.lock({ channelId: "C1", threadTs: "1.0", lockedUser: "U_MGR", createdBy: "U_MGR" });
-    await Remote.setTarget({ channelId: "C1", threadTs: "1.0", teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r", lockByRemote: true });
-    const claims = await dispatchAndReadClaims({ channelId: "C1", threadTs: "1.0", userId: "U_MGR" });
-    expect(claims.remote).toBeUndefined();
-    expect(claims.sessionConfigFp).toBe(sessionConfigFp("U_MGR", null));
+  it("no remote claim when the lock moved to someone else; fp still minted", async () => {
+    await OneOnOne.lock({ channelId: "C1", threadTs: "1.1", lockedUser: "UTESTMGR", createdBy: "UTESTMGR" });
+    await Remote.setTarget({ channelId: "C1", threadTs: "1.1", teamId: "TTESTTEAM1", userId: "UTESTA", addr: "tcA", dir: "/r", lockByRemote: true });
+    const h = harness("UTESTMGR");
+    await h.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTMGR" });
+    expect(h.claims().remote).toBeUndefined();
+    expect(h.claims().sessionConfigFp).toBe(sessionConfigFp("UTESTMGR", null));
+    await h.dispatch.close();
+  });
+
+  it("an ordinary (agent) thread gets no remote claim", async () => {
+    const h = harness(undefined);
+    await h.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTA" });
+    expect(h.claims().remote).toBeUndefined();
+    expect(h.claims().sessionConfigFp).toBe(sessionConfigFp(null, null));
+    await h.dispatch.close();
   });
 
   it("flag off: neither claim", async () => {
     delete process.env.SLAUDE_REMOTE;
-    const claims = await dispatchAndReadClaims({ channelId: "C1", threadTs: "1.0", userId: "U_A" });
-    expect(claims.remote).toBeUndefined();
-    expect(claims.sessionConfigFp).toBeUndefined();
+    const h = harness("UTESTA");
+    await h.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTA" });
+    expect(h.claims().remote).toBeUndefined();
+    expect(h.claims().sessionConfigFp).toBeUndefined();
+    await h.dispatch.close();
   });
 });
 ```
 
-where `dispatchAndReadClaims` is the harness's dispatch call followed by `verifyJobToken(enqueued.at(-1).jobToken)` returning `claims` — write it in the file using the harness's own helper names.
+(The copied import block already brings `beforeEach`, `describe`, `expect`, `test`, `verifyJobToken`, `makeQueueDispatch` and `SessionRow`; use `it` from `bun:test` or rename to `test` consistently.)
 
 - [ ] **Step 4: Implement in `dispatch.ts`**
 
@@ -3526,6 +3763,9 @@ Requires the deployment to set `SLAUDE_REMOTE=1`.
   - `toolAliases` finding: disallowing built-ins made the model hunt for them with `ToolSearch`; enabling them plus aliases keeps native schemas, and hooks see the post-alias name — so a `PreToolUse` deny on built-in names is a clean guard.
   - tailcat's SSH server runs `$SHELL -c` non-login with a minimal PATH; macOS lacks `setsid` and `rg`; closing an exec channel without a pty orphans the process → perl `setpgrp` + group kill.
   - The node reload gap and the signed `sessionConfigFp` fix.
+  - Key custody: private key encrypted at rest, served only to a user-scoped remote-mode turn, held only in the helper's memory. The tailcat address is not secret once key auth is required, but it does travel in the job token and therefore sits in the queue's job data (Redis) for the job's lifetime.
+  - A connection drop during a command is reported, never retried: re-running a half-executed command is worse than surfacing the drop.
+  - Background jobs survive session reboots and are cleaned up when remote mode ends, from the gateway, so it works even if no further turn reaches a node.
   - Spike numbers from spec §8.
 
 - [ ] **Step 4: CLAUDE.md index** — add at the top of the Findings Log list:
@@ -3568,3 +3808,5 @@ git commit -m "docs(remote): guide, field note, and tailcat in the runtime image
 3. **No `slaude remote-helper` CLI subcommand.** The helper is spawned directly as `bun src/remote/helper-main.ts`; a subcommand adds nothing.
 4. **No sim YAML scenario.** Scenario transcripts run with default env (flag off) and cannot fake the network pre-flight; `tests/gateway/core/remote-command.test.ts` covers the same flows through the handler with injected deps.
 5. **Glob semantics:** without ripgrep, a pattern without a directory part (e.g. `*.ts`) matches at any depth (find's `*` spans `/`), where the built-in matches top level only.
+6. **Background jobs survive session reboots and idle timeouts** (spec §5.2 said "session end"). Reboots happen for many reasons (reload, `stream_closed`, idle TTL, `/mcp connect`) that the user never sees as "ending" anything; killing a long build on each would be surprising. Jobs are killed when remote mode ends — `/remote off`, `/1on1 off`/open/owner change (from the gateway, best-effort), or a changed target at the next boot.
+7. **Plan mode** denies remote Write/Edit/Bash, matching the SDK's treatment of the built-ins (the spec did not mention plan mode).
