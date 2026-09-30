@@ -42,22 +42,37 @@ redirect coming back to "a gateway".
 
 ### 3.1 The portal carries its own flow state, in the browser
 
-The portal runs its own OAuth round trip. When someone starts a connect, the
-gateway prepares the authorization URL and puts everything needed to finish the
-exchange into a **short-lived signed cookie**: the OAuth `state`, the PKCE
-verifier, the server name, and the account the flow belongs to. The provider
-redirects to `/portal/oauth/callback` on the deployment's public URL, and
-whichever replica receives it reads the cookie, verifies the signature, and
-completes the exchange.
+The portal runs its own OAuth round trip, and the provider redirects to
+`/portal/oauth/callback` on the deployment's public URL, so whichever replica
+receives the callback can finish it. What differs from the panel's login is
+where the in-flight state lives.
 
-This is the pattern the panel's login already uses — flow state in a signed
-cookie instead of a server-side store — and it makes the portal connect
-replica-safe by construction rather than by routing configuration. No loopback
-listener is involved, and nothing needs sticky sessions.
+The panel keeps its login flow entirely in a signed cookie. That cannot work
+here: finishing an MCP connect needs the **client secret** issued by dynamic
+registration, and a signed cookie's payload is base64, readable by the person in
+their own browser. Phase 3 put real effort into keeping secrets off every
+machine but the gateway; shipping one to the browser to save a table would undo
+that.
 
-The cookie is `HttpOnly`, `Secure`, `SameSite=Lax`, scoped to the portal's
-callback path, and lives ten minutes. `SameSite=Lax` still sends it on the
-provider's top-level redirect, which is exactly the request that needs it.
+So the flow is split:
+
+- A **single-use row** holds what the exchange needs — client id, client secret,
+  PKCE verifier, token endpoint, server name and URL, the OAuth `state`, and the
+  account it belongs to. The payload is encrypted with the same AES-256-GCM seam
+  as the credential store, expires after ten minutes, and is deleted the moment
+  it is used.
+- A **signed cookie** holds only that row's opaque id. It binds the flow to the
+  browser that started it, so a leaked authorization URL cannot be completed
+  from somewhere else, and it carries no secret.
+
+The cookie is `HttpOnly`, `Secure`, `SameSite=Lax` and scoped to the callback
+path. `SameSite=Lax` still sends it on the provider's top-level redirect, which
+is the one request that needs it.
+
+The row lives in the database rather than Redis so a single-process `mono`
+deployment works unchanged, and `pending_gates` is not reused: it requires a
+session id, which a portal flow has none of, and stores its payload in plain
+text.
 
 ### 3.2 The Slack-side connect is left as it is
 
@@ -118,7 +133,12 @@ server this deployment does not configure.
 
 ## 5. Storage
 
-Nothing new. A completed portal connect writes through phase 3's store with an
+One new table, `portal_oauth_flows`: id, account id, encrypted payload, expiry,
+creation time. Single use — deleted on completion — and swept on expiry, so it
+never accumulates. It holds an in-flight authorization for at most ten minutes
+and nothing after that.
+
+The credential itself is nothing new. A completed portal connect writes through phase 3's store with an
 account owner, exactly as a 1:1 `/mcp connect` does, so a credential connected
 in the portal and one connected in Slack are the same row. Disconnect deletes
 that row, scoped to the caller's own account.
@@ -137,9 +157,10 @@ state, not a problem to interrupt someone about.
 
 ## 7. Failure modes
 
-**The flow cookie is missing or expired at the callback.** Ten minutes passed,
-or the person started in another browser. The callback says so and offers to
-start again. Nothing is written.
+**The flow cookie or its row is missing or expired at the callback.** Ten
+minutes passed, the person started in another browser, or the row was already
+used. The callback says so and offers to start again. Nothing is written, and a
+replayed callback finds no row because the first use deleted it.
 
 **The `state` does not match the cookie.** Refused outright, nothing written.
 This is the forgery case, and it is why state lives in the signed cookie rather
@@ -164,8 +185,10 @@ second succeeds. One credential, no partial state.
    connect` would have written, and is used by that person's next 1:1 turn.
 3. Disconnecting removes only the caller's own credential.
 4. The integrations list never contains a token, and neither does any error.
-5. A callback with no cookie, an expired cookie, or a mismatched state writes
-   nothing.
+5. A callback with no cookie, an expired cookie or row, a mismatched state, or a
+   replay of an already-used flow writes nothing.
+10. No client secret, refresh token or verifier ever reaches the browser, in a
+    cookie or anywhere else.
 6. Connect and disconnect are refused without the anti-CSRF header.
 7. Opening a 1:1 unlinked posts the onboarding link ephemerally; opening it
    linked posts nothing; neither blocks the turn.
