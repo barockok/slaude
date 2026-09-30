@@ -10,9 +10,25 @@ export function tailcatSocket(addr: string, bin = "tailcat"): SocketFactory {
     const p = spawn(bin, [addr, "22"], { stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" } });
     // tailcat logs progress lines ("# Selected ...") on stderr: drop them; they include the address.
     p.stderr.on("data", () => {});
-    const d = Duplex.from({ readable: p.stdout, writable: p.stdin });
-    d.on("close", () => p.kill());
-    p.on("exit", () => d.destroy());
+    // A hand-rolled Duplex: Duplex.from() over the child's pipes does not reliably
+    // emit 'error'/'close' when destroyed, and ssh2 only notices a dead transport through them.
+    const d = new Duplex({
+      read() { p.stdout!.resume(); },
+      write(chunk, _enc, cb) { p.stdin!.write(chunk, cb); },
+      final(cb) { p.stdin!.end(cb); },
+      destroy(err, cb) { p.kill(); cb(err); },
+    });
+    // The error can land before the SSH client has attached its own listener.
+    d.on("error", () => {});
+    p.stdout!.on("data", (c) => { if (!d.push(c)) p.stdout!.pause(); });
+    p.stdout!.on("end", () => d.push(null));
+    // Bun also surfaces a failed spawn on the child's pipes.
+    p.stdin!.on("error", () => {});
+    p.stdout!.on("error", (e) => d.destroy(e));
+    p.stderr!.on("error", () => {});
+    // A missing binary (ENOENT) is an async 'error' on the child; without a listener it crashes the process.
+    p.on("error", (e) => d.destroy(e));
+    p.on("close", () => d.destroy());
     return d;
   };
 }
