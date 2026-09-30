@@ -24,7 +24,12 @@ export interface PortalFlow {
   /** Pinned at connect, so a hostile server cannot redirect the exchange later. */
   tokenEndpoint: string;
   serverName: string;
-  serverUrl: string;
+  /**
+   * The server config as configured, not just its URL. oauthKey hashes type,
+   * url AND headers, so a credential stored under a reconstructed config would
+   * be filed under a key no session ever reads.
+   */
+  cfg: { type: string; url: string; headers?: Record<string, string> };
   state: string;
 }
 
@@ -41,7 +46,10 @@ function isFlow(v: unknown): v is PortalFlow {
     typeof f.verifier === "string" &&
     typeof f.tokenEndpoint === "string" &&
     typeof f.serverName === "string" &&
-    typeof f.serverUrl === "string" &&
+    !!f.cfg &&
+    typeof f.cfg === "object" &&
+    typeof f.cfg.type === "string" &&
+    typeof f.cfg.url === "string" &&
     typeof f.state === "string"
   );
 }

@@ -16,7 +16,7 @@ const flow = (state: string): Flows.PortalFlow => ({
   verifier: "pkce-verifier-1",
   tokenEndpoint: "https://mcp.example.com/token",
   serverName: "workbench",
-  serverUrl: "https://mcp.example.com",
+  cfg: { type: "http", url: "https://mcp.example.com", headers: { "x-api-key": "static-key" } },
   state,
 });
 
