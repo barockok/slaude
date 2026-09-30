@@ -18,7 +18,15 @@ const MAX_TIMEOUT = 600_000;
 const CWD_MARK = "__SLAUDE_CWD__";
 const JOB_ID = /^[0-9a-f]{8}$/;
 
-const bgDir = (key: string) => `"$HOME"/.slaude-bg/${sanitizeKey(key)}`;
+const bgDir = (key: string) => {
+  const k = sanitizeKey(key);
+  // An empty key would make the dir the parent of every session's jobs.
+  if (!k) throw new Error("invalid session key for background jobs");
+  return `"$HOME"/.slaude-bg/${k}`;
+};
+
+/** Shell: skip (continue) unless $P is a plain decimal pid >= 2 — never `kill -0`, `-1`, or junk. */
+const BAD_PID = `case "$P" in ''|*[!0-9]*|0*|1) continue;; esac`;
 
 export async function bashTool(
   ctx: BashCtx,
@@ -64,10 +72,12 @@ export async function bashOutputTool(ctx: BashCtx, i: { bash_id: string }): Prom
   const d = bgDir(ctx.sessionKey);
   const off = ctx.bg.get(i.bash_id) ?? 0;
   const cmd =
-    `D=${d}; [ -e "$D/${i.bash_id}.pid" ] || { echo __NOJOB__ >&2; exit 2; }; ` +
-    `tail -c +${off + 1} "$D/${i.bash_id}.log"; printf '\\n__SLAUDE_BG__'; ` +
-    `if [ -e "$D/${i.bash_id}.exit" ]; then printf 'exit:'; cat "$D/${i.bash_id}.exit"; ` +
-    `elif kill -0 -"$(cat "$D/${i.bash_id}.pid")" 2>/dev/null; then echo running; else echo killed; fi`;
+    `D=${d}; F="$D/${i.bash_id}"; { [ -e "$F.pid" ] || [ -e "$F.killed" ]; } || { echo __NOJOB__ >&2; exit 2; }; ` +
+    `tail -c +${off + 1} "$F.log"; printf '\\n__SLAUDE_BG__'; ` +
+    // A finished or killed job's pgid may have been reused: never probe it.
+    `if [ -e "$F.exit" ]; then printf 'exit:'; cat "$F.exit"; elif [ -e "$F.killed" ]; then echo killed; ` +
+    `else P=$(cat "$F.pid" 2>/dev/null); case "$P" in ''|*[!0-9]*|0*|1) echo unknown;; ` +
+    `*) if kill -0 -"$P" 2>/dev/null; then echo running; else echo killed; fi;; esac; fi`;
   const r = await ctx.exec(cmd, { timeoutMs: 30_000 });
   if (r.stderr.includes("__NOJOB__")) return fail(`No background job with ID ${i.bash_id}`);
   const at = r.stdout.lastIndexOf("\n__SLAUDE_BG__");
@@ -82,9 +92,12 @@ export async function bashKillTool(ctx: BashCtx, i: { shell_id: string }): Promi
   if (!JOB_ID.test(i.shell_id)) return fail(`No background job with ID ${i.shell_id}`);
   const d = bgDir(ctx.sessionKey);
   const cmd =
-    `PG=$(cat ${d}/${i.shell_id}.pid 2>/dev/null) || { echo __NOJOB__ >&2; exit 2; }; ` +
-    `kill -TERM -"$PG" 2>/dev/null; i=0; while [ $i -lt 5 ]; do kill -0 -"$PG" 2>/dev/null || exit 0; sleep 1; i=$((i+1)); done; ` +
-    `kill -KILL -"$PG" 2>/dev/null; exit 0`;
+    `D=${d}; F="$D/${i.shell_id}"; [ -e "$F.pid" ] || { echo __NOJOB__ >&2; exit 2; }; P=$(cat "$F.pid" 2>/dev/null); ` +
+    // Signal only a valid pid (>= 2) of a job that has not finished (its pgid may be reused).
+    `if [ ! -e "$F.exit" ]; then case "$P" in ''|*[!0-9]*|0*|1) :;; ` +
+    `*) kill -TERM -"$P" 2>/dev/null; i=0; while [ $i -lt 5 ]; do kill -0 -"$P" 2>/dev/null || break; sleep 1; i=$((i+1)); done; ` +
+    `kill -0 -"$P" 2>/dev/null && kill -KILL -"$P" 2>/dev/null;; esac; fi; ` +
+    `rm -f "$F.pid"; : > "$F.killed"; exit 0`;
   const r = await ctx.exec(cmd, { timeoutMs: 30_000 });
   if (r.stderr.includes("__NOJOB__")) return fail(`No background job with ID ${i.shell_id}`);
   return ok(`Killed background job ${i.shell_id}`);
@@ -95,7 +108,7 @@ export function cleanupCommand(sessionKey: string): string {
   const d = bgDir(sessionKey);
   return (
     `D=${d}; [ -d "$D" ] || exit 0; ` +
-    `for f in "$D"/*.pid; do [ -e "$f" ] || continue; kill -TERM -"$(cat "$f")" 2>/dev/null; done; sleep 2; ` +
-    `for f in "$D"/*.pid; do [ -e "$f" ] || continue; kill -KILL -"$(cat "$f")" 2>/dev/null; done; rm -rf "$D"`
+    `for f in "$D"/*.pid; do [ -e "$f" ] || continue; [ -e "\${f%.pid}.exit" ] && continue; P=$(cat "$f" 2>/dev/null); ${BAD_PID}; kill -TERM -"$P" 2>/dev/null; done; sleep 2; ` +
+    `for f in "$D"/*.pid; do [ -e "$f" ] || continue; [ -e "\${f%.pid}.exit" ] && continue; P=$(cat "$f" 2>/dev/null); ${BAD_PID}; kill -KILL -"$P" 2>/dev/null; done; rm -rf "$D"`
   );
 }

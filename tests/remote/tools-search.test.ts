@@ -29,6 +29,21 @@ describe("glob", () => {
     expect(out).toContain(join(root, "src/a.ts"));
     expect(out.some((l: string) => l.includes(".git"))).toBe(false);
   });
+  it("`**/name` and `dir/**/name` match at every depth, including zero directories", async () => {
+    writeFileSync(join(root, "package.json"), "{}\n");
+    writeFileSync(join(root, "src/lib/package.json"), "{}\n");
+    writeFileSync(join(root, "src/b.ts"), "x\n");
+    const pj = text(await globTool(ctx(), { pattern: "**/package.json" })).split("\n");
+    expect(pj).toContain(join(root, "package.json"));
+    expect(pj).toContain(join(root, "src/lib/package.json"));
+    const b = text(await globTool(ctx(), { pattern: "**/b.ts" })).split("\n");
+    expect(b).toContain(join(root, "src/b.ts"));
+    expect(b).toContain(join(root, "src/lib/b.ts"));
+    const sb = text(await globTool(ctx(), { pattern: "src/**/b.ts" })).split("\n");
+    expect(sb).toContain(join(root, "src/b.ts"));
+    expect(sb).toContain(join(root, "src/lib/b.ts"));
+    expect(sb).not.toContain(join(root, "package.json"));
+  });
   it("reports no files", async () => {
     expect(text(await globTool(ctx(), { pattern: "**/*.rs" }))).toBe("No files found");
   });

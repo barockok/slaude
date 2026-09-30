@@ -5,10 +5,25 @@ import { fail, ok, resolveRemotePath, type FileCtx, type ToolText } from "./file
 const SEARCH_TIMEOUT = 60_000;
 const GLOB_LIMIT = 100;
 
-/** Glob → find(1) -path pattern. find's `*` already spans `/`, so `**\/` collapses to nothing. */
-function globToFind(pattern: string): string {
-  return "./" + pattern.replace(/^\.\//, "").replace(/\*\*\//g, "");
+const MAX_STAR_DIRS = 3;
+
+/**
+ * Glob → find(1) `-path` patterns. find's `*` already spans `/`, so each `**\/`
+ * ("zero or more directories") becomes two alternatives: "" and `*\/`.
+ * Occurrences beyond the cap are treated as `*\/`.
+ */
+function globToFind(pattern: string): string[] {
+  const parts = pattern.replace(/^\.\//, "").split("**/");
+  let variants = [parts[0]!];
+  for (let k = 1; k < parts.length; k++) {
+    const seps = k <= MAX_STAR_DIRS ? ["", "*/"] : ["*/"];
+    variants = variants.flatMap((v) => seps.map((s) => v + s + parts[k]!));
+  }
+  return variants.map((v) => "./" + v);
 }
+
+/** `\( -path A -o -path B \)`, every pattern quoted. */
+const findPaths = (pattern: string) => `\\( ${globToFind(pattern).map((p) => `-path ${shq(p)}`).join(" -o ")} \\)`;
 
 export async function globTool(ctx: FileCtx, i: { pattern: string; path?: string }): Promise<ToolText> {
   let base: string;
@@ -16,7 +31,7 @@ export async function globTool(ctx: FileCtx, i: { pattern: string; path?: string
   const cmd =
     `cd ${shq(base)} || exit 2; ` +
     `if command -v rg >/dev/null 2>&1; then rg --files --hidden -g '!.git' -g ${shq(i.pattern)}; ` +
-    `else find . -type f -not -path '*/.git/*' -path ${shq(globToFind(i.pattern))} | sed 's|^\\./||'; fi ` +
+    `else find . -type f -not -path '*/.git/*' ${findPaths(i.pattern)} | sed 's|^\\./||'; fi ` +
     `| perl -ne 'chomp; my @s = stat $_; print "$s[9]\\t$_\\n"' | sort -rn | head -n ${GLOB_LIMIT} | cut -f2-`;
   const r = await ctx.exec(cmd, { timeoutMs: SEARCH_TIMEOUT });
   if (r.code !== 0 && !r.stdout) return fail(r.stderr.trim() || "glob failed");
