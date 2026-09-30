@@ -3,6 +3,7 @@
  * operator panel with its own guard — an ordinary user never reaches an operator
  * route, and the panel's guard is not relaxed to let them in.
  *
+ *   GET    /portal              the app shell (React, served statically)
  *   GET    /portal/auth/*      sign-in (./auth-routes)
  *   GET    /portal/api/me      the signed-in account and its Slack identities
  *   GET    /portal/link?t=…    confirmation page for an onboarding link
@@ -29,6 +30,7 @@ import { guardPortal } from "./guard";
 import { verifyLinkToken } from "./link-token";
 import { configuredServer, configuredServers, integrationsFor, type ConfiguredServers } from "./integrations";
 import { finishPortalConnect, startPortalConnect, type PortalConnectDeps } from "./oauth";
+import { servePortalStatic } from "./static";
 import {
   clearCookie,
   mintPortalOauthFlow,
@@ -298,6 +300,16 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
         if (!code) return back("failed");
         const done = await finishPortalConnect(guarded.account.id, cookie.flowId, code, state, connectDeps);
         return back(done.ok ? "connected" : done.reason);
+      }
+
+      // Anything else under /portal that is not an API path is the app itself.
+      // Guarded, so an unauthenticated visitor is sent to sign in rather than
+      // being handed a shell that can only show them a 401.
+      if (req.method === "GET" && seg[1] !== "api" && seg[1] !== "oauth") {
+        const guarded = await guardPortal(req, { html: true });
+        if (!guarded.ok) return guarded.response;
+        const asset = await servePortalStatic(url.pathname);
+        if (asset) return asset;
       }
 
       return json(404, { error: "not found" });

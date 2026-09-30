@@ -4,7 +4,7 @@
  * Two boundaries are load-bearing here: the owner is always the signed-in
  * account and never anything the request names, and no response carries a token.
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { db } from "../../../src/db/schema";
 import * as Accounts from "../../../src/db/accounts";
 import * as Creds from "../../../src/db/mcp-credentials";
@@ -310,6 +310,10 @@ describe("DELETE /portal/api/integrations/:name", () => {
 describe("with the portal disabled", () => {
   beforeEach(() => {
     process.env.SLAUDE_PORTAL = "";
+  });
+  // Restored, or the next test file inherits a disabled portal.
+  afterEach(() => {
+    process.env.SLAUDE_PORTAL = "1";
   });
 
   test("every integrations route falls through as if it did not exist", async () => {
