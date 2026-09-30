@@ -16,7 +16,7 @@
 - Root `bunfig.toml` enforces coverage thresholds: line 0.97, function 0.80, statement 0.97. Everything under `e2e/mock-llm/core/` is loaded in-process by tests and must stay covered. `server.ts` and `main.ts` are exercised only in a spawned child process, so they are not loaded in-process and do not count.
 - Root `tsc --noEmit` typechecks `e2e/`; it must stay clean (`bun run typecheck`).
 - `@copilotkit/aimock` is pinned to the exact version `1.43.0` in root `devDependencies` (no caret).
-- Statelessness rule: a response is a pure function of the request (body plus headers). No server-side counters, no `sequenceIndex`, no `turnIndex`. The only mutable state allowed is the request journal, which is observation only and never influences a reply.
+- Statelessness rule: a response is a pure function of the request (body plus headers). No server-side counters, no `sequenceIndex`, no `turnIndex`. The only mutable state allowed is the request journal, which is observation only and never influences a reply. Amended after the Task 1 spike (see the Ruling in the ledger): the one exception is a fault-only per-(system prompt, history) attempt counter in the front handler, which never changes reply content.
 - Scenario tag grammar: `[[mock:<name> key=value key=value]]`, lowercase names and keys, values contain no whitespace or `]`. The current turn's tag is the tag in the **most recent user message that carries one**.
 - Persona marker: a test persona's `SOUL.md` contains a line `Persona-ID: <id>`; the mock reads it from the system prompt.
 - Public repo: no real names, org names, workspace or channel identifiers, or internal service names anywhere (code, tests, comments, docs, commit messages). Use placeholders.

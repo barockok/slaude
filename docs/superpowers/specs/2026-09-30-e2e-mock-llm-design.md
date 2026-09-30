@@ -78,10 +78,14 @@ killed on one node is re-delivered to another and sends the same history again.
 - Persona: read from a `Persona-ID: <id>` line that each test persona's
   `SOUL.md` contains, and echoed in replies, so tests can assert the right
   identity answered.
-- Faults: derived from the tag and the request headers, applied by the front
-  handler. The Anthropic SDK sends `x-stainless-retry-count`, so "fail 529 on the
-  first attempt" is `retry-count < 1` and needs no state. The spike must confirm
-  the Claude CLI passes it through.
+- Faults: derived from the tag and applied by the front handler. The spike showed
+  the client's `x-stainless-retry-count` stays at 0 after a 529, so it cannot
+  drive retries. Instead the front handler keeps a per-(system prompt, history)
+  attempt counter: the one deliberate stateful exception to this rule. It is
+  fault-only and never changes reply content. Consequence for replicas: a retry
+  may land on another replica, so fault scenarios needing more than one attempt
+  (`until-retry` of 2 or more) require a single replica or client-IP affinity,
+  and test prompts must be unique per case and per persona.
 
 ### Spike (runs before any of the above is built)
 
@@ -160,7 +164,7 @@ Building blocks: `say`, `tool(name, args)`, `think`, `stream(chunks, tps)`,
 |---|---|---|---|
 | `echo` | Reply with persona name and echoed text | Ingress, engagement, threaded reply | Baseline; persona identity |
 | `multi-tool n=K` | K sequential tool calls, then a summary | Tool loop, status line | Kill the node at tool *i* of K |
-| `long-stream chunks=N tps=T` | Long slow stream | mrkdwn conversion, message splitting | Window for a mid-stream SIGKILL |
+| `long-stream chunks=N interval=<dur>` | Long slow stream | mrkdwn conversion, message splitting | Window for a mid-stream SIGKILL |
 | `think` | Thinking blocks, then answer | Thinking is not posted to Slack | Leak check |
 | `approval` | Call `surface__request_approval`; final text depends on approve/deny result | Approval gate, Block Kit buttons | Click lands on the replica that did not post the card |
 | `surface-tools` | `surface__react`, `edit`, `upload`, `get_history` | Slack surface tools | Same tools from either replica |
