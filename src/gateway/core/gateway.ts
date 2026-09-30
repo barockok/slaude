@@ -39,6 +39,7 @@ import { createPortalApi } from "../portal/api";
 import { persistConnect, persistDisconnect } from "../../agent/mcp-oauth/persist";
 import { importOnDiskCredentials } from "./credential-import";
 import { mintLinkToken } from "../portal/link-token";
+import { nudgeOnboarding } from "../portal/onboarding-nudge";
 import { accountForSlackUser } from "../../db/accounts";
 import { makeDeferQueue } from "../panel/defer-queue";
 import { suppressibleSurface } from "../panel/suppress";
@@ -1457,6 +1458,31 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           await OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId });
           agent.reload(session.id);
           await reply(`:lock: *1on1 mode* — only <@${userId}> and the manager will be heard in this thread. \`/1on1 off\` to release. Ask me to open it to guests when needed.`);
+          // Onboarding unlocks this person's own integrations; it never gates
+          // the 1:1, which is already open above. So a failure here is logged
+          // and dropped rather than turned into an error they cannot act on.
+          try {
+            const nudgeSurface = surfaceFactoryFor(dispatch?.personaId)({
+              conversationId: channelId,
+              threadRef: threadTs,
+              inboundRef: threadTs,
+              userId,
+              teamId,
+              requestApproval: async () => { throw new Error("approval is not part of onboarding"); },
+              reloadSession: () => false,
+            });
+            await nudgeOnboarding(
+              { teamId, slackUserId: userId },
+              {
+                sayEphemeral:
+                  nudgeSurface.capabilities.has("ephemeral") && nudgeSurface.sayEphemeral
+                    ? (text) => nudgeSurface.sayEphemeral!({ text, userId })
+                    : undefined,
+              },
+            );
+          } catch (e) {
+            console.error("[portal] onboarding nudge failed:", e);
+          }
           return;
         }
         if (slash.action === "lock") {
