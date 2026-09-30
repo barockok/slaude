@@ -87,3 +87,30 @@ is sent to a listener bound inside one pod, so the flow has to finish where it
 started. That is the local and same-host mode, where there is one process
 anyway. Paste-back is the mode k8s deployments use, and it is the one that
 needed this.
+
+## A harness that reported the wrong thing
+
+Verifying this on the cluster failed 5 of 12, then 9 of 12, then — after I
+checked by hand — turned out to have been passing all along.
+
+`probe()` threw away stderr and printed nothing when its `kubectl exec` failed,
+and `field()` turned empty input into an empty string. So a failed exec reached
+the assertion as a *value*, and came out as `only  of 6 completed on the
+survivor`. The empty space where the number should be was the only clue. Every
+turn had in fact completed; the probe simply could not be reached while the
+apiserver was restarting.
+
+Worse, every call into the cluster was unbounded, so an apiserver that stopped
+answering mid-run hung the script instead of failing it — 34 minutes inside
+`probe cron` with nothing printed.
+
+Both are now fixed: calls are bounded by `PROBE_TIMEOUT`, a failed probe says why
+on stderr and returns non-zero with no stdout, and `expect_value` reports
+**COULD NOT MEASURE** separately from a wrong number. The run is 12 of 12.
+
+**A test that cannot tell "I could not measure" from "I measured zero" will
+eventually report the second when it means the first.** That is strictly worse
+than no result: a red result gets debugged, and this one sent me looking for a
+delivery bug that did not exist. It is the third misleading failure this
+particular harness has produced, which is the actual signal — the earlier two
+were a placeholder model string and a cleanup racing its own retries.
