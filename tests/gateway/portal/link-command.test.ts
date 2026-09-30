@@ -16,6 +16,12 @@ import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 const ISS = "https://idp.example.com/realms/slaude";
 const TEAM = "TTESTTEAM1";
 
+// Event ids must differ across tests, or the gateway's dedup drops the second
+// message as already seen. Date.now() alone collides whenever two of these
+// tests land in the same millisecond, which they do — they take well under one.
+let eventSeq = 0;
+const nextTs = () => `${Date.now()}.${++eventSeq}`;
+
 function harness() {
   const posts: any[] = [];
   const ephemeral: any[] = [];
@@ -48,7 +54,7 @@ function harness() {
         channel_type: who.channel ? "channel" : "im",
         user: who.userId,
         team: who.teamId ?? TEAM,
-        ts: `${Date.now()}.1`,
+        ts: nextTs(),
         text,
       },
       client: t.client,

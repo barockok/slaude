@@ -38,6 +38,61 @@ export interface PreparedConnect {
    *  returned on the callback against this. */
   state: string;
   exchange(code: string): Promise<OAuthTokens>;
+  /** Everything `exchange` closes over, as plain values.
+   *
+   *  A caller that cannot keep the closure alive until the callback arrives —
+   *  the portal, where the browser may come back to another replica — stores
+   *  these instead and calls `exchangeAuthCode` itself. They include the client
+   *  secret dynamic registration issued, so they belong in encrypted storage
+   *  and never in anything the browser can read. */
+  parts: ExchangeParts;
+}
+
+/** The values a token exchange needs, independent of any one process. */
+export interface ExchangeParts {
+  tokenEndpoint: string;
+  redirectUri: string;
+  clientId: string;
+  clientSecret?: string;
+  verifier: string;
+  /** The MCP server URL, sent as the RFC 8707 `resource`. */
+  resource: string;
+}
+
+/** Redeem an authorization code. The single implementation behind both connect
+ *  paths and the portal's, so a stored flow exchanges exactly as an in-process
+ *  one does. Never echoes the provider's body into the message: an
+ *  error_description can name a token. */
+export async function exchangeAuthCode(
+  parts: ExchangeParts,
+  code: string,
+  fetchImpl: FetchLike = fetch as any,
+): Promise<OAuthTokens> {
+  const res = await fetchImpl(parts.tokenEndpoint, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: parts.redirectUri,
+      client_id: parts.clientId,
+      code_verifier: parts.verifier,
+      resource: parts.resource,
+    }).toString(),
+  });
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error(`token exchange failed (status ${res.status})`);
+  }
+  const j = await res.json();
+  if (!j?.access_token) throw new Error("token response missing access_token");
+  return {
+    clientId: parts.clientId,
+    clientSecret: parts.clientSecret,
+    accessToken: j.access_token,
+    refreshToken: j.refresh_token,
+    tokenEndpoint: parts.tokenEndpoint,
+    expiresIn: j.expires_in,
+  };
 }
 
 /** Listener-free core of the OAuth flow: validate metadata, register the client
@@ -66,36 +121,16 @@ export async function prepareConnect(opts: PrepareConnectOpts): Promise<Prepared
   u.searchParams.set("resource", opts.serverConfig.url);
   const authorizeUrl = u.toString();
 
-  async function exchange(code: string): Promise<OAuthTokens> {
-    const res = await fetchImpl(opts.meta.tokenEndpoint, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: redirectUri,
-        client_id: client.clientId,
-        code_verifier: pkce.verifier,
-        resource: opts.serverConfig.url,
-      }).toString(),
-    });
-    if (res.status < 200 || res.status >= 300) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(`token exchange failed (status ${res.status}): ${JSON.stringify(body)}`);
-    }
-    const j = await res.json();
-    if (!j?.access_token) throw new Error("token response missing access_token");
-    return {
-      clientId: client.clientId,
-      clientSecret: client.clientSecret,
-      accessToken: j.access_token,
-      refreshToken: j.refresh_token,
-      tokenEndpoint: opts.meta.tokenEndpoint,
-      expiresIn: j.expires_in,
-    };
-  }
+  const parts: ExchangeParts = {
+    tokenEndpoint: opts.meta.tokenEndpoint,
+    redirectUri,
+    clientId: client.clientId,
+    clientSecret: client.clientSecret,
+    verifier: pkce.verifier,
+    resource: opts.serverConfig.url,
+  };
 
-  return { authorizeUrl, state, exchange };
+  return { authorizeUrl, state, parts, exchange: (code) => exchangeAuthCode(parts, code, fetchImpl) };
 }
 
 /** Loopback variant: bind an ephemeral listener, then register against its
@@ -132,34 +167,18 @@ export async function beginConnect(opts: BeginConnectOpts): Promise<ConnectHandl
   u.searchParams.set("resource", opts.serverConfig.url);
   const authorizeUrl = u.toString();
 
-  async function exchange(code: string): Promise<OAuthTokens> {
-    const res = await fetchImpl(opts.meta.tokenEndpoint, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: redirectUri,
-        client_id: client.clientId,
-        code_verifier: pkce.verifier,
-        resource: opts.serverConfig.url,
-      }).toString(),
-    });
-    if (res.status < 200 || res.status >= 300) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(`token exchange failed (status ${res.status}): ${JSON.stringify(body)}`);
-    }
-    const j = await res.json();
-    if (!j?.access_token) throw new Error("token response missing access_token");
-    return {
-      clientId: client.clientId,
-      clientSecret: client.clientSecret,
-      accessToken: j.access_token,
-      refreshToken: j.refresh_token,
-      tokenEndpoint: opts.meta.tokenEndpoint,
-      expiresIn: j.expires_in,
-    };
-  }
+  const parts: ExchangeParts = {
+    tokenEndpoint: opts.meta.tokenEndpoint,
+    redirectUri,
+    clientId: client.clientId,
+    clientSecret: client.clientSecret,
+    verifier: pkce.verifier,
+    resource: opts.serverConfig.url,
+  };
 
-  return { authorizeUrl, waitForCode: loopback.waitForCode, exchange };
+  return {
+    authorizeUrl,
+    waitForCode: loopback.waitForCode,
+    exchange: (code) => exchangeAuthCode(parts, code, fetchImpl),
+  };
 }

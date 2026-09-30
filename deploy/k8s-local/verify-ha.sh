@@ -39,6 +39,8 @@ redis() { k exec deploy/dev-redis -c redis -- redis-cli "$@" 2>/dev/null | tr -d
 ready() { k get deploy "$1" -o jsonpath='{.status.readyReplicas}' 2>/dev/null; }
 pods() { k get pod -l "$1" --field-selector=status.phase=Running -o jsonpath='{.items[*].metadata.name}' 2>/dev/null; }
 http() { k exec "$PROBE" -- curl -s -m 3 -o /dev/null -w '%{http_code}' "$1" 2>/dev/null || echo 000; }
+# A built shell references hashed assets; an unbuilt one references main.tsx.
+lacks_source_entry() { ! grep -q 'main\.tsx' <<<"$1"; }
 heartbeats() { redis --scan --pattern "$PREFIX:nodes:*" | sort; }
 
 wait_ready() { # <deployment> <replicas> <timeout-seconds>
@@ -274,6 +276,33 @@ else
     "dead node still in $PREFIX:nodeset after 90s" \
     [ -n "$reaped" ]
 fi
+
+# --- the web apps are actually in the image --------------------------------
+#
+# This is how the defect was found and the only way to see it: the apps build
+# fine locally and dist/ is gitignored, so an image that never built them ships
+# only Vite's SOURCE tree. The static server then falls back to it and serves
+# HTML referencing /src/main.tsx, which a browser cannot run. Nothing in the unit
+# suite can observe that, because nothing in the unit suite runs from the image.
+#
+# Checked against the image's own files rather than over HTTP, so it holds
+# whether or not this overlay enables the panel and the portal.
+section "web apps built into the image"
+
+gw_pod="$(pods "$GW_SEL" | awk '{print $1}')"
+for app in panel portal; do
+  shell="$(k exec "$gw_pod" -- cat "src/gateway/$app/web/dist/index.html" 2>/dev/null || true)"
+  expect "/$app has a built shell in the image" \
+    "src/gateway/$app/web/dist/index.html is missing — the image never built it" \
+    [ -n "$shell" ]
+  [[ -n "$shell" ]] || continue
+  expect "/$app shell references hashed assets" \
+    "/$app shell references no built asset" \
+    grep -qE "/$app/assets/[A-Za-z0-9_.-]+\\.(js|css)" <<<"$shell"
+  expect "/$app shell references no Vite source entry" \
+    "/$app shell still references a .tsx source entry" \
+    lacks_source_entry "$shell"
+done
 
 # --- summary ---------------------------------------------------------------
 section "result"

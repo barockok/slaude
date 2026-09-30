@@ -32,7 +32,17 @@ const PG_ONLY_TABLES = new Set([
 // mcp_credentials joins for the same reason in both of its owner kinds: a
 // person's row reaches tenancy through accounts, which is deployment-global,
 // and an agent's row already carries its tenant explicitly in agent_tenant.
-const NO_TENANT_TABLES = new Set(["pending_gates", "seen_events", "accounts", "slack_identities", "mcp_credentials"]);
+// portal_oauth_flows joins for the same reason as accounts: it hangs off an
+// account, which is deployment-global, and it holds one authorization for a few
+// minutes before deleting itself.
+const NO_TENANT_TABLES = new Set([
+  "pending_gates",
+  "seen_events",
+  "accounts",
+  "slack_identities",
+  "mcp_credentials",
+  "portal_oauth_flows",
+]);
 
 // Tables that exist only on sqlite (legacy; dropped from the pg schema).
 const SQLITE_ONLY_TABLES = new Set(["skill_usage"]);
