@@ -53,9 +53,13 @@ and Bun compatibility is undocumented (run it under Node in its own container).
 
 ### Shape
 
-- `e2e/mock-llm/` holds a small server entry point that embeds `LLMock`,
-  registers scenarios as code, and mounts any extra routes the spike finds.
-- Image: `node:alpine` plus the pinned aimock version plus the scenario files.
+- `e2e/mock-llm/` holds pure scenario logic (`core/`) and a small server that
+  embeds `LLMock` for happy-path content, behind a front HTTP handler. aimock's
+  `predicate` and `ResponseFactory` receive only the request body, not HTTP
+  headers, so the front handler owns everything that depends on the tag or
+  headers: fault injection, `count_tokens`, and a request journal.
+- Image: `node:alpine` plus one bundled server file (aimock included), built with
+  `bun build --target=node`.
 - Deployed as its own Deployment with 2 replicas. It is therefore stateless by
   construction; nothing may rely on which replica answers.
 
@@ -64,17 +68,20 @@ and Bun compatibility is undocumented (run it under Node in its own container).
 A response is a pure function of the request. This is required because a turn
 killed on one node is re-delivered to another and sends the same history again.
 
-- Scenario selection: a tag in the first user message, e.g.
-  `[[mock:multi-tool n=3]]`. One `predicate` per scenario parses it.
+- Scenario selection: a tag in the most recent user message that carries one,
+  e.g. `[[mock:multi-tool n=3]]`. "Most recent" rather than "first" so a resumed
+  thread's later turn, which carries its own tag, selects its own scenario. Tool
+  results count toward the phase only when they follow that message.
 - Phase: derived from `messages[]` (the trailing `tool_result`, the count of
   assistant `tool_use` blocks). Never from aimock's `sequenceIndex` or any
   server-side counter.
-- Persona: read from the system prompt and echoed in replies, so tests can assert
-  the right identity answered.
-- Faults: derived from the request. The Anthropic SDK sends
-  `x-stainless-retry-count`, so "fail 529 on the first attempt" is
-  `retry-count < 1` and needs no state. The spike must confirm the Claude CLI
-  passes it through.
+- Persona: read from a `Persona-ID: <id>` line that each test persona's
+  `SOUL.md` contains, and echoed in replies, so tests can assert the right
+  identity answered.
+- Faults: derived from the tag and the request headers, applied by the front
+  handler. The Anthropic SDK sends `x-stainless-retry-count`, so "fail 529 on the
+  first attempt" is `retry-count < 1` and needs no state. The spike must confirm
+  the Claude CLI passes it through.
 
 ### Spike (runs before any of the above is built)
 
@@ -163,9 +170,11 @@ Building blocks: `say`, `tool(name, args)`, `think`, `stream(chunks, tps)`,
 | `resume` | Second turn in the same thread | Session resume, transcript on shared volume | Mock checks prior turns are in `messages[]` |
 | `connect-mcp` | Call `connect_mcp` | Connect broker up to the auth-URL card | Callback replica differs from start replica |
 
-Fault scenarios (parameters in the tag): `fail status=429|500|529 until-retry=N`,
-`drop after=K`, `malformed`, `hang`, `ttft ms=…`, `overflow` (400
-prompt-too-long, for the token-budget path).
+Faults are orthogonal tag parameters, so any scenario combines with any fault:
+`fail=429|500|529 until-retry=N`, `drop=K` (cut the stream after K events),
+`malformed=1`, `hang=1`, `ttft=<duration>`, `interval=<duration>` (pause between
+streamed events), `overflow=1` (400 prompt-too-long, for the token-budget path).
+Precedence: hang, overflow, fail, drop, malformed.
 
 ### Multi-persona
 
