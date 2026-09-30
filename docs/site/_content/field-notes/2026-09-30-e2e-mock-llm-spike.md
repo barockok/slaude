@@ -21,7 +21,7 @@ aimock normalizes the Anthropic body to an OpenAI-style history:
 
 ## Retry header
 
-`x-stainless-retry-count` was `"0"` on the request that followed a 529, so it is not usable as an attempt counter. The CLI absorbed the 529 (a second request, then exit 0) but the header stayed at 0. Fault scenarios must count attempts in the front handler, for example keyed by a hash of the history, as the plan's fallback describes.
+`x-stainless-retry-count` was `"0"` on the request that followed a 529, so it is not usable as an attempt counter. The CLI absorbed the 529 (a second request, then exit 0) but the header stayed at 0. Fault scenarios must count attempts in the front handler, so the front handler counts attempts keyed by a hash of the system prompt and history.
 
 ## Custom header
 
