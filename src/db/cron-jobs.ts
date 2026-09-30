@@ -98,6 +98,48 @@ export async function findDue(now: number): Promise<CronJob[]> {
   return rows.map(mapRow);
 }
 
+/**
+ * Claim one due occurrence by advancing next_run_at from the value the caller
+ * observed. Exactly one claimer wins, whatever else is running.
+ *
+ * The schedule moves BEFORE the turn is dispatched, not after it completes.
+ * Advancing at completion left the row due for the whole turn, so a cron
+ * leader dying mid-turn handed the same occurrence to the next leader, and the
+ * in-process re-entry guard could not see across replicas.
+ *
+ * Returns false when someone else already claimed it, or the job was paused or
+ * deactivated in the meantime.
+ */
+export async function claimDue(id: string, observedNextRunAt: number, nextRunAt: number): Promise<boolean> {
+  const r = await db.run(
+    `UPDATE cron_jobs SET next_run_at = ?
+     WHERE id = ? AND next_run_at = ? AND active = 1 AND paused = 0`,
+    [nextRunAt, id, observedNextRunAt],
+  );
+  return (r.changes ?? 0) > 0;
+}
+
+/**
+ * Give a claimed occurrence back, when the dispatch it was claimed for never
+ * happened. Once a turn IS enqueued the queue owns its redelivery, so this is
+ * only for a failure before that point. No-op if the row moved on since.
+ */
+export async function releaseClaim(id: string, claimedNextRunAt: number, restoreTo: number): Promise<boolean> {
+  const r = await db.run(
+    "UPDATE cron_jobs SET next_run_at = ? WHERE id = ? AND next_run_at = ?",
+    [restoreTo, id, claimedNextRunAt],
+  );
+  return (r.changes ?? 0) > 0;
+}
+
+/** Record how a run ended. The schedule already moved at claim time. */
+export async function recordRun(id: string, lastResult: string): Promise<void> {
+  await db.run(
+    "UPDATE cron_jobs SET last_run_at = ?, last_result = ? WHERE id = ?",
+    [Date.now(), lastResult, id],
+  );
+}
+
 export async function updateNextRun(id: string, nextRunAt: number, lastResult: string): Promise<void> {
   await db.run(
     "UPDATE cron_jobs SET next_run_at = ?, last_run_at = ?, last_result = ? WHERE id = ?",

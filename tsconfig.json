@@ -31,5 +31,8 @@
   // toolchain/tsconfig — intentionally separate from the Bun-native server
   // (design §Frontend). Keep it out of the server-side `tsc --noEmit` so DOM
   // globals here don't fail the backend typecheck.
-  "exclude": ["src/gateway/panel/web", "tests/panel-web"]
+  // deploy/k8s-local/probe runs INSIDE a container and imports the image's own
+  // /app/src paths, which do not resolve on a developer machine. It is verified
+  // by running it, not by this typecheck.
+  "exclude": ["src/gateway/panel/web", "tests/panel-web", "deploy/k8s-local/probe"]
 }
