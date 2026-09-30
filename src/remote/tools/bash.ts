@@ -28,6 +28,18 @@ const bgDir = (key: string) => {
 /** Shell: skip (continue) unless $P is a plain decimal pid >= 2 — never `kill -0`, `-1`, or junk. */
 const BAD_PID = `case "$P" in ''|*[!0-9]*|0*|1) continue;; esac`;
 
+/**
+ * Shell function `own PGID JOBID`: is process group PGID still this job's?
+ *   0 = ours and alive, 1 = gone, 2 = the pid was reused by an unrelated process.
+ * The job's `bash -lc` carries `slaude-job-<id>` as $0. A group whose leader is dead but
+ * which is still alive (orphaned children) is ours: a pid cannot be reused while it is
+ * still the pgid of a live group. Every kill site calls this before signalling.
+ */
+const OWN =
+  `own() { OC=$(ps -ww -o command= -p "$1" 2>/dev/null); ` +
+  `if [ -n "$OC" ]; then case "$OC" in *"slaude-job-$2"*) return 0;; *) return 2;; esac; fi; ` +
+  `if kill -0 -"$1" 2>/dev/null; then return 0; fi; return 1; }; `;
+
 export async function bashTool(
   ctx: BashCtx,
   i: { command: string; timeout?: number; description?: string; run_in_background?: boolean },
@@ -53,13 +65,15 @@ export async function bashTool(
 async function startBackground(ctx: BashCtx, enter: string, command: string): Promise<ToolText> {
   const id = randomBytes(4).toString("hex");
   const d = bgDir(ctx.sessionKey);
+  // Two statements on purpose: a lone command would let bash exec it and drop the
+  // `slaude-job-<id>` marker (its $0) that the kill sites use to prove ownership.
   const inner = `${command}\n__rc=$?; echo $__rc > ${d}/${id}.exit`;
   // Only the `nohup perl …` simple command may be backgrounded: `a && b && c &`
   // would background the whole AND-list, racing mkdir and making $! the
   // subshell's pid instead of the job's process group.
   const cmd =
     `D=${d}; mkdir -p "$D" || exit 2; ${enter} || exit 2; ` +
-    `nohup perl -e 'setpgrp(0,0); exec @ARGV' bash -lc ${shq(inner)} > "$D/${id}.log" 2>&1 < /dev/null & ` +
+    `nohup perl -e 'setpgrp(0,0); exec @ARGV' bash -lc ${shq(inner)} slaude-job-${id} > "$D/${id}.log" 2>&1 < /dev/null & ` +
     `echo $! > "$D/${id}.pid"; cat "$D/${id}.pid"`;
   const r = await ctx.exec(cmd, { timeoutMs: 30_000 });
   if (r.code !== 0) return fail(r.stderr.trim() || "could not start background job");
@@ -72,19 +86,24 @@ export async function bashOutputTool(ctx: BashCtx, i: { bash_id: string }): Prom
   const d = bgDir(ctx.sessionKey);
   const off = ctx.bg.get(i.bash_id) ?? 0;
   const cmd =
-    `D=${d}; F="$D/${i.bash_id}"; { [ -e "$F.pid" ] || [ -e "$F.killed" ]; } || { echo __NOJOB__ >&2; exit 2; }; ` +
+    `${OWN}D=${d}; F="$D/${i.bash_id}"; { [ -e "$F.pid" ] || [ -e "$F.killed" ]; } || { echo __NOJOB__ >&2; exit 2; }; ` +
     `tail -c +${off + 1} "$F.log"; printf '\\n__SLAUDE_BG__'; ` +
-    // A finished or killed job's pgid may have been reused: never probe it.
-    `if [ -e "$F.exit" ]; then printf 'exit:'; cat "$F.exit"; elif [ -e "$F.killed" ]; then echo killed; ` +
-    `else P=$(cat "$F.pid" 2>/dev/null); case "$P" in ''|*[!0-9]*|0*|1) echo unknown;; ` +
-    `*) if kill -0 -"$P" 2>/dev/null; then echo running; else echo killed; fi;; esac; fi`;
+    // R: 0 group alive and ours, 1 gone, 2 pid junk or reused by another process (forget it).
+    `R=1; if [ ! -e "$F.killed" ]; then P=$(cat "$F.pid" 2>/dev/null); ` +
+    `case "$P" in ''|*[!0-9]*|0*|1) R=2;; *) own "$P" ${i.bash_id}; R=$?;; esac; ` +
+    `if [ "$R" = 2 ]; then rm -f "$F.pid"; : > "$F.killed"; fi; fi; ` +
+    `if [ -e "$F.exit" ]; then printf 'exit:%s' "$(cat "$F.exit")"; [ "$R" = 0 ] && printf ':children'; echo; ` +
+    `elif [ "$R" = 2 ]; then echo unknown; elif [ "$R" = 0 ]; then echo running; else echo killed; fi`;
   const r = await ctx.exec(cmd, { timeoutMs: 30_000 });
   if (r.stderr.includes("__NOJOB__")) return fail(`No background job with ID ${i.bash_id}`);
   const at = r.stdout.lastIndexOf("\n__SLAUDE_BG__");
   const output = at >= 0 ? r.stdout.slice(0, at) : r.stdout;
   const state = at >= 0 ? r.stdout.slice(at + "\n__SLAUDE_BG__".length).trim() : "unknown";
   ctx.bg.set(i.bash_id, off + Buffer.byteLength(output, "utf8"));
-  const status = state.startsWith("exit:") ? `completed (exit code ${state.slice(5).trim()})` : state;
+  const done = state.match(/^exit:(.*?)(:children)?$/s);
+  const status = done
+    ? `completed (exit code ${done[1]!.trim()})${done[2] ? "; background child processes are still running" : ""}`
+    : state;
   return ok(`<status>${status}</status>\n${output || "(no new output)"}`);
 }
 
@@ -92,14 +111,15 @@ export async function bashKillTool(ctx: BashCtx, i: { shell_id: string }): Promi
   if (!JOB_ID.test(i.shell_id)) return fail(`No background job with ID ${i.shell_id}`);
   const d = bgDir(ctx.sessionKey);
   const cmd =
-    `D=${d}; F="$D/${i.shell_id}"; [ -e "$F.pid" ] || { echo __NOJOB__ >&2; exit 2; }; P=$(cat "$F.pid" 2>/dev/null); ` +
-    // Signal only a valid pid (>= 2) of a job that has not finished (its pgid may be reused).
-    `if [ ! -e "$F.exit" ]; then case "$P" in ''|*[!0-9]*|0*|1) :;; ` +
-    `*) kill -TERM -"$P" 2>/dev/null; i=0; while [ $i -lt 5 ]; do kill -0 -"$P" 2>/dev/null || break; sleep 1; i=$((i+1)); done; ` +
-    `kill -0 -"$P" 2>/dev/null && kill -KILL -"$P" 2>/dev/null;; esac; fi; ` +
-    `rm -f "$F.pid"; : > "$F.killed"; exit 0`;
+    `${OWN}D=${d}; F="$D/${i.shell_id}"; [ -e "$F.pid" ] || { echo __NOJOB__ >&2; exit 2; }; P=$(cat "$F.pid" 2>/dev/null); ` +
+    // Signal only a valid pid (>= 2) whose group is still this job's (see OWN).
+    `R=2; case "$P" in ''|*[!0-9]*|0*|1) :;; *) own "$P" ${i.shell_id}; R=$?;; esac; ` +
+    `if [ "$R" = 0 ]; then kill -TERM -"$P" 2>/dev/null; i=0; while [ $i -lt 5 ]; do kill -0 -"$P" 2>/dev/null || break; sleep 1; i=$((i+1)); done; ` +
+    `kill -0 -"$P" 2>/dev/null && kill -KILL -"$P" 2>/dev/null; fi; ` +
+    `[ "$R" = 2 ] && echo __REUSED__ >&2; rm -f "$F.pid"; : > "$F.killed"; exit 0`;
   const r = await ctx.exec(cmd, { timeoutMs: 30_000 });
   if (r.stderr.includes("__NOJOB__")) return fail(`No background job with ID ${i.shell_id}`);
+  if (r.stderr.includes("__REUSED__")) return ok(`Nothing was signalled: the pid no longer belongs to background job ${i.shell_id}.`);
   return ok(`Killed background job ${i.shell_id}`);
 }
 
@@ -107,8 +127,8 @@ export async function bashKillTool(ctx: BashCtx, i: { shell_id: string }): Promi
 export function cleanupCommand(sessionKey: string): string {
   const d = bgDir(sessionKey);
   return (
-    `D=${d}; [ -d "$D" ] || exit 0; ` +
-    `for f in "$D"/*.pid; do [ -e "$f" ] || continue; [ -e "\${f%.pid}.exit" ] && continue; P=$(cat "$f" 2>/dev/null); ${BAD_PID}; kill -TERM -"$P" 2>/dev/null; done; sleep 2; ` +
-    `for f in "$D"/*.pid; do [ -e "$f" ] || continue; [ -e "\${f%.pid}.exit" ] && continue; P=$(cat "$f" 2>/dev/null); ${BAD_PID}; kill -KILL -"$P" 2>/dev/null; done; rm -rf "$D"`
+    `${OWN}D=${d}; [ -d "$D" ] || exit 0; ` +
+    `for f in "$D"/*.pid; do [ -e "$f" ] || continue; b=\${f##*/}; P=$(cat "$f" 2>/dev/null); ${BAD_PID}; own "$P" "\${b%.pid}" && kill -TERM -"$P" 2>/dev/null; done; sleep 2; ` +
+    `for f in "$D"/*.pid; do [ -e "$f" ] || continue; b=\${f##*/}; P=$(cat "$f" 2>/dev/null); ${BAD_PID}; own "$P" "\${b%.pid}" && kill -KILL -"$P" 2>/dev/null; done; rm -rf "$D"`
   );
 }
