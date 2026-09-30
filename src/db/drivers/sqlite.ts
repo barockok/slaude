@@ -109,6 +109,26 @@ CREATE TABLE IF NOT EXISTS one_on_one_locks (
   PRIMARY KEY (channel_id, thread_ts)
 );
 
+CREATE TABLE IF NOT EXISTS remote_targets (
+  channel_id     TEXT    NOT NULL,
+  thread_ts      TEXT    NOT NULL,
+  team_id        TEXT    NOT NULL,
+  user_id        TEXT    NOT NULL,
+  addr           TEXT    NOT NULL,
+  dir            TEXT    NOT NULL,
+  lock_by_remote INTEGER NOT NULL DEFAULT 0,
+  created_at     INTEGER NOT NULL,
+  PRIMARY KEY (channel_id, thread_ts)
+);
+CREATE TABLE IF NOT EXISTS remote_keys (
+  team_id     TEXT    NOT NULL,
+  user_id     TEXT    NOT NULL,
+  public_key  TEXT    NOT NULL,
+  private_key TEXT    NOT NULL,
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (team_id, user_id)
+);
+
 CREATE TABLE IF NOT EXISTS accounts (
   id         TEXT PRIMARY KEY,
   issuer     TEXT    NOT NULL,

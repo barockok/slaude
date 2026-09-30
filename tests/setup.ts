@@ -53,6 +53,8 @@ if (pgTest && process.env.SLAUDE_DB === "pg" && process.env.SLAUDE_PG_URL === pg
     "ignores",
     "cron_jobs",
     "one_on_one_locks",
+    "remote_targets",
+    "remote_keys",
     "mention_only_threads",
     "soul_overrides",
     "sessions",

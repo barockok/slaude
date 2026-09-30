@@ -32,7 +32,10 @@ const PG_ONLY_TABLES = new Set([
 // mcp_credentials joins for the same reason in both of its owner kinds: a
 // person's row reaches tenancy through accounts, which is deployment-global,
 // and an agent's row already carries its tenant explicitly in agent_tenant.
-const NO_TENANT_TABLES = new Set(["pending_gates", "seen_events", "accounts", "slack_identities", "mcp_credentials"]);
+// remote_keys joins too: a person's SSH key is keyed by (team_id, user_id), the
+// same workspace-scoped identity slack_identities uses, so tenant_id would only
+// duplicate team_id.
+const NO_TENANT_TABLES = new Set(["pending_gates", "seen_events", "accounts", "slack_identities", "mcp_credentials", "remote_keys"]);
 
 // Tables that exist only on sqlite (legacy; dropped from the pg schema).
 const SQLITE_ONLY_TABLES = new Set(["skill_usage"]);
