@@ -40,7 +40,7 @@ redirect coming back to "a gateway".
 
 ## 3. Decisions
 
-### 3.1 The portal carries its own flow state, in the browser
+### 3.1 The portal runs its own flow, and any replica can finish it
 
 The portal runs its own OAuth round trip, and the provider redirects to
 `/portal/oauth/callback` on the deployment's public URL, so whichever replica
