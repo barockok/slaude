@@ -38,14 +38,32 @@ async function ownerFor(t: Target): Promise<CredentialOwner | null> {
   return account ? { kind: "account", accountId: account.id } : null;
 }
 
+/**
+ * Store a completed grant for an owner the caller has already resolved.
+ *
+ * The portal knows whose account it is acting for from the signed-in session,
+ * so it has nothing to resolve from a Slack scope. Both surfaces write through
+ * here, so a credential connected in the portal is the same row a 1:1 connect
+ * would have written.
+ *
+ * Unconditional: an explicit connect is the owner's own fresh grant and always
+ * replaces what was there.
+ */
+export async function persistConnectForOwner(
+  owner: CredentialOwner,
+  serverName: string,
+  cfg: OAuthServerConfig,
+  tokens: OAuthTokens,
+): Promise<void> {
+  await putCredential(owner, oauthKey(serverName, cfg), toStoredEntry(serverName, cfg, tokens));
+}
+
 export async function persistConnect(
   t: Target & { tokens: OAuthTokens },
 ): Promise<{ ok: true } | { ok: false; reason: "no-account" }> {
   const owner = await ownerFor(t);
   if (!owner) return { ok: false, reason: "no-account" };
-  // Unconditional: an explicit connect is the owner's own fresh grant and
-  // always replaces what was there.
-  await putCredential(owner, oauthKey(t.serverName, t.cfg), toStoredEntry(t.serverName, t.cfg, t.tokens));
+  await persistConnectForOwner(owner, t.serverName, t.cfg, t.tokens);
   return { ok: true };
 }
 

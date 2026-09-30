@@ -11,7 +11,7 @@ import * as Accounts from "../../src/db/accounts";
 import * as Creds from "../../src/db/mcp-credentials";
 import { __resetMasterKeyCache } from "../../src/db/crypto";
 import { oauthKey } from "../../src/agent/mcp-oauth/store";
-import { persistConnect, persistDisconnect } from "../../src/agent/mcp-oauth/persist";
+import { persistConnect, persistConnectForOwner, persistDisconnect } from "../../src/agent/mcp-oauth/persist";
 
 const ISS = "https://idp.example.com";
 const TEAM = "TTESTTEAM1";
@@ -140,5 +140,49 @@ describe("token endpoint", () => {
     writeEntry(dir, "workbench", cfg, { ...tokens("tok-1"), tokenEndpoint: "https://idp.example.com/token" });
     expect(readFileSync(join(dir, ".credentials.json"), "utf8")).not.toContain("tokenEndpoint");
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+/**
+ * The portal already knows whose account it is acting for, so it needs the same
+ * write without the Slack-scope resolution step. Both surfaces must end in one
+ * place, or a credential connected in the portal and one connected in a 1:1
+ * could drift apart.
+ */
+describe("persistConnectForOwner", () => {
+  test("writes the row a 1:1 connect would have written, pinned token endpoint and all", async () => {
+    await persistConnectForOwner({ kind: "account", accountId: personId }, "workbench", cfg, {
+      ...tokens("tok-portal"),
+      tokenEndpoint: "https://idp.example.com/token",
+    });
+    const viaPortal = (await Creds.credentialsFor({ kind: "account", accountId: personId }))[KEY]!;
+
+    await Accounts._wipeForTests();
+    const twin = (await Accounts.upsertAccount({ issuer: ISS, subject: "sub-twin", email: "t@example.com" })).id;
+    await Accounts.linkSlackIdentity({ teamId: TEAM, slackUserId: "UTESTUSER2", accountId: twin, via: "signed-link" });
+    await persistConnect({
+      ...base,
+      scope: "initiator",
+      persona: "default",
+      slackUserId: "UTESTUSER2",
+      tokens: { ...tokens("tok-portal"), tokenEndpoint: "https://idp.example.com/token" },
+    });
+    const viaSlack = (await Creds.credentialsFor({ kind: "account", accountId: twin }))[KEY]!;
+
+    expect({ ...viaPortal, expiresAt: 0 }).toEqual({ ...viaSlack, expiresAt: 0 });
+    expect(viaPortal.tokenEndpoint).toBe("https://idp.example.com/token");
+  });
+
+  test("writes under the agent owner when that is who it is told", async () => {
+    await persistConnectForOwner({ kind: "agent", tenant: "t1", persona: "ana" }, "workbench", cfg, tokens("tok-agent"));
+    expect((await Creds.credentialsFor({ kind: "agent", tenant: "t1", persona: "ana" }))[KEY]!.accessToken).toBe("tok-agent");
+    expect(await Creds.credentialsFor({ kind: "account", accountId: personId })).toEqual({});
+  });
+
+  test("replaces an existing grant, since an explicit connect is always fresh", async () => {
+    const owner = { kind: "account", accountId: personId } as const;
+    await persistConnectForOwner(owner, "workbench", cfg, tokens("old"));
+    await persistConnectForOwner(owner, "workbench", cfg, tokens("new"));
+    expect((await Creds.credentialsFor(owner))[KEY]!.accessToken).toBe("new");
   });
 });
