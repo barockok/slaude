@@ -302,10 +302,20 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
         return back(done.ok ? "connected" : done.reason);
       }
 
-      // Anything else under /portal that is not an API path is the app itself.
+      // The app's own hashed assets. Unguarded on purpose: they are the same
+      // bytes for everyone, they carry nothing about the viewer, and gating them
+      // means a person whose session expires with the page open gets redirects
+      // for scripts instead of a sign-in page.
+      if (req.method === "GET" && seg[1] === "assets") {
+        const asset = await servePortalStatic(url.pathname);
+        if (asset) return asset;
+      }
+
+      // Anything else under /portal that is not a route above is the app shell.
       // Guarded, so an unauthenticated visitor is sent to sign in rather than
-      // being handed a shell that can only show them a 401.
-      if (req.method === "GET" && seg[1] !== "api" && seg[1] !== "oauth") {
+      // handed a page that can only show them a 401. `auth` and `oauth` are
+      // excluded so an unknown path under them 404s instead of rendering the app.
+      if (req.method === "GET" && seg[1] !== "api" && seg[1] !== "auth" && seg[1] !== "oauth") {
         const guarded = await guardPortal(req, { html: true });
         if (!guarded.ok) return guarded.response;
         const asset = await servePortalStatic(url.pathname);
