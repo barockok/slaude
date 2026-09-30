@@ -57,23 +57,32 @@ describe("HelperClient", () => {
     await h.dispose();
   });
 
-  it("a late exit of a released helper does not fail the new helper's exec", async () => {
+  it("a late exit of a released helper does not fail the new helper's in-flight exec", async () => {
     const h = mk();
     await h.exec("true", { timeoutMs: 5000 });
     const old = h.__childForTests()!;
-    const oldExit = new Promise((r) => old.once("exit", r));
+    // Hold back the old child's exit event so it lands after the new helper is ready and busy.
+    const held: { deliver?: () => void } = {};
+    const emit = old.emit.bind(old);
+    (old as any).emit = (ev: string, ...args: unknown[]) => {
+      if (ev !== "exit") return emit(ev, ...args);
+      held.deliver = () => { emit(ev, ...args); };
+      return true;
+    };
     await h.release();
-    const next = h.exec("echo fresh", { timeoutMs: 5000 });
-    await oldExit;
+    const next = h.exec("sleep 2; echo fresh", { timeoutMs: 10_000 });
+    while (h.__pendingCountForTests() < 1) await new Promise((r) => setImmediate(r));
+    while (!held.deliver) await new Promise((r) => setImmediate(r));
+    held.deliver();
     expect((await next).stdout).toBe("fresh\n");
     await h.dispose();
   });
 
-  it("exec racing release rejects with a typed error and leaks no pending entry", async () => {
+  it("exec racing release after the helper is ready rejects with a typed error and leaks nothing", async () => {
     const h = mk();
-    const p = h.exec("true", { timeoutMs: 5000 });
-    const seen = p.then(() => null, (e) => e);
-    await h.release();
+    await h.exec("true", { timeoutMs: 5000 });
+    const seen = h.exec("true", { timeoutMs: 5000 }).then(() => null, (e) => e);
+    await h.release(); // same tick: the child is gone between `await ready` and the write
     const err = await seen;
     expect(err).toMatchObject({ name: "RemoteError", code: "REMOTE_UNREACHABLE", started: false });
     expect(h.__pendingCountForTests()).toBe(0);
