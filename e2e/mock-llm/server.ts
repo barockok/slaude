@@ -211,7 +211,12 @@ export async function startServer(port: number): Promise<{ port: number; stop():
 
   const server = http.createServer((req, res) => {
     handle(req, res).catch((e: unknown) => {
-      if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
+      if (res.headersSent) {
+        // A JSON error appended to a live SSE stream would read as a `malformed` scenario.
+        res.destroy();
+        return;
+      }
+      res.writeHead(500, { "content-type": "application/json" });
       res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: `mock failure: ${String(e)}` } }));
     });
   });
