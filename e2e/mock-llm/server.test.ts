@@ -127,6 +127,17 @@ describe("mock-llm server", () => {
     expect((await post(request("[[mock:echo fail=529]] y"))).status).toBe(529);
   });
 
+  test("the attempt counter is per system prompt, so each persona fails its own first attempt", async () => {
+    const msg = request("[[mock:echo fail=529]] shared text");
+    const alpha = { ...msg, system: "Persona-ID: alpha" };
+    const beta = { ...msg, system: "Persona-ID: beta" };
+    expect((await post(alpha)).status).toBe(529);
+    expect((await post(beta)).status).toBe(529);
+    const again = await post(alpha);
+    expect(again.status).toBe(200);
+    await again.text();
+  });
+
   test("until-retry=2 keeps failing twice, then succeeds", async () => {
     const body = request("[[mock:echo fail=529 until-retry=2]] ur");
     expect((await post(body)).status).toBe(529);
@@ -159,9 +170,27 @@ describe("mock-llm server", () => {
   });
 
   test("drop=2 cuts the stream after two events", async () => {
-    const res = await post(request("[[mock:long-stream chunks=30 drop=2]] go"));
-    const text = await res.text().catch(() => "");
-    expect(text.split("\n\n").filter(Boolean).length).toBeLessThanOrEqual(2);
+    // Bun's fetch silently retries a request whose reused keep-alive connection dies; `keepalive:
+    // false` keeps the test from seeing a second, concatenated stream.
+    const res = await fetch(`${base}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "anthropic-version": "2023-06-01", "x-api-key": "sk-mock" },
+      body: JSON.stringify(request("[[mock:long-stream chunks=30 drop=2]] go")),
+      keepalive: false,
+    });
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        text += decoder.decode(value, { stream: true });
+      }
+    } catch {}
+    const blocks = text.split("\n\n").filter(Boolean);
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toStartWith("event: message_start");
     expect(text).not.toContain("message_stop");
   });
 

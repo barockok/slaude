@@ -73,6 +73,16 @@ function hash(body: string): string {
   return createHash("sha256").update(JSON.stringify(messages)).digest("hex").slice(0, 16);
 }
 
+/** Attempt-counter key: the system prompt plus the history, so each persona counts on its own. */
+function attemptKey(body: string): string {
+  let basis: unknown = body;
+  try {
+    const b = JSON.parse(body) as { system?: unknown; messages?: unknown };
+    basis = { system: b.system ?? null, messages: b.messages ?? null };
+  } catch {}
+  return createHash("sha256").update(JSON.stringify(basis)).digest("hex").slice(0, 16);
+}
+
 function messageCount(body: string): number {
   try {
     const m = (JSON.parse(body) as { messages?: unknown }).messages;
@@ -88,9 +98,9 @@ export async function startServer(port: number): Promise<{ port: number; stop():
   const upstream = await mock.start();
   const journal: JournalRow[] = [];
   // Attempt counting is the one deliberate stateful exception: fault-only, it never changes reply
-  // content. With several mock replicas a retry may hit another replica, so fault scenarios needing
-  // more than one attempt require a single replica or client-IP affinity, and test prompts must be
-  // unique per case.
+  // content. The counter is per (system prompt, history). With several mock replicas a retry may hit
+  // another replica, so fault scenarios needing more than one attempt require a single replica or
+  // client-IP affinity, and test prompts must be unique per case and per persona.
   const attempts = new Map<string, number>();
   const MAX_ATTEMPTS = 10_000;
 
@@ -117,7 +127,14 @@ export async function startServer(port: number): Promise<{ port: number; stop():
     for await (const ev of sseEvents(up.body)) {
       if (res.destroyed) return;
       if (plan.action === "drop" && n >= plan.dropAfterEvents) {
-        res.destroy();
+        // FIN, not RST: a destroy() can reset the connection before the client has read the
+        // events already flushed. Ending the socket without the chunked terminator still reads
+        // as a truncated stream.
+        // Give the client a beat to consume the flushed events before the truncation lands;
+        // otherwise Bun's fetch can drop the trailing event when the FIN arrives with it.
+        await delay(50, res);
+        if (res.socket) res.socket.end();
+        else res.destroy();
         return;
       }
       if (plan.intervalMs && n > 0) await delay(plan.intervalMs, res);
@@ -156,10 +173,11 @@ export async function startServer(port: number): Promise<{ port: number; stop():
     const tag = lastTagIn(text);
     const clientRetryCount = Number.parseInt(String(req.headers["x-stainless-retry-count"] ?? "0"), 10) || 0;
     const historyHash = hash(text);
-    const retryCount = attempts.get(historyHash) ?? 0;
+    const key = attemptKey(text);
+    const retryCount = attempts.get(key) ?? 0;
     const plan = planFaults(tag, retryCount);
-    attempts.delete(historyHash);
-    attempts.set(historyHash, retryCount + 1);
+    attempts.delete(key);
+    attempts.set(key, retryCount + 1);
     if (attempts.size > MAX_ATTEMPTS) attempts.delete(attempts.keys().next().value as string);
     journal.push({
       ts: Date.now(),
