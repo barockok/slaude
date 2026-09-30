@@ -40,10 +40,87 @@ expect() { # <label> <failure-detail> <test...>
 }
 
 k() { kubectl --context "$PROFILE" -n "$NS" "$@"; }
-gateway() { k get pod -l app.kubernetes.io/component=gateway --field-selector=status.phase=Running -o name | head -1; }
+gateway() { k get pod -l app.kubernetes.io/component=gateway --field-selector=status.phase=Running -o name --request-timeout="$PROBE_TIMEOUT" 2>/dev/null | head -1; }
 nodes() { k get pod -l app.kubernetes.io/component=node --field-selector=status.phase=Running -o name; }
-probe() { k exec "$(gateway)" -- bun /tmp/probe/turns.ts "$@" 2>/dev/null | tail -1; }
-field() { python3 -c 'import json,sys;print(json.loads(sys.stdin.read() or "{}").get(sys.argv[1], ""))' "$1"; }
+
+# Every call into the cluster is bounded. An unbounded `kubectl exec` hangs
+# forever when the apiserver stops answering mid-run — observed stalling this
+# script for 34 minutes inside `probe cron`, with no output to say why.
+PROBE_TIMEOUT="${PROBE_TIMEOUT:-60s}"
+
+# Run the in-pod probe.
+#
+# On any failure this says so on stderr and returns non-zero, printing NOTHING
+# to stdout. That distinction is the point: `field` used to turn both a failed
+# exec and a genuine zero into an empty string, so an unreachable pod was
+# reported as "only  of 6 turns completed" — infrastructure trouble wearing a
+# product failure's clothes, which is worse than no result at all.
+probe() {
+  local pod out rc
+  pod="$(gateway)"
+  if [[ -z "$pod" ]]; then
+    printf '  !! probe %s: no running gateway pod to exec into\n' "${1:-?}" >&2
+    return 1
+  fi
+  out="$(k exec --request-timeout="$PROBE_TIMEOUT" "$pod" -- bun /tmp/probe/turns.ts "$@" 2>&1)"
+  rc=$?
+  if ((rc != 0)); then
+    printf '  !! probe %s failed (exit %d) on %s: %s\n' \
+      "${1:-?}" "$rc" "${pod#pod/}" "$(printf '%s' "$out" | tail -2 | tr '\n' ' ')" >&2
+    return "$rc"
+  fi
+  printf '%s\n' "$out" | tail -1
+}
+
+# Pull one field out of the probe's JSON. Silent and non-zero when the input is
+# empty, unparseable, or lacks the key, so a failed probe cannot be read as a
+# number by the caller.
+field() {
+  python3 -c '
+import json, sys
+raw = sys.stdin.read().strip()
+if not raw:
+    sys.exit(3)
+try:
+    doc = json.loads(raw)
+except json.JSONDecodeError:
+    sys.exit(3)
+if sys.argv[1] not in doc:
+    sys.exit(4)
+print(doc[sys.argv[1]])
+' "$1"
+}
+
+# Sum one or more counters out of the probe's `shared` queue snapshot. Silent
+# and non-zero on unparseable input, for the same reason as `field`.
+queue_sum() { # <counter...>
+  python3 -c '
+import json, sys
+raw = sys.stdin.read().strip()
+if not raw:
+    sys.exit(3)
+try:
+    q = json.loads(raw)["shared"]
+except (json.JSONDecodeError, KeyError, TypeError):
+    sys.exit(3)
+print(sum(int(q.get(k, 0)) for k in sys.argv[1:]))
+' "$@"
+}
+
+# Assert on a value the probe measured. An empty actual means no measurement was
+# ever obtained, which is reported as such: "could not measure" and "measured
+# the wrong number" have different causes and different fixes, and conflating
+# them is what made three of this script's past failures misleading.
+expect_value() { # <label> <actual> <want> <context>
+  local label="$1" actual="$2" want="$3" ctx="$4"
+  if [[ -z "$actual" ]]; then
+    bad "$label — COULD NOT MEASURE ($ctx); see the !! lines above for why the probe failed"
+  elif [[ "$actual" == "$want" ]]; then
+    ok "$label"
+  else
+    bad "$label — $ctx: got '$actual', want '$want'"
+  fi
+}
 
 # Kill a node's container outright — no SIGTERM, no drain — the way verify-ha
 # simulates a lost worker.
@@ -78,8 +155,8 @@ k exec -i "$(gateway)" -- sh -c 'mkdir -p /tmp/probe && cat > /tmp/probe/turns.t
 # --- turn delivery survives losing a node ----------------------------------
 section "turn delivery while a node dies"
 probe cleanup >/dev/null 2>&1 || true
-enq="$(probe enqueue "$TURNS" | field enqueued)"
-expect "enqueued $TURNS turns through the real queue" "enqueued=$enq" [ "$enq" = "$TURNS" ]
+enq="$(probe enqueue "$TURNS" | field enqueued || true)"
+expect_value "enqueued $TURNS turns through the real queue" "$enq" "$TURNS" "enqueued"
 
 # Kill as soon as a node has claimed work, so the kill lands while turns are
 # still moving. A suppressed turn is quick, so this is a race by nature: the
@@ -88,10 +165,12 @@ t0=$(date +%s)
 claimed=0
 done_at_kill=0
 while (($(date +%s) - t0 < 120)); do
-  st="$(probe status)"
-  done_at_kill="$(echo "$st" | field withCompletionMarker)"
-  active="$(echo "$st" | python3 -c 'import json,sys;print(json.load(sys.stdin)["shared"].get("active",0))')"
-  if [[ "$active" -gt 0 || "$done_at_kill" -gt 0 ]]; then claimed=1; break; fi
+  st="$(probe status || true)"
+  done_at_kill="$(echo "$st" | field withCompletionMarker || true)"
+  active="$(echo "$st" | queue_sum active || true)"
+  # Empty means the probe did not answer this round; keep polling rather than
+  # treating an unmeasured round as "nothing claimed".
+  if [[ -n "$active" && -n "$done_at_kill" ]] && ((active > 0 || done_at_kill > 0)); then claimed=1; break; fi
   sleep 2
 done
 expect "a node claimed the batch" "nothing was claimed within 120s" [ "$claimed" = 1 ]
@@ -113,41 +192,39 @@ fi
 t0=$(date +%s)
 done_count=0
 while (($(date +%s) - t0 < RECOVER_TIMEOUT)); do
-  done_count="$(probe status | field withCompletionMarker)"
+  done_count="$(probe status | field withCompletionMarker || true)"
   [[ "$done_count" == "$TURNS" ]] && break
   sleep 5
 done
 recovered=$(( $(date +%s) - t0 ))
-expect "all $TURNS turns completed after the kill (took ${recovered}s)" \
-  "only $done_count of $TURNS turns carry a completion marker after ${recovered}s" \
-  [ "$done_count" = "$TURNS" ]
+expect_value "all $TURNS turns completed after the kill (took ${recovered}s)" \
+  "$done_count" "$TURNS" "turns carrying a completion marker after ${recovered}s"
 
 # delayed counts too: a turn waiting on a dead node's session lock sits there,
 # and calling the queue "drained" without it would hide exactly that.
-left="$(probe status)"
-pending="$(echo "$left" | python3 -c 'import json,sys;q=json.load(sys.stdin)["shared"];print(sum(int(q.get(k,0)) for k in ("waiting","active","delayed")))')"
-expect "nothing is left pending in the shared queue" \
-  "waiting+active+delayed=$pending after all turns completed" \
-  [ "$pending" = 0 ]
-failed="$(echo "$left" | python3 -c 'import json,sys;print(int(json.load(sys.stdin)["shared"].get("failed",0)))')"
-expect "no turn was abandoned as failed" "failed=$failed" [ "$failed" = 0 ]
+left="$(probe status || true)"
+pending="$(echo "$left" | queue_sum waiting active delayed || true)"
+expect_value "nothing is left pending in the shared queue" \
+  "$pending" "0" "waiting+active+delayed after all turns completed"
+failed="$(echo "$left" | queue_sum failed || true)"
+expect_value "no turn was abandoned as failed" "$failed" "0" "failed"
 
 # --- delivery with a node down, deterministically ---------------------------
 # No race here: the node is already gone, so every turn in this batch must be
 # claimed and completed by the survivor.
 section "turn delivery with one node already down"
 probe cleanup >/dev/null 2>&1 || true
-enq2="$(probe enqueue "$TURNS" | field enqueued)"
-expect "enqueued $TURNS more turns while one node is down" "enqueued=$enq2" [ "$enq2" = "$TURNS" ]
+enq2="$(probe enqueue "$TURNS" | field enqueued || true)"
+expect_value "enqueued $TURNS more turns while one node is down" "$enq2" "$TURNS" "enqueued"
 t0=$(date +%s)
 done2=0
 while (($(date +%s) - t0 < RECOVER_TIMEOUT)); do
-  done2="$(probe status | field withCompletionMarker)"
+  done2="$(probe status | field withCompletionMarker || true)"
   [[ "$done2" == "$TURNS" ]] && break
   sleep 5
 done
-expect "the surviving node completed all $TURNS" \
-  "only $done2 of $TURNS completed on the survivor" \
+expect_value "the surviving node completed all $TURNS" \
+  "$done2" "$TURNS" "completed on the survivor" \
   [ "$done2" = "$TURNS" ]
 
 # --- one cron occurrence, two gateways -------------------------------------
@@ -159,18 +236,16 @@ t0=$(date +%s)
 cron_jobs=""
 advanced=""
 while (($(date +%s) - t0 < 150)); do
-  st="$(probe cron-status)"
-  advanced="$(echo "$st" | field scheduleAdvanced)"
-  cron_jobs="$(echo "$st" | field jobsForSession)"
+  st="$(probe cron-status || true)"
+  advanced="$(echo "$st" | field scheduleAdvanced || true)"
+  cron_jobs="$(echo "$st" | field jobsForSession || true)"
   [[ "$advanced" == "True" && -n "$cron_jobs" && "$cron_jobs" -ge 1 ]] && break
   sleep 5
 done
-expect "the occurrence was claimed (schedule advanced before the turn finished)" \
-  "scheduleAdvanced=$advanced" \
-  [ "$advanced" = "True" ]
-expect "exactly one turn was dispatched for the occurrence" \
-  "jobsForSession=$cron_jobs, want 1" \
-  [ "$cron_jobs" = 1 ]
+expect_value "the occurrence was claimed (schedule advanced before the turn finished)" \
+  "$advanced" "True" "scheduleAdvanced"
+expect_value "exactly one turn was dispatched for the occurrence" \
+  "$cron_jobs" "1" "jobsForSession"
 
 # --- summary ---------------------------------------------------------------
 section "result"
