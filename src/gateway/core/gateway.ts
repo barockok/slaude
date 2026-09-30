@@ -58,7 +58,7 @@ import * as Sessions from "../../db/sessions";
 import * as SeenEvents from "../../db/seen-events";
 import * as PendingGates from "../../db/pending-gates";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
-import { loadExternalMcp, privateOverrides } from "./external-mcp";
+import { loadExternalMcp, oauthHttpServers, privateOverrides } from "./external-mcp";
 import { randomBytes } from "node:crypto";
 import { ensureInitiatorConfigDir, agentConfigDir } from "../../agent/oauth-home";
 import { scopeConfigDir, personaKey } from "../../agent/mcp-oauth/scope-home";
@@ -784,14 +784,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const pendingPaste = new Map<string, PendingPaste>();
   const pasteKey = (channelId: string, threadTs: string, userId: string) => `${channelId}:${threadTs}:${userId}`;
 
-  // Only HTTP servers participate in the OAuth connect flow.
-  const httpExternalServers = (): Record<string, { url: string; headers?: Record<string, string> }> => {
-    const out: Record<string, { url: string; headers?: Record<string, string> }> = {};
-    for (const [name, cfg] of Object.entries<any>(externalMcp.servers)) {
-      if (cfg?.type === "http" && typeof cfg.url === "string") out[name] = { url: cfg.url, headers: cfg.headers };
-    }
-    return out;
-  };
+  // Only HTTP servers participate in the OAuth connect flow. Shared with the
+  // portal's integrations list so the two surfaces offer the same servers.
+  const httpExternalServers = () => oauthHttpServers(externalMcp.servers);
 
   /** Tenant and workspace that own a session's credentials, resolved exactly as
    *  the queue dispatcher resolves them, so a connect and the turns that later
