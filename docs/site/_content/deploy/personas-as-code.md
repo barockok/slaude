@@ -104,7 +104,11 @@ Behaviour to know:
 - A sync whose `committedAt` is older than the live revision is refused with
   409, before any model call. Rerunning an old CI job is safe.
 - A persona removed from the repository is tombstoned, not deleted. Its Slack
-  identity stops routing; the rows stay.
+  identity stops routing; the rows stay. A message mentioning it, or a reply
+  in a thread that belonged to it, is dropped with a log line naming the
+  persona (`[slack-rx] drop ... retired persona=<name>`). It is never answered
+  by the default persona, and a session for it (for example a cron job) fails
+  to boot rather than run as the default.
 - An empty `personas` array is refused unless `allowEmpty: true`, which
   retires every persona (the default persona then reverts to the on-disk
   `SOUL.md`).

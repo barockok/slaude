@@ -2433,6 +2433,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await persistEngaged(teamId, channelId, ts, true);
       return await handleMessage(args);
     }
+    if (!mentionedPersona) {
+      // A retired persona's identity stops routing: drop what is addressed to it
+      // rather than treat it as a colleague mention (which would disengage the
+      // thread) or hand it to the default persona.
+      const retired = mentions.map((id) => (id ? registry.tombstonedPersonaFor(id) : null)).find(Boolean);
+      if (retired) {
+        console.log(`[slack-rx] drop ch=${channelId} ts=${e.ts} — addressed to retired persona=${retired}`);
+        metric.slackDropsTotal.inc({ reason: "persona_retired" });
+        return;
+      }
+    }
     if (mentionedPersona) {
       // Re-engage the persona's row if it was disengaged; a first mention has
       // no row yet and the session is born engaged.
@@ -2500,6 +2511,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         }
       }
       const any = def ?? (await Sessions.findAnyByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts }));
+      // On a managed tenant the registry is complete: a thread whose persona it
+      // no longer lists belongs to a retired persona, and is never continued
+      // (as that persona or as the default).
+      if (any && any.persona_id && any.persona_id !== "default" && registry.isManaged() && !registry.lookupByName(any.persona_id)) {
+        console.log(`[slack-rx] drop ch=${channelId} ts=${e.ts} — thread belongs to retired persona=${any.persona_id}`);
+        metric.slackDropsTotal.inc({ reason: "persona_retired" });
+        return;
+      }
       if (any && any.engaged) {
         // Engaged session outside the registry (e.g. persona removed from
         // config) — keep handling plain replies as that persona.

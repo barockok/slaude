@@ -19,6 +19,8 @@ const stub = (): PersonaRegistry => ({
   lookupByName: () => null,
   list: () => [],
   isMultiPersonaMode: () => false,
+  isManaged: () => false,
+  tombstonedPersonaFor: () => null,
 });
 
 afterEach(async () => {

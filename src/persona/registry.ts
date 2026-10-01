@@ -16,6 +16,14 @@ export interface PersonaRegistry {
   lookupByName(name: string): Persona | null;
   list(): Persona[];
   isMultiPersonaMode(): boolean;
+  /** True when this snapshot is a synced tenant's effective state (the
+   *  database), false for the filesystem. A managed registry is complete: a
+   *  persona it does not list is not live. */
+  isManaged(): boolean;
+  /** The retired (tombstoned) persona whose Slack identity this is, or null.
+   *  Always null for a filesystem registry, and for an identity a live persona
+   *  now holds. */
+  tombstonedPersonaFor(slackUserId: string): string | null;
 }
 
 function loadPersonas(): Persona[] {
@@ -64,14 +72,22 @@ function loadPersonas(): Persona[] {
   return out;
 }
 
-function snapshot(personas: Persona[]): PersonaRegistry {
+function snapshot(
+  personas: Persona[],
+  managed?: { tombstoned: Array<{ name: string; slackUserId: string }> },
+): PersonaRegistry {
   const byUserId = new Map<string, Persona>(personas.map((p) => [p.slackUserId, p]));
   const byName = new Map<string, Persona>(personas.map((p) => [p.name, p]));
+  const retired = new Map<string, string>(
+    (managed?.tombstoned ?? []).filter((t) => !byUserId.has(t.slackUserId)).map((t) => [t.slackUserId, t.name]),
+  );
   return {
     lookupByUserId: (id) => byUserId.get(id) ?? null,
     lookupByName: (name) => byName.get(name) ?? null,
     list: () => personas,
     isMultiPersonaMode: () => personas.length > 0,
+    isManaged: () => managed !== undefined,
+    tombstonedPersonaFor: (id) => retired.get(id) ?? null,
   };
 }
 
@@ -101,7 +117,11 @@ async function loadPersonaState(tenant: string): Promise<PersonaState> {
   if (resolveDbConfig().dialect === "sqlite" || !(await isManaged(tenant))) {
     return { registry: loadPersonaRegistry(), managed: null };
   }
-  const all = await effectivePersonas(tenant);
+  const everyRow = await effectivePersonas(tenant, { includeTombstoned: true });
+  const all = everyRow.filter((p) => p.tombstonedAt === null);
+  const tombstoned = everyRow
+    .filter((p) => p.tombstonedAt !== null && p.slackUserId)
+    .map((p) => ({ name: p.name, slackUserId: p.slackUserId! }));
   const personas: Persona[] = all
     .filter((p) => p.name !== "default" && p.slackUserId)
     .map((p) => ({
@@ -111,7 +131,7 @@ async function loadPersonaState(tenant: string): Promise<PersonaState> {
       config: { slackUserId: p.slackUserId!, name: p.name, ...(p.userToken ? { userToken: p.userToken } : {}) },
       outClient: p.userToken ? new WebClient(p.userToken) : null,
     }));
-  return { registry: snapshot(personas), managed: { defaultPersona: all.find((p) => p.name === "default") ?? null } };
+  return { registry: snapshot(personas, { tombstoned }), managed: { defaultPersona: all.find((p) => p.name === "default") ?? null } };
 }
 
 export async function buildPersonaRegistry(tenant: string): Promise<PersonaRegistry> {

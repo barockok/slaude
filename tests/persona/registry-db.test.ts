@@ -60,6 +60,13 @@ describe("a filesystem registry (any dialect)", () => {
     expect(r.list()).toEqual([]);
   });
 
+  test("a filesystem registry is unmanaged and knows no retired identity", async () => {
+    writeFsPersona("fsbot", "UFSBOT", "fs soul");
+    const r = await buildPersonaRegistry("default");
+    expect(r.isManaged()).toBe(false);
+    expect(r.tombstonedPersonaFor("UFSBOT")).toBeNull();
+  });
+
   test("a filesystem persona is listed, and its soul is read from its file", async () => {
     writeFsPersona("fsbot", "UFSBOT", "fs soul");
     const r = await buildPersonaRegistry("default");
@@ -170,6 +177,7 @@ describe.skipIf(!isPg)("a database-backed registry", () => {
     setPersonaRegistry(await buildPersonaRegistry("default"));
     const one = (soul: string) => ({
       registry: { lookupByUserId: () => null, list: () => [],  isMultiPersonaMode: () => true,
+        isManaged: () => false, tombstonedPersonaFor: () => null,
         lookupByName: (n: string) => (n === "ana" ? { name: "ana", slackUserId: "UANA", soulMd: soul,
           config: { slackUserId: "UANA", name: "ana" }, outClient: null } : null) },
       managed: null,
@@ -243,5 +251,28 @@ describe.skipIf(!isPg)("the default persona's soul pair", () => {
     expect(personaSoulText()).toBe("db default");
     expect(soulDataBase().approvers.map((a) => a.userId)).toEqual(["UDBAPPROVER"]);
     expect(personaSoulText("ana")).toBe("live ana");
+  });
+});
+
+// R40-I4: a retired persona's Slack identity must be recognisable, so the
+// gateway can drop what is addressed to it instead of treating it as a stranger.
+describe.skipIf(!isPg)("a managed registry's retired identities", () => {
+  test("a tombstoned persona's Slack id maps to its name; a live one does not", async () => {
+    await P.applySync("default", [row("default"), row("ana"), row("bea")], meta("r1", "2026-10-01T10:00:00Z"));
+    await P.applySync("default", [row("default"), row("ana")], meta("r2", "2026-10-01T11:00:00Z"));
+    const r = await buildPersonaRegistry("default");
+    expect(r.isManaged()).toBe(true);
+    expect(r.lookupByUserId("UBEA")).toBeNull();
+    expect(r.tombstonedPersonaFor("UBEA")).toBe("bea");
+    expect(r.tombstonedPersonaFor("UANA")).toBeNull();
+    expect(r.tombstonedPersonaFor("UNOBODY")).toBeNull();
+  });
+
+  test("an identity re-used by a live persona is live, not retired", async () => {
+    await P.applySync("default", [row("default"), row("bea")], meta("r1", "2026-10-01T10:00:00Z"));
+    await P.applySync("default", [row("default"), { ...row("cat"), slackUserId: "UBEA" }], meta("r2", "2026-10-01T11:00:00Z"));
+    const r = await buildPersonaRegistry("default");
+    expect(r.lookupByUserId("UBEA")!.name).toBe("cat");
+    expect(r.tombstonedPersonaFor("UBEA")).toBeNull();
   });
 });

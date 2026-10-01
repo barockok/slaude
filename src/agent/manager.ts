@@ -560,7 +560,15 @@ export class AgentManager extends EventEmitter {
   } {
     const named = personaId && personaId !== "default" ? personaId : undefined;
     if (this.#personaSoulResolver) return { persona: null, name: named };
-    const persona = named ? getPersonaRegistry().lookupByName(named) : null;
+    const registry = getPersonaRegistry();
+    const persona = named ? registry.lookupByName(named) : null;
+    // A managed registry is complete, so a named persona it lacks was retired or
+    // removed. Booting it as the default persona would hand that thread the
+    // default's soul, credentials and brain slice: fail the boot instead. A
+    // filesystem registry keeps the old fallback.
+    if (named && !persona && registry.isManaged()) {
+      throw new Error(`persona '${named}' is not live on this tenant (retired or removed); refusing to boot it as the default persona`);
+    }
     return { persona, name: persona?.name };
   }
 

@@ -48,6 +48,8 @@ describe("persona soul resolution", () => {
       lookupByUserId: refuse,
       list: refuse,
       isMultiPersonaMode: refuse,
+      isManaged: refuse,
+      tombstonedPersonaFor: refuse,
     };
     setPersonaRegistry(registry);
     const seen: Array<[string, string | undefined]> = [];
