@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { CallLog } from "./core/call-log";
 import { blockActionsPayload, deliverEvent, deliverInteraction, messageEnvelope, type DeliverOptions } from "./core/inbound";
 import { FaultStore, createWebApi, parseParams } from "./core/web-api";
-import { SlackError, Workspace } from "./core/workspace";
+import { SlackError, Workspace, type FakeMessage } from "./core/workspace";
 
 export interface FakeSlack {
   url: string;
@@ -145,13 +145,36 @@ export async function startFakeSlack(opts: FakeSlackOptions = {}): Promise<FakeS
        * COST: a down or slow target blocks this request for the whole retry schedule
        * (0 + 60000 + 300000 ms by default, twice that with `duplicate`). Pass a short `retryDelaysMs`
        * (and `ackTimeoutMs`) per request, or start the fake with short delays, when the target may be down.
+       *
+       * With `redeliverTs`, nothing is posted: the EXISTING message with that ts is delivered again
+       * (under `eventId`, or a fresh one), the way Slack can deliver one message as two events.
+       * `text`, `threadTs` and `mention` describe a new message, so they are rejected there, and
+       * `user` must be the stored message's author.
        */
       case "POST send": {
-        const a = validate(body, { app: "string", channel: "string", user: "string", text: "string", target: "target", ...OPTIONAL_SEND, ...DELIVERY });
+        const redeliver = body.redeliverTs !== undefined;
+        const a = validate(body, {
+          app: "string",
+          channel: "string",
+          user: "string",
+          ...(redeliver ? { redeliverTs: "string" } : { text: "string" }),
+          target: "target",
+          ...OPTIONAL_SEND,
+          ...DELIVERY,
+        });
         const app = appOf(a.app);
         const channel = channelOf(a.channel);
-        const text = `${a.mention ? `<@${app.botUserId}> ` : ""}${a.text}`;
-        const msg = ws.post({ channel, user: a.user, text, threadTs: a.threadTs });
+        let msg: FakeMessage;
+        if (redeliver) {
+          for (const k of ["text", "threadTs", "mention"]) if (a[k] !== undefined) throw new HttpError(400, `invalid_arguments: ${k}`);
+          const stored = ws.message(channel, a.redeliverTs);
+          if (!stored) throw new HttpError(404, "message_not_found");
+          if (stored.user !== a.user) throw new HttpError(400, "invalid_arguments: user");
+          msg = stored;
+        } else {
+          const text = `${a.mention ? `<@${app.botUserId}> ` : ""}${a.text}`;
+          msg = ws.post({ channel, user: a.user, text, threadTs: a.threadTs });
+        }
         const envelope = messageEnvelope(ws, app, msg, { eventId: a.eventId });
         const o = { ...deliverOpts, ...deliveryOverrides(a), retryNum: a.retryNum };
         const eventsUrl = `${a.target}/slack/events`;

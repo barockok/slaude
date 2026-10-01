@@ -131,6 +131,33 @@ test("send retries on a failing target like Slack does, and reports every attemp
   expect(hits.map((h) => h.headers.get("x-slack-retry-num"))).toEqual([null, "1", "2"]);
 });
 
+test("send with redeliverTs re-delivers the stored message under a new event id without posting", async () => {
+  const first = await ctl.send({ app: "A0FAKE", channel: "C0TEAM", user: "U0MGR", text: "again", target: target(), mention: true, eventId: "Ev0ONE" });
+  const again = await ctl.send({ app: "A0FAKE", channel: "C0TEAM", user: "U0MGR", target: target(), redeliverTs: first.message.ts, eventId: "Ev0TWO" });
+  expect(again.message).toEqual(first.message);
+  expect((await ctl.messages("C0TEAM")).messages.map((m) => m.text)).toEqual(["<@U0BOT> again"]);
+  const [a, b] = hits.map((h) => JSON.parse(h.body));
+  expect([a.event_id, b.event_id]).toEqual(["Ev0ONE", "Ev0TWO"]);
+  expect(b.event).toEqual(a.event);
+});
+
+test("send with redeliverTs rejects a missing message, a different author and fields of a new message", async () => {
+  const first = await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "root", target: target() });
+  const base = { app: "A0FAKE", channel: "D0MGR", user: "U0MGR", target: target() };
+  hits = [];
+  await expect(ctl.send({ ...base, redeliverTs: "1.000001" })).rejects.toThrow(/404 message_not_found/);
+  await expect(ctl.send({ ...base, user: "U0ALICE", redeliverTs: first.message.ts })).rejects.toThrow(/400 invalid_arguments: user/);
+  for (const extra of [{ text: "x" }, { threadTs: first.message.ts }, { mention: true }]) {
+    const res = await fetch(`${fake.url}/__fake/send`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...base, redeliverTs: first.message.ts, ...extra }) });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe(`invalid_arguments: ${Object.keys(extra)[0]}`);
+  }
+  await expect(ctl.send({ ...base, redeliverTs: 5 } as any)).rejects.toThrow(/400 invalid_arguments: redeliverTs/);
+  // without redeliverTs, text stays required
+  await expect(ctl.send({ ...base } as any)).rejects.toThrow(/400 invalid_arguments: text/);
+  expect(hits).toEqual([]);
+});
+
 test("send honours threadTs and an unknown app or channel is a clear 4xx", async () => {
   const root = await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "root", target: target() });
   const child = await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "child", target: target(), threadTs: root.message.ts });

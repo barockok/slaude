@@ -18,14 +18,11 @@ export interface ControlMessage {
   threadTs?: string;
 }
 
-export interface SendInput {
+interface SendCommon {
   app: string;
   channel: string;
   user: string;
-  text: string;
   target: string;
-  threadTs?: string;
-  mention?: boolean;
   eventId?: string;
   duplicate?: boolean;
   retryNum?: number;
@@ -34,6 +31,21 @@ export interface SendInput {
   /** Per-request override of the server's acknowledgement timeout. */
   ackTimeoutMs?: number;
 }
+
+/** Post a new human message and deliver its event. */
+export interface NewMessageInput extends SendCommon {
+  text: string;
+  threadTs?: string;
+  mention?: boolean;
+  redeliverTs?: undefined;
+}
+
+/** Deliver the stored message with this ts again (no new post); `user` must be its author. */
+export interface RedeliverInput extends SendCommon {
+  redeliverTs: string;
+}
+
+export type SendInput = NewMessageInput | RedeliverInput;
 
 export interface ClickInput {
   app: string;
