@@ -62,8 +62,10 @@ type LiveSession = {
   idleTimer?: ReturnType<typeof setTimeout>;
   /** Set when reload_session is called so expected exit errors are suppressed. */
   reloading?: boolean;
-  /** A user input has been pushed and its `result` has not arrived yet. */
-  inTurn: boolean;
+  /** Inputs pushed whose `result` has not arrived yet. Inputs overlap (an
+   *  auto-evolve prompt and the next user message can both be outstanding), so
+   *  this is a count: a turn is in flight while it is above zero. */
+  pendingInputs: number;
   /** Resolves once the session's query loop has fully exited and the session
    *  has left #live. sendMessage awaits it for a session that is reloading. */
   exited: Promise<void>;
@@ -230,6 +232,13 @@ export class AgentManager extends EventEmitter {
   /** Sessions whose reload is deferred until the turn in flight returns its
    *  result (see reloadAfterTurn). The single owner of that decision. */
   #reloadAfterTurn = new Set<string>();
+  /** How long sendMessage waits for a reloading session to exit. */
+  #reloadExitTimeoutMs = RELOAD_EXIT_TIMEOUT_MS;
+
+  /** TEST SEAM: shrink the bounded wait for a reloading session's exit. */
+  __setReloadExitTimeoutForTests(ms: number) {
+    this.#reloadExitTimeoutMs = ms;
+  }
   /** Prompt to inject after a manual reload_session call (keyed by sessionId). */
   #reloadPrompt = new Map<string, string>();
   /** Sessions whose next turn must be suppressed (mention-only plain message).
@@ -377,8 +386,25 @@ export class AgentManager extends EventEmitter {
     let live = this.#live.get(sessionId);
     // A reloading session has closed its input: anything pushed now would never
     // reach the CLI. Wait for it to exit and boot a fresh one for this message.
+    // Bounded: a CLI that never exits after its stdin closes must not hang this
+    // forever. Past the bound the old session is aborted and detached (its
+    // eventual exit cannot touch the fresh one), and the message boots fresh.
     while (live?.reloading) {
-      await live.exited;
+      const old = live;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const exited = await Promise.race([
+        old.exited.then(() => true),
+        new Promise<boolean>((r) => (timer = setTimeout(() => r(false), this.#reloadExitTimeoutMs))),
+      ]);
+      clearTimeout(timer);
+      if (!exited) {
+        console.warn(`[mgr] reloading session=${sessionId} did not exit within ${this.#reloadExitTimeoutMs}ms; aborting it and booting fresh`);
+        this.abort(sessionId);
+        if (old.idleTimer) clearTimeout(old.idleTimer);
+        if (this.#live.get(sessionId) === old) this.#live.delete(sessionId);
+        live = undefined;
+        break;
+      }
       live = this.#live.get(sessionId);
     }
     if (live) {
@@ -452,7 +478,7 @@ export class AgentManager extends EventEmitter {
     const live = this.#live.get(sessionId);
     if (!live) return false;
     if (live.reloading) return true;
-    if (live.inTurn) {
+    if (live.pendingInputs > 0) {
       this.#reloadAfterTurn.add(sessionId);
       return true;
     }
@@ -799,7 +825,7 @@ export class AgentManager extends EventEmitter {
       id: sessionId,
       // Every input starts a turn; its `result` ends it (#fanout).
       pushUser: (text: string) => {
-        live.inTurn = true;
+        live.pendingInputs++;
         pushUser(text);
       },
       closeIterable,
@@ -808,7 +834,7 @@ export class AgentManager extends EventEmitter {
       turnTools: [],
       inAutoEvolve: false,
       channelId: row.slack_channel_id,
-      inTurn: true, // firstText is already queued
+      pendingInputs: 1, // firstText is already queued
       exited: new Promise<void>((r) => (markExited = r)),
     };
     this.#live.set(sessionId, live);
@@ -875,14 +901,29 @@ export class AgentManager extends EventEmitter {
           this.emit("event", { type: "error", sessionId, error: message } satisfies AgentEvent);
         }
       } finally {
-        this.#reloadAfterTurn.delete(sessionId);
+        // A session detached by sendMessage's bounded reload wait no longer owns
+        // the id: a fresh session may hold it, and nothing here may touch that.
+        const owns = () => this.#live.get(sessionId) === live;
+        if (owns()) this.#reloadAfterTurn.delete(sessionId);
         if (retried) {
           markExited();
           return;
         }
         if (live.idleTimer) clearTimeout(live.idleTimer);
+        if (!owns()) {
+          markExited();
+          return;
+        }
         await this.#store.setStatus(sessionId, "idle");
+        if (!owns()) {
+          markExited();
+          return;
+        }
         this.#live.delete(sessionId);
+        // Again after the delete: a reloadAfterTurn during the await above saw
+        // this session still live and may have re-added the id, which would
+        // otherwise reload the next fresh session spuriously.
+        this.#reloadAfterTurn.delete(sessionId);
         this.#budget.forget(sessionId);
         this.#stopBlocked.delete(sessionId);
         metric.sessionsLive.set(this.#live.size);
@@ -976,9 +1017,11 @@ export class AgentManager extends EventEmitter {
         break;
       }
       case "result": {
-        if (live) live.inTurn = false;
-        // A reload deferred by reloadAfterTurn applies now, at the turn's end.
-        const deferredReload = this.#reloadAfterTurn.delete(sessionId);
+        if (live) live.pendingInputs = Math.max(0, live.pendingInputs - 1);
+        // A reload deferred by reloadAfterTurn applies once NO input is
+        // outstanding: another queued input (e.g. a user message behind an
+        // auto-evolve turn) still needs the CLI's stdin.
+        const deferredReload = (live?.pendingInputs ?? 0) === 0 && this.#reloadAfterTurn.delete(sessionId);
         // Stream-closed circuit breaker: if a stream_closed error was detected
         // during this turn, handle at turn-end (clean exit point).
         if (this.#pendingReload.has(sessionId)) {
@@ -1118,6 +1161,9 @@ export class AgentManager extends EventEmitter {
     return substantive >= 2;
   }
 }
+
+/** Bound on sendMessage's wait for a reloading session's CLI to exit. */
+const RELOAD_EXIT_TIMEOUT_MS = 30_000;
 
 /** Tools that don't count toward the auto-evolve trigger threshold. */
 const AUTO_EVOLVE_IGNORE = new Set([

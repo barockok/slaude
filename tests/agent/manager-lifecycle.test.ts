@@ -8,7 +8,7 @@
  * leak is behaviorally a no-op. Every non-`query` export is re-exported from
  * the real module (session-mcp & friends need createSdkMcpServer/tool).
  */
-import { describe, it, expect, mock, beforeEach, afterAll } from "bun:test";
+import { describe, it, expect, mock, beforeEach, afterAll, spyOn } from "bun:test";
 
 // Must be set before src/memory/index.ts is first imported in this process.
 process.env.SLAUDE_MEMORY = "sqlite";
@@ -52,6 +52,9 @@ class FakeSession {
   bootError: string | null = null;
   /** Throw (instead of clean return) when the prompt iterable closes. */
   throwOnClose = false;
+  /** Never exit: ignore both the prompt iterable closing and the abort signal
+   *  (a CLI that hangs after its stdin closes). */
+  hang = false;
   setPermissionModeImpl: (m: string) => Promise<unknown> = async () => ({});
   mcpServerStatusImpl: () => Promise<unknown> = async () => [];
   _wake: (() => void) | null = null;
@@ -89,6 +92,7 @@ class FakeSession {
     }
 
     options.abortController?.signal.addEventListener("abort", () => {
+      if (self.hang) return;
       self.fail(new Error("aborted by controller"));
     });
 
@@ -99,6 +103,7 @@ class FakeSession {
           self.users.push(um);
           self.onUser?.(um);
         }
+        if (self.hang) return;
         if (self.throwOnClose) self.fail(new Error("transport closed"));
         else self.end();
       } catch (e) {
@@ -893,5 +898,115 @@ describe("AgentManager on a node: brain-slice anchor from the bundle", () => {
       if (saved === undefined) delete process.env.SLAUDE_AGENT_ID;
       else process.env.SLAUDE_AGENT_ID = saved;
     }
+  });
+});
+
+describe("AgentManager reload: overlapping inputs and a CLI that never exits", () => {
+  it("a reload requested while an auto-evolve turn AND a queued user message are pending waits for BOTH results", async () => {
+    process.env.SLAUDE_AUTO_EVOLVE = "1";
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    let finishEvolve: () => void = () => {};
+    let finishB: () => void = () => {};
+    const fs = plan((s) => {
+      s.onUser = (um) => {
+        const text = String(um.message.content);
+        if (text.includes("<auto-evolve>")) finishEvolve = () => s.emit(res());
+        else if (text === "B") finishB = () => s.emit(res());
+        else {
+          s.emit(asst([tool("Bash"), tool("Write"), txt("did the work")]));
+          s.emit(res());
+        }
+      };
+    });
+    await mgr.sendMessage(row.id, "A");
+    // A is done and the auto-evolve prompt is in flight; the node would now
+    // release the lock, and the next job pushes B into the same session.
+    await until(() => fs.users.length === 2, 3000, "auto-evolve injected");
+    await mgr.sendMessage(row.id, "B");
+    await until(() => fs.users.length === 3, 3000, "B delivered");
+
+    expect(mgr.reloadAfterTurn(row.id)).toBe(true);
+    finishEvolve();
+    await until(() => events.some((e) => e.type === "done" && e.autoEvolve), 3000, "evolve done");
+    await Bun.sleep(30);
+    // B is still in flight: input must stay open.
+    expect(fs.ended).toBe(false);
+    expect(mgr.isLive(row.id)).toBe(true);
+
+    finishB();
+    await until(() => !mgr.isLive(row.id), 3000, "reload after both results");
+    expect(fs.ended).toBe(true);
+    expect(events.filter((e) => e.type === "error")).toHaveLength(0);
+  });
+
+  it("a deferral re-added while a dying session finishes exiting does not reload the next fresh session", async () => {
+    const { dbSessionStore } = await import("../../src/agent/session-store");
+    const mgr = new AgentManager();
+    let releaseIdle: () => void = () => {};
+    let idleBlocked = false;
+    mgr.setSessionStore({
+      ...dbSessionStore,
+      setStatus: async (id: string, status: any) => {
+        if (status === "idle" && !idleBlocked) {
+          idleBlocked = true;
+          await new Promise<void>((r) => (releaseIdle = r));
+        }
+        return dbSessionStore.setStatus(id, status);
+      },
+    } as any);
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    plan((s) => {
+      s.onUser = (um) => {
+        // The CLI dies mid-turn: no result, so an input stays outstanding.
+        if (String(um.message.content) === "crash") s.fail(new Error("cli died"));
+        else s.emit(res());
+      };
+    });
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => events.some((e) => e.type === "done"), 3000, "done");
+    await mgr.sendMessage(row.id, "crash");
+    await until(() => idleBlocked, 3000, "exit reached the status write");
+    // Still live, a turn outstanding: the deferral is recorded.
+    expect(mgr.isLive(row.id)).toBe(true);
+    expect(mgr.reloadAfterTurn(row.id)).toBe(true);
+    releaseIdle();
+    await until(() => !mgr.isLive(row.id), 3000, "exit");
+
+    const fresh = plan((s) => (s.onUser = () => s.emit(res())));
+    await mgr.sendMessage(row.id, "next");
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "fresh done");
+    await Bun.sleep(30);
+    expect(fresh.ended).toBe(false);
+    expect(mgr.isLive(row.id)).toBe(true);
+    await shutdown(mgr, row.id);
+  });
+
+  it("a reloading session that never exits is aborted after the bound and the message boots fresh", async () => {
+    const mgr = new AgentManager();
+    mgr.__setReloadExitTimeoutForTests(50);
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const stuck = plan((s) => {
+      s.hang = true;
+      s.onUser = () => s.emit(res());
+    });
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => events.some((e) => e.type === "done"), 3000, "done");
+    const fresh = plan((s) => (s.onUser = () => s.emit(res())));
+    expect(mgr.reload(row.id)).toBe(true);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await mgr.sendMessage(row.id, "after");
+    } finally {
+      warn.mockRestore();
+    }
+    await until(() => fresh.users.length === 1, 3000, "fresh session got the message");
+    expect(String(fresh.users[0].message.content)).toBe("after");
+    expect(stuck.ended).toBe(false);
+    expect(mgr.isLive(row.id)).toBe(true);
+    await shutdown(mgr, row.id);
   });
 });
