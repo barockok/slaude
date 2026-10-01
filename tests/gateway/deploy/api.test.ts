@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { db } from "../../../src/db/schema";
 import { __resetMasterKeyCache } from "../../../src/db/crypto";
 import { createDeployApi } from "../../../src/gateway/deploy/api";
@@ -122,6 +122,32 @@ pgOnly("token hardening and tenant guard", () => {
     process.env.SLAUDE_DEPLOY_TOKEN = " ".repeat(40);
     expect((await api().fetch(anyPath()))!.status).toBe(404);
     expect((await api().fetch(post(" ".repeat(40))))!.status).toBe(404);
+  });
+  test("a deploy token equal to the node token is unset, with one warning", async () => {
+    const { env, __resetDeployTokenWarnings } = await import("../../../src/config/env");
+    __resetDeployTokenWarnings();
+    process.env.SLAUDE_DEPLOY_TOKEN = `  ${NODE} `;
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect((await api().fetch(post(NODE)))!.status).toBe(404);
+      expect((await api().fetch(post(NODE)))!.status).toBe(404);
+      expect(env.deployToken()).toBe("");
+      const hits = warn.mock.calls.filter((c) => c.map(String).join(" ").includes("SLAUDE_DEPLOY_TOKEN"));
+      expect(hits).toHaveLength(1);
+      expect(hits[0]!.map(String).join(" ")).not.toContain(NODE);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+  test("a preview token equal to the node token is unset too", async () => {
+    const { env } = await import("../../../src/config/env");
+    process.env.SLAUDE_DEPLOY_PREVIEW_TOKEN = NODE;
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(env.deployPreviewToken()).toBe("");
+    } finally {
+      warn.mockRestore();
+    }
   });
   test("a 31-character token is unset", async () => {
     process.env.SLAUDE_DEPLOY_TOKEN = "s".repeat(31);

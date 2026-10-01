@@ -63,7 +63,8 @@ and must be at least 32 characters after trimming. If it is unset, blank or
 shorter, the `/deploy` endpoint does not exist: every path and method returns
 404. It is separate from `SLAUDE_NODE_TOKEN` on purpose: every node holds the
 node token, and the deploy token must not be held by anything that can run a
-turn. Set the `${VAR}` variables your repository references in the same
+turn. A deploy (or preview) token equal to the node token is treated as unset,
+with one warning in the gateway log. Set the `${VAR}` variables your repository references in the same
 environment.
 
 For pull-request jobs, also set `SLAUDE_DEPLOY_PREVIEW_TOKEN` (same trim and
