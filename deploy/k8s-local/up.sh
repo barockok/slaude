@@ -107,7 +107,10 @@ ensure_secret SLAUDE_BRAIN_DATABASE_URL "postgres://slaude:slaude@postgres:5432/
 # the separate token exists to prevent. 48 hex chars clears the gateway's
 # 32-character floor. Never printed.
 DEPLOY="$HERE/deploy.env"
-SECRETS="$DEPLOY" ensure_secret SLAUDE_DEPLOY_TOKEN "$(openssl rand -hex 24)"
+touch "$DEPLOY"
+SECRETS="$DEPLOY"
+ensure_secret SLAUDE_DEPLOY_TOKEN "$(openssl rand -hex 24)"
+SECRETS="$HERE/secrets.env"
 
 # Provider credentials are rewritten every run, so rotating a key is a re-run.
 # Values are never printed.

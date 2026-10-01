@@ -69,6 +69,7 @@ the old one.
 | A gateway can be lost while serving | 30 s of traffic through the Service while a pod is deleted; longest outage must stay under one second |
 | A crashed leader is replaced | SIGKILL through the container runtime, then the lock owner must change within the TTL |
 | A crashed node is detected and pruned | its heartbeat must expire, the worker restart, and the reaper remove it from the registry |
+| A node needs no persona directory | sync a persona set (extraction cache seeded, so no model), delete the persona's directory from the volume, run a suppressed turn, then a node log must carry `persona=verifier soul=<sha256 prefix of the synced text>`; the deploy token must be on the gateway and absent from every node |
 
 Crashes use SIGKILL from the container runtime on purpose. `kubectl delete
 --force` still delivers SIGTERM, and a leader that releases its lock on the way

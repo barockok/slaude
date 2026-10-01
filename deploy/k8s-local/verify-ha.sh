@@ -37,7 +37,7 @@ expect() {
 k() { kubectl --context "$PROFILE" -n "$NS" "$@"; }
 redis() { k exec deploy/dev-redis -c redis -- redis-cli "$@" 2>/dev/null | tr -d '\r'; }
 ready() { k get deploy "$1" -o jsonpath='{.status.readyReplicas}' 2>/dev/null; }
-pods() { k get pod -l "$1" --field-selector=status.phase=Running -o jsonpath='{.items[*].metadata.name}' 2>/dev/null; }
+pods() { k get pod -l "$1" --field-selector=status.phase=Running --request-timeout="${PROBE_TIMEOUT:-60s}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null; }
 http() { k exec "$PROBE" -- curl -s -m 3 -o /dev/null -w '%{http_code}' "$1" 2>/dev/null || echo 000; }
 # A built shell references hashed assets; an unbuilt one references main.tsx.
 lacks_source_entry() { ! grep -q 'main\.tsx' <<<"$1"; }
@@ -131,12 +131,13 @@ sync_status() { # <pod> <token-env-var-name> <json-payload>
   " 2>/dev/null | tail -1
 }
 
-# Every session-boot soul line for the verifier persona, from every node pod.
+# Every session-boot soul line for the verifier persona, from the given node pods.
 # Non-zero (and silent) if ANY pod's logs could not be read, so a missing pod is
 # never mistaken for "no such line".
-verifier_soul_lines() {
+verifier_soul_lines() { # <node pod...>
   local p out all=""
-  for p in $(pods "$NODE_SEL"); do
+  (($# > 0)) || return 1
+  for p in "$@"; do
     out="$(k logs --request-timeout="$PROBE_TIMEOUT" "$p" 2>/dev/null)" || return 1
     all+="$(grep -F 'persona=verifier soul=' <<<"$out" || true)"$'\n'
   done
@@ -415,17 +416,28 @@ done
 # sha256(soulMd)>`. The expected hash is computed here from the exact text synced,
 # a text distinctive to this run, and a node log must carry it.
 #
-# The soul is extracted by a model call on sync (an unchanged soul skips it), so
-# this section needs the provider credentials up.sh was run with.
+# Sync extracts structured soul data with a model, and this overlay has no
+# provider credentials, so each soul's extraction cache entry is seeded first
+# (src/soul/extract.ts: $SLAUDE_HOME/cache/soul.<full sha256>.json). The sync
+# then finds it and calls no model; production code is untouched.
+#
+# The section leaves a synced persona set (default + verifier) on the local
+# cluster. Syncing a full set tombstones any other persona previously synced.
 section "personas as code"
 
-wait_ready slaude-gateway 2 180 >/dev/null
-wait_ready slaude-node 2 180 >/dev/null
 gw_pod="$(gateway)"
 gw_pod="${gw_pod#pod/}"
+# shellcheck disable=SC2207 # pod names contain no whitespace
+node_pods=($(pods "$NODE_SEL"))
 
-if [[ -z "$gw_pod" ]]; then
+if ! wait_ready slaude-gateway 2 180; then
+  bad "gateway rollout did not reach 2 ready replicas — COULD NOT MEASURE personas as code"
+elif ! wait_ready slaude-node 2 180; then
+  bad "node rollout did not reach 2 ready replicas — COULD NOT MEASURE personas as code"
+elif [[ -z "$gw_pod" ]]; then
   bad "personas as code — COULD NOT MEASURE (no running gateway pod)"
+elif ((${#node_pods[@]} == 0)); then
+  bad "personas as code — COULD NOT MEASURE (no running node pods)"
 else
   k exec -i --request-timeout="$PROBE_TIMEOUT" "$gw_pod" -- sh -c 'mkdir -p /tmp/probe && cat > /tmp/probe/turns.ts' <"$HERE/probe/turns.ts" \
     || printf '  !! could not install the probe into %s\n' "$gw_pod" >&2
@@ -433,7 +445,7 @@ else
   # The deploy token reaches gateways and never nodes.
   expect_value "the gateway holds the deploy token" \
     "$(env_state "$gw_pod" SLAUDE_DEPLOY_TOKEN)" "present" "gateway env"
-  for np in $(pods "$NODE_SEL"); do
+  for np in "${node_pods[@]}"; do
     expect_value "node $np does not hold the deploy token" \
       "$(env_state "$np" SLAUDE_DEPLOY_TOKEN)" "absent" "node env"
   done
@@ -441,17 +453,28 @@ else
   # Distinctive per run, so its hash cannot coincide with the default soul's and
   # no line from an earlier run can satisfy the check.
   soul="Verifier soul for the personas-as-code check, run $(date +%s)-$RANDOM."
-  want_hash="$(printf '%s' "$soul" | shasum -a 256 | cut -c1-12)"
+  want_full="$(printf '%s' "$soul" | shasum -a 256 | cut -d' ' -f1)"
+  want_hash="${want_full:0:12}"
+  default_soul="Default verify soul."
+  default_full="$(printf '%s' "$default_soul" | shasum -a 256 | cut -d' ' -f1)"
+  seed_ok=1
+  for sha in "$want_full" "$default_full"; do
+    # shellcheck disable=SC2016 # expands in the pod's shell, not here
+    printf '{"approvers":[]}' | k exec -i --request-timeout="$PROBE_TIMEOUT" "$gw_pod" -- sh -c \
+      'mkdir -p "${SLAUDE_HOME:-/data}/cache" && cat > "${SLAUDE_HOME:-/data}/cache/soul.$1.json"' _ "$sha" 2>/dev/null \
+      || { seed_ok=""; printf '  !! could not seed the soul extraction cache for %s\n' "${sha:0:12}" >&2; }
+  done
+  [[ -n "$seed_ok" ]] || bad "soul extraction cache not seeded — the sync below would need a model"
   payload="$(python3 -c '
 import json, sys, datetime
 print(json.dumps({
     "revision": "verify-1",
     "committedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "personas": [
-        {"name": "default", "soul": "Default verify soul."},
+        {"name": "default", "soul": sys.argv[2]},
         {"name": "verifier", "slackUserId": "UTESTUSER7", "soul": sys.argv[1]},
     ],
-}))' "$soul")"
+}))' "$soul" "$default_soul")"
 
   # The deploy token syncs; the node token must not.
   expect_value "the pipeline sync was accepted" \
@@ -486,7 +509,7 @@ print(json.dumps({
   seen=""
   t0=$(date +%s)
   while (($(date +%s) - t0 < 30)); do
-    if lines="$(verifier_soul_lines)"; then
+    if lines="$(verifier_soul_lines "${node_pods[@]}")"; then
       if grep -qF "persona=verifier soul=$want_hash" <<<"$lines"; then seen=yes; else seen=no; fi
       [[ "$seen" == yes ]] && break
     fi
