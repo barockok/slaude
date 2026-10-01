@@ -50,7 +50,9 @@ export async function bashTool(
 ): Promise<ToolText> {
   const enter = `cd ${shq(ctx.cwd.value)} 2>/dev/null || cd ${shq(ctx.root)}`;
   if (i.run_in_background) return startBackground(ctx, enter, i.command);
-  const timeoutMs = Math.min(Math.max(1, i.timeout ?? DEFAULT_TIMEOUT), MAX_TIMEOUT);
+  // NaN, ±Infinity, zero or negative mean "no usable value": use the default.
+  const asked = typeof i.timeout === "number" && Number.isFinite(i.timeout) && i.timeout > 0 ? i.timeout : DEFAULT_TIMEOUT;
+  const timeoutMs = Math.min(Math.max(1, asked), MAX_TIMEOUT);
   // Newline before the trailer so a trailing comment in the command cannot swallow it.
   const cmd = `${enter}\n${i.command}\n__slaude_rc=$?; printf '\\n${CWD_MARK}%s' "$(pwd)"; exit $__slaude_rc`;
   const r = await ctx.exec(cmd, { timeoutMs, login: true });

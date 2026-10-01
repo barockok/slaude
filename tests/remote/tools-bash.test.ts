@@ -34,6 +34,18 @@ describe("bash", () => {
     expect(text(r)).toContain("Exit code 4");
     expect(text(r)).toContain("nope");
   });
+  it("an unusable timeout (NaN, Infinity, zero, negative) falls back to the default", async () => {
+    const seen: number[] = [];
+    const exec: Exec = async (_cmd, opts) => { seen.push(opts.timeoutMs); return { stdout: "", stderr: "", code: 0, truncated: false, timedOut: false }; };
+    const c = { ...ctx, exec };
+    await bashTool(c, { command: "true" });
+    const dflt = seen[0]!;
+    expect(dflt).toBeGreaterThan(1000);
+    for (const timeout of [NaN, Infinity, -Infinity, 0, -5]) await bashTool(c, { command: "true", timeout });
+    expect(seen.slice(1)).toEqual([dflt, dflt, dflt, dflt, dflt]);
+    await bashTool(c, { command: "true", timeout: 1234 });
+    expect(seen.at(-1)).toBe(1234);
+  });
   it("times out and says so", async () => {
     const r = await bashTool(ctx, { command: "sleep 5", timeout: 300 });
     expect(r.isError).toBe(true);
