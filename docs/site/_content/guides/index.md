@@ -8,6 +8,7 @@ description: Task-oriented guides for operating slaude — engagement, approvals
 | Guide | What you will do |
 |---|---|
 | [Engagement and approvals](engagement.md) | Mention model, disengage, the approval gate, `/1on1`, slash commands, cron |
+| [Remote mode](remote.md) | Run a thread's shell and file tools on your own machine over tailcat SSH |
 | [Examples](examples.md) | Write a first skill, run a first ingest, add a custom MCP server, run the simulation |
 
 The persona schema, every environment variable, and the `slaude.json` manifest

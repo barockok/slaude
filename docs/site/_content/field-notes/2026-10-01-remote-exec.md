@@ -1,0 +1,99 @@
+# /remote: running a thread's tools on the user's machine
+
+**Date:** 2026-10-01
+
+`/remote <addr> <dir>` makes a thread's shell and file tools execute on the
+initiator's own machine over tailcat SSH. This note records the mechanism, the
+spike findings that shaped it, and what review rounds changed.
+
+## Move the tools, not the CLI
+
+The alternative is to run the whole agent loop on the user's machine. That
+would put the model API key, MCP credentials, KB access and the transcript on
+a laptop. Instead the loop stays on slaude and only tool execution moves. The
+Claude Agent SDK's `toolAliases` reroutes the built-in Bash/Read/Write/Edit/
+Glob/Grep to an in-process MCP server (`remote`, tools `mcp__remote__*`, plus
+`bash_output` / `bash_kill` for background jobs).
+
+## Spike findings (spec section 8)
+
+- Bash enabled plus `toolAliases` routes the call; a marker file written by the
+  command was never created locally.
+- With the built-ins *disallowed* plus aliases, the model went looking for the
+  missing tool via `ToolSearch` until it ran out of turns. So the built-ins
+  stay enabled and keep their native schemas.
+- Hooks see the post-alias tool name. A `PreToolUse` deny on built-in names is
+  therefore a clean guard: any call that reaches a *local* built-in while remote
+  is active is a bug or an alias miss, and is denied.
+- tailcat's SSH server runs `$SHELL -c` non-login with a minimal PATH. macOS has
+  no `setsid` and no `rg`. Closing an exec channel without a pty orphans the
+  process. Commands therefore run in their own process group (perl `setpgrp`)
+  and are killed by group; `bash` explicitly uses a login shell.
+- Measured on a direct path: connect about 0.55 s, warm exec p50 about 21-32 ms.
+  Relayed (DERP) latency is not measured yet.
+
+## Decisions
+
+- **Remote implies a locked /1on1** owned by the initiator. The remote machine
+  is the initiator's, so no one else may steer it. Anything that changes the
+  lock (`/1on1 off`, opening, panel unlock) ends remote mode and reloads the
+  session.
+- **Manager filter.** A manager or backup is admitted to a remote thread only
+  for `/remote off`, `/remote` status and `/1on1 off`. Everything else from a
+  non-initiator is dropped, so an approver role never grants control of
+  someone else's machine.
+- **Never fall back to local tools.** An unreachable machine returns
+  `REMOTE_UNREACHABLE` / `REMOTE_AUTH_FAILED` and the agent is told to stop.
+- **A drop during a command is reported, never retried.** The command may have
+  run; re-running a half-executed command is worse than surfacing the drop.
+- **Approvals are the built-ins' approvals.** The approver sees Bash/Write/Edit;
+  plan mode denies remote changes, `dontAsk` allows only read-only calls,
+  `acceptEdits` allows write/edit but not bash, and no approver means deny
+  everything not read-only (fail closed).
+- **Security boundary.** Commands run as the account running `tailcat serve`.
+  Path jailing in the file tools only prevents accidents; the guide recommends a
+  separate account or container for untrusted repositories.
+
+## Split deployments: the node reload gap
+
+Nodes cache warm sessions, and nothing told a node that a thread's remote target
+or lock had changed. The gateway now signs `remote` and `sessionConfigFp` into
+every job token; the node compares the fingerprint with the warm session's and
+reboots on mismatch. A side effect: the same mechanism fixes a stale /1on1 mode
+block on warm node sessions that predated this feature. Background jobs on the
+user's machine are cleaned up when remote ends, from the gateway, so it works
+even if no further turn reaches a node.
+
+## Key custody
+
+A per-(workspace, user) ed25519 key is generated at `/remote key`. The private
+half is encrypted at rest (AES-256-GCM envelope under the master key), served
+only to a user-scoped remote turn through `GET /v1/tenants/:t/remote-key`
+authorized by the signed job token, and held in memory by the helper subprocess
+tree (the parent also holds the string while forwarding it). It never appears in
+argv, env, disk or logs. The tailcat address is not secret once key auth is
+required, but it travels in the job token and so sits in the queue's job data
+for the job's lifetime; it is never echoed in replies, status lines or logs.
+
+## What reviews found
+
+- Fail-closed rules for every approval mode and for the no-approver case.
+- The manager filter above: manager/backup roles must not double as control of
+  the initiator's machine.
+- Zombie-leader ownership check: before killing a process group, the cleanup
+  verifies the group leader is still the job it started, so a recycled pid is
+  not killed.
+- Audit-subject whitelist: audit lines carry tool, program name or file
+  basename, exit code and duration only; env-assignment-prefixed commands log
+  `-` so a secret passed as `KEY=value cmd` cannot leak.
+- Panel unlock and `/1on1` transitions each had to end remote mode and reload
+  the warm session, or the thread kept executing remotely under a lifted lock.
+
+## Known limitations
+
+No PDF or ipynb reads. An explicit `exec` as the last step of a background
+command loses the job marker, so `/remote off` cannot kill that job. Tilde
+directories are resolved once at `/remote` time. The hand-rolled tailcat stdio
+Duplex was verified against tailcat v0.6.0 locally; the image ships v0.7.0. The
+feature is behind `SLAUDE_REMOTE=1`, with `SLAUDE_TAILCAT_BIN` as an operator
+override of the binary path.
