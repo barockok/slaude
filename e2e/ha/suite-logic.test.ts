@@ -1,12 +1,16 @@
 import { expect, test } from "bun:test";
 import type { CallRecord } from "../fake-slack/core/call-log";
 import {
+  bootAnnotations,
+  bootFingerprint,
   dmChannelId,
   journalRowsFor,
   lastSeq,
   maskSecrets,
   personaReplies,
   podUrls,
+  registeredApps,
+  restartDecision,
   seedCommand,
   stableCredentials,
   unknownMethods,
@@ -87,4 +91,51 @@ test("journal rows are filtered by tag and time", () => {
   const rows = [row(10, "echo"), row(20, "echo"), row(30, null), row(40, "think")];
   expect(journalRowsFor(rows, "echo", 15)).toEqual([row(20, "echo")]);
   expect(journalRowsFor(rows, "echo", 10)).toHaveLength(2);
+});
+
+const LIST = [
+  "$ bun src/cli/slack-app.ts list",
+  "A0TWO/T0TEAM  tenant=default persona=alpha bot_user=U0BALPHA updated=2026-10-01T07:39:33.976Z",
+  "A0ONE/T0TEAM  tenant=default persona=alpha bot_user=U0B0003 updated=2026-10-01T07:34:49.564Z",
+  "",
+].join("\n");
+const SUMS = (soul: string) =>
+  [`${soul.repeat(64)}  /data/SOUL.md`, `${"b".repeat(64)}  /data/cache/soul.0123456789abcdef.json`, ""].join("\n");
+
+test("registered apps drop the update stamp and the npm-style command echo, sorted", () => {
+  expect(registeredApps(LIST)).toEqual([
+    "A0ONE/T0TEAM tenant=default persona=alpha bot_user=U0B0003",
+    "A0TWO/T0TEAM tenant=default persona=alpha bot_user=U0BALPHA",
+  ]);
+  expect(registeredApps("$ bun src/cli/slack-app.ts list\n(no apps)\n")).toEqual([]);
+});
+
+test("the boot fingerprint ignores order, paths and update stamps, and moves with content", () => {
+  const base = bootFingerprint(SUMS("a"), LIST);
+  expect(base).toMatch(/^[0-9a-f]{32}$/);
+  const reordered = SUMS("a").split("\n").reverse().join("\n").replaceAll("/data/", "/other/");
+  expect(bootFingerprint(reordered, LIST.replaceAll("2026-10-01", "2027-01-01"))).toBe(base);
+  expect(bootFingerprint(SUMS("c"), LIST)).not.toBe(base);
+  expect(bootFingerprint(SUMS("a"), LIST.replace("U0BALPHA", "U0B0004"))).not.toBe(base);
+  expect(bootFingerprint(SUMS("a"), "")).not.toBe(base);
+  expect(() => bootFingerprint(`${"b".repeat(64)}  /data/cache/x.json`, LIST)).toThrow(/no SOUL.md/);
+});
+
+test("boot annotations come back in the requested order, empty when absent", () => {
+  const json = JSON.stringify({
+    items: [
+      { metadata: { name: "slaude-node", annotations: { "slaude-e2e/boot-fingerprint": "f9", other: "x" } } },
+      { metadata: { name: "slaude-gateway" } },
+    ],
+  });
+  expect(bootAnnotations(json, ["slaude-gateway", "slaude-node", "missing"])).toEqual(["", "f9", ""]);
+  expect(bootAnnotations("{}", ["a"])).toEqual([""]);
+});
+
+test("restart when the seed changed something, or the pods booted with other state; otherwise not", () => {
+  expect(restartDecision({ before: "f1", after: "f2", booted: ["f2", "f2"] }).restart).toBe(true);
+  expect(restartDecision({ before: "f1", after: "f1", booted: ["", ""] })).toEqual({ restart: true, reason: expect.stringContaining("booted before") });
+  expect(restartDecision({ before: "f1", after: "f1", booted: ["f1", "f0"] }).restart).toBe(true);
+  expect(restartDecision({ before: "f1", after: "f1", booted: [] }).restart).toBe(true);
+  expect(restartDecision({ before: "f1", after: "f1", booted: ["f1", "f1"] })).toEqual({ restart: false, reason: expect.stringContaining("nothing") });
 });

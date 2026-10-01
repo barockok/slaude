@@ -114,3 +114,69 @@ export interface MockJournalRow {
 export function journalRowsFor(rows: MockJournalRow[], tag: string, sinceMs: number): MockJournalRow[] {
   return rows.filter((r) => r.tag === tag && r.ts >= sinceMs);
 }
+
+/** Deployment annotation recording the fingerprint the slaude pods last booted with. */
+export const BOOT_ANNOTATION = "slaude-e2e/boot-fingerprint";
+
+/**
+ * The registered Slack apps from `slack-app list` output, as `app/team persona bot_user` lines,
+ * sorted. The `updated=` stamp is dropped: every upsert bumps it, even one that changes nothing.
+ * Credentials are encrypted and not listed; the bot user id stands in for them, since
+ * stableCredentials derives both from the app id.
+ */
+export function registeredApps(listOutput: string): string[] {
+  return listOutput
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => /^\S+\/\S+\s/.test(l) && !l.startsWith("$"))
+    .map((l) => l.replace(/\s+updated=\S+/, "").replace(/\s+/g, " "))
+    .sort();
+}
+
+/**
+ * One digest of everything the slaude pods read only at startup: SOUL.md and the soul cache
+ * (from `sha256sum` output, keyed by file name) and the registered-app set.
+ */
+export function bootFingerprint(sha256sumOutput: string, appListOutput: string): string {
+  const files = sha256sumOutput
+    .split("\n")
+    .map((l) => l.trim().split(/\s+/))
+    .filter((p) => p.length === 2 && /^[0-9a-f]{64}$/.test(p[0]!))
+    .map(([sum, path]) => `${path!.slice(path!.lastIndexOf("/") + 1)} ${sum}`)
+    .sort();
+  if (!files.some((f) => f.startsWith("SOUL.md "))) throw new Error("no SOUL.md checksum in the fingerprint input");
+  const canon = [...files, "--", ...registeredApps(appListOutput)].join("\n");
+  return createHash("sha256").update(canon).digest("hex").slice(0, 32);
+}
+
+/**
+ * The BOOT_ANNOTATION value of each named Deployment from `kubectl get deploy -o json`, in the
+ * order given; "" for a Deployment that is missing or has none.
+ */
+export function bootAnnotations(json: string, names: string[]): string[] {
+  const list = JSON.parse(json) as { items?: any[] };
+  const byName = new Map((list.items ?? []).map((d) => [d.metadata?.name as string, (d.metadata?.annotations?.[BOOT_ANNOTATION] ?? "") as string]));
+  return names.map((n) => byName.get(n) ?? "");
+}
+
+export interface RestartInput {
+  /** Fingerprint before the seed ran. */
+  before: string;
+  /** Fingerprint after the seed ran. */
+  after: string;
+  /** Fingerprint recorded on each slaude Deployment at its last restart by the harness ("" when absent). */
+  booted: string[];
+}
+
+/**
+ * Whether gateway and node must restart to see the seeded state. They must when the seed changed
+ * something they read only at startup, and also when the pods booted with some other state (or
+ * the harness never recorded one): a seed that changes nothing still leaves stale pods stale.
+ */
+export function restartDecision(i: RestartInput): { restart: boolean; reason: string } {
+  if (i.before !== i.after) return { restart: true, reason: "the seed changed the soul or the registered apps" };
+  if (i.booted.length === 0 || i.booted.some((b) => b !== i.after)) {
+    return { restart: true, reason: "the pods booted before the current soul and registered apps (no matching boot fingerprint)" };
+  }
+  return { restart: false, reason: "nothing the pods read at startup changed since they booted" };
+}
