@@ -80,6 +80,8 @@ type LiveSession = {
   mode?: PermissionMode;
   /** The named persona this session booted as (undefined = default). */
   personaName?: string;
+  /** Session-config fingerprint this session booted under (undefined = none known). */
+  bootFp?: string;
 };
 
 export type AgentEvent =
@@ -241,8 +243,9 @@ export class AgentManager extends EventEmitter {
   /** Per session: the open remote handle and the target it was opened for.
    *  Survives reboots (jobs keep running); disposed only when the target ends/changes. */
   #remoteHandles = new Map<string, { handle: RemoteHandle; key: string }>();
-  /** Latest session-config fingerprint seen per session (node: from job claims). */
-  #configFp = new Map<string, string>();
+  /** Latest session-config fingerprint asked for per session (node: from job
+   *  claims). A boot records it as its LiveSession.bootFp. */
+  #desiredFp = new Map<string, string>();
   #remoteDisposeTimeoutMs = REMOTE_DISPOSE_TIMEOUT_MS;
   /** Sessions whose Stop hook already blocked once this turn — cleared on user msg. */
   #stopBlocked = new Set<string>();
@@ -394,29 +397,36 @@ export class AgentManager extends EventEmitter {
     this.#remoteFactory = factory;
   }
 
-  /** Reboot a warm session whose lock/remote config changed since it booted
-   *  (spec §4.4). Undefined (older gateway) is ignored. First sight on a session
-   *  that is not live only records; a LIVE session with no recorded fingerprint
-   *  booted without one, so its tools are unknown and it is rebooted.
-   *  The reboot goes through reloadAfterTurn: closing the input of a session with
-   *  a turn in flight would break that turn, so it is deferred to the turn's result.
-   *  Returns false when the session is still live at the deadline (a turn is
-   *  mid-flight): the caller must not send into it. The fingerprint is then left
-   *  unrecorded so the next attempt retries the reboot; the deferred reload stays
-   *  armed and still fires when the turn ends. */
+  /** Make sure the session will run under the lock/remote config `fp` names
+   *  (spec §4.4). Undefined (older gateway) is ignored. True means the caller may
+   *  send: the session is not live (its next boot records `fp`) or the live one
+   *  booted under `fp`. Otherwise the live session is stale — or booted before any
+   *  fingerprint existed, so its tools are unknown — and is rebooted through
+   *  reloadAfterTurn: closing the input of a turn in flight would break it, so the
+   *  reload is armed for that turn's result and this returns false at once (the
+   *  caller requeues; it must not hold a worker slot for a long turn). An idle
+   *  session reloads now and this waits for that live object to go, bounded.
+   *  State is derived from the live session, never recorded ahead of the reboot,
+   *  so no concurrent caller can see a stale session as current. */
   async ensureConfigFp(sessionId: string, fp: string | undefined, timeoutMs = 10_000): Promise<boolean> {
     if (fp === undefined) return true;
-    const prev = this.#configFp.get(sessionId);
-    if (prev === fp) return true;
-    this.#configFp.set(sessionId, fp);
-    if (!this.reloadAfterTurn(sessionId)) return true;
+    this.#desiredFp.set(sessionId, fp);
+    const live = this.#live.get(sessionId);
+    if (!live || live.bootFp === fp) return true;
+    this.reloadAfterTurn(sessionId);
+    if (live.pendingInputs > 0) {
+      console.warn(`[mgr] config change: turn in flight, reboot deferred session=${sessionId}`);
+      return false;
+    }
     const deadline = Date.now() + timeoutMs;
-    while (this.isLive(sessionId) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
-    if (!this.isLive(sessionId)) return true;
-    if (prev === undefined) this.#configFp.delete(sessionId);
-    else this.#configFp.set(sessionId, prev);
-    console.warn(`[mgr] config change: session still live after ${timeoutMs}ms, reboot pending session=${sessionId}`);
-    return false;
+    while (this.#live.get(sessionId) === live && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    const next = this.#live.get(sessionId);
+    if (next === live) {
+      console.warn(`[mgr] config change: session still live after ${timeoutMs}ms, reboot pending session=${sessionId}`);
+      return false;
+    }
+    // A session that replaced it already: current only if it booted under fp.
+    return !next || next.bootFp === fp;
   }
 
   /** Test hook: shrink the bound on disposing a previous remote handle. */
@@ -807,6 +817,9 @@ export class AgentManager extends EventEmitter {
   }
 
   async #startSession(sessionId: string, firstText: string) {
+    // Read before any config is resolved: a fingerprint that arrives while this
+    // boot resolves its lock/remote state must not be credited to it.
+    const bootFp = this.#desiredFp.get(sessionId);
     const row = await this.#store.findById(sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);
 
@@ -919,16 +932,6 @@ export class AgentManager extends EventEmitter {
       mcpServers,
       memBlock,
     });
-    // Opened after the soul resolves, so a boot that fails there holds no connection.
-    const remoteHandle = await this.#remoteHandleFor(sessionId, remoteTarget);
-
-    const resolver = this.#resolver;
-    const baseCanUse: CanUseTool | undefined = resolver
-      ? (toolName, input, ctx) => resolver(sessionId, toolName, input, ctx)
-      : undefined;
-    const canUseTool: CanUseTool | undefined = remoteHandle
-      ? makeRemoteCanUseTool(baseCanUse, () => this.#live.get(sessionId)?.mode ?? mode)
-      : baseCanUse;
     const preCompact: HookCallback = async (input) => {
       if (input.hook_event_name !== "PreCompact") return { continue: true };
       this.emit("event", {
@@ -979,52 +982,73 @@ export class AgentManager extends EventEmitter {
     // so we also read each plugin's .mcp.json and merge into mcpServers.
     const pluginPaths = loadInstalledPluginPaths();
     const pluginMcps = loadInstalledPluginMcps();
-    const mergedMcpServers = {
-      ...(mcpServers ?? {}),
-      ...pluginMcps,
-      ...(remoteHandle && remoteTarget
-        ? { [REMOTE_MCP_NAME]: createRemoteMcp({ exec: remoteHandle.exec, root: remoteTarget.dir, sessionKey: sessionId }) }
-        : {}),
-    };
-    const hasMcpServers = Object.keys(mergedMcpServers).length > 0;
     // Always mount ~/.slaude/ as a local plugin so the SDK discovers
     // ~/.slaude/skills/<slug>/SKILL.md and injects them into <system-reminder>.
     // skipMcpDiscovery prevents the SDK from reading slaude's own mcp.json
     // (those servers are managed separately via Options.mcpServers above).
     const slaudeHomePlugin = { type: "local" as const, path: paths.home, skipMcpDiscovery: true };
     const allPlugins = [slaudeHomePlugin, ...pluginPaths];
-    const options: Options = {
-      cwd: row.working_dir,
-      // Pass `model` only when explicitly set. Empty = let the SDK / CLI use
-      // its own default (e.g. Claude Code subscription default under
-      // CLAUDE_CODE_OAUTH_TOKEN). When pointing at a non-Anthropic gateway,
-      // SLAUDE_MODEL MUST be set to a provider-qualified id.
-      ...(model ? { model } : {}),
-      abortController: abort,
-      env: scrubChildEnv({ ...process.env, ...providerEnv }),
-      ...(canUseTool ? { canUseTool } : {}),
-      ...(hasMcpServers ? { mcpServers: mergedMcpServers } : {}),
-      plugins: allPlugins,
-      // The aliased built-ins stay enabled (an alias needs its source tool, spike §8);
-      // local-only tools with no remote counterpart are removed outright.
-      ...(remoteHandle ? { toolAliases: REMOTE_TOOL_ALIASES, disallowedTools: [...REMOTE_DENIED_LOCAL_TOOLS] } : {}),
-      permissionMode: mode,
-      ...(mode === "bypassPermissions"
-        ? { allowDangerouslySkipPermissions: true }
-        : {}),
-      hooks: {
-        PreCompact: [{ hooks: [preCompact] }],
-        Stop: [{ hooks: [stopHook] }],
-        UserPromptSubmit: [{ hooks: [userPromptHook] }],
-        ...(remoteHandle ? { PreToolUse: [{ hooks: [denyLocalBuiltins] }] } : {}),
-      },
-      systemPrompt: {
-        type: "preset",
-        preset: "claude_code",
-        append: systemAppend,
-      },
-      ...sessionIdOpts(row),
-    };
+
+    // Opened after the soul resolves, so a boot that fails there holds no connection.
+    const remoteHandle = await this.#remoteHandleFor(sessionId, remoteTarget);
+    const resolver = this.#resolver;
+    const baseCanUse: CanUseTool | undefined = resolver
+      ? (toolName, input, ctx) => resolver(sessionId, toolName, input, ctx)
+      : undefined;
+    const canUseTool: CanUseTool | undefined = remoteHandle
+      ? makeRemoteCanUseTool(baseCanUse, () => this.#live.get(sessionId)?.mode ?? mode)
+      : baseCanUse;
+    let options: Options;
+    try {
+      const mergedMcpServers = {
+        ...(mcpServers ?? {}),
+        ...pluginMcps,
+        ...(remoteHandle && remoteTarget
+          ? { [REMOTE_MCP_NAME]: createRemoteMcp({ exec: remoteHandle.exec, root: remoteTarget.dir, sessionKey: sessionId }) }
+          : {}),
+      };
+      const hasMcpServers = Object.keys(mergedMcpServers).length > 0;
+      options = {
+        cwd: row.working_dir,
+        // Pass `model` only when explicitly set. Empty = let the SDK / CLI use
+        // its own default (e.g. Claude Code subscription default under
+        // CLAUDE_CODE_OAUTH_TOKEN). When pointing at a non-Anthropic gateway,
+        // SLAUDE_MODEL MUST be set to a provider-qualified id.
+        ...(model ? { model } : {}),
+        abortController: abort,
+        env: scrubChildEnv({ ...process.env, ...providerEnv }),
+        ...(canUseTool ? { canUseTool } : {}),
+        ...(hasMcpServers ? { mcpServers: mergedMcpServers } : {}),
+        plugins: allPlugins,
+        // The aliased built-ins stay enabled (an alias needs its source tool, spike §8);
+        // local-only tools with no remote counterpart are removed outright.
+        ...(remoteHandle ? { toolAliases: REMOTE_TOOL_ALIASES, disallowedTools: [...REMOTE_DENIED_LOCAL_TOOLS] } : {}),
+        permissionMode: mode,
+        ...(mode === "bypassPermissions"
+          ? { allowDangerouslySkipPermissions: true }
+          : {}),
+        hooks: {
+          PreCompact: [{ hooks: [preCompact] }],
+          Stop: [{ hooks: [stopHook] }],
+          UserPromptSubmit: [{ hooks: [userPromptHook] }],
+          ...(remoteHandle ? { PreToolUse: [{ hooks: [denyLocalBuiltins] }] } : {}),
+        },
+        systemPrompt: {
+          type: "preset",
+          preset: "claude_code",
+          append: systemAppend,
+        },
+        ...sessionIdOpts(row),
+      };
+    } catch (e) {
+      // No live session will own the handle: release the connection (never
+      // dispose — the user's background jobs survive a failed boot).
+      if (remoteHandle) {
+        await remoteHandle.release().catch((err) =>
+          console.error(`[mgr] remote release failed session=${sessionId}: ${err instanceof RemoteError ? err.code : "error"}`));
+      }
+      throw e;
+    }
 
     let markExited!: () => void;
     const live: LiveSession = {
@@ -1042,6 +1066,7 @@ export class AgentManager extends EventEmitter {
       channelId: row.slack_channel_id,
       mode,
       personaName,
+      bootFp,
       pendingInputs: 1, // firstText is already queued
       exited: new Promise<void>((r) => (markExited = r)),
     };

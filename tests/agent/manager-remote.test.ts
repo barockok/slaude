@@ -339,40 +339,77 @@ describe("remote wiring", () => {
     await shutdown(mgr, row.id);
   });
 
-  it("ensureConfigFp: returns false when the session is still live at the deadline, and retries next time", async () => {
+  it("ensureConfigFp: an idle session that does not leave by the deadline returns false", async () => {
     const mgr = new AgentManager();
     const row = await mgr.ensureSession(thread());
-    const fs = plan((f) => { f.end = () => {}; }); // the turn never returns a result: the reload stays deferred
+    const events = record(mgr);
+    const fs = plan((f) => { f.end = () => {}; }); // closing the input never ends the query
     expect(await mgr.ensureConfigFp(row.id, "fp1")).toBe(true);
     await mgr.sendMessage(row.id, "hello");
     await until(() => fs.options !== null, 3000, "boot");
+    fs.emit(res());
+    await until(() => events.some((e) => e.type === "done"), 3000, "turn end");
     expect(await mgr.ensureConfigFp(row.id, "fp2", 60)).toBe(false);
     expect(mgr.isLive(row.id)).toBe(true);
-    // Not recorded: a retry with the same fingerprint attempts the reboot again.
-    expect(await mgr.ensureConfigFp(row.id, "fp2", 60)).toBe(false);
+    expect(await mgr.ensureConfigFp(row.id, "fp2", 60)).toBe(false); // still stale: never true
     fs.ended = true;
     fs.wake();
     await until(() => !mgr.isLive(row.id), 3000, "release");
     expect(await mgr.ensureConfigFp(row.id, "fp2", 60)).toBe(true);
   });
 
-  it("ensureConfigFp: a turn in flight keeps its input until its result, then the deferred reboot completes in time", async () => {
+  it("ensureConfigFp: a turn in flight refuses at once, also for a second same-fp caller, and the deferred reboot applies the new config", async () => {
     const mgr = new AgentManager();
     const row = await mgr.ensureSession(thread());
     const fs = plan();
     expect(await mgr.ensureConfigFp(row.id, "fp1")).toBe(true);
-    await mgr.sendMessage(row.id, "hello");
+    await mgr.sendMessage(row.id, "hello"); // the turn stays in flight: no result yet
     await until(() => fs.options !== null, 3000, "boot");
-    const pending = mgr.ensureConfigFp(row.id, "fp2", 3000);
-    await Bun.sleep(50);
-    // Deferred: the input is still open while the turn has no result.
+    const t0 = Date.now();
+    expect(await mgr.ensureConfigFp(row.id, "fp2")).toBe(false);
+    expect(Date.now() - t0).toBeLessThan(500); // no polling while a turn runs
+    // The reviewer's case: a second job carrying the same new fingerprint must
+    // not be told the stale live session is current.
+    expect(await mgr.ensureConfigFp(row.id, "fp2")).toBe(false);
+    // Deferred, not forced: the turn keeps its input.
     expect(fs.ended).toBe(false);
     expect(mgr.isLive(row.id)).toBe(true);
+    // The turn ends: the armed reload fires and the session leaves.
     fs.emit(res());
-    expect(await pending).toBe(true);
-    expect(mgr.isLive(row.id)).toBe(false);
-    // Recorded: the same fingerprint is now a no-op.
+    await until(() => !mgr.isLive(row.id), 3000, "deferred reload");
     expect(await mgr.ensureConfigFp(row.id, "fp2")).toBe(true);
+    // The next boot records fp2 as the config it booted under.
+    const fs2 = plan();
+    await mgr.sendMessage(row.id, "again");
+    await until(() => fs2.options !== null, 3000, "reboot");
+    fs2.emit(res());
+    expect(await mgr.ensureConfigFp(row.id, "fp2")).toBe(true);
+    expect(mgr.isLive(row.id)).toBe(true);
+    await shutdown(mgr, row.id);
+  });
+
+  it("ensureConfigFp: a session replaced between polls is judged by identity, not liveness", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const events = record(mgr);
+    const fs = plan();
+    expect(await mgr.ensureConfigFp(row.id, "fp1")).toBe(true);
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => fs.options !== null, 3000, "boot");
+    fs.emit(res());
+    await until(() => events.some((e) => e.type === "done"), 3000, "turn end");
+    const fs2 = plan();
+    const t0 = Date.now();
+    const check = mgr.ensureConfigFp(row.id, "fp2", 2000);
+    // A message right behind the reload boots the replacement at once, so the
+    // session id may never be seen "not live" by the poll.
+    const sent = mgr.sendMessage(row.id, "next");
+    expect(await check).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(2000);
+    await sent;
+    await until(() => fs2.options !== null, 3000, "replacement boot");
+    expect(mgr.isLive(row.id)).toBe(true);
+    await shutdown(mgr, row.id);
   });
 });
 
@@ -451,5 +488,21 @@ describe("remote handle disposal bound and fail-closed", () => {
     await expect(mgr.sendMessage(row.id, "hi")).rejects.toThrow("no remote factory");
     expect(fs.options).toBeNull();
     expect(mgr.isLive(row.id)).toBe(false);
+  });
+
+  it("a boot that fails after the handle opened releases it (never disposes) and leaves no live session", async () => {
+    const mgr = new AgentManager();
+    const log: string[] = [];
+    mgr.setRemote(async () => ({ teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r" }), () => ({
+      get exec(): typeof noopExec { throw new Error("exec unavailable"); },
+      release: async () => { log.push("release"); },
+      dispose: async () => { log.push("dispose"); },
+    }));
+    const row = await mgr.ensureSession(thread());
+    const fs = plan();
+    await expect(mgr.sendMessage(row.id, "hi")).rejects.toThrow("exec unavailable");
+    expect(fs.options).toBeNull();
+    expect(mgr.isLive(row.id)).toBe(false);
+    expect(log).toEqual(["release"]);
   });
 });

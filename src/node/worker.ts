@@ -44,6 +44,9 @@ import { decodeClaims, makeRemoteFactory, makeRemoteResolver } from "./remote";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** withSessionLock result: the warm session is not on this job's config yet. */
+const STALE_CONFIG = Symbol("stale-config");
+
 /** Fraction of a job token's lifetime already spent (0..∞; >1 = expired).
  *  Pure payload parse — the gateway is the verifier; the node only decides
  *  WHEN to ask for a refresh. null when the token is unparseable. */
@@ -450,16 +453,6 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       }
     }
     store.bindToken(data.sessionId, jobToken);
-    // A changed lock/remote config reboots the warm session before this turn
-    // is sent; an older gateway mints no fingerprint and the manager ignores it.
-    // A reboot that cannot finish (a turn is still running here) must not send
-    // into the stale session — its tools may be local while the thread is remote.
-    // Requeue like a held lock; the retry reboots once the turn has ended.
-    if (!(await agent.ensureConfigFp(data.sessionId, decodeClaims(jobToken)?.sessionConfigFp))) {
-      metric.nodeTurnsTotal.inc({ result: "requeued" });
-      await job.moveToDelayed(Date.now() + 500, token);
-      throw new DelayedError();
-    }
     tenants.set(data.sessionId, data.tenantId);
     personas.set(data.sessionId, data.personaId ?? "default");
     // A cron job created inside a /1on1 carries its lock owner. The cron run
@@ -487,6 +480,16 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         };
         lostLock.addEventListener("abort", onLost, { once: true });
         try {
+          // A changed lock/remote config reboots the warm session before this
+          // turn is sent; an older gateway mints no fingerprint and the manager
+          // ignores it. Checked under the lock so no other job's turn or reboot
+          // lands between the check and the send. Not current (a turn is still
+          // in flight, so the reboot is deferred to its end) → never send into
+          // the stale session, whose tools may be local while the thread is
+          // remote: requeue like a held lock.
+          if (!(await agent.ensureConfigFp(data.sessionId, decodeClaims(jobToken)?.sessionConfigFp))) {
+            return STALE_CONFIG;
+          }
           return await runTurn(job, data);
         } finally {
           lostLock.removeEventListener("abort", onLost);
@@ -497,9 +500,10 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       { redis: cmd, keys, ...sessionLockOpts, ...opts.lock },
     );
 
-    if (res === HELD_BY_OTHER) {
-      // Another node is mid-turn on this session — requeue with a short
-      // delay (spec §2 serialization); never bounce or fail the job.
+    if (res === HELD_BY_OTHER || res === STALE_CONFIG) {
+      // Another node is mid-turn on this session, or this node's warm session
+      // has a reboot pending — requeue with a short delay (spec §2
+      // serialization); never bounce or fail the job.
       metric.nodeTurnsTotal.inc({ result: "requeued" });
       await job.moveToDelayed(Date.now() + 500, token);
       throw new DelayedError();
