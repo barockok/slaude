@@ -38,6 +38,7 @@ import {
   type Manifest,
   type Lockfile,
 } from "../config/manifest-schema";
+import { ensureGitTracked } from "../config/git-track";
 import {
   detectMarketplaceSource,
   deriveMarketplaceSlug,
@@ -406,24 +407,31 @@ async function main() {
         const alreadyOk = !update && existsSync(targetDir) && (() => {
           try { return lockEntry?.sha === sha; } catch { return false; }
         })();
-        if (alreadyOk) { skipped++; continue; }
-        if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
-        mkdirSync(targetDir, { recursive: true });
-        for (const file of readdirSync(srcDir)) {
-          const s = join(srcDir, file);
-          const d = join(targetDir, file);
-          if (statSync(s).isDirectory()) {
-            execSync(`cp -r "${s}" "${d}"`, { stdio: "pipe" });
-          } else {
-            writeFileSync(d, readFileSync(s));
+        if (alreadyOk) {
+          skipped++;
+        } else {
+          if (existsSync(targetDir)) rmSync(targetDir, { recursive: true, force: true });
+          mkdirSync(targetDir, { recursive: true });
+          for (const file of readdirSync(srcDir)) {
+            const s = join(srcDir, file);
+            const d = join(targetDir, file);
+            if (statSync(s).isDirectory()) {
+              execSync(`cp -r "${s}" "${d}"`, { stdio: "pipe" });
+            } else {
+              writeFileSync(d, readFileSync(s));
+            }
+          }
+          lock.knowledge[label] = { git: entry.git!, ref: entry.ref!, sha, path: entryPath };
+          installed++;
+          const hasIndex = existsSync(join(targetDir, "README.md")) || existsSync(join(targetDir, "index.md"));
+          if (!hasIndex) {
+            console.warn(`[install] knowledge "${label}" has no README.md or index.md at path "${entryPath}" — will be skipped at runtime`);
           }
         }
-        lock.knowledge[label] = { git: entry.git!, ref: entry.ref!, sha, path: entryPath };
-        installed++;
-        const hasIndex = existsSync(join(targetDir, "README.md")) || existsSync(join(targetDir, "index.md"));
-        if (!hasIndex) {
-          console.warn(`[install] knowledge "${label}" has no README.md or index.md at path "${entryPath}" — will be skipped at runtime`);
-        }
+        // gbrain 0.46+ requires --path sources to be a git repo with committed
+        // content — runs every pass (not just fresh copies) so re-running
+        // install heals installs that predate this requirement.
+        ensureGitTracked(targetDir);
       }
     } finally {
       rmSync(cloneDir, { recursive: true, force: true });
