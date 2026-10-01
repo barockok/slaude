@@ -1,5 +1,5 @@
 // tests/persona/registry-db.test.ts
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { db } from "../../src/db/schema";
@@ -8,6 +8,8 @@ import { paths } from "../../src/config/home";
 import * as P from "../../src/db/personas";
 import {
   __resetPersonaRegistry,
+  __setDiskSoulDataLoader,
+  __setPersonaStateLoader,
   buildPersonaRegistry,
   getPersonaRegistry,
   invalidatePersonaRegistry,
@@ -17,6 +19,8 @@ import {
 } from "../../src/persona/registry";
 import { personaSoulText, setManagedDefaultSoul } from "../../src/persona/soul-source";
 import { __resetSoulDataMemo, soulDataBase } from "../../src/soul/extract";
+import { SoulDataSchema } from "../../src/soul/data";
+import { loadSoul } from "../../src/soul/loader";
 
 const isPg = process.env.SLAUDE_DB === "pg";
 
@@ -143,15 +147,103 @@ describe.skipIf(!isPg)("a database-backed registry", () => {
     expect(soulDataBase().approvers.map((a) => a.userId)).toContain("UAPPROVER");
   });
 
-  test("a failed rebuild keeps the current snapshot", async () => {
+  test("a failed rebuild keeps the current snapshot, and says so", async () => {
     await P.applySync("default", [row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
     setPersonaRegistry(await buildPersonaRegistry("default"));
-    // A broken master key makes reading the overrides layer fail.
-    await P.setOverride("default", "ana", "model", "m", "ops");
+    // A soul override that a successful rebuild would visibly install...
+    await P.setOverride("default", "ana", "soul", { soulMd: "live soul", soulJson: null }, "ops");
+    // ...but a broken master key makes reading the overrides layer fail.
     process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 9).toString("base64");
     __resetMasterKeyCache();
-    invalidatePersonaRegistry();
-    await whenPersonaRegistrySettled();
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      invalidatePersonaRegistry();
+      await whenPersonaRegistrySettled();
+      expect(warn.mock.calls.some((c) => String(c[0]).includes("registry rebuild failed"))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
     expect(getPersonaRegistry().lookupByName("ana")!.soulMd).toBe("ana soul");
+  });
+
+  // R24: a superseded rebuild installs nothing, so the poll must not record its version.
+  test("the poll retries when its rebuild was superseded by one that failed", async () => {
+    await P.applySync("default", [row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
+    setPersonaRegistry(await buildPersonaRegistry("default"));
+    const one = (soul: string) => ({
+      registry: { lookupByUserId: () => null, list: () => [],  isMultiPersonaMode: () => true,
+        lookupByName: (n: string) => (n === "ana" ? { name: "ana", slackUserId: "UANA", soulMd: soul,
+          config: { slackUserId: "UANA", name: "ana" }, outClient: null } : null) },
+      managed: null,
+    });
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    __setPersonaStateLoader(async () => {
+      calls++;
+      if (calls === 1) { await gate; return one("superseded"); } // the poll's first rebuild
+      if (calls === 2) throw new Error("newer rebuild failed"); // the reload signal's
+      return one("converged");
+    });
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    const stop = startRegistryRevalidation("default", 20);
+    try {
+      while (calls < 1) await new Promise((r) => setTimeout(r, 5));
+      invalidatePersonaRegistry();
+      await whenPersonaRegistrySettled();
+      release();
+      const deadline = Date.now() + 2000;
+      while (getPersonaRegistry().lookupByName("ana")!.soulMd !== "converged" && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(getPersonaRegistry().lookupByName("ana")!.soulMd).toBe("converged");
+    } finally {
+      stop();
+      warn.mockRestore();
+    }
+  });
+});
+
+// R25: the default persona's soul text and structure are one pair from one source.
+describe.skipIf(!isPg)("the default persona's soul pair", () => {
+  const approvers = (id: string) => ({ approvers: [{ userId: id, scope: "everything", catchall: true }] });
+  const defRow = (soulMd: string, soulJson: unknown) => ({ ...row("default"), soulMd, soulJson });
+  const refresh = async () => { invalidatePersonaRegistry(); await whenPersonaRegistrySettled(); };
+
+  test("a managed default row supplies both text and structure", async () => {
+    await P.applySync("default", [defRow("db default", approvers("UDBAPPROVER")), row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
+    await refresh();
+    expect(personaSoulText()).toBe("db default");
+    expect(soulDataBase().approvers.map((a) => a.userId)).toEqual(["UDBAPPROVER"]);
+  });
+
+  test("with no managed default row, both come from disk", async () => {
+    __setDiskSoulDataLoader(async () => SoulDataSchema.parse(approvers("UDISKAPPROVER")));
+    await P.applySync("default", [defRow("db default", approvers("UDBAPPROVER")), row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
+    await refresh();
+    expect(personaSoulText()).toBe("db default");
+    // The default row is tombstoned by a sync that omits it.
+    await P.applySync("default", [row("ana")], meta("r2", "2026-10-01T11:00:00Z"));
+    await refresh();
+    expect(personaSoulText()).toBe(loadSoul());
+    expect(soulDataBase().approvers.map((a) => a.userId)).toEqual(["UDISKAPPROVER"]);
+  });
+
+  test("a default row whose structure is invalid keeps the previous pair, and the rest installs", async () => {
+    await P.applySync("default", [defRow("db default", approvers("UDBAPPROVER")), row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
+    await refresh();
+    await P.setOverride("default", "default", "soul", { soulMd: "broken default", soulJson: { approvers: "nope" } }, "ops");
+    await P.setOverride("default", "ana", "soul", { soulMd: "live ana", soulJson: null }, "ops");
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await refresh();
+      expect(err.mock.calls.some((c) => String(c[0]).includes("tenant=default"))).toBe(true);
+      expect(err.mock.calls.flat().join(" ")).not.toContain("broken default");
+    } finally {
+      err.mockRestore();
+    }
+    expect(personaSoulText()).toBe("db default");
+    expect(soulDataBase().approvers.map((a) => a.userId)).toEqual(["UDBAPPROVER"]);
+    expect(personaSoulText("ana")).toBe("live ana");
   });
 });

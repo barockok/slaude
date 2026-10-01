@@ -6,8 +6,8 @@ import type { Persona, PersonaConfig } from "./types";
 import type { EffectivePersona } from "./effective";
 import { effectivePersonas, isManaged, stateVersion } from "../db/personas";
 import { resolveDbConfig } from "../db/client";
-import { SoulDataSchema } from "../soul/data";
-import { setSoulData } from "../soul/extract";
+import { SoulDataSchema, type SoulData } from "../soul/data";
+import { loadSoulData, setSoulData } from "../soul/extract";
 
 export type { Persona, PersonaConfig };
 
@@ -79,7 +79,7 @@ export function loadPersonaRegistry(): PersonaRegistry {
   return snapshot(loadPersonas());
 }
 
-interface PersonaState {
+export interface PersonaState {
   registry: PersonaRegistry;
   /** Null when the tenant has never been synced: it reads the filesystem. */
   managed: { defaultPersona: EffectivePersona | null } | null;
@@ -118,12 +118,27 @@ export async function buildPersonaRegistry(tenant: string): Promise<PersonaRegis
   return (await loadPersonaState(tenant)).registry;
 }
 
+let stateLoader: (tenant: string) => Promise<PersonaState> = loadPersonaState;
+let diskSoulDataLoader: () => Promise<SoulData> = loadSoulData;
+
+/** Test seam: replace how a rebuild reads the tenant's state (null restores). */
+export function __setPersonaStateLoader(f: ((tenant: string) => Promise<PersonaState>) | null) {
+  stateLoader = f ?? loadPersonaState;
+}
+
+/** Test seam: replace the disk structured-soul read (null restores). */
+export function __setDiskSoulDataLoader(f: (() => Promise<SoulData>) | null) {
+  diskSoulDataLoader = f ?? loadSoulData;
+}
+
 let registry: PersonaRegistry | null = null;
 /** Bumped on every install; a rebuild that started before a newer install
  *  discards its result instead of overwriting fresher state. */
 let generation = 0;
 let inflight: Promise<void> | null = null;
 let managedDefaultSoul: string | null = null;
+/** Whether the installed default soul pair came from a managed `default` row. */
+let defaultPairFromDb = false;
 
 /** The managed `default` persona's soul text, or null when the tenant is not
  *  managed or has no `default` row (then the global SOUL.md is the soul). */
@@ -141,29 +156,38 @@ export function setPersonaRegistry(r: PersonaRegistry) {
 }
 
 /**
- * Build the tenant's state and install it: the registry snapshot, and for a
- * managed tenant the default persona's soul text and structured soul, so a sync
- * that changes the default persona reaches approvals and ACLs too. Boot, the
- * reload signal and the poll all go through here, so they cannot drift.
+ * Build the tenant's state and install it: the registry snapshot, plus the
+ * default persona's soul pair — its text and its structured soul, always from
+ * one source, so approvals and ACLs never disagree with the soul in the prompt:
+ *  - a managed `default` row: both from the row;
+ *  - none (unmanaged, or no live `default` row): both from disk. Only a switch
+ *    away from the row reloads them; boot already set the disk pair;
+ *  - a row whose structure fails validation: the previous pair stays (neither
+ *    half is installed), while the rest of the snapshot still installs.
+ * Boot, the reload signal and the poll all go through here, so they cannot
+ * drift. Resolves true only when this call installed a snapshot; false when a
+ * newer rebuild superseded it.
  */
-export async function refreshPersonaState(tenant: string): Promise<void> {
+export async function refreshPersonaState(tenant: string): Promise<boolean> {
   const ticket = ++generation;
-  const state = await loadPersonaState(tenant);
-  if (ticket !== generation) return; // a newer install won
+  const state = await stateLoader(tenant);
+  let pair: { text: string | null; data: SoulData; fromDb: boolean } | null = null;
+  const def = state.managed?.defaultPersona ?? null;
+  if (def) {
+    const parsed = SoulDataSchema.safeParse(def.soulJson);
+    if (parsed.success) pair = { text: def.soulMd, data: parsed.data, fromDb: true };
+    else console.error(`[persona] the default persona's soul structure is invalid tenant=${tenant}; keeping the previous default soul`);
+  } else if (defaultPairFromDb) {
+    pair = { text: null, data: await diskSoulDataLoader(), fromDb: false };
+  }
+  if (ticket !== generation) return false; // a newer install won
   registry = state.registry;
-  if (!state.managed) {
-    managedDefaultSoul = null;
-    return;
+  if (pair) {
+    managedDefaultSoul = pair.text;
+    setSoulData(pair.data);
+    defaultPairFromDb = pair.fromDb;
   }
-  const def = state.managed.defaultPersona;
-  managedDefaultSoul = def ? def.soulMd : null;
-  if (def?.soulJson) {
-    try {
-      setSoulData(SoulDataSchema.parse(def.soulJson));
-    } catch (e) {
-      console.warn("[persona] managed default soul structure is invalid:", (e as Error).message);
-    }
-  }
+  return true;
 }
 
 /**
@@ -173,9 +197,10 @@ export async function refreshPersonaState(tenant: string): Promise<void> {
  * Synchronous to callers; a failed rebuild is logged and the snapshot stays.
  */
 export function invalidatePersonaRegistry() {
-  const run = refreshPersonaState("default").catch((e) => {
-    console.warn("[persona] registry rebuild failed:", (e as Error).message);
-  });
+  const run = refreshPersonaState("default").then(
+    () => {},
+    (e) => { console.warn("[persona] registry rebuild failed:", (e as Error).message); },
+  );
   const tracked: Promise<void> = run.finally(() => {
     if (inflight === tracked) inflight = null;
   });
@@ -198,8 +223,9 @@ export function startRegistryRevalidation(tenant: string, everyMs = 10_000): () 
     try {
       const v = await stateVersion(tenant);
       if (v === last) return;
-      await refreshPersonaState(tenant);
-      last = v;
+      // Record the version only when this rebuild installed it: a superseded
+      // one installed nothing, and the rebuild that superseded it may fail.
+      if (await refreshPersonaState(tenant)) last = v;
     } catch (e) {
       console.warn("[persona] registry revalidation failed:", (e as Error).message);
     } finally {
@@ -216,6 +242,9 @@ export function __resetPersonaRegistry() {
   registry = null;
   inflight = null;
   managedDefaultSoul = null;
+  defaultPairFromDb = false;
+  stateLoader = loadPersonaState;
+  diskSoulDataLoader = loadSoulData;
 }
 
 /**
