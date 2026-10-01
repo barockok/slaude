@@ -1,5 +1,6 @@
 import { beforeEach, expect, test } from "bun:test";
 import { CallLog } from "./call-log";
+import vendored from "../schemas/methods.json";
 import { createSchemaGuard } from "./schema-guard";
 import { FaultStore, KNOWN_METHODS, createWebApi, parseParams } from "./web-api";
 import { Workspace } from "./workspace";
@@ -211,6 +212,39 @@ test("with a schema guard, violations are recorded in the call log and the respo
     'chat.postMessage: unknown response property "ts"',
     'chat.postMessage: unknown response property "message"',
   ]);
+});
+
+test("every implemented method, called with valid params, matches the vendored schemas", () => {
+  const guarded = createWebApi(ws, log, faults, createSchemaGuard(vendored.methods));
+  const m = ws.post({ channel: "C0TEAM", user: "U0MGR", text: "hello" });
+  const ref = { channel: "C0TEAM", ts: m.ts, timestamp: m.ts };
+  const valid: Record<string, Record<string, unknown>> = {
+    "auth.test": {},
+    "chat.postMessage": { channel: "C0TEAM", text: "hi", thread_ts: m.ts },
+    "chat.update": { channel: "C0TEAM", ts: m.ts, text: "edited" },
+    "chat.delete": { channel: "C0TEAM", ts: m.ts },
+    "chat.postEphemeral": { channel: "C0TEAM", user: "U0MGR", text: "psst" },
+    "reactions.add": { channel: "C0TEAM", timestamp: m.ts, name: "eyes" },
+    "reactions.remove": { channel: "C0TEAM", timestamp: m.ts, name: "eyes" },
+    "users.info": { user: "U0MGR" },
+    "users.profile.set": { profile: "{}" },
+    "conversations.replies": { channel: "C0TEAM", ts: m.ts },
+    "conversations.info": { channel: "C0TEAM" },
+    "conversations.members": { channel: "C0TEAM" },
+    "conversations.setTopic": { channel: "C0TEAM", topic: "t" },
+    "conversations.setPurpose": { channel: "C0TEAM", purpose: "p" },
+    "search.messages": { query: "hello" },
+    "pins.add": { channel: ref.channel, timestamp: ref.timestamp },
+    "pins.remove": { channel: ref.channel, timestamp: ref.timestamp },
+    "files.info": { file: "F0NONE" }, // the fake answers file_not_found: the request is still judged
+    "assistant.threads.setStatus": { channel_id: "C0TEAM", thread_ts: m.ts, status: "thinking" },
+  };
+  // a method added to the fake must get params here, or this test says so
+  expect(Object.keys(valid).sort()).toEqual([...KNOWN_METHODS].sort());
+  for (const method of KNOWN_METHODS) guarded(method, valid[method]!, token);
+  const rows = log.all();
+  expect(rows.map((r) => r.method)).toEqual([...KNOWN_METHODS]);
+  expect(rows.flatMap((r) => (r.schemaViolations ?? []).map((v) => v))).toEqual([]);
 });
 
 test("a clean call has no schemaViolations field, with a guard or without", () => {

@@ -1,5 +1,8 @@
 {
   "source": "slackapi/slack-api-specs",
+  "url": "https://github.com/slackapi/slack-api-specs",
+  "spec_file": "web-api/slack_web_openapi_v2_without_examples.json",
+  "copyright": "Copyright (c) 2017 SlackAPI",
   "commit": "bc08db49625630e3585bf2f1322128ea04f2a7f3",
   "license": "MIT",
   "methods": {
@@ -239,7 +242,8 @@
       ],
       "response": [
         "ok"
-      ]
+      ],
+      "responseUnjudged": true
     },
     "pins.add": {
       "params": [

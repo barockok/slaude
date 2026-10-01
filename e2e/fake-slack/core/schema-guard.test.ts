@@ -27,6 +27,14 @@ test("methods without a schema are not judged", () => {
   expect(guard.checkRequest("assistant.threads.setStatus", { anything: 1 })).toEqual([]);
   expect(guard.checkResponse("assistant.threads.setStatus", { ok: true, anything: 1 })).toEqual([]);
 });
+test("a null parameter counts as supplied", () => {
+  expect(guard.checkRequest("chat.postMessage", { channel: null })).toEqual([]);
+});
+test("responseUnjudged skips the response check but not the request check", () => {
+  const g = createSchemaGuard({ "search.messages": { params: ["query"], required: ["query"], response: ["ok"], responseUnjudged: true } });
+  expect(g.checkResponse("search.messages", { ok: true, messages: {} })).toEqual([]);
+  expect(g.checkRequest("search.messages", {})).toEqual(['search.messages: missing required parameter "query"']);
+});
 test("a method named like an Object.prototype member is not judged", () => {
   expect(guard.checkRequest("constructor", { anything: 1 })).toEqual([]);
 });
