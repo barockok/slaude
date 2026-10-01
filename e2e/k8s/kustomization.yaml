@@ -20,3 +20,26 @@ patches:
         # although real deploys register bot tokens in slack_apps. The sim seeds a dummy for the
         # same reason. Never validated, only used for attachments, which e2e messages lack.
         SLACK_BOT_TOKEN: "e2e-unused-placeholder"
+  # On a fresh volume the postgres entrypoint first runs a temporary server for the init scripts,
+  # listening on the Unix socket only, then shuts it down and starts the real one. With no
+  # readiness probe, up.sh's rollout wait passes at once, its in-pod `pg_isready` (socket) answers
+  # from the temporary server, and the following psql hits "the database system is shutting
+  # down"; gateways meanwhile time out on TCP. Probing over TCP (127.0.0.1) only succeeds once the
+  # real server listens, so the rollout wait covers the init phase.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: dev-postgres
+        namespace: slaude-scale
+      spec:
+        template:
+          spec:
+            containers:
+              - name: postgres
+                readinessProbe:
+                  exec:
+                    command: ["pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "slaude"]
+                  periodSeconds: 2
+                  timeoutSeconds: 2
+                  failureThreshold: 3

@@ -56,6 +56,12 @@ describe("e2e overlay", () => {
     expect(v).toContain("placeholder");
   });
 
+  test("dev-postgres is Ready only once the real server listens on TCP, not the init-phase socket server", () => {
+    const patch = kustomization.patches.map((p: any) => parse(p.patch)[0]).find((d: any) => d.kind === "Deployment" && d.metadata.name === "dev-postgres");
+    const c = patch.spec.template.spec.containers.find((x: any) => x.name === "postgres");
+    expect(c.readinessProbe.exec.command).toEqual(["pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "slaude"]);
+  });
+
   test("the overlay builds on deploy/k8s-local and includes both services", () => {
     expect(kustomization.resources).toEqual(["../../deploy/k8s-local", "mock-llm.yaml", "fake-slack.yaml"]);
   });
