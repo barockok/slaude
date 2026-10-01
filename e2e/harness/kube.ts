@@ -6,8 +6,8 @@
 //
 // Every call targets profile/context slaude-e2e (override: SLAUDE_LOCAL_PROFILE), namespace
 // slaude-scale. The user's slaude-local profile is never touched.
-import { createConnection } from "node:net";
-import { buildKubectlArgs, containerId, parsePods, profileName, type Component } from "./kube-args";
+import { createConnection, createServer } from "node:net";
+import { buildKubectlArgs, containerId, forwardedPort, parsePods, profileName, type Component } from "./kube-args";
 
 export interface RunResult {
   stdout: string;
@@ -68,24 +68,54 @@ function canConnect(port: number): Promise<boolean> {
   });
 }
 
-/** Forward localhost:<localPort> to <target>:<remotePort>; resolves once it accepts connections. */
-export async function portForward(target: string, localPort: number, remotePort: number, timeoutMs = 15_000): Promise<{ stop(): void }> {
+/** Ask the OS for a free ephemeral port (the listener is closed again before it is returned). */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.once("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address() as { port: number };
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+/**
+ * Forward a free local port to <target>:<remotePort> and resolve with that port once it is
+ * really ours: kubectl printed `Forwarding from ... -> <remotePort>` for the port we picked, the
+ * port accepts connections, and the child is still alive after a short settle. A listener that
+ * was already on the port cannot pass this, because kubectl would exit with "address in use".
+ */
+export async function portForward(target: string, remotePort: number, timeoutMs = 15_000): Promise<{ localPort: number; stop(): void }> {
+  const localPort = await freePort();
   const proc = Bun.spawn(["kubectl", ...buildKubectlArgs(["port-forward", target, `${localPort}:${remotePort}`])], {
     stdin: "ignore",
-    stdout: "ignore",
+    stdout: "pipe",
     stderr: "pipe",
   });
   const stop = () => proc.kill();
+  let seen = "";
+  const pump = async (stream: ReadableStream<Uint8Array>) => {
+    const dec = new TextDecoder();
+    for await (const chunk of stream) seen += dec.decode(chunk);
+  };
+  void pump(proc.stdout);
+  void pump(proc.stderr);
+  const fail = (why: string): never => {
+    stop();
+    throw new Error(`port-forward to ${target}: ${why}${seen.trim() ? `: ${seen.trim()}` : ""}`);
+  };
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (proc.exitCode !== null) {
-      throw new Error(`port-forward exited early: ${(await new Response(proc.stderr).text()).trim()}`);
+    if (proc.exitCode !== null) fail("kubectl exited early");
+    if (forwardedPort(seen, remotePort) === localPort && (await canConnect(localPort))) {
+      await Bun.sleep(200);
+      if (proc.exitCode !== null) fail("kubectl exited right after reporting the forward");
+      return { localPort, stop };
     }
-    if (await canConnect(localPort)) return { stop };
-    await Bun.sleep(150);
+    await Bun.sleep(100);
   }
-  stop();
-  throw new Error(`port-forward to ${target} did not accept connections within ${timeoutMs}ms`);
+  return fail(`not ready within ${timeoutMs}ms`);
 }
 
 /**

@@ -12,9 +12,15 @@
 //    the manager would be ignored. Seeding the cache sidesteps that.
 // 3. slack-app add (the same logic as `bun run slack-app add`).
 // 4. Self-verify with the LLM endpoint unreachable: a cache hit must yield manager U0MGR.
+//
+// SAFETY: this overwrites $SLAUDE_HOME/SOUL.md, so it refuses to run unless SLAUDE_E2E_SEED=1 is
+// set (callers pass it through execIn, e.g. execIn(pod, "gateway", ["env", "SLAUDE_E2E_SEED=1",
+// "bun", "/tmp/seed-persona.ts", ...])). It also refuses to replace a SOUL.md that has no
+// `Persona-ID:` line (not written by this script) unless SLAUDE_E2E_SEED_FORCE=1 is also set.
+// Only this one file is copied into the pod, so the guard is inline, not a shared module.
 // Re-running is idempotent: SOUL.md is rewritten whole and the registry row is an upsert.
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "/app/src/config/home.ts";
 import { main as slackApp } from "/app/src/cli/slack-app.ts";
@@ -41,6 +47,16 @@ const fail = (msg: string): never => {
 const f = flagsOf(process.argv.slice(2));
 for (const k of ["persona-id", "api-app-id", "team-id", "bot-token", "signing-secret", "bot-user-id"]) {
   if (!f[k]) fail(`missing --${k}`);
+}
+
+// Guard: nothing is written before these pass.
+if (process.env.SLAUDE_E2E_SEED !== "1") fail("refusing to run: set SLAUDE_E2E_SEED=1 (this overwrites SOUL.md)");
+if (
+  existsSync(paths.soul) &&
+  !/^Persona-ID:/m.test(readFileSync(paths.soul, "utf8")) &&
+  process.env.SLAUDE_E2E_SEED_FORCE !== "1"
+) {
+  fail(`refusing to replace ${paths.soul}: it has no Persona-ID line, so it is not an e2e soul (SLAUDE_E2E_SEED_FORCE=1 overrides)`);
 }
 
 // 1. SOUL.md

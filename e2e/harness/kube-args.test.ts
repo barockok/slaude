@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { buildKubectlArgs, containerId, parsePods, profileName } from "./kube-args";
+import { assertE2eProfile, buildKubectlArgs, containerId, forwardedPort, parsePods, profileName } from "./kube-args";
 
 const pod = (name: string, component: string, phase: string, ip: string, extra: object = {}) => ({
   metadata: { name, labels: { "app.kubernetes.io/component": component }, ...extra },
@@ -21,11 +21,28 @@ test("kubectl args always carry the context and namespace first", () => {
   expect(buildKubectlArgs(["get", "pod"], "slaude-e2e")).toEqual(["--context", "slaude-e2e", "-n", "slaude-scale", "get", "pod"]);
 });
 
-test("the default profile is the e2e one and never slaude-local", () => {
+test("the default profile is the e2e one", () => {
   expect(profileName({})).toBe("slaude-e2e");
-  expect(profileName({ SLAUDE_LOCAL_PROFILE: "" })).toBe("slaude-e2e");
-  expect(profileName({ SLAUDE_LOCAL_PROFILE: "other" })).toBe("other");
+  expect(profileName({ SLAUDE_LOCAL_PROFILE: "slaude-e2e-foo" })).toBe("slaude-e2e-foo");
   expect(buildKubectlArgs(["version"]).slice(0, 2)).toEqual(["--context", profileName()]);
+});
+
+test("profiles that are not e2e ones are refused", () => {
+  expect(() => assertE2eProfile("slaude-local")).toThrow(/refusing profile 'slaude-local'/);
+  expect(() => assertE2eProfile("")).toThrow(/refusing profile ''/);
+  expect(() => assertE2eProfile("minikube")).toThrow(/slaude-e2e/);
+  expect(() => profileName({ SLAUDE_LOCAL_PROFILE: "slaude-local" })).toThrow(/refusing/);
+  expect(() => profileName({ SLAUDE_LOCAL_PROFILE: "" })).toThrow(/refusing/);
+  expect(() => buildKubectlArgs(["get", "pod"], "slaude-local")).toThrow(/refusing/);
+});
+
+test("forwardedPort reads the local port for the requested remote port only", () => {
+  const out = "Forwarding from 127.0.0.1:43111 -> 8080\nForwarding from [::1]:43111 -> 8080\n";
+  expect(forwardedPort(out, 8080)).toBe(43111);
+  expect(forwardedPort(out, 9090)).toBeNull();
+  expect(forwardedPort("", 8080)).toBeNull();
+  expect(forwardedPort("Forwarding from [::1]:50000 -> 80", 80)).toBe(50000);
+  expect(forwardedPort("unable to listen on port 8080: address already in use", 8080)).toBeNull();
 });
 
 test("parsePods keeps running pods of the component, sorted, with their IPs", () => {
