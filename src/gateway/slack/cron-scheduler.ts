@@ -90,15 +90,16 @@ export class CronScheduler {
     }
 
     // A job owned by a persona a MANAGED registry no longer lists (retired or
-    // removed) is disabled before any session work. Running it would fall back
-    // to the default persona; releasing the claim would retry it every tick.
-    // Paused, not deleted: re-adding the persona and resuming brings it back.
+    // removed) skips this occurrence before any session work. Running it would
+    // fall back to the default persona; releasing the claim would retry it
+    // every tick. The claim already advanced next_run_at, so keeping it skips
+    // exactly this occurrence. The job is neither paused nor deleted: once the
+    // persona is re-added in git its next occurrence runs by itself.
     if (job.personaId && job.personaId !== "default") {
       const reg = getPersonaRegistry();
       if (reg.isManaged() && !reg.lookupByName(job.personaId)) {
-        console.log(`[cron] job ${job.id} paused — persona=${job.personaId} is not live`);
-        await CronJobs.pause(job.id);
-        await CronJobs.recordRun(job.id, "paused: persona not live");
+        console.log(`[cron] job ${job.id} skipped — persona=${job.personaId} is not live`);
+        await CronJobs.recordRun(job.id, "skipped: persona not live");
         this.#running.delete(job.id);
         return;
       }

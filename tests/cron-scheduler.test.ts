@@ -650,9 +650,9 @@ describe("CronScheduler under the gateway/node split", () => {
   });
 });
 
-// R41 (I4): a cron job owned by a persona a MANAGED registry no longer lists is
-// disabled before any session work. Releasing its claim would retry it every
-// tick forever; running it would fall back to the default persona.
+// R41/R42 (I4): a cron job owned by a persona a MANAGED registry no longer
+// lists skips its occurrence before any session work. Releasing its claim would
+// retry it every tick forever; running it would fall back to the default persona.
 describe("CronScheduler and a persona that is not live", () => {
   beforeEach(async () => { await db.run("DELETE FROM cron_jobs"); });
   afterEach(async () => { await db.run("DELETE FROM cron_jobs"); __resetPersonaRegistry(); });
@@ -679,7 +679,10 @@ describe("CronScheduler and a persona that is not live", () => {
     cronExpr: "0 9 * * *", prompt: "summarize", nextRunAt: now - 1000, personaId: "ana",
   });
 
-  test("on a managed registry the job is paused, no session is touched, and the claim is not given back", async () => {
+  // R42 (I4): skip the occurrence, never pause. The claim already advanced
+  // next_run_at, so not releasing it is enough to skip this occurrence; the job
+  // stays active and runs again by itself once the persona is re-added.
+  test("on a managed registry the occurrence is skipped (not paused), no session is touched, and the claim is kept", async () => {
     setPersonaRegistry(registry(true));
     const now = Date.now();
     const j = await job(now);
@@ -690,10 +693,31 @@ describe("CronScheduler and a persona that is not live", () => {
     expect(r.onExecute).toHaveBeenCalledTimes(0);
     expect(r.sendMessage).toHaveBeenCalledTimes(0);
     const after = (await CronJobs.findById(j.id))!;
-    expect(after.paused).toBe(1);
+    expect(after.paused).toBe(0);
+    expect(after.active).toBe(1);
     expect(after.nextRunAt).toBeGreaterThan(now);
-    expect(after.lastResult).toMatch(/persona/);
+    expect(after.lastResult).toBe("skipped: persona not live");
     expect(await CronJobs.findDue(Date.now() + 1)).toHaveLength(0);
+  });
+
+  test("re-adding the persona restores the job with no manual resume", async () => {
+    let live = false;
+    setPersonaRegistry({
+      ...registry(true),
+      lookupByName: (n: string) => (live && n === "ana" ? ({ name: "ana" } as any) : null),
+    });
+    const j = await job(Date.now());
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const first = await run();
+      expect(first.ensureSession).toHaveBeenCalledTimes(0);
+      // The persona comes back; the next occurrence falls due.
+      live = true;
+      await db.run("UPDATE cron_jobs SET next_run_at = ? WHERE id = ?", [Date.now() - 1000, j.id]);
+      const second = await run();
+      expect(second.ensureSession).toHaveBeenCalledTimes(1);
+      expect(second.sendMessage).toHaveBeenCalledTimes(1);
+    } finally { log.mockRestore(); }
   });
 
   test("on an unmanaged registry the job still runs (filesystem behaviour unchanged)", async () => {
@@ -704,3 +728,4 @@ describe("CronScheduler and a persona that is not live", () => {
     expect(r.sendMessage).toHaveBeenCalledTimes(1);
   });
 });
+
