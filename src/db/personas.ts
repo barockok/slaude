@@ -24,6 +24,10 @@ export class IdentityTakenError extends Error {
   readonly status = 409 as const;
   constructor(name: string) { super(`persona '${name}' cannot take a Slack identity another persona already uses`); }
 }
+export class PersonaNotFoundError extends Error {
+  readonly status = 404 as const;
+  constructor(name: string) { super(`no live persona named '${name}'`); }
+}
 export class StaleRevisionError extends Error {
   readonly status = 409 as const;
   constructor(readonly live: string) { super(`a newer revision is live (${live})`); }
@@ -172,6 +176,9 @@ export async function setOverride(tenant: string, name: string, field: OverrideF
   await db.transaction(async (tx) => {
     // First statement: the sync-state row lock serialises with applySync, whose first write is the same row.
     await tx.run(`UPDATE persona_sync_state SET override_version = override_version + 1 WHERE tenant_id = ?`, [tenant]);
+    const live = await tx.one<{ name: string }>(
+      `SELECT name FROM personas WHERE tenant_id = ? AND name = ? AND tombstoned_at IS NULL`, [tenant, name]);
+    if (!live) throw new PersonaNotFoundError(name);
     await tx.run(
       `INSERT INTO persona_overrides (tenant_id, persona_name, field, value, set_by, set_at) VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT (tenant_id, persona_name, field) DO UPDATE SET value = excluded.value, set_by = excluded.set_by, set_at = excluded.set_at`,

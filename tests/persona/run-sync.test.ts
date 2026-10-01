@@ -85,4 +85,28 @@ describe("runSync", () => {
     expect(dry.updated).toEqual(real.updated);
     expect(dry.overridesWiped).toBe(real.overridesWiped);
   });
+
+  test("an extraction failure is logged server-side but not leaked in the failure message", async () => {
+    const lines: string[] = [];
+    const orig = console.error;
+    console.error = (...a: unknown[]) => { lines.push(a.join(" ")); };
+    let e: any;
+    try {
+      e = await runSync(T, payload([ana]), { dryRun: false, env, by: "ci", extract: async () => { throw new Error("provider said no"); } }).catch((x) => x);
+    } finally { console.error = orig; }
+    expect(e).toBeInstanceOf(SyncFailure);
+    expect(e.message).not.toContain("provider said no");
+    expect(lines.some((l) => l.includes("persona=ana") && l.includes("provider said no"))).toBe(true);
+  });
+
+  test("a stale payload is a 409 before any extraction", async () => {
+    await runSync(T, payload([ana], { revision: "r2", committedAt: "2026-10-01T11:00:00Z" }), { dryRun: false, env, by: "ci", extract: okExtract });
+    let calls = 0;
+    const counting = async () => { calls++; return { approvers: [] }; };
+    for (const dryRun of [true, false]) {
+      const e = await runSync(T, payload([{ ...ana, soul: "changed" }]), { dryRun, env, by: "ci", extract: counting }).catch((x) => x);
+      expect(e.status).toBe(409);
+    }
+    expect(calls).toBe(0);
+  });
 });

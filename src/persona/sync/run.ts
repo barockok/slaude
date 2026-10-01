@@ -35,6 +35,13 @@ export async function runSync(
     throw e;
   }
 
+  // Fail a stale payload before spending any model call. applySync's
+  // transactional compare-and-set remains the authority; this is a fast path.
+  const live = await syncState(tenant);
+  if (live && live.committedAt > Date.parse(payload.committedAt)) {
+    throw new SyncFailure(409, `a newer revision is live (${live.revision})`);
+  }
+
   // Both layers, read once each. Desired is what the merge compares against;
   // effective is only needed for which fields carry a live override.
   const desired = new Map((await desiredPersonas(tenant, { includeTombstoned: true })).map((p) => [p.name, p]));
@@ -49,7 +56,10 @@ export async function runSync(
     } else {
       try {
         soulJson = await extract(p.soul);
-      } catch {
+      } catch (e) {
+        const cls = e instanceof Error ? e.constructor.name : typeof e;
+        const msg = (e instanceof Error ? e.message : String(e)).slice(0, 200);
+        console.error(`[persona-sync] soul extraction failed persona=${p.name}: ${cls}: ${msg}`);
         throw new SyncFailure(502, `soul extraction failed for persona '${p.name}'`);
       }
     }
@@ -62,8 +72,6 @@ export async function runSync(
   const meta = { revision: payload.revision, committedAt: Date.parse(payload.committedAt), by: opts.by };
 
   if (opts.dryRun) {
-    const live = await syncState(tenant);
-    if (live && live.committedAt > meta.committedAt) throw new SyncFailure(409, `a newer revision is live (${live.revision})`);
     const incoming = new Set(rows.map((r) => r.name));
     const report: SyncReport = { created: [], updated: [], unchanged: [], tombstoned: [], overridesWiped: 0, revision: meta.revision, dryRun: true };
     // Same rule as applySync.
@@ -74,6 +82,8 @@ export async function runSync(
       else report.updated.push(r.name);
     }
     for (const [name, prev] of desired) if (!incoming.has(name) && prev.tombstonedAt === null) report.tombstoned.push(name);
+    // setOverride refuses names without a live persona, so no orphan rows exist
+    // and this equals the count applySync's DELETE reports.
     report.overridesWiped = [...effective.values()].reduce((n, p) => n + p.overridden.length, 0);
     return report;
   }

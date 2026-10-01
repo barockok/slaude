@@ -19,6 +19,13 @@ beforeEach(async () => {
 });
 
 describe("persona repository", () => {
+  test("an override on an unknown or tombstoned persona is refused", async () => {
+    await P.applySync(T, [row("ana"), row("bea")], meta("r1", "2026-10-01T10:00:00Z"));
+    await P.applySync(T, [row("ana")], meta("r2", "2026-10-01T11:00:00Z"));
+    await expect(P.setOverride(T, "ghost", "model", "m", "ops")).rejects.toBeInstanceOf(P.PersonaNotFoundError);
+    await expect(P.setOverride(T, "bea", "model", "m", "ops")).rejects.toBeInstanceOf(P.PersonaNotFoundError);
+  });
+
   test("a tenant is unmanaged until its first sync", async () => {
     expect(await P.isManaged(T)).toBe(false);
     expect(await P.stateVersion(T)).toBe("unmanaged");
