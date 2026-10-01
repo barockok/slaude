@@ -55,6 +55,9 @@ describe("describePreflightFailure", () => {
   it("detects perl in stderr even with another exit code", () => {
     expect(describePreflightFailure({ code: 1, stdout: "", stderr: "bash: perl: not found" }, "/r")).toContain("perl is required");
   });
+  it("a directory merely named perl-something is still a directory error", () => {
+    expect(describePreflightFailure({ code: 1, stdout: "", stderr: "cd: /home/me/perl-app: No such file or directory" }, "/home/me/perl-app")).toContain("directory not found");
+  });
   it("otherwise reports the directory", () => {
     expect(describePreflightFailure({ code: 1, stdout: "", stderr: "cd: no such file" }, "/r")).toBe("directory not found or not accessible: /r");
   });

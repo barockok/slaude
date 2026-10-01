@@ -8,7 +8,7 @@ import { RemoteError } from "./types";
  *  dependency of the remote tools (process-group wrapper), and without it the
  *  wrapper fails before `cd` ever runs — that must not read as a bad directory. */
 export function describePreflightFailure(r: { code: number | null; stdout: string; stderr: string }, dir: string): string {
-  if (r.code === 127 || /perl/i.test(`${r.stderr}\n${r.stdout}`)) {
+  if (r.code === 127 || /\bperl\b[^\n]*not found|not found[^\n]*\bperl\b/i.test(`${r.stderr}\n${r.stdout}`)) {
     return "perl is required on your machine for /remote (it ships with macOS and most Linux)";
   }
   return `directory not found or not accessible: ${dir}`;
