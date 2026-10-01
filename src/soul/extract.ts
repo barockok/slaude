@@ -139,7 +139,23 @@ function regexFallback(): SoulData {
  * Safe to call repeatedly; cheap after first call.
  */
 export async function loadSoulData(): Promise<SoulData> {
-  const persona = loadSoul();
+  return extractSoulData(loadSoul(), { strict: false });
+}
+
+export class SoulExtractionError extends Error {}
+
+/**
+ * Structured extraction for an arbitrary soul text.
+ *
+ * strict: any failure throws. Used by persona sync, where a degraded extraction
+ * would store a soul stripped of its ACLs while reporting success.
+ * non-strict: falls back to the regex parse, exactly as loadSoulData always has.
+ */
+export async function extractSoulData(
+  persona: string,
+  opts: { strict: boolean; call?: (system: string, prompt: string) => Promise<string> },
+): Promise<SoulData> {
+  const call = opts.call ?? callExtractor;
   const sha = sha256(persona);
   const cp = cachePath(sha);
 
@@ -153,7 +169,7 @@ export async function loadSoulData(): Promise<SoulData> {
   }
 
   try {
-    const text = await callExtractor(soulSystemBlock(persona), EXTRACTION_PROMPT);
+    const text = await call(soulSystemBlock(persona), EXTRACTION_PROMPT);
     const raw = parseJsonLoose(text);
     const data = SoulDataSchema.parse(raw);
     // Defense in depth: every extracted Slack id MUST appear verbatim in
@@ -165,6 +181,7 @@ export async function loadSoulData(): Promise<SoulData> {
     console.log(`[soul] extracted ${data.approvers.length} approver(s), cached at ${cp}`);
     return data;
   } catch (e) {
+    if (opts.strict) throw new SoulExtractionError(`soul extraction failed: ${(e as Error).message}`);
     console.warn("[soul] LLM extraction failed, falling back to regex parser:", e);
     return regexFallback();
   }
