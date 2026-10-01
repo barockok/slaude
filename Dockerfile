@@ -34,6 +34,15 @@ RUN apt-get update \
  && uvx --version \
  && uvx --from mcp-grafana mcp-grafana --help > /dev/null
 
+# tailcat: SSH transport for /remote (runs a thread's tools on the user's machine).
+# The release archive holds the binary at its root next to LICENSE and README.md.
+ARG TAILCAT_VERSION=0.7.0
+ARG TARGETARCH
+RUN arch="${TARGETARCH:-amd64}" \
+ && curl -LsSf "https://github.com/tailscale/tailcat/releases/download/v${TAILCAT_VERSION}/tailcat_${TAILCAT_VERSION}_linux_${arch}.tar.gz" \
+    | tar -xz -C /usr/local/bin tailcat \
+ && test -x /usr/local/bin/tailcat
+
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json bun.lock tsconfig.json ./
 COPY src ./src
