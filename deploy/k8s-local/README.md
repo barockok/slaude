@@ -70,6 +70,7 @@ the old one.
 | A crashed leader is replaced | SIGKILL through the container runtime, then the lock owner must change within the TTL |
 | A crashed node is detected and pruned | its heartbeat must expire, the worker restart, and the reaper remove it from the registry |
 | A node needs no persona directory | sync a persona set (extraction cache seeded through the gateway's own `writeSoulCacheEntry`, a signed entry in its pod-local cache, so no model), delete the persona's directory from the volume, run a suppressed turn, then a node log must carry `persona=verifier soul=<sha256 prefix of the synced text>`; the deploy token must be on the gateway and absent from every node |
+| A warm node session picks up a changed soul | after that turn, sync soul B (seeded the same way), run a second suppressed turn in the **same** session (`turns.ts again`), and a node log must carry `session=<that session> persona=verifier soul=<sha256 prefix of B>`; not yet run on a cluster |
 
 Crashes use SIGKILL from the container runtime on purpose. `kubectl delete
 --force` still delivers SIGTERM, and a leader that releases its lock on the way

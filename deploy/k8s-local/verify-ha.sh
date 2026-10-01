@@ -131,6 +131,50 @@ sync_status() { # <pod> <token-env-var-name> <json-payload>
   " 2>/dev/null | tail -1
 }
 
+# Seed the soul-extraction cache inside a gateway pod for the given soul texts,
+# through the pod's own writeSoulCacheEntry (src/soul/extract.ts), so a sync
+# needs no model. Texts go in on stdin as a JSON array, never on a command line.
+seed_souls() { # <pod> <soul text...>
+  local pod="$1"
+  shift
+  # shellcheck disable=SC2016 # JS, evaluated by bun in the pod
+  python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@" \
+    | k exec -i --request-timeout="$PROBE_TIMEOUT" "$pod" -- bun -e '
+        import { writeSoulCacheEntry } from "/app/src/soul/extract.ts";
+        for (const t of JSON.parse(await Bun.stdin.text())) {
+          if (!writeSoulCacheEntry(t, { approvers: [] })) throw new Error("cache entry not written");
+        }
+      ' >/dev/null 2>&1
+}
+
+# The sync payload: the default persona plus the verifier persona.
+sync_payload() { # <revision> <verifier soul> <default soul>
+  python3 -c '
+import json, sys, datetime
+print(json.dumps({
+    "revision": sys.argv[1],
+    "committedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "personas": [
+        {"name": "default", "soul": sys.argv[3]},
+        {"name": "verifier", "slackUserId": "UTESTUSER7", "soul": sys.argv[2]},
+    ],
+}))' "$1" "$2" "$3"
+}
+
+# Wait (bounded) until the probe's tracked turn carries a completion marker.
+# Prints the last value read (1 when done), or nothing if never measured.
+wait_turn_done() { # <seconds>
+  local v="" cur t0
+  t0=$(date +%s)
+  while (($(date +%s) - t0 < $1)); do
+    cur="$(probe status | field withCompletionMarker || true)"
+    [[ -n "$cur" ]] && v="$cur"
+    [[ "$v" == 1 ]] && break
+    sleep 5
+  done
+  printf '%s' "$v"
+}
+
 # Every session-boot soul line for the verifier persona, from the given node pods.
 # Non-zero (and silent) if ANY pod's logs could not be read, so a missing pod is
 # never mistaken for "no such line".
@@ -461,30 +505,13 @@ else
   # is never recomputed here: the pod computes it through writeSoulCacheEntry.
   want_hash="$(printf '%s' "$soul" | shasum -a 256 | cut -c1-12)"
   default_soul="Default verify soul."
-  # Soul texts go in on stdin as a JSON array, never on a command line.
   seed_ok=""
-  # shellcheck disable=SC2016 # JS, evaluated by bun in the pod
-  if python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$soul" "$default_soul" \
-    | k exec -i --request-timeout="$PROBE_TIMEOUT" "$gw_pod" -- bun -e '
-        import { writeSoulCacheEntry } from "/app/src/soul/extract.ts";
-        for (const t of JSON.parse(await Bun.stdin.text())) {
-          if (!writeSoulCacheEntry(t, { approvers: [] })) throw new Error("cache entry not written");
-        }
-      ' >/dev/null 2>&1; then
+  if seed_souls "$gw_pod" "$soul" "$default_soul"; then
     seed_ok=1
   else
     bad "soul extraction cache not seeded — COULD NOT MEASURE the sync (it would need a model)"
   fi
-  payload="$(python3 -c '
-import json, sys, datetime
-print(json.dumps({
-    "revision": "verify-1",
-    "committedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    "personas": [
-        {"name": "default", "soul": sys.argv[2]},
-        {"name": "verifier", "slackUserId": "UTESTUSER7", "soul": sys.argv[1]},
-    ],
-}))' "$soul" "$default_soul")"
+  payload="$(sync_payload verify-1 "$soul" "$default_soul")"
 
   if [[ -n "$seed_ok" ]]; then
     # The deploy token syncs; the node token must not.
@@ -502,17 +529,12 @@ print(json.dumps({
   fi
 
   probe cleanup >/dev/null 2>&1 || true
-  enq="$(probe enqueue 1 --persona verifier | field enqueued || true)"
+  enq_out="$(probe enqueue 1 --persona verifier || true)"
+  enq="$(field enqueued <<<"$enq_out" || true)"
+  sess="$(field session <<<"$enq_out" || true)"
   expect_value "enqueued a turn for the persona" "$enq" "1" "enqueued"
 
-  done_v=""
-  t0=$(date +%s)
-  while (($(date +%s) - t0 < 120)); do
-    cur="$(probe status | field withCompletionMarker || true)"
-    [[ -n "$cur" ]] && done_v="$cur"
-    [[ "$done_v" == 1 ]] && break
-    sleep 5
-  done
+  done_v="$(wait_turn_done 120)"
   expect_value "a node completed the persona's turn" "$done_v" "1" "turns completed"
 
   # THE proof of where the soul came from: the booting node logged the hash of
@@ -536,6 +558,45 @@ print(json.dumps({
     expect_value "/data/personas/verifier/$f is not on the volume" \
       "$(vol_state "$gw_pod" "/data/personas/verifier/$f")" "absent" "volume state"
   done
+
+  # A WARM node session picks up a changed soul (spec §6.4). The turn above
+  # left the verifier's session warm on a node. Sync soul B, then run a second
+  # turn in the SAME session: its boot must log B's hash for that session. This
+  # rests on the deferred reload seeing outstanding inputs reach zero, which
+  # depends on the real CLI's result cadence (unit tests use a fake SDK). Each
+  # step runs only after the previous one finished; a step that cannot run
+  # makes the rest COULD NOT MEASURE, never a pass. The second turn can land on
+  # the other node, where it boots cold: B is still required, so a node that
+  # kept serving soul A fails, but a cold boot proves less than a warm one.
+  soul_b="Verifier soul B for the warm-session check, run $(date +%s)-$RANDOM."
+  want_b="$(printf '%s' "$soul_b" | shasum -a 256 | cut -c1-12)"
+  if [[ "$done_v" != 1 || -z "$sess" ]]; then
+    bad "warm session soul change — COULD NOT MEASURE (the first turn did not complete, or its session id is unknown)"
+  elif ! seed_souls "$gw_pod" "$soul_b"; then
+    bad "warm session soul change — COULD NOT MEASURE (soul B's extraction cache not seeded)"
+  else
+    # committedAt must not go backwards; a second's gap keeps it strictly newer.
+    sleep 1
+    synced_b="$(sync_status "$gw_pod" SLAUDE_DEPLOY_TOKEN "$(sync_payload verify-2 "$soul_b" "$default_soul")")"
+    expect_value "the sync to soul B was accepted" "$synced_b" "200" "sync HTTP status"
+    if [[ "$synced_b" == 200 ]]; then
+      enq2="$(probe again 1 --persona verifier | field enqueued || true)"
+      expect_value "enqueued a second turn in the same session" "$enq2" "1" "enqueued"
+      done2="$(wait_turn_done 120)"
+      expect_value "a node completed the second turn" "$done2" "1" "turns completed"
+      seen_b=""
+      t0=$(date +%s)
+      while [[ "$done2" == 1 ]] && (($(date +%s) - t0 < 30)); do
+        if lines="$(verifier_soul_lines "${node_pods[@]}")"; then
+          if grep -qF "session=$sess persona=verifier soul=$want_b" <<<"$lines"; then seen_b=yes; else seen_b=no; fi
+          [[ "$seen_b" == yes ]] && break
+        fi
+        sleep 3
+      done
+      expect_value "the same session rebooted with soul B (session=$sess soul=$want_b)" \
+        "$seen_b" "yes" "node boot log; hashes seen for this session: $(grep -F "session=$sess " <<<"${lines:-}" | grep -o 'soul=[0-9a-f]*' | sort -u | tr '\n' ' ')"
+    fi
+  fi
 fi
 
 # --- summary ---------------------------------------------------------------

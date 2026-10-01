@@ -5,6 +5,10 @@
 //   enqueue <n> [--persona <name>]
 //                 create n sessions and enqueue one turn each (default persona
 //                 unless --persona names another)
+//   again 1 [--persona <name>]
+//                 enqueue one more turn into the FIRST session the last
+//                 `enqueue` created (same thread, same persona), and track only
+//                 that turn — a second turn in a session a node holds warm
 //   status        JSON: how many of those turns carry a completion marker, plus
 //                 what the shared queue still holds
 //   cron          insert one already-due cron job
@@ -32,6 +36,8 @@ const CHANNEL = "CVERIFY";
 const MARK = "verify-turns";
 const CRON_MARK = "verify-cron";
 const STATE = "/tmp/verify-turns-ids.json";
+// The sessions the last `enqueue` created, for `again`.
+const SESSIONS = "/tmp/verify-turns-sessions.json";
 
 const [cmd, arg, ...rest] = process.argv.slice(2);
 // `--persona <name>` after the count. Absent, the probe behaves exactly as it
@@ -54,8 +60,34 @@ const readIds = (): string[] => {
   }
 };
 
+async function enqueueOne(session: { id: string }, thread: string, i: number): Promise<string> {
+  const jobId = randomUUID();
+  const jobToken = mintJobToken({
+    tenant: "default", persona: PERSONA, session: session.id,
+    team: TEAM, channel: CHANNEL, thread, initiator: "UVERIFY",
+    scope: "turn", runAs: "agent", job: jobId,
+  });
+  const r = await turns.enqueueTurn(
+    {
+      sessionId: session.id,
+      tenantId: "default",
+      personaId: PERSONA,
+      // suppress: the node runs the whole turn lifecycle — claim, session
+      // lock, completion marker, ack — but the prompt hook stops the model, so
+      // the probe costs no tokens and still proves delivery.
+      messages: [{ ts: `${Date.now()}.${i}`, user: "UVERIFY", text: `${MARK}: delivery probe`, suppress: true }],
+      jobToken,
+      enqueuedAt: Date.now(),
+    },
+    "shared",
+    jobId,
+  );
+  return r.jobId;
+}
+
 async function enqueue(n: number) {
   const ids: string[] = [];
+  const sessions: Array<{ id: string; thread: string }> = [];
   for (let i = 0; i < n; i++) {
     const thread = `${MARK}-${Date.now()}-${i}`;
     const session = await Sessions.createForThread({
@@ -66,31 +98,28 @@ async function enqueue(n: number) {
       working_dir: "/tmp",
       title: MARK,
     });
-    const jobId = randomUUID();
-    const jobToken = mintJobToken({
-      tenant: "default", persona: PERSONA, session: session.id,
-      team: TEAM, channel: CHANNEL, thread, initiator: "UVERIFY",
-      scope: "turn", runAs: "agent", job: jobId,
-    });
-    const r = await turns.enqueueTurn(
-      {
-        sessionId: session.id,
-        tenantId: "default",
-        personaId: PERSONA,
-        // suppress: the node runs the whole turn lifecycle — claim, session
-        // lock, completion marker, ack — but the prompt hook stops the model, so
-        // the probe costs no tokens and still proves delivery.
-        messages: [{ ts: `${Date.now()}.${i}`, user: "UVERIFY", text: `${MARK}: delivery probe`, suppress: true }],
-        jobToken,
-        enqueuedAt: Date.now(),
-      },
-      "shared",
-      jobId,
-    );
-    ids.push(r.jobId);
+    sessions.push({ id: session.id, thread });
+    ids.push(await enqueueOne(session, thread, i));
   }
   writeFileSync(STATE, JSON.stringify(ids));
-  console.log(JSON.stringify({ enqueued: ids.length }));
+  writeFileSync(SESSIONS, JSON.stringify(sessions));
+  console.log(JSON.stringify({ enqueued: ids.length, session: sessions[0]?.id ?? null }));
+}
+
+async function again() {
+  let first: { id: string; thread: string } | undefined;
+  try {
+    first = (JSON.parse(readFileSync(SESSIONS, "utf8")) as Array<{ id: string; thread: string }>)[0];
+  } catch {
+    /* no earlier enqueue */
+  }
+  if (!first) {
+    console.error("again: no session from an earlier enqueue");
+    process.exit(2);
+  }
+  const id = await enqueueOne(first, first.thread, 0);
+  writeFileSync(STATE, JSON.stringify([id]));
+  console.log(JSON.stringify({ enqueued: 1, session: first.id }));
 }
 
 async function status() {
@@ -167,6 +196,7 @@ async function cleanup() {
 
 const commands: Record<string, () => Promise<void>> = {
   enqueue: () => enqueue(Math.max(1, Number(arg ?? 4))),
+  again,
   status,
   cron,
   "cron-status": cronStatus,
@@ -174,7 +204,7 @@ const commands: Record<string, () => Promise<void>> = {
 };
 const run = commands[cmd ?? ""];
 if (!run) {
-  console.error("usage: turns.ts enqueue <n> [--persona <name>] | status | cron | cron-status | cleanup");
+  console.error("usage: turns.ts enqueue <n> [--persona <name>] | again 1 --persona <name> | status | cron | cron-status | cleanup");
   process.exit(2);
 }
 await run();
