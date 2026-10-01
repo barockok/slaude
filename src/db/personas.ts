@@ -12,6 +12,9 @@ import { db } from "./schema";
 import { encrypt, decrypt, isEncrypted } from "./crypto";
 import { mergeEffective, sameDesired, type DesiredPersona, type EffectivePersona, type Override, type OverrideField } from "../persona/effective";
 
+/** The persona tables exist on Postgres only; sqlite has no persona sync. */
+export const PERSONA_SYNC_NEEDS_PG = "persona sync requires Postgres (SLAUDE_DB=pg); this deployment runs on sqlite";
+
 export class NotManagedError extends Error {
   readonly status = 409 as const;
   constructor(tenant: string) { super(`tenant '${tenant}' is not managed as code yet — run a sync first`); }

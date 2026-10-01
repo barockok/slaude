@@ -12,6 +12,8 @@
 import { env } from "../../config/env";
 import { timingSafeStringEqual } from "../api/auth";
 import { json, readBodyCapped } from "../api/http";
+import { resolveDbConfig } from "../../db/client";
+import { PERSONA_SYNC_NEEDS_PG } from "../../db/personas";
 import { runSync, SyncFailure } from "../../persona/sync/run";
 import { publishConfigReload } from "../core/config-reload";
 import type { PubSub } from "../../queue/pubsub";
@@ -62,6 +64,8 @@ export function createDeployApi(opts: DeployApiOptions) {
       return json(404, { error: "not found" });
     }
     if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(tenant)) return json(404, { error: "not found" });
+    // The persona tables are Postgres-only (sqlite has no persona sync).
+    if (resolveDbConfig().dialect === "sqlite") return json(409, { error: PERSONA_SYNC_NEEDS_PG });
     const text = await readBodyCapped(req, DEPLOY_MAX_BODY_BYTES);
     if (text === null) return json(413, { error: `body exceeds ${DEPLOY_MAX_BODY_BYTES} bytes` });
     let raw: unknown;

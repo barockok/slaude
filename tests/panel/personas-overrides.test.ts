@@ -249,3 +249,32 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("panel persona overrides", () =>
     expect(reloads).toBe(0);
   });
 });
+
+// R42 (M3): on sqlite the persona routes used to 500 on a missing table.
+describe.skipIf(process.env.SLAUDE_DB === "pg")("panel persona routes on sqlite", () => {
+  const saved2: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const k of ["SLAUDE_PANEL_SECRET", "SLAUDE_PANEL_SUPERADMIN", "SLAUDE_PANEL_OPERATORS"]) saved2[k] = process.env[k];
+    process.env.SLAUDE_PANEL_SECRET = SECRET;
+    process.env.SLAUDE_PANEL_SUPERADMIN = "lead@example.com";
+    process.env.SLAUDE_PANEL_OPERATORS = "alice@example.com";
+    __resetRoleCache();
+  });
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved2)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    __resetRoleCache();
+  });
+  test("GET, POST, PUT and DELETE are 409 'persona sync requires Postgres'", async () => {
+    const p = mk(okExtract);
+    for (const r of [
+      get("/panel/api/personas", superadmin),
+      post("/panel/api/personas", { name: "ana", soul: "x", slackUserId: "UTESTUSER1" }, superadmin),
+      put("/panel/api/personas/ana/overrides/model", { value: "m" }, superadmin),
+      del("/panel/api/personas/ana/overrides/model", superadmin),
+    ]) {
+      const res = (await p.fetch(r))!;
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as any).error).toMatch(/persona sync requires Postgres/);
+    }
+  });
+});

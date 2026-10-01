@@ -46,6 +46,7 @@ import { publishConfigReload } from "../core/config-reload";
 import * as Personas from "../../db/personas";
 import { OVERRIDE_FIELDS, type OverrideField, type DesiredPersona } from "../../persona/effective";
 import { PERSONA_NAME_RE } from "../../persona/sync/payload";
+import { resolveDbConfig } from "../../db/client";
 import { assertHttpOnlyMcp, McpNotHttpOnlyError } from "../../persona/mcp-http-only";
 import { extractSoulData, SoulExtractionError } from "../../soul/extract";
 
@@ -334,6 +335,8 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
       // quick experiments and every sync from git wipes them. CSRF already ran
       // above, before any route. Tenant is always "default".
       if (seg[2] === "personas") {
+        // The persona tables are Postgres-only: say so instead of a 500.
+        if (resolveDbConfig().dialect === "sqlite") return json(409, { error: Personas.PERSONA_SYNC_NEEDS_PG });
         const tenant = "default";
         const status = (e: unknown): Response | null => {
           if (e instanceof Personas.PersonaNotFoundError) return json(404, { error: e.message });

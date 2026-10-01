@@ -227,6 +227,21 @@ describe("health mounting", () => {
   });
 });
 
+// R42 (M3): the persona tables are Postgres-only. On sqlite an authorized sync
+// used to 500 ("internal") on a missing table; it is a clear 409 instead.
+describe.skipIf(process.env.SLAUDE_DB === "pg")("/deploy on sqlite", () => {
+  test("an authorized sync or dry run is 409 'persona sync requires Postgres'", async () => {
+    for (const q of ["", "?dryRun=1"]) {
+      const res = await api().fetch(post(DEPLOY, body, q));
+      expect(res!.status).toBe(409);
+      expect(((await res!.json()) as any).error).toMatch(/persona sync requires Postgres/);
+    }
+  });
+  test("auth still comes first: a wrong token is 401", async () => {
+    expect((await api().fetch(post("x".repeat(40))))!.status).toBe(401);
+  });
+});
+
 // R42 (T6): the preview token deliberately lives in workflows that run
 // unreviewed pull-request code, so the body /deploy buffers is capped.
 pgOnly("/deploy body cap", () => {
