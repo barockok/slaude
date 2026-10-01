@@ -5,7 +5,7 @@ import type { MockRequest } from "./types";
 describe("viewHistory", () => {
   test("no tool results yet", () => {
     const req: MockRequest = { messages: [{ role: "user", content: "[[mock:multi-tool]] go" }] };
-    expect(viewHistory(req, 0)).toEqual({ toolResults: [], persona: null });
+    expect(viewHistory(req, 0)).toEqual({ toolResults: [], persona: null, tools: [] });
   });
 
   test("collects role:tool results after the tagged message", () => {

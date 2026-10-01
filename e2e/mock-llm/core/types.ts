@@ -13,6 +13,8 @@ export interface MockMessage {
 
 export interface MockRequest {
   messages: MockMessage[];
+  /** Tools the client offers (aimock's normalized OpenAI shape). */
+  tools?: Array<{ type?: string; function?: { name?: string } }>;
 }
 
 export interface Tag {
@@ -37,6 +39,8 @@ export interface HistoryView {
   toolResults: string[];
   /** Value of the `Persona-ID:` line in the system prompt, if any. */
   persona: string | null;
+  /** Names of the tools the request offers. */
+  tools: string[];
 }
 
 export interface ScenarioCtx {

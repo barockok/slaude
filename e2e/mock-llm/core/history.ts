@@ -3,6 +3,11 @@ import type { HistoryView, MockRequest } from "./types";
 
 const PERSONA_RE = /Persona-ID:\s*([A-Za-z0-9_-]+)/;
 
+/** The `Persona-ID:` value in a system prompt, or null. */
+export function personaOf(system: string): string | null {
+  return PERSONA_RE.exec(system)?.[1] ?? null;
+}
+
 /**
  * Derive everything a scenario may know about the conversation from the request
  * alone. Tool results count only when they follow the current turn's tagged
@@ -18,5 +23,6 @@ export function viewHistory(req: MockRequest, tagIndex: number): HistoryView {
     }
   }
   const system = req.messages.filter((m) => m.role === "system").map(messageText).join("\n");
-  return { toolResults, persona: PERSONA_RE.exec(system)?.[1] ?? null };
+  const tools = (req.tools ?? []).map((t) => t.function?.name).filter((n): n is string => typeof n === "string");
+  return { toolResults, persona: personaOf(system), tools };
 }

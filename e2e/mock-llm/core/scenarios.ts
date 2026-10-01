@@ -1,9 +1,17 @@
 import { paramInt } from "./tag";
 import type { Scenario } from "./types";
 
+/** slaude's surface reply tool: plain assistant text never reaches the user there. */
+export const SURFACE_REPLY_TOOL = "mcp__slaude_surface__reply";
+
 const echo: Scenario = {
   name: "echo",
-  reply: ({ view, userText }) => ({ kind: "text", content: `[${view.persona ?? "unknown"}] ${userText}` }),
+  reply: ({ view, userText }) => {
+    const content = `[${view.persona ?? "unknown"}] ${userText}`;
+    if (!view.tools.includes(SURFACE_REPLY_TOOL)) return { kind: "text", content };
+    if (view.toolResults.length > 0) return { kind: "text", content: "replied" };
+    return { kind: "tools", calls: [{ id: "toolu_mock_reply", name: SURFACE_REPLY_TOOL, args: { text: content } }] };
+  },
 };
 
 const multiTool: Scenario = {

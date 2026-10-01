@@ -5,7 +5,9 @@ import { LLMock } from "@copilotkit/aimock";
 import type { FixtureResponse } from "@copilotkit/aimock";
 import { errorBody, planFaults } from "./core/faults";
 import type { FaultPlan } from "./core/faults";
+import { personaOf } from "./core/history";
 import { resolveReply } from "./core/registry";
+import { SURFACE_REPLY_TOOL } from "./core/scenarios";
 import { findTag, lastTagIn } from "./core/tag";
 import type { MockMessage, MockReply, MockRequest, Tag } from "./core/types";
 
@@ -19,6 +21,10 @@ interface JournalRow {
   action: string;
   messages: number;
   historyHash: string;
+  /** `Persona-ID:` in the system prompt, as the echo label uses it. */
+  persona: string | null;
+  /** Whether the request offered slaude's surface reply tool. */
+  offersReply: boolean;
 }
 
 function toFixtureResponse(r: MockReply): FixtureResponse {
@@ -68,6 +74,18 @@ const HOP_HEADERS = new Set(["content-length", "content-encoding", "transfer-enc
 interface ParsedBody {
   system?: unknown;
   messages?: unknown;
+  tools?: unknown;
+}
+
+/** Anthropic `system` is a string or an array of text blocks. */
+function systemText(system: unknown): string {
+  if (typeof system === "string") return system;
+  if (Array.isArray(system)) return system.map((b) => (b && typeof b === "object" && typeof b.text === "string" ? b.text : "")).join("\n");
+  return "";
+}
+
+function offersReplyTool(tools: unknown): boolean {
+  return Array.isArray(tools) && tools.some((t) => t && typeof t === "object" && t.name === SURFACE_REPLY_TOOL);
 }
 
 /** Parse once; null when the body is not a JSON object. */
@@ -191,6 +209,8 @@ export async function startServer(port: number): Promise<{ port: number; stop():
       action: plan.action,
       messages: Array.isArray(parsed?.messages) ? parsed.messages.length : 0,
       historyHash,
+      persona: personaOf(systemText(parsed?.system)),
+      offersReply: offersReplyTool(parsed?.tools),
     });
     if (plan.delayMs) await delay(plan.delayMs, res);
     if (res.destroyed) return;

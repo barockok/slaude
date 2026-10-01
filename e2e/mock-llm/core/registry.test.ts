@@ -30,6 +30,26 @@ describe("resolveReply", () => {
       expect((reply as { content: string }).content).not.toContain("[[mock:");
     });
 
+    // slaude never shows plain assistant text: the agent speaks only through its surface reply
+    // tool. When the request offers that tool, echo answers through it.
+    const REPLY = "mcp__slaude_surface__reply";
+    const offered = (extra: MockRequest["messages"] = []): MockRequest => ({
+      messages: [{ role: "system", content: "Persona-ID: alpha" }, { role: "user", content: "[[mock:echo]] hello there" }, ...extra],
+      tools: [{ type: "function", function: { name: "Bash" } }, { type: "function", function: { name: REPLY } }],
+    });
+
+    test("answers through the surface reply tool when the request offers it", () => {
+      expect(resolveReply(offered())).toEqual({
+        kind: "tools",
+        calls: [{ id: "toolu_mock_reply", name: REPLY, args: { text: "[alpha] hello there" } }],
+      });
+    });
+
+    test("ends the turn with a short text once the reply tool has returned", () => {
+      const r = resolveReply(offered([{ role: "tool", tool_call_id: "toolu_mock_reply", content: "{\"ref\":\"1.2\"}" }]));
+      expect(r).toEqual({ kind: "text", content: "replied" });
+    });
+
     test("falls back to an unknown persona label", () => {
       expect(resolveReply(user("[[mock:echo]] hi"))).toEqual({ kind: "text", content: "[unknown] hi" });
     });

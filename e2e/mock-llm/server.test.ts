@@ -102,6 +102,38 @@ describe("mock-llm server", () => {
     expect(textOf(second)).toBe("done after 1 tools");
   });
 
+  test("echo answers through slaude's surface reply tool when the request offers it, and the journal shows it", async () => {
+    await fetch(`${base}/__mock/journal`, { method: "DELETE" });
+    const reply = { name: "mcp__slaude_surface__reply", description: "reply", input_schema: { type: "object", properties: { text: { type: "string" } } } };
+    const tools = [...TOOLS, reply];
+    const first = await events(await post(request("[[mock:echo]] via tool", { system: "Persona-ID: alpha", tools })));
+    const start = first.find((e) => e.data?.content_block?.type === "tool_use");
+    expect(start?.data.content_block.name).toBe("mcp__slaude_surface__reply");
+    const input = first.map((e) => (e.data?.delta?.type === "input_json_delta" ? e.data.delta.partial_json : "")).join("");
+    expect(JSON.parse(input)).toEqual({ text: "[alpha] via tool" });
+    expect(textOf(first)).toBe("");
+
+    const second = await events(
+      await post(
+        request("x", {
+          system: "Persona-ID: alpha",
+          tools,
+          messages: [
+            { role: "user", content: "[[mock:echo]] via tool" },
+            { role: "assistant", content: [{ type: "tool_use", id: "toolu_mock_reply", name: reply.name, input: { text: "[alpha] via tool" } }] },
+            { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_mock_reply", content: "{\"ref\":\"1.2\"}" }] },
+          ],
+        }),
+      ),
+    );
+    expect(textOf(second)).toBe("replied");
+    const rows = (await (await fetch(`${base}/__mock/journal`)).json()) as Array<Record<string, unknown>>;
+    expect(rows.map((r) => [r.tag, r.persona, r.offersReply])).toEqual([
+      ["echo", "alpha", true],
+      ["echo", "alpha", true],
+    ]);
+  });
+
   test("the same request gets the same reply every time (stateless)", async () => {
     const a = textOf(await events(await post(request("[[mock:long-stream chunks=6]] go"))));
     const b = textOf(await events(await post(request("[[mock:long-stream chunks=6]] go"))));
