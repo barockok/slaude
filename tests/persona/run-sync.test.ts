@@ -6,8 +6,11 @@ import * as P from "../../src/db/personas";
 import { runSync, SyncFailure } from "../../src/persona/sync/run";
 
 const T = "default";
-const payload = (personas: unknown[], extra: object = {}) =>
+const bare = (personas: unknown[], extra: object = {}) =>
   ({ revision: "r1", committedAt: "2026-10-01T10:00:00Z", personas, ...extra });
+// A managed tenant always carries its default persona: every non-empty fixture includes it.
+const def = { name: "default", soul: "You are the default." };
+const payload = (personas: unknown[], extra: object = {}) => bare(personas.length ? [def, ...personas] : personas, extra);
 const ana = { name: "ana", slackUserId: "UTESTUSER1", soul: "You are Ana.", userToken: "${ANA_XOXP}" };
 const okExtract = async () => ({ approvers: [] });
 const env = { ANA_XOXP: "user-token-1" };
@@ -35,7 +38,7 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync", () => {
       { dryRun: true, env, by: "ci", extract: okExtract });
     expect(r.tombstoned).toEqual(["bea"]);
     expect(r.overridesWiped).toBe(1);
-    expect((await P.effectivePersonas(T)).map((p) => p.name).sort()).toEqual(["ana", "bea"]);
+    expect((await P.effectivePersonas(T)).map((p) => p.name).sort()).toEqual(["ana", "bea", "default"]);
     expect((await P.effectivePersonas(T))[0]!.overridden).toEqual(["model"]);
   });
 
@@ -61,13 +64,21 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync", () => {
     const counting = async () => { calls++; return { approvers: [] }; };
     await runSync(T, payload([ana]), { dryRun: false, env, by: "ci", extract: counting });
     await runSync(T, payload([ana], { revision: "r2", committedAt: "2026-10-01T11:00:00Z" }), { dryRun: false, env, by: "ci", extract: counting });
-    expect(calls).toBe(1);
+    expect(calls).toBe(2); // once per persona (default and ana), not again on r2
   });
 
   test("an empty set is refused unless allowEmpty is set", async () => {
     const e = await runSync(T, payload([]), { dryRun: false, env, by: "ci", extract: okExtract }).catch((x) => x);
     expect(e.status).toBe(422);
     await expect(runSync(T, payload([], { allowEmpty: true }), { dryRun: false, env, by: "ci", extract: okExtract })).resolves.toBeDefined();
+  });
+
+  test("a non-empty set without the default persona is a 422 and applies nothing", async () => {
+    const e = await runSync(T, bare([ana]), { dryRun: false, env, by: "ci", extract: okExtract }).catch((x) => x);
+    expect(e).toBeInstanceOf(SyncFailure);
+    expect(e.status).toBe(422);
+    expect(e.message).toBe("payload must include the default persona");
+    expect(await P.isManaged(T)).toBe(false);
   });
 
   test("an older revision is a 409", async () => {
@@ -82,8 +93,8 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync", () => {
     const next = payload([ana], { revision: "r2", committedAt: "2026-10-01T11:00:00Z" });
     const dry = await runSync(T, next, { dryRun: true, env, by: "ci", extract: okExtract });
     const real = await runSync(T, next, { dryRun: false, env, by: "ci", extract: okExtract });
-    expect(dry.unchanged).toEqual(["ana"]);
-    expect(real.unchanged).toEqual(["ana"]);
+    expect(dry.unchanged).toEqual(["default", "ana"]);
+    expect(real.unchanged).toEqual(["default", "ana"]);
     expect(dry.updated).toEqual(real.updated);
     expect(dry.overridesWiped).toBe(real.overridesWiped);
   });
@@ -94,7 +105,7 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync", () => {
     console.error = (...a: unknown[]) => { lines.push(a.join(" ")); };
     let e: any;
     try {
-      e = await runSync(T, payload([ana]), { dryRun: false, env, by: "ci", extract: async () => { throw new Error("provider said no"); } }).catch((x) => x);
+      e = await runSync(T, payload([ana]), { dryRun: false, env, by: "ci", extract: async (t: string) => { if (t === ana.soul) throw new Error("provider said no"); return { approvers: [] }; } }).catch((x) => x);
     } finally { console.error = orig; }
     expect(e).toBeInstanceOf(SyncFailure);
     expect(e.message).not.toContain("provider said no");

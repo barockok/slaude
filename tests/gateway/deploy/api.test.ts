@@ -4,12 +4,13 @@ import { __resetMasterKeyCache } from "../../../src/db/crypto";
 import { createDeployApi } from "../../../src/gateway/deploy/api";
 import { createV1Api } from "../../../src/gateway/api";
 import { healthRoutes } from "../../../src/health";
+import { __resetPersonaRegistry, whenPersonaRegistrySettled } from "../../../src/persona/registry";
 
 const DEPLOY = "d".repeat(40);
 const NODE = "n".repeat(40);
 const url = "https://slaude.example.com/deploy/v1/tenants/default/personas";
 const body = { revision: "r1", committedAt: "2026-10-01T10:00:00Z",
-  personas: [{ name: "ana", slackUserId: "UTESTUSER1", soul: "You are Ana.", userToken: "${ANA_XOXP}" }] };
+  personas: [{ name: "default", soul: "You are the default." }, { name: "ana", slackUserId: "UTESTUSER1", soul: "You are Ana.", userToken: "${ANA_XOXP}" }] };
 const post = (token: string | null, b: unknown = body, q = "") =>
   new Request(url + q, { method: "POST", headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(b) });
 
@@ -21,20 +22,26 @@ beforeEach(async () => {
   process.env.SLAUDE_NODE_TOKEN = NODE;
   process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
   __resetMasterKeyCache();
+  // The persona tables are Postgres-only (migration 0011).
+  if (process.env.SLAUDE_DB !== "pg") return;
   for (const t of ["persona_overrides", "persona_sync_state", "personas"]) await db.run(`DELETE FROM ${t}`);
 });
-afterEach(() => {
+const pgOnly = describe.skipIf(process.env.SLAUDE_DB !== "pg");
+afterEach(async () => {
+  // A real sync's reload installs a database-backed snapshot: reset it.
+  await whenPersonaRegistrySettled();
+  __resetPersonaRegistry();
   for (const [k, v] of Object.entries(prev)) v === undefined ? delete process.env[k] : (process.env[k] = v);
   __resetMasterKeyCache();
 });
 
 const api = (pubsub: any = null) => createDeployApi({ pubsub, env: () => ({ ANA_XOXP: "user-token-secret-value" }), extract: async () => ({ approvers: [] }) });
 
-describe("POST /deploy/v1/tenants/:tenant/personas", () => {
+pgOnly("POST /deploy/v1/tenants/:tenant/personas", () => {
   test("the deploy token applies a sync and reports it", async () => {
     const res = await api().fetch(post(DEPLOY));
     expect(res!.status).toBe(200);
-    expect((await res!.json() as any).created).toEqual(["ana"]);
+    expect((await res!.json() as any).created).toEqual(["default", "ana"]);
   });
 
   test("without a configured deploy token every /deploy path is 404, before auth", async () => {
@@ -96,7 +103,7 @@ describe("POST /deploy/v1/tenants/:tenant/personas", () => {
   });
 });
 
-describe("token hardening and tenant guard", () => {
+pgOnly("token hardening and tenant guard", () => {
   const anyPath = () => new Request("https://slaude.example.com/deploy/anything", { headers: { authorization: "Bearer    " } });
   test("a whitespace-only deploy token is unset: every /deploy path 404s", async () => {
     process.env.SLAUDE_DEPLOY_TOKEN = " ".repeat(40);

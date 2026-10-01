@@ -29,6 +29,12 @@ export async function runSync(
     if (payload.personas.length === 0 && !payload.allowEmpty) {
       throw new PayloadError("refusing an empty persona set; set allowEmpty: true to retire every persona");
     }
+    // A managed tenant reads the default persona's soul from its `default` row
+    // and nowhere else, so a set that omits it would leave that persona with no
+    // source at all.
+    if (payload.personas.length > 0 && !payload.personas.some((p) => p.name === "default")) {
+      throw new PayloadError("payload must include the default persona");
+    }
     payload = { ...payload, personas: payload.personas.map((p) => resolvePlaceholders(p, opts.env)) };
   } catch (e) {
     if (e instanceof PayloadError) throw new SyncFailure(422, e.message);
