@@ -42,7 +42,7 @@ user message that carries a tag decides the turn. Requests with no tag get
 | `fail=<status>` `until-retry=<k>` | Error while the mock has seen fewer than `k` earlier attempts of the same request (same system prompt and history); `k` defaults to 1, so the first attempt fails and the retry succeeds |
 | `drop=<k>` | Cut the stream after `k` events |
 | `malformed=1` | Bad SSE |
-| `hang=1` | Never answer; the case lasts the client's request timeout times its retries (SDK default: 10 minutes, 2 retries), so node pods must set a short API timeout first (Plan 2 confirms the variable) |
+| `hang=1` | Never answer; the case lasts the client's request timeout times its retries (SDK default: 10 minutes, 2 retries), so node pods must set a short API timeout first (the variable is not confirmed yet) |
 | `overflow=1` | 400 prompt-too-long |
 
 Precedence: hang, overflow, fail, drop, malformed.

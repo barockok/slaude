@@ -1,4 +1,4 @@
-// Setup shared by every cluster case (Plan 2 baseline, Plan 3 HA scenarios).
+// Setup shared by every cluster case (the baseline and the follow-up HA scenarios).
 //
 // Spawns kubectl, so only *.e2e.ts files import it; the pure parts live in ./suite-logic.ts.
 // Targets the slaude-e2e profile and the slaude-scale namespace through e2e/harness/kube.ts.
@@ -183,7 +183,7 @@ async function bootedFingerprints(): Promise<string[]> {
 
 /**
  * Restart gateway and node, wait for both rollouts and then every gateway pod's /healthz, and
- * record the fingerprint they booted with. Prints how long it took (Plan 3 budgets for it).
+ * record the fingerprint they booted with. Prints how long it took (cases that restart budget for it).
  */
 async function restartSlaude(fingerprint: string): Promise<void> {
   const t0 = Date.now();

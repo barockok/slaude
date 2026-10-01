@@ -87,7 +87,7 @@ test(
   240_000,
 );
 
-// Plan 3, multi-persona: the reply must be authored by the RECEIVING app's bot user
+// Follow-up multi-persona scenarios: the reply must be authored by the RECEIVING app's bot user
 // (suite.app.botUserId). Today the gateway posts through its primary (oldest) registered app in
 // HTTP mode, so with more than one app the reply can carry another app's identity.
 test.todo("multi-persona: the reply is authored by the receiving app's bot user", () => {});

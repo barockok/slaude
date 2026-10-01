@@ -99,8 +99,10 @@ export async function portForward(target: string, remotePort: number, timeoutMs 
     const dec = new TextDecoder();
     for await (const chunk of stream) seen += dec.decode(chunk);
   };
-  void pump(proc.stdout);
-  void pump(proc.stderr);
+  // A stream error (the child killed mid-read) must not become an unhandled rejection; the
+  // readiness loop below already fails on an exited child.
+  void pump(proc.stdout).catch(() => {});
+  void pump(proc.stderr).catch(() => {});
   const fail = (why: string): never => {
     stop();
     throw new Error(`port-forward to ${target}: ${why}${seen.trim() ? `: ${seen.trim()}` : ""}`);
@@ -121,7 +123,7 @@ export async function portForward(target: string, remotePort: number, timeoutMs 
 /**
  * SIGKILL a container's main process through the container runtime, as `crash` does in
  * deploy/k8s-local/verify-ha.sh: signalling PID 1 from inside the container is ignored by the
- * kernel, so it has to come from the node. Not called by Task 9; Plan 3's failover scenarios use it.
+ * kernel, so it has to come from the node. Not called by the baseline suite; for the follow-up failover scenarios.
  */
 export async function killContainer(pod: string, container: string): Promise<void> {
   const got = await kubectl(["get", "pod", pod, "-o", "json"]);
