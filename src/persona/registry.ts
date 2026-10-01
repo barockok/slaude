@@ -134,6 +134,7 @@ async function loadPersonaState(tenant: string): Promise<PersonaState> {
   const tombstoned = everyRow
     .filter((p) => p.tombstonedAt !== null && p.slackUserId)
     .map((p) => ({ name: p.name, slackUserId: p.slackUserId! }));
+  const slackApiUrl = env.slack.apiUrl();
   const personas: Persona[] = all
     .filter((p) => p.name !== "default" && p.slackUserId)
     .map((p) => ({
@@ -141,7 +142,7 @@ async function loadPersonaState(tenant: string): Promise<PersonaState> {
       slackUserId: p.slackUserId!,
       soulMd: p.soulMd,
       config: { slackUserId: p.slackUserId!, name: p.name, ...(p.userToken ? { userToken: p.userToken } : {}) },
-      outClient: p.userToken ? new WebClient(p.userToken) : null,
+      outClient: p.userToken ? new WebClient(p.userToken, slackApiUrl ? { slackApiUrl } : undefined) : null,
       model: p.model,
       mcp: p.mcp ?? null,
     }));
