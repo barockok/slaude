@@ -40,7 +40,9 @@ describe("persona repository", () => {
     expect(r.tombstoned).toEqual(["bea"]);
     expect((await P.effectivePersonas(T)).map((p) => p.name)).toEqual(["ana"]);
     expect((await P.effectivePersonas(T, { includeTombstoned: true })).map((p) => p.name).sort()).toEqual(["ana", "bea"]);
-    await P.applySync(T, [row("ana"), row("bea")], meta("r3", "2026-10-01T12:00:00Z"));
+    const r3 = await P.applySync(T, [row("ana"), row("bea")], meta("r3", "2026-10-01T12:00:00Z"));
+    expect(r3.updated).toEqual(["bea"]);
+    expect(r3.unchanged).toEqual(["ana"]);
     expect((await P.effectivePersonas(T)).map((p) => p.name).sort()).toEqual(["ana", "bea"]);
   });
 
@@ -108,5 +110,30 @@ describe("persona repository", () => {
     await P.setOverride(T, "ana", "model", "live-model", "ops");
     expect((await P.desiredPersonas(T))[0]!.model).toBe("git-model");
     expect((await P.effectivePersonas(T))[0]!.model).toBe("live-model");
+  });
+
+  test("stateVersion never repeats: every write, syncs included, moves it", async () => {
+    const seen: string[] = [];
+    await P.applySync(T, [row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
+    seen.push(await P.stateVersion(T));
+    await P.setOverride(T, "ana", "model", "A", "ops");
+    seen.push(await P.stateVersion(T));
+    await P.applySync(T, [row("ana")], meta("r1", "2026-10-01T10:00:00Z")); // same revision, equal committedAt: accepted
+    seen.push(await P.stateVersion(T));
+    await P.setOverride(T, "ana", "model", "B", "ops");
+    seen.push(await P.stateVersion(T));
+    expect(new Set(seen).size).toBe(4);
+  });
+
+  test("createRuntimePersona never overwrites a git row, even past the read check", async () => {
+    await P.applySync(T, [row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
+    await expect(P.createRuntimePersona(T, row("ana", { origin: "runtime", soulMd: "evil" }), "ops")).rejects.toBeInstanceOf(P.NameTakenError);
+    const r = await db.one<{ soul_md: string; origin: string }>(`SELECT soul_md, origin FROM personas WHERE name='ana'`);
+    expect(r).toEqual({ soul_md: "ana soul", origin: "git" });
+  });
+
+  test("a runtime onboard may not take another persona's Slack identity", async () => {
+    await P.applySync(T, [row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
+    await expect(P.createRuntimePersona(T, row("quick", { origin: "runtime", slackUserId: "UANA" }), "ops")).rejects.toBeInstanceOf(P.IdentityTakenError);
   });
 });

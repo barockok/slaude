@@ -20,6 +20,10 @@ export class NameTakenError extends Error {
   readonly status = 409 as const;
   constructor(name: string) { super(`persona '${name}' is managed in git`); }
 }
+export class IdentityTakenError extends Error {
+  readonly status = 409 as const;
+  constructor(name: string) { super(`persona '${name}' cannot take a Slack identity another persona already uses`); }
+}
 export class StaleRevisionError extends Error {
   readonly status = 409 as const;
   constructor(readonly live: string) { super(`a newer revision is live (${live})`); }
@@ -105,16 +109,19 @@ export async function applySync(
 ): Promise<ApplyResult> {
   return db.transaction(async (tx) => {
     const now = Date.now();
+    // override_version counts EVERY write to the tenant's persona state (syncs
+    // included), never resets, so stateVersion never repeats after a change.
     // The ordering check and the write are one statement, so two concurrent
     // syncs cannot both pass it. Same shape as CronJobs.claimDue.
     await tx.run(`INSERT INTO tenants (id, name, status, created_at) VALUES (?, ?, 'active', ?) ON CONFLICT (id) DO NOTHING`,
       [tenant, tenant, now]);
     const claimed = await tx.query<{ tenant_id: string }>(
       `INSERT INTO persona_sync_state (tenant_id, revision, committed_at, synced_at, synced_by, override_version)
-       VALUES (?, ?, ?, ?, ?, 0)
+       VALUES (?, ?, ?, ?, ?, 1)
        ON CONFLICT (tenant_id) DO UPDATE SET
          revision = excluded.revision, committed_at = excluded.committed_at,
-         synced_at = excluded.synced_at, synced_by = excluded.synced_by, override_version = 0
+         synced_at = excluded.synced_at, synced_by = excluded.synced_by,
+         override_version = persona_sync_state.override_version + 1
        WHERE persona_sync_state.committed_at <= excluded.committed_at
        RETURNING tenant_id`,
       [tenant, meta.revision, meta.committedAt, now, meta.by]);
@@ -163,21 +170,21 @@ async function requireManaged(tenant: string) {
 export async function setOverride(tenant: string, name: string, field: OverrideField, value: unknown, by: string) {
   await requireManaged(tenant);
   await db.transaction(async (tx) => {
+    // First statement: the sync-state row lock serialises with applySync, whose first write is the same row.
+    await tx.run(`UPDATE persona_sync_state SET override_version = override_version + 1 WHERE tenant_id = ?`, [tenant]);
     await tx.run(
       `INSERT INTO persona_overrides (tenant_id, persona_name, field, value, set_by, set_at) VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT (tenant_id, persona_name, field) DO UPDATE SET value = excluded.value, set_by = excluded.set_by, set_at = excluded.set_at`,
       [tenant, name, field, encrypt(JSON.stringify(value)), by, Date.now()]);
-    await tx.run(`UPDATE persona_sync_state SET override_version = override_version + 1 WHERE tenant_id = ?`, [tenant]);
   });
 }
 
 export async function clearOverride(tenant: string, name: string, field: OverrideField): Promise<boolean> {
   await requireManaged(tenant);
   return db.transaction(async (tx) => {
+    // First statement: the sync-state row lock serialises with applySync, whose first write is the same row.
+    await tx.run(`UPDATE persona_sync_state SET override_version = override_version + 1 WHERE tenant_id = ?`, [tenant]);
     const r = await tx.run(`DELETE FROM persona_overrides WHERE tenant_id = ? AND persona_name = ? AND field = ?`, [tenant, name, field]);
-    if ((r.changes ?? 0) > 0) {
-      await tx.run(`UPDATE persona_sync_state SET override_version = override_version + 1 WHERE tenant_id = ?`, [tenant]);
-    }
     return (r.changes ?? 0) > 0;
   });
 }
@@ -185,20 +192,31 @@ export async function clearOverride(tenant: string, name: string, field: Overrid
 export async function createRuntimePersona(tenant: string, row: DesiredPersona, by: string) {
   await requireManaged(tenant);
   await db.transaction(async (tx) => {
+    // First statement: the sync-state row lock serialises with applySync, whose first write is the same row.
+    await tx.run(`UPDATE persona_sync_state SET override_version = override_version + 1 WHERE tenant_id = ?`, [tenant]);
     const taken = await tx.one<{ origin: string }>(`SELECT origin FROM personas WHERE tenant_id = ? AND name = ?`, [tenant, row.name]);
     if (taken?.origin === "git") throw new NameTakenError(row.name);
+    if (row.slackUserId) {
+      const dup = await tx.one<{ name: string }>(
+        `SELECT name FROM personas WHERE tenant_id = ? AND slack_user_id = ? AND name <> ? AND tombstoned_at IS NULL`,
+        [tenant, row.slackUserId, row.name]);
+      if (dup) throw new IdentityTakenError(row.name);
+    }
     const now = Date.now();
-    await tx.run(
+    const written = await tx.query<{ name: string }>(
       `INSERT INTO personas (id, tenant_id, name, soul_md, soul_json, model_default, mcp_json, slack_user_id, user_token,
                              origin, source_revision, tombstoned_at, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'runtime', NULL, NULL, ?, ?)
        ON CONFLICT (tenant_id, name) DO UPDATE SET
          soul_md = excluded.soul_md, soul_json = excluded.soul_json, model_default = excluded.model_default,
          mcp_json = excluded.mcp_json, slack_user_id = excluded.slack_user_id, user_token = excluded.user_token,
-         tombstoned_at = NULL, updated_at = excluded.updated_at`,
+         tombstoned_at = NULL, updated_at = excluded.updated_at
+       WHERE personas.origin = 'runtime'
+       RETURNING name`,
       [randomUUID(), tenant, row.name, row.soulMd, JSON.stringify(row.soulJson ?? null), row.model, encJson(row.mcp),
        row.slackUserId, row.userToken ? encrypt(row.userToken) : null, now, now]);
-    await tx.run(`UPDATE persona_sync_state SET override_version = override_version + 1 WHERE tenant_id = ?`, [tenant]);
+    // A git row appeared after the read above: never overwrite it.
+    if (!written.length) throw new NameTakenError(row.name);
     void by; // recorded in the audit log by the caller (Task 7)
   });
 }
