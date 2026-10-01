@@ -38,9 +38,8 @@ import { nodeConfigRoot, sessionConfigDir, existingSessionConfigDir } from "../a
 import { RestSessionStore } from "./session-store";
 import { buildShimServers } from "./shims";
 import { makeNodePermissionResolver } from "./shims/permission";
-import { JOB_TOKEN_TTL_SEC, type JobClaims } from "../gateway/api/auth";
-import { HelperClient } from "../remote/helper-client";
-import { cleanupCommand } from "../remote/tools/bash";
+import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
+import { decodeClaims, makeRemoteFactory, makeRemoteResolver } from "./remote";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -58,16 +57,7 @@ export function tokenAgeFraction(token: string, nowMs: number = Date.now()): num
   }
 }
 
-/** Unverified payload decode of a job token. Safe only because every sensitive
- *  use re-checks the signature at the gateway: the key endpoint verifies the
- *  token before serving anything, so a forged `remote` claim here gets nothing. */
-export function decodeClaims(token: string): Partial<JobClaims> | null {
-  try {
-    return JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"));
-  } catch {
-    return null;
-  }
-}
+export { decodeClaims };
 
 export interface NodeWorkerOpts {
   /** Root for pod-local session config homes. Default: SLAUDE_NODE_CONFIG_ROOT /
@@ -219,29 +209,9 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     if (creds.oauthToken) out.CLAUDE_CODE_OAUTH_TOKEN = creds.oauthToken;
     return out;
   });
-  // Remote mode (spec §4.5): the target rides in the signed claims of the
-  // session's current job token. The key is fetched per handle from the
-  // gateway, which re-verifies the token; it is held in memory only.
-  agent.setRemote(
-    async (sessionId) => {
-      const token = store.tokenFor(sessionId);
-      const c = token ? decodeClaims(token) : null;
-      const runAs = c?.runAs?.startsWith("user:") ? c.runAs.slice(5) : null;
-      if (!c?.remote || !runAs) return null;
-      return { teamId: c.team ?? "", userId: runAs, addr: c.remote.addr, dir: c.remote.dir };
-    },
-    async (sessionId, target) => {
-      const tenant = tenants.get(sessionId);
-      const token = store.tokenFor(sessionId);
-      if (!tenant || !token) throw new Error("no job token for remote session");
-      const privateKey = await client.getRemoteKey(tenant, token);
-      return new HelperClient({
-        transport: { kind: "tailcat", addr: target.addr },
-        privateKey,
-        onDispose: async (exec) => { await exec(cleanupCommand(sessionId), { timeoutMs: 30_000 }); },
-      });
-    },
-  );
+  // Remote mode (spec §4.5): target from the job token's signed claims; key
+  // fetched per handle from the gateway (see ./remote).
+  agent.setRemote(makeRemoteResolver(store), makeRemoteFactory({ client, store, tenants }));
 
   // Turn-end wait: resolved by the first done/error for the session.
   const turnWaiters = new Map<string, (outcome: "done" | "error") => void>();
