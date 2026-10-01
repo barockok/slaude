@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { db } from "../../src/db/schema";
 import { __resetMasterKeyCache } from "../../src/db/crypto";
 import * as P from "../../src/db/personas";
@@ -15,6 +15,13 @@ const meta = (revision: string, iso: string) => ({ revision, committedAt: Date.p
 beforeEach(async () => {
   process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
   __resetMasterKeyCache();
+  if (process.env.SLAUDE_DB !== "pg") return;
+  for (const t of ["persona_overrides", "persona_sync_state", "personas"]) await db.run(`DELETE FROM ${t}`);
+});
+
+// The persona tables are shared state: leftover rows make every later file in
+// the run see a populated personas table (and fail closed on a missing default).
+afterAll(async () => {
   if (process.env.SLAUDE_DB !== "pg") return;
   for (const t of ["persona_overrides", "persona_sync_state", "personas"]) await db.run(`DELETE FROM ${t}`);
 });

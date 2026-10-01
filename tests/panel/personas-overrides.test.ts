@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createPanelApi } from "../../src/gateway/panel/api";
 import { __resetRoleCache } from "../../src/gateway/panel/auth/roles";
 import { mintSession, AT_COOKIE } from "../../src/gateway/panel/auth/session";
@@ -54,6 +54,11 @@ beforeEach(async () => {
   for (const t of ["persona_overrides", "persona_sync_state", "personas"]) await db.run(`DELETE FROM ${t}`);
   reloads = 0;
   panel = mk(okExtract);
+});
+afterAll(async () => {
+  // Leftover persona rows make later files see a populated table (fail-closed on a missing default).
+  if (process.env.SLAUDE_DB !== "pg") return;
+  for (const t of ["persona_overrides", "persona_sync_state", "personas"]) await db.run(`DELETE FROM ${t}`);
 });
 afterEach(async () => {
   // A reload installs a database-backed snapshot into module state: never let it
