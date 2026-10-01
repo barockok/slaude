@@ -20,3 +20,33 @@ export async function readJson(req: Request): Promise<unknown | null> {
     return null;
   }
 }
+
+/**
+ * Buffer a request body under a size cap. A declared Content-Length over the
+ * cap is rejected without reading a byte; an absent or lying Content-Length is
+ * caught by counting while streaming. Returns null when the cap is exceeded
+ * (the caller sends 413).
+ */
+export async function readBodyCapped(req: Request, maxBytes: number): Promise<string | null> {
+  const declared = Number(req.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    // Abandon the upload without buffering it.
+    await req.body?.cancel().catch(() => {});
+    return null;
+  }
+  if (!req.body) return "";
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}

@@ -1,0 +1,135 @@
+/**
+ * The sync payload a pipeline POSTs, and the one place placeholders resolve.
+ *
+ * Resolution touches userToken and the mcp object only. Soul text is content:
+ * a soul can document a template and legitimately contain `${...}`, and
+ * resolving it would silently rewrite what the agent says.
+ *
+ * Only variables named PERSONA_* resolve. The gateway's environment also holds
+ * its own secrets (master key, job secret, node token, provider keys), and a
+ * persona repository must not be able to copy one into a stored persona.
+ */
+import { z } from "zod";
+
+export const PERSONA_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+export class PayloadError extends Error {
+  readonly status = 422 as const;
+}
+export class UnresolvedVarError extends PayloadError {
+  constructor(readonly variable: string) {
+    super(`unresolved variable \${${variable}} — set it in the gateway's environment`);
+  }
+}
+
+const personaSpec = z.object({
+  name: z.string().regex(PERSONA_NAME_RE, "persona name must match ^[a-z0-9][a-z0-9-]{0,62}$"),
+  slackUserId: z.string().min(1).optional(),
+  userToken: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  soul: z.string(),
+  mcp: z.record(z.unknown()).optional(),
+});
+export type PersonaSpec = z.infer<typeof personaSpec>;
+
+const payloadSchema = z.object({
+  revision: z.string().min(1),
+  committedAt: z.string().refine((s) => !Number.isNaN(Date.parse(s)), "committedAt must be an ISO 8601 instant"),
+  allowEmpty: z.boolean().default(false),
+  personas: z.array(personaSpec),
+});
+export type SyncPayload = z.infer<typeof payloadSchema>;
+
+export function parsePayload(raw: unknown): SyncPayload {
+  const r = payloadSchema.safeParse(raw);
+  if (!r.success) throw new PayloadError(r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
+  const p = r.data;
+  const names = new Set<string>();
+  const users = new Set<string>();
+  for (const s of p.personas) {
+    if (names.has(s.name)) throw new PayloadError(`duplicate persona name '${s.name}'`);
+    names.add(s.name);
+    if (s.name !== "default" && !s.slackUserId) throw new PayloadError(`persona '${s.name}' needs a slackUserId`);
+    if (s.slackUserId) {
+      if (users.has(s.slackUserId)) throw new PayloadError(`duplicate slackUserId on persona '${s.name}'`);
+      users.add(s.slackUserId);
+    }
+  }
+  return p;
+}
+
+/** Thrown for a well-formed placeholder whose name is outside the allowlist. */
+export class DisallowedVarError extends PayloadError {
+  constructor(readonly variable: string) {
+    super(`variable \${${variable}} is not allowed — placeholder names must start with ${PERSONA_VAR_PREFIX}`);
+  }
+}
+
+export const PERSONA_VAR_PREFIX = "PERSONA_";
+const ALLOWED_VAR_RE = /^PERSONA_[A-Z0-9_]+$/;
+const VAR_RE = /\$\{([A-Z0-9_]+)\}/g;
+const INVALID_VAR_RE = /\$\{[^}]*\}/;
+
+function resolveString(s: string, env: Record<string, string | undefined>): string {
+  return s.replace(VAR_RE, (_, name: string) => {
+    // Checked before the lookup: a disallowed name is never read from env.
+    if (!ALLOWED_VAR_RE.test(name)) throw new DisallowedVarError(name);
+    const v = env[name];
+    // Empty counts as missing: storing an empty token is a silent outage.
+    if (v === undefined || v === "") throw new UnresolvedVarError(name);
+    return v;
+  });
+}
+
+function resolveDeep(v: unknown, env: Record<string, string | undefined>): unknown {
+  if (typeof v === "string") return resolveString(v, env);
+  if (Array.isArray(v)) return v.map((x) => resolveDeep(x, env));
+  if (v && typeof v === "object") {
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, resolveDeep(x, env)]));
+  }
+  return v;
+}
+
+function validateStringForInvalidPlaceholders(
+  s: string,
+  field: string,
+  personaName: string,
+): void {
+  if (INVALID_VAR_RE.test(s)) {
+    throw new PayloadError(
+      `persona '${personaName}': ${field} contains an invalid placeholder — use \$\{UPPER_CASE_NAME\}`,
+    );
+  }
+}
+
+function validateDeepForInvalidPlaceholders(
+  v: unknown,
+  field: string,
+  personaName: string,
+): void {
+  if (typeof v === "string") {
+    validateStringForInvalidPlaceholders(v, field, personaName);
+  } else if (Array.isArray(v)) {
+    v.forEach((x) => validateDeepForInvalidPlaceholders(x, field, personaName));
+  } else if (v && typeof v === "object") {
+    Object.values(v).forEach((x) => validateDeepForInvalidPlaceholders(x, field, personaName));
+  }
+}
+
+export function resolvePlaceholders(spec: PersonaSpec, env: Record<string, string | undefined>): PersonaSpec {
+  const userToken = spec.userToken !== undefined ? resolveString(spec.userToken, env) : undefined;
+  if (userToken !== undefined) {
+    validateStringForInvalidPlaceholders(userToken, "userToken", spec.name);
+  }
+
+  const mcp = spec.mcp !== undefined ? (resolveDeep(spec.mcp, env) as Record<string, unknown>) : undefined;
+  if (mcp !== undefined) {
+    validateDeepForInvalidPlaceholders(mcp, "mcp", spec.name);
+  }
+
+  return {
+    ...spec,
+    ...(userToken !== undefined ? { userToken } : {}),
+    ...(mcp !== undefined ? { mcp } : {}),
+  };
+}

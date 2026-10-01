@@ -35,6 +35,7 @@
     "test:web": "playwright test -c tests/panel-web/playwright.config.ts",
     "manifest": "bun src/cli/manifest.ts",
     "slack-app": "bun src/cli/slack-app.ts",
+    "personas": "bun src/cli/personas.ts",
     "validate-soul": "bun src/cli/validate.ts",
     "install-deps": "bun src/cli/install.ts",
     "test": "bun test",

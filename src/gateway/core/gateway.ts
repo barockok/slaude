@@ -36,6 +36,7 @@ import { makePubSub, type PubSub } from "../../queue/pubsub";
 import { makePanelLock, type PanelLock } from "../../queue/panel-lock";
 import { createPanelApi } from "../panel/api";
 import { createPortalApi } from "../portal/api";
+import { createDeployApi } from "../deploy/api";
 import { persistConnect, persistDisconnect } from "../../agent/mcp-oauth/persist";
 import { importOnDiskCredentials } from "./credential-import";
 import { mintLinkToken } from "../portal/link-token";
@@ -50,7 +51,7 @@ import { syncKbWikis } from "../../knowledge/brain-sync";
 import { scheduleNightlyMaintenance } from "../../knowledge/brain-cycle";
 import { channelTrustFor, kbSourceId, resolveBrainScope } from "../../knowledge/scope";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
-import { getPersonaRegistry } from "../../persona/registry";
+import { getPersonaRegistry, livePersona, onPersonaRegistryInstalled } from "../../persona/registry";
 import type { GateInput } from "../../knowledge/gated-dispatch";
 import { loadKbs } from "../../knowledge/loader";
 import { resolveUserName } from "../slack/users";
@@ -59,7 +60,7 @@ import * as Sessions from "../../db/sessions";
 import * as SeenEvents from "../../db/seen-events";
 import * as PendingGates from "../../db/pending-gates";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
-import { loadExternalMcp, oauthHttpServers, privateOverrides } from "./external-mcp";
+import { loadExternalMcp, oauthHttpServers, privateOverrides, sessionExternalMcp } from "./external-mcp";
 import * as SlackOauthFlows from "../../db/slack-oauth-flows";
 import { randomBytes } from "node:crypto";
 import { ensureInitiatorConfigDir, agentConfigDir } from "../../agent/oauth-home";
@@ -98,6 +99,9 @@ export interface GatewayHandle {
   fetchPanel(req: Request): Promise<Response | null>;
   /** `/portal/*` — end-user onboarding. Null when SLAUDE_PORTAL is off. */
   fetchPortal(req: Request): Promise<Response | null>;
+  /** `/deploy/*` — the config pipeline's door (own token, not the node token).
+   *  Optional so test doubles needn't implement it. */
+  fetchDeploy?(req: Request): Promise<Response | null>;
   /** TEST/SIM SEAM ONLY. The pending-gate source behind /v1/pending. */
   __pendingSource(): PendingSource;
   /** TEST/SIM SEAM ONLY. Live per-session MCP contexts built by the resolver.
@@ -465,17 +469,26 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // sim override) always wins regardless of persona — sim never needs a real
   // per-persona Slack client, and per-persona resolution would otherwise try to
   // hit the real Slack API with whatever token a test happens to configure.
+  // On a managed registry a named persona that is not live is refused
+  // (livePersona throws), never served the default client: posting a retired
+  // persona's thread as the default identity is exactly what must not happen.
   const outClientForPersona = (personaId?: string): any => {
     if (!personaId || personaId === "default") return outClient;
-    return getPersonaRegistry().lookupByName(personaId)?.outClient ?? outClient;
+    return livePersona(personaId)?.outClient ?? outClient;
   };
+  // One factory per persona. A named persona's surfaces resolve their client on
+  // every call, so a sync that rotates, removes or re-points its userToken
+  // reaches surfaces built before it, including the one the in-process surface
+  // MCP of a warm session holds (bound at boot). A retired persona's resolver
+  // throws on a managed registry (outClientForPersona), so nothing posts.
   const surfaceFactoryCache = new Map<string, SurfaceFactory>();
   const surfaceFactoryFor = (personaId?: string): SurfaceFactory => {
     if (opts.surfaceFactory) return opts.surfaceFactory;
-    const key = personaId ?? "default";
+    const named = personaId && personaId !== "default" ? personaId : undefined;
+    const key = named ?? "default";
     let f = surfaceFactoryCache.get(key);
     if (!f) {
-      f = makeSlackSurfaceFactory(outClientForPersona(personaId));
+      f = makeSlackSurfaceFactory(named ? () => outClientForPersona(named) : outClient);
       surfaceFactoryCache.set(key, f);
     }
     return f;
@@ -585,6 +598,34 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // Per-session route + slack context. Mutated on each new inbound user message.
   const routes = new Map<string, SessionRoute>();
+
+  // On every registry install, bring warm routes in line with it:
+  //  - a persona a MANAGED registry no longer lists: drop its routes, so events
+  //    still arriving for that session (an in-flight turn the agent manager is
+  //    aborting) post nothing, through neither its old client nor the default;
+  //  - otherwise: re-point ctx.client at the persona's current client. Reactions
+  //    and the Slack/runtime MCP servers read ctx.client per call, and surfaces
+  //    resolve their client per call (surfaceFactoryFor), so a rotated token is
+  //    used on the next post in an EXISTING thread, with no session restart.
+  // WeakRef: a discarded gateway is not kept alive by the listener.
+  const routesRef = new WeakRef(routes);
+  const offRegistryInstalls = onPersonaRegistryInstalled((r) => {
+    const live = routesRef.deref();
+    if (!live) return offRegistryInstalls();
+    for (const [sid, route] of live) {
+      const pid = route.ctx.personaId;
+      if (!pid || pid === "default") continue;
+      const p = r.lookupByName(pid);
+      if (!p) {
+        if (!r.isManaged()) continue;
+        console.log(`[slaude] dropping route session=${sid} — persona=${pid} no longer live`);
+        live.delete(sid);
+        continue;
+      }
+      route.ctx.client = p.outClient ?? outClient;
+    }
+  });
+
   const sessionCtx = new Map<string, SessionMcpCtx>();
   // Start the cron scheduler only after `routes` exists: start() synchronously runs any
   // due job through onExecute, which registers into `routes`. Starting earlier would hit
@@ -659,8 +700,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // Use the persona's Slack user ID as the agent brain-slice key when in
     // multi-persona mode; fall back to the process-level bot ID otherwise.
     const personaId = ctx.personaId && ctx.personaId !== "default" ? ctx.personaId : null;
+    // Managed + not live: livePersona throws, so the gate refuses rather than
+    // reading or writing the default agent's private brain slice.
     const personaAgentId = personaId
-      ? (getPersonaRegistry().lookupByName(personaId)?.slackUserId ?? agentIdSync())
+      ? (livePersona(personaId)?.slackUserId ?? agentIdSync())
       : agentIdSync();
     return {
       userId: ctx.userId ?? null,
@@ -690,6 +733,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const mcpResolver = async (sessionId: string): Promise<Record<string, McpServerConfig> | undefined> => {
     const route = routes.get(sessionId);
     if (!route) return undefined;
+    const sessionMcp = sessionExternalMcp(route.ctx.personaId, externalMcp);
     const servers: Record<string, McpServerConfig> = {
       [SURFACE_MCP_NAME]: createSurfaceMcp(route.surface, {
         initiator: () => route.ctx.userId,
@@ -704,20 +748,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         getSnapshot: () => agent.getTokenSnapshot(sessionId),
       }),
       [KB_MCP_NAME]: createKbMcp(brainDepsFor(route.ctx, route.surface)),
-      // Per-persona MCP isolation: named personas load ~/.slaude/personas/<name>/mcp.json
-      // instead of the shared global config. Default sessions use the boot-time global.
-      ...(route.ctx.personaId && route.ctx.personaId !== "default"
-        ? loadExternalMcp(route.ctx.personaId).servers
-        : externalMcp.servers),
+      // Per-persona MCP isolation. A filesystem tenant: named personas load
+      // ~/.slaude/personas/<name>/mcp.json, the default the boot-time global.
+      // A managed tenant: each persona's effective mcp, never the persona
+      // directory (see sessionExternalMcp).
+      ...sessionMcp.servers,
     };
     // 1on1 privacy: when this session's effective identity is locked (live /1on1
     // lock, or a cron job's captured initiator), whitelisted external services mount
     // with the agent's credentials stripped so they run as that identity (self-prompt
     // auth). Other sessions/threads keep the agent identity (source map untouched).
     const effectiveIdentity = await agent.resolveEffectiveIdentity(sessionId, route.ctx.channel, route.ctx.threadTs);
-    const sessionMcp = route.ctx.personaId && route.ctx.personaId !== "default"
-      ? loadExternalMcp(route.ctx.personaId)
-      : externalMcp;
     Object.assign(servers, privateOverrides(sessionMcp.servers, new Set(sessionMcp.privateServices), !!effectiveIdentity));
     sessionCtx.set(sessionId, { slack: route.ctx, surface: route.surface });
     return servers;
@@ -2012,12 +2053,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           return;
         }
         if (!slash.id) {
+          // A managed tenant's session follows its persona's model until a
+          // /model pins one; show what it resolves to, not the empty row.
+          const current = agent.effectiveModelOf(session);
           try {
             const models = await listModels();
             const lines = models.map((m) => `• \`${m.id}\``).join("\n") || "_none returned_";
-            await reply(`*available models*\n${lines}\n\ncurrent: \`${session.model}\``);
+            await reply(`*available models*\n${lines}\n\ncurrent: \`${current}\``);
           } catch {
-            await reply(`can't fetch model list from provider. current: \`${session.model}\``);
+            await reply(`can't fetch model list from provider. current: \`${current}\``);
           }
           return;
         }
@@ -2189,6 +2233,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.ctx.inboundTs = eventTs;
       existing.ctx.userId = userId;
       existing.ctx.personaId = dispatch?.personaId;
+      existing.ctx.client = outClientForPersona(dispatch?.personaId);
       existing.ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
       existing.spoke = false;
       existing.todoRef = undefined;       // fresh tracker per user turn
@@ -2429,6 +2474,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await persistEngaged(teamId, channelId, ts, true);
       return await handleMessage(args);
     }
+    if (!mentionedPersona) {
+      // A retired persona's identity stops routing: drop what is addressed to it
+      // rather than treat it as a colleague mention (which would disengage the
+      // thread) or hand it to the default persona.
+      const retired = mentions.map((id) => (id ? registry.tombstonedPersonaFor(id) : null)).find(Boolean);
+      if (retired) {
+        console.log(`[slack-rx] drop ch=${channelId} ts=${e.ts} — addressed to retired persona=${retired}`);
+        metric.slackDropsTotal.inc({ reason: "persona_retired" });
+        return;
+      }
+    }
     if (mentionedPersona) {
       // Re-engage the persona's row if it was disengaged; a first mention has
       // no row yet and the session is born engaged.
@@ -2496,6 +2552,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         }
       }
       const any = def ?? (await Sessions.findAnyByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts }));
+      // On a managed tenant the registry is complete: a thread whose persona it
+      // no longer lists belongs to a retired persona, and is never continued
+      // (as that persona or as the default).
+      if (any && any.persona_id && any.persona_id !== "default" && registry.isManaged() && !registry.lookupByName(any.persona_id)) {
+        console.log(`[slack-rx] drop ch=${channelId} ts=${e.ts} — thread belongs to retired persona=${any.persona_id}`);
+        metric.slackDropsTotal.inc({ reason: "persona_retired" });
+        return;
+      }
       if (any && any.engaged) {
         // Engaged session outside the registry (e.g. persona removed from
         // config) — keep handling plain replies as that persona.
@@ -2617,6 +2681,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // never reaches an operator route, and the panel's guard is not relaxed.
   // createPortalApi returns null for every request while SLAUDE_PORTAL is off.
   const portalApi = createPortalApi();
+  // Reuses whichever pub/sub this gateway already holds; with none (mono, no
+  // Redis) the reload is local-only, which is all there is to notify.
+  const deployApi = createDeployApi({ pubsub: queueDispatch?.pubsub ?? panelInfra?.pubsub ?? null });
 
   const panelApi = panelInfra
     ? createPanelApi({
@@ -2644,6 +2711,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     fetchV1: (req: Request) => v1.fetch(req),
     fetchPanel: (req: Request) => (panelApi ? panelApi.fetch(req) : Promise.resolve(null)),
     fetchPortal: (req: Request) => portalApi.fetch(req),
+    fetchDeploy: (req: Request) => deployApi.fetch(req),
     __pendingSource: () => v1.pendingSource,
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),

@@ -8,7 +8,7 @@
  * leak is behaviorally a no-op. Every non-`query` export is re-exported from
  * the real module (session-mcp & friends need createSdkMcpServer/tool).
  */
-import { describe, it, expect, mock, beforeEach, afterAll } from "bun:test";
+import { describe, it, expect, mock, beforeEach, afterAll, spyOn } from "bun:test";
 
 // Must be set before src/memory/index.ts is first imported in this process.
 process.env.SLAUDE_MEMORY = "sqlite";
@@ -52,6 +52,9 @@ class FakeSession {
   bootError: string | null = null;
   /** Throw (instead of clean return) when the prompt iterable closes. */
   throwOnClose = false;
+  /** Never exit: ignore both the prompt iterable closing and the abort signal
+   *  (a CLI that hangs after its stdin closes). */
+  hang = false;
   setPermissionModeImpl: (m: string) => Promise<unknown> = async () => ({});
   mcpServerStatusImpl: () => Promise<unknown> = async () => [];
   _wake: (() => void) | null = null;
@@ -89,6 +92,7 @@ class FakeSession {
     }
 
     options.abortController?.signal.addEventListener("abort", () => {
+      if (self.hang) return;
       self.fail(new Error("aborted by controller"));
     });
 
@@ -99,6 +103,7 @@ class FakeSession {
           self.users.push(um);
           self.onUser?.(um);
         }
+        if (self.hang) return;
         if (self.throwOnClose) self.fail(new Error("transport closed"));
         else self.end();
       } catch (e) {
@@ -777,5 +782,427 @@ describe("AgentManager lifecycle", () => {
     await Bun.sleep(30);
     // No new session spawned — auto-continue was cleared
     expect(spawned.length).toBe(1);
+  });
+});
+
+describe("AgentManager reload around a turn in flight", () => {
+  it("reloadAfterTurn defers while a turn is in flight: input stays open until the result, then the next turn boots fresh", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    let finishSecond: () => void = () => {};
+    const first = plan((s) => {
+      s.onUser = (um) => {
+        const text = String(um.message.content);
+        if (text === "one") s.emit(res());
+        // "two" stays in flight until the test finishes it.
+        if (text === "two") finishSecond = () => s.emit(res());
+      };
+    });
+    await mgr.sendMessage(row.id, "one");
+    await until(() => events.filter((e) => e.type === "done").length === 1, 3000, "first done");
+    await mgr.sendMessage(row.id, "two");
+    await until(() => first.users.length === 2, 3000, "second turn delivered");
+
+    expect(mgr.reloadAfterTurn(row.id)).toBe(true);
+    await Bun.sleep(30);
+    // Mid-turn: the CLI's input must still be open and the session live.
+    expect(first.ended).toBe(false);
+    expect(mgr.isLive(row.id)).toBe(true);
+
+    finishSecond();
+    await until(() => !mgr.isLive(row.id), 3000, "reload at turn end");
+    expect(first.ended).toBe(true);
+    expect(events.filter((e) => e.type === "done")).toHaveLength(2);
+    expect(events.filter((e) => e.type === "error")).toHaveLength(0);
+
+    const second = plan((s) => {
+      s.onUser = () => s.emit(res());
+    });
+    await mgr.sendMessage(row.id, "three");
+    await until(() => second.users.length === 1, 3000, "fresh session");
+    expect(String(second.users[0].message.content)).toBe("three");
+    await shutdown(mgr, row.id);
+  });
+
+  it("reloadAfterTurn reloads an idle session immediately", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    plan((s) => {
+      s.onUser = () => s.emit(res());
+    });
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => events.some((e) => e.type === "done"), 3000, "done");
+    expect(mgr.reloadAfterTurn(row.id)).toBe(true);
+    await until(() => !mgr.isLive(row.id), 3000, "idle reload");
+    expect(mgr.reloadAfterTurn(row.id)).toBe(false);
+  });
+
+  it("a message sent while the session is reloading is delivered by a fresh session, not dropped", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const first = plan((s) => {
+      s.onUser = () => s.emit(res());
+    });
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => events.some((e) => e.type === "done"), 3000, "done");
+    const second = plan((s) => {
+      s.onUser = () => s.emit(res());
+    });
+
+    expect(mgr.reload(row.id)).toBe(true);
+    // The old session is still in #live (its CLI has not exited yet).
+    expect(mgr.isLive(row.id)).toBe(true);
+    await mgr.sendMessage(row.id, "during-reload");
+
+    await until(() => second.users.length === 1, 3000, "delivered to a fresh session");
+    expect(String(second.users[0].message.content)).toBe("during-reload");
+    expect(first.users.map((u) => String(u.message.content))).toEqual(["hello"]);
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "second done");
+    await shutdown(mgr, row.id);
+  });
+});
+
+describe("AgentManager on a node: brain-slice anchor from the bundle", () => {
+  it("a named persona's session gets SLAUDE_AGENT_ID from the bundle; the default persona gets none", async () => {
+    const { bundleChildEnv } = await import("../../src/node/worker");
+    const saved = process.env.SLAUDE_AGENT_ID;
+    delete process.env.SLAUDE_AGENT_ID;
+    try {
+      const mgr = new AgentManager();
+      const events = record(mgr);
+      // Node-shaped: soul and child env both come from the bundle; "ana" is in
+      // no registry on this host.
+      mgr.setPersonaSoulResolver(async () => ({ soulMd: "bundle soul", soulJson: null }));
+      const personaOf = new Map<string, string>();
+      mgr.setChildEnvResolver(async (sid) => {
+        const persona = personaOf.get(sid) ?? "default";
+        return bundleChildEnv({ providerCreds: {}, slackUserId: persona === "default" ? null : "UANA" }, persona);
+      });
+      const named = await mgr.ensureSession({ ...thread(), persona_id: "ana" });
+      personaOf.set(named.id, "ana");
+      const dflt = await mgr.ensureSession(thread());
+      const a = plan((s) => (s.onUser = () => s.emit(res())));
+      await mgr.sendMessage(named.id, "hi");
+      await until(() => events.some((e) => e.type === "done" && e.sessionId === named.id), 3000, "named done");
+      const d = plan((s) => (s.onUser = () => s.emit(res())));
+      await mgr.sendMessage(dflt.id, "hi");
+      await until(() => events.some((e) => e.type === "done" && e.sessionId === dflt.id), 3000, "default done");
+      expect(a.options.env.SLAUDE_AGENT_ID).toBe("UANA");
+      expect(d.options.env.SLAUDE_AGENT_ID).toBeUndefined();
+      await shutdown(mgr, named.id);
+      await shutdown(mgr, dflt.id);
+    } finally {
+      if (saved === undefined) delete process.env.SLAUDE_AGENT_ID;
+      else process.env.SLAUDE_AGENT_ID = saved;
+    }
+  });
+});
+
+describe("AgentManager reload: overlapping inputs and a CLI that never exits", () => {
+  it("a reload requested while an auto-evolve turn AND a queued user message are pending waits for BOTH results", async () => {
+    process.env.SLAUDE_AUTO_EVOLVE = "1";
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    let finishEvolve: () => void = () => {};
+    let finishB: () => void = () => {};
+    const fs = plan((s) => {
+      s.onUser = (um) => {
+        const text = String(um.message.content);
+        if (text.includes("<auto-evolve>")) finishEvolve = () => s.emit(res());
+        else if (text === "B") finishB = () => s.emit(res());
+        else {
+          s.emit(asst([tool("Bash"), tool("Write"), txt("did the work")]));
+          s.emit(res());
+        }
+      };
+    });
+    await mgr.sendMessage(row.id, "A");
+    // A is done and the auto-evolve prompt is in flight; the node would now
+    // release the lock, and the next job pushes B into the same session.
+    await until(() => fs.users.length === 2, 3000, "auto-evolve injected");
+    await mgr.sendMessage(row.id, "B");
+    await until(() => fs.users.length === 3, 3000, "B delivered");
+
+    expect(mgr.reloadAfterTurn(row.id)).toBe(true);
+    finishEvolve();
+    await until(() => events.some((e) => e.type === "done" && e.autoEvolve), 3000, "evolve done");
+    await Bun.sleep(30);
+    // B is still in flight: input must stay open.
+    expect(fs.ended).toBe(false);
+    expect(mgr.isLive(row.id)).toBe(true);
+
+    finishB();
+    await until(() => !mgr.isLive(row.id), 3000, "reload after both results");
+    expect(fs.ended).toBe(true);
+    expect(events.filter((e) => e.type === "error")).toHaveLength(0);
+  });
+
+  it("a deferral re-added while a dying session finishes exiting does not reload the next fresh session", async () => {
+    const { dbSessionStore } = await import("../../src/agent/session-store");
+    const mgr = new AgentManager();
+    let releaseIdle: () => void = () => {};
+    let idleBlocked = false;
+    mgr.setSessionStore({
+      ...dbSessionStore,
+      setStatus: async (id: string, status: any) => {
+        if (status === "idle" && !idleBlocked) {
+          idleBlocked = true;
+          await new Promise<void>((r) => (releaseIdle = r));
+        }
+        return dbSessionStore.setStatus(id, status);
+      },
+    } as any);
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    plan((s) => {
+      s.onUser = (um) => {
+        // The CLI dies mid-turn: no result, so an input stays outstanding.
+        if (String(um.message.content) === "crash") s.fail(new Error("cli died"));
+        else s.emit(res());
+      };
+    });
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => events.some((e) => e.type === "done"), 3000, "done");
+    await mgr.sendMessage(row.id, "crash");
+    await until(() => idleBlocked, 3000, "exit reached the status write");
+    // Still live, a turn outstanding: the deferral is recorded.
+    expect(mgr.isLive(row.id)).toBe(true);
+    expect(mgr.reloadAfterTurn(row.id)).toBe(true);
+    releaseIdle();
+    await until(() => !mgr.isLive(row.id), 3000, "exit");
+
+    const fresh = plan((s) => (s.onUser = () => s.emit(res())));
+    await mgr.sendMessage(row.id, "next");
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "fresh done");
+    await Bun.sleep(30);
+    expect(fresh.ended).toBe(false);
+    expect(mgr.isLive(row.id)).toBe(true);
+    await shutdown(mgr, row.id);
+  });
+
+  it("a reloading session that never exits is aborted after the bound and the message boots fresh", async () => {
+    const mgr = new AgentManager();
+    mgr.__setReloadExitTimeoutForTests(50);
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const stuck = plan((s) => {
+      s.hang = true;
+      s.onUser = () => s.emit(res());
+    });
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => events.some((e) => e.type === "done"), 3000, "done");
+    const fresh = plan((s) => (s.onUser = () => s.emit(res())));
+    expect(mgr.reload(row.id)).toBe(true);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await mgr.sendMessage(row.id, "after");
+    } finally {
+      warn.mockRestore();
+    }
+    await until(() => fresh.users.length === 1, 3000, "fresh session got the message");
+    expect(String(fresh.users[0].message.content)).toBe("after");
+    expect(stuck.ended).toBe(false);
+    expect(mgr.isLive(row.id)).toBe(true);
+    await shutdown(mgr, row.id);
+  });
+});
+
+// R42 (M1): a session detached by the bounded reload wait keeps its own query
+// loop; anything it emits late must not be credited to the fresh session that
+// now holds the id — late text would join the wrong turn, and a late result
+// would decrement the fresh session's outstanding inputs and apply a deferred
+// reload under its running turn.
+describe("a detached reloading session's late messages", () => {
+  it("are not credited to the fresh session", async () => {
+    const mgr = new AgentManager();
+    mgr.__setReloadExitTimeoutForTests(50);
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const stuck = plan((s) => {
+      s.hang = true;
+      s.onUser = () => s.emit(res());
+    });
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => events.some((e) => e.type === "done"), 3000, "done");
+    // The fresh session's turn stays in flight (no result yet).
+    const fresh = plan(() => {});
+    expect(mgr.reload(row.id)).toBe(true);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await mgr.sendMessage(row.id, "after");
+    } finally {
+      warn.mockRestore();
+    }
+    await until(() => fresh.users.length === 1, 3000, "fresh session got the message");
+    // A config change asks for a reload after the fresh session's turn.
+    expect(mgr.reloadAfterTurn(row.id)).toBe(true);
+    const before = events.length;
+    stuck.emit(asst([txt("late text from the detached session")]));
+    stuck.emit(res());
+    await Bun.sleep(40);
+    const late = events.slice(before);
+    expect(late.some((e) => e.type === "assistantText")).toBe(false);
+    expect(late.some((e) => e.type === "done")).toBe(false);
+    // The deferred reload did not fire under the fresh turn.
+    expect(fresh.ended).toBe(false);
+    expect(mgr.isLive(row.id)).toBe(true);
+    // The fresh session's own result still ends its turn and applies the reload.
+    fresh.emit(res());
+    await until(() => events.slice(before).some((e) => e.type === "done"), 3000, "fresh done");
+    await until(() => !mgr.isLive(row.id), 3000, "deferred reload applied after the fresh turn");
+  });
+});
+
+// R41 (I4): a registry install that retires a persona closes its WARM session.
+// Without this, the live child keeps taking messages (sendMessage pushes into it
+// and never re-resolves the persona) and runs as the default identity.
+const { setPersonaRegistry, __resetPersonaRegistry } = await import("../../src/persona/registry");
+describe("a warm session whose persona is retired", () => {
+  const reg = (managed: boolean, live: string[]) => ({
+    lookupByUserId: () => null,
+    lookupByName: (n: string) => (live.includes(n) ? { name: n, slackUserId: `U${n.toUpperCase()}`, soulMd: `${n} soul`, config: { slackUserId: `U${n.toUpperCase()}`, name: n }, outClient: null } : null),
+    list: () => [],
+    isMultiPersonaMode: () => live.length > 0,
+    isManaged: () => managed,
+    tombstonedPersonaFor: () => null,
+  }) as any;
+
+  it("is closed on a managed install that drops it, and the next message fails its boot", async () => {
+    setPersonaRegistry(reg(true, ["ana"]));
+    try {
+      const mgr = new AgentManager();
+      const row = await mgr.ensureSession({ ...thread(), persona_id: "ana" });
+      const def = await mgr.ensureSession(thread());
+      plan((s) => (s.onUser = () => s.emit(res())));
+      plan((s) => (s.onUser = () => s.emit(res())));
+      await mgr.sendMessage(row.id, "hello");
+      await mgr.sendMessage(def.id, "hello");
+      await until(() => mgr.isLive(row.id) && mgr.isLive(def.id), 3000, "both live");
+
+      setPersonaRegistry(reg(true, []));
+      await until(() => !mgr.isLive(row.id), 3000, "retired session closed");
+      expect(mgr.isLive(def.id)).toBe(true); // the default persona is untouched
+      await expect(mgr.sendMessage(row.id, "still there?")).rejects.toThrow(/ana/);
+      await shutdown(mgr, def.id);
+    } finally {
+      __resetPersonaRegistry();
+    }
+  });
+
+  it("an unmanaged install leaves it running", async () => {
+    setPersonaRegistry(reg(false, ["ana"]));
+    try {
+      const mgr = new AgentManager();
+      const row = await mgr.ensureSession({ ...thread(), persona_id: "ana" });
+      plan((s) => (s.onUser = () => s.emit(res())));
+      await mgr.sendMessage(row.id, "hello");
+      await until(() => mgr.isLive(row.id), 3000, "live");
+      setPersonaRegistry(reg(false, []));
+      await Bun.sleep(30);
+      expect(mgr.isLive(row.id)).toBe(true);
+      await shutdown(mgr, row.id);
+    } finally {
+      __resetPersonaRegistry();
+    }
+  });
+});
+
+// R42 (I2): a session's model = per-thread choice (/model) > the persona's
+// effective model on a managed tenant > SLAUDE_MODEL. Mono reads the persona
+// model from the registry; a node from its runtime bundle.
+describe("session model precedence", () => {
+  const reg = (managed: boolean, models: Record<string, string | null>, defaultModel: string | null) => ({
+    lookupByUserId: () => null,
+    lookupByName: (n: string) => (n in models
+      ? { name: n, slackUserId: `U${n.toUpperCase()}`, soulMd: `${n} soul`, config: { slackUserId: `U${n.toUpperCase()}`, name: n }, outClient: null, ...(managed ? { model: models[n] } : {}) }
+      : null),
+    list: () => [],
+    isMultiPersonaMode: () => Object.keys(models).length > 0,
+    isManaged: () => managed,
+    tombstonedPersonaFor: () => null,
+    ...(managed ? { defaultPersona: () => ({ model: defaultModel, mcp: null }) } : {}),
+  }) as any;
+
+  const bootModel = async (mgr: InstanceType<typeof AgentManager>, id: string) => {
+    const events = record(mgr);
+    const fs = plan((s) => (s.onUser = () => s.emit(res())));
+    await mgr.sendMessage(id, "hi");
+    await until(() => events.some((e) => e.type === "done" && e.sessionId === id), 3000, `done ${id}`);
+    await shutdown(mgr, id);
+    return fs.options.model as string | undefined;
+  };
+
+  const savedModel = process.env.SLAUDE_MODEL;
+  const withEnvModel = async (fn: () => Promise<void>) => {
+    process.env.SLAUDE_MODEL = "m-env";
+    try { await fn(); } finally {
+      if (savedModel === undefined) delete process.env.SLAUDE_MODEL;
+      else process.env.SLAUDE_MODEL = savedModel;
+      __resetPersonaRegistry();
+    }
+  };
+
+  it("mono, managed: persona model > SLAUDE_MODEL, and a per-thread /model beats both", async () => {
+    await withEnvModel(async () => {
+      setPersonaRegistry(reg(true, { ana: "m-ana", bea: null }, "m-default"));
+      const mgr = new AgentManager();
+      const ana = await mgr.ensureSession({ ...thread(), persona_id: "ana" });
+      const bea = await mgr.ensureSession({ ...thread(), persona_id: "bea" });
+      const dflt = await mgr.ensureSession(thread());
+      // A managed tenant's row follows its persona instead of pinning SLAUDE_MODEL.
+      expect(ana.model).toBe("");
+      expect(await bootModel(mgr, ana.id)).toBe("m-ana");
+      expect(await bootModel(mgr, bea.id)).toBe("m-env"); // persona sets no model
+      expect(await bootModel(mgr, dflt.id)).toBe("m-default"); // the default persona's own model
+      expect(mgr.effectiveModelOf({ model: "", persona_id: "ana" })).toBe("m-ana");
+
+      // An override that changes the persona's model reaches the thread at its next boot.
+      setPersonaRegistry(reg(true, { ana: "m-ana-2", bea: null }, "m-default"));
+      expect(await bootModel(mgr, ana.id)).toBe("m-ana-2");
+
+      // Per-thread /model wins over the persona.
+      await mgr.setSessionModel(ana.id, "m-thread");
+      expect(await bootModel(mgr, ana.id)).toBe("m-thread");
+      expect(mgr.effectiveModelOf({ model: "m-thread", persona_id: "ana" })).toBe("m-thread");
+    });
+  });
+
+  it("mono, unmanaged: unchanged — the row pins SLAUDE_MODEL at creation, /model overrides it", async () => {
+    await withEnvModel(async () => {
+      setPersonaRegistry(reg(false, { ana: null }, null));
+      const mgr = new AgentManager();
+      const ana = await mgr.ensureSession({ ...thread(), persona_id: "ana" });
+      expect(ana.model).toBe("m-env");
+      expect(await bootModel(mgr, ana.id)).toBe("m-env");
+      await mgr.setSessionModel(ana.id, "m-thread");
+      expect(await bootModel(mgr, ana.id)).toBe("m-thread");
+    });
+  });
+
+  it("node: the bundle's default model > SLAUDE_MODEL, and a per-thread /model beats it; an unmanaged bundle changes nothing", async () => {
+    await withEnvModel(async () => {
+      // The gateway created these rows on a managed tenant.
+      setPersonaRegistry(reg(true, { ana: "m-ana" }, null));
+      const mgr = new AgentManager();
+      const ana = await mgr.ensureSession({ ...thread(), persona_id: "ana" });
+      const legacy = await mgr.ensureSession({ ...thread(), persona_id: "ana" });
+      __resetPersonaRegistry(); // a node consults no registry
+      mgr.setPersonaSoulResolver(async () => ({ soulMd: "bundle soul", soulJson: null }));
+      let bundleModel: string | undefined = "m-bundle";
+      const asked: Array<string | undefined> = [];
+      mgr.setPersonaModelResolver(async (_sid, persona) => (asked.push(persona), bundleModel));
+      expect(await bootModel(mgr, ana.id)).toBe("m-bundle");
+      expect(asked).toEqual(["ana"]);
+      await mgr.setSessionModel(ana.id, "m-thread");
+      expect(await bootModel(mgr, ana.id)).toBe("m-thread");
+      expect(asked).toEqual(["ana"]); // a per-thread model never consults the bundle
+      // An unmanaged bundle (resolver yields undefined) leaves the row as it is.
+      bundleModel = undefined;
+      expect(await bootModel(mgr, legacy.id)).toBeUndefined();
+    });
   });
 });
