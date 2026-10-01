@@ -593,8 +593,11 @@ describe("gateway uncovered branches", () => {
     });
 
     describe("remote mode invariants", () => {
+      const savedMasterKey = process.env.SLAUDE_MASTER_KEY;
       const seed = async (ts: string, owner: string) => {
         process.env.SLAUDE_REMOTE = "1";
+        // Harmless stub: prints nothing, so ping reports "unreachable" without tailcat or a network.
+        process.env.SLAUDE_TAILCAT_BIN = "/usr/bin/true";
         process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 5).toString("base64");
         __resetMasterKeyCache();
         await Remote._wipeForTests();
@@ -602,7 +605,13 @@ describe("gateway uncovered branches", () => {
         await Remote.putKeyIfAbsent("T", owner, { privateKey: "PRIV", publicKey: "PUB" });
         await Remote.setTarget({ channelId: "D_MGR", threadTs: ts, teamId: "T", userId: owner, addr: "tcAddr1", dir: "/r", lockByRemote: false });
       };
-      afterEach(() => { delete process.env.SLAUDE_REMOTE; });
+      afterEach(() => {
+        delete process.env.SLAUDE_REMOTE;
+        delete process.env.SLAUDE_TAILCAT_BIN;
+        if (savedMasterKey === undefined) delete process.env.SLAUDE_MASTER_KEY;
+        else process.env.SLAUDE_MASTER_KEY = savedMasterKey;
+        __resetMasterKeyCache();
+      });
 
       it("manager is heard in a remote thread only to inspect or end it", async () => {
         writeSoulFixture(WORLD);

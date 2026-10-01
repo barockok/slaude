@@ -124,6 +124,8 @@ export interface PanelApiDeps {
   onLockHeld?: (sessionId: string, operatorId: string, ttlMs: number) => void;
   /** The gateway resumes Slack + replays deferred inbound for the session. */
   onLockReleased?: (sessionId: string) => void | Promise<void>;
+  /** The operator released a thread's 1on1 lock (remote mode already ended): reload the warm session. */
+  onUnlock?: (sessionId: string) => void;
   /** SSE poll cadence (ms). Default 300. */
   eventsPollMs?: number;
 }
@@ -259,6 +261,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         // life on the next lock by the same user.
         await endRemoteForThread(row.slack_channel_id, row.slack_thread_ts, { sessionId: row.id });
         await OneOnOne.unlock(row.slack_channel_id, row.slack_thread_ts);
+        deps.onUnlock?.(row.id);
         break;
       }
     }

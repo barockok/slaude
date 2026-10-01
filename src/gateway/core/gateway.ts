@@ -2667,6 +2667,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // Release (give control back to Slack): drain locally + broadcast so
         // every replica replays its own deferred inbound.
         onLockReleased: (sessionId) => broadcastPanelResume(sessionId),
+        // A warm mono session keeps its remote tools until reloaded.
+        onUnlock: (sessionId) => { agent.reload(sessionId); },
       })
     : null;
 

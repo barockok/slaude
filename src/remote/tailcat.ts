@@ -3,8 +3,11 @@ import { Duplex } from "node:stream";
 import type { SocketFactory } from "./conn";
 import { isTailcatAddr } from "./shell";
 
+/** The tailcat binary: SLAUDE_TAILCAT_BIN (read at call time, for tests/odd installs) or "tailcat" on PATH. */
+const tailcatBin = (): string => process.env.SLAUDE_TAILCAT_BIN || "tailcat";
+
 /** `tailcat <addr> 22` as a byte pipe: its stdio is the SSH socket. */
-export function tailcatSocket(addr: string, bin = "tailcat"): SocketFactory {
+export function tailcatSocket(addr: string, bin = tailcatBin()): SocketFactory {
   if (!isTailcatAddr(addr)) throw new Error("invalid tailcat address");
   return () => {
     const p = spawn(bin, [addr, "22"], { stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" } });
@@ -34,11 +37,15 @@ export function tailcatSocket(addr: string, bin = "tailcat"): SocketFactory {
 }
 
 /** Path to the remote as tailcat sees it: a direct UDP path, a DERP relay, or nothing. */
-export async function tailcatPing(addr: string, bin = "tailcat"): Promise<"direct" | "relayed" | "unreachable"> {
+export async function tailcatPing(addr: string, bin = tailcatBin()): Promise<"direct" | "relayed" | "unreachable"> {
   if (!isTailcatAddr(addr)) return "unreachable";
-  const p = Bun.spawn([bin, "ping", "--timeout=5s", addr], { stdout: "pipe", stderr: "pipe" });
-  const text = (await new Response(p.stdout).text()) + (await new Response(p.stderr).text());
-  await p.exited;
-  if (!/pong/i.test(text)) return "unreachable";
-  return /via DERP/i.test(text) ? "relayed" : "direct";
+  try {
+    const p = Bun.spawn([bin, "ping", "--timeout=5s", addr], { stdout: "pipe", stderr: "pipe" });
+    const text = (await new Response(p.stdout).text()) + (await new Response(p.stderr).text());
+    await p.exited;
+    if (!/pong/i.test(text)) return "unreachable";
+    return /via DERP/i.test(text) ? "relayed" : "direct";
+  } catch {
+    return "unreachable"; // missing binary or spawn failure
+  }
 }
