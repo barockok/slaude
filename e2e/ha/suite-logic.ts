@@ -135,9 +135,10 @@ export function registeredApps(listOutput: string): string[] {
 
 /**
  * One digest of everything the slaude pods read only at startup: SOUL.md and the soul cache
- * (from `sha256sum` output, keyed by file name) and the registered-app set.
+ * (from `sha256sum` output, keyed by file name), the registered-app set, and the data of the
+ * ConfigMap their env comes from (`kubectl get configmap -o json`; env is read at pod start).
  */
-export function bootFingerprint(sha256sumOutput: string, appListOutput: string): string {
+export function bootFingerprint(sha256sumOutput: string, appListOutput: string, configMapJson = "{}"): string {
   const files = sha256sumOutput
     .split("\n")
     .map((l) => l.trim().split(/\s+/))
@@ -145,8 +146,16 @@ export function bootFingerprint(sha256sumOutput: string, appListOutput: string):
     .map(([sum, path]) => `${path!.slice(path!.lastIndexOf("/") + 1)} ${sum}`)
     .sort();
   if (!files.some((f) => f.startsWith("SOUL.md "))) throw new Error("no SOUL.md checksum in the fingerprint input");
-  const canon = [...files, "--", ...registeredApps(appListOutput)].join("\n");
+  const canon = [...files, "--", ...registeredApps(appListOutput), "--", ...configEntries(configMapJson)].join("\n");
   return createHash("sha256").update(canon).digest("hex").slice(0, 32);
+}
+
+/** `key=value` lines of a ConfigMap's data, sorted (metadata such as resourceVersion is ignored). */
+export function configEntries(configMapJson: string): string[] {
+  const data = ((JSON.parse(configMapJson) as { data?: Record<string, string> }).data ?? {}) as Record<string, string>;
+  return Object.keys(data)
+    .sort()
+    .map((k) => `${k}=${data[k]}`);
 }
 
 /**

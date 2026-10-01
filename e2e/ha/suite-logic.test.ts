@@ -3,6 +3,7 @@ import type { CallRecord } from "../fake-slack/core/call-log";
 import {
   bootAnnotations,
   bootFingerprint,
+  configEntries,
   dmChannelId,
   journalRowsFor,
   lastSeq,
@@ -119,6 +120,16 @@ test("the boot fingerprint ignores order, paths and update stamps, and moves wit
   expect(bootFingerprint(SUMS("a"), LIST.replace("U0BALPHA", "U0B0004"))).not.toBe(base);
   expect(bootFingerprint(SUMS("a"), "")).not.toBe(base);
   expect(() => bootFingerprint(`${"b".repeat(64)}  /data/cache/x.json`, LIST)).toThrow(/no SOUL.md/);
+});
+
+test("the boot fingerprint moves with the env ConfigMap's data but not its metadata", () => {
+  const cm = (data: Record<string, string>, rv: string) => JSON.stringify({ metadata: { resourceVersion: rv }, data });
+  const base = bootFingerprint(SUMS("a"), LIST, cm({ A: "1", B: "2" }, "1"));
+  expect(bootFingerprint(SUMS("a"), LIST, cm({ B: "2", A: "1" }, "99"))).toBe(base);
+  expect(bootFingerprint(SUMS("a"), LIST, cm({ A: "1", B: "2", C: "3" }, "1"))).not.toBe(base);
+  expect(bootFingerprint(SUMS("a"), LIST, cm({ A: "1", B: "changed" }, "1"))).not.toBe(base);
+  expect(configEntries(cm({ b: "2", a: "1" }, "1"))).toEqual(["a=1", "b=2"]);
+  expect(configEntries("{}")).toEqual([]);
 });
 
 test("boot annotations come back in the requested order, empty when absent", () => {
