@@ -50,8 +50,9 @@ export function builtinFor(toolName: string): string | null {
  *    called with the BUILT-IN name (Bash/Write/Edit), so it decides exactly as locally.
  *  - node/shims/permission.ts resolver: same permissionPolicy, same renaming.
  *  - permission-gate.ts approval card: raw input preview; shows Bash + the command.
- *  - status-text.ts / manager.ts turnTools / AUTO_EVOLVE_IGNORE: match the model-emitted
- *    block.name (Bash/Read..., aliases resolve later), so unchanged.
+ *  - status-text.ts: tool events can carry the post-alias name, so mcp__remote__* is
+ *    rendered like its built-in (same safe subject), marked "(remote)" once.
+ *  - manager.ts turnTools / AUTO_EVOLVE_IGNORE: match the model-emitted block.name.
  *  - knowledge/ingest.ts Write/Edit: separate ingest query, not a remote session.
  *  - SDK mode handling (plan/acceptEdits/bypassPermissions): built-in names only,
  *    reproduced here.
@@ -124,12 +125,12 @@ function audit(name: string, input: any, outcome: string, code: number | null | 
   console.log(`[remote] tool=${name} subject=${subject || "-"} outcome=${outcome} code=${code === undefined ? "-" : code} ms=${Math.round(performance.now() - t0)}`);
 }
 
-/** Program basename of a shell command, for the audit line only. Fails closed ("") rather
+/** Program basename of a shell command, for the audit and status lines. Fails closed ("") rather
  *  than parse shell quoting: leading NAME=value assignments (which may hold secrets) are
  *  skipped, but if any value has a character outside a plain-word whitelist (quotes,
  *  escapes, substitutions, ...) or the program token is not a plain word, nothing is
  *  reported. */
-function programOf(command: string): string {
+export function programOf(command: string): string {
   for (const tok of command.trim().split(/\s+/)) {
     const asg = /^[A-Za-z_][A-Za-z0-9_]*=(.*)$/.exec(tok);
     if (asg) {
