@@ -11,9 +11,9 @@ const bare = (personas: unknown[], extra: object = {}) =>
 // A managed tenant always carries its default persona: every non-empty fixture includes it.
 const def = { name: "default", soul: "You are the default." };
 const payload = (personas: unknown[], extra: object = {}) => bare(personas.length ? [def, ...personas] : personas, extra);
-const ana = { name: "ana", slackUserId: "UTESTUSER1", soul: "You are Ana.", userToken: "${ANA_XOXP}" };
+const ana = { name: "ana", slackUserId: "UTESTUSER1", soul: "You are Ana.", userToken: "${PERSONA_ANA_XOXP}" };
 const okExtract = async () => ({ approvers: [] });
-const env = { ANA_XOXP: "user-token-1" };
+const env = { PERSONA_ANA_XOXP: "user-token-1" };
 
 beforeEach(async () => {
   process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
@@ -46,7 +46,7 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync", () => {
     const e = await runSync(T, payload([ana]), { dryRun: false, env: {}, by: "ci", extract: okExtract }).catch((x) => x);
     expect(e).toBeInstanceOf(SyncFailure);
     expect(e.status).toBe(422);
-    expect(e.message).toContain("ANA_XOXP");
+    expect(e.message).toContain("PERSONA_ANA_XOXP");
     expect(await P.isManaged(T)).toBe(false);
   });
 

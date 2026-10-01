@@ -73,6 +73,16 @@ describe.skipIf(!isPg)("runtime bundle from effective state", () => {
     expect((await handleTenantRuntime(req(), "default", "ghost")).status).toBe(404);
   });
 
+  // R40-I3: nodes never consume a persona's mcp, so a managed bundle never ships it.
+  test("a managed bundle ships mcpJson null, never the resolved mcp", async () => {
+    const mcp = { mcpServers: { x: { type: "http", url: "https://x.test/mcp", headers: { a: "resolved-header-secret" } } } };
+    await P.applySync("default", [row("ana", { mcp })], meta("r1", "2026-10-01T10:00:00Z"));
+    const res = await handleTenantRuntime(req(), "default", "ana");
+    const text = await res.text();
+    expect(JSON.parse(text).mcpJson).toBeNull();
+    expect(text).not.toContain("resolved-header-secret");
+  });
+
   test("the bundle never carries the user token", async () => {
     await P.applySync("default", [row("ana", { userToken: "user-token-secret-value" })], meta("r1", "2026-10-01T10:00:00Z"));
     const text = await (await handleTenantRuntime(req(), "default", "ana")).text();

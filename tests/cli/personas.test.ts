@@ -26,11 +26,11 @@ describe("personas export and render", () => {
   test("export writes repository layout and puts no secret in it", () => {
     const out = tmp();
     const { variables } = exportHome(home(), out);
-    expect(variables).toEqual(["ANA_XOXP"]);
+    expect(variables).toEqual(["PERSONA_ANA_XOXP"]);
     const all = readdirSync(join(out, "personas"), { recursive: true }).map(String)
       .map((f) => { try { return readFileSync(join(out, "personas", f), "utf8"); } catch { return ""; } }).join("\n");
     expect(all).not.toContain("user-token-live-secret");
-    expect(all).toContain("${ANA_XOXP}");
+    expect(all).toContain("${PERSONA_ANA_XOXP}");
   });
 
   // Acceptance 16.
@@ -41,17 +41,17 @@ describe("personas export and render", () => {
     expect(p.personas.map((x) => x.name).sort()).toEqual(["ana", "default"]);
     const ana = p.personas.find((x) => x.name === "ana")!;
     expect(ana.soul).toBe("ana soul ${NOT_A_VAR}\n");
-    expect(ana.userToken).toBe("${ANA_XOXP}");
+    expect(ana.userToken).toBe("${PERSONA_ANA_XOXP}");
     expect(ana.slackUserId).toBe("UTESTUSER1");
   });
 
   test("a hyphenated or digit persona name yields a variable the gateway accepts", () => {
     const out = tmp();
     const { variables } = exportHome(home("quick-1"), out);
-    expect(variables).toContain("QUICK_1_XOXP");
+    expect(variables).toContain("PERSONA_QUICK_1_XOXP");
     const p = renderDir(out, meta);
     const q = p.personas.find((x) => x.name === "quick-1")!;
-    const r = resolvePlaceholders(q, { QUICK_1_XOXP: "v" });
+    const r = resolvePlaceholders(q, { PERSONA_QUICK_1_XOXP: "v" });
     expect(r.userToken).toBe("v");
   });
 
@@ -62,6 +62,15 @@ describe("personas export and render", () => {
     mkdirSync(join(out, "personas", "Bad_Name"), { recursive: true });
     writeFileSync(join(out, "personas", "Bad_Name", "SOUL.md"), "x");
     expect(() => renderDir(out, meta)).toThrow(PayloadError);
+  });
+
+  test("render --check refuses a placeholder outside PERSONA_*, naming it", () => {
+    const out = tmp();
+    mkdirSync(join(out, "personas", "default"), { recursive: true });
+    writeFileSync(join(out, "personas", "default", "SOUL.md"), "x");
+    writeFileSync(join(out, "personas", "default", "mcp.json"),
+      JSON.stringify({ mcpServers: { x: { type: "http", url: "https://x.test", headers: { a: "${SLAUDE_MASTER_KEY}" } } } }));
+    expect(() => renderDir(out, meta)).toThrow(/SLAUDE_MASTER_KEY/);
   });
 
   test("render fails when personas exist but there is no default", () => {
@@ -83,20 +92,23 @@ describe("personas export hardening", () => {
   const dump = (out: string) => readdirSync(join(out, "personas"), { recursive: true }).map(String)
     .map((f) => { try { return readFileSync(join(out, "personas", f), "utf8"); } catch { return ""; } }).join("\n");
 
-  test("literal header and env values become placeholders; existing placeholders stay", () => {
+  test("literal header and env values become placeholders; existing PERSONA_ placeholders stay", () => {
     const out = tmp();
     const h = withMcp({ mcpServers: { "my-srv": {
       url: "https://example.test/mcp",
-      headers: { Authorization: "Bearer literal-bearer-value", "X-Ok": "${GOOD_VAR}" },
+      headers: { Authorization: "Bearer literal-bearer-value", "X-Ok": "${PERSONA_GOOD_VAR}", "X-Other": "${OTHER_VAR}" },
       env: { API_KEY: "literal-env-value" } } } });
     const { variables } = exportHome(h, out);
     const all = dump(out);
     expect(all).not.toContain("literal-bearer-value");
     expect(all).not.toContain("literal-env-value");
-    expect(all).toContain("${GOOD_VAR}");
-    expect(variables).toContain("ANA_MY_SRV_AUTHORIZATION");
-    expect(variables).toContain("ANA_MY_SRV_API_KEY");
-    expect(variables).not.toContain("GOOD_VAR");
+    expect(all).toContain("${PERSONA_GOOD_VAR}");
+    expect(variables).toContain("PERSONA_ANA_MY_SRV_AUTHORIZATION");
+    expect(variables).toContain("PERSONA_ANA_MY_SRV_API_KEY");
+    expect(variables).not.toContain("PERSONA_GOOD_VAR");
+    // A placeholder the gateway would refuse is replaced by a PERSONA_ one.
+    expect(all).not.toContain("${OTHER_VAR}");
+    expect(variables).toContain("PERSONA_ANA_MY_SRV_X_OTHER");
     const p = renderDir(out, meta);
     const ana = p.personas.find((x) => x.name === "ana")!;
     const env = new Proxy({}, { get: () => "v" }) as Record<string, string>;
@@ -116,7 +128,7 @@ describe("personas export hardening", () => {
     const out = tmp();
     const { variables } = exportHome(h, out);
     expect(dump(out)).not.toContain("literal-default-value");
-    expect(variables).toContain("DEFAULT_D_A");
+    expect(variables).toContain("PERSONA_DEFAULT_D_A");
   });
 
   test("invalid directory name fails export", () => {

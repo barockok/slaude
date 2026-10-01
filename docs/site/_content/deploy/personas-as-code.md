@@ -36,7 +36,7 @@ personas/
 ```yaml
 slackUserId: "UTESTUSER1"
 model: "provider/model-name"
-userToken: "${SUPPORT_BOT_XOXP}"
+userToken: "${PERSONA_SUPPORT_BOT_XOXP}"
 ```
 
 `personas/default/` is required. A sync without it is refused with 422,
@@ -48,9 +48,13 @@ which would mix two sources. The default persona needs no `slackUserId`.
 `${VAR}` is resolved by the gateway from its own environment at sync time, in
 `userToken` and in `mcp` (any string, at any depth). It is not resolved in soul
 text, which is content and may document a template. Names must be UPPER_CASE
-(`[A-Z0-9_]`). An unset or empty variable fails the sync, and any other `${...}`
-in those fields (for example `${lower}`) is a 422 naming the field, never the
-value. Secrets therefore live in the gateway's environment, never in git.
+(`[A-Z0-9_]`) and start with `PERSONA_`. Any other name, for example
+`${SLAUDE_MASTER_KEY}`, is a 422 naming the variable: the gateway's environment
+also holds its own secrets, and a persona repository must not be able to copy
+one into a stored persona. An unset or empty variable fails the sync, and any
+other `${...}` in those fields (for example `${lower}`) is a 422 naming the
+field, never the value. Secrets therefore live in the gateway's environment,
+never in git. `render --check` applies the same rules.
 
 ## Gateway setup
 
@@ -132,9 +136,11 @@ can come before or after the directory.
 bun run personas export --out ./persona-repo
 ```
 
-Reads `$SLAUDE_HOME` and writes the layout above. User tokens and every MCP
-header or env value become `${VAR}` placeholders, and the variable names to set
-on the gateway are printed. Export never writes a secret to the repository. It
+Reads `$SLAUDE_HOME` and writes the layout above. User tokens become
+`${PERSONA_<NAME>_XOXP}` and every MCP header or env value that is not already a
+`${PERSONA_...}` placeholder becomes `${PERSONA_<NAME>_<SERVER>_<KEY>}`
+(upper-cased, other characters as `_`); the variable names to set on the gateway
+are printed. Export never writes a secret to the repository. It
 refuses, naming the persona and server but not the value:
 
 - an MCP `url` containing userinfo, a query string or a fragment (move the
@@ -176,7 +182,9 @@ wins.
 - **Per-persona `mcp` is stored but not yet used in the gateway topology.**
   Nodes do not mount external MCP servers from persona config, and the gateway
   runs turns only in `mono`, where personas stay on the filesystem. Syncing or
-  overriding `mcp` records it and has no effect on a node's turns today.
+  overriding `mcp` records it and has no effect on a node's turns today. The
+  runtime bundle a node fetches carries `mcpJson: null` for a managed tenant,
+  so resolved header and env values never leave the gateway.
 - Before relying on this in production, two verifications that need
   infrastructure were not run with the implementation: the sync's
   compare-and-set against a real Postgres, and the k8s-local cluster proof

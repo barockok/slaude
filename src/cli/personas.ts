@@ -12,11 +12,11 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
-import { parsePayload, PayloadError, PERSONA_NAME_RE, resolvePlaceholders, type SyncPayload } from "../persona/sync/payload";
+import { parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, type SyncPayload } from "../persona/sync/payload";
 
 const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : undefined);
-// The gateway only resolves ${UPPER_CASE_NAME}; persona names are lower-case with hyphens.
-const varFor = (name: string) => `${name.replace(/-/g, "_").toUpperCase()}_XOXP`;
+// The gateway only resolves ${PERSONA_UPPER_CASE_NAME}; persona names are lower-case with hyphens.
+const varFor = (name: string) => `${PERSONA_VAR_PREFIX}${name.replace(/-/g, "_").toUpperCase()}_XOXP`;
 
 export function renderDir(dir: string, meta: { revision: string; committedAt: string }): SyncPayload {
   const root = join(dir, "personas");
@@ -66,7 +66,9 @@ export function renderDir(dir: string, meta: { revision: string; committedAt: st
 }
 
 const upper = (s: string) => s.replace(/[^A-Za-z0-9]/g, "_").toUpperCase();
-const PLACEHOLDER_ONLY = /^\$\{[A-Z0-9_]+\}$/;
+// Only a placeholder the gateway will resolve is kept as is; any other value,
+// including a ${NAME} outside PERSONA_*, is replaced by a generated PERSONA_ name.
+const PLACEHOLDER_ONLY = /^\$\{PERSONA_[A-Z0-9_]+\}$/;
 
 const SECRET_ARG_RE = /(key=|token=|secret=|password=|passwd=|bearer )/i;
 const SECRET_FLAG_RE = /^--?[a-z0-9_-]*(key|token|secret|password)$/i;
@@ -122,7 +124,7 @@ function scrubMcp(persona: string, file: string, raw: string, reg: Map<string, s
             throw new PayloadError(`persona '${persona}': server '${server}' ${field}.${k} is not a string — cannot be exported safely`);
           }
           if (PLACEHOLDER_ONLY.test(v)) continue;
-          const name = `${upper(persona)}_${upper(server)}_${upper(k)}`;
+          const name = `${PERSONA_VAR_PREFIX}${upper(persona)}_${upper(server)}_${upper(k)}`;
           claim(reg, name, `${persona}/${server}/${k}`);
           m[k] = `\${${name}}`;
         }

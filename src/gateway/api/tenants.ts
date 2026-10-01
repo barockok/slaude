@@ -104,7 +104,9 @@ async function buildManagedBundle(tenantId: string, personaId: string): Promise<
     soulMd: effective.soulMd,
     soulJson: effective.soulJson,
     slackUserId: effective.slackUserId ?? null,
-    mcpJson: effective.mcp,
+    // Nodes never consume a persona's mcp (no node-side mounting yet), and its
+    // header and env values are resolved secrets: ship nothing a node does not use.
+    mcpJson: null,
     skillsPaths: [paths.skills, ...(effective.name !== "default" ? [personaSkillsRoot(effective.name)] : [])],
     defaultModel: effective.model ?? env.model(),
   };

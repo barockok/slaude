@@ -4,6 +4,10 @@
  * Resolution touches userToken and the mcp object only. Soul text is content:
  * a soul can document a template and legitimately contain `${...}`, and
  * resolving it would silently rewrite what the agent says.
+ *
+ * Only variables named PERSONA_* resolve. The gateway's environment also holds
+ * its own secrets (master key, job secret, node token, provider keys), and a
+ * persona repository must not be able to copy one into a stored persona.
  */
 import { z } from "zod";
 
@@ -54,11 +58,22 @@ export function parsePayload(raw: unknown): SyncPayload {
   return p;
 }
 
+/** Thrown for a well-formed placeholder whose name is outside the allowlist. */
+export class DisallowedVarError extends PayloadError {
+  constructor(readonly variable: string) {
+    super(`variable \${${variable}} is not allowed — placeholder names must start with ${PERSONA_VAR_PREFIX}`);
+  }
+}
+
+export const PERSONA_VAR_PREFIX = "PERSONA_";
+const ALLOWED_VAR_RE = /^PERSONA_[A-Z0-9_]+$/;
 const VAR_RE = /\$\{([A-Z0-9_]+)\}/g;
 const INVALID_VAR_RE = /\$\{[^}]*\}/;
 
 function resolveString(s: string, env: Record<string, string | undefined>): string {
   return s.replace(VAR_RE, (_, name: string) => {
+    // Checked before the lookup: a disallowed name is never read from env.
+    if (!ALLOWED_VAR_RE.test(name)) throw new DisallowedVarError(name);
     const v = env[name];
     // Empty counts as missing: storing an empty token is a silent outage.
     if (v === undefined || v === "") throw new UnresolvedVarError(name);

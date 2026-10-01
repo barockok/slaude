@@ -10,7 +10,7 @@ const DEPLOY = "d".repeat(40);
 const NODE = "n".repeat(40);
 const url = "https://slaude.example.com/deploy/v1/tenants/default/personas";
 const body = { revision: "r1", committedAt: "2026-10-01T10:00:00Z",
-  personas: [{ name: "default", soul: "You are the default." }, { name: "ana", slackUserId: "UTESTUSER1", soul: "You are Ana.", userToken: "${ANA_XOXP}" }] };
+  personas: [{ name: "default", soul: "You are the default." }, { name: "ana", slackUserId: "UTESTUSER1", soul: "You are Ana.", userToken: "${PERSONA_ANA_XOXP}" }] };
 const post = (token: string | null, b: unknown = body, q = "") =>
   new Request(url + q, { method: "POST", headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(b) });
 
@@ -37,7 +37,7 @@ afterEach(async () => {
   __resetMasterKeyCache();
 });
 
-const api = (pubsub: any = null) => createDeployApi({ pubsub, env: () => ({ ANA_XOXP: "user-token-secret-value" }), extract: async () => ({ approvers: [] }) });
+const api = (pubsub: any = null) => createDeployApi({ pubsub, env: () => ({ PERSONA_ANA_XOXP: "user-token-secret-value" }), extract: async () => ({ approvers: [] }) });
 
 pgOnly("POST /deploy/v1/tenants/:tenant/personas", () => {
   test("the deploy token applies a sync and reports it", async () => {
@@ -87,7 +87,18 @@ pgOnly("POST /deploy/v1/tenants/:tenant/personas", () => {
     const res = await createDeployApi({ pubsub: null, env: () => ({}), extract: async () => ({ approvers: [] }) }).fetch(post(DEPLOY));
     expect(res!.status).toBe(422);
     const text = await res!.text();
-    expect(text).toContain("ANA_XOXP");
+    expect(text).toContain("PERSONA_ANA_XOXP");
+  });
+
+  test("a placeholder outside PERSONA_* is a 422 naming the variable; the gateway secret is never stored", async () => {
+    const leak = { ...body, personas: [body.personas[0], { ...body.personas[1], mcp: { mcpServers: { x: { type: "http", url: "https://x.test/mcp", headers: { a: "${SLAUDE_MASTER_KEY}" } } } } }] };
+    const res = await createDeployApi({ pubsub: null, env: () => ({ PERSONA_ANA_XOXP: "t", SLAUDE_MASTER_KEY: "master-key-secret-value" }), extract: async () => ({ approvers: [] }) })
+      .fetch(post(DEPLOY, leak));
+    expect(res!.status).toBe(422);
+    const text = await res!.text();
+    expect(text).toContain("SLAUDE_MASTER_KEY");
+    expect(text).not.toContain("master-key-secret-value");
+    expect(await db.query(`SELECT name FROM personas`)).toHaveLength(0);
   });
 
   test("a successful sync never echoes the resolved token", async () => {
@@ -172,7 +183,7 @@ pgOnly("the preview token (dry runs only)", () => {
 
   test("a dry run never calls the soul extractor", async () => {
     let calls = 0;
-    const a = createDeployApi({ pubsub: null, env: () => ({ ANA_XOXP: "user-token-secret-value" }), extract: async () => { calls++; return { approvers: [] }; } });
+    const a = createDeployApi({ pubsub: null, env: () => ({ PERSONA_ANA_XOXP: "user-token-secret-value" }), extract: async () => { calls++; return { approvers: [] }; } });
     const res = await a.fetch(post(DEPLOY, body, "?dryRun=1"));
     expect(res!.status).toBe(200);
     expect((await res!.json() as any).created).toEqual(["default", "ana"]);
