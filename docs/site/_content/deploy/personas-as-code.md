@@ -108,8 +108,12 @@ Behaviour to know:
   identity stops routing; the rows stay. A message mentioning it, or a reply
   in a thread that belonged to it, is dropped with a log line naming the
   persona (`[slack-rx] drop ... retired persona=<name>`). It is never answered
-  by the default persona, and a session for it (for example a cron job) fails
-  to boot rather than run as the default.
+  by the default persona: a warm session of it is closed when the registry
+  reloads (its in-flight turn is aborted), a new session for it fails to boot,
+  and its cron jobs are paused on their next due time (`last_result: paused:
+  persona not live`; resume them after re-adding the persona). Anything that
+  still asks for it — a Slack client, a brain-slice gate — is refused rather
+  than given the default persona's.
 - An empty `personas` array is refused unless `allowEmpty: true`, which
   retires every persona (the default persona then reverts to the on-disk
   `SOUL.md`).

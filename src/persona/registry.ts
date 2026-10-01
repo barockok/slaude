@@ -173,6 +173,49 @@ export function setManagedDefaultSoul(s: string | null) {
 export function setPersonaRegistry(r: PersonaRegistry) {
   generation++;
   registry = r;
+  notifyInstalled(r);
+}
+
+/**
+ * Listeners told of every installed snapshot (boot, reload signal, poll, and
+ * setPersonaRegistry). The agent manager closes warm sessions of personas no
+ * longer live; the gateway drops or re-points their routes. A listener that
+ * throws is logged and never blocks the install or the other listeners.
+ */
+const installListeners = new Set<(r: PersonaRegistry) => void>();
+export function onPersonaRegistryInstalled(fn: (r: PersonaRegistry) => void): () => void {
+  installListeners.add(fn);
+  return () => { installListeners.delete(fn); };
+}
+function notifyInstalled(r: PersonaRegistry) {
+  for (const fn of [...installListeners]) {
+    try {
+      fn(r);
+    } catch (e) {
+      console.error("[persona] registry install listener failed:", (e as Error).message);
+    }
+  }
+}
+
+/** A named persona a managed registry does not list (retired or removed). */
+export class PersonaNotLiveError extends Error {
+  constructor(readonly persona: string) {
+    super(`persona '${persona}' is not live on this tenant (retired or removed); refusing to act as the default persona`);
+  }
+}
+
+/**
+ * The live persona `name`, or null when an UNMANAGED (filesystem) registry does
+ * not list it — the long-standing fallback to the default persona. A managed
+ * registry is complete, so a name it does not list throws PersonaNotLiveError:
+ * defaulting would hand a retired persona's thread the default's identity,
+ * credentials and brain slice.
+ */
+export function livePersona(name: string, r: PersonaRegistry = getPersonaRegistry()): Persona | null {
+  const p = r.lookupByName(name);
+  if (p) return p;
+  if (r.isManaged()) throw new PersonaNotLiveError(name);
+  return null;
 }
 
 /**
@@ -207,6 +250,7 @@ export async function refreshPersonaState(tenant: string): Promise<boolean> {
     setSoulData(pair.data);
     defaultPairFromDb = pair.fromDb;
   }
+  notifyInstalled(state.registry);
   return true;
 }
 

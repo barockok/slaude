@@ -51,7 +51,7 @@ import { syncKbWikis } from "../../knowledge/brain-sync";
 import { scheduleNightlyMaintenance } from "../../knowledge/brain-cycle";
 import { channelTrustFor, kbSourceId, resolveBrainScope } from "../../knowledge/scope";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
-import { getPersonaRegistry } from "../../persona/registry";
+import { getPersonaRegistry, livePersona, onPersonaRegistryInstalled } from "../../persona/registry";
 import type { GateInput } from "../../knowledge/gated-dispatch";
 import { loadKbs } from "../../knowledge/loader";
 import { resolveUserName } from "../slack/users";
@@ -469,9 +469,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // sim override) always wins regardless of persona — sim never needs a real
   // per-persona Slack client, and per-persona resolution would otherwise try to
   // hit the real Slack API with whatever token a test happens to configure.
+  // On a managed registry a named persona that is not live is refused
+  // (livePersona throws), never served the default client: posting a retired
+  // persona's thread as the default identity is exactly what must not happen.
   const outClientForPersona = (personaId?: string): any => {
     if (!personaId || personaId === "default") return outClient;
-    return getPersonaRegistry().lookupByName(personaId)?.outClient ?? outClient;
+    return livePersona(personaId)?.outClient ?? outClient;
   };
   // Keyed by persona AND a fingerprint of its current token: a sync that
   // rotates, removes or re-points a persona's userToken rebuilds the registry
@@ -599,6 +602,24 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // Per-session route + slack context. Mutated on each new inbound user message.
   const routes = new Map<string, SessionRoute>();
+
+  // A managed registry install that retires a persona drops its warm routes, so
+  // events still arriving for that session (an in-flight turn being aborted by
+  // the agent manager) post nothing, through neither its old client nor the
+  // default one. WeakRef: a discarded gateway is not kept alive by the listener.
+  const routesRef = new WeakRef(routes);
+  const offRetiredRoutes = onPersonaRegistryInstalled((r) => {
+    const live = routesRef.deref();
+    if (!live) return offRetiredRoutes();
+    if (!r.isManaged()) return;
+    for (const [sid, route] of live) {
+      const pid = route.ctx.personaId;
+      if (!pid || pid === "default" || r.lookupByName(pid)) continue;
+      console.log(`[slaude] dropping route session=${sid} — persona=${pid} no longer live`);
+      live.delete(sid);
+    }
+  });
+
   const sessionCtx = new Map<string, SessionMcpCtx>();
   // Start the cron scheduler only after `routes` exists: start() synchronously runs any
   // due job through onExecute, which registers into `routes`. Starting earlier would hit
@@ -673,8 +694,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // Use the persona's Slack user ID as the agent brain-slice key when in
     // multi-persona mode; fall back to the process-level bot ID otherwise.
     const personaId = ctx.personaId && ctx.personaId !== "default" ? ctx.personaId : null;
+    // Managed + not live: livePersona throws, so the gate refuses rather than
+    // reading or writing the default agent's private brain slice.
     const personaAgentId = personaId
-      ? (getPersonaRegistry().lookupByName(personaId)?.slackUserId ?? agentIdSync())
+      ? (livePersona(personaId)?.slackUserId ?? agentIdSync())
       : agentIdSync();
     return {
       userId: ctx.userId ?? null,

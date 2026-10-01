@@ -1,8 +1,9 @@
-import { describe, expect, test, beforeEach, afterEach, mock } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import { db } from "../src/db/schema";
 import * as CronJobs from "../src/db/cron-jobs";
 import { parseCron, getNextRun } from "../src/gateway/slack/cron-parser";
 import { CronScheduler } from "../src/gateway/slack/cron-scheduler";
+import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../src/persona/registry";
 
 describe("cron-jobs DB", () => {
   beforeEach(async () => {
@@ -646,5 +647,60 @@ describe("CronScheduler under the gateway/node split", () => {
     await settle(scheduler);
 
     expect(agent.sendMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+// R41 (I4): a cron job owned by a persona a MANAGED registry no longer lists is
+// disabled before any session work. Releasing its claim would retry it every
+// tick forever; running it would fall back to the default persona.
+describe("CronScheduler and a persona that is not live", () => {
+  beforeEach(async () => { await db.run("DELETE FROM cron_jobs"); });
+  afterEach(async () => { await db.run("DELETE FROM cron_jobs"); __resetPersonaRegistry(); });
+  const registry = (managed: boolean): PersonaRegistry => ({
+    lookupByUserId: () => null, lookupByName: () => null, list: () => [], isMultiPersonaMode: () => false,
+    isManaged: () => managed, tombstonedPersonaFor: () => null,
+  });
+  const run = async () => {
+    const ensureSession = mock(async () => ({ id: "sess-retired" }));
+    const sendMessage = mock(async () => {});
+    const onExecute = mock(() => {});
+    const scheduler = new CronScheduler({
+      agent: { ensureSession, sendMessage, isLive: () => false, on: () => {}, off: () => {}, setCronOAuthUser: () => {} } as any,
+      client: { chat: { postMessage: async () => ({}) } } as any,
+      onExecute,
+    });
+    scheduler.start();
+    await Bun.sleep(30);
+    scheduler.stop();
+    return { ensureSession, sendMessage, onExecute };
+  };
+  const job = (now: number) => CronJobs.create({
+    slackTeamId: "T1", slackChannelId: "C123", channelId: "C123", createdBy: "U999",
+    cronExpr: "0 9 * * *", prompt: "summarize", nextRunAt: now - 1000, personaId: "ana",
+  });
+
+  test("on a managed registry the job is paused, no session is touched, and the claim is not given back", async () => {
+    setPersonaRegistry(registry(true));
+    const now = Date.now();
+    const j = await job(now);
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    let r;
+    try { r = await run(); } finally { log.mockRestore(); }
+    expect(r.ensureSession).toHaveBeenCalledTimes(0);
+    expect(r.onExecute).toHaveBeenCalledTimes(0);
+    expect(r.sendMessage).toHaveBeenCalledTimes(0);
+    const after = (await CronJobs.findById(j.id))!;
+    expect(after.paused).toBe(1);
+    expect(after.nextRunAt).toBeGreaterThan(now);
+    expect(after.lastResult).toMatch(/persona/);
+    expect(await CronJobs.findDue(Date.now() + 1)).toHaveLength(0);
+  });
+
+  test("on an unmanaged registry the job still runs (filesystem behaviour unchanged)", async () => {
+    setPersonaRegistry(registry(false));
+    await job(Date.now());
+    const r = await run();
+    expect(r.ensureSession).toHaveBeenCalledTimes(1);
+    expect(r.sendMessage).toHaveBeenCalledTimes(1);
   });
 });

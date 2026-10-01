@@ -3,6 +3,7 @@ import type { SessionRow } from "../../db/schema";
 import type { WebClient } from "@slack/web-api";
 import * as CronJobs from "../../db/cron-jobs";
 import { getNextRun } from "./cron-parser";
+import { getPersonaRegistry } from "../../persona/registry";
 
 export type CronSchedulerDeps = {
   agent: AgentManager;
@@ -86,6 +87,21 @@ export class CronScheduler {
       await CronJobs.recordRun(job.id, "error: missing Slack keys");
       this.#running.delete(job.id);
       return;
+    }
+
+    // A job owned by a persona a MANAGED registry no longer lists (retired or
+    // removed) is disabled before any session work. Running it would fall back
+    // to the default persona; releasing the claim would retry it every tick.
+    // Paused, not deleted: re-adding the persona and resuming brings it back.
+    if (job.personaId && job.personaId !== "default") {
+      const reg = getPersonaRegistry();
+      if (reg.isManaged() && !reg.lookupByName(job.personaId)) {
+        console.log(`[cron] job ${job.id} paused — persona=${job.personaId} is not live`);
+        await CronJobs.pause(job.id);
+        await CronJobs.recordRun(job.id, "paused: persona not live");
+        this.#running.delete(job.id);
+        return;
+      }
     }
 
     // Channel-target jobs broadcast to channel root — never bind a real thread, so

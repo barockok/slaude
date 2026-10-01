@@ -31,7 +31,7 @@ import { soulSystemBlock } from "../soul/loader";
 import { personaSoulText } from "../persona/soul-source";
 import { soulData, effectiveSoulForChannel } from "../soul/extract";
 import { SoulDataSchema } from "../soul/data";
-import { getPersonaRegistry } from "../persona/registry";
+import { getPersonaRegistry, livePersona, onPersonaRegistryInstalled, type PersonaRegistry } from "../persona/registry";
 import * as Sessions from "../db/sessions";
 import type { ThreadKey } from "../db/sessions";
 import { dbSessionStore, type SessionStore } from "./session-store";
@@ -71,6 +71,8 @@ type LiveSession = {
   exited: Promise<void>;
   /** Slack channel of the session row, cached at start for metric labels. */
   channelId?: string | null;
+  /** The named persona this session booted as (undefined = default). */
+  personaName?: string;
 };
 
 export type AgentEvent =
@@ -196,6 +198,18 @@ const RESUME_MISS_RE = /No conversation found with session ID/i;
 
 export class AgentManager extends EventEmitter {
   #live = new Map<string, LiveSession>();
+  /** Close warm sessions of personas a managed registry install retired. Held
+   *  through a WeakRef so a discarded manager is not kept alive by the
+   *  registry's listener set; the listener removes itself once it is gone. */
+  readonly #offRegistryInstalls: () => void = (() => {
+    const ref = new WeakRef(this);
+    const off = onPersonaRegistryInstalled((r) => {
+      const self = ref.deref();
+      if (!self) return off();
+      self.#closeRetiredPersonaSessions(r);
+    });
+    return off;
+  })();
   /** Session persistence. Defaults to the db repo; node workers inject the
    *  REST implementation (spec §6) via setSessionStore. */
   #store: SessionStore = dbSessionStore;
@@ -550,6 +564,27 @@ export class AgentManager extends EventEmitter {
     }
   }
 
+  /**
+   * On a managed registry install, close every warm session whose persona is no
+   * longer live. A live child never re-resolves its persona (sendMessage pushes
+   * straight into it and re-arms the idle timer), so without this a retired
+   * persona's thread or cron job keeps running as it booted, with the default
+   * identity's fallbacks around it. The in-flight turn is aborted; the next
+   * message boots fresh and #resolvePersona refuses it. Nodes (a soul resolver
+   * installed) and filesystem registries are unaffected.
+   */
+  #closeRetiredPersonaSessions(r: PersonaRegistry) {
+    if (this.#personaSoulResolver || !r.isManaged()) return;
+    for (const [id, live] of this.#live) {
+      if (!live.personaName || r.lookupByName(live.personaName)) continue;
+      console.log(`[agent] closing session=${id} persona=${live.personaName} — persona no longer live`);
+      this.abort(id);
+      try {
+        live.closeIterable();
+      } catch {}
+    }
+  }
+
   /** The session's persona: its registry entry (gateway/mono) and its name.
    *  With a soul resolver installed (a node) the registry is never consulted —
    *  it loads lazily from the shared volume, where a node's persona directory
@@ -560,15 +595,11 @@ export class AgentManager extends EventEmitter {
   } {
     const named = personaId && personaId !== "default" ? personaId : undefined;
     if (this.#personaSoulResolver) return { persona: null, name: named };
-    const registry = getPersonaRegistry();
-    const persona = named ? registry.lookupByName(named) : null;
     // A managed registry is complete, so a named persona it lacks was retired or
     // removed. Booting it as the default persona would hand that thread the
-    // default's soul, credentials and brain slice: fail the boot instead. A
-    // filesystem registry keeps the old fallback.
-    if (named && !persona && registry.isManaged()) {
-      throw new Error(`persona '${named}' is not live on this tenant (retired or removed); refusing to boot it as the default persona`);
-    }
+    // default's soul, credentials and brain slice: livePersona throws instead.
+    // A filesystem registry keeps the old fallback (null).
+    const persona = named ? livePersona(named) : null;
     return { persona, name: persona?.name };
   }
 
@@ -842,6 +873,7 @@ export class AgentManager extends EventEmitter {
       turnTools: [],
       inAutoEvolve: false,
       channelId: row.slack_channel_id,
+      personaName,
       pendingInputs: 1, // firstText is already queued
       exited: new Promise<void>((r) => (markExited = r)),
     };

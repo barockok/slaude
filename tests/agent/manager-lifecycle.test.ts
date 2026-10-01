@@ -1010,3 +1010,57 @@ describe("AgentManager reload: overlapping inputs and a CLI that never exits", (
     await shutdown(mgr, row.id);
   });
 });
+
+// R41 (I4): a registry install that retires a persona closes its WARM session.
+// Without this, the live child keeps taking messages (sendMessage pushes into it
+// and never re-resolves the persona) and runs as the default identity.
+const { setPersonaRegistry, __resetPersonaRegistry } = await import("../../src/persona/registry");
+describe("a warm session whose persona is retired", () => {
+  const reg = (managed: boolean, live: string[]) => ({
+    lookupByUserId: () => null,
+    lookupByName: (n: string) => (live.includes(n) ? { name: n, slackUserId: `U${n.toUpperCase()}`, soulMd: `${n} soul`, config: { slackUserId: `U${n.toUpperCase()}`, name: n }, outClient: null } : null),
+    list: () => [],
+    isMultiPersonaMode: () => live.length > 0,
+    isManaged: () => managed,
+    tombstonedPersonaFor: () => null,
+  }) as any;
+
+  it("is closed on a managed install that drops it, and the next message fails its boot", async () => {
+    setPersonaRegistry(reg(true, ["ana"]));
+    try {
+      const mgr = new AgentManager();
+      const row = await mgr.ensureSession({ ...thread(), persona_id: "ana" });
+      const def = await mgr.ensureSession(thread());
+      plan((s) => (s.onUser = () => s.emit(res())));
+      plan((s) => (s.onUser = () => s.emit(res())));
+      await mgr.sendMessage(row.id, "hello");
+      await mgr.sendMessage(def.id, "hello");
+      await until(() => mgr.isLive(row.id) && mgr.isLive(def.id), 3000, "both live");
+
+      setPersonaRegistry(reg(true, []));
+      await until(() => !mgr.isLive(row.id), 3000, "retired session closed");
+      expect(mgr.isLive(def.id)).toBe(true); // the default persona is untouched
+      await expect(mgr.sendMessage(row.id, "still there?")).rejects.toThrow(/ana/);
+      await shutdown(mgr, def.id);
+    } finally {
+      __resetPersonaRegistry();
+    }
+  });
+
+  it("an unmanaged install leaves it running", async () => {
+    setPersonaRegistry(reg(false, ["ana"]));
+    try {
+      const mgr = new AgentManager();
+      const row = await mgr.ensureSession({ ...thread(), persona_id: "ana" });
+      plan((s) => (s.onUser = () => s.emit(res())));
+      await mgr.sendMessage(row.id, "hello");
+      await until(() => mgr.isLive(row.id), 3000, "live");
+      setPersonaRegistry(reg(false, []));
+      await Bun.sleep(30);
+      expect(mgr.isLive(row.id)).toBe(true);
+      await shutdown(mgr, row.id);
+    } finally {
+      __resetPersonaRegistry();
+    }
+  });
+});

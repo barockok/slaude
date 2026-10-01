@@ -102,3 +102,35 @@ describe("a persona's outbound client after a token rotation", () => {
     expect(posted).not.toContain("old");
   });
 });
+
+// R41 (I4): a warm route of a persona a managed install retired posts nothing,
+// through neither the persona's old client nor the default bot.
+describe("a warm route whose persona is retired", () => {
+  it("is dropped on the managed install; later events for it post nothing", async () => {
+    const posted: string[] = [];
+    const { t, emit } = capturingTransport(posted);
+    const agent = new AgentManager();
+    const sent: string[] = [];
+    agent.sendMessage = mock(async (sid: string) => { sent.push(sid); }) as any;
+    createGateway(agent, t, {});
+    const postTodo = (sessionId: string) =>
+      agent.emit("event", { type: "toolCall", sessionId, tool: "TodoWrite", input: { todos: [{ content: "x", status: "pending", activeForm: "x" }] } });
+
+    setPersonaRegistry(registryWith("token-one-placeholder", fakeClient("old", posted)));
+    await emit("message", {
+      event: { type: "message", channel: CH, channel_type: "channel", user: WORLD.manager, team: TEAM, ts: `${Date.now()}.500`, text: `<@${ANA}> hi` },
+      client: t.client, context: { teamId: TEAM },
+    });
+    expect(sent).toHaveLength(1);
+
+    setPersonaRegistry({
+      lookupByUserId: () => null, lookupByName: () => null, list: () => [], isMultiPersonaMode: () => false,
+      isManaged: () => true, tombstonedPersonaFor: (id) => (id === ANA ? "ana" : null),
+    });
+    posted.length = 0;
+    postTodo(sent[0]!);
+    agent.emit("event", { type: "toolCall", sessionId: sent[0]!, tool: "mcp__slaude_surface__reply", input: {} });
+    await Bun.sleep(30);
+    expect(posted).toEqual([]);
+  });
+});
