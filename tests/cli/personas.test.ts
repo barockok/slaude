@@ -143,6 +143,63 @@ describe("personas export hardening", () => {
   });
 });
 
+describe("personas export, round 2", () => {
+  const withMcp = (mcp: unknown) => {
+    const h = home();
+    writeFileSync(join(h, "personas", "ana", "mcp.json"), JSON.stringify(mcp));
+    return h;
+  };
+  const srv = (def: unknown) => withMcp({ mcpServers: { s: def } });
+
+  test("non-string header/env values fail, naming persona, server and key", () => {
+    expect(() => exportHome(srv({ env: { PORT: 8080 } }), tmp())).toThrow(/persona 'ana'.*server 's'.*PORT/);
+    expect(() => exportHome(srv({ headers: { X: { nested: "v" } } }), tmp())).toThrow(PayloadError);
+  });
+
+  test("colliding generated variable names fail, naming both origins", () => {
+    const h = withMcp({ mcpServers: { "a-b": { env: { x: "one" } }, a: { env: { b_x: "two" } } } });
+    expect(() => exportHome(h, tmp())).toThrow(/ana\/a-b\/x.*ana\/a\/b_x|ana\/a\/b_x.*ana\/a-b\/x/);
+    const h2 = srv({ headers: { "X-Key": "one", X_Key: "two" } });
+    expect(() => exportHome(h2, tmp())).toThrow(/collision/);
+  });
+
+  test("parse errors do not echo file content", () => {
+    for (const [file, where] of [["config.json", "personas/ana"], ["mcp.json", "personas/ana"], [".mcp.json", ""]] as const) {
+      const h = home();
+      writeFileSync(join(h, where, file), "{ DISTINCTIVE_MARKER_77 nope");
+      let msg = "";
+      try { exportHome(h, tmp()); } catch (e) { msg = (e as Error).message; }
+      expect(msg).toContain(file);
+      expect(msg).not.toContain("DISTINCTIVE_MARKER_77");
+    }
+  });
+
+  test("secret-looking stdio args fail without echoing the arg", () => {
+    for (const args of [["--token=abc-secret-val"], ["--api-key", "abc-secret-val"], ["x", "Bearer abc-secret-val"]]) {
+      let msg = "";
+      try { exportHome(srv({ command: "x", args }), tmp()); } catch (e) { msg = (e as Error).message; }
+      expect(msg).toContain("persona 'ana'");
+      expect(msg).toContain("server 's'");
+      expect(msg).not.toContain("abc-secret-val");
+    }
+  });
+
+  test("benign stdio args export with a names-only stderr warning", () => {
+    const orig = console.error;
+    const seen: string[] = [];
+    console.error = (...a: unknown[]) => { seen.push(a.join(" ")); };
+    try { exportHome(srv({ command: "x", args: ["--port", "8080"] }), tmp()); } finally { console.error = orig; }
+    const w = seen.join("\n");
+    expect(w).toContain("ana/s");
+    expect(w).not.toContain("8080");
+    expect(w).not.toContain("--port");
+  });
+
+  test("a url fragment is refused", () => {
+    expect(() => exportHome(srv({ url: "https://x.test/mcp#frag" }), tmp())).toThrow(/persona 'ana'.*server 's'/);
+  });
+});
+
 describe("personas CLI entry", () => {
   const run = (...a: string[]) => Bun.spawnSync(["bun", "src/cli/personas.ts", ...a], { cwd: join(import.meta.dir, "../..") });
   test("--check is position independent, silent and exits 0 on a valid repo", () => {

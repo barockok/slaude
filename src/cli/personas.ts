@@ -68,13 +68,26 @@ export function renderDir(dir: string, meta: { revision: string; committedAt: st
 const upper = (s: string) => s.replace(/[^A-Za-z0-9]/g, "_").toUpperCase();
 const PLACEHOLDER_ONLY = /^\$\{[A-Z0-9_]+\}$/;
 
+const SECRET_ARG_RE = /(key=|token=|secret=|password=|passwd=|bearer )/i;
+const SECRET_FLAG_RE = /^--?[a-z0-9_-]*(key|token|secret|password)$/i;
+
+/** Claim a generated variable name; two different origins must never share one. */
+function claim(reg: Map<string, string>, name: string, origin: string): void {
+  const prior = reg.get(name);
+  if (prior !== undefined && prior !== origin) {
+    throw new PayloadError(`variable name collision on \${${name}}: ${prior} and ${origin} would share one variable`);
+  }
+  reg.set(name, origin);
+}
+
 /** Rewrite literal credentials in MCP config to placeholders; never keeps the original value. */
-function scrubMcp(persona: string, raw: string, variables: string[]): string {
+function scrubMcp(persona: string, file: string, raw: string, reg: Map<string, string>, argsServers: string[]): string {
   let cfg: any;
   try {
     cfg = JSON.parse(raw);
-  } catch (e) {
-    throw new PayloadError(`persona '${persona}': mcp.json is not valid JSON (${(e as Error).message})`);
+  } catch {
+    // Deliberately no parser message: it can quote file content.
+    throw new PayloadError(`persona '${persona}': ${file} is not valid JSON`);
   }
   const servers = cfg && typeof cfg === "object" ? cfg.mcpServers : undefined;
   if (servers && typeof servers === "object") {
@@ -84,22 +97,34 @@ function scrubMcp(persona: string, raw: string, variables: string[]): string {
         let bad = false;
         try {
           const u = new URL(def.url);
-          bad = !!(u.username || u.password || u.search);
+          bad = !!(u.username || u.password || u.search || u.hash);
         } catch {
-          bad = /@|\?/.test(def.url);
+          bad = /[@?#]/.test(def.url);
         }
         if (bad) {
-          throw new PayloadError(`persona '${persona}': server '${server}' url carries credentials (userinfo or query string) — move the secret into a header first`);
+          throw new PayloadError(`persona '${persona}': server '${server}' url carries credentials (userinfo, query string or fragment) — move the secret into a header first`);
         }
+      }
+      if (Array.isArray(def.args)) {
+        const args: unknown[] = def.args;
+        const risky = args.some((a, i) =>
+          typeof a === "string" && (SECRET_ARG_RE.test(a) || (SECRET_FLAG_RE.test(a) && i + 1 < args.length && !String(args[i + 1]).startsWith("-"))));
+        if (risky) {
+          throw new PayloadError(`persona '${persona}': server '${server}' has args that look like a credential — move it into env as a placeholder first`);
+        }
+        if (args.length) argsServers.push(`${persona}/${server}`);
       }
       for (const field of ["headers", "env"]) {
         const m = def[field];
         if (!m || typeof m !== "object") continue;
         for (const [k, v] of Object.entries(m)) {
-          if (typeof v !== "string" || PLACEHOLDER_ONLY.test(v)) continue;
+          if (typeof v !== "string") {
+            throw new PayloadError(`persona '${persona}': server '${server}' ${field}.${k} is not a string — cannot be exported safely`);
+          }
+          if (PLACEHOLDER_ONLY.test(v)) continue;
           const name = `${upper(persona)}_${upper(server)}_${upper(k)}`;
+          claim(reg, name, `${persona}/${server}/${k}`);
           m[k] = `\${${name}}`;
-          if (!variables.includes(name)) variables.push(name);
         }
       }
     }
@@ -108,7 +133,8 @@ function scrubMcp(persona: string, raw: string, variables: string[]): string {
 }
 
 export function exportHome(home: string, out: string): { variables: string[] } {
-  const variables: string[] = [];
+  const reg = new Map<string, string>();
+  const argsServers: string[] = [];
   const write = (name: string, files: Record<string, string>) => {
     const d = join(out, "personas", name);
     mkdirSync(d, { recursive: true });
@@ -117,7 +143,7 @@ export function exportHome(home: string, out: string): { variables: string[] } {
   const defaultSoul = read(join(home, "SOUL.md"));
   const defaultMcp = read(join(home, ".mcp.json"));
   if (defaultSoul !== undefined) {
-    write("default", { "SOUL.md": defaultSoul, ...(defaultMcp ? { "mcp.json": scrubMcp("default", defaultMcp, variables) } : {}) });
+    write("default", { "SOUL.md": defaultSoul, ...(defaultMcp ? { "mcp.json": scrubMcp("default", ".mcp.json", defaultMcp, reg, argsServers) } : {}) });
   }
   const root = join(home, "personas");
   if (existsSync(root)) {
@@ -129,24 +155,27 @@ export function exportHome(home: string, out: string): { variables: string[] } {
       try {
         cfg = (JSON.parse(read(join(d, "config.json")) ?? "{}") ?? null) as typeof cfg;
         if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) throw new Error("not an object");
-      } catch (e) {
-        throw new PayloadError(`persona '${name}': config.json is malformed (${(e as Error).message})`);
+      } catch {
+        throw new PayloadError(`persona '${name}': config.json is malformed`);
       }
       const lines = [`slackUserId: ${JSON.stringify(cfg.slackUserId ?? "")}`];
       if (cfg.userToken) {
         const v = varFor(name);
-        variables.push(v);
+        claim(reg, v, `${name}/userToken`);
         lines.push(`userToken: "\${${v}}"`); // the value never leaves $SLAUDE_HOME
       }
       const mcp = read(join(d, "mcp.json"));
       write(name, {
         "persona.yaml": lines.join("\n") + "\n",
         "SOUL.md": read(join(d, "SOUL.md")) ?? "",
-        ...(mcp ? { "mcp.json": scrubMcp(name, mcp, variables) } : {}),
+        ...(mcp ? { "mcp.json": scrubMcp(name, "mcp.json", mcp, reg, argsServers) } : {}),
       });
     }
   }
-  return { variables };
+  if (argsServers.length) {
+    console.error(`[personas] review stdio args before committing (names only): ${argsServers.join(", ")}`);
+  }
+  return { variables: [...reg.keys()] };
 }
 
 if (import.meta.main) {
