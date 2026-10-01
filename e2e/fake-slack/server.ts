@@ -25,6 +25,13 @@ export interface FakeSlackOptions {
   ackTimeoutMs?: number;
 }
 
+interface ResponseTarget {
+  app: string;
+  channel: string;
+  messageTs: string;
+  user: string;
+}
+
 async function readBody(req: http.IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const c of req) chunks.push(c as Buffer);
@@ -109,6 +116,34 @@ export async function startFakeSlack(opts: FakeSlackOptions = {}): Promise<FakeS
     if (typeof id !== "string" || !ws.channels.has(id)) throw new HttpError(404, "channel_not_found");
     return id;
   };
+  /** response_url id → the click that issued it, so an answer lands on the clicked message. */
+  const responseUrls = new Map<string, ResponseTarget>();
+
+  /**
+   * Apply a response_url answer like Slack: `delete_original` removes the clicked message,
+   * `replace_original` rewrites it, otherwise a new message is posted, `in_channel` for everyone
+   * or (the default) ephemeral to the clicker. A gone message throws `message_not_found`.
+   */
+  function applyResponse(t: ResponseTarget, body: Record<string, unknown>): string {
+    const text = typeof body.text === "string" ? body.text : "";
+    if (body.delete_original === true) {
+      ws.remove(t.channel, t.messageTs);
+      return "delete_original";
+    }
+    if (body.replace_original === true) {
+      // a replacement is the whole message: no blocks in the answer means none on the message
+      ws.update(t.channel, t.messageTs, { text, blocks: body.blocks ?? [] });
+      return "replace_original";
+    }
+    if (body.response_type === "in_channel") {
+      const app = ws.apps.get(t.app)!;
+      ws.post({ channel: t.channel, user: app.botUserId, text, blocks: body.blocks, appId: app.apiAppId });
+      return "in_channel";
+    }
+    ws.postEphemeral(t.channel, t.user, text);
+    return "ephemeral";
+  }
+
   const view = (m: { ts: string; user: string; text: string; blocks?: unknown; threadTs?: string }) => ({
     ts: m.ts,
     user: m.user,
@@ -186,6 +221,7 @@ export async function startFakeSlack(opts: FakeSlackOptions = {}): Promise<FakeS
       case "POST click": {
         const a = validate(body, { app: "string", user: "string", channel: "string", messageTs: "string", actionId: "string", target: "target", value: "string?", ...DELIVERY });
         const app = appOf(a.app);
+        const responseId = randomBytes(6).toString("hex");
         const payload = blockActionsPayload({
           ws,
           app,
@@ -194,8 +230,9 @@ export async function startFakeSlack(opts: FakeSlackOptions = {}): Promise<FakeS
           messageTs: a.messageTs,
           actionId: a.actionId,
           value: a.value,
-          responseUrl: `${publicUrl}/response/${randomBytes(6).toString("hex")}`,
+          responseUrl: `${publicUrl}/response/${responseId}`,
         });
+        responseUrls.set(responseId, { app: app.apiAppId, channel: a.channel, messageTs: a.messageTs, user: a.user });
         const delivery = await deliverInteraction(`${a.target}/slack/interactions`, app.signingSecret, payload, { ...deliverOpts, ...deliveryOverrides(a) });
         log.add({ kind: "inbound", method: "interactions", app: app.apiAppId, ok: true, status: 200, detail: { actionId: a.actionId } });
         return send(res, 200, { delivery });
@@ -221,6 +258,7 @@ export async function startFakeSlack(opts: FakeSlackOptions = {}): Promise<FakeS
       case "POST reset": {
         log.clear();
         faults.clear();
+        responseUrls.clear();
         for (const id of ws.channels.keys()) for (const m of ws.messages(id)) ws.remove(id, m.ts);
         return send(res, 200, { ok: true });
       }
@@ -248,7 +286,19 @@ export async function startFakeSlack(opts: FakeSlackOptions = {}): Promise<FakeS
       } catch {
         // keep the raw text
       }
-      log.add({ kind: "response_url", method: "response_url", ok: true, status: 200, detail: { id: path.slice("/response/".length), body: parsed } });
+      const id = path.slice("/response/".length);
+      const click = responseUrls.get(id);
+      const detail: Record<string, unknown> = { id, body: parsed, ...click };
+      if (click && typeof parsed === "object" && parsed !== null) {
+        try {
+          detail.applied = applyResponse(click, parsed as Record<string, unknown>);
+        } catch (e) {
+          if (!(e instanceof SlackError)) throw e;
+          log.add({ kind: "response_url", method: "response_url", ok: false, error: e.code, status: 404, detail });
+          return send(res, 404, { ok: false, error: e.code });
+        }
+      }
+      log.add({ kind: "response_url", method: "response_url", ok: true, status: 200, detail });
       return void res.writeHead(200, { "content-type": "text/plain" }).end("ok");
     }
     if (path.startsWith("/__fake/")) return control(req, res, path.slice("/__fake/".length), url);

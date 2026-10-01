@@ -184,6 +184,49 @@ test("click delivers a signed interaction with a response_url the fake serves", 
   expect(rows[0]!.detail).toMatchObject({ body: { text: "done" } });
 });
 
+test("a response_url answer is applied to the clicked message the way Slack does", async () => {
+  const urlFor = async (messageTs: string) => {
+    hits = [];
+    await ctl.click({ app: "A0FAKE", target: target(), user: "U0MGR", channel: "C0TEAM", messageTs, actionId: "a" });
+    return JSON.parse(new URLSearchParams(hits[0]!.body).get("payload")!).response_url as string;
+  };
+  const answer = (url: string, body: unknown) => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const card = await client.chat.postMessage({ channel: "C0TEAM", text: "card", blocks: [{ type: "actions", elements: [] }] });
+
+  // replace_original rewrites the clicked message in place (no blocks in the answer: none left)
+  await answer(await urlFor(card.ts!), { replace_original: true, text: "decided" });
+  expect((await ctl.messages("C0TEAM")).messages).toMatchObject([{ ts: card.ts, text: "decided", blocks: [] }]);
+  // an ephemeral answer (the default) reaches only the clicker and leaves the message alone
+  await answer(await urlFor(card.ts!), { response_type: "ephemeral", replace_original: false, text: "only you" });
+  await answer(await urlFor(card.ts!), { text: "also only you" });
+  expect(fake.ws.ephemerals().filter((e) => e.text.includes("only you")).map((e) => [e.channel, e.user, e.text])).toEqual([
+    ["C0TEAM", "U0MGR", "only you"],
+    ["C0TEAM", "U0MGR", "also only you"],
+  ]);
+  // in_channel posts a new message as the app's bot
+  await answer(await urlFor(card.ts!), { response_type: "in_channel", text: "for everyone" });
+  expect((await ctl.messages("C0TEAM")).messages.map((m) => [m.user, m.text])).toEqual([
+    ["U0BOT", "decided"],
+    ["U0BOT", "for everyone"],
+  ]);
+  // delete_original removes it
+  await answer(await urlFor(card.ts!), { delete_original: true });
+  expect((await ctl.messages("C0TEAM")).messages.map((m) => m.text)).toEqual(["for everyone"]);
+  // every answer is logged with where it was applied
+  const rows = (await ctl.calls({ method: "response_url" })).calls;
+  expect(rows.map((r) => r.detail?.applied)).toEqual(["replace_original", "ephemeral", "ephemeral", "in_channel", "delete_original"]);
+  expect(rows[0]!.detail).toMatchObject({ channel: "C0TEAM", messageTs: card.ts, user: "U0MGR" });
+  // answering for a message that is gone is an error, like Slack's
+  const gone = await answer(await urlFor(card.ts!), { replace_original: true, text: "late" });
+  expect(gone.status).toBe(404);
+  expect((await ctl.calls({ method: "response_url" })).calls.at(-1)).toMatchObject({ ok: false, error: "message_not_found" });
+  // reset forgets issued response_urls: a later answer is only recorded
+  const stale = await urlFor(card.ts!);
+  await ctl.reset();
+  expect((await answer(stale, { replace_original: true, text: "after reset" })).status).toBe(200);
+  expect((await ctl.calls({ method: "response_url" })).calls[0]!.detail?.applied).toBeUndefined();
+});
+
 test("reset clears messages, calls and faults but keeps users, apps and channels", async () => {
   await client.chat.postMessage({ channel: "C0TEAM", text: "gone soon" });
   await ctl.addFault({ method: "*", status: 500, times: 9 });
