@@ -43,3 +43,13 @@ export function mergeEffective(desired: DesiredPersona, overrides: Override[]): 
   }
   return out;
 }
+
+/**
+ * Whether a synced row would leave the stored persona unchanged. One
+ * definition, shared by the real sync and the dry run, so their reports cannot
+ * disagree.
+ */
+export function sameDesired(a: DesiredPersona, b: DesiredPersona): boolean {
+  return a.slackUserId === b.slackUserId && a.userToken === b.userToken && a.model === b.model &&
+    a.soulMd === b.soulMd && JSON.stringify(a.mcp) === JSON.stringify(b.mcp) && a.tombstonedAt === null;
+}

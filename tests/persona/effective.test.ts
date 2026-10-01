@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mergeEffective, type DesiredPersona } from "../../src/persona/effective";
+import { mergeEffective, sameDesired, type DesiredPersona } from "../../src/persona/effective";
 
 const desired: DesiredPersona = {
   name: "ana", slackUserId: "UTESTUSER1", userToken: null, model: "m-git",
@@ -27,5 +27,22 @@ describe("mergeEffective", () => {
   test("identity fields cannot be overridden by construction", () => {
     const e = mergeEffective(desired, [{ field: "slackUserId" as any, value: "UEVIL" }]);
     expect(e.slackUserId).toBe("UTESTUSER1");
+  });
+});
+
+describe("sameDesired", () => {
+  const base = { name: "ana", slackUserId: "UANA", userToken: null, model: null, soulMd: "s", soulJson: null, mcp: { a: 1 }, origin: "git" as const, tombstonedAt: null };
+  test("equal on the synced fields, ignoring name and soulJson", () => {
+    expect(sameDesired(base, { ...base, soulJson: { x: 1 } })).toBe(true);
+  });
+  test("differs on each synced field", () => {
+    expect(sameDesired(base, { ...base, model: "m" })).toBe(false);
+    expect(sameDesired(base, { ...base, soulMd: "t" })).toBe(false);
+    expect(sameDesired(base, { ...base, slackUserId: "U2" })).toBe(false);
+    expect(sameDesired(base, { ...base, userToken: "t" })).toBe(false);
+    expect(sameDesired(base, { ...base, mcp: { a: 2 } })).toBe(false);
+  });
+  test("a tombstoned persona is never the same", () => {
+    expect(sameDesired({ ...base, tombstonedAt: 5 }, base)).toBe(false);
   });
 });
