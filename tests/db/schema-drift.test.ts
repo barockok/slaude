@@ -16,6 +16,8 @@ const PG_ONLY_TABLES = new Set([
   "slack_apps",
   "personas",
   "provider_creds",
+  "persona_overrides", // persona_overrides + persona_sync_state: personas-as-code, Postgres-only like personas
+  "persona_sync_state",
   "schema_migrations",
 ]);
 
