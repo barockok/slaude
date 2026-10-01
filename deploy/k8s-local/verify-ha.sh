@@ -418,7 +418,7 @@ done
 #
 # Sync extracts structured soul data with a model, and this overlay has no
 # provider credentials, so each soul's extraction cache entry is seeded first
-# (src/soul/extract.ts: $SLAUDE_HOME/cache/soul.<full sha256>.json). The sync
+# (written by the pod via soulCachePath in src/soul/extract.ts). The sync
 # then finds it and calls no model; production code is untouched.
 #
 # The section leaves a synced persona set (default + verifier) on the local
@@ -453,18 +453,30 @@ else
   # Distinctive per run, so its hash cannot coincide with the default soul's and
   # no line from an earlier run can satisfy the check.
   soul="Verifier soul for the personas-as-code check, run $(date +%s)-$RANDOM."
-  want_full="$(printf '%s' "$soul" | shasum -a 256 | cut -d' ' -f1)"
-  want_hash="${want_full:0:12}"
+  # TWO different hashes, deliberately. want_hash is the 12-hex prefix of the full
+  # sha256 that manager.ts LOGS at session boot (the R4 grep below). The extraction
+  # cache key is a separate 16-hex derivation owned by src/soul/extract.ts, so it
+  # is never recomputed here: the pod computes it through soulCachePath itself.
+  want_hash="$(printf '%s' "$soul" | shasum -a 256 | cut -c1-12)"
   default_soul="Default verify soul."
-  default_full="$(printf '%s' "$default_soul" | shasum -a 256 | cut -d' ' -f1)"
-  seed_ok=1
-  for sha in "$want_full" "$default_full"; do
-    # shellcheck disable=SC2016 # expands in the pod's shell, not here
-    printf '{"approvers":[]}' | k exec -i --request-timeout="$PROBE_TIMEOUT" "$gw_pod" -- sh -c \
-      'mkdir -p "${SLAUDE_HOME:-/data}/cache" && cat > "${SLAUDE_HOME:-/data}/cache/soul.$1.json"' _ "$sha" 2>/dev/null \
-      || { seed_ok=""; printf '  !! could not seed the soul extraction cache for %s\n' "${sha:0:12}" >&2; }
-  done
-  [[ -n "$seed_ok" ]] || bad "soul extraction cache not seeded — the sync below would need a model"
+  # Soul texts go in on stdin as a JSON array, never on a command line.
+  seed_ok=""
+  # shellcheck disable=SC2016 # JS, evaluated by bun in the pod
+  if python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$soul" "$default_soul" \
+    | k exec -i --request-timeout="$PROBE_TIMEOUT" "$gw_pod" -- bun -e '
+        import { soulCachePath } from "/app/src/soul/extract.ts";
+        import { mkdirSync, writeFileSync } from "node:fs";
+        import { dirname } from "node:path";
+        for (const t of JSON.parse(await Bun.stdin.text())) {
+          const p = soulCachePath(t);
+          mkdirSync(dirname(p), { recursive: true });
+          writeFileSync(p, JSON.stringify({ approvers: [] }));
+        }
+      ' >/dev/null 2>&1; then
+    seed_ok=1
+  else
+    bad "soul extraction cache not seeded — COULD NOT MEASURE the sync (it would need a model)"
+  fi
   payload="$(python3 -c '
 import json, sys, datetime
 print(json.dumps({
@@ -476,11 +488,13 @@ print(json.dumps({
     ],
 }))' "$soul" "$default_soul")"
 
-  # The deploy token syncs; the node token must not.
-  expect_value "the pipeline sync was accepted" \
-    "$(sync_status "$gw_pod" SLAUDE_DEPLOY_TOKEN "$payload")" "200" "sync HTTP status"
-  expect_value "the node token cannot sync" \
-    "$(sync_status "$gw_pod" SLAUDE_NODE_TOKEN "$payload")" "401" "sync HTTP status with the node token"
+  if [[ -n "$seed_ok" ]]; then
+    # The deploy token syncs; the node token must not.
+    expect_value "the pipeline sync was accepted" \
+      "$(sync_status "$gw_pod" SLAUDE_DEPLOY_TOKEN "$payload")" "200" "sync HTTP status"
+    expect_value "the node token cannot sync" \
+      "$(sync_status "$gw_pod" SLAUDE_NODE_TOKEN "$payload")" "401" "sync HTTP status with the node token"
+  fi
 
   # Remove the persona's directory from the shared volume before the turn.
   if k exec --request-timeout="$PROBE_TIMEOUT" "$gw_pod" -- rm -rf /data/personas/verifier 2>/dev/null; then

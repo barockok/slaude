@@ -17,6 +17,12 @@ function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex").slice(0, 16);
 }
 
+/** The cache file for a soul text: the single derivation, shared by extraction
+ *  and anything that pre-seeds the cache (e.g. the k8s-local verifier). */
+export function soulCachePath(text: string): string {
+  return cachePath(sha256(text));
+}
+
 const DEFAULT_MAX_TOKENS = 8192;
 
 /**
@@ -156,8 +162,7 @@ export async function extractSoulData(
   opts: { strict: boolean; call?: (system: string, prompt: string) => Promise<string> },
 ): Promise<SoulData> {
   const call = opts.call ?? callExtractor;
-  const sha = sha256(persona);
-  const cp = cachePath(sha);
+  const cp = soulCachePath(persona);
 
   if (existsSync(cp)) {
     try {
