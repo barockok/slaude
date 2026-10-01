@@ -1,0 +1,17 @@
+# The local scale cluster plus the mock LLM and the fake Slack. Build with e2e/up.sh.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: slaude-scale
+resources:
+  - ../../deploy/k8s-local
+  - mock-llm.yaml
+  - fake-slack.yaml
+patches:
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: slaude-scale-config
+        namespace: slaude-scale
+      data:
+        SLAUDE_SLACK_API_URL: "http://fake-slack:8080/api/"

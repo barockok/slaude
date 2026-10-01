@@ -1,0 +1,58 @@
+# One replica: the fake's state is in memory.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-slack
+  namespace: slaude-scale
+  labels:
+    app.kubernetes.io/name: fake-slack
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fake-slack
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fake-slack
+    spec:
+      containers:
+        - name: fake-slack
+          image: slaude-fake-slack:dev
+          imagePullPolicy: Never
+          env:
+            - name: FAKE_SLACK_PUBLIC_URL
+              value: http://fake-slack:8080
+            # Compressed retry schedule so delivery-retry tests finish in seconds.
+            - name: FAKE_SLACK_RETRY_DELAYS
+              value: "0,2000,5000"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-slack
+  namespace: slaude-scale
+spec:
+  selector:
+    app.kubernetes.io/name: fake-slack
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
