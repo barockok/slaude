@@ -23,7 +23,7 @@ on:
         default: ""
         type: string
       sanity:
-        description: "Run the cluster sanity scripts (verify-ha.sh, verify-turns.sh) first"
+        description: "Run the cluster sanity scripts (verify-ha.sh, verify-turns.sh) after the cases pass"
         required: false
         default: true
         type: boolean

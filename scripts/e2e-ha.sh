@@ -10,11 +10,14 @@
 #   E2E_FORCE_UP=1        run e2e/up.sh even when every deployment is already Ready. Without it
 #                         the bring-up is skipped when the cluster is Ready, so an iteration loop
 #                         stays fast. up.sh rebuilds the images and rolls gateway and node.
-#   E2E_SANITY=1          run deploy/k8s-local/verify-ha.sh and verify-turns.sh first, against the
-#                         e2e profile. RISK: both SIGKILL gateway/node containers and verify-ha
-#                         deletes pods; the stack recovers by itself, but run them only on a cluster
-#                         you can afford to disturb (the workflow does; they take several minutes).
-#                         They are not run by default.
+#   E2E_SANITY=1          run deploy/k8s-local/verify-ha.sh and verify-turns.sh AFTER the cases
+#                         pass, against the e2e profile. RISK: both SIGKILL gateway/node containers
+#                         and verify-ha deletes pods; the stack recovers by itself, but run them
+#                         only on a cluster you can afford to disturb (the workflow does; they take
+#                         several minutes). They are not run by default. verify-ha.sh leaves the
+#                         tenant synced as personas as code, and the cases refuse to seed such a
+#                         tenant, so the cases cannot be re-run on that cluster afterwards: bring up
+#                         a fresh one (deploy/k8s-local/down.sh with this profile, then e2e/up.sh).
 #                         Both profile variables the two scripts read (SLAUDE_LOCAL_PROFILE and
 #                         MINIKUBE_PROFILE) are set to the e2e profile; the run is refused if a
 #                         script selects a cluster through any other *PROFILE* variable.
@@ -113,19 +116,9 @@ sanity_env_ok() {
   done
 }
 
+# Checked before anything runs, so a refusal never follows a finished case run.
 if ((status == 0)) && [[ "${E2E_SANITY:-}" == "1" ]]; then
   sanity_env_ok || die "sanity scripts not run"
-  export MINIKUBE_PROFILE="$PROFILE" SLAUDE_LOCAL_PROFILE="$PROFILE"
-  echo "e2e-ha: cluster sanity (verify-ha.sh, verify-turns.sh)"
-  if [[ "${E2E_DRY_RUN:-}" == "1" ]]; then
-    for s in "${SANITY_SCRIPTS[@]}"; do
-      echo "e2e-ha: dry run, would run: MINIKUBE_PROFILE=$MINIKUBE_PROFILE SLAUDE_LOCAL_PROFILE=$SLAUDE_LOCAL_PROFILE $s"
-    done
-  else
-    "${SANITY_SCRIPTS[0]}" || status=$?
-    if ((status == 0)); then "${SANITY_SCRIPTS[1]}" || status=$?; fi
-    ((status == 0)) || echo "e2e-ha: sanity checks failed (exit $status); not running the cases"
-  fi
 fi
 
 # --- the cases -----------------------------------------------------------------------------------
@@ -147,6 +140,26 @@ if ((status == 0)); then
   else
     bun test "${files[@]}" --timeout 300000
     status=$?
+  fi
+fi
+
+# --- cluster sanity, AFTER the cases -------------------------------------------------------------
+# verify-ha.sh syncs personas as code, which leaves tenant 'default' managed: the gateway then takes
+# its souls from the database and ignores the SOUL.md and soul cache the cases seed (the seed
+# refuses such a tenant). So the cases run first, on the never-synced tenant of a fresh cluster.
+# Skipped when the cases failed, so the diagnostics show the cluster the cases left, not one the
+# sanity scripts have since disturbed.
+if ((status == 0)) && [[ "${E2E_SANITY:-}" == "1" ]]; then
+  export MINIKUBE_PROFILE="$PROFILE" SLAUDE_LOCAL_PROFILE="$PROFILE"
+  echo "e2e-ha: cluster sanity (verify-ha.sh, verify-turns.sh)"
+  if [[ "${E2E_DRY_RUN:-}" == "1" ]]; then
+    for s in "${SANITY_SCRIPTS[@]}"; do
+      echo "e2e-ha: dry run, would run: MINIKUBE_PROFILE=$MINIKUBE_PROFILE SLAUDE_LOCAL_PROFILE=$SLAUDE_LOCAL_PROFILE $s"
+    done
+  else
+    "${SANITY_SCRIPTS[0]}" || status=$?
+    if ((status == 0)); then "${SANITY_SCRIPTS[1]}" || status=$?; fi
+    ((status == 0)) || echo "e2e-ha: sanity checks failed (exit $status)"
   fi
 fi
 
