@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as OneOnOne from "../../../src/db/one-on-one";
 import * as Remote from "../../../src/db/remote";
+import * as CronJobs from "../../../src/db/cron-jobs";
+import { db } from "../../../src/db/schema";
 import { __resetMasterKeyCache } from "../../../src/db/crypto";
 import { handleRemoteCommand, endRemoteForThread, remoteStatusOn, type RemoteCommandDeps } from "../../../src/gateway/core/remote-command";
 
@@ -17,7 +19,13 @@ const deps = (ok = true): RemoteCommandDeps => ({
   cleanup: async (i) => { cleanups.push(i); },
   generateKeyPair: (c) => ({ privateKey: `PRIV-${c}`, publicKey: `ssh-ed25519 AAAA ${c}` }),
   validKey: (p) => !p.privateKey.startsWith("BROKEN"),
+  listForeignThreadCrons: CronJobs.countForeignThreadJobs,
 });
+const addCron = (createdBy: string, over: { target?: "thread" | "channel"; threadTs?: string } = {}) =>
+  CronJobs.create({
+    slackTeamId: "T1", slackChannelId: "C1", slackThreadTs: over.threadTs ?? "1.0", channelId: "C1", threadTs: over.threadTs ?? "1.0",
+    createdBy, cronExpr: "0 9 * * *", prompt: "SECRET-PROMPT", nextRunAt: Date.now() + 60_000, target: over.target,
+  });
 const allOut = () => [...replies, ...privately].join("\n");
 
 beforeEach(async () => {
@@ -26,6 +34,7 @@ beforeEach(async () => {
   __resetMasterKeyCache();
   await OneOnOne._wipeForTests();
   await Remote._wipeForTests();
+  await db.run("DELETE FROM cron_jobs");
   replies = []; privately = []; reloads = 0; preflights = []; cleanups = [];
 });
 afterEach(() => { delete process.env.SLAUDE_REMOTE; });
@@ -147,6 +156,38 @@ describe("/remote", () => {
     await handleRemoteCommand({ kind: "remote", action: "key" }, ctx(), deps());
     expect(privately[0]).toContain("ssh-ed25519 KEEP");
     expect(replies.join("")).not.toContain("KEEP");
+  });
+
+  it("refuses while a cron job someone else created fires in this thread; never echoes the prompt", async () => {
+    await Remote.putKeyIfAbsent("T1", "U_A", { privateKey: "PRIV", publicKey: "PUB" });
+    await addCron("U_B");
+    await handleRemoteCommand({ kind: "remote", action: "on", addr: "tcAddr1", dir: "/r" }, ctx(), deps());
+    expect(replies[0]).toContain("1 cron job");
+    expect(replies[0]).toContain("/cron-list");
+    expect(allOut()).not.toContain("SECRET-PROMPT");
+    expect(preflights).toHaveLength(0);
+    expect(await Remote.findTarget("C1", "1.0")).toBeNull();
+    expect(await OneOnOne.find("C1", "1.0")).toBeNull();
+  });
+
+  it("a paused foreign job still blocks (it can be resumed later)", async () => {
+    await Remote.putKeyIfAbsent("T1", "U_A", { privateKey: "PRIV", publicKey: "PUB" });
+    const job = await addCron("U_B");
+    await CronJobs.pause(job.id);
+    await handleRemoteCommand({ kind: "remote", action: "on", addr: "tcAddr1", dir: "/r" }, ctx(), deps());
+    expect(replies[0]).toContain("cron job");
+    expect(preflights).toHaveLength(0);
+  });
+
+  it("allows own jobs, removed foreign jobs, channel-target jobs, and jobs in other threads", async () => {
+    await Remote.putKeyIfAbsent("T1", "U_A", { privateKey: "PRIV", publicKey: "PUB" });
+    await addCron("U_A");
+    await CronJobs.deactivate((await addCron("U_B")).id);
+    await addCron("U_B", { target: "channel" });
+    await addCron("U_B", { threadTs: "2.0" });
+    await handleRemoteCommand({ kind: "remote", action: "on", addr: "tcAddr1", dir: "/r" }, ctx(), deps());
+    expect(preflights).toHaveLength(1);
+    expect(await Remote.findTarget("C1", "1.0")).not.toBeNull();
   });
 
   it("key replaces a stored key that does not parse and says so privately", async () => {

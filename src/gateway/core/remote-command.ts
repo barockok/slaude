@@ -1,4 +1,5 @@
 import { env } from "../../config/env";
+import * as CronJobs from "../../db/cron-jobs";
 import * as OneOnOne from "../../db/one-on-one";
 import * as Remote from "../../db/remote";
 import { activeRemoteTarget } from "../../remote/active";
@@ -30,6 +31,8 @@ export interface RemoteCommandDeps {
   generateKeyPair(comment: string): { privateKey: string; publicKey: string };
   /** False for a stored pair ssh2 cannot use (e.g. one written by the defective generator). */
   validKey(pair: Remote.RemoteKeyPair): boolean;
+  /** Active cron jobs firing into this thread that someone other than `userId` created. */
+  listForeignThreadCrons(channelId: string, threadTs: string, userId: string): Promise<number>;
 }
 
 const defaultDeps: RemoteCommandDeps = {
@@ -38,6 +41,7 @@ const defaultDeps: RemoteCommandDeps = {
   cleanup: remoteCleanup,
   generateKeyPair: generateSshKeyPair,
   validKey: (p) => isValidSshKeyPair(p.privateKey, p.publicKey),
+  listForeignThreadCrons: CronJobs.countForeignThreadJobs,
 };
 
 const REPLACED_NOTE = ":warning: Your previous key was invalid and has been replaced — update `--ssh-authorized-keys` with the new key below.";
@@ -178,6 +182,15 @@ export async function handleRemoteCommand(hit: RemoteHit, ctx: RemoteCommandCtx,
   }
   if (lock && lock.open_scope !== null) {
     await ctx.reply(":lock: This 1on1 is open to guests. Run `/1on1 lock` first — remote mode needs the thread locked to you.");
+    return;
+  }
+  // A job someone else scheduled here would fire on this user's machine once the
+  // thread runs remotely (its runs resolve to the lock owner).
+  const foreignCrons = await deps.listForeignThreadCrons(channelId, threadTs, userId);
+  if (foreignCrons > 0) {
+    await ctx.reply(
+      `:x: ${foreignCrons} cron job${foreignCrons === 1 ? "" : "s"} created by someone else ${foreignCrons === 1 ? "fires" : "fire"} in this thread and would run on your machine. Check \`/cron-list\` and remove ${foreignCrons === 1 ? "it" : "them"} (or ask the owner to) before turning remote mode on.`,
+    );
     return;
   }
   const existing = await Remote.findTarget(channelId, threadTs);
