@@ -161,13 +161,15 @@ describe("createRemoteMcp", () => {
       for (const c of [
         'TOKEN="abc def" true', "TOKEN='abc def' true", "A=$(cat secretfile) true", "A=`cat x` true",
         "A=$'x y' true", 'A="x" B=y true', "(true)", "./x=y",
+        'A=ab"c SECa SECb" true', "A=x\\ SECa true", "A=${X:-SECa SECb SECc} true", "A=(SECa SECb SECc) true",
+        "A=ab'c SECa SECb' true", "A=a$(SECa SECb SECc) true", "A=a;SECb SECc true",
       ]) await run(c);
       await run("export X=1; true");
     } finally { console.log = orig; }
     const subjects = lines.filter((l) => l.startsWith("[remote] tool=bash")).map((l) => /subject=(\S+)/.exec(l)![1]);
-    expect(subjects).toEqual(["true", "true", "-n", "-", "-", "-", "-", "-", "-", "-", "-", "-", "export"]);
+    expect(subjects).toEqual(["true", "true", "-n", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "export"]);
     for (const l of lines) { expect(l).not.toContain("ghp_abc123"); expect(l).not.toContain("GITHUB_TOKEN");
-      for (const bad of ["abc", "def", "secretfile", "TOKEN", "x)", "y'"]) expect(l).not.toContain(bad);
+      for (const bad of ["abc", "def", "secretfile", "TOKEN", "x)", "y'", "SEC"]) expect(l).not.toContain(bad);
     }
   });
 
