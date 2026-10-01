@@ -5,6 +5,9 @@
  * identity.
  *
  *   POST /deploy/v1/tenants/:tenant/personas[?dryRun=1]
+ *
+ * SLAUDE_DEPLOY_TOKEN applies or previews; SLAUDE_DEPLOY_PREVIEW_TOKEN previews
+ * only (dryRun=1). A dry run makes no model call.
  */
 import { env } from "../../config/env";
 import { timingSafeStringEqual } from "../api/auth";
@@ -25,11 +28,18 @@ export function createDeployApi(opts: DeployApiOptions) {
     if (url.pathname !== "/deploy" && !url.pathname.startsWith("/deploy/")) return null;
     // Unconfigured: the endpoint does not exist, for every path and method,
     // before anything else is looked at.
-    const configured = env.deployToken();
-    if (!configured) return json(404, { error: "not found" });
+    const deployToken = env.deployToken();
+    const previewToken = env.deployPreviewToken();
+    if (!deployToken && !previewToken) return json(404, { error: "not found" });
 
+    // The deploy token may apply or preview. The preview token may only preview:
+    // presented without dryRun=1 it fails exactly like a wrong token.
+    const dryRun = url.searchParams.get("dryRun") === "1";
     const m = (req.headers.get("authorization") ?? "").match(/^Bearer\s+(.+)$/i);
-    if (!m || !timingSafeStringEqual(m[1]!, configured)) {
+    const presented = m?.[1] ?? "";
+    const asDeploy = !!m && !!deployToken && timingSafeStringEqual(presented, deployToken);
+    const asPreview = !!m && !!previewToken && timingSafeStringEqual(presented, previewToken);
+    if (!asDeploy && !(asPreview && dryRun)) {
       return json(401, { error: "invalid or missing deploy token" });
     }
 
@@ -46,7 +56,6 @@ export function createDeployApi(opts: DeployApiOptions) {
       return json(404, { error: "not found" });
     }
     if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(tenant)) return json(404, { error: "not found" });
-    const dryRun = url.searchParams.get("dryRun") === "1";
     const raw = await readJson(req);
     if (raw === null) return json(422, { error: "body must be JSON" });
 

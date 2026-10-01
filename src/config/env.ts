@@ -198,6 +198,17 @@ export const env = {
     const t = (opt("SLAUDE_DEPLOY_TOKEN") ?? "").trim();
     return t.length >= 32 ? t : "";
   },
+  /** Dry-run-only pipeline credential for /deploy, for pull-request jobs: it is
+   *  accepted only with `?dryRun=1`, so a PR workflow holding it can preview a
+   *  sync but never apply one. Same trim and 32-character floor as the deploy
+   *  token; a value equal to the deploy token is "" (unset), since it would
+   *  then be an apply credential under a preview name. */
+  deployPreviewToken: () => {
+    const t = (opt("SLAUDE_DEPLOY_PREVIEW_TOKEN") ?? "").trim();
+    if (t.length < 32) return "";
+    const d = (opt("SLAUDE_DEPLOY_TOKEN") ?? "").trim();
+    return t === d ? "" : t;
+  },
   /** HS256 secret for the short-lived per-job JWT (`X-Slaude-Job`) minted by
    *  the gateway enqueue path and verified on tool-plane + session endpoints.
    *  Empty (default) = job tokens can be neither minted nor verified. */

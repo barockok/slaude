@@ -62,11 +62,19 @@ node token, and the deploy token must not be held by anything that can run a
 turn. Set the `${VAR}` variables your repository references in the same
 environment.
 
+For pull-request jobs, also set `SLAUDE_DEPLOY_PREVIEW_TOKEN` (same trim and
+32-character floor, and it must differ from the deploy token or it counts as
+unset). It is accepted only with `?dryRun=1`; presented on an apply it gets the
+same 401 as a wrong token. A PR workflow can run on unreviewed code, so it must
+never hold a credential that can apply. The deploy token still works for both.
+A dry run makes no model call: it reports what would change without extracting
+any soul.
+
 ## The endpoint
 
 ```
 POST /deploy/v1/tenants/<tenant>/personas[?dryRun=1]
-Authorization: Bearer <SLAUDE_DEPLOY_TOKEN>
+Authorization: Bearer <SLAUDE_DEPLOY_TOKEN, or SLAUDE_DEPLOY_PREVIEW_TOKEN with dryRun=1>
 ```
 
 The tenant is `default` for a single-workspace deployment; it must match
@@ -178,8 +186,15 @@ wins.
 
 ## Complete CI example (GitHub Actions)
 
-Dry run on pull requests, apply on merge. Store the gateway URL as a repository
-variable `GATEWAY_URL` and the token as a secret `DEPLOY_TOKEN`.
+Dry run on pull requests with the preview token; apply on push to `main` with
+the deploy token, from a job bound to a protected GitHub Environment. Store the
+gateway URL as a repository variable `GATEWAY_URL`, the preview token as a
+repository secret `DEPLOY_PREVIEW_TOKEN`, and the deploy token as a secret
+`DEPLOY_TOKEN` of an environment named `personas-production` (Settings →
+Environments) that allows only the `main` branch and requires a reviewer. A
+pull request's workflow is taken from the pull request's own branch, so whatever
+it can read, an unreviewed change can use; an environment secret is released
+only to a job that the environment's rules allow.
 
 ```yaml
 name: personas
@@ -191,7 +206,8 @@ on:
     paths: ["personas/**"]
 
 jobs:
-  sync:
+  preview:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -204,22 +220,35 @@ jobs:
           bun /tmp/slaude/src/cli/personas.ts render . \
             --revision "${{ github.sha }}" \
             --committed-at "$(git log -1 --format=%cI)" > payload.json
-      - name: Dry run (pull request)
-        if: github.event_name == 'pull_request'
+      - name: Dry run
         run: |
-          curl -fsS -X POST "${{ vars.GATEWAY_URL }}/deploy/v1/tenants/default/personas?dryRun=1" \
-            -H "Authorization: Bearer ${{ secrets.DEPLOY_TOKEN }}" \
+          curl --fail-with-body -sS -X POST "${{ vars.GATEWAY_URL }}/deploy/v1/tenants/default/personas?dryRun=1" \
+            -H "Authorization: Bearer ${{ secrets.DEPLOY_PREVIEW_TOKEN }}" \
             -H "Content-Type: application/json" \
             --data @payload.json | tee report.json
-      - name: Apply (merge)
-        if: github.event_name == 'push'
+
+  apply:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: personas-production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: git clone --depth 1 https://github.com/example-org/slaude.git /tmp/slaude && cd /tmp/slaude && bun install
+      - name: Render
         run: |
-          curl -fsS -X POST "${{ vars.GATEWAY_URL }}/deploy/v1/tenants/default/personas" \
+          bun /tmp/slaude/src/cli/personas.ts render . \
+            --revision "${{ github.sha }}" \
+            --committed-at "$(git log -1 --format=%cI)" > payload.json
+      - name: Apply
+        run: |
+          curl --fail-with-body -sS -X POST "${{ vars.GATEWAY_URL }}/deploy/v1/tenants/default/personas" \
             -H "Authorization: Bearer ${{ secrets.DEPLOY_TOKEN }}" \
             -H "Content-Type: application/json" \
             --data @payload.json
 ```
 
 The dry-run report in `report.json` can be posted to the pull request with any
-comment action. The `curl -f` makes a 409 (stale), 422 (invalid) or 502
-(extraction failed) fail the job.
+comment action. `curl --fail-with-body` makes a 401, 409 (stale), 422 (invalid)
+or 502 (extraction failed) fail the job and still prints the error body, which
+names the variable, persona or revision at fault and never a secret value.

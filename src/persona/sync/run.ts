@@ -59,6 +59,11 @@ export async function runSync(
     let soulJson: unknown;
     if (prev && prev.soulMd === p.soul && !effective.get(p.name)?.overridden.includes("soul")) {
       soulJson = prev.soulJson; // unchanged soul: no model call
+    } else if (opts.dryRun) {
+      // A dry run reports created/updated/unchanged, which never depends on the
+      // structured soul. Extracting here would let any caller with the preview
+      // token spend model calls (and write the extraction cache) per request.
+      soulJson = null;
     } else {
       try {
         soulJson = await extract(p.soul);

@@ -14,12 +14,14 @@ const body = { revision: "r1", committedAt: "2026-10-01T10:00:00Z",
 const post = (token: string | null, b: unknown = body, q = "") =>
   new Request(url + q, { method: "POST", headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(b) });
 
-const ENV_KEYS = ["SLAUDE_DEPLOY_TOKEN", "SLAUDE_NODE_TOKEN", "SLAUDE_MASTER_KEY"];
+const PREVIEW = "p".repeat(40);
+const ENV_KEYS = ["SLAUDE_DEPLOY_TOKEN", "SLAUDE_DEPLOY_PREVIEW_TOKEN", "SLAUDE_NODE_TOKEN", "SLAUDE_MASTER_KEY"];
 let prev: Record<string, string | undefined>;
 beforeEach(async () => {
   prev = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
   process.env.SLAUDE_DEPLOY_TOKEN = DEPLOY;
   process.env.SLAUDE_NODE_TOKEN = NODE;
+  delete process.env.SLAUDE_DEPLOY_PREVIEW_TOKEN;
   process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
   __resetMasterKeyCache();
   // The persona tables are Postgres-only (migration 0011).
@@ -123,6 +125,58 @@ pgOnly("token hardening and tenant guard", () => {
       const r = new Request(`https://slaude.example.com/deploy/v1/tenants/${t}/personas`, { method: "POST", headers: { authorization: `Bearer ${DEPLOY}` }, body: "{}" });
       expect((await api().fetch(r))!.status).toBe(404);
     }
+  });
+});
+
+pgOnly("the preview token (dry runs only)", () => {
+  test("the preview token with dryRun=1 gets a report", async () => {
+    process.env.SLAUDE_DEPLOY_PREVIEW_TOKEN = PREVIEW;
+    const res = await api().fetch(post(PREVIEW, body, "?dryRun=1"));
+    expect(res!.status).toBe(200);
+    expect((await res!.json() as any).dryRun).toBe(true);
+  });
+
+  test("the preview token without dryRun is the same 401 as any bad token, and applies nothing", async () => {
+    process.env.SLAUDE_DEPLOY_PREVIEW_TOKEN = PREVIEW;
+    const res = await api().fetch(post(PREVIEW));
+    const bad = await api().fetch(post("x".repeat(40)));
+    expect(res!.status).toBe(401);
+    expect(await res!.text()).toBe(await bad!.text());
+    for (const q of ["?dryRun=0", "?dryRun=true", "?dryRun="]) {
+      expect((await api().fetch(post(PREVIEW, body, q)))!.status).toBe(401);
+    }
+    expect(await db.query(`SELECT name FROM personas`)).toHaveLength(0);
+  });
+
+  test("the deploy token still does both", async () => {
+    process.env.SLAUDE_DEPLOY_PREVIEW_TOKEN = PREVIEW;
+    expect((await api().fetch(post(DEPLOY, body, "?dryRun=1")))!.status).toBe(200);
+    expect((await api().fetch(post(DEPLOY)))!.status).toBe(200);
+  });
+
+  test("a preview token alone serves dry runs; a short or blank one is unset", async () => {
+    delete process.env.SLAUDE_DEPLOY_TOKEN;
+    process.env.SLAUDE_DEPLOY_PREVIEW_TOKEN = `  ${PREVIEW}\n`;
+    expect((await api().fetch(post(PREVIEW, body, "?dryRun=1")))!.status).toBe(200);
+    expect((await api().fetch(post(PREVIEW)))!.status).toBe(401);
+    process.env.SLAUDE_DEPLOY_PREVIEW_TOKEN = "p".repeat(31);
+    expect((await api().fetch(post("p".repeat(31), body, "?dryRun=1")))!.status).toBe(404);
+  });
+
+  test("a preview token equal to the deploy token is unset", async () => {
+    process.env.SLAUDE_DEPLOY_PREVIEW_TOKEN = DEPLOY;
+    // The value still works as the deploy token; it just is not a preview token.
+    const { env } = await import("../../../src/config/env");
+    expect(env.deployPreviewToken()).toBe("");
+  });
+
+  test("a dry run never calls the soul extractor", async () => {
+    let calls = 0;
+    const a = createDeployApi({ pubsub: null, env: () => ({ ANA_XOXP: "user-token-secret-value" }), extract: async () => { calls++; return { approvers: [] }; } });
+    const res = await a.fetch(post(DEPLOY, body, "?dryRun=1"));
+    expect(res!.status).toBe(200);
+    expect((await res!.json() as any).created).toEqual(["default", "ana"]);
+    expect(calls).toBe(0);
   });
 });
 
