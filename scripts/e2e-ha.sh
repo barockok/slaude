@@ -15,12 +15,19 @@
 #                         deletes pods; the stack recovers by itself, but run them only on a cluster
 #                         you can afford to disturb (the workflow does; they take several minutes).
 #                         They are not run by default.
-#   E2E_TEARDOWN=1        afterwards run deploy/k8s-local/down.sh for this profile. Refused unless
+#                         Both profile variables the two scripts read (SLAUDE_LOCAL_PROFILE and
+#                         MINIKUBE_PROFILE) are set to the e2e profile; the run is refused if a
+#                         script selects a cluster through any other *PROFILE* variable.
+#   E2E_DRY_RUN=1         after the guards, print what would run (with the profile variables) and
+#                         exit without running the bring-up, the sanity scripts or the tests.
+#   E2E_TEARDOWN=1       afterwards run deploy/k8s-local/down.sh for this profile. Refused unless
 #                         the profile matches /^slaude-e2e/. Off by default.
 #
 # Never touches any other minikube profile. If another profile is Running it refuses and prints
 # the command for you to run: the suite leaves a `claude` process (~150-200 MB) per case on a node,
-# and two running VMs starve it. No credentials are read or printed; secrets are never dumped.
+# and two running VMs starve it. No credentials are read or printed; Secrets are never dumped and
+# the diagnostics carry no env lists. A failed bring-up, sanity run or case all collect diagnostics.
+# E2E_ARTIFACTS is deleted before use, so it must be under this repo's dist/ or the temp dir.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -71,20 +78,53 @@ cluster_ready() {
   return 0
 }
 
+status=0
+
 if [[ "${E2E_FORCE_UP:-}" == "1" ]] || ! cluster_ready; then
   echo "e2e-ha: bringing the stack up (e2e/up.sh)"
-  "$ROOT/e2e/up.sh" || die "e2e/up.sh failed"
+  if [[ "${E2E_DRY_RUN:-}" == "1" ]]; then
+    echo "e2e-ha: dry run, would run: SLAUDE_LOCAL_PROFILE=$PROFILE $ROOT/e2e/up.sh"
+  else
+    "$ROOT/e2e/up.sh"
+    status=$?
+    ((status == 0)) || echo "e2e-ha: e2e/up.sh failed (exit $status); not running the cases"
+  fi
 else
   echo "e2e-ha: cluster Ready, skipping bring-up (E2E_FORCE_UP=1 to force)"
 fi
 
-status=0
+# The sanity scripts SIGKILL containers of whatever profile they select. Each reads its profile from
+# a different variable (verify-ha.sh: SLAUDE_LOCAL_PROFILE, verify-turns.sh: MINIKUBE_PROFILE), so
+# BOTH are set to the e2e profile, and the run is refused if a script now selects a cluster through
+# any other *PROFILE* variable (e2e/harness/verify-scripts.test.ts fails on the same condition).
+SANITY_SCRIPTS=("$ROOT/deploy/k8s-local/verify-ha.sh" "$ROOT/deploy/k8s-local/verify-turns.sh")
+ALLOWED_PROFILE_VARS=" MINIKUBE_PROFILE SLAUDE_LOCAL_PROFILE "
+sanity_env_ok() {
+  local s name
+  for s in "${SANITY_SCRIPTS[@]}"; do
+    while read -r name; do
+      [[ -n "$name" ]] || continue
+      case "$ALLOWED_PROFILE_VARS" in *" $name "*) ;; *)
+        printf 'e2e-ha: %s selects a cluster through %s, which this wrapper does not set; refusing\n' "${s##*/}" "$name" >&2
+        return 1 ;;
+      esac
+    done < <(grep -oE '\$\{[A-Z_]*PROFILE[A-Z_]*' "$s" | sed 's/^\${//' | sort -u)
+  done
+}
 
-if [[ "${E2E_SANITY:-}" == "1" ]]; then
+if ((status == 0)) && [[ "${E2E_SANITY:-}" == "1" ]]; then
+  sanity_env_ok || die "sanity scripts not run"
+  export MINIKUBE_PROFILE="$PROFILE" SLAUDE_LOCAL_PROFILE="$PROFILE"
   echo "e2e-ha: cluster sanity (verify-ha.sh, verify-turns.sh)"
-  "$ROOT/deploy/k8s-local/verify-ha.sh" || status=$?
-  if ((status == 0)); then "$ROOT/deploy/k8s-local/verify-turns.sh" || status=$?; fi
-  ((status == 0)) || echo "e2e-ha: sanity checks failed (exit $status); not running the cases"
+  if [[ "${E2E_DRY_RUN:-}" == "1" ]]; then
+    for s in "${SANITY_SCRIPTS[@]}"; do
+      echo "e2e-ha: dry run, would run: MINIKUBE_PROFILE=$MINIKUBE_PROFILE SLAUDE_LOCAL_PROFILE=$SLAUDE_LOCAL_PROFILE $s"
+    done
+  else
+    "${SANITY_SCRIPTS[0]}" || status=$?
+    if ((status == 0)); then "${SANITY_SCRIPTS[1]}" || status=$?; fi
+    ((status == 0)) || echo "e2e-ha: sanity checks failed (exit $status); not running the cases"
+  fi
 fi
 
 # --- the cases -----------------------------------------------------------------------------------
@@ -101,19 +141,44 @@ done
 if ((status == 0)); then
   if ((${#files[@]} == 0)); then die "no e2e/ha/*.e2e.ts files found"; fi
   printf 'e2e-ha: running %s\n' "${files[*]}"
-  bun test "${files[@]}" --timeout 300000
-  status=$?
+  if [[ "${E2E_DRY_RUN:-}" == "1" ]]; then
+    echo "e2e-ha: dry run, would run: bun test ${files[*]} --timeout 300000"
+  else
+    bun test "${files[@]}" --timeout 300000
+    status=$?
+  fi
 fi
 
 # --- diagnostics on failure ----------------------------------------------------------------------
+# The directory is deleted before use, so it must be a path we can be sure is scratch: under this
+# repo's dist/ or the system temp dir, absolute after resolution, with no `..` component.
+safe_artifacts_dir() {
+  local d="$1" tmp="${TMPDIR:-/tmp}"
+  tmp="${tmp%/}"
+  [[ -n "$d" ]] || { echo "e2e-ha: E2E_ARTIFACTS is empty" >&2; return 1; }
+  [[ "$d" == /* ]] || d="$ROOT/$d"
+  case "/$d/" in */../*) echo "e2e-ha: E2E_ARTIFACTS must not contain '..': $d" >&2; return 1 ;; esac
+  case "$d" in
+    "$ROOT/dist"/* | /tmp/* | /private/tmp/* | "$tmp"/* | /var/folders/*/*/T/*) ;;
+    *) echo "e2e-ha: E2E_ARTIFACTS must be under $ROOT/dist or the temp dir: $d" >&2; return 1 ;;
+  esac
+  [[ "$d" != "$HOME" && "$d" != "/" ]] || return 1
+  ARTIFACTS="$d"
+}
 collect_artifacts() {
   local dir="$ARTIFACTS" pf_pids=() sel="app.kubernetes.io/name=slaude" comp
+  safe_artifacts_dir "$dir" || { echo "e2e-ha: not collecting diagnostics" >&2; return; }
+  dir="$ARTIFACTS"
   rm -rf "$dir" && mkdir -p "$dir"
   echo "e2e-ha: collecting diagnostics into $dir"
   k get pods -o wide >"$dir/pods.txt" 2>&1
-  # describe only pods that are not Ready; describe prints events and spec, never Secret values
+  k get events --sort-by=.lastTimestamp >"$dir/events.txt" 2>&1
+  # Pods that are not Ready, as JSON with every env list removed (literal env values can be
+  # sensitive); the container statuses and conditions are what diagnose a stuck pod.
   k get pods --no-headers 2>/dev/null | awk '{split($2,a,"/"); if (a[1]!=a[2] || $3!="Running") print $1}' |
-    while read -r pod; do k describe pod "$pod" >"$dir/describe-$pod.txt" 2>&1; done
+    while read -r pod; do
+      k get pod "$pod" -o json 2>&1 | jq 'del(.spec.containers[]?.env, .spec.initContainers[]?.env, .metadata.managedFields)' >"$dir/pod-$pod.json" 2>&1
+    done
   for comp in gateway node; do
     k logs -l "$sel,app.kubernetes.io/component=$comp" --all-containers --prefix --tail=-1 --max-log-requests=10 >"$dir/logs-$comp.txt" 2>&1
   done
@@ -122,8 +187,10 @@ collect_artifacts() {
   done
 
   local mock_port=$((20000 + RANDOM % 20000)) fake_port=$((40000 + RANDOM % 20000))
-  k port-forward svc/mock-llm "$mock_port:8080" >/dev/null 2>&1 & pf_pids+=($!)
-  k port-forward svc/fake-slack "$fake_port:8080" >/dev/null 2>&1 & pf_pids+=($!)
+  # kubectl itself is backgrounded (not the k() wrapper, whose subshell would take the kill and
+  # leave the port-forward running)
+  kubectl --context "$PROFILE" -n "$NS" port-forward svc/mock-llm "$mock_port:8080" >/dev/null 2>&1 & pf_pids+=($!)
+  kubectl --context "$PROFILE" -n "$NS" port-forward svc/fake-slack "$fake_port:8080" >/dev/null 2>&1 & pf_pids+=($!)
   local i
   for i in $(seq 1 40); do
     if curl -fsS -m 1 "http://127.0.0.1:$mock_port/__mock/journal" >/dev/null 2>&1 &&
@@ -156,7 +223,9 @@ if ((status != 0)); then collect_artifacts; fi
 
 # --- teardown (opt-in) ---------------------------------------------------------------------------
 if [[ "${E2E_TEARDOWN:-}" == "1" ]]; then
-  if [[ "$PROFILE" =~ ^slaude-e2e ]]; then
+  if [[ "${E2E_DRY_RUN:-}" == "1" ]]; then
+    echo "e2e-ha: dry run, would run: SLAUDE_LOCAL_PROFILE=$PROFILE $ROOT/deploy/k8s-local/down.sh"
+  elif [[ "$PROFILE" =~ ^slaude-e2e ]]; then
     echo "e2e-ha: tearing down profile $PROFILE"
     SLAUDE_LOCAL_PROFILE="$PROFILE" "$ROOT/deploy/k8s-local/down.sh" || echo "e2e-ha: down.sh failed" >&2
   else
