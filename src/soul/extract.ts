@@ -46,8 +46,12 @@ function cacheMacKey(): Buffer | null | "unusable" {
   }
 }
 
+/** The MAC covers the FULL sha256 of the soul text (not the 64-bit prefix
+ *  that names the file) and the data. An entry signed over the prefix — the
+ *  earlier format — fails to verify, so it is re-extracted once. */
 function cacheMac(key: Buffer, text: string, data: unknown): string {
-  return createHmac("sha256", key).update(`${sha256(text)}\n${JSON.stringify(data)}`).digest("hex");
+  const full = createHash("sha256").update(text).digest("hex");
+  return createHmac("sha256", key).update(`${full}\n${JSON.stringify(data)}`).digest("hex");
 }
 
 /**

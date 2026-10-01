@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash, createHmac } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -136,6 +137,28 @@ describe("soulCachePath", () => {
     let called = 0;
     await extractSoulData(text, { strict: true, call: async () => { called++; return JSON.stringify(extracted); } });
     expect(called).toBe(1);
+  });
+
+  // R42 (M5): the MAC covers the FULL sha256 of the soul text, not the 64-bit
+  // prefix in the file name. An entry signed over the truncated hash (the old
+  // format) is a miss and is re-extracted.
+  test("an entry whose MAC covers only the truncated text hash is a miss", async () => {
+    withKey();
+    const dir = mkdtempSync(join(tmpdir(), "soul-cache-"));
+    process.env.SLAUDE_SOUL_CACHE_DIR = dir;
+    const text = SOUL();
+    const data = SoulDataSchema.parse(extracted);
+    const macKey = createHmac("sha256", Buffer.alloc(32, 7)).update("slaude:soul-cache:v1").digest();
+    const short = createHash("sha256").update(text).digest("hex").slice(0, 16);
+    const mac = createHmac("sha256", macKey).update(`${short}\n${JSON.stringify(data)}`).digest("hex");
+    writeFileSync(soulCachePath(text), JSON.stringify({ v: 1, mac, data }));
+    let called = 0;
+    await extractSoulData(text, { strict: true, call: async () => { called++; return JSON.stringify(extracted); } });
+    expect(called).toBe(1);
+    // ...and the entry it writes is signed over the full digest.
+    const full = createHash("sha256").update(text).digest("hex");
+    const env = JSON.parse(readFileSync(soulCachePath(text), "utf8"));
+    expect(env.mac).toBe(createHmac("sha256", macKey).update(`${full}\n${JSON.stringify(env.data)}`).digest("hex"));
   });
 
   test("a fresh extraction under a master key writes a signed entry the next call hits", async () => {
