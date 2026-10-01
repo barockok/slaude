@@ -18,6 +18,7 @@ import { createGateway, type GatewayHandle } from "../../src/gateway/core/gatewa
 import { StubAgent } from "../../src/gateway/sim/stub-agent";
 import { WORLD, writeSoulFixture } from "../../src/gateway/sim/soul-fixture";
 import { createHttpSlackTransport, type HttpSlackTransport } from "../../src/gateway/slack/http-transport";
+import { metrics } from "../../src/metrics";
 import { __resetSoulDataMemo } from "../../src/soul/extract";
 import type { CallRecord } from "./core/call-log";
 import { KNOWN_METHODS } from "./core/web-api";
@@ -97,6 +98,25 @@ const acks = async (channel: string) => (await botMessages(channel)).filter((m) 
 /** Room for a wrongly processed second copy to show up before an exactly-once assertion. */
 const settle = () => new Promise((r) => setTimeout(r, 500));
 
+/**
+ * The gateway's own count of inbound events it dropped for `reason` (slaude_slack_drops_total,
+ * read through the registry's public Prometheus rendering, summed over every series with that
+ * reason). A rise is positive proof that a copy reached the gateway and was dropped there.
+ */
+const drops = (reason: string): number => {
+  let n = 0;
+  for (const line of metrics.render().split("\n")) {
+    if (line.startsWith("slaude_slack_drops_total{") && line.includes(`reason="${reason}"`)) n += Number(line.slice(line.lastIndexOf(" ") + 1));
+  }
+  return n;
+};
+/** Wait for the gateway to drop `delta` more events for `reason` than `before`, then require exactly that many. */
+const dropped = async (reason: string, before: number, delta: number) => {
+  await until(() => drops(reason) - before >= delta, { what: `${delta} "${reason}" drop(s) in the gateway` });
+  await settle(); // a late extra copy would show up here
+  expect(drops(reason) - before).toBe(delta);
+};
+
 describe("real gateway + HTTP transport + fake Slack", () => {
   test("a DM from the manager gets one reply, threaded on the inbound message", async () => {
     const sent = await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "hello", target: base });
@@ -117,42 +137,49 @@ describe("real gateway + HTTP transport + fake Slack", () => {
   });
 
   test("a channel message without an @mention in an unengaged thread is not answered", async () => {
+    const before = drops("engagement");
     await ctl.send({ app: "A0FAKE", channel: "C0TEAM", user: "U0ALICE", text: "just chatting", target: base });
-    await settle();
+    await dropped("engagement", before, 1);
     expect(await botMessages("C0TEAM")).toEqual([]);
     expect((await ctl.calls()).calls.filter((c) => c.kind === "api" && c.method === "chat.postMessage")).toEqual([]);
   });
 
   test("a duplicate delivery of the same event produces one reply", async () => {
+    const before = drops("dedup");
     const sent = await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "dedup me", target: base, duplicate: true, eventId: "Ev0DEDUP" });
     expect(sent.deliveries.map((d) => d.finalStatus)).toEqual([200, 200]);
     await until(async () => (await acks("D0MGR")).length >= 1, { what: "first reply" });
-    await settle();
+    await dropped("dedup", before, 1);
     expect(await acks("D0MGR")).toHaveLength(1);
   });
 
   test("a Slack retry (X-Slack-Retry-Num) of an event already taken produces no second reply", async () => {
     const first = await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "retry me", target: base, eventId: "Ev0RETRY" });
     await until(async () => (await acks("D0MGR")).length >= 1, { what: "first reply" });
+    const before = drops("dedup");
     const retry = await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", target: base, redeliverTs: first.message.ts, eventId: "Ev0RETRY", retryNum: 1 });
     expect(retry.deliveries[0]!.attempts).toEqual([{ retryNum: 1, status: 200 }]);
-    await settle();
+    await dropped("dedup", before, 1);
     expect(await acks("D0MGR")).toHaveLength(1);
   });
 
   test("an event whose first delivery the gateway sees is a retry is still answered", async () => {
     // Slack's first attempt was lost (e.g. the gateway was down): only the retry arrives.
+    const before = drops("dedup");
     await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "only the retry", target: base, retryNum: 2 });
     await until(async () => (await acks("D0MGR")).length >= 1, { what: "the reply to a retry-only delivery" });
     await settle();
     expect(await acks("D0MGR")).toHaveLength(1);
+    // the retry header alone is not a reason to drop
+    expect(drops("dedup") - before).toBe(0);
   });
 
   test("the same message ts under a NEW event id is still one reply (dedup is by channel and ts)", async () => {
     const first = await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "same ts", target: base, eventId: "Ev0ONE" });
     await until(async () => (await acks("D0MGR")).length >= 1, { what: "first reply" });
+    const before = drops("dedup");
     await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", target: base, eventId: "Ev0TWO", redeliverTs: first.message.ts });
-    await settle();
+    await dropped("dedup", before, 1);
     expect(await acks("D0MGR")).toHaveLength(1);
   });
 
@@ -207,6 +234,11 @@ describe("real gateway + HTTP transport + fake Slack", () => {
   });
 
   // Keep last: it checks every call made since boot, collected across the tests above.
+  // Blind spot: this sees only calls that reach the fake over HTTP. In HTTP mode the turn's
+  // outbound client is the transport's hand-written `lazyClient` proxy
+  // (src/gateway/slack/http-transport.ts); a method missing from that proxy throws a TypeError
+  // inside the gateway and never reaches the fake, so a green result here does NOT mean the
+  // gateway's Slack surface is complete.
   test("the gateway only ever calls Web API methods the fake implements", async () => {
     await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "one more", target: base });
     await until(async () => (await acks("D0MGR")).length >= 1, { what: "reply" });
