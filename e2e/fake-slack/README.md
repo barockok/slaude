@@ -114,7 +114,18 @@ Cluster suite (needs minikube; uses the mock LLM from `e2e/mock-llm` and no cred
 
 See the header of `scripts/e2e-ha.sh` for the guards, `E2E_*` switches and the diagnostics
 it collects on failure. The workflow `.github/workflows/e2e-ha.yml` runs the same script on a
-runner, dispatched by hand.
+runner, nightly and dispatched by hand.
+
+Each run seeds the persona from one gateway pod (`e2e/harness/in-pod/seed-persona.ts`): the soul
+fixture as `SOUL.md`, a soul-extraction cache entry written through the image's own
+`writeSoulCacheEntry` (signed with the cluster's master key, since the mock LLM cannot answer
+the extraction call), and the Slack app registration. The e2e overlay points the gateway's
+`SLAUDE_SOUL_CACHE_DIR` at the shared volume, where production keeps it pod-local, so the
+entry reaches every gateway replica and survives the restart that follows a seed; the field
+note explains the trade. The seed refuses a tenant already synced as personas as code (the
+gateway would ignore it), which `deploy/k8s-local/verify-ha.sh` leaves behind: that is why the
+sanity scripts run after the cases, and why re-running the cases on a cluster they touched needs
+a fresh cluster. `bun test e2e/harness/seed-persona.test.ts` runs the seed on the host.
 
 The follow-up HA scenarios (node kill, gateway kill, cross-replica approvals, model and
 Slack faults, multi-persona) and the real-Slack canary are not in this suite yet. The
