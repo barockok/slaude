@@ -949,7 +949,7 @@ export class AgentManager extends EventEmitter {
         live.query = q;
         for await (const msg of q as AsyncIterable<SDKMessage>) {
           console.log(`[mgr] sdk msg type=${(msg as any).type} subtype=${(msg as any).subtype ?? "-"}`);
-          this.#fanout(sessionId, msg);
+          this.#fanout(sessionId, msg, live);
         }
         console.log(`[mgr] query() exited session=${sessionId}`);
         // for-await ends only when the prompt iterable is closed; that is
@@ -1040,8 +1040,13 @@ export class AgentManager extends EventEmitter {
     })();
   }
 
-  #fanout(sessionId: string, msg: SDKMessage) {
-    const live = this.#live.get(sessionId);
+  #fanout(sessionId: string, msg: SDKMessage, owner: LiveSession) {
+    // A session detached by sendMessage's bounded reload wait keeps running its
+    // own query loop, but no longer owns the id: a fresh session may hold it.
+    // Its late messages must not join the fresh session's turn, nor decrement
+    // its outstanding inputs (which could apply a deferred reload under it).
+    if (this.#live.get(sessionId) !== owner) return;
+    const live = owner;
     switch (msg.type) {
       case "assistant": {
         void this.#store.markStarted(sessionId);

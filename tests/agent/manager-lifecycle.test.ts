@@ -1011,6 +1011,52 @@ describe("AgentManager reload: overlapping inputs and a CLI that never exits", (
   });
 });
 
+// R42 (M1): a session detached by the bounded reload wait keeps its own query
+// loop; anything it emits late must not be credited to the fresh session that
+// now holds the id — late text would join the wrong turn, and a late result
+// would decrement the fresh session's outstanding inputs and apply a deferred
+// reload under its running turn.
+describe("a detached reloading session's late messages", () => {
+  it("are not credited to the fresh session", async () => {
+    const mgr = new AgentManager();
+    mgr.__setReloadExitTimeoutForTests(50);
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const stuck = plan((s) => {
+      s.hang = true;
+      s.onUser = () => s.emit(res());
+    });
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => events.some((e) => e.type === "done"), 3000, "done");
+    // The fresh session's turn stays in flight (no result yet).
+    const fresh = plan(() => {});
+    expect(mgr.reload(row.id)).toBe(true);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await mgr.sendMessage(row.id, "after");
+    } finally {
+      warn.mockRestore();
+    }
+    await until(() => fresh.users.length === 1, 3000, "fresh session got the message");
+    // A config change asks for a reload after the fresh session's turn.
+    expect(mgr.reloadAfterTurn(row.id)).toBe(true);
+    const before = events.length;
+    stuck.emit(asst([txt("late text from the detached session")]));
+    stuck.emit(res());
+    await Bun.sleep(40);
+    const late = events.slice(before);
+    expect(late.some((e) => e.type === "assistantText")).toBe(false);
+    expect(late.some((e) => e.type === "done")).toBe(false);
+    // The deferred reload did not fire under the fresh turn.
+    expect(fresh.ended).toBe(false);
+    expect(mgr.isLive(row.id)).toBe(true);
+    // The fresh session's own result still ends its turn and applies the reload.
+    fresh.emit(res());
+    await until(() => events.slice(before).some((e) => e.type === "done"), 3000, "fresh done");
+    await until(() => !mgr.isLive(row.id), 3000, "deferred reload applied after the fresh turn");
+  });
+});
+
 // R41 (I4): a registry install that retires a persona closes its WARM session.
 // Without this, the live child keeps taking messages (sendMessage pushes into it
 // and never re-resolves the persona) and runs as the default identity.
