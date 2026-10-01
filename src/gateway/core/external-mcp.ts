@@ -64,6 +64,24 @@ export function parseExternalMcp(
   return { servers, privateServices };
 }
 
+/**
+ * The servers that can hold an OAuth credential: HTTP ones with a URL.
+ *
+ * `/mcp` in Slack and the portal's integrations page both resolve their list
+ * through here, so the two surfaces cannot disagree about what is connectable.
+ */
+export function oauthHttpServers(
+  servers: Record<string, McpServerConfig>,
+): Record<string, { type: "http"; url: string; headers?: Record<string, string> }> {
+  const out: Record<string, { type: "http"; url: string; headers?: Record<string, string> }> = {};
+  for (const [name, cfg] of Object.entries<any>(servers)) {
+    if (cfg?.type === "http" && typeof cfg.url === "string") {
+      out[name] = { type: "http", url: cfg.url, headers: cfg.headers };
+    }
+  }
+  return out;
+}
+
 /** Per-session overrides: when the thread is /1on1-locked, return cleared copies of
  *  each whitelisted server so they mount anonymous. Empty when unlocked. Source map
  *  is never mutated (clearCredentials copies). */

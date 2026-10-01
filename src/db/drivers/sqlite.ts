@@ -167,6 +167,17 @@ CREATE TABLE IF NOT EXISTS mcp_credentials (
   UNIQUE (agent_tenant, agent_persona, server_key)
 );
 
+-- One in-flight portal OAuth authorization (see 0009_portal_oauth_flows.sql).
+CREATE TABLE IF NOT EXISTS portal_oauth_flows (
+  id         TEXT    PRIMARY KEY,
+  account_id TEXT    NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
+  payload    TEXT    NOT NULL,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_portal_oauth_flows_expires ON portal_oauth_flows (expires_at);
+
 CREATE TABLE IF NOT EXISTS mention_only_threads (
   channel_id TEXT    NOT NULL,
   thread_ts  TEXT    NOT NULL,

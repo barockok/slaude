@@ -6,6 +6,24 @@ WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 
+# Web stage: build the panel and portal React apps.
+#
+# They need devDependencies (vite, @vitejs/plugin-react, react-dom), so this
+# stage installs the full tree rather than reusing the production one. Only the
+# built dist/ trees are copied into the runtime image.
+#
+# Before this stage existed the image contained no built app at all — dist/ is
+# gitignored and nothing built it — so the gateway served Vite's source shell,
+# HTML referencing /src/main.tsx that a browser cannot run. The panel UI had
+# therefore never worked in a container.
+FROM oven/bun:1.3-debian AS web
+WORKDIR /app
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
+COPY tsconfig.json ./
+COPY src ./src
+RUN bun run web:build
+
 # Builder stage: install agent dependencies declared in slaude.json,
 # then copy the artifacts into the runtime image.
 FROM oven/bun:1.3-debian AS builder
@@ -70,6 +88,11 @@ COPY scripts ./scripts
 COPY --from=builder /app/.slaude/skills    /data/.slaude/skills
 COPY --from=builder /app/.slaude/knowledge /data/.slaude/knowledge
 COPY --from=builder /app/.slaude/.claude   /data/.slaude/.claude
+
+# The built web apps. Without these the panel and portal serve an unrunnable
+# source shell (see the web stage above).
+COPY --from=web /app/src/gateway/panel/web/dist  ./src/gateway/panel/web/dist
+COPY --from=web /app/src/gateway/portal/web/dist ./src/gateway/portal/web/dist
 
 ENV SLAUDE_HOME=/data
 VOLUME ["/data"]

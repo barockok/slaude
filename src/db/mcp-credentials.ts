@@ -168,6 +168,24 @@ export async function storedExpiry(owner: CredentialOwner, serverKey: string): P
   return row ? Number(row.expires_at) : null;
 }
 
+/**
+ * Expiries for every credential one owner holds, keyed by server key.
+ *
+ * Nothing is decrypted: the portal's integrations page needs to know what exists
+ * and for how long, and an endpoint that could return a token is one that
+ * eventually does.
+ */
+export async function credentialExpiries(owner: CredentialOwner): Promise<Record<string, number>> {
+  const w = ownerWhere(owner);
+  const rows = await db.query<{ server_key: string; expires_at: number }>(
+    `SELECT server_key, expires_at FROM mcp_credentials WHERE ${w.sql}`,
+    w.params,
+  );
+  const out: Record<string, number> = {};
+  for (const r of rows) out[r.server_key] = Number(r.expires_at);
+  return out;
+}
+
 /** Remove one owner's credential for one server. True if a row was removed. */
 export async function deleteCredential(owner: CredentialOwner, serverKey: string): Promise<boolean> {
   const w = ownerWhere(owner);

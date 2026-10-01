@@ -32,6 +32,18 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      # The web apps are excluded from the root typecheck (they need DOM libs),
+      # and a broken one used to fail only at image build time — or, before the
+      # Dockerfile built them at all, never. Both are checked and built here so a
+      # pull request cannot land an app the container cannot serve.
+      - name: Typecheck the web apps
+        run: |
+          bunx tsc --noEmit -p src/gateway/panel/web/tsconfig.json
+          bunx tsc --noEmit -p src/gateway/portal/web/tsconfig.json
+
+      - name: Build the web apps
+        run: bun run web:build
+
       - name: Run tests with coverage
         # --parallel=1: serialize test-file execution. brain-coverage.test.ts boots
         # a real brain with module-level singletons (embeddingActive state); without

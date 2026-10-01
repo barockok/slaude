@@ -22,17 +22,20 @@ export type { VerifyReason };
 export const PORTAL_AT_COOKIE = "portal_at";
 export const PORTAL_RT_COOKIE = "portal_rt";
 export const PORTAL_FLOW_COOKIE = "portal_flow";
+/** The MCP connect flow in progress. Carries a row id and nothing else. */
+export const PORTAL_OAUTH_COOKIE = "portal_oauth";
 
 export const PORTAL_AT_PATH = "/portal";
 export const PORTAL_RT_PATH = "/portal/auth/refresh";
 export const PORTAL_FLOW_PATH = "/portal/auth";
+export const PORTAL_OAUTH_PATH = "/portal/oauth";
 
 export const PORTAL_AT_TTL_SEC = 900;
 /** Absolute, not sliding: refresh never re-issues the refresh cookie. */
 export const PORTAL_RT_TTL_SEC = 28800;
 export const PORTAL_FLOW_TTL_SEC = 600;
 
-export type PortalTokenType = "portal_at" | "portal_rt" | "portal_flow";
+export type PortalTokenType = "portal_at" | "portal_rt" | "portal_flow" | "portal_oauth";
 
 export interface PortalClaims {
   sub: string;
@@ -129,4 +132,38 @@ export function verifyPortalFlow(
     ok: true,
     payload: { state: p.state, nonce: p.nonce, verifier: p.verifier, returnTo: p.returnTo },
   };
+}
+
+/**
+ * The MCP connect flow cookie.
+ *
+ * It binds an authorization to the browser that started it, so a leaked
+ * authorize URL cannot be completed from somewhere else. It carries the flow
+ * row's opaque id and NOTHING else: a JWT payload is base64, readable by
+ * whoever holds the cookie, and what the exchange needs includes the client
+ * secret dynamic registration issued. That rests encrypted in
+ * portal_oauth_flows instead (see src/db/portal-oauth-flows.ts).
+ */
+export function mintPortalOauthFlow(
+  flowId: string,
+  opts: { secret?: string; now?: number } = {},
+): string {
+  const secret = secretOr(opts);
+  const iat = Math.floor((opts.now ?? Date.now()) / 1000);
+  return encodeJwt({ fid: flowId, typ: "portal_oauth" as const, iat, exp: iat + PORTAL_FLOW_TTL_SEC }, secret);
+}
+
+export function verifyPortalOauthFlow(
+  token: string | null | undefined,
+  opts: { secret?: string; now?: number } = {},
+): { ok: true; flowId: string } | { ok: false; reason: VerifyReason } {
+  const r = decodeJwt<{ fid: string; typ: PortalTokenType }>(
+    token,
+    opts.secret ?? env.panel.secret(),
+    opts.now ?? Date.now(),
+  );
+  if (!r.ok) return r;
+  if (r.payload.typ !== "portal_oauth") return { ok: false, reason: "wrong_type" };
+  if (typeof r.payload.fid !== "string" || !r.payload.fid) return { ok: false, reason: "malformed" };
+  return { ok: true, flowId: r.payload.fid };
 }

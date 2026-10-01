@@ -214,6 +214,37 @@ export const env = {
     return n;
   },
 
+  /**
+   * Session-lock timings (spec §2). The TTL is also the takeover delay: a
+   * killed node never releases `lock:session:<id>`, so the turn re-delivered to
+   * another node waits for the lock to expire before it can run. The default
+   * tolerates a ten-minute stall inside a live node and costs that long a
+   * takeover when one dies; a deployment that prefers fast takeover lowers
+   * both. The TTL must stay comfortably above the renewal cadence, or a live
+   * node's lock could lapse between renewals and its session change hands
+   * mid-turn.
+   */
+  sessionLock: (): { ttlMs: number; extendEveryMs: number } => {
+    const ms = (name: string, dflt: number): number => {
+      const raw = opt(name, String(dflt));
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1) {
+        throw new Error(`${name} must be a positive integer of milliseconds (got '${raw}')`);
+      }
+      return n;
+    };
+    const extendEveryMs = ms("SLAUDE_SESSION_LOCK_EXTEND_MS", 60_000);
+    const ttlMs = ms("SLAUDE_SESSION_LOCK_TTL_MS", 600_000);
+    if (ttlMs < extendEveryMs * 3) {
+      throw new Error(
+        `SLAUDE_SESSION_LOCK_TTL_MS (${ttlMs}) must be at least 3x ` +
+          `SLAUDE_SESSION_LOCK_EXTEND_MS (${extendEveryMs}), so a renewal that is late ` +
+          `does not cost a live node its session`,
+      );
+    }
+    return { ttlMs, extendEveryMs };
+  },
+
   provider: {
     apiKey: () => opt("ANTHROPIC_API_KEY"),
     baseUrl: () => opt("ANTHROPIC_BASE_URL"),

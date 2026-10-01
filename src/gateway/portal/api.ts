@@ -3,11 +3,16 @@
  * operator panel with its own guard — an ordinary user never reaches an operator
  * route, and the panel's guard is not relaxed to let them in.
  *
+ *   GET    /portal              the app shell (React, served statically)
  *   GET    /portal/auth/*      sign-in (./auth-routes)
  *   GET    /portal/api/me      the signed-in account and its Slack identities
  *   GET    /portal/link?t=…    confirmation page for an onboarding link
  *   POST   /portal/api/link    redeem a link: bind a Slack identity
  *   DELETE /portal/api/link    unlink one of your own bindings
+ *   GET    /portal/api/integrations                  what is offered + my status
+ *   POST   /portal/api/integrations/:name/connect    start an OAuth connect
+ *   GET    /portal/oauth/callback                    finish one
+ *   DELETE /portal/api/integrations/:name            disconnect
  *
  * Redeeming is a POST behind a custom header, never a bare GET. A mutating GET
  * can be triggered cross-site by an image tag, and the consequence here is
@@ -18,13 +23,32 @@
  */
 import { env } from "../../config/env";
 import { linkSlackIdentity, unlinkSlackIdentity, slackIdentitiesForAccount } from "../../db/accounts";
+import { deleteCredential } from "../../db/mcp-credentials";
+import { oauthKey } from "../../agent/mcp-oauth/store";
 import { createPortalAuthRoutes, type PortalAuthRoutes } from "./auth-routes";
 import { guardPortal } from "./guard";
 import { verifyLinkToken } from "./link-token";
+import { configuredServer, configuredServers, integrationsFor, type ConfiguredServers } from "./integrations";
+import { finishPortalConnect, startPortalConnect, type PortalConnectDeps } from "./oauth";
+import { servePortalStatic } from "./static";
+import {
+  clearCookie,
+  mintPortalOauthFlow,
+  parseCookies,
+  setCookie,
+  verifyPortalOauthFlow,
+  PORTAL_OAUTH_COOKIE,
+  PORTAL_OAUTH_PATH,
+  PORTAL_FLOW_TTL_SEC,
+} from "./session";
 
 export interface PortalApiDeps {
   /** Test seam: stand in for the identity provider on the auth routes. */
   authRoutes?: PortalAuthRoutes;
+  /** Test seam: the deployment's connectable MCP servers. */
+  servers?: () => ConfiguredServers;
+  /** Test seam: discovery, registration and the token endpoint. */
+  connect?: PortalConnectDeps;
 }
 
 export interface PortalApi {
@@ -114,6 +138,8 @@ function confirmPage(token: string, team: string, slackUser: string): string {
 
 export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
   const authRoutes = deps.authRoutes ?? createPortalAuthRoutes();
+  const servers = deps.servers ?? configuredServers;
+  const connectDeps = deps.connect ?? {};
 
   async function fetch(req: Request): Promise<Response | null> {
     const url = new URL(req.url);
@@ -193,6 +219,107 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
         }
 
         return json(405, { error: "method not allowed" });
+      }
+
+      // GET /portal/api/integrations
+      if (seg.length === 3 && seg[1] === "api" && seg[2] === "integrations") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        const guarded = await guardPortal(req, { html: false });
+        if (!guarded.ok) return guarded.response;
+        return json(200, { integrations: await integrationsFor(guarded.account.id, servers()) });
+      }
+
+      // POST /portal/api/integrations/:name/connect
+      if (seg.length === 5 && seg[1] === "api" && seg[2] === "integrations" && seg[4] === "connect") {
+        const csrf = enforcePortalCsrf(req);
+        if (csrf) return csrf;
+        if (req.method !== "POST") return json(405, { error: "method not allowed" });
+        const guarded = await guardPortal(req, { html: false });
+        if (!guarded.ok) return guarded.response;
+
+        const name = decodeURIComponent(seg[3]!);
+        const cfg = configuredServer(name, servers());
+        // Refused rather than attempted: the name arrives from the request, and
+        // the URL it would otherwise imply is where an access token gets sent.
+        if (!cfg) return json(404, { error: "no such integration" });
+
+        const started = await startPortalConnect(guarded.account.id, name, cfg, connectDeps);
+        const res = json(200, { authorizeUrl: started.authorizeUrl });
+        res.headers.append(
+          "set-cookie",
+          setCookie(PORTAL_OAUTH_COOKIE, mintPortalOauthFlow(started.flowId), {
+            path: PORTAL_OAUTH_PATH,
+            maxAgeSec: PORTAL_FLOW_TTL_SEC,
+          }),
+        );
+        return res;
+      }
+
+      // DELETE /portal/api/integrations/:name
+      if (seg.length === 4 && seg[1] === "api" && seg[2] === "integrations") {
+        const csrf = enforcePortalCsrf(req);
+        if (csrf) return csrf;
+        if (req.method !== "DELETE") return json(405, { error: "method not allowed" });
+        const guarded = await guardPortal(req, { html: false });
+        if (!guarded.ok) return guarded.response;
+
+        const name = decodeURIComponent(seg[3]!);
+        const cfg = configuredServer(name, servers());
+        if (!cfg) return json(404, { error: "no such integration" });
+        // Scoped to the caller's own account, so one person cannot disconnect
+        // another's integration.
+        const removed = await deleteCredential({ kind: "account", accountId: guarded.account.id }, oauthKey(name, cfg));
+        return json(200, { ok: true, removed });
+      }
+
+      // GET /portal/oauth/callback?code&state — the provider's redirect.
+      if (seg.length === 3 && seg[1] === "oauth" && seg[2] === "callback") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        const guarded = await guardPortal(req, { html: true });
+        if (!guarded.ok) return guarded.response;
+
+        const jar = parseCookies(req.headers.get("cookie"));
+        const cookie = verifyPortalOauthFlow(jar[PORTAL_OAUTH_COOKIE]);
+        const code = url.searchParams.get("code") ?? "";
+        const state = url.searchParams.get("state") ?? "";
+
+        // Every outcome lands back in the app with a result it can render, and
+        // the cookie is cleared either way — the flow row is single use, so the
+        // cookie has nothing left to refer to.
+        const back = (result: string) => {
+          return new Response(null, {
+            status: 302,
+            headers: {
+              location: `/portal?connect=${encodeURIComponent(result)}`,
+              "set-cookie": clearCookie(PORTAL_OAUTH_COOKIE, PORTAL_OAUTH_PATH),
+            },
+          });
+        };
+
+        if (!cookie.ok) return back("expired");
+        if (!code) return back("failed");
+        const done = await finishPortalConnect(guarded.account.id, cookie.flowId, code, state, connectDeps);
+        return back(done.ok ? "connected" : done.reason);
+      }
+
+      // The app's own hashed assets. Unguarded on purpose: they are the same
+      // bytes for everyone, they carry nothing about the viewer, and gating them
+      // means a person whose session expires with the page open gets redirects
+      // for scripts instead of a sign-in page.
+      if (req.method === "GET" && seg[1] === "assets") {
+        const asset = await servePortalStatic(url.pathname);
+        if (asset) return asset;
+      }
+
+      // Anything else under /portal that is not a route above is the app shell.
+      // Guarded, so an unauthenticated visitor is sent to sign in rather than
+      // handed a page that can only show them a 401. `auth` and `oauth` are
+      // excluded so an unknown path under them 404s instead of rendering the app.
+      if (req.method === "GET" && seg[1] !== "api" && seg[1] !== "auth" && seg[1] !== "oauth") {
+        const guarded = await guardPortal(req, { html: true });
+        if (!guarded.ok) return guarded.response;
+        const asset = await servePortalStatic(url.pathname);
+        if (asset) return asset;
       }
 
       return json(404, { error: "not found" });

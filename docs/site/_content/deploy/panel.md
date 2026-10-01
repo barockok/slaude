@@ -143,6 +143,31 @@ Enabling it is two steps, and the second is easy to miss:
 There is no step three. The portal reuses the panel's issuer, client id,
 client secret, public URL and signing secret.
 
+### The integrations page
+
+`/portal` is the page a person actually uses. It lists the HTTP MCP servers
+this deployment configures in `.mcp.json` — the same list `/mcp` offers in
+Slack — with a connect or disconnect button each, and it says plainly where
+those credentials apply: in a 1:1 with an agent and in what the person
+schedules there, not in a channel thread, where the agent runs as itself.
+
+The MCP provider redirects back to `${SLAUDE_PANEL_PUBLIC_URL}/portal/oauth/callback`.
+That is not something you register anywhere: MCP servers use dynamic client
+registration, so slaude registers the redirect URI itself at each connect. It
+does mean the public URL must be the address the person's browser can actually
+reach, which is the same requirement the panel already has.
+
+Nothing about this needs a second replica to be correct. A connect started on
+one gateway completes on whichever replica the ingress hands the callback to,
+because the in-flight state lives in the database rather than in a process. The
+`/mcp connect` command in Slack does **not** yet have that property — its
+pending flow is still per-process — so on a multi-replica deployment prefer the
+portal for a person's own integrations.
+
+A completed portal connect writes the same stored credential a 1:1 `/mcp
+connect` would, so the two surfaces are interchangeable as far as the agent is
+concerned.
+
 **Any identity the provider authenticates gets a portal account**, with no
 role check. That is intended. An account grants nothing on its own: it becomes
 useful only once a Slack identity is bound to it, and binding requires an
@@ -180,6 +205,11 @@ returns the live session row, but history that predates the operator's
 connection, and backfilling a gap when the capped event stream has trimmed
 old entries, are both deferred. The live SSE tail is fully wired; only
 history-before-connect is missing.
+
+Both web apps are built into the container image now (`bun run web:build`, run
+by the image's web stage and by CI). Until phase 4 they were not: `dist/` is
+gitignored and nothing built it, so a deployed image served Vite's source
+shell and the panel UI never worked in a container at all.
 
 The React app (`src/gateway/panel/web/`) builds with Vite (`bun run
 test:web` covers it under Playwright) — a browser toolchain kept separate
