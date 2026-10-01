@@ -186,6 +186,18 @@ test("boot annotations come back in the requested order, empty when absent", () 
   expect(bootAnnotations("{}", ["a"])).toEqual([""]);
 });
 
+test("a missing SOUL.md is a defined 'absent' state for the before-seed reading, and still an error after", () => {
+  const noSoul = `${"b".repeat(64)}  /data/cache/soul.0123456789abcdef.json\n`;
+  const absent = bootFingerprint(noSoul, LIST, "{}", { requireSoul: false });
+  expect(absent).toMatch(/^[0-9a-f]{32}$/);
+  expect(bootFingerprint("", LIST, "{}", { requireSoul: false })).not.toBe(absent);
+  expect(absent).not.toBe(bootFingerprint(SUMS("a"), LIST, "{}", { requireSoul: false }));
+  expect(bootFingerprint(SUMS("a"), LIST, "{}", { requireSoul: false })).toBe(bootFingerprint(SUMS("a"), LIST));
+  expect(() => bootFingerprint(noSoul, LIST, "{}", { requireSoul: true })).toThrow(/no SOUL.md/);
+  // absent before, written by the seed after: the seed changed the boot state, so the pods restart
+  expect(restartDecision({ before: absent, after: bootFingerprint(SUMS("a"), LIST), booted: [absent, absent] }).restart).toBe(true);
+});
+
 test("restart when the seed changed something, or the pods booted with other state; otherwise not", () => {
   expect(restartDecision({ before: "f1", after: "f2", booted: ["f2", "f2"] }).restart).toBe(true);
   expect(restartDecision({ before: "f1", after: "f1", booted: ["", ""] })).toEqual({ restart: true, reason: expect.stringContaining("booted before") });

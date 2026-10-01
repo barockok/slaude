@@ -5,6 +5,8 @@ import type { CallRecord } from "../fake-slack/core/call-log";
 
 /** Where the seed script lands inside the gateway pod. */
 export const SEED_REMOTE_PATH = "/tmp/seed-persona.ts";
+/** seed-persona.ts imports ./soul-guard.ts, so the guard lands next to it. */
+export const SOUL_GUARD_REMOTE_PATH = "/tmp/soul-guard.ts";
 
 /** The gateway container's HTTP port (deploy/k8s-scale/40-gateway.yaml, SLAUDE_HTTP_PORT). */
 export const GATEWAY_PORT = 8080;
@@ -202,14 +204,24 @@ export function registeredApps(listOutput: string): string[] {
  * (from `sha256sum` output, keyed by file name), the registered-app set, and the data of the
  * ConfigMap their env comes from (`kubectl get configmap -o json`; env is read at pod start).
  */
-export function bootFingerprint(sha256sumOutput: string, appListOutput: string, configMapJson = "{}"): string {
+export function bootFingerprint(
+  sha256sumOutput: string,
+  appListOutput: string,
+  configMapJson = "{}",
+  opts: { requireSoul?: boolean } = {},
+): string {
   const files = sha256sumOutput
     .split("\n")
     .map((l) => l.trim().split(/\s+/))
     .filter((p) => p.length === 2 && /^[0-9a-f]{64}$/.test(p[0]!))
     .map(([sum, path]) => `${path!.slice(path!.lastIndexOf("/") + 1)} ${sum}`)
     .sort();
-  if (!files.some((f) => f.startsWith("SOUL.md "))) throw new Error("no SOUL.md checksum in the fingerprint input");
+  // Before the first seed SOUL.md may not exist yet (a gateway that has not booted far enough to
+  // write its starter): that is a defined state, not an error. After the seed it must exist.
+  if (!files.some((f) => f.startsWith("SOUL.md "))) {
+    if (opts.requireSoul !== false) throw new Error("no SOUL.md checksum in the fingerprint input");
+    files.push("SOUL.md absent");
+  }
   const canon = [...files, "--", ...registeredApps(appListOutput), "--", ...configEntries(configMapJson)].join("\n");
   return createHash("sha256").update(canon).digest("hex").slice(0, 32);
 }

@@ -16,8 +16,10 @@
 // SAFETY: this overwrites $SLAUDE_HOME/SOUL.md, so it refuses to run unless SLAUDE_E2E_SEED=1 is
 // set (callers pass it through execIn, e.g. execIn(pod, "gateway", ["env", "SLAUDE_E2E_SEED=1",
 // "bun", "/tmp/seed-persona.ts", ...])). It also refuses to replace a SOUL.md that has no
-// `Persona-ID:` line (not written by this script) unless SLAUDE_E2E_SEED_FORCE=1 is also set.
-// Only this one file is copied into the pod, so the guard is inline, not a shared module.
+// `Persona-ID:` line (not written by this script) unless it is the gateway's untouched starter
+// persona or SLAUDE_E2E_SEED_FORCE=1 is also set. On a fresh cluster the gateway writes that
+// starter at boot, so it must stay replaceable. The decision lives in ./soul-guard.ts (pure, unit
+// tested); the driver copies it into the pod next to this file.
 // Re-running is idempotent: SOUL.md is rewritten whole and the registry row is an upsert.
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -27,6 +29,7 @@ import { main as slackApp } from "/app/src/cli/slack-app.ts";
 import { WORLD, writeSoulFixture } from "/app/src/gateway/sim/soul-fixture.ts";
 import { __resetSoulDataMemo, loadSoulData, soulData } from "/app/src/soul/extract.ts";
 import { loadSoul } from "/app/src/soul/loader.ts";
+import { classifySoul, seedRefusal } from "./soul-guard.ts";
 
 function flagsOf(argv: string[]): Record<string, string> {
   const f: Record<string, string> = {};
@@ -50,14 +53,10 @@ for (const k of ["persona-id", "api-app-id", "team-id", "bot-token", "signing-se
 }
 
 // Guard: nothing is written before these pass.
-if (process.env.SLAUDE_E2E_SEED !== "1") fail("refusing to run: set SLAUDE_E2E_SEED=1 (this overwrites SOUL.md)");
-if (
-  existsSync(paths.soul) &&
-  !/^Persona-ID:/m.test(readFileSync(paths.soul, "utf8")) &&
-  process.env.SLAUDE_E2E_SEED_FORCE !== "1"
-) {
-  fail(`refusing to replace ${paths.soul}: it has no Persona-ID line, so it is not an e2e soul (SLAUDE_E2E_SEED_FORCE=1 overrides)`);
-}
+const soulKind = classifySoul(existsSync(paths.soul) ? readFileSync(paths.soul, "utf8") : null);
+const refusal = seedRefusal(soulKind, process.env, paths.soul);
+if (refusal) fail(refusal);
+console.log(`[seed-persona] replacing a SOUL.md of kind '${soulKind}'`);
 
 // 1. SOUL.md
 writeSoulFixture(WORLD);

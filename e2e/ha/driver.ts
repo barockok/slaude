@@ -32,6 +32,7 @@ import {
   restartDecision,
   seedCommand,
   SEED_REMOTE_PATH,
+  SOUL_GUARD_REMOTE_PATH,
   stableCredentials,
 } from "./suite-logic";
 
@@ -73,6 +74,7 @@ const USERS: Array<[string, string]> = [
 ];
 
 const SEED_SOURCE = join(import.meta.dir, "..", "harness", "in-pod", "seed-persona.ts");
+const SOUL_GUARD_SOURCE = join(import.meta.dir, "..", "harness", "in-pod", "soul-guard.ts");
 
 export async function setupSuite(opts: SuiteOptions = {}): Promise<Suite> {
   const personaId = opts.personaId ?? "alpha";
@@ -87,7 +89,8 @@ export async function setupSuite(opts: SuiteOptions = {}): Promise<Suite> {
     const gateways = await podNames("gateway");
     if (gateways.length === 0) throw new Error("no running gateway pod to seed the persona from");
     const seedPod = gateways[0]!;
-    const before = await fingerprintIn(seedPod);
+    const before = await fingerprintIn(seedPod, false);
+    await copyTo(seedPod, "gateway", SOUL_GUARD_SOURCE, SOUL_GUARD_REMOTE_PATH);
     await copyTo(seedPod, "gateway", SEED_SOURCE, SEED_REMOTE_PATH);
     const seeded = await execIn(
       seedPod,
@@ -147,14 +150,14 @@ async function must(what: string, r: Promise<{ stdout: string; stderr: string; c
 }
 
 /** Fingerprint of the startup-only state (SOUL.md, soul cache, registered apps), read in a gateway pod. */
-async function fingerprintIn(pod: string): Promise<string> {
+async function fingerprintIn(pod: string, requireSoul = true): Promise<string> {
   const sums = await must(
     "checksumming the soul",
     execIn(pod, "gateway", ["sh", "-c", 'sha256sum "$SLAUDE_HOME"/SOUL.md "$SLAUDE_HOME"/cache/soul.*.json 2>/dev/null || true']),
   );
   const apps = await must("slack-app list", execIn(pod, "gateway", ["sh", "-c", "cd /app && bun run slack-app list"], { timeoutMs: 60_000 }));
   const config = await must("reading the env ConfigMap", kubectl(["get", "configmap", ENV_CONFIGMAP, "-o", "json"]));
-  return bootFingerprint(sums, apps, config);
+  return bootFingerprint(sums, apps, config, { requireSoul });
 }
 
 /**
