@@ -112,6 +112,27 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("panel persona overrides", () =>
     expect(ana.soulJson).toEqual({ extracted: "new" });
   });
 
+  test("an extraction failure's 502 is generic; the provider text stays in the server log", async () => {
+    await sync([row("ana")]);
+    const failing = mk(async () => { throw new SoulExtractionError("soul extraction failed: extractor http 500: provider-body-detail"); });
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = await failing.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new" }, superadmin));
+      expect(res!.status).toBe(502);
+      const text = await res!.text();
+      expect(text).not.toContain("provider-body-detail");
+      expect(text).not.toContain("extractor http");
+      expect(JSON.parse(text).error).toMatch(/soul extraction failed/);
+      expect(err.mock.calls.some((c) => c.map(String).join(" ").includes("provider-body-detail"))).toBe(true);
+    } finally {
+      err.mockRestore();
+    }
+    // Onboarding a persona goes through the same mapping.
+    const onboard = await failing.fetch(post("/panel/api/personas", { name: "cat", soul: "s", slackUserId: "UTESTCAT1" }, superadmin));
+    expect(onboard!.status).toBe(502);
+    expect(await onboard!.text()).not.toContain("provider-body-detail");
+  });
+
   test("runtime writes to a never-synced tenant are refused", async () => {
     expect((await panel.fetch(put("/panel/api/personas/ana/overrides/model", { value: "m" }, superadmin)))!.status).toBe(409);
   });

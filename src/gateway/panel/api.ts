@@ -342,7 +342,12 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
             e instanceof Personas.NameTakenError ||
             e instanceof Personas.IdentityTakenError
           ) return json(409, { error: e.message });
-          if (e instanceof SoulExtractionError) return json(502, { error: e.message });
+          if (e instanceof SoulExtractionError) {
+            // The cause can carry provider response text: server log only,
+            // truncated, as the pipeline's sync does.
+            console.error(`[panel] soul extraction failed: ${e.message.slice(0, 200)}`);
+            return json(502, { error: "soul extraction failed" });
+          }
           return null;
         };
         const readBody = async (): Promise<Record<string, unknown> | null> => {
