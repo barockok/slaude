@@ -17,7 +17,7 @@ describe("aliases", () => {
 });
 
 describe("remotePermission — parity with how the SDK treats each built-in", () => {
-  const cases: Array<[string, string, "allow" | "ask" | null]> = [
+  const cases: Array<[string, string, "allow" | "ask" | "deny" | null]> = [
     ["mcp__remote__read", "default", "allow"],
     ["mcp__remote__glob", "default", "allow"],
     ["mcp__remote__grep", "default", "allow"],
@@ -38,7 +38,7 @@ describe("remotePermission — parity with how the SDK treats each built-in", ()
     ["mcp__slaude_kb__search", "default", null],
     ["Bash", "default", null],
   ];
-  for (const [tool, mode, want] of cases as Array<[string, string, "allow" | "ask" | "deny" | null]>) {
+  for (const [tool, mode, want] of cases) {
     it(`${tool} in ${mode} → ${want}`, () => expect(remotePermission(tool, mode)).toBe(want));
   }
   it("builtinFor maps remote tools to the built-in an approver recognises", () => {
