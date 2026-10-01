@@ -336,6 +336,8 @@ behavior documented on this page, unchanged.
   installs arrive via `bun run slack-app add` or the OAuth flow
   (`/slack/oauth/start`, enabled by `SLACK_CLIENT_ID`). Webhook mode also runs
   standalone in `mono` role — it doesn't require this topology.
+- **[Personas as code](personas-as-code.md)** — sync personas from a git
+  repository with a CI job (`/deploy`, its own token, dry-run diff).
 - **[Control panel](panel.md)** — an operator web console (`SLAUDE_PANEL=1`):
   fleet view, session control, take-control-from-Slack, and chat.
 - Architecture and invariants: `docs/internal/superpowers/specs/2026-08-24-horizontal-scale-design.md`.
