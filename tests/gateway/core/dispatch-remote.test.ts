@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, test } from "bun:test";
 import { verifyJobToken, mintJobToken } from "../../../src/gateway/api/auth";
 import { handleTokenRefresh } from "../../../src/gateway/api/jobs";
 import { makeQueueDispatch } from "../../../src/gateway/core/dispatch";
-import type { SessionRow } from "../../../src/db/schema";
+import { db, type SessionRow } from "../../../src/db/schema";
 import * as OneOnOne from "../../../src/db/one-on-one";
 import * as Remote from "../../../src/db/remote";
 import { sessionConfigFp } from "../../../src/remote/fingerprint";
@@ -75,6 +75,34 @@ describe("dispatch remote claims", () => {
     await h.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTMGR" });
     expect(h.claims().remote).toBeUndefined();
     expect(h.claims().sessionConfigFp).toBe(sessionConfigFp("UTESTMGR", null));
+    await h.dispatch.close();
+  });
+
+  it("no remote claim when the turn runs as someone other than the lock and target owner", async () => {
+    // DB lock and target both belong to A, but the effective identity resolves to B
+    // (e.g. a cron identity): only a target owned by the runAs user may be signed in.
+    await OneOnOne.lock({ channelId: "C1", threadTs: "1.1", lockedUser: "UTESTA", createdBy: "UTESTA" });
+    await Remote.setTarget({ channelId: "C1", threadTs: "1.1", teamId: "TTESTTEAM1", userId: "UTESTA", addr: "tcA", dir: "/r", lockByRemote: true });
+    const h = harness("UTESTB");
+    await h.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTA" });
+    expect(h.claims().runAs).toBe("user:UTESTB");
+    expect(h.claims().remote).toBeUndefined();
+    expect(h.claims().sessionConfigFp).toBe(sessionConfigFp("UTESTB", null));
+    await h.dispatch.close();
+  });
+
+  it("a failing remote-target lookup rejects the dispatch instead of minting a token without remote", async () => {
+    await OneOnOne.lock({ channelId: "C1", threadTs: "1.1", lockedUser: "UTESTA", createdBy: "UTESTA" });
+    await Remote.setTarget({ channelId: "C1", threadTs: "1.1", teamId: "TTESTTEAM1", userId: "UTESTA", addr: "tcA", dir: "/r", lockByRemote: true });
+    const h = harness("UTESTA");
+    // DB failure seam: the target table is unreachable for the lookup.
+    await db.run("ALTER TABLE remote_targets RENAME TO remote_targets_hidden");
+    try {
+      await expect(h.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTA" })).rejects.toThrow();
+    } finally {
+      await db.run("ALTER TABLE remote_targets_hidden RENAME TO remote_targets");
+    }
+    expect(h.enqueued).toHaveLength(0);
     await h.dispatch.close();
   });
 
