@@ -113,6 +113,33 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("persona repository", () => {
     expect((await P.effectivePersonas(T))[0]!.userToken).toBe("user-token-secret-value");
   });
 
+  // Claim 5: every write site, not only the sync's.
+  test("a runtime onboard stores the user token and mcp encrypted", async () => {
+    await P.applySync(T, [row("default")], meta("r1", "2026-10-01T10:00:00Z"));
+    await P.createRuntimePersona(T, row("cat", { origin: "runtime", userToken: "runtime-token-secret-value", mcp: { k: "runtime-mcp-secret-value" } }), "ops");
+    const raw = await db.one<{ user_token: string; mcp_json: string }>(`SELECT user_token, mcp_json::text AS mcp_json FROM personas WHERE name='cat'`);
+    expect(raw!.user_token).not.toContain("runtime-token-secret-value");
+    expect(raw!.mcp_json).not.toContain("runtime-mcp-secret-value");
+    const cat = (await P.effectivePersonas(T)).find((p) => p.name === "cat")!;
+    expect(cat.userToken).toBe("runtime-token-secret-value");
+    expect(cat.mcp).toEqual({ k: "runtime-mcp-secret-value" });
+  });
+
+  test("override values (mcp, soul) are stored encrypted", async () => {
+    await P.applySync(T, [row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
+    await P.setOverride(T, "ana", "mcp", { k: "override-mcp-secret-value" }, "ops");
+    await P.setOverride(T, "ana", "soul", { soulMd: "override-soul-text-value", soulJson: null }, "ops");
+    const raws = await db.query<{ value: string }>(`SELECT value FROM persona_overrides WHERE persona_name='ana'`);
+    expect(raws).toHaveLength(2);
+    for (const r of raws) {
+      expect(r.value).not.toContain("override-mcp-secret-value");
+      expect(r.value).not.toContain("override-soul-text-value");
+    }
+    const ana = (await P.effectivePersonas(T))[0]!;
+    expect(ana.mcp).toEqual({ k: "override-mcp-secret-value" });
+    expect(ana.soulMd).toBe("override-soul-text-value");
+  });
+
   test("desiredPersonas ignores overrides while effectivePersonas applies them", async () => {
     await P.applySync(T, [row("ana", { model: "git-model" })], meta("r1", "2026-10-01T10:00:00Z"));
     await P.setOverride(T, "ana", "model", "live-model", "ops");
