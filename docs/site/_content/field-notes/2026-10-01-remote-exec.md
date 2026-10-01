@@ -96,6 +96,12 @@ for the job's lifetime; it is never echoed in replies, status lines or logs.
 - Panel unlock and `/1on1` transitions each had to end remote mode and reload
   the warm session, or the thread kept executing remotely under a lifted lock.
 
+## Image
+
+The runtime image installs tailcat v0.7.0 from the release archive and verifies
+it against a pinned per-architecture SHA-256 (a mismatch fails the build), so a
+tampered or swapped release asset cannot slip into the image.
+
 ## Known limitations
 
 No PDF or ipynb reads. An explicit `exec` as the last step of a background

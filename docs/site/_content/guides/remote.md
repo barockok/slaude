@@ -50,7 +50,7 @@ Key custody: the private key is encrypted at rest (AES-256-GCM envelope under `S
 ## 6. Operator notes
 
 - `SLAUDE_REMOTE=1` enables the feature. `SLAUDE_TAILCAT_BIN` overrides the tailcat binary path (the image installs it at `/usr/local/bin/tailcat`).
-- Split deployments: the gateway signs the remote target and a session-config fingerprint into each job token; a node reboots a warm session when the fingerprint changes. The gateway runs preflight, ping and cleanup through tailcat, and nodes run the tools, so both gateway and node processes need the tailcat binary. The stock image ships it everywhere; a custom image must include it.
+- Split deployments: the gateway signs the remote target and a session-config fingerprint into each job token; a node reboots a warm session when the fingerprint changes. The gateway runs preflight, ping and cleanup through tailcat, and nodes run the tools, so both gateway and node processes need the tailcat binary. The stock image ships it everywhere; a custom image must include it. The image build verifies the tailcat archive against a pinned SHA-256 per architecture; bumping `TAILCAT_VERSION` means updating both hashes.
 
 ## 7. Known limitations
 
