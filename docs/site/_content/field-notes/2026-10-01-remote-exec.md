@@ -70,17 +70,23 @@ every job token; the node compares the fingerprint with the warm session's and
 reboots on mismatch. A side effect: the same mechanism fixes a stale /1on1 mode
 block on warm node sessions that predated this feature.
 
-First sight needs a rule of its own. Nothing records a fingerprint when a
-session boots, so a warm session that booted before the gateway emitted
-fingerprints (for example, the gateway was upgraded or `SLAUDE_REMOTE` was set
-on it first) has no recorded value. Treating first sight as "nothing changed"
-let such a session keep its local tools after remote mode came on. Now a *live*
-session with no recorded fingerprint is rebooted once (the transcript is kept);
-a session that is not live only records the value, since its next boot reads
-the current config anyway. If the reboot cannot finish within its deadline
-because a turn is still running, the job is requeued with a short delay, the
-same way as a held session lock, and the fingerprint stays unrecorded so the
-retry reboots. Background jobs on the
+First sight needs a rule of its own. A warm session that booted before the
+gateway emitted fingerprints (for example, the gateway was upgraded or
+`SLAUDE_REMOTE` was set on it first) has no fingerprint of its own. Treating
+first sight as "nothing changed" let such a session keep its local tools after
+remote mode came on. Now a *live* session with no fingerprint is rebooted once
+(the transcript is kept); a session that is not live needs nothing, since its
+next boot reads the current config anyway.
+
+Whether a session is current is derived from the live session itself: each boot
+stores the fingerprint it booted under, and the check (made under the session
+lock) compares against that, never against a value recorded ahead of the
+reboot. A first version recorded the new fingerprint before the reboot had
+happened, so a second job with the same fingerprint was told the stale session
+was current. If a turn is still in flight, the reboot is deferred to its result
+(closing its input would break it) and the check returns false at once, so the
+job is requeued with a short delay, the same way as a held session lock, without
+holding a worker slot. Background jobs on the
 user's machine are cleaned up when remote ends, from the gateway, so it works
 even if no further turn reaches a node.
 
