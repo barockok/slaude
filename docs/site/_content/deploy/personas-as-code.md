@@ -9,8 +9,10 @@ On Postgres (`SLAUDE_DB=pg`, a real server or PGLite) a git repository can be
 the source of truth for personas: souls, Slack identity, model, user token and
 MCP config. A CI job posts the repository's contents to the gateway; the
 gateway stores them in Postgres; replicas and nodes read them from there. This
-works in the gateway topology (`SLAUDE_ROLE=gateway` plus nodes) and in a
-single `mono` process on Postgres or PGLite. Why it works this way is in the
+works in the gateway topology (`SLAUDE_ROLE=gateway` plus nodes); the
+`/deploy` endpoint exists only there. A single `mono` process on Postgres or
+PGLite can also hold managed personas, but it is managed through the panel, not
+`/deploy` (see [Trust boundary](#trust-boundary)). Why it works this way is in the
 [field note](../field-notes/2026-10-01-personas-as-code.md).
 
 A deployment that has never been synced keeps working from the filesystem
@@ -64,8 +66,8 @@ never in git. `render --check` applies the same rules.
 
 ## Gateway setup
 
-Set `SLAUDE_DEPLOY_TOKEN` on the gateway (or the `mono` process) only, never on
-nodes. It is trimmed
+Set `SLAUDE_DEPLOY_TOKEN` on the gateway only, never on nodes and never on a
+`mono` process (`/deploy` is not mounted there). It is trimmed
 and must be at least 32 characters after trimming. If it is unset, blank or
 shorter, the `/deploy` endpoint does not exist: every path and method returns
 404. It is separate from `SLAUDE_NODE_TOKEN` on purpose: every node holds the
@@ -74,13 +76,26 @@ turn. A deploy (or preview) token equal to the node token is treated as unset,
 with one warning in the gateway log.
 
 Set the `PERSONA_*` variables your repository references in the same
-environment: the gateway's, or the `mono` process's. Never put them in an
-environment file that nodes also load: a node does not need them, and every
-node runs agent turns. In `mono`, where agent turns run in the same process,
-the agent's child process (and so its Bash tool) is started without
-`SLAUDE_DEPLOY_TOKEN`, `SLAUDE_DEPLOY_PREVIEW_TOKEN`, any `PERSONA_*`
-variable, `SLAUDE_MASTER_KEY`, `SLAUDE_NODE_TOKEN` or `SLAUDE_JOB_SECRET`, so
-a turn cannot call `/deploy` or read another persona's user token.
+environment: the gateway's. Never put them in an environment file that nodes
+also load: a node does not need them, and every node runs agent turns.
+
+### Trust boundary
+
+The guarantee that a turn cannot call `/deploy` or read another persona's
+token holds for the gateway topology only. There the agent runs on a node, a
+separate process that never held those values. Every SDK child slaude starts
+(the agent turn, the ingest pass and the `kb_think` synthesis) is also started
+without `SLAUDE_DEPLOY_TOKEN`, `SLAUDE_DEPLOY_PREVIEW_TOKEN`, any `PERSONA_*`
+variable, `SLAUDE_MASTER_KEY`, `SLAUDE_NODE_TOKEN` or `SLAUDE_JOB_SECRET`, as
+defence in depth.
+
+In `mono` the agent child runs as the same OS user as the slaude process and is
+its descendant, so it can read that process's environment (for example
+`/proc/<pid>/environ`) whatever the scrub does. `mono` is therefore one trust
+domain, as it already was: it kept each persona's user token on its own disk.
+So `/deploy` is gateway-only, and `PERSONA_*` and the deploy tokens belong on
+gateways only. A `mono` deployment is still manageable through the panel, which
+uses an OIDC superadmin session rather than an environment credential.
 
 For pull-request jobs, also set `SLAUDE_DEPLOY_PREVIEW_TOKEN` (same trim and
 32-character floor, and it must differ from the deploy token or it counts as
@@ -243,6 +258,12 @@ existed, keep the model they were created with until `/model` changes it.
 
 ## Known gaps
 
+- **Connectable and mounted MCP servers can differ.** The `/mcp connect` list
+  and the portal integrations list still read the global `.mcp.json` for a
+  managed persona, while the persona's turns mount its synced `mcp`.
+- **Export does not catch every token in an MCP URL.** It does not detect a
+  token in a URL's host, or in a URL path segment shorter than 32 characters.
+  Review MCP URLs before committing an export.
 - **Per-persona `mcp` is not consumed on nodes.** In `mono` on Postgres a
   managed persona's external MCP servers come from its effective `mcp`
   (nothing when it has none; the default persona falls back to the global

@@ -36,14 +36,22 @@ Any other name is a 422 naming the variable, checked before the environment is
 looked at. `export` generates `PERSONA_` names and `render --check` enforces the
 same rule, so CI rejects what the gateway would.
 
-The `PERSONA_*` variables live on the gateway (or the `mono` process) only.
-In `mono` that is also the process that runs agent turns, and the agent's child
-inherited the whole environment minus one key: a prompt-injected turn could
-have read every persona's user token, or used the deploy token to POST a soul
-naming an attacker as approver. The child is now started without any
-`PERSONA_*`, either deploy token, `SLAUDE_MASTER_KEY`, `SLAUDE_NODE_TOKEN` or
-`SLAUDE_JOB_SECRET`. Nothing the child runs needs them: MCP placeholders are
-expanded in the slaude process before the config reaches the child.
+The `PERSONA_*` variables and the deploy tokens live on gateways only. The
+agent's child used to inherit the whole environment minus one key, so a turn
+that held those values could read every persona's user token or POST a soul
+naming an attacker as approver. Every SDK child (the agent turn, the ingest
+pass, the `kb_think` synthesis) is now started without any `PERSONA_*`, either
+deploy token, `SLAUDE_MASTER_KEY`, `SLAUDE_NODE_TOKEN` or `SLAUDE_JOB_SECRET`.
+Nothing the child runs needs them: MCP placeholders are expanded in the slaude
+process before the config reaches the child.
+
+The scrub is defence in depth, not the boundary. In `mono` the child runs as
+the same OS user as slaude and is its descendant, so it can read the parent's
+environment (`/proc/<pid>/environ`) whatever is scrubbed. A guarantee the
+platform cannot enforce must not be documented as one, so `/deploy` is mounted
+for the gateway role only, `mono` is one trust domain (as it already was: it
+kept per-persona user tokens on its own disk), and a `mono` deployment is
+managed through the panel's OIDC superadmin session instead.
 
 ## Why skills and `slaude.json` stayed out
 
@@ -296,10 +304,15 @@ State plainly:
    not trim or length-check, so a whitespace-only `SLAUDE_NODE_TOKEN` makes `/v1`
    accept a whitespace bearer. The deploy token does not have this problem;
    the node token should get the same treatment.
-
-5. **In `mono`, a named persona's channel mandate is the default persona's.**
+5. **MCP lists read the global `.mcp.json`.** The `/mcp connect` list and the
+   portal integrations list still read it for a managed persona, so
+   connectable and mounted servers can differ.
+6. **Export misses some tokens in MCP URLs.** A token in a URL's host or in a
+   path segment shorter than 32 characters is not detected; review MCP URLs
+   before committing.
+7. **In `mono`, a named persona's channel mandate is the default persona's.**
    Nodes use each persona's own structured soul; the `mono` manager does not.
-6. **After `allowEmpty` the gateway topology runs no turns.** A managed tenant
+8. **After `allowEmpty` the gateway topology runs no turns.** A managed tenant
    with no live persona has no bundle to serve, so every node turn fails, the
    default persona's included, while `mono` reverts the default persona to the
    on-disk `SOUL.md`. The guide states it; making the two agree needs a
