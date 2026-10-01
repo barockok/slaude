@@ -14,7 +14,7 @@ card resolves on whichever replica receives it, a 429 or a 5xx from Slack is sur
 It is not Slack. It does not validate Block Kit, render mrkdwn, enforce channel
 membership rules or rate limits (other than faults a test injects), and it implements
 only the Web API methods slaude calls. A green run says nothing about whether real
-Slack would accept a payload. The real-Slack canary planned for Plan 3 samples that.
+Slack would accept a payload. The real-Slack canary planned as a follow-up samples that.
 
 ## Run it standalone
 
@@ -115,7 +115,9 @@ See the header of `scripts/e2e-ha.sh` for the guards, `E2E_*` switches and the d
 it collects on failure. The workflow `.github/workflows/e2e-ha.yml` runs the same script on a
 runner, dispatched by hand.
 
-Plan 3 adds the HA scenarios (node kill, gateway kill, cross-replica approvals, model and
-Slack faults, multi-persona) and the real-Slack canary. The multi-persona identity check
-needs a gateway defect fixed first: with several apps registered in one HTTP-mode gateway,
-outbound calls all go out as the oldest app (see the field note).
+The follow-up HA scenarios (node kill, gateway kill, cross-replica approvals, model and
+Slack faults, multi-persona) and the real-Slack canary are not in this suite yet. The
+multi-persona identity check needs a gateway defect fixed first: calls made through the HTTP
+transport's shared client (what the agent's surface and tools use when a persona has no user
+token of its own) go out as the oldest registered app (see the field note; pointers:
+`src/gateway/slack/http-transport.ts` and `src/gateway/core/gateway.ts`).
