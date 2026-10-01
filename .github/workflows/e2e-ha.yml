@@ -1,12 +1,20 @@
 name: e2e-ha
 
 # The HA end-to-end suite: the scale topology on a local minikube, the mock LLM and the fake Slack
-# in place of the model and Slack. Manual only for now; it uses no secrets and no credentials.
+# in place of the model and Slack. Runs nightly and on demand; it uses no secrets and no
+# credentials. It is deliberately not a pull-request check yet: see the note on triggers below.
 #
 # NOT YET RUN ON A RUNNER. The runtime of image builds, the sanity scripts and the cases against
 # the 60-minute limit is unmeasured; the summary step reports elapsed time so the first real run
-# shows it. The follow-up HA scenarios will add to that time.
+# shows it. The follow-up HA scenarios will add to that time. Dispatch it once by hand from the
+# default branch and read the elapsed time before trusting the nightly. A failing nightly is not
+# reported anywhere beyond the red run (no tracking issue yet).
+#
+# Triggers: a schedule only fires from the default branch, and a workflow_dispatch only appears
+# in the Actions UI once this file is there too. The schedule does not run on forks.
 on:
+  schedule:
+    - cron: "0 3 * * *" # 03:00 UTC
   workflow_dispatch:
     inputs:
       files:
@@ -35,6 +43,8 @@ env:
 jobs:
   e2e:
     name: HA e2e on minikube
+    # Scheduled runs only on the upstream repository, not on forks; manual runs anywhere.
+    if: github.event_name != 'schedule' || github.repository == 'barockok/slaude'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -78,7 +88,9 @@ jobs:
         id: suite
         env:
           E2E_ARTIFACTS: ${{ github.workspace }}/dist/e2e-artifacts
-          E2E_SANITY: ${{ inputs.sanity && '1' || '0' }}
+          # A scheduled run has no inputs: it always runs the sanity scripts. A manual run
+          # follows the input.
+          E2E_SANITY: ${{ (github.event_name != 'workflow_dispatch' || inputs.sanity) && '1' || '0' }}
           E2E_FILES: ${{ inputs.files }}
         run: |
           set -uo pipefail
