@@ -46,7 +46,9 @@ export function remotePermission(toolName: string, mode: string): "allow" | "ask
   if (!toolName.startsWith(PREFIX)) return null;
   const t = toolName.slice(PREFIX.length);
   if (READ_ONLY.has(t)) return "allow";
-  if (mode === "plan") return "deny";
+  // An unknown tool under our prefix is never approved (and never reaches an approver).
+  if (!EDITS.has(t) && !SHELL.has(t)) return "deny";
+  if (mode === "plan" || mode === "dontAsk") return "deny";
   if (mode === "bypassPermissions") return "allow";
   if (EDITS.has(t)) return mode === "acceptEdits" ? "allow" : "ask";
   return "ask";
@@ -54,16 +56,15 @@ export function remotePermission(toolName: string, mode: string): "allow" | "ask
 
 export function makeRemoteCanUseTool(base: CanUseTool | undefined, getMode: () => string): CanUseTool {
   return async (toolName, input, ctx) => {
-    const d = remotePermission(toolName, getMode());
+    const mode = getMode();
+    const d = remotePermission(toolName, mode);
     if (d === "allow") return { behavior: "allow", updatedInput: input };
-    if (d === "deny") return { behavior: "deny", message: "Plan mode: no changes to the remote machine." };
-    const name = d === "ask" ? builtinFor(toolName)! : toolName;
-    if (!base) {
-      return d === "ask"
-        ? { behavior: "deny", message: "No approver is configured for remote shell/file changes." }
-        : { behavior: "allow", updatedInput: input };
+    if (d === "deny") {
+      return { behavior: "deny", message: `Not permitted on the remote machine in ${mode} mode.` };
     }
-    return base(name, input, ctx);
+    // Fail closed: with no approver, anything not decided above is denied.
+    if (!base) return { behavior: "deny", message: "No approver is configured." };
+    return base(d === "ask" ? builtinFor(toolName) ?? toolName : toolName, input, ctx);
   };
 }
 
@@ -102,10 +103,20 @@ function guarded<I>(name: string, fn: (i: I) => Promise<ToolText>) {
 /** One line per call (spec §4.6): tool, program name or path basename, exit code,
  *  duration. No content, no address. */
 function audit(name: string, input: any, outcome: string, code: number | null | undefined, t0: number) {
-  const subject = name === "bash"
-    ? (String(input?.command ?? "").trim().split(/\s+/)[0] ?? "").split("/").pop()
+  const subject = name === "bash" ? programOf(String(input?.command ?? ""))
     : String(input?.file_path ?? input?.path ?? input?.bash_id ?? input?.shell_id ?? "").split("/").pop();
   console.log(`[remote] tool=${name} subject=${subject || "-"} outcome=${outcome} code=${code === undefined ? "-" : code} ms=${Math.round(performance.now() - t0)}`);
+}
+
+/** Program basename of a shell command: skips leading NAME=value assignments (which may
+ *  hold secrets) and bare env/sudo. Never returns a token containing "=". */
+function programOf(command: string): string {
+  for (const tok of command.trim().split(/\s+/)) {
+    if (!tok || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok) || tok === "env" || tok === "sudo") continue;
+    const p = tok.split("/").pop() ?? "";
+    return p.includes("=") ? "" : p;
+  }
+  return "";
 }
 
 export function createRemoteMcp(o: { exec: Exec; root: string; sessionKey: string }): McpSdkServerConfigWithInstance {

@@ -35,6 +35,16 @@ describe("remotePermission — parity with how the SDK treats each built-in", ()
     ["mcp__remote__bash", "plan", "deny"],
     ["mcp__remote__bash_kill", "plan", "deny"],
     ["mcp__remote__read", "plan", "allow"],
+    ["mcp__remote__read", "dontAsk", "allow"],
+    ["mcp__remote__glob", "dontAsk", "allow"],
+    ["mcp__remote__grep", "dontAsk", "allow"],
+    ["mcp__remote__bash_output", "dontAsk", "allow"],
+    ["mcp__remote__write", "dontAsk", "deny"],
+    ["mcp__remote__edit", "dontAsk", "deny"],
+    ["mcp__remote__bash", "dontAsk", "deny"],
+    ["mcp__remote__bash_kill", "dontAsk", "deny"],
+    ["mcp__remote__mystery", "default", "deny"],
+    ["mcp__remote__mystery", "bypassPermissions", "deny"],
     ["mcp__slaude_kb__search", "default", null],
     ["Bash", "default", null],
   ];
@@ -67,6 +77,25 @@ describe("makeRemoteCanUseTool", () => {
     const asked: string[] = [];
     const can = makeRemoteCanUseTool((async (n: string, input: any) => { asked.push(n); return { behavior: "allow", updatedInput: input }; }) as any, () => "plan");
     expect((await can("mcp__remote__write", { file_path: "a", content: "" }, sig)).behavior).toBe("deny");
+    expect(asked).toEqual([]);
+  });
+});
+
+describe("makeRemoteCanUseTool without an approver fails closed", () => {
+  const can = makeRemoteCanUseTool(undefined, () => "default");
+  it("denies a non-remote tool", async () => expect((await can("WebFetch", {}, sig)).behavior).toBe("deny"));
+  it("allows a remote read", async () => expect((await can("mcp__remote__read", { file_path: "a" }, sig)).behavior).toBe("allow"));
+  it("denies a remote bash", async () => expect((await can("mcp__remote__bash", { command: "ls" }, sig)).behavior).toBe("deny"));
+  it("denies an unknown remote tool without consulting the approver", async () => {
+    const asked: string[] = [];
+    const c = makeRemoteCanUseTool((async (n: string, i: any) => { asked.push(n); return { behavior: "allow", updatedInput: i }; }) as any, () => "default");
+    expect((await c("mcp__remote__mystery", {}, sig)).behavior).toBe("deny");
+    expect(asked).toEqual([]);
+  });
+  it("dontAsk denies remote changes without asking anyone", async () => {
+    const asked: string[] = [];
+    const c = makeRemoteCanUseTool((async (n: string, i: any) => { asked.push(n); return { behavior: "allow", updatedInput: i }; }) as any, () => "dontAsk");
+    expect((await c("mcp__remote__bash", { command: "ls" }, sig)).behavior).toBe("deny");
     expect(asked).toEqual([]);
   });
 });
@@ -118,6 +147,23 @@ describe("createRemoteMcp", () => {
     expect(r.content[0].text).toContain("tell the user");
     expect(r.content[0].text).toContain("/remote <new-address>");
   });
+  it("audit subject skips env assignments and never carries a secret", async () => {
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (m: string) => { lines.push(String(m)); };
+    try {
+      const s = createRemoteMcp({ exec: localExec, root: "/tmp", sessionKey: "k" });
+      const run = (command: string) => (s.instance as any)._registeredTools.bash.handler({ command }, {});
+      await run("GITHUB_TOKEN=ghp_abc123 true --force");
+      await run("A=1 B=2 true");
+      await run("sudo -n true");
+      await run("FOO=bar");
+    } finally { console.log = orig; }
+    const subjects = lines.filter((l) => l.startsWith("[remote] tool=bash")).map((l) => /subject=(\S+)/.exec(l)![1]);
+    expect(subjects).toEqual(["true", "true", "-n", "-"]);
+    for (const l of lines) { expect(l).not.toContain("ghp_abc123"); expect(l).not.toContain("GITHUB_TOKEN"); }
+  });
+
   it("audit line carries the exit code and never the command args; exitCode is not returned to the SDK", async () => {
     const lines: string[] = [];
     const orig = console.log;
