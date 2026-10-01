@@ -381,7 +381,14 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     store.bindToken(data.sessionId, jobToken);
     // A changed lock/remote config reboots the warm session before this turn
     // is sent; an older gateway mints no fingerprint and the manager ignores it.
-    await agent.ensureConfigFp(data.sessionId, decodeClaims(jobToken)?.sessionConfigFp);
+    // A reboot that cannot finish (a turn is still running here) must not send
+    // into the stale session — its tools may be local while the thread is remote.
+    // Requeue like a held lock; the retry reboots once the turn has ended.
+    if (!(await agent.ensureConfigFp(data.sessionId, decodeClaims(jobToken)?.sessionConfigFp))) {
+      metric.nodeTurnsTotal.inc({ result: "requeued" });
+      await job.moveToDelayed(Date.now() + 500, token);
+      throw new DelayedError();
+    }
     tenants.set(data.sessionId, data.tenantId);
     personas.set(data.sessionId, data.personaId ?? "default");
     // A cron job created inside a /1on1 carries its lock owner. The cron run
