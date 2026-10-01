@@ -20,8 +20,11 @@ const ANA = "UTESTANA1";
 function fakeClient(label: string, posted: string[]) {
   return {
     auth: { test: async () => ({ user_id: ANA, team: "T", url: "x" }) },
-    chat: { postMessage: async () => { posted.push(label); return { ok: true, ts: "9.9" }; }, update: async () => ({ ok: true }) },
-    reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
+    chat: {
+      postMessage: async () => { posted.push(label); return { ok: true, ts: "9.9" }; },
+      update: async () => { posted.push(`${label}:update`); return { ok: true }; },
+    },
+    reactions: { add: async () => { posted.push(`${label}:react`); return { ok: true }; }, remove: async () => ({ ok: true }) },
     conversations: { info: async () => ({}), members: async () => ({}), replies: async () => ({}) },
     users: { info: async () => ({ user: { real_name: "Ana" } }), profile: { set: async () => ({}) } },
     assistant: { threads: { setStatus: async () => ({ ok: true }) } },
@@ -70,7 +73,10 @@ afterEach(() => {
 });
 
 describe("a persona's outbound client after a token rotation", () => {
-  it("the next post after a registry rebuild with a new token uses the new client", async () => {
+  // R41 (I5): the SAME thread before and after. A route (and the in-process
+  // surface MCP bound to its surface at boot) outlives a registry install, so
+  // a test on a fresh thread after the rotation would miss the stale client.
+  it("an existing route's surface posts, reactions and later replies all use the new client", async () => {
     const posted: string[] = [];
     const { t, emit } = capturingTransport(posted);
     const agent = new AgentManager();
@@ -80,26 +86,42 @@ describe("a persona's outbound client after a token rotation", () => {
 
     const postTodo = (sessionId: string) =>
       agent.emit("event", { type: "toolCall", sessionId, tool: "TodoWrite", input: { todos: [{ content: "x", status: "pending", activeForm: "x" }] } });
-    const mention = (thread: string) => emit("message", {
-      event: { type: "message", channel: CH, channel_type: "channel", user: WORLD.manager, team: TEAM, ts: thread, text: `<@${ANA}> hi` },
+    const replied = (sessionId: string) =>
+      agent.emit("event", { type: "toolCall", sessionId, tool: "mcp__slaude_surface__reply", input: {} });
+    const thread = `${Date.now()}.300`;
+    const say = (ts: string, text: string) => emit("message", {
+      event: { type: "message", channel: CH, channel_type: "channel", user: WORLD.manager, team: TEAM, ts, thread_ts: thread, text },
       client: t.client, context: { teamId: TEAM },
     });
 
     setPersonaRegistry(registryWith("token-one-placeholder", fakeClient("old", posted)));
-    await mention(`${Date.now()}.300`);
+    await say(thread, `<@${ANA}> hi`);
     expect(sent).toHaveLength(1);
-    postTodo(sent[0]!);
+    const sid = sent[0]!;
+    postTodo(sid);
     await Bun.sleep(20);
     expect(posted).toContain("old");
 
+    // Rotate. No new inbound message: the route built before the rotation is
+    // the one the warm session's surface MCP holds.
     posted.length = 0;
     setPersonaRegistry(registryWith("token-two-placeholder", fakeClient("new", posted)));
-    await mention(`${Date.now()}.400`);
-    expect(sent).toHaveLength(2);
-    postTodo(sent[1]!);
+    postTodo(sid);
+    replied(sid); // a user-visible tool call sets the working reaction via ctx.client
+    await Bun.sleep(30);
+    // The todo message already exists, so the surface edits it (chat.update).
+    expect(posted).toContain("new:update");
+    expect(posted).toContain("new:react");
+    expect(posted.filter((p) => p.startsWith("old"))).toEqual([]);
+
+    // A later reply in the same thread reuses the route and stays on the new client.
+    posted.length = 0;
+    await say(`${Date.now()}.301`, `<@${ANA}> again`);
+    expect(sent[sent.length - 1]).toBe(sid);
+    postTodo(sid);
     await Bun.sleep(20);
-    expect(posted).toContain("new");
-    expect(posted).not.toContain("old");
+    expect(posted.filter((p) => p.startsWith("old"))).toEqual([]);
+    expect(posted.some((p) => p.startsWith("new"))).toBe(true);
   });
 });
 

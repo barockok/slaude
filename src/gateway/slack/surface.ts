@@ -26,12 +26,20 @@ export class SlackSurface implements Surface {
   readonly id = "slack";
   readonly capabilities: ReadonlySet<SurfaceCapability> = new Set<SurfaceCapability>(["edit", "react", "upload", "ephemeral"]);
 
-  #client: WebClient;
+  #resolve: () => WebClient;
   #b: SessionBinding;
 
-  constructor(client: WebClient, binding: SessionBinding) {
-    this.#client = client;
+  /** `client` may be a resolver, read on every call: a named persona's surface
+   *  then follows its CURRENT client, so a token rotated by a persona sync
+   *  reaches surfaces (and the in-process surface MCP holding one) built
+   *  before it. */
+  constructor(client: WebClient | (() => WebClient), binding: SessionBinding) {
+    this.#resolve = typeof client === "function" ? client : () => client;
     this.#b = binding;
+  }
+
+  get #client(): WebClient {
+    return this.#resolve();
   }
 
   async reply({ text }: { text: string }): Promise<{ ref: string }> {
@@ -114,6 +122,6 @@ export class SlackSurface implements Surface {
 }
 
 /** Close over a Slack WebClient and return a factory that builds a SlackSurface per session. */
-export function makeSlackSurfaceFactory(client: WebClient): SurfaceFactory {
+export function makeSlackSurfaceFactory(client: WebClient | (() => WebClient)): SurfaceFactory {
   return (binding: SessionBinding) => new SlackSurface(client, binding);
 }

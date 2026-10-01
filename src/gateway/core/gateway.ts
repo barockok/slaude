@@ -62,7 +62,7 @@ import * as PendingGates from "../../db/pending-gates";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { loadExternalMcp, oauthHttpServers, privateOverrides } from "./external-mcp";
 import * as SlackOauthFlows from "../../db/slack-oauth-flows";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { ensureInitiatorConfigDir, agentConfigDir } from "../../agent/oauth-home";
 import { scopeConfigDir, personaKey } from "../../agent/mcp-oauth/scope-home";
 import { writeEntry, removeEntry, type OAuthServerConfig, type OAuthTokens } from "../../agent/mcp-oauth/store";
@@ -476,23 +476,19 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (!personaId || personaId === "default") return outClient;
     return livePersona(personaId)?.outClient ?? outClient;
   };
-  // Keyed by persona AND a fingerprint of its current token: a sync that
-  // rotates, removes or re-points a persona's userToken rebuilds the registry
-  // with a new client, and the next post must use it, not one cached at first
-  // use. Only a hash prefix of the token is held here, never the token.
+  // One factory per persona. A named persona's surfaces resolve their client on
+  // every call, so a sync that rotates, removes or re-points its userToken
+  // reaches surfaces built before it, including the one the in-process surface
+  // MCP of a warm session holds (bound at boot). A retired persona's resolver
+  // throws on a managed registry (outClientForPersona), so nothing posts.
   const surfaceFactoryCache = new Map<string, SurfaceFactory>();
   const surfaceFactoryFor = (personaId?: string): SurfaceFactory => {
     if (opts.surfaceFactory) return opts.surfaceFactory;
     const named = personaId && personaId !== "default" ? personaId : undefined;
-    const token = named ? getPersonaRegistry().lookupByName(named)?.config.userToken : undefined;
-    const fp = token ? createHash("sha256").update(token).digest("hex").slice(0, 16) : "bot";
-    const key = `${named ?? "default"}:${fp}`;
+    const key = named ?? "default";
     let f = surfaceFactoryCache.get(key);
     if (!f) {
-      // Forget the persona's factory for its previous token, and the client in it.
-      const prefix = `${named ?? "default"}:`;
-      for (const k of surfaceFactoryCache.keys()) if (k.startsWith(prefix)) surfaceFactoryCache.delete(k);
-      f = makeSlackSurfaceFactory(outClientForPersona(personaId));
+      f = makeSlackSurfaceFactory(named ? () => outClientForPersona(named) : outClient);
       surfaceFactoryCache.set(key, f);
     }
     return f;
@@ -603,20 +599,30 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // Per-session route + slack context. Mutated on each new inbound user message.
   const routes = new Map<string, SessionRoute>();
 
-  // A managed registry install that retires a persona drops its warm routes, so
-  // events still arriving for that session (an in-flight turn being aborted by
-  // the agent manager) post nothing, through neither its old client nor the
-  // default one. WeakRef: a discarded gateway is not kept alive by the listener.
+  // On every registry install, bring warm routes in line with it:
+  //  - a persona a MANAGED registry no longer lists: drop its routes, so events
+  //    still arriving for that session (an in-flight turn the agent manager is
+  //    aborting) post nothing, through neither its old client nor the default;
+  //  - otherwise: re-point ctx.client at the persona's current client. Reactions
+  //    and the Slack/runtime MCP servers read ctx.client per call, and surfaces
+  //    resolve their client per call (surfaceFactoryFor), so a rotated token is
+  //    used on the next post in an EXISTING thread, with no session restart.
+  // WeakRef: a discarded gateway is not kept alive by the listener.
   const routesRef = new WeakRef(routes);
-  const offRetiredRoutes = onPersonaRegistryInstalled((r) => {
+  const offRegistryInstalls = onPersonaRegistryInstalled((r) => {
     const live = routesRef.deref();
-    if (!live) return offRetiredRoutes();
-    if (!r.isManaged()) return;
+    if (!live) return offRegistryInstalls();
     for (const [sid, route] of live) {
       const pid = route.ctx.personaId;
-      if (!pid || pid === "default" || r.lookupByName(pid)) continue;
-      console.log(`[slaude] dropping route session=${sid} — persona=${pid} no longer live`);
-      live.delete(sid);
+      if (!pid || pid === "default") continue;
+      const p = r.lookupByName(pid);
+      if (!p) {
+        if (!r.isManaged()) continue;
+        console.log(`[slaude] dropping route session=${sid} — persona=${pid} no longer live`);
+        live.delete(sid);
+        continue;
+      }
+      route.ctx.client = p.outClient ?? outClient;
     }
   });
 
@@ -2226,6 +2232,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.ctx.inboundTs = eventTs;
       existing.ctx.userId = userId;
       existing.ctx.personaId = dispatch?.personaId;
+      existing.ctx.client = outClientForPersona(dispatch?.personaId);
       existing.ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
       existing.spoke = false;
       existing.todoRef = undefined;       // fresh tracker per user turn
