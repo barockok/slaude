@@ -15,10 +15,12 @@ const env = { ANA_XOXP: "user-token-1" };
 beforeEach(async () => {
   process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
   __resetMasterKeyCache();
+  // The persona tables are Postgres-only (migration 0011).
+  if (process.env.SLAUDE_DB !== "pg") return;
   for (const t of ["persona_overrides", "persona_sync_state", "personas"]) await db.run(`DELETE FROM ${t}`);
 });
 
-describe("runSync", () => {
+describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync", () => {
   test("applies a set: effective state equals the payload, variables resolved", async () => {
     await runSync(T, payload([ana]), { dryRun: false, env, by: "ci", extract: okExtract });
     const [p] = await P.effectivePersonas(T);
