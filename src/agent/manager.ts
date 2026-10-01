@@ -39,6 +39,8 @@ import { resolveSessionConfigDir } from "./oauth-home";
 import { sessionIdOpts } from "./session-id-opts";
 import { sessionModeBlock } from "./session-mode";
 import { formatSessionNotes } from "./session-notes";
+import { REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, makeRemoteCanUseTool } from "../remote/mcp";
+import type { RemoteHandle, RemoteTarget } from "../remote/types";
 
 type LiveSession = {
   id: string;
@@ -60,6 +62,8 @@ type LiveSession = {
   reloading?: boolean;
   /** Slack channel of the session row, cached at start for metric labels. */
   channelId?: string | null;
+  /** Current permission mode (kept in sync by setPermissionMode) — remote tool gating reads it. */
+  mode?: PermissionMode;
 };
 
 export type AgentEvent =
@@ -193,6 +197,13 @@ export class AgentManager extends EventEmitter {
   #configDirResolver: ((sessionId: string, persona: string | undefined) => Promise<string>) | undefined;
   #mcpResolver: McpResolver | undefined;
   #stopGuard: StopGuard | undefined;
+  #remoteResolver: ((sessionId: string) => Promise<RemoteTarget | null>) | undefined;
+  #remoteFactory: ((sessionId: string, t: RemoteTarget) => Promise<RemoteHandle> | RemoteHandle) | undefined;
+  /** Per session: the open remote handle and the target it was opened for.
+   *  Survives reboots (jobs keep running); disposed only when the target ends/changes. */
+  #remoteHandles = new Map<string, { handle: RemoteHandle; key: string }>();
+  /** Latest session-config fingerprint seen per session (node: from job claims). */
+  #configFp = new Map<string, string>();
   /** Sessions whose Stop hook already blocked once this turn — cleared on user msg. */
   #stopBlocked = new Set<string>();
   /** Out-of-band gate events (mcp connect/disconnect, model change) pending delivery
@@ -266,6 +277,44 @@ export class AgentManager extends EventEmitter {
   /** Install a transport-level Stop hook guard (e.g. Slack "must reply" enforcement). */
   setStopGuard(guard: StopGuard | undefined) {
     this.#stopGuard = guard;
+  }
+
+  /** Remote mode (spec §4.1): resolver says whether a session's tools run remotely;
+   *  factory opens the connection handle for a session that does. */
+  setRemote(
+    resolver: ((sessionId: string) => Promise<RemoteTarget | null>) | undefined,
+    factory: ((sessionId: string, t: RemoteTarget) => Promise<RemoteHandle> | RemoteHandle) | undefined,
+  ) {
+    this.#remoteResolver = resolver;
+    this.#remoteFactory = factory;
+  }
+
+  /** Reboot a warm session whose lock/remote config changed since it booted
+   *  (spec §4.4). First sight only records; undefined (older gateway) is ignored. */
+  async ensureConfigFp(sessionId: string, fp: string | undefined): Promise<void> {
+    if (fp === undefined) return;
+    const prev = this.#configFp.get(sessionId);
+    this.#configFp.set(sessionId, fp);
+    if (prev === undefined || prev === fp) return;
+    if (!this.reload(sessionId)) return;
+    const deadline = Date.now() + 10_000;
+    while (this.isLive(sessionId) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+  }
+
+  /** Reuse the session's handle when the target is unchanged; otherwise dispose
+   *  the old one (kills its background jobs — remote ended or moved) and open anew. */
+  async #remoteHandleFor(sessionId: string, target: RemoteTarget | null): Promise<RemoteHandle | undefined> {
+    const key = target ? `${target.userId}|${target.addr}|${target.dir}` : "";
+    const prev = this.#remoteHandles.get(sessionId);
+    if (prev && prev.key === key) return prev.handle;
+    if (prev) {
+      this.#remoteHandles.delete(sessionId);
+      try { await prev.handle.dispose(); } catch (e) { console.error(`[mgr] remote dispose failed session=${sessionId}:`, e); }
+    }
+    if (!target || !this.#remoteFactory) return undefined;
+    const handle = await this.#remoteFactory(sessionId, target);
+    this.#remoteHandles.set(sessionId, { handle, key });
+    return handle;
   }
 
   /** Bind a cron run's OAuth identity to a session. Set by the scheduler before
@@ -420,6 +469,7 @@ export class AgentManager extends EventEmitter {
   async setPermissionMode(sessionId: string, mode: PermissionMode) {
     await this.#store.setPermissionMode(sessionId, mode);
     const live = this.#live.get(sessionId);
+    if (live) live.mode = mode;
     if (live?.query) {
       try {
         await live.query.setPermissionMode(mode);
@@ -576,13 +626,19 @@ export class AgentManager extends EventEmitter {
       : resolveSessionConfigDir(oauthUser, persona?.name);
     if (sessionConfigDir) providerEnv.CLAUDE_CONFIG_DIR = sessionConfigDir;
 
-    const resolver = this.#resolver;
-    const canUseTool: CanUseTool | undefined = resolver
-      ? (toolName, input, ctx) => resolver(sessionId, toolName, input, ctx)
-      : undefined;
-
     const mode = (row.permission_mode || "default") as PermissionMode;
     const mcpServers = await this.#mcpResolver?.(sessionId);
+    // Remote mode: tools for this session run on the lock owner's machine.
+    const remoteTarget = this.#remoteResolver ? await this.#remoteResolver(sessionId) : null;
+    const remoteHandle = await this.#remoteHandleFor(sessionId, remoteTarget);
+
+    const resolver = this.#resolver;
+    const baseCanUse: CanUseTool | undefined = resolver
+      ? (toolName, input, ctx) => resolver(sessionId, toolName, input, ctx)
+      : undefined;
+    const canUseTool: CanUseTool | undefined = remoteHandle
+      ? makeRemoteCanUseTool(baseCanUse, () => this.#live.get(sessionId)?.mode ?? mode)
+      : baseCanUse;
     // Per-channel mandate override: when SOUL.md defines a `## Channel` block
     // with its own `### Mandate` for this channel, inject an authoritative
     // directive that supersedes the global Mandate (which lives, unedited,
@@ -648,6 +704,9 @@ export class AgentManager extends EventEmitter {
     const mergedMcpServers = {
       ...(mcpServers ?? {}),
       ...pluginMcps,
+      ...(remoteHandle && remoteTarget
+        ? { [REMOTE_MCP_NAME]: createRemoteMcp({ exec: remoteHandle.exec, root: remoteTarget.dir, sessionKey: sessionId }) }
+        : {}),
     };
     const hasMcpServers = Object.keys(mergedMcpServers).length > 0;
     // Always mount ~/.slaude/ as a local plugin so the SDK discovers
@@ -668,6 +727,7 @@ export class AgentManager extends EventEmitter {
       ...(canUseTool ? { canUseTool } : {}),
       ...(hasMcpServers ? { mcpServers: mergedMcpServers } : {}),
       plugins: allPlugins,
+      ...(remoteHandle ? { toolAliases: REMOTE_TOOL_ALIASES } : {}),
       permissionMode: mode,
       ...(mode === "bypassPermissions"
         ? { allowDangerouslySkipPermissions: true }
@@ -676,6 +736,7 @@ export class AgentManager extends EventEmitter {
         PreCompact: [{ hooks: [preCompact] }],
         Stop: [{ hooks: [stopHook] }],
         UserPromptSubmit: [{ hooks: [userPromptHook] }],
+        ...(remoteHandle ? { PreToolUse: [{ hooks: [denyLocalBuiltins] }] } : {}),
       },
       systemPrompt: {
         type: "preset",
@@ -685,7 +746,7 @@ export class AgentManager extends EventEmitter {
           // runtime baseline stays the same. Default persona = global SOUL.md.
           soulSystemBlock(persona ? loadSoul(persona.soulPath) : undefined),
           channelMandateBlock,
-          sessionModeBlock(lock),
+          sessionModeBlock(lock, remoteTarget ? { userId: remoteTarget.userId, dir: remoteTarget.dir } : null),
           mcpServers
             ? `<mcp-servers>\nMCP server namespaces mounted this session. Call tools as \`mcp__<server>__<tool>\`.\n${Object.keys(mcpServers)
                 .map((n) => `- ${n}`)
@@ -710,6 +771,7 @@ export class AgentManager extends EventEmitter {
       turnTools: [],
       inAutoEvolve: false,
       channelId: row.slack_channel_id,
+      mode,
     };
     this.#live.set(sessionId, live);
     metric.sessionsLive.set(this.#live.size);
@@ -779,6 +841,11 @@ export class AgentManager extends EventEmitter {
         if (live.idleTimer) clearTimeout(live.idleTimer);
         await this.#store.setStatus(sessionId, "idle");
         this.#live.delete(sessionId);
+        // Release the connection only: a reboot (reload, stream_closed, idle TTL,
+        // /mcp connect) must not kill the user's background jobs. They are killed
+        // when remote ends or moves (#remoteHandleFor disposes).
+        void this.#remoteHandles.get(sessionId)?.handle.release().catch((e) =>
+          console.error(`[mgr] remote release failed session=${sessionId}:`, e));
         this.#budget.forget(sessionId);
         this.#stopBlocked.delete(sessionId);
         metric.sessionsLive.set(this.#live.size);
