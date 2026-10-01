@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { db } from "../../../src/db/schema";
 import { __resetMasterKeyCache } from "../../../src/db/crypto";
-import { createDeployApi } from "../../../src/gateway/deploy/api";
+import { createDeployApi, DEPLOY_MAX_BODY_BYTES } from "../../../src/gateway/deploy/api";
 import { createV1Api } from "../../../src/gateway/api";
 import { healthRoutes } from "../../../src/health";
 import { __resetPersonaRegistry, whenPersonaRegistrySettled } from "../../../src/persona/registry";
@@ -224,5 +224,28 @@ describe("health mounting", () => {
     expect(without).toBeNull();
     const withDeploy = await healthRoutes({ liveSessions: () => 0, deploy: async () => new Response("hit", { status: 200 }) })(req());
     expect(withDeploy!.status).toBe(200);
+  });
+});
+
+// R42 (T6): the preview token deliberately lives in workflows that run
+// unreviewed pull-request code, so the body /deploy buffers is capped.
+pgOnly("/deploy body cap", () => {
+  test("a body over the cap is 413 and is not applied", async () => {
+    const big = { ...body, padding: "x".repeat(DEPLOY_MAX_BODY_BYTES) };
+    const res = await api().fetch(post(DEPLOY, big));
+    expect(res!.status).toBe(413);
+    expect((await db.query("SELECT name FROM personas")).length).toBe(0);
+  });
+  test("a declared Content-Length over the cap is 413 without reading the body", async () => {
+    const req = new Request(url, {
+      method: "POST",
+      headers: { authorization: `Bearer ${DEPLOY}`, "content-type": "application/json", "content-length": String(DEPLOY_MAX_BODY_BYTES + 1) },
+      body: JSON.stringify(body),
+    });
+    expect((await api().fetch(req))!.status).toBe(413);
+  });
+  test("an unauthenticated oversized body is 401, never read", async () => {
+    const res = await api().fetch(post(null, { ...body, padding: "x".repeat(DEPLOY_MAX_BODY_BYTES) }));
+    expect(res!.status).toBe(401);
   });
 });

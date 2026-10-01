@@ -11,10 +11,16 @@
  */
 import { env } from "../../config/env";
 import { timingSafeStringEqual } from "../api/auth";
-import { json, readJson } from "../api/http";
+import { json, readBodyCapped } from "../api/http";
 import { runSync, SyncFailure } from "../../persona/sync/run";
 import { publishConfigReload } from "../core/config-reload";
 import type { PubSub } from "../../queue/pubsub";
+
+/** The largest sync payload /deploy buffers. The preview token deliberately
+ *  sits in workflows that run unreviewed pull-request code, so an unbounded
+ *  body is reachable from them; souls are text, and 4 MiB is far above any
+ *  realistic persona set. */
+export const DEPLOY_MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 export interface DeployApiOptions {
   pubsub: PubSub | null;
@@ -56,8 +62,14 @@ export function createDeployApi(opts: DeployApiOptions) {
       return json(404, { error: "not found" });
     }
     if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(tenant)) return json(404, { error: "not found" });
-    const raw = await readJson(req);
-    if (raw === null) return json(422, { error: "body must be JSON" });
+    const text = await readBodyCapped(req, DEPLOY_MAX_BODY_BYTES);
+    if (text === null) return json(413, { error: `body exceeds ${DEPLOY_MAX_BODY_BYTES} bytes` });
+    let raw: unknown;
+    try {
+      raw = text.trim() ? JSON.parse(text) : {};
+    } catch {
+      return json(422, { error: "body must be JSON" });
+    }
 
     try {
       const report = await runSync(tenant, raw, {
