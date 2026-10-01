@@ -44,8 +44,36 @@ import { decodeClaims, makeRemoteFactory, makeRemoteResolver } from "./remote";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** withSessionLock result: the warm session is not on this job's config yet. */
-const STALE_CONFIG = Symbol("stale-config");
+/** Locked-turn result: the warm session is not on this job's config yet. */
+export const STALE_CONFIG = Symbol("stale-config");
+
+/**
+ * The part of a claim that runs under lock:session:<id>: bind this job's token,
+ * reboot a warm session whose config it no longer matches, then run the turn.
+ * The token is bound only by the lock holder: a boot resolves its remote target,
+ * child env and credentials from the bound token, so a job that is about to lose
+ * the lock race must not swap the token under the holder's boot (it would boot
+ * one config labelled with another's fingerprint).
+ */
+export async function runLockedTurn<T>(deps: {
+  lock: (fn: (lostLock: AbortSignal) => Promise<T | typeof STALE_CONFIG>) => Promise<T | typeof STALE_CONFIG | typeof HELD_BY_OTHER>;
+  bindToken: (jobToken: string) => void;
+  ensureConfigFp: (fp: string | undefined) => Promise<boolean>;
+  jobToken: string;
+  run: (lostLock: AbortSignal) => Promise<T>;
+}): Promise<T | typeof STALE_CONFIG | typeof HELD_BY_OTHER> {
+  return deps.lock(async (lostLock) => {
+    deps.bindToken(deps.jobToken);
+    // A changed lock/remote config reboots the warm session before this turn
+    // is sent; an older gateway mints no fingerprint and the manager ignores
+    // it. Checked under the lock so no other job's turn, reboot or token lands
+    // between the check and the send. Not current (a turn or a boot is still
+    // in flight) → never send into the stale session, whose tools may be local
+    // while the thread is remote: the caller requeues like a held lock.
+    if (!(await deps.ensureConfigFp(decodeClaims(deps.jobToken)?.sessionConfigFp))) return STALE_CONFIG;
+    return deps.run(lostLock);
+  });
+}
 
 /** Fraction of a job token's lifetime already spent (0..∞; >1 = expired).
  *  Pure payload parse — the gateway is the verifier; the node only decides
@@ -452,7 +480,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         console.warn(`[node] token refresh failed job=${job.id} (continuing with the original):`, e);
       }
     }
-    store.bindToken(data.sessionId, jobToken);
+    // The token is bound under the session lock (runLockedTurn), not here.
     tenants.set(data.sessionId, data.tenantId);
     personas.set(data.sessionId, data.personaId ?? "default");
     // A cron job created inside a /1on1 carries its lock owner. The cron run
@@ -467,10 +495,20 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     await ensureReloadSub(data.tenantId);
 
     const started = Date.now();
-    const res = await withSessionLock(
-      data.sessionId,
-      nodeId,
-      async (lostLock) => {
+    const res = await runLockedTurn<"done" | "error" | "skipped">({
+      lock: (fn) =>
+        withSessionLock(
+          data.sessionId,
+          nodeId,
+          fn,
+          // The TTL is also the takeover delay when this node dies: it never gets to
+          // release the lock, so the re-delivered turn waits the lock out.
+          { redis: cmd, keys, ...sessionLockOpts, ...opts.lock },
+        ),
+      bindToken: (t) => store.bindToken(data.sessionId, t),
+      ensureConfigFp: (fp) => agent.ensureConfigFp(data.sessionId, fp),
+      jobToken,
+      run: async (lostLock) => {
         // Lost the lock (TTL lapsed / another holder): stop touching the
         // session immediately — another node may already be running it.
         const onLost = () => {
@@ -480,25 +518,12 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         };
         lostLock.addEventListener("abort", onLost, { once: true });
         try {
-          // A changed lock/remote config reboots the warm session before this
-          // turn is sent; an older gateway mints no fingerprint and the manager
-          // ignores it. Checked under the lock so no other job's turn or reboot
-          // lands between the check and the send. Not current (a turn is still
-          // in flight, so the reboot is deferred to its end) → never send into
-          // the stale session, whose tools may be local while the thread is
-          // remote: requeue like a held lock.
-          if (!(await agent.ensureConfigFp(data.sessionId, decodeClaims(jobToken)?.sessionConfigFp))) {
-            return STALE_CONFIG;
-          }
           return await runTurn(job, data);
         } finally {
           lostLock.removeEventListener("abort", onLost);
         }
       },
-      // The TTL is also the takeover delay when this node dies: it never gets to
-      // release the lock, so the re-delivered turn waits the lock out.
-      { redis: cmd, keys, ...sessionLockOpts, ...opts.lock },
-    );
+    });
 
     if (res === HELD_BY_OTHER || res === STALE_CONFIG) {
       // Another node is mid-turn on this session, or this node's warm session
