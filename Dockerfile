@@ -36,12 +36,24 @@ RUN apt-get update \
 
 # tailcat: SSH transport for /remote (runs a thread's tools on the user's machine).
 # The release archive holds the binary at its root next to LICENSE and README.md.
+# The pins are the SHA-256 of the release archives (from the release's
+# checksums.txt); bumping TAILCAT_VERSION requires updating both hashes.
 ARG TAILCAT_VERSION=0.7.0
+ARG TAILCAT_SHA256_AMD64=23c0b1887a5ec422f0d18a9c52b4f5357815febdaae738a1eb54036d10bd9ee6
+ARG TAILCAT_SHA256_ARM64=bbb1ab50f24f00effe1e1fd86d0501803fb80793a90785a2a16ff3428f03d8ef
 ARG TARGETARCH
-RUN arch="${TARGETARCH:-amd64}" \
- && curl -LsSf "https://github.com/tailscale/tailcat/releases/download/v${TAILCAT_VERSION}/tailcat_${TAILCAT_VERSION}_linux_${arch}.tar.gz" \
-    | tar -xz -C /usr/local/bin tailcat \
- && test -x /usr/local/bin/tailcat
+RUN set -eux; \
+    arch="${TARGETARCH:-amd64}"; \
+    case "$arch" in \
+      amd64) sha="$TAILCAT_SHA256_AMD64" ;; \
+      arm64) sha="$TAILCAT_SHA256_ARM64" ;; \
+      *) echo "unsupported architecture for tailcat: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/tailcat.tgz "https://github.com/tailscale/tailcat/releases/download/v${TAILCAT_VERSION}/tailcat_${TAILCAT_VERSION}_linux_${arch}.tar.gz"; \
+    echo "${sha}  /tmp/tailcat.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/tailcat.tgz -C /usr/local/bin tailcat; \
+    rm -f /tmp/tailcat.tgz; \
+    test -x /usr/local/bin/tailcat
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json bun.lock tsconfig.json ./
