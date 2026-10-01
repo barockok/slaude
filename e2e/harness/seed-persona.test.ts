@@ -128,9 +128,36 @@ test("an unsigned plain entry, the seed's former format, is rejected under a mas
 }, 60_000);
 
 test("a re-run replaces its own soul and the entry stays the one extraction accepts", () => {
+  const soulBefore = readFileSync(join(home, "SOUL.md"), "utf8");
+  const entryBefore = readFileSync(join(cacheDir, entries()[0]!), "utf8");
   const r = seed();
   expect(r.out).toContain("replacing a SOUL.md of kind 'e2e'");
   expect(r.code).toBe(0);
   expect(entries()).toHaveLength(1);
+  // Byte-identical, so the driver's boot fingerprint is unchanged and a re-run restarts nothing.
+  expect(readFileSync(join(home, "SOUL.md"), "utf8")).toBe(soulBefore);
+  expect(readFileSync(join(cacheDir, entries()[0]!), "utf8")).toBe(entryBefore);
   expect(verify()).toBe("U0MGR");
+}, 60_000);
+
+// Last: it leaves the tenant managed.
+test("once the tenant is managed by personas as code the seed refuses and changes nothing", () => {
+  const sync = join(tmp, "sync.ts");
+  writeFileSync(
+    sync,
+    `import { applySync } from ${JSON.stringify(join(REPO, "src", "db", "personas.ts"))};
+await applySync("default", [{ name: "default", slackUserId: null, userToken: null, model: null, soulMd: "synced",
+  soulJson: { approvers: [] }, mcp: null, origin: "git", tombstonedAt: null }],
+  { revision: "r1", committedAt: Date.parse("2026-10-01T10:00:00Z"), by: "test" });
+process.exit(0);\n`,
+  );
+  const s = Bun.spawnSync(["bun", sync], { cwd: tmp, env: childEnv({}), timeout: 45_000 });
+  expect(s.exitCode).toBe(0);
+  const soulBefore = readFileSync(join(home, "SOUL.md"), "utf8");
+  const entryBefore = readFileSync(join(cacheDir, entries()[0]!), "utf8");
+  const r = seed();
+  expect(r.out).toContain("managed by personas as code");
+  expect(r.code).toBe(1);
+  expect(readFileSync(join(home, "SOUL.md"), "utf8")).toBe(soulBefore);
+  expect(readFileSync(join(cacheDir, entries()[0]!), "utf8")).toBe(entryBefore);
 }, 60_000);

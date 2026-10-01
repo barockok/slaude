@@ -23,11 +23,14 @@
 // `Persona-ID:` line (not written by this script) unless it is the gateway's untouched starter
 // persona or SLAUDE_E2E_SEED_FORCE=1 is also set. On a fresh cluster the gateway writes that
 // starter at boot, so it must stay replaceable. The decision lives in ./soul-guard.ts (pure, unit
-// tested); the driver copies it into the pod next to this file.
+// tested); the driver copies it into the pod next to this file. It refuses, too, when the tenant
+// is managed by personas as code: the gateway then takes its souls from the database.
 // Re-running is idempotent: SOUL.md is rewritten whole and the registry row is an upsert.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { paths } from "/app/src/config/home.ts";
 import { main as slackApp } from "/app/src/cli/slack-app.ts";
+import { dbDialect } from "/app/src/db/client.ts";
+import { isManaged } from "/app/src/db/personas.ts";
 import { WORLD, writeSoulFixture } from "/app/src/gateway/sim/soul-fixture.ts";
 import {
   __resetSoulDataMemo,
@@ -64,6 +67,16 @@ for (const k of ["persona-id", "api-app-id", "team-id", "bot-token", "signing-se
 const soulKind = classifySoul(existsSync(paths.soul) ? readFileSync(paths.soul, "utf8") : null);
 const refusal = seedRefusal(soulKind, process.env, paths.soul);
 if (refusal) fail(refusal);
+// A tenant synced as personas as code reads its souls from the database, never from SOUL.md or
+// this cache, so seeding it would succeed and change nothing the gateway uses.
+// deploy/k8s-local/verify-ha.sh syncs one (with a default soul that names no manager).
+if (dbDialect() === "pg" && (await isManaged("default"))) {
+  fail(
+    "refusing to seed: tenant 'default' is managed by personas as code (a /deploy sync ran on this cluster, " +
+      "for example deploy/k8s-local/verify-ha.sh), so the gateway ignores SOUL.md and the soul cache. " +
+      "This suite needs a never-synced tenant: a fresh cluster (deploy/k8s-local/down.sh, then e2e/up.sh).",
+  );
+}
 console.log(`[seed-persona] replacing a SOUL.md of kind '${soulKind}'`);
 
 // 1. SOUL.md
