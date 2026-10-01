@@ -84,7 +84,8 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
     ((botToken: string): WebClientLike => {
       // Lazy import so tests (and socket-mode deploys) never construct the SDK client.
       const { WebClient } = require("@slack/web-api") as typeof import("@slack/web-api");
-      return new WebClient(botToken) as unknown as WebClientLike;
+      const slackApiUrl = env.slack.apiUrl();
+      return new WebClient(botToken, slackApiUrl ? { slackApiUrl } : undefined) as unknown as WebClientLike;
     });
 
   const events = new Map<string, EventHandler[]>();

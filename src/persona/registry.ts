@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { WebClient } from "@slack/web-api";
+import { env } from "../config/env";
 import { paths } from "../config/home";
 import type { Persona, PersonaConfig } from "./types";
 
@@ -52,7 +53,10 @@ function loadPersonas(): Persona[] {
       continue;
     }
 
-    const outClient = config.userToken ? new WebClient(config.userToken) : null;
+    const slackApiUrl = env.slack.apiUrl();
+    const outClient = config.userToken
+      ? new WebClient(config.userToken, slackApiUrl ? { slackApiUrl } : undefined)
+      : null;
     out.push({ name: entry, slackUserId: config.slackUserId, soulPath, config, outClient });
   }
 

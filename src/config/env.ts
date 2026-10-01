@@ -77,6 +77,17 @@ export const env = {
       }
       return n;
     },
+    /**
+     * Override for the Slack Web API base URL. Unset (the default) means the
+     * SDK's own https://slack.com/api/. Used by the end-to-end suite to point the
+     * gateway at a fake Slack; production never sets it. Normalised to end in "/"
+     * because the SDK appends the method name directly.
+     */
+    apiUrl: (): string | undefined => {
+      const raw = opt("SLAUDE_SLACK_API_URL", "").trim();
+      if (!raw) return undefined;
+      return raw.endsWith("/") ? raw : `${raw}/`;
+    },
     botToken: () => req("SLACK_BOT_TOKEN"),
     appToken: () => req("SLACK_APP_TOKEN"),
     /**
