@@ -7,7 +7,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { AgentManager } from "../../src/agent/manager";
 import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../src/persona/registry";
-import { makeTenantReloadHandler } from "../../src/node/worker";
+import { bundleChildEnv, makeBundleSoulResolver, makeTenantReloadHandler } from "../../src/node/worker";
 
 const shortHash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 12);
 
@@ -104,6 +104,26 @@ describe("persona soul resolution", () => {
     for (const l of logs) expect(l).not.toContain("SECRET-SOUL-TEXT");
   });
 
+  test("a structured soul that does not parse yields no channel mandate, never another persona's", async () => {
+    const warns: string[] = [];
+    const spy = spyOn(console, "warn").mockImplementation((...a: unknown[]) => {
+      warns.push(a.map(String).join(" "));
+    });
+    let prompt = "";
+    try {
+      const agent = new AgentManager();
+      agent.setPersonaSoulResolver(async () => ({
+        soulMd: "ana soul",
+        soulJson: { channelOverrides: [{ channel: "not-a-channel-id", mandate: "x" }], approvalTimeoutSeconds: -1 },
+      }));
+      prompt = await agent.__systemPromptForTests("s-bad", "ana", { channelId: "CTEAM01" });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(prompt).not.toContain("<channel-mandate>");
+    expect(warns).toEqual(["[agent] session=s-bad persona=ana structured soul did not parse; no channel mandate"]);
+  });
+
   // Review Focus 5: a tombstone refuses new work and never interrupts a turn.
   test("a turn in flight survives its persona being tombstoned", async () => {
     const soul = "ana soul";
@@ -148,17 +168,57 @@ describe("node reload signal", () => {
     expect(reloaded).not.toContain("sess-other");
   });
 
-  test("the worker's reload path calls AgentManager.reload, which only touches live sessions", () => {
+  test("the worker's reload path calls AgentManager.reloadAfterTurn, which only touches live sessions", () => {
     const agent = new AgentManager();
-    const spy = spyOn(agent, "reload");
+    const spy = spyOn(agent, "reloadAfterTurn");
     const onReload = makeTenantReloadHandler({
       bustRuntime: () => {},
-      reload: (sid) => agent.reload(sid),
+      reload: (sid) => agent.reloadAfterTurn(sid),
       tenants: new Map([["cold", "default"]]),
     });
     onReload("default");
     expect(spy).toHaveBeenCalledWith("cold");
     // Not live → nothing to close; the next turn boots fresh anyway.
     expect(spy.mock.results[0]?.value).toBe(false);
+  });
+});
+
+describe("node bundle resolvers", () => {
+  const bundle = { soulMd: "S", soulJson: null, providerCreds: {}, slackUserId: "UANA" } as any;
+  const deps = (recorded: string | undefined, seen: string[]) => ({
+    client: { getRuntime: async (_t: string, p: string) => (seen.push(p), bundle) },
+    tenantFor: () => "default",
+    tokenFor: () => "job-token",
+    personaFor: () => recorded,
+  });
+
+  test("the soul resolver fetches the bundle for the persona it is asked for", async () => {
+    const seen: string[] = [];
+    const r = makeBundleSoulResolver(deps("ana", seen));
+    expect(await r("s-1", "ana")).toEqual({ soulMd: "S", soulJson: null });
+    const seen2: string[] = [];
+    await makeBundleSoulResolver(deps("default", seen2))("s-2", undefined);
+    expect([...seen, ...seen2]).toEqual(["ana", "default"]);
+  });
+
+  test("a persona that disagrees with the job's recorded persona fails the boot", async () => {
+    const seen: string[] = [];
+    const r = makeBundleSoulResolver(deps("bea", seen));
+    await expect(r("s-1", "ana")).rejects.toThrow(/persona mismatch.*'ana'.*'bea'/);
+    expect(seen).toEqual([]);
+  });
+
+  test("no tenant or job token fails the boot", async () => {
+    const r = makeBundleSoulResolver({ ...deps("ana", []), tokenFor: () => undefined });
+    await expect(r("s-1", "ana")).rejects.toThrow(/no tenant or job token/);
+  });
+
+  test("the child env carries SLAUDE_AGENT_ID for a named persona only", () => {
+    expect(bundleChildEnv({ providerCreds: { apiKey: "k" }, slackUserId: "UANA" }, "ana")).toEqual({
+      ANTHROPIC_API_KEY: "k",
+      SLAUDE_AGENT_ID: "UANA",
+    });
+    expect(bundleChildEnv({ providerCreds: {}, slackUserId: "UDEF" }, "default")).toEqual({});
+    expect(bundleChildEnv({ providerCreds: {}, slackUserId: null }, "ana")).toEqual({});
   });
 });

@@ -62,6 +62,11 @@ type LiveSession = {
   idleTimer?: ReturnType<typeof setTimeout>;
   /** Set when reload_session is called so expected exit errors are suppressed. */
   reloading?: boolean;
+  /** A user input has been pushed and its `result` has not arrived yet. */
+  inTurn: boolean;
+  /** Resolves once the session's query loop has fully exited and the session
+   *  has left #live. sendMessage awaits it for a session that is reloading. */
+  exited: Promise<void>;
   /** Slack channel of the session row, cached at start for metric labels. */
   channelId?: string | null;
 };
@@ -222,6 +227,9 @@ export class AgentManager extends EventEmitter {
   #streamClosedCount = new Map<string, number>();
   /** Sessions that should inject a synthetic "continue" message after their reload. */
   #autoContinue = new Set<string>();
+  /** Sessions whose reload is deferred until the turn in flight returns its
+   *  result (see reloadAfterTurn). The single owner of that decision. */
+  #reloadAfterTurn = new Set<string>();
   /** Prompt to inject after a manual reload_session call (keyed by sessionId). */
   #reloadPrompt = new Map<string, string>();
   /** Sessions whose next turn must be suppressed (mention-only plain message).
@@ -366,7 +374,13 @@ export class AgentManager extends EventEmitter {
     // and dropped messages never reach here, so a listener can distinguish
     // "agent will run" from "handled inline" without waiting for done/error.
     this.emit("event", { type: "turnStart", sessionId } satisfies AgentEvent);
-    const live = this.#live.get(sessionId);
+    let live = this.#live.get(sessionId);
+    // A reloading session has closed its input: anything pushed now would never
+    // reach the CLI. Wait for it to exit and boot a fresh one for this message.
+    while (live?.reloading) {
+      await live.exited;
+      live = this.#live.get(sessionId);
+    }
     if (live) {
       // flush prior turn if any pending assistant content was buffered
       this.#flushTurn(live);
@@ -400,6 +414,7 @@ export class AgentManager extends EventEmitter {
   /** Cancel any in-flight turn for the session. */
   abort(sessionId: string) {
     this.#pendingReload.delete(sessionId);
+    this.#reloadAfterTurn.delete(sessionId);
     this.#autoContinue.delete(sessionId);
     this.#reloadPrompt.delete(sessionId);
     this.#live.get(sessionId)?.abort.abort();
@@ -426,6 +441,22 @@ export class AgentManager extends EventEmitter {
     live.reloading = true;
     live.closeIterable();
     return true;
+  }
+
+  /** Reload a session without breaking a turn in flight. Closing the input
+   *  mid-turn ends the CLI's stdin, which a turn still needs (permission
+   *  prompts, hooks, in-process MCP), so a session with a turn in flight is
+   *  marked and reloaded when that turn's result arrives; an idle session
+   *  reloads now. Either way the next turn boots fresh. False if not live. */
+  reloadAfterTurn(sessionId: string): boolean {
+    const live = this.#live.get(sessionId);
+    if (!live) return false;
+    if (live.reloading) return true;
+    if (live.inTurn) {
+      this.#reloadAfterTurn.add(sessionId);
+      return true;
+    }
+    return this.reload(sessionId);
   }
 
   /** Queue an out-of-band gate event (e.g. "Connected MCP server `x`.") for delivery
@@ -534,7 +565,7 @@ export class AgentManager extends EventEmitter {
     const { mcpServers, memBlock } = ctx;
     return [
       soulSystemBlock(soul.soulMd),
-      channelMandateBlock(ctx.channelId, soul.soulJson),
+      channelMandateBlock(ctx.channelId, soul.soulJson, sessionId, personaName),
       sessionModeBlock(ctx.lock ?? null),
       mcpServers
         ? `<mcp-servers>\nMCP server namespaces mounted this session. Call tools as \`mcp__<server>__<tool>\`.\n${Object.keys(mcpServers)
@@ -763,15 +794,22 @@ export class AgentManager extends EventEmitter {
       ...sessionIdOpts(row),
     };
 
+    let markExited!: () => void;
     const live: LiveSession = {
       id: sessionId,
-      pushUser,
+      // Every input starts a turn; its `result` ends it (#fanout).
+      pushUser: (text: string) => {
+        live.inTurn = true;
+        pushUser(text);
+      },
       closeIterable,
       abort,
       turn: { user: firstText, assistant: [] },
       turnTools: [],
       inAutoEvolve: false,
       channelId: row.slack_channel_id,
+      inTurn: true, // firstText is already queued
+      exited: new Promise<void>((r) => (markExited = r)),
     };
     this.#live.set(sessionId, live);
     metric.sessionsLive.set(this.#live.size);
@@ -837,13 +875,18 @@ export class AgentManager extends EventEmitter {
           this.emit("event", { type: "error", sessionId, error: message } satisfies AgentEvent);
         }
       } finally {
-        if (retried) return;
+        this.#reloadAfterTurn.delete(sessionId);
+        if (retried) {
+          markExited();
+          return;
+        }
         if (live.idleTimer) clearTimeout(live.idleTimer);
         await this.#store.setStatus(sessionId, "idle");
         this.#live.delete(sessionId);
         this.#budget.forget(sessionId);
         this.#stopBlocked.delete(sessionId);
         metric.sessionsLive.set(this.#live.size);
+        markExited();
         // After a stream_closed auto-reload, inject a synthetic "continue"
         // prompt so the resumed session picks up without human input.
         if (live.reloading && this.#autoContinue.has(sessionId)) {
@@ -933,6 +976,9 @@ export class AgentManager extends EventEmitter {
         break;
       }
       case "result": {
+        if (live) live.inTurn = false;
+        // A reload deferred by reloadAfterTurn applies now, at the turn's end.
+        const deferredReload = this.#reloadAfterTurn.delete(sessionId);
         // Stream-closed circuit breaker: if a stream_closed error was detected
         // during this turn, handle at turn-end (clean exit point).
         if (this.#pendingReload.has(sessionId)) {
@@ -952,6 +998,8 @@ export class AgentManager extends EventEmitter {
               sessionId,
               error: `MCP stream closed ${count}× in a row — circuit open, not auto-reloading. Send any message to restart.`,
             } satisfies AgentEvent);
+            // A config reload still applies: it is not an MCP recovery attempt.
+            if (deferredReload) this.reload(sessionId);
           }
           break;
         }
@@ -1020,7 +1068,7 @@ export class AgentManager extends EventEmitter {
             sessionId,
             ...(wasAutoEvolve ? { autoEvolve: true } : {}),
           } satisfies AgentEvent);
-          if (live && !wasAutoEvolve && this.#shouldAutoEvolve(live)) {
+          if (live && !wasAutoEvolve && !deferredReload && this.#shouldAutoEvolve(live)) {
             live.inAutoEvolve = true;
             live.turnTools = [];
             live.pushUser(AUTO_EVOLVE_PROMPT);
@@ -1028,6 +1076,7 @@ export class AgentManager extends EventEmitter {
             live.turnTools = [];
           }
         }
+        if (deferredReload && live) this.reload(sessionId);
         break;
       }
       default:
@@ -1111,19 +1160,29 @@ const AUTO_EVOLVE_PROMPT = [
  * With a structured soul from the persona soul resolver (a node's runtime
  * bundle), the mandate comes from that persona's own soul. Without one (mono,
  * the gateway, or a bundle carrying no structured soul), the process-global
- * soul via effectiveSoulForChannel, exactly as before.
+ * soul via effectiveSoulForChannel, exactly as before. A structured soul that
+ * is present but does not parse yields NO channel mandate: falling back to the
+ * global soul would hand this persona another persona's mandate.
  */
-function channelMandateBlock(channelId: string | null | undefined, soulJson: unknown): string {
+function channelMandateBlock(
+  channelId: string | null | undefined,
+  soulJson: unknown,
+  sessionId: string,
+  persona: string | undefined,
+): string {
   if (!channelId) return "";
   let eff: string | undefined;
   let base: string | undefined;
   const parsed = soulJson == null ? null : SoulDataSchema.safeParse(soulJson);
+  if (parsed && !parsed.success) {
+    console.warn(`[agent] session=${sessionId} persona=${persona ?? "default"} structured soul did not parse; no channel mandate`);
+    return "";
+  }
   if (parsed?.success) {
     base = parsed.data.mandate?.trim();
     const ov = parsed.data.channelOverrides.find((c) => c.channel === channelId);
     eff = ov?.mandate?.trim() || base;
   } else {
-    if (parsed) console.warn("[agent] structured soul from the resolver did not parse; using the global soul for the channel mandate");
     eff = effectiveSoulForChannel(channelId).mandate?.trim();
     base = soulData().mandate?.trim();
   }

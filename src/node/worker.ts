@@ -39,6 +39,7 @@ import { RestSessionStore } from "./session-store";
 import { buildShimServers } from "./shims";
 import { makeNodePermissionResolver } from "./shims/permission";
 import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
+import type { RuntimeBundle } from "../gateway/api/tenants";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -59,9 +60,11 @@ export function tokenAgeFraction(token: string, nowMs: number = Date.now()): num
 /**
  * The node's response to a tenant's reload signal. Busting the runtime-bundle
  * cache alone changes nothing for a warm session: the soul is baked into the
- * system prompt at session boot. reload() lets the turn in flight finish and
- * boots the next one fresh, the same mechanism the gateway uses after an MCP
- * connect. Only sessions of the signalled tenant are touched.
+ * system prompt at session boot. So every session of the signalled tenant is
+ * also reloaded through AgentManager.reloadAfterTurn, which decides whether a
+ * turn is in flight: an idle session reloads now, a busy one when its turn's
+ * result arrives (closing input mid-turn would end the CLI's stdin under it).
+ * Either way the next turn boots fresh. Only the signalled tenant is touched.
  */
 export function makeTenantReloadHandler(deps: {
   bustRuntime: (tenantId: string) => void;
@@ -71,6 +74,52 @@ export function makeTenantReloadHandler(deps: {
   return (tenantId) => {
     deps.bustRuntime(tenantId);
     for (const [sid, t] of deps.tenants) if (t === tenantId) deps.reload(sid);
+  };
+}
+
+/**
+ * The child-env overlay a runtime bundle yields: provider credentials, and for
+ * a named persona its Slack user id as SLAUDE_AGENT_ID, the anchor of its
+ * private brain slice (plugin-spawned MCP subprocesses inherit the child env).
+ * The default persona gets none, exactly as the registry path behaves.
+ */
+export function bundleChildEnv(
+  bundle: Pick<RuntimeBundle, "providerCreds" | "slackUserId">,
+  persona: string,
+): Record<string, string | undefined> {
+  const creds = bundle.providerCreds ?? {};
+  const out: Record<string, string | undefined> = {};
+  if (creds.apiKey) out.ANTHROPIC_API_KEY = creds.apiKey;
+  if (creds.baseUrl) out.ANTHROPIC_BASE_URL = creds.baseUrl;
+  if (creds.authToken) out.ANTHROPIC_AUTH_TOKEN = creds.authToken;
+  if (creds.oauthToken) out.CLAUDE_CODE_OAUTH_TOKEN = creds.oauthToken;
+  if (persona !== "default" && bundle.slackUserId) out.SLAUDE_AGENT_ID = bundle.slackUserId;
+  return out;
+}
+
+/**
+ * The node's persona soul resolver: the soul comes from the runtime bundle for
+ * the persona the manager asks for. That persona must agree with the one the
+ * job recorded for the session; a disagreement fails the boot rather than run
+ * one persona's session on another's soul.
+ */
+export function makeBundleSoulResolver(deps: {
+  client: Pick<NodeClient, "getRuntime">;
+  tenantFor: (sessionId: string) => string | undefined;
+  tokenFor: (sessionId: string) => string | undefined;
+  personaFor: (sessionId: string) => string | undefined;
+}): (sessionId: string, persona: string | undefined) => Promise<{ soulMd: string; soulJson: unknown }> {
+  return async (sessionId, persona) => {
+    const tenant = deps.tenantFor(sessionId);
+    const token = deps.tokenFor(sessionId);
+    if (!tenant || !token) throw new Error(`no tenant or job token for session ${sessionId}`);
+    const asked = persona ?? "default";
+    const recorded = deps.personaFor(sessionId);
+    if (recorded !== undefined && recorded !== asked) {
+      throw new Error(`persona mismatch for session ${sessionId}: session boots as '${asked}', job recorded '${recorded}'`);
+    }
+    const bundle = await deps.client.getRuntime(tenant, asked, token);
+    return { soulMd: bundle.soulMd, soulJson: bundle.soulJson };
   };
 }
 
@@ -217,25 +266,18 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // NodeClient — the same fetch the child-env resolver makes, so this costs a
   // 304 at most. A failure (gateway unreachable, persona tombstoned) fails the
   // boot rather than falling back to disk or to the default soul.
-  agent.setPersonaSoulResolver(async (sessionId) => {
-    const tenant = tenants.get(sessionId);
-    const token = store.tokenFor(sessionId);
-    if (!tenant || !token) throw new Error(`no tenant or job token for session ${sessionId}`);
-    const bundle = await client.getRuntime(tenant, personas.get(sessionId) ?? "default", token);
-    return { soulMd: bundle.soulMd, soulJson: bundle.soulJson };
-  });
+  agent.setPersonaSoulResolver(makeBundleSoulResolver({
+    client,
+    tenantFor: (id) => tenants.get(id),
+    tokenFor: (id) => store.tokenFor(id),
+    personaFor: (id) => personas.get(id),
+  }));
   agent.setChildEnvResolver(async (sessionId) => {
     const tenant = tenants.get(sessionId);
     const token = store.tokenFor(sessionId);
     if (!tenant || !token) return undefined;
-    const bundle = await client.getRuntime(tenant, personas.get(sessionId) ?? "default", token);
-    const creds = bundle.providerCreds ?? {};
-    const out: Record<string, string | undefined> = {};
-    if (creds.apiKey) out.ANTHROPIC_API_KEY = creds.apiKey;
-    if (creds.baseUrl) out.ANTHROPIC_BASE_URL = creds.baseUrl;
-    if (creds.authToken) out.ANTHROPIC_AUTH_TOKEN = creds.authToken;
-    if (creds.oauthToken) out.CLAUDE_CODE_OAUTH_TOKEN = creds.oauthToken;
-    return out;
+    const persona = personas.get(sessionId) ?? "default";
+    return bundleChildEnv(await client.getRuntime(tenant, persona, token), persona);
   });
 
   // Turn-end wait: resolved by the first done/error for the session.
@@ -260,7 +302,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     try {
       const onReload = makeTenantReloadHandler({
         bustRuntime: (t) => client.bustRuntime(t),
-        reload: (sid) => agent.reload(sid),
+        reload: (sid) => agent.reloadAfterTurn(sid),
         tenants,
       });
       const unsub = await pubsub.onReload(tenantId, () => onReload(tenantId));

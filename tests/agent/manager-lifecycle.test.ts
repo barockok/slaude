@@ -779,3 +779,119 @@ describe("AgentManager lifecycle", () => {
     expect(spawned.length).toBe(1);
   });
 });
+
+describe("AgentManager reload around a turn in flight", () => {
+  it("reloadAfterTurn defers while a turn is in flight: input stays open until the result, then the next turn boots fresh", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    let finishSecond: () => void = () => {};
+    const first = plan((s) => {
+      s.onUser = (um) => {
+        const text = String(um.message.content);
+        if (text === "one") s.emit(res());
+        // "two" stays in flight until the test finishes it.
+        if (text === "two") finishSecond = () => s.emit(res());
+      };
+    });
+    await mgr.sendMessage(row.id, "one");
+    await until(() => events.filter((e) => e.type === "done").length === 1, 3000, "first done");
+    await mgr.sendMessage(row.id, "two");
+    await until(() => first.users.length === 2, 3000, "second turn delivered");
+
+    expect(mgr.reloadAfterTurn(row.id)).toBe(true);
+    await Bun.sleep(30);
+    // Mid-turn: the CLI's input must still be open and the session live.
+    expect(first.ended).toBe(false);
+    expect(mgr.isLive(row.id)).toBe(true);
+
+    finishSecond();
+    await until(() => !mgr.isLive(row.id), 3000, "reload at turn end");
+    expect(first.ended).toBe(true);
+    expect(events.filter((e) => e.type === "done")).toHaveLength(2);
+    expect(events.filter((e) => e.type === "error")).toHaveLength(0);
+
+    const second = plan((s) => {
+      s.onUser = () => s.emit(res());
+    });
+    await mgr.sendMessage(row.id, "three");
+    await until(() => second.users.length === 1, 3000, "fresh session");
+    expect(String(second.users[0].message.content)).toBe("three");
+    await shutdown(mgr, row.id);
+  });
+
+  it("reloadAfterTurn reloads an idle session immediately", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    plan((s) => {
+      s.onUser = () => s.emit(res());
+    });
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => events.some((e) => e.type === "done"), 3000, "done");
+    expect(mgr.reloadAfterTurn(row.id)).toBe(true);
+    await until(() => !mgr.isLive(row.id), 3000, "idle reload");
+    expect(mgr.reloadAfterTurn(row.id)).toBe(false);
+  });
+
+  it("a message sent while the session is reloading is delivered by a fresh session, not dropped", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const first = plan((s) => {
+      s.onUser = () => s.emit(res());
+    });
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => events.some((e) => e.type === "done"), 3000, "done");
+    const second = plan((s) => {
+      s.onUser = () => s.emit(res());
+    });
+
+    expect(mgr.reload(row.id)).toBe(true);
+    // The old session is still in #live (its CLI has not exited yet).
+    expect(mgr.isLive(row.id)).toBe(true);
+    await mgr.sendMessage(row.id, "during-reload");
+
+    await until(() => second.users.length === 1, 3000, "delivered to a fresh session");
+    expect(String(second.users[0].message.content)).toBe("during-reload");
+    expect(first.users.map((u) => String(u.message.content))).toEqual(["hello"]);
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "second done");
+    await shutdown(mgr, row.id);
+  });
+});
+
+describe("AgentManager on a node: brain-slice anchor from the bundle", () => {
+  it("a named persona's session gets SLAUDE_AGENT_ID from the bundle; the default persona gets none", async () => {
+    const { bundleChildEnv } = await import("../../src/node/worker");
+    const saved = process.env.SLAUDE_AGENT_ID;
+    delete process.env.SLAUDE_AGENT_ID;
+    try {
+      const mgr = new AgentManager();
+      const events = record(mgr);
+      // Node-shaped: soul and child env both come from the bundle; "ana" is in
+      // no registry on this host.
+      mgr.setPersonaSoulResolver(async () => ({ soulMd: "bundle soul", soulJson: null }));
+      const personaOf = new Map<string, string>();
+      mgr.setChildEnvResolver(async (sid) => {
+        const persona = personaOf.get(sid) ?? "default";
+        return bundleChildEnv({ providerCreds: {}, slackUserId: persona === "default" ? null : "UANA" }, persona);
+      });
+      const named = await mgr.ensureSession({ ...thread(), persona_id: "ana" });
+      personaOf.set(named.id, "ana");
+      const dflt = await mgr.ensureSession(thread());
+      const a = plan((s) => (s.onUser = () => s.emit(res())));
+      await mgr.sendMessage(named.id, "hi");
+      await until(() => events.some((e) => e.type === "done" && e.sessionId === named.id), 3000, "named done");
+      const d = plan((s) => (s.onUser = () => s.emit(res())));
+      await mgr.sendMessage(dflt.id, "hi");
+      await until(() => events.some((e) => e.type === "done" && e.sessionId === dflt.id), 3000, "default done");
+      expect(a.options.env.SLAUDE_AGENT_ID).toBe("UANA");
+      expect(d.options.env.SLAUDE_AGENT_ID).toBeUndefined();
+      await shutdown(mgr, named.id);
+      await shutdown(mgr, dflt.id);
+    } finally {
+      if (saved === undefined) delete process.env.SLAUDE_AGENT_ID;
+      else process.env.SLAUDE_AGENT_ID = saved;
+    }
+  });
+});
