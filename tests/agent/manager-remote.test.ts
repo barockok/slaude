@@ -388,6 +388,38 @@ describe("remote wiring", () => {
     await shutdown(mgr, row.id);
   });
 
+  it("ensureConfigFp: a boot in progress refuses; once live under the same fp it is current; a failed boot clears the marker", async () => {
+    const mgr = new AgentManager();
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    let resolving = 0;
+    let fail = false;
+    mgr.setRemote(async () => {
+      resolving++;
+      if (fail) throw new Error("resolver down");
+      await gate;
+      return null;
+    }, () => ({ exec: noopExec, release: async () => {}, dispose: async () => {} }));
+    const row = await mgr.ensureSession(thread());
+    const fs = plan();
+    expect(await mgr.ensureConfigFp(row.id, "fp1")).toBe(true); // nothing live, nothing booting
+    const sent = mgr.sendMessage(row.id, "hello");
+    await until(() => resolving === 1, 3000, "boot reaches the resolver");
+    expect(mgr.isLive(row.id)).toBe(false);
+    expect(await mgr.ensureConfigFp(row.id, "fp1")).toBe(false); // would race the boot
+    open();
+    await sent;
+    await until(() => fs.options !== null, 3000, "boot");
+    expect(await mgr.ensureConfigFp(row.id, "fp1")).toBe(true); // booted under fp1
+    await shutdown(mgr, row.id);
+    // A boot that throws leaves no marker behind.
+    fail = true;
+    plan();
+    await expect(mgr.sendMessage(row.id, "again")).rejects.toThrow("resolver down");
+    expect(mgr.isLive(row.id)).toBe(false);
+    expect(await mgr.ensureConfigFp(row.id, "fp1")).toBe(true);
+  });
+
   it("ensureConfigFp: a session replaced between polls is judged by identity, not liveness", async () => {
     const mgr = new AgentManager();
     const row = await mgr.ensureSession(thread());

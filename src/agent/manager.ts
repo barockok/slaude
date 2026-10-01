@@ -246,6 +246,8 @@ export class AgentManager extends EventEmitter {
   /** Latest session-config fingerprint asked for per session (node: from job
    *  claims). A boot records it as its LiveSession.bootFp. */
   #desiredFp = new Map<string, string>();
+  /** Sessions with a boot in progress (not yet live), counted per id. */
+  #booting = new Map<string, number>();
   #remoteDisposeTimeoutMs = REMOTE_DISPOSE_TIMEOUT_MS;
   /** Sessions whose Stop hook already blocked once this turn — cleared on user msg. */
   #stopBlocked = new Set<string>();
@@ -412,7 +414,16 @@ export class AgentManager extends EventEmitter {
     if (fp === undefined) return true;
     this.#desiredFp.set(sessionId, fp);
     const live = this.#live.get(sessionId);
-    if (!live || live.bootFp === fp) return true;
+    if (!live) {
+      // A boot in progress (e.g. an auto-continue after a reload) read its
+      // fingerprint already; a message sent now would race it.
+      if (this.#booting.has(sessionId)) {
+        console.warn(`[mgr] config change: boot in progress session=${sessionId}`);
+        return false;
+      }
+      return true;
+    }
+    if (live.bootFp === fp) return true;
     this.reloadAfterTurn(sessionId);
     if (live.pendingInputs > 0) {
       console.warn(`[mgr] config change: turn in flight, reboot deferred session=${sessionId}`);
@@ -816,7 +827,27 @@ export class AgentManager extends EventEmitter {
     return this.#buildSystemAppend(sessionId, this.#resolvePersona(personaId).name, ctx);
   }
 
+  /** Boot a session, marked as booting (see ensureConfigFp) from the first
+   *  synchronous step until it is live or the boot fails. A counter, since a
+   *  retry path may start a boot for the same id while another is unwinding. */
   async #startSession(sessionId: string, firstText: string) {
+    this.#booting.set(sessionId, (this.#booting.get(sessionId) ?? 0) + 1);
+    let marked = true;
+    const unmark = () => {
+      if (!marked) return;
+      marked = false;
+      const n = (this.#booting.get(sessionId) ?? 1) - 1;
+      if (n > 0) this.#booting.set(sessionId, n);
+      else this.#booting.delete(sessionId);
+    };
+    try {
+      await this.#bootSession(sessionId, firstText, unmark);
+    } finally {
+      unmark();
+    }
+  }
+
+  async #bootSession(sessionId: string, firstText: string, onLive: () => void) {
     // Read before any config is resolved: a fingerprint that arrives while this
     // boot resolves its lock/remote state must not be credited to it.
     const bootFp = this.#desiredFp.get(sessionId);
@@ -1071,6 +1102,7 @@ export class AgentManager extends EventEmitter {
       exited: new Promise<void>((r) => (markExited = r)),
     };
     this.#live.set(sessionId, live);
+    onLive();
     metric.sessionsLive.set(this.#live.size);
     this.#armIdle(live);
     await this.#store.setStatus(sessionId, "running");
