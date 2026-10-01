@@ -41,8 +41,9 @@ unknown token gets `invalid_auth`.
 ## Control API
 
 Everything under `/__fake/`. It is unauthenticated: expose it ClusterIP-only. Bodies are
-JSON objects; a malformed one gets 400, unknown fields in `send` and `click` are rejected
-with `invalid_arguments: <field>`. A typed client is `control-client.ts`.
+JSON objects; a malformed one gets 400. In `send` and `click`, a known field with the wrong type
+(and `text`, `threadTs` or `mention` together with `redeliverTs`) is rejected with
+`invalid_arguments: <field>`; unknown fields are ignored. A typed client is `control-client.ts`.
 
 | Route | Purpose |
 |---|---|
