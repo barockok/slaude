@@ -59,6 +59,58 @@ export function stableCredentials(apiAppId: string, personaId: string): AppCrede
   };
 }
 
+export interface RegisteredApp {
+  apiAppId: string;
+  teamId: string;
+  personaId: string;
+  botUserId: string;
+}
+
+/** Rows of `slack-app list` output (`A…/T…  tenant=… persona=… bot_user=… updated=…`). */
+export function parseRegisteredApps(listOutput: string): RegisteredApp[] {
+  const out: RegisteredApp[] = [];
+  for (const line of listOutput.split("\n")) {
+    const m = /^(\S+)\/(\S+)\s.*\bpersona=(\S+)\s+bot_user=(\S+)/.exec(line.trim());
+    if (m) out.push({ apiAppId: m[1]!, teamId: m[2]!, personaId: m[3]!, botUserId: m[4]! });
+  }
+  return out;
+}
+
+/**
+ * Fixed credentials for a registered app the suite did not create (for example one an earlier
+ * task left). The gateway posts outbound through its primary (oldest) app, so every app in the
+ * registry must exist in the fake with the registry's credentials; after a fake restart the
+ * suite re-keys such apps to these values in both places. The bot user id is derived from the
+ * app id so it cannot collide with a persona app's `U0B<PERSONA>`.
+ */
+export function adoptedCredentials(apiAppId: string): AppCredentials {
+  const base = stableCredentials(apiAppId, "x");
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  const bytes = createHash("sha256").update(`slaude-e2e:bot-user:${apiAppId}`).digest();
+  let id = "";
+  for (let i = 0; i < 5; i++) id += alphabet[bytes[i]! % 32];
+  return { ...base, botUserId: `U0B${id}0` };
+}
+
+/** Registered apps in the fake's team, other than the suite's own app: these get adopted. */
+export function appsToAdopt(rows: RegisteredApp[], suiteAppId: string, teamId: string): RegisteredApp[] {
+  return rows.filter((r) => r.teamId === teamId && r.apiAppId !== suiteAppId);
+}
+
+/** `slack-app add` for an adopted app, run in a gateway pod; the secrets travel as argv only. */
+export function slackAppAddCommand(app: RegisteredApp, creds: AppCredentials): string[] {
+  return [
+    "sh", "-c", 'cd /app && exec bun src/cli/slack-app.ts "$@"', "slack-app",
+    "add",
+    "--api-app-id", app.apiAppId,
+    "--team-id", app.teamId,
+    "--bot-token", creds.botToken,
+    "--signing-secret", creds.signingSecret,
+    "--bot-user-id", creds.botUserId,
+    "--persona", app.personaId,
+  ];
+}
+
 /** Replace every occurrence of each secret with `(masked)`, so seed output can be shown safely. */
 export function maskSecrets(text: string, secrets: string[]): string {
   return secrets.filter(Boolean).reduce((t, s) => t.split(s).join("(masked)"), text);
@@ -84,9 +136,10 @@ export function podUrls(ips: Record<string, string>, port: number = GATEWAY_PORT
     .map((name) => `http://${ips[name]}:${port}`);
 }
 
-/** Bot messages in a channel that carry the persona label `[<persona>]`. */
-export function personaReplies<M extends { user: string; text: string }>(messages: M[], botUserId: string, persona: string): M[] {
-  return messages.filter((m) => m.user === botUserId && m.text.includes(`[${persona}]`));
+/** Messages by one of the given bot users that carry the persona label `[<persona>]`. */
+export function personaReplies<M extends { user: string; text: string }>(messages: M[], botUserIds: string | string[], persona: string): M[] {
+  const bots = new Set(typeof botUserIds === "string" ? [botUserIds] : botUserIds);
+  return messages.filter((m) => bots.has(m.user) && m.text.includes(`[${persona}]`));
 }
 
 /** The highest call-log sequence number, used as a `since` mark so a case only judges its own calls. */
@@ -108,6 +161,8 @@ export interface MockJournalRow {
   action: string;
   messages: number;
   historyHash: string;
+  persona: string | null;
+  offersReply: boolean;
 }
 
 /** Mock-LLM journal rows for one scenario tag recorded at or after `sinceMs`. */

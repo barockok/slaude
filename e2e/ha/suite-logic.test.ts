@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import type { CallRecord } from "../fake-slack/core/call-log";
 import {
+  adoptedCredentials,
+  appsToAdopt,
+  parseRegisteredApps,
+  slackAppAddCommand,
   bootAnnotations,
   bootFingerprint,
   configEntries,
@@ -77,6 +81,8 @@ test("persona replies are bot messages carrying the bracketed persona label", ()
     { user: "U0BOT", text: "[beta] other persona" },
   ];
   expect(personaReplies(msgs, "U0BOT", "alpha")).toEqual([{ user: "U0BOT", text: "[alpha] hello" }]);
+  expect(personaReplies([...msgs, { user: "U0OTHER", text: "[alpha] other bot" }], ["U0BOT", "U0OTHER"], "alpha")).toHaveLength(2);
+  expect(personaReplies(msgs, [], "alpha")).toEqual([]);
 });
 
 const call = (seq: number, method: string, unknown?: boolean): CallRecord => ({ seq, at: 0, kind: "api", method, ok: !unknown, status: 200, unknown });
@@ -88,7 +94,7 @@ test("call-log marks and unknown-method extraction", () => {
 });
 
 test("journal rows are filtered by tag and time", () => {
-  const row = (ts: number, tag: string | null): MockJournalRow => ({ ts, method: "POST", path: "/v1/messages", retryCount: 0, tag, action: "proxy", messages: 1, historyHash: "h" });
+  const row = (ts: number, tag: string | null): MockJournalRow => ({ ts, method: "POST", path: "/v1/messages", retryCount: 0, tag, action: "proxy", messages: 1, historyHash: "h", persona: "alpha", offersReply: true });
   const rows = [row(10, "echo"), row(20, "echo"), row(30, null), row(40, "think")];
   expect(journalRowsFor(rows, "echo", 15)).toEqual([row(20, "echo")]);
   expect(journalRowsFor(rows, "echo", 10)).toHaveLength(2);
@@ -130,6 +136,38 @@ test("the boot fingerprint moves with the env ConfigMap's data but not its metad
   expect(bootFingerprint(SUMS("a"), LIST, cm({ A: "1", B: "changed" }, "1"))).not.toBe(base);
   expect(configEntries(cm({ b: "2", a: "1" }, "1"))).toEqual(["a=1", "b=2"]);
   expect(configEntries("{}")).toEqual([]);
+});
+
+test("registered apps parse into id, team, persona and bot user", () => {
+  expect(parseRegisteredApps(LIST)).toEqual([
+    { apiAppId: "A0TWO", teamId: "T0TEAM", personaId: "alpha", botUserId: "U0BALPHA" },
+    { apiAppId: "A0ONE", teamId: "T0TEAM", personaId: "alpha", botUserId: "U0B0003" },
+  ]);
+  expect(parseRegisteredApps("$ bun src/cli/slack-app.ts list\n")).toEqual([]);
+});
+
+test("apps to adopt are the other apps in the fake's team", () => {
+  const rows = [
+    { apiAppId: "A0SUITE", teamId: "T0TEAM", personaId: "alpha", botUserId: "U0BALPHA" },
+    { apiAppId: "A0OLD", teamId: "T0TEAM", personaId: "alpha", botUserId: "U0B0003" },
+    { apiAppId: "A0ELSE", teamId: "T0OTHER", personaId: "default", botUserId: "U0X" },
+  ];
+  expect(appsToAdopt(rows, "A0SUITE", "T0TEAM").map((r) => r.apiAppId)).toEqual(["A0OLD"]);
+});
+
+test("adopted credentials are fixed per app, differ from the persona credentials, and keep a distinct bot user", () => {
+  const a = adoptedCredentials("A0OLD");
+  expect(adoptedCredentials("A0OLD")).toEqual(a);
+  expect(a.botUserId).toMatch(/^U0B[A-Z2-7]{5}0$/);
+  expect(a.botUserId).not.toBe(stableCredentials("A0OLD", "alpha").botUserId);
+  expect(adoptedCredentials("A0OTHER").botToken).not.toBe(a.botToken);
+  expect(a.signingSecret).toBe(stableCredentials("A0OLD", "x").signingSecret);
+});
+
+test("slack-app add for an adopted app passes every value as its own argv entry", () => {
+  const cmd = slackAppAddCommand({ apiAppId: "A0OLD", teamId: "T0TEAM", personaId: "alpha", botUserId: "U0B0003" }, { botUserId: "U0BNEW", botToken: "tok", signingSecret: "sec" });
+  expect(cmd.slice(0, 4)).toEqual(["sh", "-c", 'cd /app && exec bun src/cli/slack-app.ts "$@"', "slack-app"]);
+  expect(cmd.slice(4)).toEqual(["add", "--api-app-id", "A0OLD", "--team-id", "T0TEAM", "--bot-token", "tok", "--signing-secret", "sec", "--bot-user-id", "U0BNEW", "--persona", "alpha"]);
 });
 
 test("boot annotations come back in the requested order, empty when absent", () => {

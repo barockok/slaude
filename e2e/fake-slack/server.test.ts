@@ -272,6 +272,7 @@ test("response_url is built from publicUrl, not the listen address", async () =>
 test("control: apps are listed, a missing thread is a 4xx, and the client reports the status of any failure body", async () => {
   const listed = (await (await fetch(`${fake.url}/__fake/apps`)).json()) as { apps: { apiAppId: string }[] };
   expect(listed.apps.map((a) => a.apiAppId)).toEqual(["A0FAKE"]);
+  expect((await ctl.apps()).apps.map((a) => [a.apiAppId, a.botUserId])).toEqual([["A0FAKE", "U0BOT"]]);
   await expect(ctl.thread("C0TEAM", "1.1")).rejects.toThrow(/400 thread_not_found/);
   receiverStatuses = [500];
   await expect(createControlClient(target()).reset()).rejects.toThrow(/^500 $/);

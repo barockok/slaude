@@ -92,6 +92,7 @@ export function createControlClient(baseUrl: string) {
     /** Omitted credentials are generated fresh on every call; pass them to keep an app stable across calls. */
     addApp: (a: { apiAppId: string; name: string; botUserId?: string; botToken?: string; signingSecret?: string }) =>
       call<ControlApp>("POST", "apps", a),
+    apps: () => call<{ apps: ControlApp[] }>("GET", "apps"),
     addChannel: (c: { id: string; name: string; isIm?: boolean; members?: string[] }) =>
       call<{ id: string; name: string; isIm: boolean; members: string[] }>("POST", "channels", c),
     send: (i: SendInput) => call<{ message: { ts: string; channel: string; threadTs?: string }; deliveries: DeliveryResult[] }>("POST", "send", i),
