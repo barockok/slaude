@@ -16,6 +16,8 @@
 #                          taken from it; nothing else is read.
 #   ANTHROPIC_* / CLAUDE_CODE_OAUTH_TOKEN
 #                          taken from your shell when set, overriding the file.
+#   SLAUDE_LOCAL_OVERLAY   a kustomize directory to apply instead of this one;
+#                          it should build on this directory (used by e2e/up.sh).
 #
 # Without provider credentials the cluster still boots and passes every HA
 # check; nodes simply cannot run a model turn.
@@ -155,7 +157,7 @@ existed=false
 kubectl -n "$NS" get deploy slaude-gateway >/dev/null 2>&1 && existed=true
 
 log "applying overlay"
-kubectl kustomize --load-restrictor LoadRestrictionsNone "$HERE" | kubectl apply -f -
+kubectl kustomize --load-restrictor LoadRestrictionsNone "${SLAUDE_LOCAL_OVERLAY:-$HERE}" | kubectl apply -f -
 
 # Same tag, new build: the Deployment spec is unchanged, so roll it explicitly.
 if $existed; then
