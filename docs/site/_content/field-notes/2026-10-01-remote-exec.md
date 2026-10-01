@@ -15,7 +15,7 @@ Claude Agent SDK's `toolAliases` reroutes the built-in Bash/Read/Write/Edit/
 Glob/Grep to an in-process MCP server (`remote`, tools `mcp__remote__*`, plus
 `bash_output` / `bash_kill` for background jobs).
 
-## Spike findings (spec section 8)
+## Spike findings
 
 - Bash enabled plus `toolAliases` routes the call; a marker file written by the
   command was never created locally.
@@ -86,6 +86,13 @@ for the job's lifetime; it is never echoed in replies, status lines or logs.
 - Audit-subject whitelist: audit lines carry tool, program name or file
   basename, exit code and duration only; env-assignment-prefixed commands log
   `-` so a secret passed as `KEY=value cmd` cannot leak.
+- Output decoding: stdout and stderr each get a `StringDecoder`. Decoding
+  every ssh chunk on its own turned a multibyte character split across chunks
+  into U+FFFD, which would also have made the non-UTF-8 edit refusal wrongly
+  block large non-ASCII files.
+- The tailcat ping and spawn helpers never throw when the binary is missing;
+  they report unreachable instead (`SLAUDE_TAILCAT_BIN` overrides the path for
+  tests and unusual installs).
 - Panel unlock and `/1on1` transitions each had to end remote mode and reload
   the warm session, or the thread kept executing remotely under a lifted lock.
 

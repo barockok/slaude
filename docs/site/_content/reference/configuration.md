@@ -358,6 +358,8 @@ Deployment walkthrough, role-file example and cross-replica behaviour:
 | `SLAUDE_HEALTH_PORT` | No | `8080` | Health server port (socket mode only — `SLAUDE_SLACK_MODE=http` serves these on `SLAUDE_HTTP_PORT` instead). `GET /healthz` → liveness `{status:"ok", uptime_ms, sessions_live}`, `GET /readyz` → DB ping (503 if unreachable), `GET /metrics` → Prometheus exposition. Set to `0` or non-finite to disable. See `src/health.ts`. |
 | `SLAUDE_TOKEN_WARN_PCT` | No | `0.8` | Fraction of the model's context window at which slaude posts a one-shot warning in the active thread. Edge-triggered — fires once per session. Source window comes from live `modelUsage.contextWindow`. |
 | `SLAUDE_TOKEN_CRITICAL_PCT` | No | `0.92` | Critical threshold sibling of `SLAUDE_TOKEN_WARN_PCT`. Set to `0` to disable the critical tier. |
+| `SLAUDE_REMOTE` | No | `0` | `1`/`true`/`yes` enables `/remote` (a thread's shell and file tools run on the user's own machine over tailcat SSH). Off by default. See the [Remote mode guide](../guides/remote.md). |
+| `SLAUDE_TAILCAT_BIN` | No | `tailcat` | Operator override of the tailcat binary path used by `/remote`. Read at call time; the stock image installs `/usr/local/bin/tailcat`. |
 
 ### Metrics & context budget
 

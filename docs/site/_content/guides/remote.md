@@ -34,12 +34,12 @@ Remote mode also ends when anything changes the lock: `/1on1 off`, opening the 1
 
 ## 4. How the tools behave
 
-- **Same approvals as the built-ins.** The approver sees Bash, Write and Edit exactly as on the server. Plan mode denies remote changes; `dontAsk` denies everything but read-only calls; `acceptEdits` allows write and edit but not Bash; with no approver, everything that is not read-only is denied.
+- **Same approvals as the built-ins.** The approver sees Bash, Write and Edit exactly as on the server. Plan mode denies remote changes; `dontAsk` denies everything but read-only calls; `acceptEdits` allows write and edit but not Bash; `bypassPermissions` allows everything, as with the built-ins; with no approver, everything that is not read-only is denied.
 - **No fallback to the server.** If your machine is unreachable (laptop asleep, tailcat stopped, new address) tools return `REMOTE_UNREACHABLE` or `REMOTE_AUTH_FAILED` and the agent is told to stop and tell you. Wake the machine or restart `tailcat serve`, then continue.
 - **Drops mid-command are reported, not retried.** A connection lost during a command may still have run, so slaude never re-runs it for you.
 - **Background jobs** started with Bash can be polled and killed through `bash_output` and `bash_kill`.
 - `bash` runs under a login shell; the file tools do not.
-- `grep` and `find` are the default search path. Installing `ripgrep` is an optional accelerator and enables multiline search and the `type` filter.
+- `grep` and `find` are the default search path. Common file types work with the `type` filter through a built-in extension table. Installing `ripgrep` is an optional accelerator, and is needed for multiline search and for `type` values the fallback does not know.
 
 ## 5. Security
 
@@ -50,7 +50,7 @@ Key custody: the private key is encrypted at rest (AES-256-GCM envelope under `S
 ## 6. Operator notes
 
 - `SLAUDE_REMOTE=1` enables the feature. `SLAUDE_TAILCAT_BIN` overrides the tailcat binary path (the image installs it at `/usr/local/bin/tailcat`).
-- Split deployments: the gateway signs the remote target and a session-config fingerprint into each job token; a node reboots a warm session when the fingerprint changes. Nodes need the tailcat binary.
+- Split deployments: the gateway signs the remote target and a session-config fingerprint into each job token; a node reboots a warm session when the fingerprint changes. The gateway runs preflight, ping and cleanup through tailcat, and nodes run the tools, so both gateway and node processes need the tailcat binary. The stock image ships it everywhere; a custom image must include it.
 
 ## 7. Known limitations
 
