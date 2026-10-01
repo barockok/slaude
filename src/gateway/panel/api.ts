@@ -32,6 +32,7 @@
 import { z } from "zod";
 import * as Sessions from "../../db/sessions";
 import * as OneOnOne from "../../db/one-on-one";
+import { endRemoteForThread } from "../core/remote-command";
 import type { SessionRow } from "../../db/schema";
 import type { Registry } from "../../queue/registry";
 import type { PubSub } from "../../queue/pubsub";
@@ -134,6 +135,8 @@ export interface PanelApiDeps {
   onLockHeld?: (sessionId: string, operatorId: string, ttlMs: number) => void;
   /** The gateway resumes Slack + replays deferred inbound for the session. */
   onLockReleased?: (sessionId: string) => void | Promise<void>;
+  /** The operator released a thread's 1on1 lock (remote mode already ended): reload the warm session. */
+  onUnlock?: (sessionId: string) => void;
   /** SSE poll cadence (ms). Default 300. */
   eventsPollMs?: number;
   /** Strict soul extraction for runtime persona changes. Default: the real extractor. */
@@ -268,7 +271,16 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         if (!row.slack_channel_id || !row.slack_thread_ts) {
           return json(400, { error: "session has no Slack thread to unlock" });
         }
+        // Unlocking must also end remote mode: a surviving target would come back to
+        // life on the next lock by the same user.
+        await endRemoteForThread(row.slack_channel_id, row.slack_thread_ts, { sessionId: row.id });
         await OneOnOne.unlock(row.slack_channel_id, row.slack_thread_ts);
+        // The unlock has applied; a failed reload must not turn it into a 500.
+        try {
+          deps.onUnlock?.(row.id);
+        } catch {
+          console.error(`[panel] reload after unlock failed session=${row.id}`);
+        }
         break;
       }
     }

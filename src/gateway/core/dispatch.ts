@@ -18,6 +18,9 @@ import type { AgentManager, AgentEvent } from "../../agent/manager";
 import type { SessionRow } from "../../db/schema";
 import { encodeRunAs } from "../../agent/credential-owner";
 import { mintJobToken } from "../api/auth";
+import { env } from "../../config/env";
+import { activeRemoteTarget } from "../../remote/active";
+import { sessionConfigFp } from "../../remote/fingerprint";
 import { makeKeys, type Keys } from "../../queue/keys";
 import { getRedis, getSubRedis } from "../../queue/redis";
 import { makeRegistry, type Registry } from "../../queue/registry";
@@ -234,6 +237,9 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       // A failed lookup throws rather than defaulting to the agent, because
       // defaulting would run a 1:1 turn with the agent's shared credentials.
       const runAsUser = meta.oauthUser ?? (await agent.resolveEffectiveIdentity(session.id, meta.channelId, meta.threadTs));
+      // Remote mode (spec §4.5): only a target owned by the runAs user is signed in.
+      const remoteTarget = env.remote.enabled() ? await activeRemoteTarget(meta.channelId, meta.threadTs) : null;
+      const remoteClaim = remoteTarget && remoteTarget.userId === runAsUser ? { addr: remoteTarget.addr, dir: remoteTarget.dir } : undefined;
       const jobToken = mintJobToken({
         tenant: tenantId,
         persona: personaId,
@@ -245,6 +251,9 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
         scope: "turn",
         job: jobId,
         runAs: encodeRunAs(runAsUser),
+        ...(env.remote.enabled()
+          ? { sessionConfigFp: sessionConfigFp(runAsUser ?? null, remoteClaim ?? null), ...(remoteClaim ? { remote: remoteClaim } : {}) }
+          : {}),
       });
       // Routing (spec §2): warm + fresh → the holding node's queue; anything
       // else → shared. A node receiving a per-node job it no longer holds

@@ -20,6 +20,11 @@ import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, cre
 import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
 import { humanizeToolStatus } from "./status-text";
+import * as Remote from "../../db/remote";
+import { handleRemoteCommand, endRemoteForThread, remoteStatusOn } from "./remote-command";
+import { activeRemoteTarget } from "../../remote/active";
+import { HelperClient } from "../../remote/helper-client";
+import { cleanupCommand } from "../../remote/tools/bash";
 import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
@@ -583,6 +588,26 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     },
   });
   agent.setPermissionResolver(permissions.resolver);
+  if (env.remote.enabled() && env.role() !== "gateway") {
+    // Mono: the query runs in this process, so resolve the target from the DB
+    // and open the helper here. In split deploys the node does this from claims.
+    agent.setRemote(
+      async (sessionId) => {
+        const row = await Sessions.findById(sessionId);
+        return row?.slack_channel_id && row.slack_thread_ts ? activeRemoteTarget(row.slack_channel_id, row.slack_thread_ts) : null;
+      },
+      async (sessionId, t) => {
+        const key = await Remote.getKey(t.teamId, t.userId);
+        if (!key) throw new Error("remote key missing for target owner");
+        return new HelperClient({
+          transport: { kind: "tailcat", addr: t.addr },
+          privateKey: key.privateKey,
+          onDispose: async (exec) => { await exec(cleanupCommand(sessionId), { timeoutMs: 30_000 }); },
+        });
+      },
+    );
+  }
+
 
   // Diag: dump bot identity + granted scopes once at startup.
   void (async () => {
@@ -1047,6 +1072,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const userId = ctx.userId ?? "";
     const threadTs = ctx.threadTs ?? ctx.inboundTs ?? "";
     if (action === "lock") {
+      const prevTarget = await Remote.findTarget(ctx.channel, threadTs);
+      if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(ctx.channel, threadTs, { sessionId });
       await OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
       agent.reload(sessionId);
       return `Locked this thread to a 1on1 with <@${userId}> — only they and the manager are heard here now.`;
@@ -1056,12 +1083,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (!existing) {
         await OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
       }
+      await endRemoteForThread(ctx.channel, threadTs, { sessionId }); // open mode forbids remote
       await OneOnOne.setOpen(ctx.channel, threadTs, scope ?? "");
       agent.reload(sessionId);
       const scopeNote = scope ? ` Scope: ${scope}` : "";
       return `Opened this 1on1 to all participants.${scopeNote} Use set_one_on_one(action="lock") to restrict again.`;
     }
     if (!await OneOnOne.find(ctx.channel, threadTs)) return "No active 1on1 in this thread — nothing to release.";
+    await endRemoteForThread(ctx.channel, threadTs, { sessionId });
     await OneOnOne.unlock(ctx.channel, threadTs);
     agent.reload(sessionId);
     return "Released 1on1 — the thread is open again.";
@@ -1199,12 +1228,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             }
           }
           // Animated humanized status next to the bot name.
-          void status.set(
+          // remoteStatusOn never throws; the catch keeps the detached promise from ever rejecting.
+          void (async () => status.set(
             e.sessionId,
             route.ctx.channel,
             route.ctx.threadTs,
-            humanizeToolStatus(e.tool, e.input as any),
-          );
+            humanizeToolStatus(e.tool, e.input as any, { remote: await remoteStatusOn(e.sessionId, route.ctx.channel, route.ctx.threadTs) }),
+          ))().catch(() => {});
         }
         break;
       }
@@ -1424,6 +1454,26 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           metric.slackDropsTotal.inc({ reason: "one_on_one" });
           return;
         }
+        // Remote mode runs tools on the owner's machine: only the owner drives it. The
+        // manager is heard only to inspect or end it (/remote off|status, /1on1 off).
+        if (lock.open_scope === null && userId !== lock.locked_user && isMgr && env.remote.enabled() && (await activeRemoteTarget(channelId, threadTs))) {
+          // Strip exactly what the slash dispatcher strips (bot + persona mention).
+          const mgrBot = (await client.auth.test()).user_id as string;
+          const mgrPersona = dispatch?.personaId ? getPersonaRegistry().lookupByName(dispatch.personaId)?.slackUserId : undefined;
+          const mgrText = text
+            .replace(new RegExp(`<@${mgrBot}>`, "g"), "")
+            .replace(mgrPersona ? new RegExp(`<@${mgrPersona}>`, "g") : /(?!x)/g, "")
+            .trim();
+          const hit = parseSlashCommand(mgrText);
+          const allowed =
+            (hit?.kind === "remote" && (hit.action === "off" || hit.action === "status")) ||
+            (hit?.kind === "one-on-one" && hit.action === "off");
+          if (!allowed) {
+            console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — remote mode, 1on1 locked to ${lock.locked_user}`);
+            metric.slackDropsTotal.inc({ reason: "one_on_one" });
+            return;
+          }
+        }
       }
     }
 
@@ -1513,8 +1563,36 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         );
         return;
       }
+      if (slash.kind === "remote") {
+        const remoteSurface = surfaceFactoryFor(dispatch?.personaId)({
+          conversationId: channelId,
+          threadRef: threadTs,
+          inboundRef: threadTs,
+          userId,
+          teamId,
+          requestApproval: async () => { throw new Error("approval is not part of /remote"); },
+          reloadSession: () => false,
+        });
+        const soul = soulData();
+        await handleRemoteCommand(slash, {
+          teamId, channelId, threadTs, userId, sessionId: session.id,
+          isManager: userId === soul.manager.userId || userId === soul.backupManager.userId,
+          reply,
+          sayPrivately: async (text) => {
+            if (remoteSurface.capabilities.has("ephemeral") && remoteSurface.sayEphemeral) {
+              await remoteSurface.sayEphemeral({ text, userId });
+              return;
+            }
+            await reply(":warning: `/remote` setup needs a surface that supports private replies.");
+          },
+          reload: () => { agent.reload(session.id); },
+        });
+        return;
+      }
       if (slash.kind === "one-on-one") {
         if (slash.action === "on") {
+          const prevTarget = await Remote.findTarget(channelId, threadTs);
+          if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(channelId, threadTs, { sessionId: session.id });
           await OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId });
           agent.reload(session.id);
           await reply(`:lock: *1on1 mode* — only <@${userId}> and the manager will be heard in this thread. \`/1on1 off\` to release. Ask me to open it to guests when needed.`);
@@ -1569,9 +1647,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           await reply("No active 1on1 in this thread.");
           return;
         }
+        const r = await endRemoteForThread(channelId, threadTs, { sessionId: session.id });
         await OneOnOne.unlock(channelId, threadTs);
         agent.reload(session.id);
-        await reply(":unlock: 1on1 released — the thread is open again.");
+        await reply(":unlock: 1on1 released — the thread is open again." + (r.ended ? " Remote mode ended." : ""));
         return;
       }
       if (slash.kind === "mention-only") {
@@ -2695,6 +2774,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // Release (give control back to Slack): drain locally + broadcast so
         // every replica replays its own deferred inbound.
         onLockReleased: (sessionId) => broadcastPanelResume(sessionId),
+        // A warm mono session keeps its remote tools until reloaded.
+        onUnlock: (sessionId) => { agent.reload(sessionId); },
       })
     : null;
 

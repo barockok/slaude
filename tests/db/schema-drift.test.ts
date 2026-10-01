@@ -37,6 +37,9 @@ const PG_ONLY_TABLES = new Set([
 // portal_oauth_flows joins for the same reason as accounts: it hangs off an
 // account, which is deployment-global, and it holds one authorization for a few
 // minutes before deleting itself.
+// remote_keys joins too: a person's SSH key is keyed by (team_id, user_id), the
+// same workspace-scoped identity slack_identities uses, so tenant_id would only
+// duplicate team_id.
 const NO_TENANT_TABLES = new Set([
   "pending_gates",
   "seen_events",
@@ -45,6 +48,7 @@ const NO_TENANT_TABLES = new Set([
   "mcp_credentials",
   "portal_oauth_flows",
   "slack_oauth_flows",
+  "remote_keys",
 ]);
 
 // Tables that exist only on sqlite (legacy; dropped from the pg schema).

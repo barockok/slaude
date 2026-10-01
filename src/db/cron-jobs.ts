@@ -201,6 +201,21 @@ export async function listActive(): Promise<CronJob[]> {
   return rows.map(mapRow);
 }
 
+/** Active jobs (paused included: they can be resumed) that fire into this exact
+ *  Slack thread and were created by anyone other than `userId`. */
+export async function countForeignThreadJobs(slackChannelId: string, slackThreadTs: string, userId: string): Promise<number> {
+  const row = await db.one<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM cron_jobs
+     WHERE active = 1
+       AND COALESCE(target, 'thread') = 'thread'
+       AND slack_channel_id = ?
+       AND slack_thread_ts = ?
+       AND created_by <> ?`,
+    [slackChannelId, slackThreadTs, userId],
+  );
+  return Number(row?.n ?? 0);
+}
+
 function mapRow(row: any): CronJob {
   return {
     id: row.id,

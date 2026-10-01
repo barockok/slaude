@@ -24,11 +24,13 @@
  *                                           refresh token or client secret)
  *   POST  /v1/tenants/:id/mcp-credentials/refresh   gateway refreshes one server for that
  *                                           owner; returns the same projection
+ *   GET   /v1/tenants/:id/remote-key        runAs user's SSH key for a remote-mode turn (bearer + job token)
  */
 import { requireBearer, requireJobToken } from "./auth";
 import { handleSession } from "./sessions";
 import { handleTenantRuntime } from "./tenants";
 import { handleMcpCredentials, handleMcpCredentialRefresh, type CredentialRefresher } from "./mcp-credentials";
+import { handleRemoteKey } from "./remote-key";
 import { defaultCredentialRefresher } from "../core/credential-refresh";
 import { handlePending, type PendingOptions } from "./pending";
 import { handleJobEvent, handleTokenRefresh } from "./jobs";
@@ -104,6 +106,18 @@ export function createV1Api(opts: V1Options): V1Api {
           return json(403, { error: "job token is not scoped to this tenant" });
         }
         return await handleMcpCredentials(req, job.claims, credentialRefresher());
+      }
+
+      // /v1/tenants/:id/remote-key — the runAs user's SSH key, only for a token
+      // whose signed claims carry a remote target (spec §4.5).
+      if (seg.length === 4 && seg[1] === "tenants" && seg[3] === "remote-key") {
+        if (req.method !== "GET") return methodNotAllowed();
+        const job = requireJobToken(req);
+        if ("response" in job) return job.response;
+        if (job.claims.tenant !== seg[2]!) {
+          return json(403, { error: "job token is not scoped to this tenant" });
+        }
+        return await handleRemoteKey(req, job.claims);
       }
 
       // /v1/tenants/:id/mcp-credentials/refresh — refresh one server for the
