@@ -25,6 +25,10 @@ interface JournalRow {
   persona: string | null;
   /** Whether the request offered slaude's surface reply tool. */
   offersReply: boolean;
+  /** Per-process sequence number, 1-based; DELETE clears rows but never resets it, so it is a safe mark. */
+  seq: number;
+  /** Params of the request's tag (a test can add its own, e.g. `case=<id>`), or null when untagged. */
+  tagParams: Record<string, string> | null;
 }
 
 function toFixtureResponse(r: MockReply): FixtureResponse {
@@ -115,6 +119,7 @@ export async function startServer(port: number): Promise<{ port: number; stop():
   mock.on({ predicate: () => true }, (req) => toFixtureResponse(resolveReply(req as unknown as MockRequest)));
   const upstream = await mock.start();
   const journal: JournalRow[] = [];
+  let journalSeq = 0;
   // Attempt counting is the one deliberate stateful exception: fault-only, it never changes reply
   // content. The counter is per (system prompt, history). With several mock replicas a retry may hit
   // another replica, so fault scenarios needing more than one attempt require a single replica or
@@ -200,6 +205,8 @@ export async function startServer(port: number): Promise<{ port: number; stop():
     attempts.set(key, retryCount + 1);
     if (attempts.size > MAX_ATTEMPTS) attempts.delete(attempts.keys().next().value as string);
     journal.push({
+      seq: ++journalSeq,
+      tagParams: tag ? { ...tag.params } : null,
       ts: Date.now(),
       method: req.method ?? "GET",
       path,

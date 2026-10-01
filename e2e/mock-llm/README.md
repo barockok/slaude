@@ -50,8 +50,10 @@ Precedence: hang, overflow, fail, drop, malformed.
 ## Inspecting
 
 `GET /__mock/journal` lists every request as
-`{ ts, method, path, retryCount, clientRetryCount, tag, action, messages, historyHash, persona, offersReply }`
-(`persona` is the system prompt's `Persona-ID:`; `offersReply` says whether the surface reply tool was offered);
+`{ seq, ts, method, path, retryCount, clientRetryCount, tag, tagParams, action, messages, historyHash, persona, offersReply }`
+(`seq` rises per process and is never reset, so a test can take it as a mark before sending;
+`tagParams` are the tag's params, so a test can add its own `case=<id>` to find its rows;
+`persona` is the system prompt's `Persona-ID:`; `offersReply` says whether the surface reply tool was offered);
 `DELETE` clears it. `retryCount` is the number of earlier attempts of the same
 request that the mock counted itself; `clientRetryCount` is the client's
 `x-stainless-retry-count` header and is informational only. aimock's own
