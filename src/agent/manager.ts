@@ -40,7 +40,10 @@ import { sessionIdOpts } from "./session-id-opts";
 import { sessionModeBlock } from "./session-mode";
 import { formatSessionNotes } from "./session-notes";
 import { REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, makeRemoteCanUseTool } from "../remote/mcp";
-import type { RemoteHandle, RemoteTarget } from "../remote/types";
+import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/types";
+
+/** Upper bound on waiting for a previous remote handle's job cleanup at boot. */
+const REMOTE_DISPOSE_TIMEOUT_MS = 8_000;
 
 type LiveSession = {
   id: string;
@@ -204,6 +207,7 @@ export class AgentManager extends EventEmitter {
   #remoteHandles = new Map<string, { handle: RemoteHandle; key: string }>();
   /** Latest session-config fingerprint seen per session (node: from job claims). */
   #configFp = new Map<string, string>();
+  #remoteDisposeTimeoutMs = REMOTE_DISPOSE_TIMEOUT_MS;
   /** Sessions whose Stop hook already blocked once this turn — cleared on user msg. */
   #stopBlocked = new Set<string>();
   /** Out-of-band gate events (mcp connect/disconnect, model change) pending delivery
@@ -301,6 +305,35 @@ export class AgentManager extends EventEmitter {
     while (this.isLive(sessionId) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
   }
 
+  /** Test hook: shrink the bound on disposing a previous remote handle. */
+  setRemoteDisposeTimeoutMs(ms: number) {
+    this.#remoteDisposeTimeoutMs = ms;
+  }
+
+  /** Await the old handle's disposal (ordering matters for same-host re-points)
+   *  but never stall a boot on an unreachable old machine: on timeout, release the
+   *  connection (rejects the in-flight cleanup) and carry on. Logs codes only. */
+  async #disposeBounded(sessionId: string, handle: RemoteHandle): Promise<void> {
+    const logFail = (what: string, e: unknown) =>
+      console.error(`[mgr] remote ${what} failed session=${sessionId}: ${e instanceof RemoteError ? e.code : "error"}`);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const disposal = Promise.resolve().then(() => handle.dispose());
+    const timedOut = new Promise<"timeout">((r) => { timer = setTimeout(() => r("timeout"), this.#remoteDisposeTimeoutMs); });
+    try {
+      const outcome = await Promise.race([disposal.then(() => "done" as const), timedOut]);
+      if (outcome === "timeout") {
+        // Swallow the late settlement of the abandoned dispose.
+        disposal.catch(() => {});
+        console.error(`[mgr] remote dispose timed out session=${sessionId}; releasing`);
+        await handle.release().catch((e) => logFail("release", e));
+      }
+    } catch (e) {
+      logFail("dispose", e);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /** Reuse the session's handle when the target is unchanged; otherwise dispose
    *  the old one (kills its background jobs — remote ended or moved) and open anew. */
   async #remoteHandleFor(sessionId: string, target: RemoteTarget | null): Promise<RemoteHandle | undefined> {
@@ -309,9 +342,11 @@ export class AgentManager extends EventEmitter {
     if (prev && prev.key === key) return prev.handle;
     if (prev) {
       this.#remoteHandles.delete(sessionId);
-      try { await prev.handle.dispose(); } catch (e) { console.error(`[mgr] remote dispose failed session=${sessionId}:`, e); }
+      await this.#disposeBounded(sessionId, prev.handle);
     }
-    if (!target || !this.#remoteFactory) return undefined;
+    if (!target) return undefined;
+    // Fail closed: never boot local tools while the prompt says remote.
+    if (!this.#remoteFactory) throw new Error("remote target set but no remote factory installed");
     const handle = await this.#remoteFactory(sessionId, target);
     this.#remoteHandles.set(sessionId, { handle, key });
     return handle;
@@ -845,7 +880,7 @@ export class AgentManager extends EventEmitter {
         // /mcp connect) must not kill the user's background jobs. They are killed
         // when remote ends or moves (#remoteHandleFor disposes).
         void this.#remoteHandles.get(sessionId)?.handle.release().catch((e) =>
-          console.error(`[mgr] remote release failed session=${sessionId}:`, e));
+          console.error(`[mgr] remote release failed session=${sessionId}: ${e instanceof RemoteError ? e.code : "error"}`));
         this.#budget.forget(sessionId);
         this.#stopBlocked.delete(sessionId);
         metric.sessionsLive.set(this.#live.size);

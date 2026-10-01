@@ -310,3 +310,81 @@ describe("remote wiring", () => {
     await mgr.ensureConfigFp(row.id, undefined); // tokens from an older gateway: ignored
   });
 });
+
+describe("remote handle disposal bound and fail-closed", () => {
+  const mkHandle = (log: string[], n: number, dispose: () => Promise<void>) => ({
+    exec: noopExec,
+    release: async () => { log.push(`release${n}`); },
+    dispose,
+  });
+
+  it("a re-point whose old dispose never resolves still boots, releases the old handle, and swallows a late rejection", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => { unhandled.push(e); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const mgr = new AgentManager();
+      mgr.setRemoteDisposeTimeoutMs(30);
+      let target: any = { teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r" };
+      const log: string[] = [];
+      let opened = 0;
+      let rejectLate!: (e: Error) => void;
+      mgr.setRemote(async () => target, () => {
+        const n = ++opened;
+        const dispose = n === 1
+          ? () => new Promise<void>((_, rej) => { rejectLate = rej; })
+          : async () => { log.push(`dispose${n}`); };
+        return mkHandle(log, n, dispose);
+      });
+      const row = await mgr.ensureSession(thread());
+      const boot = async () => { const fs = plan(); await mgr.sendMessage(row.id, "hi"); await until(() => fs.options !== null, 3000, "boot"); return fs; };
+      await boot();
+      await shutdown(mgr, row.id);
+      await Bun.sleep(10);
+      log.length = 0; // drop the reboot's own release1
+      target = { ...target, addr: "tcB" };
+      const fs = await boot();
+      expect(opened).toBe(2);
+      expect(fs.options.mcpServers.remote).toBeDefined();
+      expect(log).toContain("release1");
+      rejectLate(new Error("late"));
+      await Bun.sleep(20);
+      expect(unhandled).toEqual([]);
+      await shutdown(mgr, row.id);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("a quick dispose is awaited before the new handle opens and triggers no timeout release", async () => {
+    const mgr = new AgentManager();
+    mgr.setRemoteDisposeTimeoutMs(2000);
+    let target: any = { teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r" };
+    const log: string[] = [];
+    let opened = 0;
+    mgr.setRemote(async () => target, () => {
+      const n = ++opened;
+      log.push(`open${n}`);
+      return mkHandle(log, n, async () => { await Bun.sleep(10); log.push(`dispose${n}`); });
+    });
+    const row = await mgr.ensureSession(thread());
+    const boot = async () => { const fs = plan(); await mgr.sendMessage(row.id, "hi"); await until(() => fs.options !== null, 3000, "boot"); await shutdown(mgr, row.id); };
+    await boot();
+    target = { ...target, addr: "tcB" };
+    await boot();
+    expect(log.indexOf("dispose1")).toBeGreaterThan(-1);
+    expect(log.indexOf("dispose1")).toBeLessThan(log.indexOf("open2"));
+    // release1 is only the reboot's release before the re-point; no timeout release after dispose
+    expect(log.filter((l) => l === "release1")).toHaveLength(1);
+  });
+
+  it("a target without an installed factory fails the boot instead of running local tools", async () => {
+    const mgr = new AgentManager();
+    mgr.setRemote(async () => ({ teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r" }), undefined);
+    const row = await mgr.ensureSession(thread());
+    const fs = plan();
+    await expect(mgr.sendMessage(row.id, "hi")).rejects.toThrow("no remote factory");
+    expect(fs.options).toBeNull();
+    expect(mgr.isLive(row.id)).toBe(false);
+  });
+});
