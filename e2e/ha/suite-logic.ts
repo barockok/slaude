@@ -153,11 +153,13 @@ export function unknownMethods(calls: CallRecord[]): string[] {
 }
 
 export interface MockJournalRow {
+  seq: number;
   ts: number;
   method: string;
   path: string;
   retryCount: number;
   tag: string | null;
+  tagParams: Record<string, string> | null;
   action: string;
   messages: number;
   historyHash: string;
@@ -165,9 +167,16 @@ export interface MockJournalRow {
   offersReply: boolean;
 }
 
-/** Mock-LLM journal rows for one scenario tag recorded at or after `sinceMs`. */
-export function journalRowsFor(rows: MockJournalRow[], tag: string, sinceMs: number): MockJournalRow[] {
-  return rows.filter((r) => r.tag === tag && r.ts >= sinceMs);
+/** The mock journal's highest sequence number: a mark taken from the mock itself, no clocks. */
+export function lastJournalSeq(rows: MockJournalRow[]): number {
+  return rows.reduce((n, r) => Math.max(n, r.seq), 0);
+}
+
+/** One case's rows after a mark: tag `name` with `case=<caseId>`, in sequence order. */
+export function caseJournalRows(rows: MockJournalRow[], mark: number, name: string, caseId: string): MockJournalRow[] {
+  return rows
+    .filter((r) => r.seq > mark && r.tag === name && r.tagParams?.case === caseId)
+    .sort((a, b) => a.seq - b.seq);
 }
 
 /** Deployment annotation recording the fingerprint the slaude pods last booted with. */

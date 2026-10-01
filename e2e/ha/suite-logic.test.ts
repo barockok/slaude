@@ -9,7 +9,8 @@ import {
   bootFingerprint,
   configEntries,
   dmChannelId,
-  journalRowsFor,
+  caseJournalRows,
+  lastJournalSeq,
   lastSeq,
   maskSecrets,
   personaReplies,
@@ -93,11 +94,15 @@ test("call-log marks and unknown-method extraction", () => {
   expect(unknownMethods([call(1, "chat.postMessage"), call(2, "views.publish", true), call(3, "x.y", true)])).toEqual(["views.publish", "x.y"]);
 });
 
-test("journal rows are filtered by tag and time", () => {
-  const row = (ts: number, tag: string | null): MockJournalRow => ({ ts, method: "POST", path: "/v1/messages", retryCount: 0, tag, action: "proxy", messages: 1, historyHash: "h", persona: "alpha", offersReply: true });
-  const rows = [row(10, "echo"), row(20, "echo"), row(30, null), row(40, "think")];
-  expect(journalRowsFor(rows, "echo", 15)).toEqual([row(20, "echo")]);
-  expect(journalRowsFor(rows, "echo", 10)).toHaveLength(2);
+test("journal marks come from the mock's seq, and a case's rows are those after the mark with its case param, in order", () => {
+  const row = (seq: number, tag: string | null, params: Record<string, string> | null): MockJournalRow => ({
+    seq, ts: 0, method: "POST", path: "/v1/messages", retryCount: 0, tag, tagParams: params, action: "proxy", messages: 1, historyHash: "h", persona: "alpha", offersReply: true,
+  });
+  expect(lastJournalSeq([])).toBe(0);
+  const rows = [row(7, "echo", { case: "D1" }), row(5, "echo", { case: "D1" }), row(9, "echo", { case: "D1" }), row(8, null, null), row(10, "echo", { case: "D2" }), row(11, "think", { case: "D1" })];
+  expect(lastJournalSeq(rows)).toBe(11);
+  expect(caseJournalRows(rows, 5, "echo", "D1").map((r) => r.seq)).toEqual([7, 9]);
+  expect(caseJournalRows(rows, 11, "echo", "D1")).toEqual([]);
 });
 
 const LIST = [
