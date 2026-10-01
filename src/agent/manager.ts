@@ -39,7 +39,7 @@ import { resolveSessionConfigDir } from "./oauth-home";
 import { sessionIdOpts } from "./session-id-opts";
 import { sessionModeBlock } from "./session-mode";
 import { formatSessionNotes } from "./session-notes";
-import { REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, makeRemoteCanUseTool } from "../remote/mcp";
+import { REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, makeRemoteCanUseTool } from "../remote/mcp";
 import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/types";
 
 /** Upper bound on waiting for a previous remote handle's job cleanup at boot. */
@@ -772,7 +772,9 @@ export class AgentManager extends EventEmitter {
       ...(canUseTool ? { canUseTool } : {}),
       ...(hasMcpServers ? { mcpServers: mergedMcpServers } : {}),
       plugins: allPlugins,
-      ...(remoteHandle ? { toolAliases: REMOTE_TOOL_ALIASES } : {}),
+      // The aliased built-ins stay enabled (an alias needs its source tool, spike §8);
+      // local-only tools with no remote counterpart are removed outright.
+      ...(remoteHandle ? { toolAliases: REMOTE_TOOL_ALIASES, disallowedTools: [...REMOTE_DENIED_LOCAL_TOOLS] } : {}),
       permissionMode: mode,
       ...(mode === "bypassPermissions"
         ? { allowDangerouslySkipPermissions: true }

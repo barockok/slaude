@@ -206,7 +206,12 @@ describe("remote wiring", () => {
     expect(fs.options.toolAliases.Bash).toBe("mcp__remote__bash");
     expect(fs.options.hooks.PreToolUse).toHaveLength(1);
     expect(fs.options.systemPrompt.append).toContain("<remote-mode>");
-    expect(fs.options.disallowedTools ?? []).not.toContain("Bash"); // enabled + alias (spike §8)
+    for (const b of ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]) {
+      expect(fs.options.disallowedTools ?? []).not.toContain(b); // enabled + alias (spike §8)
+    }
+    for (const t of ["NotebookEdit", "Monitor", "REPL", "Workflow", "EnterWorktree", "ExitWorktree", "Artifact"]) {
+      expect(fs.options.disallowedTools).toContain(t);
+    }
     await shutdown(mgr, row.id);
   });
 
@@ -249,6 +254,7 @@ describe("remote wiring", () => {
     expect(fs.options.mcpServers?.remote).toBeUndefined();
     expect(fs.options.toolAliases).toBeUndefined();
     expect(fs.options.hooks.PreToolUse).toBeUndefined();
+    expect(fs.options.disallowedTools).toBeUndefined();
     await shutdown(mgr, row.id);
   });
 

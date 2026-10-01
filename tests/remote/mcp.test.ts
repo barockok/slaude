@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import {
-  REMOTE_TOOL_ALIASES, builtinFor, remotePermission, denyLocalBuiltins, makeRemoteCanUseTool, createRemoteMcp, REMOTE_MCP_NAME,
+  REMOTE_TOOL_ALIASES, REMOTE_DENIED_LOCAL_TOOLS, builtinFor, remotePermission, denyLocalBuiltins, makeRemoteCanUseTool, createRemoteMcp, REMOTE_MCP_NAME,
 } from "../../src/remote/mcp";
 import { RemoteError } from "../../src/remote/types";
 import { localExec } from "./local-exec";
@@ -127,6 +127,17 @@ describe("denyLocalBuiltins", () => {
     expect((d as any).hookSpecificOutput.permissionDecision).toBe("deny");
     expect(await denyLocalBuiltins({ hook_event_name: "PreToolUse", tool_name: "mcp__remote__bash", tool_input: {} } as any, "t1", sig)).toEqual({});
     expect(await denyLocalBuiltins({ hook_event_name: "PreToolUse", tool_name: "WebFetch", tool_input: {} } as any, "t1", sig)).toEqual({});
+  });
+
+  it("denies every other local-execution built-in, and nothing that manages subagents", async () => {
+    expect([...REMOTE_DENIED_LOCAL_TOOLS].sort()).toEqual(["Artifact", "EnterWorktree", "ExitWorktree", "Monitor", "NotebookEdit", "REPL", "Workflow"]);
+    for (const name of REMOTE_DENIED_LOCAL_TOOLS) {
+      const d = await denyLocalBuiltins({ hook_event_name: "PreToolUse", tool_name: name, tool_input: {} } as any, "t1", sig);
+      expect((d as any).hookSpecificOutput.permissionDecision).toBe("deny");
+    }
+    for (const name of ["TaskOutput", "TaskStop", "Agent", "TodoWrite", "mcp__remote__read"]) {
+      expect(await denyLocalBuiltins({ hook_event_name: "PreToolUse", tool_name: name, tool_input: {} } as any, "t1", sig)).toEqual({});
+    }
   });
 });
 

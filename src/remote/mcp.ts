@@ -11,6 +11,20 @@ export const REMOTE_TOOL_ALIASES: Record<string, string> = Object.fromEntries(
   REMOTE_BUILTINS.map((n) => [n, `mcp__${REMOTE_MCP_NAME}__${n.toLowerCase()}`]),
 );
 
+/** Other SDK built-ins (sdk-tools.d.ts) that write files, run code, or read local
+ *  files and have no remote counterpart: disabled while remote mode is on.
+ *  Left allowed on purpose: TaskOutput/TaskStop (they manage subagents too; local
+ *  shells cannot start since Bash is rerouted), web, todo, plan, and cron tools. */
+export const REMOTE_DENIED_LOCAL_TOOLS = [
+  "NotebookEdit", // writes a local file
+  "Monitor",      // runs a local shell command
+  "REPL",         // runs JavaScript in the local process
+  "Workflow",     // runs a local script
+  "EnterWorktree", // local git worktree
+  "ExitWorktree",  // local git worktree (can delete one)
+  "Artifact",     // publishes a local file
+] as const;
+
 const PREFIX = `mcp__${REMOTE_MCP_NAME}__`;
 const READ_ONLY = new Set(["read", "glob", "grep", "bash_output"]);
 const EDITS = new Set(["write", "edit"]);
@@ -68,11 +82,13 @@ export function makeRemoteCanUseTool(base: CanUseTool | undefined, getMode: () =
   };
 }
 
-/** Belt and braces for toolAliases: hooks see the post-alias name, so this fires
- *  only if something reaches a LOCAL built-in directly (spec §4.1). */
+const DENIED_LOCAL = new Set<string>([...REMOTE_BUILTINS, ...REMOTE_DENIED_LOCAL_TOOLS]);
+
+/** Belt and braces for toolAliases and disallowedTools: hooks see the post-alias
+ *  name, so this fires only if something reaches a LOCAL built-in directly (spec §4.1). */
 export const denyLocalBuiltins: HookCallback = async (input) => {
   if (input.hook_event_name !== "PreToolUse") return {};
-  if (!(REMOTE_BUILTINS as readonly string[]).includes((input as any).tool_name)) return {};
+  if (!DENIED_LOCAL.has((input as any).tool_name)) return {};
   return {
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
