@@ -293,6 +293,20 @@ describe("mock-llm server", () => {
     expect(rows[0]!.messages).toBe(1);
   });
 
+  test("journal rows carry a sequence number that keeps rising across a clear, and the tag's params", async () => {
+    await (await post(request("[[mock:echo case=one]] a"))).text();
+    const before = (await (await fetch(`${base}/__mock/journal`)).json()) as Array<Record<string, any>>;
+    const mark = before.at(-1)!.seq as number;
+    expect(typeof mark).toBe("number");
+    expect(before.at(-1)!.tagParams).toEqual({ case: "one" });
+    await fetch(`${base}/__mock/journal`, { method: "DELETE" });
+    await (await post(request("[[mock:echo case=two ttft=1ms]] b"))).text();
+    await (await post(request("c"))).text();
+    const after = (await (await fetch(`${base}/__mock/journal`)).json()) as Array<Record<string, any>>;
+    expect(after.map((r) => r.seq)).toEqual([mark + 1, mark + 2]);
+    expect(after.map((r) => r.tagParams)).toEqual([{ case: "two", ttft: "1ms" }, null]);
+  });
+
   test("aimock's own journal is reachable through the passthrough", async () => {
     const res = await fetch(`${base}/__aimock/journal`);
     expect(res.status).toBe(200);
