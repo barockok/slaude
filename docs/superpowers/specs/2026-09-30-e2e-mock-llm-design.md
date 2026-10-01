@@ -1,39 +1,49 @@
 # Nightly end-to-end suite with a mock LLM
 
-Status: design, approved in conversation, pending written-spec review.
+Status: design, approved in conversation. Amended after the mock-LLM plan:
+the matrix now runs against a fake Slack server, with a small real-Slack canary
+alongside it (see sections 2 and 4). Pending written-spec review.
 
 ## Purpose
 
 Prove, every night, that the horizontally scaled topology (multiple gateway
-replicas, multiple node workers, multiple personas) handles real Slack traffic
-correctly, including when parts of it are killed mid-turn. Everything is real
-except the model: the LLM is replaced by a deterministic mock, which is what
-makes a scripted crash at an exact point in a turn reproducible.
+replicas, multiple node workers, multiple personas) behaves correctly under
+realistic Slack traffic, including when parts of it are killed mid-turn. The
+gateways, nodes, queue, locks, cron, Postgres and Redis are the real deployment.
+Two edges are replaced by deterministic fakes so a scripted crash at an exact
+point in a turn is reproducible: the model (a mock LLM) and Slack (a fake Slack
+server). A separate canary keeps one path on real Slack so the fake cannot drift
+unnoticed.
 
 Success criteria:
 
-- A GitHub Actions nightly runs the full suite with no model credentials.
-- Real Slack in, real Slack out, on the scale topology from `deploy/k8s-scale`.
+- The full HA matrix runs in GitHub Actions with no model credentials and no
+  Slack credentials or tunnel.
+- It runs on the scale topology from `deploy/k8s-scale`, with the real gateway
+  HTTP ingress path (signature verification, per-request app lookup) exercised.
 - The four HA behaviours below are covered, across personas and entry paths.
-- A failure leaves enough evidence (logs, mock journal, Slack transcripts) to
-  diagnose without re-running.
+- A failure leaves enough evidence (logs, mock-LLM journal, fake-Slack call log
+  and thread transcripts) to diagnose without re-running.
+- A real-Slack canary proves one persona round-trips on a real workspace.
 
 Out of scope for v1:
 
-- A full MCP OAuth round-trip. Only the LLM is mocked, so `connect-mcp` scenarios
-  stop at the auth-URL card. A fake OAuth provider is a later addition.
-- Running the suite on pull requests. The matrix is too heavy; a smoke subset can
-  follow once the nightly is stable.
+- A full MCP OAuth round-trip. The model and Slack are faked, so `connect-mcp`
+  scenarios stop at the auth-URL card. A fake OAuth provider is a later addition.
 - Load or latency budgets. `scripts/load` already owns that.
+- Slack-side behaviour that only real Slack can show (Block Kit validation,
+  mrkdwn rendering). The canary samples it; the matrix does not claim it.
 
 ## Decomposition
 
 Three sub-projects, built in this order. Each gets its own plan.
 
-1. **Mock LLM server** (`e2e/mock-llm`), preceded by a spike.
-2. **Cluster and Slack harness** (`e2e/harness`, `e2e/k8s`).
-3. **Scenarios and nightly workflow** (`e2e/scenarios`,
-   `.github/workflows/e2e-nightly.yml`).
+1. **Mock LLM server** (`e2e/mock-llm`), preceded by a spike. Built and in review.
+2. **Cluster and fake-Slack harness** (`e2e/fake-slack`, `e2e/harness`,
+   `e2e/k8s`), including the small `SLAUDE_SLACK_API_URL` seam in the gateway.
+3. **Scenarios and workflows** (`e2e/scenarios`,
+   `.github/workflows/e2e-ha.yml` for the matrix and
+   `.github/workflows/e2e-slack-canary.yml` for the real-Slack canary).
 
 ## 1. Mock LLM server
 
@@ -60,8 +70,11 @@ and Bun compatibility is undocumented (run it under Node in its own container).
   headers: fault injection, `count_tokens`, and a request journal.
 - Image: `node:alpine` plus one bundled server file (aimock included), built with
   `bun build --target=node`.
-- Deployed as its own Deployment with 2 replicas. It is therefore stateless by
-  construction; nothing may rely on which replica answers.
+- Deployed as its own Deployment. Reply content is stateless, so any replica
+  answers any request identically; but fault attempt counting is per process (see
+  the statelessness rule), so run one replica unless every fault case uses the
+  default `until-retry=1`, and collect journals per pod rather than through the
+  Service.
 
 ### Statelessness rule
 
@@ -109,39 +122,92 @@ Decision rule: if the CLI completes the turn and the retry header appears, build
 on aimock. Otherwise write a thin custom `/v1/messages` server (about 300 lines)
 and keep the scenario shapes below. Time-box: about an hour.
 
-## 2. Cluster and Slack harness
+## 2. Cluster and fake-Slack harness
 
 ### Cluster
 
 Reuse `deploy/k8s-local` (minikube, two gateways, two nodes, Postgres, Redis,
 shared volume). It references the production `deploy/k8s-scale` manifests, so the
 suite runs what ships. `up.sh` already forwards `ANTHROPIC_BASE_URL`; point it at
-the in-cluster mock Service. An `e2e/k8s` kustomize overlay adds the mock
-Deployment. Crash helpers are lifted from `verify-ha.sh` (SIGKILL through the
+the in-cluster mock Service. An `e2e/k8s` kustomize overlay adds the mock-LLM
+Deployment and the fake-Slack Deployment (one replica, since its state is in
+memory). Crash helpers are lifted from `verify-ha.sh` (SIGKILL through the
 container runtime, since `kubectl delete --force` only exercises the graceful
 path).
 
-### Slack
+### Why a fake Slack, and why not an existing tool
 
-Real Slack test workspace, HTTP events mode (`SLAUDE_SLACK_MODE=http`), which the
-HA gateways require.
+What the matrix proves is gateway, node, queue, lock and cron behaviour under
+failure, not Slack's wire behaviour. A real workspace adds rate limits, outages, a
+public tunnel and secrets without testing more of slaude, and Slack offers no API
+for a user to press a Block Kit button, so a real-Slack driver could not drive the
+approval scenarios anyway.
 
-- One Slack app per persona, created once by hand. Each app's Events and
-  Interactivity URLs are set once to the fixed tunnel hostname.
-- Apps are registered into the `slack_apps` registry non-interactively with the
-  existing `slack-app add` CLI, from secrets, inside a gateway pod. No browser
-  OAuth install in CI.
-- The driver is a Slack **user** token, because the bot ignores its own posts. It
-  posts real messages, mentions and button clicks, and reads real replies
-  (`conversations.replies`).
-- Each run creates its own channel and archives it at the end.
+Existing tools were checked and none fits: `slack-mock` intercepts HTTP inside the
+test process (our gateways run in other pods), has no request signing and returns
+`{ok: true}` for unstubbed methods; `slack-testing-library` targets App Home views;
+`@slack-wrench/jest-bolt-receiver` is an in-process Bolt receiver. The archived
+`slackapi/slack-api-specs` OpenAPI is stateless and does not generate signed
+inbound requests. So the fake is purpose-built (Bun/TypeScript, small).
 
-### Tunnel
+### Fake Slack server (`e2e/fake-slack`)
 
-A Cloudflare **named tunnel with a fixed hostname**. A quick tunnel with a random
-URL would force rewriting every app's URLs through the manifest API, whose config
-token has a single-use rotating refresh token that a workflow cannot persist
-without a PAT or GitHub App.
+An out-of-process HTTP service with three responsibilities.
+
+**Web API, in memory.** The methods slaude calls today: `chat.postMessage`,
+`chat.update`, `chat.postEphemeral`, `chat.delete`, `reactions.add`,
+`reactions.remove`, `auth.test`, `users.info`, `conversations.replies`,
+`conversations.info`, `conversations.members`, `conversations.setTopic`,
+`conversations.setPurpose`, `search.messages`, `pins.add`, `pins.remove`,
+`files.info` (and the file-upload calls the surface `upload` tool makes). State is
+real: channels, threads, message timestamps, reactions, bot and human users. A
+method outside the list answers `{ok: false, error: "unknown_method"}` and is
+recorded, so a new slaude call fails loudly instead of silently succeeding.
+
+**Inbound sender.** The fake plays Slack's side of the wire: it sends correctly
+signed `POST /slack/events` and `/slack/interactions` to a gateway, using each
+registered persona's signing secret, with real envelope fields (`event_id`,
+`event_time`, `team_id`, `api_app_id`, `authorizations`). The target is explicit:
+a specific gateway pod or the Service, so "the click lands on the replica that did
+not post the card" is deterministic. Emulated Slack behaviours that matter for HA:
+retry on a non-2xx or a slow acknowledgement (with `X-Slack-Retry-Num`, intervals
+compressible for tests), duplicate delivery of the same `event_id`, delayed and
+out-of-order delivery, and dropped events.
+
+**Control API (`/__fake/*`).** For the test harness: create a channel or user, post
+a message as a human, click a button (build and send the interaction payload for a
+chosen card and target), read a thread and the ordered call log, and inject Slack
+faults (429 with `Retry-After`, 5xx, slow responses, per method).
+
+**Spec guard.** Responses and slaude's outgoing requests are validated against a
+vendored, SHA-pinned subset of the archived Slack OpenAPI schemas for the methods
+above, so a wrong argument slaude starts sending, or a response shape the fake
+invents, fails the build. The licence of the spec repository is checked before
+vendoring (decision for the plan).
+
+**Seam in the gateway.** Both Slack clients are constructed with a token only
+(`src/gateway/slack/http-transport.ts`, `src/persona/registry.ts`). Add an env var
+`SLAUDE_SLACK_API_URL`, passed to `WebClient` as `slackApiUrl`, off by default.
+This is the only production-code change in the whole effort.
+
+**Personas.** Test personas are registered with the existing `slack-app add` CLI
+inside a gateway pod, using generated app ids, team id, bot tokens and signing
+secrets (random per run, shared with the fake). No real Slack credentials and no
+browser OAuth install.
+
+### Real-Slack canary
+
+A small, separate check that the fake has not drifted. One persona on a real Slack
+workspace (a free Slack Developer Program sandbox workspace is enough), HTTP events
+mode, one round trip: an `@mention` in a channel and a threaded reply, plus a DM.
+It uses a real bot token and signing secret, and a dedicated test user's user
+token, because the bot ignores its own posts. It runs the mock LLM, not a real
+model.
+
+It needs public ingress, so it uses a Cloudflare **named tunnel with a fixed
+hostname**. A quick tunnel with a random URL would force rewriting the app's URLs
+through the manifest API, whose config token has a single-use rotating refresh
+token that a workflow cannot persist without a PAT or GitHub App.
 
 - `cloudflared` runs on the runner, forwarding to the gateway Service through
   `kubectl port-forward`.
@@ -151,13 +217,15 @@ without a PAT or GitHub App.
 - One connector at a time. The workflow's concurrency group prevents two runs
   sharing the tunnel; a developer must not start a second connector on the same
   tunnel, since Cloudflare would load-balance between them.
+- Button clicks are out of the canary's reach (Slack has no API for them); the
+  fake covers them with signed interaction payloads.
 
 ## 3. Scenarios
 
 Every scenario is a pure function of the request (see the statelessness rule).
 Tool names are the real ones the agent has today.
 
-Building blocks: `say`, `tool(name, args)`, `think`, `stream(chunks, tps)`,
+Building blocks: `say`, `tool(name, args)`, `think`, `stream(chunks, interval)`,
 `ttft(ms)`, `fail(status)`, `drop(afterEvents)`, `malformed`, `hang`.
 
 | Tag | Mock behaviour | Real path exercised | HA use |
@@ -180,10 +248,25 @@ Faults are orthogonal tag parameters, so any scenario combines with any fault:
 streamed events), `overflow=1` (400 prompt-too-long, for the token-budget path).
 Precedence: hang, overflow, fail, drop, malformed.
 
+### Slack-side faults (fake Slack)
+
+Injected through the fake's control API, independent of the model tags, so any
+scenario combines with any Slack fault:
+
+| Fault | What the gateway must do |
+|---|---|
+| Duplicate delivery of the same `event_id` (and of the same message `ts` under a new id) | Answer once; dedup holds across replicas |
+| Slow or failed acknowledgement, so Slack retries (`X-Slack-Retry-Num`) | Acknowledge fast; no second turn from the retry |
+| Dropped event | No reply, no crash, no stuck session lock |
+| Delayed or out-of-order events within a thread | Replies stay in the right thread |
+| `chat.postMessage` or `chat.update` returns 429 with `Retry-After` | Back off and post once; no duplicate after the retry |
+| `chat.postMessage` returns 5xx once | Post once after the retry |
+| Interaction payload delivered to the replica that did not post the card | The approval resolves exactly once |
+
 ### Multi-persona
 
-The catalogue runs against at least two personas, each with its own Slack app.
-Two journal-based checks:
+The catalogue runs against at least two personas, each registered as its own fake
+Slack app (own app id, bot user, signing secret). Two journal-based checks:
 
 - `whoami`: each persona's system prompt reached the model, and only that one.
 - Isolation probe: seed a marker in persona A's memory, assert no request from
@@ -192,71 +275,119 @@ Two journal-based checks:
 ### Variation matrix
 
 A table-driven runner expands scenario × persona × entry path (DM, channel
-mention, thread reply, `/1on1`) × fault profile × kill point. Kill points: before
+mention, thread reply, `/1on1`) × model-fault profile × Slack-fault profile × kill
+point. Kill points: before
 the first token, mid-stream, during a tool, after the final text but before the
-Slack post. Kills are triggered from the journal or the Slack thread (for example
-"journal shows request 1 for this thread, so SIGKILL the node holding it").
-Threads run in parallel under a concurrency cap sized to Slack rate limits.
+Slack post. Kills are triggered from the mock-LLM journal or the fake's call log
+(for example "journal shows request 1 for this thread, so SIGKILL the node holding
+it"). Threads run in parallel under a concurrency cap sized to runner CPU; the
+fake has no rate limits unless a case injects them.
 
 ### Assertions on every HA case
 
-- Exactly one final reply in the thread; no duplicate.
-- After a node kill, the journal shows the same history sent twice.
+All Slack-side assertions read the fake's ordered call log and thread state.
+
+- Exactly one final `chat.postMessage` in the thread; no duplicate.
+- After a node kill, the mock-LLM journal shows the same history sent twice.
 - No error card is left behind.
+- No Web API call outside the known method list (the fake rejects it and the case
+  fails).
 
-## 4. Nightly workflow
+## 4. Workflows
 
-`.github/workflows/e2e-nightly.yml`
+Two workflows, so a Slack outage or a canary failure never masks a product
+regression in the matrix.
+
+### HA matrix: `.github/workflows/e2e-ha.yml`
 
 - Triggers: `schedule` (03:00 UTC) and `workflow_dispatch` with a scenario filter
-  and matrix-subset input, so a failed subset can be re-run cheaply.
-- `concurrency: e2e-nightly`, `cancel-in-progress: false`; `timeout-minutes: 90`;
+  and matrix-subset input, so a failed subset can be re-run cheaply. Because it
+  needs no secrets and no tunnel, a smoke subset can later also run on
+  `pull_request` (path-filtered) and on forks.
+- `concurrency: e2e-ha`, `cancel-in-progress: false`; `timeout-minutes: 90`;
   `runs-on: ubuntu-latest`.
 - Steps:
-  1. Install minikube and kubectl; build the slaude and mock-llm images inside
-     minikube.
-  2. `deploy/k8s-local/up.sh` with `ANTHROPIC_BASE_URL` set to the mock Service
-     and a dummy key; apply the `e2e/k8s` overlay.
-  3. Start `cloudflared` with the named-tunnel token.
-  4. Register personas with `slack-app add` inside a gateway pod.
-  5. Run `verify-ha.sh` then `verify-turns.sh` as cluster sanity.
-  6. Run `bun test e2e/`: create the channel, expand the matrix, drive cases,
-     assert on Slack, the journal and cluster state.
-  7. Always: archive the channel, collect artifacts, tear down.
-- Artifacts on failure: pod logs, mock journal, Slack thread transcripts. A
-  pass/fail matrix goes in the job summary. A failing nightly opens or updates a
-  single tracking issue.
-- Secrets: per-persona bot token and signing secret, the driver user token, the
-  tunnel token. No model key. The repo is public: workspace and team identifiers
-  live in secrets and variables, never in committed files.
+  1. Install minikube and kubectl; build the slaude, mock-llm and fake-slack
+     images inside minikube.
+  2. `deploy/k8s-local/up.sh` with `ANTHROPIC_BASE_URL` set to the mock-LLM Service,
+     a dummy key, and `SLAUDE_SLACK_API_URL` set to the fake-Slack Service; apply
+     the `e2e/k8s` overlay.
+  3. Register personas with `slack-app add` inside a gateway pod, using the
+     generated credentials shared with the fake.
+  4. Run `verify-ha.sh` then `verify-turns.sh` as cluster sanity.
+  5. Run `bun test e2e/`: create channels and users in the fake, expand the matrix,
+     drive cases through the control API, assert on the fake's call log, the
+     mock-LLM journal and cluster state.
+  6. Always: collect artifacts, tear down.
+- Artifacts on failure: pod logs, mock-LLM journal, fake-Slack call log and thread
+  transcripts. A pass/fail matrix goes in the job summary. A failing run opens or
+  updates a single tracking issue.
+- Secrets: none.
 - No blind retries. A failing case is recorded with its evidence; the subset is
   re-run through `workflow_dispatch`.
+
+### Real-Slack canary: `.github/workflows/e2e-slack-canary.yml`
+
+- Triggers: `schedule` (daily, after the matrix) and `workflow_dispatch`.
+- `concurrency: e2e-slack-canary`, `cancel-in-progress: false`; short timeout.
+- Brings up the same cluster with one persona on the real workspace, starts
+  `cloudflared` with the named-tunnel token, runs the three-step round trip
+  (mention in a channel, threaded reply, DM), archives its test channel, tears
+  down.
+- Secrets: the persona's bot token and signing secret, the test user's token, the
+  tunnel token. No model key. The repo is public: workspace and team identifiers
+  live in secrets and variables, never in committed files.
+- A canary failure opens its own labelled issue and never blocks the matrix. When
+  the canary and the matrix disagree, the fake is wrong and gets fixed first.
 
 ## Risks
 
 - **CLI vs mock fidelity.** The Claude CLI may call endpoints or send headers the
   mock does not expect. Mitigated by the spike; fallback is a thin custom mock.
-- **Slack rate limits and flakiness.** Concurrency cap, one channel per run, and
-  evidence capture on failure. Slack outages fail the nightly and are told apart
-  from product failures by the sanity steps running first.
+- **Fake Slack drifts from real Slack.** The main cost of the fake. Mitigations:
+  responses and slaude's requests are validated against vendored OpenAPI
+  schemas; unknown methods fail loudly; the daily real-Slack canary samples the
+  real wire; and a canary/matrix disagreement means the fake is fixed first. What
+  only real Slack shows (Block Kit validation, mrkdwn rendering) is explicitly
+  not claimed by the matrix.
+- **The fake is more code to maintain.** About a few hundred lines with a bounded
+  method list. The unknown-method failure turns "slaude started calling a new
+  Slack method" into a one-line fake change instead of a silent gap.
+- **One production-code change.** `SLAUDE_SLACK_API_URL` touches gateway Slack
+  client construction. It is off by default and ships in an ordinary PR; it does
+  not touch `install.sh`, the dist layout, the DB schema or the agent loop.
+- **Slack outages and rate limits** now affect only the canary, which is
+  reported separately.
 - **Runner capacity.** minikube needs about 3.5 GB; `ubuntu-latest` on a public
   repo has headroom, but the matrix runtime must stay inside the 90-minute limit.
 - **Killed-node lock TTL.** A killed node never releases its session lock, so a
   re-delivered turn waits out that lock's TTL (10 minutes; see the 2026-09-29 cron-claim and turn-failover field note).
   Kill-scenario timeouts must allow for it; this is a latency bound, not a bug.
-- **Baseline test flake.** One unidentified failure appeared in one of two full
-  `bun test` runs at the start of this work. It is unrelated but should be
-  identified before the nightly's own results are trusted.
+- **Baseline test flake.** `cli/migrate-sqlite` ("main: --help, missing target, and
+  a PGLite-dir run") failed once in a full `bun test` and passed on re-run. It is
+  unrelated to this work, but it is a flaky test in the PR gate and worth fixing
+  separately.
+- **Fault-attempt counter and mock replicas.** Inherited from the mock-LLM
+  section: multi-attempt model faults need a single mock replica or client-IP
+  affinity. The cluster overlay must set this explicitly.
 
 ## Rollout
 
-1. Spike; decide aimock or custom.
-2. Mock server plus the baseline scenarios (`echo`, `multi-tool`, faults),
-   testable locally with the existing sim harness and no cluster.
-3. Cluster and Slack harness; one persona, baseline scenario, manual dispatch.
-4. Add HA scenarios (node loss, gateway loss and leader failover, cross-replica
-   state), then multi-persona.
-5. Enable the schedule; add the tracking-issue reporter.
+1. Spike; decide aimock or custom. (Done: aimock on Node.)
+2. Mock server plus the baseline scenarios (`echo`, `multi-tool`, `long-stream`,
+   `think`, faults), testable locally with no cluster. (Done: in review.)
+3. `SLAUDE_SLACK_API_URL` seam, then the fake Slack server (Web API in memory,
+   signed inbound sender, control API, spec guard), tested in-process against one
+   gateway before any cluster exists.
+4. Cluster harness: the `e2e/k8s` overlay, crash helpers, a test driver; one
+   persona, the `echo` scenario, manual dispatch of `e2e-ha.yml`.
+5. HA scenarios (node loss, gateway loss and leader failover, cross-replica
+   state, model and Slack faults), then multi-persona.
+6. Enable the schedule, add the tracking-issue reporter, then a path-filtered PR
+   smoke subset.
+7. Real-Slack canary: sandbox workspace, test app, named tunnel, then
+   `e2e-slack-canary.yml`.
 
-No release candidate is required: the work is test and deploy tooling and does not
-touch `install.sh`, the dist layout, the DB schema or the agent loop.
+No release candidate is required: apart from the one off-by-default env var in the
+gateway, the work is test and deploy tooling and does not touch `install.sh`, the
+dist layout, the DB schema or the agent loop.
