@@ -24,8 +24,8 @@ afterEach(() => {
   __resetRoleCache();
 });
 
-const unlock = async (id: string, unlocked: string[]) => {
-  const api = createPanelApi({ registry: null, pubsub: null, panelLock: null, chat: async () => {}, onUnlock: (s) => { unlocked.push(s); } });
+const unlock = async (id: string, unlocked: string[], onUnlock: (s: string) => void = (s) => { unlocked.push(s); }) => {
+  const api = createPanelApi({ registry: null, pubsub: null, panelLock: null, chat: async () => {}, onUnlock });
   return (await api.fetch(
     new Request(`https://panel.example.com/panel/api/sessions/${id}/control`, {
       method: "POST",
@@ -54,6 +54,20 @@ describe("panel unlock-1on1", () => {
     expect(await OneOnOne.find("C_PU", "9.1")).toBeNull();
     expect(await Remote.findTarget("C_PU", "9.1")).toBeNull();
     expect(unlocked).toEqual([row.id]);
+  });
+
+  it("a throwing reload hook does not fail the request; the unlock stands", async () => {
+    const row = await Sessions.createForThread({
+      thread: { team_id: "T1", channel_id: "C_PU", thread_ts: "9.3" },
+      model: "m",
+      working_dir: "/tmp/x",
+    });
+    await OneOnOne.lock({ channelId: "C_PU", threadTs: "9.3", lockedUser: "U_A", createdBy: "U_A" });
+    await Remote.setTarget({ channelId: "C_PU", threadTs: "9.3", teamId: "T1", userId: "U_A", addr: "tcAddr1", dir: "/r", lockByRemote: false });
+    const res = await unlock(row.id, [], () => { throw new Error("reload exploded"); });
+    expect(res.status).toBe(200);
+    expect(await OneOnOne.find("C_PU", "9.3")).toBeNull();
+    expect(await Remote.findTarget("C_PU", "9.3")).toBeNull();
   });
 
   it("does not reload when the session has no Slack thread", async () => {
