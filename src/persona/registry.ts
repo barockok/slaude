@@ -7,7 +7,7 @@ import type { EffectivePersona } from "./effective";
 import { effectivePersonas, isManaged, stateVersion } from "../db/personas";
 import { resolveDbConfig } from "../db/client";
 import { SoulDataSchema, type SoulData } from "../soul/data";
-import { loadSoulData, setSoulData } from "../soul/extract";
+import { __resetSoulDataMemo, loadSoulData, setSoulData } from "../soul/extract";
 
 export type { Persona, PersonaConfig };
 
@@ -236,8 +236,10 @@ export function startRegistryRevalidation(tenant: string, everyMs = 10_000): () 
   return () => clearInterval(t);
 }
 
-/** Test helper: forget every installed snapshot and in-flight rebuild. */
+/** Test helper: forget every installed snapshot, in-flight rebuild and default
+ *  soul pair, including the structured-soul memo the pair writes into. */
 export function __resetPersonaRegistry() {
+  __resetSoulDataMemo();
   generation++;
   registry = null;
   inflight = null;

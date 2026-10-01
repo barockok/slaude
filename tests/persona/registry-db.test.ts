@@ -17,8 +17,8 @@ import {
   startRegistryRevalidation,
   whenPersonaRegistrySettled,
 } from "../../src/persona/registry";
-import { personaSoulText, setManagedDefaultSoul } from "../../src/persona/soul-source";
-import { __resetSoulDataMemo, soulDataBase } from "../../src/soul/extract";
+import { personaSoulText } from "../../src/persona/soul-source";
+import { soulDataBase } from "../../src/soul/extract";
 import { SoulDataSchema } from "../../src/soul/data";
 import { loadSoul } from "../../src/soul/loader";
 
@@ -47,8 +47,6 @@ beforeEach(async () => {
 afterEach(async () => {
   await whenPersonaRegistrySettled();
   __resetPersonaRegistry();
-  setManagedDefaultSoul(null);
-  __resetSoulDataMemo();
   rmSync(paths.personas, { recursive: true, force: true });
   if (savedKey === undefined) delete process.env.SLAUDE_MASTER_KEY;
   else process.env.SLAUDE_MASTER_KEY = savedKey;
