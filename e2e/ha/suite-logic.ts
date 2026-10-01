@@ -185,7 +185,7 @@ export interface RestartInput {
 export function restartDecision(i: RestartInput): { restart: boolean; reason: string } {
   if (i.before !== i.after) return { restart: true, reason: "the seed changed the soul or the registered apps" };
   if (i.booted.length === 0 || i.booted.some((b) => b !== i.after)) {
-    return { restart: true, reason: "the pods booted before the current soul and registered apps (no matching boot fingerprint)" };
+    return { restart: true, reason: "the pods booted before the current soul, registered apps or env ConfigMap (no matching boot fingerprint)" };
   }
   return { restart: false, reason: "nothing the pods read at startup changed since they booted" };
 }
