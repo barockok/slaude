@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
@@ -6,6 +6,7 @@ import { loadSoul, soulSystemBlock, loadApproverEntries } from "./loader";
 import { SoulDataSchema, EXTRACTION_PROMPT, type SoulData, type ApproverEntry } from "./data";
 import { applyOverrides } from "./overrides";
 import * as SoulOverrides from "../db/soul-overrides";
+import { masterKey } from "../db/crypto";
 
 /** Where extracted SoulData is cached. `SLAUDE_SOUL_CACHE_DIR` overrides the
  *  default `$SLAUDE_HOME/cache`: in the gateway topology `$SLAUDE_HOME` is a
@@ -28,6 +29,76 @@ function sha256(s: string): string {
  *  and anything that pre-seeds the cache (e.g. the k8s-local verifier). */
 export function soulCachePath(text: string): string {
   return cachePath(sha256(text));
+}
+
+/**
+ * The key that binds a cache entry to its writer, derived from SLAUDE_MASTER_KEY
+ * (never the master key itself). null: no master key is configured, so entries
+ * are plain SoulData as before. "unusable": a key is set but invalid, so no
+ * entry can be trusted or written.
+ */
+function cacheMacKey(): Buffer | null | "unusable" {
+  if (!process.env.SLAUDE_MASTER_KEY?.trim()) return null;
+  try {
+    return createHmac("sha256", masterKey()).update("slaude:soul-cache:v1").digest();
+  } catch {
+    return "unusable";
+  }
+}
+
+function cacheMac(key: Buffer, text: string, data: unknown): string {
+  return createHmac("sha256", key).update(`${sha256(text)}\n${JSON.stringify(data)}`).digest("hex");
+}
+
+/**
+ * Read a cache entry for `text`. With a master key the file must be an envelope
+ * `{ v: 1, mac, data }` whose MAC verifies: grounding alone cannot stop a
+ * planted file swapping roles between ids the soul merely mentions, but only a
+ * key holder (the gateway) can sign. Returns null on any miss; never throws.
+ */
+function readCacheEntry(text: string): { data: SoulData; why?: undefined } | { data: null; why: string } {
+  const cp = soulCachePath(text);
+  if (!existsSync(cp)) return { data: null, why: "" };
+  try {
+    const parsed = JSON.parse(readFileSync(cp, "utf8"));
+    const key = cacheMacKey();
+    let body: unknown = parsed;
+    if (key === "unusable") return { data: null, why: "SLAUDE_MASTER_KEY is invalid; not trusting the cache" };
+    const isEnvelope = parsed && typeof parsed === "object" && parsed.v === 1 && "data" in parsed;
+    if (key) {
+      if (!isEnvelope || typeof parsed.mac !== "string") return { data: null, why: "unsigned entry" };
+      const want = Buffer.from(cacheMac(key, text, parsed.data), "hex");
+      const got = Buffer.from(parsed.mac, "hex");
+      if (got.length !== want.length || !timingSafeEqual(got, want)) return { data: null, why: "entry MAC does not verify" };
+      body = parsed.data;
+    } else if (isEnvelope) {
+      body = parsed.data;
+    }
+    const data = SoulDataSchema.parse(body);
+    // Same grounding check a fresh extraction gets.
+    assertIdsGroundedInPersona(data, text);
+    return { data };
+  } catch (e) {
+    return { data: null, why: (e as Error).message?.slice(0, 200) ?? "unreadable" };
+  }
+}
+
+/**
+ * Write the cache entry for `text`: signed with the master-key-derived key when
+ * one is configured, plain SoulData otherwise. The single writer, used by
+ * extraction and by anything that pre-seeds the cache (the k8s-local verifier),
+ * so a seed is always an entry extraction accepts. Returns the path, or null
+ * when the configured master key is unusable (nothing is written).
+ */
+export function writeSoulCacheEntry(text: string, data: SoulData): string | null {
+  const valid = SoulDataSchema.parse(data);
+  const key = cacheMacKey();
+  if (key === "unusable") return null;
+  const cp = soulCachePath(text);
+  mkdirSync(cacheDir(), { recursive: true });
+  const body = key ? { v: 1, mac: cacheMac(key, text, valid), data: valid } : valid;
+  writeFileSync(cp, JSON.stringify(body, null, 2), "utf8");
+  return cp;
 }
 
 const DEFAULT_MAX_TOKENS = 8192;
@@ -171,18 +242,12 @@ export async function extractSoulData(
   const call = opts.call ?? callExtractor;
   const cp = soulCachePath(persona);
 
-  if (existsSync(cp)) {
-    try {
-      const cached = SoulDataSchema.parse(JSON.parse(readFileSync(cp, "utf8")));
-      // A cache file is never trusted: anyone who can write the cache directory
-      // could plant approvers or a manager. Re-run the same grounding check a
-      // fresh extraction gets; a hit that fails it is a miss.
-      assertIdsGroundedInPersona(cached, persona);
-      return cached;
-    } catch (e) {
-      console.warn(`[soul] cache invalid at ${cp}, re-extracting: ${(e as Error).message?.slice(0, 200)}`);
-    }
-  }
+  // A cache file is never trusted: anyone who can write the cache directory
+  // could plant approvers or a manager. A hit must pass the writer MAC (when a
+  // master key is set), the schema and the grounding check; else it is a miss.
+  const hit = readCacheEntry(persona);
+  if (hit.data) return hit.data;
+  if (hit.why) console.warn(`[soul] cache invalid at ${cp}, re-extracting: ${hit.why}`);
 
   try {
     const text = await call(soulSystemBlock(persona), EXTRACTION_PROMPT);
@@ -192,9 +257,8 @@ export async function extractSoulData(
     // SOUL.md. Blocks the LLM from inventing approvers or whitelisted
     // channels the operator never authorised.
     assertIdsGroundedInPersona(data, persona);
-    mkdirSync(cacheDir(), { recursive: true });
-    writeFileSync(cp, JSON.stringify(data, null, 2), "utf8");
-    console.log(`[soul] extracted ${data.approvers.length} approver(s), cached at ${cp}`);
+    const written = writeSoulCacheEntry(persona, data);
+    console.log(`[soul] extracted ${data.approvers.length} approver(s), ${written ? `cached at ${written}` : "not cached (SLAUDE_MASTER_KEY invalid)"}`);
     return data;
   } catch (e) {
     if (opts.strict) throw new SoulExtractionError(`soul extraction failed: ${(e as Error).message}`);
@@ -221,13 +285,8 @@ export function soulDataBase(): SoulData {
   // NOT memoized into `memo` — operator can edit SOUL.md and a subsequent
   // call should pick that up without a restart (and tests rely on it).
   try {
-    const text = loadSoul();
-    const cp = soulCachePath(text);
-    if (existsSync(cp)) {
-      const cached = SoulDataSchema.parse(JSON.parse(readFileSync(cp, "utf8")));
-      assertIdsGroundedInPersona(cached, text); // same rule as extractSoulData's hit
-      return cached;
-    }
+    const hit = readCacheEntry(loadSoul()); // same rules as extractSoulData's hit
+    if (hit.data) return hit.data;
   } catch { /* fall through */ }
   return regexFallback();
 }

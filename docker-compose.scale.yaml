@@ -89,6 +89,13 @@ services:
       SLAUDE_JOB_SECRET: ${SLAUDE_JOB_SECRET:?set SLAUDE_JOB_SECRET in .env}
       SLAUDE_MASTER_KEY: ${SLAUDE_MASTER_KEY:?set SLAUDE_MASTER_KEY in .env (openssl rand -base64 32)}
       SLAUDE_MODEL: ${SLAUDE_MODEL:-claude-sonnet-4-6}
+      # Soul extraction cache, gateway-only. The default ($SLAUDE_HOME/cache) is
+      # on slaude-home, which every node and agent turn can write; a planted
+      # entry there could install forged approvers. tmpfs: lost on restart,
+      # which only costs a re-extraction.
+      SLAUDE_SOUL_CACHE_DIR: /soul-cache
+    tmpfs:
+      - /soul-cache
     ports:
       - "8080:8080"
     volumes:

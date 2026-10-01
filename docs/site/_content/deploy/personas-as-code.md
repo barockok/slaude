@@ -119,8 +119,11 @@ Behaviour to know:
   `$SLAUDE_HOME/cache`). On gateways point it at pod-local storage, as
   `deploy/k8s-scale` does with an `emptyDir`: `$SLAUDE_HOME` is shared with
   nodes, and a cache file written there by an agent turn could otherwise plant
-  approvers. A cache hit whose Slack ids do not all appear in the soul text is
-  discarded and re-extracted.
+  approvers. `docker-compose.scale.yaml` gives the gateway a `tmpfs` for it. A
+  cache hit whose Slack ids do not all appear in the soul text is discarded and
+  re-extracted, and when `SLAUDE_MASTER_KEY` is set (it is on every gateway)
+  each entry is signed with a key derived from it, so an unsigned or altered
+  entry is also a miss.
 - Every sync wipes all runtime overrides for the tenant.
 
 ## Validate on pull requests

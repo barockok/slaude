@@ -417,9 +417,11 @@ done
 # a text distinctive to this run, and a node log must carry it.
 #
 # Sync extracts structured soul data with a model, and this overlay has no
-# provider credentials, so each soul's extraction cache entry is seeded first
-# (written by the pod via soulCachePath in src/soul/extract.ts). The sync
-# then finds it and calls no model; production code is untouched.
+# provider credentials, so each soul's extraction cache entry is seeded first,
+# written inside the gateway pod by writeSoulCacheEntry in src/soul/extract.ts:
+# the same writer extraction uses, so the entry lands in the pod-local
+# SLAUDE_SOUL_CACHE_DIR and carries the MAC derived from the pod's master key.
+# The sync then finds it and calls no model; production code is untouched.
 #
 # The section leaves a synced persona set (default + verifier) on the local
 # cluster. Syncing a full set tombstones any other persona previously synced.
@@ -456,7 +458,7 @@ else
   # TWO different hashes, deliberately. want_hash is the 12-hex prefix of the full
   # sha256 that manager.ts LOGS at session boot (the R4 grep below). The extraction
   # cache key is a separate 16-hex derivation owned by src/soul/extract.ts, so it
-  # is never recomputed here: the pod computes it through soulCachePath itself.
+  # is never recomputed here: the pod computes it through writeSoulCacheEntry.
   want_hash="$(printf '%s' "$soul" | shasum -a 256 | cut -c1-12)"
   default_soul="Default verify soul."
   # Soul texts go in on stdin as a JSON array, never on a command line.
@@ -464,13 +466,9 @@ else
   # shellcheck disable=SC2016 # JS, evaluated by bun in the pod
   if python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$soul" "$default_soul" \
     | k exec -i --request-timeout="$PROBE_TIMEOUT" "$gw_pod" -- bun -e '
-        import { soulCachePath } from "/app/src/soul/extract.ts";
-        import { mkdirSync, writeFileSync } from "node:fs";
-        import { dirname } from "node:path";
+        import { writeSoulCacheEntry } from "/app/src/soul/extract.ts";
         for (const t of JSON.parse(await Bun.stdin.text())) {
-          const p = soulCachePath(t);
-          mkdirSync(dirname(p), { recursive: true });
-          writeFileSync(p, JSON.stringify({ approvers: [] }));
+          if (!writeSoulCacheEntry(t, { approvers: [] })) throw new Error("cache entry not written");
         }
       ' >/dev/null 2>&1; then
     seed_ok=1
