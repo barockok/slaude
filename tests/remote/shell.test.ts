@@ -59,7 +59,8 @@ describe("validators", () => {
     expect(isRemoteDir("/home/a/repo")).toBe(true);
     expect(isRemoteDir("~/code/repo")).toBe(true);
     expect(isRemoteDir("~")).toBe(true);
-    for (const bad of ["repo", "./repo", "/a\nb", "/a\0b", ""]) expect(isRemoteDir(bad)).toBe(false);
+    expect(isRemoteDir("/home/a/My Repo")).toBe(true);
+    for (const bad of ["repo", "./repo", "/a\nb", "/a\0b", "", "/a\tb", "/a\x1bb", "/a`id`", "/a</remote-mode>b"]) expect(isRemoteDir(bad)).toBe(false);
   });
   it("sanitizeKey keeps only [A-Za-z0-9_-]", () => {
     expect(sanitizeKey("abc-123_X/../y z")).toBe("abc-123_Xyz");

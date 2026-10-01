@@ -20,6 +20,11 @@ import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, cre
 import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
 import { humanizeToolStatus } from "./status-text";
+import * as Remote from "../../db/remote";
+import { handleRemoteCommand, endRemoteForThread } from "./remote-command";
+import { activeRemoteTarget } from "../../remote/active";
+import { HelperClient } from "../../remote/helper-client";
+import { cleanupCommand } from "../../remote/tools/bash";
 import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
@@ -557,6 +562,36 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     },
   });
   agent.setPermissionResolver(permissions.resolver);
+  if (env.remote.enabled() && env.role() !== "gateway") {
+    // Mono: the query runs in this process, so resolve the target from the DB
+    // and open the helper here. In split deploys the node does this from claims.
+    agent.setRemote(
+      async (sessionId) => {
+        const row = await Sessions.findById(sessionId);
+        return row?.slack_channel_id && row.slack_thread_ts ? activeRemoteTarget(row.slack_channel_id, row.slack_thread_ts) : null;
+      },
+      async (sessionId, t) => {
+        const key = await Remote.getKey(t.teamId, t.userId);
+        if (!key) throw new Error("remote key missing for target owner");
+        return new HelperClient({
+          transport: { kind: "tailcat", addr: t.addr },
+          privateKey: key.privateKey,
+          onDispose: async (exec) => { await exec(cleanupCommand(sessionId), { timeoutMs: 30_000 }); },
+        });
+      },
+    );
+  }
+
+  /** sessionId → remote on?, cached briefly for the status line. */
+  const remoteStatusCache = new Map<string, { on: boolean; at: number }>();
+  const remoteOn = async (sessionId: string, channel: string, thread: string): Promise<boolean> => {
+    if (!env.remote.enabled()) return false;
+    const c = remoteStatusCache.get(sessionId);
+    if (c && Date.now() - c.at < 30_000) return c.on;
+    const on = !!(await activeRemoteTarget(channel, thread));
+    remoteStatusCache.set(sessionId, { on, at: Date.now() });
+    return on;
+  };
 
   // Diag: dump bot identity + granted scopes once at startup.
   void (async () => {
@@ -985,6 +1020,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const userId = ctx.userId ?? "";
     const threadTs = ctx.threadTs ?? ctx.inboundTs ?? "";
     if (action === "lock") {
+      const prevTarget = await Remote.findTarget(ctx.channel, threadTs);
+      if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(ctx.channel, threadTs, { sessionId });
       await OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
       agent.reload(sessionId);
       return `Locked this thread to a 1on1 with <@${userId}> — only they and the manager are heard here now.`;
@@ -994,12 +1031,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (!existing) {
         await OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
       }
+      await endRemoteForThread(ctx.channel, threadTs, { sessionId }); // open mode forbids remote
       await OneOnOne.setOpen(ctx.channel, threadTs, scope ?? "");
       agent.reload(sessionId);
       const scopeNote = scope ? ` Scope: ${scope}` : "";
       return `Opened this 1on1 to all participants.${scopeNote} Use set_one_on_one(action="lock") to restrict again.`;
     }
     if (!await OneOnOne.find(ctx.channel, threadTs)) return "No active 1on1 in this thread — nothing to release.";
+    await endRemoteForThread(ctx.channel, threadTs, { sessionId });
     await OneOnOne.unlock(ctx.channel, threadTs);
     agent.reload(sessionId);
     return "Released 1on1 — the thread is open again.";
@@ -1137,12 +1176,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             }
           }
           // Animated humanized status next to the bot name.
-          void status.set(
+          void (async () => status.set(
             e.sessionId,
             route.ctx.channel,
             route.ctx.threadTs,
-            humanizeToolStatus(e.tool, e.input as any),
-          );
+            humanizeToolStatus(e.tool, e.input as any, { remote: await remoteOn(e.sessionId, route.ctx.channel, route.ctx.threadTs) }),
+          ))();
         }
         break;
       }
@@ -1457,8 +1496,39 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         );
         return;
       }
+      if (slash.kind === "remote") {
+        const remoteSurface = surfaceFactoryFor(dispatch?.personaId)({
+          conversationId: channelId,
+          threadRef: threadTs,
+          inboundRef: threadTs,
+          userId,
+          teamId,
+          requestApproval: async () => { throw new Error("approval is not part of /remote"); },
+          reloadSession: () => false,
+        });
+        const soul = soulData();
+        await handleRemoteCommand(slash, {
+          teamId, channelId, threadTs, userId, sessionId: session.id,
+          isManager: userId === soul.manager.userId || userId === soul.backupManager.userId,
+          reply,
+          sayPrivately: async (text) => {
+            if (remoteSurface.capabilities.has("ephemeral") && remoteSurface.sayEphemeral) {
+              await remoteSurface.sayEphemeral({ text, userId });
+              return;
+            }
+            await reply(":warning: `/remote` setup needs a surface that supports private replies.");
+          },
+          reload: () => {
+            remoteStatusCache.delete(session.id);
+            agent.reload(session.id);
+          },
+        });
+        return;
+      }
       if (slash.kind === "one-on-one") {
         if (slash.action === "on") {
+          const prevTarget = await Remote.findTarget(channelId, threadTs);
+          if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(channelId, threadTs, { sessionId: session.id });
           await OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId });
           agent.reload(session.id);
           await reply(`:lock: *1on1 mode* — only <@${userId}> and the manager will be heard in this thread. \`/1on1 off\` to release. Ask me to open it to guests when needed.`);
@@ -1488,9 +1558,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           await reply("No active 1on1 in this thread.");
           return;
         }
+        const r = await endRemoteForThread(channelId, threadTs, { sessionId: session.id });
         await OneOnOne.unlock(channelId, threadTs);
         agent.reload(session.id);
-        await reply(":unlock: 1on1 released — the thread is open again.");
+        await reply(":unlock: 1on1 released — the thread is open again." + (r.ended ? " Remote mode ended." : ""));
         return;
       }
       if (slash.kind === "mention-only") {

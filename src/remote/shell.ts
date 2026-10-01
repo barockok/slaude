@@ -25,9 +25,10 @@ export function isTailcatAddr(s: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._-]{2,511}$/.test(s);
 }
 
-/** Absolute or home-relative, no control characters. */
+/** Absolute or home-relative; no control characters, backticks, or angle brackets
+ *  (the value is later interpolated into the system prompt). */
 export function isRemoteDir(s: string): boolean {
-  if (!s || /[\0\n\r]/.test(s)) return false;
+  if (!s || /[\x00-\x1f\x7f`<>]/.test(s)) return false;
   return s === "~" || s.startsWith("~/") || s.startsWith("/");
 }
 

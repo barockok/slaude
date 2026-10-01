@@ -64,7 +64,7 @@ function urlHost(u: string): string {
 }
 
 /** Map a tool-call to a safe, glanceable status line. Always redaction-netted. */
-export function humanizeToolStatus(tool: string, input: any): string {
+export function humanizeToolStatus(tool: string, input: any, opts: { remote?: boolean } = {}): string {
   const inp = input ?? {};
   let label: string;
   switch (tool) {
@@ -158,5 +158,5 @@ export function humanizeToolStatus(tool: string, input: any): string {
     }
   }
   // Central backstop — mask any secret-shaped substring that slipped through.
-  return redactSecrets(label);
+  return redactSecrets(opts.remote ? `${label} (remote)` : label);
 }
