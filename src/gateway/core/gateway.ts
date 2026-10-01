@@ -62,7 +62,7 @@ import * as PendingGates from "../../db/pending-gates";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { loadExternalMcp, oauthHttpServers, privateOverrides } from "./external-mcp";
 import * as SlackOauthFlows from "../../db/slack-oauth-flows";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { ensureInitiatorConfigDir, agentConfigDir } from "../../agent/oauth-home";
 import { scopeConfigDir, personaKey } from "../../agent/mcp-oauth/scope-home";
 import { writeEntry, removeEntry, type OAuthServerConfig, type OAuthTokens } from "../../agent/mcp-oauth/store";
@@ -473,12 +473,22 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (!personaId || personaId === "default") return outClient;
     return getPersonaRegistry().lookupByName(personaId)?.outClient ?? outClient;
   };
+  // Keyed by persona AND a fingerprint of its current token: a sync that
+  // rotates, removes or re-points a persona's userToken rebuilds the registry
+  // with a new client, and the next post must use it, not one cached at first
+  // use. Only a hash prefix of the token is held here, never the token.
   const surfaceFactoryCache = new Map<string, SurfaceFactory>();
   const surfaceFactoryFor = (personaId?: string): SurfaceFactory => {
     if (opts.surfaceFactory) return opts.surfaceFactory;
-    const key = personaId ?? "default";
+    const named = personaId && personaId !== "default" ? personaId : undefined;
+    const token = named ? getPersonaRegistry().lookupByName(named)?.config.userToken : undefined;
+    const fp = token ? createHash("sha256").update(token).digest("hex").slice(0, 16) : "bot";
+    const key = `${named ?? "default"}:${fp}`;
     let f = surfaceFactoryCache.get(key);
     if (!f) {
+      // Forget the persona's factory for its previous token, and the client in it.
+      const prefix = `${named ?? "default"}:`;
+      for (const k of surfaceFactoryCache.keys()) if (k.startsWith(prefix)) surfaceFactoryCache.delete(k);
       f = makeSlackSurfaceFactory(outClientForPersona(personaId));
       surfaceFactoryCache.set(key, f);
     }
