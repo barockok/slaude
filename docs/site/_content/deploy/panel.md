@@ -159,10 +159,16 @@ reach, which is the same requirement the panel already has.
 
 Nothing about this needs a second replica to be correct. A connect started on
 one gateway completes on whichever replica the ingress hands the callback to,
-because the in-flight state lives in the database rather than in a process. The
-`/mcp connect` command in Slack does **not** yet have that property — its
-pending flow is still per-process — so on a multi-replica deployment prefer the
-portal for a person's own integrations.
+because the in-flight state lives in the database rather than in a process.
+`/mcp connect` in Slack now shares that property in paste-back mode: the parked
+flow is a row, so the pasted callback can arrive at any replica.
+
+That does mean paste-back mode requires `SLAUDE_MASTER_KEY` — the parked flow
+holds the registered client secret and the PKCE verifier, and is stored
+encrypted. A connect refuses up front and names the variable if it is unset.
+Loopback mode (`SLAUDE_OAUTH_REDIRECT_URL` unset) is unchanged, needs no key,
+and stays per-process: the browser is sent to a listener inside one pod, so that
+flow has to finish where it started.
 
 A completed portal connect writes the same stored credential a 1:1 `/mcp
 connect` would, so the two surfaces are interchangeable as far as the agent is

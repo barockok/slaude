@@ -60,12 +60,13 @@ import * as SeenEvents from "../../db/seen-events";
 import * as PendingGates from "../../db/pending-gates";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { loadExternalMcp, oauthHttpServers, privateOverrides } from "./external-mcp";
+import * as SlackOauthFlows from "../../db/slack-oauth-flows";
 import { randomBytes } from "node:crypto";
 import { ensureInitiatorConfigDir, agentConfigDir } from "../../agent/oauth-home";
 import { scopeConfigDir, personaKey } from "../../agent/mcp-oauth/scope-home";
 import { writeEntry, removeEntry, type OAuthServerConfig, type OAuthTokens } from "../../agent/mcp-oauth/store";
 import { discover } from "../../agent/mcp-oauth/discovery";
-import { beginConnect, prepareConnect } from "../../agent/mcp-oauth/client";
+import { beginConnect, exchangeAuthCode, prepareConnect } from "../../agent/mcp-oauth/client";
 import { beginConnectShared } from "../../agent/mcp-oauth/shared-client";
 import { parseOAuthCallback } from "../../agent/mcp-oauth/callback";
 import { canTriggerIngest } from "../slack/ingest-auth";
@@ -174,7 +175,19 @@ export interface GatewayOptions {
     serverName: string;
     serverConfig: import("../../agent/mcp-oauth/store").OAuthServerConfig;
     redirectUri: string;
-  }) => Promise<{ authorizeUrl: string; state: string; exchange: (code: string) => Promise<import("../../agent/mcp-oauth/store").OAuthTokens> }>;
+  }) => Promise<{
+    authorizeUrl: string;
+    state: string;
+    /** The exchange's inputs as values. Parked in the flow row, because the
+     *  paste can arrive on a replica that never held the closure. */
+    parts: import("../../agent/mcp-oauth/client").ExchangeParts;
+  }>;
+  /** Override how a parked flow redeems its code. Defaults to the real token
+   *  endpoint round-trip. Injectable so a sim need not stand one up. */
+  oauthExchange?: (
+    parts: import("../../agent/mcp-oauth/client").ExchangeParts,
+    code: string,
+  ) => Promise<import("../../agent/mcp-oauth/store").OAuthTokens>;
   /** Disable `/mcp connect` when the boot-time store-format canary fails. Defaults to enabled. */
   mcpConnectEnabled?: boolean;
   /** Test seam: inject the outbound (post-as-user) client directly, bypassing the
@@ -490,9 +503,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     })
     .catch((e) => console.error("[gates] boot sweep failed:", e));
   // Clean up expired ignores + abandoned paste-back OAuth flows every 5 minutes.
-  // Each pendingPaste entry closes over live client creds + the PKCE verifier, so
-  // an abandoned flow must not linger in memory until the initiator happens to
-  // message again (the lazy check in the inbound path).
+  // Each parked flow holds the registered client secret and the PKCE verifier
+  // (encrypted), so an abandoned one must not linger until the initiator happens
+  // to message again.
   setInterval(() => {
     import("../../db/ignores").then((m) => m.cleanupExpired());
     // Overdue gates (live auto-deny timers normally win; this catches strays)
@@ -501,8 +514,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     void PendingGates.sweepExpired().catch(() => {});
     void PendingGates.purgeSettledOlderThan().catch(() => {});
     void SeenEvents.purgeOlderThan().catch(() => {});
-    const now = Date.now();
-    for (const [k, p] of pendingPaste) if (now > p.expiresAt) pendingPaste.delete(k);
+    void SlackOauthFlows.sweepExpiredFlows().catch(() => {});
   }, 5 * 60 * 1000);
 
   const cronScheduler = new CronScheduler({
@@ -736,6 +748,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // Paste-back prepare step (k8s / remote): register + build the authorize URL
   // against the operator's fixed redirect page, no loopback. Injectable for sims.
+  const runExchange = opts.oauthExchange ?? ((parts, code) => exchangeAuthCode(parts, code));
+
   const runPrepare = opts.oauthPrepare ?? (async ({ serverName, serverConfig, redirectUri }) => {
     const meta = await discover(serverConfig.url);
     return prepareConnect({ serverName, serverConfig, meta, redirectUri });
@@ -767,22 +781,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // Paste-back: a started-but-not-completed OAuth flow, keyed by channel:thread:user
   // (one in-flight connect per initiator per thread). The initiator completes it by
   // pasting the callback URL/code into the locked thread.
-  type PendingPaste = {
-    state: string;
-    exchange: (code: string) => Promise<OAuthTokens>;
-    serverName: string;
-    serverConfig: OAuthServerConfig;
-    sessionId: string; channelId: string; threadTs: string; userId: string;
-    scope: ConnectScope;
-    /** Named persona that owns this session, if any. Threads the persona boundary
-     *  into persistTokens so the token lands in oauth/<persona>/<userId> rather
-     *  than oauth/<userId> when the connect runs inside a persona's 1on1. */
-    personaName?: string;
-    /** ts of the posted authorize-URL message, redacted in place on settle. */
-    authMsgRef?: string;
-    expiresAt: number;
-  };
-  const pendingPaste = new Map<string, PendingPaste>();
+  // A parked paste-back flow lives in the database, not in this process: the
+  // pasted callback arrives on whichever replica took that Slack event, and one
+  // that never ran the connect would otherwise know nothing about it.
   const pasteKey = (channelId: string, threadTs: string, userId: string) => `${channelId}:${threadTs}:${userId}`;
 
   // Only HTTP servers participate in the OAuth connect flow. Shared with the
@@ -871,22 +872,32 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // The injectable `oauthConnect` stub forces loopback semantics, so paste mode
     // is gated on the redirect URL being set AND no loopback stub being supplied.
     if (redirectUrl && !opts.oauthConnect) {
+      // The parked flow holds the registered client secret and the PKCE
+      // verifier, so it is encrypted — which makes the master key a hard
+      // requirement of this mode rather than of the gateway role alone. Said
+      // plainly here, because the alternative is a connect that fails at the
+      // paste with nothing to explain it.
+      if (!process.env.SLAUDE_MASTER_KEY?.trim()) {
+        await post(
+          ":x: paste-back `/mcp connect` needs `SLAUDE_MASTER_KEY` set — the parked authorization is stored encrypted. Generate one with `openssl rand -base64 32`.",
+        );
+        return;
+      }
       try {
         const prepared = await runPrepare({ serverName: a.serverName, serverConfig, redirectUri: redirectUrl });
         const { ref } = await post(
           `:link: Authorize \`${a.serverName}\`:\n${prepared.authorizeUrl}\n\n` +
             `After you approve, the page will show a code. *Paste the full redirect URL (or just the code) back here in this thread* to finish.`,
         );
-        pendingPaste.set(pasteKey(a.channelId, a.threadTs, a.userId), {
+        await SlackOauthFlows.putFlow(pasteKey(a.channelId, a.threadTs, a.userId), {
           state: prepared.state,
-          exchange: prepared.exchange,
+          parts: prepared.parts,
           serverName: a.serverName,
-          serverConfig,
+          cfg: serverConfig,
           sessionId: a.sessionId, channelId: a.channelId, threadTs: a.threadTs, userId: a.userId,
           scope: a.scope,
           personaName: a.personaName,
           authMsgRef: ref,
-          expiresAt: Date.now() + 10 * 60_000,
         });
       } catch (e) {
         await post(`:x: \`${a.serverName}\` connect failed: ${(e as Error).message}`);
@@ -913,23 +924,37 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
   }
 
-  /** Complete a parked paste-back flow once the initiator pastes the callback. */
-  async function completePaste(pend: PendingPaste, code: string, state?: string): Promise<void> {
+  /**
+   * Complete a parked paste-back flow once the initiator pastes the callback.
+   *
+   * The flow is read without consuming for the `state` check and only taken on
+   * the path that actually exchanges. A mismatch therefore leaves the parked
+   * flow alone, which is what makes the "paste the URL from the same authorize
+   * step" advice true — before, the entry was already gone by this point and
+   * retrying could not work.
+   */
+  async function completePaste(pend: SlackOauthFlows.SlackOauthFlow, code: string, state?: string): Promise<void> {
     const surface = connectSurface(pend.channelId, pend.threadTs, pend.userId);
     const post = (text: string) => surface.reply({ text });
     if (state && state !== pend.state) {
-      // Not terminal — the initiator can paste the right URL; leave the link intact.
       await post(":x: OAuth `state` mismatch — paste the URL from the same authorize step, or rerun `/mcp connect`.");
       return;
     }
+    // Whoever wins this delete owns the exchange; a concurrent paste finds
+    // nothing and says nothing.
+    const claimed = await SlackOauthFlows.takeFlow(pasteKey(pend.channelId, pend.threadTs, pend.userId));
+    if (!claimed) return;
     try {
-      const tokens = await pend.exchange(code);
-      await persistTokens(pend, tokens);
-      await redactAuthMessage(surface, pend.authMsgRef, pend.serverName);
-      await post(`:white_check_mark: \`${pend.serverName}\` connected. Next message will use it.`);
+      const tokens = await runExchange(claimed.parts, code);
+      await persistTokens({
+        sessionId: claimed.sessionId, userId: claimed.userId, serverName: claimed.serverName,
+        serverConfig: claimed.cfg as OAuthServerConfig, scope: claimed.scope, personaName: claimed.personaName,
+      }, tokens);
+      await redactAuthMessage(surface, claimed.authMsgRef, claimed.serverName);
+      await post(`:white_check_mark: \`${claimed.serverName}\` connected. Next message will use it.`);
     } catch (e) {
-      await redactAuthMessage(surface, pend.authMsgRef, pend.serverName);
-      await post(`:x: \`${pend.serverName}\` connect failed: ${(e as Error).message}`);
+      await redactAuthMessage(surface, claimed.authMsgRef, claimed.serverName);
+      await post(`:x: \`${claimed.serverName}\` connect failed: ${(e as Error).message}`);
     }
   }
 
@@ -1387,18 +1412,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // to a different key and finds no entry. (Holds for both initiator and global
     // scope; global has no lock, so the key, not the lock, is what binds.)
     {
-      const pkey = pasteKey(channelId, threadTs, userId);
-      const pend = pendingPaste.get(pkey);
+      const pend = await SlackOauthFlows.peekFlow(pasteKey(channelId, threadTs, userId));
       if (pend) {
-        if (Date.now() > pend.expiresAt) {
-          pendingPaste.delete(pkey);
-        } else {
-          const parsed = parseOAuthCallback(stripped);
-          if (parsed.code) {
-            pendingPaste.delete(pkey);
-            await completePaste(pend, parsed.code, parsed.state);
-            return;
-          }
+        const parsed = parseOAuthCallback(stripped);
+        if (parsed.code) {
+          await completePaste(pend, parsed.code, parsed.state);
+          return;
         }
       }
     }

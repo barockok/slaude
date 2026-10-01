@@ -42,6 +42,7 @@ const NO_TENANT_TABLES = new Set([
   "slack_identities",
   "mcp_credentials",
   "portal_oauth_flows",
+  "slack_oauth_flows",
 ]);
 
 // Tables that exist only on sqlite (legacy; dropped from the pg schema).
