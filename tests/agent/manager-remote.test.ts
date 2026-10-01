@@ -296,18 +296,52 @@ describe("remote wiring", () => {
     await shutdown(mgr, row.id);
   });
 
-  it("ensureConfigFp: first sight records; a change reloads the warm session; same fp is a no-op", async () => {
+  it("ensureConfigFp: first sight on a non-live session records; a change reloads the warm session; same fp is a no-op", async () => {
     const mgr = new AgentManager();
     const row = await mgr.ensureSession(thread());
     const fs = plan();
-    await mgr.ensureConfigFp(row.id, "fp1");
+    expect(await mgr.ensureConfigFp(row.id, "fp1")).toBe(true);
     await mgr.sendMessage(row.id, "hello");
     await until(() => fs.options !== null, 3000, "boot");
-    await mgr.ensureConfigFp(row.id, "fp1");
+    expect(await mgr.ensureConfigFp(row.id, "fp1")).toBe(true);
     expect(mgr.isLive(row.id)).toBe(true);
-    await mgr.ensureConfigFp(row.id, "fp2");
+    expect(await mgr.ensureConfigFp(row.id, "fp2")).toBe(true);
     expect(mgr.isLive(row.id)).toBe(false);
-    await mgr.ensureConfigFp(row.id, undefined); // tokens from an older gateway: ignored
+    expect(await mgr.ensureConfigFp(row.id, undefined)).toBe(true); // tokens from an older gateway: ignored
+  });
+
+  it("ensureConfigFp: a live session that booted with no fingerprint is reloaded on first sight", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const fs = plan();
+    await mgr.sendMessage(row.id, "hello"); // booted before any fingerprint (e.g. gateway upgraded later)
+    await until(() => fs.options !== null, 3000, "boot");
+    expect(await mgr.ensureConfigFp(row.id, "fpX")).toBe(true);
+    expect(mgr.isLive(row.id)).toBe(false);
+    // Recorded: the same fingerprint on the next (fresh) boot is a no-op.
+    const fs2 = plan();
+    await mgr.sendMessage(row.id, "again");
+    await until(() => fs2.options !== null, 3000, "reboot");
+    expect(await mgr.ensureConfigFp(row.id, "fpX")).toBe(true);
+    expect(mgr.isLive(row.id)).toBe(true);
+    await shutdown(mgr, row.id);
+  });
+
+  it("ensureConfigFp: returns false when the session is still live at the deadline, and retries next time", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const fs = plan((f) => { f.end = () => {}; }); // the turn never finishes: stays live after reload
+    expect(await mgr.ensureConfigFp(row.id, "fp1")).toBe(true);
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => fs.options !== null, 3000, "boot");
+    expect(await mgr.ensureConfigFp(row.id, "fp2", 60)).toBe(false);
+    expect(mgr.isLive(row.id)).toBe(true);
+    // Not recorded: a retry with the same fingerprint attempts the reboot again.
+    expect(await mgr.ensureConfigFp(row.id, "fp2", 60)).toBe(false);
+    fs.ended = true;
+    fs.wake();
+    await until(() => !mgr.isLive(row.id), 3000, "release");
+    expect(await mgr.ensureConfigFp(row.id, "fp2", 60)).toBe(true);
   });
 });
 

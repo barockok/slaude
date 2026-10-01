@@ -294,15 +294,25 @@ export class AgentManager extends EventEmitter {
   }
 
   /** Reboot a warm session whose lock/remote config changed since it booted
-   *  (spec §4.4). First sight only records; undefined (older gateway) is ignored. */
-  async ensureConfigFp(sessionId: string, fp: string | undefined): Promise<void> {
-    if (fp === undefined) return;
+   *  (spec §4.4). Undefined (older gateway) is ignored. First sight on a session
+   *  that is not live only records; a LIVE session with no recorded fingerprint
+   *  booted without one, so its tools are unknown and it is rebooted.
+   *  Returns false when the session is still live at the deadline (a turn is
+   *  mid-flight): the caller must not send into it. The fingerprint is then left
+   *  unrecorded so the next attempt retries the reboot. */
+  async ensureConfigFp(sessionId: string, fp: string | undefined, timeoutMs = 10_000): Promise<boolean> {
+    if (fp === undefined) return true;
     const prev = this.#configFp.get(sessionId);
+    if (prev === fp) return true;
     this.#configFp.set(sessionId, fp);
-    if (prev === undefined || prev === fp) return;
-    if (!this.reload(sessionId)) return;
-    const deadline = Date.now() + 10_000;
+    if (!this.reload(sessionId)) return true;
+    const deadline = Date.now() + timeoutMs;
     while (this.isLive(sessionId) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    if (!this.isLive(sessionId)) return true;
+    if (prev === undefined) this.#configFp.delete(sessionId);
+    else this.#configFp.set(sessionId, prev);
+    console.warn(`[mgr] config change: session still live after ${timeoutMs}ms, reboot pending session=${sessionId}`);
+    return false;
   }
 
   /** Test hook: shrink the bound on disposing a previous remote handle. */
