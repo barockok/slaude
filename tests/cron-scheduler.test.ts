@@ -729,3 +729,46 @@ describe("CronScheduler and a persona that is not live", () => {
   });
 });
 
+// R42 (I5): #execute is started with `void`, so a throw inside it (a persona
+// retired between the live check and onExecute, a DB error) used to become an
+// unhandled rejection — which exits Bun — and left the job id in #running.
+describe("CronScheduler when a run throws", () => {
+  beforeEach(async () => { await db.run("DELETE FROM cron_jobs"); });
+  afterEach(async () => { await db.run("DELETE FROM cron_jobs"); __resetPersonaRegistry(); });
+
+  test("a throwing onExecute is caught: no unhandled rejection, error recorded, job not stuck", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (r: unknown) => { unhandled.push(r); };
+    process.on("unhandledRejection", onUnhandled);
+    const errs = spyOn(console, "error").mockImplementation(() => {});
+    const j = await CronJobs.create({
+      slackTeamId: "T1", slackChannelId: "C123", channelId: "C123", createdBy: "U999",
+      cronExpr: "0 9 * * *", prompt: "summarize", nextRunAt: Date.now() - 1000,
+    });
+    let calls = 0;
+    const ensureSession = mock(async () => ({ id: "sess-throw" }));
+    const scheduler = new CronScheduler({
+      agent: { ensureSession, sendMessage: async () => {}, isLive: () => false, on: () => {}, off: () => {}, setCronOAuthUser: () => {} } as any,
+      client: {} as any,
+      onExecute: () => { calls++; throw new Error("persona retired mid-run"); },
+    });
+    try {
+      scheduler.start();
+      await Bun.sleep(30);
+      scheduler.stop();
+      expect(calls).toBe(1);
+      expect(unhandled).toHaveLength(0);
+      expect((await CronJobs.findById(j.id))!.lastResult).toBe("error: persona retired mid-run");
+      // Not stuck in #running: the next due occurrence runs again.
+      await db.run("UPDATE cron_jobs SET next_run_at = ? WHERE id = ?", [Date.now() - 1000, j.id]);
+      scheduler.start();
+      await Bun.sleep(30);
+      scheduler.stop();
+      expect(calls).toBe(2);
+      expect(unhandled).toHaveLength(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      errs.mockRestore();
+    }
+  });
+});

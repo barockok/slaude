@@ -75,7 +75,16 @@ export class CronScheduler {
       const claimed = getNextRun(job.cronExpr);
       if (!(await CronJobs.claimDue(job.id, job.nextRunAt, claimed))) continue;
       this.#running.add(job.id);
-      void this.#execute(job, claimed);
+      // #execute is not awaited, so anything it throws (a persona retired
+      // between the live check and onExecute, a DB error) must be caught here:
+      // an unhandled rejection exits the process, and the job id would stay in
+      // #running forever. The claim is kept — the occurrence is spent.
+      void this.#execute(job, claimed).catch((e) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`[cron] job ${job.id} failed:`, msg);
+        this.#running.delete(job.id);
+        void CronJobs.recordRun(job.id, `error: ${msg}`).catch(() => {});
+      });
     }
   }
 
@@ -158,8 +167,12 @@ export class CronScheduler {
       this.#running.delete(job.id);
     };
     const onEvent = (e: any) => {
-      if (e.type === "done") void onDone(e);
-      else if (e.type === "error") void onError(e);
+      const fail = (err: unknown) => {
+        console.error(`[cron] job ${job.id} could not record its result:`, err instanceof Error ? err.message : err);
+        this.#running.delete(job.id);
+      };
+      if (e.type === "done") void onDone(e).catch(fail);
+      else if (e.type === "error") void onError(e).catch(fail);
     };
     this.#agent.on("event", onEvent);
 
