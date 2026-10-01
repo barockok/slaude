@@ -56,6 +56,24 @@ export function tokenAgeFraction(token: string, nowMs: number = Date.now()): num
   }
 }
 
+/**
+ * The node's response to a tenant's reload signal. Busting the runtime-bundle
+ * cache alone changes nothing for a warm session: the soul is baked into the
+ * system prompt at session boot. reload() lets the turn in flight finish and
+ * boots the next one fresh, the same mechanism the gateway uses after an MCP
+ * connect. Only sessions of the signalled tenant are touched.
+ */
+export function makeTenantReloadHandler(deps: {
+  bustRuntime: (tenantId: string) => void;
+  reload: (sessionId: string) => boolean;
+  tenants: ReadonlyMap<string, string>;
+}): (tenantId: string) => void {
+  return (tenantId) => {
+    deps.bustRuntime(tenantId);
+    for (const [sid, t] of deps.tenants) if (t === tenantId) deps.reload(sid);
+  };
+}
+
 export interface NodeWorkerOpts {
   /** Root for pod-local session config homes. Default: SLAUDE_NODE_CONFIG_ROOT /
    *  /config-home in the node role, else a per-process temp directory. */
@@ -194,6 +212,18 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     tenantFor: (id) => tenants.get(id),
     tokenFor: (id) => store.tokenFor(id),
   });
+  // The persona soul comes from the runtime bundle, never the shared volume: a
+  // node runs a persona whose directory is absent there. ETag-cached in
+  // NodeClient — the same fetch the child-env resolver makes, so this costs a
+  // 304 at most. A failure (gateway unreachable, persona tombstoned) fails the
+  // boot rather than falling back to disk or to the default soul.
+  agent.setPersonaSoulResolver(async (sessionId) => {
+    const tenant = tenants.get(sessionId);
+    const token = store.tokenFor(sessionId);
+    if (!tenant || !token) throw new Error(`no tenant or job token for session ${sessionId}`);
+    const bundle = await client.getRuntime(tenant, personas.get(sessionId) ?? "default", token);
+    return { soulMd: bundle.soulMd, soulJson: bundle.soulJson };
+  });
   agent.setChildEnvResolver(async (sessionId) => {
     const tenant = tenants.get(sessionId);
     const token = store.tokenFor(sessionId);
@@ -228,7 +258,12 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   async function ensureReloadSub(tenantId: string): Promise<void> {
     if (reloadUnsubs.has(tenantId)) return;
     try {
-      const unsub = await pubsub.onReload(tenantId, () => client.bustRuntime(tenantId));
+      const onReload = makeTenantReloadHandler({
+        bustRuntime: (t) => client.bustRuntime(t),
+        reload: (sid) => agent.reload(sid),
+        tenants,
+      });
+      const unsub = await pubsub.onReload(tenantId, () => onReload(tenantId));
       reloadUnsubs.set(tenantId, unsub);
     } catch (e) {
       console.error(`[node] reload subscribe failed tenant=${tenantId}:`, e);

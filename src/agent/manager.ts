@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import {
   type SDKMessage,
   type Options,
@@ -29,11 +30,13 @@ import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plu
 import { soulSystemBlock } from "../soul/loader";
 import { personaSoulText } from "../persona/soul-source";
 import { soulData, effectiveSoulForChannel } from "../soul/extract";
+import { SoulDataSchema } from "../soul/data";
 import { getPersonaRegistry } from "../persona/registry";
 import * as Sessions from "../db/sessions";
 import type { ThreadKey } from "../db/sessions";
 import { dbSessionStore, type SessionStore } from "./session-store";
 import * as OneOnOne from "../db/one-on-one";
+import type { OneOnOneLockRow } from "../db/one-on-one";
 import { memory } from "../memory";
 import { scrubChildEnv } from "./child-env";
 import { resolveSessionConfigDir } from "./oauth-home";
@@ -92,6 +95,12 @@ export type McpResolver = (
  *  Guard fires at most once per turn — if it returns non-null twice, second
  *  call is ignored (agent stops) and manager logs to stderr. */
 export type StopGuard = (sessionId: string) => string | null;
+
+/** A persona's soul as the node receives it in the runtime bundle: the text for
+ *  the <persona> block and its structured projection (SoulData-shaped, or null
+ *  when the gateway has none). */
+export type PersonaSoul = { soulMd: string; soulJson: unknown };
+export type PersonaSoulResolver = (sessionId: string, persona: string | undefined) => Promise<PersonaSoul>;
 
 /** Decide whether a UserPromptSubmit should be suppressed because its thread is
  *  disengaged. `continue:false` lets the user message persist to the transcript
@@ -192,6 +201,7 @@ export class AgentManager extends EventEmitter {
    *  to give every session a pod-local home seeded from the gateway; unset =
    *  today's resolution (persona home / per-initiator home / inherited). */
   #configDirResolver: ((sessionId: string, persona: string | undefined) => Promise<string>) | undefined;
+  #personaSoulResolver: PersonaSoulResolver | undefined;
   #mcpResolver: McpResolver | undefined;
   #stopGuard: StopGuard | undefined;
   /** Sessions whose Stop hook already blocked once this turn — cleared on user msg. */
@@ -252,6 +262,16 @@ export class AgentManager extends EventEmitter {
     resolver: ((sessionId: string, persona: string | undefined) => Promise<string>) | undefined,
   ) {
     this.#configDirResolver = resolver;
+  }
+
+  /** Install a per-session persona soul resolver, called at session boot with
+   *  the session's persona name (undefined = the default persona). It REPLACES
+   *  the local soul source (personaSoulText) and the persona registry lookup,
+   *  and a failure fails the boot: a node falling back to the shared volume when
+   *  the gateway is unreachable would boot a deleted or tombstoned persona half
+   *  configured, or as the default soul, instead of failing loudly. */
+  setPersonaSoulResolver(resolver: PersonaSoulResolver | undefined) {
+    this.#personaSoulResolver = resolver;
   }
 
   /** Install a transport-level permission resolver (e.g. Slack approval gate). */
@@ -473,6 +493,72 @@ export class AgentManager extends EventEmitter {
     }
   }
 
+  /** The session's persona: its registry entry (gateway/mono) and its name.
+   *  With a soul resolver installed (a node) the registry is never consulted —
+   *  it loads lazily from the shared volume, where a node's persona directory
+   *  need not exist — and the name is the session row's persona id. */
+  #resolvePersona(personaId: string | null | undefined): {
+    persona: ReturnType<ReturnType<typeof getPersonaRegistry>["lookupByName"]>;
+    name: string | undefined;
+  } {
+    const named = personaId && personaId !== "default" ? personaId : undefined;
+    if (this.#personaSoulResolver) return { persona: null, name: named };
+    const persona = named ? getPersonaRegistry().lookupByName(named) : null;
+    return { persona, name: persona?.name };
+  }
+
+  /** The `systemPrompt.append` text for a booting session. One function for
+   *  session start and {@link __systemPromptForTests}, so the test exercises the
+   *  production path. A soul resolver failure propagates and fails the boot. */
+  async #buildSystemAppend(
+    sessionId: string,
+    personaName: string | undefined,
+    ctx: {
+      channelId?: string | null;
+      lock?: OneOnOneLockRow | null;
+      mcpServers?: Record<string, McpServerConfig>;
+      memBlock?: string | null;
+    },
+  ): Promise<string> {
+    // Named personas use their own soul for the persona block (the database
+    // soul when the tenant is managed, else their SOUL.md); the runtime baseline
+    // stays the same. Default persona = the managed `default` row when one
+    // exists, else the global SOUL.md. On a node the resolver supplies both
+    // from the runtime bundle.
+    const soul: PersonaSoul = this.#personaSoulResolver
+      ? await this.#personaSoulResolver(sessionId, personaName)
+      : { soulMd: personaSoulText(personaName), soulJson: undefined };
+    // Observable soul source: a hash, never the text.
+    const soulHash = createHash("sha256").update(soul.soulMd).digest("hex").slice(0, 12);
+    console.log(`[agent] session=${sessionId} persona=${personaName ?? "default"} soul=${soulHash}`);
+    const { mcpServers, memBlock } = ctx;
+    return [
+      soulSystemBlock(soul.soulMd),
+      channelMandateBlock(ctx.channelId, soul.soulJson),
+      sessionModeBlock(ctx.lock ?? null),
+      mcpServers
+        ? `<mcp-servers>\nMCP server namespaces mounted this session. Call tools as \`mcp__<server>__<tool>\`.\n${Object.keys(mcpServers)
+            .map((n) => `- ${n}`)
+            .join(
+              "\n",
+            )}\nAdditional servers may be available if configured in ~/.claude/mcp.json or .mcp.json in the working directory.\n</mcp-servers>`
+        : "<mcp-servers>none</mcp-servers>",
+      memBlock ? `<memory-context>\n${memBlock}\n</memory-context>` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  /** TEST SEAM: the system-prompt append a session with this persona would boot
+   *  with, built by the same function session start uses. */
+  async __systemPromptForTests(
+    sessionId: string,
+    personaId: string | undefined,
+    ctx: { channelId?: string | null } = {},
+  ): Promise<string> {
+    return this.#buildSystemAppend(sessionId, this.#resolvePersona(personaId).name, ctx);
+  }
+
   async #startSession(sessionId: string, firstText: string) {
     const row = await this.#store.findById(sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);
@@ -558,10 +644,7 @@ export class AgentManager extends EventEmitter {
     );
     // Multi-persona: resolve the persona first — it anchors both the brain slice
     // (SLAUDE_AGENT_ID) and the config dir (creds + transcripts) below.
-    const personaId = row.persona_id;
-    const persona = personaId && personaId !== "default"
-      ? getPersonaRegistry().lookupByName(personaId)
-      : null;
+    const { persona, name: personaName } = this.#resolvePersona(row.persona_id);
     if (persona) {
       // Inject the persona's Slack user ID as the brain-slice anchor so named
       // personas each get their own private KB slice.
@@ -573,8 +656,8 @@ export class AgentManager extends EventEmitter {
     // its per-initiator home INSIDE that persona boundary. Default persona +
     // unlocked → undefined → inherit the agent's config dir (unchanged).
     const sessionConfigDir = this.#configDirResolver
-      ? await this.#configDirResolver(sessionId, persona?.name)
-      : resolveSessionConfigDir(oauthUser, persona?.name);
+      ? await this.#configDirResolver(sessionId, personaName)
+      : resolveSessionConfigDir(oauthUser, personaName);
     if (sessionConfigDir) providerEnv.CLAUDE_CONFIG_DIR = sessionConfigDir;
 
     const resolver = this.#resolver;
@@ -584,18 +667,12 @@ export class AgentManager extends EventEmitter {
 
     const mode = (row.permission_mode || "default") as PermissionMode;
     const mcpServers = await this.#mcpResolver?.(sessionId);
-    // Per-channel mandate override: when SOUL.md defines a `## Channel` block
-    // with its own `### Mandate` for this channel, inject an authoritative
-    // directive that supersedes the global Mandate (which lives, unedited,
-    // inside the <persona> text block). See effectiveSoulForChannel.
-    const channelMandateBlock = ((): string => {
-      const channelId = row.slack_channel_id;
-      if (!channelId) return "";
-      const eff = effectiveSoulForChannel(channelId).mandate?.trim();
-      const base = soulData().mandate?.trim();
-      if (!eff || eff === base) return "";
-      return `<channel-mandate>\nFor this channel your mandate is: ${eff}\nThis supersedes the Mandate section in your persona for this channel.\n</channel-mandate>`;
-    })();
+    const systemAppend = await this.#buildSystemAppend(sessionId, personaName, {
+      channelId: row.slack_channel_id,
+      lock,
+      mcpServers,
+      memBlock,
+    });
     const preCompact: HookCallback = async (input) => {
       if (input.hook_event_name !== "PreCompact") return { continue: true };
       this.emit("event", {
@@ -681,25 +758,7 @@ export class AgentManager extends EventEmitter {
       systemPrompt: {
         type: "preset",
         preset: "claude_code",
-        append: [
-          // Named personas use their own soul for the persona block (the
-          // database soul when the tenant is managed, else their SOUL.md); the
-          // runtime baseline stays the same. Default persona = the managed
-          // `default` row when one exists, else the global SOUL.md.
-          soulSystemBlock(personaSoulText(persona?.name)),
-          channelMandateBlock,
-          sessionModeBlock(lock),
-          mcpServers
-            ? `<mcp-servers>\nMCP server namespaces mounted this session. Call tools as \`mcp__<server>__<tool>\`.\n${Object.keys(mcpServers)
-                .map((n) => `- ${n}`)
-                .join(
-                  "\n",
-                )}\nAdditional servers may be available if configured in ~/.claude/mcp.json or .mcp.json in the working directory.\n</mcp-servers>`
-            : "<mcp-servers>none</mcp-servers>",
-          memBlock ? `<memory-context>\n${memBlock}\n</memory-context>` : "",
-        ]
-          .filter(Boolean)
-          .join("\n\n"),
+        append: systemAppend,
       },
       ...sessionIdOpts(row),
     };
@@ -1042,3 +1101,32 @@ const AUTO_EVOLVE_PROMPT = [
   "Do NOT redo the original task. Do NOT save one-off facts (those belong in memory). Skills are for repeatable multi-step procedures.",
   "</auto-evolve>",
 ].join("\n");
+
+/**
+ * Per-channel mandate override: when the soul defines a `## Channel` block with
+ * its own `### Mandate` for this channel, an authoritative directive that
+ * supersedes the global Mandate (which lives, unedited, inside the <persona>
+ * text block).
+ *
+ * With a structured soul from the persona soul resolver (a node's runtime
+ * bundle), the mandate comes from that persona's own soul. Without one (mono,
+ * the gateway, or a bundle carrying no structured soul), the process-global
+ * soul via effectiveSoulForChannel, exactly as before.
+ */
+function channelMandateBlock(channelId: string | null | undefined, soulJson: unknown): string {
+  if (!channelId) return "";
+  let eff: string | undefined;
+  let base: string | undefined;
+  const parsed = soulJson == null ? null : SoulDataSchema.safeParse(soulJson);
+  if (parsed?.success) {
+    base = parsed.data.mandate?.trim();
+    const ov = parsed.data.channelOverrides.find((c) => c.channel === channelId);
+    eff = ov?.mandate?.trim() || base;
+  } else {
+    if (parsed) console.warn("[agent] structured soul from the resolver did not parse; using the global soul for the channel mandate");
+    eff = effectiveSoulForChannel(channelId).mandate?.trim();
+    base = soulData().mandate?.trim();
+  }
+  if (!eff || eff === base) return "";
+  return `<channel-mandate>\nFor this channel your mandate is: ${eff}\nThis supersedes the Mandate section in your persona for this channel.\n</channel-mandate>`;
+}
