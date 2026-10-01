@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as OneOnOne from "../../../src/db/one-on-one";
 import * as Remote from "../../../src/db/remote";
 import { __resetMasterKeyCache } from "../../../src/db/crypto";
-import { handleRemoteCommand, endRemoteForThread, type RemoteCommandDeps } from "../../../src/gateway/core/remote-command";
+import { handleRemoteCommand, endRemoteForThread, remoteStatusOn, type RemoteCommandDeps } from "../../../src/gateway/core/remote-command";
 
 let replies: string[], privately: string[], reloads: number, preflights: any[], cleanups: any[];
 const ctx = (over: Partial<{ userId: string; isManager: boolean }> = {}) => ({
@@ -146,6 +146,29 @@ describe("/remote", () => {
     await handleRemoteCommand({ kind: "remote", action: "key" }, ctx(), deps());
     expect(privately[0]).toContain("ssh-ed25519 KEEP");
     expect(replies.join("")).not.toContain("KEEP");
+  });
+
+  it("status reports off for a stale row without a valid locked 1on1", async () => {
+    await Remote.setTarget({ channelId: "C1", threadTs: "1.0", teamId: "T1", userId: "U_A", addr: "tcOld", dir: "/r", lockByRemote: false });
+    await handleRemoteCommand({ kind: "remote", action: "status" }, ctx(), deps());
+    expect(replies[0]).toContain("off");
+    expect(allOut()).not.toContain("/r`");
+  });
+
+  it("endRemoteForThread still clears the target when the key lookup throws", async () => {
+    await Remote.setTarget({ channelId: "C1", threadTs: "1.0", teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r", lockByRemote: true });
+    await Remote.putKeyIfAbsent("T1", "U_A", { privateKey: "PRIV", publicKey: "PUB" });
+    process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 9).toString("base64"); // wrong key: decrypt throws
+    __resetMasterKeyCache();
+    const seen: any[] = [];
+    expect(await endRemoteForThread("C1", "1.0", { sessionId: "S9", cleanup: async (i) => { seen.push(i); } })).toEqual({ ended: true, lockByRemote: true });
+    expect(await Remote.findTarget("C1", "1.0")).toBeNull();
+    expect(seen).toEqual([]);
+  });
+
+  it("remoteStatusOn swallows a failing lookup and reports no marker", async () => {
+    const on = await remoteStatusOn("S-throw", "C1", "1.0", async () => { throw new Error("db down"); });
+    expect(on).toBe(false);
   });
 
   it("endRemoteForThread clears the target, cleans up when given a session, and reports lock origin", async () => {

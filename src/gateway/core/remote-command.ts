@@ -2,6 +2,7 @@ import { utils } from "ssh2";
 import { env } from "../../config/env";
 import * as OneOnOne from "../../db/one-on-one";
 import * as Remote from "../../db/remote";
+import { activeRemoteTarget } from "../../remote/active";
 import { preflight, remoteCleanup } from "../../remote/preflight";
 import { isRemoteDir, isTailcatAddr } from "../../remote/shell";
 import { tailcatPing } from "../../remote/tailcat";
@@ -54,6 +55,39 @@ function setupText(publicKey: string): string {
   ].join("\n");
 }
 
+/** sessionId → remote on?, cached briefly for the status line. Bounded; cleared
+ *  whenever remote starts or ends for a session. */
+const statusCache = new Map<string, { on: boolean; at: number }>();
+const STATUS_CACHE_MAX = 500;
+
+export function forgetRemoteStatus(sessionId: string): void {
+  statusCache.delete(sessionId);
+}
+
+/** Never throws: a failed lookup means "no marker". */
+export async function remoteStatusOn(
+  sessionId: string,
+  channel: string,
+  thread: string,
+  lookup: typeof activeRemoteTarget = activeRemoteTarget,
+): Promise<boolean> {
+  if (!env.remote.enabled()) return false;
+  const c = statusCache.get(sessionId);
+  if (c && Date.now() - c.at < 30_000) return c.on;
+  let on = false;
+  try {
+    on = !!(await lookup(channel, thread));
+  } catch {
+    return false;
+  }
+  if (statusCache.size >= STATUS_CACHE_MAX) {
+    const oldest = statusCache.keys().next().value;
+    if (oldest !== undefined) statusCache.delete(oldest);
+  }
+  statusCache.set(sessionId, { on, at: Date.now() });
+  return on;
+}
+
 /** Clear the thread's remote target. With a sessionId, also start best-effort
  *  cleanup of that session's background jobs on the remote (not awaited: the
  *  laptop may be asleep). `lockByRemote` tells the caller whether /remote had
@@ -64,9 +98,13 @@ export async function endRemoteForThread(
   opts: { sessionId?: string; cleanup?: typeof remoteCleanup } = {},
 ): Promise<{ ended: boolean; lockByRemote: boolean }> {
   const gone = await Remote.clearTarget(channelId, threadTs);
+  if (opts.sessionId) forgetRemoteStatus(opts.sessionId);
   if (gone && opts.sessionId) {
-    const key = await Remote.getKey(gone.team_id, gone.user_id);
-    if (key) void (opts.cleanup ?? remoteCleanup)({ addr: gone.addr, privateKey: key.privateKey, sessionKey: opts.sessionId }).catch(() => {});
+    // Best effort: a key failure (decrypt) must never block the caller's unlock.
+    try {
+      const key = await Remote.getKey(gone.team_id, gone.user_id);
+      if (key) void Promise.resolve((opts.cleanup ?? remoteCleanup)({ addr: gone.addr, privateKey: key.privateKey, sessionKey: opts.sessionId })).catch(() => {});
+    } catch {}
   }
   return { ended: !!gone, lockByRemote: gone?.lock_by_remote === 1 };
 }
@@ -79,13 +117,13 @@ export async function handleRemoteCommand(hit: RemoteHit, ctx: RemoteCommandCtx,
   const { channelId, threadTs, teamId, userId } = ctx;
 
   if (hit.action === "status") {
-    const t = await Remote.findTarget(channelId, threadTs);
+    const t = await activeRemoteTarget(channelId, threadTs);
     if (!t) {
       await ctx.reply("Remote mode: *off* — tools run on the server.");
       return;
     }
     const path = await deps.ping(t.addr);
-    await ctx.reply(`Remote mode: *on* — <@${t.user_id}>'s machine, \`${t.dir}\`, path: *${path}*.`);
+    await ctx.reply(`Remote mode: *on* — <@${t.userId}>'s machine, \`${t.dir}\`, path: *${path}*.`);
     return;
   }
 
@@ -109,6 +147,7 @@ export async function handleRemoteCommand(hit: RemoteHit, ctx: RemoteCommandCtx,
     const { lockByRemote } = await endRemoteForThread(channelId, threadTs, { sessionId: ctx.sessionId, cleanup: deps.cleanup });
     // Only release a lock that is still this target owner's: a stale row never unlocks someone else.
     if (lockByRemote && t.user_id === (await OneOnOne.find(channelId, threadTs))?.locked_user) await OneOnOne.unlock(channelId, threadTs);
+    forgetRemoteStatus(ctx.sessionId);
     ctx.reload();
     await ctx.reply(`:house: Remote mode *off* — tools run on the server again.${lockByRemote ? " 1on1 released." : ""}`);
     return;
@@ -159,6 +198,7 @@ export async function handleRemoteCommand(hit: RemoteHit, ctx: RemoteCommandCtx,
     lockByRemote = true;
   }
   await Remote.setTarget({ channelId, threadTs, teamId, userId, addr: hit.addr, dir: pf.dir, lockByRemote });
+  forgetRemoteStatus(ctx.sessionId);
   ctx.reload();
   await ctx.reply(`:satellite: Remote mode *on* — my shell and file tools now run on <@${userId}>'s machine in \`${pf.dir}\`. The thread is locked to you. \`/remote off\` to switch back.`);
 }

@@ -21,7 +21,7 @@ import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
 import { humanizeToolStatus } from "./status-text";
 import * as Remote from "../../db/remote";
-import { handleRemoteCommand, endRemoteForThread } from "./remote-command";
+import { handleRemoteCommand, endRemoteForThread, remoteStatusOn } from "./remote-command";
 import { activeRemoteTarget } from "../../remote/active";
 import { HelperClient } from "../../remote/helper-client";
 import { cleanupCommand } from "../../remote/tools/bash";
@@ -582,16 +582,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     );
   }
 
-  /** sessionId → remote on?, cached briefly for the status line. */
-  const remoteStatusCache = new Map<string, { on: boolean; at: number }>();
-  const remoteOn = async (sessionId: string, channel: string, thread: string): Promise<boolean> => {
-    if (!env.remote.enabled()) return false;
-    const c = remoteStatusCache.get(sessionId);
-    if (c && Date.now() - c.at < 30_000) return c.on;
-    const on = !!(await activeRemoteTarget(channel, thread));
-    remoteStatusCache.set(sessionId, { on, at: Date.now() });
-    return on;
-  };
 
   // Diag: dump bot identity + granted scopes once at startup.
   void (async () => {
@@ -1176,12 +1166,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             }
           }
           // Animated humanized status next to the bot name.
+          // remoteStatusOn never throws; the catch keeps the detached promise from ever rejecting.
           void (async () => status.set(
             e.sessionId,
             route.ctx.channel,
             route.ctx.threadTs,
-            humanizeToolStatus(e.tool, e.input as any, { remote: await remoteOn(e.sessionId, route.ctx.channel, route.ctx.threadTs) }),
-          ))();
+            humanizeToolStatus(e.tool, e.input as any, { remote: await remoteStatusOn(e.sessionId, route.ctx.channel, route.ctx.threadTs) }),
+          ))().catch(() => {});
         }
         break;
       }
@@ -1401,6 +1392,26 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           metric.slackDropsTotal.inc({ reason: "one_on_one" });
           return;
         }
+        // Remote mode runs tools on the owner's machine: only the owner drives it. The
+        // manager is heard only to inspect or end it (/remote off|status, /1on1 off).
+        if (lock.open_scope === null && userId !== lock.locked_user && isMgr && env.remote.enabled() && (await activeRemoteTarget(channelId, threadTs))) {
+          // Strip exactly what the slash dispatcher strips (bot + persona mention).
+          const mgrBot = (await client.auth.test()).user_id as string;
+          const mgrPersona = dispatch?.personaId ? getPersonaRegistry().lookupByName(dispatch.personaId)?.slackUserId : undefined;
+          const mgrText = text
+            .replace(new RegExp(`<@${mgrBot}>`, "g"), "")
+            .replace(mgrPersona ? new RegExp(`<@${mgrPersona}>`, "g") : /(?!x)/g, "")
+            .trim();
+          const hit = parseSlashCommand(mgrText);
+          const allowed =
+            (hit?.kind === "remote" && (hit.action === "off" || hit.action === "status")) ||
+            (hit?.kind === "one-on-one" && hit.action === "off");
+          if (!allowed) {
+            console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — remote mode, 1on1 locked to ${lock.locked_user}`);
+            metric.slackDropsTotal.inc({ reason: "one_on_one" });
+            return;
+          }
+        }
       }
     }
 
@@ -1518,10 +1529,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             }
             await reply(":warning: `/remote` setup needs a surface that supports private replies.");
           },
-          reload: () => {
-            remoteStatusCache.delete(session.id);
-            agent.reload(session.id);
-          },
+          reload: () => { agent.reload(session.id); },
         });
         return;
       }

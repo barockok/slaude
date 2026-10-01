@@ -8,6 +8,8 @@ import type { Surface, SessionBinding } from "../../../src/gateway/core/surface"
 import { db } from "../../../src/db/schema";
 import * as CronJobs from "../../../src/db/cron-jobs";
 import * as OneOnOne from "../../../src/db/one-on-one";
+import * as Remote from "../../../src/db/remote";
+import { __resetMasterKeyCache } from "../../../src/db/crypto";
 import * as MentionOnly from "../../../src/db/mention-only";
 import * as SO from "../../../src/db/soul-overrides";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
@@ -588,6 +590,75 @@ describe("gateway uncovered branches", () => {
 
       // unknown session → no active thread
       expect(await g.h.__agentOneOnOne("no-such-session", "lock")).toContain("no active thread");
+    });
+
+    describe("remote mode invariants", () => {
+      const seed = async (ts: string, owner: string) => {
+        process.env.SLAUDE_REMOTE = "1";
+        process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 5).toString("base64");
+        __resetMasterKeyCache();
+        await Remote._wipeForTests();
+        await OneOnOne.lock({ channelId: "D_MGR", threadTs: ts, lockedUser: owner, createdBy: owner });
+        await Remote.putKeyIfAbsent("T", owner, { privateKey: "PRIV", publicKey: "PUB" });
+        await Remote.setTarget({ channelId: "D_MGR", threadTs: ts, teamId: "T", userId: owner, addr: "tcAddr1", dir: "/r", lockByRemote: false });
+      };
+      afterEach(() => { delete process.env.SLAUDE_REMOTE; });
+
+      it("manager is heard in a remote thread only to inspect or end it", async () => {
+        writeSoulFixture(WORLD);
+        const g = makeGw();
+        const ts = nextTs();
+        await g.emit("message", dmArgs(g, "hi", { ts }));
+        await seed(ts, "U0OWNER");
+        const before = g.sends.length;
+        await g.emit("message", dmArgs(g, "run rm -rf", { thread_ts: ts }));
+        expect(g.sends.length).toBe(before);
+        await g.emit("message", dmArgs(g, "/remote status", { thread_ts: ts }));
+        expect(g.posts.some((p) => String(p.text).includes("Remote mode"))).toBe(true);
+        await g.emit("message", dmArgs(g, "/1on1 off", { thread_ts: ts }));
+        expect(await OneOnOne.find("D_MGR", ts)).toBeNull();
+        expect(await Remote.findTarget("D_MGR", ts)).toBeNull();
+      });
+
+      it("/remote off from the manager is admitted", async () => {
+        writeSoulFixture(WORLD);
+        const g = makeGw();
+        const ts = nextTs();
+        await g.emit("message", dmArgs(g, "hi", { ts }));
+        await seed(ts, "U0OWNER");
+        await g.emit("message", dmArgs(g, "/remote off", { thread_ts: ts }));
+        expect(await Remote.findTarget("D_MGR", ts)).toBeNull();
+      });
+
+      it("the locked user and a thread without an active remote are unaffected", async () => {
+        writeSoulFixture(WORLD);
+        const g = makeGw();
+        const ts = nextTs();
+        await g.emit("message", dmArgs(g, "hi", { ts }));
+        await seed(ts, WORLD.manager);
+        let before = g.sends.length;
+        await g.emit("message", dmArgs(g, "owner speaks", { thread_ts: ts }));
+        expect(g.sends.length).toBe(before + 1);
+        await OneOnOne.unlock("D_MGR", ts);
+        await OneOnOne.lock({ channelId: "D_MGR", threadTs: ts, lockedUser: "U0OWNER", createdBy: "U0OWNER" });
+        await Remote.clearTarget("D_MGR", ts);
+        before = g.sends.length;
+        await g.emit("message", dmArgs(g, "manager speaks", { thread_ts: ts }));
+        expect(g.sends.length).toBe(before + 1);
+      });
+
+      for (const action of ["lock", "open", "off"] as const) {
+        it(`agentOneOnOne ${action} ends the target`, async () => {
+          writeSoulFixture(WORLD);
+          const g = makeGw();
+          const ts = nextTs();
+          await g.emit("message", dmArgs(g, "hi", { ts }));
+          const session = await g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+          await seed(ts, "U0OWNER");
+          await g.h.__agentOneOnOne(session.id, action);
+          expect(await Remote.findTarget("D_MGR", ts)).toBeNull();
+        });
+      }
     });
 
     it("agent mention-only toggle (agentMentionOnly seam)", async () => {
