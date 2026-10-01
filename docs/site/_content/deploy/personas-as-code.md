@@ -5,18 +5,24 @@ description: Keep personas in a git repository and sync them to a gateway deploy
 
 # Personas as code
 
-In the gateway topology (`SLAUDE_DB=pg`, `SLAUDE_ROLE=gateway` plus nodes) a
-git repository can be the source of truth for personas: souls, Slack identity,
-model, user token and MCP config. A CI job posts the repository's contents to
-the gateway; the gateway stores them in Postgres; replicas and nodes read them
-from there. Why it works this way is in the
+On Postgres (`SLAUDE_DB=pg`, a real server or PGLite) a git repository can be
+the source of truth for personas: souls, Slack identity, model, user token and
+MCP config. A CI job posts the repository's contents to the gateway; the
+gateway stores them in Postgres; replicas and nodes read them from there. This
+works in the gateway topology (`SLAUDE_ROLE=gateway` plus nodes) and in a
+single `mono` process on Postgres or PGLite. Why it works this way is in the
 [field note](../field-notes/2026-10-01-personas-as-code.md).
 
 A deployment that has never been synced keeps working from the filesystem
 (`$SLAUDE_HOME/SOUL.md` and `personas/`) exactly as before. The first
 successful sync makes the tenant managed; from then on the database is its
-only source and the filesystem is not consulted for that tenant. Sqlite
-deployments (`mono`) stay on the filesystem.
+only source for every persona field. Two operator-level files stay as
+fallbacks for the *default* persona only, never merged with a managed value:
+the global `.mcp.json` when the default persona's synced `mcp` is empty, and
+`$SLAUDE_HOME/SOUL.md` after an `allowEmpty` retirement in `mono` (see below).
+A per-persona directory (`personas/<name>/`) is never read for a managed
+tenant. Sqlite deployments stay on the filesystem: `/deploy` and the panel's
+persona routes answer 409 `persona sync requires Postgres` there.
 
 ## Repository layout
 
@@ -58,14 +64,23 @@ never in git. `render --check` applies the same rules.
 
 ## Gateway setup
 
-Set `SLAUDE_DEPLOY_TOKEN` on the gateway only, never on nodes. It is trimmed
+Set `SLAUDE_DEPLOY_TOKEN` on the gateway (or the `mono` process) only, never on
+nodes. It is trimmed
 and must be at least 32 characters after trimming. If it is unset, blank or
 shorter, the `/deploy` endpoint does not exist: every path and method returns
 404. It is separate from `SLAUDE_NODE_TOKEN` on purpose: every node holds the
 node token, and the deploy token must not be held by anything that can run a
 turn. A deploy (or preview) token equal to the node token is treated as unset,
-with one warning in the gateway log. Set the `${VAR}` variables your repository references in the same
-environment.
+with one warning in the gateway log.
+
+Set the `PERSONA_*` variables your repository references in the same
+environment: the gateway's, or the `mono` process's. Never put them in an
+environment file that nodes also load: a node does not need them, and every
+node runs agent turns. In `mono`, where agent turns run in the same process,
+the agent's child process (and so its Bash tool) is started without
+`SLAUDE_DEPLOY_TOKEN`, `SLAUDE_DEPLOY_PREVIEW_TOKEN`, any `PERSONA_*`
+variable, `SLAUDE_MASTER_KEY`, `SLAUDE_NODE_TOKEN` or `SLAUDE_JOB_SECRET`, so
+a turn cannot call `/deploy` or read another persona's user token.
 
 For pull-request jobs, also set `SLAUDE_DEPLOY_PREVIEW_TOKEN` (same trim and
 32-character floor, and it must differ from the deploy token or it counts as
@@ -94,6 +109,7 @@ The tenant is `default` for a single-workspace deployment; it must match
 }
 ```
 
+The body is capped at 4 MiB; a larger one is 413 and nothing is applied.
 `personas render` builds this body from the repository. The response reports
 `created`, `updated`, `unchanged`, `tombstoned` and `overridesWiped`. With
 `?dryRun=1` nothing is written and nothing is published, and the report is
@@ -110,15 +126,21 @@ Behaviour to know:
   persona (`[slack-rx] drop ... retired persona=<name>`). It is never answered
   by the default persona: a warm session of it is closed when the registry
   reloads (its in-flight turn is aborted), a new session for it fails to boot,
-  and its cron jobs are paused on their next due time (`last_result: paused:
-  persona not live`; resume them after re-adding the persona). Anything that
-  still asks for it — a Slack client, a brain-slice gate — is refused rather
-  than given the default persona's.
+  and each of its cron jobs skips its occurrences while the persona is retired
+  (`last_result: skipped: persona not live`). The jobs are not paused:
+  re-adding the persona in git brings them back by themselves at their next
+  due time. Anything that still asks for it — a Slack client, a brain-slice
+  gate — is refused rather than given the default persona's.
 - An empty `personas` array is refused unless `allowEmpty: true`, which
-  retires every persona (the default persona then reverts to the on-disk
-  `SOUL.md`).
+  retires every persona, `default` included. What happens next depends on the
+  topology. In `mono` the default persona reverts to the on-disk `SOUL.md` and
+  keeps answering. In the gateway topology **every turn stops, the default
+  persona's included**: the tenant is still managed and has no live persona,
+  so a node's runtime bundle request is 404 and no turn can boot. Sync a set
+  that includes `default` to recover.
 - Each soul is run through a strict structured extraction (a model call). If
-  extraction fails the sync fails with 502 and nothing is written.
+  extraction fails the sync fails with 502 and nothing is written. A dry run
+  skips extraction.
   The result is cached by soul text in `$SLAUDE_SOUL_CACHE_DIR` (default
   `$SLAUDE_HOME/cache`). On gateways point it at pod-local storage, as
   `deploy/k8s-scale` does with an `emptyDir`: `$SLAUDE_HOME` is shared with
@@ -126,8 +148,9 @@ Behaviour to know:
   approvers. `docker-compose.scale.yaml` gives the gateway a `tmpfs` for it. A
   cache hit whose Slack ids do not all appear in the soul text is discarded and
   re-extracted, and when `SLAUDE_MASTER_KEY` is set (it is on every gateway)
-  each entry is signed with a key derived from it, so an unsigned or altered
-  entry is also a miss.
+  each entry is signed with a key derived from it, over the soul text's full
+  sha256 and the extracted data, so an unsigned or altered entry is also a
+  miss.
 - Every sync wipes all runtime overrides for the tenant.
 
 ## Validate on pull requests
@@ -152,28 +175,40 @@ Reads `$SLAUDE_HOME` and writes the layout above. User tokens become
 `${PERSONA_<NAME>_XOXP}` and every MCP header or env value that is not already a
 `${PERSONA_...}` placeholder becomes `${PERSONA_<NAME>_<SERVER>_<KEY>}`
 (upper-cased, other characters as `_`); the variable names to set on the gateway
-are printed. Export never writes a secret to the repository. It
-refuses, naming the persona and server but not the value:
+are printed. Export accepts only the MCP shapes it knows how to make safe, and
+refuses or flags everything else. It refuses, naming the persona, server and
+key but never the value:
 
+- any key it does not know: at the top level anything but `mcpServers` and
+  `privateServices`, in a server anything but `type`, `url`, `command`, `args`,
+  `headers` and `env` (for example `apiKey` or an `oauth` block). Move such a
+  value into `headers` or `env` first;
+- `headers` or `env` that is not an object, a non-string value inside one, or
+  `args` that is not a list;
 - an MCP `url` containing userinfo, a query string or a fragment (move the
   secret into a header first);
-- a non-string `headers` or `env` value;
-- two keys that would produce the same variable name;
-- stdio `args` that look like a credential (`key=`, `token=`, `secret=`,
-  `password=`, `bearer `, or a flag like `--api-token` followed by a value).
+- a token shape in a `url` path, the `command` string or any arg: a Slack or
+  GitHub token prefix, an `sk-` key, an AWS access key id, `Bearer`, a JWT, or
+  any run of 32 or more letters, digits, `_` or `-`. In `command` and `args`
+  also `key=`, `token=`, `secret=`, `password=`, `passwd=`, or a flag like
+  `--api-token` followed by a value;
+- two keys that would produce the same variable name.
 
-Other stdio `args` cannot be told apart from secrets, so export succeeds and
-prints a warning listing the servers to review before you commit. A persona
-directory whose name is not a valid persona name fails the export.
+A harmless value can match a token shape (a long path segment, for example);
+edit it before exporting. Other stdio `args` cannot be told apart from
+secrets, so export succeeds and prints a warning listing the servers to review
+before you commit. A persona directory whose name is not a valid persona name
+fails the export.
 
 ## Runtime overrides
 
 For quick experiments without a commit, the panel API (`SLAUDE_PANEL=1`)
-exposes:
+exposes the routes below. They always act on the tenant `default`.
 
-- `GET /panel/api/personas`: git versus live per field. Any authenticated
-  operator can read it. Tokens appear only as present or absent; soul text and
-  model are shown.
+- `GET /panel/api/personas`: git versus live per field, for every persona
+  including tombstoned ones (each entry says `tombstoned: true|false`). Any
+  authenticated operator can read it. Tokens appear only as present or absent;
+  soul text and model are shown.
 - `PUT /panel/api/personas/<name>/overrides/<field>` with `{ "value": ... }`
   and `DELETE` of the same path. Superadmin only. `<field>` is `soul`, `model`
   or `mcp`; nothing else can be overridden.
@@ -189,18 +224,40 @@ persona onboarded this way is not in git, and the next sync tombstones it unless
 you add it to the repository. The next sync also wipes every override: git
 wins.
 
+## Model
+
+A persona's `model` (from git, or a runtime override) is the default model of
+its sessions. The order is:
+
+1. a per-thread choice: `/model <id>` in the thread, or the panel's session
+   model;
+2. the persona's effective model;
+3. `SLAUDE_MODEL`.
+
+On a managed tenant a new session follows its persona's model, and picks up a
+changed one the next time it boots. On a node a sync or override reloads warm
+sessions after their turn in flight; in `mono` a warm session keeps its model
+(and soul) until it idles out or is reloaded.
+Sessions created before the tenant was managed, or before this behaviour
+existed, keep the model they were created with until `/model` changes it.
+
 ## Known gaps
 
-- **Per-persona `mcp` is stored but not yet used in the gateway topology.**
-  Nodes do not mount external MCP servers from persona config, and the gateway
-  runs turns only in `mono`, where personas stay on the filesystem. Syncing or
-  overriding `mcp` records it and has no effect on a node's turns today. The
-  runtime bundle a node fetches carries `mcpJson: null` for a managed tenant,
-  so resolved header and env values never leave the gateway.
-- Before relying on this in production, two verifications that need
-  infrastructure were not run with the implementation: the sync's
-  compare-and-set against a real Postgres, and the k8s-local cluster proof
-  (`deploy/k8s-local/verify-turns.sh`).
+- **Per-persona `mcp` is not consumed on nodes.** In `mono` on Postgres a
+  managed persona's external MCP servers come from its effective `mcp`
+  (nothing when it has none; the default persona falls back to the global
+  `.mcp.json`). Nodes do not mount external MCP servers from persona config:
+  syncing or overriding `mcp` records it and has no effect on a node's turns.
+  The runtime bundle a node fetches carries `mcpJson: null` for a managed
+  tenant, so resolved header and env values never leave the gateway.
+- **In `mono`, a named persona's channel mandate is the default persona's.**
+  Nodes take each persona's channel mandate from its own structured soul; the
+  `mono` process still uses the default persona's channel overrides for every
+  persona.
+- **Required before merge, not yet run:** the sync's compare-and-set against a
+  real Postgres, and the k8s-local cluster proof
+  (`deploy/k8s-local/verify-ha.sh`, the "personas as code" section, including
+  its warm-session soul-change step).
 - The existing `/v1` node token is not trimmed or length-checked the way the
   deploy token is. Use a long random value.
 
@@ -268,7 +325,9 @@ jobs:
             --data @payload.json
 ```
 
-The dry-run report in `report.json` can be posted to the pull request with any
-comment action. `curl --fail-with-body` makes a 401, 409 (stale), 422 (invalid)
+Pull requests from forks receive no repository secrets, so their dry run sends
+an empty bearer and gets 401; run the preview from a branch in the repository,
+or treat the fork's `render --check` as the gate. The dry-run report in
+`report.json` can be posted to the pull request with any comment action. `curl --fail-with-body` makes a 401, 409 (stale), 422 (invalid)
 or 502 (extraction failed) fail the job and still prints the error body, which
 names the variable, persona or revision at fault and never a secret value.

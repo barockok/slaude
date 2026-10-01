@@ -25,8 +25,25 @@ that runs in another process and expects a value in its environment or its
 config. For those, "move to the database" is not enough: who may read the row,
 which replica refreshes a token, and which person a turn runs as all matter.
 That is the work of the MCP credential store, and this branch does not reopen
-it. Git carries only placeholders (`${VAR}`) for credentials; the gateway
-resolves them from its own environment at sync time.
+it. Git carries only placeholders for credentials; the gateway resolves them
+from its own environment at sync time.
+
+Only names starting with `PERSONA_` resolve (`${PERSONA_SUPPORT_BOT_XOXP}`).
+The first version resolved any `${VAR}`, and the gateway's environment also
+holds its own secrets: a repository could have copied `${SLAUDE_MASTER_KEY}`
+into a stored persona, and from there into anything that reads persona state.
+Any other name is a 422 naming the variable, checked before the environment is
+looked at. `export` generates `PERSONA_` names and `render --check` enforces the
+same rule, so CI rejects what the gateway would.
+
+The `PERSONA_*` variables live on the gateway (or the `mono` process) only.
+In `mono` that is also the process that runs agent turns, and the agent's child
+inherited the whole environment minus one key: a prompt-injected turn could
+have read every persona's user token, or used the deploy token to POST a soul
+naming an attacker as approver. The child is now started without any
+`PERSONA_*`, either deploy token, `SLAUDE_MASTER_KEY`, `SLAUDE_NODE_TOKEN` or
+`SLAUDE_JOB_SECRET`. Nothing the child runs needs them: MCP placeholders are
+expanded in the slaude process before the config reaches the child.
 
 ## Why skills and `slaude.json` stayed out
 
@@ -76,9 +93,21 @@ asserts the deploy token gets a 401 on `/v1`.
 The token is trimmed and must be at least 32 characters after trimming;
 anything shorter is treated as unset and `/deploy` answers 404 for every path
 and method. The trim matters: the generic env reader does not trim, so a
-whitespace-only value was "configured" and a whitespace bearer matched it.
+whitespace-only value was "configured" and a whitespace bearer matched it. A
+deploy token equal to the node token counts as unset, with a warning.
 The tenant path segment is decoded inside a guard and must match the persona
 name alphabet, otherwise 404 (a malformed escape used to surface as a 500).
+
+Pull-request jobs need a dry run, and a pull request's workflow runs the pull
+request's own code, so whatever credential it holds an unreviewed change can
+use. A second token, `SLAUDE_DEPLOY_PREVIEW_TOKEN`, is accepted only with
+`?dryRun=1`; presented on an apply it is the same 401 as a wrong token. A dry
+run makes no model call (classification never depended on the extracted
+structure), so the preview token cannot spend provider budget either. Because
+that token now sits in workflows running unreviewed code, the body `/deploy`
+buffers is capped at 4 MiB (413 above it). On sqlite, where the persona tables
+do not exist, `/deploy` and the panel's persona routes answer 409 instead of
+failing on a missing table.
 
 ## The strict extractor
 
@@ -91,13 +120,28 @@ extraction that throws, returns 502, and logs the failure class and a truncated
 message server-side. Extraction and validation run before the transaction, so no
 model call happens while a lock is held.
 
+The extraction result is cached by soul text, and the cache was a planting
+point: it lived under `$SLAUDE_HOME`, a volume every node and every agent turn
+can write, and a strict extraction trusted a hit. A file planted there could
+name an attacker as manager or approver. Three layers now: the cache directory
+is `SLAUDE_SOUL_CACHE_DIR` (pod-local on gateways in the shipped manifests),
+every hit is re-validated (schema, and every Slack id must appear in the soul
+text), and with `SLAUDE_MASTER_KEY` set each entry is signed with a key derived
+from it, over the full sha256 of the text and the data. Grounding alone was not
+enough: it permits swapping roles among ids the soul merely mentions. The
+signature first covered only the 64-bit prefix that names the file; it now
+covers the full digest, and an entry in the old format is re-extracted once.
+
 ## The registry: a synchronous snapshot and a poll
 
 Lookups on the hot path are synchronous reads of a snapshot. A poll compares a
 cheap state token and rebuilds when it changes. This differs in mechanism from
 the spec's per-lookup revalidation and gives the same guarantee: staleness is
-bounded by the poll interval, and a publish on the config-reload channel makes
-it near-immediate.
+bounded by the poll interval. A write also rebuilds the snapshot on the replica
+that took it and publishes on the tenant's config-reload channel, which nodes
+subscribe to. Other gateway replicas do not subscribe: they converge through
+the 10 s poll, so "near-immediate" holds for the writing replica and the nodes
+only.
 
 Three details came from review:
 
@@ -125,6 +169,11 @@ error the bundle route fails (the node retries) rather than concluding the
 tenant is unmanaged and serving another source. The bundle also carries the
 persona's Slack user id, because the child's `SLAUDE_AGENT_ID` anchors the
 persona's private brain slice and plugin-spawned MCP processes inherit it.
+It does not carry the persona's MCP config: nodes never mount it, and its
+header and env values are resolved secrets, so a managed bundle ships
+`mcpJson: null`. It does carry the persona's effective model (see below), and
+a managed bundle says so (`managed: true`); an unmanaged bundle's content is
+unchanged.
 
 ## Nodes
 
@@ -152,21 +201,64 @@ this branch newly fires it on every warm session at every config change.
 
 On an invalid structured soul a session emits no channel mandate and logs a
 warning naming only the session and persona. It never borrows the default
-persona's mandate. A persona's own channel mandate now applies to named
-personas on a managed tenant, which is a behaviour change from the volume-based
-path.
+persona's mandate. On a node, a named persona's channel mandate now comes from
+its own structured soul, which is a behaviour change from the volume-based
+path. In `mono` it does not: the manager passes no structured soul for a named
+persona there, so the default persona's channel overrides still apply (a known
+gap below).
 
-## Export never puts a secret in git
+## Retired personas fail closed
+
+A persona removed from git is tombstoned, and every path that used to fall
+back to the default persona now refuses instead: an inbound event addressed to
+its bot user, or a reply in its thread, is dropped with a log line; a new
+session for it fails to boot; a warm session of it is closed when the registry
+installs a snapshot without it (its in-flight turn is aborted); its Slack
+client and brain-slice gate throw rather than hand back the default persona's.
+A cron job owned by it skips each occurrence while it is retired: the
+compare-and-set that claims an occurrence has already advanced the schedule,
+so recording `skipped: persona not live` without releasing the claim skips
+exactly that one. The first version paused the job, which broke "re-adding it
+in git restores it whole": every job needed a manual resume.
+
+## Model and MCP on a managed tenant
+
+The persona `model` was stored, overridable from the panel, and read by
+nothing: every session was created with `SLAUDE_MODEL`. Now the precedence is
+a per-thread `/model` choice, then the persona's effective model, then
+`SLAUDE_MODEL`. To tell a thread's choice from a default without a schema
+change, a managed tenant creates session rows with an empty model, meaning
+"follow the persona"; the model is resolved at boot (`mono` from the registry
+snapshot, a node from its bundle). Rows created earlier carry `SLAUDE_MODEL`
+and keep it, exactly as on a filesystem tenant.
+
+`mono` on Postgres or PGLite is a supported managed deployment, and its
+in-process MCP resolver still read `personas/<name>/mcp.json` from disk, so
+the synced `mcp` was ignored and stale servers kept mounting. A managed tenant
+now mounts each persona's effective `mcp` (nothing when it has none); the
+default persona falls back to the global `.mcp.json`, the same operator-level
+fallback shape as its soul. Effective values are not `${VAR}`-expanded a
+second time.
+
+## Export refuses what it cannot make safe
 
 `personas export` seeds a repository from a running home. Tokens become
-`${VAR}` placeholders and the variable names are listed. For MCP config, every
-string under any server's `headers` or `env` that is not already exactly a
-placeholder becomes a generated one. Export refuses, naming the persona and
-server and never the value: a url with userinfo, query or fragment; a
-non-string header or env value; two keys that normalise to one variable name;
-args that look like a credential (`key=`, `token=`, `secret=`, `password=`,
-`bearer `, or a `--*token`-style flag with a separate value). Other stdio args
-cannot be classified automatically, so export succeeds and prints a warning
+`${PERSONA_*}` placeholders and the variable names are listed. For MCP config,
+every string under any server's `headers` or `env` that is not already exactly
+a `PERSONA_` placeholder becomes a generated one.
+
+The first version scrubbed the shapes it knew and copied everything else, and
+a probe found six common shapes it wrote to git verbatim: a string `headers`, a
+string `args`, unknown keys such as `apiKey` or an `oauth` block, a `command`
+with an inline `TOKEN=`, and a token in the url path. Scrubbing a known shape
+loses to an unknown one, so export is now allowlist-shaped and fails closed:
+only known keys (`type`, `url`, `command`, `args`, `headers`, `env`; at the top
+level `mcpServers` and `privateServices`); `headers`/`env` must be objects of
+strings and `args` a list; the url path, the command and every arg are scanned
+for token shapes (Slack and GitHub prefixes, `sk-`, AWS key ids, `Bearer`, a
+JWT, any run of 32+ token characters). Each refusal names the persona, server
+and key, never the value. The cost is false positives, which fail safe. Other
+stdio args cannot be classified, so export succeeds and prints a warning
 listing the servers to review. Parse errors name the file and persona only,
 because a parser message can quote content.
 
@@ -178,12 +270,11 @@ every name satisfied, so CI rejects exactly what the gateway would 422.
 
 State plainly:
 
-1. **Per-persona `mcp` is stored but not consumed in the gateway topology.**
-   External MCP servers from a persona's config are mounted only by the
-   gateway's in-process resolver, which runs turns only in `mono`, and `mono`
-   is sqlite, where personas stay on the filesystem. Nodes build shims for
-   slaude's built-in tool contracts and never read persona MCP config; the
-   bundle computes `mcpJson` and nothing uses it. Wiring it changes the
+1. **Per-persona `mcp` is not consumed on nodes.** External MCP servers from
+   a persona's config are mounted only by the in-process resolver, which runs
+   turns only in `mono` (where a managed tenant now uses effective `mcp`).
+   Nodes build shims for slaude's built-in tool contracts and never read
+   persona MCP config, and a managed bundle ships none. Wiring it changes the
    security surface (a stdio server is code execution inside a node pod, and
    credentials depend on whom the turn runs as) and needs its own design.
    Ahead of that, runtime `mcp` overrides and quick-onboard `mcp` accept
@@ -192,15 +283,27 @@ State plainly:
 2. **The compare-and-set race has not been run on a real Postgres.** No
    Postgres was available in the session that built this. The repository tests
    passed on PGLite, which serialises transactions, so the race cannot occur
-   there and the pass proves nothing about the compare-and-set. The real-Postgres
-   run and the split-check mutation are required before merge.
-3. **The k8s-local cluster proof has not been executed.** The new section of
-   `verify-turns.sh` that checks a node's soul hash was only statically
-   checked; no cluster could be started. Required before merge.
+   there and the pass proves nothing about the compare-and-set. Required
+   before merge, not yet run: the real-Postgres run and the split-check
+   mutation.
+3. **The k8s-local cluster proof has not been executed.** The "personas as
+   code" section of `deploy/k8s-local/verify-ha.sh` checks a node's soul hash
+   on a fresh boot and, after a second sync, on a second turn in the same
+   session (a warm session picking up a changed soul depends on the real
+   CLI's result cadence, which unit tests fake). It was only statically
+   checked; no cluster could be started. Required before merge, not yet run.
 4. **A pre-existing weakness, not fixed here:** the `/v1` node token reader does
    not trim or length-check, so a whitespace-only `SLAUDE_NODE_TOKEN` makes `/v1`
    accept a whitespace bearer. The deploy token does not have this problem;
    the node token should get the same treatment.
+
+5. **In `mono`, a named persona's channel mandate is the default persona's.**
+   Nodes use each persona's own structured soul; the `mono` manager does not.
+6. **After `allowEmpty` the gateway topology runs no turns.** A managed tenant
+   with no live persona has no bundle to serve, so every node turn fails, the
+   default persona's included, while `mono` reverts the default persona to the
+   on-disk `SOUL.md`. The guide states it; making the two agree needs a
+   decision about what an empty managed tenant should be.
 
 Also: a killed node never releases its session lock, so a re-delivered turn
 waits out the lock TTL (an existing latency bound, unchanged).
@@ -223,6 +326,21 @@ waits out the lock TTL (an existing latency bound, unchanged).
   the persona suites touch Postgres-only tables and did not skip on sqlite.
   They now skip unless `SLAUDE_DB=pg`. From then on both legs were run for
   every task.
+- **A crash path in a fire-and-forget call.** The cron scheduler starts each
+  run with `void`, so a throw inside it (a persona retired between the live
+  check and the run, a database error) became an unhandled rejection, which
+  exits Bun, and left the job marked running. The call site now catches,
+  records the error and clears the job.
+- **A detached session still credited by id.** After the bounded reload wait
+  detaches a session that never exited, its query loop kept running and its
+  late messages were looked up by session id, so they joined the fresh
+  session's turn and a late result could apply a deferred reload under it. The
+  loop now passes its own session and late messages are dropped.
+- **Mono on Postgres was reachable and described as impossible.** Both docs
+  said "mono is sqlite", so the deploy token in the agent child, the disk MCP
+  read and the inert model all sat in a configuration the code allowed and the
+  docs ruled out. The final review found them by reading the configuration
+  space rather than the topology diagram.
 - **A test that passes under its own mutation.** Several review findings here
   (the bundle fall-through, the registry flipping to disk, a cache seed nobody
   read) were invisible to tests that asserted behaviour and not source. The
