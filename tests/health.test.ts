@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach, beforeEach } from "bun:test";
-import { startHealthServer } from "../src/health";
+import { startHealthServer, healthRoutes, deployHandlerForRole } from "../src/health";
 
 let server: ReturnType<typeof startHealthServer> = null;
 
@@ -70,5 +70,22 @@ describe("startHealthServer", () => {
     expect(mr.headers.get("content-type")).toContain("text/plain");
     const metricsBody = await mr.text();
     expect(typeof metricsBody).toBe("string");
+  });
+});
+
+describe("/deploy mount by role", () => {
+  const served = async () => new Response("deployed", { status: 200 });
+  const hit = async (role: string) => {
+    const routes = healthRoutes({ liveSessions: () => 0, deploy: deployHandlerForRole(role, served) });
+    return routes(new Request("http://x/deploy/personas", { method: "POST" }));
+  };
+
+  test("gateway serves /deploy", async () => {
+    expect((await hit("gateway"))?.status).toBe(200);
+  });
+
+  test("mono and node fall through (404 at the transport)", async () => {
+    expect(await hit("mono")).toBeNull();
+    expect(await hit("node")).toBeNull();
   });
 });

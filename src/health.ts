@@ -9,7 +9,7 @@ export type HealthDeps = {
    *  omits it for nodes. Returns null for paths it doesn't own. */
   v1?: (req: Request) => Promise<Response | null>;
   /** Optional pipeline /deploy handler (GatewayHandle.fetchDeploy). Mounted for
-   *  mono/gateway roles only, never nodes; it 404s every path while neither
+   *  the gateway role only (never node or mono; see deployHandlerForRole); it 404s every path while neither
    *  SLAUDE_DEPLOY_TOKEN nor SLAUDE_DEPLOY_PREVIEW_TOKEN is set. */
   deploy?: (req: Request) => Promise<Response | null>;
   /** Optional operator control-panel handler (GatewayHandle.fetchPanel).
@@ -22,6 +22,19 @@ export type HealthDeps = {
    *  is off, so mounting it costs nothing when disabled. */
   portal?: (req: Request) => Promise<Response | null>;
 };
+
+/**
+ * The /deploy handler is mounted for the gateway role only. A node never
+ * serves it, and neither does mono: there the agent child is the same OS user
+ * and a descendant of the process holding the deploy token, so no environment
+ * scrub can keep the token from it. Mono is managed through the panel instead.
+ */
+export function deployHandlerForRole(
+  role: string,
+  handler: (req: Request) => Promise<Response | null>,
+): ((req: Request) => Promise<Response | null>) | undefined {
+  return role === "gateway" ? handler : undefined;
+}
 
 /**
  * Route handler for the observability endpoints, shared between the
