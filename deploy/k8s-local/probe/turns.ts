@@ -138,7 +138,10 @@ async function cron() {
     slackChannelId: CHANNEL,
     channelId: CHANNEL,
     createdBy: "UVERIFY",
-    cronExpr: "* * * * *",
+    // Hourly, not every minute: the scheduler ticks every 60s, so a claim on a
+    // per-minute job moves the row only a fraction of a second ahead of now and
+    // "scheduleAdvanced" would hold for that sliver of each minute.
+    cronExpr: "0 * * * *",
     prompt: `${CRON_MARK}: fire once`,
     nextRunAt: Date.now() - 1000,
     target: "channel",
