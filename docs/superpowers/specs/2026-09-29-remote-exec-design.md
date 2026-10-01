@@ -219,8 +219,9 @@ mkdir -p ~/.slaude-bg/<session> && cd <cwd> && \
   > ~/.slaude-bg/<session>/<id>.log 2>&1 < /dev/null & echo $!
 ```
 
-`<newpgrp>` is `setsid` on Linux and `perl -e 'setpgrp(0,0); exec @ARGV'` on
-macOS, which has no `setsid` (spike-verified: own process group, killed by
+`<newpgrp>` is `perl -e 'setpgrp(0,0); exec @ARGV'` on all platforms. macOS
+has no `setsid`, and perl is present on stock macOS and Debian/Ubuntu, so one
+wrapper serves both (spike-verified: own process group, killed by
 `kill -TERM -<pgid>`). Foreground `bash` uses the same wrapper, because
 closing an exec channel without a pty leaves the process running (spike-verified). The job survives
 channel and connection loss. The job registry lives on the remote under
