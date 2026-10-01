@@ -61,6 +61,11 @@ describe("per-persona runtime route", () => {
     expect(await res!.text()).toContain("tenant");
   });
 
+  test("the default persona's bundle carries no Slack user id", async () => {
+    const res = await api().fetch(get("/v1/tenants/default/personas/default/runtime", token()));
+    expect(((await res!.json()) as any).slackUserId).toBeNull();
+  });
+
   test("the legacy tenant route still resolves the default persona", async () => {
     const res = await api().fetch(get("/v1/tenants/default/runtime", token()));
     expect(res!.status).toBe(200);

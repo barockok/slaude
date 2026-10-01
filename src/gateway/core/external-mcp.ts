@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { paths } from "../../config/home";
+import { getPersonaRegistry, type PersonaRegistry } from "../../persona/registry";
 
 /** Return a copy of a server config with all injected secrets removed.
  *  stdio → env emptied; sse/http → headers emptied + url userinfo/query/hash stripped.
@@ -112,4 +113,42 @@ export function loadExternalMcp(personaName?: string): ExternalMcp {
     console.error(`[mcp] failed to load ${f}:`, err);
     return { servers: {}, privateServices: [] };
   }
+}
+
+
+/** A `.mcp.json`-shaped value from effective state, as an ExternalMcp. A deep
+ *  copy, so a session can never mutate the registry's snapshot, and NOT
+ *  ${VAR}-expanded: the sync already resolved its placeholders, and expanding
+ *  again would read gateway environment the persona never named. */
+function fromEffective(cfg: unknown): ExternalMcp {
+  if (!cfg || typeof cfg !== "object") return { servers: {}, privateServices: [] };
+  const c = structuredClone(cfg) as { mcpServers?: unknown; privateServices?: unknown };
+  const servers = (c.mcpServers && typeof c.mcpServers === "object" ? c.mcpServers : {}) as Record<string, McpServerConfig>;
+  const list = Array.isArray(c.privateServices) ? c.privateServices.filter((n): n is string => typeof n === "string") : [];
+  return { servers, privateServices: list.filter((n) => n in servers) };
+}
+
+/**
+ * The external MCP config a session mounts, by persona and tenant source:
+ *  - filesystem (unmanaged) registry: a named persona reads
+ *    `personas/<name>/mcp.json`, the default persona the global `.mcp.json`
+ *    (`globalMcp`) — exactly as before;
+ *  - managed registry: never the persona directory. A named persona gets its
+ *    effective mcp (git or override), nothing when it has none or is not live;
+ *    the default persona its effective mcp when set, else the global
+ *    `.mcp.json` (operator level, the same fallback the default soul has).
+ */
+export function sessionExternalMcp(
+  personaId: string | null | undefined,
+  globalMcp: ExternalMcp,
+  registry: PersonaRegistry = getPersonaRegistry(),
+): ExternalMcp {
+  const named = personaId && personaId !== "default" ? personaId : undefined;
+  if (!registry.isManaged()) return named ? loadExternalMcp(named) : globalMcp;
+  if (named) {
+    const mcp = registry.lookupByName(named)?.mcp;
+    return mcp ? fromEffective(mcp) : { servers: {}, privateServices: [] };
+  }
+  const def = registry.defaultPersona?.()?.mcp;
+  return def ? fromEffective(def) : globalMcp;
 }

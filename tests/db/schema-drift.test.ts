@@ -16,6 +16,8 @@ const PG_ONLY_TABLES = new Set([
   "slack_apps",
   "personas",
   "provider_creds",
+  "persona_overrides", // persona_overrides + persona_sync_state: personas-as-code, Postgres-only like personas
+  "persona_sync_state",
   "schema_migrations",
 ]);
 
@@ -42,6 +44,7 @@ const NO_TENANT_TABLES = new Set([
   "slack_identities",
   "mcp_credentials",
   "portal_oauth_flows",
+  "slack_oauth_flows",
 ]);
 
 // Tables that exist only on sqlite (legacy; dropped from the pg schema).

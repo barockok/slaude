@@ -37,11 +37,156 @@ expect() {
 k() { kubectl --context "$PROFILE" -n "$NS" "$@"; }
 redis() { k exec deploy/dev-redis -c redis -- redis-cli "$@" 2>/dev/null | tr -d '\r'; }
 ready() { k get deploy "$1" -o jsonpath='{.status.readyReplicas}' 2>/dev/null; }
-pods() { k get pod -l "$1" --field-selector=status.phase=Running -o jsonpath='{.items[*].metadata.name}' 2>/dev/null; }
+pods() { k get pod -l "$1" --field-selector=status.phase=Running --request-timeout="${PROBE_TIMEOUT:-60s}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null; }
 http() { k exec "$PROBE" -- curl -s -m 3 -o /dev/null -w '%{http_code}' "$1" 2>/dev/null || echo 000; }
 # A built shell references hashed assets; an unbuilt one references main.tsx.
 lacks_source_entry() { ! grep -q 'main\.tsx' <<<"$1"; }
 heartbeats() { redis --scan --pattern "$PREFIX:nodes:*" | sort; }
+
+# --- bounded, loud probe helpers (same discipline as verify-turns.sh) -------
+# Every call is bounded, and a failed measurement yields an EMPTY value that
+# expect_value reports as COULD NOT MEASURE — never as a wrong product value.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROBE_TIMEOUT="${PROBE_TIMEOUT:-60s}"
+gateway() { k get pod -l "$GW_SEL" --field-selector=status.phase=Running -o name --request-timeout="$PROBE_TIMEOUT" 2>/dev/null | head -1; }
+
+# Run the in-pod turn probe. On failure: says so on stderr, prints nothing to
+# stdout, returns non-zero.
+probe() {
+  local pod out rc
+  pod="$(gateway)"
+  if [[ -z "$pod" ]]; then
+    printf '  !! probe %s: no running gateway pod to exec into\n' "${1:-?}" >&2
+    return 1
+  fi
+  out="$(k exec --request-timeout="$PROBE_TIMEOUT" "$pod" -- bun /tmp/probe/turns.ts "$@" 2>&1)"
+  rc=$?
+  if ((rc != 0)); then
+    printf '  !! probe %s failed (exit %d) on %s: %s\n' \
+      "${1:-?}" "$rc" "${pod#pod/}" "$(printf '%s' "$out" | tail -2 | tr '\n' ' ')" >&2
+    return "$rc"
+  fi
+  printf '%s\n' "$out" | tail -1
+}
+
+# One field of the probe's JSON; silent and non-zero on empty/garbled input.
+field() {
+  python3 -c '
+import json, sys
+raw = sys.stdin.read().strip()
+if not raw:
+    sys.exit(3)
+try:
+    doc = json.loads(raw)
+except json.JSONDecodeError:
+    sys.exit(3)
+if sys.argv[1] not in doc:
+    sys.exit(4)
+print(doc[sys.argv[1]])
+' "$1"
+}
+
+# <label> <actual> <want> <context>: an empty actual is "could not measure".
+expect_value() {
+  local label="$1" actual="$2" want="$3" ctx="$4"
+  if [[ -z "$actual" ]]; then
+    bad "$label — COULD NOT MEASURE ($ctx); see the !! lines above for why"
+  elif [[ "$actual" == "$want" ]]; then
+    ok "$label"
+  else
+    bad "$label — $ctx: got '$actual', want '$want'"
+  fi
+}
+
+# Whether a path exists on the shared volume, seen from a given pod:
+# prints present|absent, or NOTHING (non-zero) when the pod could not be asked.
+vol_state() { # <pod> <path>
+  # shellcheck disable=SC2016 # expands in the pod's shell, not here
+  k exec --request-timeout="$PROBE_TIMEOUT" "$1" -- sh -c \
+    'if [ -e "$1" ]; then echo present; else echo absent; fi' _ "$2" 2>/dev/null
+}
+
+# Whether a pod's environment holds a variable: present|absent, or NOTHING on
+# an exec failure. The VALUE is never read out of the pod.
+env_state() { # <pod> <name>
+  # shellcheck disable=SC2016 # expands in the pod's shell, not here
+  k exec --request-timeout="$PROBE_TIMEOUT" "$1" -- sh -c \
+    'if [ -n "$(printenv "$1")" ]; then echo present; else echo absent; fi' _ "$2" 2>/dev/null
+}
+
+# POST the persona set to /deploy from INSIDE a gateway pod, authenticating with
+# the token variable (by NAME) from that pod's own environment. The token value
+# is never read by this script, never on a command line, never in output; only
+# the HTTP status is printed. Prints "unset" when the pod lacks the variable.
+sync_status() { # <pod> <token-env-var-name> <json-payload>
+  printf '%s' "$3" | k exec -i --request-timeout="$PROBE_TIMEOUT" "$1" -- bun -e "
+    const tok = process.env.$2;
+    if (!tok) { console.log('unset'); process.exit(0); }
+    const r = await fetch('http://localhost:8080/deploy/v1/tenants/default/personas', {
+      method: 'POST',
+      headers: { authorization: 'Bearer ' + tok, 'content-type': 'application/json' },
+      body: await Bun.stdin.text(),
+    });
+    console.log(r.status);
+  " 2>/dev/null | tail -1
+}
+
+# Seed the soul-extraction cache inside a gateway pod for the given soul texts,
+# through the pod's own writeSoulCacheEntry (src/soul/extract.ts), so a sync
+# needs no model. Texts go in on stdin as a JSON array, never on a command line.
+seed_souls() { # <pod> <soul text...>
+  local pod="$1"
+  shift
+  # shellcheck disable=SC2016 # JS, evaluated by bun in the pod
+  python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@" \
+    | k exec -i --request-timeout="$PROBE_TIMEOUT" "$pod" -- bun -e '
+        import { writeSoulCacheEntry } from "/app/src/soul/extract.ts";
+        for (const t of JSON.parse(await Bun.stdin.text())) {
+          if (!writeSoulCacheEntry(t, { approvers: [] })) throw new Error("cache entry not written");
+        }
+      ' >/dev/null 2>&1
+}
+
+# The sync payload: the default persona plus the verifier persona.
+sync_payload() { # <revision> <verifier soul> <default soul>
+  python3 -c '
+import json, sys, datetime
+print(json.dumps({
+    "revision": sys.argv[1],
+    "committedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "personas": [
+        {"name": "default", "soul": sys.argv[3]},
+        {"name": "verifier", "slackUserId": "UTESTUSER7", "soul": sys.argv[2]},
+    ],
+}))' "$1" "$2" "$3"
+}
+
+# Wait (bounded) until the probe's tracked turn carries a completion marker.
+# Prints the last value read (1 when done), or nothing if never measured.
+wait_turn_done() { # <seconds>
+  local v="" cur t0
+  t0=$(date +%s)
+  while (($(date +%s) - t0 < $1)); do
+    cur="$(probe status | field withCompletionMarker || true)"
+    [[ -n "$cur" ]] && v="$cur"
+    [[ "$v" == 1 ]] && break
+    sleep 5
+  done
+  printf '%s' "$v"
+}
+
+# Every session-boot soul line for the verifier persona, from the given node pods.
+# Non-zero (and silent) if ANY pod's logs could not be read, so a missing pod is
+# never mistaken for "no such line".
+verifier_soul_lines() { # <node pod...>
+  local p out all=""
+  (($# > 0)) || return 1
+  for p in "$@"; do
+    out="$(k logs --request-timeout="$PROBE_TIMEOUT" "$p" 2>/dev/null)" || return 1
+    all+="$(grep -F 'persona=verifier soul=' <<<"$out" || true)"$'\n'
+  done
+  printf '%s' "$all"
+}
 
 wait_ready() { # <deployment> <replicas> <timeout-seconds>
   local deadline=$(($(date +%s) + $3))
@@ -63,6 +208,7 @@ crash() { # <pod> <container>
 }
 
 cleanup() {
+  probe cleanup >/dev/null 2>&1 || true
   k delete pod "$PROBE" --ignore-not-found --wait=false >/dev/null 2>&1
   rm -rf "$TMP"
 }
@@ -303,6 +449,155 @@ for app in panel portal; do
     "/$app shell still references a .tsx source entry" \
     lacks_source_entry "$shell"
 done
+
+# --- personas as code: a node needs no persona directory -------------------
+#
+# The claim: a node takes a persona's soul from the gateway's runtime bundle, not
+# from the shared volume. "The turn completed" proves nothing on its own — a
+# suppressed turn never calls the model, and a node that read the disk and fell
+# back to the DEFAULT soul would complete it too. So the proof is the soul's
+# hash: every session boot logs `persona=<name> soul=<first 12 hex of
+# sha256(soulMd)>`. The expected hash is computed here from the exact text synced,
+# a text distinctive to this run, and a node log must carry it.
+#
+# Sync extracts structured soul data with a model, and this overlay has no
+# provider credentials, so each soul's extraction cache entry is seeded first,
+# written inside the gateway pod by writeSoulCacheEntry in src/soul/extract.ts:
+# the same writer extraction uses, so the entry lands in the pod-local
+# SLAUDE_SOUL_CACHE_DIR and carries the MAC derived from the pod's master key.
+# The sync then finds it and calls no model; production code is untouched.
+#
+# The section leaves a synced persona set (default + verifier) on the local
+# cluster. Syncing a full set tombstones any other persona previously synced.
+section "personas as code"
+
+gw_pod="$(gateway)"
+gw_pod="${gw_pod#pod/}"
+# shellcheck disable=SC2207 # pod names contain no whitespace
+node_pods=($(pods "$NODE_SEL"))
+
+if ! wait_ready slaude-gateway 2 180; then
+  bad "gateway rollout did not reach 2 ready replicas — COULD NOT MEASURE personas as code"
+elif ! wait_ready slaude-node 2 180; then
+  bad "node rollout did not reach 2 ready replicas — COULD NOT MEASURE personas as code"
+elif [[ -z "$gw_pod" ]]; then
+  bad "personas as code — COULD NOT MEASURE (no running gateway pod)"
+elif ((${#node_pods[@]} == 0)); then
+  bad "personas as code — COULD NOT MEASURE (no running node pods)"
+else
+  k exec -i --request-timeout="$PROBE_TIMEOUT" "$gw_pod" -- sh -c 'mkdir -p /tmp/probe && cat > /tmp/probe/turns.ts' <"$HERE/probe/turns.ts" \
+    || printf '  !! could not install the probe into %s\n' "$gw_pod" >&2
+
+  # The deploy token reaches gateways and never nodes.
+  expect_value "the gateway holds the deploy token" \
+    "$(env_state "$gw_pod" SLAUDE_DEPLOY_TOKEN)" "present" "gateway env"
+  for np in "${node_pods[@]}"; do
+    expect_value "node $np does not hold the deploy token" \
+      "$(env_state "$np" SLAUDE_DEPLOY_TOKEN)" "absent" "node env"
+  done
+
+  # Distinctive per run, so its hash cannot coincide with the default soul's and
+  # no line from an earlier run can satisfy the check.
+  soul="Verifier soul for the personas-as-code check, run $(date +%s)-$RANDOM."
+  # TWO different hashes, deliberately. want_hash is the 12-hex prefix of the full
+  # sha256 that manager.ts LOGS at session boot (the R4 grep below). The extraction
+  # cache key is a separate 16-hex derivation owned by src/soul/extract.ts, so it
+  # is never recomputed here: the pod computes it through writeSoulCacheEntry.
+  want_hash="$(printf '%s' "$soul" | shasum -a 256 | cut -c1-12)"
+  default_soul="Default verify soul."
+  seed_ok=""
+  if seed_souls "$gw_pod" "$soul" "$default_soul"; then
+    seed_ok=1
+  else
+    bad "soul extraction cache not seeded — COULD NOT MEASURE the sync (it would need a model)"
+  fi
+  payload="$(sync_payload verify-1 "$soul" "$default_soul")"
+
+  if [[ -n "$seed_ok" ]]; then
+    # The deploy token syncs; the node token must not.
+    expect_value "the pipeline sync was accepted" \
+      "$(sync_status "$gw_pod" SLAUDE_DEPLOY_TOKEN "$payload")" "200" "sync HTTP status"
+    expect_value "the node token cannot sync" \
+      "$(sync_status "$gw_pod" SLAUDE_NODE_TOKEN "$payload")" "401" "sync HTTP status with the node token"
+  fi
+
+  # Remove the persona's directory from the shared volume before the turn.
+  if k exec --request-timeout="$PROBE_TIMEOUT" "$gw_pod" -- rm -rf /data/personas/verifier 2>/dev/null; then
+    ok "removed /data/personas/verifier from the shared volume"
+  else
+    bad "could not remove /data/personas/verifier — COULD NOT MEASURE what follows"
+  fi
+
+  probe cleanup >/dev/null 2>&1 || true
+  enq_out="$(probe enqueue 1 --persona verifier || true)"
+  enq="$(field enqueued <<<"$enq_out" || true)"
+  sess="$(field session <<<"$enq_out" || true)"
+  expect_value "enqueued a turn for the persona" "$enq" "1" "enqueued"
+
+  done_v="$(wait_turn_done 120)"
+  expect_value "a node completed the persona's turn" "$done_v" "1" "turns completed"
+
+  # THE proof of where the soul came from: the booting node logged the hash of
+  # the synced text. A node that read the disk or fell back to the default soul
+  # logs a different hash (or none for this persona) and fails here.
+  seen=""
+  t0=$(date +%s)
+  while (($(date +%s) - t0 < 30)); do
+    if lines="$(verifier_soul_lines "${node_pods[@]}")"; then
+      if grep -qF "persona=verifier soul=$want_hash" <<<"$lines"; then seen=yes; else seen=no; fi
+      [[ "$seen" == yes ]] && break
+    fi
+    sleep 3
+  done
+  expect_value "a node booted persona=verifier with the synced soul (soul=$want_hash)" \
+    "$seen" "yes" "node boot log; other verifier boot hashes seen: $(grep -o 'soul=[0-9a-f]*' <<<"${lines:-}" | sort -u | tr '\n' ' ')"
+
+  # The old code's inputs are absent. The persona's .claude home may exist now —
+  # a node creates it for transcripts — so only the soul/config files are asserted.
+  for f in SOUL.md config.json; do
+    expect_value "/data/personas/verifier/$f is not on the volume" \
+      "$(vol_state "$gw_pod" "/data/personas/verifier/$f")" "absent" "volume state"
+  done
+
+  # A WARM node session picks up a changed soul (spec §6.4). The turn above
+  # left the verifier's session warm on a node. Sync soul B, then run a second
+  # turn in the SAME session: its boot must log B's hash for that session. This
+  # rests on the deferred reload seeing outstanding inputs reach zero, which
+  # depends on the real CLI's result cadence (unit tests use a fake SDK). Each
+  # step runs only after the previous one finished; a step that cannot run
+  # makes the rest COULD NOT MEASURE, never a pass. The second turn can land on
+  # the other node, where it boots cold: B is still required, so a node that
+  # kept serving soul A fails, but a cold boot proves less than a warm one.
+  soul_b="Verifier soul B for the warm-session check, run $(date +%s)-$RANDOM."
+  want_b="$(printf '%s' "$soul_b" | shasum -a 256 | cut -c1-12)"
+  if [[ "$done_v" != 1 || -z "$sess" ]]; then
+    bad "warm session soul change — COULD NOT MEASURE (the first turn did not complete, or its session id is unknown)"
+  elif ! seed_souls "$gw_pod" "$soul_b"; then
+    bad "warm session soul change — COULD NOT MEASURE (soul B's extraction cache not seeded)"
+  else
+    # committedAt must not go backwards; a second's gap keeps it strictly newer.
+    sleep 1
+    synced_b="$(sync_status "$gw_pod" SLAUDE_DEPLOY_TOKEN "$(sync_payload verify-2 "$soul_b" "$default_soul")")"
+    expect_value "the sync to soul B was accepted" "$synced_b" "200" "sync HTTP status"
+    if [[ "$synced_b" == 200 ]]; then
+      enq2="$(probe again 1 --persona verifier | field enqueued || true)"
+      expect_value "enqueued a second turn in the same session" "$enq2" "1" "enqueued"
+      done2="$(wait_turn_done 120)"
+      expect_value "a node completed the second turn" "$done2" "1" "turns completed"
+      seen_b=""
+      t0=$(date +%s)
+      while [[ "$done2" == 1 ]] && (($(date +%s) - t0 < 30)); do
+        if lines="$(verifier_soul_lines "${node_pods[@]}")"; then
+          if grep -qF "session=$sess persona=verifier soul=$want_b" <<<"$lines"; then seen_b=yes; else seen_b=no; fi
+          [[ "$seen_b" == yes ]] && break
+        fi
+        sleep 3
+      done
+      expect_value "the same session rebooted with soul B (session=$sess soul=$want_b)" \
+        "$seen_b" "yes" "node boot log; hashes seen for this session: $(grep -F "session=$sess " <<<"${lines:-}" | grep -o 'soul=[0-9a-f]*' | sort -u | tr '\n' ' ')"
+    fi
+  fi
+fi
 
 # --- summary ---------------------------------------------------------------
 section "result"

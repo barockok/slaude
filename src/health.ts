@@ -8,6 +8,10 @@ export type HealthDeps = {
    *  only when provided — src/server.ts passes it for mono/gateway roles and
    *  omits it for nodes. Returns null for paths it doesn't own. */
   v1?: (req: Request) => Promise<Response | null>;
+  /** Optional pipeline /deploy handler (GatewayHandle.fetchDeploy). Mounted for
+   *  the gateway role only (never node or mono; see deployHandlerForRole); it 404s every path while neither
+   *  SLAUDE_DEPLOY_TOKEN nor SLAUDE_DEPLOY_PREVIEW_TOKEN is set. */
+  deploy?: (req: Request) => Promise<Response | null>;
   /** Optional operator control-panel handler (GatewayHandle.fetchPanel).
    *  Mounted only when provided — src/server.ts passes it for mono/gateway
    *  roles with SLAUDE_PANEL enabled, and omits it otherwise. Returns null for
@@ -18,6 +22,19 @@ export type HealthDeps = {
    *  is off, so mounting it costs nothing when disabled. */
   portal?: (req: Request) => Promise<Response | null>;
 };
+
+/**
+ * The /deploy handler is mounted for the gateway role only. A node never
+ * serves it, and neither does mono: there the agent child is the same OS user
+ * and a descendant of the process holding the deploy token, so no environment
+ * scrub can keep the token from it. Mono is managed through the panel instead.
+ */
+export function deployHandlerForRole(
+  role: string,
+  handler: (req: Request) => Promise<Response | null>,
+): ((req: Request) => Promise<Response | null>) | undefined {
+  return role === "gateway" ? handler : undefined;
+}
 
 /**
  * Route handler for the observability endpoints, shared between the
@@ -59,6 +76,10 @@ export function healthRoutes(deps: HealthDeps, startedAt = Date.now()) {
     }
     if (deps.v1 && (url.pathname === "/v1" || url.pathname.startsWith("/v1/"))) {
       const res = await deps.v1(req);
+      if (res) return res;
+    }
+    if (deps.deploy && (url.pathname === "/deploy" || url.pathname.startsWith("/deploy/"))) {
+      const res = await deps.deploy(req);
       if (res) return res;
     }
     if (deps.panel && (url.pathname === "/panel" || url.pathname.startsWith("/panel/"))) {

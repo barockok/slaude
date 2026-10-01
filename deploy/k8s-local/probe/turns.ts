@@ -2,7 +2,13 @@
 // Turn-delivery probe for verify-turns.sh. Runs INSIDE a gateway pod, so it uses
 // the deployment's own Redis, Postgres and key prefix — nothing is stubbed.
 //
-//   enqueue <n>   create n sessions and enqueue one turn each
+//   enqueue <n> [--persona <name>]
+//                 create n sessions and enqueue one turn each (default persona
+//                 unless --persona names another)
+//   again 1 [--persona <name>]
+//                 enqueue one more turn into the FIRST session the last
+//                 `enqueue` created (same thread, same persona), and track only
+//                 that turn — a second turn in a session a node holds warm
 //   status        JSON: how many of those turns carry a completion marker, plus
 //                 what the shared queue still holds
 //   cron          insert one already-due cron job
@@ -30,8 +36,18 @@ const CHANNEL = "CVERIFY";
 const MARK = "verify-turns";
 const CRON_MARK = "verify-cron";
 const STATE = "/tmp/verify-turns-ids.json";
+// The sessions the last `enqueue` created, for `again`.
+const SESSIONS = "/tmp/verify-turns-sessions.json";
 
-const [cmd, arg] = process.argv.slice(2);
+const [cmd, arg, ...rest] = process.argv.slice(2);
+// `--persona <name>` after the count. Absent, the probe behaves exactly as it
+// always did: every id below is "default".
+const personaFlag = rest.indexOf("--persona");
+const PERSONA = personaFlag >= 0 ? (rest[personaFlag + 1] ?? "") : "default";
+if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(PERSONA)) {
+  console.error(`--persona needs a lowercase name (got '${PERSONA}')`);
+  process.exit(2);
+}
 const redis = getRedis();
 const keys = makeKeys();
 const turns = new TurnQueues({ connection: redis, keys });
@@ -44,43 +60,66 @@ const readIds = (): string[] => {
   }
 };
 
+async function enqueueOne(session: { id: string }, thread: string, i: number): Promise<string> {
+  const jobId = randomUUID();
+  const jobToken = mintJobToken({
+    tenant: "default", persona: PERSONA, session: session.id,
+    team: TEAM, channel: CHANNEL, thread, initiator: "UVERIFY",
+    scope: "turn", runAs: "agent", job: jobId,
+  });
+  const r = await turns.enqueueTurn(
+    {
+      sessionId: session.id,
+      tenantId: "default",
+      personaId: PERSONA,
+      // suppress: the node runs the whole turn lifecycle — claim, session
+      // lock, completion marker, ack — but the prompt hook stops the model, so
+      // the probe costs no tokens and still proves delivery.
+      messages: [{ ts: `${Date.now()}.${i}`, user: "UVERIFY", text: `${MARK}: delivery probe`, suppress: true }],
+      jobToken,
+      enqueuedAt: Date.now(),
+    },
+    "shared",
+    jobId,
+  );
+  return r.jobId;
+}
+
 async function enqueue(n: number) {
   const ids: string[] = [];
+  const sessions: Array<{ id: string; thread: string }> = [];
   for (let i = 0; i < n; i++) {
     const thread = `${MARK}-${Date.now()}-${i}`;
     const session = await Sessions.createForThread({
-      thread: { team_id: TEAM, channel_id: CHANNEL, thread_ts: thread },
+      thread: { team_id: TEAM, channel_id: CHANNEL, thread_ts: thread, persona_id: PERSONA },
       // The deployment's own model: a bogus one makes the child fail to boot,
       // which looks like a delivery failure and is not one.
       model: env.model(),
       working_dir: "/tmp",
       title: MARK,
     });
-    const jobId = randomUUID();
-    const jobToken = mintJobToken({
-      tenant: "default", persona: "default", session: session.id,
-      team: TEAM, channel: CHANNEL, thread, initiator: "UVERIFY",
-      scope: "turn", runAs: "agent", job: jobId,
-    });
-    const r = await turns.enqueueTurn(
-      {
-        sessionId: session.id,
-        tenantId: "default",
-        personaId: "default",
-        // suppress: the node runs the whole turn lifecycle — claim, session
-        // lock, completion marker, ack — but the prompt hook stops the model, so
-        // the probe costs no tokens and still proves delivery.
-        messages: [{ ts: `${Date.now()}.${i}`, user: "UVERIFY", text: `${MARK}: delivery probe`, suppress: true }],
-        jobToken,
-        enqueuedAt: Date.now(),
-      },
-      "shared",
-      jobId,
-    );
-    ids.push(r.jobId);
+    sessions.push({ id: session.id, thread });
+    ids.push(await enqueueOne(session, thread, i));
   }
   writeFileSync(STATE, JSON.stringify(ids));
-  console.log(JSON.stringify({ enqueued: ids.length }));
+  writeFileSync(SESSIONS, JSON.stringify(sessions));
+  console.log(JSON.stringify({ enqueued: ids.length, session: sessions[0]?.id ?? null }));
+}
+
+async function again() {
+  let first: { id: string; thread: string } | undefined;
+  try {
+    first = (JSON.parse(readFileSync(SESSIONS, "utf8")) as Array<{ id: string; thread: string }>)[0];
+  } catch {
+    /* no earlier enqueue */
+  }
+  if (!first) {
+    console.error("again: no session from an earlier enqueue");
+    process.exit(2);
+  }
+  const id = await enqueueOne(first, first.thread, 0);
+  writeFileSync(STATE, JSON.stringify([id]));
+  console.log(JSON.stringify({ enqueued: 1, session: first.id }));
 }
 
 async function status() {
@@ -99,7 +138,10 @@ async function cron() {
     slackChannelId: CHANNEL,
     channelId: CHANNEL,
     createdBy: "UVERIFY",
-    cronExpr: "* * * * *",
+    // Hourly, not every minute: the scheduler ticks every 60s, so a claim on a
+    // per-minute job moves the row only a fraction of a second ahead of now and
+    // "scheduleAdvanced" would hold for that sliver of each minute.
+    cronExpr: "0 * * * *",
     prompt: `${CRON_MARK}: fire once`,
     nextRunAt: Date.now() - 1000,
     target: "channel",
@@ -157,6 +199,7 @@ async function cleanup() {
 
 const commands: Record<string, () => Promise<void>> = {
   enqueue: () => enqueue(Math.max(1, Number(arg ?? 4))),
+  again,
   status,
   cron,
   "cron-status": cronStatus,
@@ -164,7 +207,7 @@ const commands: Record<string, () => Promise<void>> = {
 };
 const run = commands[cmd ?? ""];
 if (!run) {
-  console.error("usage: turns.ts enqueue <n> | status | cron | cron-status | cleanup");
+  console.error("usage: turns.ts enqueue <n> [--persona <name>] | again 1 --persona <name> | status | cron | cron-status | cleanup");
   process.exit(2);
 }
 await run();

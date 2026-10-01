@@ -34,6 +34,22 @@ function csv(raw: string): string[] {
   return raw.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+/** A pipeline token equal to the node token is treated as unset: every node
+ *  holds the node token, so the pipeline credential would be on every node.
+ *  Warns once per variable; the message names the variable, never a value. */
+const warnedSameAsNode = new Set<string>();
+function sameAsNodeToken(token: string, name: string): boolean {
+  const node = (opt("SLAUDE_NODE_TOKEN") ?? "").trim();
+  if (!node || token !== node) return false;
+  if (!warnedSameAsNode.has(name)) {
+    warnedSameAsNode.add(name);
+    console.warn(`[deploy] ${name} equals SLAUDE_NODE_TOKEN, which every node holds; treating ${name} as unset`);
+  }
+  return true;
+}
+/** Test helper: let the same-as-node-token warning fire again. */
+export function __resetDeployTokenWarnings() { warnedSameAsNode.clear(); }
+
 export const env = {
   slack: {
     /**
@@ -200,6 +216,28 @@ export const env = {
    *  every /v1 request. Empty (default) = /v1 auth refuses all requests, so a
    *  mono deploy without the var exposes nothing. Rotate via env. */
   nodeToken: () => opt("SLAUDE_NODE_TOKEN"),
+  /** Pipeline credential for /deploy. Unset → /deploy does not exist. Never the
+   *  node token: every node holds that one, and "nodes can't change identity"
+   *  is the point of this endpoint having its own. Returned TRIMMED, and ""
+   *  (treated as unset, so /deploy 404s) when the trimmed value is under 32
+   *  characters: a blank or trivially short token must never count as configured. */
+  deployToken: () => {
+    const t = (opt("SLAUDE_DEPLOY_TOKEN") ?? "").trim();
+    if (t.length < 32) return "";
+    return sameAsNodeToken(t, "SLAUDE_DEPLOY_TOKEN") ? "" : t;
+  },
+  /** Dry-run-only pipeline credential for /deploy, for pull-request jobs: it is
+   *  accepted only with `?dryRun=1`, so a PR workflow holding it can preview a
+   *  sync but never apply one. Same trim and 32-character floor as the deploy
+   *  token; a value equal to the deploy token is "" (unset), since it would
+   *  then be an apply credential under a preview name. */
+  deployPreviewToken: () => {
+    const t = (opt("SLAUDE_DEPLOY_PREVIEW_TOKEN") ?? "").trim();
+    if (t.length < 32) return "";
+    const d = (opt("SLAUDE_DEPLOY_TOKEN") ?? "").trim();
+    if (t === d) return "";
+    return sameAsNodeToken(t, "SLAUDE_DEPLOY_PREVIEW_TOKEN") ? "" : t;
+  },
   /** HS256 secret for the short-lived per-job JWT (`X-Slaude-Job`) minted by
    *  the gateway enqueue path and verified on tool-plane + session endpoints.
    *  Empty (default) = job tokens can be neither minted nor verified. */

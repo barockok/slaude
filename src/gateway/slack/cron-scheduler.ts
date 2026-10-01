@@ -3,6 +3,7 @@ import type { SessionRow } from "../../db/schema";
 import type { WebClient } from "@slack/web-api";
 import * as CronJobs from "../../db/cron-jobs";
 import { getNextRun } from "./cron-parser";
+import { getPersonaRegistry } from "../../persona/registry";
 
 export type CronSchedulerDeps = {
   agent: AgentManager;
@@ -74,7 +75,16 @@ export class CronScheduler {
       const claimed = getNextRun(job.cronExpr);
       if (!(await CronJobs.claimDue(job.id, job.nextRunAt, claimed))) continue;
       this.#running.add(job.id);
-      void this.#execute(job, claimed);
+      // #execute is not awaited, so anything it throws (a persona retired
+      // between the live check and onExecute, a DB error) must be caught here:
+      // an unhandled rejection exits the process, and the job id would stay in
+      // #running forever. The claim is kept — the occurrence is spent.
+      void this.#execute(job, claimed).catch((e) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`[cron] job ${job.id} failed:`, msg);
+        this.#running.delete(job.id);
+        void CronJobs.recordRun(job.id, `error: ${msg}`).catch(() => {});
+      });
     }
   }
 
@@ -86,6 +96,22 @@ export class CronScheduler {
       await CronJobs.recordRun(job.id, "error: missing Slack keys");
       this.#running.delete(job.id);
       return;
+    }
+
+    // A job owned by a persona a MANAGED registry no longer lists (retired or
+    // removed) skips this occurrence before any session work. Running it would
+    // fall back to the default persona; releasing the claim would retry it
+    // every tick. The claim already advanced next_run_at, so keeping it skips
+    // exactly this occurrence. The job is neither paused nor deleted: once the
+    // persona is re-added in git its next occurrence runs by itself.
+    if (job.personaId && job.personaId !== "default") {
+      const reg = getPersonaRegistry();
+      if (reg.isManaged() && !reg.lookupByName(job.personaId)) {
+        console.log(`[cron] job ${job.id} skipped — persona=${job.personaId} is not live`);
+        await CronJobs.recordRun(job.id, "skipped: persona not live");
+        this.#running.delete(job.id);
+        return;
+      }
     }
 
     // Channel-target jobs broadcast to channel root — never bind a real thread, so
@@ -141,8 +167,12 @@ export class CronScheduler {
       this.#running.delete(job.id);
     };
     const onEvent = (e: any) => {
-      if (e.type === "done") void onDone(e);
-      else if (e.type === "error") void onError(e);
+      const fail = (err: unknown) => {
+        console.error(`[cron] job ${job.id} could not record its result:`, err instanceof Error ? err.message : err);
+        this.#running.delete(job.id);
+      };
+      if (e.type === "done") void onDone(e).catch(fail);
+      else if (e.type === "error") void onError(e).catch(fail);
     };
     this.#agent.on("event", onEvent);
 
