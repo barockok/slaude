@@ -55,6 +55,12 @@ describe.skipIf(!isPg)("runtime bundle from effective state", () => {
     expect(b.headers.get("etag")).not.toBe(a.headers.get("etag"));
   });
 
+  test("a managed named persona's bundle carries its Slack user id", async () => {
+    await P.applySync("default", [row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
+    const b = (await (await handleTenantRuntime(req(), "default", "ana")).json()) as any;
+    expect(b.slackUserId).toBe("UANA");
+  });
+
   test("a tombstoned persona has no bundle", async () => {
     await P.applySync("default", [row("ana"), row("bea")], meta("r1", "2026-10-01T10:00:00Z"));
     await P.applySync("default", [row("ana")], meta("r2", "2026-10-01T11:00:00Z"));
