@@ -19,6 +19,10 @@ export async function startTestSshServer(opts: { authorizedPublicKey: string }) 
   const server = new Server({ hostKeys: [hostKey] }, (client) => {
     clients.add(client);
     client.on("close", () => clients.delete(client));
+    // The peer finished: close our side too. Under Bun on Linux a socket whose FIN
+    // lands while a write is in flight emits 'end' but never 'close', and stop()
+    // (net.Server.close) would wait for it forever. ssh2 exposes no public handle.
+    client.on("end", () => (client as any)._sock?.destroy());
     client
       .on("authentication", (ctx) => {
         if (
