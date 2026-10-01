@@ -50,4 +50,15 @@ describe("e2e overlay", () => {
   test("the overlay builds on deploy/k8s-local and includes both services", () => {
     expect(kustomization.resources).toEqual(["../../deploy/k8s-local", "mock-llm.yaml", "fake-slack.yaml"]);
   });
+
+  test("e2e/up.sh scrubs every credential name deploy/k8s-local/up.sh reads", () => {
+    const base = readFileSync(join(dir, "../../deploy/k8s-local/up.sh"), "utf8");
+    const e2e = readFileSync(join(dir, "../up.sh"), "utf8");
+    const keys = base.match(/^PROVIDER_KEYS=\(([^)]*)\)/m)?.[1]?.trim().split(/\s+/) ?? [];
+    expect(keys.length).toBeGreaterThan(0);
+    const scrub = e2e.match(/^SCRUB=\(([^)]*)\)/m)?.[1]?.trim().split(/\s+/) ?? [];
+    for (const k of [...keys, "SLAUDE_LOCAL_ENV_FILE"]) expect(scrub).toContain(k);
+    expect(e2e).toContain('unset_args+=(-u "$name")');
+    expect(e2e).toMatch(/env "\$\{unset_args\[@\]\}"/);
+  });
 });
