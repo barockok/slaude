@@ -48,8 +48,8 @@ export interface Suite {
   fake: ControlClient;
   /** In-cluster URL the fake delivers events to (the Service; round-robins over the replicas). */
   gatewayUrl: string;
-  /** Direct gateway pod URLs, for replica-targeted delivery. */
-  gatewayPodUrls: string[];
+  /** Direct gateway pod URLs, for replica-targeted delivery. Re-read on every call: pod IPs change when a gateway is killed or restarted. */
+  gatewayPodUrls(): Promise<string[]>;
   app: SuiteApp;
   /** The human who DMs the agent: the soul fixture's manager, so a DM from them engages. */
   manager: string;
@@ -118,7 +118,7 @@ export async function setupSuite(opts: SuiteOptions = {}): Promise<Suite> {
     return {
       fake,
       gatewayUrl: "http://slaude-gateway:8080",
-      gatewayPodUrls: podUrls(await podIps("gateway")),
+      gatewayPodUrls: async () => podUrls(await podIps("gateway")),
       app,
       manager: MANAGER,
       async newChannel() {
