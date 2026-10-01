@@ -12,7 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
-import { parsePayload, PayloadError, PERSONA_NAME_RE, type SyncPayload } from "../persona/sync/payload";
+import { parsePayload, PayloadError, PERSONA_NAME_RE, resolvePlaceholders, type SyncPayload } from "../persona/sync/payload";
 
 const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : undefined);
 // The gateway only resolves ${UPPER_CASE_NAME}; persona names are lower-case with hyphens.
@@ -57,7 +57,54 @@ export function renderDir(dir: string, meta: { revision: string; committedAt: st
   if (personas.length > 0 && !personas.some((p) => p.name === "default")) {
     throw new PayloadError("personas/ has personas but no default/ — a non-empty sync must include a persona named 'default'");
   }
-  return parsePayload({ ...meta, personas });
+  const payload = parsePayload({ ...meta, personas });
+  // Run the gateway's placeholder validation (with every name satisfied) so a
+  // malformed ${...} fails the pull request instead of 422ing at deploy.
+  const anyEnv = new Proxy({}, { get: () => "x" }) as Record<string, string>;
+  for (const p of payload.personas) resolvePlaceholders(p, anyEnv);
+  return payload;
+}
+
+const upper = (s: string) => s.replace(/[^A-Za-z0-9]/g, "_").toUpperCase();
+const PLACEHOLDER_ONLY = /^\$\{[A-Z0-9_]+\}$/;
+
+/** Rewrite literal credentials in MCP config to placeholders; never keeps the original value. */
+function scrubMcp(persona: string, raw: string, variables: string[]): string {
+  let cfg: any;
+  try {
+    cfg = JSON.parse(raw);
+  } catch (e) {
+    throw new PayloadError(`persona '${persona}': mcp.json is not valid JSON (${(e as Error).message})`);
+  }
+  const servers = cfg && typeof cfg === "object" ? cfg.mcpServers : undefined;
+  if (servers && typeof servers === "object") {
+    for (const [server, def] of Object.entries<any>(servers)) {
+      if (!def || typeof def !== "object") continue;
+      if (typeof def.url === "string") {
+        let bad = false;
+        try {
+          const u = new URL(def.url);
+          bad = !!(u.username || u.password || u.search);
+        } catch {
+          bad = /@|\?/.test(def.url);
+        }
+        if (bad) {
+          throw new PayloadError(`persona '${persona}': server '${server}' url carries credentials (userinfo or query string) — move the secret into a header first`);
+        }
+      }
+      for (const field of ["headers", "env"]) {
+        const m = def[field];
+        if (!m || typeof m !== "object") continue;
+        for (const [k, v] of Object.entries(m)) {
+          if (typeof v !== "string" || PLACEHOLDER_ONLY.test(v)) continue;
+          const name = `${upper(persona)}_${upper(server)}_${upper(k)}`;
+          m[k] = `\${${name}}`;
+          if (!variables.includes(name)) variables.push(name);
+        }
+      }
+    }
+  }
+  return JSON.stringify(cfg, null, 2) + "\n";
 }
 
 export function exportHome(home: string, out: string): { variables: string[] } {
@@ -70,14 +117,21 @@ export function exportHome(home: string, out: string): { variables: string[] } {
   const defaultSoul = read(join(home, "SOUL.md"));
   const defaultMcp = read(join(home, ".mcp.json"));
   if (defaultSoul !== undefined) {
-    write("default", { "SOUL.md": defaultSoul, ...(defaultMcp ? { "mcp.json": defaultMcp } : {}) });
+    write("default", { "SOUL.md": defaultSoul, ...(defaultMcp ? { "mcp.json": scrubMcp("default", defaultMcp, variables) } : {}) });
   }
   const root = join(home, "personas");
   if (existsSync(root)) {
     for (const name of readdirSync(root).sort()) {
       const d = join(root, name);
       if (!statSync(d).isDirectory()) continue;
-      const cfg = JSON.parse(read(join(d, "config.json")) ?? "{}") as { slackUserId?: string; userToken?: string };
+      if (!PERSONA_NAME_RE.test(name)) throw new PayloadError(`directory '${name}' is not a valid persona name`);
+      let cfg: { slackUserId?: string; userToken?: string };
+      try {
+        cfg = (JSON.parse(read(join(d, "config.json")) ?? "{}") ?? null) as typeof cfg;
+        if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) throw new Error("not an object");
+      } catch (e) {
+        throw new PayloadError(`persona '${name}': config.json is malformed (${(e as Error).message})`);
+      }
       const lines = [`slackUserId: ${JSON.stringify(cfg.slackUserId ?? "")}`];
       if (cfg.userToken) {
         const v = varFor(name);
@@ -88,7 +142,7 @@ export function exportHome(home: string, out: string): { variables: string[] } {
       write(name, {
         "persona.yaml": lines.join("\n") + "\n",
         "SOUL.md": read(join(d, "SOUL.md")) ?? "",
-        ...(mcp ? { "mcp.json": mcp } : {}),
+        ...(mcp ? { "mcp.json": scrubMcp(name, mcp, variables) } : {}),
       });
     }
   }
@@ -96,18 +150,23 @@ export function exportHome(home: string, out: string): { variables: string[] } {
 }
 
 if (import.meta.main) {
-  const [cmd, ...rest] = process.argv.slice(2);
-  const flag = (n: string) => {
-    const i = rest.indexOf(n);
-    return i >= 0 ? rest[i + 1] : undefined;
-  };
+  const [cmd, ...args] = process.argv.slice(2);
+  const valued = new Set(["--revision", "--committed-at", "--out"]);
+  const flags = new Map<string, string>();
+  const rest: string[] = []; // positionals, flags removed
+  for (let i = 0; i < args.length; i++) {
+    if (valued.has(args[i]!)) flags.set(args[i]!, args[++i] ?? "");
+    else if (args[i]!.startsWith("--")) flags.set(args[i]!, "");
+    else rest.push(args[i]!);
+  }
+  const flag = (n: string) => flags.get(n);
   try {
     if (cmd === "render" && rest[0]) {
       const p = renderDir(rest[0], {
         revision: flag("--revision") ?? process.env.GITHUB_SHA ?? "local",
         committedAt: flag("--committed-at") ?? new Date().toISOString(),
       });
-      if (!rest.includes("--check")) console.log(JSON.stringify(p, null, 2));
+      if (!flags.has("--check")) console.log(JSON.stringify(p, null, 2));
     } else if (cmd === "export") {
       const out = flag("--out") ?? "./persona-repo";
       const { variables } = exportHome(paths.home, out);
