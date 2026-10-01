@@ -55,4 +55,29 @@ describe("resolvePlaceholders", () => {
     const soul = "Explain templating: write ${NAME} and it is substituted.";
     expect(resolvePlaceholders({ ...ana, soul }, { ANA_XOXP: "t" }).soul).toBe(soul);
   });
+
+  test("userToken with lowercase placeholder throws PayloadError, not UnresolvedVarError", () => {
+    const spec = { name: "test", slackUserId: "UTESTUSER2", soul: "x", userToken: "${ana_token}" };
+    const err = (() => { try { resolvePlaceholders(spec, {}); } catch (e) { return e; } })();
+    expect(err).toBeInstanceOf(PayloadError);
+    expect(err).not.toBeInstanceOf(UnresolvedVarError);
+  });
+
+  test("an mcp header with lowercase placeholder throws PayloadError", () => {
+    const spec = { name: "test", slackUserId: "UTESTUSER2", soul: "x", userToken: "${TEST_TOKEN}", mcp: { headers: { auth: "Bearer ${foo}" } } };
+    expect(() => resolvePlaceholders(spec, { TEST_TOKEN: "tok" })).toThrow(PayloadError);
+  });
+
+  test("a partially resolved string throws UnresolvedVarError for the missing variable, not containing resolved values in the message", () => {
+    const spec = { name: "test", slackUserId: "UTESTUSER2", soul: "x", userToken: "${A}-${B}" };
+    const err = (() => { try { resolvePlaceholders(spec, { A: "resolved-part-value" }); } catch (e) { return e; } })() as UnresolvedVarError;
+    expect(err).toBeInstanceOf(UnresolvedVarError);
+    expect(err.variable).toBe("B");
+    expect(String(err.message)).not.toContain("resolved-part-value");
+  });
+
+  test("soul text containing lowercase placeholder passes through unchanged", () => {
+    const soul = "Use ${lowercase} or ${Uppercase} in your soul.";
+    expect(resolvePlaceholders({ ...ana, soul }, { ANA_XOXP: "t" }).soul).toBe(soul);
+  });
 });

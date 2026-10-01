@@ -55,6 +55,7 @@ export function parsePayload(raw: unknown): SyncPayload {
 }
 
 const VAR_RE = /\$\{([A-Z0-9_]+)\}/g;
+const INVALID_VAR_RE = /\$\{[^}]*\}/;
 
 function resolveString(s: string, env: Record<string, string | undefined>): string {
   return s.replace(VAR_RE, (_, name: string) => {
@@ -74,10 +75,46 @@ function resolveDeep(v: unknown, env: Record<string, string | undefined>): unkno
   return v;
 }
 
+function validateStringForInvalidPlaceholders(
+  s: string,
+  field: string,
+  personaName: string,
+): void {
+  if (INVALID_VAR_RE.test(s)) {
+    throw new PayloadError(
+      `persona '${personaName}': ${field} contains an invalid placeholder — use \$\{UPPER_CASE_NAME\}`,
+    );
+  }
+}
+
+function validateDeepForInvalidPlaceholders(
+  v: unknown,
+  field: string,
+  personaName: string,
+): void {
+  if (typeof v === "string") {
+    validateStringForInvalidPlaceholders(v, field, personaName);
+  } else if (Array.isArray(v)) {
+    v.forEach((x) => validateDeepForInvalidPlaceholders(x, field, personaName));
+  } else if (v && typeof v === "object") {
+    Object.values(v).forEach((x) => validateDeepForInvalidPlaceholders(x, field, personaName));
+  }
+}
+
 export function resolvePlaceholders(spec: PersonaSpec, env: Record<string, string | undefined>): PersonaSpec {
+  const userToken = spec.userToken !== undefined ? resolveString(spec.userToken, env) : undefined;
+  if (userToken !== undefined) {
+    validateStringForInvalidPlaceholders(userToken, "userToken", spec.name);
+  }
+
+  const mcp = spec.mcp !== undefined ? (resolveDeep(spec.mcp, env) as Record<string, unknown>) : undefined;
+  if (mcp !== undefined) {
+    validateDeepForInvalidPlaceholders(mcp, "mcp", spec.name);
+  }
+
   return {
     ...spec,
-    ...(spec.userToken !== undefined ? { userToken: resolveString(spec.userToken, env) } : {}),
-    ...(spec.mcp !== undefined ? { mcp: resolveDeep(spec.mcp, env) as Record<string, unknown> } : {}),
+    ...(userToken !== undefined ? { userToken } : {}),
+    ...(mcp !== undefined ? { mcp } : {}),
   };
 }
