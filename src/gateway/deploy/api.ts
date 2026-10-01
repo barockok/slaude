@@ -39,7 +39,13 @@ export function createDeployApi(opts: DeployApiOptions) {
     }
     if (req.method !== "POST") return json(405, { error: "method not allowed" });
 
-    const tenant = decodeURIComponent(seg[3]!);
+    let tenant: string;
+    try {
+      tenant = decodeURIComponent(seg[3]!);
+    } catch {
+      return json(404, { error: "not found" });
+    }
+    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(tenant)) return json(404, { error: "not found" });
     const dryRun = url.searchParams.get("dryRun") === "1";
     const raw = await readJson(req);
     if (raw === null) return json(422, { error: "body must be JSON" });

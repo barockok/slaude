@@ -96,6 +96,29 @@ describe("POST /deploy/v1/tenants/:tenant/personas", () => {
   });
 });
 
+describe("token hardening and tenant guard", () => {
+  const anyPath = () => new Request("https://slaude.example.com/deploy/anything", { headers: { authorization: "Bearer    " } });
+  test("a whitespace-only deploy token is unset: every /deploy path 404s", async () => {
+    process.env.SLAUDE_DEPLOY_TOKEN = " ".repeat(40);
+    expect((await api().fetch(anyPath()))!.status).toBe(404);
+    expect((await api().fetch(post(" ".repeat(40))))!.status).toBe(404);
+  });
+  test("a 31-character token is unset", async () => {
+    process.env.SLAUDE_DEPLOY_TOKEN = "s".repeat(31);
+    expect((await api().fetch(post("s".repeat(31))))!.status).toBe(404);
+  });
+  test("surrounding whitespace in the env is trimmed", async () => {
+    process.env.SLAUDE_DEPLOY_TOKEN = `  ${DEPLOY}\n`;
+    expect((await api().fetch(post(DEPLOY)))!.status).toBe(200);
+  });
+  test("malformed or slash-bearing tenant escapes 404, not 500", async () => {
+    for (const t of ["%E0", "a%2Fb", "Bad_Tenant"]) {
+      const r = new Request(`https://slaude.example.com/deploy/v1/tenants/${t}/personas`, { method: "POST", headers: { authorization: `Bearer ${DEPLOY}` }, body: "{}" });
+      expect((await api().fetch(r))!.status).toBe(404);
+    }
+  });
+});
+
 describe("health mounting", () => {
   test("/deploy is served only when deps.deploy is provided", async () => {
     const req = () => post(DEPLOY);

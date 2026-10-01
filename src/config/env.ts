@@ -191,8 +191,13 @@ export const env = {
   nodeToken: () => opt("SLAUDE_NODE_TOKEN"),
   /** Pipeline credential for /deploy. Unset → /deploy does not exist. Never the
    *  node token: every node holds that one, and "nodes can't change identity"
-   *  is the point of this endpoint having its own. */
-  deployToken: () => opt("SLAUDE_DEPLOY_TOKEN"),
+   *  is the point of this endpoint having its own. Returned TRIMMED, and ""
+   *  (treated as unset, so /deploy 404s) when the trimmed value is under 32
+   *  characters: a blank or trivially short token must never count as configured. */
+  deployToken: () => {
+    const t = (opt("SLAUDE_DEPLOY_TOKEN") ?? "").trim();
+    return t.length >= 32 ? t : "";
+  },
   /** HS256 secret for the short-lived per-job JWT (`X-Slaude-Job`) minted by
    *  the gateway enqueue path and verified on tool-plane + session endpoints.
    *  Empty (default) = job tokens can be neither minted nor verified. */
