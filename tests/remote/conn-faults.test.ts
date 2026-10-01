@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { connect } from "node:net";
 import { Duplex } from "node:stream";
-import { Client, utils } from "ssh2";
+import { Client } from "ssh2";
 import { RemoteConn, type SocketFactory } from "../../src/remote/conn";
 import { tailcatSocket } from "../../src/remote/tailcat";
 import { RemoteError } from "../../src/remote/types";
-import { startTestSshServer } from "./ssh-test-server";
+import { startTestSshServer, testKeyPair } from "./ssh-test-server";
 
-const pair = utils.generateKeyPairSync("ed25519");
+const pair = testKeyPair();
 let srv: Awaited<ReturnType<typeof startTestSshServer>>;
 
 const mk = (socket: SocketFactory = () => connect(srv.port, "127.0.0.1")) =>

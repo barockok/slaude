@@ -1,13 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { connect } from "node:net";
 import { spawnSync } from "node:child_process";
-import { utils } from "ssh2";
 import { RemoteConn } from "../../src/remote/conn";
 import { RemoteError } from "../../src/remote/types";
-import { startTestSshServer } from "./ssh-test-server";
+import { startTestSshServer, testKeyPair } from "./ssh-test-server";
 
-const pair = utils.generateKeyPairSync("ed25519");
-const stranger = utils.generateKeyPairSync("ed25519");
+const pair = testKeyPair();
+const stranger = testKeyPair();
 let srv: Awaited<ReturnType<typeof startTestSshServer>>;
 
 const mk = (privateKey = pair.private, port = () => srv.port) =>

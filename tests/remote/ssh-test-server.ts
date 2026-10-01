@@ -2,12 +2,19 @@ import { Server, utils } from "ssh2";
 import { spawn } from "node:child_process";
 import { timingSafeEqual } from "node:crypto";
 import type { AddressInfo } from "node:net";
+import { generateSshKeyPair } from "../../src/remote/keygen";
+
+/** A parseable ed25519 pair in ssh2's `{ private, public }` shape. */
+export function testKeyPair(comment = ""): { private: string; public: string } {
+  const p = generateSshKeyPair(comment);
+  return { private: p.privateKey, public: p.publicKey };
+}
 
 export async function startTestSshServer(opts: { authorizedPublicKey: string }) {
   const parsed = utils.parseKey(opts.authorizedPublicKey);
   if (parsed instanceof Error) throw parsed;
   const allowed = Array.isArray(parsed) ? parsed[0]! : parsed;
-  const hostKey = utils.generateKeyPairSync("ed25519").private;
+  const hostKey = testKeyPair().private;
   const clients = new Set<any>();
   const server = new Server({ hostKeys: [hostKey] }, (client) => {
     clients.add(client);

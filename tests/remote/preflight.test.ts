@@ -3,12 +3,11 @@ import { connect } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { utils } from "ssh2";
 import { describePreflightFailure, preflight, remoteCleanup } from "../../src/remote/preflight";
-import { startTestSshServer } from "./ssh-test-server";
+import { startTestSshServer, testKeyPair } from "./ssh-test-server";
 
-const pair = utils.generateKeyPairSync("ed25519");
-const stranger = utils.generateKeyPairSync("ed25519");
+const pair = testKeyPair();
+const stranger = testKeyPair();
 let srv: Awaited<ReturnType<typeof startTestSshServer>>;
 const socket = () => connect(srv.port, "127.0.0.1");
 

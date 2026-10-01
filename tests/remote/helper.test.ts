@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
-import { utils } from "ssh2";
 import { HelperClient } from "../../src/remote/helper-client";
-import { startTestSshServer } from "./ssh-test-server";
+import { startTestSshServer, testKeyPair } from "./ssh-test-server";
 
-const pair = utils.generateKeyPairSync("ed25519");
+const pair = testKeyPair();
 let srv: Awaited<ReturnType<typeof startTestSshServer>>;
 beforeAll(async () => { srv = await startTestSshServer({ authorizedPublicKey: pair.public }); });
 afterAll(async () => { await srv.stop(); });
@@ -19,7 +18,7 @@ describe("HelperClient", () => {
   });
 
   it("surfaces transport errors with their code", async () => {
-    const bad = utils.generateKeyPairSync("ed25519");
+    const bad = testKeyPair();
     const h = new HelperClient({ transport: { kind: "tcp", host: "127.0.0.1", port: srv.port }, privateKey: bad.private });
     await expect(h.exec("true", { timeoutMs: 5000 })).rejects.toMatchObject({ code: "REMOTE_AUTH_FAILED" });
     await h.dispose();
