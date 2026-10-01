@@ -5,6 +5,7 @@ import { mintSession, AT_COOKIE } from "../../src/gateway/panel/auth/session";
 import { db } from "../../src/db/schema";
 import { __resetMasterKeyCache } from "../../src/db/crypto";
 import * as P from "../../src/db/personas";
+import { __resetPersonaRegistry, whenPersonaRegistrySettled } from "../../src/persona/registry";
 import type { DesiredPersona } from "../../src/persona/effective";
 import { SoulExtractionError } from "../../src/soul/extract";
 
@@ -54,7 +55,11 @@ beforeEach(async () => {
   reloads = 0;
   panel = mk(okExtract);
 });
-afterEach(() => {
+afterEach(async () => {
+  // A reload installs a database-backed snapshot into module state: never let it
+  // reach the next test file.
+  await whenPersonaRegistrySettled();
+  __resetPersonaRegistry();
   for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   __resetMasterKeyCache();
   __resetRoleCache();

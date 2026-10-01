@@ -15,10 +15,11 @@ const meta = (revision: string, iso: string) => ({ revision, committedAt: Date.p
 beforeEach(async () => {
   process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
   __resetMasterKeyCache();
+  if (process.env.SLAUDE_DB !== "pg") return;
   for (const t of ["persona_overrides", "persona_sync_state", "personas"]) await db.run(`DELETE FROM ${t}`);
 });
 
-describe("persona repository", () => {
+describe.skipIf(process.env.SLAUDE_DB !== "pg")("persona repository", () => {
   test("an override on an unknown or tombstoned persona is refused", async () => {
     await P.applySync(T, [row("ana"), row("bea")], meta("r1", "2026-10-01T10:00:00Z"));
     await P.applySync(T, [row("ana")], meta("r2", "2026-10-01T11:00:00Z"));
