@@ -123,6 +123,11 @@ export class RemoteConn {
       const c = new Client();
       // ssh2 may emit several errors during a handshake; a listener must always exist.
       c.on("error", () => { if (this.#client === c) this.#client = null; });
+      // The peer stopped sending: the session is over. Destroy so 'close' follows:
+      // under Bun on Linux a socket whose FIN lands while a write is in flight emits
+      // 'end' but never 'close', so ssh2 neither fails pending channel opens nor
+      // lets us drop the client, and the next exec hangs on it until its timeout.
+      c.on("end", () => sock.destroy());
       try {
         await new Promise<void>((resolve, reject) => {
           c.once("ready", () => resolve());

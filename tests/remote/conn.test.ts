@@ -110,10 +110,15 @@ describe("RemoteConn", () => {
     const c = mk(pair.private, () => port);
     expect((await c.exec("echo 1", { timeoutMs: 5000 })).stdout).toBe("1\n");
     await srv.stop();
-    await expect(c.exec("echo 2", { timeoutMs: 3000 })).rejects.toMatchObject({ code: "REMOTE_UNREACHABLE" });
+    // Issued before the client has seen the FIN: the dead link must be noticed before
+    // the exec's own timeout (not after timeout + kill grace, as a stale client was)
+    // and reported as not started, so it was retried.
+    const t = performance.now();
+    await expect(c.exec("echo 2", { timeoutMs: 3000 })).rejects.toMatchObject({ code: "REMOTE_UNREACHABLE", started: false });
+    expect(performance.now() - t).toBeLessThan(3000);
     srv = await startTestSshServer({ authorizedPublicKey: pair.public });
     port = srv.port;
     expect((await c.exec("echo 3", { timeoutMs: 5000 })).stdout).toBe("3\n");
     c.close();
-  });
+  }, 15_000);
 });
