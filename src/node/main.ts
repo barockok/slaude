@@ -11,13 +11,13 @@
  *   SLAUDE_NODE_DRAIN_SEC    SIGTERM grace (default 120)
  *
  * The node has no Slack client, no Postgres, no brain (spec §1) — sessions,
- * tools and credentials all come from the gateway over /v1. SOUL.md, skills
- * and personas are read from the shared $SLAUDE_HOME volume.
+ * tools and credentials all come from the gateway over /v1. The persona soul
+ * (text and structured) comes from the runtime bundle at session boot, so a
+ * persona's directory need not exist on the shared $SLAUDE_HOME volume; skills
+ * and transcripts still live there.
  */
 import { ensureHome } from "../config/home";
 import { env } from "../config/env";
-import { loadSoulData, setSoulData } from "../soul/extract";
-import { loadPersonaRegistry, setPersonaRegistry } from "../persona/registry";
 import { startNodeWorker } from "./worker";
 
 async function main() {
@@ -29,14 +29,9 @@ async function main() {
     throw new Error("SLAUDE_NODE_TOKEN is not set — the node cannot authenticate to the gateway /v1");
   }
 
-  // Soul + personas come from the shared RWX volume, same loaders as the
-  // gateway. Best-effort: the extractor falls back to regex parsing.
-  try {
-    setSoulData(await loadSoulData());
-  } catch (e) {
-    console.warn("[node] soul prewarm failed (continuing with regex fallback):", e);
-  }
-  setPersonaRegistry(loadPersonaRegistry());
+  // No soul or persona registry is loaded here: the worker installs a persona
+  // soul resolver that takes both from the runtime bundle per session, and the
+  // AgentManager skips the registry whenever that resolver is installed.
 
   const handle = await startNodeWorker({});
 
