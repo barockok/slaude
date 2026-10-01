@@ -44,6 +44,54 @@ class HttpError extends Error {
   }
 }
 
+type FieldKind = "string" | "string?" | "boolean?" | "int?" | "target" | "delays?" | "ms?";
+
+const OPTIONAL_SEND: Record<string, FieldKind> = { threadTs: "string?", eventId: "string?", mention: "boolean?", duplicate: "boolean?", retryNum: "int?" };
+const DELIVERY: Record<string, FieldKind> = { retryDelaysMs: "delays?", ackTimeoutMs: "ms?" };
+
+const isFiniteNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+
+function fieldOk(kind: FieldKind, v: unknown): boolean {
+  switch (kind) {
+    case "string":
+      return typeof v === "string";
+    case "string?":
+      return v === undefined || typeof v === "string";
+    case "boolean?":
+      return v === undefined || typeof v === "boolean";
+    case "int?":
+      return v === undefined || (Number.isInteger(v) && (v as number) >= 0);
+    case "ms?":
+      return v === undefined || (isFiniteNumber(v) && v > 0);
+    case "delays?":
+      return v === undefined || (Array.isArray(v) && v.length <= 10 && v.every((d) => isFiniteNumber(d) && d >= 0));
+    case "target": {
+      if (typeof v !== "string") return false;
+      try {
+        const u = new URL(v);
+        return u.protocol === "http:" || u.protocol === "https:";
+      } catch {
+        return false;
+      }
+    }
+  }
+}
+
+/** Check a control body against a field spec before any side effect; a failure is a 400 naming the field. */
+function validate(body: Record<string, any>, spec: Record<string, FieldKind>): Record<string, any> {
+  for (const [name, kind] of Object.entries(spec)) {
+    if (!fieldOk(kind, body[name])) throw new HttpError(400, `invalid_arguments: ${name}`);
+  }
+  return { ...body, target: typeof body.target === "string" ? body.target.replace(/\/+$/, "") : body.target };
+}
+
+function deliveryOverrides(a: Record<string, any>): Pick<DeliverOptions, "retryDelaysMs" | "ackTimeoutMs"> {
+  const out: Pick<DeliverOptions, "retryDelaysMs" | "ackTimeoutMs"> = {};
+  if (a.retryDelaysMs !== undefined) out.retryDelaysMs = a.retryDelaysMs;
+  if (a.ackTimeoutMs !== undefined) out.ackTimeoutMs = a.ackTimeoutMs;
+  return out;
+}
+
 export async function startFakeSlack(opts: FakeSlackOptions = {}): Promise<FakeSlack> {
   const ws = new Workspace(opts.teamId ?? "T0FAKE");
   const log = new CallLog();
@@ -74,11 +122,14 @@ export async function startFakeSlack(opts: FakeSlackOptions = {}): Promise<FakeS
     const raw = method === "GET" || method === "DELETE" ? "" : await readBody(req);
     let body: Record<string, any> = {};
     if (raw) {
+      let parsed: unknown;
       try {
-        body = JSON.parse(raw);
+        parsed = JSON.parse(raw);
       } catch {
         throw new HttpError(400, "body is not JSON");
       }
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new HttpError(400, "invalid_arguments: body");
+      body = parsed as Record<string, any>;
     }
     switch (`${method} ${route}`) {
       case "POST users":
@@ -89,33 +140,41 @@ export async function startFakeSlack(opts: FakeSlackOptions = {}): Promise<FakeS
         return send(res, 200, { apps: [...ws.apps.values()] });
       case "POST channels":
         return send(res, 200, { ...ws.addChannel(body as any), members: ws.members(body.id) });
+      /**
+       * Posts a human message, then delivers its event to `target` the way Slack does, retrying on failure.
+       * COST: a down or slow target blocks this request for the whole retry schedule
+       * (0 + 60000 + 300000 ms by default, twice that with `duplicate`). Pass a short `retryDelaysMs`
+       * (and `ackTimeoutMs`) per request, or start the fake with short delays, when the target may be down.
+       */
       case "POST send": {
-        const app = appOf(body.app);
-        const channel = channelOf(body.channel);
-        const text = `${body.mention ? `<@${app.botUserId}> ` : ""}${body.text}`;
-        const msg = ws.post({ channel, user: body.user, text, threadTs: body.threadTs });
-        const envelope = messageEnvelope(ws, app, msg, { eventId: body.eventId });
-        const o = { ...deliverOpts, retryNum: body.retryNum };
-        const eventsUrl = `${body.target}/slack/events`;
+        const a = validate(body, { app: "string", channel: "string", user: "string", text: "string", target: "target", ...OPTIONAL_SEND, ...DELIVERY });
+        const app = appOf(a.app);
+        const channel = channelOf(a.channel);
+        const text = `${a.mention ? `<@${app.botUserId}> ` : ""}${a.text}`;
+        const msg = ws.post({ channel, user: a.user, text, threadTs: a.threadTs });
+        const envelope = messageEnvelope(ws, app, msg, { eventId: a.eventId });
+        const o = { ...deliverOpts, ...deliveryOverrides(a), retryNum: a.retryNum };
+        const eventsUrl = `${a.target}/slack/events`;
         const deliveries = [await deliverEvent(eventsUrl, app.signingSecret, envelope, o)];
-        if (body.duplicate) deliveries.push(await deliverEvent(eventsUrl, app.signingSecret, envelope, o));
+        if (a.duplicate) deliveries.push(await deliverEvent(eventsUrl, app.signingSecret, envelope, o));
         log.add({ kind: "inbound", method: "events", app: app.apiAppId, ok: true, status: 200, detail: { ts: msg.ts, channel, deliveries: deliveries.length } });
         return send(res, 200, { message: { ts: msg.ts, channel, threadTs: msg.threadTs }, deliveries });
       }
       case "POST click": {
-        const app = appOf(body.app);
+        const a = validate(body, { app: "string", user: "string", channel: "string", messageTs: "string", actionId: "string", target: "target", value: "string?", ...DELIVERY });
+        const app = appOf(a.app);
         const payload = blockActionsPayload({
           ws,
           app,
-          user: body.user,
-          channel: channelOf(body.channel),
-          messageTs: body.messageTs,
-          actionId: body.actionId,
-          value: body.value,
+          user: a.user,
+          channel: channelOf(a.channel),
+          messageTs: a.messageTs,
+          actionId: a.actionId,
+          value: a.value,
           responseUrl: `${publicUrl}/response/${randomBytes(6).toString("hex")}`,
         });
-        const delivery = await deliverInteraction(`${body.target}/slack/interactions`, app.signingSecret, payload, deliverOpts);
-        log.add({ kind: "inbound", method: "interactions", app: app.apiAppId, ok: true, status: 200, detail: { actionId: body.actionId } });
+        const delivery = await deliverInteraction(`${a.target}/slack/interactions`, app.signingSecret, payload, { ...deliverOpts, ...deliveryOverrides(a) });
+        log.add({ kind: "inbound", method: "interactions", app: app.apiAppId, ok: true, status: 200, detail: { actionId: a.actionId } });
         return send(res, 200, { delivery });
       }
       case "GET thread":

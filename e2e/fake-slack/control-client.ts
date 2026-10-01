@@ -29,6 +29,10 @@ export interface SendInput {
   eventId?: string;
   duplicate?: boolean;
   retryNum?: number;
+  /** Per-request override of the server's retry schedule (max 10 non-negative delays). */
+  retryDelaysMs?: number[];
+  /** Per-request override of the server's acknowledgement timeout. */
+  ackTimeoutMs?: number;
 }
 
 export interface ClickInput {
@@ -39,6 +43,8 @@ export interface ClickInput {
   messageTs: string;
   actionId: string;
   value?: string;
+  retryDelaysMs?: number[];
+  ackTimeoutMs?: number;
 }
 
 /** Typed wrappers over the fake's `/__fake/` control API. Non-2xx throws `<status> <error>`. */

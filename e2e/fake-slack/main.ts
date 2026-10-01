@@ -1,6 +1,8 @@
 import { startFakeSlack } from "./server";
 
 const port = Number(process.env.PORT ?? 8080);
+// Slack-faithful retries (0, 1 min, 5 min) mean a down or slow target blocks a control `send` for the
+// whole schedule. The cluster sets short delays here; tests pass `retryDelaysMs` per request or to startFakeSlack.
 const delays = (process.env.FAKE_SLACK_RETRY_DELAYS ?? "0,60000,300000").split(",").map(Number);
 const running = await startFakeSlack({
   port,

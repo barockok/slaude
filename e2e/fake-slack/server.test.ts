@@ -210,19 +210,81 @@ test("a response_url body that is not JSON is recorded as text", async () => {
   expect((await ctl.calls({ method: "response_url" })).calls[0]!.detail).toMatchObject({ id: "abc", body: "plain" });
 });
 
-test("hostile requests never crash the server", async () => {
-  for (const [path, init] of [
-    ["/api/chat.postMessage", { method: "POST", body: "{{{{", headers: { "content-type": "application/json", authorization: `Bearer ${app.botToken}` } }],
-    ["/api/", { method: "POST", body: "" }],
-    ["/__fake/send", { method: "POST", body: "not json" }],
-    ["/__fake/nope", { method: "GET" }],
-    ["/nope", { method: "GET" }],
-  ] as const) {
-    const res = await fetch(`${fake.url}${path}`, init as RequestInit);
-    expect(res.status).toBeLessThan(600);
-    await res.text();
-  }
+test("hostile requests get specific statuses, never crash the server, and have no side effects", async () => {
+  const json = { "content-type": "application/json" };
+  const post = (path: string, body: string) => fetch(`${fake.url}${path}`, { method: "POST", headers: json, body });
+  const bearer = { ...json, authorization: `Bearer ${app.botToken}` };
+  const base = { app: "A0FAKE", channel: "C0TEAM", user: "U0MGR", text: "hi", target: target() };
+  const clickBase = { app: "A0FAKE", target: target(), user: "U0MGR", channel: "C0TEAM", messageTs: "1.1", actionId: "a" };
+
+  const bad = async (path: string, body: string, status: number, error: string) => {
+    const res = await post(path, body);
+    expect(res.status).toBe(status);
+    expect(await res.json()).toEqual({ ok: false, error });
+  };
+
+  // control routes
+  await bad("/__fake/send", "not json", 400, "body is not JSON");
+  await bad("/__fake/send", "null", 400, "invalid_arguments: body");
+  await bad("/__fake/send", "[1]", 400, "invalid_arguments: body");
+  await bad("/__fake/send", "5", 400, "invalid_arguments: body");
+  const { target: _t, ...noTarget } = base;
+  await bad("/__fake/send", JSON.stringify(noTarget), 400, "invalid_arguments: target");
+  await bad("/__fake/send", JSON.stringify({ ...base, target: "not a url" }), 400, "invalid_arguments: target");
+  await bad("/__fake/send", JSON.stringify({ ...base, target: "ftp://127.0.0.1" }), 400, "invalid_arguments: target");
+  await bad("/__fake/send", JSON.stringify({ ...base, text: 5 }), 400, "invalid_arguments: text");
+  await bad("/__fake/send", JSON.stringify({ ...base, mention: "yes" }), 400, "invalid_arguments: mention");
+  await bad("/__fake/send", JSON.stringify({ ...base, retryNum: -1 }), 400, "invalid_arguments: retryNum");
+  await bad("/__fake/send", JSON.stringify({ ...base, retryDelaysMs: [-1] }), 400, "invalid_arguments: retryDelaysMs");
+  await bad("/__fake/send", JSON.stringify({ ...base, retryDelaysMs: new Array(11).fill(0) }), 400, "invalid_arguments: retryDelaysMs");
+  await bad("/__fake/send", JSON.stringify({ ...base, ackTimeoutMs: 0 }), 400, "invalid_arguments: ackTimeoutMs");
+  const { actionId: _a, ...noAction } = clickBase;
+  await bad("/__fake/click", JSON.stringify(noAction), 400, "invalid_arguments: actionId");
+  await bad("/__fake/click", JSON.stringify({ ...clickBase, value: 1 }), 400, "invalid_arguments: value");
+  await bad("/__fake/send", JSON.stringify({ ...base, app: "A0NOPE" }), 404, "unknown app A0NOPE");
+  await bad("/__fake/send", JSON.stringify({ ...base, channel: "C0NOPE" }), 404, "channel_not_found");
+  expect((await fetch(`${fake.url}/__fake/nope`)).status).toBe(404);
+  expect((await fetch(`${fake.url}/nope`)).status).toBe(404);
+
+  // nothing was posted or delivered by any rejected request
+  expect((await ctl.messages("C0TEAM")).messages).toEqual([]);
+  expect(hits).toEqual([]);
+
+  // the Web API answers errors with 200 and an ok:false body, like Slack
+  const garbled = await fetch(`${fake.url}/api/chat.postMessage`, { method: "POST", body: "{{{{", headers: bearer });
+  expect(garbled.status).toBe(200);
+  expect(await garbled.json()).toMatchObject({ ok: false });
+  const empty = await fetch(`${fake.url}/api/`, { method: "POST", body: "" });
+  expect(empty.status).toBe(200);
+  expect(await empty.json()).toMatchObject({ ok: false, error: expect.any(String) });
+
   expect(await (await fetch(`${fake.url}/healthz`)).text()).toBe("ok");
+});
+
+test("send accepts a trailing slash on the target", async () => {
+  await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "slash", target: `${target()}/` });
+  expect(hits[0]!.path).toBe("/slack/events");
+});
+
+test("per-request retryDelaysMs and ackTimeoutMs override the server defaults", async () => {
+  const slow = await startFakeSlack({ port: 0, retryDelaysMs: [60_000, 60_000, 60_000], ackTimeoutMs: 200 });
+  try {
+    const c2 = createControlClient(slow.url);
+    await c2.addApp({ apiAppId: "A0FAKE", name: "agent", botUserId: "U0BOT" });
+    await c2.addChannel({ id: "D0MGR", name: "dm", isIm: true, members: ["U0MGR"] });
+    receiverStatuses = [500, 500, 500];
+    const t0 = Date.now();
+    const res = await c2.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "x", target: target(), retryDelaysMs: [0], ackTimeoutMs: 100 });
+    expect(res.deliveries[0]!.attempts.map((a) => a.status)).toEqual([500, 500]);
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    const card = slow.ws.post({ channel: "D0MGR", user: "U0BOT", text: "card" });
+    receiverStatuses = [];
+    // interactions are not retried; the overrides are accepted and applied without error
+    const click = await c2.click({ app: "A0FAKE", target: target(), user: "U0MGR", channel: "D0MGR", messageTs: card.ts, actionId: "a", retryDelaysMs: [0], ackTimeoutMs: 100 });
+    expect(click.delivery.finalStatus).toBe(200);
+  } finally {
+    await slow.stop();
+  }
 });
 
 test("until polls to a truthy value and times out with the given description", async () => {
