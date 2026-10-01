@@ -8,14 +8,14 @@ export type HealthDeps = {
    *  only when provided — src/server.ts passes it for mono/gateway roles and
    *  omits it for nodes. Returns null for paths it doesn't own. */
   v1?: (req: Request) => Promise<Response | null>;
-  /** Optional operator control-panel handler (GatewayHandle.fetchPanel).
-   *  Mounted only when provided — src/server.ts passes it for mono/gateway
-   *  roles with SLAUDE_PANEL enabled, and omits it otherwise. Returns null for
-   *  paths it doesn't own. */
   /** Optional pipeline /deploy handler (GatewayHandle.fetchDeploy). Mounted for
    *  mono/gateway roles only, never nodes; it 404s every path while neither
    *  SLAUDE_DEPLOY_TOKEN nor SLAUDE_DEPLOY_PREVIEW_TOKEN is set. */
   deploy?: (req: Request) => Promise<Response | null>;
+  /** Optional operator control-panel handler (GatewayHandle.fetchPanel).
+   *  Mounted only when provided — src/server.ts passes it for mono/gateway
+   *  roles with SLAUDE_PANEL enabled, and omits it otherwise. Returns null for
+   *  paths it doesn't own. */
   panel?: (req: Request) => Promise<Response | null>;
   /** Optional end-user portal handler (GatewayHandle.fetchPortal). Mounted for
    *  mono/gateway roles; it returns null for every request while SLAUDE_PORTAL
