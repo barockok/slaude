@@ -31,6 +31,19 @@ describe("read", () => {
     expect(r.isError).toBeFalsy();
     expect(text(r)).toBe("     2\tb\n     3\tc");
   });
+  it("coerces unusable offset/limit before building the line range", async () => {
+    writeFileSync(join(root, "f.txt"), "a\nb\nc\n");
+    const all = "     1\ta\n     2\tb\n     3\tc";
+    // Non-finite → defaults (offset 1, default limit); finite values are floored.
+    for (const [offset, limit] of [[NaN, NaN], [Infinity, Infinity], [-Infinity, -Infinity], [0.5, undefined]] as const) {
+      const r = await readTool({ ...ctx, state: new ReadState() }, { file_path: "f.txt", offset, limit });
+      expect(r.isError).toBeFalsy();
+      expect(text(r)).toBe(all);
+    }
+    // Finite values below 1 clamp to 1.
+    expect(text(await readTool(ctx, { file_path: "f.txt", offset: -3, limit: 0 }))).toBe("     1\ta");
+    expect(text(await readTool(ctx, { file_path: "f.txt", offset: 2.9, limit: 1.7 }))).toBe("     2\tb");
+  });
   it("handles hostile file names literally", async () => {
     const name = "a b'$(touch pwned).txt";
     writeFileSync(join(root, name), "safe\n");

@@ -56,6 +56,13 @@ function fileError(path: string, stderr: string): string {
   return stderr.trim() || "remote command failed";
 }
 
+/** A whole line number ≥ 1 for the sed range: non-finite → fallback, then floor,
+ *  clamped to [1, MAX_SAFE_INTEGER] so it always prints as a plain integer. */
+function lineCount(v: number | undefined, fallback: number): number {
+  const n = typeof v === "number" && Number.isFinite(v) ? Math.floor(v) : fallback;
+  return Math.min(Math.max(1, n), Number.MAX_SAFE_INTEGER);
+}
+
 export async function readTool(ctx: FileCtx, i: { file_path: string; offset?: number; limit?: number }): Promise<ToolText> {
   let path: string;
   try { path = resolveRemotePath(ctx.root, i.file_path); } catch (e) { return fail((e as Error).message); }
@@ -69,8 +76,8 @@ export async function readTool(ctx: FileCtx, i: { file_path: string; offset?: nu
     ctx.state.set(path, mtime);
     return { content: [{ type: "image", data: body, mimeType: IMAGE_TYPES[e]! }] };
   }
-  const start = Math.max(1, Math.floor(i.offset ?? 1));
-  const end = start + Math.max(1, Math.floor(i.limit ?? DEFAULT_LIMIT)) - 1;
+  const start = lineCount(i.offset, 1);
+  const end = Math.min(start + lineCount(i.limit, DEFAULT_LIMIT) - 1, Number.MAX_SAFE_INTEGER);
   const r = await ctx.exec(withFile(path, `sed -n '${start},${end}p' < "$P"`), { timeoutMs: IO_TIMEOUT });
   if (r.code !== 0) return fail(fileError(i.file_path, r.stderr));
   const { mtime, body } = splitMtime(r.stdout);
