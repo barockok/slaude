@@ -36,6 +36,11 @@ export interface JobClaims {
    *  from an older gateway still decode; the credential endpoint refuses its
    *  absence rather than defaulting. */
   runAs?: string;
+  /** Remote execution target for this turn (spec §4.5). Present only when the
+   *  thread's remote target belongs to the runAs user. Sensitive: the address. */
+  remote?: { addr: string; dir: string };
+  /** Hash of (lock owner, remote target). A node reboots a warm session when it changes. */
+  sessionConfigFp?: string;
   /** Unix seconds. */
   exp: number;
   iat?: number;
