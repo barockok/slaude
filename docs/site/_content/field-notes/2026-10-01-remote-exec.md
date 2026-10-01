@@ -81,7 +81,9 @@ next boot reads the current config anyway.
 Whether a session is current is derived from the live session itself: each boot
 stores the fingerprint it booted under, and the check (made under the session
 lock) compares against that, never against a value recorded ahead of the
-reboot. A first version recorded the new fingerprint before the reboot had
+reboot. Only the lock holder binds its job token, because a boot resolves its
+remote target and credentials from the bound token, and a boot still in
+progress counts as not current. A first version recorded the new fingerprint before the reboot had
 happened, so a second job with the same fingerprint was told the stale session
 was current. If a turn is still in flight, the reboot is deferred to its result
 (closing its input would break it) and the check returns false at once, so the
@@ -170,6 +172,15 @@ override of the binary path.
   the model to stop and tell the user.
 - `setsid` is not used anywhere. The new process group comes from
   `perl -e 'setpgrp(0,0); exec @ARGV'` on all platforms.
+- Disabling `SLAUDE_REMOTE` does not reach warm node sessions: the gateway mints
+  the fingerprint only while the flag is on, and a job without one is not
+  checked, so a session that booted remote keeps its remote tools and handle
+  until it goes idle. Operators run `/remote off` in active threads, or restart
+  the nodes, before they disable the flag.
+- A config-change requeue has no bound of its own. If a stale warm session has
+  an auto-evolve turn in flight (it runs outside the session lock), the job is
+  requeued every 500 ms without holding a worker slot until that turn ends;
+  `/abort` or a node restart ends it sooner.
 
 ## RC soak checklist
 

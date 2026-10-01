@@ -64,3 +64,5 @@ Key custody: the private key is encrypted at rest (AES-256-GCM envelope under `S
 - A background command whose last step is an explicit `exec` loses its job marker, so `/remote off` cannot kill that job.
 - A `~` in the directory is resolved once, when you run `/remote`.
 - Latency over a relayed (DERP) path has not been measured. On a direct path, connect takes about 0.55 s and a warm command about 20 to 30 ms.
+- Turning `SLAUDE_REMOTE` off does not end remote mode in sessions that are already warm: the gateway stops sending the session-config fingerprint, so nodes keep those sessions, with their remote tools, until they go idle. Run `/remote off` in active threads, or restart the nodes, before you disable the flag.
+- When a thread's config changes while the agent is still running an extra turn of its own (for example, an auto-evolve turn), the next message is requeued every 500 ms until that turn ends, with no limit. It holds no worker slot. To stop it sooner, use `/abort` or restart the node.
