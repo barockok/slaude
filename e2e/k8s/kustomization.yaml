@@ -15,3 +15,8 @@ patches:
         namespace: slaude-scale
       data:
         SLAUDE_SLACK_API_URL: "http://fake-slack:8080/api/"
+        # Workaround for a gateway bug: in HTTP mode the gateway still reads SLACK_BOT_TOKEN on
+        # every inbound message (for attachment downloads) and drops the turn when it is unset,
+        # although real deploys register bot tokens in slack_apps. The sim seeds a dummy for the
+        # same reason. Never validated, only used for attachments, which e2e messages lack.
+        SLACK_BOT_TOKEN: "e2e-unused-placeholder"

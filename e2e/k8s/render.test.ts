@@ -47,6 +47,15 @@ describe("e2e overlay", () => {
     expect(patch.data.SLAUDE_SLACK_API_URL.endsWith("/api/")).toBe(true);
   });
 
+  test("the ConfigMap patch sets a SLACK_BOT_TOKEN placeholder that is not token-shaped", () => {
+    const patch = kustomization.patches.map((p: any) => parse(p.patch)[0]).find((d: any) => d.kind === "ConfigMap");
+    const v = patch.data.SLACK_BOT_TOKEN;
+    expect(typeof v).toBe("string");
+    expect(v.length).toBeGreaterThan(0);
+    expect(v).not.toMatch(/^xox/i);
+    expect(v).toContain("placeholder");
+  });
+
   test("the overlay builds on deploy/k8s-local and includes both services", () => {
     expect(kustomization.resources).toEqual(["../../deploy/k8s-local", "mock-llm.yaml", "fake-slack.yaml"]);
   });
