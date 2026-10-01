@@ -108,13 +108,20 @@ function audit(name: string, input: any, outcome: string, code: number | null | 
   console.log(`[remote] tool=${name} subject=${subject || "-"} outcome=${outcome} code=${code === undefined ? "-" : code} ms=${Math.round(performance.now() - t0)}`);
 }
 
-/** Program basename of a shell command: skips leading NAME=value assignments (which may
- *  hold secrets) and bare env/sudo. Never returns a token containing "=". */
+/** Program basename of a shell command, for the audit line only. Fails closed ("") rather
+ *  than parse shell quoting: leading NAME=value assignments (which may hold secrets) are
+ *  skipped, but if any value starts with a quote, substitution or escape, or the program
+ *  token is not a plain word, nothing is reported. */
 function programOf(command: string): string {
   for (const tok of command.trim().split(/\s+/)) {
-    if (!tok || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok) || tok === "env" || tok === "sudo") continue;
+    const asg = /^[A-Za-z_][A-Za-z0-9_]*=(.*)$/.exec(tok);
+    if (asg) {
+      if (/^(['"`\\]|\$[('])/.test(asg[1]!)) return "";
+      continue;
+    }
+    if (!tok || tok === "env" || tok === "sudo") continue;
     const p = tok.split("/").pop() ?? "";
-    return p.includes("=") ? "" : p;
+    return /^[A-Za-z0-9._+-]+$/.test(p) ? p : "";
   }
   return "";
 }

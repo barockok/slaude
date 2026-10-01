@@ -158,10 +158,17 @@ describe("createRemoteMcp", () => {
       await run("A=1 B=2 true");
       await run("sudo -n true");
       await run("FOO=bar");
+      for (const c of [
+        'TOKEN="abc def" true', "TOKEN='abc def' true", "A=$(cat secretfile) true", "A=`cat x` true",
+        "A=$'x y' true", 'A="x" B=y true', "(true)", "./x=y",
+      ]) await run(c);
+      await run("export X=1; true");
     } finally { console.log = orig; }
     const subjects = lines.filter((l) => l.startsWith("[remote] tool=bash")).map((l) => /subject=(\S+)/.exec(l)![1]);
-    expect(subjects).toEqual(["true", "true", "-n", "-"]);
-    for (const l of lines) { expect(l).not.toContain("ghp_abc123"); expect(l).not.toContain("GITHUB_TOKEN"); }
+    expect(subjects).toEqual(["true", "true", "-n", "-", "-", "-", "-", "-", "-", "-", "-", "-", "export"]);
+    for (const l of lines) { expect(l).not.toContain("ghp_abc123"); expect(l).not.toContain("GITHUB_TOKEN");
+      for (const bad of ["abc", "def", "secretfile", "TOKEN", "x)", "y'"]) expect(l).not.toContain(bad);
+    }
   });
 
   it("audit line carries the exit code and never the command args; exitCode is not returned to the SDK", async () => {
