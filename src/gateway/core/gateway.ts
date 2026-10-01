@@ -36,6 +36,7 @@ import { makePubSub, type PubSub } from "../../queue/pubsub";
 import { makePanelLock, type PanelLock } from "../../queue/panel-lock";
 import { createPanelApi } from "../panel/api";
 import { createPortalApi } from "../portal/api";
+import { createDeployApi } from "../deploy/api";
 import { persistConnect, persistDisconnect } from "../../agent/mcp-oauth/persist";
 import { importOnDiskCredentials } from "./credential-import";
 import { mintLinkToken } from "../portal/link-token";
@@ -98,6 +99,9 @@ export interface GatewayHandle {
   fetchPanel(req: Request): Promise<Response | null>;
   /** `/portal/*` — end-user onboarding. Null when SLAUDE_PORTAL is off. */
   fetchPortal(req: Request): Promise<Response | null>;
+  /** `/deploy/*` — the config pipeline's door (own token, not the node token).
+   *  Optional so test doubles needn't implement it. */
+  fetchDeploy?(req: Request): Promise<Response | null>;
   /** TEST/SIM SEAM ONLY. The pending-gate source behind /v1/pending. */
   __pendingSource(): PendingSource;
   /** TEST/SIM SEAM ONLY. Live per-session MCP contexts built by the resolver.
@@ -2617,6 +2621,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // never reaches an operator route, and the panel's guard is not relaxed.
   // createPortalApi returns null for every request while SLAUDE_PORTAL is off.
   const portalApi = createPortalApi();
+  // Reuses whichever pub/sub this gateway already holds; with none (mono, no
+  // Redis) the reload is local-only, which is all there is to notify.
+  const deployApi = createDeployApi({ pubsub: queueDispatch?.pubsub ?? panelInfra?.pubsub ?? null });
 
   const panelApi = panelInfra
     ? createPanelApi({
@@ -2644,6 +2651,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     fetchV1: (req: Request) => v1.fetch(req),
     fetchPanel: (req: Request) => (panelApi ? panelApi.fetch(req) : Promise.resolve(null)),
     fetchPortal: (req: Request) => portalApi.fetch(req),
+    fetchDeploy: (req: Request) => deployApi.fetch(req),
     __pendingSource: () => v1.pendingSource,
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),

@@ -189,6 +189,10 @@ export const env = {
    *  every /v1 request. Empty (default) = /v1 auth refuses all requests, so a
    *  mono deploy without the var exposes nothing. Rotate via env. */
   nodeToken: () => opt("SLAUDE_NODE_TOKEN"),
+  /** Pipeline credential for /deploy. Unset → /deploy does not exist. Never the
+   *  node token: every node holds that one, and "nodes can't change identity"
+   *  is the point of this endpoint having its own. */
+  deployToken: () => opt("SLAUDE_DEPLOY_TOKEN"),
   /** HS256 secret for the short-lived per-job JWT (`X-Slaude-Job`) minted by
    *  the gateway enqueue path and verified on tool-plane + session endpoints.
    *  Empty (default) = job tokens can be neither minted nor verified. */

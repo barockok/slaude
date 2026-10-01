@@ -121,6 +121,7 @@ async function main() {
       health: {
         liveSessions: () => agent.liveCount(),
         v1: role !== "node" ? (req: Request) => slack.fetchV1(req) : undefined,
+        deploy: role !== "node" ? (req: Request) => slack.fetchDeploy?.(req) ?? Promise.resolve(null) : undefined,
         panel: panelMounted ? (req: Request) => slack.fetchPanel(req) : undefined,
         portal: role !== "node" ? (req: Request) => slack.fetchPortal(req) : undefined,
       },
@@ -131,6 +132,7 @@ async function main() {
     health = startHealthServer({
       liveSessions: () => agent.liveCount(),
       v1: role !== "node" ? (req) => slack.fetchV1(req) : undefined,
+      deploy: role !== "node" ? (req) => slack.fetchDeploy?.(req) ?? Promise.resolve(null) : undefined,
       panel: panelMounted ? (req) => slack.fetchPanel(req) : undefined,
       portal: role !== "node" ? (req) => slack.fetchPortal(req) : undefined,
     });
