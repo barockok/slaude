@@ -10,7 +10,10 @@ export interface Persona {
   /** Directory name under ~/.slaude/personas/ — used as persona_id in the DB. */
   name: string;
   slackUserId: string;
-  soulPath: string;
+  /** Set for filesystem personas; soulMd is set for database-backed ones. */
+  soulPath?: string;
+  /** Set for database-backed personas; soulPath is set for filesystem ones. */
+  soulMd?: string;
   config: PersonaConfig;
   /** Set when config.userToken (xoxp) is present — replies/edits/reactions/uploads
    *  for this persona's sessions go out as its own Slack user account instead of

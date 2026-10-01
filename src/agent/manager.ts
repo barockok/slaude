@@ -26,7 +26,8 @@ export type PermissionMode =
 import { paths } from "../config/home";
 import { env } from "../config/env";
 import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plugins";
-import { soulSystemBlock, loadSoul } from "../soul/loader";
+import { soulSystemBlock } from "../soul/loader";
+import { personaSoulText } from "../persona/soul-source";
 import { soulData, effectiveSoulForChannel } from "../soul/extract";
 import { getPersonaRegistry } from "../persona/registry";
 import * as Sessions from "../db/sessions";
@@ -681,9 +682,11 @@ export class AgentManager extends EventEmitter {
         type: "preset",
         preset: "claude_code",
         append: [
-          // Named personas use their own SOUL.md for the persona block; the
-          // runtime baseline stays the same. Default persona = global SOUL.md.
-          soulSystemBlock(persona ? loadSoul(persona.soulPath) : undefined),
+          // Named personas use their own soul for the persona block (the
+          // database soul when the tenant is managed, else their SOUL.md); the
+          // runtime baseline stays the same. Default persona = the managed
+          // `default` row when one exists, else the global SOUL.md.
+          soulSystemBlock(personaSoulText(persona?.name)),
           channelMandateBlock,
           sessionModeBlock(lock),
           mcpServers

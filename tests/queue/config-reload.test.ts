@@ -9,6 +9,8 @@ import {
   getPersonaRegistry,
   setPersonaRegistry,
   invalidatePersonaRegistry,
+  whenPersonaRegistrySettled,
+  __resetPersonaRegistry,
   type PersonaRegistry,
 } from "../../src/persona/registry";
 
@@ -19,18 +21,23 @@ const stub = (): PersonaRegistry => ({
   isMultiPersonaMode: () => false,
 });
 
-afterEach(() => {
-  invalidatePersonaRegistry();
+afterEach(async () => {
+  await whenPersonaRegistrySettled();
+  __resetPersonaRegistry();
 });
 
 describe("persona registry invalidation", () => {
-  test("a set registry is returned until it is invalidated", () => {
+  // The snapshot keeps serving while the rebuild runs: dropping it would let
+  // the next access lazily rebuild from disk, whatever the tenant's source.
+  test("a set registry keeps serving until the rebuild an invalidation starts replaces it", async () => {
     const r = stub();
     setPersonaRegistry(r);
     expect(getPersonaRegistry()).toBe(r);
 
     invalidatePersonaRegistry();
+    expect(getPersonaRegistry()).toBe(r);
 
+    await whenPersonaRegistrySettled();
     expect(getPersonaRegistry()).not.toBe(r);
   });
 });
@@ -48,6 +55,7 @@ describe("publishConfigReload", () => {
 
     expect(seen).toEqual(["tenant-one"]);
     expect(res.notified).toBe(3);
+    await whenPersonaRegistrySettled();
     expect(getPersonaRegistry()).not.toBe(r);
   });
 
@@ -58,6 +66,7 @@ describe("publishConfigReload", () => {
     const res = await publishConfigReload(null, "default");
 
     expect(res.notified).toBeNull();
+    await whenPersonaRegistrySettled();
     expect(getPersonaRegistry()).not.toBe(r);
   });
 
@@ -74,6 +83,7 @@ describe("publishConfigReload", () => {
 
     expect(res.notified).toBeNull();
     expect(res.error).toContain("redis down");
+    await whenPersonaRegistrySettled();
     expect(getPersonaRegistry()).not.toBe(r);
   });
 });

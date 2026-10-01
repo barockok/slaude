@@ -135,10 +135,14 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
     const fsPersona = getPersonaRegistry().lookupByName(personaId);
     if (!fsPersona) return null;
     let personaSoul = "";
-    try {
-      personaSoul = readFileSync(fsPersona.soulPath, "utf8");
-    } catch {
-      /* persona has no readable SOUL.md — bundle ships an empty soul */
+    // A database-backed persona has no soulPath: it ships the empty soul here
+    // until this tier is rewritten to serve effective state.
+    if (fsPersona.soulPath) {
+      try {
+        personaSoul = readFileSync(fsPersona.soulPath, "utf8");
+      } catch {
+        /* persona has no readable SOUL.md — bundle ships an empty soul */
+      }
     }
     return {
       tenantId,
