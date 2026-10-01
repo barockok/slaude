@@ -49,6 +49,7 @@ Generated files, both gitignored:
 | File | Contents | Lifetime |
 |---|---|---|
 | `secrets.env` | master key, node bearer, job-token secret, datastore URLs | created once, reused |
+| `deploy.env` | the `/deploy` pipeline token, gateway-only (nodes never receive it) | created once, reused |
 | `provider.env` | model provider credentials | rewritten every run |
 
 `secrets.env` is deliberately never regenerated. The master key encrypts the

@@ -2,7 +2,9 @@
 // Turn-delivery probe for verify-turns.sh. Runs INSIDE a gateway pod, so it uses
 // the deployment's own Redis, Postgres and key prefix — nothing is stubbed.
 //
-//   enqueue <n>   create n sessions and enqueue one turn each
+//   enqueue <n> [--persona <name>]
+//                 create n sessions and enqueue one turn each (default persona
+//                 unless --persona names another)
 //   status        JSON: how many of those turns carry a completion marker, plus
 //                 what the shared queue still holds
 //   cron          insert one already-due cron job
@@ -31,7 +33,15 @@ const MARK = "verify-turns";
 const CRON_MARK = "verify-cron";
 const STATE = "/tmp/verify-turns-ids.json";
 
-const [cmd, arg] = process.argv.slice(2);
+const [cmd, arg, ...rest] = process.argv.slice(2);
+// `--persona <name>` after the count. Absent, the probe behaves exactly as it
+// always did: every id below is "default".
+const personaFlag = rest.indexOf("--persona");
+const PERSONA = personaFlag >= 0 ? (rest[personaFlag + 1] ?? "") : "default";
+if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(PERSONA)) {
+  console.error(`--persona needs a lowercase name (got '${PERSONA}')`);
+  process.exit(2);
+}
 const redis = getRedis();
 const keys = makeKeys();
 const turns = new TurnQueues({ connection: redis, keys });
@@ -49,7 +59,7 @@ async function enqueue(n: number) {
   for (let i = 0; i < n; i++) {
     const thread = `${MARK}-${Date.now()}-${i}`;
     const session = await Sessions.createForThread({
-      thread: { team_id: TEAM, channel_id: CHANNEL, thread_ts: thread },
+      thread: { team_id: TEAM, channel_id: CHANNEL, thread_ts: thread, persona_id: PERSONA },
       // The deployment's own model: a bogus one makes the child fail to boot,
       // which looks like a delivery failure and is not one.
       model: env.model(),
@@ -58,7 +68,7 @@ async function enqueue(n: number) {
     });
     const jobId = randomUUID();
     const jobToken = mintJobToken({
-      tenant: "default", persona: "default", session: session.id,
+      tenant: "default", persona: PERSONA, session: session.id,
       team: TEAM, channel: CHANNEL, thread, initiator: "UVERIFY",
       scope: "turn", runAs: "agent", job: jobId,
     });
@@ -66,7 +76,7 @@ async function enqueue(n: number) {
       {
         sessionId: session.id,
         tenantId: "default",
-        personaId: "default",
+        personaId: PERSONA,
         // suppress: the node runs the whole turn lifecycle — claim, session
         // lock, completion marker, ack — but the prompt hook stops the model, so
         // the probe costs no tokens and still proves delivery.
@@ -164,7 +174,7 @@ const commands: Record<string, () => Promise<void>> = {
 };
 const run = commands[cmd ?? ""];
 if (!run) {
-  console.error("usage: turns.ts enqueue <n> | status | cron | cron-status | cleanup");
+  console.error("usage: turns.ts enqueue <n> [--persona <name>] | status | cron | cron-status | cleanup");
   process.exit(2);
 }
 await run();

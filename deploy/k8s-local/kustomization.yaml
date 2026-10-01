@@ -40,6 +40,12 @@ secretGenerator:
     envs:
       - secrets.env
       - provider.env
+  # The /deploy pipeline token, a separate Secret so it reaches the GATEWAY only.
+  # Nodes load slaude-scale-secrets via envFrom; putting this key there would
+  # hand every node the credential that rewrites persona identity.
+  - name: slaude-scale-deploy
+    envs:
+      - deploy.env
 
 generatorOptions:
   disableNameSuffixHash: true
@@ -89,6 +95,13 @@ patches:
               - name: gateway
                 image: slaude:local
                 imagePullPolicy: Never
+                # Gateway only. `env` merges by name; the node patch has no such entry.
+                env:
+                  - name: SLAUDE_DEPLOY_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: slaude-scale-deploy
+                        key: SLAUDE_DEPLOY_TOKEN
                 resources:
                   requests: { cpu: 100m, memory: 256Mi }
                   limits: { cpu: "1", memory: 768Mi }

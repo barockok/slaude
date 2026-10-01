@@ -101,6 +101,14 @@ ensure_secret() { grep -q "^$1=" "$SECRETS" || echo "$1=$2" >>"$SECRETS"; }
 # own database on the in-cluster Postgres (created by the dev datastores init).
 ensure_secret SLAUDE_BRAIN_DATABASE_URL "postgres://slaude:slaude@postgres:5432/slaude_brain"
 
+# The pipeline credential for /deploy. It lives in its OWN file and Secret, not
+# secrets.env: that file is injected whole into gateways and nodes alike, and a
+# node holding the deploy token could rewrite persona identity — the one thing
+# the separate token exists to prevent. 48 hex chars clears the gateway's
+# 32-character floor. Never printed.
+DEPLOY="$HERE/deploy.env"
+SECRETS="$DEPLOY" ensure_secret SLAUDE_DEPLOY_TOKEN "$(openssl rand -hex 24)"
+
 # Provider credentials are rewritten every run, so rotating a key is a re-run.
 # Values are never printed.
 : >"$PROVIDER"
