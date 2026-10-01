@@ -71,6 +71,20 @@ export async function putKeyIfAbsent(teamId: string, userId: string, pair: Remot
   return stored;
 }
 
+/** Store a pair, overwriting any existing one (replaces an unusable key). */
+export async function replaceKey(teamId: string, userId: string, pair: RemoteKeyPair): Promise<RemoteKeyPair> {
+  await db.run(
+    `INSERT INTO remote_keys (team_id, user_id, public_key, private_key, created_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(team_id, user_id)
+     DO UPDATE SET public_key = excluded.public_key, private_key = excluded.private_key, created_at = excluded.created_at`,
+    [teamId, userId, pair.publicKey, encrypt(pair.privateKey), Date.now()],
+  );
+  const stored = await getKey(teamId, userId);
+  if (!stored) throw new Error("remote key replace did not persist");
+  return stored;
+}
+
 export async function _wipeForTests(): Promise<void> {
   await db.run("DELETE FROM remote_targets");
   await db.run("DELETE FROM remote_keys");

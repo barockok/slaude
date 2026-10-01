@@ -1,8 +1,8 @@
-import { utils } from "ssh2";
 import { env } from "../../config/env";
 import * as OneOnOne from "../../db/one-on-one";
 import * as Remote from "../../db/remote";
 import { activeRemoteTarget } from "../../remote/active";
+import { generateSshKeyPair, isValidSshKeyPair } from "../../remote/keygen";
 import { preflight, remoteCleanup } from "../../remote/preflight";
 import { isRemoteDir, isTailcatAddr } from "../../remote/shell";
 import { tailcatPing } from "../../remote/tailcat";
@@ -28,20 +28,23 @@ export interface RemoteCommandDeps {
   ping: typeof tailcatPing;
   cleanup: typeof remoteCleanup;
   generateKeyPair(comment: string): { privateKey: string; publicKey: string };
+  /** False for a stored pair ssh2 cannot use (e.g. one written by the defective generator). */
+  validKey(pair: Remote.RemoteKeyPair): boolean;
 }
 
 const defaultDeps: RemoteCommandDeps = {
   preflight,
   ping: tailcatPing,
   cleanup: remoteCleanup,
-  generateKeyPair: (comment) => {
-    const k = utils.generateKeyPairSync("ed25519", { comment });
-    return { privateKey: k.private, publicKey: k.public };
-  },
+  generateKeyPair: generateSshKeyPair,
+  validKey: (p) => isValidSshKeyPair(p.privateKey, p.publicKey),
 };
 
-function setupText(publicKey: string): string {
+const REPLACED_NOTE = ":warning: Your previous key was invalid and has been replaced — update `--ssh-authorized-keys` with the new key below.";
+
+function setupText(publicKey: string, replaced = false): string {
   return [
+    ...(replaced ? [REPLACED_NOTE, ""] : []),
     "*Set up `/remote` on your machine* (only you can see this):",
     "1. Install tailcat: https://github.com/tailscale/tailcat",
     "2. Once, for an address that survives restarts: `tailcat genkey --key=default`",
@@ -53,6 +56,15 @@ function setupText(publicKey: string): string {
     "",
     ":warning: Commands run as the account that runs `tailcat serve`, with everything that account can reach. Use a separate account or a container for repos you don't trust.",
   ].join("\n");
+}
+
+/** The user's stored key, creating one on first use and replacing one that
+ *  does not parse. `fresh` means the user must (re)install the public key. */
+async function usableKey(teamId: string, userId: string, deps: RemoteCommandDeps): Promise<{ key: Remote.RemoteKeyPair; fresh: boolean; replaced: boolean }> {
+  const stored = await Remote.getKey(teamId, userId);
+  if (!stored) return { key: await Remote.putKeyIfAbsent(teamId, userId, deps.generateKeyPair(`slaude:${userId}`)), fresh: true, replaced: false };
+  if (deps.validKey(stored)) return { key: stored, fresh: false, replaced: false };
+  return { key: await Remote.replaceKey(teamId, userId, deps.generateKeyPair(`slaude:${userId}`)), fresh: true, replaced: true };
 }
 
 /** sessionId → remote on?, cached briefly for the status line. Bounded; cleared
@@ -128,8 +140,8 @@ export async function handleRemoteCommand(hit: RemoteHit, ctx: RemoteCommandCtx,
   }
 
   if (hit.action === "key") {
-    const key = (await Remote.getKey(teamId, userId)) ?? (await Remote.putKeyIfAbsent(teamId, userId, deps.generateKeyPair(`slaude:${userId}`)));
-    await ctx.sayPrivately(setupText(key.publicKey));
+    const { key, replaced } = await usableKey(teamId, userId, deps);
+    await ctx.sayPrivately(setupText(key.publicKey, replaced));
     await ctx.reply("Sent you the `/remote` setup privately.");
     return;
   }
@@ -178,11 +190,14 @@ export async function handleRemoteCommand(hit: RemoteHit, ctx: RemoteCommandCtx,
     await ctx.reply(":x: The directory must be an absolute path or start with `~/`.");
     return;
   }
-  const key = await Remote.getKey(teamId, userId);
-  if (!key) {
-    const fresh = await Remote.putKeyIfAbsent(teamId, userId, deps.generateKeyPair(`slaude:${userId}`));
-    await ctx.sayPrivately(setupText(fresh.publicKey));
-    await ctx.reply("First time here — I sent you setup steps privately. Run them, then `/remote <address> <directory>` again.");
+  const { key, fresh, replaced } = await usableKey(teamId, userId, deps);
+  if (fresh) {
+    await ctx.sayPrivately(setupText(key.publicKey, replaced));
+    await ctx.reply(
+      replaced
+        ? "Your stored key was invalid, so I made a new one and sent you setup steps privately. Restart `tailcat serve` with it, then `/remote <address> <directory>` again."
+        : "First time here — I sent you setup steps privately. Run them, then `/remote <address> <directory>` again.",
+    );
     return;
   }
   const pf = await deps.preflight({ addr: hit.addr, dir, privateKey: key.privateKey });

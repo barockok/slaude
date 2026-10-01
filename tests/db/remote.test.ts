@@ -41,6 +41,14 @@ describe("remote_keys", () => {
     expect(await Remote.getKey("T1", "U_B")).toBeNull();
   });
 
+  it("replaceKey overwrites an existing pair and inserts when absent", async () => {
+    await Remote.putKeyIfAbsent("T1", "U_A", { privateKey: "PRIV-1", publicKey: "ssh-ed25519 AAA1" });
+    const replaced = await Remote.replaceKey("T1", "U_A", { privateKey: "PRIV-2", publicKey: "ssh-ed25519 AAA2" });
+    expect(replaced).toEqual({ privateKey: "PRIV-2", publicKey: "ssh-ed25519 AAA2" });
+    expect((await Remote.getKey("T1", "U_A"))?.privateKey).toBe("PRIV-2");
+    expect((await Remote.replaceKey("T1", "U_B", { privateKey: "PRIV-B", publicKey: "PUB-B" })).privateKey).toBe("PRIV-B");
+  });
+
   it("stores the private key encrypted, never in plaintext", async () => {
     await Remote.putKeyIfAbsent("T1", "U_A", { privateKey: "PRIV-SECRET", publicKey: "ssh-ed25519 AAA1" });
     const raw = await db.one<{ private_key: string }>("SELECT private_key FROM remote_keys WHERE team_id = ? AND user_id = ?", ["T1", "U_A"]);

@@ -16,6 +16,7 @@ const deps = (ok = true): RemoteCommandDeps => ({
   ping: async () => "direct",
   cleanup: async (i) => { cleanups.push(i); },
   generateKeyPair: (c) => ({ privateKey: `PRIV-${c}`, publicKey: `ssh-ed25519 AAAA ${c}` }),
+  validKey: (p) => !p.privateKey.startsWith("BROKEN"),
 });
 const allOut = () => [...replies, ...privately].join("\n");
 
@@ -146,6 +147,37 @@ describe("/remote", () => {
     await handleRemoteCommand({ kind: "remote", action: "key" }, ctx(), deps());
     expect(privately[0]).toContain("ssh-ed25519 KEEP");
     expect(replies.join("")).not.toContain("KEEP");
+  });
+
+  it("key replaces a stored key that does not parse and says so privately", async () => {
+    await Remote.putKeyIfAbsent("T1", "U_A", { privateKey: "BROKEN", publicKey: "ssh-ed25519 OLD" });
+    await handleRemoteCommand({ kind: "remote", action: "key" }, ctx(), deps());
+    expect((await Remote.getKey("T1", "U_A"))?.privateKey).toBe("PRIV-slaude:U_A");
+    expect(privately[0]).toContain("previous key was invalid");
+    expect(privately[0]).toContain("ssh-ed25519 AAAA slaude:U_A");
+    expect(privately[0]).not.toContain("OLD");
+  });
+
+  it("on with a stored key that does not parse: replaces it, sends setup privately, no preflight, no target", async () => {
+    await Remote.putKeyIfAbsent("T1", "U_A", { privateKey: "BROKEN", publicKey: "ssh-ed25519 OLD" });
+    await handleRemoteCommand({ kind: "remote", action: "on", addr: "tcAddr1", dir: "/r" }, ctx(), deps());
+    expect((await Remote.getKey("T1", "U_A"))?.privateKey).toBe("PRIV-slaude:U_A");
+    expect(privately[0]).toContain("previous key was invalid");
+    expect(privately[0]).toContain("tailcat serve");
+    expect(preflights).toHaveLength(0);
+    expect(await Remote.findTarget("C1", "1.0")).toBeNull();
+    expect(await OneOnOne.find("C1", "1.0")).toBeNull();
+    expect(reloads).toBe(0);
+    expect(replies[0]).toContain("invalid");
+  });
+
+  it("the default validator rejects a stored key ssh2 cannot parse", async () => {
+    await Remote.putKeyIfAbsent("T1", "U_A", { privateKey: "PRIV", publicKey: "PUB" });
+    await handleRemoteCommand({ kind: "remote", action: "key" }, ctx());
+    const k = await Remote.getKey("T1", "U_A");
+    expect(k?.privateKey).not.toBe("PRIV");
+    expect(k?.publicKey.startsWith("ssh-ed25519 ")).toBe(true);
+    expect(privately[0]).toContain("previous key was invalid");
   });
 
   it("status reports off for a stale row without a valid locked 1on1", async () => {
