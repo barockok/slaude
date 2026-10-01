@@ -212,6 +212,99 @@ describe("personas export, round 2", () => {
   });
 });
 
+// The final review's probe: six shapes that export wrote to git verbatim.
+// Fixture tokens are built by concatenation so the repo's leak scan does not
+// match them literally.
+describe("personas export, allowlist shape (fails closed)", () => {
+  const withMcp = (mcp: unknown) => {
+    const h = home();
+    writeFileSync(join(h, "personas", "ana", "mcp.json"), JSON.stringify(mcp));
+    return h;
+  };
+  const srv = (def: unknown) => withMcp({ mcpServers: { s: def } });
+  const SECRET = "Q7xLm2" + "Vb9Rt4Kp8Wz1Ny6Hc3Jd5Fs0Ga";
+  const expectRefused = (h: string, re: RegExp) => {
+    let msg = "";
+    const out = tmp();
+    try { exportHome(h, out); } catch (e) { msg = (e as Error).message; }
+    expect(msg).toMatch(re);
+    expect(msg).not.toContain(SECRET);
+  };
+
+  test("shape 1: a string headers value fails", () => {
+    expectRefused(srv({ url: "https://x.test/mcp", headers: "Authorization: Bearer " + SECRET }),
+      /persona 'ana'.*server 's'.*headers/);
+  });
+
+  test("a string env value fails", () => {
+    expectRefused(srv({ command: "x", env: "API_KEY=" + SECRET }), /persona 'ana'.*server 's'.*env/);
+  });
+
+  test("shape 2: a string args value fails", () => {
+    expectRefused(srv({ command: "x", args: "--token " + SECRET }), /persona 'ana'.*server 's'.*args/);
+  });
+
+  test("shape 3: an unknown server key (apiKey) fails, naming it", () => {
+    expectRefused(srv({ url: "https://x.test/mcp", apiKey: SECRET }), /persona 'ana'.*server 's'.*apiKey/);
+  });
+
+  test("shape 4: an unknown nested server key (oauth.clientSecret) fails, naming it", () => {
+    expectRefused(srv({ url: "https://x.test/mcp", oauth: { clientId: "id", clientSecret: SECRET } }),
+      /persona 'ana'.*server 's'.*oauth/);
+  });
+
+  test("shape 5: a command string with an inline TOKEN= fails", () => {
+    expectRefused(srv({ command: "TOKEN=" + SECRET + " mcp-server" }), /persona 'ana'.*server 's'.*command/);
+  });
+
+  test("shape 6: a token in the url path fails", () => {
+    expectRefused(srv({ type: "http", url: "https://mcp.example.test/api/s/" + SECRET + "/mcp" }),
+      /persona 'ana'.*server 's'.*url/);
+  });
+
+  test("known token shapes in the url path, command or args fail", () => {
+    const shapes = [
+      "xox" + "b-12345-abcdef",
+      "gh" + "p_abcdef123456",
+      "gh" + "o_abcdef123456",
+      "github" + "_pat_abc123",
+      "s" + "k-abcdefghij",
+      "AK" + "IAABCDEFGHIJKLMNOP",
+      "ey" + "JhbGciOi.eyJzdWIi.sig",
+    ];
+    for (const t of shapes) {
+      expect(() => exportHome(srv({ url: `https://x.test/${t}/mcp` }), tmp())).toThrow(/server 's'.*url/);
+      expect(() => exportHome(srv({ command: `run-${t}` }), tmp())).toThrow(/server 's'.*command/);
+      expect(() => exportHome(srv({ command: "x", args: [t] }), tmp())).toThrow(/server 's'.*args/);
+    }
+    expect(() => exportHome(srv({ command: "bearer abc" }), tmp())).toThrow(/server 's'.*command/);
+  });
+
+  test("a non-object server definition or mcpServers fails", () => {
+    expectRefused(srv("https://u:" + SECRET + "@x.test"), /persona 'ana'.*server 's'/);
+    expectRefused(withMcp({ mcpServers: "nope" }), /persona 'ana'.*mcpServers/);
+  });
+
+  test("an unknown top-level key fails, naming it", () => {
+    expectRefused(withMcp({ mcpServers: {}, token: SECRET }), /persona 'ana'.*token/);
+  });
+
+  test("ordinary stdio and http configs still export", () => {
+    const out = tmp();
+    const h = withMcp({
+      privateServices: ["fs"],
+      mcpServers: {
+        fs: { type: "stdio", command: "bunx", args: ["@modelcontextprotocol/server-filesystem", "/srv/data"], env: { LOG: "info" } },
+        web: { type: "http", url: "https://mcp.example.test/v1/mcp", headers: { Authorization: "Bearer x" } },
+      },
+    });
+    const orig = console.error;
+    console.error = () => {};
+    try { expect(() => exportHome(h, out)).not.toThrow(); } finally { console.error = orig; }
+    expect(() => renderDir(out, meta)).not.toThrow();
+  });
+});
+
 describe("personas CLI entry", () => {
   const run = (...a: string[]) => Bun.spawnSync(["bun", "src/cli/personas.ts", ...a], { cwd: join(import.meta.dir, "../..") });
   test("--check is position independent, silent and exits 0 on a valid repo", () => {

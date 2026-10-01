@@ -5,9 +5,12 @@
  *       Repository → sync payload, validated exactly as the gateway validates
  *       it, so a malformed file fails the pull request rather than the deploy.
  *   personas export [--out <dir>]
- *       $SLAUDE_HOME → repository layout. Every token is replaced by a ${VAR}
- *       placeholder and the variables are listed, so seeding a repository never
- *       puts a secret in git.
+ *       $SLAUDE_HOME → repository layout. Every userToken, header and env value
+ *       is replaced by a ${PERSONA_*} placeholder and the variables are listed.
+ *       Anything export cannot make safe — an unknown key, a non-object
+ *       headers/env, a non-list args, a token-shaped url path, command or arg —
+ *       fails the export instead of being copied, so seeding a repository
+ *       refuses rather than puts a secret in git.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -72,6 +75,28 @@ const PLACEHOLDER_ONLY = /^\$\{PERSONA_[A-Z0-9_]+\}$/;
 
 const SECRET_ARG_RE = /(key=|token=|secret=|password=|passwd=|bearer )/i;
 const SECRET_FLAG_RE = /^--?[a-z0-9_-]*(key|token|secret|password)$/i;
+/**
+ * Token shapes refused anywhere export cannot placeholder: a url path, a
+ * command string, an arg. Slack, GitHub, OpenAI-style, AWS access keys, a
+ * Bearer prefix, a JWT, and any run of 32+ token characters (most hosted
+ * secrets). False positives fail safe: the operator edits the config first.
+ */
+const TOKEN_SHAPES: RegExp[] = [
+  /xox[a-z]-/i,
+  /\bgh[opusr]_[A-Za-z0-9]/,
+  /github_pat_/i,
+  /\bsk-[A-Za-z0-9_-]{8,}/,
+  /AKIA[0-9A-Z]{16}/,
+  /\bbearer\b/i,
+  /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\./,
+  /[A-Za-z0-9_-]{32,}/,
+];
+const looksLikeToken = (s: string) => TOKEN_SHAPES.some((re) => re.test(s));
+
+/** The only keys export knows how to make safe. Anything else could hold a
+ *  credential export has no way to recognise, so it is refused, not copied. */
+const SERVER_KEYS = new Set(["type", "url", "command", "args", "headers", "env"]);
+const TOP_KEYS = new Set(["mcpServers", "privateServices"]);
 
 /** Claim a generated variable name; two different origins must never share one. */
 function claim(reg: Map<string, string>, name: string, origin: string): void {
@@ -91,43 +116,73 @@ function scrubMcp(persona: string, file: string, raw: string, reg: Map<string, s
     // Deliberately no parser message: it can quote file content.
     throw new PayloadError(`persona '${persona}': ${file} is not valid JSON`);
   }
-  const servers = cfg && typeof cfg === "object" ? cfg.mcpServers : undefined;
-  if (servers && typeof servers === "object") {
-    for (const [server, def] of Object.entries<any>(servers)) {
-      if (!def || typeof def !== "object") continue;
-      if (typeof def.url === "string") {
-        let bad = false;
-        try {
-          const u = new URL(def.url);
-          bad = !!(u.username || u.password || u.search || u.hash);
-        } catch {
-          bad = /[@?#]/.test(def.url);
-        }
-        if (bad) {
-          throw new PayloadError(`persona '${persona}': server '${server}' url carries credentials (userinfo, query string or fragment) — move the secret into a header first`);
-        }
+  const fail = (why: string): never => {
+    throw new PayloadError(`persona '${persona}': ${file} ${why}`);
+  };
+  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) fail("is not a JSON object");
+  for (const k of Object.keys(cfg)) {
+    if (!TOP_KEYS.has(k)) fail(`has unknown top-level key '${k}' — export cannot tell whether it holds a secret; remove it first`);
+  }
+  if (cfg.privateServices !== undefined && (!Array.isArray(cfg.privateServices) || cfg.privateServices.some((n: unknown) => typeof n !== "string"))) {
+    fail("privateServices is not a list of server names");
+  }
+  const servers = cfg.mcpServers;
+  if (servers !== undefined && (!servers || typeof servers !== "object" || Array.isArray(servers))) {
+    fail("mcpServers is not an object");
+  }
+  for (const [server, def] of Object.entries<any>(servers ?? {})) {
+    const bad = (why: string): never => fail(`server '${server}' ${why}`);
+    if (!def || typeof def !== "object" || Array.isArray(def)) bad("is not an object");
+    for (const k of Object.keys(def)) {
+      if (!SERVER_KEYS.has(k)) bad(`has unknown key '${k}' — export cannot tell whether it holds a secret; remove it or move it into headers/env first`);
+    }
+    if (def.type !== undefined && typeof def.type !== "string") bad("type is not a string");
+    if (def.url !== undefined) {
+      if (typeof def.url !== "string") bad("url is not a string");
+      let path = def.url as string;
+      let carries = false;
+      try {
+        const u = new URL(def.url);
+        carries = !!(u.username || u.password || u.search || u.hash);
+        path = u.pathname;
+      } catch {
+        carries = /[@?#]/.test(def.url);
       }
-      if (Array.isArray(def.args)) {
-        const args: unknown[] = def.args;
-        const risky = args.some((a, i) =>
-          typeof a === "string" && (SECRET_ARG_RE.test(a) || (SECRET_FLAG_RE.test(a) && i + 1 < args.length && !String(args[i + 1]).startsWith("-"))));
-        if (risky) {
-          throw new PayloadError(`persona '${persona}': server '${server}' has args that look like a credential — move it into env as a placeholder first`);
-        }
-        if (args.length) argsServers.push(`${persona}/${server}`);
+      if (carries) {
+        bad("url carries credentials (userinfo, query string or fragment) — move the secret into a header first");
       }
-      for (const field of ["headers", "env"]) {
-        const m = def[field];
-        if (!m || typeof m !== "object") continue;
-        for (const [k, v] of Object.entries(m)) {
-          if (typeof v !== "string") {
-            throw new PayloadError(`persona '${persona}': server '${server}' ${field}.${k} is not a string — cannot be exported safely`);
-          }
-          if (PLACEHOLDER_ONLY.test(v)) continue;
-          const name = `${PERSONA_VAR_PREFIX}${upper(persona)}_${upper(server)}_${upper(k)}`;
-          claim(reg, name, `${persona}/${server}/${k}`);
-          m[k] = `\${${name}}`;
+      if (looksLikeToken(path)) bad("url path looks like it carries a token — move the secret into a header first");
+    }
+    if (def.command !== undefined) {
+      if (typeof def.command !== "string") bad("command is not a string");
+      if (SECRET_ARG_RE.test(def.command) || looksLikeToken(def.command)) {
+        bad("command looks like it carries a credential — move it into env as a placeholder first");
+      }
+    }
+    if (def.args !== undefined) {
+      if (!Array.isArray(def.args)) bad("args is not a list — cannot be exported safely");
+      const args: unknown[] = def.args;
+      const risky = args.some((a, i) =>
+        typeof a !== "string" ||
+        SECRET_ARG_RE.test(a) || looksLikeToken(a) ||
+        (SECRET_FLAG_RE.test(a) && i + 1 < args.length && !String(args[i + 1]).startsWith("-")));
+      if (risky) {
+        bad("has args that look like a credential — move it into env as a placeholder first");
+      }
+      if (args.length) argsServers.push(`${persona}/${server}`);
+    }
+    for (const field of ["headers", "env"]) {
+      const m = def[field];
+      if (m === undefined) continue;
+      if (!m || typeof m !== "object" || Array.isArray(m)) bad(`${field} is not an object — cannot be exported safely`);
+      for (const [k, v] of Object.entries(m)) {
+        if (typeof v !== "string") {
+          bad(`${field}.${k} is not a string — cannot be exported safely`);
         }
+        if (PLACEHOLDER_ONLY.test(v as string)) continue;
+        const name = `${PERSONA_VAR_PREFIX}${upper(persona)}_${upper(server)}_${upper(k)}`;
+        claim(reg, name, `${persona}/${server}/${k}`);
+        m[k] = `\${${name}}`;
       }
     }
   }
