@@ -20,6 +20,28 @@ patches:
         # although real deploys register bot tokens in slack_apps. The sim seeds a dummy for the
         # same reason. Never validated, only used for attachments, which e2e messages lack.
         SLACK_BOT_TOKEN: "e2e-unused-placeholder"
+  # The gateway's soul cache on the shared volume, the directory nodes already read
+  # ($SLAUDE_HOME/cache). The base keeps it pod-local (an emptyDir) so a file planted by a node
+  # or an agent turn cannot forge approvers. This test cluster gives that hardening up on purpose:
+  # the mock LLM cannot answer the soul-extraction call, so the harness seeds a signed cache entry
+  # once, and it has to reach every gateway replica, including one that replaces a killed pod,
+  # and survive the restart the harness does after seeding. In a pod-local directory each new
+  # gateway pod would boot without it and fall back to a soul with no manager. Throwaway cluster
+  # only; never copy this patch into a real deployment.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: slaude-gateway
+        namespace: slaude-scale
+      spec:
+        template:
+          spec:
+            containers:
+              - name: gateway
+                env:
+                  - name: SLAUDE_SOUL_CACHE_DIR
+                    value: /data/cache
   # On a fresh volume the postgres entrypoint first runs a temporary server for the init scripts,
   # listening on the Unix socket only, then shuts it down and starts the real one. With no
   # readiness probe, up.sh's rollout wait passes at once, its in-pod `pg_isready` (socket) answers

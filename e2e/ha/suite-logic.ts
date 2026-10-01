@@ -200,6 +200,15 @@ export function registeredApps(listOutput: string): string[] {
 }
 
 /**
+ * The in-pod shell command whose `sha256sum` output feeds bootFingerprint: SOUL.md and every soul
+ * cache entry, from the directory extraction reads. That is SLAUDE_SOUL_CACHE_DIR when set, else
+ * $SLAUDE_HOME/cache, as cacheDir() in src/soul/extract.ts decides; run in the gateway container,
+ * the variables are that container's. Missing files are not an error.
+ */
+export const STARTUP_FILES_SCRIPT =
+  'sha256sum "$SLAUDE_HOME"/SOUL.md "${SLAUDE_SOUL_CACHE_DIR:-$SLAUDE_HOME/cache}"/soul.*.json 2>/dev/null || true';
+
+/**
  * One digest of everything the slaude pods read only at startup: SOUL.md and the soul cache
  * (from `sha256sum` output, keyed by file name), the registered-app set, and the data of the
  * ConfigMap their env comes from (`kubectl get configmap -o json`; env is read at pod start).

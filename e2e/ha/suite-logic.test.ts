@@ -1,4 +1,7 @@
-import { expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { CallRecord } from "../fake-slack/core/call-log";
 import {
   adoptedCredentials,
@@ -19,6 +22,7 @@ import {
   restartDecision,
   seedCommand,
   stableCredentials,
+  STARTUP_FILES_SCRIPT,
   unknownMethods,
   type MockJournalRow,
 } from "./suite-logic";
@@ -204,4 +208,46 @@ test("restart when the seed changed something, or the pods booted with other sta
   expect(restartDecision({ before: "f1", after: "f1", booted: ["f1", "f0"] }).restart).toBe(true);
   expect(restartDecision({ before: "f1", after: "f1", booted: [] }).restart).toBe(true);
   expect(restartDecision({ before: "f1", after: "f1", booted: ["f1", "f1"] })).toEqual({ restart: false, reason: expect.stringContaining("nothing") });
+});
+
+describe("the startup-files command reads the soul cache where extraction does", () => {
+  let tmp = "";
+  beforeAll(() => {
+    tmp = mkdtempSync(join(tmpdir(), "startup-files-"));
+    for (const d of ["home/cache", "pod-cache"]) mkdirSync(join(tmp, d), { recursive: true });
+    writeFileSync(join(tmp, "home/SOUL.md"), "soul");
+    writeFileSync(join(tmp, "home/cache/soul.aaaaaaaaaaaaaaaa.json"), "in home");
+    writeFileSync(join(tmp, "pod-cache/soul.bbbbbbbbbbbbbbbb.json"), "in the override");
+  });
+  afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const run = (env: Record<string, string>) => {
+    const r = Bun.spawnSync(["/bin/sh", "-c", STARTUP_FILES_SCRIPT], {
+      env: { PATH: process.env.PATH!, SLAUDE_HOME: join(tmp, "home"), ...env },
+    });
+    expect(r.exitCode).toBe(0);
+    return r.stdout.toString();
+  };
+  const names = (out: string) =>
+    out.trim().split("\n").filter(Boolean).map((l) => l.slice(l.lastIndexOf("/") + 1)).sort();
+
+  test("SLAUDE_SOUL_CACHE_DIR set: that directory, not $SLAUDE_HOME/cache", () => {
+    expect(names(run({ SLAUDE_SOUL_CACHE_DIR: join(tmp, "pod-cache") }))).toEqual(["SOUL.md", "soul.bbbbbbbbbbbbbbbb.json"]);
+  });
+
+  test("unset or empty: $SLAUDE_HOME/cache", () => {
+    expect(names(run({}))).toEqual(["SOUL.md", "soul.aaaaaaaaaaaaaaaa.json"]);
+    expect(names(run({ SLAUDE_SOUL_CACHE_DIR: "" }))).toEqual(["SOUL.md", "soul.aaaaaaaaaaaaaaaa.json"]);
+  });
+
+  test("its output is what bootFingerprint takes, and a different cache entry moves the fingerprint", () => {
+    const home = bootFingerprint(run({}), LIST);
+    const pod = bootFingerprint(run({ SLAUDE_SOUL_CACHE_DIR: join(tmp, "pod-cache") }), LIST);
+    expect(home).toMatch(/^[0-9a-f]{32}$/);
+    expect(pod).not.toBe(home);
+  });
+
+  test("missing files are not an error", () => {
+    expect(run({ SLAUDE_HOME: join(tmp, "nowhere") })).toBe("");
+  });
 });

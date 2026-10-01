@@ -34,6 +34,7 @@ import {
   SEED_REMOTE_PATH,
   SOUL_GUARD_REMOTE_PATH,
   stableCredentials,
+  STARTUP_FILES_SCRIPT,
 } from "./suite-logic";
 
 export type ControlClient = ReturnType<typeof createControlClient>;
@@ -153,7 +154,7 @@ async function must(what: string, r: Promise<{ stdout: string; stderr: string; c
 async function fingerprintIn(pod: string, requireSoul = true): Promise<string> {
   const sums = await must(
     "checksumming the soul",
-    execIn(pod, "gateway", ["sh", "-c", 'sha256sum "$SLAUDE_HOME"/SOUL.md "$SLAUDE_HOME"/cache/soul.*.json 2>/dev/null || true']),
+    execIn(pod, "gateway", ["sh", "-c", STARTUP_FILES_SCRIPT]),
   );
   const apps = await must("slack-app list", execIn(pod, "gateway", ["sh", "-c", "cd /app && bun run slack-app list"], { timeoutMs: 60_000 }));
   const config = await must("reading the env ConfigMap", kubectl(["get", "configmap", ENV_CONFIGMAP, "-o", "json"]));
