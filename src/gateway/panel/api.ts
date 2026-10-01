@@ -46,6 +46,7 @@ import { publishConfigReload } from "../core/config-reload";
 import * as Personas from "../../db/personas";
 import { OVERRIDE_FIELDS, type OverrideField, type DesiredPersona } from "../../persona/effective";
 import { PERSONA_NAME_RE } from "../../persona/sync/payload";
+import { assertHttpOnlyMcp, McpNotHttpOnlyError } from "../../persona/mcp-http-only";
 import { extractSoulData, SoulExtractionError } from "../../soul/extract";
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}): Response =>
@@ -356,8 +357,11 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           const presence = (v: unknown) => (v != null ? "present" : "absent");
           return json(200, {
             revision: (await Personas.syncState(tenant))?.revision ?? null,
-            personas: live.map((p) => {
-              const d = desired.get(p.name)!;
+            // A sync can commit between the two reads; skip a persona the
+            // desired read does not know yet (it shows on the next read).
+            personas: live.flatMap((p) => {
+              const d = desired.get(p.name);
+              if (!d) return [];
               const overridden = (f: OverrideField) => p.overridden.includes(f);
               return {
                 name: p.name,
@@ -389,10 +393,13 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           if (name !== "default" && (typeof b.slackUserId !== "string" || !b.slackUserId)) {
             return json(422, { error: "slackUserId is required" });
           }
-          if (b.model != null && typeof b.model !== "string") return json(422, { error: "model must be a string" });
+          if (b.model != null && (typeof b.model !== "string" || !b.model)) return json(422, { error: "model must be a non-empty string" });
           if (b.userToken != null && typeof b.userToken !== "string") return json(422, { error: "userToken must be a string" });
-          if (b.mcp != null && (typeof b.mcp !== "object" || Array.isArray(b.mcp))) {
-            return json(422, { error: "mcp must be an object" });
+          if (b.mcp != null) {
+            try { assertHttpOnlyMcp(b.mcp); } catch (e) {
+              if (e instanceof McpNotHttpOnlyError) return json(422, { error: e.message });
+              throw e;
+            }
           }
           try {
             const row: DesiredPersona = {
@@ -423,11 +430,15 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           if (req.method !== "PUT" && req.method !== "DELETE") return json(405, { error: "method not allowed" });
           const denied = requireSuperadmin(role, { action: "persona.override", operator: operatorId });
           if (denied) return denied;
-          const name = decodeURIComponent(seg[3]!);
+          let name: string;
+          try { name = decodeURIComponent(seg[3]!); } catch { return json(422, { error: "invalid persona name" }); }
+          if (!PERSONA_NAME_RE.test(name)) return json(422, { error: "invalid persona name" });
           const field = seg[5] as OverrideField;
           if (!OVERRIDE_FIELDS.includes(field)) {
             return json(422, { error: `only ${OVERRIDE_FIELDS.join(", ")} can be overridden` });
           }
+          // PUT and DELETE agree on an unmanaged tenant: 409 before any existence check.
+          if (!(await Personas.isManaged(tenant))) return json(409, { error: new Personas.NotManagedError(tenant).message });
           let removed: boolean | undefined;
           try {
             if (req.method === "PUT") {
@@ -440,8 +451,11 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
                 stored = { soulMd: v, soulJson: await extractSoul(v) };
               } else if (field === "model") {
                 if (typeof v !== "string" || !v) return json(422, { error: "model value must be a non-empty string" });
-              } else if (v === null || typeof v !== "object" || Array.isArray(v)) {
-                return json(422, { error: "mcp value must be an object" });
+              } else {
+                try { assertHttpOnlyMcp(v); } catch (e) {
+                  if (e instanceof McpNotHttpOnlyError) return json(422, { error: e.message });
+                  throw e;
+                }
               }
               await Personas.setOverride(tenant, name, field, stored, operatorId);
             } else {

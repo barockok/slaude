@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createPanelApi } from "../../src/gateway/panel/api";
 import { __resetRoleCache } from "../../src/gateway/panel/auth/roles";
 import { mintSession, AT_COOKIE } from "../../src/gateway/panel/auth/session";
@@ -155,6 +155,64 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("panel persona overrides", () =>
     expect(zed.userToken).toBe(TOKEN);
     const listed = await (await panel.fetch(get("/panel/api/personas", superadmin)))!.text();
     expect(listed).not.toContain(TOKEN);
+  });
+
+  const HTTP = { mcpServers: { svc: { type: "http", url: "https://mcp.example.com", headers: { a: "b" } } } };
+  const STDIO = { mcpServers: { evil: { type: "stdio", command: "sh", args: ["-c", "x"] } } };
+  const SSE = { mcpServers: { s1: { type: "sse", url: "https://mcp.example.com" } } };
+
+  test("an mcp override is http-only", async () => {
+    await sync([row("ana")]);
+    const p = "/panel/api/personas/ana/overrides/mcp";
+    for (const bad of [STDIO, SSE]) {
+      const res = (await panel.fetch(put(p, { value: bad }, superadmin)))!;
+      expect(res.status).toBe(422);
+      const msg = ((await res.json()) as any).error as string;
+      expect(msg).not.toContain("sh");
+      expect((await P.effectivePersonas("default"))[0]!.overridden).toEqual([]);
+    }
+    expect((await panel.fetch(put(p, { value: HTTP }, superadmin)))!.status).toBe(200);
+  });
+
+  test("a runtime onboard's mcp is http-only", async () => {
+    await sync([row("ana")]);
+    const mk1 = (mcp: unknown) => post("/panel/api/personas", { name: "zed", slackUserId: "UZED", soul: "x", mcp }, superadmin);
+    const res = (await panel.fetch(mk1(STDIO)))!;
+    expect(res.status).toBe(422);
+    expect(JSON.stringify(await res.json())).toContain("evil");
+    expect((await panel.fetch(mk1(SSE)))!.status).toBe(422);
+    expect((await P.effectivePersonas("default")).some((p) => p.name === "zed")).toBe(false);
+    expect((await panel.fetch(mk1(HTTP)))!.status).toBe(200);
+  });
+
+  test("a bad persona name in the path is 422, after the role check", async () => {
+    await sync([row("ana")]);
+    for (const n of ["%E0", "a%2Fb"]) {
+      expect((await panel.fetch(put(`/panel/api/personas/${n}/overrides/model`, { value: "m" }, superadmin)))!.status).toBe(422);
+      expect((await panel.fetch(del(`/panel/api/personas/${n}/overrides/model`, superadmin)))!.status).toBe(422);
+      expect((await panel.fetch(put(`/panel/api/personas/${n}/overrides/model`, { value: "m" }, operator)))!.status).toBe(403);
+    }
+  });
+
+  test("PUT and DELETE both 409 on a never-synced tenant", async () => {
+    const p = "/panel/api/personas/ana/overrides/model";
+    expect((await panel.fetch(put(p, { value: "m" }, superadmin)))!.status).toBe(409);
+    expect((await panel.fetch(del(p, superadmin)))!.status).toBe(409);
+  });
+
+  test("a runtime onboard rejects an empty model", async () => {
+    await sync([row("ana")]);
+    expect((await panel.fetch(post("/panel/api/personas", { name: "zed", slackUserId: "UZED", soul: "x", model: "" }, superadmin)))!.status).toBe(422);
+  });
+
+  test("GET skips a persona a racing sync added between the two reads", async () => {
+    await sync([row("ana"), row("bea")]);
+    const real = P.desiredPersonas;
+    const spy = spyOn(P, "desiredPersonas").mockImplementation(async (...a) => (await real(...a)).filter((d) => d.name !== "bea"));
+    try {
+      const body = (await (await panel.fetch(get("/panel/api/personas", superadmin)))!.json()) as any;
+      expect(body.personas.map((p: any) => p.name)).toEqual(["ana"]);
+    } finally { spy.mockRestore(); }
   });
 
   test("mutations without the anti-CSRF header are refused first", async () => {
