@@ -55,6 +55,17 @@ describe.skipIf(!isPg)("runtime bundle from effective state", () => {
     expect(b.headers.get("etag")).not.toBe(a.headers.get("etag"));
   });
 
+  // R42 (I2): the persona's effective model reaches the node, marked managed.
+  test("a managed bundle is marked managed and carries the effective model", async () => {
+    await P.applySync("default", [row("ana", { model: "m-git" })], meta("r1", "2026-10-01T10:00:00Z"));
+    let b = (await (await handleTenantRuntime(req(), "default", "ana")).json()) as any;
+    expect(b.managed).toBe(true);
+    expect(b.defaultModel).toBe("m-git");
+    await P.setOverride("default", "ana", "model", "m-override", "ops");
+    b = (await (await handleTenantRuntime(req(), "default", "ana")).json()) as any;
+    expect(b.defaultModel).toBe("m-override");
+  });
+
   test("a managed named persona's bundle carries its Slack user id", async () => {
     await P.applySync("default", [row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
     const b = (await (await handleTenantRuntime(req(), "default", "ana")).json()) as any;

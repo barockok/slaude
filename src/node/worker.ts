@@ -103,23 +103,42 @@ export function bundleChildEnv(
  * job recorded for the session; a disagreement fails the boot rather than run
  * one persona's session on another's soul.
  */
-export function makeBundleSoulResolver(deps: {
+type BundleResolverDeps = {
   client: Pick<NodeClient, "getRuntime">;
   tenantFor: (sessionId: string) => string | undefined;
   tokenFor: (sessionId: string) => string | undefined;
   personaFor: (sessionId: string) => string | undefined;
-}): (sessionId: string, persona: string | undefined) => Promise<{ soulMd: string; soulJson: unknown }> {
+};
+
+/** Fetch the session's bundle for the persona it boots as, refusing a persona
+ *  that disagrees with the one the job recorded. */
+async function sessionBundle(deps: BundleResolverDeps, sessionId: string, persona: string | undefined): Promise<RuntimeBundle> {
+  const tenant = deps.tenantFor(sessionId);
+  const token = deps.tokenFor(sessionId);
+  if (!tenant || !token) throw new Error(`no tenant or job token for session ${sessionId}`);
+  const asked = persona ?? "default";
+  const recorded = deps.personaFor(sessionId);
+  if (recorded !== undefined && recorded !== asked) {
+    throw new Error(`persona mismatch for session ${sessionId}: session boots as '${asked}', job recorded '${recorded}'`);
+  }
+  return deps.client.getRuntime(tenant, asked, token);
+}
+
+export function makeBundleSoulResolver(deps: BundleResolverDeps): (sessionId: string, persona: string | undefined) => Promise<{ soulMd: string; soulJson: unknown }> {
   return async (sessionId, persona) => {
-    const tenant = deps.tenantFor(sessionId);
-    const token = deps.tokenFor(sessionId);
-    if (!tenant || !token) throw new Error(`no tenant or job token for session ${sessionId}`);
-    const asked = persona ?? "default";
-    const recorded = deps.personaFor(sessionId);
-    if (recorded !== undefined && recorded !== asked) {
-      throw new Error(`persona mismatch for session ${sessionId}: session boots as '${asked}', job recorded '${recorded}'`);
-    }
-    const bundle = await deps.client.getRuntime(tenant, asked, token);
+    const bundle = await sessionBundle(deps, sessionId, persona);
     return { soulMd: bundle.soulMd, soulJson: bundle.soulJson };
+  };
+}
+
+/** The persona's default model from a MANAGED bundle (its effective model, or
+ *  SLAUDE_MODEL on the gateway when it sets none). An unmanaged bundle yields
+ *  undefined, so the row's model stands exactly as before. The manager only
+ *  asks when the row carries no per-thread model. */
+export function makeBundleModelResolver(deps: BundleResolverDeps): (sessionId: string, persona: string | undefined) => Promise<string | undefined> {
+  return async (sessionId, persona) => {
+    const bundle = await sessionBundle(deps, sessionId, persona);
+    return bundle.managed ? bundle.defaultModel : undefined;
   };
 }
 
@@ -266,12 +285,16 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // NodeClient — the same fetch the child-env resolver makes, so this costs a
   // 304 at most. A failure (gateway unreachable, persona tombstoned) fails the
   // boot rather than falling back to disk or to the default soul.
-  agent.setPersonaSoulResolver(makeBundleSoulResolver({
+  const bundleDeps: BundleResolverDeps = {
     client,
     tenantFor: (id) => tenants.get(id),
     tokenFor: (id) => store.tokenFor(id),
     personaFor: (id) => personas.get(id),
-  }));
+  };
+  agent.setPersonaSoulResolver(makeBundleSoulResolver(bundleDeps));
+  // The persona's model (git or override) also comes from the bundle; a
+  // per-thread /model on the session row still wins (see AgentManager).
+  agent.setPersonaModelResolver(makeBundleModelResolver(bundleDeps));
   agent.setChildEnvResolver(async (sessionId) => {
     const tenant = tenants.get(sessionId);
     const token = store.tokenFor(sessionId);

@@ -2055,12 +2055,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           return;
         }
         if (!slash.id) {
+          // A managed tenant's session follows its persona's model until a
+          // /model pins one; show what it resolves to, not the empty row.
+          const current = agent.effectiveModelOf(session);
           try {
             const models = await listModels();
             const lines = models.map((m) => `• \`${m.id}\``).join("\n") || "_none returned_";
-            await reply(`*available models*\n${lines}\n\ncurrent: \`${session.model}\``);
+            await reply(`*available models*\n${lines}\n\ncurrent: \`${current}\``);
           } catch {
-            await reply(`can't fetch model list from provider. current: \`${session.model}\``);
+            await reply(`can't fetch model list from provider. current: \`${current}\``);
           }
           return;
         }

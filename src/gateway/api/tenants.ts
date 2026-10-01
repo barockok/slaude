@@ -43,7 +43,12 @@ export interface RuntimeBundle {
   mcpJson: unknown;
   /** Skill roots in resolution order (base first, persona overlay last). */
   skillsPaths: string[];
+  /** The persona's default model: on a managed tenant its effective model (git
+   *  or override), else SLAUDE_MODEL. A node applies it only when `managed`. */
   defaultModel: string;
+  /** Present (true) only on a managed tenant's bundle. Unmanaged bundles omit
+   *  it, so their content and ETag are exactly as before. */
+  managed?: true;
 }
 
 type PersonaRow = {
@@ -109,6 +114,7 @@ async function buildManagedBundle(tenantId: string, personaId: string): Promise<
     mcpJson: null,
     skillsPaths: [paths.skills, ...(effective.name !== "default" ? [personaSkillsRoot(effective.name)] : [])],
     defaultModel: effective.model ?? env.model(),
+    managed: true,
   };
 }
 

@@ -24,6 +24,10 @@ export interface PersonaRegistry {
    *  Always null for a filesystem registry, and for an identity a live persona
    *  now holds. */
   tombstonedPersonaFor(slackUserId: string): string | null;
+  /** Managed snapshots only: the `default` persona's effective model and mcp,
+   *  or null when the tenant has no live `default` row. The default persona is
+   *  not in `list()`. Absent on a filesystem registry. */
+  defaultPersona?(): { model: string | null; mcp: unknown } | null;
 }
 
 function loadPersonas(): Persona[] {
@@ -74,7 +78,10 @@ function loadPersonas(): Persona[] {
 
 function snapshot(
   personas: Persona[],
-  managed?: { tombstoned: Array<{ name: string; slackUserId: string }> },
+  managed?: {
+    tombstoned: Array<{ name: string; slackUserId: string }>;
+    defaultPersona: { model: string | null; mcp: unknown } | null;
+  },
 ): PersonaRegistry {
   const byUserId = new Map<string, Persona>(personas.map((p) => [p.slackUserId, p]));
   const byName = new Map<string, Persona>(personas.map((p) => [p.name, p]));
@@ -88,6 +95,7 @@ function snapshot(
     isMultiPersonaMode: () => personas.length > 0,
     isManaged: () => managed !== undefined,
     tombstonedPersonaFor: (id) => retired.get(id) ?? null,
+    ...(managed ? { defaultPersona: () => managed.defaultPersona } : {}),
   };
 }
 
@@ -130,8 +138,12 @@ async function loadPersonaState(tenant: string): Promise<PersonaState> {
       soulMd: p.soulMd,
       config: { slackUserId: p.slackUserId!, name: p.name, ...(p.userToken ? { userToken: p.userToken } : {}) },
       outClient: p.userToken ? new WebClient(p.userToken) : null,
+      model: p.model,
+      mcp: p.mcp ?? null,
     }));
-  return { registry: snapshot(personas, { tombstoned }), managed: { defaultPersona: all.find((p) => p.name === "default") ?? null } };
+  const def = all.find((p) => p.name === "default") ?? null;
+  const defaultFields = def ? { model: def.model, mcp: def.mcp ?? null } : null;
+  return { registry: snapshot(personas, { tombstoned, defaultPersona: defaultFields }), managed: { defaultPersona: def } };
 }
 
 export async function buildPersonaRegistry(tenant: string): Promise<PersonaRegistry> {
@@ -216,6 +228,19 @@ export function livePersona(name: string, r: PersonaRegistry = getPersonaRegistr
   if (p) return p;
   if (r.isManaged()) throw new PersonaNotLiveError(name);
   return null;
+}
+
+/**
+ * The model a session of persona `name` (undefined = the default persona)
+ * defaults to on a MANAGED tenant: its effective model — the git value or a
+ * runtime override — or null when it sets none (the caller falls back to
+ * SLAUDE_MODEL). Undefined on a filesystem registry, where personas carry no
+ * model and a session keeps the model its row was created with.
+ */
+export function managedPersonaModel(name: string | undefined, r: PersonaRegistry = getPersonaRegistry()): string | null | undefined {
+  if (!r.isManaged()) return undefined;
+  if (!name || name === "default") return r.defaultPersona?.()?.model ?? null;
+  return r.lookupByName(name)?.model ?? null;
 }
 
 /**

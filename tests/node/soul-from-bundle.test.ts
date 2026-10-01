@@ -7,7 +7,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { AgentManager } from "../../src/agent/manager";
 import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../src/persona/registry";
-import { bundleChildEnv, makeBundleSoulResolver, makeTenantReloadHandler } from "../../src/node/worker";
+import { bundleChildEnv, makeBundleModelResolver, makeBundleSoulResolver, makeTenantReloadHandler } from "../../src/node/worker";
 
 const shortHash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 12);
 
@@ -222,5 +222,25 @@ describe("node bundle resolvers", () => {
     });
     expect(bundleChildEnv({ providerCreds: {}, slackUserId: "UDEF" }, "default")).toEqual({});
     expect(bundleChildEnv({ providerCreds: {}, slackUserId: null }, "ana")).toEqual({});
+  });
+});
+
+// R42 (I2): a node takes a persona's default model from its runtime bundle —
+// but only from a managed bundle; an unmanaged one leaves the row as it is.
+describe("node bundle model resolver", () => {
+  const deps = (b: unknown, recorded: string | undefined = "ana") => ({
+    client: { getRuntime: async () => b as any },
+    tenantFor: () => "default",
+    tokenFor: () => "job-token",
+    personaFor: () => recorded,
+  });
+  test("a managed bundle yields its default model", async () => {
+    expect(await makeBundleModelResolver(deps({ managed: true, defaultModel: "m-ana" }))("s-1", "ana")).toBe("m-ana");
+  });
+  test("an unmanaged bundle yields nothing", async () => {
+    expect(await makeBundleModelResolver(deps({ defaultModel: "m-env" }))("s-1", "ana")).toBeUndefined();
+  });
+  test("a persona mismatch fails the boot", async () => {
+    await expect(makeBundleModelResolver(deps({ managed: true, defaultModel: "m" }, "bea"))("s-1", "ana")).rejects.toThrow(/persona mismatch/);
   });
 });

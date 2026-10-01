@@ -31,7 +31,7 @@ import { soulSystemBlock } from "../soul/loader";
 import { personaSoulText } from "../persona/soul-source";
 import { soulData, effectiveSoulForChannel } from "../soul/extract";
 import { SoulDataSchema } from "../soul/data";
-import { getPersonaRegistry, livePersona, onPersonaRegistryInstalled, type PersonaRegistry } from "../persona/registry";
+import { getPersonaRegistry, livePersona, managedPersonaModel, onPersonaRegistryInstalled, type PersonaRegistry } from "../persona/registry";
 import * as Sessions from "../db/sessions";
 import type { ThreadKey } from "../db/sessions";
 import { dbSessionStore, type SessionStore } from "./session-store";
@@ -110,6 +110,9 @@ export type StopGuard = (sessionId: string) => string | null;
  *  when the gateway has none). */
 export type PersonaSoul = { soulMd: string; soulJson: unknown };
 export type PersonaSoulResolver = (sessionId: string, persona: string | undefined) => Promise<PersonaSoul>;
+/** A persona's default model as the node receives it in the runtime bundle, or
+ *  undefined when the bundle is unmanaged (the row's model stands as is). */
+export type PersonaModelResolver = (sessionId: string, persona: string | undefined) => Promise<string | undefined>;
 
 /** Decide whether a UserPromptSubmit should be suppressed because its thread is
  *  disengaged. `continue:false` lets the user message persist to the transcript
@@ -223,6 +226,7 @@ export class AgentManager extends EventEmitter {
    *  today's resolution (persona home / per-initiator home / inherited). */
   #configDirResolver: ((sessionId: string, persona: string | undefined) => Promise<string>) | undefined;
   #personaSoulResolver: PersonaSoulResolver | undefined;
+  #personaModelResolver: PersonaModelResolver | undefined;
   #mcpResolver: McpResolver | undefined;
   #stopGuard: StopGuard | undefined;
   /** Sessions whose Stop hook already blocked once this turn — cleared on user msg. */
@@ -305,6 +309,51 @@ export class AgentManager extends EventEmitter {
     this.#personaSoulResolver = resolver;
   }
 
+  /** Install a per-session persona model resolver (a node: the runtime
+   *  bundle's default model). Consulted at boot only when the session row has
+   *  no per-thread model. Unset = the persona registry (mono, gateway). */
+  setPersonaModelResolver(resolver: PersonaModelResolver | undefined) {
+    this.#personaModelResolver = resolver;
+  }
+
+  /**
+   * The model a session runs with, in precedence order:
+   *   1. a per-thread choice (`/model`, the panel) — the row's model;
+   *   2. the persona's effective model on a managed tenant (git or override);
+   *   3. SLAUDE_MODEL.
+   * A managed tenant creates rows with an empty model ("follow the persona"),
+   * so a later sync or override reaches the thread at its next boot. Rows
+   * created before that, and every row on a filesystem tenant, carry
+   * SLAUDE_MODEL from creation: unchanged.
+   */
+  async #sessionModel(sessionId: string, rowModel: string, personaName: string | undefined): Promise<string> {
+    if (rowModel) return rowModel;
+    const persona = this.#personaModelResolver
+      ? await this.#personaModelResolver(sessionId, personaName)
+      : this.#registryPersonaModel(personaName);
+    return persona ?? "";
+  }
+
+  /** Mono/gateway: the managed persona's model, falling back to SLAUDE_MODEL;
+   *  undefined on a filesystem registry. */
+  #registryPersonaModel(personaName: string | undefined): string | undefined {
+    const m = managedPersonaModel(personaName);
+    return m === undefined ? undefined : (m ?? env.model());
+  }
+
+  /** The model a session row resolves to (for display), without a boot. Uses
+   *  the persona registry, which on the gateway is the same effective state a
+   *  node's bundle carries. */
+  effectiveModelOf(row: { model: string; persona_id?: string | null }): string {
+    if (row.model) return row.model;
+    const named = row.persona_id && row.persona_id !== "default" ? row.persona_id : undefined;
+    try {
+      return this.#registryPersonaModel(named) ?? "";
+    } catch {
+      return "";
+    }
+  }
+
   /** Install a transport-level permission resolver (e.g. Slack approval gate). */
   setPermissionResolver(resolver: PermissionResolver | undefined) {
     this.#resolver = resolver;
@@ -367,7 +416,10 @@ export class AgentManager extends EventEmitter {
       try {
         row = await this.#store.createForThread({
           thread,
-          model: env.model(),
+          // A managed tenant leaves the model empty so the session follows its
+          // persona's effective model at every boot (see #sessionModel). A
+          // filesystem tenant stores SLAUDE_MODEL, as it always has.
+          model: getPersonaRegistry().isManaged() ? "" : env.model(),
           working_dir: workingDir,
           title: opts.title,
           permission_mode: env.defaultPermissionMode(),
@@ -763,6 +815,7 @@ export class AgentManager extends EventEmitter {
 
     const mode = (row.permission_mode || "default") as PermissionMode;
     const mcpServers = await this.#mcpResolver?.(sessionId);
+    const model = await this.#sessionModel(sessionId, row.model, personaName);
     const systemAppend = await this.#buildSystemAppend(sessionId, personaName, {
       channelId: row.slack_channel_id,
       lock,
@@ -836,7 +889,7 @@ export class AgentManager extends EventEmitter {
       // its own default (e.g. Claude Code subscription default under
       // CLAUDE_CODE_OAUTH_TOKEN). When pointing at a non-Anthropic gateway,
       // SLAUDE_MODEL MUST be set to a provider-qualified id.
-      ...(row.model ? { model: row.model } : {}),
+      ...(model ? { model } : {}),
       abortController: abort,
       env: scrubChildEnv({ ...process.env, ...providerEnv }),
       ...(canUseTool ? { canUseTool } : {}),
@@ -891,7 +944,7 @@ export class AgentManager extends EventEmitter {
 
     (async () => {
       try {
-        console.log(`[mgr] query() boot session=${sessionId} model=${row.model} cwd=${row.working_dir} resume=${!!row.claude_started}`);
+        console.log(`[mgr] query() boot session=${sessionId} model=${model} cwd=${row.working_dir} resume=${!!row.claude_started}`);
         const q = agentSdk.query({ prompt: promptIterable, options });
         live.query = q;
         for await (const msg of q as AsyncIterable<SDKMessage>) {

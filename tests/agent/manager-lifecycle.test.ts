@@ -1064,3 +1064,99 @@ describe("a warm session whose persona is retired", () => {
     }
   });
 });
+
+// R42 (I2): a session's model = per-thread choice (/model) > the persona's
+// effective model on a managed tenant > SLAUDE_MODEL. Mono reads the persona
+// model from the registry; a node from its runtime bundle.
+describe("session model precedence", () => {
+  const reg = (managed: boolean, models: Record<string, string | null>, defaultModel: string | null) => ({
+    lookupByUserId: () => null,
+    lookupByName: (n: string) => (n in models
+      ? { name: n, slackUserId: `U${n.toUpperCase()}`, soulMd: `${n} soul`, config: { slackUserId: `U${n.toUpperCase()}`, name: n }, outClient: null, ...(managed ? { model: models[n] } : {}) }
+      : null),
+    list: () => [],
+    isMultiPersonaMode: () => Object.keys(models).length > 0,
+    isManaged: () => managed,
+    tombstonedPersonaFor: () => null,
+    ...(managed ? { defaultPersona: () => ({ model: defaultModel, mcp: null }) } : {}),
+  }) as any;
+
+  const bootModel = async (mgr: InstanceType<typeof AgentManager>, id: string) => {
+    const events = record(mgr);
+    const fs = plan((s) => (s.onUser = () => s.emit(res())));
+    await mgr.sendMessage(id, "hi");
+    await until(() => events.some((e) => e.type === "done" && e.sessionId === id), 3000, `done ${id}`);
+    await shutdown(mgr, id);
+    return fs.options.model as string | undefined;
+  };
+
+  const savedModel = process.env.SLAUDE_MODEL;
+  const withEnvModel = async (fn: () => Promise<void>) => {
+    process.env.SLAUDE_MODEL = "m-env";
+    try { await fn(); } finally {
+      if (savedModel === undefined) delete process.env.SLAUDE_MODEL;
+      else process.env.SLAUDE_MODEL = savedModel;
+      __resetPersonaRegistry();
+    }
+  };
+
+  it("mono, managed: persona model > SLAUDE_MODEL, and a per-thread /model beats both", async () => {
+    await withEnvModel(async () => {
+      setPersonaRegistry(reg(true, { ana: "m-ana", bea: null }, "m-default"));
+      const mgr = new AgentManager();
+      const ana = await mgr.ensureSession({ ...thread(), persona_id: "ana" });
+      const bea = await mgr.ensureSession({ ...thread(), persona_id: "bea" });
+      const dflt = await mgr.ensureSession(thread());
+      // A managed tenant's row follows its persona instead of pinning SLAUDE_MODEL.
+      expect(ana.model).toBe("");
+      expect(await bootModel(mgr, ana.id)).toBe("m-ana");
+      expect(await bootModel(mgr, bea.id)).toBe("m-env"); // persona sets no model
+      expect(await bootModel(mgr, dflt.id)).toBe("m-default"); // the default persona's own model
+      expect(mgr.effectiveModelOf({ model: "", persona_id: "ana" })).toBe("m-ana");
+
+      // An override that changes the persona's model reaches the thread at its next boot.
+      setPersonaRegistry(reg(true, { ana: "m-ana-2", bea: null }, "m-default"));
+      expect(await bootModel(mgr, ana.id)).toBe("m-ana-2");
+
+      // Per-thread /model wins over the persona.
+      await mgr.setSessionModel(ana.id, "m-thread");
+      expect(await bootModel(mgr, ana.id)).toBe("m-thread");
+      expect(mgr.effectiveModelOf({ model: "m-thread", persona_id: "ana" })).toBe("m-thread");
+    });
+  });
+
+  it("mono, unmanaged: unchanged — the row pins SLAUDE_MODEL at creation, /model overrides it", async () => {
+    await withEnvModel(async () => {
+      setPersonaRegistry(reg(false, { ana: null }, null));
+      const mgr = new AgentManager();
+      const ana = await mgr.ensureSession({ ...thread(), persona_id: "ana" });
+      expect(ana.model).toBe("m-env");
+      expect(await bootModel(mgr, ana.id)).toBe("m-env");
+      await mgr.setSessionModel(ana.id, "m-thread");
+      expect(await bootModel(mgr, ana.id)).toBe("m-thread");
+    });
+  });
+
+  it("node: the bundle's default model > SLAUDE_MODEL, and a per-thread /model beats it; an unmanaged bundle changes nothing", async () => {
+    await withEnvModel(async () => {
+      // The gateway created these rows on a managed tenant.
+      setPersonaRegistry(reg(true, { ana: "m-ana" }, null));
+      const mgr = new AgentManager();
+      const ana = await mgr.ensureSession({ ...thread(), persona_id: "ana" });
+      const legacy = await mgr.ensureSession({ ...thread(), persona_id: "ana" });
+      __resetPersonaRegistry(); // a node consults no registry
+      mgr.setPersonaSoulResolver(async () => ({ soulMd: "bundle soul", soulJson: null }));
+      let bundleModel: string | undefined = "m-bundle";
+      const asked: Array<string | undefined> = [];
+      mgr.setPersonaModelResolver(async (_sid, persona) => (asked.push(persona), bundleModel));
+      expect(await bootModel(mgr, ana.id)).toBe("m-bundle");
+      expect(asked).toEqual(["ana"]);
+      await mgr.setSessionModel(ana.id, "m-thread");
+      expect(await bootModel(mgr, ana.id)).toBe("m-thread");
+      expect(asked).toEqual(["ana"]); // a per-thread model never consults the bundle
+      // An unmanaged bundle (resolver yields undefined) leaves the row as it is.
+      bundleModel = undefined;
+      expect(await bootModel(mgr, legacy.id)).toBeUndefined();
+    });
+  });
+});
