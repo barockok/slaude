@@ -256,8 +256,18 @@ and `override_version` — not from the desired layer alone. Otherwise an overri
 leaves the tag unchanged, nodes revalidate, receive a not-modified, and keep the
 old soul.
 
-The next turn picks up a change. A turn already running finishes on the soul it
-started with; there is no mid-turn swap.
+The soul is assembled into the system prompt when a session **boots**, not on
+every turn, so clearing a node's bundle cache alone changes nothing for a warm
+session. A thread could keep its old soul indefinitely. On the reload signal a
+node therefore also reloads every live session for that tenant, using the same
+`AgentManager.reload` the gateway already uses after an MCP connect. A turn
+already running finishes on the soul it started with, and the next turn boots on
+the new one. There is no mid-turn swap.
+
+A node that misses the signal keeps a warm session's old soul until that session
+next boots. Bundle fetches revalidate by entity tag, but a warm session does not
+fetch. This is a known bound, not a defect: it is limited by session lifetime,
+and the gateway-side registry has no equivalent gap (§7.3).
 
 ## 7. Failure modes
 
