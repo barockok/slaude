@@ -15,6 +15,9 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { getPersonaRegistry } from "../../persona/registry";
 import { db } from "../../db/schema";
+import { resolveDbConfig } from "../../db/client";
+import { effectivePersonas, isManaged } from "../../db/personas";
+import type { EffectivePersona } from "../../persona/effective";
 import { decrypt } from "../../db/crypto";
 import { env } from "../../config/env";
 import { paths } from "../../config/home";
@@ -75,29 +78,46 @@ function envProviderCreds(): RuntimeBundle["providerCreds"] {
  * own bundle.
  */
 async function buildBundle(tenantId: string, personaId: string): Promise<RuntimeBundle | null> {
-  // The tenancy tables exist only on Postgres (P1 migrations). On sqlite the
-  // queries throw "no such table" — treat that exactly like an empty registry
-  // so the implicit 'default' tenant still serves from the file/env fallback.
+  // The tenancy tables exist only on Postgres (P1 migrations). sqlite is decided
+  // from configuration, never from a caught error: it is unmanaged, and its
+  // "no such table" failures read as an empty registry so the implicit
+  // 'default' tenant still serves from the file/env fallback. On Postgres every
+  // error propagates (the route 500s, the node retries): swallowing one would
+  // read as "unmanaged" and flip a managed tenant onto the disk tier.
+  const sqlite = resolveDbConfig().dialect === "sqlite";
   let tenant: { id: string } | null = null;
   let personas: PersonaRow[] = [];
-  try {
+  let managed = false;
+  let effective: EffectivePersona | undefined;
+  const loadRows = async () => {
     tenant = await db.one<{ id: string }>(`SELECT id FROM tenants WHERE id = ?`, [tenantId]);
-    personas = await db.query<PersonaRow>(
-      `SELECT * FROM personas WHERE tenant_id = ? AND name = ?`,
-      [tenantId, personaId],
-    );
-  } catch {
-    /* sqlite: no tenancy tables */
+    return db.query<PersonaRow>(`SELECT * FROM personas WHERE tenant_id = ? AND name = ?`, [tenantId, personaId]);
+  };
+  if (sqlite) {
+    try {
+      personas = await loadRows();
+    } catch {
+      /* sqlite: no tenancy tables */
+    }
+  } else {
+    personas = await loadRows();
+    managed = await isManaged(tenantId);
+    if (managed) effective = (await effectivePersonas(tenantId)).find((p) => p.name === personaId);
   }
   if (!tenant && tenantId !== "default") return null;
+  // A managed tenant is served from effective state alone: a missing or
+  // tombstoned persona is a 404, and tiers 2 and 3 never run.
+  if (managed && !effective) return null;
   const persona = personas[0];
+  // Provider credentials key on the persona row's id (EffectivePersona has none).
+  const credPersonaId = persona?.id;
 
   const providerCreds: RuntimeBundle["providerCreds"] = {};
-  if (persona) {
+  if (credPersonaId !== undefined) {
     const creds = await db.query<CredRow>(
       `SELECT persona_id, kind, value FROM provider_creds
        WHERE tenant_id = ? AND (persona_id IS NULL OR persona_id = ?)`,
-      [tenantId, persona.id],
+      [tenantId, credPersonaId],
     );
     // Tenant-wide rows first, persona-specific rows override.
     for (const specific of [false, true]) {
@@ -108,16 +128,28 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
         else if (c.kind === "oauth_token") providerCreds.oauthToken = decrypt(c.value);
       }
     }
-    const overlay = persona.name !== "default" ? [personaSkillsRoot(persona.name)] : [];
+    if (effective) {
+      return {
+        tenantId,
+        personaId: effective.name,
+        providerCreds,
+        soulMd: effective.soulMd,
+        soulJson: effective.soulJson,
+        mcpJson: effective.mcp,
+        skillsPaths: [paths.skills, ...(effective.name !== "default" ? [personaSkillsRoot(effective.name)] : [])],
+        defaultModel: effective.model ?? env.model(),
+      };
+    }
+    const overlay = persona!.name !== "default" ? [personaSkillsRoot(persona!.name)] : [];
     return {
       tenantId,
-      personaId: persona.name,
+      personaId: persona!.name,
       providerCreds,
-      soulMd: persona.soul_md,
-      soulJson: typeof persona.soul_json === "string" ? JSON.parse(persona.soul_json) : persona.soul_json,
-      mcpJson: typeof persona.mcp_json === "string" ? JSON.parse(persona.mcp_json) : persona.mcp_json,
+      soulMd: persona!.soul_md,
+      soulJson: typeof persona!.soul_json === "string" ? JSON.parse(persona!.soul_json) : persona!.soul_json,
+      mcpJson: typeof persona!.mcp_json === "string" ? JSON.parse(persona!.mcp_json) : persona!.mcp_json,
       skillsPaths: [paths.skills, ...overlay],
-      defaultModel: persona.model_default ?? env.model(),
+      defaultModel: persona!.model_default ?? env.model(),
     };
   }
 
