@@ -38,7 +38,9 @@ import { nodeConfigRoot, sessionConfigDir, existingSessionConfigDir } from "../a
 import { RestSessionStore } from "./session-store";
 import { buildShimServers } from "./shims";
 import { makeNodePermissionResolver } from "./shims/permission";
-import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
+import { JOB_TOKEN_TTL_SEC, type JobClaims } from "../gateway/api/auth";
+import { HelperClient } from "../remote/helper-client";
+import { cleanupCommand } from "../remote/tools/bash";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -51,6 +53,17 @@ export function tokenAgeFraction(token: string, nowMs: number = Date.now()): num
     const { iat, exp } = payload as { iat?: number; exp?: number };
     if (typeof iat !== "number" || typeof exp !== "number" || exp <= iat) return null;
     return (nowMs / 1000 - iat) / (exp - iat);
+  } catch {
+    return null;
+  }
+}
+
+/** Unverified payload decode of a job token. Safe only because every sensitive
+ *  use re-checks the signature at the gateway: the key endpoint verifies the
+ *  token before serving anything, so a forged `remote` claim here gets nothing. */
+export function decodeClaims(token: string): Partial<JobClaims> | null {
+  try {
+    return JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"));
   } catch {
     return null;
   }
@@ -206,6 +219,29 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     if (creds.oauthToken) out.CLAUDE_CODE_OAUTH_TOKEN = creds.oauthToken;
     return out;
   });
+  // Remote mode (spec §4.5): the target rides in the signed claims of the
+  // session's current job token. The key is fetched per handle from the
+  // gateway, which re-verifies the token; it is held in memory only.
+  agent.setRemote(
+    async (sessionId) => {
+      const token = store.tokenFor(sessionId);
+      const c = token ? decodeClaims(token) : null;
+      const runAs = c?.runAs?.startsWith("user:") ? c.runAs.slice(5) : null;
+      if (!c?.remote || !runAs) return null;
+      return { teamId: c.team ?? "", userId: runAs, addr: c.remote.addr, dir: c.remote.dir };
+    },
+    async (sessionId, target) => {
+      const tenant = tenants.get(sessionId);
+      const token = store.tokenFor(sessionId);
+      if (!tenant || !token) throw new Error("no job token for remote session");
+      const privateKey = await client.getRemoteKey(tenant, token);
+      return new HelperClient({
+        transport: { kind: "tailcat", addr: target.addr },
+        privateKey,
+        onDispose: async (exec) => { await exec(cleanupCommand(sessionId), { timeoutMs: 30_000 }); },
+      });
+    },
+  );
 
   // Turn-end wait: resolved by the first done/error for the session.
   const turnWaiters = new Map<string, (outcome: "done" | "error") => void>();
@@ -343,6 +379,9 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       }
     }
     store.bindToken(data.sessionId, jobToken);
+    // A changed lock/remote config reboots the warm session before this turn
+    // is sent; an older gateway mints no fingerprint and the manager ignores it.
+    await agent.ensureConfigFp(data.sessionId, decodeClaims(jobToken)?.sessionConfigFp);
     tenants.set(data.sessionId, data.tenantId);
     personas.set(data.sessionId, data.personaId ?? "default");
     // A cron job created inside a /1on1 carries its lock owner. The cron run
