@@ -7,9 +7,12 @@
  * persona registry is memoized at boot, so adding an agent meant restarting the
  * gateway and every node.
  *
- * Announcing does two things: drop this replica's memoized persona map, and
+ * Announcing does two things: rebuild this replica's persona snapshot, and
  * publish on the tenant channel so every node drops its cached runtime bundles
- * for that tenant. Other gateway replicas learn the same way their nodes do.
+ * for that tenant. Other gateway replicas do NOT subscribe to that channel:
+ * they converge through the registry's state-version poll (every 10 s), so a
+ * change is near-immediate only on the replica that took the write and on the
+ * nodes.
  */
 import { invalidatePersonaRegistry } from "../../persona/registry";
 import type { PubSub } from "../../queue/pubsub";
