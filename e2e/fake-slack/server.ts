@@ -3,6 +3,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { CallLog } from "./core/call-log";
 import { blockActionsPayload, deliverEvent, deliverInteraction, messageEnvelope, type DeliverOptions } from "./core/inbound";
+import { createSchemaGuard, type MethodSchemas } from "./core/schema-guard";
 import { FaultStore, createWebApi, parseParams } from "./core/web-api";
 import { SlackError, Workspace, type FakeMessage } from "./core/workspace";
 
@@ -23,6 +24,8 @@ export interface FakeSlackOptions {
   publicUrl?: string;
   retryDelaysMs?: number[];
   ackTimeoutMs?: number;
+  /** Judge every Web API call against these schemas; divergences land in the call log as `schemaViolations`. */
+  strictSchemas?: MethodSchemas;
 }
 
 interface ResponseTarget {
@@ -103,7 +106,7 @@ export async function startFakeSlack(opts: FakeSlackOptions = {}): Promise<FakeS
   const ws = new Workspace(opts.teamId ?? "T0FAKE");
   const log = new CallLog();
   const faults = new FaultStore();
-  const api = createWebApi(ws, log, faults);
+  const api = createWebApi(ws, log, faults, opts.strictSchemas ? createSchemaGuard(opts.strictSchemas) : undefined);
   let publicUrl = opts.publicUrl?.replace(/\/+$/, "") ?? "";
   const deliverOpts: DeliverOptions = { retryDelaysMs: opts.retryDelaysMs, ackTimeoutMs: opts.ackTimeoutMs };
 

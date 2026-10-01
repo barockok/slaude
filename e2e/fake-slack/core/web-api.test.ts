@@ -1,5 +1,6 @@
 import { beforeEach, expect, test } from "bun:test";
 import { CallLog } from "./call-log";
+import { createSchemaGuard } from "./schema-guard";
 import { FaultStore, KNOWN_METHODS, createWebApi, parseParams } from "./web-api";
 import { Workspace } from "./workspace";
 
@@ -193,4 +194,34 @@ test("non-SlackError thrown by handler is logged as fake_internal_error with 500
   expect(result.body).toEqual({ ok: false, error: "fake_internal_error" });
   const row = badLog.all().at(-1)!;
   expect(row).toMatchObject({ method: "search.messages", ok: false, error: "fake_internal_error", status: 500 });
+});
+
+test("with a schema guard, violations are recorded in the call log and the response is unchanged", () => {
+  const guarded = createWebApi(
+    ws,
+    log,
+    faults,
+    createSchemaGuard({ "chat.postMessage": { params: ["channel", "text"], required: ["channel"], response: ["ok", "channel"] } }),
+  );
+  const r = guarded("chat.postMessage", { channel: "C0TEAM", text: "hi", bogus: 1 }, token);
+  expect(r.status).toBe(200);
+  expect(r.body).toMatchObject({ ok: true, channel: "C0TEAM", ts: expect.any(String), message: expect.any(Object) });
+  expect(log.all()[0]!.schemaViolations).toEqual([
+    'chat.postMessage: unknown parameter "bogus"',
+    'chat.postMessage: unknown response property "ts"',
+    'chat.postMessage: unknown response property "message"',
+  ]);
+});
+
+test("a clean call has no schemaViolations field, with a guard or without", () => {
+  const guarded = createWebApi(
+    ws,
+    log,
+    faults,
+    createSchemaGuard({ "reactions.add": { params: ["channel", "name", "timestamp"], required: [], response: ["ok"] } }),
+  );
+  const m = ws.post({ channel: "C0TEAM", user: "U0MGR", text: "x" });
+  guarded("reactions.add", { channel: "C0TEAM", name: "eyes", timestamp: m.ts }, token);
+  call("auth.test");
+  expect(log.all().map((r) => "schemaViolations" in r)).toEqual([false, false]);
 });

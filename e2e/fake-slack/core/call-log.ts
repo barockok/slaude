@@ -10,6 +10,8 @@ export interface CallRecord {
   args?: Record<string, unknown>;
   /** Set when the method is not one the fake implements. */
   unknown?: boolean;
+  /** Set by the schema guard when the request or response diverges from the vendored Slack schema. */
+  schemaViolations?: string[];
   detail?: Record<string, unknown>;
 }
 

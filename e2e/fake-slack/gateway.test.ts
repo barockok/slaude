@@ -23,6 +23,7 @@ import { __resetSoulDataMemo } from "../../src/soul/extract";
 import type { CallRecord } from "./core/call-log";
 import { KNOWN_METHODS } from "./core/web-api";
 import { createControlClient } from "./control-client";
+import methodSchemas from "./schemas/methods.json";
 import { startFakeSlack, type FakeSlack } from "./server";
 import { until } from "./util";
 
@@ -45,7 +46,8 @@ beforeAll(async () => {
   process.env.SLAUDE_MASTER_KEY = randomBytes(32).toString("base64");
   __resetMasterKeyCache();
 
-  fake = await startFakeSlack({ port: 0, retryDelaysMs: [0, 0, 0], ackTimeoutMs: 1000 });
+  // strictSchemas: every call is judged against the vendored Slack OpenAPI subset (see the last test)
+  fake = await startFakeSlack({ port: 0, retryDelaysMs: [0, 0, 0], ackTimeoutMs: 1000, strictSchemas: methodSchemas.methods });
   process.env.SLAUDE_SLACK_API_URL = `${fake.url}/api`;
   ctl = createControlClient(fake.url);
   app = await ctl.addApp({ apiAppId: "A0FAKE", name: "agent", botUserId: "U0BOT" });
@@ -246,6 +248,8 @@ describe("real gateway + HTTP transport + fake Slack", () => {
     expect(calls.filter((c) => c.unknown).map((c) => c.method)).toEqual([]);
     const used = [...new Set(calls.map((c) => c.method))].sort();
     expect(used.every((m) => KNOWN_METHODS.includes(m))).toBe(true);
+    // and everything it sent and received matched the vendored Slack schemas
+    expect(calls.flatMap((c) => c.schemaViolations ?? [])).toEqual([]);
     // the boot itself was seen (the call log was not empty before the first test)
     expect(allCalls.some((c) => c.method === "auth.test")).toBe(true);
   });

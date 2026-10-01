@@ -1,5 +1,6 @@
 import type { CallLog } from "./call-log";
 import { redactArgs } from "./call-log";
+import type { SchemaGuard } from "./schema-guard";
 import { SlackError, type FakeMessage, type Workspace } from "./workspace";
 
 export interface ApiResult {
@@ -199,13 +200,18 @@ export function createWebApi(
   ws: Workspace,
   log: CallLog,
   faults: FaultStore,
+  guard?: SchemaGuard,
 ): (method: string, params: Params, bearer: string | null) => ApiResult {
   return (method, params, bearer) => {
     const token = bearer ?? (typeof params.token === "string" ? params.token : null);
     const app = token ? ws.appByToken(token) : undefined;
     const args = redactArgs(params);
+    // violations are only recorded in the call log: the response is never changed by the guard
+    const requestViolations = guard ? guard.checkRequest(method, params) : [];
     const done = (status: number, body: Record<string, unknown>, headers?: Record<string, string>, unknown?: boolean): ApiResult => {
+      const schemaViolations = guard ? [...requestViolations, ...guard.checkResponse(method, body)] : [];
       log.add({
+        ...(schemaViolations.length ? { schemaViolations } : {}),
         kind: "api",
         method,
         app: app?.apiAppId,

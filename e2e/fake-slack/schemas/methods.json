@@ -1,0 +1,288 @@
+{
+  "source": "slackapi/slack-api-specs",
+  "commit": "bc08db49625630e3585bf2f1322128ea04f2a7f3",
+  "license": "MIT",
+  "methods": {
+    "auth.test": {
+      "params": [],
+      "required": [],
+      "response": [
+        "bot_id",
+        "is_enterprise_install",
+        "ok",
+        "team",
+        "team_id",
+        "url",
+        "user",
+        "user_id"
+      ]
+    },
+    "chat.postMessage": {
+      "params": [
+        "as_user",
+        "attachments",
+        "blocks",
+        "channel",
+        "icon_emoji",
+        "icon_url",
+        "link_names",
+        "mrkdwn",
+        "parse",
+        "reply_broadcast",
+        "text",
+        "thread_ts",
+        "unfurl_links",
+        "unfurl_media",
+        "username"
+      ],
+      "required": [
+        "channel"
+      ],
+      "response": [
+        "channel",
+        "message",
+        "ok",
+        "ts"
+      ]
+    },
+    "chat.update": {
+      "params": [
+        "as_user",
+        "attachments",
+        "blocks",
+        "channel",
+        "link_names",
+        "parse",
+        "text",
+        "ts"
+      ],
+      "required": [
+        "channel",
+        "ts"
+      ],
+      "response": [
+        "channel",
+        "message",
+        "ok",
+        "text",
+        "ts"
+      ]
+    },
+    "chat.delete": {
+      "params": [
+        "as_user",
+        "channel",
+        "ts"
+      ],
+      "required": [],
+      "response": [
+        "channel",
+        "ok",
+        "ts"
+      ]
+    },
+    "chat.postEphemeral": {
+      "params": [
+        "as_user",
+        "attachments",
+        "blocks",
+        "channel",
+        "icon_emoji",
+        "icon_url",
+        "link_names",
+        "parse",
+        "text",
+        "thread_ts",
+        "user",
+        "username"
+      ],
+      "required": [
+        "channel",
+        "user"
+      ],
+      "response": [
+        "message_ts",
+        "ok"
+      ]
+    },
+    "reactions.add": {
+      "params": [
+        "channel",
+        "name",
+        "timestamp"
+      ],
+      "required": [
+        "channel",
+        "name",
+        "timestamp"
+      ],
+      "response": [
+        "ok"
+      ]
+    },
+    "reactions.remove": {
+      "params": [
+        "channel",
+        "file",
+        "file_comment",
+        "name",
+        "timestamp"
+      ],
+      "required": [
+        "name"
+      ],
+      "response": [
+        "ok"
+      ]
+    },
+    "users.info": {
+      "params": [
+        "include_locale",
+        "user"
+      ],
+      "required": [],
+      "response": [
+        "ok",
+        "user"
+      ]
+    },
+    "users.profile.set": {
+      "params": [
+        "name",
+        "profile",
+        "user",
+        "value"
+      ],
+      "required": [],
+      "response": [
+        "email_pending",
+        "ok",
+        "profile",
+        "username"
+      ]
+    },
+    "conversations.replies": {
+      "params": [
+        "channel",
+        "cursor",
+        "inclusive",
+        "latest",
+        "limit",
+        "oldest",
+        "ts"
+      ],
+      "required": [],
+      "response": [
+        "has_more",
+        "messages",
+        "ok"
+      ]
+    },
+    "conversations.info": {
+      "params": [
+        "channel",
+        "include_locale",
+        "include_num_members"
+      ],
+      "required": [],
+      "response": [
+        "channel",
+        "ok"
+      ]
+    },
+    "conversations.members": {
+      "params": [
+        "channel",
+        "cursor",
+        "limit"
+      ],
+      "required": [],
+      "response": [
+        "members",
+        "ok",
+        "response_metadata"
+      ]
+    },
+    "conversations.setTopic": {
+      "params": [
+        "channel",
+        "topic"
+      ],
+      "required": [],
+      "response": [
+        "channel",
+        "ok"
+      ]
+    },
+    "conversations.setPurpose": {
+      "params": [
+        "channel",
+        "purpose"
+      ],
+      "required": [],
+      "response": [
+        "channel",
+        "ok"
+      ]
+    },
+    "search.messages": {
+      "params": [
+        "count",
+        "highlight",
+        "page",
+        "query",
+        "sort",
+        "sort_dir"
+      ],
+      "required": [
+        "query"
+      ],
+      "response": [
+        "ok"
+      ]
+    },
+    "pins.add": {
+      "params": [
+        "channel",
+        "timestamp"
+      ],
+      "required": [
+        "channel"
+      ],
+      "response": [
+        "ok"
+      ]
+    },
+    "pins.remove": {
+      "params": [
+        "channel",
+        "timestamp"
+      ],
+      "required": [
+        "channel"
+      ],
+      "response": [
+        "ok"
+      ]
+    },
+    "files.info": {
+      "params": [
+        "count",
+        "cursor",
+        "file",
+        "limit",
+        "page"
+      ],
+      "required": [],
+      "response": [
+        "comments",
+        "content_html",
+        "editor",
+        "file",
+        "ok",
+        "paging",
+        "response_metadata"
+      ]
+    }
+  }
+}
