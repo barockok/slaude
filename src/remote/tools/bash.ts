@@ -33,11 +33,15 @@ const BAD_PID = `case "$P" in ''|*[!0-9]*|0*|1) continue;; esac`;
  *   0 = ours and alive, 1 = gone, 2 = the pid was reused by an unrelated process.
  * The job's `bash -lc` carries `slaude-job-<id>` as $0. A group whose leader is dead but
  * which is still alive (orphaned children) is ours: a pid cannot be reused while it is
- * still the pgid of a live group. Every kill site calls this before signalling.
+ * still the pgid of a live group. A zombie leader has no argv left (and holds its pid, so
+ * it cannot have been reused): treat it as gone. If `ps` shows nothing yet the pid exists,
+ * ps is unusable: fail closed. Every kill site calls this before signalling.
  */
 const OWN =
-  `own() { OC=$(ps -ww -o command= -p "$1" 2>/dev/null); ` +
-  `if [ -n "$OC" ]; then case "$OC" in *"slaude-job-$2"*) return 0;; *) return 2;; esac; fi; ` +
+  `own() { OC=$(ps -ww -o stat=,command= -p "$1" 2>/dev/null); ` +
+  `if [ -n "$OC" ]; then OS=\${OC#"\${OC%%[! ]*}"}; case "$OS" in Z*) :;; ` +
+  `*) case "$OC" in *"slaude-job-$2"*) return 0;; *) return 2;; esac;; esac; ` +
+  `elif kill -0 "$1" 2>/dev/null; then return 2; fi; ` +
   `if kill -0 -"$1" 2>/dev/null; then return 0; fi; return 1; }; `;
 
 export async function bashTool(
@@ -88,12 +92,11 @@ export async function bashOutputTool(ctx: BashCtx, i: { bash_id: string }): Prom
   const cmd =
     `${OWN}D=${d}; F="$D/${i.bash_id}"; { [ -e "$F.pid" ] || [ -e "$F.killed" ]; } || { echo __NOJOB__ >&2; exit 2; }; ` +
     `tail -c +${off + 1} "$F.log"; printf '\\n__SLAUDE_BG__'; ` +
-    // R: 0 group alive and ours, 1 gone, 2 pid junk or reused by another process (forget it).
+    // R: 0 group alive and ours, 1 gone, 2 pid junk or reused by another process (read-only: bash_kill cleans up).
     `R=1; if [ ! -e "$F.killed" ]; then P=$(cat "$F.pid" 2>/dev/null); ` +
-    `case "$P" in ''|*[!0-9]*|0*|1) R=2;; *) own "$P" ${i.bash_id}; R=$?;; esac; ` +
-    `if [ "$R" = 2 ]; then rm -f "$F.pid"; : > "$F.killed"; fi; fi; ` +
+    `case "$P" in ''|*[!0-9]*|0*|1) R=2;; *) own "$P" ${i.bash_id}; R=$?;; esac; fi; ` +
     `if [ -e "$F.exit" ]; then printf 'exit:%s' "$(cat "$F.exit")"; [ "$R" = 0 ] && printf ':children'; echo; ` +
-    `elif [ "$R" = 2 ]; then echo unknown; elif [ "$R" = 0 ]; then echo running; else echo killed; fi`;
+    `elif [ "$R" = 2 ]; then echo 'unknown (pid no longer belongs to this job)'; elif [ "$R" = 0 ]; then echo running; else echo killed; fi`;
   const r = await ctx.exec(cmd, { timeoutMs: 30_000 });
   if (r.stderr.includes("__NOJOB__")) return fail(`No background job with ID ${i.bash_id}`);
   const at = r.stdout.lastIndexOf("\n__SLAUDE_BG__");

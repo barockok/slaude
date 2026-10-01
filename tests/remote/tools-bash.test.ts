@@ -115,6 +115,51 @@ describe("background jobs", () => {
     } finally { await reap(child); }
   }, 20_000);
 
+  // A test-spawned perl parent forks C (own group leader) which forks G (`sleep 30`) and exits;
+  // the parent never waits, so C stays a zombie while G keeps the group alive.
+  const spawnZombie = async () => {
+    const script = `my $c = fork; if (!$c) { setpgrp(0,0); my $g = fork; if (!$g) { exec "sleep", "30" } print "$$ $g\\n"; exit 0 } sleep 100`;
+    const out = `${root}/zombie.out`;
+    const sp = await localExec(`perl -e ${shq(script)} > ${out} 2> /dev/null < /dev/null & echo $!`, { timeoutMs: 5000 });
+    const parent = sp.stdout.trim();
+    for (let n = 0; n < 50; n++) {
+      if ((await localExec(`[ -s ${out} ] && echo yes`, { timeoutMs: 5000 })).stdout.trim() === "yes") break;
+      await Bun.sleep(100);
+    }
+    const [c, g] = (await localExec(`cat ${out}`, { timeoutMs: 5000 })).stdout.trim().split(" ");
+    const stat = async (p: string) => (await localExec(`ps -o stat= -p ${p}`, { timeoutMs: 5000 })).stdout.trim();
+    const dead = async (p: string) => { const s = await stat(p); return s === "" || s.startsWith("Z"); };
+    const dir = `"$HOME"/.slaude-bg/${ctx.sessionKey}`;
+    const jobId = "abcd1234";
+    await localExec(`mkdir -p ${dir}; : > ${dir}/${jobId}.log; echo ${c} > ${dir}/${jobId}.pid`, { timeoutMs: 5000 });
+    const reap = () => localExec(`kill ${g} ${parent} 2>/dev/null; true`, { timeoutMs: 5000 });
+    return { parent, c: c!, g: g!, stat, dead, dir, jobId, reap };
+  };
+
+  it("a zombie leader keeps its job: bash_output does not forget it and bash_kill reaps the group", async () => {
+    const z = await spawnZombie();
+    try {
+      expect((await z.stat(z.c)).startsWith("Z")).toBe(true);
+      const out = text(await bashOutputTool(ctx, { bash_id: z.jobId }));
+      expect(out).toContain("running");
+      const kept = await localExec(`[ -e ${z.dir}/${z.jobId}.pid ] && echo present || echo gone`, { timeoutMs: 5000 });
+      expect(kept.stdout.trim()).toBe("present");
+      expect(text(await bashKillTool(ctx, { shell_id: z.jobId }))).toContain("Killed");
+      await Bun.sleep(300);
+      expect(await z.dead(z.g)).toBe(true);
+    } finally { await z.reap(); }
+  }, 30_000);
+
+  it("session cleanup reaps the group of a zombie leader", async () => {
+    const z = await spawnZombie();
+    try {
+      expect((await z.stat(z.c)).startsWith("Z")).toBe(true);
+      await localExec(cleanupCommand(ctx.sessionKey), { timeoutMs: 20_000 });
+      await Bun.sleep(300);
+      expect(await z.dead(z.g)).toBe(true);
+    } finally { await z.reap(); }
+  }, 30_000);
+
   it("a pid reused by an unrelated process is never signalled, and the job is forgotten", async () => {
     // Own group leader without our marker, spawned by this test only.
     const sp = await localExec(
@@ -128,6 +173,7 @@ describe("background jobs", () => {
       expect(stranger).toMatch(/^\d+$/);
       await localExec(`mkdir -p ${dir}; : > ${dir}/deadbeef.log; echo ${stranger} > ${dir}/deadbeef.pid; : > ${dir}/deadbee0.log; echo ${stranger} > ${dir}/deadbee0.pid`, { timeoutMs: 5000 });
       expect(text(await bashOutputTool(ctx, { bash_id: "deadbee0" }))).toContain("unknown");
+      expect(text(await bashOutputTool(ctx, { bash_id: "deadbee0" }))).toContain("no longer belongs");
       const k = await bashKillTool(ctx, { shell_id: "deadbeef" });
       expect(text(k)).toContain("no longer belongs");
       expect(text(k)).not.toContain("Killed");
@@ -151,11 +197,14 @@ describe("kill safety (simulated signals)", () => {
   const zero = { alive: "return 0", dead: "return 1", dies: '[ -z "$T" ]; return $?' };
   // Probes (`kill -0`) go to a file so they never mix into the tool's stdout parsing.
   const probeFile = join(homedir(), ".slaude-bg", `${key}.probes`);
-  const sim = (log: string[], alive: Alive | boolean): Exec => (cmd, o) => {
+  // `ps` prints `psOut` (nothing by default); `single` is the answer to `kill -0 <pid>` (not the group).
+  type Sim = { psOut?: string; single?: boolean };
+  const sim = (log: string[], alive: Alive | boolean, opt: Sim = {}): Exec => (cmd, o) => {
     const mode = alive === true ? "alive" : alive === false ? "dead" : alive;
     rmSync(probeFile, { force: true });
     return localExec(
-      `ps() { return 0; }; kill() { case "$1" in -0) echo "SIG $*" >> '${probeFile}'; ${zero[mode]};; -TERM) T=1;; esac; echo "SIG $*"; }\n${cmd}`,
+      `ps() { echo ${shq(opt.psOut ?? "")}; return 0; }; ` +
+        `kill() { case "$1" in -0) echo "SIG $*" >> '${probeFile}'; case "$2" in -*) ${zero[mode]};; *) return ${opt.single ? 0 : 1};; esac;; -TERM) T=1;; esac; echo "SIG $*"; }\n${cmd}`,
       o,
     ).then((r) => {
       log.push(r.stdout + (existsSync(probeFile) ? readFileSync(probeFile, "utf8") : ""));
@@ -171,7 +220,7 @@ describe("kill safety (simulated signals)", () => {
     );
   const sigs = (log: string[]) => log.join("").split("\n").filter((l) => l.startsWith("SIG "));
   const sent = (log: string[]) => sigs(log).filter((l) => !l.startsWith("SIG -0 "));
-  const mk = (log: string[], alive: Alive | boolean = "dies") => ({ exec: sim(log, alive), root: "/", sessionKey: key, cwd: { value: "/" }, bg: new Map() }) as any;
+  const mk = (log: string[], alive: Alive | boolean = "dies", opt: Sim = {}) => ({ exec: sim(log, alive, opt), root: "/", sessionKey: key, cwd: { value: "/" }, bg: new Map() }) as any;
   const HOSTILE = ["1", "0", "abc", "", "-1", "12 34", "01", "12\n34"];
   afterEach(async () => {
     await localExec(`rm -rf ${dir}`, { timeoutMs: 5000 });
@@ -244,7 +293,31 @@ describe("kill safety (simulated signals)", () => {
     await sim(log, true)(cleanupCommand(key), { timeoutMs: 20_000 });
     expect(sent(log)).toEqual(["SIG -TERM -4242", "SIG -TERM -4343", "SIG -KILL -4242", "SIG -KILL -4343"]);
     // Nothing but the two valid pids was even probed.
-    expect(sigs(log).every((l) => l.endsWith("-4242") || l.endsWith("-4343"))).toBe(true);
+    expect(sigs(log).every((l) => /[ -](4242|4343)$/.test(l))).toBe(true);
+  });
+  it("a zombie leader (ps shows `Z <defunct>`) counts as gone: the live group is still ours", async () => {
+    const log: string[] = [];
+    await seed("a0000001", "4242");
+    expect(text(await bashOutputTool(mk(log, true, { psOut: "Z <defunct>" }), { bash_id: "a0000001" }))).toContain("running");
+    await bashKillTool(mk(log, "dies", { psOut: "Z <defunct>" }), { shell_id: "a0000001" });
+    expect(sent(log)).toEqual(["SIG -TERM -4242"]);
+  });
+  it("bash_output on a not-ours verdict reports unknown but keeps the pid file", async () => {
+    const log: string[] = [];
+    await seed("a0000002", "4242");
+    const t = text(await bashOutputTool(mk(log, true, { psOut: "S sleep 30" }), { bash_id: "a0000002" }));
+    expect(t).toContain("unknown");
+    const kept = await localExec(`[ -e ${dir}/a0000002.pid ] && echo present || echo gone`, { timeoutMs: 5000 });
+    expect(kept.stdout.trim()).toBe("present");
+  });
+  it("fails closed when ps shows nothing but the pid itself exists", async () => {
+    const log: string[] = [];
+    await seed("a0000003", "4242");
+    await bashKillTool(mk(log, true, { single: true }), { shell_id: "a0000003" });
+    expect(sent(log)).toEqual([]);
+    await seed("a0000004", "4243");
+    await sim(log, true, { single: true })(cleanupCommand(key), { timeoutMs: 20_000 });
+    expect(sent(log)).toEqual([]);
   });
   it("an empty session key throws before any command is built or run", async () => {
     expect(() => cleanupCommand("!!!")).toThrow();
