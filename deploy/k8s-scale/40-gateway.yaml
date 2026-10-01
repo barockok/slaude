@@ -41,6 +41,13 @@ spec:
               value: gateway
             - name: SLAUDE_HTTP_PORT
               value: "8080"
+            # Strict soul extraction (persona sync) caches its result. The
+            # default, $SLAUDE_HOME/cache, is on the shared volume every node
+            # and agent turn can write, so a planted cache file could install
+            # forged approvers. Keep the gateway's cache pod-local; a cache hit
+            # is also re-checked against the soul text before it is used.
+            - name: SLAUDE_SOUL_CACHE_DIR
+              value: /soul-cache
           ports:
             - name: http
               containerPort: 8080
@@ -62,6 +69,8 @@ spec:
           volumeMounts:
             - name: slaude-home
               mountPath: /data
+            - name: soul-cache
+              mountPath: /soul-cache
           resources:
             requests:
               cpu: 250m
@@ -73,6 +82,10 @@ spec:
         - name: slaude-home
           persistentVolumeClaim:
             claimName: slaude-home
+        # Pod-local: a restart loses it, which only costs a re-extraction.
+        - name: soul-cache
+          emptyDir:
+            sizeLimit: 64Mi
 ---
 # Keep at least one gateway during voluntary disruptions (node drains,
 # upgrades) — it is the only Slack ingress and the nodes' control plane.

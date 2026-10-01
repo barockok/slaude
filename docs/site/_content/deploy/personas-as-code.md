@@ -98,6 +98,12 @@ Behaviour to know:
   `SOUL.md`).
 - Each soul is run through a strict structured extraction (a model call). If
   extraction fails the sync fails with 502 and nothing is written.
+  The result is cached by soul text in `$SLAUDE_SOUL_CACHE_DIR` (default
+  `$SLAUDE_HOME/cache`). On gateways point it at pod-local storage, as
+  `deploy/k8s-scale` does with an `emptyDir`: `$SLAUDE_HOME` is shared with
+  nodes, and a cache file written there by an agent turn could otherwise plant
+  approvers. A cache hit whose Slack ids do not all appear in the soul text is
+  discarded and re-extracted.
 - Every sync wipes all runtime overrides for the tenant.
 
 ## Validate on pull requests

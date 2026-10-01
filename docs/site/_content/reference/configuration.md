@@ -407,6 +407,7 @@ SLAUDE_OAUTH_LOOPBACK_PORTS=40100-40110
 | `SLAUDE_AUTO_EVOLVE` | No | `1` | Auto-evolve after each substantial user turn. When `1`, the manager injects an internal `<auto-evolve>` prompt so the agent decides whether to save or refine a skill. Set to `0` to disable. |
 | `SLAUDE_SOUL_PARSE_MAX_TOKENS` | No | `8192` | `max_tokens` budget for the soul extractor LLM call. Raise when a slower model needs more headroom (thinking-mode providers emit thinking + text blocks that both count). Non-positive or non-finite values fall back to `8192`. |
 | `SLAUDE_SOUL_PARSE_MODEL` | No | `SLAUDE_MODEL` or `claude-haiku-4-5-20251001` | Model used for the SOUL.md → JSON extraction pass. Defaults to `SLAUDE_MODEL` when set, otherwise `claude-haiku-4-5-20251001`. |
+| `SLAUDE_SOUL_CACHE_DIR` | No | `$SLAUDE_HOME/cache` | Directory for the extracted-`SoulData` cache. In the gateway topology `$SLAUDE_HOME` is a volume nodes and agent turns can write, so a planted cache file could install forged approvers; point this at pod-local storage on gateways (`deploy/k8s-scale` mounts an `emptyDir`). Every cache hit is also re-checked: each Slack id in it must appear verbatim in the soul text, or the hit is discarded and the soul re-extracted. |
 
 ### External MCP env references
 
@@ -573,7 +574,7 @@ The runtime enforces two layers:
 - **Runtime baseline** (in code, `RUNTIME_BASELINE` in `loader.ts`) — non-negotiable rules about Slack output discipline, formatting, approval, engagement, channel trust, KB-first, skill evolution, and harness overrides. You never author this; a new release can tighten it without touching your persona.
 - **Persona** (your `SOUL.md`) — who the agent is: name, role, voice, manager, mandate, values, channels, approvers, redaction. This is what the agent's system prompt renders inside `<persona>…</persona>`.
 
-Structured extraction (`src/soul/extract.ts`) calls the configured provider with `EXTRACTION_PROMPT` (`src/soul/data.ts`), validates the JSON with `SoulDataSchema` (zod), checks that every extracted Slack id appears verbatim in the raw persona (hallucinated ids are rejected), and caches the result at `~/.slaude/cache/soul.<sha>.json` keyed by `sha256(SOUL.md)`. On any extraction failure it falls back to a regex parser that only fills `approvers`.
+Structured extraction (`src/soul/extract.ts`) calls the configured provider with `EXTRACTION_PROMPT` (`src/soul/data.ts`), validates the JSON with `SoulDataSchema` (zod), checks that every extracted Slack id appears verbatim in the raw persona (hallucinated ids are rejected), and caches the result at `~/.slaude/cache/soul.<sha>.json` (or `$SLAUDE_SOUL_CACHE_DIR`) keyed by `sha256(SOUL.md)`. A cache hit gets the same grounding check before use, so a forged cache file is treated as a miss. On any extraction failure it falls back to a regex parser that only fills `approvers`.
 
 ### Validated schema — what extraction looks for
 

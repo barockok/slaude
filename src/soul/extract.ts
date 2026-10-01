@@ -7,10 +7,17 @@ import { SoulDataSchema, EXTRACTION_PROMPT, type SoulData, type ApproverEntry } 
 import { applyOverrides } from "./overrides";
 import * as SoulOverrides from "../db/soul-overrides";
 
-const CACHE_DIR = join(paths.home, "cache");
+/** Where extracted SoulData is cached. `SLAUDE_SOUL_CACHE_DIR` overrides the
+ *  default `$SLAUDE_HOME/cache`: in the gateway topology `$SLAUDE_HOME` is a
+ *  volume every node (and every agent turn) can write, so the gateway points
+ *  this at pod-local storage. Read per call so a test or boot can move it. */
+function cacheDir(): string {
+  const v = process.env.SLAUDE_SOUL_CACHE_DIR?.trim();
+  return v ? v : join(paths.home, "cache");
+}
 
 function cachePath(sha: string): string {
-  return join(CACHE_DIR, `soul.${sha}.json`);
+  return join(cacheDir(), `soul.${sha}.json`);
 }
 
 function sha256(s: string): string {
@@ -166,10 +173,14 @@ export async function extractSoulData(
 
   if (existsSync(cp)) {
     try {
-      const cached = JSON.parse(readFileSync(cp, "utf8"));
-      return SoulDataSchema.parse(cached);
+      const cached = SoulDataSchema.parse(JSON.parse(readFileSync(cp, "utf8")));
+      // A cache file is never trusted: anyone who can write the cache directory
+      // could plant approvers or a manager. Re-run the same grounding check a
+      // fresh extraction gets; a hit that fails it is a miss.
+      assertIdsGroundedInPersona(cached, persona);
+      return cached;
     } catch (e) {
-      console.warn(`[soul] cache invalid at ${cp}, re-extracting:`, e);
+      console.warn(`[soul] cache invalid at ${cp}, re-extracting: ${(e as Error).message?.slice(0, 200)}`);
     }
   }
 
@@ -181,7 +192,7 @@ export async function extractSoulData(
     // SOUL.md. Blocks the LLM from inventing approvers or whitelisted
     // channels the operator never authorised.
     assertIdsGroundedInPersona(data, persona);
-    mkdirSync(CACHE_DIR, { recursive: true });
+    mkdirSync(cacheDir(), { recursive: true });
     writeFileSync(cp, JSON.stringify(data, null, 2), "utf8");
     console.log(`[soul] extracted ${data.approvers.length} approver(s), cached at ${cp}`);
     return data;
@@ -210,10 +221,12 @@ export function soulDataBase(): SoulData {
   // NOT memoized into `memo` — operator can edit SOUL.md and a subsequent
   // call should pick that up without a restart (and tests rely on it).
   try {
-    const sha = sha256(loadSoul());
-    const cp = cachePath(sha);
+    const text = loadSoul();
+    const cp = soulCachePath(text);
     if (existsSync(cp)) {
-      return SoulDataSchema.parse(JSON.parse(readFileSync(cp, "utf8")));
+      const cached = SoulDataSchema.parse(JSON.parse(readFileSync(cp, "utf8")));
+      assertIdsGroundedInPersona(cached, text); // same rule as extractSoulData's hit
+      return cached;
     }
   } catch { /* fall through */ }
   return regexFallback();
