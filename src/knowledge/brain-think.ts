@@ -1,4 +1,5 @@
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
+import { scrubChildEnv } from "../agent/child-env";
 import { join } from "node:path";
 import { getBrain } from "./brain";
 import type { BrainScope } from "./scope";
@@ -48,6 +49,8 @@ export function sdkThinkClient(runner: typeof sdkQuery = sdkQuery): ThinkClient 
           allowedTools: [],
           permissionMode: "bypassPermissions" as const,
           maxTurns: 1,
+          // No tools, but the child still inherits the environment: scrub it.
+          env: scrubChildEnv({ ...process.env }),
         },
       });
       for await (const msg of it as AsyncIterable<{ type: string; message?: { content?: Array<{ type: string; text?: string }> } }>) {

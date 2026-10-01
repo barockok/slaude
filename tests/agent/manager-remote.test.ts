@@ -306,9 +306,12 @@ describe("remote wiring", () => {
     const mgr = new AgentManager();
     const row = await mgr.ensureSession(thread());
     const fs = plan();
+    const events = record(mgr);
     expect(await mgr.ensureConfigFp(row.id, "fp1")).toBe(true);
     await mgr.sendMessage(row.id, "hello");
     await until(() => fs.options !== null, 3000, "boot");
+    fs.emit(res()); // the turn ends: the session is warm and idle
+    await until(() => events.some((e) => e.type === "done"), 3000, "turn end");
     expect(await mgr.ensureConfigFp(row.id, "fp1")).toBe(true);
     expect(mgr.isLive(row.id)).toBe(true);
     expect(await mgr.ensureConfigFp(row.id, "fp2")).toBe(true);
@@ -320,8 +323,11 @@ describe("remote wiring", () => {
     const mgr = new AgentManager();
     const row = await mgr.ensureSession(thread());
     const fs = plan();
+    const events = record(mgr);
     await mgr.sendMessage(row.id, "hello"); // booted before any fingerprint (e.g. gateway upgraded later)
     await until(() => fs.options !== null, 3000, "boot");
+    fs.emit(res());
+    await until(() => events.some((e) => e.type === "done"), 3000, "turn end");
     expect(await mgr.ensureConfigFp(row.id, "fpX")).toBe(true);
     expect(mgr.isLive(row.id)).toBe(false);
     // Recorded: the same fingerprint on the next (fresh) boot is a no-op.
@@ -336,7 +342,7 @@ describe("remote wiring", () => {
   it("ensureConfigFp: returns false when the session is still live at the deadline, and retries next time", async () => {
     const mgr = new AgentManager();
     const row = await mgr.ensureSession(thread());
-    const fs = plan((f) => { f.end = () => {}; }); // the turn never finishes: stays live after reload
+    const fs = plan((f) => { f.end = () => {}; }); // the turn never returns a result: the reload stays deferred
     expect(await mgr.ensureConfigFp(row.id, "fp1")).toBe(true);
     await mgr.sendMessage(row.id, "hello");
     await until(() => fs.options !== null, 3000, "boot");
@@ -348,6 +354,25 @@ describe("remote wiring", () => {
     fs.wake();
     await until(() => !mgr.isLive(row.id), 3000, "release");
     expect(await mgr.ensureConfigFp(row.id, "fp2", 60)).toBe(true);
+  });
+
+  it("ensureConfigFp: a turn in flight keeps its input until its result, then the deferred reboot completes in time", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const fs = plan();
+    expect(await mgr.ensureConfigFp(row.id, "fp1")).toBe(true);
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => fs.options !== null, 3000, "boot");
+    const pending = mgr.ensureConfigFp(row.id, "fp2", 3000);
+    await Bun.sleep(50);
+    // Deferred: the input is still open while the turn has no result.
+    expect(fs.ended).toBe(false);
+    expect(mgr.isLive(row.id)).toBe(true);
+    fs.emit(res());
+    expect(await pending).toBe(true);
+    expect(mgr.isLive(row.id)).toBe(false);
+    // Recorded: the same fingerprint is now a no-op.
+    expect(await mgr.ensureConfigFp(row.id, "fp2")).toBe(true);
   });
 });
 

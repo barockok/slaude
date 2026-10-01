@@ -39,6 +39,7 @@ import { verifySlackSignature } from "./verify";
 import { healthRoutes, type HealthDeps } from "../../health";
 import { env } from "../../config/env";
 import { m } from "../../metrics";
+import { readBodyCapped } from "../api/http";
 
 type AppEntry = {
   row: SlackAppRow;
@@ -216,35 +217,9 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
 
   const maxBodyBytes = opts.maxBodyBytes ?? env.slack.httpMaxBodyBytes();
 
-  /**
-   * Buffer the request body under the size cap, BEFORE any signature work.
-   * A declared Content-Length over the cap is rejected without reading a
-   * byte; an absent or lying Content-Length is caught by counting while
-   * streaming. Returns null when the cap is exceeded (caller sends 413).
-   */
-  async function readBodyCapped(req: Request): Promise<string | null> {
-    const declared = Number(req.headers.get("content-length"));
-    if (Number.isFinite(declared) && declared > maxBodyBytes) {
-      // Abandon the upload without buffering it.
-      await req.body?.cancel().catch(() => {});
-      return null;
-    }
-    if (!req.body) return "";
-    const reader = req.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBodyBytes) {
-        await reader.cancel().catch(() => {});
-        return null;
-      }
-      chunks.push(value);
-    }
-    return Buffer.concat(chunks).toString("utf8");
-  }
+  /** Buffer the request body under the size cap, BEFORE any signature work.
+   *  Returns null when the cap is exceeded (caller sends 413). */
+  const readCapped = (req: Request) => readBodyCapped(req, maxBodyBytes);
 
   async function handleEvents(req: Request, raw: string): Promise<Response> {
     let body: any;
@@ -325,7 +300,7 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
     if (req.method !== "POST") return new Response("not found", { status: 404 });
     // Size cap first — an oversize body is refused before any buffering
     // completes and before any signature work.
-    const raw = await readBodyCapped(req);
+    const raw = await readCapped(req);
     if (raw === null) {
       log(`[slack-http] rejected ${pathname}: body over ${maxBodyBytes} bytes`);
       // The unread remainder of the upload would poison a kept-alive

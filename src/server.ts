@@ -5,7 +5,7 @@ import { AgentManager } from "./agent/manager";
 import { createSlackApp } from "./gateway/slack/adapter";
 import { createGateway } from "./gateway/core/gateway";
 import { createHttpSlackTransport } from "./gateway/slack/http-transport";
-import { startHealthServer } from "./health";
+import { startHealthServer, deployHandlerForRole } from "./health";
 import { loadSoulData, setSoulData } from "./soul/extract";
 import { assertOAuthKeyCanary } from "./agent/mcp-oauth/store";
 import { sharedLoopback } from "./agent/mcp-oauth/shared-loopback";
@@ -13,7 +13,13 @@ import { verifyState } from "./agent/mcp-oauth/state";
 import { env } from "./config/env";
 import { assertPanelConfig } from "./gateway/panel/auth/config";
 import { assertPortalConfig } from "./gateway/portal/config";
-import { loadPersonaRegistry, setPersonaRegistry } from "./persona/registry";
+import {
+  getPersonaRegistry,
+  loadPersonaRegistry,
+  refreshPersonaState,
+  setPersonaRegistry,
+  startRegistryRevalidation,
+} from "./persona/registry";
 import { getDb, resolveDbConfig } from "./db/client";
 import { assertGatewayRequirements } from "./config/gateway-requirements";
 import { brainEnabled, brainEngineConfig } from "./knowledge/brain";
@@ -56,9 +62,19 @@ async function main() {
     console.warn("[slaude] soul prewarm failed (continuing with regex fallback):", e);
   }
 
-  // Load persona registry. Absent ~/.slaude/personas/ = single-bot mode (no-op).
-  const registry = loadPersonaRegistry();
-  setPersonaRegistry(registry);
+  // Load persona registry. A tenant never synced as code reads the filesystem
+  // (absent ~/.slaude/personas/ = single-bot mode); a managed one reads its
+  // effective state from the database, and its `default` row supplies the
+  // default persona's soul and structured soul. The poll bounds staleness when
+  // a reload signal is lost; sqlite has no persona tables, so nothing to poll.
+  let stopRegistryRevalidation: (() => void) | undefined;
+  if (env.role() === "node") {
+    setPersonaRegistry(loadPersonaRegistry());
+  } else {
+    await refreshPersonaState("default");
+    if (db.dialect === "pg") stopRegistryRevalidation = startRegistryRevalidation("default");
+  }
+  const registry = getPersonaRegistry();
   if (registry.isMultiPersonaMode()) {
     console.log(`[persona] multi-persona mode: ${registry.list().map((p) => p.name).join(", ")}`);
   }
@@ -121,6 +137,7 @@ async function main() {
       health: {
         liveSessions: () => agent.liveCount(),
         v1: role !== "node" ? (req: Request) => slack.fetchV1(req) : undefined,
+        deploy: deployHandlerForRole(role, (req) => slack.fetchDeploy?.(req) ?? Promise.resolve(null)),
         panel: panelMounted ? (req: Request) => slack.fetchPanel(req) : undefined,
         portal: role !== "node" ? (req: Request) => slack.fetchPortal(req) : undefined,
       },
@@ -131,6 +148,7 @@ async function main() {
     health = startHealthServer({
       liveSessions: () => agent.liveCount(),
       v1: role !== "node" ? (req) => slack.fetchV1(req) : undefined,
+      deploy: deployHandlerForRole(role, (req) => slack.fetchDeploy?.(req) ?? Promise.resolve(null)),
       panel: panelMounted ? (req) => slack.fetchPanel(req) : undefined,
       portal: role !== "node" ? (req) => slack.fetchPortal(req) : undefined,
     });
@@ -154,6 +172,7 @@ async function main() {
 
   const shutdown = async () => {
     console.log("[slaude] shutting down");
+    stopRegistryRevalidation?.();
     health?.stop();
     await reaperHandle?.stop();
     await loopback?.stop();

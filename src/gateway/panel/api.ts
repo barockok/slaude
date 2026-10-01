@@ -25,6 +25,9 @@
  *   POST /panel/api/sessions/:id/release         release control
  *   POST /panel/api/sessions/:id/force-release   steal + audit
  *   POST /panel/api/reload                       re-read persona config (superadmin)
+ *   GET  /panel/api/personas                     git vs live per field (secrets reported as present/absent)
+ *   PUT|DELETE /panel/api/personas/:name/overrides/:field   runtime override (superadmin; wiped by the next git sync)
+ *   POST /panel/api/personas                     runtime onboard of a non-git persona (superadmin)
  */
 import { z } from "zod";
 import * as Sessions from "../../db/sessions";
@@ -41,6 +44,12 @@ import type { PanelRole } from "./auth/roles";
 import { enumerateSessions } from "./enumerator";
 import { servePanelStatic } from "./static";
 import { publishConfigReload } from "../core/config-reload";
+import * as Personas from "../../db/personas";
+import { OVERRIDE_FIELDS, type OverrideField, type DesiredPersona } from "../../persona/effective";
+import { PERSONA_NAME_RE } from "../../persona/sync/payload";
+import { resolveDbConfig } from "../../db/client";
+import { assertHttpOnlyMcp, McpNotHttpOnlyError } from "../../persona/mcp-http-only";
+import { extractSoulData, SoulExtractionError } from "../../soul/extract";
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -82,6 +91,8 @@ function enforceCsrf(req: Request): Response | null {
  */
 export const SUPERADMIN_ACTIONS: ReadonlySet<string> = new Set([
   "reload",
+  "persona.override",
+  "persona.create",
   "control.reset",
   "control.mode",
   "force-release",
@@ -128,6 +139,8 @@ export interface PanelApiDeps {
   onUnlock?: (sessionId: string) => void;
   /** SSE poll cadence (ms). Default 300. */
   eventsPollMs?: number;
+  /** Strict soul extraction for runtime persona changes. Default: the real extractor. */
+  extractSoul?: (text: string) => Promise<unknown>;
 }
 
 export interface PanelApi {
@@ -138,6 +151,7 @@ export interface PanelApi {
 export function createPanelApi(deps: PanelApiDeps): PanelApi {
   const pollMs = deps.eventsPollMs ?? 300;
   const authRoutes = createAuthRoutes();
+  const extractSoul = deps.extractSoul ?? ((t: string) => extractSoulData(t, { strict: true }));
 
   async function handleEvents(req: Request, sessionId: string, expMs: number): Promise<Response> {
     if (!deps.pubsub) return json(503, { error: "event stream unavailable (no Redis)" });
@@ -327,6 +341,161 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         const result = await publishConfigReload(deps.pubsub, tenantId);
         audit({ action: "reload", operator: operatorId, role, outcome: "ok", detail: { tenantId, ...result } });
         return json(200, { tenant: tenantId, ...result });
+      }
+
+      // --- Runtime persona changes. Git is the source of truth; these are for
+      // quick experiments and every sync from git wipes them. CSRF already ran
+      // above, before any route. Tenant is always "default".
+      if (seg[2] === "personas") {
+        // The persona tables are Postgres-only: say so instead of a 500.
+        if (resolveDbConfig().dialect === "sqlite") return json(409, { error: Personas.PERSONA_SYNC_NEEDS_PG });
+        const tenant = "default";
+        const status = (e: unknown): Response | null => {
+          if (e instanceof Personas.PersonaNotFoundError) return json(404, { error: e.message });
+          if (
+            e instanceof Personas.NotManagedError ||
+            e instanceof Personas.NameTakenError ||
+            e instanceof Personas.IdentityTakenError
+          ) return json(409, { error: e.message });
+          if (e instanceof SoulExtractionError) {
+            // The cause can carry provider response text: server log only,
+            // truncated, as the pipeline's sync does.
+            console.error(`[panel] soul extraction failed: ${e.message.slice(0, 200)}`);
+            return json(502, { error: "soul extraction failed" });
+          }
+          return null;
+        };
+        const readBody = async (): Promise<Record<string, unknown> | null> => {
+          const b = await req.json().catch(() => null);
+          return b && typeof b === "object" && !Array.isArray(b) ? (b as Record<string, unknown>) : null;
+        };
+
+        // GET /panel/api/personas — read-only, like sessions: any authenticated operator.
+        if (seg.length === 3 && req.method === "GET") {
+          const live = await Personas.effectivePersonas(tenant, { includeTombstoned: true });
+          const desired = new Map((await Personas.desiredPersonas(tenant, { includeTombstoned: true })).map((d) => [d.name, d]));
+          const presence = (v: unknown) => (v != null ? "present" : "absent");
+          return json(200, {
+            revision: (await Personas.syncState(tenant))?.revision ?? null,
+            // A sync can commit between the two reads; skip a persona the
+            // desired read does not know yet (it shows on the next read).
+            personas: live.flatMap((p) => {
+              const d = desired.get(p.name);
+              if (!d) return [];
+              const overridden = (f: OverrideField) => p.overridden.includes(f);
+              return {
+                name: p.name,
+                origin: p.origin,
+                tombstoned: p.tombstonedAt !== null,
+                slackUserId: p.slackUserId,
+                userToken: presence(p.userToken),
+                fields: {
+                  soul: { git: d.soulMd, live: p.soulMd, overridden: overridden("soul") },
+                  model: { git: d.model, live: p.model, overridden: overridden("model") },
+                  mcp: { git: presence(d.mcp), live: presence(p.mcp), overridden: overridden("mcp") },
+                },
+              };
+            }),
+          });
+        }
+
+        // POST /panel/api/personas — onboard a runtime (non-git) persona.
+        if (seg.length === 3 && req.method === "POST") {
+          const denied = requireSuperadmin(role, { action: "persona.create", operator: operatorId });
+          if (denied) return denied;
+          const b = await readBody();
+          if (!b) return json(400, { error: "invalid JSON body" });
+          const name = b.name;
+          if (typeof name !== "string" || !PERSONA_NAME_RE.test(name)) {
+            return json(422, { error: "persona name must match ^[a-z0-9][a-z0-9-]{0,62}$" });
+          }
+          if (typeof b.soul !== "string" || !b.soul.trim()) return json(422, { error: "soul text is required" });
+          if (name !== "default" && (typeof b.slackUserId !== "string" || !b.slackUserId)) {
+            return json(422, { error: "slackUserId is required" });
+          }
+          if (b.model != null && (typeof b.model !== "string" || !b.model)) return json(422, { error: "model must be a non-empty string" });
+          if (b.userToken != null && typeof b.userToken !== "string") return json(422, { error: "userToken must be a string" });
+          if (b.mcp != null) {
+            try { assertHttpOnlyMcp(b.mcp); } catch (e) {
+              if (e instanceof McpNotHttpOnlyError) return json(422, { error: e.message });
+              throw e;
+            }
+          }
+          try {
+            const row: DesiredPersona = {
+              name,
+              slackUserId: typeof b.slackUserId === "string" ? b.slackUserId : null,
+              userToken: typeof b.userToken === "string" && b.userToken ? b.userToken : null,
+              model: typeof b.model === "string" ? b.model : null,
+              soulMd: b.soul,
+              soulJson: await extractSoul(b.soul),
+              mcp: b.mcp ?? null,
+              origin: "runtime",
+              tombstonedAt: null,
+            };
+            await Personas.createRuntimePersona(tenant, row, operatorId);
+          } catch (e) {
+            const r = status(e);
+            if (r) return r;
+            throw e;
+          }
+          const reload = await publishConfigReload(deps.pubsub, tenant);
+          // The detail names the persona only; the body (and its userToken) is never logged.
+          audit({ action: "persona.create", operator: operatorId, role, outcome: "ok", detail: { tenantId: tenant, persona: name } });
+          return json(200, { ok: true, name, ...reload });
+        }
+
+        // PUT|DELETE /panel/api/personas/:name/overrides/:field
+        if (seg.length === 6 && seg[4] === "overrides") {
+          if (req.method !== "PUT" && req.method !== "DELETE") return json(405, { error: "method not allowed" });
+          const denied = requireSuperadmin(role, { action: "persona.override", operator: operatorId });
+          if (denied) return denied;
+          let name: string;
+          try { name = decodeURIComponent(seg[3]!); } catch { return json(422, { error: "invalid persona name" }); }
+          if (!PERSONA_NAME_RE.test(name)) return json(422, { error: "invalid persona name" });
+          const field = seg[5] as OverrideField;
+          if (!OVERRIDE_FIELDS.includes(field)) {
+            return json(422, { error: `only ${OVERRIDE_FIELDS.join(", ")} can be overridden` });
+          }
+          // PUT and DELETE agree on an unmanaged tenant: 409 before any existence check.
+          if (!(await Personas.isManaged(tenant))) return json(409, { error: new Personas.NotManagedError(tenant).message });
+          let removed: boolean | undefined;
+          try {
+            if (req.method === "PUT") {
+              const b = await readBody();
+              if (!b || !("value" in b)) return json(400, { error: "body must be { value }" });
+              const v = b.value;
+              let stored: unknown = v;
+              if (field === "soul") {
+                if (typeof v !== "string" || !v.trim()) return json(422, { error: "soul value must be non-empty text" });
+                stored = { soulMd: v, soulJson: await extractSoul(v) };
+              } else if (field === "model") {
+                if (typeof v !== "string" || !v) return json(422, { error: "model value must be a non-empty string" });
+              } else {
+                try { assertHttpOnlyMcp(v); } catch (e) {
+                  if (e instanceof McpNotHttpOnlyError) return json(422, { error: e.message });
+                  throw e;
+                }
+              }
+              await Personas.setOverride(tenant, name, field, stored, operatorId);
+            } else {
+              const live = await Personas.effectivePersonas(tenant);
+              if (!live.some((p) => p.name === name)) return json(404, { error: `no live persona named '${name}'` });
+              removed = await Personas.clearOverride(tenant, name, field);
+            }
+          } catch (e) {
+            const r = status(e);
+            if (r) return r;
+            throw e;
+          }
+          const reload = await publishConfigReload(deps.pubsub, tenant);
+          audit({
+            action: "persona.override", operator: operatorId, role, outcome: "ok",
+            detail: { tenantId: tenant, persona: name, field, op: req.method === "PUT" ? "set" : "clear" },
+          });
+          return json(200, { ok: true, ...(removed !== undefined ? { removed } : {}), ...reload });
+        }
+        return json(404, { error: "not found" });
       }
 
       // GET /panel/api/sessions

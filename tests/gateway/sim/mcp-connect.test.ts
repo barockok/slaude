@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { __resetMasterKeyCache } from "../../../src/db/crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createGateway } from "../../../src/gateway/core/gateway";
@@ -59,6 +60,9 @@ const mcpJsonPath = join(paths.home, ".mcp.json");
 const initiatorDir = initiatorConfigDir(INITIATOR);
 
 beforeEach(async () => {
+  // Parked flows are durable now, so a leftover from another test file would
+  // otherwise be picked up as this thread's pending connect.
+  await db.run("DELETE FROM slack_oauth_flows");
   writeSoulFixture(WORLD);                       // manager = U0MGR, trusted = C0TEAM
   OneOnOne._wipeForTests();
   // Durable dedup: tests reuse the same channel:ts across cases on purpose.
@@ -136,6 +140,9 @@ describe("/mcp gating + connect", () => {
   it("paste-back mode: posts the authorize URL, then completes on a pasted callback", async () => {
     const prev = process.env.SLAUDE_OAUTH_REDIRECT_URL;
     process.env.SLAUDE_OAUTH_REDIRECT_URL = "https://slaude.example/oauth/paste";
+    // Paste-back parks the flow encrypted, so this mode needs a master key.
+    process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
+    __resetMasterKeyCache();
     try {
       const { t, posts, emit } = capturingTransport();
       const agent = new AgentManager();
@@ -149,8 +156,19 @@ describe("/mcp gating + connect", () => {
           return {
             authorizeUrl: `https://authorize.example/x?redirect_uri=${encodeURIComponent(redirectUri)}&state=STATE123`,
             state: "STATE123",
-            exchange: async (code: string) => { exchangeCalls++; expect(code).toBe("THECODE"); return { clientId: "cid", accessToken: "AT", refreshToken: "RT", expiresIn: 3600 }; },
+            parts: {
+              tokenEndpoint: "https://authorize.example/token",
+              redirectUri,
+              clientId: "cid",
+              verifier: "v",
+              resource: "https://workbench.example/mcp",
+            },
           };
+        },
+        oauthExchange: async (_parts, code: string) => {
+          exchangeCalls++;
+          expect(code).toBe("THECODE");
+          return { clientId: "cid", accessToken: "AT", refreshToken: "RT", expiresIn: 3600 };
         },
       });
 
@@ -182,17 +200,27 @@ describe("/mcp gating + connect", () => {
   it("paste-back mode: rejects a state mismatch and writes nothing", async () => {
     const prev = process.env.SLAUDE_OAUTH_REDIRECT_URL;
     process.env.SLAUDE_OAUTH_REDIRECT_URL = "https://slaude.example/oauth/paste";
+    // Paste-back parks the flow encrypted, so this mode needs a master key.
+    process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
+    __resetMasterKeyCache();
     try {
       const { t, posts, emit } = capturingTransport();
       const agent = new AgentManager();
       agent.sendMessage = async () => {};
       let exchangeCalls = 0;
       createGateway(agent, t, {
-        oauthPrepare: async () => ({
+        oauthPrepare: async ({ redirectUri }) => ({
           authorizeUrl: "https://authorize.example/x?state=GOOD",
           state: "GOOD",
-          exchange: async () => { exchangeCalls++; return { clientId: "c", accessToken: "A" }; },
+          parts: {
+            tokenEndpoint: "https://authorize.example/token",
+            redirectUri,
+            clientId: "c",
+            verifier: "v",
+            resource: "https://workbench.example/mcp",
+          },
         }),
+        oauthExchange: async () => { exchangeCalls++; return { clientId: "c", accessToken: "A" }; },
       });
       OneOnOne.lock({ channelId: CHANNEL, threadTs: THREAD, lockedUser: INITIATOR, createdBy: INITIATOR });
 
@@ -202,9 +230,111 @@ describe("/mcp gating + connect", () => {
       expect(exchangeCalls).toBe(0);
       expect(posts.find((p) => String(p.text ?? "").includes("state` mismatch"))).toBeDefined();
       expect(existsSync(join(initiatorDir, ".credentials.json"))).toBe(false);
+
+      // The mismatch message tells the person to paste the URL from the same
+      // authorize step. That is only true if the flow survived the mismatch —
+      // it used to be deleted before the state was even compared.
+      await sendInbound(emit, "https://slaude.example/oauth/paste?code=X&state=GOOD", INITIATOR, "100.8", t.client);
+      expect(exchangeCalls).toBe(1);
+      expect(posts.find((p) => String(p.text ?? "").includes("connected"))).toBeDefined();
     } finally {
       if (prev === undefined) delete process.env.SLAUDE_OAUTH_REDIRECT_URL;
       else process.env.SLAUDE_OAUTH_REDIRECT_URL = prev;
+    }
+  });
+
+  it("paste-back mode: a second gateway finishes a flow the first one started", async () => {
+    const prev = process.env.SLAUDE_OAUTH_REDIRECT_URL;
+    process.env.SLAUDE_OAUTH_REDIRECT_URL = "https://slaude.example/oauth/paste";
+    process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
+    __resetMasterKeyCache();
+    try {
+      // Two gateways over one database, which is the whole topology in
+      // miniature: the authorize step runs on one, the pasted callback lands on
+      // the other. Before the flow was parked in the database, the second knew
+      // nothing about it and the paste fell through to the model.
+      const parts = {
+        tokenEndpoint: "https://authorize.example/token",
+        redirectUri: "https://slaude.example/oauth/paste",
+        clientId: "cid",
+        verifier: "v",
+        resource: "https://workbench.example/mcp",
+      };
+      let exchangeCalls = 0;
+      const opts = {
+        oauthPrepare: async () => ({ authorizeUrl: "https://authorize.example/x?state=STATE123", state: "STATE123", parts }),
+        oauthExchange: async (_p: any, code: string) => {
+          exchangeCalls++;
+          expect(code).toBe("THECODE");
+          return { clientId: "cid", accessToken: "AT", refreshToken: "RT", expiresIn: 3600 };
+        },
+      };
+
+      const first = capturingTransport();
+      const firstAgent = new AgentManager();
+      firstAgent.sendMessage = async () => {};
+      createGateway(firstAgent, first.t, opts);
+
+      const second = capturingTransport();
+      const secondAgent = new AgentManager();
+      secondAgent.sendMessage = async () => {};
+      createGateway(secondAgent, second.t, opts);
+
+      OneOnOne.lock({ channelId: CHANNEL, threadTs: THREAD, lockedUser: INITIATOR, createdBy: INITIATOR });
+
+      await sendInbound(first.emit, "/mcp connect workbench", INITIATOR, "101.1", first.t.client);
+      expect(first.posts.find((p) => String(p.text ?? "").includes("authorize.example"))).toBeDefined();
+
+      // Two gateways in one process share module state, so the handoff above
+      // cannot by itself tell a database from a module-level Map. This is the
+      // property that actually makes another replica able to finish the flow:
+      // it is a row, and completing it removes that row.
+      const FLOW_KEY = `${CHANNEL}:${THREAD}:${INITIATOR}`;
+      expect(await db.query("SELECT flow_key FROM slack_oauth_flows WHERE flow_key = ?", [FLOW_KEY])).toHaveLength(1);
+
+      await sendInbound(second.emit, "https://slaude.example/oauth/paste?code=THECODE&state=STATE123", INITIATOR, "101.2", second.t.client);
+
+      expect(await db.query("SELECT flow_key FROM slack_oauth_flows WHERE flow_key = ?", [FLOW_KEY])).toHaveLength(0);
+      expect(exchangeCalls).toBe(1);
+      expect(second.posts.find((p) => String(p.text ?? "").includes("connected"))).toBeDefined();
+      const creds = JSON.parse(readFileSync(join(initiatorDir, ".credentials.json"), "utf8"));
+      const key = oauthKey("workbench", { type: "http", url: "https://workbench.example/mcp", headers: undefined });
+      expect(creds.mcpOAuth?.[key]?.accessToken).toBe("AT");
+    } finally {
+      if (prev === undefined) delete process.env.SLAUDE_OAUTH_REDIRECT_URL;
+      else process.env.SLAUDE_OAUTH_REDIRECT_URL = prev;
+    }
+  });
+
+  it("paste-back mode: refuses to start without a master key, since the flow is parked encrypted", async () => {
+    const prev = process.env.SLAUDE_OAUTH_REDIRECT_URL;
+    const prevKey = process.env.SLAUDE_MASTER_KEY;
+    process.env.SLAUDE_OAUTH_REDIRECT_URL = "https://slaude.example/oauth/paste";
+    delete process.env.SLAUDE_MASTER_KEY;
+    __resetMasterKeyCache();
+    try {
+      const { t, posts, emit } = capturingTransport();
+      const agent = new AgentManager();
+      agent.sendMessage = async () => {};
+      let prepareCalls = 0;
+      createGateway(agent, t, {
+        oauthPrepare: async () => {
+          prepareCalls++;
+          throw new Error("must not register a client we cannot park");
+        },
+      });
+      OneOnOne.lock({ channelId: CHANNEL, threadTs: THREAD, lockedUser: INITIATOR, createdBy: INITIATOR });
+
+      await sendInbound(emit, "/mcp connect workbench", INITIATOR, "102.1", t.client);
+
+      expect(prepareCalls).toBe(0);
+      expect(posts.find((p) => String(p.text ?? "").includes("SLAUDE_MASTER_KEY"))).toBeDefined();
+    } finally {
+      if (prev === undefined) delete process.env.SLAUDE_OAUTH_REDIRECT_URL;
+      else process.env.SLAUDE_OAUTH_REDIRECT_URL = prev;
+      if (prevKey === undefined) delete process.env.SLAUDE_MASTER_KEY;
+      else process.env.SLAUDE_MASTER_KEY = prevKey;
+      __resetMasterKeyCache();
     }
   });
 

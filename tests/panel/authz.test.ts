@@ -9,8 +9,10 @@ afterEach(() => {
 });
 
 describe("superadmin action set", () => {
-  it("gates exactly reset, mode, force-release and reload", () => {
-    expect([...SUPERADMIN_ACTIONS].sort()).toEqual(["control.mode", "control.reset", "force-release", "reload"]);
+  it("gates exactly reset, mode, force-release, reload and the persona changes", () => {
+    expect([...SUPERADMIN_ACTIONS].sort()).toEqual([
+      "control.mode", "control.reset", "force-release", "persona.create", "persona.override", "reload",
+    ]);
   });
 
   it("leaves stop, model and unlock-1on1 to any operator", () => {

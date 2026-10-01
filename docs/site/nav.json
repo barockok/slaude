@@ -63,7 +63,8 @@
             { "path": "deploy/webhook-mode", "label": "Webhook (Events API) mode" },
             { "path": "deploy/panel", "label": "Control panel" },
             { "path": "deploy/multi-node", "label": "Multi-node scale-out" },
-            { "path": "deploy/scale-operations", "label": "Scale operations" }
+            { "path": "deploy/scale-operations", "label": "Scale operations" },
+            { "path": "deploy/personas-as-code", "label": "Personas as code" }
           ]
         }
       ]

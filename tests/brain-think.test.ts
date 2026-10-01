@@ -15,6 +15,31 @@ afterAll(async () => {
 });
 
 describe("sdkThinkClient", () => {
+  test("passes a scrubbed environment to the SDK child", async () => {
+    process.env.SLAUDE_DEPLOY_TOKEN = "d".repeat(40);
+    process.env.PERSONA_X = "secret";
+    process.env.KEEP_ME = "1";
+    let captured: { options?: Record<string, any> } = {};
+    const fakeRunner = ((args: any) => {
+      captured = args;
+      return (async function* () { yield { type: "result" }; })();
+    }) as never;
+    try {
+      await sdkThinkClient(fakeRunner).create({
+        model: "m", max_tokens: 10, system: "s",
+        messages: [{ role: "user", content: "q" }],
+      } as never);
+    } finally {
+      delete process.env.SLAUDE_DEPLOY_TOKEN;
+      delete process.env.PERSONA_X;
+      delete process.env.KEEP_ME;
+    }
+    const env = captured.options!.env as Record<string, string | undefined>;
+    expect(env.SLAUDE_DEPLOY_TOKEN).toBeUndefined();
+    expect(env.PERSONA_X).toBeUndefined();
+    expect(env.KEEP_ME).toBe("1");
+  });
+
   test("maps anthropic-shaped params onto a one-shot SDK query and back", async () => {
     let captured: { prompt?: unknown; options?: Record<string, unknown> } = {};
     const fakeRunner = ((args: { prompt: unknown; options: Record<string, unknown> }) => {

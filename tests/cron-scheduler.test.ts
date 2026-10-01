@@ -1,8 +1,9 @@
-import { describe, expect, test, beforeEach, afterEach, mock } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import { db } from "../src/db/schema";
 import * as CronJobs from "../src/db/cron-jobs";
 import { parseCron, getNextRun } from "../src/gateway/slack/cron-parser";
 import { CronScheduler } from "../src/gateway/slack/cron-scheduler";
+import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../src/persona/registry";
 
 describe("cron-jobs DB", () => {
   beforeEach(async () => {
@@ -646,5 +647,128 @@ describe("CronScheduler under the gateway/node split", () => {
     await settle(scheduler);
 
     expect(agent.sendMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+// R41/R42 (I4): a cron job owned by a persona a MANAGED registry no longer
+// lists skips its occurrence before any session work. Releasing its claim would
+// retry it every tick forever; running it would fall back to the default persona.
+describe("CronScheduler and a persona that is not live", () => {
+  beforeEach(async () => { await db.run("DELETE FROM cron_jobs"); });
+  afterEach(async () => { await db.run("DELETE FROM cron_jobs"); __resetPersonaRegistry(); });
+  const registry = (managed: boolean): PersonaRegistry => ({
+    lookupByUserId: () => null, lookupByName: () => null, list: () => [], isMultiPersonaMode: () => false,
+    isManaged: () => managed, tombstonedPersonaFor: () => null,
+  });
+  const run = async () => {
+    const ensureSession = mock(async () => ({ id: "sess-retired" }));
+    const sendMessage = mock(async () => {});
+    const onExecute = mock(() => {});
+    const scheduler = new CronScheduler({
+      agent: { ensureSession, sendMessage, isLive: () => false, on: () => {}, off: () => {}, setCronOAuthUser: () => {} } as any,
+      client: { chat: { postMessage: async () => ({}) } } as any,
+      onExecute,
+    });
+    scheduler.start();
+    await Bun.sleep(30);
+    scheduler.stop();
+    return { ensureSession, sendMessage, onExecute };
+  };
+  const job = (now: number) => CronJobs.create({
+    slackTeamId: "T1", slackChannelId: "C123", channelId: "C123", createdBy: "U999",
+    cronExpr: "0 9 * * *", prompt: "summarize", nextRunAt: now - 1000, personaId: "ana",
+  });
+
+  // R42 (I4): skip the occurrence, never pause. The claim already advanced
+  // next_run_at, so not releasing it is enough to skip this occurrence; the job
+  // stays active and runs again by itself once the persona is re-added.
+  test("on a managed registry the occurrence is skipped (not paused), no session is touched, and the claim is kept", async () => {
+    setPersonaRegistry(registry(true));
+    const now = Date.now();
+    const j = await job(now);
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    let r;
+    try { r = await run(); } finally { log.mockRestore(); }
+    expect(r.ensureSession).toHaveBeenCalledTimes(0);
+    expect(r.onExecute).toHaveBeenCalledTimes(0);
+    expect(r.sendMessage).toHaveBeenCalledTimes(0);
+    const after = (await CronJobs.findById(j.id))!;
+    expect(after.paused).toBe(0);
+    expect(after.active).toBe(1);
+    expect(after.nextRunAt).toBeGreaterThan(now);
+    expect(after.lastResult).toBe("skipped: persona not live");
+    expect(await CronJobs.findDue(Date.now() + 1)).toHaveLength(0);
+  });
+
+  test("re-adding the persona restores the job with no manual resume", async () => {
+    let live = false;
+    setPersonaRegistry({
+      ...registry(true),
+      lookupByName: (n: string) => (live && n === "ana" ? ({ name: "ana" } as any) : null),
+    });
+    const j = await job(Date.now());
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const first = await run();
+      expect(first.ensureSession).toHaveBeenCalledTimes(0);
+      // The persona comes back; the next occurrence falls due.
+      live = true;
+      await db.run("UPDATE cron_jobs SET next_run_at = ? WHERE id = ?", [Date.now() - 1000, j.id]);
+      const second = await run();
+      expect(second.ensureSession).toHaveBeenCalledTimes(1);
+      expect(second.sendMessage).toHaveBeenCalledTimes(1);
+    } finally { log.mockRestore(); }
+  });
+
+  test("on an unmanaged registry the job still runs (filesystem behaviour unchanged)", async () => {
+    setPersonaRegistry(registry(false));
+    await job(Date.now());
+    const r = await run();
+    expect(r.ensureSession).toHaveBeenCalledTimes(1);
+    expect(r.sendMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+// R42 (I5): #execute is started with `void`, so a throw inside it (a persona
+// retired between the live check and onExecute, a DB error) used to become an
+// unhandled rejection — which exits Bun — and left the job id in #running.
+describe("CronScheduler when a run throws", () => {
+  beforeEach(async () => { await db.run("DELETE FROM cron_jobs"); });
+  afterEach(async () => { await db.run("DELETE FROM cron_jobs"); __resetPersonaRegistry(); });
+
+  test("a throwing onExecute is caught: no unhandled rejection, error recorded, job not stuck", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (r: unknown) => { unhandled.push(r); };
+    process.on("unhandledRejection", onUnhandled);
+    const errs = spyOn(console, "error").mockImplementation(() => {});
+    const j = await CronJobs.create({
+      slackTeamId: "T1", slackChannelId: "C123", channelId: "C123", createdBy: "U999",
+      cronExpr: "0 9 * * *", prompt: "summarize", nextRunAt: Date.now() - 1000,
+    });
+    let calls = 0;
+    const ensureSession = mock(async () => ({ id: "sess-throw" }));
+    const scheduler = new CronScheduler({
+      agent: { ensureSession, sendMessage: async () => {}, isLive: () => false, on: () => {}, off: () => {}, setCronOAuthUser: () => {} } as any,
+      client: {} as any,
+      onExecute: () => { calls++; throw new Error("persona retired mid-run"); },
+    });
+    try {
+      scheduler.start();
+      await Bun.sleep(30);
+      scheduler.stop();
+      expect(calls).toBe(1);
+      expect(unhandled).toHaveLength(0);
+      expect((await CronJobs.findById(j.id))!.lastResult).toBe("error: persona retired mid-run");
+      // Not stuck in #running: the next due occurrence runs again.
+      await db.run("UPDATE cron_jobs SET next_run_at = ? WHERE id = ?", [Date.now() - 1000, j.id]);
+      scheduler.start();
+      await Bun.sleep(30);
+      scheduler.stop();
+      expect(calls).toBe(2);
+      expect(unhandled).toHaveLength(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      errs.mockRestore();
+    }
   });
 });

@@ -13,6 +13,7 @@ import { tryAcquire, release, heartbeat } from "../db/ingest-jobs";
 import { soulSystemBlock } from "../soul/loader";
 import { env } from "../config/env";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
+import { scrubChildEnv } from "../agent/child-env";
 
 export type IngestResult = {
   ok: boolean;
@@ -110,6 +111,8 @@ export async function defaultRunSubQuery(
       cwd: args.kbDir,
       model: env.model() || undefined,
       permissionMode: "bypassPermissions",
+      // The child runs Bash; hand it no deploy token, master key or PERSONA_*.
+      env: scrubChildEnv({ ...process.env }),
     },
   });
   for await (const msg of sdk) {

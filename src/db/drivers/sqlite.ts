@@ -167,6 +167,16 @@ CREATE TABLE IF NOT EXISTS mcp_credentials (
   UNIQUE (agent_tenant, agent_persona, server_key)
 );
 
+-- A parked paste-back /mcp connect (see 0010_slack_oauth_flows.sql).
+CREATE TABLE IF NOT EXISTS slack_oauth_flows (
+  flow_key   TEXT    PRIMARY KEY,
+  payload    TEXT    NOT NULL,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_slack_oauth_flows_expires ON slack_oauth_flows (expires_at);
+
 -- One in-flight portal OAuth authorization (see 0009_portal_oauth_flows.sql).
 CREATE TABLE IF NOT EXISTS portal_oauth_flows (
   id         TEXT    PRIMARY KEY,
