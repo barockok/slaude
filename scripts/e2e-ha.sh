@@ -41,7 +41,8 @@ die() { printf 'e2e-ha: %s\n' "$*" >&2; exit 2; }
 k() { kubectl --context "$PROFILE" -n "$NS" "$@"; }
 
 [[ "$PROFILE" =~ ^slaude-e2e ]] || die "profile '$PROFILE' does not match /^slaude-e2e/; refusing to touch it"
-for tool in minikube kubectl bun curl; do
+# jq strips env lists from the failure diagnostics (GitHub's ubuntu-latest runner ships it).
+for tool in minikube kubectl bun curl jq; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool not found on PATH"
 done
 
