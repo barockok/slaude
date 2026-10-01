@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { db } from "../../../src/db/schema";
-import { __resetMasterKeyCache } from "../../../src/db/crypto";
+import { __resetMasterKeyCache, encrypt } from "../../../src/db/crypto";
 import { paths } from "../../../src/config/home";
 import * as P from "../../../src/db/personas";
 import type { DesiredPersona } from "../../../src/persona/effective";
@@ -35,7 +35,9 @@ beforeEach(async () => {
   if (isPg) for (const t of ["persona_overrides", "persona_sync_state", "personas"]) await db.run(`DELETE FROM ${t}`);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // leave the tenant unmanaged for the other suites sharing this database
+  if (isPg) for (const t of ["persona_overrides", "persona_sync_state", "personas"]) await db.run(`DELETE FROM ${t}`);
   __resetPersonaRegistry();
   rmSync(paths.personas, { recursive: true, force: true });
   if (savedKey === undefined) delete process.env.SLAUDE_MASTER_KEY;
@@ -76,11 +78,28 @@ describe.skipIf(!isPg)("runtime bundle from effective state", () => {
     writeFsPersona("ghost");
     const spy = spyOn(P, "isManaged").mockRejectedValue(new Error("connection reset"));
     try {
-      let status: number | "threw" = "threw";
-      try { status = (await handleTenantRuntime(req(), "default", "ghost")).status; } catch { /* propagates → 500 */ }
-      expect(status).toBe("threw");
+      await expect(handleTenantRuntime(req(), "default", "ghost")).rejects.toThrow("connection reset");
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  test("effective present but raw row absent: still the effective bundle, with tenant-wide creds, never disk", async () => {
+    writeFsPersona("ghost");
+    await P.applySync("default", [row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
+    await db.run(`INSERT INTO provider_creds (id, tenant_id, persona_id, kind, value, created_at, updated_at) VALUES ('pc1', ?, NULL, 'api_key', ?, 1, 1)`,
+      ["default", encrypt("tenant-wide-key")]);
+    const eff = { ...(await P.effectivePersonas("default"))[0]!, name: "ghost", soulMd: "effective ghost soul" };
+    const spy = spyOn(P, "effectivePersonas").mockResolvedValue([eff]);
+    try {
+      const res = await handleTenantRuntime(req(), "default", "ghost");
+      expect(res.status).toBe(200);
+      const b = (await res.json()) as any;
+      expect(b.soulMd).toBe("effective ghost soul");
+      expect(b.providerCreds.apiKey).toBe("tenant-wide-key");
+    } finally {
+      spy.mockRestore();
+      await db.run(`DELETE FROM provider_creds WHERE tenant_id = ?`, ["default"]);
     }
   });
 });

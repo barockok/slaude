@@ -65,6 +65,45 @@ function envProviderCreds(): RuntimeBundle["providerCreds"] {
   return creds;
 }
 
+/** Tenant-wide provider creds first, then the persona's own (when it has a row). */
+async function applyProviderCreds(out: RuntimeBundle["providerCreds"], tenantId: string, personaRowId: string | undefined) {
+  const creds = personaRowId === undefined
+    ? await db.query<CredRow>(`SELECT persona_id, kind, value FROM provider_creds WHERE tenant_id = ? AND persona_id IS NULL`, [tenantId])
+    : await db.query<CredRow>(
+        `SELECT persona_id, kind, value FROM provider_creds
+         WHERE tenant_id = ? AND (persona_id IS NULL OR persona_id = ?)`,
+        [tenantId, personaRowId],
+      );
+  for (const specific of [false, true]) {
+    for (const c of creds) {
+      if ((c.persona_id !== null) !== specific) continue;
+      if (c.kind === "api_key") out.apiKey = decrypt(c.value);
+      else if (c.kind === "base_url") out.baseUrl = decrypt(c.value);
+      else if (c.kind === "oauth_token") out.oauthToken = decrypt(c.value);
+    }
+  }
+}
+
+/** A managed tenant: effective state only. Self-contained, so tiers 2 and 3
+ *  (disk, env) are unreachable from it. Missing or tombstoned persona -> null. */
+async function buildManagedBundle(tenantId: string, personaId: string): Promise<RuntimeBundle | null> {
+  const effective = (await effectivePersonas(tenantId)).find((p) => p.name === personaId);
+  if (!effective) return null;
+  const row = await db.one<{ id: string }>(`SELECT id FROM personas WHERE tenant_id = ? AND name = ?`, [tenantId, personaId]);
+  const providerCreds: RuntimeBundle["providerCreds"] = {};
+  await applyProviderCreds(providerCreds, tenantId, row?.id);
+  return {
+    tenantId,
+    personaId: effective.name,
+    providerCreds,
+    soulMd: effective.soulMd,
+    soulJson: effective.soulJson,
+    mcpJson: effective.mcp,
+    skillsPaths: [paths.skills, ...(effective.name !== "default" ? [personaSkillsRoot(effective.name)] : [])],
+    defaultModel: effective.model ?? env.model(),
+  };
+}
+
 /**
  * Resolve the bundle for one (tenant, persona) pair, in three tiers:
  *
@@ -85,10 +124,13 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
   // error propagates (the route 500s, the node retries): swallowing one would
   // read as "unmanaged" and flip a managed tenant onto the disk tier.
   const sqlite = resolveDbConfig().dialect === "sqlite";
+  // Managed is decided FIRST, so everything after reads one consistent answer.
+  const managed = sqlite ? false : await isManaged(tenantId);
+  if (managed) return buildManagedBundle(tenantId, personaId);
+
+  // Unmanaged: today's raw-row tier 1, then tiers 2 and 3.
   let tenant: { id: string } | null = null;
   let personas: PersonaRow[] = [];
-  let managed = false;
-  let effective: EffectivePersona | undefined;
   const loadRows = async () => {
     tenant = await db.one<{ id: string }>(`SELECT id FROM tenants WHERE id = ?`, [tenantId]);
     return db.query<PersonaRow>(`SELECT * FROM personas WHERE tenant_id = ? AND name = ?`, [tenantId, personaId]);
@@ -101,55 +143,23 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
     }
   } else {
     personas = await loadRows();
-    managed = await isManaged(tenantId);
-    if (managed) effective = (await effectivePersonas(tenantId)).find((p) => p.name === personaId);
   }
   if (!tenant && tenantId !== "default") return null;
-  // A managed tenant is served from effective state alone: a missing or
-  // tombstoned persona is a 404, and tiers 2 and 3 never run.
-  if (managed && !effective) return null;
   const persona = personas[0];
-  // Provider credentials key on the persona row's id (EffectivePersona has none).
-  const credPersonaId = persona?.id;
 
   const providerCreds: RuntimeBundle["providerCreds"] = {};
-  if (credPersonaId !== undefined) {
-    const creds = await db.query<CredRow>(
-      `SELECT persona_id, kind, value FROM provider_creds
-       WHERE tenant_id = ? AND (persona_id IS NULL OR persona_id = ?)`,
-      [tenantId, credPersonaId],
-    );
-    // Tenant-wide rows first, persona-specific rows override.
-    for (const specific of [false, true]) {
-      for (const c of creds) {
-        if ((c.persona_id !== null) !== specific) continue;
-        if (c.kind === "api_key") providerCreds.apiKey = decrypt(c.value);
-        else if (c.kind === "base_url") providerCreds.baseUrl = decrypt(c.value);
-        else if (c.kind === "oauth_token") providerCreds.oauthToken = decrypt(c.value);
-      }
-    }
-    if (effective) {
-      return {
-        tenantId,
-        personaId: effective.name,
-        providerCreds,
-        soulMd: effective.soulMd,
-        soulJson: effective.soulJson,
-        mcpJson: effective.mcp,
-        skillsPaths: [paths.skills, ...(effective.name !== "default" ? [personaSkillsRoot(effective.name)] : [])],
-        defaultModel: effective.model ?? env.model(),
-      };
-    }
-    const overlay = persona!.name !== "default" ? [personaSkillsRoot(persona!.name)] : [];
+  if (persona) {
+    await applyProviderCreds(providerCreds, tenantId, persona.id);
+    const overlay = persona.name !== "default" ? [personaSkillsRoot(persona.name)] : [];
     return {
       tenantId,
-      personaId: persona!.name,
+      personaId: persona.name,
       providerCreds,
-      soulMd: persona!.soul_md,
-      soulJson: typeof persona!.soul_json === "string" ? JSON.parse(persona!.soul_json) : persona!.soul_json,
-      mcpJson: typeof persona!.mcp_json === "string" ? JSON.parse(persona!.mcp_json) : persona!.mcp_json,
+      soulMd: persona.soul_md,
+      soulJson: typeof persona.soul_json === "string" ? JSON.parse(persona.soul_json) : persona.soul_json,
+      mcpJson: typeof persona.mcp_json === "string" ? JSON.parse(persona.mcp_json) : persona.mcp_json,
       skillsPaths: [paths.skills, ...overlay],
-      defaultModel: persona!.model_default ?? env.model(),
+      defaultModel: persona.model_default ?? env.model(),
     };
   }
 
