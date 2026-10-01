@@ -38,6 +38,14 @@ const saved: Record<string, string | undefined> = {};
 /** Every call the fake saw, boot included: beforeEach's reset would otherwise drop them. */
 const allCalls: CallRecord[] = [];
 
+/**
+ * CI runs bun with its 5 s default per-test timeout, and several cases wait on real delays (a 1 s
+ * retry-after, three signed clicks, settle windows). Every case gets TEST_MS, and every wait a
+ * shorter WAIT_MS, so a slow run fails with the name of what was awaited, not a bare timeout.
+ */
+const TEST_MS = 30_000;
+const WAIT_MS = 15_000;
+
 const ENV_KEYS = ["SLAUDE_MASTER_KEY", "SLAUDE_SLACK_API_URL", "SLACK_BOT_TOKEN", "SLAUDE_BRAIN_DISABLED"];
 
 beforeAll(async () => {
@@ -114,7 +122,7 @@ const drops = (reason: string): number => {
 };
 /** Wait for the gateway to drop `delta` more events for `reason` than `before`, then require exactly that many. */
 const dropped = async (reason: string, before: number, delta: number) => {
-  await until(() => drops(reason) - before >= delta, { what: `${delta} "${reason}" drop(s) in the gateway` });
+  await until(() => drops(reason) - before >= delta, { timeoutMs: WAIT_MS, what: `${delta} "${reason}" drop(s) in the gateway` });
   await settle(); // a late extra copy would show up here
   expect(drops(reason) - before).toBe(delta);
 };
@@ -123,20 +131,20 @@ describe("real gateway + HTTP transport + fake Slack", () => {
   test("a DM from the manager gets one reply, threaded on the inbound message", async () => {
     const sent = await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "hello", target: base });
     expect(sent.deliveries[0]!.finalStatus).toBe(200);
-    const reply = await until(async () => (await acks("D0MGR"))[0], { what: "the bot's reply" });
+    const reply = await until(async () => (await acks("D0MGR"))[0], { timeoutMs: WAIT_MS, what: "the bot's reply" });
     // even in a DM the reply goes into a thread on the inbound message, not top level
     expect(reply.threadTs).toBe(sent.message.ts);
     // the turn's lifecycle reactions end on the inbound message as a check mark
-    await until(async () => (await ctl.calls({ method: "reactions.add" })).calls.some((c) => c.args?.name === "white_check_mark"), { what: "the done reaction" });
+    await until(async () => (await ctl.calls({ method: "reactions.add" })).calls.some((c) => c.args?.name === "white_check_mark"), { timeoutMs: WAIT_MS, what: "the done reaction" });
     await settle();
     expect(await acks("D0MGR")).toHaveLength(1);
-  });
+  }, TEST_MS);
 
   test("a channel @mention from an allowed user gets a reply in the thread", async () => {
     const sent = await ctl.send({ app: "A0FAKE", channel: "C0TEAM", user: "U0ALICE", text: "status?", target: base, mention: true });
-    const reply = await until(async () => (await acks("C0TEAM"))[0], { what: "the channel reply" });
+    const reply = await until(async () => (await acks("C0TEAM"))[0], { timeoutMs: WAIT_MS, what: "the channel reply" });
     expect(reply.threadTs).toBe(sent.message.ts);
-  });
+  }, TEST_MS);
 
   test("a channel message without an @mention in an unengaged thread is not answered", async () => {
     const before = drops("engagement");
@@ -144,53 +152,53 @@ describe("real gateway + HTTP transport + fake Slack", () => {
     await dropped("engagement", before, 1);
     expect(await botMessages("C0TEAM")).toEqual([]);
     expect((await ctl.calls()).calls.filter((c) => c.kind === "api" && c.method === "chat.postMessage")).toEqual([]);
-  });
+  }, TEST_MS);
 
   test("a duplicate delivery of the same event produces one reply", async () => {
     const before = drops("dedup");
     const sent = await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "dedup me", target: base, duplicate: true, eventId: "Ev0DEDUP" });
     expect(sent.deliveries.map((d) => d.finalStatus)).toEqual([200, 200]);
-    await until(async () => (await acks("D0MGR")).length >= 1, { what: "first reply" });
+    await until(async () => (await acks("D0MGR")).length >= 1, { timeoutMs: WAIT_MS, what: "first reply" });
     await dropped("dedup", before, 1);
     expect(await acks("D0MGR")).toHaveLength(1);
-  });
+  }, TEST_MS);
 
   test("a Slack retry (X-Slack-Retry-Num) of an event already taken produces no second reply", async () => {
     const first = await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "retry me", target: base, eventId: "Ev0RETRY" });
-    await until(async () => (await acks("D0MGR")).length >= 1, { what: "first reply" });
+    await until(async () => (await acks("D0MGR")).length >= 1, { timeoutMs: WAIT_MS, what: "first reply" });
     const before = drops("dedup");
     const retry = await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", target: base, redeliverTs: first.message.ts, eventId: "Ev0RETRY", retryNum: 1 });
     expect(retry.deliveries[0]!.attempts).toEqual([{ retryNum: 1, status: 200 }]);
     await dropped("dedup", before, 1);
     expect(await acks("D0MGR")).toHaveLength(1);
-  });
+  }, TEST_MS);
 
   test("an event whose first delivery the gateway sees is a retry is still answered", async () => {
     // Slack's first attempt was lost (e.g. the gateway was down): only the retry arrives.
     const before = drops("dedup");
     await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "only the retry", target: base, retryNum: 2 });
-    await until(async () => (await acks("D0MGR")).length >= 1, { what: "the reply to a retry-only delivery" });
+    await until(async () => (await acks("D0MGR")).length >= 1, { timeoutMs: WAIT_MS, what: "the reply to a retry-only delivery" });
     await settle();
     expect(await acks("D0MGR")).toHaveLength(1);
     // the retry header alone is not a reason to drop
     expect(drops("dedup") - before).toBe(0);
-  });
+  }, TEST_MS);
 
   test("the same message ts under a NEW event id is still one reply (dedup is by channel and ts)", async () => {
     const first = await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "same ts", target: base, eventId: "Ev0ONE" });
-    await until(async () => (await acks("D0MGR")).length >= 1, { what: "first reply" });
+    await until(async () => (await acks("D0MGR")).length >= 1, { timeoutMs: WAIT_MS, what: "first reply" });
     const before = drops("dedup");
     await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", target: base, eventId: "Ev0TWO", redeliverTs: first.message.ts });
     await dropped("dedup", before, 1);
     expect(await acks("D0MGR")).toHaveLength(1);
-  });
+  }, TEST_MS);
 
   test("an approval card is posted with buttons, only an approver's click resolves it, exactly once, and the agent continues", async () => {
     agent.setBehavior("request_approval");
     await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "deploy prod", target: base });
     const card = await until(
       async () => (await botMessages("D0MGR")).find((m) => JSON.stringify(m.blocks ?? []).includes("slaude_appr:approve:")),
-      { what: "the approval card" },
+      { timeoutMs: WAIT_MS, what: "the approval card" },
     );
     const blocks = card.blocks as Array<{ type: string; elements?: Array<{ type: string; action_id?: string }> }>;
     const buttons = blocks.find((b) => b.type === "actions")!.elements!;
@@ -204,7 +212,7 @@ describe("real gateway + HTTP transport + fake Slack", () => {
 
     // a user who is not an approver is told so privately; the card and the gate stay open
     await ctl.click({ app: "A0FAKE", target: base, user: "U0ALICE", channel: "D0MGR", messageTs: card.ts, actionId: approveId! });
-    const refused = await until(async () => (await respond())[0], { what: "the not-an-approver answer" });
+    const refused = await until(async () => (await respond())[0], { timeoutMs: WAIT_MS, what: "the not-an-approver answer" });
     expect(refused.detail).toMatchObject({ applied: "ephemeral", user: "U0ALICE" });
     expect((refused.detail!.body as { text: string }).text).toContain("not on the approver allowlist");
     expect((await botMessages("D0MGR")).find((m) => m.ts === card.ts)!.blocks).toEqual(card.blocks);
@@ -212,18 +220,18 @@ describe("real gateway + HTTP transport + fake Slack", () => {
     // the approver's click resolves it: the card is replaced by the decision, the agent continues
     const click = await ctl.click({ app: "A0FAKE", target: base, user: "U0APP", channel: "D0MGR", messageTs: card.ts, actionId: approveId! });
     expect(click.delivery.finalStatus).toBe(200);
-    await until(async () => (await botMessages("D0MGR")).find((m) => m.text.includes("approved by <@U0APP>")), { what: "the post-approval reply" });
+    await until(async () => (await botMessages("D0MGR")).find((m) => m.text.includes("approved by <@U0APP>")), { timeoutMs: WAIT_MS, what: "the post-approval reply" });
     const decided = (await respond())[1]!;
     expect(decided.detail).toMatchObject({ applied: "replace_original", body: { replace_original: true, text: "Plan → *Approved* by <@U0APP>", blocks: [] } });
 
     // a second click on the same card is answered as stale through response_url, not applied again
     await ctl.click({ app: "A0FAKE", target: base, user: "U0APP", channel: "D0MGR", messageTs: card.ts, actionId: approveId! });
-    const stale = await until(async () => (await respond())[2], { what: "the stale-click response" });
+    const stale = await until(async () => (await respond())[2], { timeoutMs: WAIT_MS, what: "the stale-click response" });
     expect(stale.detail).toMatchObject({ applied: "replace_original", body: { text: ":lock: approval already decided" } });
     await settle();
     expect((await botMessages("D0MGR")).filter((m) => m.text.includes("approved by"))).toHaveLength(1);
     expect(await respond()).toHaveLength(3);
-  });
+  }, TEST_MS);
 
   test("a Slack 429 on chat.postMessage does not lose the reply, and does not duplicate it", async () => {
     await ctl.addFault({ method: "chat.postMessage", status: 429, retryAfterSec: 1, times: 1 });
@@ -233,7 +241,7 @@ describe("real gateway + HTTP transport + fake Slack", () => {
     expect(posts.map((c) => c.status)).toEqual([429, 200]);
     await settle();
     expect(await acks("D0MGR")).toHaveLength(1);
-  });
+  }, TEST_MS);
 
   // Keep last: it checks every call made since boot, collected across the tests above.
   // Blind spot: this sees only calls that reach the fake over HTTP. In HTTP mode the turn's
@@ -243,7 +251,7 @@ describe("real gateway + HTTP transport + fake Slack", () => {
   // gateway's Slack surface is complete.
   test("the gateway only ever calls Web API methods the fake implements", async () => {
     await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "one more", target: base });
-    await until(async () => (await acks("D0MGR")).length >= 1, { what: "reply" });
+    await until(async () => (await acks("D0MGR")).length >= 1, { timeoutMs: WAIT_MS, what: "reply" });
     const calls = [...allCalls, ...(await ctl.calls()).calls].filter((c) => c.kind === "api");
     expect(calls.filter((c) => c.unknown).map((c) => c.method)).toEqual([]);
     const used = [...new Set(calls.map((c) => c.method))].sort();
@@ -252,5 +260,5 @@ describe("real gateway + HTTP transport + fake Slack", () => {
     expect(calls.flatMap((c) => c.schemaViolations ?? [])).toEqual([]);
     // the boot itself was seen (the call log was not empty before the first test)
     expect(allCalls.some((c) => c.method === "auth.test")).toBe(true);
-  });
+  }, TEST_MS);
 });
