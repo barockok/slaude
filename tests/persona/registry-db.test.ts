@@ -13,6 +13,7 @@ import {
   buildPersonaRegistry,
   getPersonaRegistry,
   invalidatePersonaRegistry,
+  managedPersonaModel,
   setPersonaRegistry,
   startRegistryRevalidation,
   whenPersonaRegistrySettled,
@@ -78,6 +79,29 @@ describe("a filesystem registry (any dialect)", () => {
 });
 
 describe.skipIf(!isPg)("a database-backed registry", () => {
+  // R42 (I2, I3): the managed snapshot carries each persona's effective model
+  // and mcp, the default persona's included, overrides applied.
+  test("the snapshot carries effective model and mcp; a filesystem registry carries neither", async () => {
+    const mcp = { mcpServers: { s: { type: "http", url: "https://s.test/mcp" } } };
+    await P.applySync("default", [
+      { ...row("default"), model: "m-default", mcp },
+      { ...row("ana"), model: "m-ana" },
+    ], meta("r1", "2026-10-01T10:00:00Z"));
+    await P.setOverride("default", "ana", "model", "m-ana-live", "ops");
+    const r = await buildPersonaRegistry("default");
+    expect(r.lookupByName("ana")!.model).toBe("m-ana-live");
+    expect(r.lookupByName("ana")!.mcp).toBeNull();
+    expect(r.defaultPersona!()).toEqual({ model: "m-default", mcp });
+    expect(managedPersonaModel("ana", r)).toBe("m-ana-live");
+    expect(managedPersonaModel(undefined, r)).toBe("m-default");
+    writeFsPersona("fsbot", "UFSBOT", "fs soul");
+    await db.run(`DELETE FROM persona_sync_state`);
+    await db.run(`DELETE FROM personas`);
+    const fsr = await buildPersonaRegistry("default");
+    expect(fsr.defaultPersona).toBeUndefined();
+    expect(managedPersonaModel("fsbot", fsr)).toBeUndefined();
+  });
+
   test("a managed tenant reads effective state, and tombstoned personas are gone", async () => {
     await P.applySync("default", [row("ana"), row("bea")], meta("r1", "2026-10-01T10:00:00Z"));
     await P.applySync("default", [row("ana")], meta("r2", "2026-10-01T11:00:00Z"));

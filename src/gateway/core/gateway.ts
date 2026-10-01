@@ -60,7 +60,7 @@ import * as Sessions from "../../db/sessions";
 import * as SeenEvents from "../../db/seen-events";
 import * as PendingGates from "../../db/pending-gates";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
-import { loadExternalMcp, oauthHttpServers, privateOverrides } from "./external-mcp";
+import { loadExternalMcp, oauthHttpServers, privateOverrides, sessionExternalMcp } from "./external-mcp";
 import * as SlackOauthFlows from "../../db/slack-oauth-flows";
 import { randomBytes } from "node:crypto";
 import { ensureInitiatorConfigDir, agentConfigDir } from "../../agent/oauth-home";
@@ -733,6 +733,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const mcpResolver = async (sessionId: string): Promise<Record<string, McpServerConfig> | undefined> => {
     const route = routes.get(sessionId);
     if (!route) return undefined;
+    const sessionMcp = sessionExternalMcp(route.ctx.personaId, externalMcp);
     const servers: Record<string, McpServerConfig> = {
       [SURFACE_MCP_NAME]: createSurfaceMcp(route.surface, {
         initiator: () => route.ctx.userId,
@@ -747,20 +748,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         getSnapshot: () => agent.getTokenSnapshot(sessionId),
       }),
       [KB_MCP_NAME]: createKbMcp(brainDepsFor(route.ctx, route.surface)),
-      // Per-persona MCP isolation: named personas load ~/.slaude/personas/<name>/mcp.json
-      // instead of the shared global config. Default sessions use the boot-time global.
-      ...(route.ctx.personaId && route.ctx.personaId !== "default"
-        ? loadExternalMcp(route.ctx.personaId).servers
-        : externalMcp.servers),
+      // Per-persona MCP isolation. A filesystem tenant: named personas load
+      // ~/.slaude/personas/<name>/mcp.json, the default the boot-time global.
+      // A managed tenant: each persona's effective mcp, never the persona
+      // directory (see sessionExternalMcp).
+      ...sessionMcp.servers,
     };
     // 1on1 privacy: when this session's effective identity is locked (live /1on1
     // lock, or a cron job's captured initiator), whitelisted external services mount
     // with the agent's credentials stripped so they run as that identity (self-prompt
     // auth). Other sessions/threads keep the agent identity (source map untouched).
     const effectiveIdentity = await agent.resolveEffectiveIdentity(sessionId, route.ctx.channel, route.ctx.threadTs);
-    const sessionMcp = route.ctx.personaId && route.ctx.personaId !== "default"
-      ? loadExternalMcp(route.ctx.personaId)
-      : externalMcp;
     Object.assign(servers, privateOverrides(sessionMcp.servers, new Set(sessionMcp.privateServices), !!effectiveIdentity));
     sessionCtx.set(sessionId, { slack: route.ctx, surface: route.surface });
     return servers;
