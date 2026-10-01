@@ -63,6 +63,23 @@ test("the real @slack/web-api client works against the fake", async () => {
   expect(thread.messages[0]).toMatchObject({ text: "edited", user: "U0BOT" });
 });
 
+test("POST apps keeps supplied credentials, so re-adding an app leaves it unchanged", async () => {
+  const own = await startFakeSlack({ port: 0 });
+  try {
+    const c = createControlClient(own.url);
+    const creds = { apiAppId: "A0STABLE", name: "stable", botUserId: "U0BSTABLE", botToken: `${"xoxb"}-fake-stable`, signingSecret: "stable-secret" };
+    const first = await c.addApp(creds);
+    const again = await c.addApp(creds);
+    expect(again).toEqual(first);
+    expect(first).toMatchObject(creds);
+    const fresh = await c.addApp({ apiAppId: "A0STABLE", name: "stable" });
+    expect(fresh.botToken).not.toBe(creds.botToken);
+    expect(fresh.signingSecret).not.toBe(creds.signingSecret);
+  } finally {
+    await own.stop();
+  }
+});
+
 test("a Slack platform error surfaces as the SDK's platform error", async () => {
   await expect(client.chat.postMessage({ channel: "C0NOPE", text: "x" })).rejects.toMatchObject({ data: { error: "channel_not_found" } });
 });
