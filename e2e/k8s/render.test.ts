@@ -62,7 +62,7 @@ describe("e2e overlay", () => {
     expect(c.readinessProbe.exec.command).toEqual(["pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "slaude"]);
   });
 
-  test("the gateway's soul cache is the shared-volume directory nodes read, not the base's pod-local one", () => {
+  test("the gateway's soul cache is the default directory under the shared $SLAUDE_HOME, not the base's pod-local one", () => {
     const base = (file: string) => parse(readFileSync(join(dir, "../../deploy/k8s-scale", file), "utf8"));
     const container = (file: string, name: string) =>
       base(file).find((d) => d.kind === "Deployment").spec.template.spec.containers.find((c: any) => c.name === name);
@@ -74,7 +74,9 @@ describe("e2e overlay", () => {
     const local = envOf(gw, "SLAUDE_SOUL_CACHE_DIR");
     expect(local).toBeTruthy();
     expect(local.startsWith(`${home}/`)).toBe(false);
-    // Nodes share $SLAUDE_HOME with the gateway and use the default cache directory under it.
+    // Nodes share $SLAUDE_HOME with the gateway and set no cache directory. They no longer read
+    // the soul cache (they take the soul from the gateway's runtime bundle); this only checks
+    // that the base gives them no other soul-cache setting.
     expect(envOf(node, "SLAUDE_HOME")).toBe(home);
     expect(envOf(node, "SLAUDE_SOUL_CACHE_DIR")).toBeUndefined();
     // $SLAUDE_HOME is the shared claim's mount in both tiers.

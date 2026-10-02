@@ -20,14 +20,16 @@ patches:
         # although real deploys register bot tokens in slack_apps. The sim seeds a dummy for the
         # same reason. Never validated, only used for attachments, which e2e messages lack.
         SLACK_BOT_TOKEN: "e2e-unused-placeholder"
-  # The gateway's soul cache on the shared volume, the directory nodes already read
-  # ($SLAUDE_HOME/cache). The base keeps it pod-local (an emptyDir) so a file planted by a node
-  # or an agent turn cannot forge approvers. This test cluster gives that hardening up on purpose:
-  # the mock LLM cannot answer the soul-extraction call, so the harness seeds a signed cache entry
-  # once, and it has to reach every gateway replica, including one that replaces a killed pod,
-  # and survive the restart the harness does after seeding. In a pod-local directory each new
-  # gateway pod would boot without it and fall back to a soul with no manager. Throwaway cluster
-  # only; never copy this patch into a real deployment.
+  # The gateway's soul cache in the default directory under the shared $SLAUDE_HOME
+  # ($SLAUDE_HOME/cache). Only gateways read it: nodes no longer read the soul cache, they take
+  # the soul from the gateway's runtime bundle. The base keeps it pod-local (an emptyDir) so a
+  # file planted on the shared volume by a node or an agent turn cannot forge approvers. This
+  # patch deliberately drops that hardening, in this throwaway test cluster only: the mock LLM
+  # cannot answer the soul-extraction call, so the harness seeds one signed cache entry from one
+  # gateway pod, and every gateway replica must see it, including a pod that replaces a killed
+  # one, and it must survive the gateway restart the harness does after seeding. In a pod-local
+  # directory each new gateway pod would boot without it and fall back to a soul with no manager.
+  # Never copy this patch into a real deployment.
   - patch: |-
       apiVersion: apps/v1
       kind: Deployment
