@@ -1,0 +1,69 @@
+# The local scale cluster plus the mock LLM and the fake Slack. Build with e2e/up.sh.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: slaude-scale
+resources:
+  - ../../deploy/k8s-local
+  - mock-llm.yaml
+  - fake-slack.yaml
+patches:
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: slaude-scale-config
+        namespace: slaude-scale
+      data:
+        SLAUDE_SLACK_API_URL: "http://fake-slack:8080/api/"
+        # Workaround for a gateway bug: in HTTP mode the gateway still reads SLACK_BOT_TOKEN on
+        # every inbound message (for attachment downloads) and drops the turn when it is unset,
+        # although real deploys register bot tokens in slack_apps. The sim seeds a dummy for the
+        # same reason. Never validated, only used for attachments, which e2e messages lack.
+        SLACK_BOT_TOKEN: "e2e-unused-placeholder"
+  # The gateway's soul cache in the default directory under the shared $SLAUDE_HOME
+  # ($SLAUDE_HOME/cache). Only gateways read it: nodes no longer read the soul cache, they take
+  # the soul from the gateway's runtime bundle. The base keeps it pod-local (an emptyDir) so a
+  # file planted on the shared volume by a node or an agent turn cannot forge approvers. This
+  # patch deliberately drops that hardening, in this throwaway test cluster only: the mock LLM
+  # cannot answer the soul-extraction call, so the harness seeds one signed cache entry from one
+  # gateway pod, and every gateway replica must see it, including a pod that replaces a killed
+  # one, and it must survive the gateway restart the harness does after seeding. In a pod-local
+  # directory each new gateway pod would boot without it and fall back to a soul with no manager.
+  # Never copy this patch into a real deployment.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: slaude-gateway
+        namespace: slaude-scale
+      spec:
+        template:
+          spec:
+            containers:
+              - name: gateway
+                env:
+                  - name: SLAUDE_SOUL_CACHE_DIR
+                    value: /data/cache
+  # On a fresh volume the postgres entrypoint first runs a temporary server for the init scripts,
+  # listening on the Unix socket only, then shuts it down and starts the real one. With no
+  # readiness probe, up.sh's rollout wait passes at once, its in-pod `pg_isready` (socket) answers
+  # from the temporary server, and the following psql hits "the database system is shutting
+  # down"; gateways meanwhile time out on TCP. Probing over TCP (127.0.0.1) only succeeds once the
+  # real server listens, so the rollout wait covers the init phase.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: dev-postgres
+        namespace: slaude-scale
+      spec:
+        template:
+          spec:
+            containers:
+              - name: postgres
+                readinessProbe:
+                  exec:
+                    command: ["pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "slaude"]
+                  periodSeconds: 2
+                  timeoutSeconds: 2
+                  failureThreshold: 3

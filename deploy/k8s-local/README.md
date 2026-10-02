@@ -24,6 +24,8 @@ deploy/k8s-local/down.sh        # delete the cluster (add --purge to drop secret
   lives on the same disk as every other container on that host, so running it
   out of space is not contained to this cluster.
 
+Set `SLAUDE_LOCAL_OVERLAY` to apply a different overlay that builds on this one; used by the e2e suite.
+
 Tune the node with `SLAUDE_LOCAL_CPUS` and `SLAUDE_LOCAL_MEMORY` (MB). The
 defaults are 3 CPUs and 3500 MB.
 

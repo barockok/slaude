@@ -45,6 +45,7 @@
     "test:pg": "SLAUDE_DB=pg bun test"
   },
   "devDependencies": {
+    "@copilotkit/aimock": "1.43.0",
     "@playwright/test": "^1.62.1",
     "@types/bun": "latest",
     "@types/react": "^19",
