@@ -418,6 +418,16 @@ async function main() {
             writeFileSync(d, readFileSync(s));
           }
         }
+        if (!existsSync(join(targetDir, ".git"))) {
+          try {
+            execSync(`git init && git add -A && git -c user.name="slaude" -c user.email="slaude@local" commit -m "initial"`, {
+              cwd: targetDir,
+              stdio: "pipe",
+            });
+          } catch {
+            // best-effort git initialization for gbrain sync
+          }
+        }
         lock.knowledge[label] = { git: entry.git!, ref: entry.ref!, sha, path: entryPath };
         installed++;
         const hasIndex = existsSync(join(targetDir, "README.md")) || existsSync(join(targetDir, "index.md"));
