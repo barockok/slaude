@@ -16,6 +16,8 @@
   "users": [
     {
       "username": "lead",
+      "firstName": "Lead",
+      "lastName": "Dev",
       "email": "lead@example.com",
       "emailVerified": true,
       "enabled": true,
@@ -23,6 +25,8 @@
     },
     {
       "username": "alice",
+      "firstName": "Alice",
+      "lastName": "Dev",
       "email": "alice@example.com",
       "emailVerified": true,
       "enabled": true,
