@@ -390,10 +390,11 @@ export function ensureSources(extra: string[] = []): Promise<void> {
     for (const id of [...baselineSources(), ...extra]) {
       if (existing.has(id)) continue;
       const kb = kbs.find((k) => kbSourceId(k.label) === id);
+      const kbPath = kb ? (existsSync(join(kb.path, "wiki")) ? join(kb.path, "wiki") : kb.path) : undefined;
       try {
         await brainAdminCall(
           "sources_add",
-          kb ? { id, path: join(kb.path, "wiki"), federated: true } : { id, federated: true },
+          kbPath ? { id, path: kbPath, federated: true } : { id, federated: true },
         );
       } catch (e) {
         // lost a create race elsewhere — the source exists, which is all we need
