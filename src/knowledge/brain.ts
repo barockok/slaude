@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
 import { loadKbs } from "./loader";
@@ -170,7 +170,13 @@ export function applyEmbeddingEnv(): void {
     // missing or unreadable → start fresh
   }
 
-  const targetModel = providerQualified ? model! : `litellm:${model ?? "text-embedding-3-small"}`;
+  // If embedding_model is already configured in config.json and neither EMBEDDING_MODEL
+  // nor EMBEDDING_DIMENSIONS was explicitly provided via env, do not clobber operator config.
+  if (cfg.embedding_model && !model && !process.env.EMBEDDING_DIMENSIONS) {
+    return;
+  }
+
+  const targetModel = providerQualified ? model! : (model ? `litellm:${model}` : (typeof cfg.embedding_model === "string" ? cfg.embedding_model : "litellm:text-embedding-3-small"));
   const targetDims = Number(process.env.EMBEDDING_DIMENSIONS ?? defaultDimensionsForModel(targetModel));
 
   const prevDims = typeof cfg.embedding_dimensions === "number" ? cfg.embedding_dimensions : undefined;

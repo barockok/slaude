@@ -39,7 +39,7 @@ describe("resolveEmbeddingApiKey", () => {
     const res = resolveEmbeddingApiKey("google");
     expect(res.key).toBe("gemini-alias-key");
     expect(res.canonical).toBe("GOOGLE_GENERATIVE_AI_API_KEY");
-    expect(process.env.GOOGLE_GENERATIVE_AI_API_KEY).toBe("gemini-alias-key");
+    expect(process.env.GOOGLE_GENERATIVE_AI_API_KEY as string | undefined).toBe("gemini-alias-key");
   });
 
   test("resolves generic EMBEDDING_API_KEY alias for any provider", () => {
@@ -48,7 +48,7 @@ describe("resolveEmbeddingApiKey", () => {
     const res = resolveEmbeddingApiKey("zeroentropyai");
     expect(res.key).toBe("generic-embed-key");
     expect(res.canonical).toBe("ZEROENTROPY_API_KEY");
-    expect(process.env.ZEROENTROPY_API_KEY).toBe("generic-embed-key");
+    expect(process.env.ZEROENTROPY_API_KEY as string | undefined).toBe("generic-embed-key");
   });
 
   test("handles keyless providers", () => {
