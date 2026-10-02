@@ -55,7 +55,7 @@ export function embeddingConfigured(): boolean {
 export function applyEmbeddingEnv(): void {
   const url = process.env.EMBEDDING_URL;
   const model = process.env.EMBEDDING_MODEL;
-  // Provider-qualified model ("zeroentropyai:zembed-1") needs no URL — the
+  // Provider-qualified model ("zeroentropyai:zembed-1", "google:text-embedding-004") needs no URL — the
   // native recipe resolves its own endpoint from its provider key env.
   const providerQualified = !!model && model.includes(":");
   if (!url && !providerQualified) return;
@@ -63,7 +63,7 @@ export function applyEmbeddingEnv(): void {
     process.env.LITELLM_BASE_URL = url;
     if (process.env.EMBEDDING_API_KEY) process.env.LITELLM_API_KEY = process.env.EMBEDDING_API_KEY;
   }
-  if (embeddingConfigured()) return;
+
   const home = brainHome();
   mkdirSync(home, { recursive: true });
   const cfgPath = join(home, "config.json");
@@ -73,8 +73,27 @@ export function applyEmbeddingEnv(): void {
   } catch {
     // missing or unreadable → start fresh
   }
-  cfg.embedding_model = providerQualified ? model! : `litellm:${model ?? "text-embedding-3-small"}`;
-  cfg.embedding_dimensions = Number(process.env.EMBEDDING_DIMENSIONS ?? (providerQualified ? 2560 : 1536));
+
+  const targetModel = providerQualified ? model! : `litellm:${model ?? "text-embedding-3-small"}`;
+  const provider = targetModel.split(":")[0] ?? "";
+  const defaultDims = provider === "google" ? 768 : (provider === "zeroentropyai" ? 1280 : (provider === "voyage" ? 1024 : (providerQualified ? 2560 : 1536)));
+  const targetDims = Number(process.env.EMBEDDING_DIMENSIONS ?? defaultDims);
+
+  const prevDims = typeof cfg.embedding_dimensions === "number" ? cfg.embedding_dimensions : undefined;
+  if (prevDims && prevDims !== targetDims) {
+    console.warn(`[brain] embedding dimensions changed from ${prevDims} to ${targetDims}. Backing up old PGLite store...`);
+    const pgliteDbPath = join(home, "brain.pglite");
+    if (existsSync(pgliteDbPath)) {
+      try {
+        renameSync(pgliteDbPath, join(home, `brain.pglite.${prevDims}.bak`));
+      } catch (err) {
+        console.warn(`[brain] could not backup ${pgliteDbPath}:`, err);
+      }
+    }
+  }
+
+  cfg.embedding_model = targetModel;
+  cfg.embedding_dimensions = targetDims;
   writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n");
 }
 
@@ -135,7 +154,16 @@ async function configureEmbeddingGateway(): Promise<void> {
     return;
   }
   const provider = model.split(":")[0] ?? "";
+
+  // Normalize API key aliases (e.g. GEMINI_API_KEY -> GOOGLE_GENERATIVE_AI_API_KEY, EMBEDDING_API_KEY -> provider)
+  if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY && process.env.GEMINI_API_KEY) {
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = process.env.GEMINI_API_KEY;
+  }
   const keyEnv = PROVIDER_KEY_ENV[provider];
+  if (keyEnv && !process.env[keyEnv] && process.env.EMBEDDING_API_KEY) {
+    process.env[keyEnv] = process.env.EMBEDDING_API_KEY;
+  }
+
   if (keyEnv && !process.env[keyEnv]) {
     console.warn(`[brain] embedding_model ${model} configured but ${keyEnv} is not set — embeds stay off`);
     return;

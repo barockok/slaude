@@ -58,6 +58,19 @@ function hitKey(h: GatherHit): string {
 }
 
 /**
+ * Normalize retrieval query: trim, collapse excess whitespace, and strip common
+ * conversational filler prefixes while preserving technical keywords and domain codes.
+ */
+export function normalizeQuery(raw: string): string {
+  let q = raw.trim().replace(/\s+/g, " ");
+  // Strip common conversational filler prefixes
+  q = q.replace(/^(can you (please )?(tell me|explain|find|show|check)|please (tell me|explain|find|show|check)|what is|what are|how (does|do|can)|tell me about)\s+/i, "");
+  // Strip trailing punctuation
+  q = q.replace(/[?!.]+$/, "").trim();
+  return q.length > 0 ? q : raw.trim();
+}
+
+/**
  * Gather ranked candidates for `query` within `scope`, with each allowed source
  * guaranteed its own top-K slots. Returns hits sorted by effective rank, deduped
  * by slug (best-ranked chunk per page wins), capped at finalLimit.
@@ -66,6 +79,7 @@ export async function gather(query: string, scope: BrainScope, opts: GatherOpts 
   const perSourceK = opts.perSourceK ?? 8;
   const finalLimit = opts.finalLimit ?? 20;
   const call = opts.call ?? brainCall;
+  const targetQuery = normalizeQuery(query);
 
   const sources = scope.allowedSources.length > 0 ? scope.allowedSources : [scope.sourceId];
 
@@ -80,7 +94,7 @@ export async function gather(query: string, scope: BrainScope, opts: GatherOpts 
     sources.map(async (s): Promise<GatherHit[]> => {
       const sub: BrainScope = { clientId: scope.clientId, sourceId: s, allowedSources: [s] };
       try {
-        const hits = await call("search", { query, limit: perSourceK }, sub);
+        const hits = await call("search", { query: targetQuery, limit: perSourceK }, sub);
         return Array.isArray(hits) ? (hits as GatherHit[]) : [];
       } catch (e) {
         failures++;

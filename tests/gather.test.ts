@@ -7,7 +7,7 @@ const home = mkdtempSync(join(tmpdir(), "slaude-gather-test-"));
 process.env.SLAUDE_BRAIN_HOME = home;
 
 import { brainCall, closeBrain, ensureSources, getBrain } from "../src/knowledge/brain";
-import { gather, rankScore } from "../src/knowledge/gather";
+import { gather, normalizeQuery, rankScore } from "../src/knowledge/gather";
 import type { BrainScope } from "../src/knowledge/scope";
 
 afterAll(async () => {
@@ -127,6 +127,24 @@ describe("gather (unit, injected call)", () => {
   test("total failure (every source errors) rethrows — never papers over a down brain", async () => {
     const call = async () => { throw new Error("db on fire"); };
     expect(gather("q", scope(["a", "b"]), { call })).rejects.toThrow(/db on fire/);
+  });
+});
+
+describe("normalizeQuery", () => {
+  test("strips conversational filler prefixes and preserves core keywords", () => {
+    expect(normalizeQuery("can you please explain how disbursement flow works?")).toBe("how disbursement flow works");
+    expect(normalizeQuery("what is borrower loan status transition?")).toBe("borrower loan status transition");
+    expect(normalizeQuery("tell me about KYC verification webhook")).toBe("KYC verification webhook");
+    expect(normalizeQuery("can you check Maria KB for lead times?")).toBe("Maria KB for lead times");
+  });
+
+  test("collapses excess whitespace and trims trailing punctuation", () => {
+    expect(normalizeQuery("   what are   repayment    schedules???  ")).toBe("repayment schedules");
+  });
+
+  test("preserves technical queries without fillers", () => {
+    expect(normalizeQuery("LOAN_DISBURSED event schema")).toBe("LOAN_DISBURSED event schema");
+    expect(normalizeQuery("disbursement_flow")).toBe("disbursement_flow");
   });
 });
 
