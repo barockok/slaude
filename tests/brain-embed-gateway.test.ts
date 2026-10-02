@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeBrain, embeddingActive, getBrain, resolveEmbeddingApiKey } from "../src/knowledge/brain";
+import { closeBrain, defaultDimensionsForModel, embeddingActive, getBrain, resolveEmbeddingApiKey } from "../src/knowledge/brain";
 
 let home: string | null = null;
 
@@ -54,6 +54,20 @@ describe("resolveEmbeddingApiKey", () => {
   test("handles keyless providers", () => {
     const res = resolveEmbeddingApiKey("litellm");
     expect(res.isRequired).toBe(false);
+  });
+});
+
+describe("defaultDimensionsForModel", () => {
+  test("resolves known provider dimensions", () => {
+    expect(defaultDimensionsForModel("google:text-embedding-004")).toBe(768);
+    expect(defaultDimensionsForModel("zeroentropyai:zembed-1")).toBe(1280);
+    expect(defaultDimensionsForModel("voyage:voyage-3")).toBe(1024);
+    expect(defaultDimensionsForModel("openai:text-embedding-3-small")).toBe(1536);
+  });
+
+  test("falls back cleanly for unknown qualified and generic models", () => {
+    expect(defaultDimensionsForModel("unknown-provider:some-model")).toBe(2560);
+    expect(defaultDimensionsForModel("text-embedding-3-small")).toBe(1536);
   });
 });
 

@@ -44,6 +44,102 @@ export function embeddingConfigured(): boolean {
   }
 }
 
+// Provider prefix → canonical key env, aliases, and default vector dimensions.
+// null = keyless or optional-key provider.
+export interface ProviderKeyDef {
+  canonical: string;
+  aliases: string[];
+  defaultDims?: number;
+}
+
+export const PROVIDER_KEY_DEFS: Record<string, ProviderKeyDef | null> = {
+  google: {
+    canonical: "GOOGLE_GENERATIVE_AI_API_KEY",
+    aliases: ["GEMINI_API_KEY", "EMBEDDING_API_KEY"],
+    defaultDims: 768,
+  },
+  zeroentropyai: {
+    canonical: "ZEROENTROPY_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultDims: 1280,
+  },
+  voyage: {
+    canonical: "VOYAGE_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultDims: 1024,
+  },
+  openai: {
+    canonical: "OPENAI_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultDims: 1536,
+  },
+  openrouter: {
+    canonical: "OPENROUTER_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+  },
+  minimax: {
+    canonical: "MINIMAX_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+  },
+  together: {
+    canonical: "TOGETHER_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+  },
+  litellm: null,
+  ollama: null,
+  "llama-server": null,
+};
+
+/**
+ * Returns default vector embedding dimensions for a model string.
+ * Resolves known provider defaults from PROVIDER_KEY_DEFS, falling back to
+ * 2560 for unknown provider-qualified models and 1536 for generic litellm/OpenAI.
+ */
+export function defaultDimensionsForModel(modelString: string): number {
+  const [provider] = modelString.split(":");
+  const def = provider ? PROVIDER_KEY_DEFS[provider] : undefined;
+  if (def?.defaultDims) return def.defaultDims;
+  return modelString.includes(":") ? 2560 : 1536;
+}
+
+/**
+ * Resolves API key for an embedding provider across canonical name and declared aliases.
+ * When an alias is detected, sets the canonical env var so gbrain and downstream SDKs find it.
+ */
+export function resolveEmbeddingApiKey(provider: string): {
+  key?: string;
+  canonical?: string;
+  isRequired: boolean;
+} {
+  const def = PROVIDER_KEY_DEFS[provider];
+  if (def === null) {
+    return { isRequired: false };
+  }
+  if (!def) {
+    return {
+      key: process.env.EMBEDDING_API_KEY,
+      canonical: "EMBEDDING_API_KEY",
+      isRequired: false,
+    };
+  }
+
+  const { canonical, aliases } = def;
+  let key = process.env[canonical];
+
+  if (!key) {
+    for (const alias of aliases) {
+      const aliasVal = process.env[alias];
+      if (aliasVal) {
+        process.env[canonical] = aliasVal;
+        key = aliasVal;
+        break;
+      }
+    }
+  }
+
+  return { key, canonical, isRequired: true };
+}
+
 /**
  * Provider-generic embedding config, mirroring slaude's ANTHROPIC_BASE_URL
  * pattern: EMBEDDING_URL (+ EMBEDDING_API_KEY, EMBEDDING_MODEL,
@@ -75,9 +171,7 @@ export function applyEmbeddingEnv(): void {
   }
 
   const targetModel = providerQualified ? model! : `litellm:${model ?? "text-embedding-3-small"}`;
-  const provider = targetModel.split(":")[0] ?? "";
-  const defaultDims = provider === "google" ? 768 : (provider === "zeroentropyai" ? 1280 : (provider === "voyage" ? 1024 : (providerQualified ? 2560 : 1536)));
-  const targetDims = Number(process.env.EMBEDDING_DIMENSIONS ?? defaultDims);
+  const targetDims = Number(process.env.EMBEDDING_DIMENSIONS ?? defaultDimensionsForModel(targetModel));
 
   const prevDims = typeof cfg.embedding_dimensions === "number" ? cfg.embedding_dimensions : undefined;
   if (prevDims && prevDims !== targetDims) {
@@ -127,85 +221,6 @@ let embeddingActiveFlag = false;
  *  process exit in staging) when an embed step runs unconfigured. */
 export function embeddingActive(): boolean {
   return embeddingActiveFlag;
-}
-
-// Provider prefix → canonical key env + supported aliases in order of precedence.
-// null = keyless or optional-key provider.
-export interface ProviderKeyDef {
-  canonical: string;
-  aliases: string[];
-}
-
-export const PROVIDER_KEY_DEFS: Record<string, ProviderKeyDef | null> = {
-  google: {
-    canonical: "GOOGLE_GENERATIVE_AI_API_KEY",
-    aliases: ["GEMINI_API_KEY", "EMBEDDING_API_KEY"],
-  },
-  zeroentropyai: {
-    canonical: "ZEROENTROPY_API_KEY",
-    aliases: ["EMBEDDING_API_KEY"],
-  },
-  openai: {
-    canonical: "OPENAI_API_KEY",
-    aliases: ["EMBEDDING_API_KEY"],
-  },
-  voyage: {
-    canonical: "VOYAGE_API_KEY",
-    aliases: ["EMBEDDING_API_KEY"],
-  },
-  openrouter: {
-    canonical: "OPENROUTER_API_KEY",
-    aliases: ["EMBEDDING_API_KEY"],
-  },
-  minimax: {
-    canonical: "MINIMAX_API_KEY",
-    aliases: ["EMBEDDING_API_KEY"],
-  },
-  together: {
-    canonical: "TOGETHER_API_KEY",
-    aliases: ["EMBEDDING_API_KEY"],
-  },
-  litellm: null,
-  ollama: null,
-  "llama-server": null,
-};
-
-/**
- * Resolves API key for an embedding provider across canonical name and declared aliases.
- * When an alias is detected, sets the canonical env var so gbrain and downstream SDKs find it.
- */
-export function resolveEmbeddingApiKey(provider: string): {
-  key?: string;
-  canonical?: string;
-  isRequired: boolean;
-} {
-  const def = PROVIDER_KEY_DEFS[provider];
-  if (def === null) {
-    return { isRequired: false };
-  }
-  if (!def) {
-    return {
-      key: process.env.EMBEDDING_API_KEY,
-      canonical: "EMBEDDING_API_KEY",
-      isRequired: false,
-    };
-  }
-
-  const { canonical, aliases } = def;
-  let key = process.env[canonical];
-
-  if (!key) {
-    for (const alias of aliases) {
-      const aliasVal = process.env[alias];
-      if (aliasVal) {
-        process.env[canonical] = aliasVal;
-        key = aliasVal;
-        break;
-      }
-    }
-  }
-
-  return { key, canonical, isRequired: true };
 }
 
 async function configureEmbeddingGateway(): Promise<void> {
