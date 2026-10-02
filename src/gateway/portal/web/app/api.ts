@@ -6,10 +6,15 @@
 // does any work. A cross-site page cannot set it.
 
 export interface Integration {
+  /** What every call refers to the row by. Usually the name; a name plus hash
+   *  when two different servers share one. */
+  id: string;
   name: string;
   host: string;
   connected: boolean;
   expiresAt: number | null;
+  /** The agents (personas) that mount this server. */
+  usedBy: string[];
 }
 
 export interface Me {
@@ -40,10 +45,10 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
 export const api = {
   me: () => call<Me>("/portal/api/me"),
   integrations: () => call<{ integrations: Integration[] }>("/portal/api/integrations").then((r) => r.integrations),
-  connect: (name: string) =>
-    call<{ authorizeUrl: string }>(`/portal/api/integrations/${encodeURIComponent(name)}/connect`, { method: "POST" }),
-  disconnect: (name: string) =>
-    call<{ ok: boolean; removed: boolean }>(`/portal/api/integrations/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  connect: (id: string) =>
+    call<{ authorizeUrl: string }>(`/portal/api/integrations/${encodeURIComponent(id)}/connect`, { method: "POST" }),
+  disconnect: (id: string) =>
+    call<{ ok: boolean; removed: boolean }>(`/portal/api/integrations/${encodeURIComponent(id)}`, { method: "DELETE" }),
 };
 
 /** What the OAuth callback redirected back with, if anything. */

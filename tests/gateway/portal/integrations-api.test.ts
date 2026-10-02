@@ -11,6 +11,7 @@ import * as Creds from "../../../src/db/mcp-credentials";
 import { __resetMasterKeyCache } from "../../../src/db/crypto";
 import { oauthKey } from "../../../src/agent/mcp-oauth/store";
 import { createPortalApi, type PortalApiDeps } from "../../../src/gateway/portal/api";
+import { aggregateServers } from "../../../src/gateway/portal/integrations";
 import {
   mintPortalOauthFlow,
   mintPortalSession,
@@ -37,7 +38,7 @@ const PARTS: ExchangeParts = {
 };
 
 const deps = (over: Partial<PortalApiDeps> = {}): PortalApiDeps => ({
-  servers: () => ({ ...SERVERS }),
+  servers: () => aggregateServers([{ persona: "default", servers: { ...SERVERS } }]),
   connect: {
     prepare: async ({ redirectUri }) =>
       ({
@@ -136,7 +137,7 @@ describe("GET /portal/api/integrations", () => {
   });
 
   test("a deployment with no configured servers reports an empty list, not an error", async () => {
-    const res = await createPortalApi(deps({ servers: () => ({}) })).fetch(
+    const res = await createPortalApi(deps({ servers: () => [] })).fetch(
       req("/portal/api/integrations", { cookie: signedIn("alice") }),
     );
     expect(res!.status).toBe(200);
@@ -304,6 +305,95 @@ describe("DELETE /portal/api/integrations/:name", () => {
 
     expect(res!.status).toBe(403);
     expect(Object.keys(await Creds.credentialsFor({ kind: "account", accountId: aliceId }))).toEqual([KEY]);
+  });
+});
+
+describe("servers aggregated across personas", () => {
+  // Two personas mount a server both call `notion`, but at different URLs: two
+  // different servers that must never be confused, and that a bare name cannot tell apart.
+  const NOTION_A = { type: "http", url: "https://a.example.com/mcp" } as const;
+  const NOTION_B = { type: "http", url: "https://b.example.com/mcp" } as const;
+  const KEY_A = oauthKey("notion", NOTION_A);
+  const KEY_B = oauthKey("notion", NOTION_B);
+  const aggregated = () =>
+    aggregateServers([
+      { persona: "ana", servers: { notion: NOTION_A, shared: SERVERS.workbench } },
+      { persona: "bob", servers: { notion: NOTION_B, shared: SERVERS.workbench } },
+    ]);
+
+  test("the list carries each row's id and the personas that use it", async () => {
+    const res = await createPortalApi(deps({ servers: aggregated })).fetch(
+      req("/portal/api/integrations", { cookie: signedIn("alice") }),
+    );
+    const rows = ((await res!.json()) as any).integrations as any[];
+
+    const shared = rows.find((r) => r.name === "shared");
+    expect(shared).toMatchObject({ id: "shared", usedBy: ["ana", "bob"] });
+    const notions = rows.filter((r) => r.name === "notion");
+    expect(new Set(notions.map((r) => r.id))).toEqual(new Set([KEY_A, KEY_B]));
+    expect(notions.map((r) => r.host).sort()).toEqual(["a.example.com", "b.example.com"]);
+  });
+
+  test("a connect by a colliding id registers under the server's real name", async () => {
+    const seen: Array<{ serverName: string; url: string }> = [];
+    const base = deps();
+    const api = createPortalApi(
+      deps({
+        servers: aggregated,
+        connect: {
+          ...base.connect!,
+          prepare: async (args) => {
+            seen.push({ serverName: args.serverName, url: args.serverConfig.url });
+            return base.connect!.prepare!(args);
+          },
+        },
+      }),
+    );
+
+    const res = await api.fetch(
+      req(`/portal/api/integrations/${encodeURIComponent(KEY_B)}/connect`, { method: "POST", cookie: signedIn("alice") }),
+    );
+
+    expect(res!.status).toBe(200);
+    // The credential is keyed on the name agents use, so that is what is registered.
+    expect(seen).toEqual([{ serverName: "notion", url: NOTION_B.url }]);
+  });
+
+  test("finishing it marks only that server connected, not its namesake", async () => {
+    const api = createPortalApi(deps({ servers: aggregated }));
+    const started = await api.fetch(
+      req(`/portal/api/integrations/${encodeURIComponent(KEY_B)}/connect`, { method: "POST", cookie: signedIn("alice") }),
+    );
+    const flowCookie = started!.headers.get("set-cookie")!.split(";")[0]!.split("=").slice(1).join("=");
+    await api.fetch(
+      req("/portal/oauth/callback?code=good-code&state=st-1", { cookie: `${signedIn("alice")}; ${PORTAL_OAUTH_COOKIE}=${flowCookie}` }),
+    );
+
+    const list = await api.fetch(req("/portal/api/integrations", { cookie: signedIn("alice") }));
+    const rows = ((await list!.json()) as any).integrations as any[];
+    expect(rows.filter((r) => r.connected).map((r) => r.id)).toEqual([KEY_B]);
+    expect(Object.keys(await Creds.credentialsFor({ kind: "account", accountId: aliceId }))).toEqual([KEY_B]);
+  });
+
+  test("a disconnect by a colliding id removes only that server's credential", async () => {
+    const e = (url: string) => ({ ...entry("tok"), serverName: "notion", serverUrl: url });
+    await Creds.putCredential({ kind: "account", accountId: aliceId }, KEY_A, e(NOTION_A.url));
+    await Creds.putCredential({ kind: "account", accountId: aliceId }, KEY_B, e(NOTION_B.url));
+
+    const res = await createPortalApi(deps({ servers: aggregated })).fetch(
+      req(`/portal/api/integrations/${encodeURIComponent(KEY_A)}`, { method: "DELETE", cookie: signedIn("alice") }),
+    );
+
+    expect(await res!.json()).toEqual({ ok: true, removed: true });
+    expect(Object.keys(await Creds.credentialsFor({ kind: "account", accountId: aliceId }))).toEqual([KEY_B]);
+  });
+
+  test("the bare name of an ambiguous server is refused: it names no single server", async () => {
+    const res = await createPortalApi(deps({ servers: aggregated })).fetch(
+      req("/portal/api/integrations/notion/connect", { method: "POST", cookie: signedIn("alice") }),
+    );
+    expect(res!.status).toBe(404);
+    expect(await db.query("SELECT id FROM portal_oauth_flows")).toHaveLength(0);
   });
 });
 
