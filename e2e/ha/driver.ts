@@ -31,6 +31,7 @@ import {
   podUrls,
   restartDecision,
   seedCommand,
+  soulBootProblems,
   SEED_REMOTE_PATH,
   SOUL_GUARD_REMOTE_PATH,
   stableCredentials,
@@ -117,6 +118,7 @@ export async function setupSuite(opts: SuiteOptions = {}): Promise<Suite> {
     const decision = restartDecision({ before, after, booted: await bootedFingerprints() });
     console.log(`[e2e] restart ${decision.restart ? "needed" : "not needed"}: ${decision.reason}`);
     if (decision.restart) await restartSlaude(after);
+    await assertGatewaysBootedWithSeededSoul();
 
     const app: SuiteApp = { apiAppId: created.apiAppId, botUserId: created.botUserId, personaId, teamId: TEAM_ID };
     return {
@@ -176,6 +178,21 @@ async function adoptOtherApps(fake: ControlClient, pod: string, suiteAppId: stri
     if (r.code !== 0) throw new Error(`re-keying ${row.apiAppId} failed (exit ${r.code}): ${maskSecrets(r.stdout + r.stderr, [creds.botToken, creds.signingSecret]).trim()}`);
     console.log(`[e2e] adopted registered app ${row.apiAppId} (persona ${row.personaId}, bot ${creds.botUserId}) into the fake`);
   }
+}
+
+/**
+ * Every gateway pod must have booted on the seeded soul. If one did not, a manager's DM is
+ * ignored and a case would fail later as a bare missing reply; fail here with the cause instead.
+ * The pods booted with the current state (just restarted, or the boot fingerprint matched), so
+ * each pod's log covers that boot.
+ */
+async function assertGatewaysBootedWithSeededSoul(): Promise<void> {
+  const logs: Record<string, string> = {};
+  for (const pod of await podNames("gateway")) {
+    logs[pod] = await must(`logs of ${pod}`, kubectl(["logs", pod, "-c", "gateway", "--tail=-1"], { timeoutMs: 60_000 }));
+  }
+  const problems = soulBootProblems(logs);
+  if (problems.length) throw new Error(`a gateway did not boot with the seeded soul:\n${problems.join("\n")}`);
 }
 
 async function bootedFingerprints(): Promise<string[]> {

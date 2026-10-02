@@ -181,6 +181,32 @@ export function caseJournalRows(rows: MockJournalRow[], mark: number, name: stri
     .sort((a, b) => a.seq - b.seq);
 }
 
+/**
+ * What src/soul/extract.ts logs when a gateway's boot read of the structured soul did not hit the
+ * seeded cache entry. A hit logs nothing. A rejected entry logs "cache invalid at <path>,
+ * re-extracting: <why>"; a miss or a rejection then calls the (mock) model, which cannot answer,
+ * and logs the regex fallback, which leaves the soul without a manager.
+ */
+const SOUL_BOOT_PROBLEMS: Array<{ marker: string; cause: string }> = [
+  { marker: "[soul] cache invalid at", cause: "the seeded soul cache entry was rejected (signature, schema or grounding)" },
+  { marker: "falling back to regex parser", cause: "the soul cache missed, so the soul fell back to the regex parse and has no manager" },
+];
+
+/**
+ * Named causes, one per matching log line, when a gateway pod booted without the seeded soul;
+ * empty when every pod's log is clean. `logs` maps pod name to that pod's log since it started.
+ */
+export function soulBootProblems(logs: Record<string, string>): string[] {
+  const out: string[] = [];
+  for (const pod of Object.keys(logs).sort()) {
+    for (const line of logs[pod]!.split("\n")) {
+      const hit = SOUL_BOOT_PROBLEMS.find((p) => line.includes(p.marker));
+      if (hit) out.push(`${pod}: ${hit.cause}: ${line.trim().slice(0, 300)}`);
+    }
+  }
+  return out;
+}
+
 /** Deployment annotation recording the fingerprint the slaude pods last booted with. */
 export const BOOT_ANNOTATION = "slaude-e2e/boot-fingerprint";
 

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CallRecord } from "../fake-slack/core/call-log";
@@ -21,6 +21,7 @@ import {
   registeredApps,
   restartDecision,
   seedCommand,
+  soulBootProblems,
   stableCredentials,
   STARTUP_FILES_SCRIPT,
   unknownMethods,
@@ -208,6 +209,39 @@ test("restart when the seed changed something, or the pods booted with other sta
   expect(restartDecision({ before: "f1", after: "f1", booted: ["f1", "f0"] }).restart).toBe(true);
   expect(restartDecision({ before: "f1", after: "f1", booted: [] }).restart).toBe(true);
   expect(restartDecision({ before: "f1", after: "f1", booted: ["f1", "f1"] })).toEqual({ restart: false, reason: expect.stringContaining("nothing") });
+});
+
+describe("a gateway that booted without the seeded soul is named, with the cause", () => {
+  // The two lines src/soul/extract.ts logs, in the shape it logs them.
+  const invalid = "[soul] cache invalid at /data/cache/soul.0123456789abcdef.json, re-extracting: unsigned entry";
+  const fallback = "[soul] LLM extraction failed, falling back to regex parser: Error: extractor http 500";
+  const clean = "[db] pg (bun-sql) ready\n[persona] multi-persona mode: alpha\n";
+
+  test("clean boots report nothing", () => {
+    expect(soulBootProblems({ "slaude-gateway-a": clean, "slaude-gateway-b": clean })).toEqual([]);
+    expect(soulBootProblems({})).toEqual([]);
+  });
+
+  test("a rejected entry and the fallback are each named, per pod, with the log line", () => {
+    const got = soulBootProblems({ "slaude-gateway-b": `${clean}${invalid}\n${fallback}\n`, "slaude-gateway-a": clean });
+    expect(got).toHaveLength(2);
+    expect(got[0]).toStartWith("slaude-gateway-b: the seeded soul cache entry was rejected");
+    expect(got[0]).toContain("unsigned entry");
+    expect(got[1]).toStartWith("slaude-gateway-b: the soul cache missed");
+    expect(got[1]).toContain("no manager");
+  });
+
+  test("pods come out in name order and long lines are cut", () => {
+    const got = soulBootProblems({ z: fallback, a: `${invalid}${"x".repeat(1000)}` });
+    expect(got.map((l) => l.split(":")[0])).toEqual(["a", "z"]);
+    expect(got[0]!.length).toBeLessThan(450);
+  });
+
+  test("the markers are what src/soul/extract.ts logs", () => {
+    const src = readFileSync(join(import.meta.dir, "../../src/soul/extract.ts"), "utf8");
+    expect(src).toContain("[soul] cache invalid at ${cp}, re-extracting: ${hit.why}");
+    expect(src).toContain("[soul] LLM extraction failed, falling back to regex parser:");
+  });
 });
 
 describe("the startup-files command reads the soul cache where extraction does", () => {
