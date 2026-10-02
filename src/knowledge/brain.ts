@@ -129,19 +129,84 @@ export function embeddingActive(): boolean {
   return embeddingActiveFlag;
 }
 
-// Provider prefix → required key env. null = keyless/optional-key provider.
-const PROVIDER_KEY_ENV: Record<string, string | null> = {
-  zeroentropyai: "ZEROENTROPY_API_KEY",
-  openai: "OPENAI_API_KEY",
-  voyage: "VOYAGE_API_KEY",
-  google: "GOOGLE_GENERATIVE_AI_API_KEY",
-  openrouter: "OPENROUTER_API_KEY",
-  minimax: "MINIMAX_API_KEY",
-  together: "TOGETHER_API_KEY",
+// Provider prefix → canonical key env + supported aliases in order of precedence.
+// null = keyless or optional-key provider.
+export interface ProviderKeyDef {
+  canonical: string;
+  aliases: string[];
+}
+
+export const PROVIDER_KEY_DEFS: Record<string, ProviderKeyDef | null> = {
+  google: {
+    canonical: "GOOGLE_GENERATIVE_AI_API_KEY",
+    aliases: ["GEMINI_API_KEY", "EMBEDDING_API_KEY"],
+  },
+  zeroentropyai: {
+    canonical: "ZEROENTROPY_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+  },
+  openai: {
+    canonical: "OPENAI_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+  },
+  voyage: {
+    canonical: "VOYAGE_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+  },
+  openrouter: {
+    canonical: "OPENROUTER_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+  },
+  minimax: {
+    canonical: "MINIMAX_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+  },
+  together: {
+    canonical: "TOGETHER_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+  },
   litellm: null,
   ollama: null,
   "llama-server": null,
 };
+
+/**
+ * Resolves API key for an embedding provider across canonical name and declared aliases.
+ * When an alias is detected, sets the canonical env var so gbrain and downstream SDKs find it.
+ */
+export function resolveEmbeddingApiKey(provider: string): {
+  key?: string;
+  canonical?: string;
+  isRequired: boolean;
+} {
+  const def = PROVIDER_KEY_DEFS[provider];
+  if (def === null) {
+    return { isRequired: false };
+  }
+  if (!def) {
+    return {
+      key: process.env.EMBEDDING_API_KEY,
+      canonical: "EMBEDDING_API_KEY",
+      isRequired: false,
+    };
+  }
+
+  const { canonical, aliases } = def;
+  let key = process.env[canonical];
+
+  if (!key) {
+    for (const alias of aliases) {
+      const aliasVal = process.env[alias];
+      if (aliasVal) {
+        process.env[canonical] = aliasVal;
+        key = aliasVal;
+        break;
+      }
+    }
+  }
+
+  return { key, canonical, isRequired: true };
+}
 
 async function configureEmbeddingGateway(): Promise<void> {
   embeddingActiveFlag = false;
@@ -155,17 +220,9 @@ async function configureEmbeddingGateway(): Promise<void> {
   }
   const provider = model.split(":")[0] ?? "";
 
-  // Normalize API key aliases (e.g. GEMINI_API_KEY -> GOOGLE_GENERATIVE_AI_API_KEY, EMBEDDING_API_KEY -> provider)
-  if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY && process.env.GEMINI_API_KEY) {
-    process.env.GOOGLE_GENERATIVE_AI_API_KEY = process.env.GEMINI_API_KEY;
-  }
-  const keyEnv = PROVIDER_KEY_ENV[provider];
-  if (keyEnv && !process.env[keyEnv] && process.env.EMBEDDING_API_KEY) {
-    process.env[keyEnv] = process.env.EMBEDDING_API_KEY;
-  }
-
-  if (keyEnv && !process.env[keyEnv]) {
-    console.warn(`[brain] embedding_model ${model} configured but ${keyEnv} is not set — embeds stay off`);
+  const { key, canonical, isRequired } = resolveEmbeddingApiKey(provider);
+  if (isRequired && !key) {
+    console.warn(`[brain] embedding_model ${model} configured but ${canonical} is not set — embeds stay off`);
     return;
   }
   try {

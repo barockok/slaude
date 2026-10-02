@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeBrain, embeddingActive, getBrain } from "../src/knowledge/brain";
+import { closeBrain, embeddingActive, getBrain, resolveEmbeddingApiKey } from "../src/knowledge/brain";
 
 let home: string | null = null;
 
@@ -12,6 +12,9 @@ afterEach(async () => {
   delete process.env.EMBEDDING_MODEL;
   delete process.env.EMBEDDING_DIMENSIONS;
   delete process.env.ZEROENTROPY_API_KEY;
+  delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+  delete process.env.EMBEDDING_API_KEY;
   if (home) rmSync(home, { recursive: true, force: true });
   home = null;
 });
@@ -20,6 +23,39 @@ function freshHome(): void {
   home = mkdtempSync(join(tmpdir(), "slaude-embedgw-"));
   process.env.SLAUDE_BRAIN_HOME = home;
 }
+
+describe("resolveEmbeddingApiKey", () => {
+  test("resolves canonical env directly", () => {
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = "goog-key-1";
+    const res = resolveEmbeddingApiKey("google");
+    expect(res.key).toBe("goog-key-1");
+    expect(res.canonical).toBe("GOOGLE_GENERATIVE_AI_API_KEY");
+    expect(res.isRequired).toBe(true);
+  });
+
+  test("resolves GEMINI_API_KEY alias and populates canonical env for google", () => {
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+    process.env.GEMINI_API_KEY = "gemini-alias-key";
+    const res = resolveEmbeddingApiKey("google");
+    expect(res.key).toBe("gemini-alias-key");
+    expect(res.canonical).toBe("GOOGLE_GENERATIVE_AI_API_KEY");
+    expect(process.env.GOOGLE_GENERATIVE_AI_API_KEY).toBe("gemini-alias-key");
+  });
+
+  test("resolves generic EMBEDDING_API_KEY alias for any provider", () => {
+    delete process.env.ZEROENTROPY_API_KEY;
+    process.env.EMBEDDING_API_KEY = "generic-embed-key";
+    const res = resolveEmbeddingApiKey("zeroentropyai");
+    expect(res.key).toBe("generic-embed-key");
+    expect(res.canonical).toBe("ZEROENTROPY_API_KEY");
+    expect(process.env.ZEROENTROPY_API_KEY).toBe("generic-embed-key");
+  });
+
+  test("handles keyless providers", () => {
+    const res = resolveEmbeddingApiKey("litellm");
+    expect(res.isRequired).toBe(false);
+  });
+});
 
 describe("embedding gateway activation", () => {
   test("inactive when no embedding configured", async () => {
