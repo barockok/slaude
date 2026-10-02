@@ -132,19 +132,19 @@ describe("gather (unit, injected call)", () => {
 
 describe("normalizeQuery", () => {
   test("strips conversational filler prefixes and preserves core keywords", () => {
-    expect(normalizeQuery("can you please explain how disbursement flow works?")).toBe("how disbursement flow works");
-    expect(normalizeQuery("what is borrower loan status transition?")).toBe("borrower loan status transition");
-    expect(normalizeQuery("tell me about KYC verification webhook")).toBe("KYC verification webhook");
-    expect(normalizeQuery("can you check Maria KB for lead times?")).toBe("Maria KB for lead times");
+    expect(normalizeQuery("can you please explain how authentication middleware works?")).toBe("how authentication middleware works");
+    expect(normalizeQuery("what is user session state transition?")).toBe("user session state transition");
+    expect(normalizeQuery("tell me about webhook retry policy")).toBe("webhook retry policy");
+    expect(normalizeQuery("can you check API reference for rate limits?")).toBe("API reference for rate limits");
   });
 
   test("collapses excess whitespace and trims trailing punctuation", () => {
-    expect(normalizeQuery("   what are   repayment    schedules???  ")).toBe("repayment schedules");
+    expect(normalizeQuery("   what are   cache invalidation    strategies???  ")).toBe("cache invalidation strategies");
   });
 
   test("preserves technical queries without fillers", () => {
-    expect(normalizeQuery("LOAN_DISBURSED event schema")).toBe("LOAN_DISBURSED event schema");
-    expect(normalizeQuery("disbursement_flow")).toBe("disbursement_flow");
+    expect(normalizeQuery("USER_AUTHENTICATED event schema")).toBe("USER_AUTHENTICATED event schema");
+    expect(normalizeQuery("connection_pool_timeout")).toBe("connection_pool_timeout");
   });
 });
 
