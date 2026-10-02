@@ -47,6 +47,7 @@ function fakeClient(tag: string): WebClientLike {
     chat: {
       postMessage: async (a: any) => ({ ok: true, echo: a }),
       update: async (a: any) => ({ ok: true, echo: a }),
+      postEphemeral: async (a: any) => ({ ok: true, echo: a }),
     },
     reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
     conversations: {
@@ -630,6 +631,9 @@ describe("http slack transport — lifecycle and client proxy", () => {
     const c: any = t.client;
     expect((await c.chat.postMessage({ text: "x" })).echo.text).toBe("x");
     expect((await c.chat.update({ ts: "1" })).ok).toBe(true);
+    // The private /link reply goes through this; leaving it off the proxy meant
+    // the onboarding link was never delivered in HTTP mode.
+    expect((await c.chat.postEphemeral({ user: "U1", text: "y" })).echo.text).toBe("y");
     expect((await c.reactions.add({})).ok).toBe(true);
     expect((await c.reactions.remove({})).ok).toBe(true);
     expect((await c.conversations.info({})).ok).toBe(true);
