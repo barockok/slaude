@@ -58,16 +58,13 @@ function hitKey(h: GatherHit): string {
 }
 
 /**
- * Normalize retrieval query: trim, collapse excess whitespace, and strip common
- * conversational filler prefixes while preserving technical keywords and domain codes.
+ * Clean retrieval query: collapse excess whitespace and strip trailing punctuation
+ * without destructive language-specific assumptions, letting the embedding model
+ * handle multilingual semantics naturally.
  */
 export function normalizeQuery(raw: string): string {
-  let q = raw.trim().replace(/\s+/g, " ");
-  // Strip common conversational filler prefixes
-  q = q.replace(/^(can you (please )?(tell me|explain|find|show|check)|please (tell me|explain|find|show|check)|what is|what are|how (does|do|can)|tell me about)\s+/i, "");
-  // Strip trailing punctuation
-  q = q.replace(/[?!.]+$/, "").trim();
-  return q.length > 0 ? q : raw.trim();
+  const cleaned = raw.trim().replace(/\s+/g, " ").replace(/[?!.]+$/, "").trim();
+  return cleaned.length > 0 ? cleaned : raw.trim();
 }
 
 /**

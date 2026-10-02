@@ -131,18 +131,13 @@ describe("gather (unit, injected call)", () => {
 });
 
 describe("normalizeQuery", () => {
-  test("strips conversational filler prefixes and preserves core keywords", () => {
-    expect(normalizeQuery("can you please explain how authentication middleware works?")).toBe("how authentication middleware works");
-    expect(normalizeQuery("what is user session state transition?")).toBe("user session state transition");
-    expect(normalizeQuery("tell me about webhook retry policy")).toBe("webhook retry policy");
-    expect(normalizeQuery("can you check API reference for rate limits?")).toBe("API reference for rate limits");
-  });
-
   test("collapses excess whitespace and trims trailing punctuation", () => {
-    expect(normalizeQuery("   what are   cache invalidation    strategies???  ")).toBe("cache invalidation strategies");
+    expect(normalizeQuery("   cache   invalidation    strategies???  ")).toBe("cache invalidation strategies");
+    expect(normalizeQuery("how does auth middleware work?")).toBe("how does auth middleware work");
+    expect(normalizeQuery("gimana cara kerja webhook retry policy?!")).toBe("gimana cara kerja webhook retry policy");
   });
 
-  test("preserves technical queries without fillers", () => {
+  test("preserves exact technical queries without modification", () => {
     expect(normalizeQuery("USER_AUTHENTICATED event schema")).toBe("USER_AUTHENTICATED event schema");
     expect(normalizeQuery("connection_pool_timeout")).toBe("connection_pool_timeout");
   });
