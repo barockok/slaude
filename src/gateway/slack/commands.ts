@@ -41,6 +41,8 @@ export type SlashHit =
   | { kind: "cron-edit"; id: string; cronExpr: string; prompt: string; target: "thread" | "channel"; whenActive: "fire" | "skip" }
   | { kind: "one-on-one"; action: "on" | "off"; scope: string }
   | { kind: "one-on-one"; action: "lock" }
+  | { kind: "remote"; action: "on"; addr: string; dir?: string }
+  | { kind: "remote"; action: "off" | "status" | "key" }
   | { kind: "mention-only"; action: "on" | "off" }
   | { kind: "mcp"; action: "status" | "connect" | "disconnect"; server?: string }
   | { kind: "soul"; field: "trust" | "allow" | "dm" | "block"; action: "add" | "remove"; value: string }
@@ -59,6 +61,7 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/mode <name>", summary: "set the tool-permission mode (per session/thread)" },
   { usage: "/abort", summary: "cancel the current turn" },
   { usage: "/1on1 [lock | off]", summary: "start a private 1on1 (locked to you); `lock` re-restricts after open; `off` releases — to open to guests, ask the agent directly" },
+  { usage: "/remote [<addr> [dir] | off | key]", summary: "run this thread's shell + file tools on your own machine over tailcat (locks the thread to you); no arg shows status" },
   { usage: "/mention-only [off]", summary: "reply only when @-mentioned in this thread; `off` restores normal" },
   { usage: "/mcp [connect|disconnect <server>]", summary: "list/connect/disconnect OAuth HTTP MCP servers — in 1on1: as you; outside 1on1: manager manages the agent's shared identity" },
   { usage: "/ignore @user [dur]", summary: "ignore a user (optional duration, e.g. 1h, 30m)" },
@@ -203,6 +206,14 @@ export function parseSlashCommand(text: string): SlashHit | null {
     if (sub === "off") return { kind: "one-on-one", action: "off", scope: "" };
     if (sub === "lock") return { kind: "one-on-one", action: "lock" };
     return { kind: "one-on-one", action: "on", scope: "" };
+  }
+  if (cmd === "remote") {
+    const sub = (rest[0] ?? "").toLowerCase();
+    if (!rest[0] || sub === "status") return { kind: "remote", action: "status" };
+    if (sub === "off") return { kind: "remote", action: "off" };
+    if (sub === "key") return { kind: "remote", action: "key" };
+    const dir = rest.slice(1).join(" ").trim();
+    return dir ? { kind: "remote", action: "on", addr: rest[0], dir } : { kind: "remote", action: "on", addr: rest[0] };
   }
   if (cmd === "mention-only") {
     return { kind: "mention-only", action: arg === "off" ? "off" : "on" };

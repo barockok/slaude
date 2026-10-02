@@ -1,5 +1,6 @@
 import { SURFACE_MCP_NAME } from "./surface-mcp";
 import { SLACK_MCP_NAME } from "../slack/mcp-tools";
+import { REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, programOf } from "../../remote/mcp";
 
 /**
  * Renders the glanceable text for the Slack "is thinking…" status indicator
@@ -63,11 +64,25 @@ function urlHost(u: string): string {
   }
 }
 
+/** Remote-mode tools (post-alias names) → the built-in they stand in for, so they
+ *  render through the same safe branches. */
+const REMOTE_AS_BUILTIN: Record<string, string> = Object.fromEntries(
+  Object.entries(REMOTE_TOOL_ALIASES).map(([builtin, alias]) => [alias, builtin]),
+);
+
 /** Map a tool-call to a safe, glanceable status line. Always redaction-netted. */
-export function humanizeToolStatus(tool: string, input: any): string {
+export function humanizeToolStatus(rawTool: string, input: any, opts: { remote?: boolean } = {}): string {
   const inp = input ?? {};
+  const isRemoteTool = rawTool.startsWith(`mcp__${REMOTE_MCP_NAME}__`);
+  const tool = REMOTE_AS_BUILTIN[rawTool] ?? rawTool;
   let label: string;
   switch (tool) {
+    case `mcp__${REMOTE_MCP_NAME}__bash_output`:
+      label = "checking background job";
+      break;
+    case `mcp__${REMOTE_MCP_NAME}__bash_kill`:
+      label = "stopping background job";
+      break;
     case "Read":
       label = `reading ${shortPath(inp.file_path) || "file"}`;
       break;
@@ -82,9 +97,9 @@ export function humanizeToolStatus(tool: string, input: any): string {
       label = "editing notebook";
       break;
     case "Bash": {
-      // Program name only — NEVER the args (they carry secrets / paths / URLs).
-      const prog = (inp.command ?? "").toString().trim().split(/\s+/)[0] ?? "";
-      const name = prog.split("/").filter(Boolean).pop() || prog; // strip any path on the binary
+      // Program name only — NEVER the args (they carry secrets / paths / URLs),
+      // nor a leading NAME=value assignment; anything unclear renders generically.
+      const name = programOf((inp.command ?? "").toString());
       label = name ? `running \`${name}\`` : "running command";
       break;
     }
@@ -158,5 +173,5 @@ export function humanizeToolStatus(tool: string, input: any): string {
     }
   }
   // Central backstop — mask any secret-shaped substring that slipped through.
-  return redactSecrets(label);
+  return redactSecrets(opts.remote || isRemoteTool ? `${label} (remote)` : label);
 }

@@ -411,6 +411,14 @@ export const env = {
       return raw === "1" || raw === "true" || raw === "yes";
     },
   },
+  remote: {
+    /** `/remote` — run a thread's shell and file tools on the initiator's own
+     *  machine over tailcat SSH. Default off; ships behind this flag. */
+    enabled: () => {
+      const raw = opt("SLAUDE_REMOTE", "0").toLowerCase();
+      return raw === "1" || raw === "true" || raw === "yes";
+    },
+  },
   /** Static Prometheus labels applied to every metric, e.g.
    *  `SLAUDE_METRICS_LABELS="agent=hermes,env=prod"`. Malformed entries are
    *  silently dropped by the metrics registry. */

@@ -50,6 +50,7 @@
     "@types/bun": "latest",
     "@types/react": "^19",
     "@types/react-dom": "^19.2.5",
+    "@types/ssh2": "^1.15.6",
     "@vitejs/plugin-react": "^6.1.0",
     "marked": "^18.0.11",
     "react-dom": "19.2.7",
@@ -67,6 +68,7 @@
     "gbrain": "github:garrytan/gbrain#03ffc6ebdbc7dd8b29e5bfd0c3a9a6c983b54f01",
     "ioredis": "^6.0.0",
     "react": "^19.2.7",
+    "ssh2": "^1.17.0",
     "yaml": "^2.6.0",
     "zod": "^3.23.8"
   }

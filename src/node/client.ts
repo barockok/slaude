@@ -180,6 +180,14 @@ export class NodeClient {
     return body.entries ?? {};
   }
 
+  /** The runAs user's SSH key for a remote-mode turn (never cached on disk). */
+  async getRemoteKey(tenantId: string, jobToken: string): Promise<string> {
+    const res = await this.request(`/v1/tenants/${encodeURIComponent(tenantId)}/remote-key`, { jobToken });
+    const body = await this.#json<{ privateKey?: string }>(res);
+    if (!body.privateKey) throw new NodeApiError(502, "", "gateway returned no remote key");
+    return body.privateKey;
+  }
+
   /**
    * Ask the gateway to refresh one server's credential for this turn's owner.
    * Sends the server key and a SHA-256 of the token that failed, never a token.

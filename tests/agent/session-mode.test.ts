@@ -24,3 +24,18 @@ describe("sessionModeBlock", () => {
     expect(sessionModeBlock(null)).toBe("");
   });
 });
+
+describe("sessionModeBlock with remote", () => {
+  test("adds a <remote-mode> block naming the machine owner and dir", () => {
+    const b = sessionModeBlock(lock("U123"), { userId: "U123", dir: "/home/u/repo" });
+    expect(b).toContain("<session-mode>");
+    expect(b).toContain("<remote-mode>");
+    expect(b).toContain("<@U123>'s own machine");
+    expect(b).toContain("`/home/u/repo`");
+    expect(b).toContain("mcp__remote__bash_output");
+    expect(b).toContain("REMOTE_UNREACHABLE");
+  });
+  test("no remote → unchanged output", () => {
+    expect(sessionModeBlock(lock("U123"), null)).toBe(sessionModeBlock(lock("U123")));
+  });
+});
