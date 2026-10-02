@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # One command for the HA end-to-end suite: guard, bring the stack up when needed, run the
-# cluster cases, collect diagnostics on failure, exit with the tests' status.
+# cluster cases, then (E2E_SANITY=1) the sanity scripts, collect diagnostics on failure.
+# Exit status: a failed bring-up or failed cases win (the sanity scripts do not run after them);
+# when the cases pass and a sanity script then fails, the exit status is that script's, non-zero.
 #
 #   scripts/e2e-ha.sh [test-file...]     default: every e2e/ha/*.e2e.ts
 #
@@ -10,6 +12,11 @@
 #   E2E_FORCE_UP=1        run e2e/up.sh even when every deployment is already Ready. Without it
 #                         the bring-up is skipped when the cluster is Ready, so an iteration loop
 #                         stays fast. up.sh rebuilds the images and rolls gateway and node.
+#                         A Ready cluster keeps the image and manifests it was built with, so
+#                         after pulling changes to the app code (src/), deploy/ or e2e/k8s, run
+#                         once with E2E_FORCE_UP=1 (or tear the e2e profile down). A cluster built
+#                         from older code fails the seed on an import error; the script then
+#                         prints this hint.
 #   E2E_SANITY=1          run deploy/k8s-local/verify-ha.sh and verify-turns.sh AFTER the cases
 #                         pass, against the e2e profile. RISK: both SIGKILL gateway/node containers
 #                         and verify-ha deletes pods; the stack recovers by itself, but run them
@@ -132,16 +139,35 @@ for i in "${!files[@]}"; do
   case "${files[$i]}" in /* | ./*) ;; *) files[i]="./${files[$i]}" ;; esac
 done
 
+# When the cases' output shows the in-pod seed failing to import from the image's /app/src, the
+# cluster runs an image older than this checkout (a Ready cluster skips the bring-up).
+stale_image_hint() { # <cases log>
+  grep -qE "Export named '[^']+' not found in module '/app/src/|Cannot find module '/app/src/" "$1" 2>/dev/null || return 0
+  echo "e2e-ha: the persona seed could not import from the cluster's image (/app/src): the cluster was built"
+  echo "e2e-ha: from older code. Re-run with E2E_FORCE_UP=1 to rebuild it, or tear the e2e profile down."
+}
+
 if ((status == 0)); then
   if ((${#files[@]} == 0)); then die "no e2e/ha/*.e2e.ts files found"; fi
   printf 'e2e-ha: running %s\n' "${files[*]}"
   if [[ "${E2E_DRY_RUN:-}" == "1" ]]; then
     echo "e2e-ha: dry run, would run: bun test ${files[*]} --timeout 300000"
   else
-    bun test "${files[@]}" --timeout 300000
-    status=$?
+    cases_log="$(mktemp "${TMPDIR:-/tmp}/e2e-ha-cases.XXXXXX")"
+    bun test "${files[@]}" --timeout 300000 2>&1 | tee "$cases_log"
+    status=${PIPESTATUS[0]}
+    ((status == 0)) || stale_image_hint "$cases_log"
+    rm -f "$cases_log"
   fi
 fi
+
+# A sanity failure after green cases, said plainly in the job summary when there is one.
+sanity_failed_summary() { # <exit status>
+  echo "e2e-ha: the cases passed; the sanity checks failed (exit $1)"
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    echo "HA e2e: the cases passed; the cluster sanity scripts failed (exit $1)" >>"$GITHUB_STEP_SUMMARY"
+  fi
+}
 
 # --- cluster sanity, AFTER the cases -------------------------------------------------------------
 # verify-ha.sh syncs personas as code, which leaves tenant 'default' managed: the gateway then takes
@@ -159,7 +185,7 @@ if ((status == 0)) && [[ "${E2E_SANITY:-}" == "1" ]]; then
   else
     "${SANITY_SCRIPTS[0]}" || status=$?
     if ((status == 0)); then "${SANITY_SCRIPTS[1]}" || status=$?; fi
-    ((status == 0)) || echo "e2e-ha: sanity checks failed (exit $status)"
+    ((status == 0)) || sanity_failed_summary "$status"
   fi
 fi
 

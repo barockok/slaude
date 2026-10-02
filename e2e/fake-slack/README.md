@@ -111,6 +111,12 @@ Cluster suite (needs minikube; uses the mock LLM from `e2e/mock-llm` and no cred
 
     scripts/e2e-ha.sh                       # every e2e/ha/*.e2e.ts
     scripts/e2e-ha.sh ./e2e/ha/echo.e2e.ts  # one file (the leading ./ is required)
+    E2E_FORCE_UP=1 scripts/e2e-ha.sh        # rebuild first
+
+A cluster that is already Ready skips the bring-up and keeps the image and manifests it was
+built with. After pulling changes to the app code (`src/`), `deploy/` or `e2e/k8s`, run once
+with `E2E_FORCE_UP=1` (or tear the e2e profile down); on a cluster built from older code the
+persona seed fails on an import error, and the script prints this hint.
 
 See the header of `scripts/e2e-ha.sh` for the guards, `E2E_*` switches and the diagnostics
 it collects on failure. The workflow `.github/workflows/e2e-ha.yml` runs the same script on a
