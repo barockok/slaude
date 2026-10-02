@@ -7,7 +7,7 @@ const home = mkdtempSync(join(tmpdir(), "slaude-gather-test-"));
 process.env.SLAUDE_BRAIN_HOME = home;
 
 import { brainCall, closeBrain, ensureSources, getBrain } from "../src/knowledge/brain";
-import { gather, rankScore } from "../src/knowledge/gather";
+import { gather, normalizeQuery, rankScore } from "../src/knowledge/gather";
 import type { BrainScope } from "../src/knowledge/scope";
 
 afterAll(async () => {
@@ -127,6 +127,19 @@ describe("gather (unit, injected call)", () => {
   test("total failure (every source errors) rethrows — never papers over a down brain", async () => {
     const call = async () => { throw new Error("db on fire"); };
     expect(gather("q", scope(["a", "b"]), { call })).rejects.toThrow(/db on fire/);
+  });
+});
+
+describe("normalizeQuery", () => {
+  test("collapses excess whitespace and trims trailing punctuation", () => {
+    expect(normalizeQuery("   cache   invalidation    strategies???  ")).toBe("cache invalidation strategies");
+    expect(normalizeQuery("how does auth middleware work?")).toBe("how does auth middleware work");
+    expect(normalizeQuery("gimana cara kerja webhook retry policy?!")).toBe("gimana cara kerja webhook retry policy");
+  });
+
+  test("preserves exact technical queries without modification", () => {
+    expect(normalizeQuery("USER_AUTHENTICATED event schema")).toBe("USER_AUTHENTICATED event schema");
+    expect(normalizeQuery("connection_pool_timeout")).toBe("connection_pool_timeout");
   });
 });
 
