@@ -58,9 +58,7 @@ function hitKey(h: GatherHit): string {
 }
 
 /**
- * Clean retrieval query: collapse excess whitespace and strip trailing punctuation
- * without destructive language-specific assumptions, letting the embedding model
- * handle multilingual semantics naturally.
+ * Clean retrieval query: collapse excess whitespace and strip trailing punctuation.
  */
 export function normalizeQuery(raw: string): string {
   const cleaned = raw.trim().replace(/\s+/g, " ").replace(/[?!.]+$/, "").trim();
