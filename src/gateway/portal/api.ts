@@ -28,7 +28,7 @@ import { oauthKey } from "../../agent/mcp-oauth/store";
 import { createPortalAuthRoutes, type PortalAuthRoutes } from "./auth-routes";
 import { guardPortal } from "./guard";
 import { verifyLinkToken } from "./link-token";
-import { configuredServer, configuredServers, integrationsFor, type ConfiguredServers } from "./integrations";
+import { configuredServer, integrationsFor, portalServers, type PortalServer } from "./integrations";
 import { finishPortalConnect, startPortalConnect, type PortalConnectDeps } from "./oauth";
 import { servePortalStatic } from "./static";
 import {
@@ -46,7 +46,7 @@ export interface PortalApiDeps {
   /** Test seam: stand in for the identity provider on the auth routes. */
   authRoutes?: PortalAuthRoutes;
   /** Test seam: the deployment's connectable MCP servers. */
-  servers?: () => ConfiguredServers;
+  servers?: () => PortalServer[];
   /** Test seam: discovery, registration and the token endpoint. */
   connect?: PortalConnectDeps;
 }
@@ -138,7 +138,7 @@ function confirmPage(token: string, team: string, slackUser: string): string {
 
 export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
   const authRoutes = deps.authRoutes ?? createPortalAuthRoutes();
-  const servers = deps.servers ?? configuredServers;
+  const servers = deps.servers ?? portalServers;
   const connectDeps = deps.connect ?? {};
 
   async function fetch(req: Request): Promise<Response | null> {
@@ -237,13 +237,15 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
         const guarded = await guardPortal(req, { html: false });
         if (!guarded.ok) return guarded.response;
 
-        const name = decodeURIComponent(seg[3]!);
-        const cfg = configuredServer(name, servers());
-        // Refused rather than attempted: the name arrives from the request, and
+        const id = decodeURIComponent(seg[3]!);
+        const server = configuredServer(id, servers());
+        // Refused rather than attempted: the id arrives from the request, and
         // the URL it would otherwise imply is where an access token gets sent.
-        if (!cfg) return json(404, { error: "no such integration" });
+        if (!server) return json(404, { error: "no such integration" });
 
-        const started = await startPortalConnect(guarded.account.id, name, cfg, connectDeps);
+        // The server's own name, not the id: the credential is keyed on the name
+        // the agents use, and the id is only how the page refers to the row.
+        const started = await startPortalConnect(guarded.account.id, server.name, server.cfg, connectDeps);
         const res = json(200, { authorizeUrl: started.authorizeUrl });
         res.headers.append(
           "set-cookie",
@@ -263,12 +265,12 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
         const guarded = await guardPortal(req, { html: false });
         if (!guarded.ok) return guarded.response;
 
-        const name = decodeURIComponent(seg[3]!);
-        const cfg = configuredServer(name, servers());
-        if (!cfg) return json(404, { error: "no such integration" });
+        const id = decodeURIComponent(seg[3]!);
+        const server = configuredServer(id, servers());
+        if (!server) return json(404, { error: "no such integration" });
         // Scoped to the caller's own account, so one person cannot disconnect
         // another's integration.
-        const removed = await deleteCredential({ kind: "account", accountId: guarded.account.id }, oauthKey(name, cfg));
+        const removed = await deleteCredential({ kind: "account", accountId: guarded.account.id }, oauthKey(server.name, server.cfg));
         return json(200, { ok: true, removed });
       }
 

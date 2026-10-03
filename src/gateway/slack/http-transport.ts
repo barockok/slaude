@@ -364,6 +364,7 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
     chat: {
       postMessage: (a: any) => p((c) => c.chat.postMessage(a)),
       update: (a: any) => p((c) => c.chat.update(a)),
+      postEphemeral: (a: any) => p((c) => c.chat.postEphemeral(a)),
     },
     reactions: {
       add: (a: any) => p((c) => c.reactions.add(a)),

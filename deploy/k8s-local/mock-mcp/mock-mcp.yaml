@@ -1,0 +1,42 @@
+# Local-only. Applied by mock-mcp.sh; the server source is mounted from a
+# ConfigMap that script creates from server.ts. Runs on the slaude image (it has bun).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-mcp
+  namespace: slaude-scale
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: mock-mcp }
+  template:
+    metadata:
+      labels: { app: mock-mcp }
+    spec:
+      containers:
+        - name: mock-mcp
+          image: slaude:local
+          imagePullPolicy: Never
+          command: ["bun", "/mock/server.ts"]
+          env:
+            - { name: MOCK_MCP_ORIGIN, value: "http://mockmcp.localtest.me:9000" }
+          ports:
+            - containerPort: 9000
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          volumeMounts:
+            - { name: src, mountPath: /mock, readOnly: true }
+      volumes:
+        - name: src
+          configMap: { name: mock-mcp-src }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-mcp
+  namespace: slaude-scale
+spec:
+  selector: { app: mock-mcp }
+  ports:
+    - { port: 9000, targetPort: 9000 }

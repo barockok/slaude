@@ -36,24 +36,24 @@ export function App() {
     void load();
   }, [load]);
 
-  async function connect(name: string) {
-    setBusy(name);
+  async function connect(id: string) {
+    setBusy(id);
     setError(null);
     try {
       // The browser leaves for the provider here and comes back to
       // /portal/oauth/callback, which redirects to /portal?connect=…
-      location.href = (await api.connect(name)).authorizeUrl;
+      location.href = (await api.connect(id)).authorizeUrl;
     } catch (e) {
       setBusy(null);
       setError(e instanceof Error ? e.message : "Could not start the connection.");
     }
   }
 
-  async function disconnect(name: string) {
-    setBusy(name);
+  async function disconnect(id: string) {
+    setBusy(id);
     setError(null);
     try {
-      await api.disconnect(name);
+      await api.disconnect(id);
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not disconnect.");
@@ -90,21 +90,22 @@ export function App() {
       {!!integrations?.length && (
         <ul className="list">
           {integrations.map((i) => (
-            <li key={i.name}>
+            <li key={i.id}>
               <div>
                 <strong>{i.name}</strong>
                 <span className="host">{i.host}</span>
+                {i.usedBy.length > 0 && <span className="host">Used by {i.usedBy.join(", ")}</span>}
               </div>
               <div className="actions">
                 {i.connected ? (
                   <>
                     <span className="badge">Connected</span>
-                    <button onClick={() => void disconnect(i.name)} disabled={busy === i.name}>
+                    <button onClick={() => void disconnect(i.id)} disabled={busy === i.id}>
                       Disconnect
                     </button>
                   </>
                 ) : (
-                  <button className="primary" onClick={() => void connect(i.name)} disabled={busy === i.name}>
+                  <button className="primary" onClick={() => void connect(i.id)} disabled={busy === i.id}>
                     Connect
                   </button>
                 )}

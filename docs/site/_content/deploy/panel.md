@@ -145,11 +145,21 @@ client secret, public URL and signing secret.
 
 ### The integrations page
 
-`/portal` is the page a person actually uses. It lists the HTTP MCP servers
-this deployment configures in `.mcp.json` — the same list `/mcp` offers in
-Slack — with a connect or disconnect button each, and it says plainly where
-those credentials apply: in a 1:1 with an agent and in what the person
-schedules there, not in a channel thread, where the agent runs as itself.
+`/portal` is the page a person actually uses. It lists every HTTP MCP server
+that any agent on this deployment mounts, with a connect or disconnect button
+each, and it says plainly where those credentials apply: in a 1:1 with an agent
+and in what the person schedules there, not in a channel thread, where the agent
+runs as itself.
+
+The list is the union of each persona's MCP servers, resolved exactly as a
+session resolves them: a persona's own `mcp.json` (or, for a persona managed
+from git, its synced `mcp`), and for the default persona the global
+`.mcp.json`. A server several personas share is one row that names them, and
+one connect covers all of them, because the stored credential is keyed by the
+server's name and configuration, not by persona. Two different servers that
+happen to share a name are shown as separate rows. Only the host is shown;
+a server's headers, which can hold a persona's own credential, never reach
+the page.
 
 The MCP provider redirects back to `${SLAUDE_PANEL_PUBLIC_URL}/portal/oauth/callback`.
 That is not something you register anywhere: MCP servers use dynamic client
