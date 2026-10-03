@@ -57,7 +57,7 @@ kubectl -n $NS set env deploy/slaude-gateway \
   SLAUDE_PANEL_OIDC_ISSUER=http://keycloak.localtest.me:8180/realms/slaude-dev \
   SLAUDE_PANEL_OIDC_CLIENT_ID=slaude-panel \
   SLAUDE_PANEL_OIDC_CLIENT_SECRET=dev-secret \
-  SLAUDE_PANEL_PUBLIC_URL=$PUBLIC \
+  SLAUDE_PANEL_PUBLIC_URL="$PUBLIC" \
   SLAUDE_PANEL_SECRET=local-panel-secret-local-panel-secret! \
   SLAUDE_PANEL_SUPERADMIN=lead@example.com \
   SLAUDE_PANEL_OPERATORS=alice@example.com
