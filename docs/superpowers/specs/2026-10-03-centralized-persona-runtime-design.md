@@ -2,9 +2,12 @@
 
 **Date:** 2026-10-03
 **Status:** living document. Update it as each workstream lands.
-**Children:** `2026-10-03-persona-provider-credentials-design.md` (written);
-node labels and routing (to be written); per-persona config on nodes and
-administrator visibility (to be written)
+**Children (all written):**
+- WS-A `2026-10-03-persona-provider-credentials-design.md`
+- WS-B `2026-10-03-node-labels-and-routing-design.md`
+- WS-C `2026-10-03-persona-runtime-config-and-visibility-design.md`
+- WS-D `2026-10-03-ha-cluster-hardening-design.md`
+- WS-E `2026-10-03-ha-release-plan-design.md`
 **Builds on:** `2026-08-24-horizontal-scale-design.md`,
 `2026-10-01-personas-as-code-design.md`, `2026-09-18-phase-3-user-scoped-mcp-credentials-design.md`
 
@@ -75,7 +78,7 @@ reporting was dropped from routing (the gateway needs a name match, not a list).
 
 ## 4. Workstreams
 
-### WS-A — Provider credentials by reference (Spec: written)
+### WS-A — Provider credentials by reference (spec written)
 
 Persona holds `provider` references; the gateway resolves `vault://` and
 `env://` at bundle build; rotation reboots warm sessions through the
@@ -85,7 +88,7 @@ unchanged); `auth_token` becomes expressible.
 mock LLM with their own key; a Vault version bump reaches the next turn; Vault
 down fails a fresh start closed with a generic message.
 
-### WS-B — Node labels and routing (Spec: to be written)
+### WS-B — Node labels and routing (spec written)
 
 Signed node credential carrying labels, minted by an admin CLI; `personas.runs_on`;
 `turns.<label>` queues; the credential gate on every `/v1` endpoint that returns
@@ -98,7 +101,7 @@ credentials; the legacy static node token still works as label `default`.
 **Cuts for the first release:** no Redis token denylist (revoke by expiry and key
 rotation); the empty-label alert is a panel flag first, Slack message later.
 
-### WS-C — Per-persona config on nodes, and visibility (Spec: to be written)
+### WS-C — Per-persona config on nodes, and visibility (spec written)
 
 Per-persona remote `mcp_json` consumed on nodes (today stored, not consumed);
 per-persona KB source list enforced by the gateway; the panel shows, per persona,
@@ -107,12 +110,12 @@ the fixed layout), the label it runs on and the live nodes holding that label.
 **Depends on:** WS-B for the label view. **Done when:** an administrator can answer
 "what is this agent and where does it run" from the panel alone.
 
-### WS-D — HA and cluster finalization (backlog in §6)
+### WS-D — HA and cluster finalization (spec written; backlog in §6)
 
 Defects and gaps found by standing up and smoke-testing the topology, and the test
 harness's own fragility.
 
-### WS-E — Release (§8)
+### WS-E — Release (spec written; gate in §8)
 
 Release candidate, soak, notes under the stable name, docs, promote.
 
@@ -156,14 +159,20 @@ not re-run.
 | H10 | Unverified: an agent in a 1:1 using a connected credential against a real MCP server. | Open |
 | H11 | `kubectl port-forward` pins one pod; any gateway restart silently breaks a tunnel until recycled. A tunnel went down mid-test this way. | Observed; harness fix open |
 | H12 | `verify-turns.sh`: on a 4 CPU / 6 GB host two cron probes reported *could not measure* and pods restarted (liveness and readiness probes timed out, `context deadline exceeded`, with the node under load). Right-size requests and probe timeouts, document the sizing floor, and make the probe report *why* it could not measure (the diagnostic lines were missing from the log). | Observed, open |
-| H13 | After an interrupted `verify-turns.sh`, the node deployment was left at 3 replicas instead of 2. Root cause not established. | Observed once, investigate |
-| H14 | Two notes disagree on how long a killed node's session lock delays a re-delivered turn (45 s takeover versus a 10-minute TTL). Measure and reconcile. | Open |
+| H13 | The node deployment ends a verify run at 3 replicas. **Cause found:** the local overlay's node HPA (`minReplicas: 2`, `maxReplicas: 3`, 60 % of a 250 m request) scales it up under turn load and holds it for the 10-minute scale-down window; the script never changes replicas and has no interrupt bug. Harness fix. | Cause found, fix specified (WS-D D3.3) |
+| H14 | Documentation only: the two notes do not contradict. 45 s is the local overlay's lock TTL, 10 minutes is the default; BullMQ stall detection adds a floor of around 30 s. Qualify "45 s" wherever it appears. | Doc task (WS-D D4.1) |
 | H15 | A persona with no stored provider credentials runs on the node's own env. | Closed by WS-A (flag) |
 | H16 | Per-persona `mcp` is not consumed on nodes. | Closed by WS-C |
 | H17 | The compare-and-set race and the cluster proof for personas as code were never run on real infrastructure. | Recorded, open |
 | H18 | A `cloudflared` tunnel is a launchd or foreground process on a dev machine; two connectors for one tunnel can coexist unnoticed. Document the local-tunnel runbook. | Observed, docs |
 | H19 | `up.sh` takes the provider only from four named variables; `SLAUDE_MODEL` is never set, so every turn and the soul extraction fail with "model not found" until set by hand. | Observed, open |
 | H20 | Deployment hygiene on a shared dev machine: another local process held the port the gateway forward needs. Make the forward port configurable and fail loudly when it is taken. | Observed, harness |
+| H21 | `/v1/pending/:id` requires only the bearer and is bound to no persona or session. | Found by audit; WS-B §4.4 |
+| H22 | `/v1/jobs/:id/token-refresh` can renew a job token indefinitely (no cap from the original issue time). | Found by audit; WS-B §4.4 |
+| H23 | `/v1/jobs/:id/ack\|fail` accepts any job id with the bearer alone and logs the caller's body. | Found by audit; WS-B §4.4 |
+| H24 | Nodes mount **no external MCP at all**, global or per-persona (only the shims and `slaude_session`); `bundle.mcpJson` and `skillsPaths` are shipped and read by no node code. To be confirmed in a node pod, then fixed. | Found by investigation; WS-C §4.2.4 |
+| H25 | There is no panel UI for personas; the endpoints exist and the web app never calls them. | WS-C §4.4 |
+| H26 | Nothing watches a queue for jobs no node will claim; the reaper only drains per-node queues. | WS-B §4.7 |
 
 ## 7. Sequencing
 
