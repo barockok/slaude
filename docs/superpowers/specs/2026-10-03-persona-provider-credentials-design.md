@@ -4,8 +4,11 @@
 **Builds on:** `2026-10-01-personas-as-code-design.md` (the persona row, `/deploy`, the
 runtime bundle) and `2026-09-18-mcp-credential-ownership` (credentials stay
 gateway-owned; nodes receive a projection)
-**Sibling spec (next):** node labels and routing — it adds the gate that decides
-*which node* may receive what this spec resolves
+**Umbrella:** `2026-10-03-centralized-persona-runtime-design.md` — this is
+workstream WS-A there; the decisions, the other workstreams and the release gate
+are tracked in that document.
+**Sibling spec (next):** node labels and routing (WS-B) — it adds the gate that
+decides *which node* may receive what this spec resolves
 
 ## 1. Intent
 
