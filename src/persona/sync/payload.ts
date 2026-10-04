@@ -31,27 +31,36 @@ export class UnresolvedVarError extends PayloadError {
  * might change what a persona means.
  *
  *   1  the personas-as-code fields
- *   2  adds `provider` (WS-A). `render` writes 2 only when some persona sets
- *      it, so a gateway that predates `provider` refuses such a payload
- *      instead of stripping the field and leaving the persona on node
- *      credentials; any other payload stays 1 and deploys to either.
- *   3  adds `kbSources` (WS-C §4.1). Same rule: a gateway that predates it
- *      would drop it and widen the persona to every installed KB, so `render`
- *      writes 3 when some persona sets it, and the highest version any field
- *      needs otherwise.
+ *   2  adds `provider` (WS-A)
+ *   3  adds `kbSources` (WS-C §4.1)
+ *
+ * Each persona field newer than version 1 is one entry in PERSONA_FIELD_VERSION.
+ * `render` writes the highest version any field a persona sets needs, so a
+ * gateway that predates a field refuses the payload instead of dropping it
+ * (which would leave a persona on node credentials, or widen it to every KB);
+ * a payload that sets none stays 1 and deploys to any gateway.
  */
+export const PERSONA_FIELD_VERSION = { provider: 2, kbSources: 3 } as const;
 export const SUPPORTED_PAYLOAD_VERSION = 3;
-export const PROVIDER_PAYLOAD_VERSION = 2;
-export const KB_SOURCES_PAYLOAD_VERSION = 3;
+export const PROVIDER_PAYLOAD_VERSION = PERSONA_FIELD_VERSION.provider;
+export const KB_SOURCES_PAYLOAD_VERSION = PERSONA_FIELD_VERSION.kbSources;
 
-/** The version a payload needs: the highest any persona's fields require. */
-export function payloadVersionFor(personas: ReadonlyArray<{ provider?: unknown; kbSources?: unknown }>): number {
-  if (personas.some((p) => p.kbSources !== undefined)) return KB_SOURCES_PAYLOAD_VERSION;
-  return personas.some((p) => p.provider !== undefined) ? PROVIDER_PAYLOAD_VERSION : 1;
+/** The version a payload needs: the highest of any field a persona sets, 1 when none. */
+export function payloadVersionFor(personas: ReadonlyArray<object>): number {
+  let v = 1;
+  for (const p of personas) {
+    for (const [field, need] of Object.entries(PERSONA_FIELD_VERSION)) {
+      if ((p as Record<string, unknown>)[field] !== undefined) v = Math.max(v, need);
+    }
+  }
+  return v;
 }
 
-/** A knowledge-base source id as kbSourceId() builds it from an installed KB's label. */
-export const KB_SOURCE_ID_RE = /^kb-[a-z0-9][a-z0-9-]*$/;
+/** A knowledge-base source id as kbSourceId() builds it from an installed KB's
+ *  label: `kb-` and at most 29 more characters (gbrain ids are ≤ 32). */
+export const KB_SOURCE_ID_RE = /^kb-[a-z0-9][a-z0-9-]{0,28}$/;
+/** Most ids one persona may list. */
+export const KB_SOURCES_MAX = 64;
 
 const personaSpec = z.object({
   name: z.string().regex(PERSONA_NAME_RE, "persona name must match ^[a-z0-9][a-z0-9-]{0,62}$"),
@@ -91,6 +100,7 @@ export type PersonaSpec = Omit<z.infer<typeof personaSpec>, "provider" | "kbSour
  */
 export function parseKbSources(persona: string, raw: unknown[] | undefined): string[] | undefined {
   if (raw === undefined) return undefined;
+  if (raw.length > KB_SOURCES_MAX) throw new PayloadError(`persona '${persona}': kbSources lists ${raw.length} ids; at most ${KB_SOURCES_MAX}`);
   const seen = new Set<string>();
   raw.forEach((v, i) => {
     if (typeof v !== "string" || !KB_SOURCE_ID_RE.test(v)) {
@@ -104,11 +114,16 @@ export function parseKbSources(persona: string, raw: unknown[] | undefined): str
 
 /** Sync warnings for kbSources ids that match no installed KB (names the persona and id). */
 export function kbSourceWarnings(payload: Pick<SyncPayload, "personas">, installed: readonly string[]): string[] {
-  const have = new Set(installed);
+  // `installed` holds one id per installed KB: two labels that normalise to
+  // the same id appear twice, and a persona listing it reads both.
+  const count = new Map<string, number>();
+  for (const id of installed) count.set(id, (count.get(id) ?? 0) + 1);
   const out: string[] = [];
   for (const p of payload.personas) {
     for (const id of p.kbSources ?? []) {
-      if (!have.has(id)) out.push(`persona '${p.name}' lists ${id} in kbSources, but no such knowledge base is installed; it reads nothing from it until one is`);
+      const n = count.get(id) ?? 0;
+      if (n === 0) out.push(`persona '${p.name}' lists ${id} in kbSources, but no such knowledge base is installed; it reads nothing from it until one is`);
+      else if (n > 1) out.push(`persona '${p.name}' lists ${id} in kbSources, which more than one installed knowledge base maps to (their labels normalise to the same id); it reads all of them`);
     }
   }
   return out;

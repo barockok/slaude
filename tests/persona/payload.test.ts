@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { capPaths, MAX_REPORTED_FIELDS, SUPPORTED_PAYLOAD_VERSION, KB_SOURCES_PAYLOAD_VERSION, payloadVersionFor, unknownFieldPaths, parsePayload, resolvePlaceholders, UnresolvedVarError, PayloadError, providerWarnings } from "../../src/persona/sync/payload";
+import { capPaths, MAX_REPORTED_FIELDS, SUPPORTED_PAYLOAD_VERSION, PERSONA_FIELD_VERSION, KB_SOURCES_MAX, kbSourceWarnings, payloadVersionFor, unknownFieldPaths, parsePayload, resolvePlaceholders, UnresolvedVarError, PayloadError, providerWarnings } from "../../src/persona/sync/payload";
 
 const base = (personas: unknown[]) => ({ revision: "abc123", committedAt: "2026-10-01T10:00:00Z", personas });
 const ana = { name: "ana", slackUserId: "UTESTUSER1", soul: "You are Ana.", userToken: "${PERSONA_ANA_XOXP}" };
@@ -255,13 +255,34 @@ describe("kbSources (WS-C §4.1)", () => {
     expect(() => parsePayload(withKb(["kb-a", "kb-a"]))).toThrow(/kbSources/);
   });
 
-  test("kbSources needs payload version 3; render emits the highest version required", () => {
-    expect(SUPPORTED_PAYLOAD_VERSION).toBeGreaterThanOrEqual(KB_SOURCES_PAYLOAD_VERSION);
-    expect(KB_SOURCES_PAYLOAD_VERSION).toBe(3);
+  test("one version table: the payload needs the highest version of any field a persona sets", () => {
+    expect(PERSONA_FIELD_VERSION).toEqual({ provider: 2, kbSources: 3 });
+    expect(SUPPORTED_PAYLOAD_VERSION).toBe(3);
+    expect(payloadVersionFor([])).toBe(1);
     expect(payloadVersionFor([{}])).toBe(1);
     expect(payloadVersionFor([{ provider: {} }])).toBe(2);
     expect(payloadVersionFor([{ kbSources: [] }])).toBe(3);
+    expect(payloadVersionFor([{ provider: {}, kbSources: ["kb-a"] }])).toBe(3);
     expect(payloadVersionFor([{ provider: {} }, { kbSources: ["kb-a"] }])).toBe(3);
+  });
+
+  test("an id longer than 32 characters (kbSourceId never makes one) is refused", () => {
+    expect(() => parsePayload(withKb(["kb-" + "a".repeat(29)]))).not.toThrow();
+    expect(() => parsePayload(withKb(["kb-" + "a".repeat(30)]))).toThrow(/kbSources\[0\]/);
+  });
+
+  test("the list is capped", () => {
+    const ids = (n: number) => Array.from({ length: n }, (_, i) => `kb-k${i}`);
+    expect(() => parsePayload(withKb(ids(KB_SOURCES_MAX)))).not.toThrow();
+    expect(() => parsePayload(withKb(ids(KB_SOURCES_MAX + 1)))).toThrow(/at most/);
+  });
+
+  test("an id that several installed KBs normalise to is a warning", () => {
+    const p = parsePayload(withKb(["kb-my-wiki", "kb-runbook"]));
+    const w = kbSourceWarnings(p, ["kb-my-wiki", "kb-my-wiki", "kb-runbook"]);
+    expect(w).toEqual([expect.stringContaining("'ana'")]);
+    expect(w[0]).toContain("kb-my-wiki");
+    expect(w[0]).toContain("more than one");
   });
 
   test("kbSources is a known field, so it is never reported as ignored", () => {
