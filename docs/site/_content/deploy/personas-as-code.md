@@ -312,19 +312,25 @@ existed, keep the model they were created with until `/model` changes it.
 
 ## Known gaps
 
-- **Connectable and mounted MCP servers can differ.** The `/mcp connect` list
-  and the portal integrations list still read the global `.mcp.json` for a
-  managed persona, while the persona's turns mount its synced `mcp`.
+- **Connectable and mounted MCP servers can differ in `mono`.** In the
+  gateway role, `/mcp connect` and the portal's integrations page offer exactly
+  the servers the [MCP bridge](mcp-bridge.md) serves for the persona. In
+  `mono` they still read the global `.mcp.json` for a managed persona, while
+  the persona's turns mount its synced `mcp`.
 - **Export does not catch every token in an MCP URL.** It does not detect a
   token in a URL's host, or in a URL path segment shorter than 32 characters.
   Review MCP URLs before committing an export.
-- **Per-persona `mcp` is not consumed on nodes.** In `mono` on Postgres a
-  managed persona's external MCP servers come from its effective `mcp`
-  (nothing when it has none; the default persona falls back to the global
-  `.mcp.json`). Nodes do not mount external MCP servers from persona config:
-  syncing or overriding `mcp` records it and has no effect on a node's turns.
-  The runtime bundle a node fetches always carries `mcpJson: null`, for every
-  tenant, so resolved header and env values never leave the gateway.
+- **On nodes, per-persona `mcp` reaches the agent only through the MCP
+  bridge.** A managed persona's remote `http` servers are served by the
+  [MCP bridge](mcp-bridge.md): the runtime bundle carries only their names
+  (`mcpServers`), and every call goes through the gateway, so resolved header
+  and env values never leave it (`mcpJson` in the bundle is always `null`).
+  stdio, legacy `sse` and plugin servers in a persona's `mcp` are not bridged;
+  a node runs a stdio server only when its own
+  [node MCP manifest](node-manifest.md) declares it for that persona. In `mono`
+  on Postgres a managed persona's external MCP servers come from its effective
+  `mcp` (nothing when it has none; the default persona falls back to the
+  global `.mcp.json`).
 - **In `mono`, a named persona's channel mandate is the default persona's.**
   Nodes take each persona's channel mandate from its own structured soul; the
   `mono` process still uses the default persona's channel overrides for every
