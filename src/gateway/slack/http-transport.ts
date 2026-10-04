@@ -361,8 +361,10 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
   /** The registered app `app` names (D1.2). An exact (app, team) pair wins; a
    *  partial identity (rows written before the app was recorded) resolves only
    *  when exactly one registered app matches it; with a single registered app
-   *  that app is the answer for anything. Anything else throws: posting as some
-   *  other app is the defect this replaces. */
+   *  that app answers an identity naming NO app. An identity naming an app that
+   *  is not registered (uninstalled) never falls through to another app.
+   *  Anything else throws: posting as some other app is the defect this
+   *  replaces. */
   function resolveEntry(app: AppRef): AppEntry {
     if (app.apiAppId && app.teamId) {
       const exact = entries.get(`${app.apiAppId}:${app.teamId}`);
@@ -373,7 +375,7 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
       );
       if (matches.length === 1) return matches[0]!;
     }
-    if (entries.size === 1 && primary) return primary;
+    if (!app.apiAppId && entries.size === 1 && primary) return primary;
     throw new Error(
       `[slack-http] no registered Slack app for app=${app.apiAppId ?? "-"} team=${app.teamId ?? "-"} (${entries.size} registered)`,
     );

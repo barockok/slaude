@@ -815,13 +815,28 @@ describe("http slack transport — per-app clients (D1.2, D1.4)", () => {
     expect(t.botTokenFor!({ teamId: "T0BBB" })).toBe("bot-token-b");
   });
 
-  it("a single registered app is the answer for any identity, as before", async () => {
+  it("a single registered app answers an identity that names no app, as before", async () => {
     const { t, clients } = await boot([rowA()]);
     const calls = recordPosts(clients);
     await t.clientFor!({}).chat.postMessage({ channel: "C1" });
-    await t.clientFor!({ apiAppId: "A0OTHER", teamId: "T0ZZZ" }).chat.postMessage({ channel: "C1" });
+    await t.clientFor!({ teamId: "T0ZZZ" }).chat.postMessage({ channel: "C1" });
     expect(calls).toEqual(["bot-token-a", "bot-token-a"]);
     expect(t.botTokenFor!({})).toBe("bot-token-a");
+    expect(t.botTokenFor!({ teamId: "T0AAA" })).toBe("bot-token-a");
+  });
+
+  // R2-2: an uninstalled app's cron jobs, sessions and tokens must not fall
+  // through to whichever app remains.
+  it("with a single registered app, an identity naming another app is refused", async () => {
+    const { t, clients } = await boot([rowA()]);
+    const calls = recordPosts(clients);
+    await expect(
+      t.clientFor!({ apiAppId: "A0TWO", teamId: "T0AAA" }).chat.postMessage({ channel: "C1" }),
+    ).rejects.toThrow(/no registered Slack app/);
+    await expect(t.clientFor!({ apiAppId: "A0TWO" }).chat.postMessage({ channel: "C1" })).rejects.toThrow(/no registered Slack app/);
+    expect(t.botTokenFor!({ apiAppId: "A0TWO", teamId: "T0AAA" })).toBeUndefined();
+    expect(t.botTokenFor!({ apiAppId: "A0TWO" })).toBeUndefined();
+    expect(calls).toEqual([]);
   });
 
   it("botTokenFor returns the named app's token; apps() lists every registered app", async () => {
