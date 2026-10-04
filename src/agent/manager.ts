@@ -117,6 +117,21 @@ export type McpResolver = (
   sessionId: string,
 ) => Record<string, McpServerConfig> | undefined | Promise<Record<string, McpServerConfig> | undefined>;
 
+/** A node's manifest servers with the transport resolver's laid over them: a
+ *  gateway-resolved server wins a name collision, with a warning naming it. */
+function mergeLocalMcp(
+  sessionId: string,
+  local: Record<string, McpServerConfig>,
+  resolved: Record<string, McpServerConfig> | undefined,
+): Record<string, McpServerConfig> {
+  for (const name of Object.keys(resolved ?? {})) {
+    if (Object.hasOwn(local, name)) {
+      console.warn(`[node] session=${sessionId} MCP server '${name}' is in the node manifest and also resolved by the gateway; the gateway's wins`);
+    }
+  }
+  return { ...local, ...(resolved ?? {}) };
+}
+
 /** Stop-hook guard. Return an instruction string to block the agent from
  *  stopping (SDK feeds reason back, agent continues). Return null to allow stop.
  *  Guard fires at most once per turn — if it returns non-null twice, second
@@ -246,6 +261,7 @@ export class AgentManager extends EventEmitter {
   #personaSoulResolver: PersonaSoulResolver | undefined;
   #personaModelResolver: PersonaModelResolver | undefined;
   #mcpResolver: McpResolver | undefined;
+  #localMcpResolver: McpResolver | undefined;
   #stopGuard: StopGuard | undefined;
   #remoteResolver: ((sessionId: string) => Promise<RemoteTarget | null>) | undefined;
   #remoteFactory: ((sessionId: string, t: RemoteTarget) => Promise<RemoteHandle> | RemoteHandle) | undefined;
@@ -389,6 +405,14 @@ export class AgentManager extends EventEmitter {
   /** Install a transport-level MCP server resolver. Called once per session start. */
   setMcpResolver(resolver: McpResolver | undefined) {
     this.#mcpResolver = resolver;
+  }
+
+  /** Node only (node labels spec §4.10): the session's stdio servers from the
+   *  node manifest. Installed, it REPLACES installed-plugin MCP servers, the
+   *  transport resolver's output is merged after it (and wins a name
+   *  collision), and the CLI reads no other MCP source (strictMcpConfig). */
+  setLocalMcpResolver(resolver: McpResolver | undefined) {
+    this.#localMcpResolver = resolver;
   }
 
   /** Install a transport-level Stop hook guard (e.g. Slack "must reply" enforcement). */
@@ -808,7 +832,10 @@ export class AgentManager extends EventEmitter {
       channelId?: string | null;
       lock?: OneOnOneLockRow | null;
       remote?: { userId: string; dir: string } | null;
-      mcpServers?: Record<string, McpServerConfig>;
+      mcpServers?: Record<string, unknown>;
+      /** The CLI reads no MCP source but mcpServers (a node): the block is
+       *  the whole list. */
+      strictMcp?: boolean;
       memBlock?: string | null;
     },
   ): Promise<string> {
@@ -831,9 +858,11 @@ export class AgentManager extends EventEmitter {
       mcpServers
         ? `<mcp-servers>\nMCP server namespaces mounted this session. Call tools as \`mcp__<server>__<tool>\`.\n${Object.keys(mcpServers)
             .map((n) => `- ${n}`)
-            .join(
-              "\n",
-            )}\nAdditional servers may be available if configured in ~/.claude/mcp.json or .mcp.json in the working directory.\n</mcp-servers>`
+            .join("\n")}\n${
+            ctx.strictMcp
+              ? ""
+              : "Additional servers may be available if configured in ~/.claude/mcp.json or .mcp.json in the working directory.\n"
+          }</mcp-servers>`
         : "<mcp-servers>none</mcp-servers>",
       memBlock ? `<memory-context>\n${memBlock}\n</memory-context>` : "",
     ]
@@ -1007,14 +1036,22 @@ export class AgentManager extends EventEmitter {
 
     const mode = (row.permission_mode || "default") as PermissionMode;
     const mcpServers = await this.#mcpResolver?.(sessionId);
+    // Node: the manifest's stdio servers for this persona, and nothing else
+    // local (no plugin MCP from disk, no CLI discovery). The transport's
+    // servers go after them, so a gateway-resolved name wins a collision.
+    const localMcp = this.#localMcpResolver ? ((await this.#localMcpResolver(sessionId)) ?? {}) : null;
+    const baseMcpServers = localMcp ? mergeLocalMcp(sessionId, localMcp, mcpServers) : mcpServers;
     // Remote mode: tools for this session run on the lock owner's machine.
     const remoteTarget = this.#remoteResolver ? await this.#remoteResolver(sessionId) : null;
     const model = await this.#sessionModel(sessionId, row.model, personaName);
+    // Strict (node): the prompt lists exactly what the CLI will mount.
+    const strictNames = localMcp ? { ...baseMcpServers, ...(remoteTarget ? { [REMOTE_MCP_NAME]: true } : {}) } : null;
     const systemAppend = await this.#buildSystemAppend(sessionId, personaName, {
       channelId: row.slack_channel_id,
       lock,
       remote: remoteTarget ? { userId: remoteTarget.userId, dir: remoteTarget.dir } : null,
-      mcpServers,
+      mcpServers: strictNames ? (Object.keys(strictNames).length > 0 ? strictNames : undefined) : mcpServers,
+      strictMcp: !!localMcp,
       memBlock,
     });
     const preCompact: HookCallback = async (input) => {
@@ -1065,8 +1102,13 @@ export class AgentManager extends EventEmitter {
     // each plugin's skills/commands for this session. The SDK's `--plugin-dir`
     // path does NOT auto-mount the plugin's .mcp.json servers (CLI landmine),
     // so we also read each plugin's .mcp.json and merge into mcpServers.
-    const pluginPaths = loadInstalledPluginPaths();
-    const pluginMcps = loadInstalledPluginMcps();
+    // On a node (a local MCP resolver installed) plugin MCP servers run only
+    // when the node manifest declares them: none are read from disk, and every
+    // plugin skips the CLI's own .mcp.json discovery.
+    const pluginPaths = localMcp
+      ? loadInstalledPluginPaths().map((p) => ({ ...p, skipMcpDiscovery: true }))
+      : loadInstalledPluginPaths();
+    const pluginMcps = localMcp ? {} : loadInstalledPluginMcps();
     // Always mount ~/.slaude/ as a local plugin so the SDK discovers
     // ~/.slaude/skills/<slug>/SKILL.md and injects them into <system-reminder>.
     // skipMcpDiscovery prevents the SDK from reading slaude's own mcp.json
@@ -1086,7 +1128,7 @@ export class AgentManager extends EventEmitter {
     let options: Options;
     try {
       const mergedMcpServers = {
-        ...(mcpServers ?? {}),
+        ...(baseMcpServers ?? {}),
         ...pluginMcps,
         ...(remoteHandle && remoteTarget
           ? { [REMOTE_MCP_NAME]: createRemoteMcp({ exec: remoteHandle.exec, root: remoteTarget.dir, sessionKey: sessionId }) }
@@ -1104,6 +1146,7 @@ export class AgentManager extends EventEmitter {
         env: scrubChildEnv(withoutKeys({ ...process.env, ...providerEnv }, unsetChildEnv)),
         ...(canUseTool ? { canUseTool } : {}),
         ...(hasMcpServers ? { mcpServers: mergedMcpServers } : {}),
+        ...(localMcp ? { strictMcpConfig: true } : {}),
         plugins: allPlugins,
         // The aliased built-ins stay enabled (an alias needs its source tool, spike §8);
         // local-only tools with no remote counterpart are removed outright.
