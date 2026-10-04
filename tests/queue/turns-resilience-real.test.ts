@@ -158,10 +158,12 @@ describe.skipIf(!realEnabled)("queue/turns hardening against real Redis", () => 
 
   test("a claimed move re-delivered after a crash between append and marker appends once", async () => {
     await ready;
-    // The session's pending job on the target label, and a mismatched claim.
+    // The session's pending job on the target label, and a mismatched claim
+    // of an OLDER message (built first: merges order by Slack ts).
+    const older = turn("s-f3b", ["claimed"], "fthree");
     await queues.enqueueTurn(turn("s-f3b", ["pending"], "fthree"), { label: "fthree" }, "f3b-pending");
     await redis.del(keys.coalesce("s-f3b"));
-    await queues.enqueueTurn(turn("s-f3b", ["claimed"], "fthree"), { label: "default" }, "f3b-claimed");
+    await queues.enqueueTurn(older, { label: "default" }, "f3b-claimed");
     await redis.set(keys.coalesce("s-f3b"), JSON.stringify({ queue: "turns.label.fthree", jobId: "f3b-pending" }));
     const claimed = (await queues.queue("turns").getJob("f3b-claimed"))!;
     expect(await queues.moveTo(claimed, "fthree", { claimed: true })).toEqual({
@@ -206,7 +208,9 @@ describe.skipIf(!realEnabled)("queue/turns hardening against real Redis", () => 
     // the held copy.
     await held!.remove();
     await redis.del(keys.jobMoved("f4-stranded"), keys.coalesce("s-f4"));
-    await queues.enqueueTurn(turn("s-f4", ["stranded2"], "ffour"), { node: "f4node" }, "f4-stranded2");
+    // A stranded job older than the indexed one (merges order by Slack ts).
+    const stranded2 = { ...turn("s-f4", ["stranded2"], "ffour"), messages: [{ ts: "1699999999.000001", user: "U1", text: "stranded2" }] };
+    await queues.enqueueTurn(stranded2, { node: "f4node" }, "f4-stranded2");
     await redis.set(keys.coalesce("s-f4"), JSON.stringify({ queue: "turns.label.ffour", jobId: "f4-indexed" }));
     const res = await queues.moveTo((await queues.queue("turns.f4node").getJob("f4-stranded2"))!, "ffour");
     expect(res).toEqual({ jobId: "f4-indexed", queue: "turns.label.ffour", coalesced: true });
@@ -243,8 +247,9 @@ describe.skipIf(!realEnabled)("queue/turns hardening against real Redis", () => 
   // re-dispatch count so the one-re-dispatch bound is not reset.
   test("a re-dispatch coalesced into a pending job runs first and keeps relabelAttempts", async () => {
     await ready;
-    await queues.enqueueTurn(turn("s-rdco", ["m2"], "rdco"), { label: "rdco" }, "rdco-pending");
+    // The failed turn's message was sent first (merges order by Slack ts).
     const failed = { ...turn("s-rdco", ["m1"], "rdco"), relabelAttempts: 1 };
+    await queues.enqueueTurn(turn("s-rdco", ["m2"], "rdco"), { label: "rdco" }, "rdco-pending");
     const res = await queues.redispatch("rdco-failed", failed, "rdco", "rdco-new");
     expect(res).toEqual({ jobId: "rdco-pending", queue: "turns.label.rdco", coalesced: true });
     const j = (await queues.queue("turns.label.rdco").getJob("rdco-pending"))!;
@@ -254,8 +259,8 @@ describe.skipIf(!realEnabled)("queue/turns hardening against real Redis", () => 
     await redis.del(keys.coalesce("s-rdco"));
 
     // The same when the pending job sits on another label and is relocated.
-    await queues.enqueueTurn(turn("s-rdrl", ["n2"], "rdold"), { label: "rdold" }, "rdrl-pending");
     const failed2 = { ...turn("s-rdrl", ["n1"], "rdnew"), relabelAttempts: 1 };
+    await queues.enqueueTurn(turn("s-rdrl", ["n2"], "rdold"), { label: "rdold" }, "rdrl-pending");
     const res2 = await queues.redispatch("rdrl-failed", failed2, "rdnew", "rdrl-new");
     expect(res2).toEqual({ jobId: "rdrl-new", queue: "turns.label.rdnew", coalesced: true });
     const k = (await queues.queue("turns.label.rdnew").getJob("rdrl-new"))!;
@@ -263,5 +268,24 @@ describe.skipIf(!realEnabled)("queue/turns hardening against real Redis", () => 
     expect((k.data as TurnJob).relabelAttempts).toBe(1);
     await k.remove();
     await redis.del(keys.coalesce("s-rdrl"));
+  });
+
+  test("mergesFirst orders by the earliest Slack ts; the caller's hint decides only when the ts cannot", async () => {
+    await ready;
+    const { mergesFirst } = await import("../../src/queue/turns");
+    const at = (...ts: string[]): TurnJob => ({ ...turn("s-mf", ts.map(() => "x")), messages: ts.map((t) => ({ ts: t, user: "U1", text: t })) });
+    expect(mergesFirst(at("1700000000.000200"), at("1700000000.000100"))).toBe(true);
+    expect(mergesFirst(at("1700000000.000100"), at("1700000000.000200"), true)).toBe(false);
+    // Compared exactly: these two are equal as doubles.
+    expect(mergesFirst(at("1700000000.0000002"), at("1700000000.0000001"))).toBe(true);
+    // Seconds before fraction; a short fraction is padded, not read as an integer.
+    expect(mergesFirst(at("1700000001.000001"), at("1700000000.9"))).toBe(true);
+    expect(mergesFirst(at("1700000000.000001"), at("1700000000.1"))).toBe(false);
+    // The earliest message of each job counts.
+    expect(mergesFirst(at("1700000000.000300"), at("1700000000.000400", "1700000000.000200"))).toBe(true);
+    // A tie or a non-Slack ts: the hint.
+    expect(mergesFirst(at("1700000000.000100"), at("1700000000.000100"), true)).toBe(true);
+    expect(mergesFirst(at("1700000000.000100"), at("sim-1"), true)).toBe(true);
+    expect(mergesFirst(at("1700000000.000100"), at("sim-1"))).toBe(false);
   });
 });

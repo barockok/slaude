@@ -177,6 +177,46 @@ function maxAttempts(a: TurnJob, b: TurnJob): number {
  *  same Slack message, so its ts, author and text all match. */
 const msgKey = (m: TurnMessage): string => `${m.ts}\u0000${m.user}\u0000${m.text}`;
 
+/** A Slack ts (`1700000000.000100`) as a comparable [seconds, nanos] pair;
+ *  null for anything else. Compared exactly: a double loses the last digits. */
+function tsOrder(ts: string): [bigint, number] | null {
+  const m = /^(\d+)(?:\.(\d{1,9}))?$/.exec(ts);
+  return m ? [BigInt(m[1]!), Number((m[2] ?? "").padEnd(9, "0"))] : null;
+}
+
+/** A job's earliest message ts, or null when it has no message or any of
+ *  its messages has no Slack ts. */
+function jobBirth(job: TurnJob): [bigint, number] | null {
+  let min: [bigint, number] | null = null;
+  for (const m of job.messages) {
+    const t = tsOrder(m.ts);
+    if (!t) return null;
+    if (!min || t[0] < min[0] || (t[0] === min[0] && t[1] < min[1])) min = t;
+  }
+  return min;
+}
+
+/**
+ * Whether `incoming`'s messages go BEFORE `pending`'s when the two jobs are
+ * merged (review U10b-R1/R2): the job whose earliest message is older goes
+ * first, whichever of the two reached the merge first. A rescued, moved or
+ * re-dispatched turn can reach it after a newer job of its session did (the
+ * coalesce index lost, two dead nodes reaped in either order), so the order
+ * of arrival is not the order the messages were sent in. Ordered by Slack ts,
+ * not `enqueuedAt`: a re-dispatch restamps enqueuedAt, and replicas' clocks
+ * differ. `hint` (the caller's own knowledge) decides only when the two are
+ * not comparable: a tie, or a message without a Slack ts.
+ */
+export function mergesFirst(pending: TurnJob, incoming: TurnJob, hint = false): boolean {
+  const a = jobBirth(incoming);
+  const b = jobBirth(pending);
+  if (a && b) {
+    if (a[0] !== b[0]) return a[0] < b[0];
+    if (a[1] !== b[1]) return a[1] < b[1];
+  }
+  return hint;
+}
+
 /** `extra` without the messages `base` already holds (review F3). */
 export function newMessages(base: readonly TurnMessage[], extra: readonly TurnMessage[]): TurnMessage[] {
   const have = new Set(base.map(msgKey));
@@ -299,8 +339,9 @@ export class TurnQueues {
    * the job it rides on (token-refresh binding). Ignored when the messages
    * coalesce into an existing pending job.
    *
-   * `first`: these messages are OLDER than the pending job's (a re-dispatch
-   * of a failed turn), so a coalesce puts them before its messages, not after.
+   * A coalesce orders the two jobs' messages by Slack ts (mergesFirst);
+   * `first` says these messages are OLDER than the pending job's (a
+   * re-dispatch of a failed turn) for when the ts cannot tell.
    */
   async enqueueTurn(
     job: TurnJob,
@@ -327,11 +368,12 @@ export class TurnQueues {
    * With `want`, a pending job on a different queue is relocated there first
    * (#relocate) instead of appended in place.
    *
-   * `first`: `job`'s messages are older than the pending job's (a moved or
-   * re-dispatched turn; review U10b-A/B) and go BEFORE them, so the session's
-   * messages still run in the order they were sent. Either way the merged job
-   * keeps the larger relabelAttempts of the two, so merging a re-dispatched
-   * turn never resets the one-re-dispatch bound.
+   * The older job's messages go first (mergesFirst, by Slack ts; `first` is
+   * the caller's hint for when the ts cannot tell: a moved or re-dispatched
+   * turn; review U10b-A/B/R1), so the session's messages still run in the
+   * order they were sent. Either way the merged job keeps the larger
+   * relabelAttempts of the two, so merging a re-dispatched turn never resets
+   * the one-re-dispatch bound.
    */
   async #tryAppend(
     ckey: string,
@@ -369,7 +411,7 @@ export class TurnQueues {
     }
     await pending.updateData({
       ...prev,
-      messages: opts.first ? [...fresh, ...prev.messages] : [...prev.messages, ...fresh],
+      messages: mergesFirst(prev, job, opts.first) ? [...fresh, ...prev.messages] : [...prev.messages, ...fresh],
       enqueuedAt: Math.min(prev.enqueuedAt ?? job.enqueuedAt, job.enqueuedAt),
       ...(attempts > 0 ? { relabelAttempts: attempts } : {}),
       // Keep the ORIGINAL job's token: its `job` claim must keep matching the
@@ -410,7 +452,7 @@ export class TurnQueues {
     const attempts = maxAttempts(prev, job);
     const merged: TurnJob = {
       ...job,
-      messages: opts.first
+      messages: mergesFirst(prev, job, opts.first)
         ? [...job.messages, ...newMessages(job.messages, prev.messages)]
         : [...prev.messages, ...newMessages(prev.messages, job.messages)],
       enqueuedAt: Math.min(prev.enqueuedAt ?? job.enqueuedAt, job.enqueuedAt),
@@ -520,9 +562,9 @@ export class TurnQueues {
    *      marker at it;
    *   2. take `job` off its queue atomically (refused when a worker holds it:
    *      drop the copy, its worker runs it);
-   *   3. put the messages BEFORE the indexed job's (they are older: the
-   *      index moves on to a newer job only once this one was claimed or
-   *      parked; review U10b-A) and drop the held copy, or, when that job was
+   *   3. merge the messages into the indexed job, the older job's first
+   *      (mergesFirst; review U10b-A/R2: with the index lost, the indexed job
+   *      can be the older one) and drop the held copy, or, when that job was
    *      claimed meanwhile, promote the copy instead.
    *
    * If `job`'s turn already ran (turn-done, read in the same atomic step as
@@ -601,9 +643,9 @@ export class TurnQueues {
     const from = job.queueName;
     const id = String(job.id);
     if (from === target) return { jobId: id, queue: target, coalesced: false };
-    const data = job.data as TurnJob;
-    const ckey = this.keys.coalesce(data.sessionId);
-    const lockKey = this.keys.coalesceLock(data.sessionId);
+    const { sessionId } = job.data as TurnJob;
+    const ckey = this.keys.coalesce(sessionId);
+    const lockKey = this.keys.coalesceLock(sessionId);
     const lockOwner = randomUUID();
     await this.#acquireAppendLock(lockKey, lockOwner);
     try {
@@ -613,13 +655,15 @@ export class TurnQueues {
         await this.#markMoved(id, { queue: target, jobId: id });
         return { jobId: id, queue: target, coalesced: false };
       }
+      const data = job.data as TurnJob;
       if (opts.claimed) {
         // The original stays locked by the caller, so the index cannot point
         // at it usefully; append to another pending job if there is one.
         const raw = await this.#connection.get(ckey);
         const ref = raw ? (() => { try { return JSON.parse(raw) as MovedRef; } catch { return null; } })() : null;
         if (ref && !(ref.jobId === id && ref.queue === from)) {
-          // Its messages are older than the pending job's: they go first.
+          // Its messages are normally older than the pending job's: the hint
+          // for when their ts cannot tell (mergesFirst).
           const appended = await this.#tryAppend(ckey, data, undefined, { first: true });
           if (appended) {
             await this.#markMoved(id, { queue: appended.queue, jobId: appended.jobId });
@@ -659,7 +703,8 @@ export class TurnQueues {
   async redispatch(failedJobId: string, job: TurnJob, label: string, newJobId: string): Promise<EnqueueResult | null> {
     const won = await this.#connection.set(this.keys.redispatch(failedJobId), newJobId, "PX", REDISPATCH_TTL_MS, "NX");
     if (won !== "OK") return null;
-    // The failed turn's messages are older than any pending job's: first.
+    // The failed turn's messages are normally older than any pending job's:
+    // the hint for when their ts cannot tell (mergesFirst).
     const res = await this.enqueueTurn(job, { label }, newJobId, { first: true });
     await this.#markMoved(failedJobId, { queue: res.queue, jobId: res.jobId });
     return res;

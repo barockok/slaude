@@ -208,6 +208,37 @@ describe.skipIf(!realEnabled)("queue/reaper rescues active jobs of dead nodes (r
     await redis.del(keys.coalesce("s-order"));
   });
 
+  const labelRuns = (): string[][] => {
+    const ran: string[][] = [];
+    worker("turns.label.engineering", async (job) => {
+      ran.push((job.data as TurnJob).messages.map((m) => m.text));
+    });
+    return ran;
+  };
+
+  // Review U10b-R2: with the coalesce index lost, the first move points it at
+  // the OLDER job; a newer job moved later used to be put ahead of it.
+  test("two dead nodes, coalesce index lost: the older job's messages run before the newer one's", async () => {
+    await ready;
+    await registry.nodeUp("dead-x", ["engineering"]);
+    await queues.enqueueTurn(turn("s-lost", "older", "engineering"), { node: "dead-x" }, "lost-x");
+    await redis.del(keys.coalesce("s-lost"));
+    await queues.enqueueTurn(turn("s-lost", "newer", "engineering"), { node: "dead-y" }, "lost-y");
+    await redis.del(keys.coalesce("s-lost"));
+    // dead-x is reaped first (dead-y is not known yet), so the index points at
+    // the older job on the label queue when the newer one is moved.
+    await until(async () => !(await registry.nodeAlive("dead-x")), 2000);
+    expect((await reaper.reapDeadNodes()).jobsMoved).toBe(1);
+    await registry.nodeUp("dead-y", ["engineering"]);
+    await until(async () => !(await registry.nodeAlive("dead-y")), 2000);
+    expect((await reaper.reapDeadNodes()).jobsMoved).toBe(1);
+    const ran = labelRuns();
+    await until(() => ran.flat().length >= 2, 5000);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(ran.flat()).toEqual(["older", "newer"]);
+    await redis.del(keys.coalesce("s-lost"));
+  });
+
   test("waiting jobs of a dead node go to their own label's queue, not to turns", async () => {
     await ready;
     await registry.nodeUp("dead-d", ["finance"]);
