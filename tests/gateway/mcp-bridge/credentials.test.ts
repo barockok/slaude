@@ -68,7 +68,7 @@ const claims = (runAs: string | undefined, extra: Partial<JobClaims> = {}): JobC
 
 let grants: { refreshToken: string }[] = [];
 let grantImpl: (p: { refreshToken: string }) => Promise<{ clientId: string; accessToken: string; refreshToken?: string; expiresIn?: number }>;
-let cards: { server: string; scope: string; session: string }[] = [];
+let cards: { server: string; scope: string; session: string; reason: string }[] = [];
 let bridge: McpBridge;
 
 function newBridge(): McpBridge {
@@ -84,7 +84,7 @@ function newBridge(): McpBridge {
     }),
     policy: { allowLoopback: true, allowedHosts: [], internalHosts: [] },
     limits: () => ({ timeoutMs: 5000, ownerConcurrency: 4, maxRequestBytes: 1 << 20, maxResultBytes: 1 << 20 }),
-    onNeedsAuth: (c, server, scope) => void cards.push({ server, scope, session: c.session }),
+    onNeedsAuth: (c, server, scope, reason) => void cards.push({ server, scope, session: c.session, reason }),
   });
 }
 
@@ -170,7 +170,7 @@ describe("runAs = user, private server (privateServices)", () => {
     const r = await bridge.call(claims(`user:${NOGRANT}`), "privsvc", "whoami", {});
     expect(r).toEqual({ content: [{ type: "text", text: connectText("privsvc") }], isError: true });
     expect(up.seen.length).toBe(before);
-    expect(cards).toEqual([{ server: "privsvc", scope: "initiator", session: "S1" }]);
+    expect(cards).toEqual([{ server: "privsvc", scope: "initiator", session: "S1", reason: "connect" }]);
   });
 
   test("an unbound user gets 'connect S' although the agent holds a grant", async () => {
@@ -250,7 +250,7 @@ describe("refresh and re-authorisation", () => {
       expect(JSON.stringify(r)).not.toContain(LEAKY_BODY);
     }
     // Once per (session, server) per window.
-    expect(cards).toEqual([{ server: "example", scope: "global", session: "S1" }]);
+    expect(cards).toEqual([{ server: "example", scope: "global", session: "S1", reason: "reauth" }]);
   });
 
   test("a refreshed token the server still refuses => no second refresh, fixed text", async () => {

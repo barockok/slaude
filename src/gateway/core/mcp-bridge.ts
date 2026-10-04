@@ -325,7 +325,7 @@ export interface McpBridgeDeps {
   policy?: OutboundPolicyOptions;
   limits?: () => BridgeLimits;
   /** Post the connect card in the claims' thread (rate-limited here). */
-  onNeedsAuth?(claims: JobClaims, server: string, scope: "initiator" | "global"): Promise<void> | void;
+  onNeedsAuth?(claims: JobClaims, server: string, scope: "initiator" | "global", reason: "connect" | "reauth"): Promise<void> | void;
   /** How long one (session, server) waits between connect cards. Default 10 min. */
   cardWindowMs?: number;
   /** Most pooled upstream sessions kept open. Default 256. */
@@ -378,7 +378,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
     return { cfg, isPrivate: runAs?.kind === "user" && mcp.privateServices.includes(server) };
   }
 
-  function maybeCard(claims: JobClaims, server: string): void {
+  function maybeCard(claims: JobClaims, server: string, reason: "connect" | "reauth"): void {
     if (!deps.onNeedsAuth) return;
     const k = `${claims.session}\u0000${server}`;
     const last = lastCard.get(k);
@@ -386,7 +386,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
     lastCard.set(k, now());
     const scope = parseRunAs(claims.runAs)?.kind === "user" ? "initiator" : "global";
     void Promise.resolve()
-      .then(() => deps.onNeedsAuth!(claims, server, scope))
+      .then(() => deps.onNeedsAuth!(claims, server, scope, reason))
       .catch((e) => console.warn(`[mcp-bridge] connect card failed server=${server} error=${e instanceof Error ? e.name : typeof e}`));
   }
 
@@ -511,7 +511,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
               continue;
             }
           }
-          maybeCard(claims, server);
+          maybeCard(claims, server, "reauth");
           return { ok: false, text: reauthText(server) };
         }
         return { ok: false, text: describeFailure(e, server, timeoutMs, signal) };
@@ -554,7 +554,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
       const { cfg, isPrivate } = resolveServer(claims, server);
       const cred = await chooseCredential(claims, server, cfg, isPrivate, credDeps);
       if (cred.kind === "connect") {
-        maybeCard(claims, server);
+        maybeCard(claims, server, "connect");
         return { tools: [], instructions: connectText(server), unavailable: true };
       }
       const timeoutMs = effectiveTimeout(cfg);
@@ -588,7 +588,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
       const { cfg, isPrivate } = resolveServer(claims, server);
       const cred = await chooseCredential(claims, server, cfg, isPrivate, credDeps);
       if (cred.kind === "connect") {
-        maybeCard(claims, server);
+        maybeCard(claims, server, "connect");
         return errResult(connectText(server));
       }
       const timeoutMs = effectiveTimeout(cfg);
