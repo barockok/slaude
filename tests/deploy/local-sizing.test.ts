@@ -3,7 +3,9 @@
  * node size and the provisional Docker VM floor are written down.
  */
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parse } from "yaml";
 
 const dir = new URL("../../deploy/k8s-local/", import.meta.url).pathname;
@@ -21,6 +23,9 @@ const sizing = Object.fromEntries(
   LOCAL_VM_FLOOR_MEMORY_MB: number;
   LOCAL_SYSTEM_RESERVE_MILLICPU: number;
   LOCAL_SYSTEM_RESERVE_MEMORY_MB: number;
+  LOCAL_NODE_BASE_MB: number;
+  LOCAL_NODE_SESSION_MB: number;
+  LOCAL_NODE_WARM_SESSIONS: number;
 };
 
 const kustomization = parse(readFileSync(`${dir}kustomization.yaml`, "utf8")) as any;
@@ -43,6 +48,33 @@ test("summed limits at the pinned replica counts fit the node, minus its system 
     expect(lim.memory, `${name} must set a memory limit`).toBeDefined();
     cpu += n * milli(String(lim.cpu));
     mem += n * mb(lim.memory);
+  }
+  expect(cpu).toBeLessThanOrEqual(sizing.LOCAL_NODE_CPUS * 1000 - sizing.LOCAL_SYSTEM_RESERVE_MILLICPU);
+  expect(mem).toBeLessThanOrEqual(sizing.LOCAL_NODE_MEMORY_MB - sizing.LOCAL_SYSTEM_RESERVE_MEMORY_MB);
+});
+
+test("a node pod's limit covers bun plus the documented number of warm sessions", () => {
+  const need = sizing.LOCAL_NODE_BASE_MB + sizing.LOCAL_NODE_WARM_SESSIONS * sizing.LOCAL_NODE_SESSION_MB;
+  expect(mb(container("slaude-node").resources.limits.memory)).toBeGreaterThanOrEqual(need);
+});
+
+// Keycloak and mock-mcp are optional add-ons the documented flow deploys. Their limits are
+// overcommitted by design (sizing.env says so); their REQUESTS must fit with everything else.
+test("requests fit the node with the Keycloak and mock-mcp add-ons at the HPA maximum", () => {
+  const req = (file: string) => {
+    const d = readFileSync(`${dir}${file}`, "utf8").split(/^---$/m).map((x) => parse(x)).find((x) => x?.kind === "Deployment");
+    return d.spec.template.spec.containers[0].resources.requests;
+  };
+  let cpu = 0;
+  let mem = 0;
+  const atMax = { "slaude-gateway": 2, "slaude-node": 3, "dev-postgres": 1, "dev-redis": 1 } as Record<string, number>;
+  for (const [name, n] of Object.entries(atMax)) {
+    cpu += n * milli(String(container(name).resources.requests.cpu));
+    mem += n * mb(container(name).resources.requests.memory);
+  }
+  for (const f of ["keycloak.yaml", "mock-mcp/mock-mcp.yaml"]) {
+    cpu += milli(String(req(f).cpu));
+    mem += mb(req(f).memory);
   }
   expect(cpu).toBeLessThanOrEqual(sizing.LOCAL_NODE_CPUS * 1000 - sizing.LOCAL_SYSTEM_RESERVE_MILLICPU);
   expect(mem).toBeLessThanOrEqual(sizing.LOCAL_NODE_MEMORY_MB - sizing.LOCAL_SYSTEM_RESERVE_MEMORY_MB);
@@ -101,36 +133,33 @@ test("both dev datastores carry a readiness probe, and Postgres probes over TCP"
 
 const haveKubectl = Bun.spawnSync(["kubectl", "version", "--client"]).exitCode === 0;
 
-// The generated env files are gitignored; stand-ins are written only when missing and removed after.
+// Rendered from a temporary copy of the two directories the overlay reads, so the checkout never
+// receives a generated env file.
 function render(model: string): string {
-  const files = ["secrets.env", "provider.env", "deploy.env", "model.env"];
-  const made: string[] = [];
-  for (const f of files) {
-    if (f === "model.env" || !existsSync(dir + f)) {
-      if (f !== "model.env") made.push(f);
-      writeFileSync(dir + f, f === "model.env" ? model : `PLACEHOLDER_${f.replace(".env", "").toUpperCase()}=x\n`);
-    }
-  }
+  const tmp = mkdtempSync(join(tmpdir(), "local-render-"));
   try {
-    const r = Bun.spawnSync(["kubectl", "kustomize", "--load-restrictor", "LoadRestrictionsNone", dir]);
+    cpSync(dir, join(tmp, "deploy/k8s-local"), { recursive: true });
+    cpSync(`${dir}../k8s-scale`, join(tmp, "deploy/k8s-scale"), { recursive: true });
+    const local = join(tmp, "deploy/k8s-local/");
+    for (const [f, text] of [
+      ["secrets.env", "PLACEHOLDER_SECRET=x\n"],
+      ["provider.env", "PLACEHOLDER_PROVIDER=x\n"],
+      ["deploy.env", "PLACEHOLDER_DEPLOY=x\n"],
+      ["model.env", model],
+    ] as const)
+      writeFileSync(local + f, text);
+    const r = Bun.spawnSync(["kubectl", "kustomize", "--load-restrictor", "LoadRestrictionsNone", local]);
     expect(r.stderr.toString()).toBe("");
     return r.stdout.toString();
   } finally {
-    for (const f of made) rmSync(dir + f, { force: true });
+    rmSync(tmp, { recursive: true, force: true });
   }
 }
 
 test.skipIf(!haveKubectl)("model.env merges into the base ConfigMap: empty keeps the default, a value overrides it", () => {
-  const hadModelEnv = existsSync(dir + "model.env");
-  const saved = hadModelEnv ? readFileSync(dir + "model.env", "utf8") : "";
-  try {
-    expect(render("")).toMatch(/SLAUDE_MODEL: claude-sonnet-4-6/);
-    const out = render("SLAUDE_MODEL=provider/some-model\n");
-    expect(out).toMatch(/SLAUDE_MODEL: provider\/some-model/);
-    // merged, not replaced: the rest of the base ConfigMap and the overlay's patch survive
-    expect(out).toMatch(/SLAUDE_NODE_CONCURRENCY: "2"/);
-  } finally {
-    if (hadModelEnv) writeFileSync(dir + "model.env", saved);
-    else rmSync(dir + "model.env", { force: true });
-  }
+  expect(render("")).toMatch(/SLAUDE_MODEL: claude-sonnet-4-6/);
+  const out = render("SLAUDE_MODEL=provider/some-model\n");
+  expect(out).toMatch(/SLAUDE_MODEL: provider\/some-model/);
+  // merged, not replaced: the rest of the base ConfigMap and the overlay's patch survive
+  expect(out).toMatch(/SLAUDE_NODE_CONCURRENCY: "2"/);
 });

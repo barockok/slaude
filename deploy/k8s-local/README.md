@@ -40,6 +40,15 @@ nodes, Postgres and Redis sum to less than the node, minus a system reserve.
 `tests/deploy/local-sizing.test.ts` fails when the two disagree, so change
 them together.
 
+Two things about those numbers, both provisional until measured. First, a node
+pod holds bun plus one `claude` CLI child per warm session (about 150-200 MB
+each), so its limit is 896 Mi: 200 + 3 x 200 = 800 MB for three warm sessions.
+The sum is then 2 x 448 (gateway) + 2 x 896 (node) + 240 (Postgres) + 64 (Redis)
+= 2992 MB, against 3500 - 500 = 3000 MB. Second, Keycloak (`panel.sh`) and
+mock-mcp are optional add-ons left out of that sum: their limits (1 Gi, 256 Mi)
+would take it to about 4250 MB, so limits are overcommitted by design when they
+run, and what must fit is requests (2496 MB with both and three nodes).
+
 ## Model credentials
 
 The cluster boots and passes every HA check with **no credentials at all**.

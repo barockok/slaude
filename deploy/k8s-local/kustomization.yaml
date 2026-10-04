@@ -125,7 +125,7 @@ patches:
                         key: SLAUDE_DEPLOY_TOKEN
                 resources:
                   requests: { cpu: 100m, memory: 256Mi }
-                  limits: { cpu: 400m, memory: 512Mi }
+                  limits: { cpu: 400m, memory: 448Mi }
                 # Probe values for a loaded laptop, merged over the base probes (httpGet and
                 # periods stay the base's): a 1 s timeout and 3 failures kill a pod
                 # that is merely busy, and /readyz queries Postgres on the event
@@ -156,7 +156,7 @@ patches:
                 imagePullPolicy: Never
                 resources:
                   requests: { cpu: 250m, memory: 384Mi }
-                  limits: { cpu: 700m, memory: 768Mi }
+                  limits: { cpu: 700m, memory: 896Mi }
                 # Probe values for a loaded laptop, merged over the base probes (httpGet and
                 # periods stay the base's): a 1 s timeout and 3 failures kill a pod
                 # that is merely busy, and /readyz queries Postgres on the event
@@ -183,7 +183,7 @@ patches:
               - name: postgres
                 resources:
                   requests: { cpu: 100m, memory: 192Mi }
-                  limits: { cpu: 400m, memory: 320Mi }
+                  limits: { cpu: 400m, memory: 240Mi }
 
   - patch: |-
       apiVersion: apps/v1
@@ -198,7 +198,7 @@ patches:
               - name: redis
                 resources:
                   requests: { cpu: 50m, memory: 64Mi }
-                  limits: { cpu: 200m, memory: 96Mi }
+                  limits: { cpu: 200m, memory: 64Mi }
 
   # KEDA is not installed locally; keep only the CPU fallback from the same file.
   - patch: |-
