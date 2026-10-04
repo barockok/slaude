@@ -10,6 +10,8 @@ import {
   providerView,
   secretRefView,
   soulView,
+  type McpType,
+  type McpVia,
 } from "../../src/gateway/panel/persona-view";
 
 const SECRETS = [
@@ -31,43 +33,54 @@ const MCP = {
 };
 
 describe("mcpServersView", () => {
-  test("names, transport, route and hostname only, sorted by name", () => {
-    const view = mcpServersView(MCP, () => false);
-    expect(view).toEqual([
-      { name: "docs", via: "bridge", type: "http", host: "docs.example.com", oauth: false },
-      { name: "implicit", via: "stdio", type: "stdio", host: null, oauth: false },
-      { name: "legacy", via: "none", type: "sse", host: "legacy.example.com", oauth: false },
-      { name: "local", via: "stdio", type: "stdio", host: null, oauth: false },
-      { name: "odd", via: "none", type: "other", host: null, oauth: false },
+  const none = () => null;
+  const gw = { role: "gateway" as const, agentExpiry: none };
+  const row = (name: string, via: McpVia, type: McpType, host: string | null, expiresAt: number | null = null) =>
+    ({ name, via, type, host, oauth: expiresAt !== null, expiresAt });
+
+  test("gateway role: http is bridged; stdio, sse and unknown types are not served by the gateway", () => {
+    expect(mcpServersView(MCP, gw)).toEqual([
+      row("docs", "bridge", "http", "docs.example.com"),
+      // A node mounts only its own manifest's stdio servers, never a persona's.
+      row("implicit", "none", "stdio", null),
+      row("legacy", "none", "sse", "legacy.example.com"),
+      row("local", "none", "stdio", null),
+      row("odd", "none", "other", null),
     ]);
   });
 
-  test("no header, env, argument, query, userinfo or fragment survives", () => {
-    const text = JSON.stringify(mcpServersView(MCP, () => true));
-    for (const s of SECRETS) expect(text).not.toContain(s);
-    expect(text).not.toContain("/opt/tools");
-    expect(text).not.toContain("8443");
+  test("mono role: a persona's stdio servers run in the gateway process", () => {
+    const view = mcpServersView(MCP, { role: "mono", agentExpiry: none });
+    expect(view.find((s) => s.name === "local")!.via).toBe("stdio");
+    expect(view.find((s) => s.name === "implicit")!.via).toBe("stdio");
   });
 
-  test("oauth asks about the bridged server's exact config, and only for bridged servers", () => {
+  test("no header, env, argument, query, userinfo or fragment survives", () => {
+    for (const role of ["gateway", "mono"] as const) {
+      const text = JSON.stringify(mcpServersView(MCP, { role, agentExpiry: () => 1 }));
+      for (const s of SECRETS) expect(text).not.toContain(s);
+      expect(text).not.toContain("/opt/tools");
+      expect(text).not.toContain("8443");
+    }
+  });
+
+  test("the agent credential is looked up by the bridged server's exact config; its expiry is reported", () => {
     const asked: Array<[string, unknown]> = [];
-    const view = mcpServersView(MCP, (name, cfg) => { asked.push([name, cfg]); return name === "docs"; });
+    const view = mcpServersView(MCP, {
+      role: "gateway",
+      agentExpiry: (name, cfg) => { asked.push([name, cfg]); return name === "docs" ? 1234 : null; },
+    });
     expect(asked).toEqual([["docs", { type: "http", url: MCP.mcpServers.docs.url, headers: MCP.mcpServers.docs.headers }]]);
-    expect(view.find((s) => s.name === "docs")!.oauth).toBe(true);
+    expect(view.find((s) => s.name === "docs")).toMatchObject({ oauth: true, expiresAt: 1234 });
   });
 
   test("absent, malformed or empty config is an empty list", () => {
     for (const v of [null, undefined, "x", [], {}, { mcpServers: null }, { mcpServers: [] }]) {
-      expect(mcpServersView(v, () => true)).toEqual([]);
+      expect(mcpServersView(v, gw)).toEqual([]);
     }
     // An unparseable URL yields no host, never the raw string.
-    expect(mcpServersView({ mcpServers: { s: { type: "sse", url: "not a url QS-SECRET-1" } } }, () => true)).toEqual([
-      { name: "s", via: "none", type: "sse", host: null, oauth: false },
-    ]);
-    expect(mcpServersView({ mcpServers: { a: null, b: "x" } }, () => true)).toEqual([
-      { name: "a", via: "none", type: "other", host: null, oauth: false },
-      { name: "b", via: "none", type: "other", host: null, oauth: false },
-    ]);
+    expect(mcpServersView({ mcpServers: { s: { type: "sse", url: "not a url QS-SECRET-1" } } }, gw)).toEqual([row("s", "none", "sse", null)]);
+    expect(mcpServersView({ mcpServers: { a: null, b: "x" } }, gw)).toEqual([row("a", "none", "other", null), row("b", "none", "other", null)]);
   });
 });
 

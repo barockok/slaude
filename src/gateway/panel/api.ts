@@ -52,7 +52,7 @@ import { PERSONA_NAME_RE } from "../../persona/sync/payload";
 import { resolveDbConfig } from "../../db/client";
 import { assertHttpOnlyMcp, McpNotHttpOnlyError } from "../../persona/mcp-http-only";
 import { extractSoulData, SoulExtractionError } from "../../soul/extract";
-import { kbMode, kbView, mcpServersView, personaNodes, providerView, soulView, type NodeView } from "./persona-view";
+import { kbMode, kbView, mcpServersView, personaNodes, providerView, soulView, type NodeView, type PanelRole as PersonaViewRole } from "./persona-view";
 import { installedKbSourceIds } from "../../knowledge/persona-kb";
 import { discoverSkills } from "../../skills/loader";
 import { credentialExpiries } from "../../db/mcp-credentials";
@@ -154,6 +154,10 @@ export interface PanelApiDeps {
   /** Installed `kb-*` source ids, for the persona view. Default: what
    *  $SLAUDE_HOME/knowledge holds (installedKbSourceIds). */
   installedKbSources?: () => string[];
+  /** Where turns run: `gateway` (on nodes, the node queue) or `mono` (this
+   *  process). Decides how the persona view reports a persona's stdio MCP
+   *  servers. Default `gateway`. */
+  role?: PersonaViewRole;
 }
 
 export interface PanelApi {
@@ -166,6 +170,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
   const authRoutes = createAuthRoutes();
   const extractSoul = deps.extractSoul ?? ((t: string) => extractSoulData(t, { strict: true }));
   const installedKbSources = deps.installedKbSources ?? installedKbSourceIds;
+  const panelRole = deps.role ?? "gateway";
 
   async function handleEvents(req: Request, sessionId: string, expMs: number): Promise<Response> {
     if (!deps.pubsub) return json(503, { error: "event stream unavailable (no Redis)" });
@@ -461,7 +466,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
             model: { git: d.model, live: p.model, overridden: overridden("model") },
             runsOn: p.runsOn ?? null,
             provider: providerView(p.provider),
-            mcp: mcpServersView(p.mcp, (server, cfg) => oauthKey(server, cfg) in held),
+            mcp: mcpServersView(p.mcp, { role: panelRole, agentExpiry: (server, cfg) => held[oauthKey(server, cfg)] ?? null }),
             kb: kbView(p.kbSources, installedKbSources()),
             skills: discoverSkills(name)
               .map((s) => ({ slug: s.slug, name: s.name, source: s.source }))

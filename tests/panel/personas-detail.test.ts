@@ -67,9 +67,11 @@ const registry = {
   },
 } as any;
 
-const mk = (o: { registry?: any; installed?: string[] } = {}) =>
+const DOCS_EXPIRY = Date.parse("2100-01-01T00:00:00Z");
+const mk = (o: { registry?: any; installed?: string[]; role?: "gateway" | "mono" } = {}) =>
   createPanelApi({
     registry: o.registry === undefined ? registry : o.registry,
+    role: o.role ?? "gateway",
     pubsub: null, panelLock: null, chat: async () => {},
     installedKbSources: () => o.installed ?? ["kb-handbook", "kb-runbooks"],
   });
@@ -131,7 +133,7 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("GET /panel/api/personas/:name",
     // The agent holds an OAuth credential for `docs` (keyed on its exact config).
     await putCredential({ kind: "agent", tenant: "default", persona: "ana" }, oauthKey("docs", DOCS), {
       serverName: "docs", serverUrl: DOCS.url, clientId: "cid", clientSecret: S.clientSecret,
-      accessToken: S.access, refreshToken: S.refresh, expiresAt: Date.now() + 3_600_000,
+      accessToken: S.access, refreshToken: S.refresh, expiresAt: DOCS_EXPIRY,
     });
   };
 
@@ -150,10 +152,10 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("GET /panel/api/personas/:name",
       runsOn: "engineering",
       provider: { apiKey: "vault://kv/agents/ana#api_key", authToken: "none", oauthToken: "none", baseUrl: "https://llm.example.com/v1" },
       mcp: [
-        { name: "docs", via: "bridge", type: "http", host: "docs.example.com", oauth: true },
-        { name: "legacy", via: "none", type: "sse", host: "legacy.example.com", oauth: false },
-        { name: "local", via: "stdio", type: "stdio", host: null, oauth: false },
-        { name: "tracker", via: "bridge", type: "http", host: "tracker.example.com", oauth: false },
+        { name: "docs", via: "bridge", type: "http", host: "docs.example.com", oauth: true, expiresAt: DOCS_EXPIRY },
+        { name: "legacy", via: "none", type: "sse", host: "legacy.example.com", oauth: false, expiresAt: null },
+        { name: "local", via: "none", type: "stdio", host: null, oauth: false, expiresAt: null },
+        { name: "tracker", via: "bridge", type: "http", host: "tracker.example.com", oauth: false, expiresAt: null },
       ],
       kb: { mode: "list", sources: [{ id: "kb-runbooks", installed: true }, { id: "kb-missing", installed: false }] },
       skills: [],
@@ -198,6 +200,14 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("GET /panel/api/personas/:name",
     expect(bodies).not.toContain("/opt/tools");
     expect(bodies).not.toContain("https://docs.example.com/mcp");
     expect(JSON.parse((await read("/panel/api/personas/ana")).text).provider.authToken).toBe("stored");
+  });
+
+  test("in mono a persona's stdio server runs in the gateway process; in the gateway role it is not served", async () => {
+    await seedAna();
+    const via = async (role: "gateway" | "mono") =>
+      JSON.parse((await read("/panel/api/personas/ana", operator, mk({ role }))).text).mcp.find((s: any) => s.name === "local").via;
+    expect(await via("gateway")).toBe("none");
+    expect(await via("mono")).toBe("stdio");
   });
 
   test("auth: no session is 401, an unlisted identity 403, any operator role 200", async () => {

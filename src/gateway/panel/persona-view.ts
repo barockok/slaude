@@ -15,10 +15,18 @@ import { PROVIDER_SECRET_FIELDS, type PersonaProvider } from "../../persona/sync
 import { DEFAULT_LABEL } from "../../queue/keys";
 import type { Registry } from "../../queue/registry";
 
-/** How a node reaches the server: through the gateway's MCP bridge (http), as a
- *  node-local stdio server, or not at all in the gateway role (e.g. sse). */
+/** Where the persona's agent gets the server's tools:
+ *   bridge  an http server, relayed by the gateway's MCP bridge;
+ *   stdio   mono only: a persona's stdio server runs in the gateway process;
+ *   none    not served from this definition. In the gateway role a node mounts
+ *           only its own manifest's stdio and plugin servers, never a
+ *           persona's; sse and unknown types are not bridged.
+ *  `plugin` is never produced: plugin servers are node-local software the
+ *  gateway does not see. */
 export type McpVia = "bridge" | "stdio" | "none";
 export type McpType = "http" | "sse" | "stdio" | "other";
+/** `gateway`: turns run on nodes. `mono`: turns run in this process. */
+export type PanelRole = "gateway" | "mono";
 
 export interface McpServerView {
   name: string;
@@ -26,8 +34,12 @@ export interface McpServerView {
   type: McpType;
   /** Hostname only (no scheme, port, path, query or userinfo); null for stdio. */
   host: string | null;
-  /** The persona's agent identity holds an OAuth credential for this server. */
+  /** The persona's AGENT identity holds a stored OAuth credential for this
+   *  server (per-user credentials are not reported). */
   oauth: boolean;
+  /** That credential's expiry (epoch ms), not a secret; null when none. An
+   *  expired one is refreshed on use. */
+  expiresAt: number | null;
 }
 
 export type BridgedConfig = { type: "http"; url: string; headers?: Record<string, string> };
@@ -51,12 +63,15 @@ function typeOf(cfg: Record<string, unknown>): McpType {
 }
 
 /**
- * One row per server in a `{ mcpServers: { … } }` value. `agentHolds` answers
- * whether the agent holds an OAuth credential for a bridged server's exact
- * config (the credential key hashes type, URL and headers); it is asked only
- * for servers the bridge would serve.
+ * One row per server in a `{ mcpServers: { … } }` value. `agentExpiry` gives
+ * the expiry of the agent's stored OAuth credential for a bridged server's
+ * exact config (the credential key hashes type, URL and headers), or null; it
+ * is asked only for servers the bridge would serve.
  */
-export function mcpServersView(mcp: unknown, agentHolds: (name: string, cfg: BridgedConfig) => boolean): McpServerView[] {
+export function mcpServersView(
+  mcp: unknown,
+  opts: { role: PanelRole; agentExpiry: (name: string, cfg: BridgedConfig) => number | null },
+): McpServerView[] {
   if (!isObj(mcp) || !isObj(mcp.mcpServers)) return [];
   return Object.entries(mcp.mcpServers)
     .map(([name, raw]): McpServerView => {
@@ -64,14 +79,16 @@ export function mcpServersView(mcp: unknown, agentHolds: (name: string, cfg: Bri
       const type = typeOf(cfg);
       // Exactly the set oauthHttpServers (and so the bridge) serves.
       const bridged = cfg.type === "http" && typeof cfg.url === "string";
+      const expiresAt = bridged
+        ? opts.agentExpiry(name, { type: "http", url: cfg.url as string, headers: cfg.headers as Record<string, string> | undefined })
+        : null;
       return {
         name,
-        via: bridged ? "bridge" : type === "stdio" ? "stdio" : "none",
+        via: bridged ? "bridge" : type === "stdio" && opts.role === "mono" ? "stdio" : "none",
         type,
         host: type === "stdio" || type === "other" ? null : hostnameOf(cfg.url),
-        oauth: bridged
-          ? agentHolds(name, { type: "http", url: cfg.url as string, headers: cfg.headers as Record<string, string> | undefined })
-          : false,
+        oauth: expiresAt !== null,
+        expiresAt,
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));

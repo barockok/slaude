@@ -3053,6 +3053,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         onLockReleased: (sessionId) => broadcastPanelResume(sessionId),
         // A warm mono session keeps its remote tools until reloaded.
         onUnlock: (sessionId) => { agent.reload(sessionId); },
+        // The persona view says where a persona's stdio MCP servers run.
+        role: queueDispatch ? "gateway" : "mono",
         // Label status (node labels spec §4.7): only with a node queue.
         labels: queueDispatch
           ? (() => {
