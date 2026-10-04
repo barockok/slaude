@@ -14,6 +14,7 @@
  *   SLAUDE_VAULT_CACHE_TTL         seconds; default 60; 0 = no cache
  *   SLAUDE_VAULT_STALE_MAX         seconds a failed refresh may serve the last value; default 600
  *   SLAUDE_VAULT_K8S_TOKEN_PATH    service-account JWT path (default the in-pod path)
+ *   SLAUDE_VAULT_ALLOW_INSECURE    1 = development: allow http:// and token auth
  *
  * Every name starts with SLAUDE_VAULT_, which the child-env scrub strips.
  */
@@ -45,6 +46,15 @@ function trimmed(env: Env, name: string): string | undefined {
   return v ? v : undefined;
 }
 
+/** A value that goes into a header or a login body: printable ASCII, no whitespace or control characters. */
+function headerSafe(env: Env, name: string): string | undefined {
+  const v = trimmed(env, name);
+  if (v !== undefined && !/^[\x21-\x7e]+$/.test(v)) {
+    throw new VaultConfigError(`${name} must be printable ASCII with no whitespace or control characters`);
+  }
+  return v;
+}
+
 function seconds(env: Env, name: string, dflt: number): number {
   const raw = trimmed(env, name);
   if (raw === undefined) return dflt * 1000;
@@ -68,13 +78,27 @@ export function loadVaultConfig(env: Env): VaultConfig | null {
   if (url.username || url.password || url.search || url.hash || (url.pathname !== "/" && url.pathname !== "")) {
     throw new VaultConfigError("SLAUDE_VAULT_ADDR must be a bare origin (no credentials, path or query)");
   }
+  // Development only: plain http (the service-account JWT and the Vault token
+  // would cross the network in cleartext) and static-token auth.
+  const insecure = trimmed(env, "SLAUDE_VAULT_ALLOW_INSECURE") === "1";
+  if (url.protocol === "http:" && !insecure) {
+    throw new VaultConfigError(
+      "SLAUDE_VAULT_ADDR must be https; plain http is for development only (set SLAUDE_VAULT_ALLOW_INSECURE=1)",
+    );
+  }
 
   const authRaw = (trimmed(env, "SLAUDE_VAULT_AUTH") ?? "kubernetes").toLowerCase();
   if (authRaw !== "kubernetes" && authRaw !== "token") {
     throw new VaultConfigError("SLAUDE_VAULT_AUTH must be 'kubernetes' or 'token'");
   }
-  const role = trimmed(env, "SLAUDE_VAULT_ROLE");
-  const token = trimmed(env, "SLAUDE_VAULT_TOKEN");
+  if (authRaw === "token" && !insecure) {
+    throw new VaultConfigError(
+      "SLAUDE_VAULT_AUTH=token is for development only (set SLAUDE_VAULT_ALLOW_INSECURE=1)",
+    );
+  }
+  const role = headerSafe(env, "SLAUDE_VAULT_ROLE");
+  const token = headerSafe(env, "SLAUDE_VAULT_TOKEN");
+  const namespace = headerSafe(env, "SLAUDE_VAULT_NAMESPACE");
   if (authRaw === "kubernetes" && !role) {
     throw new VaultConfigError("SLAUDE_VAULT_ROLE is required for SLAUDE_VAULT_AUTH=kubernetes");
   }
@@ -118,7 +142,7 @@ export function loadVaultConfig(env: Env): VaultConfig | null {
     auth: authRaw,
     role,
     token,
-    namespace: trimmed(env, "SLAUDE_VAULT_NAMESPACE"),
+    namespace,
     caCertPath: trimmed(env, "SLAUDE_VAULT_CACERT"),
     jwtPath: trimmed(env, "SLAUDE_VAULT_K8S_TOKEN_PATH") ?? DEFAULT_K8S_JWT_PATH,
     cacheTtlMs: seconds(env, "SLAUDE_VAULT_CACHE_TTL", 60),
@@ -132,19 +156,28 @@ export function loadVaultConfig(env: Env): VaultConfig | null {
  * Refuse a Vault configuration in a role that cannot protect it (§6.2, §9).
  * `mono`: the agent child shares the process user and can read the pod's
  * service-account token, so there is no boundary. `node`: nodes hold no Vault
- * configuration and make no Vault call; they receive resolved values only.
+ * configuration and make no Vault call; they receive resolved values only, so
+ * ANY set SLAUDE_VAULT_* or VAULT_* variable on a node is refused (a stray
+ * VAULT_TOKEN would sit in every agent child's reach). The error names the
+ * variable, never its value.
  */
 export function assertVaultAllowedInRole(role: "mono" | "gateway" | "node", env: Env): void {
+  if (role === "node") {
+    const names = Object.keys(env)
+      .filter((k) => (k.startsWith("SLAUDE_VAULT_") || k.startsWith("VAULT_")) && trimmed(env, k))
+      .sort();
+    if (names.length > 0) {
+      throw new VaultConfigError(
+        `${names.join(", ")} must not be set on a node: Vault credentials are resolved by the gateway only.`,
+      );
+    }
+    return;
+  }
   if (!trimmed(env, "SLAUDE_VAULT_ADDR")) return;
   if (role === "mono") {
     throw new VaultConfigError(
       "SLAUDE_VAULT_ADDR is not supported with SLAUDE_ROLE=mono: the agent child can read the " +
         "service-account token Vault trusts. Run a gateway and nodes, or use env:// references.",
-    );
-  }
-  if (role === "node") {
-    throw new VaultConfigError(
-      "SLAUDE_VAULT_ADDR must not be set on a node: credentials are resolved by the gateway only.",
     );
   }
 }

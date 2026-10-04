@@ -48,6 +48,7 @@ describe("createSecretResolver", () => {
   function make(envOver: Record<string, string> = {}) {
     const env = {
       SLAUDE_VAULT_ADDR: fv.addr,
+      SLAUDE_VAULT_ALLOW_INSECURE: "1", // the fake Vault speaks plain http
       SLAUDE_VAULT_ROLE: "slaude-gateway",
       SLAUDE_VAULT_ALLOWED_PREFIXES: "secret/slaude/personas/{persona}",
       PERSONA_SUPPORT_URL: "https://llm.example.com",

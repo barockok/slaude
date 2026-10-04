@@ -23,6 +23,7 @@ describe.skipIf(!addr)("secrets against a real Vault (dev mode)", () => {
     const env = {
       SLAUDE_VAULT_ADDR: addr!,
       SLAUDE_VAULT_AUTH: "token",
+      SLAUDE_VAULT_ALLOW_INSECURE: "1",
       SLAUDE_VAULT_TOKEN: token,
       SLAUDE_VAULT_ALLOWED_PREFIXES: "secret/slaude/personas/{persona}",
     };

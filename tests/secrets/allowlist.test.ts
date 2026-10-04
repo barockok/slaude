@@ -122,8 +122,9 @@ describe("loadVaultConfig", () => {
   test("kubernetes auth needs a role; token auth needs a token", () => {
     const { SLAUDE_VAULT_ROLE: _, ...noRole } = base;
     expect(() => loadVaultConfig(noRole)).toThrow(/SLAUDE_VAULT_ROLE/);
-    expect(() => loadVaultConfig({ ...base, SLAUDE_VAULT_AUTH: "token" })).toThrow(/SLAUDE_VAULT_TOKEN/);
-    expect(loadVaultConfig({ ...base, SLAUDE_VAULT_AUTH: "token", SLAUDE_VAULT_TOKEN: "fake" })!.auth).toBe("token");
+    const dev = { ...base, SLAUDE_VAULT_ALLOW_INSECURE: "1" };
+    expect(() => loadVaultConfig({ ...dev, SLAUDE_VAULT_AUTH: "token" })).toThrow(/SLAUDE_VAULT_TOKEN/);
+    expect(loadVaultConfig({ ...dev, SLAUDE_VAULT_AUTH: "token", SLAUDE_VAULT_TOKEN: "fake" })!.auth).toBe("token");
     expect(() => loadVaultConfig({ ...base, SLAUDE_VAULT_AUTH: "approle" })).toThrow(/SLAUDE_VAULT_AUTH/);
   });
 
@@ -141,9 +142,40 @@ describe("loadVaultConfig", () => {
     expect(() => loadVaultConfig({ ...base, SLAUDE_VAULT_ADDR: "https://u:p@vault.example.com" })).toThrow(
       VaultConfigError,
     );
-    expect(loadVaultConfig({ ...base, SLAUDE_VAULT_ADDR: "http://127.0.0.1:8200/" })!.addr).toBe(
-      "http://127.0.0.1:8200",
+    expect(
+      loadVaultConfig({ ...base, SLAUDE_VAULT_ADDR: "http://127.0.0.1:8200/", SLAUDE_VAULT_ALLOW_INSECURE: "1" })!.addr,
+    ).toBe("http://127.0.0.1:8200");
+  });
+
+  test("plain http needs the explicit development opt-in", () => {
+    expect(() => loadVaultConfig({ ...base, SLAUDE_VAULT_ADDR: "http://vault.example.com" })).toThrow(
+      /SLAUDE_VAULT_ALLOW_INSECURE/,
     );
+    expect(() =>
+      loadVaultConfig({ ...base, SLAUDE_VAULT_ADDR: "http://vault.example.com", SLAUDE_VAULT_ALLOW_INSECURE: "0" }),
+    ).toThrow(VaultConfigError);
+  });
+
+  test("token auth (development only) needs the same opt-in", () => {
+    expect(() => loadVaultConfig({ ...base, SLAUDE_VAULT_AUTH: "token", SLAUDE_VAULT_TOKEN: "fake" })).toThrow(
+      /SLAUDE_VAULT_ALLOW_INSECURE/,
+    );
+  });
+
+  test("role, token and namespace with control characters or line breaks are refused", () => {
+    expect(() => loadVaultConfig({ ...base, SLAUDE_VAULT_ROLE: "slaude\ngateway" })).toThrow(/SLAUDE_VAULT_ROLE/);
+    expect(() =>
+      loadVaultConfig({
+        ...base,
+        SLAUDE_VAULT_AUTH: "token",
+        SLAUDE_VAULT_ALLOW_INSECURE: "1",
+        SLAUDE_VAULT_TOKEN: "fake\r\nX-Injected: 1",
+      }),
+    ).toThrow(/SLAUDE_VAULT_TOKEN/);
+    expect(() => loadVaultConfig({ ...base, SLAUDE_VAULT_NAMESPACE: "team\u0000a" })).toThrow(
+      /SLAUDE_VAULT_NAMESPACE/,
+    );
+    expect(() => loadVaultConfig({ ...base, SLAUDE_VAULT_ROLE: "slaude gateway" })).toThrow(/SLAUDE_VAULT_ROLE/);
   });
 
   test("explicit multi-segment mounts; nested mounts are ambiguous and refused", () => {
@@ -182,5 +214,13 @@ describe("assertVaultAllowedInRole", () => {
     expect(() => assertVaultAllowedInRole("node", { SLAUDE_VAULT_ADDR: "https://vault.example.com" })).toThrow(
       /node/,
     );
+  });
+
+  test("a node is refused for ANY SLAUDE_VAULT_* or VAULT_* variable, and names it", () => {
+    for (const name of ["SLAUDE_VAULT_TOKEN", "SLAUDE_VAULT_ROLE", "VAULT_TOKEN", "VAULT_ADDR"]) {
+      expect(() => assertVaultAllowedInRole("node", { [name]: "fake" })).toThrow(name);
+    }
+    expect(() => assertVaultAllowedInRole("node", { VAULT_TOKEN: "" })).not.toThrow();
+    expect(() => assertVaultAllowedInRole("node", { PERSONA_X: "fake" })).not.toThrow();
   });
 });
