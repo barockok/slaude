@@ -128,6 +128,12 @@ export interface Keys {
    *  (`{queue, jobId}` JSON), so a dispatch follower watching the old queue
    *  follows it instead of reading the move as the turn's end. */
   jobMoved(jobId: string): string;
+  /** `redispatch:<jobId>` — once-guard: the gateway replica that re-dispatched
+   *  a LABEL_MISMATCH job (node labels spec §4.6). */
+  redispatch(jobId: string): string;
+  /** `label-unserved-since` hash: label → ms since which it has had waiting
+   *  jobs and no live node (spec §4.7), written by the reaper leader. */
+  labelUnservedSince(): string;
 }
 
 export function makeKeys(prefix: string = redisPrefix()): Keys {
@@ -155,5 +161,7 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     panelHoldChannel: () => `${prefix}:panel-hold`,
     turnDone: (jobId) => `${prefix}:turn-done:${jobId}`,
     jobMoved: (jobId) => `${prefix}:job-moved:${jobId}`,
+    redispatch: (jobId) => `${prefix}:redispatch:${jobId}`,
+    labelUnservedSince: () => `${prefix}:label-unserved-since`,
   };
 }
