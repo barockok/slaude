@@ -48,6 +48,17 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("persona repository", () => {
     expect((await P.desiredPersonas(T))[0]!.provider).toBeNull();
   });
 
+  test("kbSources round-trips: null (all) and [] (none) stay distinct, a change is an update", async () => {
+    await P.applySync(T, [row("ana", { kbSources: ["kb-runbook"] }), row("bea", { kbSources: [] }), row("cy")], meta("r1", "2026-10-01T10:00:00Z"));
+    const by = async () => new Map((await P.effectivePersonas(T)).map((p) => [p.name, p.kbSources]));
+    expect(await by()).toEqual(new Map<string, string[] | null | undefined>([["ana", ["kb-runbook"]], ["bea", []], ["cy", null]]));
+    const same = await P.applySync(T, [row("ana", { kbSources: ["kb-runbook"] }), row("bea", { kbSources: [] }), row("cy")], meta("r2", "2026-10-01T11:00:00Z"));
+    expect(same.unchanged.sort()).toEqual(["ana", "bea", "cy"]);
+    const changed = await P.applySync(T, [row("ana", { kbSources: ["kb-runbook", "kb-finance"] }), row("bea"), row("cy")], meta("r3", "2026-10-01T12:00:00Z"));
+    expect(changed.updated.sort()).toEqual(["ana", "bea"]);
+    expect((await by()).get("bea")).toBeNull();
+  });
+
   test("a runtime onboard stores provider references too", async () => {
     await P.applySync(T, [row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
     await P.createRuntimePersona(T, row("bea", { origin: "runtime", provider: { authToken: "env://PERSONA_BEA_TOKEN" } }), "ops");

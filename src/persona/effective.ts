@@ -19,6 +19,10 @@ export interface DesiredPersona {
    *  only: not an override field, so a reference changes only through a sync.
    *  Absent and null both mean "this persona names no provider". */
   provider?: PersonaProvider | null;
+  /** The `kb-*` sources this persona may read (WS-C §4.1). Absent and null
+   *  both mean every installed KB; [] means none. Desired layer only, like
+   *  provider: not an override field. */
+  kbSources?: string[] | null;
   origin: "git" | "runtime";
   tombstonedAt: number | null;
 }
@@ -57,7 +61,8 @@ export function mergeEffective(desired: DesiredPersona, overrides: Override[]): 
 export function sameDesired(a: DesiredPersona, b: DesiredPersona): boolean {
   return a.slackUserId === b.slackUserId && a.userToken === b.userToken && a.model === b.model &&
     a.soulMd === b.soulMd && JSON.stringify(a.mcp) === JSON.stringify(b.mcp) &&
-    canonicalProvider(a.provider) === canonicalProvider(b.provider) && a.tombstonedAt === null;
+    canonicalProvider(a.provider) === canonicalProvider(b.provider) &&
+    JSON.stringify(a.kbSources ?? null) === JSON.stringify(b.kbSources ?? null) && a.tombstonedAt === null;
 }
 
 /** Key-order-independent form, so a row read back from JSONB compares equal. */
