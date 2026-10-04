@@ -28,6 +28,7 @@
  *   POST  /v1/jobs/:id/ack|fail       telemetry only                      (node)
  *   POST  /v1/jobs/:id/token-refresh  fresh token, same claims            (node+job within grace, label)
  *   POST  /v1/jobs/:id/token-reissue  re-mint a long-queued job's token   (node+job any age, label)
+ *   POST  /v1/tools/memory/prefetch|sync  episodic memory, run on the gateway (node+job, label)
  *   POST  /v1/tools/:server/:tool     contract-validated tool call        (node+job, label)
  */
 import {
@@ -50,6 +51,8 @@ import { executeToolCall } from "./tools";
 import type { ToolPlaneDeps } from "./tools/deps";
 import { defaultPendingSource, type PendingSource } from "./pending-source";
 import { json, methodNotAllowed, notFound, readJson } from "./http";
+import { defaultMemoryPlane, handleMemory, type MemoryPlane } from "./memory";
+import { memory as processMemory } from "../../memory";
 
 export interface V1Api {
   /** Handle a request; null when the path is not under /v1 (caller falls through). */
@@ -65,6 +68,9 @@ export interface V1Options {
   /** MCP credential refresher. Default: single-flight across replicas on Redis
    *  in the gateway role, in-process otherwise. */
   credentialRefresher?: CredentialRefresher;
+  /** Episodic memory for node turns. Default: this process's memory provider,
+   *  gated through `tools` like the KB tools; null = not served (404). */
+  memory?: MemoryPlane | null;
   /** Turn-queue lookup for token-reissue. Absent (mono) = no job is reissuable. */
   jobLookup?: JobLookup;
 }
@@ -103,9 +109,11 @@ export interface RouteDef {
 const tenantScoped = (claims: JobClaims, tenant: string): Response | null =>
   claims.tenant !== tenant ? json(403, { error: "job token is not scoped to this tenant" }) : null;
 
-/** The route table. Order matters only between patterns that overlap; none do. */
+/** The route table. Order matters only between patterns that overlap: only
+ *  "tools.memory" and "tools" do, and the narrower one comes first. */
 export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDef[] {
   const credentialRefresher = (): CredentialRefresher => opts.credentialRefresher ?? defaultCredentialRefresher();
+  const memoryPlane = opts.memory === undefined ? defaultMemoryPlane(opts.tools, processMemory) : (opts.memory ?? undefined);
   let warnedTokenlessPending = false;
   return [
     {
@@ -244,6 +252,21 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
       gate: "label",
       jobGraceSec: Number.MAX_SAFE_INTEGER,
       handle: async ({ req, seg, claims }) => handleTokenReissue(req, seg[1]!, claims!, opts.jobLookup),
+    },
+    {
+      // Must precede "tools", whose pattern also matches this path. Label-gated
+      // like every tool call: memory is persona data. Session, persona and
+      // scope come from the token, never the body.
+      name: "tools.memory",
+      methods: ["POST"],
+      pattern: ["tools", "memory", "prefetch|sync"],
+      auth: "node+job",
+      gate: "label",
+      handle: async ({ req, seg, claims }) => {
+        const body = await readJson(req);
+        if (body === null) return json(400, { error: "malformed JSON body" });
+        return handleMemory(seg[2]!, body, claims!, memoryPlane);
+      },
     },
     {
       name: "tools",
