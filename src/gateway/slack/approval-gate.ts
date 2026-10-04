@@ -105,10 +105,11 @@ export class ApprovalGate {
         const userId = (body as any).user?.id ?? "unknown";
         const stale = async () => {
           try {
+            // Ephemeral note only: the decided card is the visible record.
             await respond({
-              replace_original: true,
+              response_type: "ephemeral",
+              replace_original: false,
               text: `:lock: approval already decided`,
-              blocks: [],
             });
           } catch {}
         };

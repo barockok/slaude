@@ -232,13 +232,13 @@ export class PermissionGate {
         const status = decision === "deny" ? ("denied" as const) : ("approved" as const);
         const stale = async () => {
           // Already decided (duplicate click, expiry, abort, or another
-          // replica won). Make sure the buttons go away by replacing the
-          // message via the click's response_url.
+          // replica won). Answer ephemerally and leave the card alone: the
+          // first decision's rewrite is the only visible record.
           try {
             await respond({
-              replace_original: true,
+              response_type: "ephemeral",
+              replace_original: false,
               text: `:lock: \`${a.action_id.split(":")[2]}\` already decided`,
-              blocks: [],
             });
           } catch {}
         };

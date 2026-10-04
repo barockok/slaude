@@ -6,6 +6,7 @@ type Handler = (a: any) => Promise<void>;
 function fakeApp() {
   const handlers: { matcher: RegExp; fn: Handler }[] = [];
   const posts: any[] = [];
+  const updates: any[] = [];
   const app: any = {
     action: (matcher: RegExp, fn: Handler) => handlers.push({ matcher, fn }),
     client: {
@@ -14,12 +15,17 @@ function fakeApp() {
           posts.push(m);
           return { ok: true, ts: "9.9" };
         },
+        update: async (m: any) => {
+          updates.push(m);
+          return { ok: true };
+        },
       },
     },
   };
   return {
     app,
     posts,
+    updates,
     fire: async (action_id: string, userId: string) => {
       const respondCalls: any[] = [];
       const respond = async (m: any) => {
@@ -217,8 +223,15 @@ describe("PermissionGate", () => {
       .elements.find((e: any) => e.action_id.includes("allow:")).action_id;
     await f.fire(allowId, "USR");
     await p;
+    const updatesBefore = f.updates.length;
     const calls = await f.fire(allowId, "USR");
-    expect(calls.some((c: any) => /already decided/.test(c.text))).toBe(true);
+    const note = calls.find((c: any) => /already decided/.test(c.text));
+    expect(note).toBeTruthy();
+    // Leave the decided card untouched: ephemeral, no replace, no chat.update.
+    expect(note.replace_original).toBe(false);
+    expect(note.response_type).toBe("ephemeral");
+    expect(note.blocks).toBeUndefined();
+    expect(f.updates.length).toBe(updatesBefore);
   });
 
   test("unbindSession + decisionReason rendered", async () => {

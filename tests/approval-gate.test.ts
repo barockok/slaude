@@ -249,9 +249,16 @@ describe("ApprovalGate", () => {
       .elements.find((e: any) => e.action_id.includes("approve")).action_id;
     await f.fire(id, "U001");
     await p;
+    const updatesBefore = f.updates.length;
     // Fire again — pending entry gone
     const respond = await f.fire(id, "U001");
-    expect((respond as any).calls.some((c: any) => /already decided/.test(c.text))).toBe(true);
+    const note = (respond as any).calls.find((c: any) => /already decided/.test(c.text));
+    expect(note).toBeTruthy();
+    // The decided card is the only visible record: never replaced or cleared.
+    expect(note.replace_original).toBe(false);
+    expect(note.response_type).toBe("ephemeral");
+    expect(note.blocks).toBeUndefined();
+    expect(f.updates.length).toBe(updatesBefore);
   });
 
   test("empty summary → fallback text", async () => {
