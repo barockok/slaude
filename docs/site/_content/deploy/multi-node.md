@@ -25,6 +25,8 @@ flowchart TB
   N2 -->|/v1| GW
 ```
 
+**Limits, stated first.** Nodes reach Redis directly, so queue names are routing, not access control: a node can read another label's queue and its job payloads (message text). What node labels enforce is the credential path: a node without a persona's label cannot run that persona's turns with its credentials. Files on the shared volume are shared until sandboxing exists, and every agent turn on a node runs as the node's user, so labels separate nodes, not personas that share a node. Details: [Labels and routing](#labels-and-routing). Alerts: [alerts runbook](alerts.md). Rolling back a configured cluster: [rollback runbook](rollback.md).
+
 Roles are env flags. `SLAUDE_ROLE=mono` (the default) keeps the single-process behavior, and nothing here changes the mono deploy.
 
 ---
@@ -139,7 +141,10 @@ So each tier gets its own Secret:
 | Secret (`deploy/k8s-scale/10-secrets.yaml`) | Holds | Loaded by |
 |---|---|---|
 | `slaude-scale-secrets` | `SLAUDE_MASTER_KEY`, `SLAUDE_JOB_SECRET`, `SLAUDE_NODE_KEY` (+ `_PREVIOUS`), `SLAUDE_NODE_LEGACY_TOKEN`, `SLAUDE_PG_URL`, `SLAUDE_BRAIN_DATABASE_URL`, the Slack client and signing secrets, `SLAUDE_OAUTH_STATE_SECRET`, deploy tokens, the gateway's provider key | gateways, through `envFrom` |
-| `slaude-scale-node-secrets` | `SLAUDE_NODE_TOKEN` (the node's own credential), `SLAUDE_REDIS_URL`, the provider env fallback | nodes, through `envFrom`; gateways read only `SLAUDE_REDIS_URL` from it, by key |
+| `slaude-scale-node-secrets` | `SLAUDE_REDIS_URL`, the provider env fallback | every node deployment, through `envFrom`; gateways read only `SLAUDE_REDIS_URL` from it, by key |
+| `slaude-scale-node-cred-<label>` (one per node deployment) | that deployment's `SLAUDE_NODE_TOKEN` only | its node deployment, by key; nothing else |
+
+One credential Secret per node deployment means a node of one label never holds another label's credential. A cluster set up with an earlier release kept `SLAUDE_NODE_TOKEN` in `slaude-scale-node-secrets`; the node deployments now read it by key from the credential Secret (an `env` entry wins over `envFrom`), so create those Secrets before applying the new `50-node.yaml`, with the node image already at this release.
 
 `SLAUDE_GATEWAY_URL` is not secret and stays a plain variable in `50-node.yaml`. `docker-compose.scale.yaml` already gives each tier only its own variables.
 
@@ -196,7 +201,7 @@ Before this release both Deployments loaded `slaude-scale-secrets`. That Secret 
 5. Keep your copy of `10-secrets.yaml` (or its sealed form) in the two-Secret shape, so the next apply does not undo the split.
 6. Deal with what nodes were exposed to (below).
 
-On the local cluster (`deploy/k8s-local`), re-running `up.sh` does steps 1 to 5 (drain first if turns are running). It derives `node.env` from the existing `secrets.env`, so every value is kept; an older `secrets.env` line `SLAUDE_NODE_TOKEN=` is renamed in place to `SLAUDE_NODE_LEGACY_TOKEN=`, value unchanged.
+On the local cluster (`deploy/k8s-local`), re-running `up.sh` does steps 1 to 5 (drain first if turns are running). It derives the node files (Redis in `node.env`, one credential file per node deployment) from the existing `secrets.env`, so every value is kept; an older `secrets.env` line `SLAUDE_NODE_TOKEN=` is renamed in place to `SLAUDE_NODE_LEGACY_TOKEN=`, value unchanged.
 
 ### What nodes were exposed to
 
@@ -247,7 +252,7 @@ bun run node-token inspect -        # reads the token on stdin; prints claims on
 bun run node-token revoke engineering-a
 ```
 
-`mint` prints the token once, on stdout, and a warning on stderr. Put it in the **node** Secret as that node's `SLAUDE_NODE_TOKEN`; never give it to a gateway, a command line or a log. Labels are 1 to 8 entries of `[a-z0-9][a-z0-9-]{0,31}`; the default lifetime is 90 days and the maximum 400. `revoke` writes a `node_revocations` row (Postgres only; on sqlite revocation is skipped with a warning): every credential with that id issued **before** the revocation is refused within 30 seconds. Issue times are whole seconds, so a credential re-minted in the same second as the revoke is refused too; mint again a second later. If the revocation store is down, a cached answer is used for at most five minutes, then `/v1` answers 503.
+`mint` prints the token once, on stdout, and a warning on stderr. Put it in that node deployment's credential Secret (`slaude-scale-node-cred-<label>`) as `SLAUDE_NODE_TOKEN`, without the trailing newline (`10-secrets.yaml` shows a pipe that does this); never give it to a gateway, a command line or a log. Labels are 1 to 8 entries of `[a-z0-9][a-z0-9-]{0,31}`; the default lifetime is 90 days and the maximum 400. `revoke` writes a `node_revocations` row (Postgres only; on sqlite revocation is skipped with a warning): every credential with that id issued **before** the revocation is refused within 30 seconds. Issue times are whole seconds, so a credential re-minted in the same second as the revoke is refused too; mint again a second later. If the revocation store is down, a cached answer is used for at most five minutes, then `/v1` answers 503.
 
 **Rotating the key.** Set the new key as `SLAUDE_NODE_KEY` and the old one as `SLAUDE_NODE_KEY_PREVIOUS`, re-mint and roll the nodes, then drop the previous key.
 
