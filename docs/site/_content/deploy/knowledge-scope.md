@@ -47,7 +47,9 @@ the REST tool plane nodes call. Concretely:
   answered with the default persona's scope.
 - With the brain disabled, the agent's prompt names
   `$SLAUDE_HOME/knowledge/<label>/` so it can read a knowledge base's files
-  directly; the label comes from `list_kbs` or `search_kbs`.
+  directly; the label comes from `list_kbs` or `search_kbs`. The prompt is
+  built where the turn runs, so set `SLAUDE_BRAIN_DISABLED` the same on
+  gateways and nodes.
 
 There is no runtime override for `kbSources`: it changes only through a sync.
 Filesystem (never-synced) deployments have no `kbSources`; every persona reads
