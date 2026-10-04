@@ -174,6 +174,25 @@ describe("node MCP merge (local resolver installed)", () => {
     expect(promptBlock(opts).names.sort()).toEqual(["remote", "slaude_session"]);
   });
 
+  it("a manifest server named 'remote' is replaced by the remote tools in a remote session, with a warning", async () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const mgr = new AgentManager();
+      mgr.setLocalMcpResolver(async () => ({ remote: stdio("manifest-remote") }));
+      const noopExec = async () => ({ stdout: "", stderr: "", code: 0, truncated: false, timedOut: false });
+      mgr.setRemote(
+        async () => ({ teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r" }),
+        () => ({ exec: noopExec, release: async () => {}, dispose: async () => {} }),
+      );
+      const opts = await boot(mgr);
+      expect(opts.mcpServers.remote.command).not.toBe("manifest-remote");
+      const warned = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("node manifest") && l.includes("'remote'"));
+      expect(warned).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("a local resolver failure fails the boot", async () => {
     const mgr = new AgentManager();
     mgr.setLocalMcpResolver(async () => {

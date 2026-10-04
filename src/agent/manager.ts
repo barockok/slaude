@@ -1135,6 +1135,11 @@ export class AgentManager extends EventEmitter {
     const canUseTool: CanUseTool | undefined = remoteHandle
       ? makeRemoteCanUseTool(baseCanUse, () => this.#live.get(sessionId)?.mode ?? mode)
       : baseCanUse;
+    if (remoteHandle && localMcp && Object.hasOwn(localMcp, REMOTE_MCP_NAME)) {
+      console.warn(
+        `[node] session=${sessionId} MCP server '${REMOTE_MCP_NAME}' is in the node manifest; this session runs remotely, so the remote tools replace it`,
+      );
+    }
     let options: Options;
     try {
       const mergedMcpServers = {
