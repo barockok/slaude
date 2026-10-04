@@ -381,12 +381,16 @@ While paused, `/healthz` still answers `200` (with `"auth_paused": true` in the 
 
 ### Moves are at-least-once
 
-Every move (relabel, a mismatch at claim, the reaper) adds the job's copy on the target queue **held** (delayed), takes the original off its queue in one atomic Redis step that refuses a job a worker holds or has finished, and only then releases the copy. A message a pending job already holds is not appended again. A `job-moved` marker tells the gateway's follower where the job went, so a move never reads as the end of the turn. Two crash windows remain, each one Redis round trip wide, and both are at-least-once rather than lost:
+Every move (relabel, a mismatch at claim, the reaper) adds the job's copy on the target queue **held** (delayed), takes the original off its queue in one atomic Redis step that refuses a job a worker holds or has finished, and only then releases the copy. A message a pending job already holds is not appended again. When a moved job is merged into the session's newer pending job, its messages go **before** that job's, so they still run in the order they were sent. The reaper rescues a dead node's claimed (active) job only once its lock has expired; if that job's turn had already finished (its `turn-done` marker exists, read in the same atomic step), the job is dropped rather than moved, so nothing of it runs again. A `job-moved` marker tells the gateway's follower where the job went, so a move never reads as the end of the turn. Two crash windows remain, each one Redis round trip wide, and both are at-least-once rather than lost:
 
 - dying after the original was taken and before the copy is released: the copy runs when its 30-second hold lapses, so the turn is late;
 - merging into another pending job of the session, dying after the append and before the held copy is dropped: the messages run twice.
 
-They cannot be closed without moving the whole move into one Lua script, BullMQ's own add included. The LABEL_MISMATCH re-dispatch is guarded once across gateway replicas; a replica dying in its middle delays it by 30 seconds, when another replica's follower redoes it.
+They cannot be closed without moving the whole move into one Lua script, BullMQ's own add included.
+
+**Who re-dispatches a LABEL_MISMATCH turn.** Only a gateway follower that is following the failed job: the one on the replica that dispatched the turn (or a later message of the same session). If that gateway restarts, or the follower's deadline passes before the job fails, nobody re-dispatches it and the turn ends with no reply. The re-dispatch is guarded once across replicas; a replica dying in its middle delays it by 30 seconds, and only another replica already following the same job redoes it.
+
+**Order of a re-dispatched turn.** A re-dispatched turn holds older messages. When the session has a pending (not yet claimed) job, the re-dispatched messages are merged into it **ahead** of its own, and the merged job keeps the re-dispatch count, so it is not re-dispatched a second time. When the session's newer job is already running, or there is none, the re-dispatched turn is a job of its own and runs after whatever is already running: its older messages then run after the newer ones.
 
 **Upgrade gateways before nodes.** An older gateway's follower ignores the `job-moved` marker and can close a turn early (its reaction and status end while the moved job still runs), and it does not hold back `LABEL_MISMATCH`: it posts the fixed message without re-dispatching.
 

@@ -380,9 +380,10 @@ rolling upgrade.
 
 **When a persona's label changes:** new messages go to the new label; warm routing ignores a node that
 lacks it; pending coalesced jobs are moved (§4.6); the old node's warm session idles out and
-unregisters. A turn already in flight on the old node starts getting 403 on its next call, ends with
-`LABEL_MISMATCH` and is re-dispatched once to the new label (§4.6). The docs say a relabel invalidates
-in-flight work. The session-config fingerprint is not used: it reboots a session on the same node, which
+unregisters. A turn already in flight keeps the label signed into its token. It ends with
+`LABEL_MISMATCH` and is re-dispatched once (§4.6) only if its node no longer carries that label, so the
+gate refuses its next call, or if a refresh at claim is refused. A turn on a node that still carries the
+old label finishes there. To stop it, re-credential the node without the label or abort the turn. The session-config fingerprint is not used: it reboots a session on the same node, which
 is the wrong remedy.
 
 ### 4.9 Stated limits
