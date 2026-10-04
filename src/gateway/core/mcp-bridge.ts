@@ -271,10 +271,13 @@ export function capResult(result: CallToolResult, cap: number): CallToolResult {
 
 // ── per-owner concurrency ───────────────────────────────────────────────────
 
-class Slots {
+/** Counting semaphores by key. A waiter whose call is aborted (before or
+ *  while it waits) gives up its place at once and is never handed a slot. */
+export class Slots {
   #active = new Map<string, number>();
   #waiting = new Map<string, Array<() => void>>();
   async acquire(key: string, limit: number, deadline: number, signal?: AbortSignal): Promise<boolean> {
+    if (signal?.aborted) return false;
     const n = this.#active.get(key) ?? 0;
     if (n < limit) {
       this.#active.set(key, n + 1);
@@ -539,6 +542,8 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
     const lim = limits();
     if (!(await slots.acquire(ownerKey, lim.ownerConcurrency, deadline, signal))) return null;
     try {
+      // Granted, but the call was aborted meanwhile: give the slot back unused.
+      if (signal?.aborted) return null;
       return await fn();
     } finally {
       slots.release(ownerKey);
