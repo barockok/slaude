@@ -14,7 +14,7 @@
  * eventually does. Nor does it return a server's headers: they can carry a
  * persona's static credential.
  */
-import { loadExternalMcp, oauthHttpServers, sessionExternalMcp, type ExternalMcp } from "../core/external-mcp";
+import { connectableServers, loadExternalMcp, type ExternalMcp } from "../core/external-mcp";
 import { credentialExpiries } from "../../db/mcp-credentials";
 import { oauthKey, type OAuthServerConfig } from "../../agent/mcp-oauth/store";
 import { getPersonaRegistry, type PersonaRegistry } from "../../persona/registry";
@@ -86,7 +86,7 @@ export function portalServers(opts: { registry?: PersonaRegistry; global?: Exter
   return aggregateServers(
     personas.map((persona) => ({
       persona,
-      servers: oauthHttpServers(sessionExternalMcp(persona === "default" ? undefined : persona, global, registry).servers),
+      servers: connectableServers(persona === "default" ? undefined : persona, global, registry),
     })),
   );
 }

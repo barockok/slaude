@@ -19,7 +19,7 @@ import * as SoulOverrides from "../../db/soul-overrides";
 import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, createConnectMcp, CONNECT_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
 import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
-import { humanizeToolStatus } from "./status-text";
+import { humanizeToolStatus, redactSecrets } from "./status-text";
 import * as Remote from "../../db/remote";
 import { handleRemoteCommand, endRemoteForThread, remoteStatusOn } from "./remote-command";
 import { activeRemoteTarget } from "../../remote/active";
@@ -33,6 +33,7 @@ import { createV1Api } from "../api";
 import type { PendingSource } from "../api/pending-source";
 import { defaultGateBus } from "../../queue/gate-bus";
 import { makeQueueDispatch, type QueueDispatch } from "./dispatch";
+import { createOnceGuard, failureText } from "./failure-codes";
 import { getRedis, getSubRedis } from "../../queue/redis";
 import { makeKeys } from "../../queue/keys";
 import type { SessionRow } from "../../db/schema";
@@ -65,7 +66,7 @@ import * as Sessions from "../../db/sessions";
 import * as SeenEvents from "../../db/seen-events";
 import * as PendingGates from "../../db/pending-gates";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
-import { loadExternalMcp, oauthHttpServers, privateOverrides, sessionExternalMcp } from "./external-mcp";
+import { connectableServers, loadExternalMcp, privateOverrides, sessionExternalMcp } from "./external-mcp";
 import * as SlackOauthFlows from "../../db/slack-oauth-flows";
 import { randomBytes } from "node:crypto";
 import { ensureInitiatorConfigDir, agentConfigDir } from "../../agent/oauth-home";
@@ -623,6 +624,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // Per-session route + slack context. Mutated on each new inbound user message.
   const routes = new Map<string, SessionRoute>();
+  const firstFailurePost = createOnceGuard();
 
   // On every registry install, bring warm routes in line with it:
   //  - a persona a MANAGED registry no longer lists: drop its routes, so events
@@ -852,9 +854,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // that never ran the connect would otherwise know nothing about it.
   const pasteKey = (channelId: string, threadTs: string, userId: string) => `${channelId}:${threadTs}:${userId}`;
 
-  // Only HTTP servers participate in the OAuth connect flow. Shared with the
-  // portal's integrations list so the two surfaces offer the same servers.
-  const httpExternalServers = () => oauthHttpServers(externalMcp.servers);
+  // Only HTTP servers participate in the OAuth connect flow. Resolved per
+  // persona (as a session mounts them) through the function the portal's
+  // integrations list also uses, so the two surfaces offer the same servers.
+  const httpExternalServers = (personaId?: string | null) => connectableServers(personaId, externalMcp);
 
   /** Tenant and workspace that own a session's credentials, resolved exactly as
    *  the queue dispatcher resolves them, so a connect and the turns that later
@@ -1051,7 +1054,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
       scope = "global";
     }
-    const httpServers = httpExternalServers();
+    const httpServers = httpExternalServers(ctx.personaId);
     const cfg = httpServers[serverName];
     if (!cfg) {
       const names = Object.keys(httpServers);
@@ -1132,15 +1135,23 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const soul = soulData();
       if (ctx.userId !== soul.manager.userId && ctx.userId !== soul.backupManager.userId) return;
     }
+    // Look the server up BEFORE consuming the card: a card minted by an older
+    // version can name a server this persona does not mount, and approving it
+    // only to drop it would swallow the click silently.
+    const cfg = httpExternalServers(ctx.personaName)[ctx.serverName];
+    if (!cfg) {
+      await connectSurface(ctx.channelId, ctx.threadTs, ctx.userId)
+        .reply({ text: `:warning: \`${ctx.serverName}\` is not available for this agent any more, so it can't be connected. Run \`/mcp\` for the current list.` })
+        .catch(() => {});
+      return;
+    }
     // One click wins; a duplicate (or another replica) sees null and stops.
     if (!(await PendingGates.resolve(token, "approved", clicker))) return;
-    const cfg = httpExternalServers()[ctx.serverName];
-    if (!cfg) return;
     await connectServer({ ...ctx, sessionId: gate.sessionId, serverCfg: cfg, personaName: ctx.personaName });
   });
 
   agent.on("event", (e: AgentEvent) => {
-    console.log(`[agent-evt] ${e.type} session=${e.sessionId}${"tool" in e ? ` tool=${e.tool}` : ""}${"error" in e ? ` err=${e.error}` : ""}`);
+    console.log(`[agent-evt] ${e.type} session=${e.sessionId}${"tool" in e ? ` tool=${e.tool}` : ""}${"error" in e ? ` err=${redactSecrets(String(e.error))}` : ""}`);
     const route = routes.get(e.sessionId);
     if (!route) return;
 
@@ -1303,15 +1314,25 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         break;
       }
       case "error": {
+        // The raw error (provider/CLI text, stack fragments) stays in the server
+        // log; Slack only ever gets the fixed text for the failure code (D1.6).
+        console.error(`[turn-error] session=${e.sessionId} code=${e.code ?? "UNKNOWN"} job=${e.jobId ?? "-"}: ${redactSecrets(String(e.error))}`);
         void (async () => {
-          try {
-            await t.client.chat.postMessage({
-              channel: route.ctx.channel,
-              thread_ts: route.ctx.threadTs,
-              text: `:warning: error: \`${e.error}\``,
-              mrkdwn: true,
-            });
-          } catch {}
+          // One message per failed turn. With a job id (queue mode) the key is the
+          // job, so a client retry or a queue attempt that surfaces the same failure
+          // posts once. Without one (mono/local) it is the session's current inbound
+          // message, so the MCP-circuit error and the result error of one turn post
+          // once. The guard is an in-process Set: it does NOT span replicas.
+          if (firstFailurePost(e.jobId ? `${e.sessionId}:job:${e.jobId}` : `${e.sessionId}:ts:${route.ctx.inboundTs}`)) {
+            try {
+              await t.client.chat.postMessage({
+                channel: route.ctx.channel,
+                thread_ts: route.ctx.threadTs,
+                text: failureText(e.code),
+                mrkdwn: true,
+              });
+            } catch {}
+          }
           await reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_ERROR);
           reactions.forget(e.sessionId);
           presence.exit(e.sessionId);
@@ -1780,7 +1801,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           await reply(":warning: `/mcp` connect is temporarily disabled (store-format canary failed) — see server logs.");
           return;
         }
-        const httpServers = httpExternalServers();
+        const httpServers = httpExternalServers(dispatch?.personaId);
 
         if (slash.action === "connect") {
           const name = slash.server;
@@ -2239,14 +2260,25 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
 
     // Resolve username and download any file attachments into the session dir.
+    // The token is read only when there are files, and from the app the event
+    // belongs to (HTTP mode puts it on the context). The environment is the
+    // fallback in Socket Mode only: in HTTP mode it is absent by design (D1.1).
+    const inboundFiles = (event.files ?? []) as SlackFile[];
+    let attachToken: string | undefined;
+    if (inboundFiles.length) {
+      attachToken = context?.botToken ?? (env.slack.mode() === "socket" ? env.slack.botToken() : undefined);
+      if (!attachToken) console.error(`[slack-attach] no bot token for the event's app — skipping ${inboundFiles.length} file(s)`);
+    }
     const [userName, files] = await Promise.all([
       resolveUserName(client, userId),
-      downloadAttachments({
-        files: ((event.files ?? []) as SlackFile[]),
-        botToken: env.slack.botToken(),
-        workingDir: session.working_dir,
-        inboundTs: eventTs,
-      }),
+      attachToken
+        ? downloadAttachments({
+            files: inboundFiles,
+            botToken: attachToken,
+            workingDir: session.working_dir,
+            inboundTs: eventTs,
+          })
+        : Promise.resolve([]),
     ]);
     if (env.metricsPerUser()) {
       metric.userTurnsTotal.inc({ user_id: userId, user_name: userName });
@@ -2311,6 +2343,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.ctx.threadTs = threadTs;
       existing.ctx.inboundTs = eventTs;
       existing.ctx.userId = userId;
+      existing.ctx.botToken = context?.botToken;
       existing.ctx.personaId = dispatch?.personaId;
       existing.ctx.client = outClientForPersona(dispatch?.personaId);
       existing.ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
@@ -2329,6 +2362,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         inboundTs: eventTs,
         userId,
         teamId,
+        botToken: context?.botToken,
         personaId: dispatch?.personaId,
       };
       ctx.requestApproval = (req) =>

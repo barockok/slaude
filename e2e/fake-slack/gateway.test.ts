@@ -227,8 +227,13 @@ describe("real gateway + HTTP transport + fake Slack", () => {
     // a second click on the same card is answered as stale through response_url, not applied again
     await ctl.click({ app: "A0FAKE", target: base, user: "U0APP", channel: "D0MGR", messageTs: card.ts, actionId: approveId! });
     const stale = await until(async () => (await respond())[2], { timeoutMs: WAIT_MS, what: "the stale-click response" });
-    expect(stale.detail).toMatchObject({ applied: "replace_original", body: { text: ":lock: approval already decided" } });
+    expect(stale.detail).toMatchObject({
+      applied: "ephemeral",
+      body: { replace_original: false, text: ":lock: approval already decided" },
+    });
     await settle();
+    // the decided card is the record: still there, untouched by the stale click
+    expect((await botMessages("D0MGR")).find((m) => m.ts === card.ts)!.blocks).toEqual([]);
     expect((await botMessages("D0MGR")).filter((m) => m.text.includes("approved by"))).toHaveLength(1);
     expect(await respond()).toHaveLength(3);
   }, TEST_MS);

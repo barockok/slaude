@@ -49,6 +49,14 @@ export const api = {
     call<{ authorizeUrl: string }>(`/portal/api/integrations/${encodeURIComponent(id)}/connect`, { method: "POST" }),
   disconnect: (id: string) =>
     call<{ ok: boolean; removed: boolean }>(`/portal/api/integrations/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  /** Remove one Slack identity from the signed-in account. A DELETE with a JSON
+   *  body; the CSRF header is added by `call()` because the method mutates. */
+  unlink: (teamId: string, slackUserId: string) =>
+    call<{ ok: boolean }>("/portal/api/link", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ teamId, slackUserId }),
+    }),
 };
 
 /** What the OAuth callback redirected back with, if anything. */

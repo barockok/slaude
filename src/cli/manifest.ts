@@ -15,7 +15,12 @@
 export type ManifestMode = "socket" | "http";
 
 /** Bot scopes the app needs — single source for the manifest AND the OAuth
- *  install flow's authorize URL (src/gateway/slack/oauth.ts). */
+ *  install flow's authorize URL (src/gateway/slack/oauth.ts).
+ *
+ *  NOT audited: this list was not checked against Slack's documentation. It looks
+ *  short for calls the code makes (pins.*, canvases.*, conversations.setTopic /
+ *  setPurpose, files.* uploads) and search.messages needs a USER token. Audit it
+ *  (spec WS-D D1.5) before relying on it for a fresh install. */
 export const BOT_SCOPES = [
   "app_mentions:read",
   "channels:history",
@@ -35,9 +40,13 @@ export const BOT_SCOPES = [
   "reactions:read",
   "reactions:write",
   "users:read",
-  "users.profile:write",
   "assistant:write",
 ] as const;
+
+/** User-token scopes. users.profile:write acts as a person, so Slack accepts it
+ *  only under oauth_config.scopes.user (authorize URL: `user_scope`), never as a
+ *  bot scope. Presence (users.profile.set) needs a user token anyway. */
+export const USER_SCOPES = ["users.profile:write"] as const;
 
 export function buildManifest(
   opts: { mode?: ManifestMode; url?: string; oauthRedirectUrl?: string } = {},
@@ -70,6 +79,7 @@ export function buildManifest(
     oauth_config: {
       scopes: {
         bot: [...BOT_SCOPES],
+        user: [...USER_SCOPES],
       },
     },
     settings: {

@@ -1,4 +1,5 @@
 import { describe, expect, test, beforeEach } from "bun:test";
+import * as PendingGates from "../src/db/pending-gates";
 import { PermissionGate } from "../src/gateway/slack/permission-gate";
 
 type Handler = (a: any) => Promise<void>;
@@ -6,6 +7,7 @@ type Handler = (a: any) => Promise<void>;
 function fakeApp() {
   const handlers: { matcher: RegExp; fn: Handler }[] = [];
   const posts: any[] = [];
+  const updates: any[] = [];
   const app: any = {
     action: (matcher: RegExp, fn: Handler) => handlers.push({ matcher, fn }),
     client: {
@@ -14,12 +16,17 @@ function fakeApp() {
           posts.push(m);
           return { ok: true, ts: "9.9" };
         },
+        update: async (m: any) => {
+          updates.push(m);
+          return { ok: true };
+        },
       },
     },
   };
   return {
     app,
     posts,
+    updates,
     fire: async (action_id: string, userId: string) => {
       const respondCalls: any[] = [];
       const respond = async (m: any) => {
@@ -217,8 +224,33 @@ describe("PermissionGate", () => {
       .elements.find((e: any) => e.action_id.includes("allow:")).action_id;
     await f.fire(allowId, "USR");
     await p;
+    const updatesBefore = f.updates.length;
     const calls = await f.fire(allowId, "USR");
-    expect(calls.some((c: any) => /already decided/.test(c.text))).toBe(true);
+    const note = calls.find((c: any) => /already decided/.test(c.text));
+    expect(note).toBeTruthy();
+    // Leave the decided card untouched: ephemeral, no replace, no chat.update.
+    expect(note.replace_original).toBe(false);
+    expect(note.response_type).toBe("ephemeral");
+    expect(note.blocks).toBeUndefined();
+    expect(f.updates.length).toBe(updatesBefore);
+  });
+
+  test("click on a cancelled row says cancelled, not decided", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app);
+    gate.bindSession("S", "C", "T");
+    const ac = new AbortController();
+    const p = gate.resolver("S", "Bash", {}, ctx("UCXL1", ac.signal));
+    const allowId = (await firstPost(f)).blocks
+      .find((b: any) => b.type === "actions")
+      .elements.find((e: any) => e.action_id.includes("allow:")).action_id;
+    await PendingGates.resolve("UCXL1", "cancelled", "system");
+    const calls = await f.fire(allowId, "USR");
+    expect(calls[0].text).toContain("cancelled");
+    expect(calls[0].text).not.toContain("already decided");
+    expect(calls[0].replace_original).toBe(false);
+    expect(f.updates.length).toBe(0);
+    expect((await p).behavior).toBe("deny");
   });
 
   test("unbindSession + decisionReason rendered", async () => {

@@ -61,7 +61,6 @@ beforeAll(async () => {
   if (!realEnabled) return;
   process.env.SLAUDE_NODE_TOKEN = NODE_TOKEN;
   process.env.SLAUDE_JOB_SECRET = JOB_SECRET;
-  process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
   process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 5).toString("base64");
 
   const { ensureHome } = await import("../../src/config/home");

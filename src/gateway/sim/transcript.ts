@@ -47,6 +47,8 @@ export async function runTranscript(t: Transcript, agent: "stub" | "real" = "stu
       if (step.expect_reply) {
         const hit = s.cards().some((c) => (c.text ?? "").includes(step.expect_reply.contains));
         if (!hit) throw new Error(`expect_reply contains ${JSON.stringify(step.expect_reply.contains)} - no match. bus=${dump(s.cards())}`);
+        const banned = step.expect_reply.not_contains;
+        if (banned && s.cards().some((c) => (c.text ?? "").includes(banned))) throw new Error(`expect_reply not_contains ${JSON.stringify(banned)} - found. bus=${dump(s.cards())}`);
         continue;
       }
       if (step.expect_drop) {

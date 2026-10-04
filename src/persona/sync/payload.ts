@@ -10,6 +10,7 @@
  * persona repository must not be able to copy one into a stored persona.
  */
 import { z } from "zod";
+import { redactSecrets } from "../../gateway/core/status-text";
 
 export const PERSONA_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
@@ -22,6 +23,13 @@ export class UnresolvedVarError extends PayloadError {
   }
 }
 
+/**
+ * The payload format this gateway understands. A payload with no `version` is
+ * version 1. A newer one is refused rather than half-applied: its extra fields
+ * might change what a persona means.
+ */
+export const SUPPORTED_PAYLOAD_VERSION = 1;
+
 const personaSpec = z.object({
   name: z.string().regex(PERSONA_NAME_RE, "persona name must match ^[a-z0-9][a-z0-9-]{0,62}$"),
   slackUserId: z.string().min(1).optional(),
@@ -33,6 +41,7 @@ const personaSpec = z.object({
 export type PersonaSpec = z.infer<typeof personaSpec>;
 
 const payloadSchema = z.object({
+  version: z.number().int().min(1).default(1),
   revision: z.string().min(1),
   committedAt: z.string().refine((s) => !Number.isNaN(Date.parse(s)), "committedAt must be an ISO 8601 instant"),
   allowEmpty: z.boolean().default(false),
@@ -40,7 +49,49 @@ const payloadSchema = z.object({
 });
 export type SyncPayload = z.infer<typeof payloadSchema>;
 
+const PERSONA_KEYS = new Set(Object.keys(personaSpec.shape));
+const TOP_KEYS = new Set(Object.keys(payloadSchema.shape));
+// A key is echoed in messages, so only a plain identifier-shaped one is (no
+// '.', which would let a top-level key pose as a persona path) and one the
+// secret net leaves untouched; the value is never read.
+export const safeKey = (k: string) =>
+  /^[A-Za-z0-9_-]{1,64}$/.test(k) && redactSecrets(k) === k ? k : "<invalid-key>";
+
+/** How many unknown-field paths are ever logged, returned or put in an error. */
+export const MAX_REPORTED_FIELDS = 50;
+export function capPaths(paths: string[]): string[] {
+  return paths.length <= MAX_REPORTED_FIELDS
+    ? paths
+    : [...paths.slice(0, MAX_REPORTED_FIELDS), `…and ${paths.length - MAX_REPORTED_FIELDS} more`];
+}
+
+/**
+ * Paths of keys the schema does not know (`revision`-level and per persona),
+ * names only. The schema strips them from stored state; this is how the
+ * pipeline learns they were dropped.
+ */
+export function unknownFieldPaths(raw: unknown): string[] {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+  const o = raw as Record<string, unknown>;
+  const out = Object.keys(o).filter((k) => !TOP_KEYS.has(k)).map(safeKey);
+  if (Array.isArray(o.personas)) {
+    o.personas.forEach((p, i) => {
+      if (!p || typeof p !== "object" || Array.isArray(p)) return;
+      const rec = p as Record<string, unknown>;
+      const name = typeof rec.name === "string" && PERSONA_NAME_RE.test(rec.name) ? rec.name : `#${i}`;
+      for (const k of Object.keys(rec)) if (!PERSONA_KEYS.has(k)) out.push(`persona.${name}.${safeKey(k)}`);
+    });
+  }
+  return out;
+}
+
 export function parsePayload(raw: unknown): SyncPayload {
+  const v = raw && typeof raw === "object" ? (raw as { version?: unknown }).version : undefined;
+  if (typeof v === "number" && Number.isInteger(v) && v > SUPPORTED_PAYLOAD_VERSION) {
+    throw new PayloadError(
+      `payload version ${v} is newer than this gateway supports (${SUPPORTED_PAYLOAD_VERSION}); upgrade the gateway before deploying it`,
+    );
+  }
   const r = payloadSchema.safeParse(raw);
   if (!r.success) throw new PayloadError(r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
   const p = r.data;
