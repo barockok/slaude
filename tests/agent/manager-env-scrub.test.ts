@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { scrubChildEnv } from "../../src/agent/child-env";
+import { GATEWAY_ONLY_ENV_NAMES, GATEWAY_ONLY_ENV_PREFIXES } from "../../src/config/gateway-only-env";
 
 describe("scrubChildEnv", () => {
   it("removes SLAUDE_ENCRYPTION_KEY from the env passed to the SDK child", () => {
@@ -37,5 +38,32 @@ describe("scrubChildEnv", () => {
     const input = { SLAUDE_MASTER_KEY: "k", PERSONA_A_XOXP: "t" };
     scrubChildEnv(input);
     expect(input).toEqual({ SLAUDE_MASTER_KEY: "k", PERSONA_A_XOXP: "t" });
+  });
+});
+
+describe("scrubChildEnv and the gateway-only list", () => {
+  it("strips every gateway-only name and prefix, the single list the node boot check uses", () => {
+    const input: Record<string, string> = { KEEP: "yes", SLAUDE_REDIS_URL: "redis://r", ANTHROPIC_BASE_URL: "https://llm.example.com" };
+    for (const n of GATEWAY_ONLY_ENV_NAMES) input[n] = "fake";
+    for (const p of GATEWAY_ONLY_ENV_PREFIXES) input[`${p}SOMETHING`] = "fake";
+    const out = scrubChildEnv(input);
+    expect(out).toEqual({ KEEP: "yes", SLAUDE_REDIS_URL: "redis://r", ANTHROPIC_BASE_URL: "https://llm.example.com" });
+  });
+
+  it("strips the database URLs, Slack secrets, node keys and Vault variables by name", () => {
+    const out = scrubChildEnv({
+      SLAUDE_PG_URL: "postgres://u:p@h/db",
+      SLAUDE_BRAIN_DATABASE_URL: "postgres://u:p@h/brain",
+      SLACK_SIGNING_SECRET: "s",
+      SLACK_CLIENT_SECRET: "c",
+      SLACK_BOT_TOKEN: "b",
+      SLAUDE_OAUTH_STATE_SECRET: "o",
+      SLAUDE_NODE_KEY: "k",
+      SLAUDE_NODE_KEY_PREVIOUS: "kp",
+      SLAUDE_NODE_LEGACY_TOKEN: "l",
+      SLAUDE_VAULT_ADDR: "https://vault.example.com",
+      VAULT_TOKEN: "v",
+    });
+    expect(out).toEqual({});
   });
 });
