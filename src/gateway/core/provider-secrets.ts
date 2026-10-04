@@ -10,7 +10,9 @@
  * logs at error level, as §7 requires for an allowlist refusal.
  */
 import { m as metric } from "../../metrics";
-import { createSecretResolver, loadVaultConfig, type ResolveEvent, type SecretResolver } from "../../secrets";
+import {
+  assertVaultAllowedInRole, createSecretResolver, loadVaultConfig, type ResolveEvent, type SecretResolver,
+} from "../../secrets";
 
 export function logResolveEvent(e: ResolveEvent): void {
   metric.providerCredResolveTotal.inc({ scheme: e.scheme, outcome: e.outcome });
@@ -19,6 +21,35 @@ export function logResolveEvent(e: ResolveEvent): void {
     `duration_ms=${Math.round(e.durationMs)}${e.reason ? ` reason=${e.reason}` : ""}`;
   if (e.outcome === "denied" || e.outcome === "error") console.error(line);
   else console.log(line);
+}
+
+/**
+ * `mono` installs no child-env resolver (only a node worker does), so a
+ * persona's provider references would be silently ignored there and the
+ * persona would run on the process's own credentials. Refuse instead (WS-A
+ * §5.2), naming the personas. Called at boot and by sync.
+ */
+export function assertNoProviderRefsInMono(role: "mono" | "gateway" | "node", personas: readonly string[]): void {
+  if (role !== "mono" || personas.length === 0) return;
+  throw new Error(
+    `persona provider references are not supported with SLAUDE_ROLE=mono (set by: ${personas.join(", ")}). ` +
+      "Run a gateway and nodes, or remove `provider` from these personas.",
+  );
+}
+
+/**
+ * Boot step (src/server.ts), before anything is opened: refuse Vault settings
+ * in a role that cannot protect them (any SLAUDE_VAULT_* / VAULT_* on a node;
+ * SLAUDE_VAULT_ADDR in mono), then build the gateway/mono resolver from the
+ * environment — which refuses Vault with an empty allowlist. A node resolves
+ * nothing: null.
+ */
+export function bootProviderSecretResolver(
+  role: "mono" | "gateway" | "node",
+  env: Record<string, string | undefined>,
+): SecretResolver | null {
+  assertVaultAllowedInRole(role, env);
+  return role === "node" ? null : buildProviderSecretResolver(env);
 }
 
 /**

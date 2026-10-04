@@ -16,6 +16,7 @@ import {
 import { sameDesired, type DesiredPersona } from "../effective";
 import { loadVaultConfig, parseRef, SecretResolutionError, type VaultConfig } from "../../secrets";
 import { isAllowed, requestPathFor } from "../../secrets/allowlist";
+import { assertNoProviderRefsInMono } from "../../gateway/core/provider-secrets";
 
 export class SyncFailure extends Error {
   constructor(readonly status: 409 | 422 | 502 | 503, message: string) { super(message); }
@@ -94,6 +95,13 @@ export async function runSync(
     }
     payload = { ...payload, personas: payload.personas.map((p) => resolvePlaceholders(p, opts.env)) };
     checkVaultRefs(payload, opts.vault !== undefined ? opts.vault : loadVaultConfig(opts.env));
+    const rawRole = (opts.env.SLAUDE_ROLE ?? "mono").trim().toLowerCase();
+    const role = rawRole === "gateway" || rawRole === "node" ? rawRole : "mono";
+    try {
+      assertNoProviderRefsInMono(role, payload.personas.filter((p) => p.provider).map((p) => p.name));
+    } catch (e) {
+      throw new PayloadError((e as Error).message);
+    }
   } catch (e) {
     if (e instanceof PayloadError) throw new SyncFailure(422, e.message);
     throw e;

@@ -191,6 +191,8 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync stage one reporting", (
 });
 
 describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync provider references (WS-A §4, §6.3)", () => {
+  // References need a gateway: mono refuses them (below).
+  const env = { PERSONA_ANA_XOXP: "user-token-1", SLAUDE_ROLE: "gateway" };
   const vaultEnv = {
     ...env,
     SLAUDE_VAULT_ADDR: "https://vault.example.com",
@@ -227,6 +229,14 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync provider references (WS
     const e = await fail(withRef("vault://other/slaude/personas/ana#api_key"), vaultEnv);
     expect(e.status).toBe(422);
     expect(e.message).toContain("mount");
+  });
+
+  test("mono refuses a payload with provider references, naming the persona, and applies nothing", async () => {
+    const e = await fail(withRef("env://PERSONA_ANA_KEY"), { PERSONA_ANA_XOXP: "user-token-1" });
+    expect(e.status).toBe(422);
+    expect(e.message).toContain("SLAUDE_ROLE=mono");
+    expect(e.message).toContain("ana");
+    expect(await P.isManaged(T)).toBe(false);
   });
 
   test("a vault:// reference on a gateway without Vault is refused, not stored to fail every turn", async () => {

@@ -16,6 +16,7 @@ import { assertPortalConfig } from "./gateway/portal/config";
 import {
   getPersonaRegistry,
   loadPersonaRegistry,
+  personasWithProvider,
   refreshPersonaState,
   setPersonaRegistry,
   startRegistryRevalidation,
@@ -25,6 +26,8 @@ import { assertGatewayRequirements } from "./config/gateway-requirements";
 import { brainEnabled, brainEngineConfig } from "./knowledge/brain";
 import { brainMode } from "./knowledge/brain-config";
 import * as SoulOverrides from "./db/soul-overrides";
+import { assertNoProviderRefsInMono, bootProviderSecretResolver } from "./gateway/core/provider-secrets";
+import { setProviderSecretResolver } from "./gateway/api/tenants";
 
 async function main() {
   ensureHome();
@@ -44,6 +47,11 @@ async function main() {
     brainEngine: () => brainEngineConfig().engine,
     masterKey: () => { masterKey(); },
   });
+  // Provider credentials by reference (WS-A §5, §6): refuse Vault settings a
+  // role cannot protect, refuse Vault with an empty allowlist, and hand the
+  // runtime-bundle builder its resolver. Env only; nothing is connected yet.
+  const providerResolver = bootProviderSecretResolver(env.role(), process.env);
+  if (providerResolver) setProviderSecretResolver(providerResolver);
 
   // Open the DB first: on Postgres this applies pending migrations (unless
   // SLAUDE_MIGRATE_ON_BOOT=0), and a bad SLAUDE_PG_URL fails the boot here
@@ -72,6 +80,8 @@ async function main() {
     setPersonaRegistry(loadPersonaRegistry());
   } else {
     await refreshPersonaState("default");
+    // mono applies no child-env resolver: a stored reference would be ignored.
+    assertNoProviderRefsInMono(env.role(), personasWithProvider());
     if (db.dialect === "pg") stopRegistryRevalidation = startRegistryRevalidation("default");
   }
   const registry = getPersonaRegistry();

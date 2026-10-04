@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { metrics } from "../../../src/metrics";
-import { buildProviderSecretResolver, logResolveEvent } from "../../../src/gateway/core/provider-secrets";
+import { assertNoProviderRefsInMono, bootProviderSecretResolver, buildProviderSecretResolver, logResolveEvent } from "../../../src/gateway/core/provider-secrets";
 import { VaultConfigError } from "../../../src/secrets";
 import { startFakeVault } from "../../secrets/fake-vault";
 
@@ -10,6 +10,34 @@ function capture<T>(fn: () => T): { lines: string[]; result: T } {
   console.error = (m: string) => { lines.push(`error ${m}`); };
   try { return { lines, result: fn() }; } finally { console.log = log; console.error = err; }
 }
+
+describe("mono refuses provider references (WS-A §5.2)", () => {
+  test("mono with a persona that sets provider refuses, naming the persona", () => {
+    expect(() => assertNoProviderRefsInMono("mono", ["default", "ana"])).toThrow(/SLAUDE_ROLE=mono.*default, ana/);
+  });
+  test("mono with none, and gateway with some, are fine", () => {
+    expect(() => assertNoProviderRefsInMono("mono", [])).not.toThrow();
+    expect(() => assertNoProviderRefsInMono("gateway", ["ana"])).not.toThrow();
+  });
+});
+
+describe("bootProviderSecretResolver", () => {
+  const vault = { SLAUDE_VAULT_ADDR: "https://vault.example.com", SLAUDE_VAULT_ROLE: "r", SLAUDE_VAULT_ALLOWED_PREFIXES: "secret/slaude/personas/{persona}" };
+  test("a gateway with Vault builds a resolver", () => {
+    expect(bootProviderSecretResolver("gateway", vault)).not.toBeNull();
+  });
+  test("a node resolves nothing, and refuses any Vault variable", () => {
+    expect(bootProviderSecretResolver("node", {})).toBeNull();
+    expect(() => bootProviderSecretResolver("node", { VAULT_TOKEN: "x" })).toThrow(VaultConfigError);
+  });
+  test("mono refuses Vault; mono without Vault builds an env-only resolver", () => {
+    expect(() => bootProviderSecretResolver("mono", vault)).toThrow(/SLAUDE_ROLE=mono/);
+    expect(bootProviderSecretResolver("mono", {})).not.toBeNull();
+  });
+  test("Vault with an empty allowlist refuses to start", () => {
+    expect(() => bootProviderSecretResolver("gateway", { ...vault, SLAUDE_VAULT_ALLOWED_PREFIXES: "" })).toThrow(/ALLOWED_PREFIXES/);
+  });
+});
 
 describe("provider credential resolver wiring", () => {
   test("events count by scheme and outcome; a refusal logs at error level with its reason", () => {
