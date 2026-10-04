@@ -8,17 +8,24 @@
  * Today's monolith reality: real deploys have an empty personas table, so the
  * `default` tenant falls back to the current file/env loaders (SOUL.md,
  * ~/.slaude/mcp.json, ANTHROPIC_* env) — the same inputs the in-process
- * gateway uses. ETag = sha256 of the bundle; If-None-Match → 304 so nodes can
- * cache it (spec §6).
+ * gateway uses. ETag = HMAC of the bundle keyed by SLAUDE_MASTER_KEY;
+ * If-None-Match → 304 so nodes can cache it (spec §6).
+ *
+ * A managed persona's `provider` references (WS-A §5) are resolved here, on
+ * every build, so a session start, resume or reload reads the current secret;
+ * a failure answers 503 with a fixed body.
  */
-import { createHash } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { getPersonaRegistry } from "../../persona/registry";
 import { db } from "../../db/schema";
 import { resolveDbConfig } from "../../db/client";
 import { effectivePersonas, isManaged } from "../../db/personas";
 import type { EffectivePersona } from "../../persona/effective";
-import { decrypt } from "../../db/crypto";
+import { PROVIDER_FIELDS, type PersonaProvider } from "../../persona/sync/payload";
+import { createSecretResolver, parseRef, SecretResolutionError, type SecretRef, type SecretResolver } from "../../secrets";
+import { logResolveEvent } from "../core/provider-secrets";
+import { decrypt, masterKey, MasterKeyError } from "../../db/crypto";
 import { env } from "../../config/env";
 import { paths } from "../../config/home";
 import { loadSoul } from "../../soul/loader";
@@ -77,6 +84,14 @@ function envProviderCreds(): RuntimeBundle["providerCreds"] {
   return creds;
 }
 
+/** provider_creds.kind → the bundle key it fills. */
+const CRED_KINDS: Record<string, keyof RuntimeBundle["providerCreds"]> = {
+  api_key: "apiKey",
+  base_url: "baseUrl",
+  oauth_token: "oauthToken",
+  auth_token: "authToken",
+};
+
 /** Tenant-wide provider creds first, then the persona's own (when it has a row). */
 async function applyProviderCreds(out: RuntimeBundle["providerCreds"], tenantId: string, personaRowId: string | undefined) {
   const creds = personaRowId === undefined
@@ -89,11 +104,50 @@ async function applyProviderCreds(out: RuntimeBundle["providerCreds"], tenantId:
   for (const specific of [false, true]) {
     for (const c of creds) {
       if ((c.persona_id !== null) !== specific) continue;
-      if (c.kind === "api_key") out.apiKey = decrypt(c.value);
-      else if (c.kind === "base_url") out.baseUrl = decrypt(c.value);
-      else if (c.kind === "oauth_token") out.oauthToken = decrypt(c.value);
+      const key = Object.hasOwn(CRED_KINDS, c.kind) ? CRED_KINDS[c.kind] : undefined;
+      if (key) out[key] = decrypt(c.value);
     }
   }
+}
+
+/**
+ * The resolver for provider references. The gateway installs one built from
+ * its environment at boot (src/gateway/core/provider-secrets.ts, which adds
+ * Vault); until then, and in tests, env:// references resolve against this
+ * process's environment and a vault:// reference fails as "disabled".
+ */
+let secretResolver: SecretResolver | null = null;
+export function setProviderSecretResolver(r: SecretResolver | null): void {
+  secretResolver = r;
+}
+function providerSecretResolver(): SecretResolver {
+  return (secretResolver ??= createSecretResolver({ env: process.env, onEvent: logResolveEvent }));
+}
+
+/**
+ * Overlay a persona's provider references (WS-A §5.3: reference > persona row >
+ * tenant row > none, per field) by resolving each one. A literal baseUrl is
+ * used as is. Any failure throws SecretResolutionError; the caller answers 503.
+ */
+async function applyProviderRefs(out: RuntimeBundle["providerCreds"], persona: string, provider: PersonaProvider | null | undefined) {
+  if (!provider) return;
+  const resolver = providerSecretResolver();
+  const resolved = await Promise.all(
+    PROVIDER_FIELDS.map(async (field) => {
+      const v = provider[field];
+      if (!v) return [field, undefined] as const;
+      if (field === "baseUrl" && !v.startsWith("vault://") && !v.startsWith("env://")) return [field, v] as const;
+      let ref: SecretRef;
+      try {
+        ref = parseRef(v);
+      } catch {
+        // A stored row that no longer parses: never resolve it, never echo it.
+        throw new SecretResolutionError("invalid_ref", "stored provider reference does not parse");
+      }
+      return [field, await resolver.resolve(ref, { persona })] as const;
+    }),
+  );
+  for (const [field, value] of resolved) if (value !== undefined) out[field] = value;
 }
 
 /** A managed tenant: effective state only. Self-contained, so tiers 2 and 3
@@ -104,6 +158,7 @@ async function buildManagedBundle(tenantId: string, personaId: string): Promise<
   const row = await db.one<{ id: string }>(`SELECT id FROM personas WHERE tenant_id = ? AND name = ?`, [tenantId, personaId]);
   const providerCreds: RuntimeBundle["providerCreds"] = {};
   await applyProviderCreds(providerCreds, tenantId, row?.id);
+  await applyProviderRefs(providerCreds, effective.name, effective.provider);
   return {
     tenantId,
     personaId: effective.name,
@@ -245,15 +300,51 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
   };
 }
 
+/** The whole 503 body when a provider credential cannot be resolved. A node
+ *  maps it to the typed failure code; nothing else is said. */
+export const PROVIDER_UNAVAILABLE_BODY = {
+  error: "provider credentials unavailable",
+  code: "PROVIDER_CREDENTIALS_UNAVAILABLE",
+} as const;
+
+/**
+ * ETag = HMAC-SHA256 of the body (WS-A §8). The body holds plaintext provider
+ * credentials, so a bare hash would let anyone who sees the tag (a proxy log)
+ * test a guessed key against it offline. Keyed by a subkey of SLAUDE_MASTER_KEY
+ * so every replica agrees (a node's 304 survives landing on another replica).
+ * Without a master key (an unmanaged single process) a random per-process key
+ * keeps the property; the only cost is a 200 instead of a 304 across restarts.
+ */
+let fallbackEtagKey: Buffer | null = null;
+function etagKey(): Buffer {
+  try {
+    return createHmac("sha256", masterKey()).update("slaude/runtime-bundle-etag/v1").digest();
+  } catch (e) {
+    if (!(e instanceof MasterKeyError)) throw e;
+    return (fallbackEtagKey ??= randomBytes(32));
+  }
+}
+function bundleEtag(body: string): string {
+  return createHmac("sha256", etagKey()).update(body).digest("hex");
+}
+
 export async function handleTenantRuntime(
   req: Request,
   tenantId: string,
   personaId: string,
 ): Promise<Response> {
-  const bundle = await buildBundle(tenantId, personaId);
+  let bundle: RuntimeBundle | null;
+  try {
+    bundle = await buildBundle(tenantId, personaId);
+  } catch (e) {
+    // The resolver already logged persona, scheme and reason. The body is
+    // fixed: the reason, path and value stay on the gateway (WS-A §7).
+    if (e instanceof SecretResolutionError) return json(503, PROVIDER_UNAVAILABLE_BODY);
+    throw e;
+  }
   if (!bundle) return notFound("unknown tenant or persona");
   const body = JSON.stringify(bundle);
-  const etag = `"${createHash("sha256").update(body).digest("hex")}"`;
+  const etag = `"${bundleEtag(body)}"`;
   const inm = req.headers.get("if-none-match");
   // RFC 7232 §3.2: "*" matches any current representation; otherwise compare
   // against each listed entity-tag.
