@@ -466,6 +466,19 @@ Before this policy, OAuth fetches used the plain `fetch`. Now, by default:
 
 **Recovery:** list the affected hosts in `SLAUDE_OUTBOUND_INTERNAL_HOSTS` and restart the gateway. Stored credentials are not deleted. A refused refresh is reported as a transient failure, not as a revoked grant, so connections recover once the host is listed and nobody has to reconnect.
 
+The [MCP bridge](../deploy/mcp-bridge.md) sends every request to a persona's remote MCP servers through the same policy, pinned to each server's configured origin. Its per-request timeout and response cap come from the `SLAUDE_MCP_BRIDGE_*` variables below instead of the 10 s / 1 MiB defaults.
+
+### MCP bridge <a id="mcp-bridge"></a>
+
+Gateway-side limits of the [MCP bridge](../deploy/mcp-bridge.md) (gateway role only; read per call). A value that is not a positive integer is refused.
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `SLAUDE_MCP_BRIDGE_TIMEOUT_MS` | No | `50000` | Longest one upstream MCP call may take, in milliseconds. Keep it shorter than any ingress or proxy timeout in front of the gateway. A server's own `timeout` in its configuration can only lower it. |
+| `SLAUDE_MCP_BRIDGE_OWNER_CONCURRENCY` | No | `8` | Upstream calls in flight at once for one identity (one persona's agent, or one person). Further calls wait for a slot within the timeout. |
+| `SLAUDE_MCP_BRIDGE_MAX_REQUEST_BYTES` | No | `1048576` | Largest body a node may send for one bridged call; larger is refused with `413`. |
+| `SLAUDE_MCP_BRIDGE_MAX_RESULT_BYTES` | No | `1048576` | Largest tool result returned to the agent. Above it the text is kept up to the limit and a `[result truncated by the MCP bridge: …]` line is appended; images and structured content are dropped. |
+
 ### Skills repo & evolution
 
 | Name | Required | Default | Description |
