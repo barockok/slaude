@@ -56,6 +56,11 @@ const CLI_REFUSAL = "the CLI would expand it again against the agent child's env
 export const MINIMAL_ENV_NAMES = ["PATH", "HOME", "LANG", "TMPDIR"] as const;
 /** The exec wrapper a stdio server is started through. */
 export const MCP_EXEC_ENTRY = fileURLToPath(new URL("./mcp-exec.ts", import.meta.url));
+/** Bun runtime flags for the wrapper. The CLI starts a stdio server in the
+ *  session workspace, which the agent can write, and Bun reads `bunfig.toml`
+ *  (a `preload` runs code before the wrapper) and `.env` from the cwd: an
+ *  explicit empty config and no env file make the wrapper ignore both. */
+export const MCP_EXEC_BUN_FLAGS = ["--config=/dev/null", "--no-env-file", "--no-install"] as const;
 
 export class NodeManifestError extends Error {
   override name = "NodeManifestError";
@@ -277,7 +282,7 @@ export function stdioServersFor(
     const cfg = {
       type: "stdio" as const,
       command: execPath,
-      args: [MCP_EXEC_ENTRY, Object.keys(env).join(","), "--", s.command, ...s.args],
+      args: [...MCP_EXEC_BUN_FLAGS, MCP_EXEC_ENTRY, Object.keys(env).join(","), "--", s.command, ...s.args],
       env,
     };
     // The last word: nothing in what the CLI receives may be expandable.

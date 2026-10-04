@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   EMPTY_NODE_MANIFEST,
+  MCP_EXEC_BUN_FLAGS,
   MCP_EXEC_ENTRY,
   NODE_MANIFEST_DEFAULT_PATH,
   NodeManifestError,
@@ -326,7 +327,7 @@ describe("allow semantics", () => {
     expect(cfg.tf).toEqual({
       type: "stdio",
       command: "/opt/bun",
-      args: [MCP_EXEC_ENTRY, "PATH,HOME,LANG,TMPDIR,TF_TOKEN", "--", "terraform-mcp", "--stdio"],
+      args: [...MCP_EXEC_BUN_FLAGS, MCP_EXEC_ENTRY, "PATH,HOME,LANG,TMPDIR,TF_TOKEN", "--", "terraform-mcp", "--stdio"],
       env: { PATH: "/usr/bin:/bin", HOME: "/home/node", LANG: "C.UTF-8", TMPDIR: "/tmp", TF_TOKEN: "tf-fake-value" },
     });
     expect(JSON.stringify(cfg)).not.toContain("provider-fake");
@@ -336,7 +337,7 @@ describe("allow semantics", () => {
     const local = parse({ version: 1, mcpServers: { gh: { command: "g", env: { HOME: "/srv/gh" } } }, allow: { p: "*" } });
     const cfg = stdioServersFor(local, "p", { PATH: "/bin" }, "/opt/bun") as any;
     expect(cfg.gh.env).toEqual({ PATH: "/bin", HOME: "/srv/gh" });
-    expect(cfg.gh.args[1]).toBe("PATH,HOME");
+    expect(cfg.gh.args[MCP_EXEC_BUN_FLAGS.length + 1]).toBe("PATH,HOME");
   });
 });
 

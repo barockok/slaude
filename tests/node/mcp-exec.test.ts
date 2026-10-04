@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseNodeManifest, stdioServersFor } from "../../src/node/manifest";
@@ -47,10 +47,10 @@ function cliExpand(s: string, childEnv: Record<string, string>): string {
 
 /** Start a config the way the CLI does: expand it against the agent child's
  *  environment, then run it with that environment under the server's `env`. */
-function startLikeCli(cfg: { command: string; args: string[]; env: Record<string, string> }, inherited: Record<string, string>) {
+function startLikeCli(cfg: { command: string; args: string[]; env: Record<string, string> }, inherited: Record<string, string>, cwd?: string) {
   const x = (v: string) => cliExpand(v, inherited);
   const env = Object.fromEntries(Object.entries(cfg.env).map(([k, v]) => [k, x(v)]));
-  const child = spawn(x(cfg.command), cfg.args.map(x), { stdio: ["pipe", "pipe", "inherit"], env: { ...inherited, ...env } });
+  const child = spawn(x(cfg.command), cfg.args.map(x), { cwd, stdio: ["pipe", "pipe", "inherit"], env: { ...inherited, ...env } });
   return {
     async request(): Promise<{ env: Record<string, string>; argv: string[] }> {
       const out = new Promise<string>((resolve) => {
@@ -134,6 +134,32 @@ describe("mcp-exec wrapper", () => {
       expect(seen).not.toContain("provider-fake");
       expect(seen).not.toContain("job-fake");
     }
+  });
+
+  it("a bunfig.toml or .env in the session workspace (the server's cwd) does not run inside the wrapper", async () => {
+    const ws = mkdtempSync(join(tmpdir(), "slaude-mcp-ws-"));
+    const marker = join(ws, "preload-ran");
+    // Records every process it runs in. The echo server is itself a Bun
+    // process started in the workspace, so it may load the file; the wrapper
+    // must not.
+    writeFileSync(join(ws, "evil.ts"), `require("node:fs").appendFileSync(${JSON.stringify(marker)}, process.argv[1] + "\\n");`);
+    writeFileSync(join(ws, "bunfig.toml"), `preload = ["./evil.ts"]\n`);
+    writeFileSync(join(ws, ".env"), "LANG=from-dotenv\n");
+    const nodeEnv = { PATH: process.env.PATH ?? "/usr/bin:/bin", LANG: "C.UTF-8" };
+    const m = parseNodeManifest(
+      // The server itself ignores the workspace .env, so LANG can only come from the wrapper.
+      JSON.stringify({ version: 1, mcpServers: { echo: { command: process.execPath, args: ["--no-env-file", echoServer] } }, allow: { p: ["echo"] } }),
+      nodeEnv,
+      "node.json",
+    );
+    const cfg = stdioServersFor(m, "p", nodeEnv) as any;
+    // The CLI's own environment has no LANG, so only the wrapper's config env sets it.
+    const srv = startLikeCli({ ...cfg.echo, env: { PATH: nodeEnv.PATH } }, { PATH: nodeEnv.PATH }, ws);
+    const { env } = await srv.request();
+    expect(await srv.stop()).toBe(0);
+    const ranIn = existsSync(marker) ? readFileSync(marker, "utf8").split("\n").filter(Boolean) : [];
+    expect(ranIn.some((p) => p.endsWith("mcp-exec.ts"))).toBe(false);
+    expect(env.LANG).toBeUndefined();
   });
 
   it("resolves a bare command on the server's own PATH and passes its exit code", async () => {
