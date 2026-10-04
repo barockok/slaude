@@ -363,13 +363,102 @@ export function policyFetch(
     const headers: Record<string, string> = {};
     new Headers(init.headers ?? undefined).forEach((v, k) => { headers[k] = v; });
     if (init.body != null && typeof init.body !== "string") throw new OutboundBlockedError("only string request bodies are supported");
-    const res = await safeFetch(
+    return safeFetchStreaming(
       url,
       { method: init.method ?? "GET", headers, ...(init.body != null ? { body: init.body } : {}), ...(init.signal ? { signal: init.signal } : {}) },
       opts,
     );
-    return res.toResponse();
   };
+}
+
+/**
+ * `safeFetch`, but resolved as soon as the response HEADERS arrive, with a
+ * streamed body: a reader sees each chunk as it comes, so an event stream that
+ * delivers its answer and stays open does not hold the caller until the
+ * timeout. The size cap and the timeout still bound the whole body; aborting
+ * the signal, or cancelling the body, destroys the connection.
+ */
+export async function safeFetchStreaming(
+  rawUrl: string,
+  init: SafeRequestInit = {},
+  opts: OutboundPolicyOptions = {},
+): Promise<Response> {
+  const { url, addresses } = await checkOutbound(rawUrl, opts);
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxBytes = opts.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+  const headers: Record<string, string> = { ...init.headers };
+  if (init.body !== undefined) headers["content-length"] = String(Buffer.byteLength(init.body));
+  const signal = init.signal;
+  if (signal?.aborted) throw abortError();
+
+  return new Promise<Response>((resolve, reject) => {
+    let headersIn = false;
+    let bodyCtl: ReadableStreamDefaultController<Uint8Array> | null = null;
+    let finished = false;
+    const finish = (e?: Error) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if (!e) return;
+      // The body learns of the failure BEFORE the socket goes: destroying it
+      // first can end the response, which would read as a clean close.
+      if (!headersIn) reject(e);
+      else {
+        try { bodyCtl?.error(e); } catch { /* already closed */ }
+      }
+      req.destroy();
+    };
+    const transportFail = (e: Error & { code?: unknown }) =>
+      finish(new Error(`request to ${url.hostname} failed (${transportCode(e)})`));
+
+    const req = (url.protocol === "https:" ? https : http).request(url, {
+      method: init.method ?? "GET",
+      headers,
+      lookup: ((_h: string, o: { all?: boolean } | undefined, cb: (...a: unknown[]) => void) =>
+        o?.all ? cb(null, addresses) : cb(null, addresses[0]!.address, addresses[0]!.family)) as never,
+    }, (res) => {
+      headersIn = true;
+      const status = res.statusCode ?? 0;
+      const h = new Headers();
+      for (const [k, v] of Object.entries(res.headers)) {
+        if (v === undefined) continue;
+        for (const one of Array.isArray(v) ? v : [v]) h.append(k, one);
+      }
+      const nullBody = status === 204 || status === 205 || status === 304;
+      let size = 0;
+      const body = nullBody
+        ? null
+        : new ReadableStream<Uint8Array>({
+            start(c) {
+              bodyCtl = c;
+            },
+            cancel() {
+              finish();
+              req.destroy();
+            },
+          });
+      res.on("data", (c: Buffer) => {
+        if (finished) return;
+        size += c.length;
+        if (size > maxBytes) return finish(new Error(`response from ${url.hostname} exceeded ${maxBytes} bytes`));
+        try { bodyCtl?.enqueue(new Uint8Array(c)); } catch { /* reader went away */ }
+      });
+      res.on("end", () => {
+        if (finished) return;
+        try { bodyCtl?.close(); } catch { /* already closed */ }
+        finish();
+      });
+      res.on("error", transportFail);
+      resolve(new Response(body, { status, headers: h }));
+    });
+    const timer = setTimeout(() => finish(new Error(`request to ${url.hostname} timed out after ${timeoutMs}ms`)), timeoutMs);
+    req.on("error", transportFail);
+    const onAbort = () => finish(abortError());
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (init.body !== undefined) req.write(init.body);
+    req.end();
+  });
 }
 
 /** `safeFetch` with the environment's policy, shaped like the `FetchLike`

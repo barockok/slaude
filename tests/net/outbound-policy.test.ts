@@ -384,6 +384,49 @@ describe("safeFetch (against a local server, loopback admitted by the dev flag)"
     expect(hits).toHaveLength(0);
   });
 
+  test("policyFetch streams: a held-open event stream delivers its first event at once; an abort closes it", async () => {
+    let closedByClient = false;
+    const s = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      idleTimeout: 0,
+      fetch: (req) => {
+        req.signal.addEventListener("abort", () => { closedByClient = true; });
+        return new Response(
+          new ReadableStream({
+            start(c) {
+              c.enqueue(new TextEncoder().encode("event: message\ndata: {\"ok\":true}\n\n"));
+              // never closed
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      },
+    });
+    try {
+      const ac = new AbortController();
+      const t0 = Date.now();
+      const res = await policyFetch(dev({ timeoutMs: 5000 }))(`http://127.0.0.1:${s.port}/`, { signal: ac.signal });
+      const reader = res.body!.getReader();
+      const first = new TextDecoder().decode((await reader.read()).value);
+      expect(first).toContain('data: {"ok":true}');
+      expect(Date.now() - t0).toBeLessThan(1000);
+      ac.abort();
+      await expect(reader.read()).rejects.toThrow(/aborted/);
+      const end = Date.now() + 2000;
+      while (!closedByClient && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+      expect(closedByClient).toBe(true);
+    } finally {
+      s.stop(true);
+    }
+  });
+
+  test("policyFetch: the size cap and the timeout bound a streamed body", async () => {
+    const big = await policyFetch(dev({ maxResponseBytes: 1000 }))(`${base()}/big`);
+    await expect(big.text()).rejects.toThrow(/exceeded 1000 bytes/);
+    await expect(policyFetch(dev({ timeoutMs: 100 }))(`${base()}/hang`)).rejects.toThrow(/timed out after 100ms/);
+  });
+
   test("policyFetch: a 204 answer has no body", async () => {
     const s = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response(null, { status: 204 }) });
     try {
