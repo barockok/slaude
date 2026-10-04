@@ -41,7 +41,7 @@ Status values: `todo`, `in progress`, `in review`, `accepted`, `blocked`.
 | U2 | Slack HTTP-mode correctness, scopes, typed failure text | WS-D D1.1, D1.3, D1.5, D1.6 | accepted |
 | U3 | Approval cards, portal unlink, `/mcp` per persona | WS-D D2.1–D2.3 | accepted |
 | U4 | Local cluster and verify harness, runbooks | WS-D D3.1–D3.7, D4.1, D4.5 | accepted |
-| U5 | Secret split, ServiceAccounts, node boot warning | WS-B §4.0 stage one | fix round |
+| U5 | Secret split, ServiceAccounts, node boot warning | WS-B §4.0 stage one | accepted |
 | U6 | Model-child lockdown, one outbound-fetch policy | WS-D D5.2, D5.3 | accepted |
 
 ### Stage 2 — features (release-candidate class)
@@ -49,14 +49,14 @@ Status values: `todo`, `in progress`, `in review`, `accepted`, `blocked`.
 | Unit | Content | Spec | Status |
 |---|---|---|---|
 | U7 | Per-request Slack client | WS-D D1.2, D1.4 | accepted |
-| U8a | Secrets module: reference parser, resolver seam, env and Vault backends | WS-A §4–§6 | in review |
+| U8a | Secrets module: reference parser, resolver seam, env and Vault backends | WS-A §4–§6 | accepted |
 | U8b | Provider credentials: persona field, bundle, node delivery, fatal typed failure, mono refusal | WS-A §5, §7–§11 | accepted |
 | U9 | Node credential, `authenticateNode`, route table, gate, endpoint hardening | WS-B §4.1–§4.4 | accepted |
-| U10 | `runs_on`, label queues, dispatch, worker, reaper, unserved labels, typed relabel | WS-B §4.5–§4.8 | todo |
-| U11 | Node-local stdio manifest, plugin allow-list, strict MCP config | WS-B §4.10 | todo |
-| U12 | MCP bridge | WS-C §4.2 | fix round |
-| U13 | KB scope, scoped list tools, skills provenance, memory-provider check | WS-C §4.1, §4.3 | fix round |
-| U14 | Panel persona API and screens | WS-C §4.4 | todo |
+| U10 | `runs_on`, label queues, dispatch, worker, reaper, unserved labels, typed relabel | WS-B §4.5–§4.8 | accepted (U10a, U10b) |
+| U11 | Node-local stdio manifest, plugin allow-list, strict MCP config | WS-B §4.10 | accepted |
+| U12 | MCP bridge | WS-C §4.2 | accepted |
+| U13 | KB scope, scoped list tools, skills provenance, memory-provider check | WS-C §4.1, §4.3 | accepted |
+| U14 | Panel persona API and screens | WS-C §4.4 | in progress |
 
 ### Stage 3 — cluster setup for the operator's mock test, docs, closeout
 
@@ -86,3 +86,8 @@ Status values: `todo`, `in progress`, `in review`, `accepted`, `blocked`.
 - The MCP bridge keeps the node-side MCP credential seeding in place until the bridge is proven; a later cleanup removes it.
 - Cross-replica de-duplication of failure messages is per process (U2); a Redis-backed guard is a possible later step.
 - **Cleanup after the MCP bridge is proven in a cluster (U12, WS-C §4.2.11):** remove the node-side MCP credential seeding (`src/node/credentials.ts`, its wiring in `src/node/worker.ts`), the `needs-auth` recovery, and the `GET /v1/tenants/:t/mcp-credentials` and `…/refresh` endpoints. Left in place by U12 on purpose. The bridge's connect-card rate limit is also per process (one card per session and server per 10 minutes per replica).
+- **Follow-ups from the U10–U13 reviews (not blocking the RC unless noted):**
+  - U13: a manager speaking in someone else's locked thread, and a cron created inside a 1:1 (runs as the user), write episodic memory into the persona's shared slice (`memoryScopeFor` ignores `runAs`); the gateway memory handler bounds only the provider call, not `ready()`/lock lookup; with the brain disabled the baseline prompt still names `kb_memoize`/`kb_search`; node mounts `kb_*` shims even then.
+  - U11: refuse runtime-control keys (`BUN_OPTIONS`, `NODE_OPTIONS`, `BUN_CONFIG_*`, `LD_PRELOAD`, `DYLD_*`) as manifest `env` keys; the manifest wrapper's `--config=/dev/null` assumes Linux; a Bun-based stdio server run from a workspace holding a `.env` loads it itself (operator's server).
+  - U10b: node paused on a refused credential stays healthy but not ready (alert on `slaude_node_auth_paused`); the re-dispatching follower is the dispatching gateway only; two ordering races remain and are documented.
+  - Flaky tests seen under load: `tests/node/worker-e2e` lock-resolver (fixed in U11 for its own waits), `tests/gateway/sim/tui/app-interactions` help overlay, `tests/deploy/e2e-ha-collect` free_port.
