@@ -71,13 +71,29 @@ or fragment. `http` is accepted only for a host listed (by exact name) in
 `SLAUDE_OUTBOUND_INTERNAL_HOSTS`, the same list the outbound-fetch policy uses;
 a private IP address likewise only when listed. A loopback, link-local or
 cloud-metadata address (`127.0.0.1`, `169.254.169.254`, `localhost`, the
-metadata host names) is never accepted, listed or not. The gateway checks this
-at sync and again every time it builds the bundle, for a literal URL and for
-a URL a reference resolved to.
+metadata host names, with or without a trailing dot) is never accepted, listed
+or not. The gateway checks this at sync and again every time it builds the
+bundle, for a literal URL and for a URL a reference resolved to.
+
+**Host names are not resolved in DNS.** Only literal IP addresses and the names
+above are classified; the agent child connects from the node's network, so a
+lookup on the gateway would prove nothing about where the child lands. A
+public name whose DNS answer is a loopback or private address (a wildcard-DNS
+name such as one under `nip.io`, say) passes this check. `SLAUDE_OUTBOUND_ALLOWED_HOSTS`
+does not apply to `baseUrl`: it governs the gateway's own outbound fetches. To
+limit where personas may send their keys, review `provider.baseUrl` in the
+persona repository (whoever can merge there can set it), keep each persona's
+secret under its own `{persona}` Vault folder so a redirected `baseUrl` can only
+carry that persona's own key, and restrict the nodes' egress at the network
+layer.
 On the gateway a `vault://` reference is also checked against
 `SLAUDE_VAULT_ALLOWED_PREFIXES`, and refused when this gateway has no Vault
 configured, so a reference that could never resolve fails the pipeline rather
 than every turn.
+
+A sync that removes `provider` from a persona that had it warns, naming the
+persona: from then on it uses the `provider_creds` rows and, with the default
+flag, the node's own credentials.
 
 **Provider and model are a pair.** A sync warns (and reports in `warnings`)
 for a persona that sets `provider.baseUrl` without `model`, and for any named
@@ -193,6 +209,13 @@ Vault returns; warm sessions keep running.
 |---|---|
 | Vault not answering (unreachable, timeout, 5xx, login failure) with no usable cached value | The bundle endpoint answers 503 with `transient: true` and `Retry-After`; the node fails the boot and the job takes its normal retry; the last attempt fails with `PROVIDER_CREDENTIALS_UNAVAILABLE` |
 | A definitive answer: a denied or missing secret or field, a bad reference, a `baseUrl` outside the rule | 503 with `transient: false`; the node fails the boot with `PROVIDER_CREDENTIALS_UNAVAILABLE` and the job fails without a retry |
+
+How many times a failing turn asks for the bundle: the node's client retries
+any 5xx up to three times in one request (waiting 250 ms, then 500 ms) and
+does not read `Retry-After`; a transient failure then takes the queue's
+second attempt (after about 1 s) with the same three tries. A transient
+failure therefore costs about six bundle builds per turn, and so up to six
+Vault reads when nothing is cached; a definitive one costs three.
 | A reference outside the allowlist | As definitive, and an error-level `provider.cred.resolve` line with reason `prefix` |
 | A managed persona with no credential and `SLAUDE_PROVIDER_ENV_FALLBACK=0` | The same code |
 | Vault down, warm session | Nothing changes |
@@ -224,13 +247,14 @@ variable:
   tenant or job token) fails the same way.
 
 A persona that **sets** `provider` always gets the `0` behaviour, whatever the
-flag. The deleted variables are `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
-`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_HEADERS`,
-`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `AWS_ACCESS_KEY_ID`,
-`AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_BEARER_TOKEN_BEDROCK`,
-`AWS_PROFILE`, `ANTHROPIC_BEDROCK_BASE_URL`, `GOOGLE_APPLICATION_CREDENTIALS`,
-`ANTHROPIC_UNIX_SOCKET`, `ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, and
-every `ANTHROPIC_VERTEX_*` and `ANTHROPIC_DEFAULT_*_MODEL`.
+flag. The deleted variables are whole families, so a provider mode the CLI adds
+later is covered too: every `ANTHROPIC_*`, `CLAUDE_CODE_USE_*`,
+`CLAUDE_CODE_OAUTH_*`, `CLAUDE_CODE_API_KEY_*`, `CLAUDE_CODE_CLIENT_*` and
+`AWS_*` variable, and `GOOGLE_APPLICATION_CREDENTIALS`, except those the bundle
+supplied. What the child needs to run is never removed: `PATH`, `HOME`,
+`USER`, `SHELL`, `TMPDIR`, `LANG`, `CLAUDE_CONFIG_DIR`, `ENABLE_TOOL_SEARCH`,
+`SLAUDE_AGENT_ID`, and the `DISABLE_*` and
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` switches slaude sets.
 
 Set `0` once every managed persona has its own credentials, and remove the
 provider variables from the node Deployment.
