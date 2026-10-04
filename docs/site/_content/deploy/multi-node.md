@@ -144,7 +144,9 @@ So each tier gets its own Secret:
 
 The manifests also give the gateway its own ServiceAccount (`slaude-gateway`, in `40-gateway.yaml`), and node pods mount no ServiceAccount token (`automountServiceAccountToken: false`). slaude makes no Kubernetes API call in either tier.
 
-**A node reads no database.** Before the split a node still read the `/1on1` lock straight from Postgres at session start. The gateway now signs the lock into the job token (the `lock` claim), and the node builds the session-mode block from it. In the node role, embedded storage is refused: `SLAUDE_DB` without `SLAUDE_PG_URL`, sqlite, or the brain's embedded PGLite. Anything that still asks for it fails with `NodeDbAccessError` and a logged stack, rather than silently reading an empty in-process database.
+**A node reads no database.** Before the split a node still read the `/1on1` lock straight from Postgres at session start. The gateway now signs the lock into the job token (the `lock` claim), and the node builds the session-mode block from it. Every dispatch also signs a session-config fingerprint over the run-as identity, the whole lock (owner, and whether it is locked or open with a scope) and the remote target. When the fingerprint changes, a warm node session reboots before the next turn, so a thread that goes from locked to open gets the open-mode instructions. One limit: a follow-up message that joins a job still waiting in the queue rides that job's token, and a token refresh copies its claims. Such a job runs on the lock as of its first message, exactly like `runAs`. This affects at most that one job; the next job carries the new lock. In the node role, embedded storage is refused: `SLAUDE_DB` without `SLAUDE_PG_URL`, sqlite, or the brain's embedded PGLite. Anything that still asks for it fails with `NodeDbAccessError` and a logged stack, rather than silently reading an empty in-process database. A job without a `lock` claim, minted by an older gateway, fails at session start on such a node, so the session never starts without its privacy instructions.
+
+**Note: episodic memory does not run on nodes.** In the scaled topology, node turns get no `<memory-context>`, and memory is not written. Before the split, nodes reached the brain's Postgres through the shared URL. Memory failures are logged and never break a turn. Serving memory through the gateway is a tracked follow-up, and the release candidate is not promoted to stable without it. Soul overrides are similar: on a node they apply only when the runtime bundle carries the structured soul.
 
 **The optional NetworkPolicy.** `deploy/k8s-scale/optional/node-egress-networkpolicy.yaml` allows node egress only to DNS, the gateway on 8080, port 6379 and port 443. It works by port: nodes cannot reach Postgres on 5432 or Vault on 8200, but a Postgres or Vault served on 443 or 6379 would still be reachable. Narrow the 6379 rule with a `to:` block naming your Redis. `/remote` sessions reach the initiator's machine over SSH through the tailnet, so add egress rules for those ports if you use `/remote`. The policy is optional because it only works on a CNI that enforces NetworkPolicy, and it may need your Redis and provider ports. Neither `kustomization.yaml` includes it.
 
@@ -154,6 +156,8 @@ The manifests also give the gateway its own ServiceAccount (`slaude-gateway`, in
 - `SLAUDE_NODE_BOOT_CHECK=refuse`: the node exits non-zero. `SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1` turns the refusal back into a warning. Use it only as a temporary escape.
 
 A later release makes `refuse` the default. Finish the split while the check only warns. The same list, plus `SLAUDE_NODE_TOKEN` and `SLAUDE_REDIS_URL`, is stripped from the agent child's environment in every role. A `${NAME}` placeholder in `.mcp.json` that names a gateway-only variable is left unexpanded, with the name logged. The runtime bundle never carries the MCP config.
+
+**Known gap: the gateway reads `.mcp.json` from the shared volume.** `${NAME}` placeholders in `$SLAUDE_HOME/.mcp.json` expand against the gateway's environment. Gateway-only names are refused, but any other variable the gateway holds can still be expanded into a server config: an embedding provider key, `ANTHROPIC_API_KEY`, or anything else set on it. The file is on the shared volume, which node turns can write. Keep gateway-only credentials on the gateway-only list, and watch that file.
 
 **Known gap: the gateway's `.env` is on the shared volume.** At boot every process loads `$SLAUDE_HOME/.env` (`/data/.env` in these manifests) into its environment, for any variable not already set. That file sits on the shared volume, which nodes and their agent turns can write. A turn on a node can therefore set a gateway variable the manifests leave unset, for example `SLAUDE_SLACK_API_URL`, and it takes effect when a gateway next restarts. The split does not close this. Until it is fixed, set every variable the gateway relies on explicitly in its Secret or ConfigMap, and watch that file.
 
@@ -174,12 +178,13 @@ Before this release both Deployments loaded `slaude-scale-secrets`. That Secret 
    ```
 
    You can leave the provider variables out if every tenant's runtime bundle carries provider credentials. A managed tenant (personas as code) or a database persona with no stored provider credentials needs them.
-2. Apply `40-gateway.yaml`. Gateways roll onto their ServiceAccount and read the node token and Redis URL from the node Secret, which holds the same values.
-3. Apply `50-node.yaml`. Nodes roll onto the node Secret. Each new node pod should log no gateway-secrets warning, and `slaude_node_gateway_secrets_present` should read 0.
-4. Keep your copy of `10-secrets.yaml` (or its sealed form) in the two-Secret shape, so the next apply does not undo the split.
-5. Deal with what nodes were exposed to (below).
+2. Apply `40-gateway.yaml`, with gateways on this release's image. Gateways roll onto their ServiceAccount and read the node token and Redis URL from the node Secret, which holds the same values.
+3. **Let queued and running turns drain.** Wait until `slaude_queue_depth` is 0 and no turn is running. Two things can go wrong otherwise. A job minted by an older gateway carries no `lock` claim, so it fails at session start on a node with no database (`NodeDbAccessError`). And an older node image on the new manifests silently opens an empty in-memory database and reads every thread as unlocked.
+4. Apply `50-node.yaml`, with **the node image already at this release**: set the image in the same apply, never the manifest first. Nodes roll onto the node Secret, which holds no database URL. Each new node pod should log no gateway-secrets warning, and `slaude_node_gateway_secrets_present` should read 0. Each warm session reboots once on its first turn, because sessions started before this release carry no session-config fingerprint. The reboot is expected and does not repeat.
+5. Keep your copy of `10-secrets.yaml` (or its sealed form) in the two-Secret shape, so the next apply does not undo the split.
+6. Deal with what nodes were exposed to (below).
 
-On the local cluster (`deploy/k8s-local`), re-running `up.sh` does steps 1 to 4. It derives `node.env` from the existing `secrets.env`, so every value is kept.
+On the local cluster (`deploy/k8s-local`), re-running `up.sh` does steps 1 to 5 (drain first if turns are running). It derives `node.env` from the existing `secrets.env`, so every value is kept.
 
 ### What nodes were exposed to
 
