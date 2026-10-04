@@ -218,3 +218,44 @@ describe("NodeClient runtime cache keying", () => {
     expect((await c.getRuntime("default", "other", "j")).providerCreds.apiKey).toBe("key-other");
   });
 });
+
+// The MCP bridge relay (review R2): a tool CALL is at most once, so the node
+// never repeats it, whatever the gateway answered; a LIST is safe to repeat.
+describe("postMcpx retry policy", () => {
+  let hits = 0;
+  let stub: ReturnType<typeof Bun.serve>;
+  beforeAll(() => {
+    stub = Bun.serve({
+      port: 0,
+      fetch: () => {
+        hits++;
+        return new Response("bad gateway", { status: 502 });
+      },
+    });
+  });
+  afterAll(() => stub.stop(true));
+  const client = (fetchImpl?: typeof fetch) =>
+    new NodeClient({ baseUrl: `http://127.0.0.1:${stub.port}`, token: "t", attempts: 3, baseDelayMs: 1, ...(fetchImpl ? { fetchImpl } : {}) });
+
+  test("a call that gets 502 reaches the gateway exactly once; a list retries", async () => {
+    hits = 0;
+    await expect(client().postMcpx("crm", "call", { name: "x", arguments: {} }, "job")).rejects.toBeInstanceOf(NodeApiError);
+    expect(hits).toBe(1);
+    hits = 0;
+    await expect(client().postMcpx("crm", "list", {}, "job")).rejects.toBeInstanceOf(NodeApiError);
+    expect(hits).toBe(3);
+  });
+
+  test("a call that hits a network error is sent exactly once; a list retries", async () => {
+    let tries = 0;
+    const down = (async () => {
+      tries++;
+      throw new TypeError("connection refused");
+    }) as unknown as typeof fetch;
+    await expect(client(down).postMcpx("crm", "call", { name: "x" }, "job")).rejects.toThrow("connection refused");
+    expect(tries).toBe(1);
+    tries = 0;
+    await expect(client(down).postMcpx("crm", "list", {}, "job")).rejects.toThrow("connection refused");
+    expect(tries).toBe(3);
+  });
+});

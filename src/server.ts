@@ -10,7 +10,7 @@ import { loadSoulData, setSoulData } from "./soul/extract";
 import { assertOAuthKeyCanary } from "./agent/mcp-oauth/store";
 import { sharedLoopback } from "./agent/mcp-oauth/shared-loopback";
 import { verifyState } from "./agent/mcp-oauth/state";
-import { env, jobAgeEnvViolations } from "./config/env";
+import { env, jobAgeEnvViolations, mcpBridgeEnvViolations } from "./config/env";
 import { assertPanelConfig } from "./gateway/panel/auth/config";
 import { assertPortalConfig } from "./gateway/portal/config";
 import { getPersonaRegistry } from "./persona/registry";
@@ -37,7 +37,7 @@ async function main() {
   // role that mounts /v1 uses them, so a weak key, one shared with the job
   // secret, or an unparsable cap stops boot.
   if (env.role() !== "node") {
-    const bad = [...nodeKeyViolations(process.env), ...jobAgeEnvViolations(process.env)];
+    const bad = [...nodeKeyViolations(process.env), ...jobAgeEnvViolations(process.env), ...mcpBridgeEnvViolations(process.env)];
     if (bad.length) throw new Error(`refusing to start:\n${bad.map((v) => `  - ${v}`).join("\n")}`);
   }
   assertGatewayRequirements({

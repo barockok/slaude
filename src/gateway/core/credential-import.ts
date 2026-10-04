@@ -33,6 +33,7 @@ import { paths } from "../../config/home";
 import { agentConfigDir } from "../../agent/oauth-home";
 import { accountIdsForSlackUserAnyTeam } from "../../db/accounts";
 import { isEntry, putCredentialIfAbsent } from "../../db/mcp-credentials";
+import { bumpMcpCredEpoch } from "./mcp-cred-epoch";
 import type { CredentialOwner } from "../../agent/credential-owner";
 
 export interface ImportRoots {
@@ -92,6 +93,7 @@ export async function importOnDiskCredentials(roots: ImportRoots = defaultRoots(
 
   async function importDir(dir: string, owner: CredentialOwner) {
     if (!existsSync(credFile(dir))) return;
+    let imported = false;
     const m = readMcpOAuth(dir);
     if (m === null) {
       r.skippedUnreadable++;
@@ -102,8 +104,13 @@ export async function importOnDiskCredentials(roots: ImportRoots = defaultRoots(
         r.skippedUnreadable++;
         continue;
       }
-      if (await putCredentialIfAbsent(owner, key, e)) r.imported++;
+      if (await putCredentialIfAbsent(owner, key, e)) {
+        r.imported++;
+        imported = true;
+      }
     }
+    // Warm sessions of this owner re-list their bridged tools (mcp-cred-epoch.ts).
+    if (imported) await bumpMcpCredEpoch(owner);
   }
 
   async function importPerson(dir: string, slackUserId: string) {

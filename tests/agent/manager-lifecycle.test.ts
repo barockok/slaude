@@ -434,6 +434,27 @@ describe("AgentManager lifecycle", () => {
     await shutdown(mgr, row.id);
   });
 
+  // WS-C §4.2: a node's async resolver returns the bridged servers next to the
+  // shims; they reach Options.mcpServers and the <mcp-servers> block.
+  it("an async MCP resolver's bridged servers are mounted and listed in <mcp-servers>", async () => {
+    const { buildBridgeServers } = await import("../../src/node/bridge");
+    const mgr = new AgentManager();
+    mgr.setMcpResolver(async (sid) => ({
+      ...(await buildBridgeServers(sid, ["example-crm"], {
+        client: { postMcpx: async () => ({ tools: [], instructions: "x" }) },
+        tokenFor: () => "tok",
+      })),
+      slaude_session: { type: "http", url: "http://localhost:1" } as any,
+    }));
+    const row = await mgr.ensureSession(thread());
+    const fs = plan();
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => fs.options !== null, 3000, "boot");
+    expect(fs.options.mcpServers["example-crm"]).toMatchObject({ type: "sdk", name: "example-crm" });
+    expect(fs.options.systemPrompt.append).toContain("- example-crm\n");
+    await shutdown(mgr, row.id);
+  });
+
   it("wires resolver/mcp options and runs Stop + PreCompact hooks", async () => {
     const mgr = new AgentManager();
     const events = record(mgr);

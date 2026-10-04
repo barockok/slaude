@@ -195,7 +195,7 @@ export class NodeClient {
   /** Low-level request with bearer + optional job token + retry policy. */
   async request(
     path: string,
-    o: { method?: string; body?: unknown; jobToken?: string; headers?: Record<string, string>; retry?: boolean } = {},
+    o: { method?: string; body?: unknown; jobToken?: string; headers?: Record<string, string>; retry?: boolean; signal?: AbortSignal } = {},
   ): Promise<Response> {
     const headers: Record<string, string> = {
       authorization: `Bearer ${this.#token}`,
@@ -212,6 +212,7 @@ export class NodeClient {
           method: o.method ?? "GET",
           headers,
           ...(o.body !== undefined ? { body: JSON.stringify(o.body) } : {}),
+          ...(o.signal ? { signal: o.signal } : {}),
         });
         // 5xx: transient server trouble — retry. Everything else returns.
         if (res.status >= 500 && retry && attempt < this.#attempts - 1) {
@@ -367,6 +368,31 @@ export class NodeClient {
       return { content: [{ type: "text", text: `tool unavailable: ${text.slice(0, 200)}` }], isError: true };
     }
     return this.#json<ToolResult>(res);
+  }
+
+  /**
+   * The MCP bridge (WS-C §4.2): relay one `tools/list` or `tools/call` for a
+   * bridged server to the gateway, which is the MCP client to the real server.
+   * The body and the answer are relayed unchanged. A call is never retried (a
+   * tool may not be idempotent); a list is. `signal` aborts the request, which
+   * the gateway propagates to the upstream. Throws GateDenied on the label
+   * gate's 403 and NodeApiError on any other non-200.
+   */
+  async postMcpx(
+    server: string,
+    op: "list" | "call",
+    body: Record<string, unknown>,
+    jobToken: string,
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    const res = await this.request(`/v1/tools/mcpx/${encodeURIComponent(server)}/${op}`, {
+      method: "POST",
+      body,
+      jobToken,
+      retry: op === "list",
+      ...(signal ? { signal } : {}),
+    });
+    return this.#json<Record<string, unknown>>(res);
   }
 
   /**
