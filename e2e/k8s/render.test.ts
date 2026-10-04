@@ -47,9 +47,15 @@ describe("e2e overlay", () => {
     expect(patch.data.SLAUDE_SLACK_API_URL.endsWith("/api/")).toBe(true);
   });
 
-  test("the ConfigMap patch sets a SLACK_BOT_TOKEN placeholder that is not token-shaped", () => {
-    const patch = kustomization.patches.map((p: any) => parse(p.patch)[0]).find((d: any) => d.kind === "ConfigMap");
-    const v = patch.data.SLACK_BOT_TOKEN;
+  // SLACK_BOT_TOKEN is gateway-only: the ConfigMap is loaded by nodes too, so the
+  // placeholder rides in the gateway Deployment patch, never the ConfigMap.
+  test("the gateway patch sets a SLACK_BOT_TOKEN placeholder that is not token-shaped, and the ConfigMap does not", () => {
+    const cm = kustomization.patches.map((p: any) => parse(p.patch)[0]).find((d: any) => d.kind === "ConfigMap");
+    expect(cm.data.SLACK_BOT_TOKEN).toBeUndefined();
+    const gw = kustomization.patches
+      .map((p: any) => parse(p.patch)[0])
+      .find((d: any) => d.kind === "Deployment" && d.metadata.name === "slaude-gateway");
+    const v = gw.spec.template.spec.containers.find((c: any) => c.name === "gateway").env.find((e: any) => e.name === "SLACK_BOT_TOKEN").value;
     expect(typeof v).toBe("string");
     expect(v.length).toBeGreaterThan(0);
     expect(v).not.toMatch(/^xox/i);
@@ -87,9 +93,10 @@ describe("e2e overlay", () => {
       .find((d: any) => d.kind === "Deployment" && d.metadata.name === "slaude-gateway");
     const patched = patch.spec.template.spec.containers.find((c: any) => c.name === "gateway");
     expect(envOf(patched, "SLAUDE_SOUL_CACHE_DIR")).toBe(`${home}/cache`);
-    // Env only: the patch adds no volume, mount, image or other env.
+    // Env only: the patch adds no volume, mount or image, and no env beyond the
+    // soul cache and the bot-token placeholder.
     expect(Object.keys(patched).sort()).toEqual(["env", "name"]);
-    expect(patched.env).toHaveLength(1);
+    expect(patched.env.map((e: any) => e.name).sort()).toEqual(["SLACK_BOT_TOKEN", "SLAUDE_SOUL_CACHE_DIR"]);
   });
 
   test("the overlay builds on deploy/k8s-local and includes both services", () => {

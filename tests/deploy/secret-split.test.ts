@@ -10,7 +10,7 @@
  * (its built-in kustomize); skipped without it.
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseAllDocuments } from "yaml";
@@ -30,9 +30,12 @@ function kustomize(dir: string): any[] {
 const tmp = mkdtempSync(join(tmpdir(), "slaude-secret-split-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
-function buildLocal(): any[] {
+/** Copies the overlays into a temp tree with fake generated env files. */
+function stage(): string {
+  if (existsSync(join(tmp, "deploy/k8s-local/secrets.env"))) return tmp;
   cpSync(join(root, "deploy/k8s-scale"), join(tmp, "deploy/k8s-scale"), { recursive: true });
   cpSync(join(root, "deploy/k8s-local"), join(tmp, "deploy/k8s-local"), { recursive: true });
+  cpSync(join(root, "e2e/k8s"), join(tmp, "e2e/k8s"), { recursive: true });
   const local = join(tmp, "deploy/k8s-local");
   // The files up.sh generates, with fake values and every key it can write.
   writeFileSync(
@@ -49,11 +52,33 @@ function buildLocal(): any[] {
   writeFileSync(join(local, "node.env"), "SLAUDE_NODE_TOKEN=fake\nSLAUDE_REDIS_URL=redis://fake\n");
   writeFileSync(join(local, "provider.env"), "ANTHROPIC_API_KEY=fake\n");
   writeFileSync(join(local, "deploy.env"), "SLAUDE_DEPLOY_TOKEN=fake\n");
-  return kustomize(local);
+  return tmp;
 }
+const buildLocal = () => kustomize(join(stage(), "deploy/k8s-local"));
+const buildE2e = () => kustomize(join(stage(), "e2e/k8s"));
 
 const find = (docs: any[], kind: string, name: string) => docs.find((d) => d.kind === kind && d.metadata?.name === name);
 const container = (dep: any, name: string) => dep.spec.template.spec.containers.find((c: any) => c.name === name);
+
+/** Every variable name (or mounted Secret key) a pod's containers can see,
+ *  resolved through the built Secrets and ConfigMaps: envFrom, env, key
+ *  references, init containers included, and Secrets mounted as volumes. */
+function visiblePod(docs: any[], podSpec: any): { name: string; via: string }[] {
+  const out: { name: string; via: string }[] = [];
+  for (const c of [...(podSpec.initContainers ?? []), ...(podSpec.containers ?? [])]) out.push(...visibleEnv(docs, c));
+  const keysOf = (name: string) => {
+    const obj = find(docs, "Secret", name);
+    expect(obj, `Secret ${name} mounted as a volume is not in the build`).toBeDefined();
+    return Object.keys({ ...(obj.data ?? {}), ...(obj.stringData ?? {}) });
+  };
+  for (const v of podSpec.volumes ?? []) {
+    if (v.secret) for (const k of keysOf(v.secret.secretName)) out.push({ name: k, via: `volume/${v.name}` });
+    for (const src of v.projected?.sources ?? []) {
+      if (src.secret) for (const k of keysOf(src.secret.name)) out.push({ name: k, via: `projected/${v.name}` });
+    }
+  }
+  return out;
+}
 
 /** Every variable name a container can see, resolved through the built Secrets and ConfigMaps. */
 function visibleEnv(docs: any[], c: any): { name: string; via: string }[] {
@@ -78,6 +103,7 @@ function visibleEnv(docs: any[], c: any): { name: string; via: string }[] {
 const builds: [string, () => any[]][] = [
   ["deploy/k8s-scale", () => kustomize(join(root, "deploy/k8s-scale"))],
   ["deploy/k8s-local", buildLocal],
+  ["e2e/k8s", buildE2e],
 ];
 
 for (const [label, build] of builds) {
@@ -86,8 +112,8 @@ for (const [label, build] of builds) {
     const node = find(docs, "Deployment", "slaude-node");
     const gateway = find(docs, "Deployment", "slaude-gateway");
 
-    test("the node container can see no gateway-only variable", () => {
-      const leaked = visibleEnv(docs, container(node, "node")).filter((v) => isGatewayOnlyEnv(v.name));
+    test("the node pod can see no gateway-only variable", () => {
+      const leaked = visiblePod(docs, node.spec.template.spec).filter((v) => isGatewayOnlyEnv(v.name));
       expect(leaked).toEqual([]);
     });
 
