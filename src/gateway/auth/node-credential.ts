@@ -81,6 +81,9 @@ export function labelsError(labels: unknown): string | null {
 export function nodeIdError(id: unknown): string | null {
   if (typeof id !== "string" || !NODE_ID_RE.test(id)) return `malformed id (want ${NODE_ID_RE.source})`;
   if (id === LEGACY_NODE_ID) return `'${LEGACY_NODE_ID}' is reserved for the legacy token`;
+  // A node's own queue is turns.<id>; `label.` would collide with a label
+  // queue (turns.label.<label>). The node refuses such an id at boot too.
+  if (id.startsWith("label.")) return "an id starting with 'label.' is reserved for label queues";
   return null;
 }
 
