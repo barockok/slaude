@@ -27,6 +27,16 @@ export type FakeVault = {
   leaseSeconds: number;
   /** login fails with this status when set */
   loginStatus?: number;
+  /** lookup-self answers this status regardless of the token (e.g. 403: a role without the default policy) */
+  lookupStatus?: number;
+  /** renew-self answers this status when set */
+  renewStatus?: number;
+  /** lease handed out by renew-self when set (defaults to leaseSeconds) */
+  renewLeaseSeconds?: number;
+  /** answer kv reads with a redirect to this URL */
+  kvRedirect?: string;
+  /** send kv headers at once, then stall the body this many ms */
+  kvBodyStallMs?: number;
 };
 
 export function startFakeVault(): FakeVault {
@@ -61,14 +71,17 @@ export function startFakeVault(): FakeVault {
       if (url.pathname === "/v1/auth/token/lookup-self") {
         fv.namespaces.push({ kind: "lookup", ns });
         fv.counts.lookup++;
+        if (fv.lookupStatus) return json(fv.lookupStatus, { errors: ["permission denied"] });
         if (!token || !fv.live.has(token)) return json(403, { errors: ["permission denied"] });
         return json(200, { data: { ttl: fv.leaseSeconds } });
       }
       if (url.pathname === "/v1/auth/token/renew-self" && req.method === "POST") {
         fv.namespaces.push({ kind: "renew", ns });
         fv.counts.renew++;
+        if (fv.renewStatus) return json(fv.renewStatus, { errors: ["forced"] });
         if (!token || !fv.live.has(token)) return json(403, { errors: ["permission denied"] });
-        return json(200, { auth: { client_token: token, lease_duration: fv.leaseSeconds, renewable: true } });
+        const lease = fv.renewLeaseSeconds ?? fv.leaseSeconds;
+        return json(200, { auth: { client_token: token, lease_duration: lease, renewable: true } });
       }
       if (url.pathname.startsWith("/v1/")) {
         fv.namespaces.push({ kind: "kv", ns });
@@ -76,6 +89,19 @@ export function startFakeVault(): FakeVault {
         if (token) fv.kvTokens.push(token);
         if (fv.kvDelayMs) await Bun.sleep(fv.kvDelayMs);
         if (fv.kvStatus) return json(fv.kvStatus, { errors: ["forced"] });
+        if (fv.kvRedirect) return new Response(null, { status: 307, headers: { location: fv.kvRedirect } });
+        if (fv.kvBodyStallMs) {
+          const stall = fv.kvBodyStallMs;
+          const body = new ReadableStream({
+            async start(c) {
+              c.enqueue(new TextEncoder().encode('{"data":'));
+              await Bun.sleep(stall);
+              c.enqueue(new TextEncoder().encode("{}}"));
+              c.close();
+            },
+          });
+          return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+        }
         const path = url.pathname.slice(4);
         if (!token || !fv.live.has(token) || fv.denied.has(path)) return json(403, { errors: ["permission denied"] });
         if (!fv.secrets.has(path)) return json(404, { errors: [] });

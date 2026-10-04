@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { VaultConfig } from "../../src/secrets/config";
-import { SecretResolutionError } from "../../src/secrets/errors";
+import { SecretResolutionError, TRANSIENT_REASONS } from "../../src/secrets/errors";
 import { createVaultClient } from "../../src/secrets/vault";
 import { startFakeVault, type FakeVault } from "./fake-vault";
 
@@ -132,7 +132,8 @@ describe("Vault client — 403 handling", () => {
     expect(fv.counts.login).toBe(2);
     t += 1_000;
     fv.live.clear();
-    expect(await reason(c.read("secret", "slaude/personas/a", "api_key"))).toBe("auth");
+    // the 403 is reported as itself (denied), not as a transient auth failure
+    expect(await reason(c.read("secret", "slaude/personas/a", "api_key"))).toBe("denied");
     expect(fv.counts.login).toBe(2);
     t += 30_000;
     expect(await c.read("secret", "slaude/personas/a", "api_key")).toBe("fake-key-a");
@@ -153,6 +154,97 @@ describe("Vault client — 403 handling", () => {
     // and sequential denials do not log in either
     for (let i = 0; i < 5; i++) await reason(c.read("secret", "slaude/personas/b", "api_key"));
     expect(fv.counts.login).toBe(1);
+  });
+});
+
+describe("Vault client — a good token is never thrown away", () => {
+  beforeEach(() => {
+    fv.secrets.set("secret/data/slaude/personas/bob", { api_key: "fake-key-b" });
+    fv.denied.add("secret/data/slaude/personas/bob");
+  });
+
+  test("lookup-self itself 403s (role without the default policy): one denial does not cause an outage", async () => {
+    fv.lookupStatus = 403;
+    const c = client();
+    expect(await c.read("secret", "slaude/personas/a", "api_key")).toBe("fake-key-a");
+    t += 1_000;
+    expect(await reason(c.read("secret", "slaude/personas/bob", "api_key"))).toBe("denied");
+    for (const step of [1_000, 4_000, 5_000, 5_000, 5_000, 5_000]) {
+      t += step;
+      expect(await c.read("secret", "slaude/personas/a", "api_key")).toBe("fake-key-a");
+      expect(await reason(c.read("secret", "slaude/personas/bob", "api_key"))).toBe("denied");
+    }
+    expect(fv.counts.login).toBe(1);
+    expect(fv.counts.lookup).toBe(1);
+  });
+
+  test("a dead token whose replacement login fails reports the 403 as denied and keeps the old token", async () => {
+    const c = client();
+    await c.read("secret", "slaude/personas/a", "api_key");
+    t += 60_000;
+    fv.live.clear();
+    fv.loginStatus = 503;
+    expect(await reason(c.read("secret", "slaude/personas/a", "api_key"))).toBe("denied");
+    expect(fv.counts.login).toBe(2);
+    // Vault comes back and re-validates the old token: no login needed, it is still used
+    fv.loginStatus = undefined;
+    fv.live.add("fake-token-1");
+    t += 1_000;
+    expect(await c.read("secret", "slaude/personas/a", "api_key")).toBe("fake-key-a");
+    expect(fv.kvTokens.at(-1)).toBe("fake-token-1");
+    expect(fv.counts.login).toBe(2);
+  });
+
+  test("renew fails and login fails, but the lease is still running: the current token keeps working", async () => {
+    fv.leaseSeconds = 90;
+    const c = client();
+    await c.read("secret", "slaude/personas/a", "api_key");
+    t += 61_000; // past the renew point (60 s), before the lease end (90 s)
+    fv.renewStatus = 503;
+    fv.loginStatus = 503;
+    expect(await c.read("secret", "slaude/personas/a", "api_key")).toBe("fake-key-a");
+    t += 1_000;
+    expect(await c.read("secret", "slaude/personas/a", "api_key")).toBe("fake-key-a");
+    expect(fv.kvTokens.every((x) => x === "fake-token-1")).toBe(true);
+    // renew and login are rate limited too: one attempt each in the window
+    expect(fv.counts.renew).toBe(1);
+    expect(fv.counts.login).toBe(2);
+  });
+
+  test("a renew that returns lease 0 forces a login (lease 0 = never expires only on login)", async () => {
+    fv.leaseSeconds = 90;
+    fv.renewLeaseSeconds = 0;
+    const c = client();
+    await c.read("secret", "slaude/personas/a", "api_key");
+    t += 61_000;
+    await c.read("secret", "slaude/personas/a", "api_key");
+    expect(fv.counts.renew).toBe(1);
+    expect(fv.counts.login).toBe(2);
+  });
+
+  test("a login lease of 0 never expires", async () => {
+    fv.leaseSeconds = 0;
+    const c = client();
+    await c.read("secret", "slaude/personas/a", "api_key");
+    t += 10 * 86_400_000;
+    await c.read("secret", "slaude/personas/a", "api_key");
+    expect(fv.counts.login).toBe(1);
+    expect(fv.counts.renew).toBe(0);
+  });
+
+  test("a clock that jumps backwards does not block login or keep a token alive", async () => {
+    fv.leaseSeconds = 30;
+    const c = client();
+    await c.read("secret", "slaude/personas/a", "api_key");
+    t -= 3_600_000; // wall clock stepped back an hour
+    // the token's age is unknown, so it is refreshed rather than trusted for another hour
+    await c.read("secret", "slaude/personas/a", "api_key");
+    expect(fv.counts.renew + fv.counts.login).toBe(2);
+    // and a login is not blocked for an hour by a "future" last attempt
+    fv.live.clear();
+    fv.renewStatus = 403;
+    t += 31_000;
+    expect(await c.read("secret", "slaude/personas/a", "api_key")).toBe("fake-key-a");
   });
 });
 
@@ -204,6 +296,51 @@ describe("Vault client — transport failures", () => {
     fv.kvDelayMs = 300;
     const c = client({}, { requestTimeoutMs: 50 });
     expect(await reason(c.read("secret", "slaude/personas/a", "api_key"))).toBe("timeout");
+  });
+
+  test("a timeout while the body is still arriving is a timeout, not a bad response", async () => {
+    fv.kvBodyStallMs = 300;
+    const c = client({}, { requestTimeoutMs: 80 });
+    expect(await reason(c.read("secret", "slaude/personas/a", "api_key"))).toBe("timeout");
+  });
+
+  test("redirects are not followed: another host never receives the token", async () => {
+    const other = startFakeVault();
+    try {
+      other.live.add("fake-token-1");
+      fv.kvRedirect = `${other.addr}/v1/secret/data/slaude/personas/a`;
+      expect(await reason(client().read("secret", "slaude/personas/a", "api_key"))).toBe("unreachable");
+      expect(other.counts.kv).toBe(0);
+      expect(other.kvTokens).toEqual([]);
+    } finally {
+      other.stop();
+    }
+  });
+
+  test("the CA bundle is read from SLAUDE_VAULT_CACERT; an unreadable one fails closed", async () => {
+    const read: string[] = [];
+    const ok = createVaultClient(cfg({ caCertPath: "/fake/ca.pem" }), {
+      now,
+      readFile: async (p) => {
+        read.push(p);
+        return p === "/fake/ca.pem" ? "fake-ca-pem" : "fake-sa-jwt";
+      },
+    });
+    await ok.read("secret", "slaude/personas/a", "api_key").catch(() => {});
+    expect(read).toContain("/fake/ca.pem");
+    const bad = createVaultClient(cfg({ caCertPath: "/fake/missing.pem" }), {
+      now,
+      readFile: async (p) => {
+        if (p.endsWith(".pem")) throw new Error("ENOENT");
+        return "fake-sa-jwt";
+      },
+    });
+    expect(await reason(bad.read("secret", "slaude/personas/a", "api_key"))).toBe("unreachable");
+    expect(fv.counts.login).toBe(1); // only the first client got as far as a request
+  });
+
+  test("which reasons are transient (may serve a stale value)", () => {
+    expect([...TRANSIENT_REASONS].sort()).toEqual(["auth", "bad_response", "server_error", "timeout", "unreachable"]);
   });
 
   test("unreachable", async () => {
