@@ -1133,10 +1133,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const soul = soulData();
       if (ctx.userId !== soul.manager.userId && ctx.userId !== soul.backupManager.userId) return;
     }
+    // Look the server up BEFORE consuming the card: a card minted by an older
+    // version can name a server this persona does not mount, and approving it
+    // only to drop it would swallow the click silently.
+    const cfg = httpExternalServers(ctx.personaName)[ctx.serverName];
+    if (!cfg) {
+      await connectSurface(ctx.channelId, ctx.threadTs, ctx.userId)
+        .reply({ text: `:warning: \`${ctx.serverName}\` is not available for this agent any more, so it can't be connected. Run \`/mcp\` for the current list.` })
+        .catch(() => {});
+      return;
+    }
     // One click wins; a duplicate (or another replica) sees null and stops.
     if (!(await PendingGates.resolve(token, "approved", clicker))) return;
-    const cfg = httpExternalServers(ctx.personaName)[ctx.serverName];
-    if (!cfg) return;
     await connectServer({ ...ctx, sessionId: gate.sessionId, serverCfg: cfg, personaName: ctx.personaName });
   });
 
