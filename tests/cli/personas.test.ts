@@ -81,6 +81,40 @@ describe("personas export and render", () => {
     expect(() => renderDir(out, meta)).toThrow(/default/);
     expect(() => renderDir(out, meta)).toThrow(PayloadError);
   });
+
+  const repoWith = (yaml: string) => {
+    const out = tmp();
+    mkdirSync(join(out, "personas", "default"), { recursive: true });
+    writeFileSync(join(out, "personas", "default", "SOUL.md"), "x");
+    mkdirSync(join(out, "personas", "ana"), { recursive: true });
+    writeFileSync(join(out, "personas", "ana", "SOUL.md"), "x");
+    writeFileSync(join(out, "personas", "ana", "persona.yaml"), yaml);
+    return out;
+  };
+
+  test("render carries provider references from persona.yaml", () => {
+    const out = repoWith(
+      "slackUserId: UTESTUSER1\nmodel: m-1\nprovider:\n  apiKey: vault://secret/slaude/personas/ana#api_key\n  baseUrl: https://llm.example.com\n");
+    const unknown: string[][] = [];
+    const ana = renderDir(out, meta, (p) => unknown.push(p)).personas.find((x) => x.name === "ana")!;
+    expect(ana.provider).toEqual({ apiKey: "vault://secret/slaude/personas/ana#api_key", baseUrl: "https://llm.example.com" });
+    expect(unknown).toEqual([]);
+  });
+
+  test("render --check refuses a literal provider secret with the gateway's parser, never echoing it", () => {
+    const out = repoWith("slackUserId: UTESTUSER1\nprovider:\n  apiKey: sk-literal-secret-value\n");
+    const e = (() => { try { renderDir(out, meta); } catch (x) { return x as Error; } })()!;
+    expect(e).toBeInstanceOf(PayloadError);
+    expect(e.message).toContain("persona 'ana': provider.apiKey");
+    expect(e.message).not.toContain("sk-literal-secret-value");
+  });
+
+  test("render reports provider/model warnings through its callback", () => {
+    const out = repoWith("slackUserId: UTESTUSER1\nprovider:\n  baseUrl: https://llm.example.com\n");
+    const warnings: string[] = [];
+    renderDir(out, meta, undefined, (w) => warnings.push(...w));
+    expect(warnings.some((w) => w.includes("'ana'") && w.includes("provider.baseUrl"))).toBe(true);
+  });
 });
 
 describe("personas export hardening", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { capPaths, MAX_REPORTED_FIELDS, SUPPORTED_PAYLOAD_VERSION, unknownFieldPaths, parsePayload, resolvePlaceholders, UnresolvedVarError, PayloadError } from "../../src/persona/sync/payload";
+import { capPaths, MAX_REPORTED_FIELDS, SUPPORTED_PAYLOAD_VERSION, unknownFieldPaths, parsePayload, resolvePlaceholders, UnresolvedVarError, PayloadError, providerWarnings } from "../../src/persona/sync/payload";
 
 const base = (personas: unknown[]) => ({ revision: "abc123", committedAt: "2026-10-01T10:00:00Z", personas });
 const ana = { name: "ana", slackUserId: "UTESTUSER1", soul: "You are Ana.", userToken: "${PERSONA_ANA_XOXP}" };
@@ -143,5 +143,74 @@ describe("payload version and unknown fields", () => {
     expect(c).toHaveLength(MAX_REPORTED_FIELDS + 1);
     expect(c.at(-1)).toBe("…and 950 more");
     expect(capPaths(["a"])).toEqual(["a"]);
+  });
+});
+
+describe("provider (WS-A §4)", () => {
+  const withProvider = (provider: unknown, extra: object = {}) => base([{ ...ana, model: "m-1", provider, ...extra }]);
+  const err = (raw: unknown) => { try { parsePayload(raw); } catch (e) { return e as Error; } throw new Error("no error"); };
+
+  test("references and a literal baseUrl parse and are kept", () => {
+    const provider = {
+      apiKey: "vault://secret/slaude/personas/ana#api_key",
+      authToken: "env://PERSONA_ANA_AUTH",
+      oauthToken: "vault://team/kv/ana#oauth",
+      baseUrl: "https://llm.example.com",
+    };
+    expect(parsePayload(withProvider(provider)).personas[0]!.provider).toEqual(provider);
+  });
+
+  test("baseUrl may itself be a reference", () => {
+    const p = parsePayload(withProvider({ baseUrl: "env://PERSONA_ANA_URL" })).personas[0]!;
+    expect(p.provider!.baseUrl).toBe("env://PERSONA_ANA_URL");
+  });
+
+  test("a literal secret, a placeholder or another scheme is refused, naming persona and field, never the value", () => {
+    for (const apiKey of ["sk-literal-secret-value", "${PERSONA_ANA_KEY}", "https://x.example.com/k", "env://ANTHROPIC_API_KEY"]) {
+      const e = err(withProvider({ apiKey }));
+      expect(e).toBeInstanceOf(PayloadError);
+      expect(e.message).toContain("persona 'ana': provider.apiKey");
+      expect(e.message).not.toContain(apiKey);
+    }
+  });
+
+  test("a traversal or encoded separator is refused", () => {
+    for (const authToken of ["vault://secret/../x#f", "vault://secret/a%2fb#f", "vault://secret/a#"]) {
+      expect(err(withProvider({ authToken })).message).toContain("provider.authToken");
+    }
+  });
+
+  test("a literal baseUrl must be a bare http(s) URL; userinfo is refused without echoing it", () => {
+    for (const baseUrl of ["ftp://llm.example.com", "not a url", "https://user:hunter2@llm.example.com"]) {
+      const e = err(withProvider({ baseUrl }));
+      expect(e.message).toContain("persona 'ana': provider.baseUrl");
+      expect(e.message).not.toContain("hunter2");
+    }
+  });
+
+  test("an unknown key inside provider is refused, not silently dropped", () => {
+    expect(err(withProvider({ apikey: "vault://secret/a/b#f" })).message).toContain("provider");
+  });
+
+  test("an empty provider object counts as absent", () => {
+    expect(parsePayload(withProvider({})).personas[0]!.provider).toBeUndefined();
+  });
+
+  test("provider is a known field, so it is never reported as ignored", () => {
+    expect(unknownFieldPaths(withProvider({ apiKey: "env://PERSONA_ANA_KEY" }))).toEqual([]);
+  });
+});
+
+describe("providerWarnings", () => {
+  test("baseUrl without model, and a persona with no model at all, are named", () => {
+    const p = parsePayload(base([
+      { name: "default", soul: "d", model: "m" },
+      { ...ana, provider: { baseUrl: "https://llm.example.com", apiKey: "env://PERSONA_ANA_KEY" } },
+      { name: "bea", slackUserId: "UTESTUSER2", soul: "b" },
+    ]));
+    const w = providerWarnings(p);
+    expect(w.some((s) => s.includes("'ana'") && s.includes("provider.baseUrl"))).toBe(true);
+    expect(w.some((s) => s.includes("'bea'") && s.includes("no model"))).toBe(true);
+    expect(w.some((s) => s.includes("'default'"))).toBe(false);
   });
 });

@@ -12,12 +12,12 @@
 import { z } from "zod";
 import { redactSecrets } from "../../gateway/core/status-text";
 import { PERSONA_VAR_PREFIX, PERSONA_VAR_RE } from "../../secrets/persona-var";
+import { parseRef } from "../../secrets/ref";
+import { PayloadError } from "./errors";
+
+export { PayloadError };
 
 export const PERSONA_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
-
-export class PayloadError extends Error {
-  readonly status = 422 as const;
-}
 export class UnresolvedVarError extends PayloadError {
   constructor(readonly variable: string) {
     super(`unresolved variable \${${variable}} — set it in the gateway's environment`);
@@ -38,8 +38,22 @@ const personaSpec = z.object({
   model: z.string().min(1).optional(),
   soul: z.string(),
   mcp: z.record(z.unknown()).optional(),
+  // Shape only here; parseProvider below checks every key and value with
+  // messages that never echo a value (zod's would echo an unknown key).
+  provider: z.record(z.unknown()).optional(),
 });
-export type PersonaSpec = z.infer<typeof personaSpec>;
+
+/**
+ * Where a persona's LLM provider credentials are (WS-A §4). Each secret field
+ * is a reference (`vault://…#field` or `env://PERSONA_*`), never a value;
+ * `baseUrl` is not a secret and may be a literal http(s) URL or a reference.
+ */
+export type PersonaProvider = { apiKey?: string; authToken?: string; oauthToken?: string; baseUrl?: string };
+export const PROVIDER_SECRET_FIELDS = ["apiKey", "authToken", "oauthToken"] as const;
+export const PROVIDER_FIELDS = [...PROVIDER_SECRET_FIELDS, "baseUrl"] as const;
+export type ProviderField = (typeof PROVIDER_FIELDS)[number];
+
+export type PersonaSpec = Omit<z.infer<typeof personaSpec>, "provider"> & { provider?: PersonaProvider };
 
 const payloadSchema = z.object({
   version: z.number().int().min(1).default(1),
@@ -48,7 +62,69 @@ const payloadSchema = z.object({
   allowEmpty: z.boolean().default(false),
   personas: z.array(personaSpec),
 });
-export type SyncPayload = z.infer<typeof payloadSchema>;
+export type SyncPayload = Omit<z.infer<typeof payloadSchema>, "personas"> & { personas: PersonaSpec[] };
+
+const isRefShaped = (v: string) => v.startsWith("vault://") || v.startsWith("env://");
+
+/**
+ * Validate one persona's `provider` object. Secret fields must be references
+ * (the same parseRef the gateway resolves with, so `render --check` and /deploy
+ * agree); `baseUrl` is a reference or a bare http(s) URL with no userinfo.
+ * Unknown keys are refused rather than dropped: a misspelt `apikey` would
+ * otherwise leave the persona silently on the node's own credentials. Errors
+ * name the persona and field, never a value. An empty object is absent.
+ */
+export function parseProvider(persona: string, raw: Record<string, unknown> | undefined): PersonaProvider | undefined {
+  if (raw === undefined) return undefined;
+  const known = new Set<string>(PROVIDER_FIELDS);
+  const out: PersonaProvider = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (!known.has(k)) {
+      throw new PayloadError(`persona '${persona}': provider.${safeKey(k)} is not a provider field (${PROVIDER_FIELDS.join(", ")})`);
+    }
+    const field = k as ProviderField;
+    const label = `persona '${persona}': provider.${field}`;
+    if (typeof v !== "string" || v === "") throw new PayloadError(`${label} must be a non-empty string`);
+    if (field === "baseUrl" && !isRefShaped(v)) {
+      let url: URL | null = null;
+      try {
+        url = new URL(v);
+      } catch {
+        /* reported below */
+      }
+      if (!url || (url.protocol !== "https:" && url.protocol !== "http:")) {
+        throw new PayloadError(`${label} must be an http(s) URL or a vault:// or env:// reference`);
+      }
+      if (url.username || url.password) {
+        throw new PayloadError(`${label} must not carry credentials in the URL; use provider.apiKey or provider.authToken`);
+      }
+    } else {
+      parseRef(v, label);
+    }
+    out[field] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * Sync warnings for the provider/model pairing (WS-A §4): a persona that sets
+ * `provider.baseUrl` with no `model`, and any named persona with no model at
+ * all, which inherits the gateway's default, a model its own provider may not
+ * have ("model not found" on every turn). The default persona's model IS the
+ * gateway default, so it only warns there when it also sets a baseUrl.
+ */
+export function providerWarnings(payload: Pick<SyncPayload, "personas">): string[] {
+  const out: string[] = [];
+  for (const p of payload.personas) {
+    if (p.model) continue;
+    if (p.provider?.baseUrl) {
+      out.push(`persona '${p.name}' sets provider.baseUrl but no model; it will run the gateway's default model on that provider`);
+    } else if (p.name !== "default" || p.provider) {
+      out.push(`persona '${p.name}' has no model; it inherits the gateway's default, which its provider may not offer`);
+    }
+  }
+  return out;
+}
 
 const PERSONA_KEYS = new Set(Object.keys(personaSpec.shape));
 const TOP_KEYS = new Set(Object.keys(payloadSchema.shape));
@@ -95,7 +171,13 @@ export function parsePayload(raw: unknown): SyncPayload {
   }
   const r = payloadSchema.safeParse(raw);
   if (!r.success) throw new PayloadError(r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
-  const p = r.data;
+  const p: SyncPayload = {
+    ...r.data,
+    personas: r.data.personas.map(({ provider, ...rest }) => {
+      const parsed = parseProvider(rest.name, provider);
+      return parsed ? { ...rest, provider: parsed } : rest;
+    }),
+  };
   const names = new Set<string>();
   const users = new Set<string>();
   for (const s of p.personas) {
