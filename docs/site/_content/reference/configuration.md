@@ -405,6 +405,36 @@ SLAUDE_OAUTH_LOOPBACK_HOST=0.0.0.0
 SLAUDE_OAUTH_LOOPBACK_PORTS=40100-40110
 ```
 
+### Outbound fetch policy <a id="outbound-policy"></a>
+
+The MCP OAuth flows (discovery, dynamic client registration, code exchange and token refresh) send every request through one outbound policy (`src/net/outbound-policy.ts`). The URLs come from persona configuration and from the servers' own metadata, and the gateway attaches credentials to them, so by default:
+
+- only `https` is allowed;
+- the host is resolved once, every address is checked, and the connection goes to the checked address. Loopback, private (RFC 1918, unique-local), shared (`100.64.0.0/10`), link-local, cloud metadata, multicast and reserved addresses are refused, IPv4 and IPv6, including IPv4 carried inside IPv6;
+- redirects are not followed (a 3xx is treated as a failure);
+- each request has a 10 s timeout and a 1 MiB response cap.
+
+Failures read `outbound request refused: <host> …` or `request to <host> failed (<code>)`. They name the host, never the resolved address.
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `SLAUDE_OUTBOUND_ALLOWED_HOSTS` | No | `""` | Comma-separated hosts (`auth.example.com`, or `*.example.com` for subdomains). When set, only these hosts are reachable. It **narrows** the policy: a listed host is still refused if it resolves to a private or loopback address. |
+| `SLAUDE_OUTBOUND_INTERNAL_HOSTS` | No | `""` | Comma-separated hosts you vouch for that may resolve to **private** ranges (RFC 1918, unique-local, `100.64.0.0/10`) and may use `http`. Use it for an in-cluster IdP or MCP server. Matching is by **exact hostname**: list every host the flow reaches, so the MCP server, its authorization server, and the token and registration endpoints' hosts if they differ. Loopback, link-local and cloud metadata addresses (`169.254.169.254`, `100.100.100.200`, `fd00:ec2::254`) are refused even for these hosts. |
+| `SLAUDE_OUTBOUND_DEV_LOOPBACK` | No | unset | `1` admits loopback addresses, and `http` to them. For tests and local development only; never set it in a deployment. Private and metadata addresses stay refused. |
+
+**Proxies.** Under Bun, these requests honour `HTTP_PROXY` / `HTTPS_PROXY` (and `NO_PROXY`), and there is no per-request opt-out. With a proxy set, the request is still addressed to the checked IP, but the proxy makes the connection. The proxy is then the trust boundary: it must not reach private ranges on the gateway's behalf.
+
+**Not covered yet.** Panel and portal OIDC login (`src/gateway/panel/auth/oidc.ts`) and the remote-brain MCP transport (`src/knowledge/remote/brain-client.ts`) still use the plain `fetch`.
+
+#### Breaking change
+
+Before this policy, OAuth fetches used the plain `fetch`. Now, by default:
+
+- discovery, registration, code exchange and refresh against `http` or private-range hosts **fail**. This includes in-cluster IdPs and MCP servers, the remote brain's IdP (its token refresh goes through the same code), and servers on a tailnet (`100.64.0.0/10`);
+- discovery no longer follows redirects. A server that answered the first probe with a 3xx now falls through to the well-known metadata URLs, and fails if those are not served either.
+
+**Recovery:** list the affected hosts in `SLAUDE_OUTBOUND_INTERNAL_HOSTS` and restart the gateway. Stored credentials are not deleted. A refused refresh is reported as a transient failure, not as a revoked grant, so connections recover once the host is listed and nobody has to reconnect.
+
 ### Skills repo & evolution
 
 | Name | Required | Default | Description |
