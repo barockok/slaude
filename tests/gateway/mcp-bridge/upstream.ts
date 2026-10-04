@@ -86,6 +86,8 @@ export interface Upstream {
   /** Fault tools run, by name: `fault_502` (runs, then answers 502) and
    *  `fault_drop` (runs, then the response body breaks off). */
   executed: Record<string, number>;
+  /** DELETE requests whose connection the client dropped (with `hangDelete`). */
+  deleteAborts: number;
   /** A restart: every session is forgotten (like expireSessions). */
   restart(): void;
   /** Drop every session: the next request on an old session id gets 404. */
@@ -100,8 +102,13 @@ export function startUpstream(
   opts: {
     json?: boolean;
     redirectTo?: string;
-    /** The status for a session id the server does not know. Default 404 (the spec); many servers send 400. */
-    unknownSessionStatus?: 400 | 404;
+    /** The status for a session id the server does not know. Default 404 (the spec); many servers send 400, some 500. */
+    unknownSessionStatus?: 400 | 404 | 500;
+    /** Runs before each `initialize` POST is handled, with its 1-based ordinal:
+     *  may delay it, or answer it with its own Response instead. */
+    onInitialize?: (n: number) => Promise<Response | void>;
+    /** Never answer a DELETE (session termination). */
+    hangDelete?: boolean;
     /** Extra generated tools after TOOLS, and tools/list page size (default: one page). */
     extraTools?: number;
     pageSize?: number;
@@ -119,8 +126,10 @@ export function startUpstream(
     refuse: new Set(),
     forbid: new Set(),
     httpAborts: 0,
+    deleteAborts: 0,
     executed: {},
   };
+  let inits = 0;
   const allTools: unknown[] = [
     ...TOOLS,
     ...Array.from({ length: opts.extraTools ?? 0 }, (_, i) => ({
@@ -196,6 +205,10 @@ export function startUpstream(
         const body = await req.clone().json().catch(() => null);
         for (const m of Array.isArray(body) ? body : [body]) {
           if (m?.method) state.methods.push(m.method);
+          if (m?.method === "initialize" && opts.onInitialize) {
+            const answer = await opts.onInitialize(++inits);
+            if (answer) return answer;
+          }
           if (m?.method === "notifications/cancelled") state.cancelled.push(m.params?.requestId);
           // A `slow` call never completes on its own: an abort of its HTTP
           // request means the client dropped the connection.
@@ -232,6 +245,10 @@ export function startUpstream(
           }
         }
       }
+      if (req.method === "DELETE" && opts.hangDelete) {
+        req.signal.addEventListener("abort", () => void state.deleteAborts++, { once: true });
+        return new Promise<Response>(() => {});
+      }
       const sid = req.headers.get("mcp-session-id");
       if (sid) {
         const t = transports.get(sid);
@@ -242,6 +259,7 @@ export function startUpstream(
         sessionIdGenerator: () => randomUUID(),
         enableJsonResponse: !!opts.json,
         onsessioninitialized: (id) => void transports.set(id, t),
+        onsessionclosed: (id) => void transports.delete(id),
       });
       await newServer().connect(t);
       return t.handleRequest(req);
@@ -254,6 +272,9 @@ export function startUpstream(
     },
     get httpAborts() {
       return state.httpAborts;
+    },
+    get deleteAborts() {
+      return state.deleteAborts;
     },
     url: `http://127.0.0.1:${http.port}/mcp`,
     port: http.port!,

@@ -752,8 +752,10 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
         // transit (a 5xx, a dropped connection, a stream that ended or went
         // silent until the deadline) may have run. Only a stale session, which
         // the server rejects before running anything, is safe to repeat. The
-        // session itself is kept: other calls may be using it.
+        // session is retired (an upstream that forgot it may answer every
+        // request with a 5xx), but closes only once other calls on it finish.
         if (sent && !idempotent && !(e instanceof UpstreamSessionExpired) && !signal?.aborted && mayHaveRun(e, callSig)) {
+          retire(key, p);
           console.warn(`[mcp-bridge] call interrupted server=${server} error=${e instanceof Error ? e.name : typeof e}`);
           return { ok: false, text: interruptedText(server) };
         }
