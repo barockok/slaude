@@ -6,6 +6,7 @@ import {
   OutboundBlockedError,
   checkOutbound,
   classifyAddress,
+  policyFetch,
   safeFetch,
   type Resolver,
 } from "../../src/net/outbound-policy";
@@ -343,6 +344,54 @@ describe("safeFetch (against a local server, loopback admitted by the dev flag)"
       expect(proxyHits).toEqual([`http://127.0.0.1:${server.port}/json`]);
     } finally {
       proxy.stop(true);
+    }
+  });
+
+  test("an abort signal destroys the request and rejects with an AbortError", async () => {
+    const ac = new AbortController();
+    const p = safeFetch(`${base()}/hang`, { signal: ac.signal }, dev({ timeoutMs: 5000 }));
+    setTimeout(() => ac.abort(), 20);
+    const err = await p.then(() => new Error("resolved"), (e: Error) => e);
+    expect(err.name).toBe("AbortError");
+    // Already aborted: refused before any connection.
+    hits = [];
+    await expect(safeFetch(`${base()}/json`, { signal: ac.signal }, dev())).rejects.toThrow(/aborted/);
+    expect(hits).toHaveLength(0);
+  });
+
+  test("policyFetch: a standard Response with status, headers and body", async () => {
+    const f = policyFetch(dev());
+    const res = await f(`${base()}/json`, { method: "POST", headers: new Headers({ "content-type": "text/plain" }), body: "hi" });
+    expect(res).toBeInstanceOf(Response);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-test")).toBe("1");
+    expect(await res.json()).toEqual({ ok: true, body: "hi" });
+  });
+
+  test("policyFetch: a redirect is returned, not followed", async () => {
+    const res = await policyFetch(dev())(`${base()}/redirect`, { headers: { authorization: "Bearer test-token" } });
+    expect(res.status).toBe(302);
+    expect(hits.some((h) => h.includes("/secret"))).toBe(false);
+  });
+
+  test("policyFetch: a request outside the pinned origin is refused before connecting", async () => {
+    const f = policyFetch({ ...dev(), pinnedOrigin: "https://mcp.example.com" });
+    await expect(f(`${base()}/json`)).rejects.toBeInstanceOf(OutboundBlockedError);
+    expect(hits).toHaveLength(0);
+    // The pinned origin itself is still subject to the address policy.
+    const g = policyFetch({ allowLoopback: false, allowedHosts: [], internalHosts: [], pinnedOrigin: base() });
+    await expect(g(`${base()}/json`)).rejects.toBeInstanceOf(OutboundBlockedError);
+    expect(hits).toHaveLength(0);
+  });
+
+  test("policyFetch: a 204 answer has no body", async () => {
+    const s = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response(null, { status: 204 }) });
+    try {
+      const res = await policyFetch(dev())(`http://127.0.0.1:${s.port}/`);
+      expect(res.status).toBe(204);
+      expect(res.body).toBeNull();
+    } finally {
+      s.stop(true);
     }
   });
 

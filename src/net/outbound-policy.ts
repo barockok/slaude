@@ -65,6 +65,8 @@ export interface SafeRequestInit {
   method?: string;
   headers?: Record<string, string>;
   body?: string;
+  /** Aborts the request (the socket is destroyed) and rejects with an AbortError. */
+  signal?: AbortSignal;
 }
 
 export const DEFAULT_TIMEOUT_MS = 10_000;
@@ -250,6 +252,17 @@ export class SafeResponse {
   };
   async text(): Promise<string> { return this.body.toString("utf8"); }
   async json(): Promise<any> { return JSON.parse(this.body.toString("utf8")); }
+  /** A standard fetch Response with the same status, headers and body. */
+  toResponse(): Response {
+    const headers = new Headers();
+    for (const [k, v] of Object.entries(this.rawHeaders)) {
+      if (v === undefined) continue;
+      for (const one of Array.isArray(v) ? v : [v]) headers.append(k, one);
+    }
+    // A Response may not carry a body for these statuses.
+    const nullBody = this.status === 204 || this.status === 205 || this.status === 304;
+    return new Response(nullBody ? null : this.body, { status: this.status, headers });
+  }
 }
 
 /** A short, address-free label for a transport error: its code when it is a
@@ -272,9 +285,14 @@ export async function safeFetch(
   const headers: Record<string, string> = { ...init.headers };
   if (init.body !== undefined) headers["content-length"] = String(Buffer.byteLength(init.body));
 
+  const signal = init.signal;
+  if (signal?.aborted) throw abortError();
+
   return new Promise<SafeResponse>((resolve, reject) => {
     let settled = false;
-    const settle = (fn: () => void) => { if (!settled) { settled = true; clearTimeout(timer); fn(); } };
+    const settle = (fn: () => void) => {
+      if (!settled) { settled = true; clearTimeout(timer); signal?.removeEventListener("abort", onAbort); fn(); }
+    };
     const fail = (e: Error) => settle(() => reject(e));
     // Transport errors are rewritten, never passed through: the runtime's own
     // message can embed the pinned address (a TLS failure reads `fetching
@@ -308,9 +326,50 @@ export async function safeFetch(
       req.destroy();
     }, timeoutMs);
     req.on("error", transportFail);
+    const onAbort = () => {
+      fail(abortError());
+      req.destroy();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
     if (init.body !== undefined) req.write(init.body);
     req.end();
   });
+}
+
+function abortError(): Error {
+  const e = new Error("the request was aborted");
+  e.name = "AbortError";
+  return e;
+}
+
+/**
+ * A WHATWG-shaped `fetch` under the policy, for clients that take a custom
+ * fetch (the MCP SDK's StreamableHTTPClientTransport). Every request is
+ * checked and pinned exactly as `safeFetch`; with `pinnedOrigin` a request to
+ * any other origin is refused before DNS, so a client cannot be steered
+ * elsewhere with the credential it carries. The body must be a string (the
+ * MCP transport sends JSON text) and the response is buffered.
+ */
+export function policyFetch(
+  opts: OutboundPolicyOptions & { pinnedOrigin?: string } = {},
+): (input: string | URL | Request, init?: RequestInit) => Promise<Response> {
+  return async (input, init = {}) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (opts.pinnedOrigin !== undefined) {
+      let origin: string;
+      try { origin = new URL(url).origin; } catch { throw new OutboundBlockedError("invalid URL"); }
+      if (origin !== opts.pinnedOrigin) throw new OutboundBlockedError(`${new URL(url).hostname} is not this server's pinned origin`);
+    }
+    const headers: Record<string, string> = {};
+    new Headers(init.headers ?? undefined).forEach((v, k) => { headers[k] = v; });
+    if (init.body != null && typeof init.body !== "string") throw new OutboundBlockedError("only string request bodies are supported");
+    const res = await safeFetch(
+      url,
+      { method: init.method ?? "GET", headers, ...(init.body != null ? { body: init.body } : {}), ...(init.signal ? { signal: init.signal } : {}) },
+      opts,
+    );
+    return res.toResponse();
+  };
 }
 
 /** `safeFetch` with the environment's policy, shaped like the `FetchLike`
