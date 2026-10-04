@@ -13,6 +13,24 @@ function capture() {
   return { lines, log: (msg: string) => lines.push(msg) };
 }
 
+describe("enforceNodeBootCheck: Vault variables (R1-F3)", () => {
+  test("any SLAUDE_VAULT_* or VAULT_* refuses the boot even in the default warn mode, naming only", () => {
+    for (const env of [
+      { SLAUDE_VAULT_ADDR: "https://vault.example.com" },
+      { VAULT_TOKEN: "fake-vault-token-value" },
+      { VAULT_ADDR: "https://vault.example.com", SLAUDE_NODE_BOOT_CHECK: "warn" },
+    ]) {
+      const c = capture();
+      expect(enforceNodeBootCheck(env, c.log)).toBe(false);
+      expect(c.lines.join("\n")).toContain("refusing to boot");
+      expect(c.lines.join("\n")).not.toContain("fake-vault-token-value");
+    }
+  });
+  test("an empty Vault variable is ignored", () => {
+    expect(enforceNodeBootCheck({ VAULT_TOKEN: "" }, capture().log)).toBe(true);
+  });
+});
+
 describe("enforceNodeBootCheck", () => {
   test("clean environment: boots, logs nothing, the gauge reads 0", () => {
     const c = capture();
