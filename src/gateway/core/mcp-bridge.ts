@@ -267,8 +267,9 @@ export function localOriginPins(): OriginPins {
   };
 }
 
-/** Shared by every gateway replica; no expiry (an operator clears a key to
- *  move a server deliberately, or rotates the credential). */
+/** Shared by every gateway replica; no expiry. To move a server deliberately
+ *  an operator deletes `<prefix>:mcpx-origin-pin:<id>` (the id is logged at the
+ *  first refusal) or rotates the header values. */
 export function redisOriginPins(redis: Redis, prefix: string): OriginPins {
   return {
     async pin(key, origin) {
@@ -483,13 +484,22 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
   const originPins = (): OriginPins =>
     (pins ??= env.role() === "gateway" ? redisOriginPins(getRedis(), redisPrefix()) : localOriginPins());
   /** The config headers may go to this origin only if they went there first. */
+  const loggedPins = new Set<string>();
   async function pinRefused(claims: JobClaims, server: string, cred: Exclude<BridgeCredential, { kind: "connect" }>): Promise<boolean> {
     if (Object.keys(cred.configHeaders).length === 0) return false;
     const origin = originOf(cred.url);
     if (!origin) return true;
-    const pinnedTo = await originPins().pin(pinKey(claims, server, cred.configHeaders), origin);
+    const id = pinKey(claims, server, cred.configHeaders);
+    const pinnedTo = await originPins().pin(id, origin);
     if (pinnedTo === origin) return false;
-    console.warn(`[mcp-bridge] refused: configured credentials of server=${server} are pinned to another origin`);
+    // The id is a hash of (tenant, persona, server, headers), never a secret:
+    // the operator deletes `<SLAUDE_REDIS_PREFIX>:mcpx-origin-pin:<id>` to move
+    // the server deliberately (docs/site/_content/deploy/mcp-bridge.md).
+    if (!loggedPins.has(id)) {
+      if (loggedPins.size >= 1000) loggedPins.clear();
+      loggedPins.add(id);
+      console.warn(`[mcp-bridge] refused: configured credentials of server=${server} are pinned to another origin; pin id=${id}`);
+    }
     return true;
   }
   const cardWindowMs = deps.cardWindowMs ?? 10 * 60_000;

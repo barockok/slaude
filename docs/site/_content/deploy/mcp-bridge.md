@@ -127,8 +127,18 @@ configuration:
   replica). If the URL later points to another origin with the same headers,
   the call is refused with
   `S: its configured credentials are pinned to the host they were first sent to, …`
-  and the new host receives nothing. To move a server on purpose, rotate its
-  header values (a new credential is pinned afresh).
+  and the new host receives nothing. Pins do not expire, and a persona sync
+  that changes the URL does not reset them. To move a server on purpose,
+  either rotate its header values (a new credential is pinned afresh), or
+  delete the pin. The gateway logs the pin id once at the first refusal
+  (`[mcp-bridge] refused: … pin id=<id>`; a hash of tenant, persona, server and
+  header values, never a secret):
+
+  ```sh
+  redis-cli DEL "<SLAUDE_REDIS_PREFIX>:mcpx-origin-pin:<id>"   # prefix default: slaude
+  ```
+
+  The next call pins the new origin.
 
 ## Failures
 

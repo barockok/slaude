@@ -5,7 +5,7 @@
  * nothing. A config may not set transport or session headers (review m2).
  * The pins are shared across gateway replicas through Redis.
  */
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import {
   createMcpBridge,
@@ -87,8 +87,22 @@ describe("static credentials are pinned to their first origin", () => {
     try {
       const headers = { authorization: "Bearer shared-static" };
       expect((await whoami({ url: a.url, headers }, redisOriginPins(redis, prefix))).isError).toBeUndefined();
-      // Another replica (another pin client) refuses the moved URL.
-      expect((await whoami({ url: b.url, headers }, redisOriginPins(redis, prefix))).content).toEqual([{ type: "text", text: pinnedElsewhereText("s") }]);
+      // Another replica (another pin client) refuses the moved URL, and logs
+      // the pin id (a hash, never a secret) once.
+      const warn = spyOn(console, "warn").mockImplementation(() => {});
+      let logged: string[] = [];
+      try {
+        expect((await whoami({ url: b.url, headers }, redisOriginPins(redis, prefix))).content).toEqual([{ type: "text", text: pinnedElsewhereText("s") }]);
+        logged = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("pin id="));
+      } finally {
+        warn.mockRestore();
+      }
+      expect(logged).toHaveLength(1);
+      expect(logged[0]).not.toContain("shared-static");
+      const id = logged[0]!.split("pin id=")[1]!;
+      // The documented remedy: delete that key, and the move is accepted.
+      expect(await redis.del(`${prefix}:mcpx-origin-pin:${id}`)).toBe(1);
+      expect((await whoami({ url: b.url, headers }, redisOriginPins(redis, prefix))).isError).toBeUndefined();
     } finally {
       const keys = await redis.keys(`${prefix}:*`);
       if (keys.length) await redis.del(...keys);
