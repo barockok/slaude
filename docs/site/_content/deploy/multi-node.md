@@ -367,6 +367,8 @@ The session-config fingerprint is not used for a relabel: it reboots a session o
 
 **A revoked or expired node credential at runtime.** A node that gets a `401` for its own credential (the body carries code `NODE_UNAUTHORIZED`) pauses every claim loop and stops its heartbeat, so it no longer counts as alive for warm routing or the unserved signal, and logs once. Turns already running are left to finish or fail. It retries `GET /v1/node/whoami` with backoff (5 s doubling to 60 s) and resumes claiming once it succeeds. A `401` for a job token is not a credential problem and does not pause anything.
 
+While paused, `/healthz` still answers `200` (with `"auth_paused": true` in the body): a liveness restart cannot fix a revoked credential, and the restarted node would only crash-loop on the boot-time `401`. `/readyz` answers `503`. Alert on the gauge instead: `slaude_node_auth_paused` is `1` while the node is paused and `0` otherwise, for example `slaude_node_auth_paused == 1` held `for: 5m`. Re-credential the node to clear it.
+
 ### Moves are at-least-once
 
 Every move (relabel, a mismatch at claim, the reaper) adds the job's copy on the target queue **held** (delayed), takes the original off its queue in one atomic Redis step that refuses a job a worker holds or has finished, and only then releases the copy. A message a pending job already holds is not appended again. A `job-moved` marker tells the gateway's follower where the job went, so a move never reads as the end of the turn. Two crash windows remain, each one Redis round trip wide, and both are at-least-once rather than lost:

@@ -221,6 +221,10 @@ export const m = {
   v1ToolCallsTotal: metrics.counter("slaude_v1_tool_calls_total", "REST tool-plane invocations on /v1/tools/<server>/<tool>, labeled by server + tool."),
   // Node runtime (spec §6).
   nodeSessionsLive: metrics.gauge("slaude_node_sessions_live", "Warm SDK Query sessions held by this node."),
+  nodeAuthPaused: metrics.gauge(
+    "slaude_node_auth_paused",
+    "1 while this node has paused its claim loops because the gateway refused its credential (401), else 0. /healthz stays 200 meanwhile; alert on this.",
+  ),
   nodeGatewaySecretsPresent: metrics.gauge(
     "slaude_node_gateway_secrets_present",
     "Gateway-only variables found in this node's environment at boot (0 = the Secret split is done).",

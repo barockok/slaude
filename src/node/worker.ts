@@ -617,13 +617,20 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
    * In-flight turns are left to finish or fail. It resumes only after GET
    * /v1/node/whoami succeeds again (a 404 is an older gateway that has
    * already authenticated the request).
+   *
+   * /healthz stays 200 while paused (review U10b-D): a liveness restart cannot
+   * fix a revoked credential and would crash-loop on the boot-time 401. The
+   * pause shows as `auth_paused` in the probe body and as the
+   * slaude_node_auth_paused gauge, which is what to alert on.
    */
   let claimWorkers: Worker[] = [];
   let authPaused = false;
+  metric.nodeAuthPaused.set(0);
   const authRetry = { initialMs: opts.authRetry?.initialMs ?? 5_000, maxMs: opts.authRetry?.maxMs ?? 60_000 };
   function pauseForAuth(): void {
     if (authPaused || stopped) return;
     authPaused = true;
+    metric.nodeAuthPaused.set(1);
     console.error(`[node] ${nodeId} the gateway refused this node's credential (401): pausing claims until it is accepted again`);
     void (async () => {
       await Promise.all(claimWorkers.map((w) => w.pause(true).catch(() => {})));
@@ -643,6 +650,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       await registry.nodeUp(nodeId, labels).catch(() => {});
       for (const w of claimWorkers) w.resume();
       authPaused = false;
+      metric.nodeAuthPaused.set(0);
       console.log(`[node] ${nodeId} credential accepted again: resuming claims`);
     })();
   }
@@ -983,6 +991,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // lifecycle: a draining node must drop out of rotation, and a node whose
   // BullMQ/Redis plumbing is broken must not report healthy.
   const workersRunning = () => workers.every((w) => w.isRunning());
+  // Liveness excuses a claim loop paused on purpose for a refused credential.
+  const workersAlive = () => workers.every((w) => w.isRunning() || (authPaused && w.isPaused()));
   const redisReady = () => cmd.status === "ready";
   const recentWorkerError = () => lastWorkerError !== null && Date.now() - lastWorkerError.at < errorWindowMs;
   const healthBody = () => ({
@@ -991,7 +1001,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     sessions_live: agent.liveCount(),
     redis: cmd.status,
     workers_running: workersRunning(),
-    ...(authPaused ? { auth_paused: true } : {}),
+    auth_paused: authPaused,
     ...(lastWorkerError ? { last_worker_error: lastWorkerError } : {}),
   });
   const port = opts.port === undefined ? (env.nodePort() || null) : opts.port;
@@ -1004,7 +1014,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           fetch: async (req) => {
             const path = new URL(req.url).pathname;
             if (path === "/healthz") {
-              const healthy = state === "ready" && redisReady() && workersRunning() && !recentWorkerError();
+              const healthy = state === "ready" && redisReady() && workersAlive() && !recentWorkerError();
               return Response.json(
                 { status: healthy ? "ok" : state === "draining" || state === "stopped" ? "draining" : "unhealthy", ...healthBody() },
                 { status: healthy ? 200 : 503 },

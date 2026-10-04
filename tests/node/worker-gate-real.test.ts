@@ -7,7 +7,9 @@
  *     acknowledging "done", and the turn's end goes out on the events stream
  *     as a LABEL_MISMATCH error, never as "done";
  *   - a 401 for the node's own credential pauses every claim loop and the
- *     heartbeat, logged once, until whoami succeeds again.
+ *     heartbeat, logged once, until whoami succeeds again. /healthz stays 200
+ *     meanwhile (a restart cannot fix a revoked credential; it would only
+ *     crash-loop on the boot 401) and slaude_node_auth_paused reads 1.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { REAL_URL, realEnabled, testPrefix, cleanupPrefix, sweepTag, obliterateQueues, until, sleep } from "../queue/real";
@@ -102,7 +104,7 @@ beforeAll(async () => {
     heartbeatSec: 0.2,
     nodeTtlSec: 0.6,
     drainSec: 2,
-    port: null,
+    port: 0,
     authRetry: { initialMs: 100, maxMs: 200 },
   });
   store = node.store;
@@ -172,10 +174,19 @@ d("worker: label gate and node-credential refusals", () => {
       expect(ran.has("s-auth2")).toBe(false);
       expect(await (await turns.queue("turns").getJob("auth2")).getState()).toBe("waiting");
       expect(errors.filter((l) => l.includes("pausing claims"))).toHaveLength(1);
+      // Liveness stays green while paused; the pause is a field and a gauge.
+      const base = `http://127.0.0.1:${node.httpPort()}`;
+      const hz = await fetch(`${base}/healthz`);
+      expect(hz.status).toBe(200);
+      expect(await hz.json()).toMatchObject({ status: "ok", auth_paused: true });
+      expect(await (await fetch(`${base}/metrics`)).text()).toMatch(/^slaude_node_auth_paused 1$/m);
       // The credential is accepted again: claims and the heartbeat resume.
       gw.whoami = 200;
       await until(() => ran.get("s-auth2") === 1, 10_000);
       expect(await registry.nodeAlive("node-gate")).toBe(true);
+      const after = (await (await fetch(`http://127.0.0.1:${node.httpPort()}/healthz`)).json()) as { auth_paused?: boolean };
+      expect(after.auth_paused).toBe(false);
+      expect(await (await fetch(`http://127.0.0.1:${node.httpPort()}/metrics`)).text()).toMatch(/^slaude_node_auth_paused 0$/m);
     } finally {
       console.error = orig;
       gw.whoami = 200;
