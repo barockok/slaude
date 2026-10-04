@@ -119,7 +119,7 @@ describe("two live replicas share pending_gates (critic repro, fixed)", () => {
     await PendingGates.resolve(id, "expired", "system");
 
     const responds = await A.fire(`slaude_appr:approve:${id}`, "U0APP");
-    expect(responds.some((r) => /already decided/.test(r.text ?? ""))).toBe(true);
+    expect(responds.some((r) => /expired/.test(r.text ?? "") && r.replace_original === false)).toBe(true);
     const d = await p;
     expect(d.approved).toBe(false);
     expect(d.by).toBe("system");
@@ -135,7 +135,7 @@ describe("two live replicas share pending_gates (critic repro, fixed)", () => {
     await PendingGates.resolve("swept_tu", "expired", "system");
 
     const responds = await A.fire("slaude_perm:allow:swept_tu", "U0MGR");
-    expect(responds.some((r) => /already decided/.test(r.text ?? ""))).toBe(true);
+    expect(responds.some((r) => /expired/.test(r.text ?? "") && r.replace_original === false)).toBe(true);
     const r = (await p) as any;
     expect(r.behavior).toBe("deny");
   }, 10_000);

@@ -12,6 +12,7 @@ import * as PendingGates from "../../../src/db/pending-gates";
 import * as OneOnOne from "../../../src/db/one-on-one";
 import { PermissionGate } from "../../../src/gateway/slack/permission-gate";
 import { ApprovalGate } from "../../../src/gateway/slack/approval-gate";
+import { getPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../../src/persona/registry";
 
 /**
  * M2 semantics at the gateway level: the durable state (seen_events,
@@ -66,8 +67,8 @@ function makeGw(gwOpts: any = {}) {
   const agent = new AgentManager();
   const sends: string[] = [];
   agent.sendMessage = async (_id: string, txt: string) => { sends.push(txt); };
-  createGateway(agent, cap.t, gwOpts);
-  return { ...cap, agent, sends };
+  const h = createGateway(agent, cap.t, gwOpts);
+  return { ...cap, agent, sends, h };
 }
 
 const msg = (client: any, text: string, ts: string, opts: { user?: string; thread?: string } = {}) => ({
@@ -285,5 +286,73 @@ describe("stale-click idempotency (two clicks, one wins)", () => {
     const second = await f.fire(`slaude_appr:deny:${id}`, "U0APP");
     expect(second.some((m) => /already decided/.test(m.text ?? ""))).toBe(true);
     expect((await PendingGates.get(id))!.status).toBe("approved");
+  });
+});
+
+describe("persona-only MCP servers are connectable from Slack (per-persona resolution)", () => {
+  const ANA = "UANAPERSONA1";
+  const notion = { type: "http", url: "https://notion.example/mcp" };
+  const anaRegistry = (): PersonaRegistry => {
+    const ana = { name: "ana", slackUserId: ANA, config: { slackUserId: ANA, name: "ana" }, outClient: null, mcp: { mcpServers: { notion } }, model: null } as any;
+    return {
+      lookupByUserId: (u) => (u === ANA ? ana : null),
+      lookupByName: (n) => (n === "ana" ? ana : null),
+      list: () => [ana],
+      isMultiPersonaMode: () => true,
+      isManaged: () => true,
+      tombstonedPersonaFor: () => null,
+      defaultPersona: () => ({ model: null, mcp: null }),
+    };
+  };
+  let prior: PersonaRegistry;
+  beforeEach(() => {
+    prior = getPersonaRegistry();
+    setPersonaRegistry(anaRegistry());
+    // No global .mcp.json: notion exists only in ana's own config.
+    rmSync(join(paths.home, ".mcp.json"), { force: true });
+    mkdirSync(process.env.CLAUDE_CONFIG_DIR!, { recursive: true });
+  });
+  afterEach(() => setPersonaRegistry(prior));
+
+  const stub = (seen: string[]) => async (a: any) => {
+    seen.push(a.serverName);
+    return { clientId: "c", accessToken: "a" };
+  };
+
+  it("a Connect card for a persona-only server connects when clicked", async () => {
+    const seen: string[] = [];
+    await PendingGates.create({
+      id: "anacard1", kind: "mcp_connect", sessionId: "S_OLD",
+      payload: { channelId: CH, threadTs: "600.0", userId: WORLD.manager, serverName: "notion", scope: "global", personaName: "ana" },
+    });
+    const g = makeGw({ oauthConnect: stub(seen) });
+    await g.click("slaude_mcp:connect:anacard1", WORLD.manager);
+    expect(seen).toEqual(["notion"]);
+    expect((await PendingGates.get("anacard1"))!.status).toBe("approved");
+  });
+
+  it("a card naming a server the persona does not mount is told so and not consumed", async () => {
+    await PendingGates.create({
+      id: "anacard2", kind: "mcp_connect", sessionId: "S_OLD",
+      payload: { channelId: CH, threadTs: "601.0", userId: WORLD.manager, serverName: "global-only", scope: "global", personaName: "ana" },
+    });
+    const seen: string[] = [];
+    const g = makeGw({ oauthConnect: stub(seen) });
+    await g.click("slaude_mcp:connect:anacard2", WORLD.manager);
+    expect(seen).toEqual([]);
+    expect((await PendingGates.get("anacard2"))!.status).toBe("pending");
+    expect(g.posts.some((p) => /not available/i.test(String(p.text ?? "")))).toBe(true);
+  });
+
+  it("the agent's connect tool resolves the thread's persona", async () => {
+    const seen: string[] = [];
+    const g = makeGw({ oauthConnect: stub(seen) });
+    await g.emit("message", msg(g.t.client, `<@${ANA}> connect notion`, nextTs()));
+    const rows = await db.query<{ id: string }>("SELECT id FROM sessions");
+    expect(rows.length).toBe(1);
+    const out = await g.h.__agentConnect(rows[0]!.id, "notion");
+    expect(out).toMatch(/Started authorizing/);
+    for (let i = 0; i < 200 && seen.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(seen).toEqual(["notion"]);
   });
 });
