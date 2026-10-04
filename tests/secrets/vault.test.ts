@@ -216,7 +216,7 @@ describe("Vault client — transport failures", () => {
   test("an injected fetch is used, and error messages never carry the value", async () => {
     const seen: string[] = [];
     const c = client({}, {
-      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      fetch: (async (input: string | URL | Request, init?: RequestInit) => {
         seen.push(String(input));
         return fetch(input, init);
       }) as typeof fetch,

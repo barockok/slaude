@@ -3,8 +3,6 @@
  * token lookup-self / renew-self, and KV v2 reads, with switches for the
  * failure shapes the client must tell apart. Fake tokens and values only.
  */
-import type { Server } from "bun";
-
 export type FakeVault = {
   addr: string;
   stop(): void;
@@ -45,7 +43,7 @@ export function startFakeVault(): FakeVault {
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-  const server: Server = Bun.serve({
+  const server = Bun.serve({
     port: 0,
     async fetch(req) {
       const url = new URL(req.url);
