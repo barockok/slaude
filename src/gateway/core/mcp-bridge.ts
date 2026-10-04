@@ -71,6 +71,8 @@ export const cancelledText = (server: string) => `the call to ${server} was canc
 export const busyText = (server: string) => `too many MCP calls are in flight for this identity; ${server} was not called`;
 export const truncatedText = (size: number, cap: number) =>
   `[result truncated by the MCP bridge: ${size} bytes is over the ${cap}-byte limit]`;
+export const interruptedText = (server: string) =>
+  `the call to ${server} was interrupted; it may have been executed — check before retrying`;
 export const forbiddenText = (server: string) => `${server} refused this call: permission denied for this identity`;
 export const listTruncatedText = (shown: number, maxTools: number, maxBytes: number) =>
   `[tool list truncated by the MCP bridge: ${shown} tools are available here; the limits are ${maxTools} tools and ${maxBytes} bytes]`;
@@ -671,6 +673,9 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
     left: () => number,
     signal: AbortSignal | undefined,
     callSig: AbortSignal,
+    /** Safe to repeat (tools/list). A tools/call is NOT: it is retried only
+     *  when the upstream provably did not run it (a stale-session rejection). */
+    idempotent: boolean,
     op: (c: Client) => Promise<T>,
   ): Promise<{ ok: true; value: T } | { ok: false; text: string }> {
     const key = poolKey(cred, server);
@@ -678,10 +683,14 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
     let reconnected = false;
     let current = cred;
     for (;;) {
+      // Whether the failure came from the request itself (the upstream may have
+      // acted on it) or from opening the session (it never saw the request).
+      let sent = false;
       try {
         // Opening the session is not tied to this call's signal: other calls
         // may be waiting on the same initialisation.
         const client = await session(key, current, left());
+        sent = true;
         return { ok: true, value: await callSignal.run(callSig, () => op(client)) };
       } catch (e) {
         if (e instanceof UpstreamForbidden) return { ok: false, text: forbiddenText(server) };
@@ -707,6 +716,14 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
           }
           maybeCard(claims, server, "reauth");
           return { ok: false, text: reauthText(server) };
+        }
+        // At most once: a call that reached the upstream and then failed in
+        // transit (a 5xx, a dropped connection) may have run. Only a stale
+        // session, which the server rejects before running anything, is safe.
+        if (sent && !idempotent && !(e instanceof UpstreamSessionExpired) && retriable(e, signal, callSig)) {
+          drop(key);
+          console.warn(`[mcp-bridge] call interrupted server=${server} error=${e instanceof Error ? e.name : typeof e}`);
+          return { ok: false, text: interruptedText(server) };
         }
         if (!reconnected && retriable(e, signal, callSig)) {
           reconnected = true;
@@ -804,7 +821,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
       const maxBytes = lim.maxListBytes ?? DEFAULT_MAX_LIST_BYTES;
       const out = await budgeted(cfg, signal, ({ timeoutMs, deadline, left, callSig }) =>
         withSlots(claims, server, cred.ownerKey, deadline, signal, () =>
-          run(claims, server, cred, timeoutMs, left, signal, callSig, async (client) => {
+          run(claims, server, cred, timeoutMs, left, signal, callSig, true, async (client) => {
             const tools: unknown[] = [];
             let bytes = 0;
             let truncated = false;
@@ -852,7 +869,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
       if (await pinRefused(claims, server, cred)) return errResult(pinnedElsewhereText(server));
       const out = await budgeted(cfg, signal, ({ timeoutMs, deadline, left, callSig }) =>
         withSlots(claims, server, cred.ownerKey, deadline, signal, () =>
-          run(claims, server, cred, timeoutMs, left, signal, callSig, (client) =>
+          run(claims, server, cred, timeoutMs, left, signal, callSig, false, (client) =>
             rawRequest(client, "tools/call", { name, arguments: args ?? {} }, {
               timeout: left(),
               ...(signal ? { signal } : {}),

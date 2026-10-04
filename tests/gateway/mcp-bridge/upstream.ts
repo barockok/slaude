@@ -83,6 +83,9 @@ export interface Upstream {
   forbid: Set<string>;
   /** POST requests whose connection the client dropped before the response ended. */
   httpAborts: number;
+  /** Fault tools run, by name: `fault_502` (runs, then answers 502) and
+   *  `fault_drop` (runs, then the response body breaks off). */
+  executed: Record<string, number>;
   /** A restart: every session is forgotten (like expireSessions). */
   restart(): void;
   /** Drop every session: the next request on an old session id gets 404. */
@@ -116,6 +119,7 @@ export function startUpstream(
     refuse: new Set(),
     forbid: new Set(),
     httpAborts: 0,
+    executed: {},
   };
   const allTools: unknown[] = [
     ...TOOLS,
@@ -197,6 +201,19 @@ export function startUpstream(
           // request means the client dropped the connection.
           if (m?.method === "tools/call" && m.params?.name === "slow") {
             req.signal.addEventListener("abort", () => void state.httpAborts++, { once: true });
+          }
+          // Faults AFTER the tool ran: the client cannot know whether it did.
+          if (m?.method === "tools/call" && (m.params?.name === "fault_502" || m.params?.name === "fault_drop")) {
+            const name = m.params.name as string;
+            state.executed[name] = (state.executed[name] ?? 0) + 1;
+            if (name === "fault_502") return new Response("bad gateway", { status: 502 });
+            const broken = new ReadableStream({
+              start(c) {
+                c.enqueue(new TextEncoder().encode('{"jsonrpc":"2.0","id":'));
+                c.error(new Error("connection lost"));
+              },
+            });
+            return new Response(broken, { headers: { "content-type": "application/json" } });
           }
         }
       }

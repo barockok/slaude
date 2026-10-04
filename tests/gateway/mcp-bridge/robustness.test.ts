@@ -12,7 +12,7 @@
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { capResult, createMcpBridge, listTruncatedText, type BridgeLimits } from "../../../src/gateway/core/mcp-bridge";
+import { capResult, createMcpBridge, interruptedText, listTruncatedText, type BridgeLimits } from "../../../src/gateway/core/mcp-bridge";
 import type { JobClaims } from "../../../src/gateway/api/auth";
 import { TOOLS, startUpstream, type Upstream } from "./upstream";
 
@@ -76,6 +76,38 @@ describe("recovery", () => {
       expect(up.methods.filter((m) => m === "initialize")).toHaveLength(1);
       clock += 61_000;
       await b.call(claims, "s", "echo", { text: "c" });
+      expect(up.methods.filter((m) => m === "initialize")).toHaveLength(2);
+    } finally {
+      await b.close();
+    }
+  });
+});
+
+describe("tool calls are at most once", () => {
+  for (const name of ["fault_502", "fault_drop"]) {
+    test(`${name}: the upstream ran the call once; the bridge does not retry and says it may have run`, async () => {
+      const up = upstream();
+      const b = bridgeAt(up.url);
+      try {
+        const r = await b.call(claims, "s", name, {});
+        expect(r).toEqual({ content: [{ type: "text", text: interruptedText("s") }], isError: true });
+        expect(up.executed[name]).toBe(1);
+        expect(up.methods.filter((m) => m === "tools/call")).toHaveLength(1);
+      } finally {
+        await b.close();
+      }
+    });
+  }
+
+  test("a stale session (400 before the tool runs) is retried once on a fresh session and succeeds", async () => {
+    const up = upstream({ unknownSessionStatus: 400 });
+    const b = bridgeAt(up.url);
+    try {
+      await b.call(claims, "s", "echo", { text: "warm" });
+      up.restart();
+      expect((await b.call(claims, "s", "echo", { text: "again" })).content).toEqual([{ type: "text", text: "again" }]);
+      // The rejected request plus one retry.
+      expect(up.methods.filter((m) => m === "tools/call")).toHaveLength(3);
       expect(up.methods.filter((m) => m === "initialize")).toHaveLength(2);
     } finally {
       await b.close();
