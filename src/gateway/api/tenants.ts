@@ -29,10 +29,9 @@ import { baseUrlProblem, internalHostsFrom } from "../../persona/provider-base-u
 import { logResolveEvent } from "../core/provider-secrets";
 import { decrypt, masterKey, MasterKeyError } from "../../db/crypto";
 import { env } from "../../config/env";
-import { paths } from "../../config/home";
 import { loadSoul } from "../../soul/loader";
 import { soulData } from "../../soul/extract";
-import { personaSkillsRoot } from "../../skills/loader";
+import { skillRootsFor } from "../../skills/loader";
 import { json, notFound } from "./http";
 import { bridgedServerNames } from "../core/external-mcp";
 
@@ -205,7 +204,7 @@ async function buildManagedBundle(tenantId: string, personaId: string): Promise<
     // bridged server names below, never the config.
     mcpJson: null,
     mcpServers: bridgedServerNames(effective.name),
-    skillsPaths: [paths.skills, ...(effective.name !== "default" ? [personaSkillsRoot(effective.name)] : [])],
+    skillsPaths: skillRootsFor(effective.name),
     defaultModel: effective.model ?? env.model(),
     managed: true,
   };
@@ -257,7 +256,6 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
   const providerCreds: RuntimeBundle["providerCreds"] = {};
   if (persona) {
     await applyProviderCreds(providerCreds, tenantId, persona.id);
-    const overlay = persona.name !== "default" ? [personaSkillsRoot(persona.name)] : [];
     return {
       tenantId,
       personaId: persona.name,
@@ -267,7 +265,7 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
       slackUserId: persona.slack_user_id ?? null,
       mcpJson: null,
       mcpServers: bridgedServerNames(persona.name),
-      skillsPaths: [paths.skills, ...overlay],
+      skillsPaths: skillRootsFor(persona.name),
       defaultModel: persona.model_default ?? env.model(),
     };
   }
@@ -304,7 +302,7 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
       slackUserId: fsPersona.slackUserId ?? null,
       mcpJson: null,
       mcpServers: bridgedServerNames(personaId),
-      skillsPaths: [paths.skills, personaSkillsRoot(personaId)],
+      skillsPaths: skillRootsFor(personaId),
       defaultModel: env.model(),
     };
   }
@@ -334,7 +332,7 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
     slackUserId: null,
     mcpJson: null,
     mcpServers: bridgedServerNames(undefined),
-    skillsPaths: [paths.skills],
+    skillsPaths: skillRootsFor(),
     defaultModel: env.model(),
   };
 }

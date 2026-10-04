@@ -25,6 +25,7 @@ least `role=gateway|node` per Deployment so the series below are separable.
 | `slaude_sessions_warm` | gauge | — | Sessions registered warm on some node † |
 | `slaude_reaper_last_run_timestamp_seconds` | gauge | — | Unix time of the last completed reaper pass † |
 | `slaude_v1_tool_calls_total` | counter | `server`, `tool` | REST tool-plane invocations from nodes |
+| `slaude_memory_gateway_failures_total` | counter | `kind` | Node memory calls to the gateway that failed (`prefetch:timeout`, `sync:409`, `prefetch:network`, `unsupported`, ...). Each kind is also logged once per node; the turn runs without memory. A steady rise means node turns have no `<memory-context>` |
 | `slaude_v1_job_events_total` | counter | `event` | Node job telemetry (`ack`\|`fail`) |
 
 † Exported only by the current **reaper leader** replica. Aggregate with

@@ -56,11 +56,11 @@ import { brainEnabled, ensureSources } from "../../knowledge/brain";
 import { brainMode } from "../../knowledge/brain-config";
 import { syncKbWikis } from "../../knowledge/brain-sync";
 import { scheduleNightlyMaintenance } from "../../knowledge/brain-cycle";
-import { channelTrustFor, kbSourceId, resolveBrainScope } from "../../knowledge/scope";
+import { channelTrustFor, resolveBrainScope } from "../../knowledge/scope";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
 import { getPersonaRegistry, livePersona, managedPersonaProvider, onPersonaRegistryInstalled } from "../../persona/registry";
 import type { GateInput } from "../../knowledge/gated-dispatch";
-import { loadKbs } from "../../knowledge/loader";
+import { personaKbs, personaKbSourceIds } from "../../knowledge/persona-kb";
 import { resolveUserName } from "../slack/users";
 import { downloadAttachments, type SlackFile } from "../slack/attachments";
 import * as Sessions from "../../db/sessions";
@@ -798,7 +798,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const brainDepsFor = (ctx: SlackContext, surface: Surface): BrainToolDeps | undefined =>
     brainEnabled()
       ? {
-          scope: async () => resolveBrainScope({ ...(await brainGateFor(ctx)), kbSources: loadKbs().map((k) => kbSourceId(k.label)) }),
+          // kb-* sources: the live persona's kbSources ∩ installed, per call
+          // (WS-C §4.1.3), so a sync applies on the next turn.
+          scope: async () =>
+            resolveBrainScope({ ...(await brainGateFor(ctx)), kbSources: personaKbSourceIds(ctx.personaId) }),
           gate: () => brainGateFor(ctx),
           managers: () => {
             const soul = soulData();
@@ -825,7 +828,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       [SESSION_MCP_NAME]: createSessionMcp({
         getSnapshot: () => agent.getTokenSnapshot(sessionId),
       }),
-      [KB_MCP_NAME]: createKbMcp(brainDepsFor(route.ctx, route.surface)),
+      [KB_MCP_NAME]: createKbMcp(brainDepsFor(route.ctx, route.surface), { kbs: () => personaKbs(route.ctx.personaId) }),
       // Per-persona MCP isolation. A filesystem tenant: named personas load
       // ~/.slaude/personas/<name>/mcp.json, the default the boot-time global.
       // A managed tenant: each persona's effective mcp, never the persona

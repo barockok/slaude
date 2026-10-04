@@ -42,6 +42,7 @@ import { RestSessionStore } from "./session-store";
 import { buildShimServers } from "./shims";
 import { buildBridgeServers } from "./bridge";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
+import { makeNodeMemoryProvider } from "./memory";
 import { makeNodePermissionResolver } from "./shims/permission";
 import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
@@ -527,6 +528,9 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   };
 
   agent.setSessionStore(store);
+  // Episodic memory runs on the gateway, scoped by the job token (a node has
+  // no database or brain); a failure only costs the turn its memory.
+  agent.setMemoryProvider(makeNodeMemoryProvider({ client, tokenFor: (id) => store.tokenFor(id) }));
   agent.setPermissionResolver(makeNodePermissionResolver({ client, tokenFor: (id) => store.tokenFor(id) }));
   /** Sessions the gateway's label gate refused on a bridged MCP call. Marked
    *  only for now: the worker's GateDenied handling (U10b) consumes it. */
