@@ -258,9 +258,14 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
         job: jobId,
         runAs: encodeRunAs(runAsUser),
         lock: lockClaim,
-        ...(env.remote.enabled()
-          ? { sessionConfigFp: sessionConfigFp(runAsUser ?? null, remoteClaim ?? null), ...(remoteClaim ? { remote: remoteClaim } : {}) }
-          : {}),
+        // Minted on every dispatch, remote mode or not: a warm node session
+        // reboots when it changes, which is how a lock that flips locked↔open
+        // reaches the session-mode instructions on a node. A follow-up that
+        // coalesces into a waiting job keeps that job's token (and refresh
+        // copies its claims), so runAs, lock and fingerprint are as of the
+        // job's first message: at most that one job runs on the old lock.
+        sessionConfigFp: sessionConfigFp({ runAs: runAsUser ?? null, lock: lockClaim, remote: remoteClaim ?? null }),
+        ...(remoteClaim ? { remote: remoteClaim } : {}),
       });
       // Routing (spec §2): warm + fresh → the holding node's queue; anything
       // else → shared. A node receiving a per-node job it no longer holds

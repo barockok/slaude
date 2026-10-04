@@ -70,13 +70,25 @@ describe("validators", () => {
 });
 
 describe("sessionConfigFp", () => {
-  it("is stable for equal input and changes with lock owner or target", () => {
-    const a = sessionConfigFp("U1", { addr: "tcA", dir: "/r" });
-    expect(sessionConfigFp("U1", { addr: "tcA", dir: "/r" })).toBe(a);
-    expect(sessionConfigFp("U2", { addr: "tcA", dir: "/r" })).not.toBe(a);
-    expect(sessionConfigFp("U1", { addr: "tcB", dir: "/r" })).not.toBe(a);
-    expect(sessionConfigFp("U1", { addr: "tcA", dir: "/s" })).not.toBe(a);
-    expect(sessionConfigFp("U1", null)).not.toBe(a);
-    expect(sessionConfigFp(null, null)).toMatch(/^[0-9a-f]{16}$/);
+  const fp = (runAs: string | null, lock: { user: string; openScope: string | null } | null, remote: { addr: string; dir: string } | null) =>
+    sessionConfigFp({ runAs, lock, remote });
+  const L = { user: "U1", openScope: null };
+
+  it("is stable for equal input and changes with run-as identity or target", () => {
+    const a = fp("U1", L, { addr: "tcA", dir: "/r" });
+    expect(fp("U1", L, { addr: "tcA", dir: "/r" })).toBe(a);
+    expect(fp("U2", L, { addr: "tcA", dir: "/r" })).not.toBe(a);
+    expect(fp("U1", L, { addr: "tcB", dir: "/r" })).not.toBe(a);
+    expect(fp("U1", L, { addr: "tcA", dir: "/s" })).not.toBe(a);
+    expect(fp("U1", L, null)).not.toBe(a);
+    expect(fp(null, null, null)).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("changes with the whole lock: owner, locked vs open, and the open scope", () => {
+    const locked = fp("U1", L, null);
+    expect(fp("U1", { user: "U1", openScope: "" }, null)).not.toBe(locked);
+    expect(fp("U1", { user: "U1", openScope: "billing" }, null)).not.toBe(fp("U1", { user: "U1", openScope: "" }, null));
+    expect(fp("U1", { user: "U2", openScope: null }, null)).not.toBe(locked);
+    expect(fp("U1", null, null)).not.toBe(locked);
   });
 });
