@@ -5,7 +5,8 @@
  * or on the allowlist below, with the reason it may reach a node. A new secret
  * added to the gateway without a decision fails here.
  *
- * Scanned: src/gateway, src/db, src/knowledge, src/config. Matched: names in
+ * Scanned: src/gateway, src/db, src/knowledge, src/config, src/agent, src/node,
+ * src/remote, src/soul, src/memory. Matched: names in
  * `process.env.X`, `process.env["X"]`, `opt("X")`, `req("X")`, `env.X`, and any
  * quoted all-caps literal, whose name contains SECRET, TOKEN, KEY, PASSWORD or _URL.
  */
@@ -15,7 +16,7 @@ import { join } from "node:path";
 import { isGatewayOnlyEnv } from "../../src/config/gateway-only-env";
 
 const ROOT = join(import.meta.dir, "../..");
-const DIRS = ["src/gateway", "src/db", "src/knowledge", "src/config"];
+const DIRS = ["src/gateway", "src/db", "src/knowledge", "src/config", "src/agent", "src/node", "src/remote", "src/soul", "src/memory"];
 const SECRETISH = /SECRET|TOKEN|KEY|PASSWORD|_URL/;
 
 /** Names that look secret but are not gateway-only, and why. */
@@ -51,6 +52,9 @@ const ALLOW: Record<string, string> = {
   SLAUDE_PANEL_PUBLIC_URL: "public address",
   SLAUDE_SLACK_API_URL: "endpoint address (tests point it at a fake)",
   SLAUDE_REDIS_TEST_URL: "test-only",
+  // Other.
+  SLAUDE_ENCRYPTION_KEY: "the connect broker's key, used by the agent process itself; stripped from the agent child (child-env.ts)",
+  SLAUDE_SOUL_PARSE_MAX_TOKENS: "a size limit, not a secret",
 };
 
 function files(dir: string): string[] {
