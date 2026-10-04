@@ -99,7 +99,10 @@ rotate() { # <persona>
     IFS= read -r value || true
     [[ -n "$value" ]] || die "no value on stdin"
   fi
-  data="$(python3 -c 'import json,sys; print(json.dumps({sys.argv[1]: sys.argv[2]}))' "$field" "$value")"
+  # The value goes to python on stdin (printf is a shell builtin), never as an
+  # argument, where any process listing would show it. Only the field name is
+  # an argument.
+  data="$(printf '%s' "$value" | python3 -c 'import json,sys; print(json.dumps({sys.argv[1]: sys.stdin.read()}))' "$field")"
   printf '%s' "$data" | v kv patch "$(path_of "$p")" - >/dev/null || die "could not patch $(path_of "$p")"
   ver="$(version_of "$p")"
   # The hash prefix lets verify-turns.sh compare it with a bundle; never the value.

@@ -4,7 +4,10 @@
  * tests can prove that secret values travel on stdin only, never in a command
  * line (where `ps` and shell history would see them).
  */
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+
+// Each run starts many short processes (python3, the kubectl stub, wrappers).
+setDefaultTimeout(30000);
 import { cpSync, chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +15,9 @@ import { join } from "node:path";
 const root = join(import.meta.dir, "../..");
 let dir = "";
 let local = "";
+const WRAPPED = ["python3", "shasum", "cut", "sed", "tail", "cat", "grep", "date"];
+/** Every command line a script ran: kubectl's and the wrapped programs'. */
+const argvs = () => log("calls.log") + log("argv.log");
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "local-scripts-"));
@@ -38,6 +44,14 @@ exit 0
 `,
   );
   chmodSync(join(dir, "kubectl"), 0o755);
+  // Every other program the scripts run with an argument list: a wrapper logs
+  // its argv, then runs the real one. Shell builtins (printf) have no argv.
+  for (const prog of WRAPPED) {
+    const real = Bun.which(prog);
+    if (!real) continue;
+    writeFileSync(join(dir, prog), `#!/bin/bash\nprintf '%s\\n' "${prog} $*" >>"${dir}/argv.log"\nexec "${real}" "$@"\n`);
+    chmodSync(join(dir, prog), 0o755);
+  }
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -50,6 +64,7 @@ function run(script: string, args: string[], env: Record<string, string> = {}) {
   const r = Bun.spawnSync(["bash", join(local, script), ...args], {
     env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir, SLAUDE_LOCAL_PROFILE: "prof", ...env },
     stdin: "ignore",
+    timeout: 25000,
   });
   return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() };
 }
@@ -67,6 +82,7 @@ test("vault.sh seed: the policy, a token with the gateway's id, a secret per per
   // Values travel on stdin, never in a command line, and are never printed.
   for (const secret of ["gw-token-value-1234", "provider-secret-value"]) {
     expect(calls).not.toContain(secret);
+    expect(argvs()).not.toContain(secret);
     expect(stdin).toContain(secret);
     expect(r.out + r.err).not.toContain(secret);
   }
@@ -96,6 +112,7 @@ test("vault.sh rotate reads the new value from stdin and prints a version and ha
   const r = Bun.spawnSync(["bash", join(local, "vault.sh"), "rotate", "alpha"], {
     env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir, SLAUDE_LOCAL_PROFILE: "prof" },
     stdin: new TextEncoder().encode("new-secret-value\n"),
+    timeout: 25000,
   });
   expect(r.exitCode).toBe(0);
   const out = r.stdout.toString();
@@ -103,6 +120,9 @@ test("vault.sh rotate reads the new value from stdin and prints a version and ha
   expect(out).not.toContain("new-secret-value");
   expect(log("calls.log")).toContain("kv patch secret/slaude/personas/alpha -");
   expect(log("calls.log")).not.toContain("new-secret-value");
+  // Nor in any other process's argv (python3 builds the JSON from stdin).
+  expect(log("argv.log")).toContain("python3");
+  expect(argvs()).not.toContain("new-secret-value");
   expect(log("stdin.log")).toContain('{"api_key": "new-secret-value"}');
 });
 
