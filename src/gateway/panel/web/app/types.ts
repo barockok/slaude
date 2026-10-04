@@ -59,3 +59,61 @@ export interface TimelineEntry {
   ts: number;
   event: AgentEvent;
 }
+
+// Persona read model (src/gateway/panel/api.ts, WS-C §4.4.1). References and
+// presence only: the server never sends a secret value, an MCP URL, header,
+// env or argument, or a resolved provider value.
+
+export type KbMode = "all" | "none" | "list";
+
+/** One row of GET /panel/api/personas. */
+export interface PersonaSummary {
+  name: string;
+  origin: "git" | "runtime";
+  tombstoned: boolean;
+  slackUserId: string | null;
+  userToken: "present" | "absent";
+  runsOn: string | null;
+  kb: { mode: KbMode };
+  fields: {
+    soul: { git: string; live: string; overridden: boolean };
+    model: { git: string | null; live: string | null; overridden: boolean };
+    mcp: { git: "present" | "absent"; live: "present" | "absent"; overridden: boolean };
+  };
+}
+
+export interface PersonaListBody {
+  revision: string | null;
+  personas: PersonaSummary[];
+}
+
+export interface PersonaMcpServer {
+  name: string;
+  /** bridge: http via the gateway's bridge; stdio: mono only, runs in the
+   *  gateway process; none: not served from this definition. */
+  via: "bridge" | "stdio" | "none";
+  type: "http" | "sse" | "stdio" | "other";
+  host: string | null;
+  /** The persona's AGENT identity holds a stored OAuth credential. */
+  oauth: boolean;
+  /** That credential's expiry (epoch ms); null when none. */
+  expiresAt: number | null;
+}
+
+/** GET /panel/api/personas/:name. */
+export interface PersonaDetail {
+  name: string;
+  origin: "git" | "runtime";
+  tombstoned: boolean;
+  slackUserId: string | null;
+  soul: { length: number; overridden: boolean; preview: string };
+  model: { git: string | null; live: string | null; overridden: boolean };
+  runsOn: string | null;
+  /** Each credential field: a `vault://` or `env://` reference, "stored", or "none". */
+  provider: { apiKey: string; authToken: string; oauthToken: string; baseUrl: string | null };
+  mcp: PersonaMcpServer[];
+  kb: { mode: KbMode; sources: Array<{ id: string; installed: boolean }> };
+  skills: Array<{ slug: string; name: string; source: "global" | "persona" }>;
+  /** Live nodes holding the persona's label; null when no node registry answers. */
+  nodes: Array<{ id: string; alive: boolean; labels: string[] }> | null;
+}

@@ -3,12 +3,12 @@ import { api, onForbidden, ApiError, IS_MOCK } from "./api";
 import type { Me } from "./types";
 import { SessionList } from "./List";
 import { SessionDetail } from "./Detail";
+import { PersonaList } from "./PersonaList";
+import { PersonaPage } from "./PersonaDetail";
 
-function readRoute(): string | null {
-  const h = location.hash.replace(/^#/, "");
-  const m = h.match(/^\/s\/(.+)$/);
-  return m ? m[1]! : null;
-}
+import { parseRoute, type Route } from "./lib";
+
+const readRoute = () => parseRoute(location.hash);
 
 const params = new URLSearchParams(location.search);
 
@@ -20,7 +20,7 @@ function initialTheme(): "light" | "dark" {
 }
 
 export function App() {
-  const [route, setRoute] = useState<string | null>(readRoute());
+  const [route, setRoute] = useState<Route>(readRoute());
   const [theme, setTheme] = useState<"light" | "dark">(initialTheme());
   const [me, setMe] = useState<Me | null>(null);
   // The shell waits for /panel/auth/me rather than flashing a half-authenticated
@@ -63,8 +63,12 @@ export function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  const open = (id: string) => { location.hash = `/s/${id}`; setRoute(id); };
-  const back = () => { location.hash = ""; setRoute(null); };
+  const go = (hash: string) => { location.hash = hash; setRoute(parseRoute(hash)); };
+  const open = (id: string) => go(`/s/${id}`);
+  const back = () => go("");
+  const openPersona = (name: string) => go(`/p/${encodeURIComponent(name)}`);
+  const personas = () => go("/p");
+  const onPersonas = route.kind === "personas" || route.kind === "persona";
 
   if (!identified) return null;
 
@@ -72,6 +76,10 @@ export function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand"><span className="brand-mark">s</span>slaude <small>· fleet</small></div>
+        <nav className="topnav" aria-label="Sections">
+          <a className={onPersonas ? "" : "on"} data-testid="nav-sessions" href="#" onClick={(e) => { e.preventDefault(); back(); }}>Sessions</a>
+          <a className={onPersonas ? "on" : ""} data-testid="nav-personas" href="#/p" onClick={(e) => { e.preventDefault(); personas(); }}>Personas</a>
+        </nav>
         {IS_MOCK && <span className="mock-badge" data-testid="mock-badge">FIXTURE MODE</span>}
         <div className="topbar-spacer" />
         <button className="icon-btn" data-testid="theme-toggle" title="Toggle theme"
@@ -89,7 +97,10 @@ export function App() {
       <main className="main">
         {forbidden
           ? <Forbidden email={me?.email ?? null} />
-          : route ? <SessionDetail id={route} onBack={back} /> : <SessionList onOpen={open} />}
+          : route.kind === "session" ? <SessionDetail id={route.id} onBack={back} />
+          : route.kind === "personas" ? <PersonaList onOpen={openPersona} />
+          : route.kind === "persona" ? <PersonaPage name={route.name} onBack={personas} />
+          : <SessionList onOpen={open} />}
       </main>
     </div>
   );

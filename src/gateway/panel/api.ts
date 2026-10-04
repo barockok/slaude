@@ -26,6 +26,7 @@
  *   POST /panel/api/sessions/:id/force-release   steal + audit
  *   POST /panel/api/reload                       re-read persona config (superadmin)
  *   GET  /panel/api/personas                     git vs live per field (secrets reported as present/absent)
+ *   GET  /panel/api/personas/:name               one persona's definition: references and presence, never values
  *   PUT|DELETE /panel/api/personas/:name/overrides/:field   runtime override (superadmin; wiped by the next git sync)
  *   POST /panel/api/personas                     runtime onboard of a non-git persona (superadmin)
  */
@@ -51,6 +52,11 @@ import { PERSONA_NAME_RE } from "../../persona/sync/payload";
 import { resolveDbConfig } from "../../db/client";
 import { assertHttpOnlyMcp, McpNotHttpOnlyError } from "../../persona/mcp-http-only";
 import { extractSoulData, SoulExtractionError } from "../../soul/extract";
+import { kbMode, kbView, mcpServersView, personaNodes, providerView, soulView, type NodeView, type PanelRole as PersonaViewRole } from "./persona-view";
+import { installedKbSourceIds } from "../../knowledge/persona-kb";
+import { discoverSkills } from "../../skills/loader";
+import { credentialExpiries } from "../../db/mcp-credentials";
+import { oauthKey } from "../../agent/mcp-oauth/store";
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -145,6 +151,13 @@ export interface PanelApiDeps {
   /** Node label status (node labels spec §4.7) for GET /panel/api/labels.
    *  Absent or null (mono: no node queue) = 503. */
   labels?: (() => Promise<LabelStatus[]>) | null;
+  /** Installed `kb-*` source ids, for the persona view. Default: what
+   *  $SLAUDE_HOME/knowledge holds (installedKbSourceIds). */
+  installedKbSources?: () => string[];
+  /** Where turns run: `gateway` (on nodes, the node queue) or `mono` (this
+   *  process). Decides how the persona view reports a persona's stdio MCP
+   *  servers. Default `gateway`. */
+  role?: PersonaViewRole;
 }
 
 export interface PanelApi {
@@ -156,6 +169,8 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
   const pollMs = deps.eventsPollMs ?? 300;
   const authRoutes = createAuthRoutes();
   const extractSoul = deps.extractSoul ?? ((t: string) => extractSoulData(t, { strict: true }));
+  const installedKbSources = deps.installedKbSources ?? installedKbSourceIds;
+  const panelRole = deps.role ?? "gateway";
 
   async function handleEvents(req: Request, sessionId: string, expMs: number): Promise<Response> {
     if (!deps.pubsub) return json(503, { error: "event stream unavailable (no Redis)" });
@@ -406,6 +421,8 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
                 userToken: presence(p.userToken),
                 // Where the persona runs (node labels spec §4.5); git-only, never overridden.
                 runsOn: p.runsOn ?? null,
+                // Knowledge scope summary (WS-C §4.1); the ids are on the detail route.
+                kb: { mode: kbMode(p.kbSources) },
                 fields: {
                   soul: { git: d.soulMd, live: p.soulMd, overridden: overridden("soul") },
                   model: { git: d.model, live: p.model, overridden: overridden("model") },
@@ -413,6 +430,48 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
                 },
               };
             }),
+          });
+        }
+
+        // GET /panel/api/personas/:name — one persona's definition (WS-C §4.4.1).
+        // Read-only, any authenticated operator. References and presence only:
+        // persona-view.ts says what is never shown. Not audited, like every
+        // other panel read, and nothing from the persona is logged.
+        if (seg.length === 4) {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          let name: string;
+          try { name = decodeURIComponent(seg[3]!); } catch { return json(422, { error: "invalid persona name" }); }
+          if (!PERSONA_NAME_RE.test(name)) return json(422, { error: "invalid persona name" });
+          const one = await Personas.personaByName(tenant, name, { includeTombstoned: true });
+          if (!one) return json(404, { error: `no persona named '${name}'` });
+          const { effective: p, desired: d } = one;
+          // Whether the agent holds an OAuth credential per server: expiries
+          // only, nothing decrypted.
+          const held = await credentialExpiries({ kind: "agent", tenant, persona: name });
+          let nodes: NodeView[] | null;
+          try {
+            nodes = await personaNodes(deps.registry, p.runsOn);
+          } catch (e) {
+            // The node list is a live read; the definition stays useful without it.
+            console.error(`[panel] node lookup for a persona view failed: ${e instanceof Error ? e.name : typeof e}`);
+            nodes = null;
+          }
+          const overridden = (f: OverrideField) => p.overridden.includes(f);
+          return json(200, {
+            name: p.name,
+            origin: p.origin,
+            tombstoned: p.tombstonedAt !== null,
+            slackUserId: p.slackUserId,
+            soul: soulView(p.soulMd, overridden("soul")),
+            model: { git: d.model, live: p.model, overridden: overridden("model") },
+            runsOn: p.runsOn ?? null,
+            provider: providerView(p.provider),
+            mcp: mcpServersView(p.mcp, { role: panelRole, agentExpiry: (server, cfg) => held[oauthKey(server, cfg)] ?? null }),
+            kb: kbView(p.kbSources, installedKbSources()),
+            skills: discoverSkills(name)
+              .map((s) => ({ slug: s.slug, name: s.name, source: s.source }))
+              .sort((a, b) => a.slug.localeCompare(b.slug)),
+            nodes,
           });
         }
 
