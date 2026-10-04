@@ -11,6 +11,40 @@ function useConnectResult(): string | null {
   return result;
 }
 
+/** The Slack identities bound to this account, each with an Unlink button. */
+export function IdentityList({
+  identities,
+  busy,
+  onUnlink,
+}: {
+  identities: Me["slackIdentities"];
+  busy: string | null;
+  onUnlink: (teamId: string, slackUserId: string) => void;
+}) {
+  return (
+    <ul className="list">
+      {identities.map((s) => {
+        const key = `${s.teamId}:${s.slackUserId}`;
+        return (
+          <li key={key}>
+            <div>
+              <strong>Slack</strong>
+              <span className="host">
+                {s.slackUserId} in {s.teamId}
+              </span>
+            </div>
+            <div className="actions">
+              <button onClick={() => onUnlink(s.teamId, s.slackUserId)} disabled={busy === key}>
+                Unlink
+              </button>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 export function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [integrations, setIntegrations] = useState<Integration[] | null>(null);
@@ -57,6 +91,19 @@ export function App() {
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not disconnect.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function unlink(teamId: string, slackUserId: string) {
+    setBusy(`${teamId}:${slackUserId}`);
+    setError(null);
+    try {
+      await api.unlink(teamId, slackUserId);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not unlink.");
     } finally {
       setBusy(null);
     }
@@ -113,6 +160,13 @@ export function App() {
             </li>
           ))}
         </ul>
+      )}
+
+      {!!me?.slackIdentities.length && (
+        <>
+          <h2>Slack accounts</h2>
+          <IdentityList identities={me.slackIdentities} busy={busy} onUnlink={(t, u) => void unlink(t, u)} />
+        </>
       )}
 
       {me && me.slackIdentities.length === 0 && (
