@@ -4,8 +4,8 @@
 //     it is read back from /panel/auth/me.
 //   - mock: in-browser fixtures + a scripted emitter, for ?mock=1 (gauntlet
 //     screenshots with no backend at all).
-import type { SessionSummary, AgentEvent, TimelineEntry, Me } from "./types";
-import { FIXTURE_SESSIONS, SCRIPT, OPERATOR, DETAIL_ID } from "./fixtures";
+import type { SessionSummary, AgentEvent, TimelineEntry, Me, PersonaListBody, PersonaDetail } from "./types";
+import { FIXTURE_SESSIONS, SCRIPT, OPERATOR, DETAIL_ID, FIXTURE_PERSONAS, FIXTURE_PERSONA_DETAILS } from "./fixtures";
 
 export class ApiError extends Error {
   constructor(public status: number, public body: any) {
@@ -32,12 +32,19 @@ export interface Backend {
   release(id: string): Promise<{ ok: boolean; released: boolean }>;
   forceRelease(id: string): Promise<{ ok: boolean; displaced?: string }>;
   subscribe(id: string, onEntry: (e: TimelineEntry) => void): () => void;
+  /** Persona list (read only). 409 when the deployment has no persona tables. */
+  listPersonas(): Promise<PersonaListBody>;
+  /** One persona's definition (read only). 404 unknown, 409 no persona tables. */
+  getPersona(name: string): Promise<PersonaDetail>;
 }
 
 const params = new URLSearchParams(typeof location !== "undefined" ? location.search : "");
 export const IS_MOCK = params.get("mock") === "1";
 // no-redis flag lets the gauntlet/e2e exercise the 503 degradation path.
 export const FORCE_503 = params.get("noredis") === "1";
+// sqlite flag lets the fixtures exercise the persona routes' 409 (no Postgres).
+export const FORCE_409 = params.get("sqlite") === "1";
+const PERSONA_409 = "persona sync requires Postgres (SLAUDE_DB=pg); this deployment runs on sqlite";
 
 // The operator identity now comes from the panel session cookie, not a header
 // or a query parameter. `?op=` survives only in the mock backend, where it
@@ -127,6 +134,8 @@ function realBackend(): Backend {
     heartbeat: (id) => req(`/sessions/${id}/heartbeat`, { method: "POST" }),
     release: (id) => req(`/sessions/${id}/release`, { method: "POST" }),
     forceRelease: (id) => req(`/sessions/${id}/force-release`, { method: "POST" }),
+    listPersonas: () => req("/personas"),
+    getPersona: (name) => req(`/personas/${encodeURIComponent(name)}`),
     subscribe(id, onEntry) {
       // No identity in the URL (PII leaks into access logs / history / Referer):
       // SSE is a GET, so the same-origin session cookie authenticates it, and
@@ -233,6 +242,16 @@ function mockBackend(): Backend {
     async heartbeat() { return { ok: true, ttl_ms: 45000 }; },
     async release(id) { locks.delete(id); return { ok: true, released: true }; },
     async forceRelease(id) { const d = locks.get(id); locks.set(id, op); return { ok: true, displaced: d }; },
+    async listPersonas() {
+      if (FORCE_409) throw new ApiError(409, { error: PERSONA_409 });
+      return { revision: "fixture-rev", personas: FIXTURE_PERSONAS.map((p) => ({ ...p })) };
+    },
+    async getPersona(name) {
+      if (FORCE_409) throw new ApiError(409, { error: PERSONA_409 });
+      const d = FIXTURE_PERSONA_DETAILS[name];
+      if (!d) throw new ApiError(404, { error: `no persona named '${name}'` });
+      return structuredClone(d);
+    },
     subscribe(id, onEntry) {
       let i = 0, alive = true, seq = 0;
       const frames = id === DETAIL_ID ? SCRIPT : SCRIPT.slice(0, 4);

@@ -1,7 +1,7 @@
 // Realistic fixture fleet + a scripted event stream. Shared by the in-browser
 // mock (?mock=1) and the Bun stub server that backs the e2e suite, so both
 // render identical data with no live backend.
-import type { SessionSummary, AgentEvent } from "./types";
+import type { SessionSummary, AgentEvent, PersonaDetail, PersonaSummary } from "./types";
 
 // Anchored to load time so relative ages ("2m ago", "3h ago") read naturally
 // in the gauntlet while exact-on-hover timestamps stay honest.
@@ -98,3 +98,97 @@ export const SCRIPT: { delay: number; event: AgentEvent }[] = (() => {
     { delay: 220, event: { type: "done", sessionId: sid } },
   ];
 })();
+
+// Persona definitions, shaped exactly as GET /panel/api/personas/:name answers:
+// references and presence only, never a value.
+const soulText = (name: string, role: string) =>
+  `# ${name}\n\nYou are ${name}, the team's ${role}. You answer in the thread you were asked in, ` +
+  `check the knowledge base before acting, and ask an approver before anything irreversible. ` +
+  `You keep replies short and you say plainly when you do not know.`;
+
+export const FIXTURE_PERSONA_DETAILS: Record<string, PersonaDetail> = {
+  default: {
+    name: "default", origin: "git", tombstoned: false, slackUserId: null,
+    soul: { length: 0, overridden: false, preview: "" },
+    model: { git: "claude-sonnet-4-6", live: "claude-sonnet-4-6", overridden: false },
+    runsOn: null,
+    provider: { apiKey: "none", authToken: "none", oauthToken: "none", baseUrl: null },
+    mcp: [],
+    kb: { mode: "all", sources: [{ id: "kb-handbook", installed: true }, { id: "kb-runbooks", installed: true }, { id: "kb-finance", installed: true }] },
+    skills: [{ slug: "release-notes", name: "release-notes", source: "global" }],
+    nodes: [{ id: "gw-node-1", alive: true, labels: ["default"] }, { id: "gw-node-3", alive: true, labels: ["default", "finance"] }],
+  },
+  ravi: {
+    name: "ravi", origin: "git", tombstoned: false, slackUserId: "UFIXRAVI01",
+    soul: { length: 0, overridden: false, preview: "" },
+    model: { git: "claude-opus-4-8", live: "claude-opus-4-8", overridden: false },
+    runsOn: "finance",
+    provider: { apiKey: "vault://kv/agents/ravi#api_key", authToken: "none", oauthToken: "none", baseUrl: "https://llm.example.com/v1" },
+    mcp: [
+      { name: "ledger", via: "bridge", type: "http", host: "ledger.example.com", oauth: true },
+      { name: "warehouse", via: "bridge", type: "http", host: "warehouse.example.com", oauth: false },
+      { name: "sheets", via: "stdio", type: "stdio", host: null, oauth: false },
+    ],
+    kb: { mode: "list", sources: [{ id: "kb-finance", installed: true }, { id: "kb-audit", installed: false }] },
+    skills: [
+      { slug: "month-end-close", name: "Month-end close", source: "persona" },
+      { slug: "release-notes", name: "release-notes", source: "global" },
+    ],
+    nodes: [{ id: "gw-node-3", alive: true, labels: ["default", "finance"] }],
+  },
+  lena: {
+    name: "lena", origin: "git", tombstoned: false, slackUserId: "UFIXLENA02",
+    soul: { length: 0, overridden: true, preview: "" },
+    model: { git: "claude-sonnet-4-6", live: "claude-opus-4-8", overridden: true },
+    runsOn: "engineering",
+    provider: { apiKey: "env://PERSONA_LENA_API_KEY", authToken: "none", oauthToken: "none", baseUrl: null },
+    mcp: [{ name: "tracker", via: "bridge", type: "http", host: "tracker.example.com", oauth: true }],
+    kb: { mode: "all", sources: [{ id: "kb-handbook", installed: true }, { id: "kb-runbooks", installed: true }, { id: "kb-finance", installed: true }] },
+    skills: [{ slug: "release-notes", name: "release-notes", source: "global" }],
+    // No live node carries `engineering`: the panel says so.
+    nodes: [],
+  },
+  toko: {
+    name: "toko", origin: "runtime", tombstoned: false, slackUserId: "UFIXTOKO03",
+    soul: { length: 0, overridden: false, preview: "" },
+    model: { git: null, live: null, overridden: false },
+    runsOn: null,
+    provider: { apiKey: "none", authToken: "none", oauthToken: "none", baseUrl: null },
+    mcp: [{ name: "legacy-feed", via: "none", type: "sse", host: "feed.example.com", oauth: false }],
+    kb: { mode: "none", sources: [] },
+    skills: [],
+    nodes: [{ id: "gw-node-1", alive: true, labels: ["default"] }, { id: "gw-node-3", alive: true, labels: ["default", "finance"] }],
+  },
+  max: {
+    name: "max", origin: "git", tombstoned: true, slackUserId: "UFIXMAX004",
+    soul: { length: 0, overridden: false, preview: "" },
+    model: { git: "claude-haiku-4-5", live: "claude-haiku-4-5", overridden: false },
+    runsOn: "support",
+    provider: { apiKey: "vault://kv/agents/max#api_key", authToken: "none", oauthToken: "none", baseUrl: null },
+    mcp: [],
+    kb: { mode: "list", sources: [{ id: "kb-runbooks", installed: true }] },
+    skills: [],
+    nodes: null,
+  },
+};
+for (const [name, role] of [["default", "general assistant"], ["ravi", "finance analyst"], ["lena", "incident lead"], ["toko", "platform engineer"], ["max", "support triager"]] as const) {
+  const text = soulText(name, role);
+  const d = FIXTURE_PERSONA_DETAILS[name]!;
+  d.soul = { ...d.soul, length: text.length, preview: text.slice(0, 200) };
+}
+
+/** The list route's rows for the same personas. */
+export const FIXTURE_PERSONAS: PersonaSummary[] = Object.values(FIXTURE_PERSONA_DETAILS).map((d) => ({
+  name: d.name,
+  origin: d.origin,
+  tombstoned: d.tombstoned,
+  slackUserId: d.slackUserId,
+  userToken: d.name === "ravi" ? "present" : "absent",
+  runsOn: d.runsOn,
+  kb: { mode: d.kb.mode },
+  fields: {
+    soul: { git: d.soul.preview, live: d.soul.preview, overridden: d.soul.overridden },
+    model: d.model,
+    mcp: { git: d.mcp.length ? "present" : "absent", live: d.mcp.length ? "present" : "absent", overridden: false },
+  },
+}));
