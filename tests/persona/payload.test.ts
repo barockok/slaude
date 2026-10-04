@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { SUPPORTED_PAYLOAD_VERSION, unknownFieldPaths, parsePayload, resolvePlaceholders, UnresolvedVarError, PayloadError } from "../../src/persona/sync/payload";
+import { capPaths, MAX_REPORTED_FIELDS, SUPPORTED_PAYLOAD_VERSION, unknownFieldPaths, parsePayload, resolvePlaceholders, UnresolvedVarError, PayloadError } from "../../src/persona/sync/payload";
 
 const base = (personas: unknown[]) => ({ revision: "abc123", committedAt: "2026-10-01T10:00:00Z", personas });
 const ana = { name: "ana", slackUserId: "UTESTUSER1", soul: "You are Ana.", userToken: "${PERSONA_ANA_XOXP}" };
@@ -129,5 +129,19 @@ describe("payload version and unknown fields", () => {
   });
   test("a hostile key name is never echoed", () => {
     expect(unknownFieldPaths({ ...base([ana]), "sk-abc def!": 1 })).toEqual(["<invalid-key>"]);
+  });
+  test("secret-shaped key names are never echoed", () => {
+    const raw = { ...base([ana]), ["AKIA" + "ABCDEFGHIJKLMNOP"]: 1, ["xox" + "b-1234567890-abcdef"]: 1, "sk-abcdefghijkl": 1 };
+    expect(unknownFieldPaths(raw)).toEqual(["<invalid-key>", "<invalid-key>", "<invalid-key>"]);
+  });
+  test("a dotted top-level key cannot pose as a persona path", () => {
+    expect(unknownFieldPaths({ ...base([ana]), "persona.default.soul": 1 })).toEqual(["<invalid-key>"]);
+  });
+  test("capPaths bounds a long list", () => {
+    const many = Array.from({ length: 1000 }, (_, i) => `k${i}`);
+    const c = capPaths(many);
+    expect(c).toHaveLength(MAX_REPORTED_FIELDS + 1);
+    expect(c.at(-1)).toBe("…and 950 more");
+    expect(capPaths(["a"])).toEqual(["a"]);
   });
 });

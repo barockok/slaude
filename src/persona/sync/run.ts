@@ -5,7 +5,7 @@
  * two is the single transaction in applySync. Any failure in phase one applies
  * nothing. Messages name a variable, persona or revision, never a value.
  */
-import { parsePayload, resolvePlaceholders, unknownFieldPaths, PayloadError } from "./payload";
+import { parsePayload, resolvePlaceholders, unknownFieldPaths, capPaths, MAX_REPORTED_FIELDS, SUPPORTED_PAYLOAD_VERSION, PayloadError } from "./payload";
 import { extractSoulData } from "../../soul/extract";
 import {
   applySync, desiredPersonas, effectivePersonas, syncState, StaleRevisionError, type ApplyResult,
@@ -15,7 +15,7 @@ import { sameDesired, type DesiredPersona } from "../effective";
 export class SyncFailure extends Error {
   constructor(readonly status: 409 | 422 | 502, message: string) { super(message); }
 }
-export type SyncReport = ApplyResult & { revision: string; dryRun: boolean; ignoredFields: string[] };
+export type SyncReport = ApplyResult & { revision: string; dryRun: boolean; ignoredFields: string[]; ignoredFieldsTotal: number };
 
 export async function runSync(
   tenant: string,
@@ -24,12 +24,21 @@ export async function runSync(
 ): Promise<SyncReport> {
   const extract = opts.extract ?? ((t: string) => extractSoulData(t, { strict: true }));
   let payload;
-  const ignoredFields = unknownFieldPaths(raw);
+  const allIgnored = unknownFieldPaths(raw);
+  const ignoredFields = allIgnored.slice(0, MAX_REPORTED_FIELDS);
+  const ignoredFieldsTotal = allIgnored.length;
   try {
+    // The version check comes first so a newer payload always gets the
+    // upgrade message, not a complaint about its new fields.
+    const v = raw && typeof raw === "object" ? (raw as { version?: unknown }).version : undefined;
+    if (typeof v === "number" && Number.isInteger(v) && v > SUPPORTED_PAYLOAD_VERSION) parsePayload(raw);
+    if (opts.env.SLAUDE_DEPLOY_STRICT !== undefined && !["0", "1"].includes(opts.env.SLAUDE_DEPLOY_STRICT)) {
+      console.warn("[persona-sync] SLAUDE_DEPLOY_STRICT is set to a value other than 0 or 1; strict mode is OFF");
+    }
     // Stage two (opt-in): a field this gateway does not know is an error, not
     // a silent drop. Names only, never values.
-    if (ignoredFields.length && opts.env.SLAUDE_DEPLOY_STRICT === "1") {
-      throw new PayloadError(`unknown field(s) refused under SLAUDE_DEPLOY_STRICT: ${ignoredFields.join(", ")}`);
+    if (allIgnored.length && opts.env.SLAUDE_DEPLOY_STRICT === "1") {
+      throw new PayloadError(`unknown field(s) refused under SLAUDE_DEPLOY_STRICT: ${capPaths(allIgnored).join(", ")}`);
     }
     payload = parsePayload(raw);
     if (payload.personas.length === 0 && !payload.allowEmpty) {
@@ -86,14 +95,14 @@ export async function runSync(
     });
   }
 
-  if (ignoredFields.length) {
-    console.warn(`[persona-sync] ignored unknown payload fields tenant=${tenant}: ${ignoredFields.join(", ")}`);
+  if (allIgnored.length) {
+    console.warn(`[persona-sync] ignored unknown payload fields tenant=${tenant}: ${capPaths(allIgnored).join(", ")}`);
   }
   const meta = { revision: payload.revision, committedAt: Date.parse(payload.committedAt), by: opts.by };
 
   if (opts.dryRun) {
     const incoming = new Set(rows.map((r) => r.name));
-    const report: SyncReport = { created: [], updated: [], unchanged: [], tombstoned: [], overridesWiped: 0, revision: meta.revision, dryRun: true, ignoredFields };
+    const report: SyncReport = { created: [], updated: [], unchanged: [], tombstoned: [], overridesWiped: 0, revision: meta.revision, dryRun: true, ignoredFields, ignoredFieldsTotal };
     // Same rule as applySync.
     for (const r of rows) {
       const prev = desired.get(r.name);
@@ -109,7 +118,7 @@ export async function runSync(
   }
 
   try {
-    return { ...(await applySync(tenant, rows, meta)), revision: meta.revision, dryRun: false, ignoredFields };
+    return { ...(await applySync(tenant, rows, meta)), revision: meta.revision, dryRun: false, ignoredFields, ignoredFieldsTotal };
   } catch (e) {
     if (e instanceof StaleRevisionError) throw new SyncFailure(409, e.message);
     throw e;

@@ -10,6 +10,7 @@
  * persona repository must not be able to copy one into a stored persona.
  */
 import { z } from "zod";
+import { redactSecrets } from "../../gateway/core/status-text";
 
 export const PERSONA_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
@@ -50,9 +51,19 @@ export type SyncPayload = z.infer<typeof payloadSchema>;
 
 const PERSONA_KEYS = new Set(Object.keys(personaSpec.shape));
 const TOP_KEYS = new Set(Object.keys(payloadSchema.shape));
-// A key is echoed in messages, so only a plain identifier-shaped one is; the
-// value is never read.
-const safeKey = (k: string) => (/^[A-Za-z0-9_.-]{1,64}$/.test(k) ? k : "<invalid-key>");
+// A key is echoed in messages, so only a plain identifier-shaped one is (no
+// '.', which would let a top-level key pose as a persona path) and one the
+// secret net leaves untouched; the value is never read.
+export const safeKey = (k: string) =>
+  /^[A-Za-z0-9_-]{1,64}$/.test(k) && redactSecrets(k) === k ? k : "<invalid-key>";
+
+/** How many unknown-field paths are ever logged, returned or put in an error. */
+export const MAX_REPORTED_FIELDS = 50;
+export function capPaths(paths: string[]): string[] {
+  return paths.length <= MAX_REPORTED_FIELDS
+    ? paths
+    : [...paths.slice(0, MAX_REPORTED_FIELDS), `…and ${paths.length - MAX_REPORTED_FIELDS} more`];
+}
 
 /**
  * Paths of keys the schema does not know (`revision`-level and per persona),

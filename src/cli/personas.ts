@@ -15,7 +15,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
-import { parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, unknownFieldPaths, SUPPORTED_PAYLOAD_VERSION, type SyncPayload } from "../persona/sync/payload";
+import { parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, safeKey, capPaths, SUPPORTED_PAYLOAD_VERSION, type SyncPayload } from "../persona/sync/payload";
 
 const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : undefined);
 // The gateway only resolves ${PERSONA_UPPER_CASE_NAME}; persona names are lower-case with hyphens.
@@ -44,7 +44,7 @@ export function renderDir(
       throw new PayloadError(`persona '${name}': persona.yaml is not valid YAML (${(e as Error).message})`);
     }
     if (cfg && typeof cfg === "object") {
-      for (const k of Object.keys(cfg)) if (!YAML_KEYS.has(k)) unknown.push(`persona.${name}.${/^[A-Za-z0-9_.-]{1,64}$/.test(k) ? k : "<invalid-key>"}`);
+      for (const k of Object.keys(cfg)) if (!YAML_KEYS.has(k)) unknown.push(`persona.${name}.${safeKey(k)}`);
     }
     const soul = read(join(root, name, "SOUL.md"));
     if (soul === undefined) throw new PayloadError(`persona '${name}' has no SOUL.md`);
@@ -72,8 +72,7 @@ export function renderDir(
     throw new PayloadError("personas/ has personas but no default/ — a non-empty sync must include a persona named 'default'");
   }
   const payload = parsePayload({ version: SUPPORTED_PAYLOAD_VERSION, ...meta, personas });
-  const extra = [...unknown, ...unknownFieldPaths({ version: 1, ...meta, personas })];
-  if (extra.length) onUnknown?.(extra);
+  if (unknown.length) onUnknown?.(capPaths(unknown));
   // Run the gateway's placeholder validation (with every name satisfied) so a
   // malformed ${...} fails the pull request instead of 422ing at deploy.
   const anyEnv = new Proxy({}, { get: () => "x" }) as Record<string, string>;
