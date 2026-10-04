@@ -32,7 +32,14 @@ provider:
 | `apiKey` | `ANTHROPIC_API_KEY` | reference |
 | `authToken` | `ANTHROPIC_AUTH_TOKEN` | reference |
 | `oauthToken` | `CLAUDE_CODE_OAUTH_TOKEN` | reference |
-| `baseUrl` | `ANTHROPIC_BASE_URL` | a literal `http(s)` URL, or a reference |
+| `baseUrl` | `ANTHROPIC_BASE_URL` | a literal `https` URL, or a reference |
+
+**`provider` is one atomic set.** When a persona sets any `provider` field, its
+credentials come from that object and nowhere else: never from a
+`provider_creds` row and never from the node's own environment, whatever
+`SLAUDE_PROVIDER_ENV_FALLBACK` says. A `baseUrl` therefore needs a credential
+reference (`apiKey`, `authToken` or `oauthToken`) in the same object, and a
+persona with only a key runs on the provider's default host, not the node's.
 
 Two schemes exist, and no other:
 
@@ -40,7 +47,12 @@ Two schemes exist, and no other:
   be several segments (see `SLAUDE_VAULT_MOUNTS`).
 - `env://PERSONA_<NAME>`: a variable in the **gateway's** environment. Only
   `PERSONA_*` names are allowed, for the same reason as `${PERSONA_*}`
-  placeholders: the gateway's environment also holds its own secrets.
+  placeholders: the gateway's environment also holds its own secrets. The
+  variable must be set when the sync runs (its presence is checked; its value
+  is never read into the payload). `env://` is **not scoped per persona**: any
+  persona may name any `PERSONA_*` variable, including one meant for another
+  persona. Use `vault://` with a `{persona}` prefix when personas must not
+  reach each other's credentials.
 
 A reference is not a secret, so it may sit in git, in the `/deploy` payload and
 in the panel. The `personas` table stores the reference only.
@@ -48,8 +60,20 @@ in the panel. The `personas` table stores the reference only.
 `render --check` and `/deploy` validate references with the gateway's own
 parser: a literal secret, a `${...}` placeholder, another scheme, `..` or `.`
 segments, empty segments, percent-encoding, a query string, a missing `#field`,
-an unknown key inside `provider`, or a `baseUrl` with a user name or password
-in it is refused with 422, naming the persona and field and never the value.
+an unknown key inside `provider`, a `baseUrl` with no credential beside it, or
+a `baseUrl` outside the rule below is refused with 422, naming the persona and
+field and never the value. `render` writes payload `version: 2` when any persona
+sets `provider` (otherwise 1), so a gateway too old to know the field refuses
+the payload instead of ignoring it.
+
+A literal `baseUrl` must be `https`, with no user name, password, query string
+or fragment. `http` is accepted only for a host listed (by exact name) in
+`SLAUDE_OUTBOUND_INTERNAL_HOSTS`, the same list the outbound-fetch policy uses;
+a private IP address likewise only when listed. A loopback, link-local or
+cloud-metadata address (`127.0.0.1`, `169.254.169.254`, `localhost`, the
+metadata host names) is never accepted, listed or not. The gateway checks this
+at sync and again every time it builds the bundle, for a literal URL and for
+a URL a reference resolved to.
 On the gateway a `vault://` reference is also checked against
 `SLAUDE_VAULT_ALLOWED_PREFIXES`, and refused when this gateway has no Vault
 configured, so a reference that could never resolve fails the pipeline rather
@@ -64,15 +88,17 @@ which its own provider may not offer.
 
 ### Precedence
 
-Per field: the persona's reference, then the persona's own `provider_creds`
-row, then the tenant-wide `provider_creds` row, then nothing. A managed tenant
-never falls back to the gateway's environment for a persona.
+A persona that sets `provider` gets exactly that set. A persona that does not
+gets, per field, its own `provider_creds` row, then the tenant-wide row, then
+nothing. A managed tenant never falls back to the gateway's environment for a
+persona.
 
 ## Vault setup
 
-Vault configuration lives on the gateway only. A node refuses to boot with any
-`SLAUDE_VAULT_*` or `VAULT_*` variable when `SLAUDE_NODE_BOOT_CHECK=refuse`, and
-warns otherwise; nodes make no Vault call. All variables are listed in the
+Vault configuration lives on the gateway only. A node always refuses to boot
+with any `SLAUDE_VAULT_*` or `VAULT_*` variable set, whatever
+`SLAUDE_NODE_BOOT_CHECK` says (it names the variables, never their values);
+nodes make no Vault call. All variables are listed in the
 [configuration reference](../reference/configuration.md#provider-credentials).
 
 1. **KV v2.** References read `GET /v1/<mount>/data/<path>`. A KV v1 mount
@@ -88,10 +114,34 @@ warns otherwise; nodes make no Vault call. All variables are listed in the
    ```
 
    The shipped `slaude-gateway` ServiceAccount sets
-   `automountServiceAccountToken: false`. Vault's Kubernetes login needs the
-   pod's token, so set it to `true` on the gateway ServiceAccount (or pod) when
-   you enable Vault. Node pods keep `automountServiceAccountToken: false`, so
-   no node can read a token the role trusts.
+   `automountServiceAccountToken: false`; keep it. Vault's Kubernetes login
+   needs a service-account JWT, so give the **gateway pod only** a projected
+   token with Vault as its audience and a short expiry, and point
+   `SLAUDE_VAULT_K8S_TOKEN_PATH` at it:
+
+   ```yaml
+   # gateway Deployment, pod spec
+   volumes:
+     - name: vault-token
+       projected:
+         sources:
+           - serviceAccountToken:
+               audience: vault
+               expirationSeconds: 600
+               path: token
+   # gateway container
+   volumeMounts:
+     - name: vault-token
+       mountPath: /var/run/secrets/vault
+       readOnly: true
+   env:
+     - name: SLAUDE_VAULT_K8S_TOKEN_PATH
+       value: /var/run/secrets/vault/token
+   ```
+
+   Bind the role's `audience` to `vault` as well. Node pods keep
+   `automountServiceAccountToken: false` and get no projected token, so no node
+   can read a token the role trusts.
 3. **A policy that reads the persona folders only:**
 
    ```hcl
@@ -141,12 +191,13 @@ Vault returns; warm sessions keep running.
 
 | Situation | Behaviour |
 |---|---|
-| Vault unreachable, or a reference unresolvable, with no usable cached value | The bundle endpoint answers 503 with a fixed body; the node fails the session boot with `PROVIDER_CREDENTIALS_UNAVAILABLE`; the job fails without a retry |
-| A reference outside the allowlist | The same, and an error-level `provider.cred.resolve` line with reason `prefix` |
+| Vault not answering (unreachable, timeout, 5xx, login failure) with no usable cached value | The bundle endpoint answers 503 with `transient: true` and `Retry-After`; the node fails the boot and the job takes its normal retry; the last attempt fails with `PROVIDER_CREDENTIALS_UNAVAILABLE` |
+| A definitive answer: a denied or missing secret or field, a bad reference, a `baseUrl` outside the rule | 503 with `transient: false`; the node fails the boot with `PROVIDER_CREDENTIALS_UNAVAILABLE` and the job fails without a retry |
+| A reference outside the allowlist | As definitive, and an error-level `provider.cred.resolve` line with reason `prefix` |
 | A managed persona with no credential and `SLAUDE_PROVIDER_ENV_FALLBACK=0` | The same code |
 | Vault down, warm session | Nothing changes |
 
-Slack gets one fixed message per failed turn:
+Slack gets one fixed message per failed job, not one per attempt:
 
 > :warning: I can't reach my model provider right now (credentials unavailable). The details are in the server log.
 
@@ -160,15 +211,26 @@ internal reason. It never logs the path, field or value. Metrics:
 ## The node's own provider variables
 
 `SLAUDE_PROVIDER_ENV_FALLBACK` on a node decides what happens when a managed
-persona's bundle leaves a provider variable out:
+persona that does **not** set `provider` gets a bundle without some provider
+variable:
 
 - `1` (default): the node's own `ANTHROPIC_*` / `CLAUDE_CODE_OAUTH_TOKEN` fill
   the gap, as before, and the node logs one warning per persona naming it and
   the variables it filled.
-- `0`: the four provider variables are **deleted** from the agent child's
-  environment unless the bundle supplied them, and a managed persona whose
+- `0`: every provider-selecting variable is **deleted** from the agent child's
+  environment unless the bundle supplied it, and a managed persona whose
   bundle has no API key, auth token or OAuth token fails its turn with
-  `PROVIDER_CREDENTIALS_UNAVAILABLE`.
+  `PROVIDER_CREDENTIALS_UNAVAILABLE`. A session the node cannot place (no
+  tenant or job token) fails the same way.
+
+A persona that **sets** `provider` always gets the `0` behaviour, whatever the
+flag. The deleted variables are `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_HEADERS`,
+`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_BEARER_TOKEN_BEDROCK`,
+`AWS_PROFILE`, `ANTHROPIC_BEDROCK_BASE_URL`, `GOOGLE_APPLICATION_CREDENTIALS`,
+`ANTHROPIC_UNIX_SOCKET`, `ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, and
+every `ANTHROPIC_VERTEX_*` and `ANTHROPIC_DEFAULT_*_MODEL`.
 
 Set `0` once every managed persona has its own credentials, and remove the
 provider variables from the node Deployment.
@@ -188,7 +250,18 @@ allowlist bound what a persona can name; the Vault policy bounds what the
 gateway can read at all; neither protects one persona on a node from another
 persona's prompt-injected turn.
 
-Anyone who can sync personas can change a reference.
+Anyone who can sync personas can change a reference, and so can set a
+persona's `baseUrl`: whoever controls the persona repository decides where that
+persona's model traffic goes. That is why `provider` is an atomic set. A key is
+only ever sent to the host the **same** persona declared, beside that key: a
+persona's `baseUrl` never receives a `provider_creds` row's key or the node's
+own key, and a persona's key never goes to the node's `ANTHROPIC_BASE_URL`. A
+repository change can redirect a persona's own key, which its author can name
+anyway; it cannot capture another persona's or the node's. The `baseUrl` rule
+keeps that traffic off loopback, link-local and metadata addresses, and off
+private addresses the operator has not listed.
+
+`env://` references are not scoped per persona (see [References](#references)).
 
 ## The gateway's own provider
 

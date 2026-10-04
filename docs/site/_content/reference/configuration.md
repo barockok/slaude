@@ -262,7 +262,7 @@ All vars are read via `src/config/env.ts` (`req()` throws on missing, `opt()` re
 
 ### Persona provider credentials <a id="provider-credentials"></a>
 
-A managed persona's `provider` references are resolved by the gateway at runtime-bundle build. See [Provider credentials](../deploy/provider-credentials.md). Every `SLAUDE_VAULT_*` variable is gateway-only: it is stripped from the agent child's environment, and a node reports it under `SLAUDE_NODE_BOOT_CHECK`. `SLAUDE_VAULT_ADDR` is refused with `SLAUDE_ROLE=mono`.
+A managed persona's `provider` references are resolved by the gateway at runtime-bundle build. See [Provider credentials](../deploy/provider-credentials.md). Every `SLAUDE_VAULT_*` variable is gateway-only: it is stripped from the agent child's environment, and a node with any `SLAUDE_VAULT_*` or `VAULT_*` variable set refuses to boot, whatever `SLAUDE_NODE_BOOT_CHECK` says. `SLAUDE_VAULT_ADDR` is refused with `SLAUDE_ROLE=mono`.
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
@@ -274,12 +274,13 @@ A managed persona's `provider` references are resolved by the gateway at runtime
 | `SLAUDE_VAULT_MOUNTS` | No | first segment of each allowed prefix | Comma list of KV v2 mounts (one or more segments each). The longest whole-segment match is the mount; nested mounts are refused. |
 | `SLAUDE_VAULT_NAMESPACE` | No | `""` | Sent as `X-Vault-Namespace`. |
 | `SLAUDE_VAULT_CACERT` | No | `""` | CA bundle path for a private Vault. |
-| `SLAUDE_VAULT_K8S_TOKEN_PATH` | No | `/var/run/secrets/kubernetes.io/serviceaccount/token` | Service-account JWT path for `kubernetes` auth. |
+| `SLAUDE_VAULT_K8S_TOKEN_PATH` | No | `/var/run/secrets/kubernetes.io/serviceaccount/token` | Service-account JWT path for `kubernetes` auth. Point it at a projected token (audience `vault`, short expiry) mounted on the gateway pod only; see [Vault setup](../deploy/provider-credentials.md#vault-setup). |
 | `SLAUDE_VAULT_CACHE_TTL` | No | `60` | Seconds a resolved value is cached per gateway process. `0` = fetch at every session start. |
 | `SLAUDE_VAULT_STALE_MAX` | No | `600` | Seconds a cached value may still be served when a refresh fails because Vault cannot answer. |
 | `SLAUDE_VAULT_ALLOW_INSECURE` | No | `""` | `1` allows an `http://` address and `token` auth. Development only. |
-| `SLAUDE_PROVIDER_ENV_FALLBACK` | No (node) | `1` | `1`: a managed persona whose bundle lacks a provider variable runs on the node's own, with one warning per persona. `0`: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_BASE_URL` are deleted from the agent child's environment unless the bundle supplied them, and a managed persona with no credential fails its turn with `PROVIDER_CREDENTIALS_UNAVAILABLE`. Any other value stops the node. |
-| `PERSONA_*` | No | — | Values for `env://PERSONA_*` references and `${PERSONA_*}` placeholders, read from the gateway's environment. |
+| `SLAUDE_PROVIDER_ENV_FALLBACK` | No (node) | `1` | For a managed persona that does not set `provider`. `1`: a provider variable its bundle lacks comes from the node's own environment, with one warning per persona. `0`: every provider-selecting variable (the four `ANTHROPIC_*`/`CLAUDE_CODE_OAUTH_TOKEN` ones, Bedrock/Vertex switches and cloud credentials, custom headers, model pins; full list in [Provider credentials](../deploy/provider-credentials.md#the-nodes-own-provider-variables)) is deleted from the agent child's environment unless the bundle supplied it, and a persona with no credential fails its turn with `PROVIDER_CREDENTIALS_UNAVAILABLE`. A persona that sets `provider` always gets the `0` behaviour. Any other value stops the node. |
+| `PERSONA_*` | No | — | Values for `env://PERSONA_*` references and `${PERSONA_*}` placeholders, read from the gateway's environment. Not scoped per persona: any persona may name any of them. |
+| `SLAUDE_OUTBOUND_INTERNAL_HOSTS` | No | `""` | Also governs a persona's literal `provider.baseUrl`: `http` and private IP addresses only for a host listed here (exact name). Loopback, link-local and metadata addresses are never allowed. |
 
 ### Slack — optional
 
