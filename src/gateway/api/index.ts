@@ -50,8 +50,9 @@ import { handleJobEvent, handleTokenRefresh, handleTokenReissue, REFRESH_GRACE_S
 import { executeToolCall } from "./tools";
 import type { ToolPlaneDeps } from "./tools/deps";
 import { defaultPendingSource, type PendingSource } from "./pending-source";
-import { json, methodNotAllowed, notFound, readJson } from "./http";
-import { defaultMemoryPlane, handleMemory, type MemoryPlane } from "./memory";
+import { json, methodNotAllowed, notFound, readBodyCapped, readJson } from "./http";
+import { defaultMemoryPlane, handleMemory, MEMORY_BODY_MAX_BYTES, type MemoryPlane } from "./memory";
+import { PersonaNotLiveError } from "../../persona/registry";
 import { memory as processMemory } from "../../memory";
 
 export interface V1Api {
@@ -263,8 +264,14 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
       auth: "node+job",
       gate: "label",
       handle: async ({ req, seg, claims }) => {
-        const body = await readJson(req);
-        if (body === null) return json(400, { error: "malformed JSON body" });
+        const text = await readBodyCapped(req, MEMORY_BODY_MAX_BYTES);
+        if (text === null) return json(413, { error: "body too large" });
+        let body: unknown = {};
+        try {
+          if (text.trim()) body = JSON.parse(text);
+        } catch {
+          return json(400, { error: "malformed JSON body" });
+        }
         return handleMemory(seg[2]!, body, claims!, memoryPlane);
       },
     },
@@ -294,6 +301,9 @@ export function matchRoute(route: Pick<RouteDef, "pattern">, seg: readonly strin
   }
   return true;
 }
+
+/** Body `code` of the 409 a retired persona's job gets on any /v1 route. */
+export const PERSONA_NOT_LIVE_CODE = "PERSONA_NOT_LIVE";
 
 export function createV1Api(opts: V1Options): V1Api {
   const pendingSource = opts.pendingSource ?? defaultPendingSource();
@@ -328,6 +338,12 @@ export function createV1Api(opts: V1Options): V1Api {
       }
       return await route.handle({ req, seg, node: auth.node, claims, expiresAt: auth.expiresAt });
     } catch (e) {
+      // A retired persona's job: a definitive refusal, not a server fault. A
+      // 4xx is never retried by a node, and one line (no stack) is enough.
+      if (e instanceof PersonaNotLiveError) {
+        console.warn(`[v1] ${req.method} ${url.pathname} refused: persona '${e.persona}' is not live`);
+        return json(409, { error: "persona is not live", code: PERSONA_NOT_LIVE_CODE });
+      }
       // Log the real error server-side; never reflect internals (messages can
       // carry paths, SQL, or provider detail) to the caller.
       console.error(`[v1] ${req.method} ${url.pathname} failed:`, e);

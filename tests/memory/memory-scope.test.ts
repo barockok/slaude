@@ -4,7 +4,7 @@
  * else's /1on1".
  */
 import { describe, expect, test } from "bun:test";
-import { memoryScopeFor } from "../../src/memory/scope";
+import { memoryScopeFor, withClaimLock } from "../../src/memory/scope";
 import { AGENT_SOURCE, agentSourceId, userSourceId } from "../../src/knowledge/scope";
 import type { GateInput } from "../../src/knowledge/gated-dispatch";
 
@@ -32,12 +32,22 @@ describe("memoryScopeFor", () => {
     expect(s.read?.allowedSources).toEqual([userSourceId("U1")]);
   });
 
-  test("a public channel reads nothing private, and is written to the agent's own slice, not public", () => {
+  test("a public channel reads and writes only the persona's own slice (never the legacy source, never public)", () => {
     for (const trust of ["public", "unknown"] as const) {
-      const s = memoryScopeFor(g({ channelTrust: trust }));
-      expect(s.read).toBeNull();
+      const s = memoryScopeFor(g({ channelTrust: trust }), { channel: "C0PUBLIC" });
+      expect(s.read).toEqual({ clientId: PERSONA, sourceId: A, allowedSources: [A] });
       expect(s.write).toEqual({ clientId: PERSONA, sourceId: A, allowedSources: [A] });
     }
+  });
+
+  test("a DM from a non-manager is the user's own slice, read and written, like a /1on1", () => {
+    const s = memoryScopeFor(g({ channelTrust: "unknown" }), { channel: "D0DM" });
+    expect(s.write?.sourceId).toBe(userSourceId("U1"));
+    expect(s.read?.allowedSources).toEqual([userSourceId("U1")]);
+  });
+
+  test("a manager's DM keeps the manager's KB rule", () => {
+    expect(memoryScopeFor(g({ channelTrust: "unknown", isManager: true }), { channel: "D0DM" }).write?.sourceId).toBe(A);
   });
 
   test("someone else's locked thread is neither read nor written", () => {
@@ -46,5 +56,22 @@ describe("memoryScopeFor", () => {
 
   test("a manager in someone else's locked thread keeps the manager's KB rule (agent slice)", () => {
     expect(memoryScopeFor(g({ userId: "U2", lockedUser: "U1", isManager: true })).write?.sourceId).toBe(A);
+  });
+});
+
+describe("withClaimLock: the more private of the live lock and the token's claim", () => {
+  test("no claim (older gateway) or the same lock: the live lock", () => {
+    expect(withClaimLock(g({ lockedUser: "U1" }), undefined).lockedUser).toBe("U1");
+    expect(withClaimLock(g({ lockedUser: null }), null).lockedUser).toBeNull();
+    expect(withClaimLock(g({ lockedUser: "U1" }), "U1").lockedUser).toBe("U1");
+  });
+  test("unlocked live, locked at dispatch (a sync after /1on1 off): the claim", () => {
+    const merged = withClaimLock(g({ userId: "U1", lockedUser: null }), "U1");
+    expect(merged.lockedUser).toBe("U1");
+    expect(memoryScopeFor(merged).write?.sourceId).toBe(userSourceId("U1"));
+  });
+  test("two different owners: the one that is not the speaker", () => {
+    expect(withClaimLock(g({ userId: "U1", lockedUser: "U1" }), "U9").lockedUser).toBe("U9");
+    expect(withClaimLock(g({ userId: "U1", lockedUser: "U9" }), "U1").lockedUser).toBe("U9");
   });
 });

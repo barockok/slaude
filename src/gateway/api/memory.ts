@@ -5,18 +5,26 @@
  *
  * Everything that decides where memory lives comes from the verified job token:
  * the session, the persona (whose own `agent-<id>` slice is used, never the
- * process-wide one) and the gate input (channel trust, /1on1 lock, manager),
- * through the same brainGateFor the KB tools use. The body carries only the
- * turn's text; any other field is a 400.
+ * process-wide one), the gate input (channel trust, manager) through the same
+ * brainGateFor the KB tools use, and the /1on1 lock (the more private of the
+ * live lock and the token's `lock` claim). The body carries only the turn's
+ * text; any other field is a 400.
  *
  *   prefetch  {}                              → { block: string | null }
  *   sync      { user: string, assistant: string } → { ok: true }
+ *
+ * A persona that is not live is refused (PersonaNotLiveError, mapped to 409 by
+ * the router) for every provider. A provider call that hangs is abandoned at
+ * GATEWAY_MEMORY_TIMEOUT_MS: prefetch answers null, sync answers ok, and the
+ * timeout is logged once per operation.
  */
 import { z } from "zod";
 import type { GateInput } from "../../knowledge/gated-dispatch";
+import { agentIdReady } from "../../knowledge/agent-identity";
 import type { MemoryProvider } from "../../memory/provider";
 import { BrainMemoryProvider } from "../../memory/brain-provider";
-import { memoryScopeFor } from "../../memory/scope";
+import { memoryScopeFor, withClaimLock } from "../../memory/scope";
+import { livePersona } from "../../persona/registry";
 import { zodIssueLine } from "../../tools/contracts/types";
 import type { JobClaims } from "./auth";
 import { json, notFound } from "./http";
@@ -24,6 +32,11 @@ import type { ToolPlaneDeps } from "./tools/deps";
 
 export const MEMORY_OPS = ["prefetch", "sync"] as const;
 export type MemoryOp = (typeof MEMORY_OPS)[number];
+
+/** The gateway's bound on one provider call; below the node's own bound. */
+export const GATEWAY_MEMORY_TIMEOUT_MS = 2000;
+/** A sync body is two clipped strings (the node sends at most ~2000 chars each). */
+export const MEMORY_BODY_MAX_BYTES = 64 * 1024;
 
 const prefetchBody = z.object({}).strict();
 const syncBody = z.object({ user: z.string(), assistant: z.string() }).strict();
@@ -33,32 +46,72 @@ export interface MemoryPlane {
   sync(claims: JobClaims, turn: { user: string; assistant: string }): Promise<void>;
 }
 
+/** Refuse a named persona the registry does not list as live (throws). */
+const defaultAssertLive = (claims: JobClaims): void => {
+  if (claims.persona && claims.persona !== "default") livePersona(claims.persona);
+};
+
 /**
  * The gateway's memory plane over a provider. A brain-backed provider is read
  * and written in the scope memoryScopeFor derives from the gate input; with no
- * gate (brain disabled) or a flat provider (SLAUDE_MEMORY=sqlite, keyed on the
- * session alone) the provider runs as it does in mono.
+ * gate (brain disabled) it reads and writes nothing. A flat provider
+ * (SLAUDE_MEMORY=sqlite, keyed on the session alone) runs as it does in mono.
  */
 export function makeMemoryPlane(deps: {
   provider: MemoryProvider;
   gateFor(claims: JobClaims): Promise<GateInput | null>;
+  /** Settles the process agent identity before a gate is computed, so the
+   *  default persona never scopes by the "default" fallback. */
+  ready?: () => Promise<unknown>;
+  assertLive?: (claims: JobClaims) => void;
+  timeoutMs?: number;
+  warn?: (msg: string) => void;
 }): MemoryPlane {
   const { provider } = deps;
+  const ready = deps.ready ?? agentIdReady;
+  const assertLive = deps.assertLive ?? defaultAssertLive;
+  const timeoutMs = deps.timeoutMs ?? GATEWAY_MEMORY_TIMEOUT_MS;
+  const warn = deps.warn ?? ((m: string) => console.warn(m));
+  const warned = new Set<string>();
+
+  async function bounded<T>(op: MemoryOp, p: Promise<T>, fallback: T): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = Symbol("timeout");
+    p.catch(() => {}); // a late rejection of the abandoned call is not unhandled
+    try {
+      const r = await Promise.race([p, new Promise<typeof timedOut>((res) => (timer = setTimeout(() => res(timedOut), timeoutMs)))]);
+      if (r !== timedOut) return r as T;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!warned.has(op)) {
+      warned.add(op);
+      warn(`[memory] ${op} gave up after ${timeoutMs}ms; the turn runs without it (logged once)`);
+    }
+    return fallback;
+  }
+
+  /** The turn's memory scope, or null when the brain gives it none. */
+  async function scope(claims: JobClaims) {
+    await ready();
+    const gate = await deps.gateFor(claims);
+    if (!gate) return null;
+    return memoryScopeFor(withClaimLock(gate, claims.lock?.user), { channel: claims.channel });
+  }
+
   return {
     async prefetch(claims) {
-      if (!(provider instanceof BrainMemoryProvider)) return provider.prefetch(claims.session);
-      const gate = await deps.gateFor(claims);
-      if (!gate) return null;
-      const { read } = memoryScopeFor(gate);
-      return read ? provider.prefetchIn(claims.session, read) : null;
+      assertLive(claims);
+      if (!(provider instanceof BrainMemoryProvider)) return bounded("prefetch", provider.prefetch(claims.session), null);
+      const s = await scope(claims);
+      return s?.read ? bounded("prefetch", provider.prefetchIn(claims.session, s.read), null) : null;
     },
     async sync(claims, turn) {
+      assertLive(claims);
       const t = { sessionId: claims.session, ...turn };
-      if (!(provider instanceof BrainMemoryProvider)) return provider.syncTurn(t);
-      const gate = await deps.gateFor(claims);
-      if (!gate) return;
-      const { write } = memoryScopeFor(gate);
-      if (write) await provider.syncTurnIn(t, write);
+      if (!(provider instanceof BrainMemoryProvider)) return bounded("sync", provider.syncTurn(t), undefined);
+      const s = await scope(claims);
+      if (s?.write) await bounded("sync", provider.syncTurnIn(t, s.write), undefined);
     },
   };
 }
