@@ -115,6 +115,7 @@ Losing a node pod loses nothing: a node holds no credential the gateway does not
 Turn delivery is **at-least-once, deduplicated to effectively-once** for the common failure windows:
 
 - A node killed **mid-turn** (before any Slack post): BullMQ stall recovery re-delivers the job, and another node runs the turn once. Not immediately, though: a killed node never releases its `lock:session:<id>`, so the re-delivered turn waits for that lock's TTL to expire — **10 minutes by default** — before another node can run it. Nothing is lost or duplicated; the turn is late. Tune it with `SLAUDE_SESSION_LOCK_TTL_MS` and `SLAUDE_SESSION_LOCK_EXTEND_MS` (defaults 600000 and 60000). The TTL must stay at least three times the renewal cadence, or a late renewal could cost a live node its session mid-turn; the process refuses to start otherwise. BullMQ's stall detection has to fire as well (its defaults, a 30-second lock and a 30-second check, are not tuned here), so no takeover is faster than roughly 30 seconds whatever the TTL. **45 seconds is the local overlay's value, not the default**: `deploy/k8s-local` runs 45000/5000 so its checks stay quick, and a killed node's turn was measured taking over in 50 seconds there. A real deployment waits out the 10 minutes unless it lowers the TTL itself.
+- A node killed during a **warm-routed** turn (one sent to the node's own queue because the session was warm there): no surviving worker consumes that queue, so BullMQ's stall recovery never sees the job. The reaper does: once the dead node's heartbeat and the job's BullMQ lock have both expired, it moves the job, same id, to its label's queue, and another node runs it, after the same session-lock wait. A job whose lock is still live (a partitioned process may still be running it) is left alone, and the reaper looks again on its next pass.
 - A node killed **after the turn but before the BullMQ ack** (the zombie window): the worker writes a `turn-done:<jobId>` marker to Redis the moment the agent turn finishes, *before* any ack. The retried delivery finds the marker and completes the job without re-running the turn — no duplicate Slack posts.
 - **Residual window**: a node dying *between its last Slack post and the marker write* (single-digit milliseconds) still replays the turn on retry. This is the irreducible at-least-once residue of a post-to-external-system-then-record design; Slack-side `ts` inspection is the audit trail if it ever fires.
 
@@ -249,7 +250,7 @@ A node holding the old shared token authenticates as `{id: legacy, labels: [defa
 
 ### Job tokens
 
-A job token is refreshed at claim and during a turn. Its total life is capped by `SLAUDE_JOB_TOKEN_MAX_AGE` (6 hours) from its first issue. A job that waited in the queue longer than the refresh window (the 15-minute TTL plus a 1-hour grace) gets a new token through `POST /v1/jobs/:id/token-reissue`, which needs the label, the job still in the queue, and the job younger than `SLAUDE_JOB_MAX_AGE` (24 hours). A reissue restarts the token-life clock at the claim, so a job's token can live up to `SLAUDE_JOB_MAX_AGE` from its original enqueue in total, never beyond it.
+A job token is refreshed at claim, when it has used a fifth of its life in the queue. Its total life is capped by `SLAUDE_JOB_TOKEN_MAX_AGE` (6 hours) from its first issue. A job that waited in the queue longer than the refresh window (the 15-minute TTL plus a 1-hour grace) gets a new token through `POST /v1/jobs/:id/token-reissue`, which needs the label, the job still in the queue, and the job younger than `SLAUDE_JOB_MAX_AGE` (24 hours). A reissue restarts the token-life clock at the claim, so a job's token can live up to `SLAUDE_JOB_MAX_AGE` from its original enqueue in total, never beyond it.
 
 ### Metrics and an alert
 
@@ -272,6 +273,99 @@ groups:
         annotations:
           summary: "A node still uses the legacy shared token; give it a signed credential, then set SLAUDE_NODE_LEGACY=off."
 ```
+
+## Labels and routing
+
+**Read the limits first.** Queue names are **routing, not access control**: every node reaches Redis directly, so a node can read any label's queue, and with it the job payloads, which hold the message text. What a label enforces is the **credential path**: a node without the label cannot get that agent's runtime bundle, provider credentials, MCP tokens, SSH key or tool access, even holding a valid job token for it. Files on the shared volume are shared by every node until sandboxing exists. A **node is the trust unit**: every agent turn on a node runs as the node's user and can read the node's environment and the other turns' processes, so labels separate nodes, never personas that share a node. Put personas that must not see each other's secrets on nodes with different labels.
+
+### What a label is
+
+A label is a name a node's signed credential carries (see [Minting](#minting)), matching `[a-z0-9][a-z0-9-]{0,31}`. A persona runs on the label in its `runsOn` field in [personas as code](personas-as-code.md); a persona without one, and every filesystem or sqlite persona, runs on `default`. `runsOn` is set only from git, never by a runtime override.
+
+At dispatch the gateway signs the persona's label into the job token and the job payload, and enqueues on that label's queue:
+
+| Queue (BullMQ name) | Consumed by |
+|---|---|
+| `turns` | nodes carrying `default`, including every legacy node |
+| `turns.label.<label>` | nodes carrying `<label>` |
+| `turns.<nodeId>` | that node only: turns of sessions warm on it |
+
+A node runs one BullMQ worker per label it carries plus one on its own queue, each with `SLAUDE_NODE_CONCURRENCY` slots, so a node's ceiling is `(labels + 1) × SLAUDE_NODE_CONCURRENCY`. Warm routing sends a turn to a node's own queue only while that node still carries the persona's label. A job that reaches a node without its label (reaped or warm-routed before a relabel) is moved to its label's queue, not run.
+
+### Scaling a label
+
+Run **one node Deployment per label**, each with its own signed credential, and scale each on its own queue. With KEDA, each label gets its own ScaledObject whose Redis list trigger reads that label's wait list (`<SLAUDE_REDIS_PREFIX>:bull:turns.label.<label>:wait`; `slaude:bull:turns:wait` for `default`, as in `deploy/k8s-scale/70-autoscale.yaml`):
+
+```yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: slaude-node-finance
+  namespace: slaude-scale
+spec:
+  scaleTargetRef:
+    name: slaude-node-finance        # the Deployment whose credential carries `finance`
+  minReplicaCount: 2                 # HA: one node of the label may die
+  maxReplicaCount: 10
+  cooldownPeriod: 300
+  triggers:
+    - type: redis
+      metadata:
+        address: REPLACE-redis-host:6379
+        listName: slaude:bull:turns.label.finance:wait
+        listLength: "5"
+```
+
+Keep **at least two replicas per label** for HA. The cost is stated plainly: every label adds at least two always-on node pods, whether or not its agents are busy, so N labels cost at least 2N nodes. A label with one replica has no node while that pod restarts, and its turns wait. `slaude_queue_depth` has a series per label queue (`{queue="turns.label.finance", label="finance"}`); it is exported by the reaper leader only, so take `max()` across gateway pods.
+
+### Unserved labels
+
+A label is **in use** when a live persona runs on it or its `turns.label.<label>` queue exists in Redis. Every reaper pass (about 30 s, on the leader) counts, for each label in use, the jobs waiting on its queue and the live nodes carrying it. When jobs wait and no live node carries the label for longer than `SLAUDE_LABEL_UNSERVED_SECS` (default 60), the label is **unserved**:
+
+- the gauge `slaude_label_unserved{label}` is 1 (0 otherwise; a label that leaves use loses its series; at most 100 labels are reported);
+- `GET /panel/api/labels` reports it. Read-only, for any authenticated operator, with the same guard as the other panel reads; 503 without a node queue (mono):
+
+  ```json
+  [{ "label": "default", "liveNodes": 2, "waiting": 0, "unserved": false },
+   { "label": "finance", "liveNodes": 0, "waiting": 3, "unserved": true }]
+  ```
+
+Nothing is posted to Slack; the turns simply wait. An example alert:
+
+```yaml
+- alert: SlaudeLabelUnserved
+  expr: max by (label) (slaude_label_unserved) == 1
+  for: 5m
+  annotations:
+    summary: "Turns for node label {{ $labels.label }} are waiting and no node carries it; start or fix that label's node Deployment."
+```
+
+A sync that names a `runsOn` no live node carries is reported as a warning at deploy time, for the same reason.
+
+### Relabel and LABEL_MISMATCH
+
+When a persona's `runsOn` changes:
+
+- **new messages** go to the new label's queue;
+- **warm routing** ignores a node that lacks the new label, and that node's warm session idles out and unregisters;
+- **a pending message** (in a job of the session still waiting, on any queue) is moved to the new label's queue when the next message arrives, merged with it under a token signed for the new label. A waiting job that no new message follows keeps its old label and runs on a node carrying it;
+- **work in flight is invalidated** when a call it makes is refused. A turn whose node does not carry the label signed into its token gets `403` from the gate on its next call (a tool call becomes an error result for the model), and a token refresh at claim is refused with `409` and code `LABEL_MISMATCH` when the persona's live `runsOn` differs from the token's label. Either way the job **fails with `LABEL_MISMATCH`** (never acknowledged as done, never retried by BullMQ), and the gateway **re-dispatches it once** to the persona's current label, posting nothing. If that second attempt also fails with `LABEL_MISMATCH`, the user sees one fixed message ("No worker is available that matches this persona's requirements"). A `403` on the runtime bundle fails the same way.
+- A turn already running on a node that **still carries the old label** finishes there: the label signed into its token is still among the node's labels, and a token is refreshed only at claim. To stop such a turn, re-credential the old node without the label or abort the turn.
+
+The session-config fingerprint is not used for a relabel: it reboots a session on the same node, which is the wrong remedy.
+
+**A revoked or expired node credential at runtime.** A node that gets a `401` for its own credential (the body carries code `NODE_UNAUTHORIZED`) pauses every claim loop and stops its heartbeat, so it no longer counts as alive for warm routing or the unserved signal, and logs once. Turns already running are left to finish or fail. It retries `GET /v1/node/whoami` with backoff (5 s doubling to 60 s) and resumes claiming once it succeeds. A `401` for a job token is not a credential problem and does not pause anything.
+
+### Moves are at-least-once
+
+Every move (relabel, a mismatch at claim, the reaper) adds the job's copy on the target queue **held** (delayed), takes the original off its queue in one atomic Redis step that refuses a job a worker holds or has finished, and only then releases the copy. A message a pending job already holds is not appended again. A `job-moved` marker tells the gateway's follower where the job went, so a move never reads as the end of the turn. Two crash windows remain, each one Redis round trip wide, and both are at-least-once rather than lost:
+
+- dying after the original was taken and before the copy is released: the copy runs when its 30-second hold lapses, so the turn is late;
+- merging into another pending job of the session, dying after the append and before the held copy is dropped: the messages run twice.
+
+They cannot be closed without moving the whole move into one Lua script, BullMQ's own add included. The LABEL_MISMATCH re-dispatch is guarded once across gateway replicas; a replica dying in its middle delays it by 30 seconds, when another replica's follower redoes it.
+
+**Upgrade gateways before nodes.** An older gateway's follower ignores the `job-moved` marker and can close a turn early (its reaction and status end while the moved job still runs), and it does not hold back `LABEL_MISMATCH`: it posts the fixed message without re-dispatching.
 
 ## Control panel (`/panel`)
 
