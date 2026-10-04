@@ -76,7 +76,7 @@ export interface Keys {
   /** SCAN pattern matching every live node heartbeat key. */
   nodePattern(): string;
   /** `nodelabels:<nodeId>` — the labels a live node consumes, comma-joined,
-   *  written with the heartbeat and with the same TTL. Absent for a node that
+   *  written with every heartbeat; TTL max(node TTL, 3× heartbeat). Absent for a node that
    *  predates labels: it counts as `{default}`. */
   nodeLabels(nodeId: string): string;
   /** Set of every nodeId that ever registered — reaper work list. */

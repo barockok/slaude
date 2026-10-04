@@ -66,6 +66,11 @@ export function makeRegistry(opts: RegistryOpts) {
   const hbSec = opts.heartbeatSec ?? heartbeatSec();
   const sessTtlMs = Math.max(1, Math.round(2 * hbSec * 1000));
   const nodeTtlMs = Math.max(1, Math.round((opts.nodeTtlSec ?? 30) * 1000));
+  // The labels key must outlive every warm session on the node (whose
+  // freshness window is 2× heartbeat), or warm routing would read an expired
+  // key as {default} while the node still holds a live Query: so at least the
+  // node key's TTL and at least 3× heartbeat, refreshed on every beat.
+  const nodeLabelsTtlMs = Math.max(nodeTtlMs, Math.round(3 * hbSec * 1000));
   const sessIdOf = (key: string) => key.slice(`${keys.prefix}:sess:`.length);
   const nodeIdOf = (key: string) => key.slice(`${keys.prefix}:nodes:`.length);
   const listLive = async () => (await scanKeys(redis, keys.nodePattern())).map(nodeIdOf);
@@ -123,7 +128,7 @@ export function makeRegistry(opts: RegistryOpts) {
      *  transaction; omitted = an unlabelled node, i.e. `{default}`. */
     async nodeUp(node: string, labels?: readonly string[]): Promise<void> {
       const tx = redis.multi().set(keys.node(node), Date.now(), "PX", nodeTtlMs);
-      if (labels) tx.set(keys.nodeLabels(node), encodeLabels(labels), "PX", nodeTtlMs);
+      if (labels) tx.set(keys.nodeLabels(node), encodeLabels(labels), "PX", nodeLabelsTtlMs);
       await tx.sadd(keys.nodeSet(), node).exec();
     },
 
@@ -137,7 +142,7 @@ export function makeRegistry(opts: RegistryOpts) {
       await redis
         .multi()
         .set(keys.node(node), Date.now(), "PX", nodeTtlMs)
-        .set(keys.nodeLabels(node), encodeLabels(labels), "PX", nodeTtlMs)
+        .set(keys.nodeLabels(node), encodeLabels(labels), "PX", nodeLabelsTtlMs)
         .exec();
     },
 
@@ -189,6 +194,8 @@ export function makeRegistry(opts: RegistryOpts) {
 
     /** The node-heartbeat TTL this registry was built with (ms). */
     nodeTtlMs,
+    /** The labels key TTL (ms): max(node TTL, 3× heartbeat). */
+    nodeLabelsTtlMs,
 
     /** Currently-alive node ids (heartbeat key present). */
     async listNodes(): Promise<string[]> {
