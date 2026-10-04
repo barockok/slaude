@@ -2,9 +2,11 @@
 // Turn-delivery probe for verify-turns.sh. Runs INSIDE a gateway pod, so it uses
 // the deployment's own Redis, Postgres and key prefix — nothing is stubbed.
 //
-//   enqueue <n> [--persona <name>] [--label <label>]
+//   enqueue <n> [--persona <name>] [--label <label>|live]
 //                 create n sessions and enqueue one turn each (default persona
-//                 unless --persona names another)
+//                 unless --persona names another). `--label live` resolves the
+//                 persona's CURRENT label the way dispatch does (runsOnFor on a
+//                 freshly built persona registry). Prints the sessions and label.
 //   again 1 [--persona <name>] [--label <label>]
 //                 enqueue one more turn into the FIRST session the last
 //                 `enqueue` created (same thread, same persona), and track only
@@ -16,6 +18,17 @@
 //   cron-status   JSON: whether its schedule advanced, its result, and how many
 //                 turn jobs exist for its synthetic session
 //   cleanup       remove the rows and markers this probe created
+//   token 1 [--persona <name>] [--label <label>|live]
+//                 create one session and print ONLY a job token for it on
+//                 stdout, for piping into the node probe (probe/node.ts). Never
+//                 printed to a terminal by the verify scripts.
+//   legacy-whoami JSON: { status, legacy } of GET /v1/node/whoami presented with
+//                 this gateway's SLAUDE_NODE_LEGACY_TOKEN (401 when the legacy
+//                 door is closed)
+//   unserved <label>
+//                 JSON: { value } of slaude_label_unserved{label} on THIS gateway
+//                 replica's /metrics (only the reaper leader exports it; null
+//                 when this replica has no such series)
 //
 // The probe's turns are SUPPRESSED: the node runs the full turn lifecycle and
 // writes its completion marker, but the prompt hook stops the model, so the probe
@@ -31,6 +44,7 @@ import { db } from "/app/src/db/schema.ts";
 import * as Sessions from "/app/src/db/sessions.ts";
 import * as CronJobs from "/app/src/db/cron-jobs.ts";
 import { env } from "/app/src/config/env.ts";
+import { buildPersonaRegistry, runsOnFor } from "/app/src/persona/registry.ts";
 
 const TEAM = "TVERIFY";
 const CHANNEL = "CVERIFY";
@@ -53,9 +67,11 @@ if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(PERSONA)) {
 // carried in the payload, and the queue they land on). Absent = `default`, the
 // `turns` queue, exactly as before labels.
 const labelFlag = rest.indexOf("--label");
-const LABEL = labelFlag >= 0 ? (rest[labelFlag + 1] ?? "") : "default";
+const labelArg = labelFlag >= 0 ? (rest[labelFlag + 1] ?? "") : "default";
+// `live`: the persona's label as dispatch would resolve it now.
+const LABEL = labelArg === "live" ? runsOnFor(PERSONA, await buildPersonaRegistry("default")) : labelArg;
 if (!LABEL_RE.test(LABEL)) {
-  console.error(`--label needs a node label (got '${LABEL}')`);
+  console.error(`--label needs a node label or 'live' (got '${labelArg}')`);
   process.exit(2);
 }
 const QUEUE = labelTurnsQueue(LABEL);
@@ -115,7 +131,52 @@ async function enqueue(n: number) {
   }
   writeFileSync(STATE, JSON.stringify(ids));
   writeFileSync(SESSIONS, JSON.stringify(sessions));
-  console.log(JSON.stringify({ enqueued: ids.length, session: sessions[0]?.id ?? null }));
+  console.log(
+    JSON.stringify({ enqueued: ids.length, session: sessions[0]?.id ?? null, sessions: sessions.map((s) => s.id), label: LABEL }),
+  );
+}
+
+async function token() {
+  const thread = `${MARK}-token-${Date.now()}`;
+  const session = await Sessions.createForThread({
+    thread: { team_id: TEAM, channel_id: CHANNEL, thread_ts: thread, persona_id: PERSONA },
+    model: env.model(),
+    working_dir: "/tmp",
+    title: MARK,
+  });
+  process.stdout.write(
+    mintJobToken({
+      label: LABEL, tenant: "default", persona: PERSONA, session: session.id,
+      team: TEAM, channel: CHANNEL, thread, initiator: "UVERIFY",
+      scope: "turn", runAs: "agent", job: randomUUID(),
+    }),
+  );
+}
+
+async function legacyWhoami() {
+  const tok = process.env.SLAUDE_NODE_LEGACY_TOKEN;
+  if (!tok) {
+    console.log(JSON.stringify({ status: "unset" }));
+    return;
+  }
+  const r = await fetch("http://localhost:8080/v1/node/whoami", { headers: { authorization: `Bearer ${tok}` } });
+  let legacy: unknown = null;
+  try {
+    legacy = ((await r.json()) as { legacy?: unknown }).legacy ?? null;
+  } catch {
+    /* not JSON */
+  }
+  console.log(JSON.stringify({ status: r.status, legacy }));
+}
+
+async function unserved() {
+  if (!arg || !LABEL_RE.test(arg)) {
+    console.error("unserved needs a node label");
+    process.exit(2);
+  }
+  const text = await (await fetch("http://localhost:8080/metrics")).text();
+  const line = text.split("\n").find((l) => l.startsWith("slaude_label_unserved{") && l.includes(`label="${arg}"`));
+  console.log(JSON.stringify({ value: line ? Number(line.trim().split(/\s+/).pop()) : null }));
 }
 
 async function again() {
@@ -216,10 +277,16 @@ const commands: Record<string, () => Promise<void>> = {
   cron,
   "cron-status": cronStatus,
   cleanup,
+  token,
+  "legacy-whoami": legacyWhoami,
+  unserved,
 };
 const run = commands[cmd ?? ""];
 if (!run) {
-  console.error("usage: turns.ts enqueue <n> [--persona <name>] | again 1 --persona <name> | status | cron | cron-status | cleanup");
+  console.error(
+    "usage: turns.ts enqueue <n> [--persona <name>] [--label <label>|live] | again 1 --persona <name> | status | cron | " +
+      "cron-status | cleanup | token 1 [--persona <name>] [--label <label>|live] | legacy-whoami | unserved <label>",
+  );
   process.exit(2);
 }
 await run();

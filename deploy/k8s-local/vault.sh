@@ -6,6 +6,8 @@
 #   ./vault.sh rotate <persona>  write a new version of that persona's credential:
 #                                the value is read from stdin when stdin is not a
 #                                terminal, else a new placeholder is generated
+#   ./vault.sh reseed <persona>  write that persona's secret from provider.env again,
+#                                undoing a rotate (verify-turns.sh does, on exit)
 #   ./vault.sh status            each persona's secret version (never a value)
 #
 # Secrets live at secret/slaude/personas/<persona> (KV v2), the path the gateway's
@@ -61,19 +63,24 @@ seed() {
     echo "vault: gateway token created (policy slaude-personas)"
   fi
 
-  local p want have
-  for p in "${PERSONAS[@]}"; do
-    want="$(vault_secret_json "$PROVIDER" "$p" | shasum -a 256 | cut -c1-16)"
-    have="$(v kv metadata get -format=json "$(path_of "$p")" 2>/dev/null \
-      | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]; print((d.get("custom_metadata") or {}).get("seed",""))' 2>/dev/null || true)"
-    if [[ "$have" == "$want" ]]; then
-      echo "vault: $(path_of "$p") up to date"
-      continue
-    fi
-    vault_secret_json "$PROVIDER" "$p" | v kv put "$(path_of "$p")" - >/dev/null || die "could not write $(path_of "$p")"
-    v kv metadata put -custom-metadata="seed=$want" "$(path_of "$p")" >/dev/null || die "could not tag $(path_of "$p")"
-    echo "vault: $(path_of "$p") written"
-  done
+  local p
+  for p in "${PERSONAS[@]}"; do seed_one "$p"; done
+}
+
+# Write one persona's secret from provider.env, unless it was already seeded from
+# this provider.env (`force` writes anyway).
+seed_one() { # <persona> [force]
+  local p="$1" want have
+  want="$(vault_secret_json "$PROVIDER" "$p" | shasum -a 256 | cut -c1-16)"
+  have="$(v kv metadata get -format=json "$(path_of "$p")" 2>/dev/null \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]; print((d.get("custom_metadata") or {}).get("seed",""))' 2>/dev/null || true)"
+  if [[ "$have" == "$want" && "${2:-}" != force ]]; then
+    echo "vault: $(path_of "$p") up to date"
+    return 0
+  fi
+  vault_secret_json "$PROVIDER" "$p" | v kv put "$(path_of "$p")" - >/dev/null || die "could not write $(path_of "$p")"
+  v kv metadata put -custom-metadata="seed=$want" "$(path_of "$p")" >/dev/null || die "could not tag $(path_of "$p")"
+  echo "vault: $(path_of "$p") written"
 }
 
 version_of() { # <persona>
@@ -110,6 +117,10 @@ status() {
 case "${1:-}" in
   seed) seed ;;
   rotate) [[ -n "${2:-}" ]] || die "usage: vault.sh rotate <persona>"; rotate "$2" ;;
+  reseed)
+    if [[ -z "${2:-}" ]] || ! valid_persona "$2"; then die "usage: vault.sh reseed <persona>"; fi
+    seed_one "$2" force
+    ;;
   status) status ;;
-  *) die "usage: vault.sh seed | rotate <persona> | status" ;;
+  *) die "usage: vault.sh seed | rotate <persona> | reseed <persona> | status" ;;
 esac

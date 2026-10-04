@@ -10,6 +10,16 @@
 # mid-flight, and asserts every turn still completes exactly once. Then it fires
 # one cron occurrence and asserts the two gateways dispatch it once between them.
 #
+# Then the node-label topology (the local persona set must be synced: up.sh does
+# it, personas.sh sync redoes it): a turn for `beta` lands on a `finance` node and
+# never on a `default` one; the label gate refuses a node another label's bundle
+# while it holds a valid job token; a rotated Vault key reaches the next new
+# thread; a bridged MCP tool answers through the gateway; with every `finance`
+# node stopped a `beta` turn waits and the label is reported unserved, then runs
+# once a node is back; a relabelled persona's next turn goes to its new label.
+# Everything it changes (the finance replica count, beta's label, beta's Vault
+# key) is put back on exit.
+#
 # Recovery is not instant: a killed node never releases its session lock, so the
 # turn it held waits for that lock's TTL before another node can run it (10
 # minutes by default, 45 s in the local overlay), and BullMQ's stall detection
@@ -38,6 +48,12 @@ RECOVER_TIMEOUT="${RECOVER_TIMEOUT:-240}"
 CLAIM_TIMEOUT="${CLAIM_TIMEOUT:-120}"
 CRON_TIMEOUT="${CRON_TIMEOUT:-150}"
 SETTLE_TIMEOUT="${SETTLE_TIMEOUT:-120}"
+# A Vault rotation reaches a new bundle within the gateway's Vault cache TTL
+# (SLAUDE_VAULT_CACHE_TTL, 10 s in the local overlay).
+ROTATE_TIMEOUT="${ROTATE_TIMEOUT:-90}"
+# slaude_label_unserved needs waiting work and no live node for longer than
+# SLAUDE_LABEL_UNSERVED_SECS (20 s locally), plus a reaper pass (30 s).
+UNSERVED_TIMEOUT="${UNSERVED_TIMEOUT:-150}"
 POLL_FAST="${POLL_FAST:-2}"
 POLL_SLOW="${POLL_SLOW:-5}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -73,7 +89,10 @@ PROBE_TIMEOUT="${PROBE_TIMEOUT:-60s}"
 
 k() { kubectl --context "$PROFILE" -n "$NS" "$@"; }
 gateway() { k get pod -l app.kubernetes.io/component=gateway --field-selector=status.phase=Running -o name --request-timeout="$PROBE_TIMEOUT" 2>/dev/null | head -1; }
+gateways() { k get pod -l app.kubernetes.io/component=gateway --field-selector=status.phase=Running -o name --request-timeout="$PROBE_TIMEOUT" 2>/dev/null; }
+# The `default` label's nodes (slaude-node), and the `finance` label's.
 nodes() { k get pod -l app.kubernetes.io/component=node --field-selector=status.phase=Running -o name; }
+finance_nodes() { k get pod -l app.kubernetes.io/component=node-finance --field-selector=status.phase=Running -o name --request-timeout="$PROBE_TIMEOUT" 2>/dev/null; }
 
 # Run the in-pod probe.
 #
@@ -87,13 +106,21 @@ nodes() { k get pod -l app.kubernetes.io/component=node --field-selector=status.
 # The probe's name is left in $WORK/last_probe (this runs in a subshell, so a
 # variable would not survive) for `field` and `queue_sum` to quote.
 probe() {
-  local pod out rc
+  local pod
   printf '%s' "${1:-?}" >"$WORK/last_probe"
   pod="$(gateway)"
   if [[ -z "$pod" ]]; then
     diag "  !! probe ${1:-?}: no running gateway pod to exec into"
     return 1
   fi
+  probe_in "$pod" "$@"
+}
+
+# The same, in a named gateway pod (the probe must have been installed there).
+probe_in() { # <pod> <args...>
+  local pod="$1" out rc
+  shift
+  printf '%s' "${1:-?}" >"$WORK/last_probe"
   out="$(k exec --request-timeout="$PROBE_TIMEOUT" "$pod" -- bun /tmp/probe/turns.ts "$@" 2>&1)"
   rc=$?
   if ((rc != 0)); then
@@ -187,6 +214,95 @@ expect_value() { # <label> <actual> <want> <context>
   fi
 }
 
+# Copy a probe script into a pod once per run. Non-zero (and says why) on failure.
+install_in() { # <pod> <script under probe/>
+  local pod="${1#pod/}"
+  grep -qxF "$pod $2" "$WORK/installed" 2>/dev/null && return 0
+  if ! k exec -i --request-timeout="$PROBE_TIMEOUT" "$pod" -- sh -c "mkdir -p /tmp/probe && cat > /tmp/probe/$2" \
+    <"$HERE/probe/$2" >/dev/null 2>&1; then
+    diag "  !! could not copy probe/$2 into $pod"
+    return 1
+  fi
+  echo "$pod $2" >>"$WORK/installed"
+}
+
+# The node-side probe (probe/node.ts) in a node pod, as that node. Same contract
+# as `probe`: on failure it says so and prints nothing. stdin passes through
+# (the job token, for runtime and mcpx).
+node_probe() { # <pod> <args...>
+  local pod="${1#pod/}" out rc
+  shift
+  printf 'node %s' "${1:-?}" >"$WORK/last_probe"
+  install_in "$pod" node.ts || return 1
+  out="$(k exec -i --request-timeout="$PROBE_TIMEOUT" "$pod" -- bun /tmp/probe/node.ts "$@" 2>&1)"
+  rc=$?
+  if ((rc != 0)); then
+    diag "  !! node probe ${1:-?} failed (exit $rc) on $pod: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"
+    return "$rc"
+  fi
+  printf 'node probe %s on %s -> %s\n' "${1:-?}" "$pod" "$(printf '%s\n' "$out" | tail -1)" >>"$LOG"
+  printf '%s\n' "$out" | tail -1
+}
+
+# A job token for one fresh session of <persona>, signed for <label> (or `live`:
+# the persona's current label). Printed for a pipe into node_probe, never logged.
+job_token() { # <persona> <label|live>
+  local pod out
+  pod="$(gateway)"
+  [[ -n "$pod" ]] || { diag "  !! job token: no running gateway pod"; return 1; }
+  out="$(k exec --request-timeout="$PROBE_TIMEOUT" "$pod" -- bun /tmp/probe/turns.ts token 1 --persona "$1" --label "$2" 2>/dev/null)"
+  if [[ ! "$out" =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]]; then
+    diag "  !! could not mint a job token for persona $1 (label $2); is the local persona set synced?"
+    return 1
+  fi
+  printf '%s' "$out"
+}
+
+# The node probe's answer for <persona>'s bundle, with a fresh job token (a new
+# thread). Prints the probe's JSON line, or nothing.
+runtime_as() { # <node pod> <persona> <label|live>
+  local tok
+  tok="$(job_token "$2" "$3")" || return 1
+  printf '%s' "$tok" | node_probe "$1" runtime "$2"
+}
+
+# Every session-boot line of the given pods' logs. Non-zero (and silent) if ANY
+# pod's logs could not be read, so a missing pod is never read as "no line".
+boot_lines() { # <pod...>
+  local p out all=""
+  (($# > 0)) || return 1
+  for p in "$@"; do
+    out="$(k logs --request-timeout="$PROBE_TIMEOUT" "$p" 2>/dev/null)" || return 1
+    all+="$(grep -E 'session=[^ ]+ persona=' <<<"$out" || true)"$'\n'
+  done
+  printf '%s' "$all"
+}
+
+# How many of <sessions> booted on <pods>: "n" (0..), or nothing when the logs
+# could not be read.
+sessions_booted_on() { # "<session ids>" <pod...>
+  local ids="$1" lines n=0 id
+  shift
+  lines="$(boot_lines "$@")" || return 1
+  for id in $ids; do grep -qF "session=$id persona=" <<<"$lines" && n=$((n + 1)); done
+  printf '%s\n' "$n"
+}
+
+# Wait (bounded) until the probe's tracked turns all carry a completion marker.
+# Prints the last count read, or nothing if never measured.
+wait_done() { # <want> <seconds> [probe status args...]
+  local want="$1" secs="$2" v="" cur t0
+  shift 2
+  t0=$(date +%s)
+  while (($(date +%s) - t0 < secs)); do
+    cur="$(probe status "$@" | field withCompletionMarker || true)"
+    [[ -n "$cur" ]] && v="$cur"
+    [[ "$v" == "$want" ]] && break
+    sleep "$POLL_SLOW"
+  done
+  printf '%s' "$v"
+}
+
 # Kill a node's container outright — no SIGTERM, no drain — the way verify-ha
 # simulates a lost worker.
 crash_node() { # <pod>
@@ -201,6 +317,19 @@ crash_node() { # <pod>
 
 cleanup() {
   local pod
+  # Put back what the label sections changed, before anything else.
+  if [[ -n "${FINANCE_REPLICAS:-}" ]]; then
+    k scale deploy slaude-node-finance --replicas="$FINANCE_REPLICAS" >/dev/null 2>&1 \
+      || diag "  !! cleanup: could not scale slaude-node-finance back to $FINANCE_REPLICAS; do it by hand"
+  fi
+  if [[ -n "${RELABELED:-}" ]]; then
+    SLAUDE_LOCAL_PROFILE="$PROFILE" "$HERE/personas.sh" sync >/dev/null 2>&1 \
+      || diag "  !! cleanup: could not re-sync the persona set; beta may still run on default (personas.sh sync)"
+  fi
+  if [[ -n "${ROTATED:-}" ]]; then
+    SLAUDE_LOCAL_PROFILE="$PROFILE" "$HERE/vault.sh" reseed beta >/dev/null 2>&1 \
+      || diag "  !! cleanup: could not restore beta's Vault secret (vault.sh reseed beta)"
+  fi
   # The probe's stdout is a JSON ack nobody needs; its failures go through diag.
   probe cleanup >/dev/null || diag "  !! cleanup: the probe's own cleanup failed; its rows and markers may remain"
   pod="$(gateway)"
@@ -344,6 +473,187 @@ expect_value "the occurrence was claimed (schedule advanced before the turn fini
   "$advanced" "True" "scheduleAdvanced"
 expect_value "exactly one turn was dispatched for the occurrence" \
   "$cron_jobs" "1" "jobsForSession"
+
+# --- node labels: routing ----------------------------------------------------
+# The persona's label is resolved the way dispatch resolves it (`--label live`:
+# runsOnFor over the live persona rows), and the turns' session boots are looked
+# for in the node logs: on a `finance` node, and on no `default` node.
+section "node labels: a finance persona's turns run on finance nodes only"
+probe cleanup >/dev/null || true
+# shellcheck disable=SC2207 # pod names contain no whitespace
+fin_pods=($(finance_nodes))
+# shellcheck disable=SC2207
+def_pods=($(nodes))
+enq_out="$(probe enqueue 2 --persona beta --label live || true)"
+beta_label="$(field label <<<"$enq_out" || true)"
+expect_value "beta resolves to label finance (is the persona set synced? personas.sh sync)" "$beta_label" "finance" "label"
+beta_sessions="$(python3 -c 'import json,sys; print(" ".join(json.loads(sys.argv[1])["sessions"]))' "$enq_out" 2>/dev/null || true)"
+if [[ "$beta_label" != finance || -z "$beta_sessions" ]]; then
+  bad "finance routing — COULD NOT MEASURE (no beta turns were enqueued on finance)"
+elif ((${#fin_pods[@]} == 0)); then
+  bad "finance routing — COULD NOT MEASURE (no running finance node)"
+else
+  done_b="$(wait_done 2 "$RECOVER_TIMEOUT" 0 --label finance)"
+  expect_value "both beta turns completed" "$done_b" "2" "turns carrying a completion marker"
+  on_fin=""
+  t0=$(date +%s)
+  while (($(date +%s) - t0 < 30)); do
+    on_fin="$(sessions_booted_on "$beta_sessions" "${fin_pods[@]}" || true)"
+    [[ "$on_fin" == 2 ]] && break
+    sleep "$POLL_FAST"
+  done
+  expect_value "both beta sessions booted on a finance node" "$on_fin" "2" "sessions found in finance node logs"
+  on_def="$(sessions_booted_on "$beta_sessions" "${def_pods[@]}" || true)"
+  expect_value "no beta session booted on a default node" "$on_def" "0" "sessions found in default node logs"
+fi
+
+# --- the label gate ------------------------------------------------------------
+# A valid job token is not enough: a node without the persona's label is refused
+# the persona's bundle (403), whatever token it presents.
+section "the label gate"
+if ((${#fin_pods[@]} == 0 || ${#def_pods[@]} == 0)); then
+  bad "label gate — COULD NOT MEASURE (needs a running finance node and a running default node)"
+else
+  got="$(runtime_as "${def_pods[0]}" beta finance | field status || true)"
+  expect_value "a default node is refused beta's bundle (403) while holding beta's job token" "$got" "403" "runtime status"
+  got="$(runtime_as "${fin_pods[0]}" beta finance | field status || true)"
+  expect_value "a finance node gets beta's bundle" "$got" "200" "runtime status"
+  got="$(runtime_as "${fin_pods[0]}" alpha default | field status || true)"
+  expect_value "a finance node is refused alpha's bundle (403)" "$got" "403" "runtime status"
+fi
+
+# --- provider rotation ---------------------------------------------------------
+# A new thread fetches a fresh bundle; the gateway resolves the persona's Vault
+# reference again once its cache entry is older than SLAUDE_VAULT_CACHE_TTL.
+# Only a sha256 prefix of the key is ever compared, never the key.
+section "provider rotation: a new thread uses the new key"
+if ((${#fin_pods[@]} == 0)); then
+  bad "provider rotation — COULD NOT MEASURE (no running finance node)"
+else
+  before="$(runtime_as "${fin_pods[0]}" beta live | field keySha || true)"
+  if [[ -z "$before" || "$before" == None ]]; then
+    bad "provider rotation — COULD NOT MEASURE (beta's bundle carries no provider key; is Vault seeded? vault.sh seed)"
+  else
+    rot_out="$(printf 'local-rotated-%s-%s\n' "$(date +%s)" "$RANDOM" | SLAUDE_LOCAL_PROFILE="$PROFILE" "$HERE/vault.sh" rotate beta 2>&1)" && ROTATED=1
+    want="$(sed -n 's/.* sha=\([0-9a-f]\{12\}\)$/\1/p' <<<"$rot_out")"
+    if [[ -z "$want" ]]; then
+      bad "provider rotation — could not rotate beta's key: ${rot_out:0:200}"
+    else
+      after=""
+      t0=$(date +%s)
+      while (($(date +%s) - t0 < ROTATE_TIMEOUT)); do
+        after="$(runtime_as "${fin_pods[0]}" beta live | field keySha || true)"
+        [[ "$after" == "$want" ]] && break
+        sleep "$POLL_SLOW"
+      done
+      took=$(($(date +%s) - t0))
+      expect_value "a new thread's bundle carries the rotated key (after ${took}s)" "$after" "$want" "key hash in a fresh bundle"
+    fi
+  fi
+fi
+
+# --- MCP bridge ----------------------------------------------------------------
+# beta's `mockmcp` server is bridged: the node lists and calls it through the
+# gateway, which holds the configuration and the credential. alpha does not
+# bridge it, so the same route answers 404 for alpha's token.
+section "MCP bridge"
+if ((${#fin_pods[@]} == 0 || ${#def_pods[@]} == 0)); then
+  bad "MCP bridge — COULD NOT MEASURE (needs a running finance node and a running default node)"
+else
+  tok="$(job_token beta live || true)"
+  if [[ -z "$tok" ]]; then
+    bad "MCP bridge — COULD NOT MEASURE (no job token for beta)"
+  else
+    listed="$(printf '%s' "$tok" | node_probe "${fin_pods[0]}" mcpx mockmcp list | field tools || true)"
+    expect_value "beta lists the bridged server's tools" "$listed" "['echo']" "tools"
+    word="verify-$(date +%s)-$RANDOM"
+    called="$(printf '%s' "$tok" | node_probe "${fin_pods[0]}" mcpx mockmcp call "$word" | field text || true)"
+    expect_value "beta's call reaches the upstream and comes back" "$called" "echo: $word" "tool result text"
+  fi
+  tok_a="$(job_token alpha live || true)"
+  got="$([[ -n "$tok_a" ]] && printf '%s' "$tok_a" | node_probe "${def_pods[0]}" mcpx mockmcp list | field status || true)"
+  expect_value "alpha, which does not bridge mockmcp, gets 404 for it" "$got" "404" "status"
+fi
+
+# --- an unserved label ---------------------------------------------------------
+# Stop every finance node: a beta turn must wait (not fail, not run elsewhere),
+# the reaper leader must report the label unserved, and the turn must run once
+# a finance node is back. The replica count is restored on exit in any case.
+section "unserved label: a finance turn waits for a finance node"
+orig="$(k get deploy slaude-node-finance -o jsonpath='{.spec.replicas}' 2>/dev/null)"
+gws=()
+for g in $(gateways); do install_in "$g" turns.ts && gws+=("$g"); done
+if [[ ! "$orig" =~ ^[1-9][0-9]*$ ]]; then
+  bad "unserved label — COULD NOT MEASURE (slaude-node-finance replicas '${orig}', want 1 or more)"
+elif ((${#gws[@]} == 0)); then
+  bad "unserved label — COULD NOT MEASURE (no gateway pod to read the metric from)"
+elif ! k scale deploy slaude-node-finance --replicas=0 >/dev/null; then
+  bad "unserved label — could not scale slaude-node-finance to 0"
+else
+  FINANCE_REPLICAS="$orig"
+  t0=$(date +%s)
+  while [[ -n "$(finance_nodes)" ]] && (($(date +%s) - t0 < SETTLE_TIMEOUT)); do sleep "$POLL_FAST"; done
+  probe cleanup >/dev/null || true
+  enq="$(probe enqueue 1 --persona beta --label live | field label || true)"
+  expect_value "a beta turn was enqueued on finance with no finance node" "$enq" "finance" "label"
+  seen=""
+  t0=$(date +%s)
+  while [[ "$enq" == finance ]] && (($(date +%s) - t0 < UNSERVED_TIMEOUT)); do
+    for g in "${gws[@]}"; do
+      v="$(probe_in "${g#pod/}" unserved finance | field value || true)"
+      [[ "$v" == 1 ]] && { seen=1; break 2; }
+      [[ -n "$v" ]] && seen="${seen:-0}"
+    done
+    sleep "$POLL_SLOW"
+  done
+  expect_value "slaude_label_unserved{label=\"finance\"} is 1 on the reaper leader (after $(($(date +%s) - t0))s)" "$seen" "1" "gauge"
+  st="$(probe status 0 --label finance || true)"
+  expect_value "the turn did not run while finance was unserved" "$(field withCompletionMarker <<<"$st" || true)" "0" "turns completed"
+  expect_value "the turn is still waiting on turns.label.finance" "$(queue_sum waiting delayed <<<"$st" || true)" "1" "waiting+delayed"
+  if k scale deploy slaude-node-finance --replicas="$orig" >/dev/null; then
+    FINANCE_REPLICAS=""
+    resumed="$(wait_done 1 "$RECOVER_TIMEOUT" 0 --label finance)"
+    expect_value "the waiting turn ran once a finance node was back" "$resumed" "1" "turns completed"
+  else
+    bad "could not scale slaude-node-finance back to $orig"
+  fi
+fi
+
+# --- relabel -------------------------------------------------------------------
+# A sync that moves beta to `default` sends its next turn to a default node. An
+# in-flight turn's one re-dispatch (LABEL_MISMATCH) is done by the gateway that
+# dispatched it, which a probe-enqueued turn has none of: that half is the
+# real-Slack runbook's (README.md).
+section "relabel: the next turn follows the persona's new label"
+if ! sync_out="$(SLAUDE_LOCAL_PROFILE="$PROFILE" "$HERE/personas.sh" sync --relabel beta=default 2>&1)"; then
+  bad "relabel — could not sync beta onto default: ${sync_out:0:200}"
+else
+  RELABELED=1
+  probe cleanup >/dev/null || true
+  enq_out="$(probe enqueue 1 --persona beta --label live || true)"
+  expect_value "beta now resolves to label default" "$(field label <<<"$enq_out" || true)" "default" "label"
+  sess="$(field session <<<"$enq_out" || true)"
+  done_r="$(wait_done 1 "$RECOVER_TIMEOUT")"
+  expect_value "the relabelled persona's turn completed" "$done_r" "1" "turns completed"
+  # shellcheck disable=SC2207
+  def_pods=($(nodes))
+  on_def=""
+  t0=$(date +%s)
+  while [[ -n "$sess" ]] && (($(date +%s) - t0 < 30)); do
+    on_def="$(sessions_booted_on "$sess" "${def_pods[@]}" || true)"
+    [[ "$on_def" == 1 ]] && break
+    sleep "$POLL_FAST"
+  done
+  expect_value "it booted on a default node" "$on_def" "1" "session found in default node logs"
+  if SLAUDE_LOCAL_PROFILE="$PROFILE" "$HERE/personas.sh" sync >/dev/null 2>&1; then
+    RELABELED=""
+    expect_value "after the set is synced again, beta is back on finance" \
+      "$(probe enqueue 1 --persona beta --label live | field label || true)" "finance" "label"
+    probe cleanup >/dev/null || true
+  else
+    bad "could not sync the persona set back; beta still runs on default"
+  fi
+fi
 
 # --- summary ---------------------------------------------------------------
 section "result"

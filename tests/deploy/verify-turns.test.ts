@@ -31,7 +31,12 @@ case "$args" in
   *"deploy slaude-gateway"*readyReplicas*) echo 2 ;;
   *"deploy slaude-node"*readyReplicas*) echo "\${STUB_NODE_READY:-2}" ;;
   *"component=gateway"*"-o name"*) [[ -n "\${STUB_NO_GATEWAY:-}" ]] || echo pod/gw-1 ;;
+  *"component=node-finance"*"-o name"*) [[ -n "\${STUB_FINANCE_SCALED:-}" && -f "$STUB_DIR/scaled0" ]] || echo pod/fin-1 ;;
   *"component=node"*"-o name"*) printf 'pod/node-1\\npod/node-2\\n' ;;
+  *"deploy slaude-node-finance"*"{.spec.replicas}"*) echo 1 ;;
+  *"scale deploy slaude-node-finance --replicas=0"*) touch "$STUB_DIR/scaled0" ;;
+  *"bun /tmp/probe/turns.ts token"*) printf 'hdr-STUBTOKEN.payload.sig' ;;
+  *"bun /tmp/probe/node.ts"*) cat >/dev/null; echo '{"status":403,"gate":true}' ;;
   *"bun /tmp/probe/turns.ts"*)
     if [[ "\${STUB_PROBE_MODE:-}" == fail ]]; then echo "boom: connection refused" >&2; exit 1; fi
     echo "this is not json"
@@ -130,6 +135,30 @@ test("it waits for the node deployment to settle at two after pinning, and says 
   const r = run({ STUB_NODE_READY: "3" });
   expect(r.out).toContain("node deployment did not settle at two replicas within 1s");
   expect(r.log).toContain("did not settle");
+});
+
+test("the label sections report COULD NOT MEASURE when their probes cannot answer, never a zero", () => {
+  const r = run();
+  expect(r.out).toContain("node labels: a finance persona's turns run on finance nodes only");
+  expect(r.out).toMatch(/FAIL\s+beta resolves to label finance .* COULD NOT MEASURE/);
+  expect(r.out).toContain("finance routing — COULD NOT MEASURE");
+  expect(r.out).toContain("provider rotation — COULD NOT MEASURE");
+});
+
+test("a job token reaches the node probe on stdin and is never logged or printed", () => {
+  const r = run();
+  // The stub node probe answers 403 with the gate flag: the default-node check passes on it.
+  expect(r.out).toContain("PASS  a default node is refused beta's bundle (403)");
+  expect(r.out + r.log).not.toContain("STUBTOKEN");
+  expect(calls()).not.toContain("STUBTOKEN");
+});
+
+test("stopping the finance nodes is undone on exit, even when the run fails", () => {
+  const r = run();
+  expect(r.code).not.toBe(0);
+  const scales = calls().split("\n").filter((l) => l.includes("scale deploy slaude-node-finance"));
+  expect(scales[0]).toContain("--replicas=0");
+  expect(scales.at(-1)).toContain("--replicas=1");
 });
 
 test("a failed container kill reports the reason instead of discarding it", () => {

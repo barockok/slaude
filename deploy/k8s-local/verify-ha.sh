@@ -8,6 +8,13 @@
 #
 # Exits non-zero if any check fails. Takes a few minutes: the crash checks have
 # to outlive the 30-second leader and heartbeat TTLs.
+#
+# The topology has node deployments for two labels: slaude-node (`default`, two
+# replicas) and slaude-node-finance (`finance`, one). Checks about "the node
+# worker" use the default ones; checks that must hold for every node (credential
+# placement, the shared volume, heartbeats, what each node is allowed to hold)
+# cover both. It also checks the node credentials and the legacy door, and that
+# a node handed a gateway-only variable refuses to boot.
 set -uo pipefail
 
 PROFILE="${SLAUDE_LOCAL_PROFILE:-slaude-local}"
@@ -16,7 +23,10 @@ PREFIX="${SLAUDE_REDIS_PREFIX:-slaude}"
 LEADER_KEY="$PREFIX:lock:leader:reaper"
 PROBE="slaude-ha-probe"
 GW_SEL="app.kubernetes.io/name=slaude,app.kubernetes.io/component=gateway"
+# The `default` label's nodes, the `finance` label's, and every node pod.
 NODE_SEL="app.kubernetes.io/name=slaude,app.kubernetes.io/component=node"
+FIN_SEL="app.kubernetes.io/name=slaude,app.kubernetes.io/component=node-finance"
+ALL_NODE_SEL="app.kubernetes.io/name=slaude,slaude.dev/tier=node"
 TMP="$(mktemp -d)"
 
 pass=0
@@ -41,7 +51,10 @@ pods() { k get pod -l "$1" --field-selector=status.phase=Running --request-timeo
 http() { k exec "$PROBE" -- curl -s -m 3 -o /dev/null -w '%{http_code}' "$1" 2>/dev/null || echo 000; }
 # A built shell references hashed assets; an unbuilt one references main.tsx.
 lacks_source_entry() { ! grep -q 'main\.tsx' <<<"$1"; }
+lacks_text() { ! grep -qF "$1" <<<"$2"; } # <text> <haystack>
 heartbeats() { redis --scan --pattern "$PREFIX:nodes:*" | sort; }
+# Live heartbeats expected: every ready node of both labels.
+nodes_ready() { echo $(($(ready slaude-node || true) + 0 + $(ready slaude-node-finance || true) + 0)); }
 
 # --- bounded, loud probe helpers (same discipline as verify-turns.sh) -------
 # Every call is bounded, and a failed measurement yields an EMPTY value that
@@ -116,51 +129,20 @@ env_state() { # <pod> <name>
     'if [ -n "$(printenv "$1")" ]; then echo present; else echo absent; fi' _ "$2" 2>/dev/null
 }
 
-# POST the persona set to /deploy from INSIDE a gateway pod, authenticating with
-# the token variable (by NAME) from that pod's own environment. The token value
-# is never read by this script, never on a command line, never in output; only
-# the HTTP status is printed. Prints "unset" when the pod lacks the variable.
-sync_status() { # <pod> <token-env-var-name> <json-payload>
-  printf '%s' "$3" | k exec -i --request-timeout="$PROBE_TIMEOUT" "$1" -- bun -e "
-    const tok = process.env.$2;
-    if (!tok) { console.log('unset'); process.exit(0); }
-    const r = await fetch('http://localhost:8080/deploy/v1/tenants/default/personas', {
-      method: 'POST',
-      headers: { authorization: 'Bearer ' + tok, 'content-type': 'application/json' },
-      body: await Bun.stdin.text(),
-    });
-    console.log(r.status);
-  " 2>/dev/null | tail -1
+# Sync the local persona set (personas/local-set.json) plus the verifier persona
+# through personas.sh: inside ONE gateway pod it seeds that pod's own soul cache
+# (writeSoulCacheEntry, so no model is called) and posts to /deploy there, with
+# the bearer read from the pod's environment by NAME. Prints personas.sh's JSON
+# line ({status, warnings, souls: {<name>: <soul hash prefix>}}), or nothing.
+sync_set() { # <revision> <verifier soul> [personas.sh sync options...]
+  local rev="$1" vsoul="$2"
+  shift 2
+  SLAUDE_LOCAL_PROFILE="$PROFILE" "$HERE/personas.sh" sync --any-status --revision "$rev" \
+    --add verifier=UTESTUSER7 --soul "verifier=$vsoul" "$@" 2>/dev/null | tail -1
 }
-
-# Seed the soul-extraction cache inside a gateway pod for the given soul texts,
-# through the pod's own writeSoulCacheEntry (src/soul/extract.ts), so a sync
-# needs no model. Texts go in on stdin as a JSON array, never on a command line.
-seed_souls() { # <pod> <soul text...>
-  local pod="$1"
-  shift
-  # shellcheck disable=SC2016 # JS, evaluated by bun in the pod
-  python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@" \
-    | k exec -i --request-timeout="$PROBE_TIMEOUT" "$pod" -- bun -e '
-        import { writeSoulCacheEntry } from "/app/src/soul/extract.ts";
-        for (const t of JSON.parse(await Bun.stdin.text())) {
-          if (!writeSoulCacheEntry(t, { approvers: [] })) throw new Error("cache entry not written");
-        }
-      ' >/dev/null 2>&1
-}
-
-# The sync payload: the default persona plus the verifier persona.
-sync_payload() { # <revision> <verifier soul> <default soul>
-  python3 -c '
-import json, sys, datetime
-print(json.dumps({
-    "revision": sys.argv[1],
-    "committedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    "personas": [
-        {"name": "default", "soul": sys.argv[3]},
-        {"name": "verifier", "slackUserId": "UTESTUSER7", "soul": sys.argv[2]},
-    ],
-}))' "$1" "$2" "$3"
+# The soul hash prefix personas.sh reported for one persona: what a node logs.
+soul_hash() { # <personas.sh JSON> <persona>
+  python3 -c 'import json,sys; print(json.loads(sys.argv[1])["souls"][sys.argv[2]])' "$1" "$2" 2>/dev/null
 }
 
 # Wait (bounded) until the probe's tracked turn carries a completion marker.
@@ -243,6 +225,10 @@ expect "two gateway replicas ready" \
 expect "two node replicas ready" \
   "node ready=$(ready slaude-node), want 2" \
   [ "$(ready slaude-node)" = 2 ]
+wait_ready slaude-node-finance 1 120 >/dev/null || true
+expect "one finance node replica ready" \
+  "finance node ready=$(ready slaude-node-finance), want 1" \
+  [ "$(ready slaude-node-finance)" = 1 ]
 
 code="$(http http://slaude-gateway:8080/readyz)"
 expect "gateway readiness through the Service (checks Postgres)" \
@@ -257,9 +243,10 @@ expect "internal API refuses an unauthenticated caller" \
   [ "$code" = 401 ]
 
 n="$(heartbeats | grep -c . || true)"
-expect "two node heartbeats registered in Redis" \
-  "node heartbeats=$n, want 2" \
-  [ "$n" = 2 ]
+want_beats="$(nodes_ready)"
+expect "one node heartbeat per ready node registered in Redis ($want_beats)" \
+  "node heartbeats=$n, want $want_beats" \
+  [ "$n" = "$want_beats" ]
 
 owner0="$(redis GET "$LEADER_KEY")"
 expect "exactly one reaper leader elected" \
@@ -292,7 +279,7 @@ expect "the brain runs on the Postgres server, in its own database" \
 # check to this pod's lifetime: files from before an upgrade are left in place
 # on purpose by the import, for rollback, and must not trip it.
 section "credential placement"
-for pod in $(pods app.kubernetes.io/component=node); do
+for pod in $(pods "$ALL_NODE_SEL"); do
   # shellcheck disable=SC2016  # expands inside the node pod, not here
   root="$(k exec "$pod" -- sh -c 'printf %s "$SLAUDE_NODE_CONFIG_ROOT"' 2>/dev/null | tr -d '\r')"
   expect "$pod keeps session config homes pod-local" \
@@ -317,7 +304,7 @@ expect "the gateway imported on-disk credentials at boot" \
 section "shared \$SLAUDE_HOME across every pod"
 token="ha-$(date +%s)-$RANDOM"
 read -r -a gws <<<"$(pods "$GW_SEL")"
-read -r -a nodes <<<"$(pods "$NODE_SEL")"
+read -r -a nodes <<<"$(pods "$ALL_NODE_SEL")"
 k exec "${gws[0]}" -c gateway -- sh -c "echo $token > /data/.ha-probe" >/dev/null
 seen=0
 for p in "${gws[@]}"; do
@@ -414,11 +401,11 @@ else
   t0="$(date +%s)"
   settled=""
   while (($(date +%s) - t0 < 60)); do
-    [[ "$(heartbeats | grep -c . || true)" == 2 ]] && { settled=1; break; }
+    [[ "$(heartbeats | grep -c . || true)" == "$(nodes_ready)" ]] && { settled=1; break; }
     sleep 3
   done
-  expect "back to two live heartbeats, with a fresh id for the restarted worker" \
-    "heartbeat count did not settle at 2" \
+  expect "back to one live heartbeat per ready node, with a fresh id for the restarted worker" \
+    "heartbeat count did not settle at $(nodes_ready)" \
     [ -n "$settled" ]
 
   # The reaper leader prunes dead ids from the registry on its next pass.
@@ -432,6 +419,93 @@ else
   expect "reaper removed the dead node from the registry within ${reaped}s" \
     "dead node still in $PREFIX:nodeset after 90s" \
     [ -n "$reaped" ]
+fi
+
+# --- node credentials and the legacy door -----------------------------------
+# Each node presents its own credential (whoami, as that node). A signed one
+# carries exactly its deployment's label; the legacy token is `default` only.
+# The legacy door is whatever this cluster was brought up with
+# (SLAUDE_LOCAL_LEGACY_DOOR: SLAUDE_NODE_LEGACY=off on the gateways when closed),
+# and is checked from a gateway with its own SLAUDE_NODE_LEGACY_TOKEN.
+section "node credentials and the legacy door"
+# Run the node-side probe in a node pod (copied in first). Prints its JSON, or
+# nothing (and says why on stderr).
+node_probe() { # <pod> <args...>
+  local pod="$1" out rc
+  shift
+  if ! k exec -i --request-timeout="$PROBE_TIMEOUT" "$pod" -- sh -c 'mkdir -p /tmp/probe && cat > /tmp/probe/node.ts' \
+    <"$HERE/probe/node.ts" >/dev/null 2>&1; then
+    printf '  !! could not copy probe/node.ts into %s\n' "$pod" >&2
+    return 1
+  fi
+  out="$(k exec --request-timeout="$PROBE_TIMEOUT" "$pod" -- bun /tmp/probe/node.ts "$@" 2>&1 </dev/null)"
+  rc=$?
+  if ((rc != 0)); then
+    printf '  !! node probe %s failed (exit %d) on %s: %s\n' "${1:-?}" "$rc" "$pod" "$(printf '%s' "$out" | tail -2 | tr '\n' ' ')" >&2
+    return "$rc"
+  fi
+  printf '%s\n' "$out" | tail -1
+}
+door="$(k get configmap slaude-scale-gateway-config -o jsonpath='{.data.SLAUDE_NODE_LEGACY}' 2>/dev/null)"
+door_state=open
+[[ "$(tr '[:upper:]' '[:lower:]' <<<"$door")" == off ]] && door_state=closed
+echo "  note  legacy door: $door_state"
+gw_pod="$(gateway)"
+if [[ -z "$gw_pod" ]]; then
+  bad "legacy door — COULD NOT MEASURE (no running gateway pod)"
+elif ! k exec -i --request-timeout="$PROBE_TIMEOUT" "${gw_pod#pod/}" -- sh -c 'mkdir -p /tmp/probe && cat > /tmp/probe/turns.ts' <"$HERE/probe/turns.ts"; then
+  bad "legacy door — COULD NOT MEASURE (could not install the probe)"
+else
+  lw="$(probe legacy-whoami || true)"
+  if [[ "$door_state" == closed ]]; then
+    expect_value "the legacy door is closed: the legacy token is refused (401)" "$(field status <<<"$lw" || true)" "401" "whoami status with the legacy token"
+  else
+    expect_value "the legacy door is open: the legacy token is accepted as default" "$(field status <<<"$lw" || true)" "200" "whoami status with the legacy token"
+    expect_value "the legacy identity is marked legacy" "$(field legacy <<<"$lw" || true)" "True" "whoami legacy flag"
+  fi
+fi
+for sel_label in "$NODE_SEL default" "$FIN_SEL finance"; do
+  sel="${sel_label% *}"
+  label="${sel_label##* }"
+  for pod in $(pods "$sel"); do
+    w="$(node_probe "$pod" whoami || true)"
+    expect_value "$pod is admitted by the gateway (whoami)" "$(field status <<<"$w" || true)" "200" "whoami status"
+    expect_value "$pod's credential carries exactly label $label" "$(field labels <<<"$w" || true)" "['$label']" "credential labels"
+    if [[ "$door_state" == closed ]]; then
+      expect_value "$pod uses a signed credential (the door is closed)" "$(field legacy <<<"$w" || true)" "False" "legacy flag"
+    else
+      echo "  note  $pod credential: $(field legacy <<<"$w" 2>/dev/null | sed 's/True/legacy token/; s/False/signed/')"
+    fi
+  done
+done
+
+# --- a node handed a gateway-only variable refuses to boot -------------------
+# The node entry runs in a node pod with a clean environment plus one fake
+# gateway-only variable, and the pod's own SLAUDE_NODE_BOOT_CHECK. It must stop
+# at the boot check, naming the variable and never its value. It has no node
+# credential, so even a check that let it through could not join the cluster
+# (it would stop at "SLAUDE_NODE_TOKEN is not set" instead, which fails here).
+section "a node holding a gateway-only variable refuses to boot"
+boot_pod="$(pods "$NODE_SEL" | awk '{print $1}')"
+if [[ -z "$boot_pod" ]]; then
+  bad "boot refusal — COULD NOT MEASURE (no running default node)"
+else
+  fake="verify-fake-$RANDOM$RANDOM"
+  # shellcheck disable=SC2016 # expands inside the node pod
+  boot_out="$(k exec --request-timeout="$PROBE_TIMEOUT" "$boot_pod" -- sh -c \
+    'mode="$SLAUDE_NODE_BOOT_CHECK"; cd /app && env -i PATH="$PATH" HOME=/tmp SLAUDE_HOME=/tmp/verify-boot SLAUDE_ROLE=node \
+       SLAUDE_NODE_BOOT_CHECK="$mode" SLAUDE_JOB_SECRET="$1" bun src/node/main.ts; echo "exit=$?"' _ "$fake" 2>&1 </dev/null)"
+  boot_rc="$(sed -n 's/^exit=\([0-9]*\)$/\1/p' <<<"$boot_out" | tail -1)"
+  if [[ -z "$boot_rc" ]]; then
+    bad "the node entry's exit status — COULD NOT MEASURE (the exec failed): $(tail -2 <<<"$boot_out" | tr '\n' ' ' | cut -c1-200)"
+  else
+    expect "the node entry exited non-zero (exit $boot_rc)" "the node entry exited 0" [ "$boot_rc" != 0 ]
+  fi
+  expect "it refused at the boot check, naming SLAUDE_JOB_SECRET" \
+    "no boot-check refusal in its output: $(tail -3 <<<"$boot_out" | tr '\n' ' ' | cut -c1-300)" \
+    grep -q "refusing to boot: gateway-only variables are set in this node's environment: SLAUDE_JOB_SECRET" <<<"$boot_out"
+  expect "it never printed the variable's value" "the value appeared in the output" \
+    lacks_text "$fake" "$boot_out"
 fi
 
 # --- the web apps are actually in the image --------------------------------
@@ -471,21 +545,22 @@ done
 # sha256(soulMd)>`. The expected hash is computed here from the exact text synced,
 # a text distinctive to this run, and a node log must carry it.
 #
-# Sync extracts structured soul data with a model, and this overlay has no
-# provider credentials, so each soul's extraction cache entry is seeded first,
-# written inside the gateway pod by writeSoulCacheEntry in src/soul/extract.ts:
-# the same writer extraction uses, so the entry lands in the pod-local
-# SLAUDE_SOUL_CACHE_DIR and carries the MAC derived from the pod's master key.
-# The sync then finds it and calls no model; production code is untouched.
+# Sync extracts structured soul data with a model, and this check must not need
+# one, so each soul's extraction cache entry is seeded first, written inside the
+# gateway pod by writeSoulCacheEntry in src/soul/extract.ts: the same writer
+# extraction uses, so the entry lands in the pod-local SLAUDE_SOUL_CACHE_DIR and
+# carries the MAC derived from the pod's master key. The sync then finds it and
+# calls no model; production code is untouched. personas.sh does both, in one pod.
 #
-# The section leaves a synced persona set (default + verifier) on the local
-# cluster. Syncing a full set tombstones any other persona previously synced.
+# The section leaves the local persona set plus `verifier` synced. Every persona
+# carries a Vault provider reference (the nodes run with the fallback off), so
+# Vault must be seeded (up.sh does it; vault.sh seed redoes it).
 section "personas as code"
 
 gw_pod="$(gateway)"
 gw_pod="${gw_pod#pod/}"
 # shellcheck disable=SC2207 # pod names contain no whitespace
-node_pods=($(pods "$NODE_SEL"))
+node_pods=($(pods "$ALL_NODE_SEL"))
 
 if ! wait_ready slaude-gateway 2 180; then
   bad "gateway rollout did not reach 2 ready replicas — COULD NOT MEASURE personas as code"
@@ -511,26 +586,18 @@ else
   # no line from an earlier run can satisfy the check.
   soul="Verifier soul for the personas-as-code check, run $(date +%s)-$RANDOM."
   # TWO different hashes, deliberately. want_hash is the 12-hex prefix of the full
-  # sha256 that manager.ts LOGS at session boot (the R4 grep below). The extraction
-  # cache key is a separate 16-hex derivation owned by src/soul/extract.ts, so it
-  # is never recomputed here: the pod computes it through writeSoulCacheEntry.
-  want_hash="$(printf '%s' "$soul" | shasum -a 256 | cut -c1-12)"
-  default_soul="Default verify soul."
-  seed_ok=""
-  if seed_souls "$gw_pod" "$soul" "$default_soul"; then
-    seed_ok=1
-  else
-    bad "soul extraction cache not seeded — COULD NOT MEASURE the sync (it would need a model)"
-  fi
-  payload="$(sync_payload verify-1 "$soul" "$default_soul")"
-
-  if [[ -n "$seed_ok" ]]; then
-    # The deploy token syncs; the node token must not.
-    expect_value "the pipeline sync was accepted" \
-      "$(sync_status "$gw_pod" SLAUDE_DEPLOY_TOKEN "$payload")" "200" "sync HTTP status"
-    expect_value "the node token cannot sync" \
-      "$(sync_status "$gw_pod" SLAUDE_NODE_LEGACY_TOKEN "$payload")" "401" "sync HTTP status with the node token"
-  fi
+  # sha256 that manager.ts LOGS at session boot (the R4 grep below), of the soul
+  # text exactly as synced (personas.sh reports it: SLAUDE_LOCAL_MANAGER adds a
+  # line). The extraction cache key is a separate 16-hex derivation owned by
+  # src/soul/extract.ts, computed in the pod through writeSoulCacheEntry.
+  r1="$(sync_set verify-1 "$soul")"
+  # The deploy token syncs; the node token must not.
+  expect_value "the pipeline sync was accepted" "$(field status <<<"$r1" || true)" "200" "sync HTTP status"
+  want_hash="$(soul_hash "$r1" verifier || true)"
+  [[ -n "$want_hash" ]] || want_hash="$(printf '%s' "$soul" | shasum -a 256 | cut -c1-12)"
+  expect_value "the node token cannot sync" \
+    "$(sync_set verify-1n "$soul" --no-seed --token-var SLAUDE_NODE_LEGACY_TOKEN | field status || true)" "401" \
+    "sync HTTP status with the node token"
 
   # Remove the persona's directory from the shared volume before the turn.
   if k exec --request-timeout="$PROBE_TIMEOUT" "$gw_pod" -- rm -rf /data/personas/verifier 2>/dev/null; then
@@ -580,15 +647,15 @@ else
   # the other node, where it boots cold: B is still required, so a node that
   # kept serving soul A fails, but a cold boot proves less than a warm one.
   soul_b="Verifier soul B for the warm-session check, run $(date +%s)-$RANDOM."
-  want_b="$(printf '%s' "$soul_b" | shasum -a 256 | cut -c1-12)"
   if [[ "$done_v" != 1 || -z "$sess" ]]; then
     bad "warm session soul change — COULD NOT MEASURE (the first turn did not complete, or its session id is unknown)"
-  elif ! seed_souls "$gw_pod" "$soul_b"; then
-    bad "warm session soul change — COULD NOT MEASURE (soul B's extraction cache not seeded)"
   else
     # committedAt must not go backwards; a second's gap keeps it strictly newer.
     sleep 1
-    synced_b="$(sync_status "$gw_pod" SLAUDE_DEPLOY_TOKEN "$(sync_payload verify-2 "$soul_b" "$default_soul")")"
+    r2="$(sync_set verify-2 "$soul_b")"
+    synced_b="$(field status <<<"$r2" || true)"
+    want_b="$(soul_hash "$r2" verifier || true)"
+    [[ -n "$want_b" ]] || want_b="$(printf '%s' "$soul_b" | shasum -a 256 | cut -c1-12)"
     expect_value "the sync to soul B was accepted" "$synced_b" "200" "sync HTTP status"
     if [[ "$synced_b" == 200 ]]; then
       enq2="$(probe again 1 --persona verifier | field enqueued || true)"
