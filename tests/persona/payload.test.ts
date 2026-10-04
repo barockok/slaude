@@ -137,6 +137,13 @@ describe("payload version and unknown fields", () => {
   test("a dotted top-level key cannot pose as a persona path", () => {
     expect(unknownFieldPaths({ ...base([ana]), "persona.default.soul": 1 })).toEqual(["<invalid-key>"]);
   });
+  test("runsOn is a known field, validated against the label pattern", () => {
+    expect(parsePayload(base([{ ...ana, runsOn: "engineering" }])).personas[0]!.runsOn).toBe("engineering");
+    expect(unknownFieldPaths(base([{ ...ana, runsOn: "engineering" }]))).toEqual([]);
+    for (const bad of ["Engineering", "-x", "a".repeat(33), "a.b", ""]) {
+      expect(() => parsePayload(base([{ ...ana, runsOn: bad }]))).toThrow(PayloadError);
+    }
+  });
   test("capPaths bounds a long list", () => {
     const many = Array.from({ length: 1000 }, (_, i) => `k${i}`);
     const c = capPaths(many);
@@ -256,14 +263,23 @@ describe("kbSources (WS-C §4.1)", () => {
   });
 
   test("one version table: the payload needs the highest version of any field a persona sets", () => {
-    expect(PERSONA_FIELD_VERSION).toEqual({ provider: 2, kbSources: 3 });
+    expect(PERSONA_FIELD_VERSION).toEqual({ provider: 2, runsOn: 2, kbSources: 3 });
     expect(SUPPORTED_PAYLOAD_VERSION).toBe(3);
+    const key = { apiKey: "env://PERSONA_ANA_KEY" };
     expect(payloadVersionFor([])).toBe(1);
-    expect(payloadVersionFor([{}])).toBe(1);
-    expect(payloadVersionFor([{ provider: {} }])).toBe(2);
-    expect(payloadVersionFor([{ kbSources: [] }])).toBe(3);
-    expect(payloadVersionFor([{ provider: {}, kbSources: ["kb-a"] }])).toBe(3);
-    expect(payloadVersionFor([{ provider: {} }, { kbSources: ["kb-a"] }])).toBe(3);
+    expect(payloadVersionFor([ana])).toBe(1);
+    expect(payloadVersionFor([{ ...ana, provider: key }])).toBe(2);
+    expect(payloadVersionFor([ana, { ...ana, runsOn: "finance" }])).toBe(2);
+    expect(payloadVersionFor([{ ...ana, provider: key, runsOn: "finance" }])).toBe(2);
+    expect(payloadVersionFor([{ ...ana, kbSources: [] }])).toBe(3);
+    expect(payloadVersionFor([{ ...ana, runsOn: "finance", kbSources: ["kb-a"] }])).toBe(3);
+    expect(payloadVersionFor([{ ...ana, provider: key }, { ...ana, kbSources: ["kb-a"] }])).toBe(3);
+  });
+
+  test("a gateway that knows only version 2 refuses a version-3 payload instead of dropping kbSources", () => {
+    const v3 = { ...base([{ ...ana, kbSources: ["kb-a"] }]), version: payloadVersionFor([{ kbSources: ["kb-a"] }]) };
+    expect(() => parsePayload(v3, { supportedVersion: 2 })).toThrow(/newer than this gateway supports \(2\)/);
+    expect(parsePayload(v3).personas[0]!.kbSources).toEqual(["kb-a"]);
   });
 
   test("an id longer than 32 characters (kbSourceId never makes one) is refused", () => {

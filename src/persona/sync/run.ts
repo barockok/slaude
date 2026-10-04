@@ -26,7 +26,8 @@ export class SyncFailure extends Error {
 }
 export type SyncReport = ApplyResult & {
   revision: string; dryRun: boolean; ignoredFields: string[]; ignoredFieldsTotal: number;
-  /** Provider/model pairing warnings (WS-A §4): applied anyway, reported by persona name. */
+  /** Applied anyway, reported by persona name: provider/model pairing (WS-A
+   *  §4) and a runsOn label no live node carries (node labels spec §4.5). */
   warnings: string[];
 };
 
@@ -80,11 +81,25 @@ function checkEnvRefs(payload: SyncPayload, env: Record<string, string | undefin
   }
 }
 
+/**
+ * A persona whose `runsOn` no live node carries is a warning, not an error
+ * (node labels spec §4.5): the nodes may simply not be up yet. Its turns wait
+ * on the label queue until a node with the label starts.
+ */
+export function unservedLabelWarnings(rows: ReadonlyArray<{ name: string; runsOn?: string | null }>, live: ReadonlySet<string>): string[] {
+  return rows
+    .filter((r) => r.runsOn && !live.has(r.runsOn))
+    .map((r) => `persona '${r.name}': no live node carries label '${r.runsOn}'; its turns wait until one does`);
+}
+
 export async function runSync(
   tenant: string,
   raw: unknown,
   opts: {
     dryRun: boolean; env: Record<string, string | undefined>; by: string; extract?: (text: string) => Promise<unknown>;
+    /** The labels live nodes carry (the registry's node-label view). Absent
+     *  (no queue: a single process) = no label warnings. */
+    liveLabels?: () => Promise<ReadonlySet<string>>;
     /** Default: loadVaultConfig(env). Null = no Vault on this gateway. */
     vault?: VaultConfig | null;
     /** The installed KB source ids, for the unknown-kbSources warning. Default: $SLAUDE_HOME/knowledge. */
@@ -185,7 +200,7 @@ export async function runSync(
     }
     rows.push({
       name: p.name, slackUserId: p.slackUserId ?? null, userToken: p.userToken ?? null, model: p.model ?? null,
-      soulMd: p.soul, soulJson, mcp: p.mcp ?? null, provider: p.provider ?? null, kbSources: p.kbSources ?? null,
+      soulMd: p.soul, soulJson, mcp: p.mcp ?? null, provider: p.provider ?? null, runsOn: p.runsOn ?? null, kbSources: p.kbSources ?? null,
       origin: "git", tombstonedAt: null,
     });
   }
@@ -196,6 +211,14 @@ export async function runSync(
     const prev = desired.get(r.name);
     if (prev && prev.tombstonedAt === null && prev.provider && !r.provider) {
       warnings.push(`persona '${r.name}' no longer declares provider; it now uses tenant/node credentials`);
+    }
+  }
+  if (opts.liveLabels && rows.some((r) => r.runsOn)) {
+    try {
+      warnings.push(...unservedLabelWarnings(rows, await opts.liveLabels()));
+    } catch (e) {
+      // The check is advisory: a Redis hiccup must not fail a deploy.
+      console.warn(`[persona-sync] could not read live node labels tenant=${tenant}: ${(e as Error).message}`);
     }
   }
   for (const w of warnings) console.warn(`[persona-sync] warning tenant=${tenant}: ${w}`);

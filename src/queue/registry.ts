@@ -11,7 +11,7 @@
  * key is precisely the signal the reaper is looking for).
  */
 import type { Redis } from "ioredis";
-import { makeKeys, type Keys } from "./keys";
+import { DEFAULT_LABEL, makeKeys, type Keys } from "./keys";
 import { heartbeatSec } from "./redis";
 
 const HEARTBEAT_IF_EXISTS = `
@@ -43,6 +43,11 @@ export interface RegistryOpts {
 
 export type Registry = ReturnType<typeof makeRegistry>;
 
+// Labels match LABEL_RE, which excludes ',', so a comma join is unambiguous.
+const encodeLabels = (labels: readonly string[]) => [...new Set(labels)].sort().join(",");
+const decodeLabels = (v: string | null): ReadonlySet<string> =>
+  v === null ? new Set([DEFAULT_LABEL]) : new Set(v.split(",").filter(Boolean));
+
 /** Cursor-safe SCAN. Shared with the reaper. */
 export async function scanKeys(redis: Redis, pattern: string): Promise<string[]> {
   const out: string[] = [];
@@ -61,8 +66,14 @@ export function makeRegistry(opts: RegistryOpts) {
   const hbSec = opts.heartbeatSec ?? heartbeatSec();
   const sessTtlMs = Math.max(1, Math.round(2 * hbSec * 1000));
   const nodeTtlMs = Math.max(1, Math.round((opts.nodeTtlSec ?? 30) * 1000));
+  // The labels key must outlive every warm session on the node (whose
+  // freshness window is 2× heartbeat), or warm routing would read an expired
+  // key as {default} while the node still holds a live Query: so at least the
+  // node key's TTL and at least 3× heartbeat, refreshed on every beat.
+  const nodeLabelsTtlMs = Math.max(nodeTtlMs, Math.round(3 * hbSec * 1000));
   const sessIdOf = (key: string) => key.slice(`${keys.prefix}:sess:`.length);
   const nodeIdOf = (key: string) => key.slice(`${keys.prefix}:nodes:`.length);
+  const listLive = async () => (await scanKeys(redis, keys.nodePattern())).map(nodeIdOf);
 
   return {
     keys,
@@ -112,18 +123,59 @@ export function makeRegistry(opts: RegistryOpts) {
       return found;
     },
 
-    /** Node boot: announce liveness and join the reaper's work list. */
-    async nodeUp(node: string): Promise<void> {
+    /** Node boot: announce liveness and join the reaper's work list. The
+     *  node's labels (from its verified credential) ride in the same
+     *  transaction; omitted = an unlabelled node, i.e. `{default}`. */
+    async nodeUp(node: string, labels?: readonly string[]): Promise<void> {
+      const tx = redis.multi().set(keys.node(node), Date.now(), "PX", nodeTtlMs);
+      if (labels) tx.set(keys.nodeLabels(node), encodeLabels(labels), "PX", nodeLabelsTtlMs);
+      await tx.sadd(keys.nodeSet(), node).exec();
+    },
+
+    /** Periodic node heartbeat — refreshes the 30s liveness key, and the
+     *  labels key beside it in the same transaction. */
+    async beatNode(node: string, labels?: readonly string[]): Promise<void> {
+      if (!labels) {
+        await redis.set(keys.node(node), Date.now(), "PX", nodeTtlMs);
+        return;
+      }
       await redis
         .multi()
         .set(keys.node(node), Date.now(), "PX", nodeTtlMs)
-        .sadd(keys.nodeSet(), node)
+        .set(keys.nodeLabels(node), encodeLabels(labels), "PX", nodeLabelsTtlMs)
         .exec();
     },
 
-    /** Periodic node heartbeat — refreshes the 30s liveness key. */
-    async beatNode(node: string): Promise<void> {
-      await redis.set(keys.node(node), Date.now(), "PX", nodeTtlMs);
+    /**
+     * The labels a node consumes (spec §4.8). A node with no `nodelabels:`
+     * key predates labels and consumes only `turns`, so it counts as
+     * `{default}` — warm routing keeps working during a rolling upgrade.
+     */
+    async nodeLabels(node: string): Promise<ReadonlySet<string>> {
+      return decodeLabels(await redis.get(keys.nodeLabels(node)));
+    },
+
+    /** Whether `node` consumes `label` (warm-routing check at dispatch). */
+    async nodeCarries(node: string, label: string): Promise<boolean> {
+      return decodeLabels(await redis.get(keys.nodeLabels(node))).has(label);
+    },
+
+    /** Live nodes (heartbeat key present) that carry `label`. */
+    async nodesWithLabel(label: string): Promise<string[]> {
+      const live = await listLive();
+      if (live.length === 0) return [];
+      const vals = await redis.mget(...live.map((n) => keys.nodeLabels(n)));
+      return live.filter((_, i) => decodeLabels(vals[i] ?? null).has(label));
+    },
+
+    /** Every label at least one live node carries. */
+    async liveLabels(): Promise<Set<string>> {
+      const live = await listLive();
+      const out = new Set<string>();
+      if (live.length === 0) return out;
+      const vals = await redis.mget(...live.map((n) => keys.nodeLabels(n)));
+      for (const v of vals) for (const l of decodeLabels(v ?? null)) out.add(l);
+      return out;
     },
 
     async nodeAlive(node: string): Promise<boolean> {
@@ -142,6 +194,8 @@ export function makeRegistry(opts: RegistryOpts) {
 
     /** The node-heartbeat TTL this registry was built with (ms). */
     nodeTtlMs,
+    /** The labels key TTL (ms): max(node TTL, 3× heartbeat). */
+    nodeLabelsTtlMs,
 
     /** Currently-alive node ids (heartbeat key present). */
     async listNodes(): Promise<string[]> {
@@ -155,7 +209,7 @@ export function makeRegistry(opts: RegistryOpts) {
 
     /** Graceful shutdown: leave both liveness key and reaper work list. */
     async nodeDown(node: string): Promise<void> {
-      await redis.multi().del(keys.node(node)).srem(keys.nodeSet(), node).exec();
+      await redis.multi().del(keys.node(node), keys.nodeLabels(node)).srem(keys.nodeSet(), node).exec();
     },
 
     /** Reaper bookkeeping: forget a dead node after cleaning it up. */

@@ -59,11 +59,16 @@ export function startReaperLeader(opts: ReaperRunnerOpts): LeaderHandle {
             if (moved) console.log(`[reaper] rescued ${moved} stalled job(s) from ${nodeId}`);
           }
           // Gauges (leader-only — one writer per scrape target set).
-          const counts = await reaper.sharedQueue().getJobCounts("waiting", "delayed", "prioritized");
-          metric.queueDepth.set(
-            (counts.waiting ?? 0) + (counts.delayed ?? 0) + (counts.prioritized ?? 0),
-            { queue: "turns" },
-          );
+          // One series per label queue (node labels spec §4.7): `queue` keeps
+          // its meaning (`turns` is still label default) and `label` is added.
+          // Bounded by the labels in use, not by nodes.
+          for (const { queue, label } of await infra.turns.labelQueues()) {
+            const counts = await infra.turns.queue(queue).getJobCounts("waiting", "delayed", "prioritized");
+            metric.queueDepth.set(
+              (counts.waiting ?? 0) + (counts.delayed ?? 0) + (counts.prioritized ?? 0),
+              { queue, label },
+            );
+          }
           metric.nodesAlive.set(alive.length);
           metric.sessionsWarm.set((await scanKeys(opts.redis, keys.sessPattern())).length);
           metric.reaperLastRun.set(Math.floor(Date.now() / 1000));

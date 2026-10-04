@@ -215,7 +215,7 @@ export const m = {
     "slaude_node_gateway_secrets_present",
     "Gateway-only variables found in this node's environment at boot (0 = the Secret split is done).",
   ),
-  nodeTurnsTotal: metrics.counter("slaude_node_turns_total", "Turn jobs processed by this node, labeled by result (done|error|skipped|requeued)."),
+  nodeTurnsTotal: metrics.counter("slaude_node_turns_total", "Turn jobs processed by this node, labeled by result (done|error|skipped|requeued|moved|deduped)."),
   nodeTurnDuration: metrics.histogram(
     "slaude_node_turn_duration_seconds",
     "Wall-clock duration of turn jobs run on this node (lock wait included).",
@@ -230,7 +230,7 @@ export const m = {
   // (post-signature, post-registry lookup), labeled by event type.
   gatewayEventsTotal: metrics.counter("slaude_gateway_events_total", "Slack events accepted and dispatched by this gateway replica, labeled by event type."),
   // Gateway queue-side (spec §6), set by the reaper leader loop.
-  queueDepth: metrics.gauge("slaude_queue_depth", "Turn jobs waiting or delayed, labeled by queue."),
+  queueDepth: metrics.gauge("slaude_queue_depth", "Turn jobs waiting or delayed, labeled by queue and node label."),
   // Leader liveness: unix seconds of the last completed reaper pass. Lets
   // alerting distinguish "leader gone" from an ex-leader replica that keeps
   // rendering its stale last gauge values on every scrape.

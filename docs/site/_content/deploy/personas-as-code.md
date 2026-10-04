@@ -50,11 +50,23 @@ provider:                       # optional: this persona's own LLM credentials
   apiKey: "vault://secret/slaude/personas/support-bot#api_key"
 kbSources:                      # optional: the knowledge bases it may read
   - kb-runbook
+runsOn: "engineering"           # optional: the node label this persona runs on
 ```
 
 `kbSources` lists the `kb-<label>` knowledge-base sources the persona may read.
 Absent means every installed knowledge base; `[]` means none. It filters
 retrieval and is not isolation. See [Knowledge scope](knowledge-scope.md).
+
+`runsOn` names the node label whose nodes run this persona's turns: lower-case
+letters, digits and `-`, at most 32 characters (`^[a-z0-9][a-z0-9-]{0,31}$`).
+Absent means `default`, the label every unlabelled node and every legacy node
+carries; filesystem and sqlite personas are always `default`. It is set in git
+only: it is not a runtime override, so the panel cannot change where an agent
+runs. A sync that names a label no live node carries is applied anyway and
+reported as a warning in `warnings` (`no live node carries label '<label>'`):
+the persona's turns wait on that label's queue until a node with the label
+starts. `export` writes `runsOn` only when the persona's `config.json` already
+has it.
 
 `provider` holds references (`vault://…#field` or `env://PERSONA_*`), never a
 credential; `baseUrl` may also be a literal `https` URL, and needs a credential
@@ -147,13 +159,14 @@ The tenant is `default` for a single-workspace deployment; it must match
 The body is capped at 4 MiB; a larger one is 413 and nothing is applied.
 `personas render` builds this body from the repository. The response reports
 `created`, `updated`, `unchanged`, `tombstoned`, `overridesWiped`,
-`ignoredFields` and `warnings` (provider/model pairing, and `kbSources` ids that
-match no installed knowledge base, by persona name).
-Migrations 0014 (`personas.provider_json`) and 0017 (`personas.kb_sources`)
-apply at boot by default. With `SLAUDE_MIGRATE_ON_BOOT=0` and a migration not
-applied, a gateway whose tenant is already managed fails at boot with a
-database error about the missing column; one whose tenant is not managed yet
-refuses its first sync with 503 naming the migration. With
+`ignoredFields` and `warnings` (provider/model pairing, a `runsOn` label no
+live node carries, and `kbSources` ids that match no installed knowledge base,
+by persona name).
+Migrations 0014 (`personas.provider_json`), 0016 (`personas.runs_on`) and 0017
+(`personas.kb_sources`) apply at boot by default. With `SLAUDE_MIGRATE_ON_BOOT=0`
+and a migration not applied, a gateway whose tenant is already managed fails at
+boot with a database error about the missing column; one whose tenant is not
+managed yet refuses its first sync with 503 naming the migration. With
 `?dryRun=1` nothing is written and nothing is published, and the report is
 what a real sync of the same body would produce, including how many runtime
 overrides it would wipe.
@@ -162,9 +175,9 @@ Behaviour to know:
 
 - `version` is the payload format; absent means 1, and `personas render` always
   writes the highest version any field needs: 3 when any persona sets
-  `kbSources`, else 2 when any persona sets `provider`, otherwise 1. A payload
-  without those fields still deploys to an older gateway, and one with them is
-  refused by a gateway that would ignore them. A payload whose `version` is newer than the gateway supports is
+  `kbSources`, else 2 when any persona sets `provider` or `runsOn`, otherwise 1.
+  A payload without those fields still deploys to an older gateway, and one
+  with them is refused by a gateway that would ignore them. A payload whose `version` is newer than the gateway supports is
   refused with 422 before anything is applied: upgrade the gateway first.
 - A field the gateway does not know (at the top level or on a persona) is
   ignored, never stored, and listed in `ignoredFields` as `futureKnob` or

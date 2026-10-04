@@ -15,13 +15,14 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
+import { LABEL_RE } from "../queue/keys";
 import { parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, safeKey, capPaths, payloadVersionFor, providerWarnings, type SyncPayload } from "../persona/sync/payload";
 
 const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : undefined);
 // The gateway only resolves ${PERSONA_UPPER_CASE_NAME}; persona names are lower-case with hyphens.
 const varFor = (name: string) => `${PERSONA_VAR_PREFIX}${name.replace(/-/g, "_").toUpperCase()}_XOXP`;
 
-const YAML_KEYS = new Set(["slackUserId", "userToken", "model", "provider", "kbSources"]);
+const YAML_KEYS = new Set(["slackUserId", "userToken", "model", "provider", "runsOn", "kbSources"]);
 
 /** `onUnknown` receives `persona.<name>.<key>` for each persona.yaml key the payload has no field for (names only).
  *  `onWarnings` receives the gateway's provider/model sync warnings (WS-A §4). */
@@ -39,7 +40,7 @@ export function renderDir(
     if (!statSync(join(root, name)).isDirectory()) continue;
     if (!PERSONA_NAME_RE.test(name)) throw new PayloadError(`directory '${name}' is not a valid persona name`);
     const yaml = read(join(root, name, "persona.yaml"));
-    let cfg: { slackUserId?: string; userToken?: string; model?: string; provider?: unknown; kbSources?: unknown };
+    let cfg: { slackUserId?: string; userToken?: string; model?: string; provider?: unknown; runsOn?: string; kbSources?: unknown };
     try {
       cfg = ((yaml ? Bun.YAML.parse(yaml) : {}) ?? {}) as typeof cfg;
     } catch (e) {
@@ -66,6 +67,7 @@ export function renderDir(
       ...(cfg.slackUserId ? { slackUserId: String(cfg.slackUserId) } : {}),
       ...(cfg.userToken ? { userToken: String(cfg.userToken) } : {}),
       ...(cfg.model ? { model: String(cfg.model) } : {}),
+      ...(cfg.runsOn ? { runsOn: String(cfg.runsOn) } : {}),
       // Passed as written: parsePayload validates it with the gateway's own parser.
       ...(cfg.provider !== undefined ? { provider: cfg.provider } : {}),
       // Absent = every installed KB; [] = none. A YAML `kbSources:` with no
@@ -229,7 +231,7 @@ export function exportHome(home: string, out: string): { variables: string[] } {
       const d = join(root, name);
       if (!statSync(d).isDirectory()) continue;
       if (!PERSONA_NAME_RE.test(name)) throw new PayloadError(`directory '${name}' is not a valid persona name`);
-      let cfg: { slackUserId?: string; userToken?: string };
+      let cfg: { slackUserId?: string; userToken?: string; runsOn?: unknown };
       try {
         cfg = (JSON.parse(read(join(d, "config.json")) ?? "{}") ?? null) as typeof cfg;
         if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) throw new Error("not an object");
@@ -237,6 +239,14 @@ export function exportHome(home: string, out: string): { variables: string[] } {
         throw new PayloadError(`persona '${name}': config.json is malformed`);
       }
       const lines = [`slackUserId: ${JSON.stringify(cfg.slackUserId ?? "")}`];
+      // Carried only when the persona already names a node label; render
+      // validates it against the label pattern like any other field.
+      if (cfg.runsOn !== undefined) {
+        if (typeof cfg.runsOn !== "string" || !LABEL_RE.test(cfg.runsOn)) {
+          throw new PayloadError(`persona '${name}': config.json runsOn is not a valid node label`);
+        }
+        lines.push(`runsOn: ${JSON.stringify(cfg.runsOn)}`);
+      }
       if (cfg.userToken) {
         const v = varFor(name);
         claim(reg, v, `${name}/userToken`);

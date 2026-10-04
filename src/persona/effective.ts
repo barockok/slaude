@@ -15,6 +15,9 @@ export interface DesiredPersona {
   soulMd: string;
   soulJson: unknown;
   mcp: unknown;
+  /** The node label this persona runs on (node labels spec §4.5); null or
+   *  absent = `default`. Desired layer only: no override can set it. */
+  runsOn?: string | null;
   /** Provider credential REFERENCES (WS-A §4), never values. Desired layer
    *  only: not an override field, so a reference changes only through a sync.
    *  Absent and null both mean "this persona names no provider". */
@@ -61,6 +64,7 @@ export function mergeEffective(desired: DesiredPersona, overrides: Override[]): 
 export function sameDesired(a: DesiredPersona, b: DesiredPersona): boolean {
   return a.slackUserId === b.slackUserId && a.userToken === b.userToken && a.model === b.model &&
     a.soulMd === b.soulMd && JSON.stringify(a.mcp) === JSON.stringify(b.mcp) &&
+    (a.runsOn ?? null) === (b.runsOn ?? null) &&
     canonicalProvider(a.provider) === canonicalProvider(b.provider) &&
     JSON.stringify(a.kbSources ?? null) === JSON.stringify(b.kbSources ?? null) && a.tombstonedAt === null;
 }

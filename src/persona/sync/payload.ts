@@ -12,6 +12,7 @@
 import { z } from "zod";
 import { redactSecrets } from "../../gateway/core/status-text";
 import { PERSONA_VAR_PREFIX, PERSONA_VAR_RE } from "../../secrets/persona-var";
+import { LABEL_RE } from "../../queue/keys";
 import { parseRef } from "../../secrets/ref";
 import { baseUrlProblem, internalHostsFrom } from "../provider-base-url";
 import { PayloadError } from "./errors";
@@ -31,19 +32,17 @@ export class UnresolvedVarError extends PayloadError {
  * might change what a persona means.
  *
  *   1  the personas-as-code fields
- *   2  adds `provider` (WS-A)
+ *   2  adds `provider` (WS-A) and `runsOn` (node labels spec §4.5)
  *   3  adds `kbSources` (WS-C §4.1)
  *
  * Each persona field newer than version 1 is one entry in PERSONA_FIELD_VERSION.
  * `render` writes the highest version any field a persona sets needs, so a
  * gateway that predates a field refuses the payload instead of dropping it
- * (which would leave a persona on node credentials, or widen it to every KB);
- * a payload that sets none stays 1 and deploys to any gateway.
+ * (which would leave a persona on node credentials, on `default`, or widen it
+ * to every KB); a payload that sets none stays 1 and deploys to any gateway.
  */
-export const PERSONA_FIELD_VERSION = { provider: 2, kbSources: 3 } as const;
+export const PERSONA_FIELD_VERSION = { provider: 2, runsOn: 2, kbSources: 3 } as const;
 export const SUPPORTED_PAYLOAD_VERSION = 3;
-export const PROVIDER_PAYLOAD_VERSION = PERSONA_FIELD_VERSION.provider;
-export const KB_SOURCES_PAYLOAD_VERSION = PERSONA_FIELD_VERSION.kbSources;
 
 /** The version a payload needs: the highest of any field a persona sets, 1 when none. */
 export function payloadVersionFor(personas: ReadonlyArray<object>): number {
@@ -69,6 +68,8 @@ const personaSpec = z.object({
   model: z.string().min(1).optional(),
   soul: z.string(),
   mcp: z.record(z.unknown()).optional(),
+  // The node label the persona runs on; absent = `default`. Not overridable.
+  runsOn: z.string().regex(LABEL_RE, `runsOn must match ${LABEL_RE.source}`).optional(),
   // Shape only here; parseProvider below checks every key and value with
   // messages that never echo a value (zod's would echo an unknown key).
   provider: z.record(z.unknown()).optional(),
@@ -239,11 +240,17 @@ export function unknownFieldPaths(raw: unknown): string[] {
   return out;
 }
 
-export function parsePayload(raw: unknown, opts: { internalHosts?: readonly string[] } = {}): SyncPayload {
+/** `supportedVersion` (default SUPPORTED_PAYLOAD_VERSION) lets a test stand in
+ *  for an older gateway: the refusal rule is the same at every version. */
+export function parsePayload(
+  raw: unknown,
+  opts: { internalHosts?: readonly string[]; supportedVersion?: number } = {},
+): SyncPayload {
+  const supported = opts.supportedVersion ?? SUPPORTED_PAYLOAD_VERSION;
   const v = raw && typeof raw === "object" ? (raw as { version?: unknown }).version : undefined;
-  if (typeof v === "number" && Number.isInteger(v) && v > SUPPORTED_PAYLOAD_VERSION) {
+  if (typeof v === "number" && Number.isInteger(v) && v > supported) {
     throw new PayloadError(
-      `payload version ${v} is newer than this gateway supports (${SUPPORTED_PAYLOAD_VERSION}); upgrade the gateway before deploying it`,
+      `payload version ${v} is newer than this gateway supports (${supported}); upgrade the gateway before deploying it`,
     );
   }
   const r = payloadSchema.safeParse(raw);

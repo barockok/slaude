@@ -16,7 +16,7 @@ export type { Persona, PersonaConfig };
 /** A managed tenant's `default` row: its effective model and mcp, and its
  *  provider references (desired layer; not overridable). */
 export type DefaultPersonaFields = {
-  model: string | null; mcp: unknown; provider?: PersonaProvider | null;
+  model: string | null; mcp: unknown; provider?: PersonaProvider | null; runsOn?: string | null;
   /** Desired layer, not overridable: null = every installed KB. */
   kbSources?: string[] | null;
 };
@@ -155,11 +155,12 @@ async function loadPersonaState(tenant: string): Promise<PersonaState> {
       model: p.model,
       mcp: p.mcp ?? null,
       provider: p.provider ?? null,
+      runsOn: p.runsOn ?? null,
       kbSources: p.kbSources ?? null,
     }));
   const def = all.find((p) => p.name === "default") ?? null;
   const defaultFields = def
-    ? { model: def.model, mcp: def.mcp ?? null, provider: def.provider ?? null, kbSources: def.kbSources ?? null }
+    ? { model: def.model, mcp: def.mcp ?? null, provider: def.provider ?? null, runsOn: def.runsOn ?? null, kbSources: def.kbSources ?? null }
     : null;
   return { registry: snapshot(personas, { tombstoned, defaultPersona: defaultFields }), managed: { defaultPersona: def } };
 }
@@ -283,10 +284,14 @@ export function personasWithProvider(r: PersonaRegistry = getPersonaRegistry()):
 /**
  * The node label persona `personaId` runs on (node labels spec §4.5). Signed
  * into the job token and payload at dispatch; the /v1 gate requires it among
- * the calling node's labels. Always "default" until `personas.runs_on` lands.
+ * the calling node's labels. A managed persona's `runs_on`, or "default" when it
+ * sets none; a filesystem (or sqlite) persona has no row and is always
+ * "default", as is a name the snapshot does not list.
  */
-export function runsOnFor(_personaId: string | undefined): string {
-  return "default";
+export function runsOnFor(personaId: string | undefined, r: PersonaRegistry = getPersonaRegistry()): string {
+  if (!r.isManaged()) return "default";
+  const label = !personaId || personaId === "default" ? r.defaultPersona?.()?.runsOn : r.lookupByName(personaId)?.runsOn;
+  return label ?? "default";
 }
 
 /**

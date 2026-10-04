@@ -34,6 +34,28 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("persona repository", () => {
     await expect(P.setOverride(T, "bea", "model", "m", "ops")).rejects.toBeInstanceOf(P.PersonaNotFoundError);
   });
 
+  test("runs_on round-trips through the sync, a relabel is an update, and no override reaches it", async () => {
+    const r1 = await P.applySync(T, [row("ana", { runsOn: "engineering" }), row("bea")], meta("r1", "2026-10-01T10:00:00Z"));
+    expect(r1.created.sort()).toEqual(["ana", "bea"]);
+    const byName = async () => new Map((await P.effectivePersonas(T)).map((p) => [p.name, p]));
+    expect((await byName()).get("ana")!.runsOn).toBe("engineering");
+    expect((await byName()).get("bea")!.runsOn).toBeNull();
+    const r2 = await P.applySync(T, [row("ana", { runsOn: "finance" }), row("bea")], meta("r2", "2026-10-01T11:00:00Z"));
+    expect(r2.updated).toEqual(["ana"]);
+    expect(r2.unchanged).toEqual(["bea"]);
+    expect((await byName()).get("ana")!.runsOn).toBe("finance");
+    // The override set stays soul|model|mcp: the table refuses any other field.
+    await expect(P.setOverride(T, "ana", "runsOn" as any, "engineering", "ops")).rejects.toThrow();
+    expect((await byName()).get("ana")!.runsOn).toBe("finance");
+    // Dropping the field puts the persona back on default.
+    await P.applySync(T, [row("ana"), row("bea")], meta("r3", "2026-10-01T12:00:00Z"));
+    expect((await byName()).get("ana")!.runsOn).toBeNull();
+  });
+
+  test("the column refuses a malformed label", async () => {
+    await expect(P.applySync(T, [row("ana", { runsOn: "Not A Label" })], meta("r1", "2026-10-01T10:00:00Z"))).rejects.toThrow();
+  });
+
   test("provider references round-trip through a sync, are desired-layer only, and a change is an update", async () => {
     const provider = { apiKey: "vault://secret/slaude/personas/ana#api_key", baseUrl: "https://llm.example.com" };
     await P.applySync(T, [row("ana", { provider })], meta("r1", "2026-10-01T10:00:00Z"));
@@ -63,6 +85,21 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("persona repository", () => {
     await P.applySync(T, [row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
     await P.createRuntimePersona(T, row("bea", { origin: "runtime", provider: { authToken: "env://PERSONA_BEA_TOKEN" } }), "ops");
     expect((await P.desiredPersonas(T)).find((p) => p.name === "bea")!.provider).toEqual({ authToken: "env://PERSONA_BEA_TOKEN" });
+  });
+
+  // Review R1-F5: both version-2 columns in one row, through both upserts.
+  test("provider and runsOn persist together in one row, via the sync and a runtime onboard", async () => {
+    const provider = { apiKey: "env://PERSONA_ANA_KEY" };
+    await P.applySync(T, [row("ana", { provider, runsOn: "engineering" })], meta("r1", "2026-10-01T10:00:00Z"));
+    const ana = (await P.desiredPersonas(T)).find((p) => p.name === "ana")!;
+    expect(ana.provider).toEqual(provider);
+    expect(ana.runsOn).toBe("engineering");
+    const r2 = await P.applySync(T, [row("ana", { provider, runsOn: "engineering" })], meta("r2", "2026-10-01T11:00:00Z"));
+    expect(r2.unchanged).toEqual(["ana"]);
+    await P.createRuntimePersona(T, row("bea", { origin: "runtime", provider: { authToken: "env://PERSONA_BEA_TOKEN" }, runsOn: "finance" }), "ops");
+    const bea = (await P.effectivePersonas(T)).find((p) => p.name === "bea")!;
+    expect(bea.provider).toEqual({ authToken: "env://PERSONA_BEA_TOKEN" });
+    expect(bea.runsOn).toBe("finance");
   });
 
   test("a tenant is unmanaged until its first sync", async () => {

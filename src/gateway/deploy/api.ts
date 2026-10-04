@@ -28,6 +28,9 @@ export interface DeployApiOptions {
   pubsub: PubSub | null;
   env?: () => Record<string, string | undefined>;
   extract?: (text: string) => Promise<unknown>;
+  /** The labels live nodes carry; a persona on a label none carries is a
+   *  warning in the report. Absent = no such check (mono). */
+  liveLabels?: () => Promise<ReadonlySet<string>>;
 }
 
 export function createDeployApi(opts: DeployApiOptions) {
@@ -81,6 +84,7 @@ export function createDeployApi(opts: DeployApiOptions) {
         by: "pipeline",
         env: (opts.env ?? (() => process.env))(),
         extract: opts.extract,
+        ...(opts.liveLabels ? { liveLabels: opts.liveLabels } : {}),
       });
       if (!dryRun) await publishConfigReload(opts.pubsub, tenant);
       return json(200, report);
