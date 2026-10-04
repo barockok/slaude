@@ -67,12 +67,17 @@ test("refuses when a context of that name points at another cluster", () => {
   expect(r.calls).not.toMatch(/ apply | rollout /);
 });
 
-test("every kubectl call in up.sh and lib.sh that reaches a cluster names the profile's context", () => {
-  for (const f of ["deploy/k8s-local/up.sh", "deploy/k8s-local/lib.sh"]) {
+// up.sh no longer switches the current context, so no script may rely on it.
+const SCRIPTS = ["up.sh", "lib.sh", "panel.sh", "forward.sh", "vault.sh", "personas.sh", "verify-ha.sh", "verify-turns.sh", "mock-mcp/mock-mcp.sh"].map(
+  (f) => `deploy/k8s-local/${f}`,
+);
+
+test("every kubectl call in the local scripts that reaches a cluster names the profile's context", () => {
+  for (const f of SCRIPTS) {
     for (const line of readFileSync(join(root, f), "utf8").split("\n")) {
       if (/^\s*#/.test(line) || !/(^|[\s|(])kubectl\s/.test(line)) continue;
       // Not cluster calls: a local build, reading the kubeconfig, the prerequisite loop, message text.
-      const rest = line.replace(/kubectl kustomize /, "").replace(/kubectl config (get-contexts|view) /g, "");
+      const rest = line.replace(/\s#\s.*$/, "").replace(/kubectl kustomize /, "").replace(/kubectl config (get-contexts|view) /g, "");
       if (/for bin in|die "|_say "|"kubectl has no context/.test(line)) continue;
       for (const m of rest.matchAll(/kubectl\s+(\S+)/g)) expect(`${f}: ${m[0]}`).toContain('--context');
     }

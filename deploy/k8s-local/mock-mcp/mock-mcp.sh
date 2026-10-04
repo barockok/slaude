@@ -6,6 +6,7 @@
 # a hostAlias for it.
 set -euo pipefail
 NS=slaude-scale
+PROFILE="${SLAUDE_LOCAL_PROFILE:-slaude-local}" # the kubectl context; never the current one
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The server's public name and the Service both say 9000, so the local port is
 # checked rather than applied (forward.sh mock-mcp reads the same variable).
@@ -14,18 +15,18 @@ if [[ "${SLAUDE_LOCAL_MOCK_MCP_PORT:-9000}" != 9000 ]]; then
   exit 1
 fi
 
-kubectl -n $NS create configmap mock-mcp-src --from-file=server.ts="$HERE/server.ts" --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -f "$HERE/mock-mcp.yaml"
-kubectl -n $NS rollout status deploy/mock-mcp --timeout=300s
+kubectl --context "$PROFILE" -n $NS create configmap mock-mcp-src --from-file=server.ts="$HERE/server.ts" --dry-run=client -o yaml | kubectl --context "$PROFILE" apply -f -
+kubectl --context "$PROFILE" apply -f "$HERE/mock-mcp.yaml"
+kubectl --context "$PROFILE" -n $NS rollout status deploy/mock-mcp --timeout=300s
 
-IP="$(kubectl -n $NS get svc mock-mcp -o jsonpath='{.spec.clusterIP}')"
-if ! kubectl -n $NS get deploy slaude-gateway -o jsonpath='{.spec.template.spec.hostAliases[*].hostnames[*]}' | grep -q mockmcp.localtest.me; then
-  kubectl -n $NS patch deploy/slaude-gateway --type json -p \
+IP="$(kubectl --context "$PROFILE" -n $NS get svc mock-mcp -o jsonpath='{.spec.clusterIP}')"
+if ! kubectl --context "$PROFILE" -n $NS get deploy slaude-gateway -o jsonpath='{.spec.template.spec.hostAliases[*].hostnames[*]}' | grep -q mockmcp.localtest.me; then
+  kubectl --context "$PROFILE" -n $NS patch deploy/slaude-gateway --type json -p \
     "[{\"op\":\"add\",\"path\":\"/spec/template/spec/hostAliases/-\",\"value\":{\"ip\":\"$IP\",\"hostnames\":[\"mockmcp.localtest.me\"]}}]"
-  kubectl -n $NS rollout status deploy/slaude-gateway --timeout=300s
+  kubectl --context "$PROFILE" -n $NS rollout status deploy/slaude-gateway --timeout=300s
 fi
 
-kubectl -n $NS exec -i deploy/slaude-gateway -- sh -c 'cat > /data/.mcp.json' <<'JSON'
+kubectl --context "$PROFILE" -n $NS exec -i deploy/slaude-gateway -- sh -c 'cat > /data/.mcp.json' <<'JSON'
 { "mcpServers": { "mockmcp": { "type": "http", "url": "http://mockmcp.localtest.me:9000/mcp" } } }
 JSON
 cat <<MSG
