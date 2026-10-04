@@ -12,6 +12,7 @@
 import type { NodeCredential } from "../gateway/api/mcp-credentials";
 import { GATE_DENIED_CODE, JOB_HEADER } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
+import { BootFailure } from "../gateway/core/failure-codes";
 
 export interface NodeClientOpts {
   /** Gateway base URL (SLAUDE_GATEWAY_URL), e.g. http://gateway:8080 */
@@ -80,6 +81,24 @@ export class NodeApiError extends Error {
   ) {
     super(message ?? `gateway /v1 request failed: ${status} ${body.slice(0, 300)}`);
   }
+}
+
+/** A getRuntime failure as a typed boot failure: the gateway's 503 says
+ *  whether it is transient; a network error or another 5xx is; a 4xx is not. */
+export function bundleFetchFailure(e: unknown): BootFailure {
+  let transient = true;
+  if (e instanceof NodeApiError) {
+    if (e.status === 503) {
+      try {
+        transient = (JSON.parse(e.body) as { transient?: unknown }).transient === true;
+      } catch {
+        transient = true;
+      }
+    } else {
+      transient = e.status >= 500;
+    }
+  }
+  return new BootFailure("PROVIDER_CREDENTIALS_UNAVAILABLE", "runtime bundle fetch failed", { cause: e, transient });
 }
 
 /**

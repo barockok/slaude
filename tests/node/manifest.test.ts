@@ -20,6 +20,8 @@ import {
   parseNodeManifest,
   stdioServersFor,
 } from "../../src/node/manifest";
+import { NodeApiError } from "../../src/node/client";
+import { BootFailure } from "../../src/gateway/core/failure-codes";
 
 const NODE_ENV = { PATH: "/usr/bin:/bin", HOME: "/home/node", LANG: "C.UTF-8", TMPDIR: "/tmp", NODE_TF_TOKEN: "tf-fake-value", OTHER: "x" };
 
@@ -396,14 +398,40 @@ describe("makeNodeLocalMcpResolver — keyed on the job token's claims", () => {
     expect(await noTenant("s1")).toEqual({});
   });
 
-  it("a token the gateway refuses for that persona fails the boot (never mounts)", async () => {
+  it("a token the gateway refuses for that persona fails the boot (never mounts), definitively", async () => {
     const { resolver } = setup({
       claims: { persona: "ops-bot", tenant: "t1" },
       runtime: async () => {
-        throw new Error("403 job token is not scoped to this persona");
+        throw new NodeApiError(403, '{"error":"job token is not scoped to this persona"}');
       },
     });
-    await expect(resolver("s1")).rejects.toThrow("403");
+    const e = await resolver("s1").then(
+      () => null,
+      (x) => x,
+    );
+    expect(e).toBeInstanceOf(BootFailure);
+    expect(e.code).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
+    expect(e.transient).toBe(false);
+  });
+
+  it("a bundle fetch failure is classified like the child-env resolver's: 503 by its body, network and 5xx transient", async () => {
+    const fail = async (err: unknown) => {
+      const { resolver } = setup({
+        claims: { persona: "ops-bot", tenant: "t1" },
+        runtime: async () => {
+          throw err;
+        },
+      });
+      return resolver("s1").then(
+        () => null,
+        (x) => x as BootFailure,
+      );
+    };
+    expect((await fail(new NodeApiError(503, JSON.stringify({ transient: true }))))!.transient).toBe(true);
+    expect((await fail(new NodeApiError(503, JSON.stringify({ transient: false }))))!.transient).toBe(false);
+    expect((await fail(new NodeApiError(502, "bad gateway")))!.transient).toBe(true);
+    expect((await fail(new TypeError("fetch failed")))!.transient).toBe(true);
+    expect((await fail(new NodeApiError(401, "unauthorized")))!.transient).toBe(false);
   });
 
   it("the unsigned payload persona cannot widen: only the claims decide", async () => {

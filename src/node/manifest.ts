@@ -42,7 +42,7 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { isChildScrubbedEnv } from "../agent/child-env";
 import { env as appEnv } from "../config/env";
-import type { NodeClient } from "./client";
+import { type NodeClient, bundleFetchFailure } from "./client";
 import { decodeClaims } from "./remote";
 
 export const NODE_MANIFEST_DEFAULT_PATH = "/etc/slaude/node.json";
@@ -309,7 +309,8 @@ export interface NodeLocalMcpDeps {
  * The node's per-session stdio servers. The persona is the job token's claim;
  * the runtime-bundle fetch with that token for that persona is the check that
  * the claim is the gateway's (the endpoint answers 403 for a token scoped to
- * another persona, 401 for one it did not sign). A refusal fails the boot.
+ * another persona, 401 for one it did not sign). A refusal fails the boot,
+ * classified transient or definitive as the child-env resolver's is.
  */
 export function makeNodeLocalMcpResolver(deps: NodeLocalMcpDeps): (sessionId: string) => Promise<Record<string, McpServerConfig>> {
   return async (sessionId) => {
@@ -318,7 +319,11 @@ export function makeNodeLocalMcpResolver(deps: NodeLocalMcpDeps): (sessionId: st
     const persona = token ? decodeClaims(token)?.persona : undefined;
     if (!token || !tenant || !persona) return {};
     if (allowedServers(deps.manifest, persona).length === 0) return {};
-    await deps.client.getRuntime(tenant, persona, token);
+    try {
+      await deps.client.getRuntime(tenant, persona, token);
+    } catch (e) {
+      throw bundleFetchFailure(e);
+    }
     return stdioServersFor(deps.manifest, persona, deps.nodeEnv, deps.execPath);
   };
 }

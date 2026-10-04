@@ -35,7 +35,7 @@ import { makeRegistry, type Registry } from "../queue/registry";
 import { makePubSub, type PubSub } from "../queue/pubsub";
 import { withSessionLock, HELD_BY_OTHER } from "../queue/locks";
 import { jobLabel, TurnQueues, type TurnJob } from "../queue/turns";
-import { NodeApiError, NodeClient } from "./client";
+import { NodeApiError, NodeClient, bundleFetchFailure } from "./client";
 import { makeAuthRecovery, makeSessionSeeder } from "./credentials";
 import { nodeConfigRoot, sessionConfigDir, existingSessionConfigDir } from "../agent/config-root";
 import { RestSessionStore } from "./session-store";
@@ -272,24 +272,6 @@ export function nodeChildEnv(
   const set: Record<string, string> = {};
   for (const [k, v] of Object.entries(overlay)) if (v !== undefined) set[k] = v;
   return new ChildEnvPatch(set, providerSelectingNames(opts.nodeEnv));
-}
-
-/** A getRuntime failure as a typed boot failure: the gateway's 503 says
- *  whether it is transient; a network error or another 5xx is; a 4xx is not. */
-function bundleFetchFailure(e: unknown): BootFailure {
-  let transient = true;
-  if (e instanceof NodeApiError) {
-    if (e.status === 503) {
-      try {
-        transient = (JSON.parse(e.body) as { transient?: unknown }).transient === true;
-      } catch {
-        transient = true;
-      }
-    } else {
-      transient = e.status >= 500;
-    }
-  }
-  return new BootFailure("PROVIDER_CREDENTIALS_UNAVAILABLE", "runtime bundle fetch failed", { cause: e, transient });
 }
 
 /**
