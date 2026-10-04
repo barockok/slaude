@@ -168,6 +168,11 @@ export interface MoveOpts {
   rescueActive?: boolean;
 }
 
+/** The larger relabelAttempts of two jobs being merged (absent = 0). */
+function maxAttempts(a: TurnJob, b: TurnJob): number {
+  return Math.max(a.relabelAttempts ?? 0, b.relabelAttempts ?? 0);
+}
+
 /** One message's identity for de-duplication: a re-delivered message is the
  *  same Slack message, so its ts, author and text all match. */
 const msgKey = (m: TurnMessage): string => `${m.ts}\u0000${m.user}\u0000${m.text}`;
@@ -289,15 +294,23 @@ export class TurnQueues {
    * dispatcher mints it before the token so the token's `job` claim matches
    * the job it rides on (token-refresh binding). Ignored when the messages
    * coalesce into an existing pending job.
+   *
+   * `first`: these messages are OLDER than the pending job's (a re-dispatch
+   * of a failed turn), so a coalesce puts them before its messages, not after.
    */
-  async enqueueTurn(job: TurnJob, target: TurnTarget = { label: DEFAULT_LABEL }, jobId?: string): Promise<EnqueueResult> {
+  async enqueueTurn(
+    job: TurnJob,
+    target: TurnTarget = { label: DEFAULT_LABEL },
+    jobId?: string,
+    opts: { first?: boolean } = {},
+  ): Promise<EnqueueResult> {
     const ckey = this.keys.coalesce(job.sessionId);
     const lockKey = this.keys.coalesceLock(job.sessionId);
     const lockOwner = randomUUID();
     const qname = this.queueName(target);
     await this.#acquireAppendLock(lockKey, lockOwner);
     try {
-      const appended = await this.#tryAppend(ckey, job, { queue: qname, jobId });
+      const appended = await this.#tryAppend(ckey, job, { queue: qname, jobId }, opts);
       if (appended) return appended;
       return await this.#addFresh(job, qname, ckey, jobId);
     } finally {
@@ -310,9 +323,11 @@ export class TurnQueues {
    * With `want`, a pending job on a different queue is relocated there first
    * (#relocate) instead of appended in place.
    *
-   * `first`: `job`'s messages are older than the pending job's (a moved
-   * turn; review U10b-A) and go BEFORE them, so the session's messages still
-   * run in the order they were sent.
+   * `first`: `job`'s messages are older than the pending job's (a moved or
+   * re-dispatched turn; review U10b-A/B) and go BEFORE them, so the session's
+   * messages still run in the order they were sent. Either way the merged job
+   * keeps the larger relabelAttempts of the two, so merging a re-dispatched
+   * turn never resets the one-re-dispatch bound.
    */
   async #tryAppend(
     ckey: string,
@@ -343,7 +358,8 @@ export class TurnQueues {
     // retry after the claim race below, would otherwise run it twice. With
     // nothing new, the messages are already in a job that runs them.
     const fresh = newMessages(prev.messages, job.messages);
-    if (fresh.length === 0) {
+    const attempts = maxAttempts(prev, job);
+    if (fresh.length === 0 && attempts === (prev.relabelAttempts ?? 0)) {
       await this.#connection.pexpire(ckey, COALESCE_TTL_MS);
       return { jobId: pending.id!, queue: ref.queue, coalesced: true };
     }
@@ -351,6 +367,7 @@ export class TurnQueues {
       ...prev,
       messages: opts.first ? [...fresh, ...prev.messages] : [...prev.messages, ...fresh],
       enqueuedAt: Math.min(prev.enqueuedAt ?? job.enqueuedAt, job.enqueuedAt),
+      ...(attempts > 0 ? { relabelAttempts: attempts } : {}),
       // Keep the ORIGINAL job's token: its `job` claim must keep matching the
       // job id for /v1/jobs/:id/token-refresh, and the worker refreshes an
       // aging token at claim time anyway — replacing it with the newest
@@ -386,12 +403,14 @@ export class TurnQueues {
   ): Promise<EnqueueResult | null> {
     const prev = pending.data as TurnJob;
     const id = want.jobId ?? randomUUID();
+    const attempts = maxAttempts(prev, job);
     const merged: TurnJob = {
       ...job,
       messages: opts.first
         ? [...job.messages, ...newMessages(job.messages, prev.messages)]
         : [...prev.messages, ...newMessages(prev.messages, job.messages)],
       enqueuedAt: Math.min(prev.enqueuedAt ?? job.enqueuedAt, job.enqueuedAt),
+      ...(attempts > 0 ? { relabelAttempts: attempts } : {}),
     };
     // "done": the pending job's turn already ran; add only this call's messages.
     if ((await this.#swap(pending, want.queue, merged, id)) !== "moved") return null;
@@ -636,7 +655,8 @@ export class TurnQueues {
   async redispatch(failedJobId: string, job: TurnJob, label: string, newJobId: string): Promise<EnqueueResult | null> {
     const won = await this.#connection.set(this.keys.redispatch(failedJobId), newJobId, "PX", REDISPATCH_TTL_MS, "NX");
     if (won !== "OK") return null;
-    const res = await this.enqueueTurn(job, { label }, newJobId);
+    // The failed turn's messages are older than any pending job's: first.
+    const res = await this.enqueueTurn(job, { label }, newJobId, { first: true });
     await this.#markMoved(failedJobId, { queue: res.queue, jobId: res.jobId });
     return res;
   }

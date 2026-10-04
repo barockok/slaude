@@ -235,4 +235,31 @@ describe.skipIf(!realEnabled)("queue/turns hardening against real Redis", () => 
     await jobs[0]!.remove();
     await redis.del(keys.coalesce("s-redisp"));
   });
+
+  // Review U10b-B: a re-dispatched turn holds the OLDER messages. Coalesced
+  // into the session's pending job they go first, and the merged job keeps the
+  // re-dispatch count so the one-re-dispatch bound is not reset.
+  test("a re-dispatch coalesced into a pending job runs first and keeps relabelAttempts", async () => {
+    await ready;
+    await queues.enqueueTurn(turn("s-rdco", ["m2"], "rdco"), { label: "rdco" }, "rdco-pending");
+    const failed = { ...turn("s-rdco", ["m1"], "rdco"), relabelAttempts: 1 };
+    const res = await queues.redispatch("rdco-failed", failed, "rdco", "rdco-new");
+    expect(res).toEqual({ jobId: "rdco-pending", queue: "turns.label.rdco", coalesced: true });
+    const j = (await queues.queue("turns.label.rdco").getJob("rdco-pending"))!;
+    expect((j.data as TurnJob).messages.map((m) => m.text)).toEqual(["m1", "m2"]);
+    expect((j.data as TurnJob).relabelAttempts).toBe(1);
+    await j.remove();
+    await redis.del(keys.coalesce("s-rdco"));
+
+    // The same when the pending job sits on another label and is relocated.
+    await queues.enqueueTurn(turn("s-rdrl", ["n2"], "rdold"), { label: "rdold" }, "rdrl-pending");
+    const failed2 = { ...turn("s-rdrl", ["n1"], "rdnew"), relabelAttempts: 1 };
+    const res2 = await queues.redispatch("rdrl-failed", failed2, "rdnew", "rdrl-new");
+    expect(res2).toEqual({ jobId: "rdrl-new", queue: "turns.label.rdnew", coalesced: true });
+    const k = (await queues.queue("turns.label.rdnew").getJob("rdrl-new"))!;
+    expect((k.data as TurnJob).messages.map((m) => m.text)).toEqual(["n1", "n2"]);
+    expect((k.data as TurnJob).relabelAttempts).toBe(1);
+    await k.remove();
+    await redis.del(keys.coalesce("s-rdrl"));
+  });
 });
