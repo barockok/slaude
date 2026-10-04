@@ -293,8 +293,12 @@ d("gateway↔node E2E (real Redis)", () => {
       expect(posts.filter((p) => p.text === fixed)).toHaveLength(1);
       expect(posts.map((p) => String(p.text)).join("\n")).not.toContain("raw-detail-never-posted");
       const sid = await sessionIdOf(FAIL_THREAD);
-      const failed = [...(await turnsQ.queue("turns").getFailed()), ...(await turnsQ.queue(nodeTurnsQueueFn(NODE_ID)).getFailed())];
-      const job = failed.find((j: any) => j.data?.sessionId === sid);
+      // The error event can reach Slack before BullMQ records the failure.
+      const failedJob = async () =>
+        [...(await turnsQ.queue("turns").getFailed()), ...(await turnsQ.queue(nodeTurnsQueueFn(NODE_ID)).getFailed())]
+          .find((j: any) => j.data?.sessionId === sid);
+      await until(async () => !!(await failedJob()), 10_000);
+      const job = await failedJob();
       expect(job?.failedReason).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
       expect(job).toBeDefined();
       expect(job.attemptsMade).toBe(1);
