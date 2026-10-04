@@ -105,4 +105,45 @@ describe.skipIf(!realEnabled)("queue/registry against real Redis", () => {
     expect(await reg.nodeAlive("n-beat")).toBe(false);
     expect(await reg.knownNodes()).not.toContain("n-beat");
   });
+
+  // Node labels spec §4.8.
+  test("labels ride the heartbeat; the beat value stays a bare timestamp", async () => {
+    await ready;
+    const reg = mkRegistry();
+    await reg.nodeUp("n-lab", ["engineering", "default"]);
+    expect([...(await reg.nodeLabels("n-lab"))].sort()).toEqual(["default", "engineering"]);
+    expect(await reg.nodeLastBeat("n-lab")).toBeGreaterThan(0);
+    expect(Number(await redis.get(keys.node("n-lab")))).toBeGreaterThan(0);
+    await reg.beatNode("n-lab", ["finance"]);
+    expect([...(await reg.nodeLabels("n-lab"))]).toEqual(["finance"]);
+    expect(await reg.nodeCarries("n-lab", "finance")).toBe(true);
+    expect(await reg.nodeCarries("n-lab", "engineering")).toBe(false);
+    await reg.nodeDown("n-lab");
+    expect(await redis.exists(keys.nodeLabels("n-lab"))).toBe(0);
+  });
+
+  test("the labels key has the heartbeat's TTL", async () => {
+    await ready;
+    const reg = mkRegistry({ nodeTtlSec: 0.2 });
+    await reg.nodeUp("n-labttl", ["finance"]);
+    await until(async () => (await redis.exists(keys.nodeLabels("n-labttl"))) === 0, 2000);
+    expect(await reg.nodeAlive("n-labttl")).toBe(false);
+  });
+
+  test("a node with no nodelabels key (an old node) counts as {default}", async () => {
+    await ready;
+    const reg = mkRegistry();
+    await reg.nodeUp("n-old"); // an old node writes no labels
+    expect([...(await reg.nodeLabels("n-old"))]).toEqual(["default"]);
+    expect(await reg.nodeCarries("n-old", "default")).toBe(true);
+    expect(await reg.nodeCarries("n-old", "finance")).toBe(false);
+    await reg.nodeUp("n-fin", ["finance"]);
+    expect(await reg.nodesWithLabel("default")).toContain("n-old");
+    expect(await reg.nodesWithLabel("default")).not.toContain("n-fin");
+    expect(await reg.nodesWithLabel("finance")).toEqual(["n-fin"]);
+    const live = await reg.liveLabels();
+    expect(live.has("default") && live.has("finance")).toBe(true);
+    await reg.nodeDown("n-old");
+    await reg.nodeDown("n-fin");
+  });
 });
