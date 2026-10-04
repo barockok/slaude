@@ -142,8 +142,10 @@ export async function setupSuite(opts: SuiteOptions = {}): Promise<Suite> {
   }
 }
 
-const DEPLOYMENTS = ["slaude-gateway", "slaude-node"];
-// Both Deployments take their env from this ConfigMap (envFrom), read at pod start.
+// Every slaude Deployment: all take their env from this ConfigMap (envFrom), read
+// at pod start, so a restart must cover the finance node too. Not vault (dev mode
+// keeps its secrets in memory; a restart would empty it) nor mock-mcp (no env here).
+const DEPLOYMENTS = ["slaude-gateway", "slaude-node", "slaude-node-finance"];
 const ENV_CONFIGMAP = "slaude-scale-config";
 
 async function must(what: string, r: Promise<{ stdout: string; stderr: string; code: number }>): Promise<string> {

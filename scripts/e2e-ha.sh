@@ -90,7 +90,7 @@ fi
 # --- bring-up only when something is not Ready ---------------------------------------------------
 cluster_ready() {
   local out want
-  want="slaude-gateway slaude-node mock-llm fake-slack dev-redis dev-postgres"
+  want="slaude-gateway slaude-node slaude-node-finance vault mock-mcp mock-llm fake-slack dev-redis dev-postgres"
   # shellcheck disable=SC2086
   out="$(k get deploy $want -o jsonpath='{range .items[*]}{.status.readyReplicas}/{.spec.replicas} {end}' 2>/dev/null)" || return 1
   [[ -n "$out" ]] || return 1
