@@ -31,14 +31,54 @@ const sizing = Object.fromEntries(
 
 const kustomization = parse(readFileSync(`${dir}kustomization.yaml`, "utf8")) as any;
 const patches = (kustomization.patches as { patch: string }[]).map((p) => parse(p.patch));
+// The overlay's own Deployments (not patches of the base): Vault, the mock MCP server.
+const ownFiles = ["vault.yaml", "mock-mcp/mock-mcp.yaml"];
+const ownDeployments = ownFiles.flatMap((f) =>
+  readFileSync(`${dir}${f}`, "utf8").split(/^---$/m).map((x) => parse(x)).filter((x) => x?.kind === "Deployment"),
+);
 const container = (deploy: string) =>
-  patches.find((d) => d.kind === "Deployment" && d.metadata.name === deploy).spec.template.spec.containers[0];
+  (
+    patches.find((d) => d.kind === "Deployment" && d.metadata.name === deploy) ??
+    ownDeployments.find((d) => d.metadata.name === deploy)
+  ).spec.template.spec.containers[0];
 
 const milli = (q: string) => (q.endsWith("m") ? Number(q.slice(0, -1)) : Number(q) * 1000);
 const mb = (q: string) => (q.endsWith("Gi") ? Number(q.slice(0, -2)) * 1024 : Number(q.slice(0, -2)));
 
 // replicas at the pinned HPA (the verify scripts pin max to min)
-const PINNED = { "slaude-gateway": 2, "slaude-node": 2, "dev-postgres": 1, "dev-redis": 1 } as const;
+const PINNED = {
+  "slaude-gateway": 2,
+  "slaude-node": 2,
+  "slaude-node-finance": 1,
+  "dev-postgres": 1,
+  "dev-redis": 1,
+  vault: 1,
+  "mock-mcp": 1,
+} as const;
+
+test("every Deployment in the overlay is counted in the sizing", () => {
+  const r = Bun.spawnSync(["sh", "-c", "command -v kubectl"]);
+  if (r.exitCode !== 0) return;
+  const tmp = mkdtempSync(join(tmpdir(), "local-sizing-"));
+  try {
+    stageLocal(tmp);
+    const out = Bun.spawnSync(["kubectl", "kustomize", "--load-restrictor", "LoadRestrictionsNone", join(tmp, "deploy/k8s-local")]);
+    const names = out.stdout
+      .toString()
+      .split(/^---$/m)
+      .map((d) => parse(d))
+      .filter((d) => d?.kind === "Deployment")
+      .map((d) => d.metadata.name)
+      .sort();
+    expect(names).toEqual(Object.keys(PINNED).sort());
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("the finance node is sized like a default node", () => {
+  expect(container("slaude-node-finance").resources).toEqual(container("slaude-node").resources);
+});
 
 test("summed limits at the pinned replica counts fit the node, minus its system reserve", () => {
   let cpu = 0;
@@ -59,21 +99,21 @@ test("a node pod's limit covers bun plus the documented number of warm sessions"
   expect(mb(container("slaude-node").resources.limits.memory)).toBeGreaterThanOrEqual(need);
 });
 
-// Keycloak and mock-mcp are optional add-ons the documented flow deploys. Their limits are
-// overcommitted by design (sizing.env says so); their REQUESTS must fit with everything else.
-test("requests fit the node with the Keycloak and mock-mcp add-ons at the HPA maximum", () => {
+// Keycloak is an optional add-on the documented flow deploys (panel.sh). Its limit is
+// overcommitted by design (sizing.env says so); its REQUESTS must fit with everything else.
+test("requests fit the node with the Keycloak add-on and the default nodes at the HPA maximum", () => {
   const req = (file: string) => {
     const d = readFileSync(`${dir}${file}`, "utf8").split(/^---$/m).map((x) => parse(x)).find((x) => x?.kind === "Deployment");
     return d.spec.template.spec.containers[0].resources.requests;
   };
   let cpu = 0;
   let mem = 0;
-  const atMax = { "slaude-gateway": 2, "slaude-node": 3, "dev-postgres": 1, "dev-redis": 1 } as Record<string, number>;
+  const atMax = { ...PINNED, "slaude-node": 3 } as Record<string, number>;
   for (const [name, n] of Object.entries(atMax)) {
     cpu += n * milli(String(container(name).resources.requests.cpu));
     mem += n * mb(container(name).resources.requests.memory);
   }
-  for (const f of ["keycloak.yaml", "mock-mcp/mock-mcp.yaml"]) {
+  for (const f of ["keycloak.yaml"]) {
     cpu += milli(String(req(f).cpu));
     mem += mb(req(f).memory);
   }
