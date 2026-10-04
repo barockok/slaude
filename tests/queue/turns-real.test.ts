@@ -221,4 +221,17 @@ describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
     expect(job!.opts.backoff).toEqual({ type: "exponential", delay: 1000 });
     await job!.remove();
   });
+
+  test("peekJob reads a job on an uncached queue name and leaves the shared connection open", async () => {
+    await ready;
+    const fresh = mkQueues();
+    const res = await queues.enqueueTurn(turn("s-peek", ["x"]), { node: "peek-node" }, "peek-job-1");
+    const j = await fresh.peekJob(res.queue, "peek-job-1");
+    expect((j?.data as TurnJob).sessionId).toBe("s-peek");
+    expect(await fresh.peekJob("turns.nobody", "peek-job-1")).toBeUndefined();
+    // The injected connection survived the temporary handle's close.
+    expect(await redis.ping()).toBe("PONG");
+    expect(await queues.queue(res.queue).getWaitingCount()).toBeGreaterThanOrEqual(1);
+    await j!.remove();
+  });
 });

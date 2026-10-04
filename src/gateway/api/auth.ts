@@ -1,8 +1,9 @@
 /**
  * /v1 auth (spec §3):
  *
- *   - `Authorization: Bearer <SLAUDE_NODE_TOKEN>` — static shared secret on
- *     EVERY /v1 request, compared timing-safe. Unset token = refuse all.
+ *   - `Authorization: Bearer <node credential>` on EVERY /v1 request: a signed
+ *     node credential (SLAUDE_NODE_KEY, node labels spec §4.1) or the legacy
+ *     shared token, compared timing-safe. See authenticateNode.
  *   - `X-Slaude-Job: <jwt>` — short-lived per-job token (HS256, secret
  *     SLAUDE_JOB_SECRET) minted by the gateway enqueue path; required on the
  *     tool plane and session endpoints. Claims: {tenant, persona, session,
@@ -17,6 +18,8 @@
  */
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { env } from "../../config/env";
+import { m as metric } from "../../metrics";
+import { LEGACY_NODE_ID, NodeCredentialVerifier, verifyNodeCredentialSync } from "../auth/node-credential";
 
 export interface JobClaims {
   tenant: string;
@@ -51,9 +54,21 @@ export interface JobClaims {
    *  this is how its session-mode block learns the lock. Absent = a gateway
    *  that predates the claim. */
   lock?: { user: string; openScope: string | null } | null;
+  /** The node label this turn runs on, signed at dispatch (node labels spec
+   *  §4.3). The gate requires it among the calling node's labels. Absent (a
+   *  token from before the change) means "default". */
+  label?: string;
+  /** First issue time (unix seconds), carried across token-refresh so the
+   *  token's total life is capped. Absent = this token's own `iat`. */
+  iat0?: number;
   /** Unix seconds. */
   exp: number;
   iat?: number;
+}
+
+/** The label a job token is bound to; a token minted before labels is "default". */
+export function jobLabel(claims: Pick<JobClaims, "label">): string {
+  return claims.label || "default";
 }
 
 /** Default job-token TTL: the max turn duration (spec §2). */
@@ -120,11 +135,20 @@ export function verifyJobToken(
   } catch {
     return { ok: false, reason: "malformed" };
   }
+  if (typeof claims !== "object" || claims === null || Array.isArray(claims)) return { ok: false, reason: "malformed" };
   const nowSec = Math.floor((opts.now ?? Date.now()) / 1000);
   const grace = Math.max(0, opts.graceSec ?? 0);
   if (typeof claims.exp !== "number" || claims.exp + grace <= nowSec) return { ok: false, reason: "expired" };
   for (const k of ["tenant", "persona", "session", "team", "channel", "thread", "initiator", "scope"] as const) {
     if (typeof claims[k] !== "string") return { ok: false, reason: "bad_claims" };
+  }
+  // A job token has no `typ`; a signed node credential does. Refusing any typ
+  // keeps a node credential from passing as a job token even if an operator
+  // gave both keys the same value.
+  if ((claims as { typ?: unknown }).typ !== undefined) return { ok: false, reason: "bad_claims" };
+  // An empty label would read as "default" through jobLabel; refuse it instead.
+  if (claims.label !== undefined && (typeof claims.label !== "string" || claims.label === "")) {
+    return { ok: false, reason: "bad_claims" };
   }
   return { ok: true, claims };
 }
@@ -132,28 +156,165 @@ export function verifyJobToken(
 const json = (status: number, body: unknown): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-/**
- * Enforce the static bearer on a /v1 request. Returns null when authorized,
- * otherwise the error Response to send. An unset SLAUDE_NODE_TOKEN refuses
- * everything (503 — operator misconfiguration, not a client error).
- */
-export function requireBearer(req: Request): Response | null {
-  const configured = env.nodeToken();
-  if (!configured) return json(503, { error: "SLAUDE_NODE_TOKEN is not configured on this gateway" });
-  const header = req.headers.get("authorization") ?? "";
-  const m = header.match(/^Bearer\s+(.+)$/i);
-  if (!m || !timingSafeStringEqual(m[1]!, configured)) {
-    return json(401, { error: "invalid or missing bearer token" });
+export type NodeIdentity = { id: string; labels: ReadonlySet<string>; legacy: boolean };
+
+export type NodeAuthResult =
+  | { ok: true; node: NodeIdentity; expiresAt?: number }
+  | { ok: false; response: Response };
+
+const LEGACY_IDENTITY: NodeIdentity = Object.freeze({
+  id: LEGACY_NODE_ID,
+  labels: new Set(["default"]) as ReadonlySet<string>,
+  legacy: true,
+});
+
+let defaultVerifier: NodeCredentialVerifier | null = null;
+let warnedOldTokenName = false;
+let warnedLegacyWithKey = false;
+let warnedLegacyIsCredential = false;
+
+/** Test seam: swap the verifier (revocation source, cache). */
+export function __setNodeVerifier(v: NodeCredentialVerifier | null): void {
+  defaultVerifier = v;
+}
+/** Test helper: let the one-time warnings fire again. */
+export function __resetNodeAuthWarnings(): void {
+  warnedOldTokenName = false;
+  warnedLegacyWithKey = false;
+  warnedLegacyIsCredential = false;
+}
+
+/** The legacy value this gateway accepts, or "" when the door is closed. */
+function legacyToken(): string {
+  if (env.nodeLegacyOff()) return "";
+  const keyed = !!(env.nodeKey() || env.nodeKeyPrevious());
+  const name = env.nodeLegacyToken().trim() ? "SLAUDE_NODE_LEGACY_TOKEN" : "SLAUDE_NODE_TOKEN";
+  // The old gateway reading (SLAUDE_NODE_TOKEN as the value to accept) applies
+  // only while no node key is set: once signed credentials exist, that
+  // variable may well hold one, and accepting it here would skip expiry,
+  // revocation and labels.
+  // Trimmed: a whitespace-only value is unset, not a token nobody can send.
+  const t = env.nodeLegacyToken().trim() || (keyed ? "" : env.nodeToken().trim());
+  if (!t) return "";
+  // A node credential is never a legacy value, whatever variable holds it.
+  if (looksLikeNodeCredential(t)) {
+    if (!warnedLegacyIsCredential) {
+      warnedLegacyIsCredential = true;
+      console.error(
+        `[node-auth] ${name} looks like a node credential (it verifies as one, or its payload carries ` +
+          "typ, exp or labels), not a legacy shared token; ignoring it as a legacy value. " +
+          "Give the gateway SLAUDE_NODE_LEGACY_TOKEN (a random string) or leave the legacy door closed.",
+      );
+    }
+    return "";
   }
-  return null;
+  return t;
+}
+
+/**
+ * A value is treated as a node credential when it verifies as one under the
+ * configured keys, or when its middle dot-separated part decodes to a JSON
+ * object carrying `typ`, `exp` or `labels` (a credential minted under a key
+ * this gateway does not hold). Any other value, dots included, is an ordinary
+ * operator-chosen legacy token.
+ */
+function looksLikeNodeCredential(t: string): boolean {
+  if (verifyNodeCredentialSync(t).ok) return true;
+  const parts = t.split(".");
+  if (parts.length !== 3) return false;
+  try {
+    const body = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8"));
+    return typeof body === "object" && body !== null && ("typ" in body || "exp" in body || "labels" in body);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Authenticate a /v1 request (node labels spec §4.2). Runs on EVERY request;
+ * there is no session, so a revoked credential stops at the next call.
+ *
+ *   - a bearer equal to the legacy token → { id: "legacy", labels: {default} }
+ *     (SLAUDE_NODE_LEGACY=off closes this door)
+ *   - a bearer that verifies as a signed node credential → its claims
+ *   - anything else → 401; neither a key nor a legacy token configured → 503
+ */
+export async function authenticateNode(req: Request): Promise<NodeAuthResult> {
+  const legacy = legacyToken();
+  const keyed = !!(env.nodeKey() || env.nodeKeyPrevious());
+  if (!legacy && !keyed) {
+    return {
+      ok: false,
+      response: json(503, { error: "no node credential is configured on this gateway (SLAUDE_NODE_KEY or SLAUDE_NODE_LEGACY_TOKEN)" }),
+    };
+  }
+  const header = req.headers.get("authorization") ?? "";
+  const bearer = header.match(/^Bearer\s+(.+)$/i)?.[1] ?? "";
+  if (!bearer) return { ok: false, response: json(401, { error: "invalid or missing bearer token" }) };
+
+  if (legacy && timingSafeStringEqual(bearer, legacy)) {
+    if (!env.nodeLegacyToken().trim() && !warnedOldTokenName) {
+      warnedOldTokenName = true;
+      console.warn(
+        "[node-auth] the gateway reads SLAUDE_NODE_TOKEN as the legacy node token; this is deprecated, set SLAUDE_NODE_LEGACY_TOKEN instead",
+      );
+    }
+    if (keyed) {
+      metric.nodeLegacyAuthTotal.inc();
+      if (!warnedLegacyWithKey) {
+        warnedLegacyWithKey = true;
+        console.warn(
+          "[node-auth] a node authenticated with the legacy shared token while SLAUDE_NODE_KEY is set; give it a signed credential, then set SLAUDE_NODE_LEGACY=off",
+        );
+      }
+    }
+    return { ok: true, node: LEGACY_IDENTITY };
+  }
+
+  if (keyed) {
+    let r;
+    try {
+      r = await (defaultVerifier ??= new NodeCredentialVerifier()).verify(bearer);
+    } catch (e) {
+      // Revocation could not be checked: fail closed.
+      console.error("[node-auth] node credential revocation lookup failed:", e instanceof Error ? e.message : e);
+      return { ok: false, response: json(503, { error: "node credential revocation store unavailable" }) };
+    }
+    if (r.ok) {
+      return {
+        ok: true,
+        node: { id: r.claims.id, labels: new Set(r.claims.labels), legacy: false },
+        expiresAt: r.claims.exp,
+      };
+    }
+  }
+  return { ok: false, response: json(401, { error: "invalid or missing bearer token" }) };
+}
+
+/** The gate's refusal (node labels spec §4.3). Generic on purpose; `code` lets
+ *  the node client type it without parsing prose. */
+export const GATE_DENIED_CODE = "GATE_DENIED";
+export const GATE_DENIED_MESSAGE = "this node may not serve this agent";
+
+/** Require the job's label among the node's labels. Null = allowed. */
+export function gateLabel(node: NodeIdentity, claims: JobClaims, route: string): Response | null {
+  const label = jobLabel(claims);
+  if (node.labels.has(label)) return null;
+  console.error(
+    `[v1] gate denied: node=${node.id} tenant=${claims.tenant} persona=${claims.persona} label=${label} route=${route}`,
+  );
+  return json(403, { error: GATE_DENIED_MESSAGE, code: GATE_DENIED_CODE });
 }
 
 /**
  * Enforce the per-job JWT on tool-plane / session endpoints. Returns the
  * claims, or the error Response to send.
  */
-export function requireJobToken(req: Request): { claims: JobClaims } | { response: Response } {
-  const r = verifyJobToken(req.headers.get(JOB_HEADER));
+export function requireJobToken(
+  req: Request,
+  opts: { graceSec?: number } = {},
+): { claims: JobClaims } | { response: Response } {
+  const r = verifyJobToken(req.headers.get(JOB_HEADER), opts);
   if (r.ok) return { claims: r.claims };
   if (r.reason === "unconfigured") {
     return { response: json(503, { error: "SLAUDE_JOB_SECRET is not configured on this gateway" }) };

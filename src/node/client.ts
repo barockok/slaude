@@ -10,7 +10,7 @@
  *   - ETag cache for the tenant runtime bundle (If-None-Match / 304).
  */
 import type { NodeCredential } from "../gateway/api/mcp-credentials";
-import { JOB_HEADER } from "../gateway/api/auth";
+import { GATE_DENIED_CODE, JOB_HEADER } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
 
 export interface NodeClientOpts {
@@ -65,6 +65,35 @@ export class NodeApiError extends Error {
     message?: string,
   ) {
     super(message ?? `gateway /v1 request failed: ${status} ${body.slice(0, 300)}`);
+  }
+}
+
+/**
+ * The gateway's label gate refused this node (node labels spec §4.3): the
+ * node's credential does not carry the job's label. Typed so the worker can
+ * fail the job instead of retrying it; the client never retries it.
+ */
+export class GateDenied extends NodeApiError {
+  constructor(body: string) {
+    super(403, body, "the gateway refused this node for this agent (label gate)");
+  }
+}
+
+/** The verified identity GET /v1/node/whoami returns. */
+export interface NodeWhoami {
+  id: string;
+  labels: string[];
+  legacy: boolean;
+  /** Null for the legacy identity (it does not expire). */
+  expiresInSec: number | null;
+}
+
+function isGateDenied(status: number, body: string): boolean {
+  if (status !== 403) return false;
+  try {
+    return (JSON.parse(body) as { code?: unknown }).code === GATE_DENIED_CODE;
+  } catch {
+    return false;
   }
 }
 
@@ -131,8 +160,21 @@ export class NodeClient {
   }
 
   async #json<T>(res: Response): Promise<T> {
-    if (!res.ok) throw new NodeApiError(res.status, await res.text().catch(() => ""));
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      if (isGateDenied(res.status, body)) throw new GateDenied(body);
+      throw new NodeApiError(res.status, body);
+    }
     return (await res.json()) as T;
+  }
+
+  /**
+   * The node's verified identity. No retry here: the boot handshake owns its
+   * backoff (it must retry network errors but exit on a 401).
+   */
+  async whoami(): Promise<NodeWhoami> {
+    const res = await this.request("/v1/node/whoami", { retry: false });
+    return this.#json<NodeWhoami>(res);
   }
 
   async getSession(id: string, jobToken: string): Promise<SessionView | null> {
@@ -233,8 +275,10 @@ export class NodeClient {
    * long-poll IS the retry loop, and a network error should surface to the
    * caller's loop rather than double-wait.
    */
-  async getPending(id: string): Promise<PendingView | "timeout" | "notfound"> {
-    const res = await this.request(`/v1/pending/${id}`, { retry: false });
+  async getPending(id: string, jobToken?: string): Promise<PendingView | "timeout" | "notfound"> {
+    // The job token binds the poll to this turn's session (node labels spec
+    // §4.4); only a legacy node may poll without one, and only for a while.
+    const res = await this.request(`/v1/pending/${id}`, { retry: false, ...(jobToken ? { jobToken } : {}) });
     if (res.status === 204) return "timeout";
     if (res.status === 404) return "notfound";
     return this.#json<PendingView>(res);
@@ -262,6 +306,17 @@ export class NodeClient {
    */
   async refreshJobToken(jobId: string, currentToken: string): Promise<string> {
     const res = await this.request(`/v1/jobs/${jobId}/token-refresh`, { method: "POST", jobToken: currentToken });
+    const body = await this.#json<{ jobToken: string }>(res);
+    return body.jobToken;
+  }
+
+  /**
+   * Re-mint the token of a job that waited past the refresh grace (node labels
+   * spec §4.4). Presents the job's own token and the queue it was claimed from;
+   * the gateway checks the job is still queued and under its maximum age.
+   */
+  async reissueJobToken(jobId: string, queue: string, jobToken: string): Promise<string> {
+    const res = await this.request(`/v1/jobs/${jobId}/token-reissue`, { method: "POST", body: { queue }, jobToken });
     const body = await this.#json<{ jobToken: string }>(res);
     return body.jobToken;
   }

@@ -107,7 +107,7 @@ if [[ ! -s "$SECRETS" ]]; then
   log "generating $SECRETS"
   {
     echo "SLAUDE_MASTER_KEY=$(openssl rand -base64 32)"
-    echo "SLAUDE_NODE_TOKEN=$(openssl rand -hex 24)"
+    echo "SLAUDE_NODE_LEGACY_TOKEN=$(openssl rand -hex 24)"
     echo "SLAUDE_JOB_SECRET=$(openssl rand -hex 24)"
     echo "SLAUDE_PG_URL=postgres://slaude:slaude@postgres:5432/slaude"
     echo "SLAUDE_REDIS_URL=redis://redis:6379"
@@ -125,10 +125,21 @@ ensure_secret SLAUDE_BRAIN_DATABASE_URL "postgres://slaude:slaude@postgres:5432/
 # run rather than generated, so the token the gateway accepts and the token
 # nodes present can never differ, and a cluster created before the split
 # (which had one Secret for both tiers) keeps its existing values.
+#
+# The gateway reads the shared node token as SLAUDE_NODE_LEGACY_TOKEN; a node
+# presents it as its own SLAUDE_NODE_TOKEN. A secrets.env written before that
+# rename holds SLAUDE_NODE_TOKEN: the line is renamed in place (value kept), so
+# the gateway never reads a node credential under the node's variable name.
+if grep -q '^SLAUDE_NODE_TOKEN=' "$SECRETS" && ! grep -q '^SLAUDE_NODE_LEGACY_TOKEN=' "$SECRETS"; then
+  sed -i.bak 's/^SLAUDE_NODE_TOKEN=/SLAUDE_NODE_LEGACY_TOKEN=/' "$SECRETS" && rm -f "$SECRETS.bak"
+fi
 NODE_ENV="$HERE/node.env"
-grep -E '^(SLAUDE_NODE_TOKEN|SLAUDE_REDIS_URL)=' "$SECRETS" >"$NODE_ENV" || true
+{
+  grep -E '^SLAUDE_NODE_LEGACY_TOKEN=' "$SECRETS" | sed 's/^SLAUDE_NODE_LEGACY_TOKEN=/SLAUDE_NODE_TOKEN=/'
+  grep -E '^SLAUDE_REDIS_URL=' "$SECRETS"
+} >"$NODE_ENV" || true
 [[ "$(wc -l <"$NODE_ENV" | tr -d ' ')" == 2 ]] \
-  || die "$SECRETS must define SLAUDE_NODE_TOKEN and SLAUDE_REDIS_URL exactly once; fix it or run ./down.sh --purge"
+  || die "$SECRETS must define SLAUDE_NODE_LEGACY_TOKEN and SLAUDE_REDIS_URL exactly once; fix it or run ./down.sh --purge"
 
 # The pipeline credential for /deploy. It lives in its OWN file and Secret, not
 # secrets.env, and is wired into the gateway only by key: a node holding the

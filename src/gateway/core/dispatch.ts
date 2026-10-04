@@ -18,6 +18,7 @@ import type { AgentManager, AgentEvent } from "../../agent/manager";
 import type { SessionRow } from "../../db/schema";
 import { encodeRunAs } from "../../agent/credential-owner";
 import { mintJobToken } from "../api/auth";
+import { runsOnFor } from "../../persona/registry";
 import { env } from "../../config/env";
 import { activeRemoteTarget } from "../../remote/active";
 import * as OneOnOne from "../../db/one-on-one";
@@ -249,7 +250,11 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       // a token minted by an older gateway. A failed lookup fails the dispatch.
       const lockRow = await OneOnOne.find(meta.channelId, meta.threadTs);
       const lockClaim = lockRow ? { user: lockRow.locked_user, openScope: lockRow.open_scope } : null;
+      // The node label the persona runs on, signed into the token (the /v1
+      // gate checks it against the node's credential) and carried in the payload.
+      const label = runsOnFor(personaId);
       const jobToken = mintJobToken({
+        label,
         tenant: tenantId,
         persona: personaId,
         session: session.id,
@@ -287,6 +292,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           sessionId: session.id,
           tenantId,
           personaId,
+          label,
           ...(meta.oauthUser ? { oauthUser: meta.oauthUser } : {}),
           messages: [
             { ts: meta.eventTs, user: meta.userId, text, ...(meta.suppress ? { suppress: true } : {}) },

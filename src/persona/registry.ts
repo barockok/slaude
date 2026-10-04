@@ -249,6 +249,15 @@ export function managedPersonaModel(name: string | undefined, r: PersonaRegistry
 }
 
 /**
+ * The node label persona `personaId` runs on (node labels spec §4.5). Signed
+ * into the job token and payload at dispatch; the /v1 gate requires it among
+ * the calling node's labels. Always "default" until `personas.runs_on` lands.
+ */
+export function runsOnFor(_personaId: string | undefined): string {
+  return "default";
+}
+
+/**
  * Build the tenant's state and install it: the registry snapshot, plus the
  * default persona's soul pair — its text and its structured soul, always from
  * one source, so approvals and ACLs never disagree with the soul in the prompt:
