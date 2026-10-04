@@ -21,6 +21,9 @@ spec:
         app.kubernetes.io/name: slaude
         app.kubernetes.io/component: node
     spec:
+      # Nodes never call the Kubernetes API, and every agent child on a node
+      # can read what the pod mounts: no ServiceAccount token.
+      automountServiceAccountToken: false
       # MUST exceed SLAUDE_NODE_DRAIN_SEC (ConfigMap, default 120): on
       # SIGTERM the worker stops claiming and finishes in-flight turns
       # within the drain grace; kubelet must not SIGKILL it mid-drain.
@@ -30,9 +33,12 @@ spec:
           image: ghcr.io/REPLACE/slaude:latest
           imagePullPolicy: Always
           command: ["bun", "run", "worker"]
+          # The node Secret only. Loading the gateway's would hand every node,
+          # and every agent child on it, the master key and the job secret; the
+          # node logs a warning at boot if it finds them (10-secrets.yaml).
           envFrom:
             - secretRef:
-                name: slaude-scale-secrets
+                name: slaude-scale-node-secrets
             - configMapRef:
                 name: slaude-scale-config
           env:

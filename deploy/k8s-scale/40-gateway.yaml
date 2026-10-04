@@ -2,6 +2,21 @@
 # Slack ingress (/slack/events, /slack/interactions, /slack/oauth/*), the
 # /v1 REST for nodes, cron + reaper leadership (Redis-lock elected), and
 # /healthz /readyz /metrics on the same port.
+#
+# Its own ServiceAccount, so a Role bound for the gateway never reaches nodes
+# and nothing granted to `default` reaches the gateway. slaude makes no
+# Kubernetes API call, so no token is mounted; set it to true only if you bind
+# a Role that something in the pod uses.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: slaude-gateway
+  namespace: slaude-scale
+  labels:
+    app.kubernetes.io/name: slaude
+    app.kubernetes.io/component: gateway
+automountServiceAccountToken: false
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,6 +37,7 @@ spec:
         app.kubernetes.io/name: slaude
         app.kubernetes.io/component: gateway
     spec:
+      serviceAccountName: slaude-gateway
       # Gateways hold no in-flight turns; default grace is plenty for
       # draining HTTP + long-polls (Slack retries anything cut off).
       terminationGracePeriodSeconds: 30
@@ -29,12 +45,27 @@ spec:
         - name: gateway
           image: ghcr.io/REPLACE/slaude:latest
           imagePullPolicy: Always
+          # The gateway's own Secret, whole. Never the node's: that one may hold
+          # a node-side provider fallback the gateway must not pick up.
           envFrom:
             - secretRef:
                 name: slaude-scale-secrets
             - configMapRef:
                 name: slaude-scale-config
           env:
+            # Shared with nodes, read by key from the node Secret so each value
+            # has one source: the node credential the gateway accepts on /v1,
+            # and the queues' Redis.
+            - name: SLAUDE_NODE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: slaude-scale-node-secrets
+                  key: SLAUDE_NODE_TOKEN
+            - name: SLAUDE_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: slaude-scale-node-secrets
+                  key: SLAUDE_REDIS_URL
             - name: SLAUDE_HOME
               value: /data
             - name: SLAUDE_ROLE
