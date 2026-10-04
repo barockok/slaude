@@ -183,19 +183,21 @@ export function __resetNodeAuthWarnings(): void {
 function legacyToken(): string {
   if (env.nodeLegacyOff()) return "";
   const keyed = !!(env.nodeKey() || env.nodeKeyPrevious());
-  const name = env.nodeLegacyToken() ? "SLAUDE_NODE_LEGACY_TOKEN" : "SLAUDE_NODE_TOKEN";
+  const name = env.nodeLegacyToken().trim() ? "SLAUDE_NODE_LEGACY_TOKEN" : "SLAUDE_NODE_TOKEN";
   // The old gateway reading (SLAUDE_NODE_TOKEN as the value to accept) applies
   // only while no node key is set: once signed credentials exist, that
   // variable may well hold one, and accepting it here would skip expiry,
   // revocation and labels.
-  const t = env.nodeLegacyToken() || (keyed ? "" : env.nodeToken());
+  // Trimmed: a whitespace-only value is unset, not a token nobody can send.
+  const t = env.nodeLegacyToken().trim() || (keyed ? "" : env.nodeToken().trim());
   if (!t) return "";
-  // A signed credential is never a legacy value, whatever variable holds it.
-  if (JWT_SHAPE.test(t) || verifyNodeCredentialSync(t).ok) {
+  // A node credential is never a legacy value, whatever variable holds it.
+  if (looksLikeNodeCredential(t)) {
     if (!warnedLegacyIsCredential) {
       warnedLegacyIsCredential = true;
       console.error(
-        `[node-auth] ${name} holds a signed node credential, not a legacy shared token; ignoring it as a legacy value. ` +
+        `[node-auth] ${name} looks like a node credential (it verifies as one, or its payload carries ` +
+          "typ, exp or labels), not a legacy shared token; ignoring it as a legacy value. " +
           "Give the gateway SLAUDE_NODE_LEGACY_TOKEN (a random string) or leave the legacy door closed.",
       );
     }
@@ -204,8 +206,24 @@ function legacyToken(): string {
   return t;
 }
 
-/** Three dot-separated base64url parts: the shape of any signed token. */
-const JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+/**
+ * A value is treated as a node credential when it verifies as one under the
+ * configured keys, or when its middle dot-separated part decodes to a JSON
+ * object carrying `typ`, `exp` or `labels` (a credential minted under a key
+ * this gateway does not hold). Any other value, dots included, is an ordinary
+ * operator-chosen legacy token.
+ */
+function looksLikeNodeCredential(t: string): boolean {
+  if (verifyNodeCredentialSync(t).ok) return true;
+  const parts = t.split(".");
+  if (parts.length !== 3) return false;
+  try {
+    const body = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8"));
+    return typeof body === "object" && body !== null && ("typ" in body || "exp" in body || "labels" in body);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Authenticate a /v1 request (node labels spec §4.2). Runs on EVERY request;
@@ -230,7 +248,7 @@ export async function authenticateNode(req: Request): Promise<NodeAuthResult> {
   if (!bearer) return { ok: false, response: json(401, { error: "invalid or missing bearer token" }) };
 
   if (legacy && timingSafeStringEqual(bearer, legacy)) {
-    if (!env.nodeLegacyToken() && !warnedOldTokenName) {
+    if (!env.nodeLegacyToken().trim() && !warnedOldTokenName) {
       warnedOldTokenName = true;
       console.warn(
         "[node-auth] the gateway reads SLAUDE_NODE_TOKEN as the legacy node token; this is deprecated, set SLAUDE_NODE_LEGACY_TOKEN instead",

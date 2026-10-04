@@ -237,16 +237,44 @@ describe("authenticateNode", () => {
         const r = await authenticateNode(req(`Bearer ${stale}`));
         expect({ v, status: !r.ok && r.response.status }).toEqual({ v, status: 401 });
       }
-      // Without any key: a JWT-shaped legacy value is still refused, and with
-      // nothing else configured the gateway reports it as unconfigured.
+      // Without any key: a real credential is still recognised by its claims and
+      // refused, and with nothing else configured the gateway reports 503.
       delete process.env.SLAUDE_NODE_KEY;
-      delete process.env.SLAUDE_NODE_TOKEN;
-      process.env.SLAUDE_NODE_LEGACY_TOKEN = "aaaa.bbbb.cccc";
-      expect(((await authenticateNode(req("Bearer aaaa.bbbb.cccc"))) as any).response.status).toBe(503);
+      for (const v of ["SLAUDE_NODE_LEGACY_TOKEN", "SLAUDE_NODE_TOKEN"]) {
+        delete process.env.SLAUDE_NODE_LEGACY_TOKEN;
+        delete process.env.SLAUDE_NODE_TOKEN;
+        process.env[v] = stale;
+        expect({ v, s: ((await authenticateNode(req(`Bearer ${stale}`))) as any).response.status }).toEqual({ v, s: 503 });
+      }
     } finally {
       console.error = origErr;
     }
     expect(errs.some((e) => e.includes("legacy") && !e.includes(stale))).toBe(true);
+  });
+
+  test("an operator-chosen legacy token with dots still works (no key: exactly as before)", async () => {
+    for (const v of ["SLAUDE_NODE_LEGACY_TOKEN", "SLAUDE_NODE_TOKEN"]) {
+      delete process.env.SLAUDE_NODE_LEGACY_TOKEN;
+      delete process.env.SLAUDE_NODE_TOKEN;
+      process.env[v] = "my.legacy.token";
+      const r = await authenticateNode(req("Bearer my.legacy.token"));
+      expect({ v, ok: r.ok, legacy: r.ok && r.node.legacy }).toEqual({ v, ok: true, legacy: true });
+    }
+    // Also with a key set, under the new variable.
+    process.env.SLAUDE_NODE_KEY = "node-key";
+    delete process.env.SLAUDE_NODE_TOKEN;
+    process.env.SLAUDE_NODE_LEGACY_TOKEN = "my.legacy.token";
+    expect((await authenticateNode(req("Bearer my.legacy.token"))).ok).toBe(true);
+  });
+
+  test("whitespace-only legacy values are unset (503), and values are trimmed", async () => {
+    process.env.SLAUDE_NODE_LEGACY_TOKEN = "   ";
+    expect(((await authenticateNode(req("Bearer x"))) as any).response.status).toBe(503);
+    delete process.env.SLAUDE_NODE_LEGACY_TOKEN;
+    process.env.SLAUDE_NODE_TOKEN = " \t ";
+    expect(((await authenticateNode(req("Bearer x"))) as any).response.status).toBe(503);
+    process.env.SLAUDE_NODE_TOKEN = "  node-secret \n";
+    expect((await authenticateNode(req("Bearer node-secret"))).ok).toBe(true);
   });
 
   test("legacy use while SLAUDE_NODE_KEY is set: warns once and counts every use", async () => {

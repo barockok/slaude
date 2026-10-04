@@ -245,7 +245,7 @@ At boot a node calls `GET /v1/node/whoami`, which returns the verified `{id, lab
 
 ### The legacy token
 
-A node holding the old shared token authenticates as `{id: legacy, labels: [default]}`. The gateway reads that value as `SLAUDE_NODE_LEGACY_TOKEN` from its own Secret; a node keeps presenting it as `SLAUDE_NODE_TOKEN`. The gateway also accepts its own `SLAUDE_NODE_TOKEN` as the legacy value, with a deprecation warning, but **only while no `SLAUDE_NODE_KEY` is set**, and it refuses any legacy value that looks like a signed credential: a signed credential is never downgraded to the legacy identity. While the door is open every `default` persona is reachable with one shared secret, so close it with `SLAUDE_NODE_LEGACY=off` once every node has a signed credential.
+A node holding the old shared token authenticates as `{id: legacy, labels: [default]}`. The gateway reads that value as `SLAUDE_NODE_LEGACY_TOKEN` from its own Secret; a node keeps presenting it as `SLAUDE_NODE_TOKEN`. The gateway also accepts its own `SLAUDE_NODE_TOKEN` as the legacy value, with a deprecation warning, but **only while no `SLAUDE_NODE_KEY` is set**, and it refuses a legacy value that is a node credential: one that verifies under the configured keys, or whose middle dot-separated part decodes to JSON carrying `typ`, `exp` or `labels`. A signed credential is never downgraded to the legacy identity. Any other value, dots included, is an ordinary legacy token. Values are trimmed; a whitespace-only value counts as unset. While the door is open every `default` persona is reachable with one shared secret, so close it with `SLAUDE_NODE_LEGACY=off` once every node has a signed credential.
 
 ### Job tokens
 
