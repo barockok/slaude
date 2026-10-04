@@ -22,7 +22,17 @@
  * in the queue, its stored token is the one presented, and its total age is
  * under SLAUDE_JOB_MAX_AGE.
  */
-import { JOB_HEADER, JOB_TOKEN_TTL_SEC, mintJobToken, timingSafeStringEqual, verifyJobToken, type JobClaims } from "./auth";
+import {
+  JOB_HEADER,
+  JOB_TOKEN_TTL_SEC,
+  jobLabel,
+  LABEL_MISMATCH_CODE,
+  mintJobToken,
+  timingSafeStringEqual,
+  verifyJobToken,
+  type JobClaims,
+} from "./auth";
+import { runsOnFor } from "../../persona/registry";
 import { env } from "../../config/env";
 import { m as metric } from "../../metrics";
 import { json, readJson } from "./http";
@@ -57,6 +67,15 @@ export async function handleTokenRefresh(req: Request, jobId: string, nowMs: num
   const claims = r.claims;
   if (claims.job !== jobId) {
     return json(403, { error: "token was not minted for this job" });
+  }
+  // The live label is re-checked here (node labels spec §4.3, §4.8): after a
+  // relabel the token's signed label is no longer where the persona runs. The
+  // node ends the turn with LABEL_MISMATCH and the gateway re-dispatches it
+  // once to the persona's current label.
+  const live = runsOnFor(claims.persona);
+  if (live !== jobLabel(claims)) {
+    console.warn(`[v1-jobs] token refresh refused: persona=${claims.persona} label=${jobLabel(claims)} now runs on ${live}`);
+    return json(409, { error: "the agent's node label changed", code: LABEL_MISMATCH_CODE });
   }
   const iat0 = firstIssued(claims);
   const nowSec = Math.floor(nowMs / 1000);

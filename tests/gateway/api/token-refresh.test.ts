@@ -127,3 +127,35 @@ describe("/v1/jobs/:id/token-refresh", () => {
     expect((await handleTokenRefresh(req(null), "job-123")).status).toBe(401);
   });
 });
+
+describe("live label re-check at refresh (node labels spec §4.3, §4.8)", () => {
+  /** A managed registry snapshot whose default persona runs on `label`. */
+  const managedDefault = (label: string | null) => ({
+    lookupByUserId: () => null,
+    lookupByName: () => null,
+    list: () => [],
+    isMultiPersonaMode: () => false,
+    isManaged: () => true,
+    tombstonedPersonaFor: () => null,
+    defaultPersona: () => ({ model: null, mcp: null, runsOn: label }),
+  });
+
+  test("refresh is refused with a typed 409 once the persona runs on another label", async () => {
+    const { setPersonaRegistry, __resetPersonaRegistry } = await import("../../../src/persona/registry");
+    const { LABEL_MISMATCH_CODE } = await import("../../../src/gateway/api/auth");
+    try {
+      setPersonaRegistry(managedDefault("finance") as any);
+      const onEng = mintJobToken({ ...baseClaims, label: "engineering" });
+      const res = await handleTokenRefresh(req(onEng), "job-123");
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: "the agent's node label changed", code: LABEL_MISMATCH_CODE });
+      // The token's label is still the persona's: refreshed as before.
+      const onFin = mintJobToken({ ...baseClaims, label: "finance" });
+      expect((await handleTokenRefresh(req(onFin), "job-123")).status).toBe(200);
+      // A token from before labels is `default`: refused while the persona is on finance.
+      expect((await handleTokenRefresh(req(mintJobToken(baseClaims)), "job-123")).status).toBe(409);
+    } finally {
+      __resetPersonaRegistry();
+    }
+  });
+});

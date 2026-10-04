@@ -250,7 +250,7 @@ export async function authenticateNode(req: Request): Promise<NodeAuthResult> {
   }
   const header = req.headers.get("authorization") ?? "";
   const bearer = header.match(/^Bearer\s+(.+)$/i)?.[1] ?? "";
-  if (!bearer) return { ok: false, response: json(401, { error: "invalid or missing bearer token" }) };
+  if (!bearer) return { ok: false, response: json(401, { error: "invalid or missing bearer token", code: NODE_UNAUTHORIZED_CODE }) };
 
   if (legacy && timingSafeStringEqual(bearer, legacy)) {
     if (!env.nodeLegacyToken().trim() && !warnedOldTokenName) {
@@ -288,8 +288,17 @@ export async function authenticateNode(req: Request): Promise<NodeAuthResult> {
       };
     }
   }
-  return { ok: false, response: json(401, { error: "invalid or missing bearer token" }) };
+  return { ok: false, response: json(401, { error: "invalid or missing bearer token", code: NODE_UNAUTHORIZED_CODE }) };
 }
+
+/** A 401 for the node's own credential (not a job token): the node pauses its
+ *  workers until whoami succeeds again (node labels spec §4.6). */
+export const NODE_UNAUTHORIZED_CODE = "NODE_UNAUTHORIZED";
+
+/** A token refresh refused because the persona's live label is not the one
+ *  signed into the token (409, node labels spec §4.3, §4.8): the node ends the
+ *  turn with LABEL_MISMATCH and the gateway re-dispatches it once. */
+export const LABEL_MISMATCH_CODE = "LABEL_MISMATCH";
 
 /** The gate's refusal (node labels spec §4.3). Generic on purpose; `code` lets
  *  the node client type it without parsing prose. */
