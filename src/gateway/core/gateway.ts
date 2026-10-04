@@ -2251,6 +2251,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             existing.ctx.channel = channelId;
             existing.ctx.threadTs = threadTs;
             existing.ctx.inboundTs = eventTs;
+            if (app.apiAppId) existing.ctx.apiAppId = app.apiAppId;
             existing.spoke = false;
             existing.wasCompacting = true;
           } else {
