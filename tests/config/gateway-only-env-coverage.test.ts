@@ -63,6 +63,8 @@ const ALLOW: Record<string, string> = {
   // Other.
   SLAUDE_ENCRYPTION_KEY: "the connect broker's key, used by the agent process itself; stripped from the agent child (child-env.ts)",
   SLAUDE_SOUL_PARSE_MAX_TOKENS: "a size limit, not a secret",
+  SLAUDE_JOB_TOKEN_MAX_AGE: "a duration cap, not a secret",
+  SLAUDE_NODE_ALLOW_TOKENLESS_PENDING: "a compatibility switch, not a secret",
 };
 
 function files(dir: string): string[] {

@@ -38,6 +38,9 @@ export interface TurnJob {
   sessionId: string;
   tenantId: string;
   personaId: string;
+  /** The node label this turn runs on (node labels spec §4.3); the same value
+   *  is signed into jobToken. Absent on jobs from an older gateway = "default". */
+  label?: string;
   messages: TurnMessage[];
   /** Identity the turn runs as when it is not the thread's /1on1 lock owner —
    *  currently a cron job's captured initiator. The node applies it before the
@@ -98,6 +101,24 @@ export class TurnQueues {
       this.#queues.set(name, q);
     }
     return q;
+  }
+
+  /**
+   * Read one job by queue name without caching a handle for a name this
+   * process has not used: the name can come from a caller (token-reissue), and
+   * the handle cache must not grow with whatever names callers send.
+   */
+  async peekJob(name: string, jobId: string): Promise<Job | undefined> {
+    const cached = this.#queues.get(name);
+    if (cached) return cached.getJob(jobId);
+    const q = new Queue(name, { connection: this.#connection, prefix: this.keys.bullPrefix });
+    try {
+      return await q.getJob(jobId);
+    } finally {
+      // close() would quit the shared connection only if BullMQ owned it; it
+      // does not here (an injected connection), so this just drops the handle.
+      await q.close().catch(() => {});
+    }
   }
 
   /** Spec §2: attempts 2 with backoff; keep a bounded tail for inspection. */

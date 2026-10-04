@@ -10,13 +10,14 @@ import { loadSoulData, setSoulData } from "./soul/extract";
 import { assertOAuthKeyCanary } from "./agent/mcp-oauth/store";
 import { sharedLoopback } from "./agent/mcp-oauth/shared-loopback";
 import { verifyState } from "./agent/mcp-oauth/state";
-import { env } from "./config/env";
+import { env, jobAgeEnvViolations } from "./config/env";
 import { assertPanelConfig } from "./gateway/panel/auth/config";
 import { assertPortalConfig } from "./gateway/portal/config";
 import { getPersonaRegistry } from "./persona/registry";
 import { bootPersonaState } from "./persona/boot";
 import { getDb, resolveDbConfig } from "./db/client";
 import { assertGatewayRequirements } from "./config/gateway-requirements";
+import { nodeKeyViolations } from "./gateway/auth/node-credential";
 import { brainEnabled, brainEngineConfig } from "./knowledge/brain";
 import { brainMode } from "./knowledge/brain-config";
 import * as SoulOverrides from "./db/soul-overrides";
@@ -32,6 +33,13 @@ async function main() {
   // anything is opened, since opening PGLite on the shared volume is itself the
   // harm. Resolved from env alone; nothing is connected yet.
   const dbCfg = resolveDbConfig();
+  // Node credential keys and job-token caps (node labels spec §4.1, §4.4): every
+  // role that mounts /v1 uses them, so a weak key, one shared with the job
+  // secret, or an unparsable cap stops boot.
+  if (env.role() !== "node") {
+    const bad = [...nodeKeyViolations(process.env), ...jobAgeEnvViolations(process.env)];
+    if (bad.length) throw new Error(`refusing to start:\n${bad.map((v) => `  - ${v}`).join("\n")}`);
+  }
   assertGatewayRequirements({
     role: env.role(),
     slackMode: env.slack.mode(),
