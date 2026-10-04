@@ -117,7 +117,6 @@ describe("post-as-user env wiring", () => {
     saved.SLACK_USER_TOKEN = process.env.SLACK_USER_TOKEN;
     process.env.SLACK_POST_AS_USER = "true";
     delete process.env.SLACK_USER_TOKEN;
-    process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
 
     const { t } = captureTransport();
     // No outClient + flag on + token unset → postsAsUser false, warn branch fires.

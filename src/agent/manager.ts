@@ -43,6 +43,7 @@ import { resolveSessionConfigDir } from "./oauth-home";
 import { sessionIdOpts } from "./session-id-opts";
 import { sessionModeBlock } from "./session-mode";
 import { formatSessionNotes } from "./session-notes";
+import type { FailureCode } from "../gateway/core/failure-codes";
 import { REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, makeRemoteCanUseTool } from "../remote/mcp";
 import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/types";
 
@@ -91,7 +92,9 @@ export type AgentEvent =
   | { type: "thinking"; sessionId: string; text: string }
   | { type: "turnStart"; sessionId: string }
   | { type: "done"; sessionId: string; autoEvolve?: boolean }
-  | { type: "error"; sessionId: string; error: string }
+  // `error` is the RAW detail for logs only; Slack gets the fixed text for `code`
+  // (gateway/core/failure-codes.ts). `jobId` lets the gateway post once per job.
+  | { type: "error"; sessionId: string; error: string; code?: FailureCode; jobId?: string }
   | { type: "tokenUsage"; sessionId: string; snapshot: UsageSnapshot }
   | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" };
 
@@ -1163,7 +1166,7 @@ export class AgentManager extends EventEmitter {
           this.emit("event", { type: "done", sessionId } satisfies AgentEvent);
         } else {
           metric.errorsTotal.inc({ kind: "sdk" });
-          this.emit("event", { type: "error", sessionId, error: message } satisfies AgentEvent);
+          this.emit("event", { type: "error", sessionId, error: message, code: "TURN_FAILED" } satisfies AgentEvent);
         }
       } finally {
         // A session detached by sendMessage's bounded reload wait no longer owns
@@ -1315,6 +1318,7 @@ export class AgentManager extends EventEmitter {
               type: "error",
               sessionId,
               error: `MCP stream closed ${count}× in a row — circuit open, not auto-reloading. Send any message to restart.`,
+              code: "TURN_FAILED",
             } satisfies AgentEvent);
             // A config reload still applies: it is not an MCP recovery attempt.
             if (deferredReload) this.reload(sessionId);
@@ -1374,6 +1378,7 @@ export class AgentManager extends EventEmitter {
               type: "error",
               sessionId,
               error: errStr,
+              code: "TURN_FAILED",
             } satisfies AgentEvent);
             if (live) live.turnTools = [];
           }

@@ -45,6 +45,8 @@ type AppEntry = {
   row: SlackAppRow;
   signingSecret: string;
   client: WebClientLike;
+  /** Decrypted bot token of THIS app, handed to event handlers (attachment download). */
+  botToken: string;
 };
 
 export type HttpTransportOptions = {
@@ -114,7 +116,7 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
     primary = null;
     for (const row of rows) {
       const { botToken, signingSecret } = decryptTokens(row);
-      const entry: AppEntry = { row, signingSecret, client: makeClient(botToken) };
+      const entry: AppEntry = { row, signingSecret, client: makeClient(botToken), botToken };
       entries.set(`${row.api_app_id}:${row.team_id}`, entry);
       const group = byApp.get(row.api_app_id) ?? [];
       group.push(entry);
@@ -150,6 +152,7 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
       teamId: body.team_id ?? event.team,
       apiAppId: body.api_app_id,
       botUserId: entry.row.bot_user_id ?? undefined,
+      botToken: entry.botToken,
     };
     for (const h of events.get(event.type) ?? []) {
       await h({ event, client: entry.client, context });
@@ -354,37 +357,34 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
   }
 
   // Gateway construction touches transport.client before start() (boot-time
-  // agent-id resolution fires auth.test asynchronously). Every method of this
-  // proxy parks on the started promise and then delegates to the primary
-  // (oldest-registered) app's client.
-  const p = <T>(fn: (c: WebClientLike) => Promise<T>): Promise<T> =>
-    started.then(() => fn(primary!.client));
-  const lazyClient = {
-    auth: { test: (a?: any) => p((c) => c.auth.test(a)) },
-    chat: {
-      postMessage: (a: any) => p((c) => c.chat.postMessage(a)),
-      update: (a: any) => p((c) => c.chat.update(a)),
-      postEphemeral: (a: any) => p((c) => c.chat.postEphemeral(a)),
-    },
-    reactions: {
-      add: (a: any) => p((c) => c.reactions.add(a)),
-      remove: (a: any) => p((c) => c.reactions.remove(a)),
-    },
-    conversations: {
-      info: (a: any) => p((c) => c.conversations.info(a)),
-      members: (a: any) => p((c) => c.conversations.members(a)),
-      replies: (a: any) => p((c) => c.conversations.replies(a)),
-    },
-    users: {
-      info: (a: any) => p((c) => c.users.info(a)),
-      profile: { set: (a: any) => p((c) => c.users.profile.set(a)) },
-    },
-    search: { messages: (a: any) => p((c) => c.search.messages(a)) },
-    // Slack Agents status indicator — used behind an any-cast (status.ts).
-    assistant: {
-      threads: { setStatus: (a: any) => p((c) => (c as any).assistant.threads.setStatus(a)) },
-    },
-  } as unknown as WebClientLike;
+  // agent-id resolution fires auth.test asynchronously). A recursive Proxy
+  // forwards any `a.b.c(...)` to the primary (oldest-registered) app's client:
+  // the call parks on `started`, then resolves the same path on the real client.
+  // A hand-listed proxy missed methods twice, so a new Slack method must not need
+  // a change here. Per-request client selection is a separate change (D1.2).
+  // Property names that serializers, inspectors and promise machinery probe: they
+  // must read as absent, not as a callable that fires a (rejecting) Slack call.
+  const PROBES = new Set(["then", "toJSON", "inspect", "valueOf", "toString", "asymmetricMatch", "$$typeof", "nodeType"]);
+  const lazyAt = (path: string[]): any =>
+    new Proxy(function () {}, {
+      get: (_t, key) => (typeof key === "symbol" || PROBES.has(key) ? undefined : lazyAt([...path, key])),
+      apply: (_t, _this, args) =>
+        started.then(() => {
+          let parent: any = primary!.client;
+          let fn: any = parent;
+          for (const k of path) {
+            parent = fn;
+            fn = fn[k];
+          }
+          // An unknown method is not a function: this throws the TypeError a real client would.
+          return Reflect.apply(fn, parent, args);
+        }),
+    });
+  // The ROOT must not be callable: SlackSurface and Reactions treat a function
+  // argument as a client resolver and would call it, getting a Promise back.
+  const lazyClient = new Proxy({} as object, {
+    get: (_t, key) => (typeof key === "symbol" || PROBES.has(key) ? undefined : lazyAt([key])),
+  }) as WebClientLike;
 
   return {
     client: lazyClient,

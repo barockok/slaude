@@ -94,7 +94,6 @@ const nextTs = () => `${++seq}.1`;
 
 beforeEach(async () => {
   writeSoulFixture(WORLD);
-  process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
   await db.run("DELETE FROM sessions");
   await db.run("DELETE FROM seen_events");
   await db.run("DELETE FROM pending_gates");
