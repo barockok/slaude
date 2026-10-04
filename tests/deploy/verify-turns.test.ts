@@ -5,7 +5,7 @@
  * probe whose exec fails, no running gateway. Each must say which probe and what
  * it received, on stdout AND in the named log file.
  */
-import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,7 @@ let dir = "";
 
 function freshDir() {
   dir = mkdtempSync(join(tmpdir(), "verify-turns-"));
+  dirs.push(dir);
   writeFileSync(
     join(dir, "kubectl"),
     `#!/usr/bin/env bash
@@ -63,8 +64,12 @@ exit 0
     chmodSync(join(dir, helper), 0o755);
   }
 }
-beforeEach(freshDir);
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+// Every directory a run used, removed at the end (an abandoned run may still
+// be writing to its own).
+const dirs: string[] = [];
+afterAll(() => {
+  for (const d of dirs) rmSync(d, { recursive: true, force: true });
+});
 
 // A run normally takes a few seconds. On some hosts the OS occasionally stalls
 // the creation of a process for about 300 s: a bare loop that writes a stub and
@@ -73,17 +78,18 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 // started asynchronously, abandoned after RUN_TIMEOUT_MS (it keeps running in
 // its own temporary directory), and repeated once in a fresh directory.
 const RUN_TIMEOUT_MS = 20000;
-type Run = { code: number | null; timedOut: boolean; out: string; err: string; log: string };
+type Run = { dir: string; code: number | null; timedOut: boolean; out: string; err: string; log: string; calls: string; helpers: string };
 
 async function runOnce(env: Record<string, string>): Promise<Run> {
-  const proc = Bun.spawn(["bash", "-c", 'exec bash "$0" >"$1" 2>"$2"', script, join(dir, "out.txt"), join(dir, "err.txt")], {
+  const d = dir;
+  const proc = Bun.spawn(["bash", "-c", 'exec bash "$0" >"$1" 2>"$2"', script, join(d, "out.txt"), join(d, "err.txt")], {
     stdin: "ignore",
     stdout: "ignore",
     stderr: "ignore",
     env: {
       PATH: `${dir}:${process.env.PATH}`,
       STUB_DIR: dir,
-      VERIFY_TURNS_LOG: join(dir, "run.log"),
+      VERIFY_TURNS_LOG: join(d, "run.log"),
       TURNS: "2",
       CLAIM_TIMEOUT: "1",
       RECOVER_TIMEOUT: "1",
@@ -94,8 +100,8 @@ async function runOnce(env: Record<string, string>): Promise<Run> {
       ROTATE_TIMEOUT: "1",
       UNSERVED_TIMEOUT: "1",
       HELPER_TIMEOUT: "10",
-      PERSONAS_SH: join(dir, "personas.sh"),
-      VAULT_SH: join(dir, "vault.sh"),
+      PERSONAS_SH: join(d, "personas.sh"),
+      VAULT_SH: join(d, "vault.sh"),
       ...env,
     },
   });
@@ -106,26 +112,42 @@ async function runOnce(env: Record<string, string>): Promise<Run> {
   ]);
   clearTimeout(timer);
   if (code === null) proc.kill(9);
-  const read = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : "");
-  return { code, timedOut: code === null, out: read("out.txt"), err: read("err.txt"), log: read("run.log") };
+  const read = (f: string) => (existsSync(join(d, f)) ? readFileSync(join(d, f), "utf8") : "");
+  return {
+    dir: d,
+    code,
+    timedOut: code === null,
+    out: read("out.txt"),
+    err: read("err.txt"),
+    log: read("run.log"),
+    calls: read("calls.log"),
+    helpers: read("helpers.log"),
+  };
 }
 
-async function run(env: Record<string, string> = {}): Promise<Run> {
+// Tests that need the same environment share one run: each run launches a few
+// hundred processes, and every launch is a chance of the stall above.
+const runs = new Map<string, Promise<Run>>();
+function run(env: Record<string, string> = {}): Promise<Run> {
+  const key = JSON.stringify(Object.entries(env).sort());
+  if (!runs.has(key)) runs.set(key, runFresh(env));
+  return runs.get(key)!;
+}
+
+async function runFresh(env: Record<string, string>): Promise<Run> {
+  freshDir();
   const first = await runOnce(env);
   if (!first.timedOut) return first;
   console.warn("[verify-turns.test] a run timed out (a stalled process launch); repeating it once in a fresh directory");
-  const abandoned = dir;
   freshDir();
-  rmSync(abandoned, { recursive: true, force: true });
   const second = await runOnce(env);
   expect(second.timedOut, "the run timed out twice").toBe(false);
   return second;
 }
-const calls = () => (existsSync(join(dir, "calls.log")) ? readFileSync(join(dir, "calls.log"), "utf8") : "");
 
 test("names its log file at the start, and the log holds what was printed", async () => {
   const r = await run();
-  expect(r.out.split("\n")[0]).toContain(join(dir, "run.log"));
+  expect(r.out.split("\n")[0]).toContain(join(r.dir, "run.log"));
   expect(r.log).toContain("preconditions");
   expect(r.log).toContain("FAIL");
 });
@@ -157,7 +179,7 @@ test("a probe whose exec fails is reported on stdout with its exit status and ou
 test("the HPA is pinned for the run and restored on the way out, even when the run fails", async () => {
   const r = await run();
   expect(r.code).not.toBe(0);
-  const patches = calls().split("\n").filter((l) => l.includes("patch hpa"));
+  const patches = r.calls.split("\n").filter((l) => l.includes("patch hpa"));
   expect(patches).toHaveLength(2);
   expect(patches[0]).toContain('"maxReplicas":2');
   expect(patches[1]).toContain('"maxReplicas":3');
@@ -194,26 +216,26 @@ test("a job token reaches the node probe on stdin and is never logged or printed
   // The stub node probe answers 403 with the gate flag: the default-node check passes on it.
   expect(r.out).toContain("PASS  a default node is refused beta's bundle (403)");
   expect(r.out + r.log).not.toContain("STUBTOKEN");
-  expect(calls()).not.toContain("STUBTOKEN");
+  expect(r.calls).not.toContain("STUBTOKEN");
 });
 
 test("stopping the finance nodes is undone on exit, even when the run fails", async () => {
   const r = await run();
   expect(r.code).not.toBe(0);
-  const scales = calls().split("\n").filter((l) => l.includes("scale deploy slaude-node-finance"));
+  const scales = r.calls.split("\n").filter((l) => l.includes("scale deploy slaude-node-finance"));
   expect(scales[0]).toContain("--replicas=0");
   expect(scales.at(-1)).toContain("--replicas=1");
 });
 
 test("the relabel step goes through personas.sh, bounded, and reports a refused sync as a failure", async () => {
   const r = await run();
-  expect(readFileSync(join(dir, "helpers.log"), "utf8")).toContain("personas.sh sync --relabel beta=default");
+  expect(r.helpers).toContain("personas.sh sync --relabel beta=default");
   expect(r.out).toContain("relabel — could not sync beta onto default");
 });
 
 test("every kubectl call carries a request timeout", async () => {
-  await run();
-  for (const line of calls().split("\n").filter(Boolean)) expect(line).toContain("--request-timeout=");
+  const r = await run();
+  for (const line of r.calls.split("\n").filter(Boolean)) expect(line).toContain("--request-timeout=");
 });
 
 test("a failed container kill reports the reason instead of discarding it", async () => {
