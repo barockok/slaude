@@ -1424,8 +1424,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (!teamId || !userId) return;
     // Drop only self-echoes; other bots' messages flow through so slaude can
     // see CI alerts, summarizer bots, etc. in shared threads.
-    const selfBotId = await getSelfBotId(args);
-    if (event.bot_id && selfBotId && event.bot_id === selfBotId) {
+    if (await isSelfBotEcho(args, event)) {
       console.log(`[slack-rx] drop ch=${channelId} ts=${eventTs} — self bot echo`);
       metric.slackDropsTotal.inc({ reason: "self_bot" });
       return;
@@ -2557,21 +2556,57 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (row) await Sessions.setEngaged(row.id, value);
   };
 
-  // The bot's own user and bot ids, per app (D1.4): with several registered
-  // apps, a mention of app B's bot is a mention of "the bot" only on B's
-  // events. Resolved with the event's own client and cached per app.
+  // Bot identities (D1.4). With several registered apps in one channel, every
+  // message reaches every app, so "self" must be the union of ALL registered
+  // apps' bot ids: app A's reply delivered through app B is still our own
+  // echo, or the bots answer each other. "This bot" (whom a mention engages)
+  // is the delivering app's own bot user. Each app's ids come from its own
+  // client's auth.test, cached per app.
   const botIdsCache = new Map<string, { userId: string; botId: string }>();
-  const botIdsFor = async (args: any): Promise<{ userId: string; botId: string }> => {
-    const key = `${args?.context?.apiAppId ?? ""}:${args?.context?.teamId ?? args?.event?.team ?? ""}`;
+  const botIdsOf = async (key: string, client: any): Promise<{ userId: string; botId: string }> => {
     const hit = botIdsCache.get(key);
     if (hit) return hit;
-    const res = await (args?.client ?? t.client).auth.test();
+    const res = await client.auth.test();
     const ids = { userId: res.user_id as string, botId: (res as any).bot_id as string };
     botIdsCache.set(key, ids);
     return ids;
   };
-  const getBotId = async (args: any) => (await botIdsFor(args)).userId;
-  const getSelfBotId = async (args: any) => (await botIdsFor(args)).botId;
+  /** The delivering app's own bot user id. */
+  const getBotId = async (args: any) =>
+    (await botIdsOf(`${args?.context?.apiAppId ?? ""}:${args?.context?.teamId ?? args?.event?.team ?? ""}`, args?.client ?? t.client)).userId;
+  // Union over every registered app, refreshed at most once a minute so an
+  // app installed at runtime is picked up. An app whose auth.test fails is
+  // left out of this round rather than failing the event.
+  let selfBots: { userIds: Set<string>; botIds: Set<string>; at: number } | null = null;
+  const getSelfBots = async (args: any): Promise<{ userIds: Set<string>; botIds: Set<string> }> => {
+    if (!selfBots || Date.now() - selfBots.at > 60_000) {
+      const apps = t.apps ? await t.apps() : [{ apiAppId: "", teamId: "", client: t.client }];
+      const userIds = new Set<string>();
+      const botIds = new Set<string>();
+      for (const a of apps) {
+        try {
+          const ids = await botIdsOf(`${a.apiAppId}:${a.teamId}`, a.client);
+          if (ids.userId) userIds.add(ids.userId);
+          if (ids.botId) botIds.add(ids.botId);
+        } catch (e: any) {
+          console.error(`[slack-auth] app=${a.apiAppId || "-"} auth.test failed:`, e?.data?.error ?? e?.message);
+        }
+      }
+      selfBots = { userIds, botIds, at: Date.now() };
+    }
+    // The delivering app is always self, even before the next refresh.
+    const own = await botIdsOf(`${args?.context?.apiAppId ?? ""}:${args?.context?.teamId ?? args?.event?.team ?? ""}`, args?.client ?? t.client);
+    return {
+      userIds: new Set([...selfBots.userIds, own.userId].filter(Boolean)),
+      botIds: new Set([...selfBots.botIds, own.botId].filter(Boolean)),
+    };
+  };
+  /** A message posted by any registered app's bot. */
+  const isSelfBotEcho = async (args: any, e: any): Promise<boolean> => {
+    if (!e.bot_id && !e.user) return false;
+    const self = await getSelfBots(args);
+    return (Boolean(e.bot_id) && self.botIds.has(e.bot_id)) || (Boolean(e.user) && self.userIds.has(e.user));
+  };
 
   // When posting as a real user (xoxp), the agent's own messages arrive as plain
   // `message` events with NO `bot_id` — the bot-id self-filter misses them and we
@@ -2619,9 +2654,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // should answer.
   t.event("message", async (args: any) => {
     const e: any = args.event;
-    // Drop only self bot-echoes; other bots flow through.
-    const selfBotId = await getSelfBotId(args);
-    if (e.bot_id && selfBotId && e.bot_id === selfBotId) return;
+    // Drop only self bot-echoes (any registered app's bot); other bots flow through.
+    if (await isSelfBotEcho(args, e)) {
+      metric.slackDropsTotal.inc({ reason: "self_bot" });
+      return;
+    }
     if (!e.user) return;
     // Drop self-echoes when posting as a real user (xoxp) — default identity or a
     // named persona: own posts carry our user id and no bot_id, so they'd
@@ -2644,6 +2681,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
     const mentions = Array.from(text.matchAll(/<@([A-Z0-9]+)>/g)).map((m) => m[1]);
     const mentionsBot = mentions.includes(botId);
+    // A mention of ANOTHER registered app's bot is addressed to that app, which
+    // gets its own copy of the message: this app neither answers it nor reads
+    // it as a mention of a colleague (which would disengage the thread).
+    const selfBotUsers = (await getSelfBots(args)).userIds;
+    if (!mentionsBot && mentions.some((u) => u && u !== botId && selfBotUsers.has(u))) {
+      console.log(`[slack-rx] drop ch=${channelId} ts=${e.ts} — addressed to another registered app`);
+      metric.slackDropsTotal.inc({ reason: "other_app" });
+      return;
+    }
 
     const teamId: string | undefined = args.context?.teamId ?? e.team;
 
@@ -2654,7 +2700,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       : null;
     // A mention is "other" only when it targets neither the bot nor a known persona.
     const mentionsOther = mentions.some(
-      (u) => u && u !== botId && !registry.lookupByUserId(u),
+      (u) => u && u !== botId && !selfBotUsers.has(u) && !registry.lookupByUserId(u),
     );
 
     if (mentionsBot) {
@@ -2724,9 +2770,20 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // persona) row is checked first, mirroring the bot-first ordering the old
     // in-memory Set had, then named personas in registry order, then any other
     // session row for the thread.
+    // A thread already recorded under another registered app is continued by
+    // that app's own copy of this message; answering here too would hand the
+    // thread to whichever app's delivery won the dedup race.
+    const otherApp = (row: SessionRow | null | undefined): boolean => {
+      const own = args.context?.apiAppId;
+      if (!own || !row?.slack_app_id || row.slack_app_id === own) return false;
+      console.log(`[slack-rx] drop ch=${channelId} ts=${e.ts} — thread belongs to app ${row.slack_app_id}`);
+      metric.slackDropsTotal.inc({ reason: "other_app" });
+      return true;
+    };
     if (teamId) {
       const def = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: "default" });
       if (def?.engaged) {
+        if (otherApp(def)) return;
         return await handleMessage(args);
       }
       // Multi-persona: a plain reply continues whichever persona is engaged in this thread.
@@ -2734,6 +2791,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         for (const p of registry.list()) {
           const row = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: p.name });
           if (row?.engaged) {
+            if (otherApp(row)) return;
             return await handleMessage(args, { personaId: p.name });
           }
         }
@@ -2748,6 +2806,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         return;
       }
       if (any && any.engaged) {
+        if (otherApp(any)) return;
         // Engaged session outside the registry (e.g. persona removed from
         // config) — keep handling plain replies as that persona.
         const restoredPersonaId = any.persona_id !== "default" ? any.persona_id : undefined;
@@ -2757,6 +2816,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // transcript too (suppressed by the hook) so the session stays populated
       // for re-engage. No model run, no Slack feedback.
       if (any && any.engaged === 0) {
+        if (otherApp(any)) return;
         const disengagedPersonaId = any.persona_id !== "default" ? any.persona_id : undefined;
         console.log(
           `[slack-rx] record ch=${channelId} ts=${e.ts} user=${e.user} — disengaged thread, suppressed`,
