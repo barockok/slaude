@@ -5,7 +5,7 @@
  * two is the single transaction in applySync. Any failure in phase one applies
  * nothing. Messages name a variable, persona or revision, never a value.
  */
-import { parsePayload, resolvePlaceholders, PayloadError } from "./payload";
+import { parsePayload, resolvePlaceholders, unknownFieldPaths, PayloadError } from "./payload";
 import { extractSoulData } from "../../soul/extract";
 import {
   applySync, desiredPersonas, effectivePersonas, syncState, StaleRevisionError, type ApplyResult,
@@ -15,7 +15,7 @@ import { sameDesired, type DesiredPersona } from "../effective";
 export class SyncFailure extends Error {
   constructor(readonly status: 409 | 422 | 502, message: string) { super(message); }
 }
-export type SyncReport = ApplyResult & { revision: string; dryRun: boolean };
+export type SyncReport = ApplyResult & { revision: string; dryRun: boolean; ignoredFields: string[] };
 
 export async function runSync(
   tenant: string,
@@ -24,7 +24,13 @@ export async function runSync(
 ): Promise<SyncReport> {
   const extract = opts.extract ?? ((t: string) => extractSoulData(t, { strict: true }));
   let payload;
+  const ignoredFields = unknownFieldPaths(raw);
   try {
+    // Stage two (opt-in): a field this gateway does not know is an error, not
+    // a silent drop. Names only, never values.
+    if (ignoredFields.length && opts.env.SLAUDE_DEPLOY_STRICT === "1") {
+      throw new PayloadError(`unknown field(s) refused under SLAUDE_DEPLOY_STRICT: ${ignoredFields.join(", ")}`);
+    }
     payload = parsePayload(raw);
     if (payload.personas.length === 0 && !payload.allowEmpty) {
       throw new PayloadError("refusing an empty persona set; set allowEmpty: true to retire every persona");
@@ -80,11 +86,14 @@ export async function runSync(
     });
   }
 
+  if (ignoredFields.length) {
+    console.warn(`[persona-sync] ignored unknown payload fields tenant=${tenant}: ${ignoredFields.join(", ")}`);
+  }
   const meta = { revision: payload.revision, committedAt: Date.parse(payload.committedAt), by: opts.by };
 
   if (opts.dryRun) {
     const incoming = new Set(rows.map((r) => r.name));
-    const report: SyncReport = { created: [], updated: [], unchanged: [], tombstoned: [], overridesWiped: 0, revision: meta.revision, dryRun: true };
+    const report: SyncReport = { created: [], updated: [], unchanged: [], tombstoned: [], overridesWiped: 0, revision: meta.revision, dryRun: true, ignoredFields };
     // Same rule as applySync.
     for (const r of rows) {
       const prev = desired.get(r.name);
@@ -100,7 +109,7 @@ export async function runSync(
   }
 
   try {
-    return { ...(await applySync(tenant, rows, meta)), revision: meta.revision, dryRun: false };
+    return { ...(await applySync(tenant, rows, meta)), revision: meta.revision, dryRun: false, ignoredFields };
   } catch (e) {
     if (e instanceof StaleRevisionError) throw new SyncFailure(409, e.message);
     throw e;

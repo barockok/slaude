@@ -123,3 +123,45 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync", () => {
     expect(calls).toBe(0);
   });
 });
+
+// Refusals happen in phase one, before any database access: no Postgres needed.
+describe("runSync payload version and unknown fields", () => {
+  const strictEnv = { ...env, SLAUDE_DEPLOY_STRICT: "1" };
+  test("a newer payload version is a 422", async () => {
+    const e = await runSync(T, payload([], { version: 99 }), { dryRun: true, env, by: "ci", extract: okExtract }).catch((x) => x);
+    expect(e).toBeInstanceOf(SyncFailure);
+    expect(e.status).toBe(422);
+    expect(e.message).toMatch(/newer than this gateway supports/);
+  });
+  test("strict mode refuses an unknown field, naming it and never its value", async () => {
+    const e = await runSync(T, payload([{ ...ana, visibility: "leaky-value" }], { futureKnob: "leaky-value" }),
+      { dryRun: true, env: strictEnv, by: "ci", extract: okExtract }).catch((x) => x);
+    expect(e).toBeInstanceOf(SyncFailure);
+    expect(e.status).toBe(422);
+    expect(e.message).toContain("futureKnob");
+    expect(e.message).toContain("persona.ana.visibility");
+    expect(e.message).not.toContain("leaky-value");
+  });
+  test("strict mode is off unless the value is exactly 1", async () => {
+    // Not refused in phase one: it proceeds to the database (absent here), so any error is not the strict 422.
+    const e = await runSync(T, payload([], { futureKnob: 1 }), { dryRun: true, env: { ...env, SLAUDE_DEPLOY_STRICT: "0" }, by: "ci", extract: okExtract }).catch((x) => x);
+    expect(String(e?.message ?? "")).not.toContain("SLAUDE_DEPLOY_STRICT");
+  });
+});
+
+describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync stage one reporting", () => {
+  test("unknown fields are applied-around, reported, and warned by name only", async () => {
+    const warn = console.warn; const lines: string[] = [];
+    console.warn = (m: string) => { lines.push(String(m)); };
+    try {
+      const r = await runSync(T, payload([{ ...ana, visibility: "leaky-value" }], { futureKnob: "leaky-value" }),
+        { dryRun: false, env, by: "ci", extract: okExtract });
+      expect(r.ignoredFields).toEqual(["futureKnob", "persona.ana.visibility"]);
+    } finally { console.warn = warn; }
+    expect(lines.join("\n")).toContain("persona.ana.visibility");
+    expect(lines.join("\n")).not.toContain("leaky-value");
+  });
+  test("a known-field payload reports an empty list", async () => {
+    expect((await runSync(T, payload([ana]), { dryRun: true, env, by: "ci", extract: okExtract })).ignoredFields).toEqual([]);
+  });
+});

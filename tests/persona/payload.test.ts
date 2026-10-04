@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parsePayload, resolvePlaceholders, UnresolvedVarError, PayloadError } from "../../src/persona/sync/payload";
+import { SUPPORTED_PAYLOAD_VERSION, unknownFieldPaths, parsePayload, resolvePlaceholders, UnresolvedVarError, PayloadError } from "../../src/persona/sync/payload";
 
 const base = (personas: unknown[]) => ({ revision: "abc123", committedAt: "2026-10-01T10:00:00Z", personas });
 const ana = { name: "ana", slackUserId: "UTESTUSER1", soul: "You are Ana.", userToken: "${PERSONA_ANA_XOXP}" };
@@ -103,5 +103,31 @@ describe("resolvePlaceholders", () => {
     for (const v of ["PERSONA", "PERSONAX_A", "XPERSONA_A", "PERSONA_"]) {
       expect(() => resolvePlaceholders({ ...ana, userToken: `\${${v}}` }, { [v]: "t" })).toThrow(PayloadError);
     }
+  });
+});
+
+describe("payload version and unknown fields", () => {
+  test("an absent version is version 1; a supported one passes", () => {
+    expect(parsePayload(base([ana])).version).toBe(1);
+    expect(parsePayload({ ...base([ana]), version: SUPPORTED_PAYLOAD_VERSION }).version).toBe(SUPPORTED_PAYLOAD_VERSION);
+  });
+  test("a newer version is refused with a clear message", () => {
+    const err = (() => { try { parsePayload({ ...base([ana]), version: SUPPORTED_PAYLOAD_VERSION + 1 }); } catch (e) { return e as PayloadError; } })();
+    expect(err).toBeInstanceOf(PayloadError);
+    expect(err!.message).toMatch(/newer than this gateway supports/);
+  });
+  test("a non-integer or zero version is a schema error", () => {
+    for (const version of [0, 1.5, "1"]) expect(() => parsePayload({ ...base([ana]), version })).toThrow(PayloadError);
+  });
+  test("unknown keys are listed by path, names only, and stripped from the parse", () => {
+    const raw = { ...base([{ ...ana, visibility: "secret-value" }]), futureKnob: "secret-value" };
+    expect(unknownFieldPaths(raw)).toEqual(["futureKnob", "persona.ana.visibility"]);
+    expect(JSON.stringify(parsePayload(raw))).not.toContain("secret-value");
+  });
+  test("a known-field payload has no unknown fields", () => {
+    expect(unknownFieldPaths({ ...base([ana]), version: 1 })).toEqual([]);
+  });
+  test("a hostile key name is never echoed", () => {
+    expect(unknownFieldPaths({ ...base([ana]), "sk-abc def!": 1 })).toEqual(["<invalid-key>"]);
   });
 });
