@@ -72,9 +72,10 @@ The TTL is also now tunable: `SLAUDE_SESSION_LOCK_TTL_MS` and
 `SLAUDE_SESSION_LOCK_EXTEND_MS`, defaults unchanged at ten minutes and one
 minute. The TTL must stay at least three times the renewal cadence or the
 process refuses to start, since a late renewal would otherwise cost a live node
-its session mid-turn. The local cluster runs 45 s and 5 s, where a killed node's
+its session mid-turn. The local overlay (not the default, which is ten minutes) runs 45 s and 5 s, where a killed node's
 turn was measured taking over in **50 seconds** — the TTL is the bound, exactly
-as the mechanism predicts.
+as the mechanism predicts (below it sits BullMQ's own stall detection, roughly
+30 s, which a shorter TTL cannot beat).
 
 **Two probe bugs worth naming**, because both produced convincing false
 failures. Creating the probe's sessions with a placeholder model string made the

@@ -13,7 +13,7 @@ import { tryAcquire, release, heartbeat } from "../db/ingest-jobs";
 import { soulSystemBlock } from "../soul/loader";
 import { env } from "../config/env";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
-import { scrubChildEnv } from "../agent/child-env";
+import { scrubChildEnv, TOOLS_SURVIVING_EMPTY_SET } from "../agent/child-env";
 
 export type IngestResult = {
   ok: boolean;
@@ -85,6 +85,9 @@ export async function run(opts: IngestOptions): Promise<IngestResult> {
   }
 }
 
+/** Built-in tools the ingest child may use: files only. */
+const INGEST_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep"] as const;
+
 export async function defaultRunSubQuery(
   args: { kbDir: string; readme: string; rawFiles: string[] },
   _query = sdkQuery,
@@ -94,7 +97,7 @@ export async function defaultRunSubQuery(
     "\n\n<ingest-mode>",
     `You are running an ingest pass against the writable knowledge base mounted at ${args.kbDir}.`,
     "The KB's schema is below. Follow it. Read raw/ entries that are not yet reflected in wiki/, update wiki/ pages, append to wiki/log.md, and stop when done.",
-    "Do NOT call mcp__slaude_surface__* or mcp__slaude_slack__*. Do NOT call mcp__slaude_skills__write_skill or sync_manifest. Use Read/Write/Edit/Bash directly.",
+    "Do NOT call mcp__slaude_surface__* or mcp__slaude_slack__*. Do NOT call mcp__slaude_skills__write_skill or sync_manifest. Use Read/Write/Edit/Glob/Grep directly.",
     "</ingest-mode>",
     "\n\n<kb-schema source=\"README.md\">",
     args.readme,
@@ -110,7 +113,16 @@ export async function defaultRunSubQuery(
       systemPrompt,
       cwd: args.kbDir,
       model: env.model() || undefined,
-      permissionMode: "bypassPermissions",
+      // The raw files are untrusted input. File tools only (no shell, web or
+      // subagents), and acceptEdits instead of bypassPermissions: edits are
+      // auto-approved inside the KB dir (cwd) and anything that would need a
+      // prompt is denied, since this child has no one to ask. No MCP servers
+      // or settings-borne tools (WS-D D5.2).
+      tools: [...INGEST_TOOLS],
+      disallowedTools: [...TOOLS_SURVIVING_EMPTY_SET],
+      permissionMode: "acceptEdits",
+      strictMcpConfig: true,
+      settingSources: [],
       // The child runs Bash; hand it no deploy token, master key or PERSONA_*.
       env: scrubChildEnv({ ...process.env }),
     },

@@ -4,6 +4,7 @@ import { startLoopback } from "./loopback";
 import type { AuthServerMeta } from "./discovery";
 import type { OAuthServerConfig, OAuthTokens } from "./store";
 import type { FetchLike } from "./types";
+import { outboundFetch } from "../../net/outbound-policy";
 
 export interface BeginConnectOpts {
   serverName: string;
@@ -66,7 +67,7 @@ export interface ExchangeParts {
 export async function exchangeAuthCode(
   parts: ExchangeParts,
   code: string,
-  fetchImpl: FetchLike = fetch as any,
+  fetchImpl: FetchLike = outboundFetch,
 ): Promise<OAuthTokens> {
   const res = await fetchImpl(parts.tokenEndpoint, {
     method: "POST",
@@ -100,7 +101,7 @@ export async function exchangeAuthCode(
  *  and return an `exchange(code)` bound to the same verifier/redirectUri. No port,
  *  no listener — works in k8s where arbitrary runtime ports aren't reachable. */
 export async function prepareConnect(opts: PrepareConnectOpts): Promise<PreparedConnect> {
-  const fetchImpl = opts.fetchImpl ?? (fetch as any);
+  const fetchImpl = opts.fetchImpl ?? outboundFetch;
   if (!opts.meta.authorizationEndpoint || !opts.meta.tokenEndpoint) {
     throw new Error("authorization-server metadata missing authorization_endpoint/token_endpoint");
   }
@@ -140,7 +141,7 @@ export async function prepareConnect(opts: PrepareConnectOpts): Promise<Prepared
  *  redirect page). Structurally parallels `prepareConnect`, but the loopback must
  *  know the state and port before building the redirect_uri, so it stays separate. */
 export async function beginConnect(opts: BeginConnectOpts): Promise<ConnectHandle> {
-  const fetchImpl = opts.fetchImpl ?? (fetch as any);
+  const fetchImpl = opts.fetchImpl ?? outboundFetch;
   if (!opts.meta.authorizationEndpoint || !opts.meta.tokenEndpoint) {
     throw new Error("authorization-server metadata missing authorization_endpoint/token_endpoint");
   }

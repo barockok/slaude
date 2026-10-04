@@ -11,6 +11,7 @@
  */
 import { z } from "zod";
 import { redactSecrets } from "../../gateway/core/status-text";
+import { PERSONA_VAR_PREFIX, PERSONA_VAR_RE } from "../../secrets/persona-var";
 
 export const PERSONA_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
@@ -116,8 +117,8 @@ export class DisallowedVarError extends PayloadError {
   }
 }
 
-export const PERSONA_VAR_PREFIX = "PERSONA_";
-const ALLOWED_VAR_RE = /^PERSONA_[A-Z0-9_]+$/;
+export { PERSONA_VAR_PREFIX };
+const ALLOWED_VAR_RE = PERSONA_VAR_RE;
 const VAR_RE = /\$\{([A-Z0-9_]+)\}/g;
 const INVALID_VAR_RE = /\$\{[^}]*\}/;
 

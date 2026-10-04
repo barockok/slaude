@@ -8,8 +8,12 @@
 #
 # Environment (all optional):
 #   SLAUDE_LOCAL_PROFILE   minikube profile name             (default slaude-local)
-#   SLAUDE_LOCAL_CPUS      CPUs for the minikube node         (default 3)
-#   SLAUDE_LOCAL_MEMORY    memory in MB for the minikube node (default 3500)
+#   SLAUDE_LOCAL_CPUS      CPUs for the minikube node         (default 3, see sizing.env)
+#   SLAUDE_LOCAL_MEMORY    memory in MB for the minikube node (default 3500, see sizing.env)
+#   SLAUDE_LOCAL_MODEL     the cluster-wide default SLAUDE_MODEL, for a gateway whose
+#                          model names differ from the base ConfigMap's. Read from the
+#                          shell, else from SLAUDE_LOCAL_ENV_FILE. Written to model.env.
+#   SLAUDE_LOCAL_PORT      local port printed for the gateway forward (default 8080)
 #   SLAUDE_LOCAL_ENV_FILE  a dotenv file to read LLM provider credentials from.
 #                          Only ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL,
 #                          ANTHROPIC_AUTH_TOKEN and CLAUDE_CODE_OAUTH_TOKEN are
@@ -23,15 +27,21 @@
 # check; nodes simply cannot run a model turn.
 set -euo pipefail
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Node size defaults and the provisional Docker VM floor live in one file.
+# shellcheck source=/dev/null
+. "$HERE/sizing.env"
+# shellcheck source=/dev/null
+. "$HERE/lib.sh"
 PROFILE="${SLAUDE_LOCAL_PROFILE:-slaude-local}"
-CPUS="${SLAUDE_LOCAL_CPUS:-3}"
-MEMORY="${SLAUDE_LOCAL_MEMORY:-3500}"
+CPUS="${SLAUDE_LOCAL_CPUS:-$LOCAL_NODE_CPUS}"
+MEMORY="${SLAUDE_LOCAL_MEMORY:-$LOCAL_NODE_MEMORY_MB}"
 IMAGE="slaude:local"
 NS="slaude-scale"
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 SECRETS="$HERE/secrets.env"
 PROVIDER="$HERE/provider.env"
+MODEL_ENV="$HERE/model.env"
 PROVIDER_KEYS=(ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN)
 
 log() { printf '\n==> %s\n' "$*"; }
@@ -40,6 +50,13 @@ die() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 for bin in minikube kubectl openssl python3; do
   command -v "$bin" >/dev/null || die "$bin is required"
 done
+
+# The Docker VM that hosts the minikube node. Smaller than the provisional floor
+# still starts, and then fails under load in ways that look like product bugs.
+if command -v docker >/dev/null && vm="$(docker info --format '{{.NCPU}} {{.MemTotal}}' 2>/dev/null)" && [[ "$vm" =~ ^[0-9]+\ [0-9]+$ ]]; then
+  # shellcheck disable=SC2086 # two words, deliberately split
+  vm_size_warning $vm "$LOCAL_VM_FLOOR_CPUS" "$LOCAL_VM_FLOOR_MEMORY_MB" || true
+fi
 
 # --- 1. Cluster ------------------------------------------------------------
 if minikube -p "$PROFILE" status --format '{{.Host}}' 2>/dev/null | grep -q Running; then
@@ -137,6 +154,18 @@ else
   log "no provider credentials found — cluster will boot, but nodes cannot run model turns"
 fi
 
+# The cluster default model. It cannot ride in provider.env: pods load envFrom
+# with the Secret first and the ConfigMap second, and the later source wins, so
+# the base ConfigMap's SLAUDE_MODEL would override it. kustomization.yaml merges
+# this file into that ConfigMap instead. The file always exists; empty means
+# "keep the base default".
+model="$(resolve_local_model)"
+: >"$MODEL_ENV"
+if [[ -n "$model" ]]; then
+  printf 'SLAUDE_MODEL=%s\n' "$model" >"$MODEL_ENV"
+  log "cluster default model: $model"
+fi
+
 # --- 3. Image --------------------------------------------------------------
 # Refuse to build without disk headroom, BEFORE starting. The node's storage is
 # a volume on the Docker host's disk, shared with every other container there.
@@ -186,15 +215,7 @@ kubectl -n "$NS" rollout status deploy/dev-postgres --timeout=600s
 # after the claim, so deleting and recreating the claim reattaches the old
 # data. Without the database a gateway exits and is restarted in a loop.
 log "ensuring the brain database exists"
-for _ in $(seq 1 30); do
-  kubectl -n "$NS" exec deploy/dev-postgres -c postgres -- pg_isready -U slaude >/dev/null 2>&1 && break
-  sleep 2
-done
-psql_pg() { kubectl -n "$NS" exec deploy/dev-postgres -c postgres -- psql -U slaude -v ON_ERROR_STOP=1 "$@"; }
-if ! psql_pg -d postgres -tAc "select 1 from pg_database where datname = 'slaude_brain'" | grep -q 1; then
-  psql_pg -d postgres -c "CREATE DATABASE slaude_brain" >/dev/null
-fi
-psql_pg -d slaude_brain -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm; CREATE EXTENSION IF NOT EXISTS pgcrypto;" >/dev/null
+ensure_brain_database
 
 for d in dev-redis slaude-gateway slaude-node; do
   kubectl -n "$NS" rollout status "deploy/$d" --timeout=600s
@@ -206,6 +227,6 @@ cat <<EOF
 
 Next:
   $HERE/verify-ha.sh                         # prove failover behaviour
-  kubectl -n $NS port-forward svc/slaude-gateway 8080:8080
+  $HERE/forward.sh gateway                   # self-healing forward on localhost:${SLAUDE_LOCAL_PORT:-8080}
   $HERE/down.sh                              # delete the cluster
 EOF

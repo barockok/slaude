@@ -1,4 +1,5 @@
 import type { FetchLike } from "./types";
+import { outboundFetch } from "../../net/outbound-policy";
 
 export interface AuthServerMeta {
   authorizationEndpoint: string;
@@ -21,8 +22,10 @@ function wellKnownPrmUrls(serverUrl: string): string[] {
 }
 
 /** Resolve the OAuth authorization-server metadata for an HTTP MCP server.
- *  fetchImpl is injectable for tests; defaults to global fetch. */
-export async function discover(serverUrl: string, fetchImpl: FetchLike = fetch as any): Promise<AuthServerMeta> {
+ *  fetchImpl is injectable for tests; defaults to the outbound policy
+ *  (src/net/outbound-policy.ts): the server URL is configuration and every
+ *  later URL comes from the server's own metadata. */
+export async function discover(serverUrl: string, fetchImpl: FetchLike = outboundFetch): Promise<AuthServerMeta> {
   const probe = await fetchImpl(serverUrl);
   const wwwAuth = probe.headers.get("www-authenticate") || "";
   const m = wwwAuth.match(/resource_metadata="([^"]+)"/);

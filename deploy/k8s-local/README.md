@@ -15,7 +15,11 @@ deploy/k8s-local/down.sh        # delete the cluster (add --purge to drop secret
 ## Prerequisites
 
 - `minikube`, `kubectl`, `openssl` and `python3`.
-- A Docker runtime with about **3.5 GB** of free memory for the minikube node.
+- A Docker runtime whose VM has at least **4 CPUs and 6 GB** of memory. This
+  floor is **provisional, to be measured**: it is the size the cluster has run
+  in (a 3 CPU / 3.5 GB minikube node inside a 4 CPU / 6 GB VM, with roughly
+  100 MB left under verification load), not yet the smallest that passes
+  `verify-turns.sh` twice in a row. `up.sh` warns when the VM is smaller.
   On macOS with colima, `colima ssh -- free -m` shows what is actually
   available; other containers you run share that memory.
 - At least **5 GB** of free disk on the Docker host once the cluster is up.
@@ -28,6 +32,22 @@ Set `SLAUDE_LOCAL_OVERLAY` to apply a different overlay that builds on this one;
 
 Tune the node with `SLAUDE_LOCAL_CPUS` and `SLAUDE_LOCAL_MEMORY` (MB). The
 defaults are 3 CPUs and 3500 MB.
+
+The node size, the VM floor and the room the node keeps for itself are written
+down once, in [`sizing.env`](sizing.env). The per-pod requests and limits in
+`kustomization.yaml` are sized against it: the limits of two gateways, two
+nodes, Postgres and Redis sum to less than the node, minus a system reserve.
+`tests/deploy/local-sizing.test.ts` fails when the two disagree, so change
+them together.
+
+Two things about those numbers, both provisional until measured. First, a node
+pod holds bun plus one `claude` CLI child per warm session (about 150-200 MB
+each), so its limit is 896 Mi: 200 + 3 x 200 = 800 MB for three warm sessions.
+The sum is then 2 x 448 (gateway) + 2 x 896 (node) + 240 (Postgres) + 64 (Redis)
+= 2992 MB, against 3500 - 500 = 3000 MB. Second, Keycloak (`panel.sh`) and
+mock-mcp are optional add-ons left out of that sum: their limits (1 Gi, 256 Mi)
+would take it to about 4250 MB, so limits are overcommitted by design when they
+run, and what must fit is requests (2496 MB with both and three nodes).
 
 ## Model credentials
 
@@ -43,8 +63,24 @@ SLAUDE_LOCAL_ENV_FILE=./.env deploy/k8s-local/up.sh
 ```
 
 Only `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` and
-`CLAUDE_CODE_OAUTH_TOKEN` are read from that file. Values are never printed.
-Re-run `up.sh` to rotate them.
+`CLAUDE_CODE_OAUTH_TOKEN` are read from that file (plus `SLAUDE_LOCAL_MODEL`,
+below). Values are never printed. Re-run `up.sh` to rotate them.
+
+### Choosing the model
+
+The base ConfigMap sets `SLAUDE_MODEL` to an Anthropic model name, which is
+wrong for any other Anthropic-compatible gateway. Set the cluster default with
+`SLAUDE_LOCAL_MODEL`, from your shell or the same dotenv file:
+
+```sh
+SLAUDE_LOCAL_MODEL=provider/some-model deploy/k8s-local/up.sh
+```
+
+It is written to `model.env` (always created; empty keeps the base default) and
+merged into the `slaude-scale-config` ConfigMap. It cannot go in `provider.env`:
+pods load the Secret first and the ConfigMap second, and the later source wins,
+so the base value would override it. This is the cluster default; a persona
+that carries its own model (where supported) takes precedence.
 
 Generated files, both gitignored:
 
@@ -53,6 +89,7 @@ Generated files, both gitignored:
 | `secrets.env` | master key, node bearer, job-token secret, datastore URLs | created once, reused |
 | `deploy.env` | the `/deploy` pipeline token, gateway-only (nodes never receive it) | created once, reused |
 | `provider.env` | model provider credentials | rewritten every run |
+| `model.env` | the optional `SLAUDE_MODEL` default | rewritten every run |
 
 `secrets.env` is deliberately never regenerated. The master key encrypts the
 Slack app registry at rest, and a new key would orphan every row encrypted under
@@ -99,7 +136,64 @@ so the re-delivered turn waits for that lock's TTL before another node can run
 it. Production defaults to **10 minutes**; this overlay sets
 `SLAUDE_SESSION_LOCK_TTL_MS=45000` so the takeover happens in under a minute and
 the script stays quick. The run prints how long it actually took (50 s on a
-45 s TTL, last measured).
+45 s TTL, last measured). **45 s is this overlay's value, not the default**, and
+BullMQ's stall detection (30 s lock and 30 s check, untuned) must fire as well,
+so no takeover is faster than about 30 s whatever the TTL.
+
+Both verify scripts pin the node HPA for the run (`maxReplicas` set to
+`minReplicas`, restored by an `EXIT` trap; the original value is kept in a
+`slaude.dev/original-max-replicas` annotation, so a run killed before its trap
+cannot leave it pinned). Left alone the HPA scales to three nodes under turn
+load and holds there for ten minutes.
+
+`verify-turns.sh` prints every diagnostic (`!!` lines) to stdout **and** to a
+log file named on its first line (`VERIFY_TURNS_LOG` sets the path). A probe
+that fails or returns something that is not JSON says which probe and what it
+received, and a check it could not measure says so instead of reporting a wrong
+value.
+
+## Reaching the cluster from your machine
+
+```sh
+deploy/k8s-local/forward.sh gateway    # localhost:$SLAUDE_LOCAL_PORT (8080)
+deploy/k8s-local/forward.sh keycloak   # localhost:8180, after panel.sh
+deploy/k8s-local/forward.sh mock-mcp   # localhost:9000, after mock-mcp/mock-mcp.sh
+```
+
+A bare `kubectl port-forward svc/...` binds one pod and goes quiet when that
+pod is replaced; anything using it (a browser, a tunnel) just fails. `forward.sh`
+forwards to one named pod and, every few seconds, checks that its process is
+alive, that the pod is still a ready endpoint of the Service, and that the
+forwarded port answers; it rebinds when any of those fails. It refuses to start
+when the local port is already taken, because a second forward on a busy port
+can quietly bind another loopback address while the old listener keeps
+answering. Run one per terminal.
+
+`SLAUDE_LOCAL_PORT` moves the gateway port. The Keycloak (8180) and mock MCP
+(9000) ports are written into URLs the pods also use, so `panel.sh` and
+`mock-mcp.sh` refuse any other value rather than break the login redirect.
+
+### Putting a local tunnel in front of the gateway
+
+To receive real Slack events the gateway needs a public HTTPS name. Use a
+tunnel from a hostname you control (`slaude.example.com` below) to the local
+forward. What has gone wrong before:
+
+- **One process owns the forward.** The tunnel points at `localhost:8080`, and
+  that port is whatever holds it. Run `forward.sh gateway` and nothing else on
+  that port, so a rollout does not silently strand the tunnel on a dead pod.
+- **List the tunnel's connectors first.** A second connector for the same
+  tunnel can be running unnoticed on the machine (an old terminal, a service
+  started at login), and traffic is split between them, so half the requests
+  reach a stale forward. Before debugging anything else, list the tunnel's
+  connectors and stop all but the one you mean.
+- **A Slack Request URL fails silently.** When the path is down, the Events API
+  Request URL flips to "didn't respond" and stays that way after the path
+  heals. Press **Retry** in the Slack app's Event Subscriptions page once
+  `curl https://slaude.example.com/healthz` answers.
+- **Recycle the forward after any rollout.** `up.sh`, `panel.sh` and
+  `mock-mcp.sh` restart the gateway; `forward.sh` rebinds by itself, but a
+  hand-run `kubectl port-forward` does not.
 
 ## What it cannot prove
 
@@ -217,7 +311,8 @@ kubectl -n slaude-scale scale deploy dev-postgres --replicas=1
 | Ingress with TLS | none; the Service is kept |
 | KEDA queue-depth autoscaling | CPU HPA fallback, capped at three nodes |
 | Node drain 120 s, grace 150 s | drain 30 s, grace 45 s |
-| Production-sized requests | trimmed to fit a laptop |
+| Production-sized requests | trimmed to fit a laptop (see `sizing.env`) |
+| Kubernetes' default probe timing (1 s timeout, 3 failures) | 5 s timeout, 5 failures and a `startupProbe`, patched in this overlay only |
 
 Plain `kubectl apply -k` refuses this overlay, because it references files
 outside its own directory. `up.sh` renders it with the load restrictor relaxed:
