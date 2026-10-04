@@ -9,7 +9,7 @@ import { AgentManager } from "../../src/agent/manager";
 import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../src/persona/registry";
 import {
   bundleChildEnv, makeBundleModelResolver, makeBundleSoulResolver, makeNodeChildEnvResolver, makeTenantReloadHandler, nodeChildEnv,
-  PROVIDER_ENV_KEYS,
+  PROVIDER_ENV_KEYS, CHILD_ENV_KEEP, providerSelectingNames,
 } from "../../src/node/worker";
 import { NodeApiError } from "../../src/node/client";
 import { ChildEnvPatch } from "../../src/agent/child-env";
@@ -258,30 +258,55 @@ describe("nodeChildEnv", () => {
     expect(warns).toEqual([]);
   });
 
-  // R2-F3: every variable that selects or authenticates a provider.
-  const FULL_LIST = [
+  // R2-F3 / re-check F2: prefix families, so a provider switch the CLI adds
+  // later (Foundry, Mantle, a gateway mode) is removed too.
+  const ALWAYS = [
     "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
-    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_BEARER_TOKEN_BEDROCK", "AWS_PROFILE",
-    "ANTHROPIC_BEDROCK_BASE_URL", "GOOGLE_APPLICATION_CREDENTIALS", "ANTHROPIC_UNIX_SOCKET",
-    "ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL",
+    "GOOGLE_APPLICATION_CREDENTIALS",
   ];
-  const richNodeEnv = {
-    ...nodeEnv, ANTHROPIC_VERTEX_PROJECT_ID: "p", ANTHROPIC_VERTEX_BASE_URL: "https://v.example.com",
-    ANTHROPIC_DEFAULT_OPUS_MODEL: "m", ANTHROPIC_DEFAULT_HAIKU_MODEL: "m", PATH: "/bin", ANTHROPIC_DEFAULTS: "not-a-model-var",
+  const familyVars = {
+    ANTHROPIC_CUSTOM_HEADERS: "h", ANTHROPIC_MODEL: "m", ANTHROPIC_SMALL_FAST_MODEL: "m",
+    ANTHROPIC_VERTEX_PROJECT_ID: "p", ANTHROPIC_DEFAULT_OPUS_MODEL: "m", ANTHROPIC_UNIX_SOCKET: "/s",
+    ANTHROPIC_FOUNDRY_API_KEY: "k", ANTHROPIC_FOUNDRY_RESOURCE: "r", ANTHROPIC_BEDROCK_MANTLE_BASE_URL: "u",
+    ANTHROPIC_AWS_REGION: "r", ANTHROPIC_IDENTITY_TOKEN: "t", ANTHROPIC_IDENTITY_TOKEN_FILE: "/t",
+    CLAUDE_CODE_USE_BEDROCK: "1", CLAUDE_CODE_USE_VERTEX: "1", CLAUDE_CODE_USE_FOUNDRY: "1",
+    CLAUDE_CODE_USE_MANTLE: "1", CLAUDE_CODE_USE_ANTHROPIC_AWS: "1", CLAUDE_CODE_USE_GATEWAY: "1",
+    CLAUDE_CODE_OAUTH_REFRESH_TOKEN: "r", CLAUDE_CODE_API_KEY_HELPER_TTL_MS: "1",
+    CLAUDE_CODE_CLIENT_CERT: "/c", CLAUDE_CODE_CLIENT_KEY: "/k",
+    AWS_ACCESS_KEY_ID: "a", AWS_SECRET_ACCESS_KEY: "s", AWS_SESSION_TOKEN: "t", AWS_BEARER_TOKEN_BEDROCK: "b",
+    AWS_PROFILE: "p", AWS_REGION: "r",
   };
+  // What the CLI needs to run is never removed (CHILD_ENV_KEEP).
+  const keepVars = {
+    PATH: "/bin", HOME: "/home/x", CLAUDE_CONFIG_DIR: "/c", ENABLE_TOOL_SEARCH: "true", SLAUDE_AGENT_ID: "UANA",
+    TMPDIR: "/tmp", DISABLE_TELEMETRY: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS: "1000", NODE_EXTRA_CA_CERTS: "/ca", HTTPS_PROXY: "http://proxy.example.com",
+  };
+  const richNodeEnv = { ...nodeEnv, ...familyVars, ...keepVars };
 
-  test("fallback off: a patch that deletes every provider-selecting variable the bundle did not supply", () => {
+  test("fallback off: a patch that deletes every provider-selecting family the bundle did not supply", () => {
     const out = nodeChildEnv({ providerCreds: { apiKey: "k" }, slackUserId: "UANA", managed: true }, "ana",
       { ...opts(false), nodeEnv: richNodeEnv });
     expect(out).toBeInstanceOf(ChildEnvPatch);
     const p = out as ChildEnvPatch;
     expect(p.set).toEqual({ ANTHROPIC_API_KEY: "k", SLAUDE_AGENT_ID: "UANA" });
-    const expected = [...FULL_LIST, "ANTHROPIC_VERTEX_PROJECT_ID", "ANTHROPIC_VERTEX_BASE_URL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"];
-    expect([...p.unset].sort()).toEqual(expected.sort());
-    expect(p.unset).not.toContain("PATH");
-    expect(p.unset).not.toContain("ANTHROPIC_DEFAULTS");
+    for (const k of [...ALWAYS, ...Object.keys(familyVars)]) expect(p.unset).toContain(k);
+    for (const k of Object.keys(keepVars)) expect(p.unset).not.toContain(k);
     for (const k of PROVIDER_ENV_KEYS) expect(p.unset).toContain(k);
+  });
+
+  test("the keep list holds what the CLI needs to run, and no family matches it", () => {
+    for (const k of ["PATH", "HOME", "CLAUDE_CONFIG_DIR", "ENABLE_TOOL_SEARCH", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"]) {
+      expect(CHILD_ENV_KEEP).toContain(k);
+    }
+    expect(providerSelectingNames(keepVars).filter((k) => k in keepVars)).toEqual([]);
+  });
+
+  test("a declared provider with Foundry switched on at the node keeps neither the switch nor its key", () => {
+    const p = nodeChildEnv({ providerCreds: { apiKey: "k" }, slackUserId: null, managed: true, ownProvider: true }, "ana",
+      { ...opts(true), nodeEnv: { CLAUDE_CODE_USE_FOUNDRY: "1", ANTHROPIC_FOUNDRY_API_KEY: "node-foundry-key" } }) as ChildEnvPatch;
+    expect(p.unset).toContain("CLAUDE_CODE_USE_FOUNDRY");
+    expect(p.unset).toContain("ANTHROPIC_FOUNDRY_API_KEY");
   });
 
   // M-1: a persona that declares its own provider is never mixed with the node's.
