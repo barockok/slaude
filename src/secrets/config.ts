@@ -16,7 +16,10 @@
  *   SLAUDE_VAULT_K8S_TOKEN_PATH    service-account JWT path (default the in-pod path)
  *   SLAUDE_VAULT_ALLOW_INSECURE    1 = development: allow http:// and token auth
  *
- * Every name starts with SLAUDE_VAULT_, which the child-env scrub strips.
+ * Every name starts with SLAUDE_VAULT_. Today's child-env scrub (scrubChildEnv)
+ * strips a fixed set of names plus PERSONA_*, NOT these: the SLAUDE_VAULT_ and
+ * VAULT_ prefixes arrive with the gateway-only env list (separate change).
+ * Until then, keep these variables on the gateway only.
  */
 import { parseAllowedPrefixes, VaultConfigError, type AllowedPrefix } from "./allowlist";
 import { checkVaultPath } from "./ref";
