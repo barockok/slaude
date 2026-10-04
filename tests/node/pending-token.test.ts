@@ -17,6 +17,11 @@ import { GATE_DENIED_CODE, JOB_HEADER } from "../../src/gateway/api/auth";
 
 type Leg = Response | (() => Response);
 
+/** Most pending polls any test here needs; more means the loop did not stop. */
+const MAX_POLLS = 4;
+/** Per-test bound (ms): the shims retry a failed poll after 1 s. */
+const BOUND_MS = 10_000;
+
 /** A NodeClient over a stub gateway: records the job token of every pending
  *  poll and lets the test switch the session's live token between legs. */
 function stubGateway(opts: { openText: string; pendingLegs: Leg[]; onPoll?: (n: number) => void }) {
@@ -29,6 +34,9 @@ function stubGateway(opts: { openText: string; pendingLegs: Leg[]; onPoll?: (n: 
     }
     if (path.startsWith("/v1/pending/")) {
       pendingTokens.push(req.headers.get(JOB_HEADER));
+      // Bound: a poll loop that should have stopped is ended here, so the test
+      // fails on its poll count instead of hanging.
+      if (pendingTokens.length > MAX_POLLS) return Response.json({ status: "expired", payload: {}, resolvedBy: null });
       opts.onPoll?.(pendingTokens.length);
       const leg = opts.pendingLegs.shift() ?? new Response(null, { status: 204 });
       return typeof leg === "function" ? leg() : leg;
@@ -54,7 +62,7 @@ describe("pollPending", () => {
     const out = await pollPending(client, "P1", { jobToken: () => live, retryDelayMs: 1 });
     expect(out).toMatchObject({ status: "approved" });
     expect(pendingTokens).toEqual(["tok-A", "tok-B", "tok-B"]);
-  });
+  }, BOUND_MS);
 
   test("a 4xx refusal (gate 403, 401) stops at once; network errors and 5xx are retried", async () => {
     const gate = () => new Response(JSON.stringify({ error: "x", code: GATE_DENIED_CODE }), { status: 403 });
@@ -73,7 +81,7 @@ describe("pollPending", () => {
     });
     expect(await pollPending(client, "P1", { jobToken: () => "t", retryDelayMs: 1 })).toMatchObject({ status: "approved" });
     expect(pendingTokens).toHaveLength(2);
-  });
+  }, BOUND_MS);
 });
 
 async function callShim(cfg: any, toolName: string, args: Record<string, unknown>): Promise<any> {
@@ -102,7 +110,7 @@ describe("shims send the live job token on pending polls", () => {
     const res = await callShim(shims[surfaceContract.server], surfaceContract.tools.request_approval.name, { summary: "plan" });
     expect(res.content[0].text).toBe("approved by <@U1>");
     expect(pendingTokens).toEqual(["tok-A", "tok-B"]);
-  });
+  }, BOUND_MS);
 
   test("request_approval: a refused poll ends the call with an error, not a retry loop", async () => {
     const { client, pendingTokens } = stubGateway({
@@ -113,7 +121,7 @@ describe("shims send the live job token on pending polls", () => {
     const res = await callShim(shims[surfaceContract.server], surfaceContract.tools.request_approval.name, { summary: "plan" });
     expect(res.isError).toBe(true);
     expect(pendingTokens).toHaveLength(1);
-  });
+  }, BOUND_MS);
 
   test("permission resolver: token on every poll; a refreshed token on the next one; a refusal denies", async () => {
     let live = "tok-A";
@@ -134,5 +142,5 @@ describe("shims send the live job token on pending polls", () => {
     const d2: any = await makeNodePermissionResolver({ client: refused.client, tokenFor: () => "t" })("S1", "Bash", { command: "ls" }, ctx);
     expect(d2.behavior).toBe("deny");
     expect(refused.pendingTokens).toHaveLength(1);
-  });
+  }, BOUND_MS);
 });
