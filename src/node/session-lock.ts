@@ -14,7 +14,8 @@ type TokenSource = { tokenFor(sessionId: string): string | undefined };
 export function lockFromClaims(store: TokenSource, sessionId: string): OneOnOneLockRow | null | undefined {
   const token = store.tokenFor(sessionId);
   const c = token ? decodeClaims(token) : null;
-  if (!c || !("lock" in c)) return undefined;
+  // A token minted for another session says nothing about this one.
+  if (!c || c.session !== sessionId || !("lock" in c)) return undefined;
   if (!c.lock) return null;
   return {
     channel_id: c.channel ?? "",
