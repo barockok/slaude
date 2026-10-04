@@ -118,8 +118,13 @@ export async function handleTokenReissue(
     return json(409, { error: "token is still refreshable: use token-refresh" });
   }
   // The job's age runs from its ORIGINAL enqueue, never from a reissue.
-  const enqueuedAt = typeof job.data.enqueuedAt === "number" ? job.data.enqueuedAt : job.timestamp;
-  const bornMs = Math.min(enqueuedAt, job.timestamp || enqueuedAt);
+  // The earliest finite birth time on record; with none, the age is unknown
+  // and the job is treated as too old rather than minted a NaN expiry.
+  const births = [job.data.enqueuedAt, job.timestamp].filter(
+    (t): t is number => typeof t === "number" && Number.isFinite(t),
+  );
+  if (births.length === 0) return json(410, { error: "job is past its maximum age" });
+  const bornMs = Math.min(...births);
   const capSec = Math.floor((bornMs + env.jobMaxAgeSec() * 1000) / 1000);
   if (nowSec >= capSec) {
     return json(410, { error: "job is past its maximum age" });

@@ -193,6 +193,17 @@ describe("POST /v1/jobs/:id/token-reissue", () => {
     }
   });
 
+  test("a job with no usable birth time is 410, never a token with a NaN exp", async () => {
+    const tok = ancient();
+    for (const job of [
+      { data: { jobToken: tok }, timestamp: Number.NaN, state: "active" },
+      { data: { jobToken: tok, enqueuedAt: Number.NaN }, timestamp: Number.NaN, state: "active" },
+      { data: { jobToken: tok, enqueuedAt: Infinity }, timestamp: undefined as unknown as number, state: "active" },
+    ] as QueuedJob[]) {
+      expect((await handleTokenReissue(reissueReq(tok), "J1", verified(tok), lookupOf(job), NOW)).status).toBe(410);
+    }
+  });
+
   test("a token still inside the refresh window is refused with 409 (use token-refresh)", async () => {
     // Expired 30 minutes ago: inside REFRESH_GRACE_SEC (1h).
     const recent = mintJobToken({ ...claims(), label: "finance" }, { now: NOW - 45 * 60_000 });
