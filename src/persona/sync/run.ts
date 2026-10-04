@@ -6,13 +6,15 @@
  * nothing. Messages name a variable, persona or revision, never a value.
  */
 import {
-  parsePayload, resolvePlaceholders, unknownFieldPaths, capPaths, providerWarnings, MAX_REPORTED_FIELDS,
+  parsePayload, resolvePlaceholders, unknownFieldPaths, capPaths, providerWarnings, kbSourceWarnings, MAX_REPORTED_FIELDS,
   PROVIDER_FIELDS, SUPPORTED_PAYLOAD_VERSION, PayloadError, type SyncPayload,
 } from "./payload";
 import { extractSoulData } from "../../soul/extract";
 import {
-  applySync, desiredPersonas, effectivePersonas, providerColumnPresent, syncState, StaleRevisionError, type ApplyResult,
+  applySync, desiredPersonas, effectivePersonas, kbSourcesColumnPresent, providerColumnPresent, syncState, StaleRevisionError,
+  type ApplyResult,
 } from "../../db/personas";
+import { installedKbSourceIds } from "../../knowledge/persona-kb";
 import { sameDesired, type DesiredPersona } from "../effective";
 import { loadVaultConfig, parseRef, SecretResolutionError, type VaultConfig } from "../../secrets";
 import { isAllowed, requestPathFor } from "../../secrets/allowlist";
@@ -100,6 +102,8 @@ export async function runSync(
     liveLabels?: () => Promise<ReadonlySet<string>>;
     /** Default: loadVaultConfig(env). Null = no Vault on this gateway. */
     vault?: VaultConfig | null;
+    /** The installed KB source ids, for the unknown-kbSources warning. Default: $SLAUDE_HOME/knowledge. */
+    installedKbSources?: () => string[];
   },
 ): Promise<SyncReport> {
   const extract = opts.extract ?? ((t: string) => extractSoulData(t, { strict: true }));
@@ -150,7 +154,16 @@ export async function runSync(
     throw new SyncFailure(503,
       "the database schema predates this gateway (personas.provider_json is missing): apply migration 0014 before syncing personas");
   }
-  const warnings = providerWarnings(payload);
+  if (!(await kbSourcesColumnPresent())) {
+    throw new SyncFailure(503,
+      "the database schema predates this gateway (personas.kb_sources is missing): apply migration 0017 before syncing personas");
+  }
+  const warnings = [
+    ...providerWarnings(payload),
+    // An id that matches no installed KB is applied anyway: the installer and
+    // the sync land independently (WS-C §4.1.5).
+    ...kbSourceWarnings(payload, (opts.installedKbSources ?? installedKbSourceIds)()),
+  ];
 
   // Fail a stale payload before spending any model call. applySync's
   // transactional compare-and-set remains the authority; this is a fast path.
@@ -187,7 +200,7 @@ export async function runSync(
     }
     rows.push({
       name: p.name, slackUserId: p.slackUserId ?? null, userToken: p.userToken ?? null, model: p.model ?? null,
-      soulMd: p.soul, soulJson, mcp: p.mcp ?? null, provider: p.provider ?? null, runsOn: p.runsOn ?? null,
+      soulMd: p.soul, soulJson, mcp: p.mcp ?? null, provider: p.provider ?? null, runsOn: p.runsOn ?? null, kbSources: p.kbSources ?? null,
       origin: "git", tombstonedAt: null,
     });
   }

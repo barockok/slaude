@@ -85,3 +85,4 @@ Status values: `todo`, `in progress`, `in review`, `accepted`, `blocked`.
 - Gateway-served memory: public and DM threads get no `<memory-context>` on nodes by design; a persistent memory failure is logged once.
 - The MCP bridge keeps the node-side MCP credential seeding in place until the bridge is proven; a later cleanup removes it.
 - Cross-replica de-duplication of failure messages is per process (U2); a Redis-backed guard is a possible later step.
+- **Cleanup after the MCP bridge is proven in a cluster (U12, WS-C §4.2.11):** remove the node-side MCP credential seeding (`src/node/credentials.ts`, its wiring in `src/node/worker.ts`), the `needs-auth` recovery, and the `GET /v1/tenants/:t/mcp-credentials` and `…/refresh` endpoints. Left in place by U12 on purpose. The bridge's connect-card rate limit is also per process (one card per session and server per 10 minutes per replica).

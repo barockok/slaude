@@ -7,6 +7,7 @@ import {
   matchSkillInvocation,
   buildSkillInvocation,
 } from "../src/skills/loader";
+import { skillOps } from "../src/skills/mcp-tools";
 
 beforeEach(() => {
   ensureHome();
@@ -63,9 +64,38 @@ describe("discoverSkills", () => {
   });
 });
 
+// WS-C §4.3.2: provenance while merging, with no change in what is merged.
+describe("discoverSkills provenance", () => {
+  const overlay = join(paths.personas, "prov-ana", "skills");
+  const writeOverlay = (slug: string, body: string) => {
+    mkdirSync(join(overlay, slug), { recursive: true });
+    writeFileSync(join(overlay, slug, "SKILL.md"), body);
+  };
+  beforeEach(() => rmSync(join(paths.personas, "prov-ana"), { recursive: true, force: true }));
+
+  test("global skills are 'global'; the default persona sees only those", () => {
+    writeSkill("release", "body");
+    expect(discoverSkills().map((s) => [s.slug, s.source])).toEqual([["release", "global"]]);
+    expect(discoverSkills("default").map((s) => [s.slug, s.source])).toEqual([["release", "global"]]);
+  });
+
+  test("a persona's own skill is 'persona', and shadows a global of the same slug", () => {
+    writeSkill("release", "global body");
+    writeSkill("triage", "global triage");
+    writeOverlay("release", "persona body");
+    writeOverlay("budget", "persona budget");
+    const by = new Map(discoverSkills("prov-ana").map((s) => [s.slug, s]));
+    expect(by.get("triage")?.source).toBe("global");
+    expect(by.get("release")?.source).toBe("persona");
+    expect(by.get("release")?.body).toBe("persona body");
+    expect(by.get("budget")?.source).toBe("persona");
+    expect(skillOps.list("prov-ana").find((s) => s.slug === "release")?.source).toBe("persona");
+  });
+});
+
 describe("matchSkillInvocation", () => {
   const skills = [
-    { slug: "rel", name: "rel", description: "", body: "", dir: "/x" },
+    { slug: "rel", name: "rel", description: "", body: "", dir: "/x", source: "global" as const },
   ];
   test("matches /slug", () => {
     expect(matchSkillInvocation("/rel arg1 arg2", skills)).toEqual({
@@ -89,6 +119,7 @@ describe("buildSkillInvocation", () => {
       description: "",
       body: "session=${SLAUDE_SESSION_ID} dir=${SLAUDE_SKILL_DIR} args=${SLAUDE_SKILL_ARGS}",
       dir: "/d",
+      source: "global" as const,
     };
     const out = buildSkillInvocation(skill, "abc", "S1");
     expect(out).toContain("session=S1");
@@ -98,7 +129,7 @@ describe("buildSkillInvocation", () => {
     expect(out).toContain("<skill-args>");
   });
   test("no args → no skill-args block", () => {
-    const skill = { slug: "x", name: "x", description: "", body: "b", dir: "/d" };
+    const skill = { slug: "x", name: "x", description: "", body: "b", dir: "/d", source: "global" as const };
     const out = buildSkillInvocation(skill, "", "S");
     expect(out).not.toContain("<skill-args>");
   });

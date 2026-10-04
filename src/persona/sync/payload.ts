@@ -32,24 +32,34 @@ export class UnresolvedVarError extends PayloadError {
  * might change what a persona means.
  *
  *   1  the personas-as-code fields
- *   2  adds the fields in V2_PERSONA_FIELDS: `provider` (WS-A) and `runsOn`
- *      (node labels spec §4.5). `render` writes 2 only when some persona sets
- *      one of them, so a gateway that predates them refuses such a payload
- *      instead of stripping the field (leaving the persona on node credentials,
- *      or on `default`); any other payload stays 1 and deploys to either.
+ *   2  adds `provider` (WS-A) and `runsOn` (node labels spec §4.5)
+ *   3  adds `kbSources` (WS-C §4.1)
+ *
+ * Each persona field newer than version 1 is one entry in PERSONA_FIELD_VERSION.
+ * `render` writes the highest version any field a persona sets needs, so a
+ * gateway that predates a field refuses the payload instead of dropping it
+ * (which would leave a persona on node credentials, on `default`, or widen it
+ * to every KB); a payload that sets none stays 1 and deploys to any gateway.
  */
-export const SUPPORTED_PAYLOAD_VERSION = 2;
+export const PERSONA_FIELD_VERSION = { provider: 2, runsOn: 2, kbSources: 3 } as const;
+export const SUPPORTED_PAYLOAD_VERSION = 3;
 
-/**
- * Persona fields a version-1 gateway does not know. Adding a version-2 field
- * is one entry here.
- */
-export const V2_PERSONA_FIELDS = ["provider", "runsOn"] as const;
-
-/** The version a payload needs: 2 when any persona sets any version-2 field, else 1. */
+/** The version a payload needs: the highest of any field a persona sets, 1 when none. */
 export function payloadVersionFor(personas: ReadonlyArray<object>): number {
-  return personas.some((p) => V2_PERSONA_FIELDS.some((f) => (p as Record<string, unknown>)[f] !== undefined)) ? 2 : 1;
+  let v = 1;
+  for (const p of personas) {
+    for (const [field, need] of Object.entries(PERSONA_FIELD_VERSION)) {
+      if ((p as Record<string, unknown>)[field] !== undefined) v = Math.max(v, need);
+    }
+  }
+  return v;
 }
+
+/** A knowledge-base source id as kbSourceId() builds it from an installed KB's
+ *  label: `kb-` and at most 29 more characters (gbrain ids are ≤ 32). */
+export const KB_SOURCE_ID_RE = /^kb-[a-z0-9][a-z0-9-]{0,28}$/;
+/** Most ids one persona may list. */
+export const KB_SOURCES_MAX = 64;
 
 const personaSpec = z.object({
   name: z.string().regex(PERSONA_NAME_RE, "persona name must match ^[a-z0-9][a-z0-9-]{0,62}$"),
@@ -63,6 +73,9 @@ const personaSpec = z.object({
   // Shape only here; parseProvider below checks every key and value with
   // messages that never echo a value (zod's would echo an unknown key).
   provider: z.record(z.unknown()).optional(),
+  // The KB sources this persona may read; absent = every installed KB. Each id
+  // is checked by parseKbSources below. Desired layer only, not overridable.
+  kbSources: z.array(z.unknown()).optional(),
 });
 
 /**
@@ -75,7 +88,47 @@ export const PROVIDER_SECRET_FIELDS = ["apiKey", "authToken", "oauthToken"] as c
 export const PROVIDER_FIELDS = [...PROVIDER_SECRET_FIELDS, "baseUrl"] as const;
 export type ProviderField = (typeof PROVIDER_FIELDS)[number];
 
-export type PersonaSpec = Omit<z.infer<typeof personaSpec>, "provider"> & { provider?: PersonaProvider };
+export type PersonaSpec = Omit<z.infer<typeof personaSpec>, "provider" | "kbSources"> & {
+  provider?: PersonaProvider;
+  kbSources?: string[];
+};
+
+/**
+ * Validate one persona's `kbSources` (WS-C §4.1.5): each id must have the
+ * `kb-<label>` shape, once. Whether it matches an INSTALLED KB is a warning at
+ * sync (kbSourceWarnings), since the installer and the sync land independently.
+ * Errors name the persona and the position, never the value.
+ */
+export function parseKbSources(persona: string, raw: unknown[] | undefined): string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (raw.length > KB_SOURCES_MAX) throw new PayloadError(`persona '${persona}': kbSources lists ${raw.length} ids; at most ${KB_SOURCES_MAX}`);
+  const seen = new Set<string>();
+  raw.forEach((v, i) => {
+    if (typeof v !== "string" || !KB_SOURCE_ID_RE.test(v)) {
+      throw new PayloadError(`persona '${persona}': kbSources[${i}] is not a knowledge-base source id (kb-<label>, ${KB_SOURCE_ID_RE.source})`);
+    }
+    if (seen.has(v)) throw new PayloadError(`persona '${persona}': kbSources[${i}] repeats an earlier id`);
+    seen.add(v);
+  });
+  return raw as string[];
+}
+
+/** Sync warnings for kbSources ids that match no installed KB (names the persona and id). */
+export function kbSourceWarnings(payload: Pick<SyncPayload, "personas">, installed: readonly string[]): string[] {
+  // `installed` holds one id per installed KB: two labels that normalise to
+  // the same id appear twice, and a persona listing it reads both.
+  const count = new Map<string, number>();
+  for (const id of installed) count.set(id, (count.get(id) ?? 0) + 1);
+  const out: string[] = [];
+  for (const p of payload.personas) {
+    for (const id of p.kbSources ?? []) {
+      const n = count.get(id) ?? 0;
+      if (n === 0) out.push(`persona '${p.name}' lists ${id} in kbSources, but no such knowledge base is installed; it reads nothing from it until one is`);
+      else if (n > 1) out.push(`persona '${p.name}' lists ${id} in kbSources, which more than one installed knowledge base maps to (their labels normalise to the same id); it reads all of them`);
+    }
+  }
+  return out;
+}
 
 const payloadSchema = z.object({
   version: z.number().int().min(1).default(1),
@@ -187,20 +240,27 @@ export function unknownFieldPaths(raw: unknown): string[] {
   return out;
 }
 
-export function parsePayload(raw: unknown, opts: { internalHosts?: readonly string[] } = {}): SyncPayload {
+/** `supportedVersion` (default SUPPORTED_PAYLOAD_VERSION) lets a test stand in
+ *  for an older gateway: the refusal rule is the same at every version. */
+export function parsePayload(
+  raw: unknown,
+  opts: { internalHosts?: readonly string[]; supportedVersion?: number } = {},
+): SyncPayload {
+  const supported = opts.supportedVersion ?? SUPPORTED_PAYLOAD_VERSION;
   const v = raw && typeof raw === "object" ? (raw as { version?: unknown }).version : undefined;
-  if (typeof v === "number" && Number.isInteger(v) && v > SUPPORTED_PAYLOAD_VERSION) {
+  if (typeof v === "number" && Number.isInteger(v) && v > supported) {
     throw new PayloadError(
-      `payload version ${v} is newer than this gateway supports (${SUPPORTED_PAYLOAD_VERSION}); upgrade the gateway before deploying it`,
+      `payload version ${v} is newer than this gateway supports (${supported}); upgrade the gateway before deploying it`,
     );
   }
   const r = payloadSchema.safeParse(raw);
   if (!r.success) throw new PayloadError(r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
   const p: SyncPayload = {
     ...r.data,
-    personas: r.data.personas.map(({ provider, ...rest }) => {
+    personas: r.data.personas.map(({ provider, kbSources, ...rest }) => {
       const parsed = parseProvider(rest.name, provider, opts.internalHosts ?? internalHostsFrom(process.env));
-      return parsed ? { ...rest, provider: parsed } : rest;
+      const kb = parseKbSources(rest.name, kbSources);
+      return { ...rest, ...(parsed ? { provider: parsed } : {}), ...(kb ? { kbSources: kb } : {}) };
     }),
   };
   const names = new Set<string>();

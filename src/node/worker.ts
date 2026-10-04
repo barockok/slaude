@@ -40,6 +40,9 @@ import { makeAuthRecovery, makeSessionSeeder } from "./credentials";
 import { nodeConfigRoot, sessionConfigDir, existingSessionConfigDir } from "../agent/config-root";
 import { RestSessionStore } from "./session-store";
 import { buildShimServers } from "./shims";
+import { buildBridgeServers } from "./bridge";
+import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
+import { makeNodeMemoryProvider } from "./memory";
 import { makeNodePermissionResolver } from "./shims/permission";
 import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
@@ -364,6 +367,24 @@ async function sessionBundle(deps: BundleResolverDeps, sessionId: string, person
   return deps.client.getRuntime(tenant, asked, token);
 }
 
+/** The bridged MCP server names in the session's runtime bundle (ETag-cached:
+ *  the same fetch the soul resolver makes). An older gateway sends none; a
+ *  failed fetch mounts none, and the boot's own bundle fetch reports it. */
+export function makeBridgedNamesResolver(deps: BundleResolverDeps): (sessionId: string) => Promise<string[]> {
+  return async (sessionId) => {
+    const tenant = deps.tenantFor(sessionId);
+    const token = deps.tokenFor(sessionId);
+    if (!tenant || !token) return [];
+    try {
+      const bundle = await deps.client.getRuntime(tenant, deps.personaFor(sessionId) ?? "default", token);
+      const names = (bundle as { mcpServers?: unknown }).mcpServers;
+      return Array.isArray(names) ? names.filter((n): n is string => typeof n === "string" && n.length > 0) : [];
+    } catch {
+      return [];
+    }
+  };
+}
+
 export function makeBundleSoulResolver(deps: BundleResolverDeps): (sessionId: string, persona: string | undefined) => Promise<{ soulMd: string; soulJson: unknown }> {
   return async (sessionId, persona) => {
     const bundle = await sessionBundle(deps, sessionId, persona);
@@ -514,18 +535,44 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   };
 
   agent.setSessionStore(store);
+  // Episodic memory runs on the gateway, scoped by the job token (a node has
+  // no database or brain); a failure only costs the turn its memory.
+  agent.setMemoryProvider(makeNodeMemoryProvider({ client, tokenFor: (id) => store.tokenFor(id) }));
   agent.setPermissionResolver(makeNodePermissionResolver({ client, tokenFor: (id) => store.tokenFor(id) }));
-  agent.setMcpResolver((sessionId) => ({
-    ...buildShimServers(sessionId, {
+  /** Sessions the gateway's label gate refused on a bridged MCP call. Marked
+   *  only for now: the worker's GateDenied handling (U10b) consumes it. */
+  const gateDenied = new Set<string>();
+  agent.setMcpResolver(async (sessionId) => {
+    const local: Record<string, McpServerConfig> = {
+      ...buildShimServers(sessionId, {
+        client,
+        tokenFor: (id) => store.tokenFor(id),
+        signalFor: (id) => turnAborts.get(id)?.signal,
+      }),
+      // Token budget stays node-local (spec §3): the live Query is here.
+      [SESSION_MCP_NAME]: createSessionMcp({ getSnapshot: () => agent.getTokenSnapshot(sessionId) }),
+    };
+    // The persona's remote MCP servers, through the gateway (WS-C §4.2): names
+    // from the runtime bundle, tool lists fetched once here at boot.
+    const bridged = await buildBridgeServers(sessionId, await bridgedNames(sessionId), {
       client,
       tokenFor: (id) => store.tokenFor(id),
-      signalFor: (id) => turnAborts.get(id)?.signal,
-    }),
-    // Token budget stays node-local (spec §3): the live Query is here.
-    [SESSION_MCP_NAME]: createSessionMcp({ getSnapshot: () => agent.getTokenSnapshot(sessionId) }),
-  }));
+      onGateDenied: (id) => {
+        gateDenied.add(id);
+        console.warn(`[node] gateway refused this node for session=${id} (label gate) on a bridged MCP call`);
+      },
+    }, new Set(Object.keys(local)));
+    return { ...bridged, ...local };
+  });
+  const bridgedNames = makeBridgedNamesResolver({
+    client,
+    tenantFor: (id) => tenants.get(id),
+    tokenFor: (id) => store.tokenFor(id),
+    personaFor: (id) => personas.get(id),
+  });
   // The manifest's stdio servers for the persona in the job token's claims
-  // (never the payload's personaId); merged before the resolver above.
+  // (never the payload's personaId); merged before the resolver above, so a
+  // bridged or shim server wins a name collision against the manifest.
   if (manifest) {
     agent.setLocalMcpResolver(
       makeNodeLocalMcpResolver({ manifest, client, tenantFor: (id) => tenants.get(id), tokenFor: (id) => store.tokenFor(id) }),

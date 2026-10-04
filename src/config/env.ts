@@ -29,6 +29,15 @@ function opt(name: string, fallback = ""): string {
   return process.env[name] ?? fallback;
 }
 
+/** A positive integer variable; unset or empty means the default. */
+function positiveInt(name: string, fallback: number): number {
+  const raw = (process.env[name] ?? "").trim();
+  if (!raw) return fallback;
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n < 1) throw new Error(`${name} must be a positive integer (got '${raw}')`);
+  return n;
+}
+
 /** Parse a duration: a bare number of seconds, or a number with an `s`, `m`,
  *  `h` or `d` suffix. Returns null for anything else or a non-positive value. */
 export function parseDurationSec(raw: string): number | null {
@@ -48,6 +57,32 @@ export function jobAgeEnvViolations(e: Record<string, string | undefined>): stri
     if (raw && parseDurationSec(raw) === null) {
       out.push(`${name} must be a positive number of seconds or a duration like 6h (got '${raw}')`);
     }
+  }
+  return out;
+}
+
+/** Boot check for the MCP bridge's variables (gateway and mono roles): each set
+ *  value must parse, so a typo stops the boot naming the variable instead of
+ *  failing every bridged call. */
+export function mcpBridgeEnvViolations(e: Record<string, string | undefined>): string[] {
+  const out: string[] = [];
+  for (const name of [
+    "SLAUDE_MCP_BRIDGE_TIMEOUT_MS",
+    "SLAUDE_MCP_BRIDGE_OWNER_CONCURRENCY",
+    "SLAUDE_MCP_BRIDGE_SESSION_CONCURRENCY",
+    "SLAUDE_MCP_BRIDGE_IDLE_MS",
+    "SLAUDE_MCP_BRIDGE_MAX_REQUEST_BYTES",
+    "SLAUDE_MCP_BRIDGE_MAX_RESULT_BYTES",
+    "SLAUDE_MCP_BRIDGE_MAX_LIST_BYTES",
+    "SLAUDE_MCP_BRIDGE_MAX_TOOLS",
+  ]) {
+    const raw = (e[name] ?? "").trim();
+    if (raw && !(Number.isSafeInteger(Number(raw)) && Number(raw) >= 1)) out.push(`${name} must be a positive integer (got '${raw}')`);
+  }
+  const flag = (e.SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG ?? "").trim();
+  if (flag !== "" && flag !== "0" && flag !== "1") out.push(`SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG must be 0 or 1 (got '${flag}')`);
+  for (const n of (e.SLAUDE_MCP_BRIDGE_ENV_ALLOW ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
+    if (!/^[A-Z0-9_]+$/.test(n)) out.push(`SLAUDE_MCP_BRIDGE_ENV_ALLOW entries must be variable names (A-Z, 0-9, _): '${n}'`);
   }
   return out;
 }
@@ -328,6 +363,22 @@ export const env = {
       throw new Error(`SLAUDE_PROVIDER_ENV_FALLBACK must be 0 or 1 (got '${raw}')`);
     }
     return raw === "1";
+  },
+  /**
+   * The MCP bridge's limits (WS-C §4.2.8), read per call. The timeout is the
+   * ceiling for one upstream call and must stay shorter than any ingress
+   * timeout in front of the gateway; a server's own `timeout` can only lower
+   * it. A malformed value is a configuration error, never a silent default.
+   */
+  mcpBridge: {
+    timeoutMs: (): number => positiveInt("SLAUDE_MCP_BRIDGE_TIMEOUT_MS", 50_000),
+    ownerConcurrency: (): number => positiveInt("SLAUDE_MCP_BRIDGE_OWNER_CONCURRENCY", 8),
+    maxRequestBytes: (): number => positiveInt("SLAUDE_MCP_BRIDGE_MAX_REQUEST_BYTES", 1024 * 1024),
+    maxResultBytes: (): number => positiveInt("SLAUDE_MCP_BRIDGE_MAX_RESULT_BYTES", 1024 * 1024),
+    sessionConcurrency: (): number => positiveInt("SLAUDE_MCP_BRIDGE_SESSION_CONCURRENCY", 4),
+    idleMs: (): number => positiveInt("SLAUDE_MCP_BRIDGE_IDLE_MS", 5 * 60_000),
+    maxListBytes: (): number => positiveInt("SLAUDE_MCP_BRIDGE_MAX_LIST_BYTES", 1024 * 1024),
+    maxTools: (): number => positiveInt("SLAUDE_MCP_BRIDGE_MAX_TOOLS", 500),
   },
   /** BullMQ worker concurrency per node process (spec §6). Default 8. */
   nodeConcurrency: (): number => {

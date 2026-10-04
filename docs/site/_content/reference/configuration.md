@@ -467,6 +467,25 @@ Before this policy, OAuth fetches used the plain `fetch`. Now, by default:
 
 **Recovery:** list the affected hosts in `SLAUDE_OUTBOUND_INTERNAL_HOSTS` and restart the gateway. Stored credentials are not deleted. A refused refresh is reported as a transient failure, not as a revoked grant, so connections recover once the host is listed and nobody has to reconnect.
 
+The [MCP bridge](../deploy/mcp-bridge.md) sends every request to a persona's remote MCP servers through the same policy, pinned to each server's configured origin. Its per-request timeout and response cap come from the `SLAUDE_MCP_BRIDGE_*` variables below instead of the 10 s / 1 MiB defaults.
+
+### MCP bridge <a id="mcp-bridge"></a>
+
+Gateway-side limits of the [MCP bridge](../deploy/mcp-bridge.md) (gateway role only; read per call). A value that is not a positive integer is refused.
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG` | No | `0` | `1` also bridges servers defined in FILES under `$SLAUDE_HOME` (the global `.mcp.json`, `personas/<name>/mcp.json`). Off by default: that directory is writable by agent turns, so only the managed persona's configuration (stored encrypted in the database) is bridged. Anything but `0`/`1` is refused. |
+| `SLAUDE_MCP_BRIDGE_ENV_ALLOW` | No | `""` | With the file opt-in, the comma-separated variable names a file's `${VAR}` placeholders may expand. Every other placeholder stays as written (its name is logged once). Gateway-only variables are never expanded. |
+| `SLAUDE_MCP_BRIDGE_TIMEOUT_MS` | No | `50000` | One deadline per bridged call, in milliseconds, covering the wait for a slot, opening the session, a refresh and its retry. Keep it shorter than any ingress or proxy timeout in front of the gateway. A server's own `timeout` in its configuration can only lower it. |
+| `SLAUDE_MCP_BRIDGE_SESSION_CONCURRENCY` | No | `4` | Upstream calls in flight at once for one thread's session on one server. |
+| `SLAUDE_MCP_BRIDGE_OWNER_CONCURRENCY` | No | `8` | Upstream calls in flight at once for one identity (one persona's agent, or one person) on one server. Further calls wait for a slot within the deadline. |
+| `SLAUDE_MCP_BRIDGE_IDLE_MS` | No | `300000` | A pooled upstream session unused this long is closed and reopened on the next call. |
+| `SLAUDE_MCP_BRIDGE_MAX_REQUEST_BYTES` | No | `1048576` | Largest body a node may send for one bridged call; larger is refused with `413`. |
+| `SLAUDE_MCP_BRIDGE_MAX_RESULT_BYTES` | No | `1048576` | Largest tool result returned to the agent. Above it the text is kept up to the limit and a `[result truncated by the MCP bridge: …]` line is appended; images and structured content are dropped. |
+| `SLAUDE_MCP_BRIDGE_MAX_TOOLS` | No | `500` | Most tools listed for one bridged server. |
+| `SLAUDE_MCP_BRIDGE_MAX_LIST_BYTES` | No | `1048576` | Most bytes of tool definitions listed for one bridged server. Over either list cap paging stops and a `[tool list truncated by the MCP bridge: …]` notice is added to the server's instructions. |
+
 ### Skills repo & evolution
 
 | Name | Required | Default | Description |
