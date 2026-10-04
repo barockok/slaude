@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { PayloadError } from "../../src/persona/sync/payload";
+import { PERSONA_VAR_RE } from "../../src/secrets/persona-var";
 import { canonicalRef, parseRef, SecretRefError } from "../../src/secrets/ref";
+
+describe("one PERSONA_ name rule", () => {
+  test("the shared regex accepts PERSONA_X and refuses everything else", () => {
+    expect(PERSONA_VAR_RE.test("PERSONA_X_1")).toBe(true);
+    for (const n of ["PERSONA_", "persona_x", "SLAUDE_MASTER_KEY", "PERSONA_x", "XPERSONA_A"]) {
+      expect(PERSONA_VAR_RE.test(n)).toBe(false);
+    }
+  });
+});
 
 describe("parseRef — valid references", () => {
   test("vault ref with a single-segment mount", () => {

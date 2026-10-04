@@ -20,7 +20,8 @@
  * Errors are PayloadErrors (422) so sync can surface them as-is. They name the
  * caller's label (persona and field) and never echo the input.
  */
-import { PayloadError, PERSONA_VAR_PREFIX } from "../persona/sync/payload";
+import { PayloadError } from "../persona/sync/payload";
+import { PERSONA_VAR_PREFIX, PERSONA_VAR_RE } from "./persona-var";
 
 export type VaultRef = { scheme: "vault"; path: string; field: string };
 export type EnvRef = { scheme: "env"; name: string };
@@ -29,7 +30,6 @@ export type SecretRef = VaultRef | EnvRef;
 export class SecretRefError extends PayloadError {}
 
 const SEGMENT_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
-const ENV_NAME_RE = /^PERSONA_[A-Z0-9_]+$/;
 const MAX_REF_LENGTH = 1024;
 
 export function canonicalRef(ref: SecretRef): string {
@@ -68,7 +68,7 @@ export function parseRef(input: string, label?: string): SecretRef {
 
   if (input.startsWith("env://")) {
     const name = input.slice("env://".length);
-    if (!ENV_NAME_RE.test(name)) {
+    if (!PERSONA_VAR_RE.test(name)) {
       fail(`env:// names must start with ${PERSONA_VAR_PREFIX} and contain only A-Z, 0-9 and _`);
     }
     return { scheme: "env", name };

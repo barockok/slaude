@@ -4,13 +4,12 @@
  * still never read the gateway's own secrets (master key, tokens, provider keys).
  */
 import { SecretResolutionError } from "./errors";
-
-const ENV_NAME_RE = /^PERSONA_[A-Z0-9_]+$/;
+import { PERSONA_VAR_RE } from "./persona-var";
 
 export function createEnvBackend(env: Record<string, string | undefined>) {
   return {
     read(name: string): string {
-      if (!ENV_NAME_RE.test(name)) {
+      if (!PERSONA_VAR_RE.test(name)) {
         throw new SecretResolutionError("env_missing", "env:// names must start with PERSONA_");
       }
       const v = env[name];
