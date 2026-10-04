@@ -181,14 +181,40 @@ nodes make no Vault call. All variables are listed in the
    sibling's. The check runs on the final request path, at sync and again at
    every resolution.
 
+### Development: token auth
+
 `SLAUDE_VAULT_AUTH=token` with `SLAUDE_VAULT_TOKEN`, and a plain `http://`
 address, are for development only and need `SLAUDE_VAULT_ALLOW_INSECURE=1`.
+The local cluster (`deploy/k8s-local`) uses this path against a dev-mode Vault:
+the token sits in the **gateway** Secret, and no Kubernetes auth role is
+involved. A static token never expires on its own and is not bound to a pod,
+so anything that reads the gateway's environment holds Vault access for as
+long as the token lives. Never use it on a cluster that serves real traffic.
+
+### The service-account rule
+
+Vault trusts whoever presents a token for the bound ServiceAccount. That token
+is therefore a secret of the same weight as the Vault policy it unlocks:
+
+- bind the Kubernetes-auth role to the **gateway's own** ServiceAccount, never
+  to `default` and never to an account a node pod or any other workload runs
+  under;
+- mount the token only into gateway pods, as a projected token with audience
+  `vault` and a short expiry (above), and keep
+  `automountServiceAccountToken: false` everywhere else;
+- nodes hold no Vault configuration at all; a node with any `SLAUDE_VAULT_*` or
+  `VAULT_*` variable refuses to boot;
+- `mono` refuses `SLAUDE_VAULT_ADDR`, because its agent child runs as the same
+  user as the process that holds the token.
 
 ## Rotation
 
 A credential is read when the runtime bundle is built: a new thread, a respawn
 after the idle TTL (default 15 minutes), or a reload. Write a new version in
-Vault and the next spawn picks it up; no sync and no redeploy.
+Vault and the next spawn picks it up; no sync and no redeploy. Because each
+gateway caches a resolved value for `SLAUDE_VAULT_CACHE_TTL` seconds, a new
+thread may still get the old value for up to that long after the write; to
+check a rotation, start a **new thread** after the TTL has passed.
 
 A warm session keeps the value it booted with. For an urgent rotation (a
 leaked key) use `/reload` or the panel's reload, which respawns sessions at
@@ -209,6 +235,9 @@ Vault returns; warm sessions keep running.
 |---|---|
 | Vault not answering (unreachable, timeout, 5xx, login failure) with no usable cached value | The bundle endpoint answers 503 with `transient: true` and `Retry-After`; the node fails the boot and the job takes its normal retry; the last attempt fails with `PROVIDER_CREDENTIALS_UNAVAILABLE` |
 | A definitive answer: a denied or missing secret or field, a bad reference, a `baseUrl` outside the rule | 503 with `transient: false`; the node fails the boot with `PROVIDER_CREDENTIALS_UNAVAILABLE` and the job fails without a retry |
+| A reference outside the allowlist | As definitive, and an error-level `provider.cred.resolve` line with reason `prefix` |
+| A managed persona with no credential and `SLAUDE_PROVIDER_ENV_FALLBACK=0` | The same code |
+| Vault down, warm session | Nothing changes |
 
 How many times a failing turn asks for the bundle: the node's client retries
 any 5xx up to three times in one request (waiting 250 ms, then 500 ms) and
@@ -216,9 +245,6 @@ does not read `Retry-After`; a transient failure then takes the queue's
 second attempt (after about 1 s) with the same three tries. A transient
 failure therefore costs about six bundle builds per turn, and so up to six
 Vault reads when nothing is cached; a definitive one costs three.
-| A reference outside the allowlist | As definitive, and an error-level `provider.cred.resolve` line with reason `prefix` |
-| A managed persona with no credential and `SLAUDE_PROVIDER_ENV_FALLBACK=0` | The same code |
-| Vault down, warm session | Nothing changes |
 
 Slack gets one fixed message per failed job, not one per attempt:
 
@@ -229,7 +255,8 @@ Raw error text never reaches Slack. The gateway logs one
 (`ok`, `cached`, `stale`, `denied`, `error`), duration and, on failure, an
 internal reason. It never logs the path, field or value. Metrics:
 `slaude_provider_cred_resolve_total{scheme,outcome}` and
-`slaude_provider_cred_stale_served_total`.
+`slaude_provider_cred_stale_served_total`. Alert rules for Vault being
+unreachable are in the [alerts runbook](alerts.md#vault-unreachable).
 
 ## The node's own provider variables
 
