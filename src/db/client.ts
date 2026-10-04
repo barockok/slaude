@@ -256,14 +256,16 @@ export function dbDialect(): Dialect {
 /** Open (once) and return the process-wide client. Postgres: migrations
  *  applied first, unless SLAUDE_MIGRATE_ON_BOOT=0 opts out (env.db.migrateOnBoot). */
 export function getDb(): Promise<DbClient> {
+  // Checked on every call, not only the first open: a client opened before
+  // the process took the node role must not be handed out either.
+  try {
+    guardNode(config());
+  } catch (e) {
+    return Promise.reject(e);
+  }
   if (activeSync) return Promise.resolve(activeSync);
   if (!activePromise) {
     const cfg = config();
-    try {
-      guardNode(cfg);
-    } catch (e) {
-      return Promise.reject(e);
-    }
     activePromise = (async () => {
       if (cfg.dialect === "sqlite") return openSqliteSync(cfg.path);
       const client = await openDb(cfg);
@@ -302,7 +304,7 @@ export function getSqliteRaw(): import("bun:sqlite").Database | null {
 function sync(): DbClient | null {
   const cfg = config();
   if (cfg.dialect !== "sqlite") return null;
-  if (!activeSync) guardNode(cfg);
+  guardNode(cfg);
   return openSqliteSync(cfg.path);
 }
 
