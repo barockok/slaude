@@ -446,7 +446,8 @@ d("gateway↔node E2E (real Redis)", () => {
     try {
       posts.length = 0;
       await emitSlack("message", msg(LOCK_THREAD, "9200.1", "<@USLAUDE> locked hello"));
-      await until(() => posts.some((p) => String(p.text).includes("node-reply:")), 15_000);
+      // This thread's own reply: an earlier test's late reply must not end the wait.
+      await until(() => posts.some((p) => p.thread_ts === LOCK_THREAD && String(p.text).includes("node-reply:")), 15_000);
       const sid = await sessionIdOf(LOCK_THREAD);
       expect(typeof stub.lockResolver).toBe("function");
       const lock = await stub.lockResolver(sid);
@@ -462,7 +463,8 @@ d("gateway↔node E2E (real Redis)", () => {
   // not widen what the session mounts.
   test("the manifest resolver keys on the job token's persona, never the payload's personaId", async () => {
     const M_THREAD = "9300.0";
-    const replies = () => posts.filter((p) => String(p.text).includes("node-reply:")).length;
+    // Only this thread's replies: an earlier session's late reply must not count.
+    const replies = () => posts.filter((p) => p.thread_ts === M_THREAD && String(p.text).includes("node-reply:")).length;
     const before = replies();
     await emitSlack("message", msg(M_THREAD, "9300.1", "<@USLAUDE> manifest"));
     await until(() => replies() > before, 15_000);
