@@ -126,9 +126,10 @@ describe.skipIf(!realEnabled)("queue/reaper against real Redis", () => {
     const report = await reaper.reapDeadNodes();
     expect(report.jobsMoved).toBe(1);
     expect(await queues.queue(nodeQueueName("dead-2")).getWaitingCount()).toBe(0);
-    // no third job: the node job's messages were appended onto the shared one
+    // no third job: the node job's messages were merged into the shared one,
+    // ahead of its own: the stranded job is the older one (U10b-A)
     const job = await queues.queue("turns").getJob(shared.jobId);
-    expect((job!.data as TurnJob).messages.map((m) => m.text)).toEqual(["on-shared", "on-node"]);
+    expect((job!.data as TurnJob).messages.map((m) => m.text)).toEqual(["on-node", "on-shared"]);
     expect(await queues.queue("turns").getWaitingCount()).toBe(1);
     // Review R2-4: the append-elsewhere branch leaves a job-moved marker too.
     expect(await queues.movedTo(onNode.jobId)).toEqual({ queue: "turns", jobId: shared.jobId });

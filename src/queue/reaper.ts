@@ -16,9 +16,11 @@
  * whose BullMQ lock has expired, atomically (the lock is checked in the same
  * Redis step that takes the job). An active job whose lock is still live (the
  * process may be partitioned, not dead) is never touched; the node then stays
- * on the work list, so the next pass looks again. A job that already finished
- * its turn keeps its id, so the turn-done marker completes it without running
- * the model again.
+ * on the work list, so the next pass looks again. A job whose turn already
+ * finished (its turn-done marker exists, read in the same atomic step) is
+ * taken off the node's queue and dropped, never copied or merged into another
+ * job: its turn ran. Any other rescued job's messages go BEFORE those of the
+ * session's newer pending job when the two are merged.
  *
  * moveStalled additionally rescues jobs sitting unclaimed on a *live* node's
  * queue past a threshold (node too busy or its worker wedged): they too go
@@ -45,7 +47,8 @@ export interface ReapReport {
   deadNodes: string[];
   /** sess:* entries deleted. */
   sessionsCleared: number;
-  /** Jobs moved from per-node queues to their label queues. */
+  /** Jobs this pass took off per-node queues: moved to their label queues,
+   *  merged into the session's pending job, or (turn already done) dropped. */
   jobsMoved: number;
 }
 
@@ -79,10 +82,17 @@ export function makeReaper(opts: ReaperOpts) {
     return byNode;
   };
 
-  /** Move one job to its own label's queue; true when it left this queue. */
-  const moveHome = async (job: Job, rescueActive: boolean): Promise<boolean> => {
+  /**
+   * Move one job to its own label's queue. `taken`: this call took it off the
+   * node's queue (it is gone from there now). `left`: the move did not report
+   * it as still here — also true when an earlier pass already moved it, so a
+   * job only `held` by a live lock keeps its node on the work list.
+   */
+  const moveHome = async (job: Job, rescueActive: boolean): Promise<{ taken: boolean; left: boolean }> => {
     const res = await turns.moveTo(job, jobLabel(job.data as TurnJob), { rescueActive });
-    return !(res.queue === job.queueName && res.jobId === String(job.id));
+    const left = !(res.queue === job.queueName && res.jobId === String(job.id));
+    const taken = !(await turns.queue(job.queueName).getJob(String(job.id)));
+    return { taken, left: left || taken };
   };
 
   /**
@@ -95,13 +105,14 @@ export function makeReaper(opts: ReaperOpts) {
     let moved = 0;
     let held = 0;
     for (const job of (await q.getJobs([...MOVABLE_STATES])) as Job[]) {
-      if (await moveHome(job, false)) moved++;
+      if ((await moveHome(job, false)).taken) moved++;
     }
     for (const job of (await q.getJobs(["active"])) as Job[]) {
       // moveTo re-checks the lock in the same atomic step that takes the job;
       // a job it leaves in place is still held by a live lock.
-      if (await moveHome(job, true)) moved++;
-      else held++;
+      const r = await moveHome(job, true);
+      if (r.taken) moved++;
+      if (!r.left) held++;
     }
     return { moved, held };
   };
@@ -154,7 +165,7 @@ export function makeReaper(opts: ReaperOpts) {
       let moved = 0;
       for (const job of await q.getJobs(["waiting"])) {
         if (now - job.timestamp <= thresholdMs) continue;
-        if (await moveHome(job, false)) moved++;
+        if ((await moveHome(job, false)).taken) moved++;
       }
       return moved;
     },

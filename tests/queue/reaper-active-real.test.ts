@@ -151,6 +151,63 @@ describe.skipIf(!realEnabled)("queue/reaper rescues active jobs of dead nodes (r
     await redis.del(keys.coalesce("s-part"));
   });
 
+  // Review U10b-A: a rescued active job used to be merged AFTER the session's
+  // newer pending job, under that job's id: the order flipped (m2, m1) and the
+  // turn-done marker of its own id no longer protected a finished turn.
+  const strandPair = async (node: string, session: string, ids: [string, string]) => {
+    await registry.nodeUp(node, ["engineering"]);
+    await registry.register(session, node);
+    // m1: claimed by the node, which then dies (its lock is never renewed).
+    await queues.enqueueTurn(turn(session, "m1", "engineering"), { node }, ids[0]);
+    const nodeW = worker(`turns.${node}`, null, { autorun: false, lockDuration: 300 });
+    expect((await nodeW.getNextJob(`tok-${node}`))!.id).toBe(ids[0]);
+    // m2 arrives while m1 is active: a separate job, waiting on the same queue.
+    const b = await queues.enqueueTurn(turn(session, "m2", "engineering"), { node }, ids[1]);
+    expect(b).toEqual({ jobId: ids[1], queue: `turns.${node}`, coalesced: false });
+    await until(async () => !(await registry.nodeAlive(node)), 2000);
+    await until(lockGone(`turns.${node}`, ids[0]), 5000);
+  };
+
+  test("a rescued active job whose turn already finished (turn-done) is taken without running any of it again", async () => {
+    await ready;
+    await strandPair("dead-e", "s-done", ["done-a", "done-b"]);
+    // The node finished m1's turn (marker written before the ack) and died.
+    await redis.set(keys.turnDone("done-a"), "done", "EX", 600);
+    const report = await reaper.reapDeadNodes();
+    expect(report.jobsMoved).toBe(2);
+    // The label's worker starts after the reap, so the outcome does not hang
+    // on whether it claimed m2 before the rescue reached m1.
+    const ran: string[][] = [];
+    worker("turns.label.engineering", async (job) => {
+      ran.push((job.data as TurnJob).messages.map((m) => m.text));
+    });
+    expect(await queues.queue("turns.dead-e").getJobCounts("active", "waiting", "delayed")).toEqual({ active: 0, waiting: 0, delayed: 0 });
+    await until(() => ran.length >= 1, 5000);
+    await new Promise((r) => setTimeout(r, 400)); // room for a duplicate to show
+    expect(ran).toEqual([["m2"]]);
+    expect(await queues.queue("turns.label.engineering").getDelayedCount()).toBe(0);
+    await redis.del(keys.coalesce("s-done"), keys.turnDone("done-a"));
+  });
+
+  test("a rescued active job without turn-done runs before the newer pending job, each message once", async () => {
+    await ready;
+    await strandPair("dead-f", "s-order", ["ord-a", "ord-b"]);
+    const report = await reaper.reapDeadNodes();
+    expect(report.jobsMoved).toBe(2);
+    const ran: string[][] = [];
+    worker("turns.label.engineering", async (job) => {
+      ran.push((job.data as TurnJob).messages.map((m) => m.text));
+    });
+    await until(() => ran.length >= 1, 5000);
+    await new Promise((r) => setTimeout(r, 400));
+    expect(ran.flat()).toEqual(["m1", "m2"]);
+    const again = await reaper.reapDeadNodes();
+    expect(again.jobsMoved).toBe(0);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(ran.flat()).toEqual(["m1", "m2"]);
+    await redis.del(keys.coalesce("s-order"));
+  });
+
   test("waiting jobs of a dead node go to their own label's queue, not to turns", async () => {
     await ready;
     await registry.nodeUp("dead-d", ["finance"]);

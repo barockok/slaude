@@ -83,6 +83,11 @@ describe.skipIf(!realEnabled)("queue/turns hardening against real Redis", () => 
     expect(await queues.takeUnclaimed((await q.getJob("tk-wait"))!)).toBe("wait");
     expect(await queues.takeUnclaimed((await q.getJob("tk-delay"))!)).toBe("delayed");
     expect(await q.getJob("tk-wait")).toBeUndefined();
+    // A job whose turn already ran is taken but reported `done`: copy nothing.
+    await q.add("turn", turn("s-take-t", ["t"]), { jobId: "tk-ran" });
+    await redis.set(keys.turnDone("tk-ran"), "done", "EX", 60);
+    expect(await queues.takeUnclaimed((await q.getJob("tk-ran"))!)).toBe("done");
+    expect(await q.getJob("tk-ran")).toBeUndefined();
     expect(await queues.takeUnclaimed({ id: "tk-nope", queueName: "turns.label.take" })).toBe("missing");
 
     // A claimed job: locked while its worker holds it.
@@ -164,7 +169,8 @@ describe.skipIf(!realEnabled)("queue/turns hardening against real Redis", () => 
     await redis.del(keys.jobMoved("f3b-claimed"));
     await queues.moveTo(claimed, "fthree", { claimed: true });
     const j = await queues.queue("turns.label.fthree").getJob("f3b-pending");
-    expect((j!.data as TurnJob).messages.map((m) => m.text)).toEqual(["pending", "claimed"]);
+    // The claimed job's messages are the older ones: they go first (U10b-A).
+    expect((j!.data as TurnJob).messages.map((m) => m.text)).toEqual(["claimed", "pending"]);
     await j!.remove();
     await queues.queue("turns").remove("f3b-claimed");
     await redis.del(keys.coalesce("s-f3b"));
@@ -203,7 +209,8 @@ describe.skipIf(!realEnabled)("queue/turns hardening against real Redis", () => 
     const res = await queues.moveTo((await queues.queue("turns.f4node").getJob("f4-stranded2"))!, "ffour");
     expect(res).toEqual({ jobId: "f4-indexed", queue: "turns.label.ffour", coalesced: true });
     const ix = await queues.queue("turns.label.ffour").getJob("f4-indexed");
-    expect((ix!.data as TurnJob).messages.map((m) => m.text)).toEqual(["indexed", "stranded2"]);
+    // The moved job's messages go before the indexed job's (U10b-A).
+    expect((ix!.data as TurnJob).messages.map((m) => m.text)).toEqual(["stranded2", "indexed"]);
     expect(await queues.queue("turns.label.ffour").getDelayedCount()).toBe(0);
     expect(await queues.movedTo("f4-stranded2")).toEqual({ queue: "turns.label.ffour", jobId: "f4-indexed" });
     await ix!.remove();
