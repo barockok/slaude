@@ -388,7 +388,7 @@ Every move (relabel, a mismatch at claim, the reaper) adds the job's copy on the
 
 They cannot be closed without moving the whole move into one Lua script, BullMQ's own add included.
 
-**Who re-dispatches a LABEL_MISMATCH turn.** Only a gateway follower that is following the failed job: the one on the replica that dispatched the turn (or a later message of the same session). If that gateway restarts, or the follower's deadline passes before the job fails, nobody re-dispatches it and the turn ends with no reply. The re-dispatch is guarded once across replicas; a replica dying in its middle delays it by 30 seconds, and only another replica already following the same job redoes it.
+**Who re-dispatches a LABEL_MISMATCH turn.** Only a gateway follower that is following the failed job: the one on the replica that dispatched the turn, or on a replica that coalesced a later message into the same job. If that gateway restarts, or the follower's deadline passes before the job fails, nobody re-dispatches it and the turn ends with no reply. The re-dispatch is guarded once across replicas; a replica dying in its middle delays it by 30 seconds, and only another replica already following the same job redoes it.
 
 **Order of a re-dispatched turn.** A re-dispatched turn holds older messages. When the session has a pending (not yet claimed) job, the re-dispatched messages are merged into it **ahead** of its own, and the merged job keeps the re-dispatch count, so it is not re-dispatched a second time. When the session's newer job is already running, or there is none, the re-dispatched turn is a job of its own and runs after whatever is already running: its older messages then run after the newer ones.
 
