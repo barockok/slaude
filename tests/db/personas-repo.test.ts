@@ -81,6 +81,24 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("persona repository", () => {
     expect((await by()).get("bea")).toBeNull();
   });
 
+  // Three migrations (0014, 0016, 0017) add one column each to the same two
+  // upserts: one row must carry all three through both.
+  test("provider, runsOn and kbSources persist together in one row through both upserts", async () => {
+    const provider = { apiKey: "env://PERSONA_ANA_KEY" };
+    const all = { provider, runsOn: "engineering", kbSources: ["kb-runbook"] };
+    await P.applySync(T, [row("ana", all)], meta("r1", "2026-10-01T10:00:00Z"));
+    const git = (await P.desiredPersonas(T)).find((p) => p.name === "ana")!;
+    expect({ provider: git.provider, runsOn: git.runsOn, kbSources: git.kbSources }).toEqual(all);
+    expect((await P.applySync(T, [row("ana", all)], meta("r2", "2026-10-01T11:00:00Z"))).unchanged).toEqual(["ana"]);
+    const changed = await P.applySync(T, [row("ana", { ...all, runsOn: "finance" })], meta("r3", "2026-10-01T12:00:00Z"));
+    expect(changed.updated).toEqual(["ana"]);
+
+    const rt = { provider: { authToken: "env://PERSONA_BEA_TOKEN" }, runsOn: "ops", kbSources: [] as string[] };
+    await P.createRuntimePersona(T, row("bea", { origin: "runtime", ...rt }), "ops");
+    const runtime = (await P.desiredPersonas(T)).find((p) => p.name === "bea")!;
+    expect({ provider: runtime.provider, runsOn: runtime.runsOn, kbSources: runtime.kbSources }).toEqual(rt);
+  });
+
   test("a runtime onboard stores provider references too", async () => {
     await P.applySync(T, [row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
     await P.createRuntimePersona(T, row("bea", { origin: "runtime", provider: { authToken: "env://PERSONA_BEA_TOKEN" } }), "ops");

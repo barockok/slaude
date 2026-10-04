@@ -276,15 +276,16 @@ describe("runsOn", () => {
     } finally { console.warn = warn; }
   });
 
-  test.skipIf(process.env.SLAUDE_DB !== "pg")("one warnings array carries both the provider and the label warnings", async () => {
+  test.skipIf(process.env.SLAUDE_DB !== "pg")("one warnings array carries the provider, the label and the KB warnings", async () => {
     const warn = console.warn; console.warn = () => {};
     try {
-      const r = await runSync(T, payload([{ ...ana, runsOn: "finance", provider: { baseUrl: "https://llm.example.com", apiKey: "env://PERSONA_ANA_KEY" } }]), {
+      const r = await runSync(T, payload([{ ...ana, runsOn: "finance", kbSources: ["kb-not-installed"], provider: { baseUrl: "https://llm.example.com", apiKey: "env://PERSONA_ANA_KEY" } }]), {
         dryRun: true, env: { ...env, PERSONA_ANA_KEY: "k", SLAUDE_ROLE: "gateway" }, by: "ci", extract: okExtract,
-        liveLabels: async () => new Set(["default"]),
+        liveLabels: async () => new Set(["default"]), installedKbSources: () => ["kb-runbook"],
       });
       expect(r.warnings.some((w) => w.includes("no live node carries label 'finance'"))).toBe(true);
-      expect(r.warnings.some((w) => !w.includes("no live node carries") && w.includes("'ana'"))).toBe(true);
+      expect(r.warnings.some((w) => w.includes("provider.baseUrl") && w.includes("'ana'"))).toBe(true);
+      expect(r.warnings.some((w) => w.includes("kb-not-installed") && w.includes("'ana'"))).toBe(true);
     } finally { console.warn = warn; }
   });
 });
