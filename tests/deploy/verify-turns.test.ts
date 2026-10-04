@@ -26,7 +26,7 @@ case "$args" in
   *"get hpa"*original-max-replicas*) ;;
   *"patch hpa"*) ;;
   *"deploy slaude-gateway"*readyReplicas*) echo 2 ;;
-  *"deploy slaude-node"*readyReplicas*) echo 2 ;;
+  *"deploy slaude-node"*readyReplicas*) echo "\${STUB_NODE_READY:-2}" ;;
   *"component=gateway"*"-o name"*) [[ -n "\${STUB_NO_GATEWAY:-}" ]] || echo pod/gw-1 ;;
   *"component=node"*"-o name"*) printf 'pod/node-1\\npod/node-2\\n' ;;
   *"bun /tmp/probe/turns.ts"*)
@@ -39,7 +39,13 @@ esac
 exit 0
 `,
   );
-  writeFileSync(join(dir, "minikube"), "#!/usr/bin/env bash\nexit 0\n");
+  writeFileSync(
+    join(dir, "minikube"),
+    `#!/usr/bin/env bash
+if [[ -n "\${STUB_KILL_FAIL:-}" ]]; then echo "Error: No such container: abc123" >&2; exit 1; fi
+exit 0
+`,
+  );
   chmodSync(join(dir, "kubectl"), 0o755);
   chmodSync(join(dir, "minikube"), 0o755);
 });
@@ -57,6 +63,7 @@ function run(env: Record<string, string> = {}) {
       CRON_TIMEOUT: "1",
       POLL_FAST: "0",
       POLL_SLOW: "0",
+      SETTLE_TIMEOUT: "1",
       ...env,
     },
   });
@@ -114,4 +121,17 @@ test("cleanup with no running gateway says so instead of silently doing nothing"
 test("a failing cron trigger is a failure, not an ignored one", () => {
   const r = run({ STUB_PROBE_MODE: "fail" });
   expect(r.out).toMatch(/FAIL .*cron/);
+});
+
+test("it waits for the node deployment to settle at two after pinning, and says when it did not", () => {
+  const r = run({ STUB_NODE_READY: "3" });
+  expect(r.out).toContain("node deployment did not settle at two replicas within 1s");
+  expect(r.log).toContain("did not settle");
+});
+
+test("a failed container kill reports the reason instead of discarding it", () => {
+  const r = run({ STUB_KILL_FAIL: "1" });
+  expect(r.out).toContain("could not kill");
+  expect(r.out).toContain("No such container: abc123");
+  expect(r.log).toContain("No such container: abc123");
 });

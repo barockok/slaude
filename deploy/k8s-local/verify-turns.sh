@@ -37,6 +37,7 @@ TURNS="${TURNS:-6}"
 RECOVER_TIMEOUT="${RECOVER_TIMEOUT:-240}"
 CLAIM_TIMEOUT="${CLAIM_TIMEOUT:-120}"
 CRON_TIMEOUT="${CRON_TIMEOUT:-150}"
+SETTLE_TIMEOUT="${SETTLE_TIMEOUT:-120}"
 POLL_FAST="${POLL_FAST:-2}"
 POLL_SLOW="${POLL_SLOW:-5}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -189,10 +190,13 @@ expect_value() { # <label> <actual> <want> <context>
 # Kill a node's container outright — no SIGTERM, no drain — the way verify-ha
 # simulates a lost worker.
 crash_node() { # <pod>
-  local pod="${1#pod/}" id
+  local pod="${1#pod/}" id out
   id="$(k get pod "$pod" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's|.*/||')"
-  [[ -n "$id" ]] || return 1
-  minikube -p "$PROFILE" ssh -- docker kill --signal=KILL "$id" >/dev/null 2>&1
+  [[ -n "$id" ]] || { diag "  !! crash_node: no container id for $pod"; return 1; }
+  if ! out="$(minikube -p "$PROFILE" ssh -- docker kill --signal=KILL "$id" 2>&1)"; then
+    diag "  !! docker kill of $pod failed: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"
+    return 1
+  fi
 }
 
 cleanup() {
@@ -215,7 +219,13 @@ trap cleanup EXIT
 section "preconditions"
 # Pin the node HPA first: left alone it scales the deployment to three under
 # turn load and holds it there for its ten-minute scale-down window.
-pin_node_hpa || diag "  note  node HPA not pinned; the assertions below accept more than two nodes"
+if pin_node_hpa; then
+  # The HPA scales a third node away on its own sync period; give it time.
+  wait_deploy_ready slaude-node 2 "$SETTLE_TIMEOUT" ||
+    diag "  note  node deployment did not settle at two replicas within ${SETTLE_TIMEOUT}s; the assertions below accept more than two nodes"
+else
+  diag "  note  node HPA not pinned; the assertions below accept more than two nodes"
+fi
 
 gw_ready="$(k get deploy slaude-gateway -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"
 node_ready="$(k get deploy slaude-node -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"

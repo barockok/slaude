@@ -85,6 +85,13 @@ test("a database that is already there is not created again", () => {
   expect(calls()).not.toContain("CREATE DATABASE");
 });
 
+test("the existence check compares output exactly: text merely containing a 1 is not 'exists'", () => {
+  set("exists", "ERROR: connection 1 refused\n", 0);
+  const r = run("ensure_brain_database");
+  expect(r.code).toBe(0);
+  expect(calls()).toContain("CREATE DATABASE");
+});
+
 test("any other CREATE DATABASE failure is retried, then reported", () => {
   set("exists", "");
   set("create", "ERROR:  the database system is shutting down", 1);

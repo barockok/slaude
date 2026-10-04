@@ -61,7 +61,8 @@ ensure_brain_database() {
 
   psql_pg() { kubectl -n "$NS" exec deploy/dev-postgres -c postgres -- psql -U slaude -v ON_ERROR_STOP=1 "$@"; }
   for ((i = 1; i <= create_tries; i++)); do
-    if out="$(psql_pg -d postgres -tAc "select 1 from pg_database where datname = 'slaude_brain'" 2>&1)" && grep -q 1 <<<"$out"; then
+    # stdout only, compared exactly: stderr text must not be able to match.
+    if out="$(psql_pg -d postgres -tAc "select 1 from pg_database where datname = 'slaude_brain'" 2>/dev/null)" && [[ "$out" == 1 ]]; then
       break
     fi
     if out="$(psql_pg -d postgres -c "CREATE DATABASE slaude_brain" 2>&1)"; then
@@ -95,10 +96,12 @@ HPA_ANNOTATION="slaude.dev/original-max-replicas"
 # read or patched; the caller decides whether that is fatal.
 pin_node_hpa() {
   local min max saved
-  min="$(kubectl --context "$PROFILE" -n "$NS" get hpa "$HPA_NAME" -o jsonpath='{.spec.minReplicas}' 2>/dev/null)"
-  max="$(kubectl --context "$PROFILE" -n "$NS" get hpa "$HPA_NAME" -o jsonpath='{.spec.maxReplicas}' 2>/dev/null)"
+  local err
+  min="$(kubectl --context "$PROFILE" -n "$NS" get hpa "$HPA_NAME" -o jsonpath='{.spec.minReplicas}' 2>&1)"
+  max="$(kubectl --context "$PROFILE" -n "$NS" get hpa "$HPA_NAME" -o jsonpath='{.spec.maxReplicas}' 2>&1)"
   if [[ ! "$min" =~ ^[0-9]+$ || ! "$max" =~ ^[0-9]+$ ]]; then
-    _say "  !! could not read minReplicas/maxReplicas of hpa/$HPA_NAME (got min='$min' max='$max')"
+    err="$(printf '%s %s' "$min" "$max" | tr '\n' ' ')"
+    _say "  !! could not read minReplicas/maxReplicas of hpa/$HPA_NAME: ${err:0:300}"
     return 1
   fi
   saved="$(kubectl --context "$PROFILE" -n "$NS" get hpa "$HPA_NAME" -o 'jsonpath={.metadata.annotations.slaude\.dev/original-max-replicas}' 2>/dev/null)"
@@ -113,6 +116,18 @@ pin_node_hpa() {
     return 1
   fi
   PINNED_HPA=1
+}
+
+# Wait (bounded) until a deployment reports exactly <n> ready replicas. Reads NS
+# and PROFILE. Non-zero on timeout.
+wait_deploy_ready() { # <deployment> <n> <timeout-seconds>
+  local deadline=$(($(date +%s) + $3)) got
+  while :; do
+    got="$(kubectl --context "$PROFILE" -n "$NS" get deploy "$1" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"
+    [[ "$got" == "$2" ]] && return 0
+    (($(date +%s) >= deadline)) && return 1
+    sleep "${POLL_FAST:-2}"
+  done
 }
 
 restore_node_hpa() {
