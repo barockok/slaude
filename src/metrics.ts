@@ -93,6 +93,10 @@ export class Registry {
 
   gauge(name: string, help: string): {
     set: (value: number, labels?: LabelMap) => void;
+    /** Drop one series (a label set that no longer exists). */
+    remove: (labels: LabelMap) => void;
+    /** The label sets currently exported. */
+    labelSets: () => LabelMap[];
   } {
     let m = this.#metrics.get(name);
     if (!m) {
@@ -106,6 +110,12 @@ export class Registry {
         gauge.series.set(key, value);
         labelStore.set(`${name}|${key}`, labels);
       },
+      remove: (labels) => {
+        const key = seriesKey(labels);
+        gauge.series.delete(key);
+        labelStore.delete(`${name}|${key}`);
+      },
+      labelSets: () => [...gauge.series.keys()].map((k) => labelStore.get(`${name}|${k}`) ?? {}),
     };
   }
 
@@ -234,6 +244,10 @@ export const m = {
   // alerting distinguish "leader gone" from an ex-leader replica that keeps
   // rendering its stale last gauge values on every scrape.
   reaperLastRun: metrics.gauge("slaude_reaper_last_run_timestamp_seconds", "Unix time of the last completed reaper pass on this replica (leader only)."),
+  labelUnserved: metrics.gauge(
+    "slaude_label_unserved",
+    "1 when a node label in use has had waiting turn jobs and no live node for longer than SLAUDE_LABEL_UNSERVED_SECS, else 0; labeled by label (leader only).",
+  ),
   nodesAlive: metrics.gauge("slaude_nodes_alive", "Node heartbeat keys currently live."),
   sessionsWarm: metrics.gauge("slaude_sessions_warm", "Sessions registered warm on some node."),
   // Persona provider credentials by reference (WS-A §7). Labels never carry a
