@@ -253,6 +253,21 @@ export const env = {
     }
     return n;
   },
+  /**
+   * SLAUDE_PROVIDER_ENV_FALLBACK (node, WS-A §5.4). `1` (default): a managed
+   * persona whose bundle lacks a provider variable runs on the node's own,
+   * with a one-time warning per persona. `0`: those variables are removed from
+   * the agent child's environment, and a managed persona with no credential
+   * fails its turn with PROVIDER_CREDENTIALS_UNAVAILABLE. Anything else is a
+   * configuration error, so a typo never silently means "fall back".
+   */
+  providerEnvFallback: (): boolean => {
+    const raw = opt("SLAUDE_PROVIDER_ENV_FALLBACK", "1").trim();
+    if (raw !== "0" && raw !== "1") {
+      throw new Error(`SLAUDE_PROVIDER_ENV_FALLBACK must be 0 or 1 (got '${raw}')`);
+    }
+    return raw === "1";
+  },
   /** BullMQ worker concurrency per node process (spec §6). Default 8. */
   nodeConcurrency: (): number => {
     const raw = opt("SLAUDE_NODE_CONCURRENCY", "8");

@@ -20,7 +20,7 @@ import { hostname, tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { Worker, DelayedError, type Job } from "bullmq";
+import { Worker, DelayedError, UnrecoverableError, type Job } from "bullmq";
 import type { Redis } from "ioredis";
 import { AgentManager, type AgentEvent } from "../agent/manager";
 import { createSessionMcp, SESSION_MCP_NAME } from "../agent/session-mcp";
@@ -42,6 +42,8 @@ import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
 import { decodeClaims, makeRemoteFactory, makeRemoteResolver } from "./remote";
 import { lockFromClaims } from "./session-lock";
+import { ChildEnvPatch } from "../agent/child-env";
+import { BootFailure, createOnceGuard } from "../gateway/core/failure-codes";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -132,6 +134,51 @@ export function bundleChildEnv(
   return out;
 }
 
+/** The provider variables a bundle can supply (WS-A §4). */
+export const PROVIDER_ENV_KEYS = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+] as const;
+
+/**
+ * The child-env overlay for a session, with the no-silent-fallback rule
+ * (WS-A §5.4) applied to a MANAGED bundle. An unmanaged bundle (disk or env
+ * tier) is additive exactly as before.
+ *
+ *   fallback on  (SLAUDE_PROVIDER_ENV_FALLBACK=1, the default): additive, plus
+ *                `warn(persona, names)` when the node's own environment fills a
+ *                provider variable the bundle left out — the persona fell back.
+ *   fallback off (=0): a ChildEnvPatch that DELETES every provider variable the
+ *                bundle did not supply; a bundle with no credential at all
+ *                (no API key, auth token or OAuth token) fails the boot with
+ *                PROVIDER_CREDENTIALS_UNAVAILABLE.
+ */
+export function nodeChildEnv(
+  bundle: Pick<RuntimeBundle, "providerCreds" | "slackUserId" | "managed">,
+  persona: string,
+  opts: { fallback: boolean; nodeEnv: Record<string, string | undefined>; warn: (persona: string, names: string[]) => void },
+): Record<string, string | undefined> | ChildEnvPatch {
+  const overlay = bundleChildEnv(bundle, persona);
+  if (!bundle.managed) return overlay;
+  if (opts.fallback) {
+    const filled = PROVIDER_ENV_KEYS.filter((k) => !overlay[k] && opts.nodeEnv[k]);
+    if (filled.length) opts.warn(persona, filled);
+    return overlay;
+  }
+  const c = bundle.providerCreds ?? {};
+  if (!c.apiKey && !c.authToken && !c.oauthToken) {
+    throw new BootFailure(
+      "PROVIDER_CREDENTIALS_UNAVAILABLE",
+      `persona '${persona}' has no provider credentials and SLAUDE_PROVIDER_ENV_FALLBACK=0`,
+    );
+  }
+  const set: Record<string, string> = {};
+  for (const [k, v] of Object.entries(overlay)) if (v !== undefined) set[k] = v;
+  return new ChildEnvPatch(set, PROVIDER_ENV_KEYS);
+}
+
 /**
  * The node's persona soul resolver: the soul comes from the runtime bundle for
  * the persona the manager asks for. That persona must agree with the one the
@@ -199,6 +246,8 @@ export interface NodeWorkerOpts {
   errorWindowMs?: number;
   /** Session-lock knobs (tests shrink them). */
   lock?: { ttlMs?: number; extendEveryMs?: number };
+  /** SLAUDE_PROVIDER_ENV_FALLBACK override (tests). Default: env. */
+  providerEnvFallback?: boolean;
   /** Hard turn deadline in ms. Default: the job-token TTL (max turn duration). */
   turnTimeoutMs?: number;
   /** BullMQ Worker tuning (tests shrink stall detection to simulate a killed
@@ -276,6 +325,13 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   const warm = new Set<string>();
   /** tenantId → reload-channel unsubscribe. */
   const reloadUnsubs = new Map<string, () => Promise<void>>();
+  /** Drop the session's cached runtime bundle (it holds plaintext provider
+   *  credentials) when the session unregisters (WS-A §8). Keyed per (tenant,
+   *  persona), so another live session of that persona simply refetches. */
+  const evictBundle = (sessionId: string) => {
+    const tenant = tenants.get(sessionId);
+    if (tenant) client.bustRuntime(tenant, personas.get(sessionId) ?? "default");
+  };
 
   agent.setSessionStore(store);
   agent.setPermissionResolver(makeNodePermissionResolver({ client, tokenFor: (id) => store.tokenFor(id) }));
@@ -330,12 +386,27 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // The persona's model (git or override) also comes from the bundle; a
   // per-thread /model on the session row still wins (see AgentManager).
   agent.setPersonaModelResolver(makeBundleModelResolver(bundleDeps));
+  // Read once: a malformed value stops the node at start, never mid-turn.
+  const providerEnvFallback = opts.providerEnvFallback ?? env.providerEnvFallback();
+  const warnFallbackOnce = createOnceGuard();
   agent.setChildEnvResolver(async (sessionId) => {
     const tenant = tenants.get(sessionId);
     const token = store.tokenFor(sessionId);
     if (!tenant || !token) return undefined;
     const persona = personas.get(sessionId) ?? "default";
-    return bundleChildEnv(await client.getRuntime(tenant, persona, token), persona);
+    // A failure here (gateway 503 on an unresolvable reference, gateway
+    // unreachable) fails the boot with PROVIDER_CREDENTIALS_UNAVAILABLE.
+    return nodeChildEnv(await client.getRuntime(tenant, persona, token), persona, {
+      fallback: providerEnvFallback,
+      nodeEnv: process.env,
+      warn: (p, names) => {
+        if (!warnFallbackOnce(`${tenant}\u0000${p}`)) return;
+        console.warn(
+          `[node] persona '${p}' (tenant ${tenant}) is running on this node's own ${names.join(", ")}: ` +
+            `its bundle supplies none. Set SLAUDE_PROVIDER_ENV_FALLBACK=0 to refuse instead.`,
+        );
+      },
+    });
   });
   // Remote mode (spec §4.5): target from the job token's signed claims; key
   // fetched per handle from the gateway (see ./remote).
@@ -440,8 +511,11 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         if (agent.isLive(sessionId)) {
           await registry.register(sessionId, nodeId);
           warm.add(sessionId);
-        } else if (warm.delete(sessionId)) {
-          await registry.unregister(sessionId);
+        } else {
+          // No live child (the turn ended it, or its boot failed): its
+          // credentials must not outlive it in this node's memory.
+          evictBundle(sessionId);
+          if (warm.delete(sessionId)) await registry.unregister(sessionId);
         }
       } catch (e) {
         console.error(`[node] registry update failed session=${sessionId}:`, e);
@@ -499,35 +573,49 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     await ensureReloadSub(data.tenantId);
 
     const started = Date.now();
-    const res = await runLockedTurn<"done" | "error" | "skipped">({
-      lock: (fn) =>
-        withSessionLock(
-          data.sessionId,
-          nodeId,
-          fn,
-          // The TTL is also the takeover delay when this node dies: it never gets to
-          // release the lock, so the re-delivered turn waits the lock out.
-          { redis: cmd, keys, ...sessionLockOpts, ...opts.lock },
-        ),
-      bindToken: (t) => store.bindToken(data.sessionId, t),
-      ensureConfigFp: (fp) => agent.ensureConfigFp(data.sessionId, fp),
-      jobToken,
-      run: async (lostLock) => {
-        // Lost the lock (TTL lapsed / another holder): stop touching the
-        // session immediately — another node may already be running it.
-        const onLost = () => {
-          console.error(`[node] session lock lost session=${data.sessionId} — aborting turn`);
-          turnAborts.get(data.sessionId)?.abort();
-          agent.abort(data.sessionId);
-        };
-        lostLock.addEventListener("abort", onLost, { once: true });
-        try {
-          return await runTurn(job, data);
-        } finally {
-          lostLock.removeEventListener("abort", onLost);
-        }
-      },
-    });
+    let res: "done" | "error" | "skipped" | typeof STALE_CONFIG | typeof HELD_BY_OTHER;
+    try {
+      res = await runLockedTurn<"done" | "error" | "skipped">({
+        lock: (fn) =>
+          withSessionLock(
+            data.sessionId,
+            nodeId,
+            fn,
+            // The TTL is also the takeover delay when this node dies: it never gets to
+            // release the lock, so the re-delivered turn waits the lock out.
+            { redis: cmd, keys, ...sessionLockOpts, ...opts.lock },
+          ),
+        bindToken: (t) => store.bindToken(data.sessionId, t),
+        ensureConfigFp: (fp) => agent.ensureConfigFp(data.sessionId, fp),
+        jobToken,
+        run: async (lostLock) => {
+          // Lost the lock (TTL lapsed / another holder): stop touching the
+          // session immediately — another node may already be running it.
+          const onLost = () => {
+            console.error(`[node] session lock lost session=${data.sessionId} — aborting turn`);
+            turnAborts.get(data.sessionId)?.abort();
+            agent.abort(data.sessionId);
+          };
+          lostLock.addEventListener("abort", onLost, { once: true });
+          try {
+            return await runTurn(job, data);
+          } finally {
+            lostLock.removeEventListener("abort", onLost);
+          }
+        },
+      });
+    } catch (e) {
+      if (!(e instanceof BootFailure)) throw e;
+      // A typed boot failure (WS-A §5.4, §7): the code rides the turn's error
+      // event (the gateway posts its fixed text once per job) and is the job's
+      // failure reason, and the job fails WITHOUT a retry — another attempt
+      // would only fail the same way and post again.
+      console.error(`[node] session boot failed session=${data.sessionId} job=${job.id} code=${e.code}`);
+      agent.emit("event", { type: "error", sessionId: data.sessionId, error: "session boot failed", code: e.code } satisfies AgentEvent);
+      metric.nodeTurnsTotal.inc({ result: "error" });
+      void client.failJob(String(job.id), { sessionId: data.sessionId, code: e.code });
+      throw new UnrecoverableError(e.code);
+    }
 
     if (res === HELD_BY_OTHER || res === STALE_CONFIG) {
       // Another node is mid-turn on this session, or this node's warm session
@@ -589,6 +677,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
             if (!(await registry.heartbeat(sessionId))) await registry.register(sessionId, nodeId);
           } else {
             warm.delete(sessionId);
+            evictBundle(sessionId);
             store.unbindToken(sessionId);
             tenants.delete(sessionId);
             personas.delete(sessionId);

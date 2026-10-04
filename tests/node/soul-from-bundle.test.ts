@@ -7,7 +7,11 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { AgentManager } from "../../src/agent/manager";
 import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../src/persona/registry";
-import { bundleChildEnv, makeBundleModelResolver, makeBundleSoulResolver, makeTenantReloadHandler } from "../../src/node/worker";
+import {
+  bundleChildEnv, makeBundleModelResolver, makeBundleSoulResolver, makeTenantReloadHandler, nodeChildEnv, PROVIDER_ENV_KEYS,
+} from "../../src/node/worker";
+import { ChildEnvPatch } from "../../src/agent/child-env";
+import { BootFailure } from "../../src/gateway/core/failure-codes";
 
 const shortHash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 12);
 
@@ -222,6 +226,54 @@ describe("node bundle resolvers", () => {
     });
     expect(bundleChildEnv({ providerCreds: {}, slackUserId: "UDEF" }, "default")).toEqual({});
     expect(bundleChildEnv({ providerCreds: {}, slackUserId: null }, "ana")).toEqual({});
+  });
+});
+
+// WS-A §5.4: no silent fallback onto the node's own provider environment.
+describe("nodeChildEnv", () => {
+  const nodeEnv = { ANTHROPIC_API_KEY: "node-key", ANTHROPIC_BASE_URL: "https://node.example.com" };
+  const warns: Array<[string, string[]]> = [];
+  const opts = (fallback: boolean) => ({ fallback, nodeEnv, warn: (p: string, n: string[]) => warns.push([p, n]) });
+
+  test("an unmanaged bundle is additive, whatever the flag, and never warns", () => {
+    warns.length = 0;
+    const b = { providerCreds: {}, slackUserId: "UANA" };
+    expect(nodeChildEnv(b, "ana", opts(false))).toEqual({ SLAUDE_AGENT_ID: "UANA" });
+    expect(nodeChildEnv(b, "ana", opts(true))).toEqual({ SLAUDE_AGENT_ID: "UANA" });
+    expect(warns).toEqual([]);
+  });
+
+  test("fallback on: additive, and names the persona and the variables the node filled", () => {
+    warns.length = 0;
+    const out = nodeChildEnv({ providerCreds: { authToken: "t" }, slackUserId: null, managed: true }, "ana", opts(true));
+    expect(out).toEqual({ ANTHROPIC_AUTH_TOKEN: "t" });
+    expect(warns).toEqual([["ana", ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]]]);
+  });
+
+  test("fallback on: a bundle that supplies everything the node has does not warn", () => {
+    warns.length = 0;
+    nodeChildEnv({ providerCreds: { apiKey: "k", baseUrl: "https://p.example.com" }, slackUserId: null, managed: true }, "ana", opts(true));
+    expect(warns).toEqual([]);
+  });
+
+  test("fallback off: a patch that deletes every provider key the bundle did not supply", () => {
+    const out = nodeChildEnv({ providerCreds: { apiKey: "k" }, slackUserId: "UANA", managed: true }, "ana", opts(false));
+    expect(out).toBeInstanceOf(ChildEnvPatch);
+    const p = out as ChildEnvPatch;
+    expect(p.set).toEqual({ ANTHROPIC_API_KEY: "k", SLAUDE_AGENT_ID: "UANA" });
+    expect([...p.unset].sort()).toEqual([...PROVIDER_ENV_KEYS].sort());
+  });
+
+  test("fallback off: a managed persona with no credential fails with the typed code", () => {
+    let e: unknown;
+    try {
+      nodeChildEnv({ providerCreds: { baseUrl: "https://p.example.com" }, slackUserId: null, managed: true }, "ana", opts(false));
+    } catch (x) {
+      e = x;
+    }
+    expect(e).toBeInstanceOf(BootFailure);
+    expect((e as BootFailure).code).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
+    expect((e as Error).message).toContain("'ana'");
   });
 });
 

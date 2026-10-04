@@ -40,6 +40,10 @@ let acquireLockFn: any;
 let sessionIdOf: (thread: string) => Promise<string>;
 let metricsRender: () => string;
 
+/** When set, the stub's session boot fails with this error (a BootFailure). */
+let bootFailure: Error | null = null;
+let busts: Array<[string, string | undefined]> = [];
+
 /** Current stub behavior; tests swap it. */
 let behavior: (a: { sessionId: string; text: string; servers: any; signal: AbortSignal }) => Promise<void>;
 
@@ -183,6 +187,8 @@ beforeAll(async () => {
     override suppressNextTurn(_id: string) {}
     override async sendMessage(sessionId: string, text: string): Promise<void> {
       this.emit("event", { type: "turnStart", sessionId } as any);
+      // The real manager's boot fails this way when the child-env resolver throws.
+      if (bootFailure) throw bootFailure;
       const ac = new AbortController();
       this.aborts.set(sessionId, ac);
       const servers = (await this.mcp?.(sessionId)) ?? {};
@@ -202,6 +208,11 @@ beforeAll(async () => {
   stub = new NodeStubAgent();
 
   const client = new NodeClient({ baseUrl: `http://127.0.0.1:${server.port}`, token: NODE_TOKEN, baseDelayMs: 5 });
+  const bust = client.bustRuntime.bind(client);
+  client.bustRuntime = (t: string, p?: string) => {
+    busts.push([t, p]);
+    bust(t, p);
+  };
   workerHandle = await startNodeWorker({
     nodeId: NODE_ID,
     client,
@@ -263,6 +274,34 @@ d("gateway↔node E2E (real Redis)", () => {
     expect(reply.channel).toBe("C0TEAM");
     // Follower re-emitted the node's done → gateway stamped ✅ on the inbound.
     await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9000.1"), 10_000);
+  }, 30_000);
+
+  // WS-A §5.4, §7: a typed boot failure reaches Slack as its fixed text, once,
+  // and is the job's failure reason with no retry; the session's cached bundle
+  // is evicted since no child holds it.
+  test("a provider-credential boot failure posts the fixed text once and fails the job without a retry", async () => {
+    const { BootFailure, failureText } = await import("../../src/gateway/core/failure-codes");
+    const FAIL_THREAD = "9050.0";
+    posts.length = 0;
+    busts = [];
+    bootFailure = new BootFailure("PROVIDER_CREDENTIALS_UNAVAILABLE", "resolver failed: raw-detail-never-posted");
+    try {
+      await emitSlack("message", msg(FAIL_THREAD, "9050.1", "<@USLAUDE> hello"));
+      const fixed = failureText("PROVIDER_CREDENTIALS_UNAVAILABLE");
+      await until(() => posts.some((p) => p.text === fixed), 15_000);
+      await sleep(600); // a retry or a second emitter would post again within the follower's linger
+      expect(posts.filter((p) => p.text === fixed)).toHaveLength(1);
+      expect(posts.map((p) => String(p.text)).join("\n")).not.toContain("raw-detail-never-posted");
+      const sid = await sessionIdOf(FAIL_THREAD);
+      const failed = [...(await turnsQ.queue("turns").getFailed()), ...(await turnsQ.queue(nodeTurnsQueueFn(NODE_ID)).getFailed())];
+      const job = failed.find((j: any) => j.data?.sessionId === sid);
+      expect(job?.failedReason).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
+      expect(job).toBeDefined();
+      expect(job.attemptsMade).toBe(1);
+      expect(busts.some(([t]) => t === "default")).toBe(true);
+    } finally {
+      bootFailure = null;
+    }
   }, 30_000);
 
   // A cron job created inside a /1on1 carries its lock owner. The cron run keys
