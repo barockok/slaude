@@ -22,11 +22,12 @@ let turns: any;
 let registry: any;
 let pubsub: any;
 let node: any;
-let mint: (claims: Record<string, unknown>) => string;
+let mint: (claims: Record<string, unknown>, nowMs?: number) => string;
 
 /** What the fake gateway answers. */
 const gw = {
   tool: 200 as 200 | 403,
+  refresh: 200 as 200 | 409,
   whoami: 200 as 200 | 401,
   calls: [] as string[],
   fails: [] as unknown[],
@@ -42,6 +43,9 @@ const fakeFetch = async (url: string, init?: RequestInit): Promise<Response> => 
     return gw.tool === 403
       ? j(403, { error: "this node may not serve this agent", code: "GATE_DENIED" })
       : j(200, { content: [{ type: "text", text: "ok" }] });
+  }
+  if (path.endsWith("/token-refresh") && gw.refresh === 409) {
+    return j(409, { error: "the agent's node label changed", code: "LABEL_MISMATCH" });
   }
   if (path === "/v1/node/whoami") {
     return gw.whoami === 401 ? j(401, NODE_401) : j(200, { id: "node-gate", labels: ["default"], legacy: false, expiresInSec: 3600 });
@@ -64,7 +68,7 @@ beforeAll(async () => {
   const { makePubSub } = await import("../../src/queue/pubsub");
   const { mintJobToken } = await import("../../src/gateway/api/auth");
   const { Redis } = await import("ioredis");
-  mint = (c) => mintJobToken(c as any, { secret: "gate-test-secret" });
+  mint = (c, nowMs) => mintJobToken(c as any, { secret: "gate-test-secret", ...(nowMs ? { now: nowMs } : {}) });
 
   keys = makeKeys(testPrefix("wgate"));
   redis = new Redis(REAL_URL, { maxRetriesPerRequest: null });
@@ -123,13 +127,16 @@ afterAll(async () => {
   }
 });
 
-const job = (sessionId: string, jobId: string) => ({
+const job = (sessionId: string, jobId: string, mintedAgoMs = 0) => ({
   sessionId,
   tenantId: "default",
   personaId: "default",
   label: "default",
   messages: [{ ts: `1700000300.${jobId}`, user: "U1", text: "hi" }],
-  jobToken: mint({ tenant: "default", persona: "default", session: sessionId, team: "T", channel: "C", thread: "1", initiator: "U1", scope: "turn", job: jobId, label: "default" }),
+  jobToken: mint(
+    { tenant: "default", persona: "default", session: sessionId, team: "T", channel: "C", thread: "1", initiator: "U1", scope: "turn", job: jobId, label: "default" },
+    mintedAgoMs ? Date.now() - mintedAgoMs : undefined,
+  ),
   enqueuedAt: Date.now(),
 });
 
@@ -154,6 +161,23 @@ d("worker: label gate and node-credential refusals", () => {
     gw.tool = 200;
     await turns.enqueueTurn(job("s-gate", "gate2"), { label: "default" }, "gate2");
     await until(async () => (await (await turns.queue("turns").getJob("gate2"))?.getState()) === "completed", 10_000);
+  });
+
+  // Review U10b-F: the other road to LABEL_MISMATCH — refused at claim.
+  test("an aged token whose refresh is refused 409 LABEL_MISMATCH fails the job LABEL_MISMATCH without running it", async () => {
+    gw.refresh = 409;
+    try {
+      // Minted 10 minutes ago: past a fifth of its TTL, so the node refreshes it at claim.
+      await turns.enqueueTurn(job("s-refresh", "refresh1", 10 * 60_000), { label: "default" }, "refresh1");
+      await until(async () => (await (await turns.queue("turns").getJob("refresh1"))?.getState()) === "failed", 10_000);
+      const j = await turns.queue("turns").getJob("refresh1");
+      expect(j.failedReason).toBe("LABEL_MISMATCH");
+      expect(j.attemptsMade).toBe(1);
+      expect(ran.has("s-refresh")).toBe(false);
+      expect(gw.calls).toContain("/v1/jobs/refresh1/token-refresh");
+    } finally {
+      gw.refresh = 200;
+    }
   });
 
   test("a node-credential 401 pauses claims and the heartbeat until whoami succeeds", async () => {

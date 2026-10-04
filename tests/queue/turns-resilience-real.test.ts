@@ -112,10 +112,12 @@ describe.skipIf(!realEnabled)("queue/turns hardening against real Redis", () => 
     expect(await queues.takeUnclaimed((await q.getJob("tk-done"))!, { rescueActive: true })).toBe("claimed");
   });
 
-  // F1: the window between "is it still pending?" and "remove it". A worker
-  // claims AND finishes the original inside the move; the move must see that
-  // and drop its copy, so each message runs exactly once.
-  test("a job claimed and finished inside a move runs its messages exactly once", async () => {
+  // F1: what this proves is that a move REFUSES an original a worker has
+  // already finished (claimed and completed before the take): the held copy
+  // is dropped, so each message runs once. That no claim can slip in between
+  // the check and the removal is not something a test can race: the take is
+  // one Lua script, atomic by construction.
+  test("a move refuses an original a worker already finished and drops its copy", async () => {
     await ready;
     const ran: string[] = [];
     const record = async (job: Job) => {
