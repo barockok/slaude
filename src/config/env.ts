@@ -56,13 +56,18 @@ function csv(raw: string): string[] {
  *  Warns once per variable; the message names the variable, never a value. */
 const warnedSameAsNode = new Set<string>();
 function sameAsNodeToken(token: string, name: string): boolean {
-  const node = (opt("SLAUDE_NODE_TOKEN") ?? "").trim();
-  if (!node || token !== node) return false;
-  if (!warnedSameAsNode.has(name)) {
-    warnedSameAsNode.add(name);
-    console.warn(`[deploy] ${name} equals SLAUDE_NODE_TOKEN, which every node holds; treating ${name} as unset`);
+  // SLAUDE_NODE_TOKEN is what a node presents; SLAUDE_NODE_LEGACY_TOKEN is the
+  // gateway's copy of the shared token every legacy node presents as its own.
+  for (const nodeVar of ["SLAUDE_NODE_TOKEN", "SLAUDE_NODE_LEGACY_TOKEN"]) {
+    const node = (opt(nodeVar) ?? "").trim();
+    if (!node || token !== node) continue;
+    if (!warnedSameAsNode.has(name)) {
+      warnedSameAsNode.add(name);
+      console.warn(`[deploy] ${name} equals ${nodeVar}, which every node holds; treating ${name} as unset`);
+    }
+    return true;
   }
-  return true;
+  return false;
 }
 /** Test helper: let the same-as-node-token warning fire again. */
 export function __resetDeployTokenWarnings() { warnedSameAsNode.clear(); }
