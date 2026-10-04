@@ -10,7 +10,7 @@ import { loadSoulData, setSoulData } from "./soul/extract";
 import { assertOAuthKeyCanary } from "./agent/mcp-oauth/store";
 import { sharedLoopback } from "./agent/mcp-oauth/shared-loopback";
 import { verifyState } from "./agent/mcp-oauth/state";
-import { env } from "./config/env";
+import { env, jobAgeEnvViolations } from "./config/env";
 import { assertPanelConfig } from "./gateway/panel/auth/config";
 import { assertPortalConfig } from "./gateway/portal/config";
 import {
@@ -36,10 +36,11 @@ async function main() {
   // anything is opened, since opening PGLite on the shared volume is itself the
   // harm. Resolved from env alone; nothing is connected yet.
   const dbCfg = resolveDbConfig();
-  // Node credential keys (node labels spec §4.1): every role that mounts /v1
-  // verifies them, so a weak key or one shared with the job secret stops boot.
+  // Node credential keys and job-token caps (node labels spec §4.1, §4.4): every
+  // role that mounts /v1 uses them, so a weak key, one shared with the job
+  // secret, or an unparsable cap stops boot.
   if (env.role() !== "node") {
-    const bad = nodeKeyViolations(process.env);
+    const bad = [...nodeKeyViolations(process.env), ...jobAgeEnvViolations(process.env)];
     if (bad.length) throw new Error(`refusing to start:\n${bad.map((v) => `  - ${v}`).join("\n")}`);
   }
   assertGatewayRequirements({

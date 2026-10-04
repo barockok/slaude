@@ -38,6 +38,20 @@ export function parseDurationSec(raw: string): number | null {
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
+/** Boot check for the job-token caps: each set value must parse. Messages name
+ *  the variable. A bad value would otherwise surface as a 500 on every token
+ *  refresh and reissue. */
+export function jobAgeEnvViolations(e: Record<string, string | undefined>): string[] {
+  const out: string[] = [];
+  for (const name of ["SLAUDE_JOB_TOKEN_MAX_AGE", "SLAUDE_JOB_MAX_AGE"]) {
+    const raw = (e[name] ?? "").trim();
+    if (raw && parseDurationSec(raw) === null) {
+      out.push(`${name} must be a positive number of seconds or a duration like 6h (got '${raw}')`);
+    }
+  }
+  return out;
+}
+
 function durationEnvSec(name: string, dflt: number): number {
   const raw = opt(name).trim();
   if (!raw) return dflt;
