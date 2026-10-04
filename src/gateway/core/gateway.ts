@@ -737,6 +737,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // for any brain mode so per-turn scoping and memory writes see the real id.
   // resolveAgentId catches auth.test failures internally and always resolves, so
   // a bare fire-and-forget is safe (no unhandled rejection).
+  // Deliberately NOT per Slack app (D1.4): this id anchors ONE process-wide
+  // brain slice (agent-<id>), read synchronously by every scope builder. Making
+  // it per app would split one deployment's memory across slices by whichever
+  // app a turn arrived through, which is a brain-scoping design change. With
+  // several registered apps the auth.test fallback names the oldest one, so
+  // such deployments should set SLAUDE_AGENT_ID, which wins without a call.
   if (brainEnabled()) void resolveAgentId(() => outClient.auth.test());
   if (brainEnabled() && brainMode() === "local") {
     void ensureSources()
