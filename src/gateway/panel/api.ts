@@ -437,9 +437,9 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           let name: string;
           try { name = decodeURIComponent(seg[3]!); } catch { return json(422, { error: "invalid persona name" }); }
           if (!PERSONA_NAME_RE.test(name)) return json(422, { error: "invalid persona name" });
-          const p = (await Personas.effectivePersonas(tenant, { includeTombstoned: true })).find((x) => x.name === name);
-          const d = (await Personas.desiredPersonas(tenant, { includeTombstoned: true })).find((x) => x.name === name);
-          if (!p || !d) return json(404, { error: `no persona named '${name}'` });
+          const one = await Personas.personaByName(tenant, name, { includeTombstoned: true });
+          if (!one) return json(404, { error: `no persona named '${name}'` });
+          const { effective: p, desired: d } = one;
           // Whether the agent holds an OAuth credential per server: expiries
           // only, nothing decrypted.
           const held = await credentialExpiries({ kind: "agent", tenant, persona: name });

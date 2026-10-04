@@ -144,6 +144,24 @@ export async function effectivePersonas(tenant: string, opts: { includeTombstone
   ));
 }
 
+/** One persona's two layers, read by name in a single snapshot of each table,
+ *  or null when there is no such row (tombstoned rows only when asked). */
+export async function personaByName(
+  tenant: string,
+  name: string,
+  opts: { includeTombstoned?: boolean } = {},
+): Promise<{ desired: DesiredPersona; effective: EffectivePersona } | null> {
+  const r = await db.one<Row>(
+    `SELECT ${ROW_COLUMNS}
+     FROM personas WHERE tenant_id = ? AND name = ? ${opts.includeTombstoned ? "" : "AND tombstoned_at IS NULL"}`,
+    [tenant, name]);
+  if (!r) return null;
+  const ovs = await db.query<{ field: OverrideField; value: string }>(
+    `SELECT field, value FROM persona_overrides WHERE tenant_id = ? AND persona_name = ?`, [tenant, name]);
+  const desired = toDesired(r);
+  return { desired, effective: mergeEffective(desired, ovs.map((o): Override => ({ field: o.field, value: JSON.parse(decrypt(o.value)) }))) };
+}
+
 export async function applySync(
   tenant: string,
   rows: DesiredPersona[],
