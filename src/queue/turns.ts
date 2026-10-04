@@ -198,6 +198,11 @@ export class TurnQueues {
     this.#afterTakeOriginal = opts.afterTakeOriginal;
   }
 
+  /** The command connection these queues share (label status reads). */
+  get redis(): Redis {
+    return this.#connection;
+  }
+
   /**
    * Take `job` off its queue if no worker holds it (TAKE_UNCLAIMED_LUA, one
    * atomic step). Returns the script's outcome: a state name when taken.

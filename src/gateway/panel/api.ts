@@ -37,6 +37,7 @@ import type { SessionRow } from "../../db/schema";
 import type { Registry } from "../../queue/registry";
 import type { PubSub } from "../../queue/pubsub";
 import type { PanelLock } from "../../queue/panel-lock";
+import type { LabelStatus } from "../../queue/label-status";
 import { guardRequest } from "./auth/guard";
 import { createAuthRoutes } from "./auth/routes";
 import { audit } from "./auth/audit";
@@ -141,6 +142,9 @@ export interface PanelApiDeps {
   eventsPollMs?: number;
   /** Strict soul extraction for runtime persona changes. Default: the real extractor. */
   extractSoul?: (text: string) => Promise<unknown>;
+  /** Node label status (node labels spec §4.7) for GET /panel/api/labels.
+   *  Absent or null (mono: no node queue) = 503. */
+  labels?: (() => Promise<LabelStatus[]>) | null;
 }
 
 export interface PanelApi {
@@ -341,6 +345,17 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         const result = await publishConfigReload(deps.pubsub, tenantId);
         audit({ action: "reload", operator: operatorId, role, outcome: "ok", detail: { tenantId, ...result } });
         return json(200, { tenant: tenantId, ...result });
+      }
+
+      // GET /panel/api/labels — read-only, any authenticated operator: per node
+      // label in use, its live nodes, waiting jobs and whether it is unserved.
+      if (seg.length === 3 && seg[2] === "labels") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        if (!deps.labels) return json(503, { error: "label status unavailable (no node queue)" });
+        return json(
+          200,
+          (await deps.labels()).map((s) => ({ label: s.label, liveNodes: s.liveNodes, waiting: s.waiting, unserved: s.unserved })),
+        );
       }
 
       // --- Runtime persona changes. Git is the source of truth; these are for
