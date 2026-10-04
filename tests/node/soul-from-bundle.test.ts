@@ -421,3 +421,33 @@ describe("node bundle model resolver", () => {
     await expect(makeBundleModelResolver(deps({ managed: true, defaultModel: "m" }, "bea"))("s-1", "ana")).rejects.toThrow(/persona mismatch/);
   });
 });
+
+// Node labels spec §4.6: a 403 on the bundle fails the job the same way a
+// gate 403 on a tool call does — LABEL_MISMATCH, never transient.
+describe("a label-gate 403 on the bundle", () => {
+  const gated = {
+    client: {
+      getRuntime: async () => {
+        const { GateDenied } = await import("../../src/node/client");
+        throw new GateDenied(JSON.stringify({ code: "GATE_DENIED" }));
+      },
+    },
+    tenantFor: () => "default",
+    tokenFor: () => "job-token",
+    personaFor: () => "ana",
+  };
+  test("fails the soul and model resolution with LABEL_MISMATCH", async () => {
+    for (const r of [makeBundleSoulResolver(gated as any), makeBundleModelResolver(gated as any)]) {
+      const e = await (r as (s: string, p: string) => Promise<unknown>)("s-1", "ana").catch((x: unknown) => x);
+      expect(e).toBeInstanceOf(BootFailure);
+      expect((e as BootFailure).code).toBe("LABEL_MISMATCH");
+      expect((e as BootFailure).transient).toBe(false);
+    }
+  });
+  test("fails the child-env resolution with LABEL_MISMATCH", async () => {
+    const e = await makeNodeChildEnvResolver({ ...(gated as any), fallback: true })("s-1").catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(BootFailure);
+    expect((e as BootFailure).code).toBe("LABEL_MISMATCH");
+    expect((e as BootFailure).transient).toBe(false);
+  });
+});

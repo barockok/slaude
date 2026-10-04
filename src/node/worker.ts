@@ -35,7 +35,7 @@ import { makeRegistry, type Registry } from "../queue/registry";
 import { makePubSub, type PubSub } from "../queue/pubsub";
 import { withSessionLock, HELD_BY_OTHER } from "../queue/locks";
 import { jobLabel, TurnQueues, type TurnJob } from "../queue/turns";
-import { NodeApiError, NodeClient } from "./client";
+import { GateDenied, isLabelMismatch, NodeApiError, NodeClient } from "./client";
 import { makeAuthRecovery, makeSessionSeeder } from "./credentials";
 import { nodeConfigRoot, sessionConfigDir, existingSessionConfigDir } from "../agent/config-root";
 import { RestSessionStore } from "./session-store";
@@ -46,7 +46,7 @@ import type { RuntimeBundle } from "../gateway/api/tenants";
 import { decodeClaims, makeRemoteFactory, makeRemoteResolver } from "./remote";
 import { lockFromClaims } from "./session-lock";
 import { ChildEnvPatch } from "../agent/child-env";
-import { BootFailure, createOnceGuard } from "../gateway/core/failure-codes";
+import { BootFailure, createOnceGuard, type FailureCode } from "../gateway/core/failure-codes";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -103,7 +103,10 @@ export { decodeClaims };
  * the queue would otherwise run on a mostly-spent (or expired, within the
  * refresh grace) token. A refresh refused with 401 means the job waited past
  * the grace: ask the gateway to re-mint it from the queued job (node labels
- * spec §4.4). Any failure keeps the original token.
+ * spec §4.4). A refusal because the persona now runs on another label (409
+ * LABEL_MISMATCH), or a gate 403, throws BootFailure("LABEL_MISMATCH"): the
+ * job fails and the gateway re-dispatches it once. Any other failure keeps
+ * the original token.
  */
 export async function tokenAtClaim(
   client: Pick<NodeClient, "refreshJobToken" | "reissueJobToken">,
@@ -117,6 +120,9 @@ export async function tokenAtClaim(
   try {
     return await client.refreshJobToken(jobId, token);
   } catch (e) {
+    if (e instanceof GateDenied || (e instanceof NodeApiError && isLabelMismatch(e.status, e.body))) {
+      throw new BootFailure("LABEL_MISMATCH", `token refresh refused for job ${jobId}: the agent's label changed`, { cause: e });
+    }
     if (e instanceof NodeApiError && e.status === 401) {
       try {
         return await client.reissueJobToken(jobId, queueName, token);
@@ -270,9 +276,16 @@ export function nodeChildEnv(
   return new ChildEnvPatch(set, providerSelectingNames(opts.nodeEnv));
 }
 
+function labelMismatchBoot(e: unknown): BootFailure {
+  return new BootFailure("LABEL_MISMATCH", "the gateway refused this node for this agent (label gate)", { cause: e });
+}
+
 /** A getRuntime failure as a typed boot failure: the gateway's 503 says
  *  whether it is transient; a network error or another 5xx is; a 4xx is not. */
 function bundleFetchFailure(e: unknown): BootFailure {
+  // A gate 403 on the bundle: this node may not serve the agent (node labels
+  // spec §4.6). Never transient; the gateway re-dispatches the turn once.
+  if (e instanceof GateDenied) return labelMismatchBoot(e);
   let transient = true;
   if (e instanceof NodeApiError) {
     if (e.status === 503) {
@@ -360,7 +373,11 @@ async function sessionBundle(deps: BundleResolverDeps, sessionId: string, person
   if (recorded !== undefined && recorded !== asked) {
     throw new Error(`persona mismatch for session ${sessionId}: session boots as '${asked}', job recorded '${recorded}'`);
   }
-  return deps.client.getRuntime(tenant, asked, token);
+  try {
+    return await deps.client.getRuntime(tenant, asked, token);
+  } catch (e) {
+    throw e instanceof GateDenied ? labelMismatchBoot(e) : e;
+  }
 }
 
 export function makeBundleSoulResolver(deps: BundleResolverDeps): (sessionId: string, persona: string | undefined) => Promise<{ soulMd: string; soulJson: unknown }> {
@@ -419,6 +436,9 @@ export interface NodeWorkerOpts {
    *  before the processor returns (i.e. before any BullMQ ack) — the window
    *  a kill-after-reply zombie test needs to die in. */
   hooks?: { afterTurn?: (jobId: string, outcome: "done" | "error") => void | Promise<void> };
+  /** Backoff of the whoami retry while paused on a 401 (tests shrink it).
+   *  Default 5s doubling to 60s. */
+  authRetry?: { initialMs?: number; maxMs?: number };
 }
 
 /** How long a turn-done marker outlives its job (covers Slack's retry window
@@ -475,6 +495,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // must not claim to be healthy.
   let state: NodeWorkerState = "starting";
   let lastWorkerError: { at: number; message: string } | null = null;
+  let stopped = false;
 
   // Connections: one command conn (registry/locks/streams), one subscriber,
   // one per BullMQ worker (blocking claims must never share).
@@ -577,6 +598,59 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // signed claim: a node has no database to read it from.
   agent.setSessionLockResolver(async (sessionId) => lockFromClaims(store, sessionId));
 
+  /**
+   * Sessions whose current turn got a label-gate 403 on any gateway call
+   * (node labels spec §4.6). The call itself fails (a tool shim returns an
+   * isError result); at turn end the job FAILS with LABEL_MISMATCH instead of
+   * acknowledging "done", so the gateway re-dispatches it once.
+   */
+  const gateDenied = new Set<string>();
+
+  /**
+   * A 401 for this node's own credential (revoked or expired) PAUSES every
+   * claim loop and stops the heartbeat — the node cannot serve, so it must not
+   * look alive to warm routing or the unserved-label signal — and logs once.
+   * In-flight turns are left to finish or fail. It resumes only after GET
+   * /v1/node/whoami succeeds again (a 404 is an older gateway that has
+   * already authenticated the request).
+   */
+  let claimWorkers: Worker[] = [];
+  let authPaused = false;
+  const authRetry = { initialMs: opts.authRetry?.initialMs ?? 5_000, maxMs: opts.authRetry?.maxMs ?? 60_000 };
+  function pauseForAuth(): void {
+    if (authPaused || stopped) return;
+    authPaused = true;
+    console.error(`[node] ${nodeId} the gateway refused this node's credential (401): pausing claims until it is accepted again`);
+    void (async () => {
+      await Promise.all(claimWorkers.map((w) => w.pause(true).catch(() => {})));
+      let delay = authRetry.initialMs;
+      while (!stopped) {
+        await sleep(delay);
+        if (stopped) return;
+        try {
+          await client.whoami();
+          break;
+        } catch (e) {
+          if (e instanceof NodeApiError && e.status === 404) break;
+          delay = Math.min(delay * 2, authRetry.maxMs);
+        }
+      }
+      if (stopped) return;
+      await registry.nodeUp(nodeId, labels).catch(() => {});
+      for (const w of claimWorkers) w.resume();
+      authPaused = false;
+      console.log(`[node] ${nodeId} credential accepted again: resuming claims`);
+    })();
+  }
+
+  client.setHooks({
+    onGateDenied: (jobToken) => {
+      const sid = jobToken ? decodeClaims(jobToken)?.session : undefined;
+      if (sid) gateDenied.add(sid);
+    },
+    onNodeUnauthorized: () => pauseForAuth(),
+  });
+
   // Turn-end wait: resolved by the first done/error for the session.
   const turnWaiters = new Map<string, (outcome: "done" | "error") => void>();
   agent.on("event", (e: AgentEvent) => {
@@ -585,8 +659,16 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     // Exact trim: at MAXLEN 1000 the cost is negligible and it removes the
     // approximate-trim overshoot window, keeping the gateway follower's gap
     // exposure to genuinely >1000-event bursts (which the dispatcher covers
-    // via job-completion authority anyway).
-    void pubsub.appendEvent(e.sessionId, e, { exact: true }).catch(() => {});
+    // via job-completion authority anyway). A turn that hit the label gate
+    // never reports "done" (nor its own error): its end goes out as a
+    // LABEL_MISMATCH error, which the gateway's follower holds back while it
+    // decides on a re-dispatch.
+    const ends = (e.type === "done" && !e.autoEvolve) || e.type === "error";
+    const out: AgentEvent =
+      ends && gateDenied.has(e.sessionId)
+        ? { type: "error", sessionId: e.sessionId, error: "label gate refused this node", code: "LABEL_MISMATCH" }
+        : e;
+    void pubsub.appendEvent(e.sessionId, out, { exact: true }).catch(() => {});
     if (e.type === "toolResult" && (e.result as { is_error?: unknown } | undefined)?.is_error) {
       void recovery.onToolError(e.sessionId).catch(() => {});
     }
@@ -611,6 +693,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
 
   async function runTurn(job: Job, data: TurnJob): Promise<"done" | "error" | "skipped"> {
     const sessionId = data.sessionId;
+    gateDenied.delete(sessionId);
     const ac = new AbortController();
     turnAborts.set(sessionId, ac);
     const abortAgent = () => {
@@ -720,10 +803,27 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       metric.nodeTurnsTotal.inc({ result: "skipped" });
       return { skipped: "abort-flag" };
     }
+    /** Fail the job with a typed code: the code is the job's failure reason
+     *  and rides an error event (unless the turn already sent one), and the
+     *  job is not retried. */
+    const failTyped = (code: FailureCode, why: string, emit = true): never => {
+      console.error(`[node] job failed session=${data.sessionId} job=${job.id} code=${code}: ${why}`);
+      if (emit) agent.emit("event", { type: "error", sessionId: data.sessionId, error: why, code } satisfies AgentEvent);
+      metric.nodeTurnsTotal.inc({ result: "error" });
+      void client.failJob(String(job.id), { sessionId: data.sessionId, code });
+      throw new UnrecoverableError(code);
+    };
     // Refresh an aging token at claim: minted at ENQUEUE, but the turn's
     // deadline starts NOW — a job that sat in the queue would otherwise run
-    // on a mostly-spent (or expired, within the refresh grace) token.
-    const jobToken = await tokenAtClaim(client, String(job.id), job.queueName, data.jobToken);
+    // on a mostly-spent (or expired, within the refresh grace) token. A
+    // refusal because the agent was relabelled fails the job LABEL_MISMATCH.
+    let jobToken: string;
+    try {
+      jobToken = await tokenAtClaim(client, String(job.id), job.queueName, data.jobToken);
+    } catch (e) {
+      if (e instanceof BootFailure) failTyped(e.code, e.message);
+      throw e;
+    }
     // The token is bound under the session lock (runLockedTurn), not here.
     tenants.set(data.sessionId, data.tenantId);
     personas.set(data.sessionId, data.personaId ?? "default");
@@ -772,6 +872,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       });
     } catch (e) {
       if (!(e instanceof BootFailure)) throw e;
+      gateDenied.delete(data.sessionId);
       // A typed boot failure (WS-A §5.4, §7). A transient one (the secret
       // store or the gateway not answering, review R2-F4) with attempts left
       // takes BullMQ's normal retry, silently. Otherwise the code rides the
@@ -802,6 +903,10 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     }
 
     metric.nodeTurnDuration.observe((Date.now() - started) / 1000);
+    // A call of this turn hit the label gate (node labels spec §4.6): the job
+    // fails with LABEL_MISMATCH rather than being acknowledged; the turn's end
+    // already went out as that error event.
+    if (gateDenied.delete(data.sessionId)) failTyped("LABEL_MISMATCH", "a gateway call of this turn hit the label gate", false);
     metric.nodeTurnsTotal.inc({ result: res });
     if (res === "error") void client.failJob(String(job.id), { sessionId: data.sessionId });
     else void client.ackJob(String(job.id), { sessionId: data.sessionId, result: res });
@@ -828,6 +933,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         ...opts.bull,
       }),
   );
+  claimWorkers = workers;
   for (const w of workers) {
     w.on("error", (e) => {
       lastWorkerError = { at: Date.now(), message: String((e as Error)?.message ?? e) };
@@ -845,6 +951,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // sessions whose Query the idle TTL closed.
   const hbTimer = setInterval(() => {
     void (async () => {
+      // Paused on a 401: not serving, so not announced (pauseForAuth).
+      if (authPaused) return;
       try {
         await registry.beatNode(nodeId, labels);
         metric.nodeSessionsLive.set(agent.liveCount());
@@ -879,6 +987,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     sessions_live: agent.liveCount(),
     redis: cmd.status,
     workers_running: workersRunning(),
+    ...(authPaused ? { auth_paused: true } : {}),
     ...(lastWorkerError ? { last_worker_error: lastWorkerError } : {}),
   });
   const port = opts.port === undefined ? (env.nodePort() || null) : opts.port;
@@ -923,7 +1032,6 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         });
   if (http) console.log(`[node] ${nodeId} healthz/metrics on :${http.port}`);
 
-  let stopped = false;
   async function stop(o: { drainSec?: number } = {}): Promise<void> {
     if (stopped) return;
     stopped = true;
