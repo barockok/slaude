@@ -202,6 +202,10 @@ export const m = {
   v1ToolCallsTotal: metrics.counter("slaude_v1_tool_calls_total", "REST tool-plane invocations on /v1/tools/<server>/<tool>, labeled by server + tool."),
   // Node runtime (spec §6).
   nodeSessionsLive: metrics.gauge("slaude_node_sessions_live", "Warm SDK Query sessions held by this node."),
+  nodeGatewaySecretsPresent: metrics.gauge(
+    "slaude_node_gateway_secrets_present",
+    "Gateway-only variables found in this node's environment at boot (0 = the Secret split is done).",
+  ),
   nodeTurnsTotal: metrics.counter("slaude_node_turns_total", "Turn jobs processed by this node, labeled by result (done|error|skipped|requeued)."),
   nodeTurnDuration: metrics.histogram(
     "slaude_node_turn_duration_seconds",

@@ -45,7 +45,21 @@ kubectl apply -f deploy/k8s-scale/40-gateway.yaml
 kubectl apply -f deploy/k8s-scale/50-node.yaml
 kubectl apply -f deploy/k8s-scale/60-ingress.yaml
 kubectl apply -f deploy/k8s-scale/70-autoscale.yaml   # KEDA ScaledObject (see file for the HPA fallback)
+# or, the same set in one build:
+kubectl apply -k deploy/k8s-scale
+# optional, on a CNI that enforces NetworkPolicy (read the file first):
+kubectl apply -f deploy/k8s-scale/optional/node-egress-networkpolicy.yaml
 ```
+
+`10-secrets.yaml` holds **two** Secrets: `slaude-scale-secrets` for the gateway
+only (master key, job secret, database URLs, Slack secrets) and
+`slaude-scale-node-secrets` for nodes (the node bearer, Redis, the provider env
+fallback). The gateway reads the node bearer and Redis URL from the node Secret
+by key. Never load the gateway Secret on a node: a node that finds a
+gateway-only variable logs a warning at boot and sets
+`slaude_node_gateway_secrets_present`, and a later release refuses to boot.
+Upgrading a cluster that used one Secret for both tiers, and the rotation that
+follows, is described in the multi-node deploy guide (the Secret split).
 
 Then point the Slack app at the ingress host — `bun run manifest --mode http
 --url https://slaude-gw.example.com` emits the request URLs (and, when

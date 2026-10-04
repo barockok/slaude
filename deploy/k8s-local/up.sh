@@ -120,11 +120,21 @@ ensure_secret() { grep -q "^$1=" "$SECRETS" || echo "$1=$2" >>"$SECRETS"; }
 # own database on the in-cluster Postgres (created by the dev datastores init).
 ensure_secret SLAUDE_BRAIN_DATABASE_URL "postgres://slaude:slaude@postgres:5432/slaude_brain"
 
+# secrets.env is the GATEWAY's Secret. Nodes get their own, holding only what a
+# node needs: its credential and Redis. It is derived from secrets.env on every
+# run rather than generated, so the token the gateway accepts and the token
+# nodes present can never differ, and a cluster created before the split
+# (which had one Secret for both tiers) keeps its existing values.
+NODE_ENV="$HERE/node.env"
+grep -E '^(SLAUDE_NODE_TOKEN|SLAUDE_REDIS_URL)=' "$SECRETS" >"$NODE_ENV" || true
+[[ "$(wc -l <"$NODE_ENV" | tr -d ' ')" == 2 ]] \
+  || die "$SECRETS must define SLAUDE_NODE_TOKEN and SLAUDE_REDIS_URL exactly once; fix it or run ./down.sh --purge"
+
 # The pipeline credential for /deploy. It lives in its OWN file and Secret, not
-# secrets.env: that file is injected whole into gateways and nodes alike, and a
-# node holding the deploy token could rewrite persona identity — the one thing
-# the separate token exists to prevent. 48 hex chars clears the gateway's
-# 32-character floor. Never printed.
+# secrets.env, and is wired into the gateway only by key: a node holding the
+# deploy token could rewrite persona identity — the one thing the separate
+# token exists to prevent. 48 hex chars clears the gateway's 32-character
+# floor. Never printed.
 DEPLOY="$HERE/deploy.env"
 touch "$DEPLOY"
 SECRETS="$DEPLOY"

@@ -41,6 +41,7 @@ import { makeNodePermissionResolver } from "./shims/permission";
 import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
 import { decodeClaims, makeRemoteFactory, makeRemoteResolver } from "./remote";
+import { lockFromClaims } from "./session-lock";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -339,6 +340,9 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // Remote mode (spec §4.5): target from the job token's signed claims; key
   // fetched per handle from the gateway (see ./remote).
   agent.setRemote(makeRemoteResolver(store), makeRemoteFactory({ client, store, tenants }));
+  // The /1on1 lock (session-mode block, config identity) from the job token's
+  // signed claim: a node has no database to read it from.
+  agent.setSessionLockResolver(async (sessionId) => lockFromClaims(store, sessionId));
 
   // Turn-end wait: resolved by the first done/error for the session.
   const turnWaiters = new Map<string, (outcome: "done" | "error") => void>();

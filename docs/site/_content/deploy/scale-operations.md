@@ -39,6 +39,7 @@ values, so never `sum()` these.
 | `slaude_node_turns_total` | counter | `result` | Turn jobs processed (`done`\|`error`\|`skipped`\|`requeued`) |
 | `slaude_node_turn_duration_seconds` | histogram | — | Wall-clock turn duration |
 | `slaude_node_queue_claim_latency_seconds` | histogram | — | enqueue→claim latency (SLO: p95 < 500ms, spec §8) |
+| `slaude_node_gateway_secrets_present` | gauge | — | Gateway-only variables found in the node's environment at boot. Anything above 0 means the node still loads the gateway's Secret; see [the Secret split](multi-node.md#the-secret-split) |
 
 ### Agent runtime (emitted wherever the `AgentManager` runs — nodes in this topology, the single process in mono)
 

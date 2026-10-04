@@ -20,6 +20,7 @@ import { encodeRunAs } from "../../agent/credential-owner";
 import { mintJobToken } from "../api/auth";
 import { env } from "../../config/env";
 import { activeRemoteTarget } from "../../remote/active";
+import * as OneOnOne from "../../db/one-on-one";
 import { sessionConfigFp } from "../../remote/fingerprint";
 import { makeKeys, type Keys } from "../../queue/keys";
 import { getRedis, getSubRedis } from "../../queue/redis";
@@ -240,6 +241,11 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       // Remote mode (spec §4.5): only a target owned by the runAs user is signed in.
       const remoteTarget = env.remote.enabled() ? await activeRemoteTarget(meta.channelId, meta.threadTs) : null;
       const remoteClaim = remoteTarget && remoteTarget.userId === runAsUser ? { addr: remoteTarget.addr, dir: remoteTarget.dir } : undefined;
+      // The thread's /1on1 lock, for the node's session-mode block: a node has
+      // no database. Always present (null = unlocked) so a node can tell it from
+      // a token minted by an older gateway. A failed lookup fails the dispatch.
+      const lockRow = await OneOnOne.find(meta.channelId, meta.threadTs);
+      const lockClaim = lockRow ? { user: lockRow.locked_user, openScope: lockRow.open_scope } : null;
       const jobToken = mintJobToken({
         tenant: tenantId,
         persona: personaId,
@@ -251,9 +257,15 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
         scope: "turn",
         job: jobId,
         runAs: encodeRunAs(runAsUser),
-        ...(env.remote.enabled()
-          ? { sessionConfigFp: sessionConfigFp(runAsUser ?? null, remoteClaim ?? null), ...(remoteClaim ? { remote: remoteClaim } : {}) }
-          : {}),
+        lock: lockClaim,
+        // Minted on every dispatch, remote mode or not: a warm node session
+        // reboots when it changes, which is how a lock that flips locked↔open
+        // reaches the session-mode instructions on a node. A follow-up that
+        // coalesces into a waiting job keeps that job's token (and refresh
+        // copies its claims), so runAs, lock and fingerprint are as of the
+        // job's first message: at most that one job runs on the old lock.
+        sessionConfigFp: sessionConfigFp({ runAs: runAsUser ?? null, lock: lockClaim, remote: remoteClaim ?? null }),
+        ...(remoteClaim ? { remote: remoteClaim } : {}),
       });
       // Routing (spec §2): warm + fresh → the holding node's queue; anything
       // else → shared. A node receiving a per-node job it no longer holds

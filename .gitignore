@@ -39,4 +39,5 @@ docs/site/_site/
 deploy/k8s-local/secrets.env
 deploy/k8s-local/provider.env
 deploy/k8s-local/deploy.env
+deploy/k8s-local/node.env
 deploy/k8s-local/model.env

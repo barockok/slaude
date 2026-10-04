@@ -23,7 +23,6 @@ import { env } from "../../config/env";
 import { paths } from "../../config/home";
 import { loadSoul } from "../../soul/loader";
 import { soulData } from "../../soul/extract";
-import { loadExternalMcp } from "../core/external-mcp";
 import { personaSkillsRoot } from "../../skills/loader";
 import { json, notFound } from "./http";
 
@@ -39,8 +38,11 @@ export interface RuntimeBundle {
    *  SLAUDE_AGENT_ID, the anchor of a named persona's private brain slice.
    *  null for the default persona's env tier, or when the persona has none. */
   slackUserId: string | null;
-  /** External MCP config ({servers, privateServices}) the node renders to mcp.json. */
-  mcpJson: unknown;
+  /** Always null. No node reads it, and on the disk tiers it was the shared,
+   *  node-writable $SLAUDE_HOME/.mcp.json with ${VAR} placeholders expanded
+   *  against the gateway's environment, so a planted placeholder could carry a
+   *  gateway secret to a node. Kept in the shape for older nodes. */
+  mcpJson: null;
   /** Skill roots in resolution order (base first, persona overlay last). */
   skillsPaths: string[];
   /** The persona's default model: on a managed tenant its effective model (git
@@ -172,7 +174,7 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
       soulMd: persona.soul_md,
       soulJson: typeof persona.soul_json === "string" ? JSON.parse(persona.soul_json) : persona.soul_json,
       slackUserId: persona.slack_user_id ?? null,
-      mcpJson: typeof persona.mcp_json === "string" ? JSON.parse(persona.mcp_json) : persona.mcp_json,
+      mcpJson: null,
       skillsPaths: [paths.skills, ...overlay],
       defaultModel: persona.model_default ?? env.model(),
     };
@@ -208,7 +210,7 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
       soulMd: personaSoul,
       soulJson: null,
       slackUserId: fsPersona.slackUserId ?? null,
-      mcpJson: loadExternalMcp(),
+      mcpJson: null,
       skillsPaths: [paths.skills, personaSkillsRoot(personaId)],
       defaultModel: env.model(),
     };
@@ -237,7 +239,7 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
     soulMd,
     soulJson,
     slackUserId: null,
-    mcpJson: loadExternalMcp(),
+    mcpJson: null,
     skillsPaths: [paths.skills],
     defaultModel: env.model(),
   };

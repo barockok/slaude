@@ -508,7 +508,24 @@ export class AgentManager extends EventEmitter {
     threadTs?: string | null,
   ): Promise<string | undefined> {
     return this.#cronOAuthUser.get(sessionId)
-      ?? (channel && threadTs ? (await OneOnOne.find(channel, threadTs))?.locked_user : undefined);
+      ?? (channel && threadTs ? (await this.#lockFor(sessionId, channel, threadTs))?.locked_user : undefined);
+  }
+
+  #lockResolver: ((sessionId: string) => Promise<OneOnOneLockRow | null | undefined>) | null = null;
+
+  /** Install where a session's /1on1 lock comes from. A node has no database:
+   *  its resolver reads the lock the gateway signed into the job token. The
+   *  resolver returns undefined when it does not know (a token from an older
+   *  gateway), which falls back to the database lookup. Unset = the database
+   *  (mono, gateway). */
+  setSessionLockResolver(fn: ((sessionId: string) => Promise<OneOnOneLockRow | null | undefined>) | null) {
+    this.#lockResolver = fn;
+  }
+
+  async #lockFor(sessionId: string, channel: string, threadTs: string): Promise<OneOnOneLockRow | null> {
+    const supplied = this.#lockResolver ? await this.#lockResolver(sessionId) : undefined;
+    if (supplied !== undefined) return supplied;
+    return OneOnOne.find(channel, threadTs);
   }
 
   /** Number of SDK Query sessions currently live in this process. */
@@ -857,7 +874,12 @@ export class AgentManager extends EventEmitter {
     const row = await this.#store.findById(sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);
 
-    const memBlock = await memory.prefetch(sessionId);
+    // Memory must never break a turn (the brain provider's own policy). The
+    // sqlite provider throws where no database is open, as on a node.
+    const memBlock = await memory.prefetch(sessionId).catch((e) => {
+      console.error(`[mgr] memory prefetch failed session=${sessionId}:`, e instanceof Error ? e.message : e);
+      return null;
+    });
     const abort = new AbortController();
     const queue: string[] = [firstText];
     let resolveNext: (() => void) | null = null;
@@ -929,7 +951,7 @@ export class AgentManager extends EventEmitter {
     // re-resolution (CLAUDE_CONFIG_DIR is read once at child boot).
     const lock =
       row.slack_channel_id && row.slack_thread_ts
-        ? await OneOnOne.find(row.slack_channel_id, row.slack_thread_ts)
+        ? await this.#lockFor(sessionId, row.slack_channel_id, row.slack_thread_ts)
         : null;
     const oauthUser = await this.resolveEffectiveIdentity(
       sessionId,
@@ -1412,7 +1434,9 @@ export class AgentManager extends EventEmitter {
     const user = live.turn.user;
     const assistant = live.turn.assistant.join("\n");
     live.turn = { user: "", assistant: [] };
-    void memory.syncTurn({ sessionId: live.id, user, assistant });
+    void memory.syncTurn({ sessionId: live.id, user, assistant }).catch((e) => {
+      console.error(`[mgr] memory sync failed session=${live.id}:`, e instanceof Error ? e.message : e);
+    });
   }
 
   /**

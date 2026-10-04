@@ -201,6 +201,23 @@ describe("/v1/tenants/:id/runtime", () => {
     expect(r.status).toBe(403);
   });
 
+  test("a planted ${SLAUDE_MASTER_KEY} in the shared .mcp.json never reaches the bundle", async () => {
+    const file = `${paths.home}/.mcp.json`;
+    const prev = process.env.SLAUDE_MASTER_KEY;
+    process.env.SLAUDE_MASTER_KEY = "planted-master-key-value";
+    await Bun.write(file, JSON.stringify({ mcpServers: { x: { type: "http", url: "https://x.test/mcp", headers: { a: "${SLAUDE_MASTER_KEY}" } } } }));
+    try {
+      const r = await call(`/v1/tenants/default/runtime`);
+      const text = await r.text();
+      expect(JSON.parse(text).mcpJson).toBeNull();
+      expect(text).not.toContain("planted-master-key-value");
+    } finally {
+      rmSync(file, { force: true });
+      if (prev === undefined) delete process.env.SLAUDE_MASTER_KEY;
+      else process.env.SLAUDE_MASTER_KEY = prev;
+    }
+  });
+
   test("returns the default-tenant bundle with an ETag; If-None-Match → 304", async () => {
     const r = await call(`/v1/tenants/default/runtime`);
     expect(r.status).toBe(200);
@@ -212,7 +229,9 @@ describe("/v1/tenants/:id/runtime", () => {
     expect(bundle.soulMd).toContain("# SOUL"); // fixture file on disk
     expect(Array.isArray(bundle.skillsPaths)).toBe(true);
     expect(bundle.skillsPaths[0]).toBe(paths.skills);
-    expect(bundle.mcpJson).toBeDefined();
+    // Nodes never read mcpJson; the shared, node-writable .mcp.json expanded
+    // against the gateway's env must never ride in the bundle.
+    expect(bundle.mcpJson).toBeNull();
     expect(typeof bundle.providerCreds).toBe("object");
 
     const r304 = await call(`/v1/tenants/default/runtime`, { headers: { "if-none-match": etag } });

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { paths } from "../../config/home";
+import { isGatewayOnlyEnv } from "../../config/gateway-only-env";
 import { getPersonaRegistry, type PersonaRegistry } from "../../persona/registry";
 
 /** Return a copy of a server config with all injected secrets removed.
@@ -43,7 +44,18 @@ export function parseExternalMcp(
   parsed: any,
   env: Record<string, string | undefined> = process.env,
 ): ExternalMcp {
-  const expand = (s: string) => s.replace(/\$\{([A-Z0-9_]+)\}/g, (_, name) => env[name] ?? "");
+  // .mcp.json sits on $SLAUDE_HOME, which agent turns can write. A placeholder
+  // naming a gateway-only variable (master key, job secret, database URLs, Slack
+  // secrets, PERSONA_*, ...) is left as written: expanding it would hand the
+  // gateway's secret to whatever server config the file names. Name logged only.
+  const expand = (s: string) =>
+    s.replace(/\$\{([A-Z0-9_]+)\}/g, (whole, name: string) => {
+      if (isGatewayOnlyEnv(name)) {
+        console.warn(`[mcp] .mcp.json references gateway-only variable ${name}; left unexpanded`);
+        return whole;
+      }
+      return env[name] ?? "";
+    });
   const servers: Record<string, McpServerConfig> = parsed?.mcpServers ?? {};
   for (const cfg of Object.values<any>(servers)) {
     if (cfg?.env && typeof cfg.env === "object") {

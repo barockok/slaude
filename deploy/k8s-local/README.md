@@ -82,18 +82,26 @@ pods load the Secret first and the ConfigMap second, and the later source wins,
 so the base value would override it. This is the cluster default; a persona
 that carries its own model (where supported) takes precedence.
 
-Generated files, both gitignored:
+Generated files, all gitignored:
 
-| File | Contents | Lifetime |
-|---|---|---|
-| `secrets.env` | master key, node bearer, job-token secret, datastore URLs | created once, reused |
-| `deploy.env` | the `/deploy` pipeline token, gateway-only (nodes never receive it) | created once, reused |
-| `provider.env` | model provider credentials | rewritten every run |
-| `model.env` | the optional `SLAUDE_MODEL` default | rewritten every run |
+| File | Contents | Secret / ConfigMap | Lifetime |
+|---|---|---|---|
+| `secrets.env` | master key, node bearer, job-token secret, datastore URLs | `slaude-scale-secrets` (gateway only) | created once, reused |
+| `node.env` | the node bearer and the Redis URL, copied from `secrets.env` | `slaude-scale-node-secrets` (node only) | rewritten every run |
+| `deploy.env` | the `/deploy` pipeline token | `slaude-scale-deploy` (gateway only) | created once, reused |
+| `provider.env` | model provider credentials | both Secrets: the gateway's own calls, and the nodes' provider env fallback | rewritten every run |
+| `model.env` | the optional `SLAUDE_MODEL` default | merged into `slaude-scale-config` | rewritten every run |
 
 `secrets.env` is deliberately never regenerated. The master key encrypts the
 Slack app registry at rest, and a new key would orphan every row encrypted under
 the old one.
+
+Nodes never load `secrets.env`: a node holding the master key or the job-token
+secret could act as the gateway. A cluster created before this split loaded one
+Secret into both tiers; re-running `up.sh` derives `node.env` from the existing
+`secrets.env` and moves the nodes onto the node Secret, keeping every value.
+Afterwards treat the job-token secret and the master key as exposed and rotate
+them; see the Secret split section of the multi-node deploy guide.
 
 ## What `verify-ha.sh` proves
 
