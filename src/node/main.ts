@@ -8,7 +8,9 @@
  *                            (bun run node-token mint) or the legacy shared token.
  *                            Checked at boot with GET /v1/node/whoami.
  *   SLAUDE_REDIS_URL         queues / registry / locks / pub/sub
- *   SLAUDE_NODE_CONCURRENCY  BullMQ concurrency (default 8)
+ *   SLAUDE_NODE_CONCURRENCY  BullMQ concurrency PER WORKER (default 8). A node
+ *                            runs one worker per credential label plus one for
+ *                            its own queue: its ceiling is workers × this
  *   SLAUDE_NODE_PORT         /healthz + /metrics (default 8081)
  *   SLAUDE_NODE_DRAIN_SEC    SIGTERM grace (default 120)
  *   SLAUDE_NODE_BOOT_CHECK   warn (default) | refuse: what to do when a
@@ -53,7 +55,10 @@ async function main() {
   // soul resolver that takes both from the runtime bundle per session, and the
   // AgentManager skips the registry whenever that resolver is installed.
 
-  const handle = await startNodeWorker({});
+  // The labels this node consumes are the ones its VERIFIED credential carries
+  // (whoami). A legacy token is {default}; a gateway older than whoami (404,
+  // identity null) only knows `turns`, which is `default` too.
+  const handle = await startNodeWorker({ labels: hs.identity?.labels ?? ["default"] });
 
   let shuttingDown = false;
   const shutdown = (signal: string) => {

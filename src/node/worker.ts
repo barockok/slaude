@@ -1,6 +1,7 @@
 /**
- * Node worker (spec §6): BullMQ workers on the shared `turns` queue and this
- * node's per-node queue, running SDK turns through the existing AgentManager
+ * Node worker (spec §6): one BullMQ worker per label this node's credential
+ * carries (`turns` for `default`, `turns.label.<label>` otherwise) plus one on
+ * this node's per-node queue, running SDK turns through the existing AgentManager
  * with every gateway dependency swapped for its REST/queue counterpart:
  *
  *   sessions    → RestSessionStore over /v1/sessions
@@ -9,7 +10,9 @@
  *   child env   → tenant runtime bundle creds (ETag-cached), not process env
  *   events      → appended to the events:<session> Redis stream
  *
- * Per job: consume the durable abort flag (a pre-claim /abort skips the turn),
+ * Per job: a job whose label this node does not carry is moved to its label's
+ * queue (never re-queued here); consume the durable abort flag (a pre-claim
+ * /abort skips the turn),
  * take lock:session:<id> (held elsewhere → delay + requeue, never bounce),
  * run the turn, then keep the Query warm — registered in sess:<id> with
  * heartbeats — until the idle TTL closes it. Losing the lock mid-turn or an
@@ -26,12 +29,12 @@ import { AgentManager, type AgentEvent } from "../agent/manager";
 import { createSessionMcp, SESSION_MCP_NAME } from "../agent/session-mcp";
 import { env } from "../config/env";
 import { m as metric, metrics } from "../metrics";
-import { makeKeys, nodeTurnsQueue, TURNS_QUEUE, type Keys } from "../queue/keys";
+import { assertNodeIdUsable, DEFAULT_LABEL, LABEL_RE, labelTurnsQueue, makeKeys, nodeTurnsQueue, type Keys } from "../queue/keys";
 import { createRedis, heartbeatSec as envHeartbeatSec, nodeDrainSec, redisUrl } from "../queue/redis";
 import { makeRegistry, type Registry } from "../queue/registry";
 import { makePubSub, type PubSub } from "../queue/pubsub";
 import { withSessionLock, HELD_BY_OTHER } from "../queue/locks";
-import type { TurnJob } from "../queue/turns";
+import { jobLabel, TurnQueues, type TurnJob } from "../queue/turns";
 import { NodeApiError, NodeClient } from "./client";
 import { makeAuthRecovery, makeSessionSeeder } from "./credentials";
 import { nodeConfigRoot, sessionConfigDir, existingSessionConfigDir } from "../agent/config-root";
@@ -219,6 +222,11 @@ export interface NodeWorkerOpts {
   client?: NodeClient;
   redisUrl?: string;
   keys?: Keys;
+  /** The labels this node consumes, from its verified credential (node labels
+   *  spec §4.2). Default: `["default"]` — a legacy node. */
+  labels?: readonly string[];
+  /** BullMQ concurrency PER WORKER. A node runs one worker per label plus one
+   *  for its own queue, so its ceiling is `(labels + 1) × concurrency`. */
   concurrency?: number;
   /** Injectable agent (tests use a stub). Default: a fresh AgentManager. */
   agent?: AgentManager;
@@ -273,6 +281,13 @@ export interface NodeWorkerHandle {
 
 export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWorkerHandle> {
   const nodeId = opts.nodeId ?? `${hostname()}-${randomBytes(3).toString("hex")}`;
+  // A node id whose own queue would be a label queue's name is refused before
+  // anything is announced or claimed.
+  assertNodeIdUsable(nodeId);
+  const labels = [...new Set(opts.labels ?? [DEFAULT_LABEL])];
+  if (labels.length === 0) throw new Error("a node needs at least one label");
+  for (const l of labels) if (!LABEL_RE.test(l)) throw new Error(`malformed node label '${l}'`);
+  const labelSet: ReadonlySet<string> = new Set(labels);
   const keys = opts.keys ?? makeKeys();
   const url = opts.redisUrl ?? redisUrl();
   const client = opts.client ?? new NodeClient({ baseUrl: env.gatewayUrl(), token: env.nodeToken() });
@@ -295,6 +310,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   const sub: Redis = createRedis(url);
   const registry: Registry = makeRegistry({ redis: cmd, keys, heartbeatSec: hbSec, nodeTtlSec: opts.nodeTtlSec });
   const pubsub: PubSub = makePubSub({ redis: cmd, sub, keys });
+  // Queue handles for moving a job to its label's queue (a mismatch at claim).
+  const turnQueues = new TurnQueues({ connection: cmd, keys });
 
   const agent = opts.agent ?? new AgentManager();
   const store = new RestSessionStore(client);
@@ -500,6 +517,18 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     } catch {
       // Marker unreadable — proceed with the turn (at-least-once).
     }
+    // Label check (node labels spec §4.6): a job for a label this node does
+    // not carry — warm-routed here before a relabel, or reaped onto `turns` —
+    // is MOVED to its label's queue, keeping its id, and this copy completes.
+    // Never a delayed re-queue on this node's queue: that would spin. Checked
+    // before the abort flag, which belongs to whichever node runs the turn.
+    const label = jobLabel(data);
+    if (!labelSet.has(label)) {
+      const moved = await turnQueues.moveTo(job, label, { claimed: true });
+      metric.nodeTurnsTotal.inc({ result: "moved" });
+      console.log(`[node] job=${job.id} label=${label} not carried here — moved to ${moved.queue}`);
+      return { moved: moved.queue };
+    }
     // Durable abort flag: /abort published before any node claimed the job.
     if (await pubsub.consumeAbortFlag(data.sessionId)) {
       metric.nodeTurnsTotal.inc({ result: "skipped" });
@@ -570,32 +599,33 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     return { result: res };
   };
 
-  // Announce liveness BEFORE claiming anything.
-  await registry.nodeUp(nodeId);
+  // Announce liveness (and the labels, same transaction) BEFORE claiming anything.
+  await registry.nodeUp(nodeId, labels);
 
+  // One BullMQ worker per label plus this node's own queue, each on its own
+  // connection (blocking claims must never share) with its own concurrency.
+  // No node-level semaphore: holding claimed jobs active while they wait would
+  // starve idle nodes and hide the backlog from the autoscaler, which reads
+  // the wait list. A node's ceiling is therefore workers × concurrency.
+  const queueNames = [...labels.map(labelTurnsQueue), nodeTurnsQueue(nodeId)];
   // Own the BullMQ connections so kill() can sever them abruptly.
-  const bullConns = [createRedis(url), createRedis(url)] as const;
-  const workers = [
-    new Worker(TURNS_QUEUE, processor, {
-      connection: bullConns[0],
-      prefix: keys.bullPrefix,
-      concurrency,
-      ...opts.bull,
-    }),
-    new Worker(nodeTurnsQueue(nodeId), processor, {
-      connection: bullConns[1],
-      prefix: keys.bullPrefix,
-      concurrency,
-      ...opts.bull,
-    }),
-  ];
+  const bullConns = queueNames.map(() => createRedis(url));
+  const workers = queueNames.map(
+    (name, i) =>
+      new Worker(name, processor, {
+        connection: bullConns[i]!,
+        prefix: keys.bullPrefix,
+        concurrency,
+        ...opts.bull,
+      }),
+  );
   for (const w of workers) {
     w.on("error", (e) => {
       lastWorkerError = { at: Date.now(), message: String((e as Error)?.message ?? e) };
       console.error(`[node] worker error:`, e);
     });
   }
-  // Ready once both BullMQ workers have actually subscribed to their queues.
+  // Ready once every BullMQ worker has actually subscribed to its queue.
   void Promise.all(workers.map((w) => w.waitUntilReady()))
     .then(() => {
       if (state === "starting") state = "ready";
@@ -607,7 +637,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   const hbTimer = setInterval(() => {
     void (async () => {
       try {
-        await registry.beatNode(nodeId);
+        await registry.beatNode(nodeId, labels);
         metric.nodeSessionsLive.set(agent.liveCount());
         for (const sessionId of [...warm]) {
           if (agent.isLive(sessionId)) {
@@ -707,6 +737,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     for (const unsub of reloadUnsubs.values()) await unsub().catch(() => {});
     reloadUnsubs.clear();
     await pubsub.close().catch(() => {});
+    await turnQueues.close().catch(() => {});
     http?.stop(true);
     for (const c of [cmd, sub]) {
       try {
@@ -734,7 +765,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     for (const c of [...bullConns, cmd, sub]) c.disconnect(false);
   }
 
-  console.log(`[node] ${nodeId} up — queues: ${TURNS_QUEUE}, ${nodeTurnsQueue(nodeId)} (concurrency ${concurrency})`);
+  console.log(`[node] ${nodeId} up — labels: ${labels.join(",")} queues: ${queueNames.join(", ")} (concurrency ${concurrency} per worker, ceiling ${queueNames.length * concurrency})`);
   return {
     nodeId,
     agent,

@@ -214,7 +214,7 @@ export const m = {
     "slaude_node_gateway_secrets_present",
     "Gateway-only variables found in this node's environment at boot (0 = the Secret split is done).",
   ),
-  nodeTurnsTotal: metrics.counter("slaude_node_turns_total", "Turn jobs processed by this node, labeled by result (done|error|skipped|requeued)."),
+  nodeTurnsTotal: metrics.counter("slaude_node_turns_total", "Turn jobs processed by this node, labeled by result (done|error|skipped|requeued|moved|deduped)."),
   nodeTurnDuration: metrics.histogram(
     "slaude_node_turn_duration_seconds",
     "Wall-clock duration of turn jobs run on this node (lock wait included).",
