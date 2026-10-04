@@ -144,7 +144,24 @@ So each tier gets its own Secret:
 | `slaude-scale-node-secrets` | `SLAUDE_REDIS_URL`, the provider env fallback | every node deployment, through `envFrom`; gateways read only `SLAUDE_REDIS_URL` from it, by key |
 | `slaude-scale-node-cred-<label>` (one per node deployment) | that deployment's `SLAUDE_NODE_TOKEN` only | its node deployment, by key; nothing else |
 
-One credential Secret per node deployment means a node of one label never holds another label's credential. A cluster set up with an earlier release kept `SLAUDE_NODE_TOKEN` in `slaude-scale-node-secrets`; the node deployments now read it by key from the credential Secret (an `env` entry wins over `envFrom`), so create those Secrets before applying the new `50-node.yaml`, with the node image already at this release.
+One credential Secret per node deployment means a node of one label never holds another label's credential. A cluster set up with an earlier release kept `SLAUDE_NODE_TOKEN` in `slaude-scale-node-secrets`; the node deployments now read it by key from the credential Secret (an `env` entry wins over `envFrom`). Move it in this order:
+
+1. **Drain first**: stop new work and let queued and running turns finish
+   (`slaude_queue_depth` at 0).
+2. **Node image at this release first**: an older node does not read the
+   credential Secret.
+3. **Create the credential Secrets** before anything else changes:
+   `slaude-scale-node-cred-default` holding the node's **existing**
+   `SLAUDE_NODE_TOKEN` value (the legacy token; the gateway keeps accepting it
+   as `SLAUDE_NODE_LEGACY_TOKEN` while the legacy door is open), and one per
+   further label holding a newly minted signed credential.
+4. **Apply the new `50-node.yaml`** (node deployments that read the credential
+   by key), and only **then** the new `10-secrets.yaml`.
+
+Do not apply the new `10-secrets.yaml` before the new `50-node.yaml`: it removes
+`SLAUDE_NODE_TOKEN` from `slaude-scale-node-secrets`, so a node pod still on the
+old template that restarts in between starts with no credential and cannot reach
+the gateway.
 
 `SLAUDE_GATEWAY_URL` is not secret and stays a plain variable in `50-node.yaml`. `docker-compose.scale.yaml` already gives each tier only its own variables.
 
