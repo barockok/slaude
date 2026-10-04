@@ -65,11 +65,6 @@ export class SimSession {
     const actor = (ROLE_NAMES as readonly string[]).includes(asName) ? (resolveRole(asName, soulData()) ?? asName) : asName;
     const behavior = opts.behavior ?? "reply";
 
-    // The real gateway eagerly reads env.slack.botToken() per inbound turn (for
-    // attachment downloads). The sim never has real files, so the token is never
-    // used to hit Slack — seed a dummy so the accessor doesn't throw.
-    process.env.SLACK_BOT_TOKEN ??= "xoxb-sim";
-
     const transport = new SimTransport({ users: { U0MGR: "Manager", U0APP: "Approver", U0ALICE: "Alice", U0BOB: "Bob", U0BACKUP: "Backup" } });
 
     // Multi-node: gateway role + N node workers over real Redis; the local
@@ -102,9 +97,6 @@ export class SimSession {
     // SOUL.md. Best-effort — falls back to regex internally if the LLM is unavailable.
     try { setSoulData(await loadSoulData()); }
     catch (e) { console.warn("[sim] soul prewarm failed (regex fallback):", e); }
-
-    // Attachment-download accessor reads the bot token even though the sim never hits Slack.
-    process.env.SLACK_BOT_TOKEN ??= "xoxb-sim";
 
     const manager = soulData().manager?.userId;
     const actor = manager ?? "U0MGR";

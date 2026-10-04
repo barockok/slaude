@@ -1,4 +1,5 @@
 import type { FetchLike } from "./types";
+import { outboundFetch } from "../../net/outbound-policy";
 
 export interface ClientInfo { clientId: string; clientSecret?: string; }
 
@@ -6,7 +7,7 @@ export interface ClientInfo { clientId: string; clientSecret?: string; }
 export async function registerClient(
   registrationEndpoint: string,
   redirectUri: string,
-  fetchImpl: FetchLike = fetch as any,
+  fetchImpl: FetchLike = outboundFetch,
 ): Promise<ClientInfo> {
   const res = await fetchImpl(registrationEndpoint, {
     method: "POST",

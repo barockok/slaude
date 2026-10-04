@@ -67,7 +67,6 @@ function harness() {
 const USER = WORLD.manager;
 
 beforeEach(async () => {
-  process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
   process.env.SLAUDE_PORTAL = "1";
   process.env.SLAUDE_PANEL_SECRET = "p".repeat(32);
   process.env.SLAUDE_PANEL_PUBLIC_URL = "https://slaude.example.com";

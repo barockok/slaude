@@ -47,6 +47,8 @@ heartbeats() { redis --scan --pattern "$PREFIX:nodes:*" | sort; }
 # Every call is bounded, and a failed measurement yields an EMPTY value that
 # expect_value reports as COULD NOT MEASURE — never as a wrong product value.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "$HERE/lib.sh"
 PROBE_TIMEOUT="${PROBE_TIMEOUT:-60s}"
 gateway() { k get pod -l "$GW_SEL" --field-selector=status.phase=Running -o name --request-timeout="$PROBE_TIMEOUT" 2>/dev/null | head -1; }
 
@@ -210,6 +212,7 @@ crash() { # <pod> <container>
 cleanup() {
   probe cleanup >/dev/null 2>&1 || true
   k delete pod "$PROBE" --ignore-not-found --wait=false >/dev/null 2>&1
+  restore_node_hpa
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -226,6 +229,14 @@ fi
 
 # --- 1. baseline -----------------------------------------------------------
 section "baseline"
+# Pin the node HPA (maxReplicas = minReplicas) for the run, restored by the
+# trap: left alone it scales the deployment to three under turn load and holds
+# it there for its ten-minute scale-down window, and the checks below say "two".
+if pin_node_hpa; then
+  wait_ready slaude-node 2 120 || echo "  note  node deployment did not settle at two replicas within 120s"
+else
+  echo "  note  node HPA not pinned; the node replica checks may see more than two"
+fi
 expect "two gateway replicas ready" \
   "gateway ready=$(ready slaude-gateway), want 2" \
   [ "$(ready slaude-gateway)" = 2 ]

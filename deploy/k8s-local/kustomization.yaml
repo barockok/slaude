@@ -15,8 +15,17 @@
 #   - Postgres and Redis run in-cluster (the dev stand-ins), single replica.
 #   - No Ingress: Slack cannot reach a laptop anyway, and the Service stays.
 #   - CPU HPA instead of KEDA, capped low enough to fit the VM.
-#   - Resource requests trimmed and node drain shortened, so a laptop fits two
-#     of each tier and failover tests finish in seconds rather than minutes.
+#   - Resource requests and limits trimmed and node drain shortened, so a laptop
+#     fits two of each tier and failover tests finish in seconds, not minutes.
+#     The numbers are sized against sizing.env (the node size and the
+#     provisional Docker VM floor), which is the one place they are written
+#     down; tests/deploy/local-sizing.test.ts fails when they disagree. The
+#     summed LIMITS at the pinned replica counts (2 gateways, 2 nodes, Postgres,
+#     Redis) must fit the node size minus its system reserve.
+#   - Probes are looser than the base's (5 s timeout, 5 failures, plus a
+#     startupProbe): the base manifests are shared with production and keep
+#     Kubernetes' defaults, a busy laptop does not meet them.
+#   - The node HPA stays, and the verify scripts pin it for their run.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -53,6 +62,18 @@ secretGenerator:
   - name: slaude-scale-deploy
     envs:
       - deploy.env
+
+# Optional model override, written by up.sh from SLAUDE_LOCAL_MODEL (the file
+# always exists and is empty when unset). It is a ConfigMap entry, not part of
+# provider.env, because pods load envFrom with the Secret first and the
+# ConfigMap second, and the later source wins: SLAUDE_MODEL in the Secret would
+# lose to the base ConfigMap's value.
+configMapGenerator:
+  - name: slaude-scale-config
+    namespace: slaude-scale
+    behavior: merge
+    envs:
+      - model.env
 
 generatorOptions:
   disableNameSuffixHash: true
@@ -111,7 +132,19 @@ patches:
                         key: SLAUDE_DEPLOY_TOKEN
                 resources:
                   requests: { cpu: 100m, memory: 256Mi }
-                  limits: { cpu: "1", memory: 768Mi }
+                  limits: { cpu: 400m, memory: 448Mi }
+                # Probe values for a loaded laptop, merged over the base probes (httpGet and
+                # periods stay the base's): a 1 s timeout and 3 failures kill a pod
+                # that is merely busy, and /readyz queries Postgres on the event
+                # loop that runs the turns. The startupProbe holds liveness off
+                # while the pod boots (up to 5 s x 60 = 5 minutes).
+                livenessProbe: { timeoutSeconds: 5, failureThreshold: 5 }
+                readinessProbe: { timeoutSeconds: 5, failureThreshold: 5 }
+                startupProbe:
+                  httpGet: { path: /healthz, port: http }
+                  periodSeconds: 5
+                  timeoutSeconds: 5
+                  failureThreshold: 60
 
   - patch: |-
       apiVersion: apps/v1
@@ -130,7 +163,19 @@ patches:
                 imagePullPolicy: Never
                 resources:
                   requests: { cpu: 250m, memory: 384Mi }
-                  limits: { cpu: 1500m, memory: 1536Mi }
+                  limits: { cpu: 700m, memory: 896Mi }
+                # Probe values for a loaded laptop, merged over the base probes (httpGet and
+                # periods stay the base's): a 1 s timeout and 3 failures kill a pod
+                # that is merely busy, and /readyz queries Postgres on the event
+                # loop that runs the turns. The startupProbe holds liveness off
+                # while the pod boots (up to 5 s x 60 = 5 minutes).
+                livenessProbe: { timeoutSeconds: 5, failureThreshold: 5 }
+                readinessProbe: { timeoutSeconds: 5, failureThreshold: 5 }
+                startupProbe:
+                  httpGet: { path: /healthz, port: health }
+                  periodSeconds: 5
+                  timeoutSeconds: 5
+                  failureThreshold: 60
 
   - patch: |-
       apiVersion: apps/v1
@@ -145,7 +190,7 @@ patches:
               - name: postgres
                 resources:
                   requests: { cpu: 100m, memory: 192Mi }
-                  limits: { memory: 512Mi }
+                  limits: { cpu: 400m, memory: 240Mi }
 
   - patch: |-
       apiVersion: apps/v1
@@ -160,7 +205,7 @@ patches:
               - name: redis
                 resources:
                   requests: { cpu: 50m, memory: 64Mi }
-                  limits: { memory: 256Mi }
+                  limits: { cpu: 200m, memory: 64Mi }
 
   # KEDA is not installed locally; keep only the CPU fallback from the same file.
   - patch: |-

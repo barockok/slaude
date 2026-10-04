@@ -302,6 +302,8 @@ describe("http slack transport — events", () => {
     expect(seen.length).toBe(1);
     expect(seen[0].context.teamId).toBe("T0BBB");
     expect(seen[0].client).toBe(clients.get("xoxb-fake-b")!);
+    // The context carries THIS app's token (attachment download), not the primary's.
+    expect(seen[0].context.botToken).toBe("xoxb-fake-b");
     // And a signature crossover (team B envelope signed with A's secret) fails.
     const res = await postEvents(base, SECRET_A, { ...eventEnvelope(), team_id: "T0BBB" });
     expect(res.status).toBe(401);
@@ -644,6 +646,105 @@ describe("http slack transport — lifecycle and client proxy", () => {
     expect((await c.search.messages({})).ok).toBe(true);
     expect((await c.assistant.threads.setStatus({})).status).toBe("set");
     expect(logs.some((l) => l.includes("2 apps"))).toBe(true);
+  });
+
+  // D1.3: a hand-listed proxy failed twice (postEphemeral, then files.uploadV2 and
+  // friends). Any `a.b.c(...)` must reach the primary client with the same args.
+  it("transport.client forwards any method path to the primary client, with the same arguments", async () => {
+    const calls: Array<{ tag: string; path: string; args: unknown[] }> = [];
+    // A client that records whatever path it is called on, so the table below is
+    // the only list of methods in the test.
+    const recorder = (tag: string, base: string[] = []): any =>
+      new Proxy(function () {}, {
+        get: (_t, k) => (typeof k === "symbol" || k === "then" ? undefined : recorder(tag, [...base, k])),
+        apply: (_t, _this, args) => {
+          calls.push({ tag, path: base.join("."), args });
+          return Promise.resolve({ ok: true, path: base.join(".") });
+        },
+      });
+    const t = createHttpSlackTransport({
+      port: 0,
+      loadApps: async () => [
+        appRow(),
+        appRow({ team_id: "T0BBB", bot_token: encrypt("xoxb-fake-b"), signing_secret: encrypt(SECRET_B), created_at: 2 }),
+      ],
+      makeClient: (token) => recorder(token),
+      log: () => {},
+    });
+    booted.push(t);
+    await t.start();
+    const methods = [
+      "auth.test", "chat.postMessage", "chat.update", "chat.postEphemeral", "chat.delete",
+      "reactions.add", "reactions.remove", "conversations.info", "conversations.members",
+      "conversations.replies", "conversations.setTopic", "conversations.setPurpose",
+      "conversations.canvases.create", "canvases.edit", "users.info", "users.profile.set",
+      "search.messages", "assistant.threads.setStatus", "files.uploadV2", "files.info",
+      "pins.add", "pins.remove",
+    ];
+    for (const m of methods) {
+      const arg = { marker: m };
+      const out = await m.split(".").reduce((o: any, k) => o[k], t.client as any)(arg);
+      expect(out.path).toBe(m);
+      const last = calls.at(-1)!;
+      expect(last.path).toBe(m);
+      expect(last.args).toEqual([arg]);
+      expect(last.tag).toBe("xoxb-fake-a"); // primary only; per-request selection is D1.2
+    }
+  });
+
+  it("transport.client: an unknown namespace on a real client throws the same TypeError, after start", async () => {
+    const t = createHttpSlackTransport({
+      port: 0,
+      loadApps: async () => [appRow()],
+      makeClient: () => fakeClient("a"),
+      log: () => {},
+    });
+    booted.push(t);
+    await t.start();
+    const c: any = t.client;
+    let real: unknown;
+    try { (fakeClient("a") as any).nope.thing({}); } catch (e) { real = e; }
+    let got: unknown;
+    try { await c.nope.thing({}); } catch (e) { got = e; }
+    expect(real).toBeInstanceOf(TypeError);
+    expect(got).toBeInstanceOf(TypeError);
+  });
+
+  // B1: the root lazy client must not be callable. SlackSurface and Reactions
+  // treat a function argument as a resolver and CALL it, which would hand them a
+  // Promise instead of a client.
+  it("transport.client is a plain object, so surfaces and reactions use it as a client, not a resolver", async () => {
+    const posted: any[] = [];
+    const reacted: any[] = [];
+    const real: any = fakeClient("a");
+    real.chat.postMessage = async (a: any) => (posted.push(a), { ok: true, ts: "9.9" });
+    real.reactions.add = async (a: any) => (reacted.push(a), { ok: true });
+    const t = createHttpSlackTransport({ port: 0, loadApps: async () => [appRow()], makeClient: () => real, log: () => {} });
+    booted.push(t);
+    await t.start();
+    expect(typeof t.client).toBe("object");
+
+    const { makeSlackSurfaceFactory } = await import("../../../src/gateway/slack/surface");
+    const { ReactionTracker } = await import("../../../src/gateway/slack/reactions");
+    const surface = makeSlackSurfaceFactory(t.client as any)({
+      conversationId: "C1", threadRef: "1.1", inboundRef: "1.1",
+      requestApproval: async () => ({ approved: false, by: "" }) as any,
+      reloadSession: () => false,
+    });
+    await surface.reply({ text: "hi" });
+    expect(posted.length).toBe(1);
+    await new ReactionTracker(t.client).set("s1", "C1", "1.1", "eyes");
+    expect(reacted.length).toBe(1);
+  });
+
+  // m3: serializers and inspectors must not trigger a (possibly rejecting) call.
+  it("transport.client is safe to stringify and inspect", async () => {
+    const t = createHttpSlackTransport({ port: 0, loadApps: async () => [appRow()], makeClient: () => fakeClient("a"), log: () => {} });
+    booted.push(t);
+    await t.start();
+    const holder = { client: t.client, n: 1 };
+    expect(() => JSON.stringify(holder)).not.toThrow();
+    expect(() => require("node:util").inspect(holder)).not.toThrow();
   });
 
   it("default makeClient constructs a real @slack/web-api WebClient (no network)", async () => {

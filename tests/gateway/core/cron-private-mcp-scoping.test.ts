@@ -31,7 +31,6 @@ function writeMcp() {
 }
 
 function makeGw(agent: AgentManager) {
-  process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
   const client = {
     auth: { test: async () => ({ user_id: "U_SLAUDE", bot_id: "B_SLAUDE", team: "T", url: "x" }) },
     chat: { postMessage: async () => ({ ok: true, ts: "1" }), update: async () => ({ ok: true }) },

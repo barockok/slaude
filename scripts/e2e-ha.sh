@@ -48,6 +48,18 @@ ARTIFACTS="${E2E_ARTIFACTS:-dist/e2e-artifacts}"
 export SLAUDE_LOCAL_PROFILE="$PROFILE"
 
 die() { printf 'e2e-ha: %s\n' "$*" >&2; exit 2; }
+# shellcheck source=/dev/null
+. "$ROOT/deploy/k8s-local/lib.sh"
+# A random port nobody is listening on: a plain forward onto a taken port can quietly bind a
+# second loopback address while the old listener keeps answering.
+free_port() { # <base> <span>
+  local p i
+  for i in $(seq 1 50); do
+    p=$(($1 + RANDOM % $2))
+    port_in_use "$p" || { echo "$p"; return 0; }
+  done
+  return 1
+}
 k() { kubectl --context "$PROFILE" -n "$NS" "$@"; }
 
 [[ "$PROFILE" =~ ^slaude-e2e ]] || die "profile '$PROFILE' does not match /^slaude-e2e/; refusing to touch it"
@@ -226,17 +238,31 @@ collect_artifacts() {
     k logs "deploy/$comp" --all-containers --prefix --tail=-1 >"$dir/logs-$comp.txt" 2>&1
   done
 
-  local mock_port=$((20000 + RANDOM % 20000)) fake_port=$((40000 + RANDOM % 20000))
+  local mock_port fake_port ready=0
+  mock_port="$(free_port 20000 20000)"
+  fake_port="$(free_port 40000 20000)"
+  if [[ -z "$mock_port" || -z "$fake_port" ]]; then
+    echo "e2e-ha: could not find a free local port for the diagnostics port-forwards" >&2
+    return 1
+  fi
   # kubectl itself is backgrounded (not the k() wrapper, whose subshell would take the kill and
-  # leave the port-forward running)
-  kubectl --context "$PROFILE" -n "$NS" port-forward svc/mock-llm "$mock_port:8080" >/dev/null 2>&1 & pf_pids+=($!)
-  kubectl --context "$PROFILE" -n "$NS" port-forward svc/fake-slack "$fake_port:8080" >/dev/null 2>&1 & pf_pids+=($!)
+  # leave the port-forward running). Its stderr is kept: it is the only explanation for a forward
+  # that never answers.
+  kubectl --context "$PROFILE" -n "$NS" port-forward svc/mock-llm "$mock_port:8080" >/dev/null 2>"$dir/portforward-mock-llm.err" & pf_pids+=($!)
+  kubectl --context "$PROFILE" -n "$NS" port-forward svc/fake-slack "$fake_port:8080" >/dev/null 2>"$dir/portforward-fake-slack.err" & pf_pids+=($!)
   local i
-  for i in $(seq 1 40); do
+  for i in $(seq 1 "${E2E_PF_TRIES:-80}"); do
     if curl -fsS -m 1 "http://127.0.0.1:$mock_port/__mock/journal" >/dev/null 2>&1 &&
-      curl -fsS -m 1 "http://127.0.0.1:$fake_port/healthz" >/dev/null 2>&1; then break; fi
+      curl -fsS -m 1 "http://127.0.0.1:$fake_port/healthz" >/dev/null 2>&1; then ready=1; break; fi
     sleep 0.25
   done
+  if ((ready == 0)); then
+    echo "e2e-ha: the diagnostics port-forwards did not answer within 20s; the mock journal and fake-slack calls were NOT collected" >&2
+    cat "$dir"/portforward-*.err >&2 2>/dev/null
+    for i in "${pf_pids[@]}"; do kill "$i" 2>/dev/null; done
+    wait 2>/dev/null
+    return 1
+  fi
   curl -sS -m 10 "http://127.0.0.1:$mock_port/__mock/journal" >"$dir/mock-journal.json" 2>&1
   curl -sS -m 10 "http://127.0.0.1:$fake_port/__fake/calls" >"$dir/fake-calls.json" 2>&1
   # the fake has no channel listing; every channel a call mentioned is read back
@@ -259,7 +285,7 @@ collect_artifacts() {
   echo "e2e-ha: artifacts: $(find "$dir" -type f | wc -l | tr -d ' ') files in $dir"
 }
 
-if ((status != 0)); then collect_artifacts; fi
+if ((status != 0)); then collect_artifacts || echo "e2e-ha: diagnostics are incomplete (see above)" >&2; fi
 
 # --- teardown (opt-in) ---------------------------------------------------------------------------
 if [[ "${E2E_TEARDOWN:-}" == "1" ]]; then

@@ -10,11 +10,12 @@
  * (its built-in kustomize); skipped without it.
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseAllDocuments } from "yaml";
 import { isGatewayOnlyEnv } from "../../src/config/gateway-only-env";
+import { stageLocal } from "./stage-local";
 
 const root = join(import.meta.dir, "../..");
 const hasKubectl = Bun.spawnSync(["sh", "-c", "command -v kubectl"]).exitCode === 0;
@@ -30,28 +31,10 @@ function kustomize(dir: string): any[] {
 const tmp = mkdtempSync(join(tmpdir(), "slaude-secret-split-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
-/** Copies the overlays into a temp tree with fake generated env files. */
+let staged = false;
 function stage(): string {
-  if (existsSync(join(tmp, "deploy/k8s-local/secrets.env"))) return tmp;
-  cpSync(join(root, "deploy/k8s-scale"), join(tmp, "deploy/k8s-scale"), { recursive: true });
-  cpSync(join(root, "deploy/k8s-local"), join(tmp, "deploy/k8s-local"), { recursive: true });
-  cpSync(join(root, "e2e/k8s"), join(tmp, "e2e/k8s"), { recursive: true });
-  const local = join(tmp, "deploy/k8s-local");
-  // The files up.sh generates, with fake values and every key it can write.
-  writeFileSync(
-    join(local, "secrets.env"),
-    [
-      "SLAUDE_MASTER_KEY=fake",
-      "SLAUDE_NODE_TOKEN=fake",
-      "SLAUDE_JOB_SECRET=fake",
-      "SLAUDE_PG_URL=postgres://fake",
-      "SLAUDE_REDIS_URL=redis://fake",
-      "SLAUDE_BRAIN_DATABASE_URL=postgres://fake",
-    ].join("\n") + "\n",
-  );
-  writeFileSync(join(local, "node.env"), "SLAUDE_NODE_TOKEN=fake\nSLAUDE_REDIS_URL=redis://fake\n");
-  writeFileSync(join(local, "provider.env"), "ANTHROPIC_API_KEY=fake\n");
-  writeFileSync(join(local, "deploy.env"), "SLAUDE_DEPLOY_TOKEN=fake\n");
+  if (!staged) stageLocal(tmp);
+  staged = true;
   return tmp;
 }
 const buildLocal = () => kustomize(join(stage(), "deploy/k8s-local"));

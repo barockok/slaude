@@ -56,17 +56,12 @@ const registryWith = (token: string, client: any): PersonaRegistry => {
 };
 
 const CACHE_DIR = join(paths.home, "cache");
-const savedBot = process.env.SLACK_BOT_TOKEN;
 beforeEach(() => {
-  // Read when a forwarded message is handled; any non-empty placeholder will do.
-  process.env.SLACK_BOT_TOKEN ||= "test-bot-token-placeholder";
   if (existsSync(CACHE_DIR)) rmSync(CACHE_DIR, { recursive: true, force: true });
   __resetSoulDataMemo();
   writeSoulFixture(WORLD);
 });
 afterEach(() => {
-  if (savedBot === undefined) delete process.env.SLACK_BOT_TOKEN;
-  else process.env.SLACK_BOT_TOKEN = savedBot;
   __resetPersonaRegistry();
   __resetSoulDataMemo();
   try { rmSync(paths.soul, { force: true }); } catch {}

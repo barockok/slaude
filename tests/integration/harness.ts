@@ -21,7 +21,6 @@ export async function setupScenarioEnv(): Promise<void> {
   process.env.SLAUDE_BRAIN_DISABLED = "1";
   process.env.SLAUDE_NODE_TOKEN = NODE_TOKEN;
   process.env.SLAUDE_JOB_SECRET = JOB_SECRET;
-  process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
   const { ensureHome } = await import("../../src/config/home");
   const { writeSoulFixture, WORLD } = await import("../../src/gateway/sim/soul-fixture");
   ensureHome();
