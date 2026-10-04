@@ -63,6 +63,7 @@
             { "path": "deploy/webhook-mode", "label": "Webhook (Events API) mode" },
             { "path": "deploy/panel", "label": "Control panel" },
             { "path": "deploy/multi-node", "label": "Multi-node scale-out" },
+            { "path": "deploy/node-manifest", "label": "Node MCP manifest" },
             { "path": "deploy/scale-operations", "label": "Scale operations" },
             { "path": "deploy/personas-as-code", "label": "Personas as code" },
             { "path": "deploy/provider-credentials", "label": "Provider credentials" },

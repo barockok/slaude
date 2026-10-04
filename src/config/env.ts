@@ -337,6 +337,9 @@ export const env = {
   jobSecret: () => opt("SLAUDE_JOB_SECRET"),
   /** Gateway base URL a node worker calls for /v1 (spec §6). */
   gatewayUrl: () => opt("SLAUDE_GATEWAY_URL", "http://localhost:8080"),
+  /** Node: the stdio MCP manifest (node labels spec §4.10), read once at node
+   *  start. An absent file means no stdio or plugin MCP server for any persona. */
+  nodeManifestPath: () => opt("SLAUDE_NODE_MANIFEST", "/etc/slaude/node.json"),
   /** Node /healthz + /metrics port (spec §6). Default 8081; 0 disables. */
   nodePort: (): number => {
     const raw = opt("SLAUDE_NODE_PORT", "8081");

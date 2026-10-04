@@ -16,6 +16,8 @@
  *   SLAUDE_NODE_BOOT_CHECK   warn (default) | refuse: what to do when a
  *                            gateway-only variable is in this environment
  *   SLAUDE_NODE_ALLOW_GATEWAY_SECRETS  1 = refuse only warns (temporary escape)
+ *   SLAUDE_NODE_MANIFEST     stdio MCP manifest (default /etc/slaude/node.json);
+ *                            absent = no stdio or plugin MCP server is mounted
  *
  * The node has no Slack client, no Postgres, no brain (spec §1) — sessions,
  * tools and credentials all come from the gateway over /v1. The persona soul
@@ -29,6 +31,7 @@ import { startNodeWorker } from "./worker";
 import { enforceNodeBootCheck } from "./boot-check";
 import { NodeClient } from "./client";
 import { nodeHandshake } from "./handshake";
+import { type NodeManifest, NodeManifestError, describeNodeManifest, loadNodeManifest } from "./manifest";
 
 async function main() {
   // Before anything else: a node must not hold the gateway's secrets (the
@@ -43,6 +46,19 @@ async function main() {
   if (!env.nodeToken()) {
     throw new Error("SLAUDE_NODE_TOKEN is not set — the node cannot authenticate to the gateway /v1");
   }
+
+  // The stdio MCP manifest, read once (a change needs a pod roll). Invalid =
+  // stop now, naming the field; absent = no stdio or plugin MCP server for any
+  // persona.
+  let manifest: NodeManifest;
+  try {
+    manifest = loadNodeManifest();
+  } catch (e) {
+    if (!(e instanceof NodeManifestError)) throw e;
+    console.error(`[node] refusing to boot: ${e.message}`);
+    process.exit(1);
+  }
+  console.log(`[node] ${describeNodeManifest(manifest)}`);
 
   // The handshake: prove the credential before claiming work. Exits only on a
   // refusal (401); a gateway that is not up yet is retried with backoff.
@@ -59,7 +75,7 @@ async function main() {
   // The labels this node consumes are the ones its VERIFIED credential carries
   // (whoami). A legacy token is {default}; a gateway older than whoami (404,
   // identity null) only knows `turns`, which is `default` too.
-  const handle = await startNodeWorker({ labels: hs.identity?.labels ?? ["default"] });
+  const handle = await startNodeWorker({ labels: hs.identity?.labels ?? ["default"], manifest });
 
   let shuttingDown = false;
   const shutdown = (signal: string) => {
