@@ -166,6 +166,18 @@ scrape_configs:
   `SLAUDE_NODE_CONCURRENCY` (default 8) and no node-wide cap, so a node can
   run up to `(labels + 1) × SLAUDE_NODE_CONCURRENCY` turns at once. Size the
   pod for that number, or lower the concurrency on nodes with many labels.
+- **Label heartbeat.** A node publishes its labels in `nodelabels:<id>`
+  beside its heartbeat. The key's TTL is the larger of the node key's (30 s)
+  and 3× `SLAUDE_HEARTBEAT_SEC`, refreshed on every beat, so it outlives every
+  warm session on the node (a session is fresh for 2× the heartbeat). A node
+  with no such key (an older node) counts as `default`.
+- **Depth series.** The reaper leader finds label queues by their BullMQ
+  `:meta` key in Redis (`<prefix>:bull:turns.label.<label>:meta`), so
+  `slaude_queue_depth` has one series per label queue that exists, including
+  one that no persona uses any more until its keys are removed. The series set
+  is bounded by the label pattern (at most 32 characters, lower-case letters,
+  digits and `-`) and in practice by the labels in use, never by nodes or
+  sessions.
 - **Gateways** are stateless. Scale `replicas` manually on ingress volume.
   Leaders (cron, reaper) elect via Redis locks — any replica count is safe.
 - **Draining**: node SIGTERM stops claiming, finishes in-flight turns within
