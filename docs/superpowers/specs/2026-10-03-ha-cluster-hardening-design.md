@@ -3,8 +3,9 @@
 **Date:** 2026-10-03
 **Umbrella:** `2026-10-03-centralized-persona-runtime-design.md` — this is WS-D, the
 backlog H1–H20 and the findings added since
-**Evidence:** every item below was re-checked against `main` at `1eb8bfb`; "present"
-means reproduced in the current code, not recalled from a note
+**Revised:** 2026-10-04 (after design review)
+**Evidence:** every item below was re-checked against `main` at `79dec1a` (the merge of the HA
+review branch); "present" means reproduced in the current code, not recalled from a note
 
 ## 1. Intent
 
@@ -23,8 +24,9 @@ reviewable change.
 and `/mcp` behaviour (D2); the local-cluster scripts, manifests and verify harness
 (D3); and the verification tasks that need a real environment (D4).
 
-**Out:** anything in WS-A, WS-B or WS-C; a redesign of the Slack transport; Slack
-scopes beyond what the code already calls (§D1.5 says what is unverified).
+**Out:** the features in WS-A, WS-B and WS-C (but their *foundations* are batch D5); a redesign
+of the Slack transport; Slack scopes beyond what the code already calls (§D1.5 says what is
+unverified).
 
 ## 3. Batch D1 — Slack HTTP-mode correctness
 
@@ -60,6 +62,9 @@ scopes beyond what the code already calls (§D1.5 says what is unverified).
   route context (`ctx.client` is already set from `outClientForPersona`), and let the
   gates and surfaces resolve a client from `(api_app_id, team_id)` instead of holding
   one at construction. A single-app deployment behaves as before.
+- **Release.** This threads a client through the gates, surfaces, presence, status and cron: a
+  refactor across the whole outbound path, not a one-line fix. It ships in the **release-candidate
+  series**, not in the direct patch release (WS-E); the other D1 items do not depend on it.
 - **Test.** Two registered apps; an event for the second posts, reacts and requests
   approval as the second, not the first. Today's test (`http-transport.test.ts:608`)
   only asserts the lazy client reaches the primary.
@@ -102,6 +107,19 @@ client they are made per registered app, and the logs name each.
   (`pins.*`, `canvases.*`, `conversations.setTopic/setPurpose`, and `search.messages`,
   which needs a user token). This was not checked against Slack's documentation. It is
   a task in this batch to check and either fix the list or record why it is right.
+
+### D1.6 Raw error text is posted into Slack
+
+- **Where.** Turn errors post `e.error` verbatim (`gateway.ts:~1308`), and a failed job posts a message built
+  from the failure reason (`dispatch.ts:197-199`). That text can be a provider or CLI message ("Invalid API key
+  · Please run /login") or a stack fragment, and it goes to a channel other people can read. A connect-flow
+  leak of exactly this kind was fixed before; this is the same class on the main path.
+- **Fix.** Failures carry a **typed code** on the event stream and in the job failure; the gateway maps codes to
+  fixed text and logs the detail server-side. Unknown codes map to one generic message. A single message per
+  failed turn, de-duplicated on the job id (today a client retry, a BullMQ attempt and a replica can each post).
+  The codes WS-A and WS-B add (`PROVIDER_CREDENTIALS_UNAVAILABLE`, `LABEL_MISMATCH`) use the same mapping.
+- **Test.** A turn that fails with a provider error posts the fixed text and not the error; a job that fails
+  twice posts once; an unknown code posts the generic text.
 
 ## 4. Batch D2 — approvals, portal, `/mcp`
 
@@ -305,12 +323,61 @@ is list connectors), that a Slack Request URL silently flips to "didn't respond"
 path is down and needs a manual Retry, and that the forward must be recycled after any
 rollout. Lives in the `k8s-local` README, with generic hostnames.
 
+## 6a. Batch D5 — foundations and security fixes
+
+These are small, independent of the new features, and **must land before** the features that depend on them.
+
+### D5.1 A strict, versioned `/deploy` payload
+
+- **Where.** The persona payload schema is permissive (`z.object` with Zod's default of stripping unknown keys,
+  `payload.ts:24-31`), and the sync upsert writes a fixed column list (`db/personas.ts:151-160`). A gateway running
+  older code that receives a payload carrying a newer field (`runsOn`, `provider`, `kbSources`) **records the
+  revision and silently drops the field**; the persona then runs on node credentials, on `default`, with all
+  knowledge sources.
+- **Fix.** The payload gains a `version` (absent means 1); a payload whose `version` is newer than the gateway
+  understands is refused. Unknown fields are handled in two stages so no existing pipeline breaks in a patch release:
+  **first release** — they are accepted, ignored, and **reported** in the response (`ignoredFields`) and the gateway log;
+  **next release** — they are a 422 naming the field. This is what makes rolling the code back, or deploying to a
+  gateway that has not been upgraded, fail loudly instead of silently dropping `runsOn`, `provider` or `kbSources`.
+- **Test.** An unknown field is reported (stage one) and refused (stage two); an older payload still syncs; a newer
+  `version` is refused; the export and `render --check` emit the version.
+
+### D5.2 The gateway's own model children must not have tools
+
+- **Where.** `kb_think` synthesis runs an SDK child with `allowedTools: []` and
+  `permissionMode: "bypassPermissions"` (`src/knowledge/brain-think.ts:49-50`) over untrusted page content. A review
+  found that an empty `allowedTools` does not disable tools in this SDK version (it passes `--allowedTools` only for
+  a non-empty list), so the result may be a prompt-injection path to Bash on the gateway pod — the pod that will
+  hold Vault access and the master key. **This claim is unverified.**
+- **Task (first).** Reproduce: run the synthesis child over a page that tells the model to run a command, and see
+  whether a tool executes. If it does, fix by passing the SDK's explicit empty tool set (`tools: []`) and a
+  non-bypass permission mode, and apply the same to any other gateway-side model child (soul extraction, ingest).
+- **Test.** A synthesis child with a malicious page executes no tool.
+
+### D5.3 One outbound-fetch policy
+
+The MCP bridge (WS-C §4.2.7) needs an SSRF policy, and the OAuth discovery, registration and token-exchange fetches
+have the same gap today (no host or scheme validation, no private-range denial, redirects followed, no timeout).
+Build the policy **once**, in one module, and use it in both places: scheme check, address check after DNS
+resolution, no redirects with credentials, a timeout, and an optional host allowlist.
+
+- **Test.** Private, loopback, link-local and metadata addresses refused; a rebinding hostname refused; redirects
+  not followed; discovery and exchange go through the same module.
+
+### D5.4 Deployment manifests
+
+Not the Secret split (WS-B phase 0), but the manifests it needs: a dedicated ServiceAccount for the gateway, node pods
+with `automountServiceAccountToken: false`, and an optional NetworkPolicy keeping nodes away from Postgres and Vault.
+These ship with the manifests and the local overlay.
+
 ## 7. Ordering
 
-D1 first (product defects that make HTTP mode wrong), D2 with it or right after, D3.1
-and D3.4 early because they unblock a clean rebuild, D3.2/D3.3/D3.5/D3.6 together as the
-harness batch, D4 last because it needs the others in place. D1, D2 and the harness fixes
-carry no schema change and need no release candidate on their own (WS-E decides).
+D5 first where a feature depends on it (D5.1 before any new payload field; D5.3 before the MCP bridge;
+D5.2 is a security task to reproduce early). Then D1 (product defects that make HTTP mode wrong; **D1.2 goes
+through a release candidate**), D2 with it or right after, D3.1 and D3.4 early because they unblock a clean
+rebuild, D3.2/D3.3/D3.5/D3.6 together as the harness batch, D4 last because it needs the others in place. D1
+(except D1.2), D2 and the harness fixes carry no schema change and need no release candidate on their own
+(WS-E decides).
 
 ## 8. Testing summary
 
@@ -322,6 +389,7 @@ suites named above are updated rather than duplicated.
 
 ## 9. Open decisions
 
+0. **D5.2 is unverified** and a security question; reproduce it before scheduling the fix.
 1. **Probe values** (D3.2): `timeoutSeconds: 5`, `failureThreshold: 5` proposed; production
    values may differ from the local overlay's, and the base manifests are shared.
 2. **Slack scope audit** (D1.5): how far to go checking the bot scope list against Slack's
