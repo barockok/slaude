@@ -76,6 +76,21 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("persona repository", () => {
     expect((await P.desiredPersonas(T)).find((p) => p.name === "bea")!.provider).toEqual({ authToken: "env://PERSONA_BEA_TOKEN" });
   });
 
+  // Review R1-F5: both version-2 columns in one row, through both upserts.
+  test("provider and runsOn persist together in one row, via the sync and a runtime onboard", async () => {
+    const provider = { apiKey: "env://PERSONA_ANA_KEY" };
+    await P.applySync(T, [row("ana", { provider, runsOn: "engineering" })], meta("r1", "2026-10-01T10:00:00Z"));
+    const ana = (await P.desiredPersonas(T)).find((p) => p.name === "ana")!;
+    expect(ana.provider).toEqual(provider);
+    expect(ana.runsOn).toBe("engineering");
+    const r2 = await P.applySync(T, [row("ana", { provider, runsOn: "engineering" })], meta("r2", "2026-10-01T11:00:00Z"));
+    expect(r2.unchanged).toEqual(["ana"]);
+    await P.createRuntimePersona(T, row("bea", { origin: "runtime", provider: { authToken: "env://PERSONA_BEA_TOKEN" }, runsOn: "finance" }), "ops");
+    const bea = (await P.effectivePersonas(T)).find((p) => p.name === "bea")!;
+    expect(bea.provider).toEqual({ authToken: "env://PERSONA_BEA_TOKEN" });
+    expect(bea.runsOn).toBe("finance");
+  });
+
   test("a tenant is unmanaged until its first sync", async () => {
     expect(await P.isManaged(T)).toBe(false);
     expect(await P.stateVersion(T)).toBe("unmanaged");
