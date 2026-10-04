@@ -16,7 +16,10 @@ export type SecretFailureReason =
   | "prefix"
   /** env:// variable unset or empty */
   | "env_missing"
-  /** Vault: no secret at the path (404, or a deleted/destroyed version) */
+  /** Vault: no secret at the path (404, or a deleted/destroyed version). Known
+   *  limit: a KV v1 mount usually answers a `<mount>/data/<path>` read with 404
+   *  too, and cannot be told apart without reading sys/mounts — so a v1 mount
+   *  reports this, not `kv_v1`. */
   | "missing_secret"
   /** Vault: the secret exists but has no such field */
   | "missing_field"
