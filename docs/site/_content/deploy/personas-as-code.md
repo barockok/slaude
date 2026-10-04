@@ -277,7 +277,11 @@ exposes the routes below. They always act on the tenant `default`.
 - `GET /panel/api/personas`: git versus live per field, for every persona
   including tombstoned ones (each entry says `tombstoned: true|false`). Any
   authenticated operator can read it. Tokens appear only as present or absent;
-  soul text and model are shown.
+  soul text and model are shown, plus `runsOn` and a `kb.mode` summary
+  (`all`, `none` or `list`).
+- `GET /panel/api/personas/<name>`: one persona's definition, references and
+  presence only (see [the control panel's persona page](panel.md)). Any
+  authenticated operator; `404` for an unknown name.
 - `PUT /panel/api/personas/<name>/overrides/<field>` with `{ "value": ... }`
   and `DELETE` of the same path. Superadmin only. `<field>` is `soul`, `model`
   or `mcp`; nothing else can be overridden.
