@@ -65,3 +65,35 @@ describe("an interrupted call retires its session", () => {
     }
   });
 });
+
+describe("a shared session open", () => {
+  test("has its own timeout: a waiter with a full budget is not failed by the first opener's short one", async () => {
+    const gate = Promise.withResolvers<void>();
+    const up = upstream({
+      onInitialize: async (n) => {
+        // The first open fails late, so its caller re-opens with little budget left.
+        if (n === 1) {
+          await sleep(700);
+          return new Response("unavailable", { status: 503 });
+        }
+        if (n === 2) return void (await gate.promise);
+        return new Response("unavailable", { status: 503 });
+      },
+    });
+    const b = bridgeAt(up.url, { timeoutMs: 1000 });
+    try {
+      const a = b.call({ ...claims, session: "S-A" }, "s", "echo", { text: "a" });
+      await until(() => count(up, "initialize") === 2);
+      const late = b.call({ ...claims, session: "S-B" }, "s", "echo", { text: "b" });
+      // Past A's deadline, well inside B's.
+      await sleep(450);
+      gate.resolve();
+      expect((await late).content).toEqual(text("b"));
+      await a;
+      expect(count(up, "initialize")).toBe(2);
+    } finally {
+      gate.resolve();
+      await b.close();
+    }
+  });
+});

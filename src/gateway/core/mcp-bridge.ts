@@ -698,7 +698,6 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
     server: string,
     cred: Exclude<BridgeCredential, { kind: "connect" }>,
     timeoutMs: number,
-    left: () => number,
     signal: AbortSignal | undefined,
     callSig: AbortSignal,
     /** Safe to repeat (tools/list). A tools/call is NOT: it is retried only
@@ -714,9 +713,10 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
       // Whether the failure came from the request itself (the upstream may have
       // acted on it) or from opening the session (it never saw the request).
       let sent = false;
-      // Opening the session is not tied to this call's signal: other calls
-      // may be waiting on the same initialisation.
-      const p = lease(key, current, left());
+      // Opening the session is not tied to this call's signal or budget:
+      // other calls may be waiting on the same initialisation, so it gets the
+      // full configured timeout and each caller waits only its own deadline.
+      const p = lease(key, current, timeoutMs);
       try {
         const client = await p.client;
         sent = true;
@@ -867,7 +867,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
       const maxBytes = lim.maxListBytes ?? DEFAULT_MAX_LIST_BYTES;
       const out = await budgeted(cfg, signal, ({ timeoutMs, deadline, left, callSig }) =>
         withSlots(claims, server, cred.ownerKey, deadline, signal, () =>
-          run(claims, server, cred, timeoutMs, left, signal, callSig, true, async (client) => {
+          run(claims, server, cred, timeoutMs, signal, callSig, true, async (client) => {
             const tools: unknown[] = [];
             let bytes = 0;
             let truncated = false;
@@ -915,7 +915,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
       if (await pinRefused(claims, server, cred)) return errResult(pinnedElsewhereText(server));
       const out = await budgeted(cfg, signal, ({ timeoutMs, deadline, left, callSig }) =>
         withSlots(claims, server, cred.ownerKey, deadline, signal, () =>
-          run(claims, server, cred, timeoutMs, left, signal, callSig, false, (client) =>
+          run(claims, server, cred, timeoutMs, signal, callSig, false, (client) =>
             rawRequest(client, "tools/call", { name, arguments: args ?? {} }, {
               timeout: left(),
               ...(signal ? { signal } : {}),
