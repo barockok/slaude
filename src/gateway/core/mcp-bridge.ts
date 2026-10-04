@@ -56,6 +56,9 @@ import { env } from "../../config/env";
 import { OutboundBlockedError, policyFetch, type OutboundPolicyOptions } from "../../net/outbound-policy";
 import { clearCredentials, oauthHttpServers, type ExternalMcp } from "./external-mcp";
 import { defaultCredentialRefresher, sha256Hex, type makeCredentialRefresher } from "./credential-refresh";
+import type { Redis } from "ioredis";
+import { getRedis } from "../../queue/redis";
+import { redisPrefix } from "../../queue/keys";
 
 // ── fixed texts (never an upstream body) ────────────────────────────────────
 
@@ -119,8 +122,10 @@ export type BridgeCredential =
       headers: Record<string, string>;
       /** Whose session this is, for the pool. */
       ownerKey: string;
+      /** The CONFIG-supplied headers among `headers` (not the OAuth bearer). */
+      configHeaders: Record<string, string>;
     }
-  | { kind: "static"; url: string; headers: Record<string, string>; ownerKey: string }
+  | { kind: "static"; url: string; headers: Record<string, string>; ownerKey: string; configHeaders: Record<string, string> }
   | { kind: "connect" };
 
 export interface CredentialDeps {
@@ -133,6 +138,21 @@ const withoutAuthorization = (h: Record<string, string> | undefined): Record<str
   for (const [k, v] of Object.entries(h ?? {})) if (k.toLowerCase() !== "authorization") out[k] = v;
   return out;
 };
+
+/** Headers a server CONFIG may not set: transport framing, hop-by-hop headers
+ *  and the MCP session id belong to the client. */
+const RESERVED_HEADERS = new Set([
+  "host", "content-length", "transfer-encoding", "connection", "keep-alive", "proxy-connection",
+  "te", "trailer", "upgrade", "mcp-session-id", "mcp-protocol-version",
+]);
+
+export function configSuppliedHeaders(h: Record<string, string> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(h ?? {})) {
+    if (typeof v === "string" && !RESERVED_HEADERS.has(k.toLowerCase())) out[k] = v;
+  }
+  return out;
+}
 
 const originOf = (url: string): string | null => {
   try {
@@ -164,7 +184,7 @@ export async function chooseCredential(
   const runAs = parseRunAs(claims.runAs);
   if (!runAs) throw new BridgeRefused(403, "job token does not say whose identity this turn runs as");
   const key = oauthKey(server, { type: "http", url: cfg.url, headers: cfg.headers });
-  const staticHeaders = { ...(cfg.headers ?? {}) };
+  const staticHeaders = configSuppliedHeaders(cfg.headers);
   const oauth = (owner: CredentialOwner, entry: StoredEntry, url: string, base: Record<string, string>): BridgeCredential => ({
     kind: "oauth",
     owner,
@@ -173,13 +193,14 @@ export async function chooseCredential(
     url,
     headers: { ...withoutAuthorization(base), authorization: `Bearer ${entry.accessToken}` },
     ownerKey: ownerKeyOf(owner),
+    configHeaders: withoutAuthorization(base),
   });
 
   if (runAs.kind === "agent") {
     const owner: CredentialOwner = { kind: "agent", tenant: claims.tenant, persona: claims.persona || "default" };
     const entry = (await deps.credentialsFor(owner))[key];
     if (pinned(entry, cfg)) return oauth(owner, entry, cfg.url, staticHeaders);
-    return { kind: "static", url: cfg.url, headers: staticHeaders, ownerKey: ownerKeyOf(owner) };
+    return { kind: "static", url: cfg.url, headers: staticHeaders, ownerKey: ownerKeyOf(owner), configHeaders: staticHeaders };
   }
 
   const account = await deps.accountFor(claims.team, runAs.slackUserId);
@@ -197,8 +218,52 @@ export async function chooseCredential(
   // Static headers are the config's (agent-wide), but the session is still
   // this person's: never pooled with the agent's or anyone else's.
   const who = owner ? ownerKeyOf(owner) : JSON.stringify(["user", claims.team, runAs.slackUserId]);
-  return { kind: "static", url: cfg.url, headers: staticHeaders, ownerKey: who };
+  return { kind: "static", url: cfg.url, headers: staticHeaders, ownerKey: who, configHeaders: staticHeaders };
 }
+
+// ── static-credential origin pins ───────────────────────────────────────────
+
+/**
+ * Where a server's CONFIG-supplied headers were first sent, per (tenant,
+ * persona, server, headers). A server whose URL later moves to another origin
+ * with the same headers is refused: the headers are a credential bound to the
+ * host they were written for. Defence in depth on top of the managed-config
+ * rule; OAuth entries carry their own pin (the entry's serverUrl).
+ */
+export interface OriginPins {
+  /** Record `origin` if nothing is pinned yet; return the pinned origin. */
+  pin(key: string, origin: string): Promise<string>;
+}
+
+export function localOriginPins(): OriginPins {
+  const m = new Map<string, string>();
+  return {
+    async pin(key, origin) {
+      if (!m.has(key)) m.set(key, origin);
+      return m.get(key)!;
+    },
+  };
+}
+
+/** Shared by every gateway replica; no expiry (an operator clears a key to
+ *  move a server deliberately, or rotates the credential). */
+export function redisOriginPins(redis: Redis, prefix: string): OriginPins {
+  return {
+    async pin(key, origin) {
+      const k = `${prefix}:mcpx-origin-pin:${key}`;
+      await redis.set(k, origin, "NX");
+      return (await redis.get(k)) ?? origin;
+    },
+  };
+}
+
+export const pinnedElsewhereText = (server: string) =>
+  `${server}: its configured credentials are pinned to the host they were first sent to, and the server's URL now points elsewhere; the gateway will not send them there`;
+
+const pinKey = (claims: JobClaims, server: string, headers: Record<string, string>) =>
+  createHash("sha256")
+    .update(JSON.stringify([claims.tenant, claims.persona || "default", server, Object.entries(headers).sort(([a], [b]) => a.localeCompare(b))]))
+    .digest("hex");
 
 // ── upstream errors, classified in the fetch (the SDK's own errors embed bodies) ──
 
@@ -333,6 +398,8 @@ export interface McpBridgeDeps {
   cardWindowMs?: number;
   /** Most pooled upstream sessions kept open. Default 256. */
   maxPooled?: number;
+  /** Static-credential origin pins. Default: Redis in the gateway role, else in-process. */
+  originPins?: OriginPins;
   now?: () => number;
 }
 
@@ -363,6 +430,19 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
   const refresher = (): CredentialRefresher => deps.refresher ?? defaultCredentialRefresher();
   const limits = deps.limits ?? envLimits;
   const now = deps.now ?? Date.now;
+  let pins: OriginPins | undefined = deps.originPins;
+  const originPins = (): OriginPins =>
+    (pins ??= env.role() === "gateway" ? redisOriginPins(getRedis(), redisPrefix()) : localOriginPins());
+  /** The config headers may go to this origin only if they went there first. */
+  async function pinRefused(claims: JobClaims, server: string, cred: Exclude<BridgeCredential, { kind: "connect" }>): Promise<boolean> {
+    if (Object.keys(cred.configHeaders).length === 0) return false;
+    const origin = originOf(cred.url);
+    if (!origin) return true;
+    const pinnedTo = await originPins().pin(pinKey(claims, server, cred.configHeaders), origin);
+    if (pinnedTo === origin) return false;
+    console.warn(`[mcp-bridge] refused: configured credentials of server=${server} are pinned to another origin`);
+    return true;
+  }
   const cardWindowMs = deps.cardWindowMs ?? 10 * 60_000;
   const maxPooled = deps.maxPooled ?? 256;
   const pool = new Map<string, Pooled>();
@@ -565,6 +645,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
         maybeCard(claims, server, "connect");
         return { tools: [], instructions: connectText(server), unavailable: true };
       }
+      if (await pinRefused(claims, server, cred)) return { tools: [], instructions: pinnedElsewhereText(server), unavailable: true };
       // One deadline for the whole call: the wait for a slot, opening the
       // session, a refresh and its retry all fit inside it.
       const timeoutMs = effectiveTimeout(cfg);
@@ -603,6 +684,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
         maybeCard(claims, server, "connect");
         return errResult(connectText(server));
       }
+      if (await pinRefused(claims, server, cred)) return errResult(pinnedElsewhereText(server));
       const timeoutMs = effectiveTimeout(cfg);
       const deadline = now() + timeoutMs;
       const left = () => Math.max(1, deadline - now());
