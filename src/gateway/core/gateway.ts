@@ -33,6 +33,7 @@ import { createV1Api } from "../api";
 import type { PendingSource } from "../api/pending-source";
 import { defaultGateBus } from "../../queue/gate-bus";
 import { makeQueueDispatch, type QueueDispatch } from "./dispatch";
+import { createOnceGuard, failureText } from "./failure-codes";
 import { getRedis, getSubRedis } from "../../queue/redis";
 import { makeKeys } from "../../queue/keys";
 import type { SessionRow } from "../../db/schema";
@@ -623,6 +624,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // Per-session route + slack context. Mutated on each new inbound user message.
   const routes = new Map<string, SessionRoute>();
+  const firstFailurePost = createOnceGuard();
 
   // On every registry install, bring warm routes in line with it:
   //  - a persona a MANAGED registry no longer lists: drop its routes, so events
@@ -1303,15 +1305,22 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         break;
       }
       case "error": {
+        // The raw error (provider/CLI text, stack fragments) stays in the server
+        // log; Slack only ever gets the fixed text for the failure code (D1.6).
+        console.error(`[turn-error] session=${e.sessionId} code=${e.code ?? "UNKNOWN"} job=${e.jobId ?? "-"}: ${e.error}`);
         void (async () => {
-          try {
-            await t.client.chat.postMessage({
-              channel: route.ctx.channel,
-              thread_ts: route.ctx.threadTs,
-              text: `:warning: error: \`${e.error}\``,
-              mrkdwn: true,
-            });
-          } catch {}
+          // One message per failed job: a retry, a queue attempt and a replica
+          // can each surface the same failure. Events with no job id are posted.
+          if (!e.jobId || firstFailurePost(`${e.sessionId}:${e.jobId}`)) {
+            try {
+              await t.client.chat.postMessage({
+                channel: route.ctx.channel,
+                thread_ts: route.ctx.threadTs,
+                text: failureText(e.code),
+                mrkdwn: true,
+              });
+            } catch {}
+          }
           await reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_ERROR);
           reactions.forget(e.sessionId);
           presence.exit(e.sessionId);

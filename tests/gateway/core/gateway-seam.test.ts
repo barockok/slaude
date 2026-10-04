@@ -7,6 +7,7 @@ import * as Sessions from "../../../src/db/sessions";
 import * as CronJobs from "../../../src/db/cron-jobs";
 import * as MentionOnly from "../../../src/db/mention-only";
 import * as SO from "../../../src/db/soul-overrides";
+import { failureText } from "../../../src/gateway/core/failure-codes";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 
 function fakeTransport(): Transport {
@@ -384,6 +385,33 @@ describe("createGateway", () => {
       g.agent.emit("event", { type: "done", sessionId: row!.id } as any);
       await tick();
       expect(doneCount()).toBe(1); // suppressed done short-circuited — no new ✅
+    });
+
+    // D1.6: failures reach Slack as fixed text for a typed code, never as the
+    // raw error; and a job that fails twice posts once.
+    it("a failed turn posts the fixed text, not the provider error, once per job", async () => {
+      await wipe();
+      writeSoulFixture(WORLD);
+      const g = newGateway();
+      const tick = () => new Promise((r) => setTimeout(r, 20));
+      await g.mention("800.1", "<@U_SLAUDE> hello");
+      const row = await Sessions.findByThread({ team_id: "T", channel_id: CH, thread_ts: "800.1" });
+      const raw = "Invalid API key · Please run /login";
+      const before = g.posts.length;
+      g.agent.emit("event", { type: "error", sessionId: row!.id, error: raw, code: "TURN_FAILED", jobId: "job-1" } as any);
+      g.agent.emit("event", { type: "error", sessionId: row!.id, error: raw, code: "TURN_FAILED", jobId: "job-1" } as any);
+      await tick();
+      const posted = g.posts.slice(before).map((p) => p.text);
+      expect(posted.length).toBe(1);
+      expect(posted[0]).toBe(failureText("TURN_FAILED"));
+      expect(posted.join("\n")).not.toContain("Invalid API key");
+
+      // An unknown or absent code posts the generic text, still not the raw error.
+      g.agent.emit("event", { type: "error", sessionId: row!.id, error: raw, code: "NOPE", jobId: "job-2" } as any);
+      g.agent.emit("event", { type: "error", sessionId: row!.id, error: raw } as any);
+      await tick();
+      const more = g.posts.slice(before + 1).map((p) => p.text);
+      expect(more).toEqual([failureText("UNKNOWN"), failureText("UNKNOWN")]);
     });
   });
 });
