@@ -27,7 +27,7 @@
 import { randomUUID } from "node:crypto";
 import { Queue, type Job, type JobsOptions } from "bullmq";
 import type { Redis } from "ioredis";
-import { DEFAULT_LABEL, labelTurnsQueue, makeKeys, nodeTurnsQueue, TURNS_QUEUE, type Keys } from "./keys";
+import { DEFAULT_LABEL, LABEL_QUEUE_PREFIX, LABEL_RE, labelTurnsQueue, makeKeys, nodeTurnsQueue, TURNS_QUEUE, type Keys } from "./keys";
 import { acquireLock, releaseLock } from "./locks";
 
 export interface TurnMessage {
@@ -254,6 +254,30 @@ export class TurnQueues {
 
   async #markMoved(fromJobId: string, to: MovedRef): Promise<void> {
     await this.#connection.set(this.keys.jobMoved(fromJobId), JSON.stringify(to), "PX", MOVED_TTL_MS);
+  }
+
+  /**
+   * Every label queue that exists in Redis, as `{queue, label}`, `turns`
+   * (default) first. Found by its BullMQ `:meta` key; bounded by the labels in
+   * use, so it is safe as a metric label set.
+   */
+  async labelQueues(): Promise<Array<{ queue: string; label: string }>> {
+    const out = [{ queue: TURNS_QUEUE, label: DEFAULT_LABEL }];
+    const head = `${this.keys.bullPrefix}:${LABEL_QUEUE_PREFIX}`;
+    const seen = new Set<string>();
+    let cursor = "0";
+    do {
+      const [next, batch] = await this.#connection.scan(cursor, "MATCH", `${head}*:meta`, "COUNT", 200);
+      cursor = next;
+      for (const k of batch) {
+        const label = k.slice(head.length, -":meta".length);
+        if (LABEL_RE.test(label) && !seen.has(label)) {
+          seen.add(label);
+          out.push({ queue: labelTurnsQueue(label), label });
+        }
+      }
+    } while (cursor !== "0");
+    return out;
   }
 
   /** Where job `jobId` was last moved to, or null if it never was. */

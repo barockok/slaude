@@ -298,6 +298,19 @@ describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
     await redis.del(keys.coalesce("s-mv"));
   });
 
+  test("labelQueues lists turns first and every label queue that exists, once", async () => {
+    await ready;
+    const a = await queues.enqueueTurn({ ...turn("s-lq-a", ["x"]), label: "ops" }, { label: "ops" });
+    const b = await queues.enqueueTurn({ ...turn("s-lq-b", ["x"]), label: "ops" }, { label: "ops" });
+    const lq = await queues.labelQueues();
+    expect(lq[0]).toEqual({ queue: "turns", label: "default" });
+    expect(lq.filter((q) => q.label === "ops")).toEqual([{ queue: "turns.label.ops", label: "ops" }]);
+    // A node's own queue is not a label queue.
+    expect(lq.some((q) => q.queue.startsWith("turns.nodeA"))).toBe(false);
+    await queues.queue("turns.label.ops").remove(a.jobId);
+    await queues.queue("turns.label.ops").remove(b.jobId);
+  });
+
   test("peekJob reads a job on an uncached queue name and leaves the shared connection open", async () => {
     await ready;
     const fresh = mkQueues();
