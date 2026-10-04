@@ -63,7 +63,8 @@ restart. The node refuses to start, with an error naming the field, when:
 - a server name is malformed, or an `allow` entry names a server that is not in
   `mcpServers` or names one twice;
 - an `env` value references a variable the node does not have, or a variable
-  that may never reach a subprocess (below).
+  that may never reach a subprocess (below);
+- `${` appears anywhere the CLI would expand it (below).
 
 A missing file is not an error: it is an empty manifest, so no persona gets a
 stdio server. The node logs one line at start with the server and persona
@@ -94,9 +95,9 @@ whose server is not in the manifest runs without that server.
 
 ## Environment
 
-`${VAR}` in an `env` value is expanded when the node starts, from the node's
-own environment. Literal values are kept as written. A reference to a variable
-the node does not have stops the node.
+A plain `${VAR}` in an `env` value is expanded when the node starts, from the
+node's own environment. Literal values are kept as written. A reference to a
+variable the node does not have stops the node.
 
 These variables can never be used, as a reference or as an `env` key: every
 gateway-only variable (the list under `SLAUDE_NODE_BOOT_CHECK` in the
@@ -104,18 +105,34 @@ gateway-only variable (the list under `SLAUDE_NODE_BOOT_CHECK` in the
 `SLAUDE_NODE_TOKEN`, `SLAUDE_REDIS_URL` and `SLAUDE_ENCRYPTION_KEY`. A manifest
 that uses one stops the node, naming the variable.
 
+**The CLI expands `${…}` a second time.** The Claude CLI that starts each
+server expands `${VAR}` and `${VAR:-default}` in the server's `command`, `args`
+and `env` values against its own environment, which is the agent child's and
+holds the persona's provider credentials. To leave it nothing to expand, the
+node refuses to start, naming the field (never the value), when:
+
+- `command` or an `args` entry contains `${` (expansion happens only in `env`
+  values; use an absolute path, or pass the value through `env`);
+- an `env` value uses any form other than a plain `${NAME}`: a default
+  (`${NAME:-x}`), another modifier, or an unterminated `${`;
+- an `env` value, once expanded, still contains `${` (the node variable's own
+  value holds one);
+- `PATH`, `HOME`, `LANG` or `TMPDIR` in the node's environment contains `${`.
+
 Each server starts with an **explicit minimal environment**: its own `env`,
-plus `PATH`, `HOME`, `LANG` and `TMPDIR` from the node. It does not inherit the
-agent child's environment, so the persona's provider credentials do not reach
-it. A server's own `env` overrides one of the four. slaude starts the server
-through a small wrapper that receives the variable names in its arguments and
-the values in its environment, and starts the real command with only those.
+plus `PATH`, `HOME`, `LANG` and `TMPDIR` from the node. A server's own `env`
+overrides one of the four. slaude starts the server through a small wrapper
+that receives the variable names in its arguments and the values in its
+environment, and starts the real command with only those. The server does not
+inherit the agent child's environment, and because no `${` reaches the CLI,
+the CLI cannot substitute one of the child's variables into the server's
+arguments or `env`.
 
 The expanded values are part of the MCP configuration the agent child is
 started with, and the Agent SDK passes that configuration on the child's
-command line. Any process on the node can therefore read them, which is the
-trust model above: give a node only the credentials every persona on it may
-see.
+command line; the wrapper then holds them in its environment. Any process on
+the node can read both, which is the trust model above: give a node only the
+credentials every persona on it may see.
 
 ## Name collisions and other MCP sources
 
