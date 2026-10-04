@@ -210,13 +210,23 @@ export function applyEmbeddingEnv(): void {
 function takeoverStaleLock(dbDir: string): void {
   if (process.env.SLAUDE_BRAIN_TAKEOVER === "0") return;
   const lockDir = join(dbDir, ".gbrain-lock");
+  const pidFile = join(dbDir, "postmaster.pid");
+  let removed = false;
   try {
-    if (!readdirSync(lockDir).length && !existsSync(join(lockDir, "lock"))) return;
-  } catch {
-    return; // no lock dir — nothing to do
+    if (readdirSync(lockDir).length || existsSync(join(lockDir, "lock"))) {
+      rmSync(lockDir, { recursive: true, force: true });
+      removed = true;
+    }
+  } catch {}
+  try {
+    if (existsSync(pidFile)) {
+      rmSync(pidFile, { force: true });
+      removed = true;
+    }
+  } catch {}
+  if (removed) {
+    console.warn("[brain] removing leftover PGLite lock / postmaster.pid (previous process did not shut down cleanly)");
   }
-  console.warn("[brain] removing leftover PGLite lock (previous process did not shut down cleanly)");
-  rmSync(lockDir, { recursive: true, force: true });
 }
 
 let embeddingActiveFlag = false;
