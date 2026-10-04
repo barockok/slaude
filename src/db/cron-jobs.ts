@@ -4,6 +4,9 @@ import { randomUUID } from "node:crypto";
 export type CronJob = {
   id: string;
   slackTeamId: string | null;
+  /** Slack app (api_app_id) the job was created under; null on older jobs.
+   *  A run posts as this app when several are registered (D1.2). */
+  slackAppId: string | null;
   slackChannelId: string | null;
   slackThreadTs: string | null;
   channelId: string;
@@ -32,6 +35,7 @@ export type CronJob = {
 
 export async function create(args: {
   slackTeamId?: string;
+  slackAppId?: string;
   slackChannelId?: string;
   slackThreadTs?: string;
   channelId: string;
@@ -47,11 +51,12 @@ export async function create(args: {
 }): Promise<CronJob> {
   const id = randomUUID();
   await db.run(
-    `INSERT INTO cron_jobs (id, slack_team_id, slack_channel_id, slack_thread_ts, channel_id, thread_ts, created_by, cron_expr, prompt, next_run_at, target, when_active, oauth_user, persona_id, active)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    `INSERT INTO cron_jobs (id, slack_team_id, slack_app_id, slack_channel_id, slack_thread_ts, channel_id, thread_ts, created_by, cron_expr, prompt, next_run_at, target, when_active, oauth_user, persona_id, active)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
     [
       id,
       args.slackTeamId ?? null,
+      args.slackAppId ?? null,
       args.slackChannelId ?? null,
       args.slackThreadTs ?? null,
       args.channelId,
@@ -220,6 +225,7 @@ function mapRow(row: any): CronJob {
   return {
     id: row.id,
     slackTeamId: row.slack_team_id,
+    slackAppId: row.slack_app_id ?? null,
     slackChannelId: row.slack_channel_id,
     slackThreadTs: row.slack_thread_ts,
     channelId: row.channel_id,

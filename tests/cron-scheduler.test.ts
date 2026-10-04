@@ -181,7 +181,6 @@ describe("CronScheduler", () => {
   test("starts and stops without error", async () => {
     const scheduler = new CronScheduler({
       agent: { ensureSession: () => ({ id: "test" }), sendMessage: async () => {}, isLive: () => false, on: () => {}, off: () => {} } as any,
-      client: { chat: { postMessage: async () => ({}) } } as any,
     });
     scheduler.start();
     scheduler.start(); // idempotent
@@ -202,7 +201,6 @@ describe("CronScheduler", () => {
     const sendMessage = mock(async () => {});
     const scheduler = new CronScheduler({
       agent: { ensureSession: () => ({ id: "test" }), sendMessage, isLive: () => false, on: () => {}, off: () => {} } as any,
-      client: { chat: { postMessage: async () => ({}) } } as any,
     });
     scheduler.start();
     await new Promise((r) => setTimeout(r, 20));
@@ -222,7 +220,6 @@ describe("CronScheduler", () => {
     const sendMessage = mock(async () => {});
     const scheduler = new CronScheduler({
       agent: { ensureSession: () => ({ id: "test" }), sendMessage, isLive: () => false, on: () => {}, off: () => {} } as any,
-      client: { chat: { postMessage: async () => ({}) } } as any,
     });
     scheduler.start();
     await new Promise((r) => setTimeout(r, 20));
@@ -247,7 +244,6 @@ describe("CronScheduler", () => {
     const sendMessage = mock(async () => {});
     const scheduler = new CronScheduler({
       agent: { ensureSession: () => ({ id: "sess-1" }), sendMessage, isLive: () => true, on: () => {}, off: () => {} } as any,
-      client: { chat: { postMessage: async () => ({}) } } as any,
     });
     scheduler.start();
     await new Promise((r) => setTimeout(r, 20));
@@ -270,7 +266,6 @@ describe("CronScheduler", () => {
     const sendMessage = mock(async () => {});
     const scheduler = new CronScheduler({
       agent: { ensureSession: () => ({ id: "sess-1" }), sendMessage, isLive: () => true, on: () => {}, off: () => {} } as any,
-      client: { chat: { postMessage: async () => ({}) } } as any,
     });
     scheduler.start();
     await new Promise((r) => setTimeout(r, 20));
@@ -296,7 +291,6 @@ describe("CronScheduler", () => {
     const sendMessage = mock(async () => {});
     const scheduler = new CronScheduler({
       agent: { ensureSession: () => ({ id: "sess-1" }), sendMessage, isLive: () => false, on: () => {}, off: () => {} } as any,
-      client: { chat: { postMessage: async () => ({}) } } as any,
     });
     scheduler.start();
     await new Promise((r) => setTimeout(r, 20));
@@ -328,7 +322,6 @@ describe("CronScheduler", () => {
         },
         off: () => {},
       } as any,
-      client: { chat: { postMessage: async () => ({}) } } as any,
     });
     scheduler.start();
     await new Promise((r) => setTimeout(r, 20));
@@ -364,7 +357,6 @@ describe("CronScheduler", () => {
         on: () => {},
         off: () => {},
       } as any,
-      client: { chat: { postMessage: async () => ({}) } } as any,
     });
     scheduler.start();
     await new Promise((r) => setTimeout(r, 20));
@@ -396,7 +388,6 @@ describe("CronScheduler", () => {
         },
         off: () => {},
       } as any,
-      client: { chat: { postMessage: async () => ({}) } } as any,
     });
     scheduler.start();
     await new Promise((r) => setTimeout(r, 20));
@@ -422,7 +413,6 @@ describe("CronScheduler", () => {
         ensureSession: (key: any) => { capturedKey = key; return { id: "sess-1" }; },
         sendMessage: async () => {}, isLive: () => false, on: () => {}, off: () => {},
       } as any,
-      client: { chat: { postMessage: async () => ({}) } } as any,
     });
     scheduler.start();
     await new Promise((r) => setTimeout(r, 20));
@@ -447,7 +437,6 @@ describe("CronScheduler", () => {
         sendMessage: async (...args: any[]) => { calls.push({ fn: "sendMessage", args }); },
         isLive: () => false, on: () => {}, off: () => {},
       } as any,
-      client: { chat: { postMessage: async () => ({}) } } as any,
     });
     scheduler.start();
     await new Promise((r) => setTimeout(r, 20));
@@ -474,7 +463,6 @@ describe("CronScheduler", () => {
         sendMessage: async () => {},
         isLive: () => false, on: () => {}, off: () => {},
       } as any,
-      client: { chat: { postMessage: async () => ({}) } } as any,
     });
     scheduler.start();
     await new Promise((r) => setTimeout(r, 20));
@@ -496,7 +484,6 @@ describe("CronScheduler", () => {
         ensureSession: (key: any) => { capturedKey = key; return { id: "sess-2" }; },
         sendMessage: async () => {}, isLive: () => false, on: () => {}, off: () => {},
       } as any,
-      client: { chat: { postMessage: async () => ({}) } } as any,
     });
     scheduler.start();
     await new Promise((r) => setTimeout(r, 20));
@@ -590,7 +577,6 @@ describe("CronScheduler under the gateway/node split", () => {
     const send = mock(async () => {});
     const scheduler = new CronScheduler({
       agent: agent as any,
-      client: {} as any,
       send: send as any,
     });
 
@@ -608,7 +594,6 @@ describe("CronScheduler under the gateway/node split", () => {
     let seen: any;
     const scheduler = new CronScheduler({
       agent: agentStub() as any,
-      client: {} as any,
       send: (async (i: any) => { seen = i; }) as any,
     });
 
@@ -626,7 +611,6 @@ describe("CronScheduler under the gateway/node split", () => {
     // Local process says idle; the cluster says a turn is in flight.
     const scheduler = new CronScheduler({
       agent: agentStub({ isLive: () => false }) as any,
-      client: {} as any,
       send: send as any,
       isLive: async () => true,
     });
@@ -641,7 +625,7 @@ describe("CronScheduler under the gateway/node split", () => {
   test("without the seams it still uses the local agent (mono)", async () => {
     await dueJob();
     const agent = agentStub();
-    const scheduler = new CronScheduler({ agent: agent as any, client: {} as any });
+    const scheduler = new CronScheduler({ agent: agent as any });
 
     scheduler.start();
     await settle(scheduler);
@@ -666,7 +650,6 @@ describe("CronScheduler and a persona that is not live", () => {
     const onExecute = mock(() => {});
     const scheduler = new CronScheduler({
       agent: { ensureSession, sendMessage, isLive: () => false, on: () => {}, off: () => {}, setCronOAuthUser: () => {} } as any,
-      client: { chat: { postMessage: async () => ({}) } } as any,
       onExecute,
     });
     scheduler.start();
@@ -749,7 +732,6 @@ describe("CronScheduler when a run throws", () => {
     const ensureSession = mock(async () => ({ id: "sess-throw" }));
     const scheduler = new CronScheduler({
       agent: { ensureSession, sendMessage: async () => {}, isLive: () => false, on: () => {}, off: () => {}, setCronOAuthUser: () => {} } as any,
-      client: {} as any,
       onExecute: () => { calls++; throw new Error("persona retired mid-run"); },
     });
     try {

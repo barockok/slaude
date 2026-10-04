@@ -8,22 +8,32 @@ import type { WebClientLike } from "../core/transport";
  *
  * Status auto-clears when the bot posts a reply, but we also clear explicitly
  * on turn end / error. Auto-disables on missing_scope so we don't spam logs.
+ *
+ * Accepts a fixed client or a per-session resolver: with several registered
+ * Slack apps the status must be set by the app the session belongs to (D1.2).
+ * The resolver is read on every call.
  */
 export class Status {
-  #client: WebClientLike;
+  #clientOrResolver: WebClientLike | ((sessionId: string) => WebClientLike);
   #disabled = false;
   /** sessionId → {channel, threadTs} so we know what to clear. */
   #active = new Map<string, { channel: string; threadTs: string }>();
 
-  constructor(client: WebClientLike) {
-    this.#client = client;
+  constructor(clientOrResolver: WebClientLike | ((sessionId: string) => WebClientLike)) {
+    this.#clientOrResolver = clientOrResolver;
+  }
+
+  #clientFor(sessionId: string): WebClientLike {
+    return typeof this.#clientOrResolver === "function"
+      ? this.#clientOrResolver(sessionId)
+      : this.#clientOrResolver;
   }
 
   async set(sessionId: string, channel: string, threadTs: string, text: string) {
     if (this.#disabled) return;
     this.#active.set(sessionId, { channel, threadTs });
     try {
-      await (this.#client as any).assistant.threads.setStatus({
+      await (this.#clientFor(sessionId) as any).assistant.threads.setStatus({
         channel_id: channel,
         thread_ts: threadTs,
         status: text,
@@ -50,7 +60,7 @@ export class Status {
     if (!a) return;
     this.#active.delete(sessionId);
     try {
-      await (this.#client as any).assistant.threads.setStatus({
+      await (this.#clientFor(sessionId) as any).assistant.threads.setStatus({
         channel_id: a.channel,
         thread_ts: a.threadTs,
         status: "",

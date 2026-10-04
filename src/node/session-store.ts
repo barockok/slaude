@@ -28,6 +28,7 @@ function toRow(v: SessionView): SessionRow {
     slack_team_id: v.slack_team_id,
     slack_channel_id: v.slack_channel_id,
     slack_thread_ts: v.slack_thread_ts,
+    slack_app_id: v.slack_app_id ?? null,
     permission_mode: v.permission_mode,
     engaged: v.engaged,
     persona_id: v.persona_id,

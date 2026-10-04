@@ -1,4 +1,4 @@
-import type { Transport, WebClientLike } from "../core/transport";
+import { clientForApp, type AppRef, type Transport } from "../core/transport";
 import type {
   CanUseTool,
   PermissionUpdate,
@@ -206,16 +206,16 @@ function permBlocks(toolName: string, input: Record<string, unknown>, toolUseId:
  * allow without prompting — useful for safe read-only ops like Read/Grep/Glob.
  */
 export class PermissionGate {
-  #client: WebClientLike;
+  #transport: Pick<Transport, "client" | "clientFor">;
   #autoAllow: Set<string>;
   /** sessionId → channel/thread for routing the prompt. */
-  #routes = new Map<string, { channel: string; threadTs: string }>();
+  #routes = new Map<string, { channel: string; threadTs: string; app?: AppRef }>();
   #pending = new Map<PendingKey, Pending>();
   /** Explicit bus override (tests/sim); undefined = env-driven default. */
   #busOverride: GateBus | null | undefined;
 
   constructor(transport: Transport, opts: { gateBus?: GateBus | null } = {}) {
-    this.#client = transport.client;
+    this.#transport = transport;
     this.#busOverride = opts.gateBus;
     this.#autoAllow = autoAllowFromEnv();
 
@@ -355,9 +355,10 @@ export class PermissionGate {
     }
   }
 
-  /** Adapter calls this when it knows where a session lives in Slack. */
-  bindSession(sessionId: string, channel: string, threadTs: string) {
-    this.#routes.set(sessionId, { channel, threadTs });
+  /** Adapter calls this when it knows where a session lives in Slack, and
+   *  which app it belongs to: the card is posted as that app (D1.2). */
+  bindSession(sessionId: string, channel: string, threadTs: string, app?: AppRef) {
+    this.#routes.set(sessionId, { channel, threadTs, ...(app ? { app } : {}) });
   }
 
   unbindSession(sessionId: string) {
@@ -380,6 +381,8 @@ export class PermissionGate {
     threadTs: string;
     decisionReason?: string;
     suggestions?: unknown[];
+    /** Slack app the session belongs to (D1.2). */
+    app?: AppRef;
   }): Promise<{ decision: PermissionDecision } | { pendingId: string }> {
     const policy = permissionPolicy(args.toolName, args.input, this.#autoAllow);
     if (policy) return { decision: policy };
@@ -398,7 +401,7 @@ export class PermissionGate {
       expiresAt: Date.now() + PERM_GATE_TTL_MS,
     });
     try {
-      await this.#client.chat.postMessage({
+      await clientForApp(this.#transport, args.app).chat.postMessage({
         channel: args.channel,
         thread_ts: args.threadTs,
         text: `:lock: Approval needed: \`${args.toolName}\``,
@@ -487,7 +490,7 @@ export class PermissionGate {
     );
 
     try {
-      const posted = await this.#client.chat.postMessage({
+      const posted = await clientForApp(this.#transport, route.app).chat.postMessage({
         channel: route.channel,
         thread_ts: route.threadTs,
         text: `:lock: Approval needed: \`${toolName}\``,

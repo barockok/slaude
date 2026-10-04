@@ -135,6 +135,12 @@ export async function clearStarted(id: string): Promise<void> {
   ]);
 }
 
+/** Record the Slack app (api_app_id) the thread arrives through (D1.2), so
+ *  turns with no inbound event (the operator panel) post as that app. */
+export async function setSlackApp(id: string, apiAppId: string): Promise<void> {
+  await db.run(`UPDATE sessions SET slack_app_id = ?, updated_at = ? WHERE id = ?`, [apiAppId, Date.now(), id]);
+}
+
 /** Persist per-thread engagement so a disengage (user @mentioned a colleague)
  *  survives both the next-message restore path and gateway restarts. */
 export async function setEngaged(id: string, engaged: boolean): Promise<void> {

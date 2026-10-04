@@ -1,13 +1,11 @@
 import type { AgentManager } from "../../agent/manager";
 import type { SessionRow } from "../../db/schema";
-import type { WebClient } from "@slack/web-api";
 import * as CronJobs from "../../db/cron-jobs";
 import { getNextRun } from "./cron-parser";
 import { getPersonaRegistry } from "../../persona/registry";
 
 export type CronSchedulerDeps = {
   agent: AgentManager;
-  client: WebClient;
   /**
    * How a cron turn is delivered. The gateway role injects the queue dispatch
    * so the turn runs on a node like every other turn; without it the scheduler
@@ -33,7 +31,6 @@ export type CronSchedulerDeps = {
 
 export class CronScheduler {
   #agent: AgentManager;
-  #client: WebClient;
   #onExecute?: (job: CronJobs.CronJob, sessionId: string) => void;
   #send?: CronSchedulerDeps["send"];
   #isLive?: CronSchedulerDeps["isLive"];
@@ -42,7 +39,6 @@ export class CronScheduler {
 
   constructor(deps: CronSchedulerDeps) {
     this.#agent = deps.agent;
-    this.#client = deps.client;
     this.#onExecute = deps.onExecute;
     this.#send = deps.send;
     this.#isLive = deps.isLive;
