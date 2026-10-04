@@ -93,12 +93,19 @@ const COALESCE_TTL_MS = 10 * 60 * 1000;
 /** How long a job-moved marker is kept: longer than a follower lives (20 min). */
 const MOVED_TTL_MS = 60 * 60 * 1000;
 
+/** How long a move's copy is held unclaimable while the original is removed
+ *  (#swap). Promoted at once on success; only a crash mid-move waits it out. */
+const SWAP_HOLD_MS = 30_000;
+
 export interface TurnQueuesOpts {
   connection: Redis;
   keys?: Keys;
   /** Test-only: awaited between updateData and the post-update state check,
    *  to force the claim race deterministically. */
   afterUpdateData?: () => Promise<void>;
+  /** Test-only: awaited inside a move between adding the held copy and
+   *  removing the original — the window a claim race needs. */
+  beforeSwapRemove?: () => Promise<void>;
 }
 
 export class TurnQueues {
@@ -106,11 +113,13 @@ export class TurnQueues {
   #connection: Redis;
   #queues = new Map<string, Queue>();
   #afterUpdateData?: () => Promise<void>;
+  #beforeSwapRemove?: () => Promise<void>;
 
   constructor(opts: TurnQueuesOpts) {
     this.#connection = opts.connection;
     this.keys = opts.keys ?? makeKeys();
     this.#afterUpdateData = opts.afterUpdateData;
+    this.#beforeSwapRemove = opts.beforeSwapRemove;
   }
 
   queueName(target: TurnTarget): string {
@@ -199,8 +208,13 @@ export class TurnQueues {
     const pending = await this.queue(ref.queue).getJob(ref.jobId);
     if (!pending) return null; // stale index (job done + removed)
     if (!PENDING_STATES.has(await pending.getState())) return null; // already claimed
-    if (want && ref.queue !== want.queue) return this.#relocate(pending, job, ckey, want);
     const prev = pending.data as TurnJob;
+    // Only a LABEL change relocates (node labels spec §4.6). A warmth change
+    // under the same label (the warm node came or went between messages)
+    // appends in place exactly as before labels: same job id, same token.
+    if (want && ref.queue !== want.queue && jobLabel(prev) !== jobLabel(job)) {
+      return this.#relocate(pending, job, ckey, want);
+    }
     await pending.updateData({
       ...prev,
       messages: [...prev.messages, ...job.messages],
@@ -225,11 +239,10 @@ export class TurnQueues {
    * appended, as ONE job under this call's id and token (node labels spec
    * §4.6). The new token, not the pending job's: after a relabel the old
    * token's label claim is not the persona's, and the /v1 gate would refuse
-   * every call the turn makes. Add first, then remove the original; if the
-   * original was claimed in between (remove refuses a locked job) the copy is
-   * undone and null tells the caller to add only this call's messages — the
-   * claimed job runs the earlier ones. The job-moved marker is written before
-   * the original disappears, so a follower never reads the move as an end.
+   * every call the turn makes. Through #swap, so the original's messages run
+   * exactly once: if a worker claimed the original meanwhile, null tells the
+   * caller to add only this call's messages — the claimed job runs the
+   * earlier ones.
    */
   async #relocate(pending: Job, job: TurnJob, ckey: string, want: { queue: string; jobId?: string }): Promise<EnqueueResult | null> {
     const prev = pending.data as TurnJob;
@@ -239,17 +252,39 @@ export class TurnQueues {
       messages: [...prev.messages, ...job.messages],
       enqueuedAt: Math.min(prev.enqueuedAt ?? job.enqueuedAt, job.enqueuedAt),
     };
-    await this.queue(want.queue).add("turn", merged, { ...this.defaultJobOpts(), jobId: id });
-    await this.#markMoved(String(pending.id), { queue: want.queue, jobId: id });
-    try {
-      await pending.remove();
-    } catch {
-      await this.queue(want.queue).remove(id).catch(() => {});
-      await this.#connection.del(this.keys.jobMoved(String(pending.id))).catch(() => {});
-      return null;
-    }
+    if (!(await this.#swap(pending, want.queue, merged, id))) return null;
     await this.#connection.set(ckey, JSON.stringify({ queue: want.queue, jobId: id }), "PX", COALESCE_TTL_MS);
     return { jobId: id, queue: want.queue, coalesced: true };
+  }
+
+  /**
+   * Replace an UNCLAIMED job with a copy on `target`, so its messages run
+   * exactly once. The copy is added HELD (delayed), so no worker can claim it;
+   * then the original is removed — Redis refuses to remove a locked job, so a
+   * failure means a worker already holds the original: the held copy is
+   * dropped (still unclaimable) and false is returned. Only once the original
+   * is gone is the copy promoted. A crash in between leaves the copy to run
+   * when the hold lapses (at-least-once, never lost). The job-moved marker is
+   * written before the original disappears, so a follower never reads the
+   * move as the turn's end.
+   */
+  async #swap(original: Job, target: string, data: TurnJob, id: string): Promise<boolean> {
+    const copy = await this.queue(target).add("turn", data, { ...this.defaultJobOpts(), jobId: id, delay: SWAP_HOLD_MS });
+    await this.#markMoved(String(original.id), { queue: target, jobId: id });
+    if (this.#beforeSwapRemove) await this.#beforeSwapRemove();
+    try {
+      // remove() refuses only a LOCKED job; one that was claimed and already
+      // finished would be removed "successfully" after running. Check first.
+      if (!PENDING_STATES.has(await original.getState())) throw new Error("claimed");
+      await original.remove();
+    } catch {
+      await copy.remove().catch(() => {});
+      await this.#connection.del(this.keys.jobMoved(String(original.id))).catch(() => {});
+      return false;
+    }
+    // A failed promote only delays the turn by the hold; it is not lost.
+    await copy.promote().catch(() => {});
+    return true;
   }
 
   async #markMoved(fromJobId: string, to: MovedRef): Promise<void> {
@@ -307,50 +342,73 @@ export class TurnQueues {
    * being moved, and appending a job onto itself before removing it would
    * lose the turn. Under the session's append lock:
    *
-   * - index points elsewhere (a different pending job exists): append these
-   *   messages there and drop the original;
-   * - otherwise: fresh add on shared (re-pointing the index), then remove the
-   *   original. If the original got claimed in that window (live-queue race)
-   *   its worker will run it — undo our copy to avoid a double turn; if even
-   *   the undo fails the duplicate stands (at-least-once, session-lock
-   *   serialized).
+   * - index points elsewhere (a different pending job exists): remove the
+   *   original first, then append its messages there (a failed remove means a
+   *   worker holds it: it runs, nothing is appended);
+   * - otherwise: a copy on shared through #swap, re-pointing the index.
+   *
+   * Every branch that takes the job off this queue writes the job-moved
+   * marker, so a follower never reads the move as the turn's end.
+   *
+   * TODO(U10b): this moves a job of ANY label onto `turns` (label default); a
+   * default node then moves a non-default job on to its label's queue at
+   * claim. Reaping straight onto the job's own label queue is U10b's change.
    */
   async moveToShared(job: Job): Promise<EnqueueResult> {
     const data = job.data as TurnJob;
+    const id = String(job.id);
     const ckey = this.keys.coalesce(data.sessionId);
     const lockKey = this.keys.coalesceLock(data.sessionId);
     const lockOwner = randomUUID();
     await this.#acquireAppendLock(lockKey, lockOwner);
     try {
-      const existing = await this.#connection.get(ckey);
-      let indexedElsewhere = false;
-      if (existing) {
-        try {
-          indexedElsewhere = (JSON.parse(existing) as { jobId: string }).jobId !== job.id;
-        } catch {
-          /* corrupt index — treat as self */
-        }
+      const appended = await this.#moveIntoIndexed(job, ckey);
+      if (appended) return appended;
+      const newId = randomUUID();
+      if (!(await this.#swap(job, TURNS_QUEUE, data, newId))) {
+        return { jobId: id, queue: job.queueName, coalesced: false }; // claimed: its worker runs it
       }
-      if (indexedElsewhere) {
-        const appended = await this.#tryAppend(ckey, data);
-        if (appended) {
-          await job.remove();
-          return appended;
-        }
-      }
-      const res = await this.#addFresh(data, TURNS_QUEUE, ckey);
-      await this.#markMoved(String(job.id), { queue: res.queue, jobId: res.jobId }).catch(() => {});
-      try {
-        await job.remove();
-      } catch {
-        await this.queue(TURNS_QUEUE)
-          .remove(res.jobId)
-          .catch(() => {});
-      }
-      return res;
+      await this.#connection.set(ckey, JSON.stringify({ queue: TURNS_QUEUE, jobId: newId }), "PX", COALESCE_TTL_MS);
+      return { jobId: newId, queue: TURNS_QUEUE, coalesced: false };
     } finally {
       await releaseLock(this.#connection, lockKey, lockOwner).catch(() => {});
     }
+  }
+
+  /**
+   * The append-elsewhere branch shared by moveToShared and moveTo: when the
+   * coalesce index points at ANOTHER pending job, take `job` off its queue
+   * (remove FIRST, so a claimed job is never also appended elsewhere) and
+   * append its messages to the indexed job, or add them fresh on the indexed
+   * queue if that job was claimed meanwhile. Null = the index points at `job`
+   * itself (or nowhere): the caller moves it. A failed remove returns the
+   * job's own location: its worker runs it.
+   */
+  async #moveIntoIndexed(job: Job, ckey: string): Promise<EnqueueResult | null> {
+    const id = String(job.id);
+    const raw = await this.#connection.get(ckey);
+    if (!raw) return null;
+    let ref: MovedRef;
+    try {
+      ref = JSON.parse(raw) as MovedRef;
+    } catch {
+      return null; // corrupt index — treat as self
+    }
+    if (ref.jobId === id && ref.queue === job.queueName) return null;
+    const other = await this.queue(ref.queue).getJob(ref.jobId);
+    if (!other || !PENDING_STATES.has(await other.getState())) return null;
+    await this.#markMoved(id, ref);
+    try {
+      if (!PENDING_STATES.has(await job.getState())) throw new Error("claimed");
+      await job.remove();
+    } catch {
+      await this.#connection.del(this.keys.jobMoved(id)).catch(() => {});
+      return { jobId: id, queue: job.queueName, coalesced: false };
+    }
+    const data = job.data as TurnJob;
+    const res = (await this.#tryAppend(ckey, data)) ?? (await this.#addFresh(data, ref.queue, ckey));
+    await this.#markMoved(id, { queue: res.queue, jobId: res.jobId });
+    return res;
   }
 
   /**
@@ -360,15 +418,17 @@ export class TurnQueues {
    * still dedups it. Under the session's append lock:
    *
    * - already on that queue: nothing to do;
-   * - the coalesce index points at another pending job: append there (the
-   *   same rule as moveToShared);
-   * - otherwise add the copy on the label queue and re-point the index.
+   * - already moved (a job-moved marker sends it away from this queue, or the
+   *   target already holds this id in any state): the move is DONE — return
+   *   where it went, add nothing. This makes a re-delivered claim idempotent:
+   *   a node that died after adding the copy but before completing the
+   *   original must not append the messages twice or start a second copy;
+   * - the coalesce index points at another pending job: append there;
+   * - otherwise put a copy on the label queue and re-point the index.
    *
    * `claimed`: the caller is the worker holding this job (a label mismatch at
    * claim). The original cannot be removed while locked; the caller completes
-   * it instead, and the job-moved marker tells a follower where the turn went.
-   * Unclaimed: the original is removed after the copy is added; if it was
-   * claimed in between, the copy is undone and its worker runs it.
+   * it instead. Unclaimed: through #swap, so the messages run exactly once.
    */
   async moveTo(job: Job, label: string, opts: { claimed?: boolean } = {}): Promise<EnqueueResult> {
     const target = labelTurnsQueue(label);
@@ -381,39 +441,35 @@ export class TurnQueues {
     const lockOwner = randomUUID();
     await this.#acquireAppendLock(lockKey, lockOwner);
     try {
-      const existing = await this.#connection.get(ckey);
-      let indexedElsewhere = false;
-      if (existing) {
-        try {
-          const ref = JSON.parse(existing) as { queue: string; jobId: string };
-          indexedElsewhere = ref.jobId !== id || ref.queue !== from;
-        } catch {
-          /* corrupt index — treat as self */
-        }
+      const done = await this.movedTo(id);
+      if (done && done.queue !== from) return { jobId: done.jobId, queue: done.queue, coalesced: false };
+      if (await this.queue(target).getJob(id)) {
+        await this.#markMoved(id, { queue: target, jobId: id });
+        return { jobId: id, queue: target, coalesced: false };
       }
-      if (indexedElsewhere) {
-        const appended = await this.#tryAppend(ckey, data);
-        if (appended) {
-          await this.#markMoved(id, { queue: appended.queue, jobId: appended.jobId });
-          if (!opts.claimed) await job.remove();
-          return appended;
+      if (opts.claimed) {
+        // The original stays locked by the caller, so the index cannot point
+        // at it usefully; append to another pending job if there is one.
+        const raw = await this.#connection.get(ckey);
+        const ref = raw ? (() => { try { return JSON.parse(raw) as MovedRef; } catch { return null; } })() : null;
+        if (ref && !(ref.jobId === id && ref.queue === from)) {
+          const appended = await this.#tryAppend(ckey, data);
+          if (appended) {
+            await this.#markMoved(id, { queue: appended.queue, jobId: appended.jobId });
+            return appended;
+          }
         }
+        // Add, then mark: a crash in between leaves the copy on the target,
+        // which the target check above treats as done on re-delivery.
+        const res = await this.#addFresh(data, target, ckey, id);
+        await this.#markMoved(id, { queue: target, jobId: id });
+        return res;
       }
-      // Same id on the target; a job already holding that id there (a move
-      // that came back) would swallow the add, so fall back to a fresh id.
-      const clash = await this.queue(target).getJob(id);
-      const res = await this.#addFresh(data, target, ckey, clash ? undefined : id);
-      await this.#markMoved(id, { queue: target, jobId: res.jobId });
-      if (!opts.claimed) {
-        try {
-          await job.remove();
-        } catch {
-          await this.queue(target).remove(res.jobId).catch(() => {});
-          await this.#connection.del(this.keys.jobMoved(id)).catch(() => {});
-          return { jobId: id, queue: from, coalesced: false };
-        }
-      }
-      return res;
+      const appended = await this.#moveIntoIndexed(job, ckey);
+      if (appended) return appended;
+      if (!(await this.#swap(job, target, data, id))) return { jobId: id, queue: from, coalesced: false };
+      await this.#connection.set(ckey, JSON.stringify({ queue: target, jobId: id }), "PX", COALESCE_TTL_MS);
+      return { jobId: id, queue: target, coalesced: false };
     } finally {
       await releaseLock(this.#connection, lockKey, lockOwner).catch(() => {});
     }

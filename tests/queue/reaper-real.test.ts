@@ -117,7 +117,7 @@ describe.skipIf(!realEnabled)("queue/reaper against real Redis", () => {
   test("moving a dead node's job coalesces into an existing pending shared job", async () => {
     await ready;
     await registry.nodeUp("dead-2");
-    await queues.enqueueTurn(turn("s-merge", "on-node"), { node: "dead-2" });
+    const onNode = await queues.enqueueTurn(turn("s-merge", "on-node"), { node: "dead-2" });
     // decouple the index, then land a shared job for the same session
     await redis.del(keys.coalesce("s-merge"));
     const shared = await queues.enqueueTurn(turn("s-merge", "on-shared"), { label: "default" });
@@ -130,6 +130,8 @@ describe.skipIf(!realEnabled)("queue/reaper against real Redis", () => {
     const job = await queues.queue("turns").getJob(shared.jobId);
     expect((job!.data as TurnJob).messages.map((m) => m.text)).toEqual(["on-shared", "on-node"]);
     expect(await queues.queue("turns").getWaitingCount()).toBe(1);
+    // Review R2-4: the append-elsewhere branch leaves a job-moved marker too.
+    expect(await queues.movedTo(onNode.jobId)).toEqual({ queue: "turns", jobId: shared.jobId });
     await job!.remove();
     await redis.del(keys.coalesce("s-merge"));
   });

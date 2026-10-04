@@ -298,6 +298,104 @@ describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
     await redis.del(keys.coalesce("s-mv"));
   });
 
+  // Review R2-1: a worker claiming the original inside the move's window must
+  // not leave a second, already-claimable copy behind.
+  test("a relabel racing a claim runs every message exactly once", async () => {
+    await ready;
+    const ran: Array<{ queue: string; texts: string[] }> = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    // A turn takes a while: the claimed original stays locked (active).
+    const record = (queue: string) => async (job: Job) => {
+      ran.push({ queue, texts: (job.data as TurnJob).messages.map((m) => m.text) });
+      await gate;
+    };
+    await queues.enqueueTurn({ ...turn("s-race-relabel", ["m1"]), label: "racea" }, { label: "racea" }, "rr-orig");
+    let wA: Worker | undefined;
+    const racing = mkQueues({
+      beforeSwapRemove: async () => {
+        // Inside the window: a worker on the old queue claims the original,
+        // and an idle worker waits on the new queue.
+        wA = startWorker("turns.label.racea", record("racea"));
+        await until(async () => (await (await queues.queue("turns.label.racea").getJob("rr-orig"))!.getState()) !== "waiting", 5000);
+        startWorker("turns.label.raceb", record("raceb"));
+        await new Promise((r) => setTimeout(r, 300));
+      },
+    });
+    const res = await racing.enqueueTurn({ ...turn("s-race-relabel", ["m2"]), label: "raceb" }, { label: "raceb" }, "rr-new");
+    expect(res).toEqual({ jobId: "rr-new", queue: "turns.label.raceb", coalesced: false });
+    await until(() => ran.length >= 2, 5000);
+    release();
+    await new Promise((r) => setTimeout(r, 500)); // room for a duplicate to show
+    expect(ran.sort((a, b) => a.queue.localeCompare(b.queue))).toEqual([
+      { queue: "racea", texts: ["m1"] },
+      { queue: "raceb", texts: ["m2"] },
+    ]);
+    expect(await queues.movedTo("rr-orig")).toBeNull();
+    void wA;
+  });
+
+  // Review R2-3: only a label change relocates; warmth changes append in place.
+  test("a warmth change under the same label appends in place (same id, same token)", async () => {
+    await ready;
+    await queues.enqueueTurn({ ...turn("s-warm-flip", ["one"], "tok-1"), label: "default" }, { node: "flipnode" }, "wf-1");
+    const second = await queues.enqueueTurn({ ...turn("s-warm-flip", ["two"], "tok-2"), label: "default" }, { label: "default" }, "wf-2");
+    expect(second).toEqual({ jobId: "wf-1", queue: "turns.flipnode", coalesced: true });
+    const j = await queues.queue("turns.flipnode").getJob("wf-1");
+    expect((j!.data as TurnJob).messages.map((m) => m.text)).toEqual(["one", "two"]);
+    expect((j!.data as TurnJob).jobToken).toBe("tok-1");
+    expect(await queues.movedTo("wf-1")).toBeNull();
+    // An old job with no label is `default` too: still in place.
+    await queues.queue("turns.flipnode").remove("wf-1");
+    await queues.enqueueTurn(turn("s-warm-flip2", ["a"]), { label: "default" }, "wf-3");
+    const back = await queues.enqueueTurn({ ...turn("s-warm-flip2", ["b"]), label: "default" }, { node: "flipnode" }, "wf-4");
+    expect(back).toEqual({ jobId: "wf-3", queue: "turns", coalesced: true });
+    await queues.queue("turns").remove("wf-3");
+    await redis.del(keys.coalesce("s-warm-flip"), keys.coalesce("s-warm-flip2"));
+  });
+
+  // Review R2-2: a re-delivered claim after the copy was made adds nothing.
+  test("moveTo for a claimed job is idempotent when the copy is waiting", async () => {
+    await ready;
+    await queues.enqueueTurn({ ...turn("s-redeliver", ["x"]), label: "redel" }, { label: "default" }, "rd-1");
+    const orig = (await queues.queue("turns").getJob("rd-1"))!;
+    const first = await queues.moveTo(orig, "redel", { claimed: true });
+    const again = await queues.moveTo(orig, "redel", { claimed: true });
+    expect(first).toEqual({ jobId: "rd-1", queue: "turns.label.redel", coalesced: false });
+    expect(again).toEqual({ jobId: "rd-1", queue: "turns.label.redel", coalesced: false });
+    const copies = await queues.queue("turns.label.redel").getJobs(["waiting", "active", "delayed"]);
+    expect(copies.map((c) => c.id)).toEqual(["rd-1"]);
+    expect((copies[0]!.data as TurnJob).messages.map((m) => m.text)).toEqual(["x"]);
+    await queues.queue("turns.label.redel").remove("rd-1");
+    await queues.queue("turns").remove("rd-1");
+    await redis.del(keys.coalesce("s-redeliver"));
+  });
+
+  test("moveTo for a claimed job is idempotent when the copy is already running", async () => {
+    await ready;
+    await queues.enqueueTurn({ ...turn("s-redeliver2", ["y"]), label: "redel2" }, { label: "default" }, "rd-2");
+    const orig = (await queues.queue("turns").getJob("rd-2"))!;
+    await queues.moveTo(orig, "redel2", { claimed: true });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let runs = 0;
+    const w = startWorker("turns.label.redel2", async () => {
+      runs++;
+      await gate;
+    });
+    await until(async () => runs === 1, 5000);
+    const again = await queues.moveTo(orig, "redel2", { claimed: true });
+    expect(again.queue).toBe("turns.label.redel2");
+    expect(again.jobId).toBe("rd-2");
+    const counts = await queues.queue("turns.label.redel2").getJobCounts("waiting", "active", "delayed");
+    expect(counts).toEqual({ waiting: 0, active: 1, delayed: 0 });
+    release();
+    await new Promise((r) => w.on("completed", r));
+    expect(runs).toBe(1);
+    await queues.queue("turns").remove("rd-2");
+    await redis.del(keys.coalesce("s-redeliver2"));
+  });
+
   test("labelQueues lists turns first and every label queue that exists, once", async () => {
     await ready;
     const a = await queues.enqueueTurn({ ...turn("s-lq-a", ["x"]), label: "ops" }, { label: "ops" });
