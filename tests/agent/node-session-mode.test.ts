@@ -16,16 +16,19 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-process.env.SLAUDE_AUTO_EVOLVE = "0";
-process.env.SLAUDE_IDLE_MINUTES = "0";
-
 const realSdk = await import("@anthropic-ai/claude-agent-sdk");
+// Captured before mock.module rebinds the namespace's `query` to the mock.
+const realQuery = realSdk.query;
 type QueryArgs = { prompt: AsyncIterable<any>; options: any };
 /** Options of every query() boot, in order: one entry per session (re)boot. */
 let captured: any[] = [];
+/** The module mock outlives this file in a single-process run: outside this
+ *  file's tests it passes through to the real SDK. */
+let fakeActive = false;
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({
   ...realSdk,
   query: (args: QueryArgs) => {
+    if (!fakeActive) return realQuery(args as any);
     captured.push(args.options);
     // A warm session: answer every prompt until the input closes.
     return {
@@ -50,14 +53,19 @@ const { NodeDbAccessError } = await import("../../src/db/client");
 const { lockFromClaims } = await import("../../src/node/session-lock");
 const { sessionConfigFp } = await import("../../src/remote/fingerprint");
 
-const ENV = ["SLAUDE_ROLE", "SLAUDE_DB", "SLAUDE_PG_URL"] as const;
+// Every variable this file sets, restored afterwards: the suite runs in one process.
+const ENV = ["SLAUDE_ROLE", "SLAUDE_DB", "SLAUDE_PG_URL", "SLAUDE_AUTO_EVOLVE", "SLAUDE_IDLE_MINUTES"] as const;
 const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
 beforeAll(() => {
+  fakeActive = true;
   process.env.SLAUDE_ROLE = "node";
   process.env.SLAUDE_DB = "pg";
   delete process.env.SLAUDE_PG_URL;
+  process.env.SLAUDE_AUTO_EVOLVE = "0";
+  process.env.SLAUDE_IDLE_MINUTES = "0";
 });
 afterAll(() => {
+  fakeActive = false;
   for (const k of ENV) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
@@ -136,13 +144,16 @@ const OPEN = "currently open to all participants";
 describe("node-role session mode from gateway-supplied data", () => {
   it("a locked thread gets the private 1on1 block, and the database is never asked", async () => {
     const find = spyOn(OneOnOne, "find");
-    const s = await nodeSession();
-    await s.turn(gatewayToken(s.row.id, { user: "U_OWNER", openScope: null }));
-    expect(captured).toHaveLength(1);
-    expect(captured[0].systemPrompt.append).toContain(PRIVATE);
-    expect(find).not.toHaveBeenCalled();
-    find.mockRestore();
-    s.mgr.reload(s.row.id);
+    try {
+      const s = await nodeSession();
+      await s.turn(gatewayToken(s.row.id, { user: "U_OWNER", openScope: null }));
+      expect(captured).toHaveLength(1);
+      expect(captured[0].systemPrompt.append).toContain(PRIVATE);
+      expect(find).not.toHaveBeenCalled();
+      s.mgr.reload(s.row.id);
+    } finally {
+      find.mockRestore();
+    }
   });
 
   it("an open thread gets the open block with its scope; an unlocked one gets none", async () => {
@@ -238,8 +249,13 @@ describe("memory on a node with no database", () => {
   });
 
   it("a failing prefetch and syncTurn do not break the turn", async () => {
-    const pre = spyOn(memory, "prefetch").mockImplementation((id: string) => sqliteMemory.prefetch(id));
-    const sync = spyOn(memory, "syncTurn").mockImplementation((t: any) => sqliteMemory.syncTurn(t));
+    // Bound before spying: when an earlier file chose SLAUDE_MEMORY=sqlite,
+    // `memory` IS the sqlite provider, and a spy that called through the
+    // object would call itself.
+    const sqlitePrefetch = sqliteMemory.prefetch.bind(sqliteMemory);
+    const sqliteSync = sqliteMemory.syncTurn.bind(sqliteMemory);
+    const pre = spyOn(memory, "prefetch").mockImplementation((id: string) => sqlitePrefetch(id));
+    const sync = spyOn(memory, "syncTurn").mockImplementation((t: any) => sqliteSync(t));
     try {
       const s = await nodeSession();
       await s.turn(gatewayToken(s.row.id, null));
