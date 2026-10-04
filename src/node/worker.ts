@@ -556,8 +556,12 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // no database or brain); a failure only costs the turn its memory.
   agent.setMemoryProvider(makeNodeMemoryProvider({ client, tokenFor: (id) => store.tokenFor(id) }));
   agent.setPermissionResolver(makeNodePermissionResolver({ client, tokenFor: (id) => store.tokenFor(id) }));
-  /** Sessions the gateway's label gate refused on a bridged MCP call. Marked
-   *  only for now: the worker's GateDenied handling (U10b) consumes it. */
+  /**
+   * Sessions whose current turn got a label-gate 403 on any gateway call
+   * (node labels spec §4.6). The call itself fails (a tool shim returns an
+   * isError result); at turn end the job FAILS with LABEL_MISMATCH instead of
+   * acknowledging "done", so the gateway re-dispatches it once.
+   */
   const gateDenied = new Set<string>();
   agent.setMcpResolver(async (sessionId) => {
     const local: Record<string, McpServerConfig> = {
@@ -646,14 +650,6 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // The /1on1 lock (session-mode block, config identity) from the job token's
   // signed claim: a node has no database to read it from.
   agent.setSessionLockResolver(async (sessionId) => lockFromClaims(store, sessionId));
-
-  /**
-   * Sessions whose current turn got a label-gate 403 on any gateway call
-   * (node labels spec §4.6). The call itself fails (a tool shim returns an
-   * isError result); at turn end the job FAILS with LABEL_MISMATCH instead of
-   * acknowledging "done", so the gateway re-dispatches it once.
-   */
-  const gateDenied = new Set<string>();
 
   /**
    * A 401 for this node's own credential (revoked or expired) PAUSES every
