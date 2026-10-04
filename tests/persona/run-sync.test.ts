@@ -192,7 +192,7 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync stage one reporting", (
 
 describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync provider references (WS-A §4, §6.3)", () => {
   // References need a gateway: mono refuses them (below).
-  const env = { PERSONA_ANA_XOXP: "user-token-1", SLAUDE_ROLE: "gateway" };
+  const env = { PERSONA_ANA_XOXP: "user-token-1", PERSONA_ANA_KEY: "ana-key-value", SLAUDE_ROLE: "gateway" };
   const vaultEnv = {
     ...env,
     SLAUDE_VAULT_ADDR: "https://vault.example.com",
@@ -231,6 +231,28 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync provider references (WS
     expect(e.message).toContain("mount");
   });
 
+  test("an env:// reference to an unset variable fails the sync, naming it, never echoing a value", async () => {
+    const e = await fail(withRef("env://PERSONA_ANA_TYPO"), env);
+    expect(e.status).toBe(422);
+    expect(e.message).toContain("persona 'ana': provider.apiKey");
+    expect(e.message).toContain("PERSONA_ANA_TYPO");
+    expect(e.message).not.toContain("ana-key-value");
+    expect(await P.isManaged(T)).toBe(false);
+  });
+
+  test("a persona with a baseUrl and no credential is refused at sync (M-1)", async () => {
+    const e = await fail({ ...ana, model: "m-1", provider: { baseUrl: "https://llm.example.com" } }, env);
+    expect(e.status).toBe(422);
+    expect(e.message).toContain("persona 'ana': provider.baseUrl");
+  });
+
+  test("an internal host from the gateway's SLAUDE_OUTBOUND_INTERNAL_HOSTS may use http", async () => {
+    const p = { ...ana, model: "m-1", provider: { baseUrl: "http://llm.internal.example", apiKey: "env://PERSONA_ANA_KEY" } };
+    expect((await fail(p, env)).status).toBe(422);
+    const r = await runSync(T, payload([p]), { dryRun: true, env: { ...env, SLAUDE_OUTBOUND_INTERNAL_HOSTS: "llm.internal.example" }, by: "ci", extract: okExtract });
+    expect(r.created).toContain("ana");
+  });
+
   test("mono refuses a payload with provider references, naming the persona, and applies nothing", async () => {
     const e = await fail(withRef("env://PERSONA_ANA_KEY"), { PERSONA_ANA_XOXP: "user-token-1" });
     expect(e.status).toBe(422);
@@ -249,7 +271,7 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync provider references (WS
     const warn = console.warn; const lines: string[] = [];
     console.warn = (m: string) => { lines.push(String(m)); };
     try {
-      const r = await runSync(T, payload([{ ...ana, provider: { baseUrl: "https://llm.example.com" } }]),
+      const r = await runSync(T, payload([{ ...ana, provider: { baseUrl: "https://llm.example.com", apiKey: "env://PERSONA_ANA_KEY" } }]),
         { dryRun: true, env, by: "ci", extract: okExtract });
       expect(r.warnings.some((w) => w.includes("'ana'"))).toBe(true);
     } finally { console.warn = warn; }

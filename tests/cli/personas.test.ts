@@ -110,7 +110,7 @@ describe("personas export and render", () => {
   });
 
   test("render reports provider/model warnings through its callback", () => {
-    const out = repoWith("slackUserId: UTESTUSER1\nprovider:\n  baseUrl: https://llm.example.com\n");
+    const out = repoWith("slackUserId: UTESTUSER1\nprovider:\n  baseUrl: https://llm.example.com\n  apiKey: env://PERSONA_ANA_KEY\n");
     const warnings: string[] = [];
     renderDir(out, meta, undefined, (w) => warnings.push(...w));
     expect(warnings.some((w) => w.includes("'ana'") && w.includes("provider.baseUrl"))).toBe(true);

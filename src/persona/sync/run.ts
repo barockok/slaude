@@ -17,6 +17,7 @@ import { sameDesired, type DesiredPersona } from "../effective";
 import { loadVaultConfig, parseRef, SecretResolutionError, type VaultConfig } from "../../secrets";
 import { isAllowed, requestPathFor } from "../../secrets/allowlist";
 import { assertNoProviderRefsInMono } from "../../gateway/core/provider-secrets";
+import { internalHostsFrom } from "../provider-base-url";
 
 export class SyncFailure extends Error {
   constructor(readonly status: 409 | 422 | 502 | 503, message: string) { super(message); }
@@ -56,6 +57,27 @@ function checkVaultRefs(payload: SyncPayload, vault: VaultConfig | null): void {
   }
 }
 
+/**
+ * An env:// reference must name a variable that is set (non-empty) in the
+ * gateway's environment, so a typo fails the sync like an unresolved
+ * `${PERSONA_*}` placeholder (review R2-F5). Presence only: the value is never
+ * read into the payload or echoed. vault:// is never resolved at sync.
+ */
+function checkEnvRefs(payload: SyncPayload, env: Record<string, string | undefined>): void {
+  for (const p of payload.personas) {
+    for (const field of PROVIDER_FIELDS) {
+      const v = p.provider?.[field];
+      if (!v || !v.startsWith("env://")) continue;
+      const ref = parseRef(v, `persona '${p.name}': provider.${field}`);
+      if (ref.scheme === "env" && !env[ref.name]) {
+        throw new PayloadError(
+          `persona '${p.name}': provider.${field} names ${ref.name}, which is unset or empty in the gateway's environment`,
+        );
+      }
+    }
+  }
+}
+
 export async function runSync(
   tenant: string,
   raw: unknown,
@@ -83,7 +105,7 @@ export async function runSync(
     if (allIgnored.length && opts.env.SLAUDE_DEPLOY_STRICT === "1") {
       throw new PayloadError(`unknown field(s) refused under SLAUDE_DEPLOY_STRICT: ${capPaths(allIgnored).join(", ")}`);
     }
-    payload = parsePayload(raw);
+    payload = parsePayload(raw, { internalHosts: internalHostsFrom(opts.env) });
     if (payload.personas.length === 0 && !payload.allowEmpty) {
       throw new PayloadError("refusing an empty persona set; set allowEmpty: true to retire every persona");
     }
@@ -102,6 +124,7 @@ export async function runSync(
     } catch (e) {
       throw new PayloadError((e as Error).message);
     }
+    checkEnvRefs(payload, opts.env);
   } catch (e) {
     if (e instanceof PayloadError) throw new SyncFailure(422, e.message);
     throw e;

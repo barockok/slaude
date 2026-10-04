@@ -13,6 +13,7 @@ import { z } from "zod";
 import { redactSecrets } from "../../gateway/core/status-text";
 import { PERSONA_VAR_PREFIX, PERSONA_VAR_RE } from "../../secrets/persona-var";
 import { parseRef } from "../../secrets/ref";
+import { baseUrlProblem, internalHostsFrom } from "../provider-base-url";
 import { PayloadError } from "./errors";
 
 export { PayloadError };
@@ -69,12 +70,17 @@ const isRefShaped = (v: string) => v.startsWith("vault://") || v.startsWith("env
 /**
  * Validate one persona's `provider` object. Secret fields must be references
  * (the same parseRef the gateway resolves with, so `render --check` and /deploy
- * agree); `baseUrl` is a reference or a bare http(s) URL with no userinfo.
+ * agree); `baseUrl` is a reference or an https URL under the baseUrl policy
+ * (src/persona/provider-base-url.ts), and needs a credential beside it.
  * Unknown keys are refused rather than dropped: a misspelt `apikey` would
  * otherwise leave the persona silently on the node's own credentials. Errors
  * name the persona and field, never a value. An empty object is absent.
  */
-export function parseProvider(persona: string, raw: Record<string, unknown> | undefined): PersonaProvider | undefined {
+export function parseProvider(
+  persona: string,
+  raw: Record<string, unknown> | undefined,
+  internalHosts: readonly string[] = [],
+): PersonaProvider | undefined {
   if (raw === undefined) return undefined;
   const known = new Set<string>(PROVIDER_FIELDS);
   const out: PersonaProvider = {};
@@ -86,22 +92,20 @@ export function parseProvider(persona: string, raw: Record<string, unknown> | un
     const label = `persona '${persona}': provider.${field}`;
     if (typeof v !== "string" || v === "") throw new PayloadError(`${label} must be a non-empty string`);
     if (field === "baseUrl" && !isRefShaped(v)) {
-      let url: URL | null = null;
-      try {
-        url = new URL(v);
-      } catch {
-        /* reported below */
-      }
-      if (!url || (url.protocol !== "https:" && url.protocol !== "http:")) {
-        throw new PayloadError(`${label} must be an http(s) URL or a vault:// or env:// reference`);
-      }
-      if (url.username || url.password) {
-        throw new PayloadError(`${label} must not carry credentials in the URL; use provider.apiKey or provider.authToken`);
-      }
+      const problem = baseUrlProblem(v, internalHosts);
+      if (problem) throw new PayloadError(`${label} ${problem}`);
     } else {
       parseRef(v, label);
     }
     out[field] = v;
+  }
+  // `provider` is one atomic set: a persona's key is only ever sent to the host
+  // the same persona names, and its host only ever receives its own key. A
+  // baseUrl with no credential would pair it with someone else's (M-1).
+  if (out.baseUrl && !PROVIDER_SECRET_FIELDS.some((f) => out[f])) {
+    throw new PayloadError(
+      `persona '${persona}': provider.baseUrl needs a credential reference in the same provider object (apiKey, authToken or oauthToken)`,
+    );
   }
   return Object.keys(out).length ? out : undefined;
 }
@@ -162,7 +166,7 @@ export function unknownFieldPaths(raw: unknown): string[] {
   return out;
 }
 
-export function parsePayload(raw: unknown): SyncPayload {
+export function parsePayload(raw: unknown, opts: { internalHosts?: readonly string[] } = {}): SyncPayload {
   const v = raw && typeof raw === "object" ? (raw as { version?: unknown }).version : undefined;
   if (typeof v === "number" && Number.isInteger(v) && v > SUPPORTED_PAYLOAD_VERSION) {
     throw new PayloadError(
@@ -174,7 +178,7 @@ export function parsePayload(raw: unknown): SyncPayload {
   const p: SyncPayload = {
     ...r.data,
     personas: r.data.personas.map(({ provider, ...rest }) => {
-      const parsed = parseProvider(rest.name, provider);
+      const parsed = parseProvider(rest.name, provider, opts.internalHosts ?? internalHostsFrom(process.env));
       return parsed ? { ...rest, provider: parsed } : rest;
     }),
   };

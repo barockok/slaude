@@ -161,8 +161,26 @@ describe("provider (WS-A §4)", () => {
   });
 
   test("baseUrl may itself be a reference", () => {
-    const p = parsePayload(withProvider({ baseUrl: "env://PERSONA_ANA_URL" })).personas[0]!;
+    const p = parsePayload(withProvider({ baseUrl: "env://PERSONA_ANA_URL", apiKey: "env://PERSONA_ANA_KEY" })).personas[0]!;
     expect(p.provider!.baseUrl).toBe("env://PERSONA_ANA_URL");
+  });
+
+  // M-1: provider is an atomic set; a host without its own key would be paired with another's.
+  test("a baseUrl with no credential reference beside it is refused, naming persona and field", () => {
+    for (const baseUrl of ["https://llm.example.com", "env://PERSONA_ANA_URL"]) {
+      const e = err(withProvider({ baseUrl }));
+      expect(e.message).toContain("persona 'ana': provider.baseUrl");
+      expect(e.message).toContain("credential");
+    }
+  });
+
+  test("http, private and link-local base URLs are refused; an internal host may opt in", () => {
+    for (const baseUrl of ["http://llm.example.com", "https://10.1.2.3", "https://169.254.169.254/latest", "https://localhost"]) {
+      expect(err(withProvider({ baseUrl, apiKey: "env://PERSONA_ANA_KEY" })).message).toContain("provider.baseUrl");
+    }
+    const raw = withProvider({ baseUrl: "http://llm.internal.example", apiKey: "env://PERSONA_ANA_KEY" });
+    expect(parsePayload(raw, { internalHosts: ["llm.internal.example"] }).personas[0]!.provider!.baseUrl).toBe("http://llm.internal.example");
+    expect(() => parsePayload(withProvider({ baseUrl: "http://169.254.169.254", apiKey: "env://PERSONA_ANA_KEY" }), { internalHosts: ["169.254.169.254"] })).toThrow(PayloadError);
   });
 
   test("a literal secret, a placeholder or another scheme is refused, naming persona and field, never the value", () => {
@@ -180,9 +198,9 @@ describe("provider (WS-A §4)", () => {
     }
   });
 
-  test("a literal baseUrl must be a bare http(s) URL; userinfo is refused without echoing it", () => {
+  test("a literal baseUrl must be an https URL; userinfo is refused without echoing it", () => {
     for (const baseUrl of ["ftp://llm.example.com", "not a url", "https://user:hunter2@llm.example.com"]) {
-      const e = err(withProvider({ baseUrl }));
+      const e = err(withProvider({ baseUrl, apiKey: "env://PERSONA_ANA_KEY" }));
       expect(e.message).toContain("persona 'ana': provider.baseUrl");
       expect(e.message).not.toContain("hunter2");
     }
