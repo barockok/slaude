@@ -23,6 +23,8 @@
     "dev": "bun --watch src/server.ts",
     "start": "bun src/server.ts",
     "worker": "bun src/node/main.ts",
+    "start:mock": "bun src/gateway/mock/server.ts",
+    "slack:tui": "bun src/gateway/mock/tui.tsx",
     "sim": "bun src/gateway/sim/cli.ts",
     "typecheck": "tsc --noEmit",
     "docs": "bun docs/site/build.mjs",
