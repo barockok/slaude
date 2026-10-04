@@ -215,6 +215,21 @@ export function startUpstream(
             });
             return new Response(broken, { headers: { "content-type": "application/json" } });
           }
+          // Event-stream faults after the tool ran: the stream breaks off (with or
+          // without a priming event id), or ends with no response at all.
+          if (m?.method === "tools/call" && ["sse_drop", "sse_primed_drop", "sse_close"].includes(m.params?.name)) {
+            const name = m.params.name as string;
+            state.executed[name] = (state.executed[name] ?? 0) + 1;
+            const enc = new TextEncoder();
+            const stream = new ReadableStream({
+              start(c) {
+                if (name === "sse_primed_drop") c.enqueue(enc.encode("id: prime-1\ndata: \n\n"));
+                if (name === "sse_close") return c.close();
+                setTimeout(() => c.error(new Error("connection lost")), 10);
+              },
+            });
+            return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+          }
         }
       }
       const sid = req.headers.get("mcp-session-id");

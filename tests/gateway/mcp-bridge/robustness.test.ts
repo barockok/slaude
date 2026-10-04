@@ -83,6 +83,50 @@ describe("recovery", () => {
   });
 });
 
+describe("a pooled session shared by concurrent calls (review R1)", () => {
+  for (const json of [false, true]) {
+    for (const n of [2, 8]) {
+      test(`${n} concurrent calls across upstream restarts all succeed, on ONE fresh session per restart (${json ? "JSON" : "SSE"})`, async () => {
+        const up = upstream({ unknownSessionStatus: 400, json });
+        const b = bridgeAt(up.url, { sessionConcurrency: 16, ownerConcurrency: 16 });
+        try {
+          await b.call(claims, "s", "echo", { text: "warm" });
+          for (let round = 0; round < 5; round++) {
+            up.restart();
+            const rs = await Promise.all(
+              Array.from({ length: n }, (_, i) => b.call({ ...claims, session: `S-${i}` }, "s", "echo", { text: `r${round}-${i}` })),
+            );
+            rs.forEach((r, i) => expect(r).toEqual({ content: [{ type: "text", text: `r${round}-${i}` }] }));
+          }
+          expect(up.methods.filter((m) => m === "initialize")).toHaveLength(6);
+          expect(up.sessions()).toBe(1);
+        } finally {
+          await b.close();
+        }
+      });
+    }
+  }
+
+  test("one thread's 502 does not abort another thread's call in flight on the same pooled session", async () => {
+    const up = upstream();
+    const b = bridgeAt(up.url);
+    try {
+      await b.call(claims, "s", "echo", { text: "warm" });
+      const ac = new AbortController();
+      let settled = false;
+      const slow = b.call({ ...claims, session: "S-A" }, "s", "slow", {}, ac.signal).then((r) => ((settled = true), r));
+      await until(() => up.methods.filter((m) => m === "tools/call").length === 2);
+      expect((await b.call({ ...claims, session: "S-B" }, "s", "fault_502", {})).content).toEqual([{ type: "text", text: interruptedText("s") }]);
+      await new Promise((r) => setTimeout(r, 200));
+      expect(settled).toBe(false);
+      ac.abort();
+      expect((await slow).content).toEqual([{ type: "text", text: "the call to s was cancelled" }]);
+    } finally {
+      await b.close();
+    }
+  });
+});
+
 describe("tool calls are at most once", () => {
   for (const name of ["fault_502", "fault_drop"]) {
     test(`${name}: the upstream ran the call once; the bridge does not retry and says it may have run`, async () => {
@@ -93,6 +137,20 @@ describe("tool calls are at most once", () => {
         expect(r).toEqual({ content: [{ type: "text", text: interruptedText("s") }], isError: true });
         expect(up.executed[name]).toBe(1);
         expect(up.methods.filter((m) => m === "tools/call")).toHaveLength(1);
+      } finally {
+        await b.close();
+      }
+    });
+  }
+
+  for (const name of ["sse_drop", "sse_primed_drop", "sse_close"]) {
+    test(`${name}: an answer stream that breaks or ends with no response after the call was sent: ran once, "may have run"`, async () => {
+      const up = upstream();
+      const b = bridgeAt(up.url, { timeoutMs: 400 });
+      try {
+        const r = await b.call(claims, "s", name, {});
+        expect(r).toEqual({ content: [{ type: "text", text: interruptedText("s") }], isError: true });
+        expect(up.executed[name]).toBe(1);
       } finally {
         await b.close();
       }

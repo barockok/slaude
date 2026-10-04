@@ -8,7 +8,7 @@
  * and the per-owner concurrency limit queues.
  */
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { createMcpBridge, protocolErrorText, truncatedText, cancelledText, timeoutText, type BridgeLimits } from "../../../src/gateway/core/mcp-bridge";
+import { createMcpBridge, interruptedText, protocolErrorText, truncatedText, cancelledText, timeoutText, type BridgeLimits } from "../../../src/gateway/core/mcp-bridge";
 import type { JobClaims } from "../../../src/gateway/api/auth";
 import { INSTRUCTIONS, PNG_1PX, TOOLS, startUpstream } from "./upstream";
 
@@ -132,11 +132,15 @@ describe("relay failures and limits", () => {
     expect(sse.cancelled.length).toBe(cancelledBefore + 1);
   });
 
-  test("a server's own timeout is honoured, with fixed text", async () => {
+  // A call that went out and got no answer by the deadline may have run:
+  // the interrupted text, not "did not answer" (review R3).
+  test("a server's own timeout is honoured; a sent call that times out may have run", async () => {
     const b = bridgeFor(sse.url, { timeout: 150 });
     try {
+      const t0 = Date.now();
       const r = await b.call(claims(), "example", "slow", {});
-      expect(r).toEqual({ content: [{ type: "text", text: timeoutText("example", 150) }], isError: true });
+      expect(r).toEqual({ content: [{ type: "text", text: interruptedText("example") }], isError: true });
+      expect(Date.now() - t0).toBeLessThan(1500);
     } finally {
       await b.close();
     }
@@ -145,8 +149,10 @@ describe("relay failures and limits", () => {
   test("the gateway ceiling wins over a longer per-server timeout", async () => {
     const b = bridgeFor(sse.url, { timeout: 60_000, limits: { timeoutMs: 150 } });
     try {
+      const t0 = Date.now();
       const r = await b.call(claims(), "example", "slow", {});
-      expect(r.content).toEqual([{ type: "text", text: timeoutText("example", 150) }]);
+      expect(r.content).toEqual([{ type: "text", text: interruptedText("example") }]);
+      expect(Date.now() - t0).toBeLessThan(1500);
     } finally {
       await b.close();
     }

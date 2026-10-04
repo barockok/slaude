@@ -454,6 +454,10 @@ interface Pooled {
   /** The headers the next request carries; the bearer is swapped on refresh. */
   holder: { headers: Record<string, string> };
   lastUsed: number;
+  /** Calls currently using this session. */
+  inflight: number;
+  /** Out of service: no new call takes it; closed when `inflight` reaches 0. */
+  stale: boolean;
 }
 
 export interface McpBridge {
@@ -580,37 +584,46 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
     };
   }
 
-  /** Keep the pool bounded and fresh: close sessions idle past the expiry, and
-   *  the least recently used one when full. */
+  /** Keep the pool bounded and fresh: retire sessions idle past the expiry,
+   *  and the least recently used idle one when full. A session with calls in
+   *  flight is never closed under them (retire only marks it stale). */
   function sweep(keep: string): void {
     const idleMs = limits().idleMs ?? DEFAULT_IDLE_MS;
     const t = now();
-    for (const [k, p] of pool) if (k !== keep && t - p.lastUsed > idleMs) drop(k);
+    for (const [k, p] of pool) if (k !== keep && p.inflight === 0 && t - p.lastUsed > idleMs) retire(k, p);
     if (pool.size < maxPooled) return;
-    let oldest: [string, number] | null = null;
-    for (const [k, p] of pool) if (k !== keep && (!oldest || p.lastUsed < oldest[1])) oldest = [k, p.lastUsed];
-    if (oldest) drop(oldest[0]);
+    let oldest: [string, Pooled] | null = null;
+    for (const [k, p] of pool) if (k !== keep && p.inflight === 0 && (!oldest || p.lastUsed < oldest[1].lastUsed)) oldest = [k, p];
+    if (oldest) retire(oldest[0], oldest[1]);
   }
 
-  function drop(key: string): void {
-    const p = pool.get(key);
-    pool.delete(key);
-    void p?.client.then((c) => c.close()).catch(() => {});
+  function closeSession(p: Pooled): void {
+    void p.client.then((c) => c.close()).catch(() => {});
   }
 
-  /** The pooled upstream session for `key`, opened on first use or after it
-   *  sat idle past the expiry. The headers are this call's: a refreshed token
-   *  replaces the bearer in place. */
-  async function session(key: string, cred: Exclude<BridgeCredential, { kind: "connect" }>, timeoutMs: number): Promise<Client> {
+  /** Take THIS session out of service: new calls open a fresh one; it closes
+   *  when its last in-flight call finishes. A session that already replaced it
+   *  under the same key is left alone. */
+  function retire(key: string, p: Pooled): void {
+    if (pool.get(key) === p) pool.delete(key);
+    if (p.stale) return;
+    p.stale = true;
+    if (p.inflight === 0) closeSession(p);
+  }
+
+  /** Lease the pooled session for `key` (opened on first use, after it went
+   *  stale, or after it sat idle past the expiry). Synchronous get-or-create, so
+   *  N concurrent callers share ONE new session (single flight). The headers are
+   *  this call's: a refreshed token replaces the bearer in place. */
+  function lease(key: string, cred: Exclude<BridgeCredential, { kind: "connect" }>, timeoutMs: number): Pooled {
     let p = pool.get(key);
-    if (p && now() - p.lastUsed > (limits().idleMs ?? DEFAULT_IDLE_MS)) {
-      drop(key);
+    if (p && p.inflight === 0 && now() - p.lastUsed > (limits().idleMs ?? DEFAULT_IDLE_MS)) {
+      retire(key, p);
       p = undefined;
     }
     sweep(key);
     if (p) {
       p.holder.headers = cred.headers;
-      p.lastUsed = now();
     } else {
       const holder = { headers: cred.headers };
       const origin = originOf(cred.url);
@@ -629,16 +642,20 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
         }
         return c;
       })();
-      p = { client, holder, lastUsed: now() };
+      // Observed here so a failed open is never an unhandled rejection.
+      client.catch(() => {});
+      p = { client, holder, lastUsed: now(), inflight: 0, stale: false };
       pool.set(key, p);
     }
-    const mine = p;
-    try {
-      return await mine.client;
-    } catch (e) {
-      if (pool.get(key) === mine) pool.delete(key);
-      throw e;
-    }
+    p.lastUsed = now();
+    p.inflight++;
+    return p;
+  }
+
+  function unlease(p: Pooled): void {
+    p.inflight--;
+    p.lastUsed = now();
+    if (p.stale && p.inflight === 0) closeSession(p);
   }
 
   const poolKey = (cred: Exclude<BridgeCredential, { kind: "connect" }>, server: string) =>
@@ -660,10 +677,11 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
 
   /**
    * Run `op` against the upstream for this call's credential. A 401 refreshes
-   * the OAuth token once and retries once; any other failure a fresh session
-   * may cure (an expired or forgotten session, a dropped connection, a 5xx)
-   * drops the pooled session and retries once. Everything else maps to a
-   * fixed text.
+   * the OAuth token once and retries once. A failure a fresh session may cure
+   * retries once on a fresh session, except for a tools/call that reached the
+   * upstream: calls are at most once (only a stale-session rejection, which
+   * the server sends before running anything, is retried). Only the session
+   * that failed is retired, and never under other calls still using it.
    */
   async function run<T>(
     claims: JobClaims,
@@ -686,16 +704,18 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
       // Whether the failure came from the request itself (the upstream may have
       // acted on it) or from opening the session (it never saw the request).
       let sent = false;
+      // Opening the session is not tied to this call's signal: other calls
+      // may be waiting on the same initialisation.
+      const p = lease(key, current, left());
       try {
-        // Opening the session is not tied to this call's signal: other calls
-        // may be waiting on the same initialisation.
-        const client = await session(key, current, left());
+        const client = await p.client;
         sent = true;
         return { ok: true, value: await callSignal.run(callSig, () => op(client)) };
       } catch (e) {
+        if (!sent) retire(key, p); // the open failed: nobody can use it
         if (e instanceof UpstreamForbidden) return { ok: false, text: forbiddenText(server) };
         if (e instanceof UpstreamUnauthorized) {
-          drop(key);
+          retire(key, p);
           if (current.kind === "oauth" && !refreshed) {
             refreshed = true;
             let out;
@@ -717,22 +737,36 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
           maybeCard(claims, server, "reauth");
           return { ok: false, text: reauthText(server) };
         }
+        if (e instanceof UpstreamSessionExpired) retire(key, p);
         // At most once: a call that reached the upstream and then failed in
-        // transit (a 5xx, a dropped connection) may have run. Only a stale
-        // session, which the server rejects before running anything, is safe.
-        if (sent && !idempotent && !(e instanceof UpstreamSessionExpired) && retriable(e, signal, callSig)) {
-          drop(key);
+        // transit (a 5xx, a dropped connection, a stream that ended or went
+        // silent until the deadline) may have run. Only a stale session, which
+        // the server rejects before running anything, is safe to repeat. The
+        // session itself is kept: other calls may be using it.
+        if (sent && !idempotent && !(e instanceof UpstreamSessionExpired) && !signal?.aborted && mayHaveRun(e, callSig)) {
           console.warn(`[mcp-bridge] call interrupted server=${server} error=${e instanceof Error ? e.name : typeof e}`);
           return { ok: false, text: interruptedText(server) };
         }
         if (!reconnected && retriable(e, signal, callSig)) {
           reconnected = true;
-          drop(key);
+          if (sent) retire(key, p);
           continue;
         }
         return { ok: false, text: describeFailure(e, server, timeoutMs, signal, callSig) };
+      } finally {
+        unlease(p);
       }
     }
+  }
+
+  /** After the request was sent: a transport failure, or no answer by the
+   *  deadline, leaves the call's outcome unknown. A JSON-RPC error answer, a
+   *  policy refusal or an auth answer does not. */
+  function mayHaveRun(e: unknown, callSig: AbortSignal): boolean {
+    if (callSig.aborted) return true;
+    if (e instanceof OutboundBlockedError || e instanceof UpstreamUnauthorized || e instanceof UpstreamForbidden) return false;
+    if (e instanceof McpError) return e.code === ErrorCode.ConnectionClosed || e.code === ErrorCode.RequestTimeout;
+    return true;
   }
 
   function describeFailure(e: unknown, server: string, timeoutMs: number, signal: AbortSignal | undefined, callSig: AbortSignal): string {
@@ -884,7 +918,11 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
 
     async close() {
       const all = [...pool.keys()];
-      for (const k of all) drop(k);
+      for (const k of all) {
+        const p = pool.get(k)!;
+        pool.delete(k);
+        closeSession(p);
+      }
     },
 
     __poolKeys: () => [...pool.keys()],
