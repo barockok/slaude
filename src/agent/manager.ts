@@ -854,6 +854,18 @@ export class AgentManager extends EventEmitter {
   /** Boot a session, marked as booting (see ensureConfigFp) from the first
    *  synchronous step until it is live or the boot fails. A counter, since a
    *  retry path may start a boot for the same id while another is unwinding. */
+  /** A fire-and-forget reboot (resume-miss retry) has no caller to reject to:
+   *  its failure is the turn's error event, with its code when it is typed. */
+  #rebootFailed(sessionId: string, e: unknown) {
+    console.error(`[mgr] reboot failed session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+    this.emit("event", {
+      type: "error",
+      sessionId,
+      error: "session reboot failed",
+      code: e instanceof BootFailure ? e.code : "TURN_FAILED",
+    } satisfies AgentEvent);
+  }
+
   async #startSession(sessionId: string, firstText: string) {
     this.#booting.set(sessionId, (this.#booting.get(sessionId) ?? 0) + 1);
     let marked = true;
@@ -1183,7 +1195,7 @@ export class AgentManager extends EventEmitter {
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           // Fire and forget — restart with the same first prompt.
-          void this.#startSession(sessionId, firstText);
+          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e));
           return;
         }
         // Mirror failure: we seeded --session-id but a transcript with that id
@@ -1195,7 +1207,7 @@ export class AgentManager extends EventEmitter {
           await this.#store.markStarted(sessionId);
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
-          void this.#startSession(sessionId, firstText);
+          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e));
           return;
         }
         if (live?.reloading) {

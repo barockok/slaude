@@ -934,7 +934,7 @@ describe("AgentManager on a node: provider credentials from the child-env resolv
     await shutdown(mgr, row.id);
   });
 
-  it("a plain overlay still only adds: the node's own values stand where it says nothing", async () => {
+  it("a plain overlay (unmanaged bundle only; nodeChildEnv never returns one for a declared provider) only adds", async () => {
     const mgr = new AgentManager();
     const events = record(mgr);
     mgr.setChildEnvResolver(async () => ({ ANTHROPIC_API_KEY: "persona-key" }));
@@ -960,6 +960,28 @@ describe("AgentManager on a node: provider credentials from the child-env resolv
     expect(e.code).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
     expect(spawned.length).toBe(before);
     expect(mgr.isLive(row.id)).toBe(false);
+  });
+
+  // R1-F10: the resume-miss reboot is fire-and-forget; its boot failure must
+  // surface as the turn's typed error, not an unhandled rejection.
+  it("a boot failure on the resume-miss reboot emits the typed error event", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    let calls = 0;
+    mgr.setChildEnvResolver(async () => {
+      if (calls++ === 0) return {};
+      throw new Error("gateway /v1 request failed: 503");
+    });
+    const row = await mgr.ensureSession(thread());
+    await Sessions.markStarted(row.id); // force a resume attempt on first boot
+    plan((s) => {
+      s.bootError = "Error: No conversation found with session ID " + row.id;
+    });
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => events.some((e) => e.type === "error"), 3000, "typed error");
+    const err = events.find((e) => e.type === "error");
+    expect(err.code).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
+    expect(err.error).not.toContain("503");
   });
 
   it("a BootFailure from the resolver keeps its own code", async () => {
