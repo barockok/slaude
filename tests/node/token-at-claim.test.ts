@@ -104,4 +104,22 @@ describe("tokenAtClaim", () => {
     });
     expect(await quiet(() => tokenAtClaim(other.client, "J1", "turns", old, NOW))).toBe(old);
   });
+
+  // Review U10b-E: the gateway now re-checks the label at reissue too.
+  test("a reissue refused because the agent was relabelled is a LABEL_MISMATCH failure", async () => {
+    const { BootFailure } = await import("../../src/gateway/core/failure-codes");
+    const ancient = tokenIssued(3 * 3600_000);
+    const c = fakeClient(
+      async () => {
+        throw new NodeApiError(401, "{}");
+      },
+      async () => {
+        throw new NodeApiError(409, JSON.stringify({ error: "the agent's node label changed", code: "LABEL_MISMATCH" }));
+      },
+    );
+    const e = await tokenAtClaim(c.client, "J1", "turns", ancient, NOW).catch((x) => x);
+    expect(e).toBeInstanceOf(BootFailure);
+    expect(e.code).toBe("LABEL_MISMATCH");
+    expect(c.calls).toEqual(["refresh:J1", "reissue:J1:turns"]);
+  });
 });

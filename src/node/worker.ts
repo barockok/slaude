@@ -104,8 +104,8 @@ export { decodeClaims };
  * the queue would otherwise run on a mostly-spent (or expired, within the
  * refresh grace) token. A refresh refused with 401 means the job waited past
  * the grace: ask the gateway to re-mint it from the queued job (node labels
- * spec §4.4). A refusal because the persona now runs on another label (409
- * LABEL_MISMATCH), or a gate 403, throws BootFailure("LABEL_MISMATCH"): the
+ * spec §4.4). A refusal of either because the persona now runs on another
+ * label (409 LABEL_MISMATCH), or a gate 403, throws BootFailure("LABEL_MISMATCH"): the
  * job fails and the gateway re-dispatches it once. Any other failure keeps
  * the original token.
  */
@@ -128,6 +128,9 @@ export async function tokenAtClaim(
       try {
         return await client.reissueJobToken(jobId, queueName, token);
       } catch (e2) {
+        if (e2 instanceof GateDenied || (e2 instanceof NodeApiError && isLabelMismatch(e2.status, e2.body))) {
+          throw new BootFailure("LABEL_MISMATCH", `token reissue refused for job ${jobId}: the agent's label changed`, { cause: e2 });
+        }
         console.warn(`[node] token reissue failed job=${jobId} (continuing with the original):`, e2);
       }
     } else {
