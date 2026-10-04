@@ -19,7 +19,7 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { env } from "../../config/env";
 import { m as metric } from "../../metrics";
-import { LEGACY_NODE_ID, NodeCredentialVerifier } from "../auth/node-credential";
+import { LEGACY_NODE_ID, NodeCredentialVerifier, verifyNodeCredentialSync } from "../auth/node-credential";
 
 export interface JobClaims {
   tenant: string;
@@ -162,6 +162,7 @@ const LEGACY_IDENTITY: NodeIdentity = Object.freeze({
 let defaultVerifier: NodeCredentialVerifier | null = null;
 let warnedOldTokenName = false;
 let warnedLegacyWithKey = false;
+let warnedLegacyIsCredential = false;
 
 /** Test seam: swap the verifier (revocation source, cache). */
 export function __setNodeVerifier(v: NodeCredentialVerifier | null): void {
@@ -171,16 +172,36 @@ export function __setNodeVerifier(v: NodeCredentialVerifier | null): void {
 export function __resetNodeAuthWarnings(): void {
   warnedOldTokenName = false;
   warnedLegacyWithKey = false;
+  warnedLegacyIsCredential = false;
 }
 
 /** The legacy value this gateway accepts, or "" when the door is closed. */
 function legacyToken(): string {
   if (env.nodeLegacyOff()) return "";
-  const t = env.nodeLegacyToken();
-  if (t) return t;
-  // The old gateway reading: SLAUDE_NODE_TOKEN as the value to accept.
-  return env.nodeToken();
+  const keyed = !!(env.nodeKey() || env.nodeKeyPrevious());
+  const name = env.nodeLegacyToken() ? "SLAUDE_NODE_LEGACY_TOKEN" : "SLAUDE_NODE_TOKEN";
+  // The old gateway reading (SLAUDE_NODE_TOKEN as the value to accept) applies
+  // only while no node key is set: once signed credentials exist, that
+  // variable may well hold one, and accepting it here would skip expiry,
+  // revocation and labels.
+  const t = env.nodeLegacyToken() || (keyed ? "" : env.nodeToken());
+  if (!t) return "";
+  // A signed credential is never a legacy value, whatever variable holds it.
+  if (JWT_SHAPE.test(t) || verifyNodeCredentialSync(t).ok) {
+    if (!warnedLegacyIsCredential) {
+      warnedLegacyIsCredential = true;
+      console.error(
+        `[node-auth] ${name} holds a signed node credential, not a legacy shared token; ignoring it as a legacy value. ` +
+          "Give the gateway SLAUDE_NODE_LEGACY_TOKEN (a random string) or leave the legacy door closed.",
+      );
+    }
+    return "";
+  }
+  return t;
 }
+
+/** Three dot-separated base64url parts: the shape of any signed token. */
+const JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
 /**
  * Authenticate a /v1 request (node labels spec §4.2). Runs on EVERY request;

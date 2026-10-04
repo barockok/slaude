@@ -53,14 +53,12 @@ spec:
             - configMapRef:
                 name: slaude-scale-config
           env:
-            # Shared with nodes, read by key from the node Secret so each value
-            # has one source: the node credential the gateway accepts on /v1,
-            # and the queues' Redis.
-            - name: SLAUDE_NODE_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: slaude-scale-node-secrets
-                  key: SLAUDE_NODE_TOKEN
+            # The queues' Redis, shared with nodes, read by key from the node
+            # Secret so the value has one source. The node credential is NOT
+            # read from there: a node's SLAUDE_NODE_TOKEN may be a signed
+            # credential, which the gateway verifies with SLAUDE_NODE_KEY and
+            # must never accept as the legacy shared token. The legacy value
+            # is SLAUDE_NODE_LEGACY_TOKEN in the gateway's own Secret.
             - name: SLAUDE_REDIS_URL
               valueFrom:
                 secretKeyRef:

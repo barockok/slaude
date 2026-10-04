@@ -88,8 +88,9 @@ export async function main(argv: string[], deps: CliDeps = {}): Promise<number> 
         const token = mintNodeCredential({ id, labels, ttlSec }, { key, now: deps.now });
         err(
           `[node-token] minted id=${id} labels=${labels.join(",")} expires=${new Date(((deps.now ?? Date.now()) / 1000 + ttlSec) * 1000).toISOString()}. ` +
-            "This is the only time it is shown. Put it in the node's Secret as SLAUDE_NODE_TOKEN; " +
-            "never in a command line, a shell history or a log.",
+            "This is the only time it is shown. Put it in the NODE Secret as that node's SLAUDE_NODE_TOKEN; " +
+            "never give it to a gateway (the gateway's legacy value is SLAUDE_NODE_LEGACY_TOKEN, a random string), " +
+            "and never put it in a command line, a shell history or a log.",
         );
         out(token);
         return 0;

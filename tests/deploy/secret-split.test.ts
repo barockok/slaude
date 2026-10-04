@@ -119,9 +119,18 @@ for (const [label, build] of builds) {
 
     test("the gateway still has what it shares with nodes", () => {
       const names = visibleEnv(docs, container(gateway, "gateway")).map((v) => v.name);
-      for (const n of ["SLAUDE_MASTER_KEY", "SLAUDE_JOB_SECRET", "SLAUDE_PG_URL", "SLAUDE_NODE_TOKEN", "SLAUDE_REDIS_URL"]) {
+      for (const n of ["SLAUDE_MASTER_KEY", "SLAUDE_JOB_SECRET", "SLAUDE_PG_URL", "SLAUDE_NODE_LEGACY_TOKEN", "SLAUDE_REDIS_URL"]) {
         expect(names).toContain(n);
       }
+    });
+
+    test("the gateway reads the legacy node token under its own name, never the node's credential", () => {
+      // SLAUDE_NODE_TOKEN is a node's own credential; a signed one fed to the
+      // gateway must never become the value the gateway accepts.
+      const seen = visibleEnv(docs, container(gateway, "gateway"));
+      expect(seen.filter((v) => v.name === "SLAUDE_NODE_TOKEN")).toEqual([]);
+      const legacy = seen.find((v) => v.name === "SLAUDE_NODE_LEGACY_TOKEN");
+      expect(legacy?.via).toBe("Secret/slaude-scale-secrets");
     });
 
     test("the optional NetworkPolicy is not part of the default build", () => {

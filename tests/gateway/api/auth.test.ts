@@ -210,6 +210,45 @@ describe("authenticateNode", () => {
     }
   });
 
+  test("with SLAUDE_NODE_KEY set, the gateway's own SLAUDE_NODE_TOKEN is not a legacy value", async () => {
+    process.env.SLAUDE_NODE_KEY = "node-key";
+    process.env.SLAUDE_NODE_TOKEN = "node-secret";
+    const r = await authenticateNode(req("Bearer node-secret"));
+    expect(!r.ok && r.response.status).toBe(401);
+  });
+
+  test("a signed credential configured as the legacy value is refused, not downgraded to legacy", async () => {
+    // The repro: an expired AND revoked credential, put where the gateway reads
+    // the legacy value, must not authenticate as {legacy, default}.
+    process.env.SLAUDE_NODE_KEY = "node-key";
+    __setNodeVerifier(new NodeCredentialVerifier({ revocations: async () => Math.floor(Date.now() / 1000) }));
+    const stale = mintNodeCredential(
+      { id: "gpu-a", labels: ["gpu"], ttlSec: 86400 },
+      { key: "node-key", now: Date.now() - 100 * 86400_000 },
+    );
+    const errs: string[] = [];
+    const origErr = console.error;
+    console.error = (...a: unknown[]) => errs.push(a.join(" "));
+    try {
+      for (const v of ["SLAUDE_NODE_LEGACY_TOKEN", "SLAUDE_NODE_TOKEN"]) {
+        delete process.env.SLAUDE_NODE_LEGACY_TOKEN;
+        delete process.env.SLAUDE_NODE_TOKEN;
+        process.env[v] = stale;
+        const r = await authenticateNode(req(`Bearer ${stale}`));
+        expect({ v, status: !r.ok && r.response.status }).toEqual({ v, status: 401 });
+      }
+      // Without any key: a JWT-shaped legacy value is still refused, and with
+      // nothing else configured the gateway reports it as unconfigured.
+      delete process.env.SLAUDE_NODE_KEY;
+      delete process.env.SLAUDE_NODE_TOKEN;
+      process.env.SLAUDE_NODE_LEGACY_TOKEN = "aaaa.bbbb.cccc";
+      expect(((await authenticateNode(req("Bearer aaaa.bbbb.cccc"))) as any).response.status).toBe(503);
+    } finally {
+      console.error = origErr;
+    }
+    expect(errs.some((e) => e.includes("legacy") && !e.includes(stale))).toBe(true);
+  });
+
   test("legacy use while SLAUDE_NODE_KEY is set: warns once and counts every use", async () => {
     process.env.SLAUDE_NODE_LEGACY_TOKEN = "node-secret";
     const before = legacyCount();

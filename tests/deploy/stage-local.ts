@@ -13,7 +13,7 @@ const root = join(import.meta.dir, "../..");
 export const LOCAL_GENERATED: Record<string, string> = {
   "secrets.env": [
     "SLAUDE_MASTER_KEY=fake",
-    "SLAUDE_NODE_TOKEN=fake",
+    "SLAUDE_NODE_LEGACY_TOKEN=fake",
     "SLAUDE_JOB_SECRET=fake",
     "SLAUDE_PG_URL=postgres://fake",
     "SLAUDE_REDIS_URL=redis://fake",

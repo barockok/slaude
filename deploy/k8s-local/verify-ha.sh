@@ -529,7 +529,7 @@ else
     expect_value "the pipeline sync was accepted" \
       "$(sync_status "$gw_pod" SLAUDE_DEPLOY_TOKEN "$payload")" "200" "sync HTTP status"
     expect_value "the node token cannot sync" \
-      "$(sync_status "$gw_pod" SLAUDE_NODE_TOKEN "$payload")" "401" "sync HTTP status with the node token"
+      "$(sync_status "$gw_pod" SLAUDE_NODE_LEGACY_TOKEN "$payload")" "401" "sync HTTP status with the node token"
   fi
 
   # Remove the persona's directory from the shared volume before the turn.
