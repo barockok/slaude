@@ -646,6 +646,68 @@ describe("http slack transport — lifecycle and client proxy", () => {
     expect(logs.some((l) => l.includes("2 apps"))).toBe(true);
   });
 
+  // D1.3: a hand-listed proxy failed twice (postEphemeral, then files.uploadV2 and
+  // friends). Any `a.b.c(...)` must reach the primary client with the same args.
+  it("transport.client forwards any method path to the primary client, with the same arguments", async () => {
+    const calls: Array<{ tag: string; path: string; args: unknown[] }> = [];
+    // A client that records whatever path it is called on, so the table below is
+    // the only list of methods in the test.
+    const recorder = (tag: string, base: string[] = []): any =>
+      new Proxy(function () {}, {
+        get: (_t, k) => (typeof k === "symbol" || k === "then" ? undefined : recorder(tag, [...base, k])),
+        apply: (_t, _this, args) => {
+          calls.push({ tag, path: base.join("."), args });
+          return Promise.resolve({ ok: true, path: base.join(".") });
+        },
+      });
+    const t = createHttpSlackTransport({
+      port: 0,
+      loadApps: async () => [
+        appRow(),
+        appRow({ team_id: "T0BBB", bot_token: encrypt("xoxb-fake-b"), signing_secret: encrypt(SECRET_B), created_at: 2 }),
+      ],
+      makeClient: (token) => recorder(token),
+      log: () => {},
+    });
+    booted.push(t);
+    await t.start();
+    const methods = [
+      "auth.test", "chat.postMessage", "chat.update", "chat.postEphemeral", "chat.delete",
+      "reactions.add", "reactions.remove", "conversations.info", "conversations.members",
+      "conversations.replies", "conversations.setTopic", "conversations.setPurpose",
+      "conversations.canvases.create", "canvases.edit", "users.info", "users.profile.set",
+      "search.messages", "assistant.threads.setStatus", "files.uploadV2", "files.info",
+      "pins.add", "pins.remove",
+    ];
+    for (const m of methods) {
+      const arg = { marker: m };
+      const out = await m.split(".").reduce((o: any, k) => o[k], t.client as any)(arg);
+      expect(out.path).toBe(m);
+      const last = calls.at(-1)!;
+      expect(last.path).toBe(m);
+      expect(last.args).toEqual([arg]);
+      expect(last.tag).toBe("xoxb-fake-a"); // primary only; per-request selection is D1.2
+    }
+  });
+
+  it("transport.client: an unknown namespace on a real client throws the same TypeError, after start", async () => {
+    const t = createHttpSlackTransport({
+      port: 0,
+      loadApps: async () => [appRow()],
+      makeClient: () => fakeClient("a"),
+      log: () => {},
+    });
+    booted.push(t);
+    await t.start();
+    const c: any = t.client;
+    let real: unknown;
+    try { (fakeClient("a") as any).nope.thing({}); } catch (e) { real = e; }
+    let got: unknown;
+    try { await c.nope.thing({}); } catch (e) { got = e; }
+    expect(real).toBeInstanceOf(TypeError);
+    expect(got).toBeInstanceOf(TypeError);
+  });
+
   it("default makeClient constructs a real @slack/web-api WebClient (no network)", async () => {
     const t = createHttpSlackTransport({
       port: 0,

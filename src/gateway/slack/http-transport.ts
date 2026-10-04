@@ -354,37 +354,28 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
   }
 
   // Gateway construction touches transport.client before start() (boot-time
-  // agent-id resolution fires auth.test asynchronously). Every method of this
-  // proxy parks on the started promise and then delegates to the primary
-  // (oldest-registered) app's client.
-  const p = <T>(fn: (c: WebClientLike) => Promise<T>): Promise<T> =>
-    started.then(() => fn(primary!.client));
-  const lazyClient = {
-    auth: { test: (a?: any) => p((c) => c.auth.test(a)) },
-    chat: {
-      postMessage: (a: any) => p((c) => c.chat.postMessage(a)),
-      update: (a: any) => p((c) => c.chat.update(a)),
-      postEphemeral: (a: any) => p((c) => c.chat.postEphemeral(a)),
-    },
-    reactions: {
-      add: (a: any) => p((c) => c.reactions.add(a)),
-      remove: (a: any) => p((c) => c.reactions.remove(a)),
-    },
-    conversations: {
-      info: (a: any) => p((c) => c.conversations.info(a)),
-      members: (a: any) => p((c) => c.conversations.members(a)),
-      replies: (a: any) => p((c) => c.conversations.replies(a)),
-    },
-    users: {
-      info: (a: any) => p((c) => c.users.info(a)),
-      profile: { set: (a: any) => p((c) => c.users.profile.set(a)) },
-    },
-    search: { messages: (a: any) => p((c) => c.search.messages(a)) },
-    // Slack Agents status indicator — used behind an any-cast (status.ts).
-    assistant: {
-      threads: { setStatus: (a: any) => p((c) => (c as any).assistant.threads.setStatus(a)) },
-    },
-  } as unknown as WebClientLike;
+  // agent-id resolution fires auth.test asynchronously). A recursive Proxy
+  // forwards any `a.b.c(...)` to the primary (oldest-registered) app's client:
+  // the call parks on `started`, then resolves the same path on the real client.
+  // A hand-listed proxy missed methods twice, so a new Slack method must not need
+  // a change here. Per-request client selection is a separate change (D1.2).
+  const lazyAt = (path: string[]): any =>
+    new Proxy(function () {}, {
+      // Not thenable, so `await t.client` / Promise.resolve(t.client) do not hang.
+      get: (_t, key) => (typeof key === "symbol" || key === "then" ? undefined : lazyAt([...path, key])),
+      apply: (_t, _this, args) =>
+        started.then(() => {
+          let parent: any = primary!.client;
+          let fn: any = parent;
+          for (const k of path) {
+            parent = fn;
+            fn = fn[k];
+          }
+          // An unknown method is not a function: this throws the TypeError a real client would.
+          return Reflect.apply(fn, parent, args);
+        }),
+    });
+  const lazyClient = lazyAt([]) as WebClientLike;
 
   return {
     client: lazyClient,
