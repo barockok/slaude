@@ -566,7 +566,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   const cronScheduler = new CronScheduler({
     agent,
-    client: t.client as any,
     // Queue mode: a cron turn is a turn like any other — it runs on a node, not
     // in the gateway, which is sized and drained on the assumption that it holds
     // none. mono keeps running it in process (no send/isLive injected).
