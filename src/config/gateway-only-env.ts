@@ -33,6 +33,13 @@ export const GATEWAY_ONLY_ENV_NAMES: readonly string[] = [
   "SLAUDE_OAUTH_STATE_SECRET",
   "SLAUDE_DEPLOY_TOKEN",
   "SLAUDE_DEPLOY_PREVIEW_TOKEN",
+  // The panel and portal sign their sessions with these.
+  "SLAUDE_PANEL_SECRET",
+  "SLAUDE_PANEL_OIDC_CLIENT_SECRET",
+  // The brain's own credentials: a remote brain-server token, the embedding key.
+  "SLAUDE_BRAIN_TOKEN",
+  "EMBEDDING_API_KEY",
+  "LITELLM_API_KEY",
 ];
 
 /** Every variable starting with one of these is gateway-only. Case-sensitive. */

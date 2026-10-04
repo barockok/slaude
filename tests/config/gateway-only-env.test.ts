@@ -25,6 +25,11 @@ describe("the gateway-only variable list", () => {
       "SLAUDE_OAUTH_STATE_SECRET",
       "SLAUDE_DEPLOY_TOKEN",
       "SLAUDE_DEPLOY_PREVIEW_TOKEN",
+      "SLAUDE_PANEL_SECRET",
+      "SLAUDE_PANEL_OIDC_CLIENT_SECRET",
+      "SLAUDE_BRAIN_TOKEN",
+      "EMBEDDING_API_KEY",
+      "LITELLM_API_KEY",
     ]) {
       expect(GATEWAY_ONLY_ENV_NAMES).toContain(name);
       expect(isGatewayOnlyEnv(name)).toBe(true);
