@@ -147,6 +147,22 @@ recorded:
   for those turns is refused (fail closed) until the next turn is dispatched
   by an upgraded gateway, which mints a token that names the app.
 
+Known limits when two apps share a channel:
+
+- **A thread's app is not in the channel any more.** If the app a thread is
+  recorded under is still registered but its bot was removed from the
+  channel, that app never receives the thread's messages, and the other app
+  leaves them to it. Nobody answers plain replies there. An `@mention` of the
+  bot that is still in the channel takes the thread over.
+- **A message that mentions both bots** gets one reply. The app whose copy
+  arrives first takes it, and the other copy is dropped as a duplicate.
+- **Threads from before the app was recorded** (`slack_app_id` is NULL) are
+  taken by whichever app's copy of the next message arrives first. From then
+  on the thread stays with that app.
+- **One registered app, team-only identity.** With a single registered app,
+  an identity that names no app resolves to that app even if it names a
+  different team, as it did before several apps were supported.
+
 Set `SLAUDE_AGENT_ID` in a deployment with several apps. The brain's agent
 identity is one per process. Without the variable it comes from the oldest
 registered app.
