@@ -114,13 +114,13 @@ for (const [label, build] of builds) {
     test("every node loads the node Secret and not the gateway's", () => {
       for (const n of nodes) {
         const refs = (container(n, "node").envFrom ?? []).map((s: any) => s.secretRef?.name).filter(Boolean);
-        expect(refs, n.metadata.name).toContain("slaude-scale-node-secrets");
-        expect(refs, n.metadata.name).not.toContain("slaude-scale-secrets");
+        expect(refs as string[], n.metadata.name).toContain("slaude-scale-node-secrets");
+        expect(refs as string[], n.metadata.name).not.toContain("slaude-scale-secrets");
       }
     });
 
     test("node pods mount no ServiceAccount token", () => {
-      for (const n of nodes) expect(n.spec.template.spec.automountServiceAccountToken, n.metadata.name).toBe(false);
+      for (const n of nodes) expect(n.spec.template.spec.automountServiceAccountToken as boolean, n.metadata.name).toBe(false);
     });
 
     test("the gateway runs under its own ServiceAccount", () => {
