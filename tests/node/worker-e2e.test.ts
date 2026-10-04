@@ -157,6 +157,11 @@ beforeAll(async () => {
     aborts = new Map<string, AbortController>();
     abortedSessions: string[] = [];
     configDirResolver?: (sessionId: string, persona: string | undefined) => Promise<string>;
+    lockResolver?: ((sessionId: string) => Promise<any>) | null;
+    override setSessionLockResolver(r: any) {
+      super.setSessionLockResolver(r);
+      this.lockResolver = r;
+    }
     override setMcpResolver(r: any) {
       super.setMcpResolver(r);
       this.mcp = r;
@@ -282,6 +287,27 @@ d("gateway↔node E2E (real Redis)", () => {
     await until(async () => (await stub.resolveEffectiveIdentity(sid)) === "UTESTOWNER1", 15_000);
     expect(await stub.resolveEffectiveIdentity(sid)).toBe("UTESTOWNER1");
   }, 40_000);
+
+  // A node has no database: the /1on1 lock it builds the session-mode block
+  // from must come from the job token's signed claim, through the resolver the
+  // worker installs (removing that wiring fails here).
+  test("the worker installs a lock resolver that reads the job token's lock claim", async () => {
+    const LOCK_THREAD = "9200.0";
+    const OneOnOne = await import("../../src/db/one-on-one");
+    await OneOnOne.lock({ channelId: "C0TEAM", threadTs: LOCK_THREAD, lockedUser: "U0MGR", createdBy: "U0MGR" });
+    try {
+      posts.length = 0;
+      await emitSlack("message", msg(LOCK_THREAD, "9200.1", "<@USLAUDE> locked hello"));
+      await until(() => posts.some((p) => String(p.text).includes("node-reply:")), 15_000);
+      const sid = await sessionIdOf(LOCK_THREAD);
+      expect(typeof stub.lockResolver).toBe("function");
+      const lock = await stub.lockResolver(sid);
+      expect(lock?.locked_user).toBe("U0MGR");
+      expect(lock?.open_scope).toBeNull();
+    } finally {
+      await OneOnOne.unlock("C0TEAM", LOCK_THREAD);
+    }
+  }, 30_000);
 
   test("warm routing: second message rides the per-node queue", async () => {
     const sessionId = await sessionIdOf(THREAD);
