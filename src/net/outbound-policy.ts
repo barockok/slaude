@@ -224,6 +224,13 @@ export class SafeResponse {
   async json(): Promise<any> { return JSON.parse(this.body.toString("utf8")); }
 }
 
+/** A short, address-free label for a transport error: its code when it is a
+ *  plain identifier (ECONNREFUSED, ERR_TLS_CERT_ALTNAME_INVALID), else its name. */
+function transportCode(e: Error & { code?: unknown }): string {
+  if (typeof e.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(e.code)) return e.code;
+  return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(e.name) ? e.name : "Error";
+}
+
 /** Fetch under the policy: checked once, connected to the checked address,
  *  no redirects, bounded in time and size. */
 export async function safeFetch(
@@ -241,6 +248,11 @@ export async function safeFetch(
     let settled = false;
     const settle = (fn: () => void) => { if (!settled) { settled = true; clearTimeout(timer); fn(); } };
     const fail = (e: Error) => settle(() => reject(e));
+    // Transport errors are rewritten, never passed through: the runtime's own
+    // message can embed the pinned address (a TLS failure reads `fetching
+    // "https://<ip>:<port>/…"`), and connect errors reach the Slack thread.
+    const transportFail = (e: Error & { code?: unknown }) =>
+      fail(new Error(`request to ${url.hostname} failed (${transportCode(e)})`));
 
     const req = (url.protocol === "https:" ? https : http).request(url, {
       method: init.method ?? "GET",
@@ -261,13 +273,13 @@ export async function safeFetch(
         chunks.push(c);
       });
       res.on("end", () => settle(() => resolve(new SafeResponse(res.statusCode ?? 0, res.headers, Buffer.concat(chunks)))));
-      res.on("error", fail);
+      res.on("error", transportFail);
     });
     const timer = setTimeout(() => {
       fail(new Error(`request to ${url.hostname} timed out after ${timeoutMs}ms`));
       req.destroy();
     }, timeoutMs);
-    req.on("error", fail);
+    req.on("error", transportFail);
     if (init.body !== undefined) req.write(init.body);
     req.end();
   });

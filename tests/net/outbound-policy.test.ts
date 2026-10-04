@@ -1,4 +1,7 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   OutboundBlockedError,
   checkOutbound,
@@ -254,6 +257,45 @@ describe("safeFetch (against a local server, loopback admitted by the dev flag)"
     const res = await safeFetch(`${base()}/text`, {}, dev());
     expect(await res.text()).toBe("not json");
     await expect(res.json()).rejects.toThrow();
+  });
+
+  test("a transport failure on a pinned address names the host, never the address", async () => {
+    // TLS against the plain-http server: the handshake fails on the pinned
+    // address. Bun's raw message embeds the IP it connected to; the error can
+    // be posted into a Slack thread, so only the hostname may appear.
+    const resolver = fakeResolver({ "idp.example.test": ["127.0.0.1"] });
+    const err = await safeFetch(`https://idp.example.test:${server.port}/x`, {}, dev({ resolver })).catch((e) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/^request to idp\.example\.test failed \([A-Za-z0-9_]+\)$/);
+    expect(err.message).not.toContain("127.0.0.1");
+  });
+
+  const hasOpenssl = Bun.which("openssl") !== null;
+  test.skipIf(!hasOpenssl)("a TLS certificate failure on a pinned address names the host, never the address", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "slaude-tls-"));
+    try {
+      const gen = Bun.spawnSync(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+        "-keyout", join(dir, "k.pem"), "-out", join(dir, "c.pem"), "-subj", "/CN=svc.example.test",
+        "-addext", "subjectAltName=DNS:svc.example.test"], { stderr: "pipe" });
+      expect(gen.exitCode).toBe(0);
+      const tls = Bun.serve({
+        port: 0, hostname: "127.0.0.1",
+        tls: { cert: readFileSync(join(dir, "c.pem"), "utf8"), key: readFileSync(join(dir, "k.pem"), "utf8") },
+        fetch: () => new Response("ok"),
+      });
+      try {
+        // Self-signed and the wrong name: the raw runtime error reads
+        // `… fetching "https://127.0.0.1:<port>/x"`.
+        const resolver = fakeResolver({ "other.example.test": ["127.0.0.1"] });
+        const err = await safeFetch(`https://other.example.test:${tls.port}/x`, {}, dev({ resolver })).catch((e) => e as Error);
+        expect(err.message).toMatch(/^request to other\.example\.test failed \([A-Za-z0-9_]+\)$/);
+        expect(err.message).not.toContain("127.0.0.1");
+      } finally {
+        tls.stop(true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("a connection failure surfaces as an error", async () => {
