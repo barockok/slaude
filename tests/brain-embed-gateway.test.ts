@@ -2,18 +2,23 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeBrain, defaultDimensionsForModel, embeddingActive, getBrain, resolveEmbeddingApiKey } from "../src/knowledge/brain";
+import { closeBrain, defaultDimensionsForModel, embeddingActive, getBrain, resolveEmbeddingApiKey, canonicalizeEmbeddingModel, applyEmbeddingEnv, EMBEDDING_PROVIDERS, normalizeEmbeddingProvider } from "../src/knowledge/brain";
+import { readFileSync } from "node:fs";
 
 let home: string | null = null;
 
 afterEach(async () => {
   await closeBrain();
   delete process.env.SLAUDE_BRAIN_HOME;
+  delete process.env.EMBEDDING_PROVIDER;
   delete process.env.EMBEDDING_MODEL;
   delete process.env.EMBEDDING_DIMENSIONS;
+  delete process.env.EMBEDDING_URL;
   delete process.env.ZEROENTROPY_API_KEY;
   delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   delete process.env.GEMINI_API_KEY;
+  delete process.env.VOYAGE_API_KEY;
+  delete process.env.OPENAI_API_KEY;
   delete process.env.EMBEDDING_API_KEY;
   if (home) rmSync(home, { recursive: true, force: true });
   home = null;
@@ -92,4 +97,77 @@ describe("embedding gateway activation", () => {
     await getBrain();
     expect(embeddingActive()).toBe(true);
   }, 60_000);
+});
+
+describe("canonicalizeEmbeddingModel with provider enum", () => {
+  test("resolves default model when EMBEDDING_PROVIDER is specified without model", () => {
+    expect(canonicalizeEmbeddingModel(undefined, undefined, "google")).toBe("google:text-embedding-004");
+    expect(canonicalizeEmbeddingModel(undefined, undefined, "openai")).toBe("openai:text-embedding-3-small");
+    expect(canonicalizeEmbeddingModel(undefined, undefined, "voyage")).toBe("voyage:voyage-3");
+    expect(canonicalizeEmbeddingModel(undefined, undefined, "zeroentropyai")).toBe("zeroentropyai:zembed-1");
+    expect(canonicalizeEmbeddingModel(undefined, undefined, "litellm")).toBe("litellm:text-embedding-3-small");
+  });
+
+  test("normalizes provider aliases (gemini -> google, zeroentropy -> zeroentropyai, azure -> azure-openai)", () => {
+    expect(canonicalizeEmbeddingModel(undefined, undefined, "gemini")).toBe("google:text-embedding-004");
+    expect(canonicalizeEmbeddingModel(undefined, undefined, "zeroentropy")).toBe("zeroentropyai:zembed-1");
+    expect(canonicalizeEmbeddingModel(undefined, undefined, "azure")).toBe("azure-openai:text-embedding-3-small");
+  });
+
+  test("pairs explicit EMBEDDING_PROVIDER with user-chosen bare model", () => {
+    expect(canonicalizeEmbeddingModel("text-embedding-3-large", undefined, "openai")).toBe("openai:text-embedding-3-large");
+    expect(canonicalizeEmbeddingModel("custom-gemini-embed", undefined, "google")).toBe("google:custom-gemini-embed");
+  });
+
+  test("honors explicit fully-qualified provider prefix in model", () => {
+    expect(canonicalizeEmbeddingModel("voyage:voyage-code-3", undefined, "openai")).toBe("voyage:voyage-code-3");
+    expect(canonicalizeEmbeddingModel("gemini:text-embedding-004")).toBe("google:text-embedding-004");
+  });
+
+  test("maps bare known model to its default provider if provider not specified", () => {
+    expect(canonicalizeEmbeddingModel("text-embedding-3-small")).toBe("openai:text-embedding-3-small");
+    expect(canonicalizeEmbeddingModel("text-embedding-004")).toBe("google:text-embedding-004");
+    expect(canonicalizeEmbeddingModel("zembed-1")).toBe("zeroentropyai:zembed-1");
+  });
+
+  test("returns undefined when no provider, model, or url configured", () => {
+    expect(canonicalizeEmbeddingModel()).toBeUndefined();
+  });
+
+  test("falls back to litellm when URL is provided", () => {
+    expect(canonicalizeEmbeddingModel(undefined, "http://localhost:8000/v1")).toBe("litellm:text-embedding-3-small");
+    expect(canonicalizeEmbeddingModel("custom-model", "http://localhost:8000/v1")).toBe("litellm:custom-model");
+  });
+});
+
+describe("applyEmbeddingEnv", () => {
+  test("writes deterministic provider and model configuration to config.json", () => {
+    freshHome();
+    process.env.EMBEDDING_PROVIDER = "google";
+    applyEmbeddingEnv();
+
+    const cfg = JSON.parse(readFileSync(join(home!, "config.json"), "utf8"));
+    expect(cfg.embedding_provider).toBe("google");
+    expect(cfg.embedding_model).toBe("google:text-embedding-004");
+    expect(cfg.embedding_dimensions).toBe(768);
+  });
+
+  test("resets dimensions to model default when switching provider without explicit dims", () => {
+    freshHome();
+    // Initially google (768)
+    process.env.EMBEDDING_PROVIDER = "google";
+    applyEmbeddingEnv();
+
+    let cfg = JSON.parse(readFileSync(join(home!, "config.json"), "utf8"));
+    expect(cfg.embedding_dimensions).toBe(768);
+
+    // Switch to openai (1536)
+    process.env.EMBEDDING_PROVIDER = "openai";
+    applyEmbeddingEnv();
+
+    cfg = JSON.parse(readFileSync(join(home!, "config.json"), "utf8"));
+    expect(cfg.embedding_provider).toBe("openai");
+    expect(cfg.embedding_model).toBe("openai:text-embedding-3-small");
+    expect(cfg.embedding_dimensions).toBe(1536);
+  });
 });

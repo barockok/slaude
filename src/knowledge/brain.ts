@@ -44,8 +44,110 @@ export function embeddingConfigured(): boolean {
   }
 }
 
-// Provider prefix → canonical key env, aliases, and default vector dimensions.
-// null = keyless or optional-key provider.
+// Deterministic embedding provider enum & configuration
+export const EMBEDDING_PROVIDERS = [
+  "google",
+  "openai",
+  "voyage",
+  "zeroentropyai",
+  "openrouter",
+  "together",
+  "minimax",
+  "azure-openai",
+  "ollama",
+  "litellm",
+] as const;
+
+export type EmbeddingProvider = (typeof EMBEDDING_PROVIDERS)[number];
+
+export const PROVIDER_ALIASES: Record<string, EmbeddingProvider> = {
+  gemini: "google",
+  zeroentropy: "zeroentropyai",
+  azure: "azure-openai",
+};
+
+export function normalizeEmbeddingProvider(raw?: string): EmbeddingProvider | undefined {
+  if (!raw) return undefined;
+  const p = raw.trim().toLowerCase();
+  if ((EMBEDDING_PROVIDERS as readonly string[]).includes(p)) {
+    return p as EmbeddingProvider;
+  }
+  if (p in PROVIDER_ALIASES) {
+    return PROVIDER_ALIASES[p];
+  }
+  return undefined;
+}
+
+export interface ProviderConfig {
+  canonicalKey?: string;
+  aliases: string[];
+  defaultModel: string;
+  defaultDims: number;
+}
+
+export const PROVIDER_CONFIGS: Record<EmbeddingProvider, ProviderConfig> = {
+  google: {
+    canonicalKey: "GOOGLE_GENERATIVE_AI_API_KEY",
+    aliases: ["GEMINI_API_KEY", "EMBEDDING_API_KEY"],
+    defaultModel: "text-embedding-004",
+    defaultDims: 768,
+  },
+  openai: {
+    canonicalKey: "OPENAI_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultModel: "text-embedding-3-small",
+    defaultDims: 1536,
+  },
+  voyage: {
+    canonicalKey: "VOYAGE_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultModel: "voyage-3",
+    defaultDims: 1024,
+  },
+  zeroentropyai: {
+    canonicalKey: "ZEROENTROPY_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultModel: "zembed-1",
+    defaultDims: 1280,
+  },
+  openrouter: {
+    canonicalKey: "OPENROUTER_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultModel: "text-embedding-3-small",
+    defaultDims: 1536,
+  },
+  together: {
+    canonicalKey: "TOGETHER_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultModel: "togethercomputer/m2-bert-80M-8k-retrieval",
+    defaultDims: 768,
+  },
+  minimax: {
+    canonicalKey: "MINIMAX_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultModel: "embo-01",
+    defaultDims: 1536,
+  },
+  "azure-openai": {
+    canonicalKey: "AZURE_OPENAI_API_KEY",
+    aliases: ["OPENAI_API_KEY", "EMBEDDING_API_KEY"],
+    defaultModel: "text-embedding-3-small",
+    defaultDims: 1536,
+  },
+  ollama: {
+    canonicalKey: "OLLAMA_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultModel: "nomic-embed-text",
+    defaultDims: 768,
+  },
+  litellm: {
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultModel: "text-embedding-3-small",
+    defaultDims: 1536,
+  },
+};
+
+// Backward-compatibility export for PROVIDER_KEY_DEFS
 export interface ProviderKeyDef {
   canonical: string;
   aliases: string[];
@@ -53,52 +155,133 @@ export interface ProviderKeyDef {
 }
 
 export const PROVIDER_KEY_DEFS: Record<string, ProviderKeyDef | null> = {
-  google: {
+  ...Object.fromEntries(
+    Object.entries(PROVIDER_CONFIGS).map(([prov, def]) => [
+      prov,
+      def.canonicalKey
+        ? { canonical: def.canonicalKey, aliases: def.aliases, defaultDims: def.defaultDims }
+        : null,
+    ])
+  ),
+  gemini: {
     canonical: "GOOGLE_GENERATIVE_AI_API_KEY",
     aliases: ["GEMINI_API_KEY", "EMBEDDING_API_KEY"],
     defaultDims: 768,
   },
-  zeroentropyai: {
+  zeroentropy: {
     canonical: "ZEROENTROPY_API_KEY",
     aliases: ["EMBEDDING_API_KEY"],
     defaultDims: 1280,
   },
-  voyage: {
-    canonical: "VOYAGE_API_KEY",
-    aliases: ["EMBEDDING_API_KEY"],
-    defaultDims: 1024,
-  },
-  openai: {
-    canonical: "OPENAI_API_KEY",
-    aliases: ["EMBEDDING_API_KEY"],
+  azure: {
+    canonical: "AZURE_OPENAI_API_KEY",
+    aliases: ["OPENAI_API_KEY", "EMBEDDING_API_KEY"],
     defaultDims: 1536,
   },
-  openrouter: {
-    canonical: "OPENROUTER_API_KEY",
-    aliases: ["EMBEDDING_API_KEY"],
-  },
-  minimax: {
-    canonical: "MINIMAX_API_KEY",
-    aliases: ["EMBEDDING_API_KEY"],
-  },
-  together: {
-    canonical: "TOGETHER_API_KEY",
-    aliases: ["EMBEDDING_API_KEY"],
-  },
-  litellm: null,
-  ollama: null,
   "llama-server": null,
 };
 
+export const KNOWN_MODEL_DIMENSIONS: Record<string, number> = {
+  // OpenAI
+  "text-embedding-3-small": 1536,
+  "text-embedding-3-large": 3072,
+  "text-embedding-ada-002": 1536,
+  // Google / Gemini
+  "text-embedding-004": 768,
+  "gemini-embedding-001": 768,
+  // ZeroEntropy
+  "zembed-1": 1280,
+  // Voyage
+  "voyage-3-lite": 512,
+  "voyage-3": 1024,
+  "voyage-code-3": 1024,
+  "voyage-finance-2": 1024,
+  "voyage-law-2": 1024,
+  "voyage-4": 1024,
+  "voyage-4-large": 1024,
+  "voyage-multimodal-3": 1024,
+  // Open-source / local
+  "bge-small": 384,
+  "all-minilm": 384,
+  "all-minilm-l6-v2": 384,
+  "bge-base": 768,
+  "nomic-embed-text": 768,
+  "bge-m3": 1024,
+  "bge-large": 1024,
+};
+
+export const BARE_MODEL_TO_PROVIDER: Record<string, EmbeddingProvider> = {
+  "text-embedding-3-small": "openai",
+  "text-embedding-3-large": "openai",
+  "text-embedding-ada-002": "openai",
+  "text-embedding-004": "google",
+  "gemini-embedding-001": "google",
+  "zembed-1": "zeroentropyai",
+  "voyage-3": "voyage",
+  "voyage-3-lite": "voyage",
+  "voyage-code-3": "voyage",
+  "voyage-4": "voyage",
+  "voyage-4-large": "voyage",
+};
+
+/**
+ * Deterministically canonicalize an embedding model string based on provider
+ * enum/setting, model string, or explicit base URL.
+ */
+export function canonicalizeEmbeddingModel(
+  rawModel?: string,
+  url?: string,
+  rawProvider?: string
+): string | undefined {
+  const explicitProvider = normalizeEmbeddingProvider(rawProvider);
+  const trimmedModel = rawModel?.trim();
+
+  // If model already has a provider prefix "provider:model"
+  if (trimmedModel?.includes(":")) {
+    const colonIdx = trimmedModel.indexOf(":");
+    const provPrefix = trimmedModel.slice(0, colonIdx);
+    const modelRest = trimmedModel.slice(colonIdx + 1);
+    const normalizedPrefix = normalizeEmbeddingProvider(provPrefix) ?? provPrefix.toLowerCase();
+    return `${normalizedPrefix}:${modelRest}`;
+  }
+
+  // Determine provider
+  let provider = explicitProvider;
+
+  if (!provider) {
+    if (url) {
+      provider = "litellm";
+    } else if (trimmedModel) {
+      const autoProv = BARE_MODEL_TO_PROVIDER[trimmedModel.toLowerCase()];
+      if (autoProv) provider = autoProv;
+    }
+  }
+
+  if (!provider) {
+    return trimmedModel ? `litellm:${trimmedModel}` : undefined;
+  }
+
+  // Now we have a provider. Determine the model.
+  const chosenModel = trimmedModel || PROVIDER_CONFIGS[provider]?.defaultModel || "text-embedding-3-small";
+  return `${provider}:${chosenModel}`;
+}
+
 /**
  * Returns default vector embedding dimensions for a model string.
- * Resolves known provider defaults from PROVIDER_KEY_DEFS, falling back to
- * 2560 for unknown provider-qualified models and 1536 for generic litellm/OpenAI.
+ * Resolves model-specific dimensions first, then known provider defaults,
+ * falling back to 2560 for unknown provider-qualified models and 1536 for generic litellm/OpenAI.
  */
 export function defaultDimensionsForModel(modelString: string): number {
-  const [provider] = modelString.split(":");
-  const def = provider ? PROVIDER_KEY_DEFS[provider] : undefined;
-  if (def?.defaultDims) return def.defaultDims;
+  const parts = modelString.split(":");
+  const modelName = (parts.length > 1 ? parts[1] : parts[0])!.toLowerCase();
+  for (const [known, dims] of Object.entries(KNOWN_MODEL_DIMENSIONS)) {
+    if (modelName === known || modelName.includes(known)) return dims;
+  }
+  const provider = parts.length > 1 ? parts[0]!.toLowerCase() : "";
+  const normProv = normalizeEmbeddingProvider(provider);
+  if (normProv && PROVIDER_CONFIGS[normProv]?.defaultDims) {
+    return PROVIDER_CONFIGS[normProv].defaultDims;
+  }
   return modelString.includes(":") ? 2560 : 1536;
 }
 
@@ -111,54 +294,53 @@ export function resolveEmbeddingApiKey(provider: string): {
   canonical?: string;
   isRequired: boolean;
 } {
-  const def = PROVIDER_KEY_DEFS[provider];
-  if (def === null) {
-    return { isRequired: false };
-  }
+  const norm = normalizeEmbeddingProvider(provider);
+  const def = norm ? PROVIDER_CONFIGS[norm] : undefined;
   if (!def) {
+    if (provider.toLowerCase() === "llama-server") return { isRequired: false };
     return {
       key: process.env.EMBEDDING_API_KEY,
       canonical: "EMBEDDING_API_KEY",
       isRequired: false,
     };
   }
+  if (!def.canonicalKey) {
+    return {
+      key: process.env.LITELLM_API_KEY ?? process.env.EMBEDDING_API_KEY,
+      canonical: "LITELLM_API_KEY",
+      isRequired: false,
+    };
+  }
 
-  const { canonical, aliases } = def;
-  let key = process.env[canonical];
+  const { canonicalKey, aliases } = def;
+  let key = process.env[canonicalKey];
 
   if (!key) {
     for (const alias of aliases) {
       const aliasVal = process.env[alias];
       if (aliasVal) {
-        process.env[canonical] = aliasVal;
+        process.env[canonicalKey] = aliasVal;
         key = aliasVal;
         break;
       }
     }
   }
 
-  return { key, canonical, isRequired: true };
+  return { key, canonical: canonicalKey, isRequired: true };
 }
 
 /**
  * Provider-generic embedding config, mirroring slaude's ANTHROPIC_BASE_URL
- * pattern: EMBEDDING_URL (+ EMBEDDING_API_KEY, EMBEDDING_MODEL,
- * EMBEDDING_DIMENSIONS) point at any OpenAI-compatible /v1/embeddings
- * endpoint. Mapped onto gbrain's `litellm:` recipe (its generic
- * base-URL+key passthrough). An explicit embedding_model already in
- * config.json always wins — env never clobbers operator config.
+ * pattern: EMBEDDING_PROVIDER + EMBEDDING_MODEL (+ EMBEDDING_URL,
+ * EMBEDDING_API_KEY, EMBEDDING_DIMENSIONS) configure the embedding provider
+ * and model deterministically. An explicit embedding_model already in
+ * config.json always wins unless env vars are explicitly set.
  */
 export function applyEmbeddingEnv(): void {
-  const url = process.env.EMBEDDING_URL;
-  const model = process.env.EMBEDDING_MODEL;
-  // Provider-qualified model ("zeroentropyai:zembed-1", "google:text-embedding-004") needs no URL — the
-  // native recipe resolves its own endpoint from its provider key env.
-  const providerQualified = !!model && model.includes(":");
-  if (!url && !providerQualified) return;
-  if (url) {
-    process.env.LITELLM_BASE_URL = url;
-    if (process.env.EMBEDDING_API_KEY) process.env.LITELLM_API_KEY = process.env.EMBEDDING_API_KEY;
-  }
+  const url = process.env.EMBEDDING_URL?.trim();
+  const rawProvider = process.env.EMBEDDING_PROVIDER?.trim();
+  const rawModel = process.env.EMBEDDING_MODEL?.trim();
+  const explicitDims = process.env.EMBEDDING_DIMENSIONS?.trim();
 
   const home = brainHome();
   mkdirSync(home, { recursive: true });
@@ -170,31 +352,75 @@ export function applyEmbeddingEnv(): void {
     // missing or unreadable → start fresh
   }
 
-  // If embedding_model is already configured in config.json and neither EMBEDDING_MODEL
-  // nor EMBEDDING_DIMENSIONS was explicitly provided via env, do not clobber operator config.
-  if (cfg.embedding_model && !model && !process.env.EMBEDDING_DIMENSIONS) {
+  const resolvedModel = canonicalizeEmbeddingModel(rawModel, url, rawProvider);
+
+  // If neither env vars nor config.json configure an embedding model, do nothing
+  if (!resolvedModel && !cfg.embedding_model && !explicitDims) {
+    delete process.env.GBRAIN_EMBEDDING_MODEL;
+    delete process.env.GBRAIN_EMBEDDING_DIMENSIONS;
     return;
   }
 
-  const targetModel = providerQualified ? model! : (model ? `litellm:${model}` : (typeof cfg.embedding_model === "string" ? cfg.embedding_model : "litellm:text-embedding-3-small"));
-  const targetDims = Number(process.env.EMBEDDING_DIMENSIONS ?? defaultDimensionsForModel(targetModel));
+  if (url) {
+    process.env.LITELLM_BASE_URL = url;
+    if (process.env.EMBEDDING_API_KEY) process.env.LITELLM_API_KEY = process.env.EMBEDDING_API_KEY;
+  }
+
+  // Target model: explicit resolved env model takes precedence when rawModel or rawProvider is set,
+  // falling back to existing config.json model.
+  const targetModel =
+    rawModel || rawProvider
+      ? resolvedModel ?? (typeof cfg.embedding_model === "string" ? cfg.embedding_model : "litellm:text-embedding-3-small")
+      : typeof cfg.embedding_model === "string"
+        ? cfg.embedding_model
+        : (resolvedModel ?? "litellm:text-embedding-3-small");
+  const modelChanged = cfg.embedding_model !== targetModel;
+
+  // If model changed and operator didn't explicitly specify dims, reset to target model's default dims
+  const targetDims = Number(
+    explicitDims ??
+      (!modelChanged && typeof cfg.embedding_dimensions === "number"
+        ? cfg.embedding_dimensions
+        : defaultDimensionsForModel(targetModel))
+  );
 
   const prevDims = typeof cfg.embedding_dimensions === "number" ? cfg.embedding_dimensions : undefined;
   if (prevDims && prevDims !== targetDims) {
     console.warn(`[brain] embedding dimensions changed from ${prevDims} to ${targetDims}. Backing up old PGLite store...`);
-    const pgliteDbPath = join(home, "brain.pglite");
-    if (existsSync(pgliteDbPath)) {
-      try {
-        renameSync(pgliteDbPath, join(home, `brain.pglite.${prevDims}.bak`));
-      } catch (err) {
-        console.warn(`[brain] could not backup ${pgliteDbPath}:`, err);
+    const storePaths = [
+      join(home, "db"),
+      join(home, "brain.pglite"),
+    ];
+    for (const storePath of storePaths) {
+      if (existsSync(storePath)) {
+        const bakPath = `${storePath}.${prevDims}.bak`;
+        try {
+          if (existsSync(bakPath)) rmSync(bakPath, { recursive: true, force: true });
+          renameSync(storePath, bakPath);
+          console.warn(`[brain] backed up ${storePath} -> ${bakPath}`);
+        } catch (err) {
+          console.warn(`[brain] could not backup ${storePath}:`, err);
+        }
       }
     }
   }
 
-  cfg.embedding_model = targetModel;
-  cfg.embedding_dimensions = targetDims;
-  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n");
+  const dimsChanged = cfg.embedding_dimensions !== targetDims;
+  if (modelChanged || dimsChanged) {
+    cfg.embedding_provider = targetModel.split(":")[0];
+    cfg.embedding_model = targetModel;
+    cfg.embedding_dimensions = targetDims;
+    const serialized = JSON.stringify(cfg, null, 2) + "\n";
+    writeFileSync(cfgPath, serialized);
+    const gbrainCfgDir = join(home, ".gbrain");
+    mkdirSync(gbrainCfgDir, { recursive: true });
+    writeFileSync(join(gbrainCfgDir, "config.json"), serialized);
+    console.log(`[brain] embedding configured: ${targetModel} (${targetDims} dims)`);
+  }
+
+  // Synchronize process env for gbrain internals
+  process.env.GBRAIN_EMBEDDING_MODEL = targetModel;
+  process.env.GBRAIN_EMBEDDING_DIMENSIONS = String(targetDims);
 }
 
 /**
@@ -322,6 +548,9 @@ async function boot(): Promise<Engine> {
   // gbrain reads GBRAIN_HOME for config.json, lock files, clones.
   process.env.GBRAIN_HOME = home;
   applyEmbeddingEnv();
+  // Configure embedding gateway before engine connect & initSchema so schema migrations
+  // size the embedding columns to match the configured model dimensions.
+  await configureEmbeddingGateway();
   const cfg = brainEngineConfig();
   // Lock takeover assumes exclusive ownership at boot — true only for PGLite's
   // one-process-per-brain contract. Under shared Postgres another process (the
@@ -333,7 +562,6 @@ async function boot(): Promise<Engine> {
   await engine.connect(cfg);
   await engine.initSchema();
   if (cfg.engine === "pglite") await clearStaleDbLocks(engine);
-  await configureEmbeddingGateway();
   return engine;
 }
 
@@ -347,6 +575,8 @@ export async function closeBrain(): Promise<void> {
   enginePromise = null;
   ensureInFlight = null; // next boot may target a different brain home
   embeddingActiveFlag = false;
+  delete process.env.GBRAIN_EMBEDDING_MODEL;
+  delete process.env.GBRAIN_EMBEDDING_DIMENSIONS;
   await e.disconnect();
 }
 
