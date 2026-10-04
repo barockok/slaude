@@ -27,9 +27,9 @@ export function failureText(code: unknown): string {
   return FAILURE_TEXT[isFailureCode(code) ? code : "UNKNOWN"];
 }
 
-/** Bounded once-per-key guard: a client retry, a queue attempt and a second
- *  replica can all report the same failed job; only the first call per key
- *  returns true. The oldest keys are forgotten past `cap` entries. */
+/** Bounded, in-process once-per-key guard: only the first call per key returns
+ *  true. It is a plain Set, so it does NOT dedupe across replicas. The oldest
+ *  keys are forgotten past `cap` entries. */
 export function createOnceGuard(cap = 2000): (key: string) => boolean {
   const seen = new Set<string>();
   return (key) => {

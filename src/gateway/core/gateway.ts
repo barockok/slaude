@@ -19,7 +19,7 @@ import * as SoulOverrides from "../../db/soul-overrides";
 import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, createConnectMcp, CONNECT_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
 import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
-import { humanizeToolStatus } from "./status-text";
+import { humanizeToolStatus, redactSecrets } from "./status-text";
 import * as Remote from "../../db/remote";
 import { handleRemoteCommand, endRemoteForThread, remoteStatusOn } from "./remote-command";
 import { activeRemoteTarget } from "../../remote/active";
@@ -1151,7 +1151,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   });
 
   agent.on("event", (e: AgentEvent) => {
-    console.log(`[agent-evt] ${e.type} session=${e.sessionId}${"tool" in e ? ` tool=${e.tool}` : ""}${"error" in e ? ` err=${e.error}` : ""}`);
+    console.log(`[agent-evt] ${e.type} session=${e.sessionId}${"tool" in e ? ` tool=${e.tool}` : ""}${"error" in e ? ` err=${redactSecrets(String(e.error))}` : ""}`);
     const route = routes.get(e.sessionId);
     if (!route) return;
 
@@ -1316,11 +1316,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       case "error": {
         // The raw error (provider/CLI text, stack fragments) stays in the server
         // log; Slack only ever gets the fixed text for the failure code (D1.6).
-        console.error(`[turn-error] session=${e.sessionId} code=${e.code ?? "UNKNOWN"} job=${e.jobId ?? "-"}: ${e.error}`);
+        console.error(`[turn-error] session=${e.sessionId} code=${e.code ?? "UNKNOWN"} job=${e.jobId ?? "-"}: ${redactSecrets(String(e.error))}`);
         void (async () => {
-          // One message per failed job: a retry, a queue attempt and a replica
-          // can each surface the same failure. Events with no job id are posted.
-          if (!e.jobId || firstFailurePost(`${e.sessionId}:${e.jobId}`)) {
+          // One message per failed turn. With a job id (queue mode) the key is the
+          // job, so a client retry or a queue attempt that surfaces the same failure
+          // posts once. Without one (mono/local) it is the session's current inbound
+          // message, so the MCP-circuit error and the result error of one turn post
+          // once. The guard is an in-process Set: it does NOT span replicas.
+          if (firstFailurePost(e.jobId ? `${e.sessionId}:job:${e.jobId}` : `${e.sessionId}:ts:${route.ctx.inboundTs}`)) {
             try {
               await t.client.chat.postMessage({
                 channel: route.ctx.channel,

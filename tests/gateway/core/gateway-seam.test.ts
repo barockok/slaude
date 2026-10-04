@@ -409,6 +409,29 @@ describe("createGateway", () => {
       await tick();
       const more = g.posts.slice(before + 1).map((p) => p.text);
       expect(more).toEqual([failureText("UNKNOWN"), failureText("UNKNOWN")]);
+
+      // The server-side log line is redacted too.
+      const logged: string[] = [];
+      const origErr = console.error;
+      console.error = (...a: unknown[]) => void logged.push(a.join(" "));
+      try {
+        g.agent.emit("event", { type: "error", sessionId: row!.id, error: "bad token xoxb-123456789012-abcdefghij", code: "TURN_FAILED", jobId: "job-3" } as any);
+        await tick();
+      } finally {
+        console.error = origErr;
+      }
+      expect(logged.some((l) => l.includes("[turn-error]"))).toBe(true);
+      expect(logged.join("\n")).not.toContain("xoxb-123456789012");
+
+      // Local/mono mode has no job id: two errors for ONE turn (e.g. the MCP
+      // circuit error then the result error) still post once, keyed on the turn.
+      await g.mention("800.2", "<@U_SLAUDE> again");
+      const row2 = await Sessions.findByThread({ team_id: "T", channel_id: CH, thread_ts: "800.2" });
+      const mark = g.posts.length;
+      g.agent.emit("event", { type: "error", sessionId: row2!.id, error: "first", code: "TURN_FAILED" } as any);
+      g.agent.emit("event", { type: "error", sessionId: row2!.id, error: "second" } as any);
+      await tick();
+      expect(g.posts.slice(mark).map((p) => p.text)).toEqual([failureText("TURN_FAILED")]);
     });
   });
 });
