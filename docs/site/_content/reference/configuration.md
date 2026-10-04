@@ -260,6 +260,27 @@ All vars are read via `src/config/env.ts` (`req()` throws on missing, `opt()` re
 | `ANTHROPIC_MODEL` | No | `""` | CLI-native fallback when `SLAUDE_MODEL` is unset. Forwarded to SDK child. |
 | `ANTHROPIC_SMALL_FAST_MODEL` | No | CLI default | Haiku-class model for compaction and sub-tasks. |
 
+### Persona provider credentials <a id="provider-credentials"></a>
+
+A managed persona's `provider` references are resolved by the gateway at runtime-bundle build. See [Provider credentials](../deploy/provider-credentials.md). Every `SLAUDE_VAULT_*` variable is gateway-only: it is stripped from the agent child's environment, and a node reports it under `SLAUDE_NODE_BOOT_CHECK`. `SLAUDE_VAULT_ADDR` is refused with `SLAUDE_ROLE=mono`.
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `SLAUDE_VAULT_ADDR` | No | `""` | Vault base URL (a bare origin). Setting it enables `vault://` references. Must be `https` unless `SLAUDE_VAULT_ALLOW_INSECURE=1`. |
+| `SLAUDE_VAULT_AUTH` | No | `kubernetes` | `kubernetes` (login with the pod's service-account token) or `token` (development only). |
+| `SLAUDE_VAULT_ROLE` | With `kubernetes` auth | `""` | The Kubernetes-auth role, bound to the gateway's own ServiceAccount. |
+| `SLAUDE_VAULT_TOKEN` | With `token` auth | `""` | Static Vault token. Development only; needs `SLAUDE_VAULT_ALLOW_INSECURE=1`. |
+| `SLAUDE_VAULT_ALLOWED_PREFIXES` | With `SLAUDE_VAULT_ADDR` | `""` | Comma list of `<mount>/<path-prefix>`. A reference resolves only when its final request path is inside one. `{persona}` (a whole segment) expands to the persona's name. Empty with `SLAUDE_VAULT_ADDR` set: the gateway refuses to start. |
+| `SLAUDE_VAULT_MOUNTS` | No | first segment of each allowed prefix | Comma list of KV v2 mounts (one or more segments each). The longest whole-segment match is the mount; nested mounts are refused. |
+| `SLAUDE_VAULT_NAMESPACE` | No | `""` | Sent as `X-Vault-Namespace`. |
+| `SLAUDE_VAULT_CACERT` | No | `""` | CA bundle path for a private Vault. |
+| `SLAUDE_VAULT_K8S_TOKEN_PATH` | No | `/var/run/secrets/kubernetes.io/serviceaccount/token` | Service-account JWT path for `kubernetes` auth. |
+| `SLAUDE_VAULT_CACHE_TTL` | No | `60` | Seconds a resolved value is cached per gateway process. `0` = fetch at every session start. |
+| `SLAUDE_VAULT_STALE_MAX` | No | `600` | Seconds a cached value may still be served when a refresh fails because Vault cannot answer. |
+| `SLAUDE_VAULT_ALLOW_INSECURE` | No | `""` | `1` allows an `http://` address and `token` auth. Development only. |
+| `SLAUDE_PROVIDER_ENV_FALLBACK` | No (node) | `1` | `1`: a managed persona whose bundle lacks a provider variable runs on the node's own, with one warning per persona. `0`: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_BASE_URL` are deleted from the agent child's environment unless the bundle supplied them, and a managed persona with no credential fails its turn with `PROVIDER_CREDENTIALS_UNAVAILABLE`. Any other value stops the node. |
+| `PERSONA_*` | No | — | Values for `env://PERSONA_*` references and `${PERSONA_*}` placeholders, read from the gateway's environment. |
+
 ### Slack — optional
 
 | Name | Required | Default | Description |
