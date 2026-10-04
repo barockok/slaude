@@ -241,6 +241,21 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync provider references (WS
     expect(await P.isManaged(T)).toBe(false);
   });
 
+  // Re-check F3: dropping provider silently changes whose credentials run.
+  test("a sync that removes provider from a persona warns, naming it", async () => {
+    await runSync(T, payload([withRef("env://PERSONA_ANA_KEY")]), { dryRun: false, env, by: "ci", extract: okExtract });
+    const next = payload([{ ...ana, model: "m-1" }], { revision: "r2", committedAt: "2026-10-01T11:00:00Z" });
+    const dry = await runSync(T, next, { dryRun: true, env, by: "ci", extract: okExtract });
+    expect(dry.updated).toEqual(["ana"]);
+    expect(dry.warnings).toContain("persona 'ana' no longer declares provider; it now uses tenant/node credentials");
+    const r = await runSync(T, next, { dryRun: false, env, by: "ci", extract: okExtract });
+    expect(r.updated).toEqual(["ana"]);
+    expect(r.warnings).toEqual(["persona 'ana' no longer declares provider; it now uses tenant/node credentials"]);
+    const again = await runSync(T, payload([{ ...ana, model: "m-1" }], { revision: "r3", committedAt: "2026-10-01T12:00:00Z" }),
+      { dryRun: false, env, by: "ci", extract: okExtract });
+    expect(again.warnings).toEqual([]);
+  });
+
   test("a persona with a baseUrl and no credential is refused at sync (M-1)", async () => {
     const e = await fail({ ...ana, model: "m-1", provider: { baseUrl: "https://llm.example.com" } }, env);
     expect(e.status).toBe(422);

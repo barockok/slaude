@@ -136,7 +136,6 @@ export async function runSync(
       "the database schema predates this gateway (personas.provider_json is missing): apply migration 0014 before syncing personas");
   }
   const warnings = providerWarnings(payload);
-  for (const w of warnings) console.warn(`[persona-sync] warning tenant=${tenant}: ${w}`);
 
   // Fail a stale payload before spending any model call. applySync's
   // transactional compare-and-set remains the authority; this is a fast path.
@@ -176,6 +175,16 @@ export async function runSync(
       soulMd: p.soul, soulJson, mcp: p.mcp ?? null, provider: p.provider ?? null, origin: "git", tombstonedAt: null,
     });
   }
+
+  // A persona that drops `provider` silently returns to the provider_creds rows
+  // and the node's own environment; say so by name (review re-check F3).
+  for (const r of rows) {
+    const prev = desired.get(r.name);
+    if (prev && prev.tombstonedAt === null && prev.provider && !r.provider) {
+      warnings.push(`persona '${r.name}' no longer declares provider; it now uses tenant/node credentials`);
+    }
+  }
+  for (const w of warnings) console.warn(`[persona-sync] warning tenant=${tenant}: ${w}`);
 
   if (allIgnored.length) {
     console.warn(`[persona-sync] ignored unknown payload fields tenant=${tenant}: ${capPaths(allIgnored).join(", ")}`);
