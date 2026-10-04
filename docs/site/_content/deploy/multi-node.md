@@ -221,7 +221,7 @@ Either way, finish the split first. Rotating while nodes still load the gateway 
 
 ## Node credentials
 
-A node proves who it is, and which **labels** it carries, with a signed credential. The label decides which agents a node may serve: every request a node makes with a job token is checked against the label signed into that token at dispatch, and a node without it gets `403 this node may not serve this agent`, even holding a valid job token. Until personas carry their own label, every persona is `default`.
+A node proves who it is, and which **labels** it carries, with a signed credential. The label decides which agents a node may serve: every request a node makes with a job token is checked against the label signed into that token at dispatch, and a node without it gets `403 this node may not serve this agent`, even holding a valid job token. A persona's label is its `runsOn` in [personas as code](personas-as-code.md); a persona without one, and every filesystem or sqlite persona, is `default`. Each label has its own queue (`turns` for `default`, `turns.label.<label>` otherwise), and a node consumes the queue of every label its credential carries, so a persona's turns run only on nodes that carry its label (a job that lands on another node's queue is moved to its label's queue, not run).
 
 **What the gate does not do.** A node is one trust domain: every agent turn on it runs as the node's user and can read the node's environment and other turns' processes. Labels separate nodes, not personas that share a node. Nodes also read Redis directly, so queue names are routing, not access control.
 

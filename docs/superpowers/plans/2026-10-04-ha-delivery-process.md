@@ -48,14 +48,14 @@ Status values: `todo`, `in progress`, `in review`, `accepted`, `blocked`.
 
 | Unit | Content | Spec | Status |
 |---|---|---|---|
-| U7 | Per-request Slack client | WS-D D1.2, D1.4 | in progress |
+| U7 | Per-request Slack client | WS-D D1.2, D1.4 | accepted |
 | U8a | Secrets module: reference parser, resolver seam, env and Vault backends | WS-A §4–§6 | in review |
-| U8b | Provider credentials: persona field, bundle, node delivery, fatal typed failure, mono refusal | WS-A §5, §7–§11 | todo |
-| U9 | Node credential, `authenticateNode`, route table, gate, endpoint hardening | WS-B §4.1–§4.4 | todo |
+| U8b | Provider credentials: persona field, bundle, node delivery, fatal typed failure, mono refusal | WS-A §5, §7–§11 | accepted |
+| U9 | Node credential, `authenticateNode`, route table, gate, endpoint hardening | WS-B §4.1–§4.4 | accepted |
 | U10 | `runs_on`, label queues, dispatch, worker, reaper, unserved labels, typed relabel | WS-B §4.5–§4.8 | todo |
 | U11 | Node-local stdio manifest, plugin allow-list, strict MCP config | WS-B §4.10 | todo |
-| U12 | MCP bridge | WS-C §4.2 | todo |
-| U13 | KB scope, scoped list tools, skills provenance, memory-provider check | WS-C §4.1, §4.3 | todo |
+| U12 | MCP bridge | WS-C §4.2 | fix round |
+| U13 | KB scope, scoped list tools, skills provenance, memory-provider check | WS-C §4.1, §4.3 | fix round |
 | U14 | Panel persona API and screens | WS-C §4.4 | todo |
 
 ### Stage 3 — cluster setup for the operator's mock test, docs, closeout
@@ -80,5 +80,8 @@ Status values: `todo`, `in progress`, `in review`, `accepted`, `blocked`.
 - `.mcp.json` `${VAR}` expansion is a blocklist against the gateway-only list; the gateway should not read `.mcp.json` or `.env` from the node-writable shared volume (same follow-up class).
 - The `lock` claim in the job token can be stale for a job that was waiting while the lock flipped (documented next to `runAs`).
 - Rollout rule: the node image must be at this release before the new node Secret is applied, and queued turns must drain first.
+- **mono episodic memory leak (found by U13):** in `mono` the in-process memory provider uses the process-wide agent id, so named personas' turns (1:1s included) land in the default persona's slice. Node memory is now scoped through the gateway; mono needs the same scoped provider. Track before stable.
+- Gateway-served memory: public and DM threads get no `<memory-context>` on nodes by design; a persistent memory failure is logged once.
+- The MCP bridge keeps the node-side MCP credential seeding in place until the bridge is proven; a later cleanup removes it.
 - Cross-replica de-duplication of failure messages is per process (U2); a Redis-backed guard is a possible later step.
 - **Cleanup after the MCP bridge is proven in a cluster (U12, WS-C §4.2.11):** remove the node-side MCP credential seeding (`src/node/credentials.ts`, its wiring in `src/node/worker.ts`), the `needs-auth` recovery, and the `GET /v1/tenants/:t/mcp-credentials` and `…/refresh` endpoints. Left in place by U12 on purpose. The bridge's connect-card rate limit is also per process (one card per session and server per 10 minutes per replica).

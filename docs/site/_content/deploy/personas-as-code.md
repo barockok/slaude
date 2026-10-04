@@ -48,7 +48,19 @@ userToken: "${PERSONA_SUPPORT_BOT_XOXP}"
 provider:                       # optional: this persona's own LLM credentials
   baseUrl: "https://llm.example.com"
   apiKey: "vault://secret/slaude/personas/support-bot#api_key"
+runsOn: "engineering"           # optional: the node label this persona runs on
 ```
+
+`runsOn` names the node label whose nodes run this persona's turns: lower-case
+letters, digits and `-`, at most 32 characters (`^[a-z0-9][a-z0-9-]{0,31}$`).
+Absent means `default`, the label every unlabelled node and every legacy node
+carries; filesystem and sqlite personas are always `default`. It is set in git
+only: it is not a runtime override, so the panel cannot change where an agent
+runs. A sync that names a label no live node carries is applied anyway and
+reported as a warning in `warnings` (`no live node carries label '<label>'`):
+the persona's turns wait on that label's queue until a node with the label
+starts. `export` writes `runsOn` only when the persona's `config.json` already
+has it.
 
 `provider` holds references (`vault://…#field` or `env://PERSONA_*`), never a
 credential; `baseUrl` may also be a literal `https` URL, and needs a credential
@@ -141,7 +153,8 @@ The tenant is `default` for a single-workspace deployment; it must match
 The body is capped at 4 MiB; a larger one is 413 and nothing is applied.
 `personas render` builds this body from the repository. The response reports
 `created`, `updated`, `unchanged`, `tombstoned`, `overridesWiped`,
-`ignoredFields` and `warnings` (provider/model pairing, by persona name).
+`ignoredFields` and `warnings` (provider/model pairing, and a `runsOn` label
+no live node carries, by persona name).
 Migration 0014 (`personas.provider_json`) applies at boot by default. With
 `SLAUDE_MIGRATE_ON_BOOT=0` and the migration not applied, a gateway whose
 tenant is already managed fails at boot with a database error about the
@@ -154,8 +167,9 @@ overrides it would wipe.
 Behaviour to know:
 
 - `version` is the payload format; absent means 1, and `personas render` always
-  writes it: 2 when any persona sets `provider`, otherwise 1, so a payload
-  without `provider` still deploys to an older gateway, and one with it is
+  writes it: 2 when any persona sets a version-2 field (`provider` or `runsOn`),
+  otherwise 1, so a payload
+  without them still deploys to an older gateway, and one with either is
   refused by a gateway that would ignore it. A payload whose `version` is newer than the gateway supports is
   refused with 422 before anything is applied: upgrade the gateway first.
 - A field the gateway does not know (at the top level or on a persona) is

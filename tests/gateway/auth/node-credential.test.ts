@@ -84,6 +84,9 @@ describe("mint / verify", () => {
       expect(verifyNodeCredentialSync(raw(c), { keys: [KEY], now: NOW })).toEqual({ ok: false, reason: "bad_claims" });
     }
     expect(() => mint({ id: "legacy" })).toThrow(/reserved/);
+    // A node id starting with `label.` would collide with a label queue name.
+    expect(() => mint({ id: "label.finance" })).toThrow(/label\./);
+    expect(() => mint({ id: "labels-host" })).not.toThrow();
   });
 
   test("both keys during rotation", () => {
