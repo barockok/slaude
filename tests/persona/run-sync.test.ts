@@ -189,3 +189,72 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync stage one reporting", (
     expect((await runSync(T, payload([ana]), { dryRun: true, env, by: "ci", extract: okExtract })).ignoredFields).toEqual([]);
   });
 });
+
+describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync provider references (WS-A §4, §6.3)", () => {
+  const vaultEnv = {
+    ...env,
+    SLAUDE_VAULT_ADDR: "https://vault.example.com",
+    SLAUDE_VAULT_ROLE: "slaude-gateway",
+    SLAUDE_VAULT_ALLOWED_PREFIXES: "secret/slaude/personas/{persona}",
+  };
+  const withRef = (apiKey: string) => ({ ...ana, model: "m-1", provider: { apiKey } });
+  const fail = (p: unknown, e: Record<string, string>) =>
+    runSync(T, payload([p]), { dryRun: false, env: e, by: "ci", extract: okExtract }).catch((x) => x);
+
+  test("references are stored as references; no value is resolved at sync", async () => {
+    await runSync(T, payload([withRef("env://PERSONA_ANA_KEY")]), { dryRun: false, env, by: "ci", extract: okExtract });
+    const p = (await P.desiredPersonas(T)).find((x) => x.name === "ana")!;
+    expect(p.provider).toEqual({ apiKey: "env://PERSONA_ANA_KEY" });
+  });
+
+  test("a vault:// reference inside the persona's own prefix is accepted", async () => {
+    const r = await runSync(T, payload([withRef("vault://secret/slaude/personas/ana#api_key")]),
+      { dryRun: false, env: vaultEnv, by: "ci", extract: okExtract });
+    expect(r.created).toContain("ana");
+  });
+
+  test("a vault:// reference to a sibling's folder is refused at sync, naming persona and field", async () => {
+    const e = await fail(withRef("vault://secret/slaude/personas/bea#api_key"), vaultEnv);
+    expect(e).toBeInstanceOf(SyncFailure);
+    expect(e.status).toBe(422);
+    expect(e.message).toContain("persona 'ana': provider.apiKey");
+    expect(e.message).toContain("SLAUDE_VAULT_ALLOWED_PREFIXES");
+    expect(e.message).not.toContain("personas/bea");
+    expect(await P.isManaged(T)).toBe(false);
+  });
+
+  test("a vault:// reference under no configured mount is refused", async () => {
+    const e = await fail(withRef("vault://other/slaude/personas/ana#api_key"), vaultEnv);
+    expect(e.status).toBe(422);
+    expect(e.message).toContain("mount");
+  });
+
+  test("a vault:// reference on a gateway without Vault is refused, not stored to fail every turn", async () => {
+    const e = await fail(withRef("vault://secret/slaude/personas/ana#api_key"), env);
+    expect(e.status).toBe(422);
+    expect(e.message).toContain("SLAUDE_VAULT_ADDR");
+  });
+
+  test("provider/model warnings are logged and reported", async () => {
+    const warn = console.warn; const lines: string[] = [];
+    console.warn = (m: string) => { lines.push(String(m)); };
+    try {
+      const r = await runSync(T, payload([{ ...ana, provider: { baseUrl: "https://llm.example.com" } }]),
+        { dryRun: true, env, by: "ci", extract: okExtract });
+      expect(r.warnings.some((w) => w.includes("'ana'"))).toBe(true);
+    } finally { console.warn = warn; }
+    expect(lines.join("\n")).toContain("'ana'");
+  });
+
+  test("a database that predates provider_json refuses the sync loudly", async () => {
+    await db.run(`ALTER TABLE personas DROP COLUMN provider_json`);
+    try {
+      const e = await fail(withRef("env://PERSONA_ANA_KEY"), env);
+      expect(e).toBeInstanceOf(SyncFailure);
+      expect(e.status).toBe(503);
+      expect(e.message).toContain("provider_json");
+    } finally {
+      await db.run(`ALTER TABLE personas ADD COLUMN IF NOT EXISTS provider_json JSONB`);
+    }
+  });
+});
