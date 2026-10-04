@@ -26,6 +26,10 @@
 #   finance    = slaude:bull:turns.label.finance:wait
 #
 # Install KEDA first: https://keda.sh/docs/latest/deploy/
+#
+# Without KEDA, do not apply this file: apply
+# optional/node-cpu-fallback-hpa.yaml instead (a CPU HPA per label). Never both:
+# two autoscalers on one Deployment fight over its replica count.
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
@@ -78,61 +82,3 @@ spec:
 #        query: max(slaude_queue_depth{queue="turns"})   # max(): leader-only gauge
 #        (for a label: the `label` series of the same gauge, one trigger per label)
 #        threshold: "10"
----
-# --- Fallback: plain HPA on CPU, for clusters without KEDA. ---
-# CPU is a POOR proxy for slaude's load: turns are dominated by waiting on
-# the LLM provider, so a node can be saturated (all concurrency slots busy)
-# at low CPU. Use this only until KEDA is installed; expect it to under-scale.
-# NOTE: mutually exclusive with the ScaledObject above (KEDA manages its own
-# HPA) — apply one or the other, never both.
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: slaude-node-cpu-fallback
-  namespace: slaude-scale
-  annotations:
-    slaude/disabled: "delete the ScaledObject before applying this fallback"
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: slaude-node
-  minReplicas: 2
-  maxReplicas: 20
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 60
-  behavior:
-    scaleDown:
-      # Slow scale-down: warm sessions on a reaped replica cold-resume
-      # elsewhere, but churning replicas every window wastes that warmth.
-      stabilizationWindowSeconds: 600
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: slaude-node-finance-cpu-fallback
-  namespace: slaude-scale
-  annotations:
-    slaude/disabled: "delete the ScaledObject before applying this fallback"
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: slaude-node-finance
-  minReplicas: 2
-  maxReplicas: 10
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 60
-  behavior:
-    scaleDown:
-      stabilizationWindowSeconds: 600

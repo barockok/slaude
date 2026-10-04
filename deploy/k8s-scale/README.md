@@ -27,8 +27,10 @@ scaling): `docs-new/deployment/scale-operations.md`.
   support pgvector: RDS, Cloud SQL, Azure Flexible Server, Aiven.
 - **An RWX-capable StorageClass** for the shared `$SLAUDE_HOME` PVC
   (`30-pvc.yaml`): EFS, Filestore, Azure Files, Longhorn RWX, CephFS, NFS.
-- **KEDA** for queue-depth autoscaling (`70-autoscale.yaml`); a CPU-based
-  HPA fallback is included for clusters without it.
+- **KEDA** for queue-depth autoscaling (`70-autoscale.yaml`, one
+  ScaledObject per label). Without KEDA, leave `70-autoscale.yaml` out and
+  apply `optional/node-cpu-fallback-hpa.yaml` instead (a CPU HPA per label).
+  Never both: two autoscalers on one Deployment fight over its replicas.
 - An ingress controller + TLS (Slack requires valid HTTPS on the request URL).
 
 ## Apply
@@ -44,7 +46,9 @@ kubectl apply -f deploy/k8s-scale/30-pvc.yaml
 kubectl apply -f deploy/k8s-scale/40-gateway.yaml
 kubectl apply -f deploy/k8s-scale/50-node.yaml
 kubectl apply -f deploy/k8s-scale/60-ingress.yaml
-kubectl apply -f deploy/k8s-scale/70-autoscale.yaml   # KEDA ScaledObjects, one per label (see file for the HPA fallback)
+kubectl apply -f deploy/k8s-scale/70-autoscale.yaml   # KEDA ScaledObjects, one per label
+# or, without KEDA (never both):
+# kubectl apply -f deploy/k8s-scale/optional/node-cpu-fallback-hpa.yaml
 # or, the same set in one build:
 kubectl apply -k deploy/k8s-scale
 # optional, on a CNI that enforces NetworkPolicy (read the file first):

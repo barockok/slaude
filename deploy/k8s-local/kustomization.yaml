@@ -14,7 +14,8 @@
 #     a multi-node minikube would strand pods exactly like RWO storage does.
 #   - Postgres and Redis run in-cluster (the dev stand-ins), single replica.
 #   - No Ingress: Slack cannot reach a laptop anyway, and the Service stays.
-#   - CPU HPA instead of KEDA, capped low enough to fit the VM.
+#   - CPU HPA (deploy/k8s-scale/optional/node-cpu-fallback-hpa.yaml) instead of
+#     KEDA, for the default label only, capped low enough to fit the VM.
 #   - Resource requests and limits trimmed and node drain shortened, so a laptop
 #     fits two of each tier and failover tests finish in seconds, not minutes.
 #     The numbers are sized against sizing.env (the node size and the
@@ -47,7 +48,8 @@ resources:
   - ../k8s-scale/40-gateway.yaml
   - ../k8s-scale/50-node.yaml
   - ../k8s-scale/60-ingress.yaml
-  - ../k8s-scale/70-autoscale.yaml
+  # No KEDA here: the CPU fallback instead of 70-autoscale.yaml, never both.
+  - ../k8s-scale/optional/node-cpu-fallback-hpa.yaml
   - ../k8s-scale/90-dev-datastores.yaml
   - vault.yaml
   - mock-mcp/mock-mcp.yaml
@@ -293,23 +295,7 @@ patches:
                   requests: { cpu: 50m, memory: 64Mi }
                   limits: { cpu: 200m, memory: 64Mi }
 
-  # KEDA is not installed locally; keep only the default label's CPU fallback.
-  - patch: |-
-      $patch: delete
-      apiVersion: keda.sh/v1alpha1
-      kind: ScaledObject
-      metadata:
-        name: slaude-node
-        namespace: slaude-scale
-
-  - patch: |-
-      $patch: delete
-      apiVersion: keda.sh/v1alpha1
-      kind: ScaledObject
-      metadata:
-        name: slaude-node-finance
-        namespace: slaude-scale
-
+  # The finance label runs a fixed single replica locally: no autoscaler.
   - patch: |-
       $patch: delete
       apiVersion: autoscaling/v2

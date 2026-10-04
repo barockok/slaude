@@ -159,8 +159,9 @@ scrape_configs:
 ## Scaling behavior
 
 - **Nodes** scale on queue depth via KEDA (`deploy/k8s-scale/70-autoscale.yaml`
-  — redis list-length trigger on the BullMQ wait list. Prometheus and CPU-HPA
-  variants documented in the file). Scale-down is deliberately slow: a reaped
+  — redis list-length trigger on the BullMQ wait list, one ScaledObject per
+  label; a Prometheus variant is documented in the file). Without KEDA, apply
+  `deploy/k8s-scale/optional/node-cpu-fallback-hpa.yaml` instead, never both. Scale-down is deliberately slow: a reaped
   node's warm sessions cold-resume elsewhere from the shared volume, but the
   warmth is lost.
 - **Node labels.** Each label has its own queue: `turns` for `default` (the

@@ -9,7 +9,7 @@
  * Needs kubectl (its built-in kustomize); skipped without it.
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseAllDocuments } from "yaml";
@@ -80,6 +80,12 @@ for (const [name, build] of builds) {
         ["slaude-node", "default"],
         ["slaude-node-finance", "finance"],
       ]);
+    });
+
+    test("no Deployment is scaled by both a KEDA ScaledObject and an HPA", () => {
+      const keda = docs.filter((d) => d.kind === "ScaledObject").map((d) => d.spec.scaleTargetRef.name);
+      const hpa = docs.filter((d) => d.kind === "HorizontalPodAutoscaler").map((d) => d.spec.scaleTargetRef.name);
+      expect(keda.filter((n) => hpa.includes(n))).toEqual([]);
     });
 
     test("no node Deployment's selector matches another one's pods", () => {
@@ -164,6 +170,14 @@ describe.skipIf(!hasKubectl)("built deploy/k8s-scale: production base", () => {
       // HA per label: never fewer than two.
       expect(so.spec.minReplicaCount).toBeGreaterThanOrEqual(2);
     }
+  });
+
+  test("the optional CPU fallback has one HPA per node Deployment, and is not in the build", () => {
+    expect(docs.filter((d) => d.kind === "HorizontalPodAutoscaler")).toEqual([]);
+    const fallback = parseAllDocuments(readFileSync(join(root, "deploy/k8s-scale/optional/node-cpu-fallback-hpa.yaml"), "utf8"))
+      .map((d) => d.toJSON())
+      .filter(Boolean);
+    expect(fallback.map((h: any) => h.spec.scaleTargetRef.name).sort()).toEqual(nodes.map((n) => n.dep.metadata.name).sort());
   });
 
   test("one PodDisruptionBudget per node Deployment, selecting exactly its pods", () => {
