@@ -29,6 +29,15 @@ function opt(name: string, fallback = ""): string {
   return process.env[name] ?? fallback;
 }
 
+/** A positive integer variable; unset or empty means the default. */
+function positiveInt(name: string, fallback: number): number {
+  const raw = (process.env[name] ?? "").trim();
+  if (!raw) return fallback;
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n < 1) throw new Error(`${name} must be a positive integer (got '${raw}')`);
+  return n;
+}
+
 /** Parse a duration: a bare number of seconds, or a number with an `s`, `m`,
  *  `h` or `d` suffix. Returns null for anything else or a non-positive value. */
 export function parseDurationSec(raw: string): number | null {
@@ -325,6 +334,18 @@ export const env = {
       throw new Error(`SLAUDE_PROVIDER_ENV_FALLBACK must be 0 or 1 (got '${raw}')`);
     }
     return raw === "1";
+  },
+  /**
+   * The MCP bridge's limits (WS-C §4.2.8), read per call. The timeout is the
+   * ceiling for one upstream call and must stay shorter than any ingress
+   * timeout in front of the gateway; a server's own `timeout` can only lower
+   * it. A malformed value is a configuration error, never a silent default.
+   */
+  mcpBridge: {
+    timeoutMs: (): number => positiveInt("SLAUDE_MCP_BRIDGE_TIMEOUT_MS", 50_000),
+    ownerConcurrency: (): number => positiveInt("SLAUDE_MCP_BRIDGE_OWNER_CONCURRENCY", 8),
+    maxRequestBytes: (): number => positiveInt("SLAUDE_MCP_BRIDGE_MAX_REQUEST_BYTES", 1024 * 1024),
+    maxResultBytes: (): number => positiveInt("SLAUDE_MCP_BRIDGE_MAX_RESULT_BYTES", 1024 * 1024),
   },
   /** BullMQ worker concurrency per node process (spec §6). Default 8. */
   nodeConcurrency: (): number => {
