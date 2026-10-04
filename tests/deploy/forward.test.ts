@@ -31,6 +31,7 @@ case "$*" in
   *port-forward*)
     # args: ... port-forward pod/<name> <local>:<container>
     pod="\${@: -2:1}"; ports="\${@: -1}"
+    if [[ -f "$STUB_DIR/pf_fail" ]]; then echo "error: lost connection to pod" >&2; exit 1; fi
     echo "$pod" >>"$STUB_DIR/forwards.log"
     echo $$ >"$STUB_DIR/pf.pid"
     exec bun "$STUB_DIR/listen.ts" "\${ports%%:*}"
@@ -152,4 +153,15 @@ test("waits instead of failing when the Service has no ready endpoint yet", asyn
   expect(forwards()).toEqual([]);
   writeFileSync(join(dir, "endpoints"), "gw-a\n");
   await until(() => forwards().length === 1, "a forward once an endpoint appears");
+});
+
+test("a forward that exits at once is reported as exited, not as slow to answer", async () => {
+  const port = await freePort();
+  writeFileSync(join(dir, "pf_fail"), "");
+  const p = Bun.spawn(["bash", "-c", `exec bash "${script}" gateway >"${dir}/out.log" 2>&1`], { env: env(port) });
+  procs.push(p);
+  await until(() => existsSync(join(dir, "out.log")) && readFileSync(join(dir, "out.log"), "utf8").includes("exited"), "an 'exited' report");
+  const out = readFileSync(join(dir, "out.log"), "utf8");
+  expect(out).toContain("lost connection to pod");
+  expect(out).not.toContain("did not answer");
 });

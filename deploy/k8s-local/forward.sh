@@ -130,7 +130,11 @@ start_forward() { # returns non-zero when there is nothing to forward to yet
     healthy && { log "forwarding localhost:$PORT -> pod/$pod:$cport"; return 0; }
     sleep 0.25
   done
-  log "forward to pod/$pod did not answer within ${STARTUP}s: $(tail -n 2 "$ERRFILE" | tr '\n' ' ')"
+  if kill -0 "$FWD_PID" 2>/dev/null; then
+    log "forward to pod/$pod did not answer within ${STARTUP}s: $(tail -n 2 "$ERRFILE" | tr '\n' ' ')"
+  else
+    log "forward to pod/$pod exited: $(tail -n 2 "$ERRFILE" | tr '\n' ' ')"
+  fi
   stop_forward
   return 1
 }
