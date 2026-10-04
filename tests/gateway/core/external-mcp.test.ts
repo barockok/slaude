@@ -2,6 +2,10 @@ import { describe, it, expect } from "bun:test";
 import { clearCredentials } from "../../../src/gateway/core/external-mcp";
 import { parseExternalMcp } from "../../../src/gateway/core/external-mcp";
 import { privateOverrides } from "../../../src/gateway/core/external-mcp";
+import { currentGlobalMcp } from "../../../src/gateway/core/external-mcp";
+import { rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { paths } from "../../../src/config/home";
 
 describe("clearCredentials", () => {
   it("empties env on a stdio server, preserving command + args", () => {
@@ -120,5 +124,24 @@ describe("privateOverrides", () => {
   it("ignores whitelist names with no matching server", () => {
     const out = privateOverrides(servers, new Set(["ghost"]), true);
     expect(out).toEqual({});
+  });
+});
+
+describe("currentGlobalMcp", () => {
+  it("re-reads the global .mcp.json only when it changes, and hands out copies", () => {
+    const f = join(paths.home, ".mcp.json");
+    try {
+      writeFileSync(f, JSON.stringify({ mcpServers: { a: { type: "http", url: "https://a.example.com/mcp" } } }));
+      const first = currentGlobalMcp();
+      expect(Object.keys(first.servers)).toEqual(["a"]);
+      delete (first.servers as Record<string, unknown>).a;
+      expect(Object.keys(currentGlobalMcp().servers)).toEqual(["a"]);
+      writeFileSync(f, JSON.stringify({ mcpServers: { a: { type: "http", url: "https://a.example.com/mcp" }, bb: { type: "http", url: "https://b.example.com/mcp" } } }));
+      expect(Object.keys(currentGlobalMcp().servers)).toEqual(["a", "bb"]);
+      rmSync(f);
+      expect(currentGlobalMcp()).toEqual({ servers: {}, privateServices: [] });
+    } finally {
+      rmSync(f, { force: true });
+    }
   });
 });

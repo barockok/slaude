@@ -49,3 +49,34 @@ describe.skipIf(process.env.SLAUDE_DB === "pg")("runtime bundle mcpJson (disk ti
     expect(text).not.toContain("planted-master-key-value");
   });
 });
+
+describe.skipIf(process.env.SLAUDE_DB === "pg")("runtime bundle mcpServers (the MCP bridge, WS-C §4.2)", () => {
+  const MIXED = {
+    mcpServers: {
+      web: { type: "http", url: "https://mcp.example.com/mcp?key=qs-secret", headers: { authorization: "Bearer header-secret" } },
+      local: { command: "some-binary", env: { TOKEN: "env-secret" } },
+      legacy: { type: "sse", url: "https://sse.example.com/sse" },
+    },
+  };
+
+  test("names only: the http servers the bridge serves, no URL, header or env value", async () => {
+    writeFileSync(join(paths.home, ".mcp.json"), JSON.stringify(MIXED));
+    const res = await handleTenantRuntime(new Request("https://x/"), "default", "default");
+    const text = await res.text();
+    expect(JSON.parse(text).mcpServers).toEqual(["web"]);
+    for (const leak of ["mcp.example.com", "qs-secret", "header-secret", "env-secret", "some-binary"]) expect(text).not.toContain(leak);
+  });
+
+  test("a filesystem persona gets its own servers, and none is an empty list", async () => {
+    const dir = join(paths.personas, "ghost");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ slackUserId: "UGHOST", name: "ghost" }));
+    writeFileSync(join(dir, "SOUL.md"), "ghost soul");
+    __resetPersonaRegistry();
+    const none = await handleTenantRuntime(new Request("https://x/"), "default", "ghost");
+    expect(((await none.json()) as any).mcpServers).toEqual([]);
+    writeFileSync(join(dir, "mcp.json"), JSON.stringify(MIXED));
+    const some = await handleTenantRuntime(new Request("https://x/"), "default", "ghost");
+    expect(((await some.json()) as any).mcpServers).toEqual(["web"]);
+  });
+});

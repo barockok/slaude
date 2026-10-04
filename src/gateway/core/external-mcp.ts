@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { paths } from "../../config/home";
@@ -140,6 +140,36 @@ export function loadExternalMcp(personaName?: string): ExternalMcp {
   }
 }
 
+let globalCache: { stamp: string; value: ExternalMcp } | null = null;
+
+/** The global `.mcp.json`, re-read only when the file changes. The MCP bridge
+ *  and the runtime bundle resolve it per request through here, so both agree on
+ *  what a persona mounts without a file read per tool call. Callers get a deep
+ *  copy: the cached value is never handed out to be mutated. */
+export function currentGlobalMcp(): ExternalMcp {
+  const f = join(paths.home, ".mcp.json");
+  let stamp: string;
+  try {
+    const st = statSync(f);
+    stamp = `${st.mtimeMs}:${st.size}:${st.ino}`;
+  } catch {
+    globalCache = null;
+    return { servers: {}, privateServices: [] };
+  }
+  if (!globalCache || globalCache.stamp !== stamp) globalCache = { stamp, value: loadExternalMcp() };
+  return structuredClone(globalCache.value);
+}
+
+/** The persona's servers the MCP bridge serves to a node (WS-C §4.2): its
+ *  OAuth-connectable HTTP servers, exactly the set the mcpx routes accept and
+ *  /mcp connect offers. stdio, sse and plugin servers are not bridged. */
+export function bridgedServerNames(
+  personaId: string | null | undefined,
+  globalMcp: ExternalMcp = currentGlobalMcp(),
+  registry?: PersonaRegistry,
+): string[] {
+  return Object.keys(connectableServers(personaId, globalMcp, registry)).sort();
+}
 
 /** A `.mcp.json`-shaped value from effective state, as an ExternalMcp. A deep
  *  copy, so a session can never mutate the registry's snapshot, and NOT

@@ -34,6 +34,7 @@ import { loadSoul } from "../../soul/loader";
 import { soulData } from "../../soul/extract";
 import { personaSkillsRoot } from "../../skills/loader";
 import { json, notFound } from "./http";
+import { bridgedServerNames } from "../core/external-mcp";
 
 export interface RuntimeBundle {
   tenantId: string;
@@ -52,6 +53,11 @@ export interface RuntimeBundle {
    *  against the gateway's environment, so a planted placeholder could carry a
    *  gateway secret to a node. Kept in the shape for older nodes. */
   mcpJson: null;
+  /** The persona's remote MCP servers a node mounts through the MCP bridge
+   *  (WS-C §4.2): NAMES only — no URL, header or secret reaches a node. Its
+   *  OAuth-connectable http servers (stdio, sse and plugin servers are not
+   *  bridged). A node that predates the bridge ignores the field. */
+  mcpServers: string[];
   /** Skill roots in resolution order (base first, persona overlay last). */
   skillsPaths: string[];
   /** The persona's default model: on a managed tenant its effective model (git
@@ -195,9 +201,10 @@ async function buildManagedBundle(tenantId: string, personaId: string): Promise<
     soulMd: effective.soulMd,
     soulJson: effective.soulJson,
     slackUserId: effective.slackUserId ?? null,
-    // Nodes never consume a persona's mcp (no node-side mounting yet), and its
-    // header and env values are resolved secrets: ship nothing a node does not use.
+    // A persona's mcp holds resolved header and env secrets: a node gets the
+    // bridged server names below, never the config.
     mcpJson: null,
+    mcpServers: bridgedServerNames(effective.name),
     skillsPaths: [paths.skills, ...(effective.name !== "default" ? [personaSkillsRoot(effective.name)] : [])],
     defaultModel: effective.model ?? env.model(),
     managed: true,
@@ -259,6 +266,7 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
       soulJson: typeof persona.soul_json === "string" ? JSON.parse(persona.soul_json) : persona.soul_json,
       slackUserId: persona.slack_user_id ?? null,
       mcpJson: null,
+      mcpServers: bridgedServerNames(persona.name),
       skillsPaths: [paths.skills, ...overlay],
       defaultModel: persona.model_default ?? env.model(),
     };
@@ -295,6 +303,7 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
       soulJson: null,
       slackUserId: fsPersona.slackUserId ?? null,
       mcpJson: null,
+      mcpServers: bridgedServerNames(personaId),
       skillsPaths: [paths.skills, personaSkillsRoot(personaId)],
       defaultModel: env.model(),
     };
@@ -324,6 +333,7 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
     soulJson,
     slackUserId: null,
     mcpJson: null,
+    mcpServers: bridgedServerNames(undefined),
     skillsPaths: [paths.skills],
     defaultModel: env.model(),
   };

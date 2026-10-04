@@ -8,7 +8,7 @@ import { __resetMasterKeyCache, encrypt } from "../../../src/db/crypto";
 import { paths } from "../../../src/config/home";
 import * as P from "../../../src/db/personas";
 import type { DesiredPersona } from "../../../src/persona/effective";
-import { __resetPersonaRegistry } from "../../../src/persona/registry";
+import { __resetPersonaRegistry, refreshPersonaState } from "../../../src/persona/registry";
 import { handleTenantRuntime } from "../../../src/gateway/api/tenants";
 
 const isPg = process.env.SLAUDE_DB === "pg";
@@ -92,6 +92,25 @@ describe.skipIf(!isPg)("runtime bundle from effective state", () => {
     const text = await res.text();
     expect(JSON.parse(text).mcpJson).toBeNull();
     expect(text).not.toContain("resolved-header-secret");
+  });
+
+  // WS-C §4.2: the bridged server NAMES, and only the http ones.
+  test("a managed bundle carries the bridged server names, never their config", async () => {
+    const mcp = {
+      mcpServers: {
+        x: { type: "http", url: "https://x.test/mcp", headers: { a: "resolved-header-secret" } },
+        s: { command: "local-binary", env: { K: "resolved-env-secret" } },
+      },
+    };
+    await P.applySync("default", [row("ana", { mcp }), row("bo")], meta("r1", "2026-10-01T10:00:00Z"));
+    // The bundle reads the same registry sessions and the mcpx routes read; a
+    // sync refreshes it in a running gateway.
+    await refreshPersonaState("default");
+    const text = await (await handleTenantRuntime(req(), "default", "ana")).text();
+    expect(JSON.parse(text).mcpServers).toEqual(["x"]);
+    for (const leak of ["x.test", "resolved-header-secret", "resolved-env-secret", "local-binary"]) expect(text).not.toContain(leak);
+    const bo = await (await handleTenantRuntime(req(), "default", "bo")).json();
+    expect((bo as { mcpServers: string[] }).mcpServers).toEqual([]);
   });
 
   test("the bundle never carries the user token", async () => {
