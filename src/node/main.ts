@@ -4,7 +4,9 @@
  * it). Boots the worker off env:
  *
  *   SLAUDE_GATEWAY_URL       gateway base URL for /v1 (default localhost:8080)
- *   SLAUDE_NODE_TOKEN        static bearer for /v1
+ *   SLAUDE_NODE_TOKEN        this node's /v1 credential: a signed node credential
+ *                            (bun run node-token mint) or the legacy shared token.
+ *                            Checked at boot with GET /v1/node/whoami.
  *   SLAUDE_REDIS_URL         queues / registry / locks / pub/sub
  *   SLAUDE_NODE_CONCURRENCY  BullMQ concurrency (default 8)
  *   SLAUDE_NODE_PORT         /healthz + /metrics (default 8081)
@@ -23,6 +25,8 @@ import { ensureHome } from "../config/home";
 import { env } from "../config/env";
 import { startNodeWorker } from "./worker";
 import { enforceNodeBootCheck } from "./boot-check";
+import { NodeClient } from "./client";
+import { nodeHandshake } from "./handshake";
 
 async function main() {
   // Before anything else: a node must not hold the gateway's secrets (the
@@ -35,6 +39,14 @@ async function main() {
   }
   if (!env.nodeToken()) {
     throw new Error("SLAUDE_NODE_TOKEN is not set — the node cannot authenticate to the gateway /v1");
+  }
+
+  // The handshake: prove the credential before claiming work. Exits only on a
+  // refusal (401); a gateway that is not up yet is retried with backoff.
+  const hs = await nodeHandshake(new NodeClient());
+  if (!hs.ok) {
+    console.error(hs.message);
+    process.exit(1);
   }
 
   // No soul or persona registry is loaded here: the worker installs a persona

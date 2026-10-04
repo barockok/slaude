@@ -96,7 +96,10 @@ async function requestApprovalOverRest(
     pendingId = "";
   }
   if (!pendingId) return errResult("approval open returned no pendingId");
-  const outcome = await pollPending(deps.client, pendingId, { signal: deps.signalFor?.(sessionId) });
+  const outcome = await pollPending(deps.client, pendingId, {
+    signal: deps.signalFor?.(sessionId),
+    jobToken: () => deps.tokenFor(sessionId) ?? token,
+  });
   if (outcome === "aborted") return errResult("approval request aborted");
   if (outcome === "notfound") return errResult("approval gate disappeared before a decision");
   const d = decisionFromApprovalRow({ status: outcome.status, resolvedBy: outcome.resolvedBy });

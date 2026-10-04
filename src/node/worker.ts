@@ -32,7 +32,7 @@ import { makeRegistry, type Registry } from "../queue/registry";
 import { makePubSub, type PubSub } from "../queue/pubsub";
 import { withSessionLock, HELD_BY_OTHER } from "../queue/locks";
 import type { TurnJob } from "../queue/turns";
-import { NodeClient } from "./client";
+import { NodeApiError, NodeClient } from "./client";
 import { makeAuthRecovery, makeSessionSeeder } from "./credentials";
 import { nodeConfigRoot, sessionConfigDir, existingSessionConfigDir } from "../agent/config-root";
 import { RestSessionStore } from "./session-store";
@@ -481,7 +481,17 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       try {
         jobToken = await client.refreshJobToken(String(job.id), jobToken);
       } catch (e) {
-        console.warn(`[node] token refresh failed job=${job.id} (continuing with the original):`, e);
+        if (e instanceof NodeApiError && e.status === 401) {
+          // Waited past the refresh grace (or the token's maximum age): ask the
+          // gateway to re-mint it from the queued job (node labels spec §4.4).
+          try {
+            jobToken = await client.reissueJobToken(String(job.id), job.queueName, jobToken);
+          } catch (e2) {
+            console.warn(`[node] token reissue failed job=${job.id} (continuing with the original):`, e2);
+          }
+        } else {
+          console.warn(`[node] token refresh failed job=${job.id} (continuing with the original):`, e);
+        }
       }
     }
     // The token is bound under the session lock (runLockedTurn), not here.

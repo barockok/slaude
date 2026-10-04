@@ -14,7 +14,12 @@ export type PendingOutcome = PendingView | "notfound" | "aborted";
 export async function pollPending(
   client: NodeClient,
   pendingId: string,
-  opts: { signal?: AbortSignal; retryDelayMs?: number } = {},
+  opts: {
+    signal?: AbortSignal;
+    retryDelayMs?: number;
+    /** The turn's live job token, read per leg so a refreshed token is used. */
+    jobToken?: () => string | undefined;
+  } = {},
 ): Promise<PendingOutcome> {
   const retryDelayMs = opts.retryDelayMs ?? 1000;
   // Abort must win instantly even while a 30s long-poll leg is in flight —
@@ -28,7 +33,7 @@ export async function pollPending(
     if (opts.signal?.aborted) return "aborted";
     let leg: PendingView | "timeout" | "notfound" | "aborted" | "netfail";
     try {
-      leg = await Promise.race([client.getPending(pendingId), abortedPromise]);
+      leg = await Promise.race([client.getPending(pendingId, opts.jobToken?.()), abortedPromise]);
     } catch {
       leg = "netfail";
     }
