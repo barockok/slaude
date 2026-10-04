@@ -37,19 +37,20 @@ Status values: `todo`, `in progress`, `in review`, `accepted`, `blocked`.
 
 | Unit | Content | Spec | Status |
 |---|---|---|---|
-| U1 | Versioned `/deploy` payload, unknown fields reported | WS-D D5.1 | todo |
-| U2 | Slack HTTP-mode correctness, scopes, typed failure text | WS-D D1.1, D1.3, D1.5, D1.6 | todo |
-| U3 | Approval cards, portal unlink, `/mcp` per persona | WS-D D2.1–D2.3 | todo |
-| U4 | Local cluster and verify harness, runbooks | WS-D D3.1–D3.7, D4.1, D4.5 | todo |
-| U5 | Secret split, ServiceAccounts, node boot warning | WS-B §4.0 stage one | todo |
-| U6 | Model-child lockdown, one outbound-fetch policy | WS-D D5.2, D5.3 | todo |
+| U1 | Versioned `/deploy` payload, unknown fields reported | WS-D D5.1 | accepted |
+| U2 | Slack HTTP-mode correctness, scopes, typed failure text | WS-D D1.1, D1.3, D1.5, D1.6 | fix round |
+| U3 | Approval cards, portal unlink, `/mcp` per persona | WS-D D2.1–D2.3 | accepted |
+| U4 | Local cluster and verify harness, runbooks | WS-D D3.1–D3.7, D4.1, D4.5 | in review |
+| U5 | Secret split, ServiceAccounts, node boot warning | WS-B §4.0 stage one | fix round |
+| U6 | Model-child lockdown, one outbound-fetch policy | WS-D D5.2, D5.3 | in review |
 
 ### Stage 2 — features (release-candidate class)
 
 | Unit | Content | Spec | Status |
 |---|---|---|---|
 | U7 | Per-request Slack client | WS-D D1.2, D1.4 | todo |
-| U8 | Provider credentials by reference, Vault | WS-A | todo |
+| U8a | Secrets module: reference parser, resolver seam, env and Vault backends | WS-A §4–§6 | in progress |
+| U8b | Provider credentials: persona field, bundle, node delivery, fatal typed failure, mono refusal | WS-A §5, §7–§11 | todo |
 | U9 | Node credential, `authenticateNode`, route table, gate, endpoint hardening | WS-B §4.1–§4.4 | todo |
 | U10 | `runs_on`, label queues, dispatch, worker, reaper, unserved labels, typed relabel | WS-B §4.5–§4.8 | todo |
 | U11 | Node-local stdio manifest, plugin allow-list, strict MCP config | WS-B §4.10 | todo |
@@ -64,6 +65,12 @@ Status values: `todo`, `in progress`, `in review`, `accepted`, `blocked`.
 | U15 | `k8s-local` for the full topology (split Secrets, labelled node deployments, dev Vault, bridge upstream, runbooks), docs, field notes, release-note drafts | WS-D, WS-E §8 | todo |
 | U16 | Whole-branch verification and cross-unit review | all | todo |
 
-## Open issues
+## Open issues and follow-ups found by review
 
-None yet.
+- **Re-encrypt tool for `SLAUDE_MASTER_KEY` rotation does not exist.** The docs now say so; a command is a blocking follow-up before the key can be rotated safely (a managed gateway fails at boot after a key change).
+- **Gateways load `/data/.env` from the shared, node-writable home at boot** (`src/config/env.ts`, `home.ts`), so a node turn can set variables for after a restart. Not closed by the Secret split; needs its own fix.
+- **Node-side direct database reads.** The Secret split removed the Postgres URL from nodes, which exposed that the node agent reads the `/1on1` lock from the database directly. U5's fix round delivers it from the gateway and makes a node fail loudly instead of opening an embedded database; any other direct reads found are listed as numbered follow-ups.
+- **`SLAUDE_OUTBOUND_INTERNAL_HOSTS`** (U6) must be set for in-cluster HTTP identity providers and MCP servers, including the local mock MCP; set it in the `k8s-local` overlay (U15) and state it in the release notes.
+- **Release notes must mention:** the child-env scrub now removes Slack tokens and database URLs from the agent child in `mono`, and the outbound policy refuses private and http hosts by default.
+- U6 found and fixed a real prompt-injection path: the `kb_think` synthesis child could run Bash from page content.
+- Cross-replica de-duplication of failure messages is per process (U2); a Redis-backed guard is a possible later step.

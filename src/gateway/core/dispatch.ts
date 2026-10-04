@@ -160,7 +160,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
                 const target = [...state.jobs.keys()].find((id) => !state.outcomeEmitted.has(id));
                 if (target === undefined) continue;
                 state.outcomeEmitted.add(target);
-                agent.emit("event", e);
+                agent.emit("event", e.type === "error" ? { ...e, jobId: target } : e);
                 // Turn finished — linger briefly for stragglers, then stop
                 // (unless a new enqueue pushed the deadline out again).
                 state.deadline = Math.min(state.deadline, Date.now() + followLingerMs);
@@ -195,7 +195,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
                     `[dispatch] events-stream gap session=${sessionId} job=${jobId} state=${jstate} — synthesizing turn outcome`,
                   );
                   agent.emit("event", (jstate === "failed"
-                    ? { type: "error", sessionId, error: "turn failed on the node (job failed; events stream gap)" }
+                    ? { type: "error", sessionId, error: "turn failed on the node (job failed; events stream gap)", code: "TURN_FAILED", jobId }
                     : { type: "done", sessionId }) as AgentEvent);
                 }
               }

@@ -45,7 +45,6 @@ function msgArgs(client: any, text: string, userId: string, channel = "D_TEST", 
 beforeEach(() => {
   db.run("DELETE FROM sessions");
   writeSoulFixture(WORLD);
-  process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
 });
 
 describe("gateway /bash command", () => {
