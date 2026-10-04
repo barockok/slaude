@@ -45,8 +45,6 @@ function dmInbound(user: string, ts: string, client: any) {
 const CACHE_DIR = join(paths.home, "cache");
 
 beforeEach(() => {
-  // An admitted DM forwards to the model, which downloads attachments — that reads
-  // SLACK_BOT_TOKEN. Ensure it's set (another suite may have cleared it).
   OneOnOne._wipeForTests();
   // Drop any soul cache a prior suite cached on the shared temp home, then seed our
   // fixture so soulData() returns the memo we set (not a foreign cache or fallback).

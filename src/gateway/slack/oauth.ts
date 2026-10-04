@@ -240,6 +240,10 @@ export async function handleOAuth(
     const authorize = new URL("https://slack.com/oauth/v2/authorize");
     authorize.searchParams.set("client_id", clientId);
     authorize.searchParams.set("scope", scopes);
+    // user_scope makes Slack issue an installer USER token alongside the bot token
+    // (authed_user.access_token in the oauth.v2.access response). The callback below
+    // currently drops it and stores only the bot token; the scope is declared so the
+    // manifest and the install agree, and persisting the token is a later change.
     if (userScopes) authorize.searchParams.set("user_scope", userScopes);
     authorize.searchParams.set("state", state);
     if (redirectUrl) authorize.searchParams.set("redirect_uri", redirectUrl);

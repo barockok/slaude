@@ -725,7 +725,7 @@ describe("http slack transport — lifecycle and client proxy", () => {
     expect(typeof t.client).toBe("object");
 
     const { makeSlackSurfaceFactory } = await import("../../../src/gateway/slack/surface");
-    const { Reactions } = await import("../../../src/gateway/slack/reactions");
+    const { ReactionTracker } = await import("../../../src/gateway/slack/reactions");
     const surface = makeSlackSurfaceFactory(t.client as any)({
       conversationId: "C1", threadRef: "1.1", inboundRef: "1.1",
       requestApproval: async () => ({ approved: false, by: "" }) as any,
@@ -733,7 +733,7 @@ describe("http slack transport — lifecycle and client proxy", () => {
     });
     await surface.reply({ text: "hi" });
     expect(posted.length).toBe(1);
-    await new Reactions(t.client).set("s1", "C1", "1.1", "eyes");
+    await new ReactionTracker(t.client).set("s1", "C1", "1.1", "eyes");
     expect(reacted.length).toBe(1);
   });
 
