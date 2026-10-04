@@ -13,19 +13,16 @@ import { verifyState } from "./agent/mcp-oauth/state";
 import { env, jobAgeEnvViolations } from "./config/env";
 import { assertPanelConfig } from "./gateway/panel/auth/config";
 import { assertPortalConfig } from "./gateway/portal/config";
-import {
-  getPersonaRegistry,
-  loadPersonaRegistry,
-  refreshPersonaState,
-  setPersonaRegistry,
-  startRegistryRevalidation,
-} from "./persona/registry";
+import { getPersonaRegistry } from "./persona/registry";
+import { bootPersonaState } from "./persona/boot";
 import { getDb, resolveDbConfig } from "./db/client";
 import { assertGatewayRequirements } from "./config/gateway-requirements";
 import { nodeKeyViolations } from "./gateway/auth/node-credential";
 import { brainEnabled, brainEngineConfig } from "./knowledge/brain";
 import { brainMode } from "./knowledge/brain-config";
 import * as SoulOverrides from "./db/soul-overrides";
+import { bootProviderSecretResolver } from "./gateway/core/provider-secrets";
+import { setProviderSecretResolver } from "./gateway/api/tenants";
 
 async function main() {
   ensureHome();
@@ -52,6 +49,11 @@ async function main() {
     brainEngine: () => brainEngineConfig().engine,
     masterKey: () => { masterKey(); },
   });
+  // Provider credentials by reference (WS-A §5, §6): refuse Vault settings a
+  // role cannot protect, refuse Vault with an empty allowlist, and hand the
+  // runtime-bundle builder its resolver. Env only; nothing is connected yet.
+  const providerResolver = bootProviderSecretResolver(env.role(), process.env);
+  if (providerResolver) setProviderSecretResolver(providerResolver);
 
   // Open the DB first: on Postgres this applies pending migrations (unless
   // SLAUDE_MIGRATE_ON_BOOT=0), and a bad SLAUDE_PG_URL fails the boot here
@@ -75,13 +77,9 @@ async function main() {
   // effective state from the database, and its `default` row supplies the
   // default persona's soul and structured soul. The poll bounds staleness when
   // a reload signal is lost; sqlite has no persona tables, so nothing to poll.
-  let stopRegistryRevalidation: (() => void) | undefined;
-  if (env.role() === "node") {
-    setPersonaRegistry(loadPersonaRegistry());
-  } else {
-    await refreshPersonaState("default");
-    if (db.dialect === "pg") stopRegistryRevalidation = startRegistryRevalidation("default");
-  }
+  // mono applies no child-env resolver: a stored provider reference refuses
+  // the start rather than being ignored (src/persona/boot.ts).
+  const stopRegistryRevalidation = await bootPersonaState(env.role(), db.dialect);
   const registry = getPersonaRegistry();
   if (registry.isMultiPersonaMode()) {
     console.log(`[persona] multi-persona mode: ${registry.list().map((p) => p.name).join(", ")}`);

@@ -236,4 +236,8 @@ export const m = {
   reaperLastRun: metrics.gauge("slaude_reaper_last_run_timestamp_seconds", "Unix time of the last completed reaper pass on this replica (leader only)."),
   nodesAlive: metrics.gauge("slaude_nodes_alive", "Node heartbeat keys currently live."),
   sessionsWarm: metrics.gauge("slaude_sessions_warm", "Sessions registered warm on some node."),
+  // Persona provider credentials by reference (WS-A §7). Labels never carry a
+  // path, field or value.
+  providerCredResolveTotal: metrics.counter("slaude_provider_cred_resolve_total", "Provider credential reference resolutions on this gateway, labeled by scheme (vault|env) and outcome (ok|cached|stale|denied|error)."),
+  providerCredStaleServedTotal: metrics.counter("slaude_provider_cred_stale_served_total", "Times a cached provider credential was served past its TTL because Vault could not answer."),
 };

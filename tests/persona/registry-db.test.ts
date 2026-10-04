@@ -14,6 +14,8 @@ import {
   getPersonaRegistry,
   invalidatePersonaRegistry,
   managedPersonaModel,
+  managedPersonaProvider,
+  personasWithProvider,
   runsOnFor,
   setPersonaRegistry,
   startRegistryRevalidation,
@@ -100,7 +102,7 @@ describe.skipIf(!isPg)("a database-backed registry", () => {
     const r = await buildPersonaRegistry("default");
     expect(r.lookupByName("ana")!.model).toBe("m-ana-live");
     expect(r.lookupByName("ana")!.mcp).toBeNull();
-    expect(r.defaultPersona!()).toEqual({ model: "m-default", mcp, runsOn: null });
+    expect(r.defaultPersona!()).toEqual({ model: "m-default", mcp, provider: null, runsOn: null });
     expect(managedPersonaModel("ana", r)).toBe("m-ana-live");
     expect(managedPersonaModel(undefined, r)).toBe("m-default");
     writeFsPersona("fsbot", "UFSBOT", "fs soul");
@@ -109,6 +111,24 @@ describe.skipIf(!isPg)("a database-backed registry", () => {
     const fsr = await buildPersonaRegistry("default");
     expect(fsr.defaultPersona).toBeUndefined();
     expect(managedPersonaModel("fsbot", fsr)).toBeUndefined();
+  });
+
+  test("the snapshot carries provider references; the helpers name who sets them", async () => {
+    await P.applySync("default", [
+      { ...row("default"), provider: { authToken: "env://PERSONA_DEFAULT_TOKEN" } },
+      { ...row("ana"), provider: { apiKey: "env://PERSONA_ANA_KEY" } },
+      row("bea"),
+    ], meta("r1", "2026-10-01T10:00:00Z"));
+    const r = await buildPersonaRegistry("default");
+    expect(managedPersonaProvider("ana", r)).toEqual({ apiKey: "env://PERSONA_ANA_KEY" });
+    expect(managedPersonaProvider("bea", r)).toBeNull();
+    expect(managedPersonaProvider(undefined, r)).toEqual({ authToken: "env://PERSONA_DEFAULT_TOKEN" });
+    expect(personasWithProvider(r)).toEqual(["default", "ana"]);
+    await db.run(`DELETE FROM persona_sync_state`);
+    await db.run(`DELETE FROM personas`);
+    const fsr = await buildPersonaRegistry("default");
+    expect(managedPersonaProvider("ana", fsr)).toBeNull();
+    expect(personasWithProvider(fsr)).toEqual([]);
   });
 
   test("runsOnFor reads each managed persona's runs_on; null and an unknown name are 'default'", async () => {

@@ -45,7 +45,20 @@ personas/
 slackUserId: "UTESTUSER1"
 model: "provider/model-name"
 userToken: "${PERSONA_SUPPORT_BOT_XOXP}"
+provider:                       # optional: this persona's own LLM credentials
+  baseUrl: "https://llm.example.com"
+  apiKey: "vault://secret/slaude/personas/support-bot#api_key"
 ```
+
+`provider` holds references (`vault://…#field` or `env://PERSONA_*`), never a
+credential; `baseUrl` may also be a literal `https` URL, and needs a credential
+reference beside it. The set is atomic: a persona that sets `provider` never
+receives a key from anywhere else. The gateway resolves them when it builds the
+persona's runtime bundle. See
+[Provider credentials](provider-credentials.md). A persona that sets
+`provider.baseUrl` without `model`, or a named persona with no `model`, gets a
+sync warning. `export` never writes `provider` (filesystem personas have
+none); add it to `persona.yaml` by hand.
 
 `personas/default/` is required. A sync without it is refused with 422,
 because the default persona's soul would otherwise have to come from disk,
@@ -127,8 +140,13 @@ The tenant is `default` for a single-workspace deployment; it must match
 
 The body is capped at 4 MiB; a larger one is 413 and nothing is applied.
 `personas render` builds this body from the repository. The response reports
-`created`, `updated`, `unchanged`, `tombstoned`, `overridesWiped` and
-`ignoredFields`. With
+`created`, `updated`, `unchanged`, `tombstoned`, `overridesWiped`,
+`ignoredFields` and `warnings` (provider/model pairing, by persona name).
+Migration 0014 (`personas.provider_json`) applies at boot by default. With
+`SLAUDE_MIGRATE_ON_BOOT=0` and the migration not applied, a gateway whose
+tenant is already managed fails at boot with a database error about the
+missing column; one whose tenant is not managed yet refuses its first sync with
+503 naming the migration. With
 `?dryRun=1` nothing is written and nothing is published, and the report is
 what a real sync of the same body would produce, including how many runtime
 overrides it would wipe.
@@ -136,7 +154,9 @@ overrides it would wipe.
 Behaviour to know:
 
 - `version` is the payload format; absent means 1, and `personas render` always
-  writes it. A payload whose `version` is newer than the gateway supports is
+  writes it: 2 when any persona sets `provider`, otherwise 1, so a payload
+  without `provider` still deploys to an older gateway, and one with it is
+  refused by a gateway that would ignore it. A payload whose `version` is newer than the gateway supports is
   refused with 422 before anything is applied: upgrade the gateway first.
 - A field the gateway does not know (at the top level or on a persona) is
   ignored, never stored, and listed in `ignoredFields` as `futureKnob` or

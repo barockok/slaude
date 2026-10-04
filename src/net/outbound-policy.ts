@@ -172,8 +172,12 @@ export function classifyAddress(ip: string): AddressKind | null {
 
 // ── policy ───────────────────────────────────────────────────────────────
 
-const csvEnv = (name: string): string[] =>
-  (process.env[name] ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+/** A comma list of host names, trimmed and lower-cased (the parser for every
+ *  SLAUDE_OUTBOUND_*_HOSTS variable). */
+export const parseHostList = (raw: string | undefined): string[] =>
+  (raw ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+
+const csvEnv = (name: string): string[] => parseHostList(process.env[name]);
 
 const systemResolver: Resolver = async (host) =>
   (await dnsLookup(host, { all: true, verbatim: true })).map((a) => ({ address: a.address, family: a.family }));

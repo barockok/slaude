@@ -16,19 +16,21 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { join } from "node:path";
 import { paths } from "../config/home";
 import { LABEL_RE } from "../queue/keys";
-import { parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, safeKey, capPaths, payloadVersionFor, type SyncPayload } from "../persona/sync/payload";
+import { parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, safeKey, capPaths, payloadVersionFor, providerWarnings, type SyncPayload } from "../persona/sync/payload";
 
 const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : undefined);
 // The gateway only resolves ${PERSONA_UPPER_CASE_NAME}; persona names are lower-case with hyphens.
 const varFor = (name: string) => `${PERSONA_VAR_PREFIX}${name.replace(/-/g, "_").toUpperCase()}_XOXP`;
 
-const YAML_KEYS = new Set(["slackUserId", "userToken", "model", "runsOn"]);
+const YAML_KEYS = new Set(["slackUserId", "userToken", "model", "provider", "runsOn"]);
 
-/** `onUnknown` receives `persona.<name>.<key>` for each persona.yaml key the payload has no field for (names only). */
+/** `onUnknown` receives `persona.<name>.<key>` for each persona.yaml key the payload has no field for (names only).
+ *  `onWarnings` receives the gateway's provider/model sync warnings (WS-A §4). */
 export function renderDir(
   dir: string,
   meta: { revision: string; committedAt: string },
   onUnknown?: (paths: string[]) => void,
+  onWarnings?: (warnings: string[]) => void,
 ): SyncPayload {
   const unknown: string[] = [];
   const root = join(dir, "personas");
@@ -38,7 +40,7 @@ export function renderDir(
     if (!statSync(join(root, name)).isDirectory()) continue;
     if (!PERSONA_NAME_RE.test(name)) throw new PayloadError(`directory '${name}' is not a valid persona name`);
     const yaml = read(join(root, name, "persona.yaml"));
-    let cfg: { slackUserId?: string; userToken?: string; model?: string; runsOn?: string };
+    let cfg: { slackUserId?: string; userToken?: string; model?: string; provider?: unknown; runsOn?: string };
     try {
       cfg = ((yaml ? Bun.YAML.parse(yaml) : {}) ?? {}) as typeof cfg;
     } catch (e) {
@@ -66,6 +68,8 @@ export function renderDir(
       ...(cfg.userToken ? { userToken: String(cfg.userToken) } : {}),
       ...(cfg.model ? { model: String(cfg.model) } : {}),
       ...(cfg.runsOn ? { runsOn: String(cfg.runsOn) } : {}),
+      // Passed as written: parsePayload validates it with the gateway's own parser.
+      ...(cfg.provider !== undefined ? { provider: cfg.provider } : {}),
       ...(mcp !== undefined ? { mcp } : {}),
     });
   }
@@ -75,6 +79,8 @@ export function renderDir(
   }
   const payload = parsePayload({ version: payloadVersionFor(personas), ...meta, personas });
   if (unknown.length) onUnknown?.(capPaths(unknown));
+  const warnings = providerWarnings(payload);
+  if (warnings.length) onWarnings?.(warnings);
   // Run the gateway's placeholder validation (with every name satisfied) so a
   // malformed ${...} fails the pull request instead of 422ing at deploy.
   const anyEnv = new Proxy({}, { get: () => "x" }) as Record<string, string>;
@@ -275,6 +281,8 @@ if (import.meta.main) {
         committedAt: flag("--committed-at") ?? new Date().toISOString(),
       }, (paths) => {
         if (flags.has("--check")) console.error(`[personas] unknown fields (the gateway will ignore them, or refuse under SLAUDE_DEPLOY_STRICT): ${paths.join(", ")}`);
+      }, (warnings) => {
+        for (const w of warnings) console.error(`[personas] warning: ${w}`);
       });
       if (!flags.has("--check")) console.log(JSON.stringify(p, null, 2));
     } else if (cmd === "export") {

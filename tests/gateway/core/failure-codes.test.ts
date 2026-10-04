@@ -1,5 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { FAILURE_TEXT, createOnceGuard, failureText } from "../../../src/gateway/core/failure-codes";
+import { BootFailure, FAILURE_TEXT, createOnceGuard, failureText } from "../../../src/gateway/core/failure-codes";
+
+describe("BootFailure", () => {
+  test("carries its code and cause; the message stays out of Slack text", () => {
+    const cause = new Error("raw provider detail");
+    const e = new BootFailure("PROVIDER_CREDENTIALS_UNAVAILABLE", "boot failed", { cause });
+    expect(e.code).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
+    expect(e.cause).toBe(cause);
+    expect(e.name).toBe("BootFailure");
+    expect(failureText(e.code)).not.toContain("raw provider detail");
+  });
+});
 
 describe("failure codes", () => {
   test("every code maps to fixed text; the required codes exist", () => {

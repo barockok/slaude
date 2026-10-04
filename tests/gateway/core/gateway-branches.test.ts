@@ -936,6 +936,51 @@ describe("gateway uncovered branches", () => {
     });
   });
 
+  // R1-F5 / WS-A §5.5: a persona on its own provider is never checked against
+  // the gateway's provider, even when the gateway's would "verify" the id.
+  describe("/model for a managed persona that sets provider", () => {
+    it("passes the choice through unverified and does not list the gateway's models", async () => {
+      writeSoulFixture(WORLD);
+      const { setPersonaRegistry, __resetPersonaRegistry } = await import("../../../src/persona/registry");
+      const prevKey = process.env.ANTHROPIC_API_KEY;
+      const prevFetch = globalThis.fetch;
+      process.env.ANTHROPIC_API_KEY = "gateway-key";
+      let modelCalls = 0;
+      globalThis.fetch = (async (url: any, init?: any) => {
+        if (String(url).includes("/v1/models")) {
+          modelCalls++;
+          return new Response(JSON.stringify({ data: [{ id: "gw-model" }] }), { status: 200 });
+        }
+        return prevFetch(url, init);
+      }) as any;
+      __resetModelCache();
+      setPersonaRegistry({
+        lookupByUserId: () => null,
+        lookupByName: () => null,
+        list: () => [],
+        isMultiPersonaMode: () => false,
+        isManaged: () => true,
+        tombstonedPersonaFor: () => null,
+        defaultPersona: () => ({ model: null, mcp: null, provider: { apiKey: "env://PERSONA_DEFAULT_KEY" } }),
+      });
+      try {
+        const g = makeGw();
+        await g.emit("message", dmArgs(g, "/model gw-model", { ts: nextTs() }));
+        await waitFor(() => g.posts.some((p) => String(p.text).includes("model →")));
+        expect(g.posts.some((p) => String(p.text).includes("couldn't verify"))).toBe(true);
+        await g.emit("message", dmArgs(g, "/model", { ts: nextTs() }));
+        await waitFor(() => g.posts.some((p) => String(p.text).includes("can't fetch model list")));
+        expect(modelCalls).toBe(0);
+      } finally {
+        __resetPersonaRegistry();
+        globalThis.fetch = prevFetch;
+        if (prevKey) process.env.ANTHROPIC_API_KEY = prevKey;
+        else delete process.env.ANTHROPIC_API_KEY;
+        __resetModelCache();
+      }
+    });
+  });
+
   describe("cron lifecycle slash commands", () => {
     const mention = async (g: any, text: string, user = WORLD.manager) => {
       const ts = nextTs();

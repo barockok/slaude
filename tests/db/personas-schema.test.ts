@@ -23,7 +23,24 @@ describe("personas-as-code schema", () => {
     }
   });
 
-  test("runs_on is nullable (null = default) and checked against the label pattern", async () => {
+  test("0014: personas.provider_json exists and provider_creds accepts auth_token, still refusing other kinds", async () => {
+    const pg = await openDb({ dialect: "pg", driver: "pglite" });
+    try {
+      await runMigrations(pg, { log: () => {} });
+      const col = await pg.one<{ data_type: string; is_nullable: string }>(
+        `SELECT data_type, is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='personas' AND column_name='provider_json'`);
+      expect(col).toEqual({ data_type: "jsonb", is_nullable: "YES" });
+      const ins = (id: string, kind: string) => pg.run(
+        `INSERT INTO provider_creds (id, tenant_id, persona_id, kind, value, created_at, updated_at) VALUES (?, 'default', NULL, ?, 'v', 0, 0)`, [id, kind]);
+      await ins("c1", "auth_token");
+      await ins("c2", "api_key");
+      await expect(ins("c3", "password")).rejects.toThrow();
+    } finally {
+      await pg.close();
+    }
+  });
+
+  test("0016: runs_on is nullable (null = default) and checked against the label pattern", async () => {
     const pg = await openDb({ dialect: "pg", driver: "pglite" });
     try {
       await runMigrations(pg, { log: () => {} });

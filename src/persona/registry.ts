@@ -5,12 +5,17 @@ import { env } from "../config/env";
 import { paths } from "../config/home";
 import type { Persona, PersonaConfig } from "./types";
 import type { EffectivePersona } from "./effective";
+import type { PersonaProvider } from "./sync/payload";
 import { effectivePersonas, isManaged, stateVersion } from "../db/personas";
 import { resolveDbConfig } from "../db/client";
 import { SoulDataSchema, type SoulData } from "../soul/data";
 import { __resetSoulDataMemo, loadSoulData, setSoulData } from "../soul/extract";
 
 export type { Persona, PersonaConfig };
+
+/** A managed tenant's `default` row: its effective model and mcp, and its
+ *  provider references (desired layer; not overridable). */
+export type DefaultPersonaFields = { model: string | null; mcp: unknown; provider?: PersonaProvider | null; runsOn?: string | null };
 
 export interface PersonaRegistry {
   lookupByUserId(slackUserId: string): Persona | null;
@@ -28,7 +33,7 @@ export interface PersonaRegistry {
   /** Managed snapshots only: the `default` persona's effective model and mcp,
    *  or null when the tenant has no live `default` row. The default persona is
    *  not in `list()`. Absent on a filesystem registry. */
-  defaultPersona?(): { model: string | null; mcp: unknown; runsOn?: string | null } | null;
+  defaultPersona?(): DefaultPersonaFields | null;
 }
 
 function loadPersonas(): Persona[] {
@@ -84,7 +89,7 @@ function snapshot(
   personas: Persona[],
   managed?: {
     tombstoned: Array<{ name: string; slackUserId: string }>;
-    defaultPersona: { model: string | null; mcp: unknown; runsOn?: string | null } | null;
+    defaultPersona: DefaultPersonaFields | null;
   },
 ): PersonaRegistry {
   const byUserId = new Map<string, Persona>(personas.map((p) => [p.slackUserId, p]));
@@ -145,10 +150,11 @@ async function loadPersonaState(tenant: string): Promise<PersonaState> {
       outClient: p.userToken ? new WebClient(p.userToken, slackApiUrl ? { slackApiUrl } : undefined) : null,
       model: p.model,
       mcp: p.mcp ?? null,
+      provider: p.provider ?? null,
       runsOn: p.runsOn ?? null,
     }));
   const def = all.find((p) => p.name === "default") ?? null;
-  const defaultFields = def ? { model: def.model, mcp: def.mcp ?? null, runsOn: def.runsOn ?? null } : null;
+  const defaultFields = def ? { model: def.model, mcp: def.mcp ?? null, provider: def.provider ?? null, runsOn: def.runsOn ?? null } : null;
   return { registry: snapshot(personas, { tombstoned, defaultPersona: defaultFields }), managed: { defaultPersona: def } };
 }
 
@@ -247,6 +253,25 @@ export function managedPersonaModel(name: string | undefined, r: PersonaRegistry
   if (!r.isManaged()) return undefined;
   if (!name || name === "default") return r.defaultPersona?.()?.model ?? null;
   return r.lookupByName(name)?.model ?? null;
+}
+
+/**
+ * The provider references of persona `name` (undefined = the default persona)
+ * on a managed tenant, or null when it names none (always null on a filesystem
+ * registry). References only; values are resolved at bundle build.
+ */
+export function managedPersonaProvider(name: string | undefined, r: PersonaRegistry = getPersonaRegistry()): PersonaProvider | null {
+  if (!r.isManaged()) return null;
+  if (!name || name === "default") return r.defaultPersona?.()?.provider ?? null;
+  return r.lookupByName(name)?.provider ?? null;
+}
+
+/** Names of the live personas (the default included) that set provider references. */
+export function personasWithProvider(r: PersonaRegistry = getPersonaRegistry()): string[] {
+  if (!r.isManaged()) return [];
+  const out = r.list().filter((p) => p.provider).map((p) => p.name);
+  if (r.defaultPersona?.()?.provider) out.unshift("default");
+  return out;
 }
 
 /**

@@ -21,6 +21,27 @@ export function isFailureCode(v: unknown): v is FailureCode {
   return typeof v === "string" && Object.hasOwn(FAILURE_TEXT, v);
 }
 
+/**
+ * A session boot that failed for a reason with its own failure code. The node
+ * worker turns it into the job's failure reason and an error event carrying the
+ * code; the message is for the server log only.
+ */
+export class BootFailure extends Error {
+  override readonly name = "BootFailure";
+  /** True when the cause may clear by itself (a secret store or the gateway
+   *  not answering): the job may be retried. False (default) when retrying
+   *  cannot help (a denial, a missing secret, a bad reference). */
+  readonly transient: boolean;
+  constructor(
+    readonly code: FailureCode,
+    message: string,
+    options?: { cause?: unknown; transient?: boolean },
+  ) {
+    super(message, options?.cause !== undefined ? { cause: options.cause } : undefined);
+    this.transient = options?.transient ?? false;
+  }
+}
+
 /** The only text that may be posted into Slack for a failure. Unknown or absent
  *  codes get the generic message. */
 export function failureText(code: unknown): string {

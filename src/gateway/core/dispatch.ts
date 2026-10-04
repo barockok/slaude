@@ -29,6 +29,7 @@ import { getRedis, getSubRedis } from "../../queue/redis";
 import { makeRegistry, type Registry } from "../../queue/registry";
 import { makePubSub, type PubSub } from "../../queue/pubsub";
 import { TurnQueues, type TurnTarget } from "../../queue/turns";
+import { isFailureCode } from "./failure-codes";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -211,8 +212,12 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
                   console.warn(
                     `[dispatch] events-stream gap session=${sessionId} job=${jobId} state=${jstate} — synthesizing turn outcome`,
                   );
+                  // A typed failure travels as the job's failure reason
+                  // (the node throws UnrecoverableError(code)); anything
+                  // else is a plain TURN_FAILED.
+                  const reason = (j as { failedReason?: unknown } | undefined)?.failedReason;
                   agent.emit("event", (jstate === "failed"
-                    ? { type: "error", sessionId, error: "turn failed on the node (job failed; events stream gap)", code: "TURN_FAILED", jobId }
+                    ? { type: "error", sessionId, error: "turn failed on the node (job failed; events stream gap)", code: isFailureCode(reason) ? reason : "TURN_FAILED", jobId }
                     : { type: "done", sessionId }) as AgentEvent);
                 }
               }
