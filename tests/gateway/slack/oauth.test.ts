@@ -11,7 +11,7 @@ import {
   OAUTH_COOKIE,
   OAUTH_STATE_TTL_SEC,
 } from "../../../src/gateway/slack/oauth";
-import { buildManifest, BOT_SCOPES } from "../../../src/cli/manifest";
+import { buildManifest, BOT_SCOPES, USER_SCOPES } from "../../../src/cli/manifest";
 import { createHttpSlackTransport } from "../../../src/gateway/slack/http-transport";
 
 const SECRET = "client-secret-for-tests";
@@ -109,6 +109,10 @@ describe("handleOAuth", () => {
     expect(loc.origin + loc.pathname).toBe("https://slack.com/oauth/v2/authorize");
     expect(loc.searchParams.get("client_id")).toBe("1234.5678");
     expect(loc.searchParams.get("scope")).toBe(BOT_SCOPES.join(","));
+    // users.profile:write is a USER scope: it must ride user_scope, not scope.
+    expect(loc.searchParams.get("scope")!.split(",")).not.toContain("users.profile:write");
+    expect(loc.searchParams.get("user_scope")).toBe(USER_SCOPES.join(","));
+    expect(loc.searchParams.get("user_scope")!.split(",")).toContain("users.profile:write");
     const state = loc.searchParams.get("state")!;
     expect(verifyOAuthState(state, { secret: SECRET })).toEqual({ ok: true, nonce: expect.any(String) });
   });
@@ -428,6 +432,7 @@ describe("manifest oauth redirect", () => {
     });
     expect(m.oauth_config.redirect_urls).toEqual(["https://gw.example.com/slack/oauth/callback"]);
     expect(m.oauth_config.scopes.bot).toEqual([...BOT_SCOPES]);
+    expect(m.oauth_config.scopes.user).toEqual([...USER_SCOPES]);
   });
 
   it("socket mode never emits redirect_urls", () => {

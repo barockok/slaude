@@ -65,7 +65,6 @@ function richTransport(o: { botUserId?: string; authThrows?: boolean } = {}) {
 }
 
 function makeGw(o: { transport?: Rich; gwOpts?: GatewayOptions; agent?: AgentManager } = {}) {
-  process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
   const cap = o.transport ?? richTransport();
   const agent = o.agent ?? new AgentManager();
   const sends: string[] = [];
@@ -411,6 +410,9 @@ describe("gateway uncovered branches", () => {
 
   it("file attachments are downloaded and wrapped in <attachment> blocks", async () => {
     writeSoulFixture(WORLD);
+    // Socket Mode reads the bot token from the environment, only when files exist.
+    const prevToken = process.env.SLACK_BOT_TOKEN;
+    process.env.SLACK_BOT_TOKEN = "xoxb-test";
     const fileServer = Bun.serve({ port: 0, fetch: async () => new Response("hello attachment") });
     try {
       const g = makeGw();
@@ -422,6 +424,8 @@ describe("gateway uncovered branches", () => {
       expect(g.sends[0]!).toContain("User attached 1 file(s)");
     } finally {
       fileServer.stop(true);
+      if (prevToken === undefined) delete process.env.SLACK_BOT_TOKEN;
+      else process.env.SLACK_BOT_TOKEN = prevToken;
     }
   });
 

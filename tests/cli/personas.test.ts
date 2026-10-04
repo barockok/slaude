@@ -316,6 +316,22 @@ describe("personas CLI entry", () => {
       expect(r.stdout.toString()).toBe("");
     }
   });
+  test("render emits the payload version", () => {
+    const out = tmp();
+    exportHome(home(), out);
+    expect(JSON.parse(run("render", out).stdout.toString()).version).toBe(1);
+    expect(renderDir(out, meta).version).toBe(1);
+  });
+  test("--check reports unknown persona.yaml keys by name on stderr and still exits 0", () => {
+    const out = tmp();
+    exportHome(home(), out);
+    const f = join(out, "personas", "ana", "persona.yaml");
+    writeFileSync(f, readFileSync(f, "utf8") + 'visibility: "leaky-value"\n');
+    const r = run("render", out, "--check");
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr.toString()).toContain("persona.ana.visibility");
+    expect(r.stderr.toString()).not.toContain("leaky-value");
+  });
   test("an invalid repo exits 1 with [personas] on stderr", () => {
     const out = tmp();
     mkdirSync(join(out, "personas", "Bad_Name"), { recursive: true });

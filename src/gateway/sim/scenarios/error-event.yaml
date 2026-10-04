@@ -3,4 +3,4 @@ as: manager
 agent_behavior: boom
 steps:
   - send: { text: "do a thing" }
-  - expect_reply: { contains: "error" }
+  - expect_reply: { contains: "Something went wrong", not_contains: "simulated failure" }
