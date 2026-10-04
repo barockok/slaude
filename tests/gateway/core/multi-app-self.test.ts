@@ -144,4 +144,24 @@ describe("two registered apps in one channel", () => {
     expect(g.turns).toHaveLength(2);
     expect((await Sessions.findById(g.turns[1]!))!.slack_app_id).toBe("A0ONE");
   });
+
+  // F3: B is registered but not in the channel, so its copy never arrives. The
+  // mention is a colleague mention for A, as before: recorded, thread disengaged.
+  it("a mention of a registered bot that is not in the channel is recorded suppressed and disengages", async () => {
+    const g = setup();
+    await g.deliver("A0ONE", { user: WORLD.manager, ts: "936.1", text: `<@${BOT.A0ONE.user}> hi` });
+    expect(g.turns).toHaveLength(1);
+    g.members.delete(BOT.A0TWO.user);
+    await g.deliver("A0ONE", { user: WORLD.manager, ts: "936.2", thread_ts: "936.1", text: `<@${BOT.A0TWO.user}> over to you` });
+    expect(g.turns).toHaveLength(2); // recorded into the transcript (suppressed: no model run)
+    expect((await Sessions.findById(g.turns[0]!))!.engaged).toBe(0);
+  });
+
+  it("a mention of a registered bot that IS in the channel is left to its own copy", async () => {
+    const g = setup();
+    await g.deliver("A0ONE", { user: WORLD.manager, ts: "937.1", text: `<@${BOT.A0ONE.user}> hi` });
+    await g.deliver("A0ONE", { user: WORLD.manager, ts: "937.2", thread_ts: "937.1", text: `<@${BOT.A0TWO.user}> over to you` });
+    expect(g.turns).toHaveLength(1);
+    expect((await Sessions.findById(g.turns[0]!))!.engaged).toBe(1);
+  });
 });

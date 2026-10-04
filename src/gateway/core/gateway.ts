@@ -2602,6 +2602,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       botIds: new Set([...selfBots!.botIds, own.botId].filter(Boolean)),
     };
   };
+  /** Whether any of `users` is a member of `channel`. A failed lookup answers
+   *  yes: leaving the message to the other app is the safe side. */
+  const anyInChannel = async (client: any, channel: string, users: string[]): Promise<boolean> => {
+    try {
+      const r = await client.conversations.members({ channel, limit: 1000 });
+      const members = new Set<string>(r?.members ?? []);
+      return users.some((u) => members.has(u));
+    } catch {
+      return true;
+    }
+  };
   /** A message posted by any registered app's bot. */
   const isSelfBotEcho = async (args: any, e: any): Promise<boolean> => {
     if (!e.bot_id && !e.user) return false;
@@ -2685,11 +2696,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // A mention of ANOTHER registered app's bot is addressed to that app, which
     // gets its own copy of the message: this app neither answers it nor reads
     // it as a mention of a colleague (which would disengage the thread).
+    // That app's copy only arrives if its bot is in the channel; a mention of a
+    // registered bot that is not here is a colleague mention like any other.
     const selfBotUsers = (await getSelfBots(args)).userIds;
-    if (!mentionsBot && mentions.some((u) => u && u !== botId && selfBotUsers.has(u))) {
-      console.log(`[slack-rx] drop ch=${channelId} ts=${e.ts} — addressed to another registered app`);
-      metric.slackDropsTotal.inc({ reason: "other_app" });
-      return;
+    const otherAppBots = mentionsBot ? [] : mentions.filter((u): u is string => Boolean(u) && u !== botId && selfBotUsers.has(u!));
+    const absentAppBots = new Set<string>();
+    if (otherAppBots.length) {
+      if (await anyInChannel(args.client ?? t.client, channelId, otherAppBots)) {
+        console.log(`[slack-rx] drop ch=${channelId} ts=${e.ts} — addressed to another registered app`);
+        metric.slackDropsTotal.inc({ reason: "other_app" });
+        return;
+      }
+      for (const u of otherAppBots) absentAppBots.add(u);
     }
 
     const teamId: string | undefined = args.context?.teamId ?? e.team;
@@ -2701,7 +2719,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       : null;
     // A mention is "other" only when it targets neither the bot nor a known persona.
     const mentionsOther = mentions.some(
-      (u) => u && u !== botId && !selfBotUsers.has(u) && !registry.lookupByUserId(u),
+      (u) => u && u !== botId && (!selfBotUsers.has(u) || absentAppBots.has(u)) && !registry.lookupByUserId(u),
     );
 
     if (mentionsBot) {
