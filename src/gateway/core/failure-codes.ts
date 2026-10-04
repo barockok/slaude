@@ -28,12 +28,17 @@ export function isFailureCode(v: unknown): v is FailureCode {
  */
 export class BootFailure extends Error {
   override readonly name = "BootFailure";
+  /** True when the cause may clear by itself (a secret store or the gateway
+   *  not answering): the job may be retried. False (default) when retrying
+   *  cannot help (a denial, a missing secret, a bad reference). */
+  readonly transient: boolean;
   constructor(
     readonly code: FailureCode,
     message: string,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; transient?: boolean },
   ) {
-    super(message, options);
+    super(message, options?.cause !== undefined ? { cause: options.cause } : undefined);
+    this.transient = options?.transient ?? false;
   }
 }
 

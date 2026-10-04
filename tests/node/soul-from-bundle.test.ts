@@ -8,8 +8,10 @@ import { createHash } from "node:crypto";
 import { AgentManager } from "../../src/agent/manager";
 import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../src/persona/registry";
 import {
-  bundleChildEnv, makeBundleModelResolver, makeBundleSoulResolver, makeTenantReloadHandler, nodeChildEnv, PROVIDER_ENV_KEYS,
+  bundleChildEnv, makeBundleModelResolver, makeBundleSoulResolver, makeNodeChildEnvResolver, makeTenantReloadHandler, nodeChildEnv,
+  PROVIDER_ENV_KEYS,
 } from "../../src/node/worker";
+import { NodeApiError } from "../../src/node/client";
 import { ChildEnvPatch } from "../../src/agent/child-env";
 import { BootFailure } from "../../src/gateway/core/failure-codes";
 
@@ -256,12 +258,50 @@ describe("nodeChildEnv", () => {
     expect(warns).toEqual([]);
   });
 
-  test("fallback off: a patch that deletes every provider key the bundle did not supply", () => {
-    const out = nodeChildEnv({ providerCreds: { apiKey: "k" }, slackUserId: "UANA", managed: true }, "ana", opts(false));
+  // R2-F3: every variable that selects or authenticates a provider.
+  const FULL_LIST = [
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_BEARER_TOKEN_BEDROCK", "AWS_PROFILE",
+    "ANTHROPIC_BEDROCK_BASE_URL", "GOOGLE_APPLICATION_CREDENTIALS", "ANTHROPIC_UNIX_SOCKET",
+    "ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL",
+  ];
+  const richNodeEnv = {
+    ...nodeEnv, ANTHROPIC_VERTEX_PROJECT_ID: "p", ANTHROPIC_VERTEX_BASE_URL: "https://v.example.com",
+    ANTHROPIC_DEFAULT_OPUS_MODEL: "m", ANTHROPIC_DEFAULT_HAIKU_MODEL: "m", PATH: "/bin", ANTHROPIC_DEFAULTS: "not-a-model-var",
+  };
+
+  test("fallback off: a patch that deletes every provider-selecting variable the bundle did not supply", () => {
+    const out = nodeChildEnv({ providerCreds: { apiKey: "k" }, slackUserId: "UANA", managed: true }, "ana",
+      { ...opts(false), nodeEnv: richNodeEnv });
     expect(out).toBeInstanceOf(ChildEnvPatch);
     const p = out as ChildEnvPatch;
     expect(p.set).toEqual({ ANTHROPIC_API_KEY: "k", SLAUDE_AGENT_ID: "UANA" });
-    expect([...p.unset].sort()).toEqual([...PROVIDER_ENV_KEYS].sort());
+    const expected = [...FULL_LIST, "ANTHROPIC_VERTEX_PROJECT_ID", "ANTHROPIC_VERTEX_BASE_URL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"];
+    expect([...p.unset].sort()).toEqual(expected.sort());
+    expect(p.unset).not.toContain("PATH");
+    expect(p.unset).not.toContain("ANTHROPIC_DEFAULTS");
+    for (const k of PROVIDER_ENV_KEYS) expect(p.unset).toContain(k);
+  });
+
+  // M-1: a persona that declares its own provider is never mixed with the node's.
+  test("a declared provider is strict even with fallback on: nothing from the node, no warning", () => {
+    warns.length = 0;
+    const out = nodeChildEnv({ providerCreds: { apiKey: "k", baseUrl: "https://p.example.com" }, slackUserId: null, managed: true, ownProvider: true },
+      "ana", { ...opts(true), nodeEnv: richNodeEnv });
+    expect(out).toBeInstanceOf(ChildEnvPatch);
+    const p = out as ChildEnvPatch;
+    expect(p.set).toEqual({ ANTHROPIC_API_KEY: "k", ANTHROPIC_BASE_URL: "https://p.example.com" });
+    expect(p.unset).toContain("ANTHROPIC_AUTH_TOKEN");
+    expect(p.unset).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(p.unset).toContain("AWS_SECRET_ACCESS_KEY");
+    expect(warns).toEqual([]);
+  });
+
+  test("a declared provider with only a key drops the node's base URL", () => {
+    const p = nodeChildEnv({ providerCreds: { apiKey: "k" }, slackUserId: null, managed: true, ownProvider: true }, "ana", opts(true)) as ChildEnvPatch;
+    expect(p.unset).toContain("ANTHROPIC_BASE_URL");
+    expect(p.set.ANTHROPIC_BASE_URL).toBeUndefined();
   });
 
   test("fallback off: a managed persona with no credential fails with the typed code", () => {
@@ -273,7 +313,67 @@ describe("nodeChildEnv", () => {
     }
     expect(e).toBeInstanceOf(BootFailure);
     expect((e as BootFailure).code).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
+    expect((e as BootFailure).transient).toBe(false);
     expect((e as Error).message).toContain("'ana'");
+  });
+});
+
+describe("makeNodeChildEnvResolver", () => {
+  const managed = { providerCreds: { authToken: "t" }, slackUserId: null, managed: true };
+  const deps = (over: Record<string, unknown> = {}) => ({
+    client: { getRuntime: async () => managed as any },
+    tenantFor: () => "default" as string | undefined,
+    tokenFor: () => "job-token" as string | undefined,
+    personaFor: () => "ana" as string | undefined,
+    nodeEnv: { ANTHROPIC_API_KEY: "node-key" },
+    ...over,
+  });
+  const savedFlag = process.env.SLAUDE_PROVIDER_ENV_FALLBACK;
+  afterEach(() => {
+    if (savedFlag === undefined) delete process.env.SLAUDE_PROVIDER_ENV_FALLBACK;
+    else process.env.SLAUDE_PROVIDER_ENV_FALLBACK = savedFlag;
+  });
+
+  test("the flag comes from SLAUDE_PROVIDER_ENV_FALLBACK when not passed", async () => {
+    process.env.SLAUDE_PROVIDER_ENV_FALLBACK = "0";
+    expect(await makeNodeChildEnvResolver(deps())("s-1")).toBeInstanceOf(ChildEnvPatch);
+    process.env.SLAUDE_PROVIDER_ENV_FALLBACK = "1";
+    expect(await makeNodeChildEnvResolver(deps({ warn: () => {} }))("s-1")).toEqual({ ANTHROPIC_AUTH_TOKEN: "t" });
+  });
+
+  test("the fallback warning is logged once per persona, naming it", async () => {
+    const lines: string[] = [];
+    const r = makeNodeChildEnvResolver(deps({ fallback: true, warn: (m: string) => lines.push(m) }));
+    await r("s-1");
+    await r("s-2");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("'ana'");
+    expect(lines[0]).toContain("ANTHROPIC_API_KEY");
+    const r2 = makeNodeChildEnvResolver(deps({ fallback: true, warn: (m: string) => lines.push(m), personaFor: () => "bea" }));
+    await r2("s-3");
+    expect(lines).toHaveLength(2);
+  });
+
+  test("no tenant or token: nothing with fallback on, a typed failure with fallback off", async () => {
+    expect(await makeNodeChildEnvResolver(deps({ fallback: true, tokenFor: () => undefined }))("s-1")).toBeUndefined();
+    const e = await makeNodeChildEnvResolver(deps({ fallback: false, tokenFor: () => undefined }))("s-1").catch((x) => x);
+    expect(e).toBeInstanceOf(BootFailure);
+    expect(e.code).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
+  });
+
+  // R2-F4: transient vs definitive, from the gateway's 503 body.
+  test("a gateway 503 maps to a typed failure carrying its transient flag; other failures are classified", async () => {
+    const failWith = (err: unknown) => deps({ fallback: false, client: { getRuntime: async () => { throw err; } } });
+    const body = (transient: boolean) => JSON.stringify({ error: "provider credentials unavailable", code: "PROVIDER_CREDENTIALS_UNAVAILABLE", transient });
+    const t = await makeNodeChildEnvResolver(failWith(new NodeApiError(503, body(true))))("s-1").catch((x) => x);
+    expect(t).toBeInstanceOf(BootFailure);
+    expect(t.transient).toBe(true);
+    const d = await makeNodeChildEnvResolver(failWith(new NodeApiError(503, body(false))))("s-1").catch((x) => x);
+    expect(d.transient).toBe(false);
+    const net = await makeNodeChildEnvResolver(failWith(new Error("ECONNREFUSED")))("s-1").catch((x) => x);
+    expect(net.transient).toBe(true);
+    const gone = await makeNodeChildEnvResolver(failWith(new NodeApiError(404, "{}")))("s-1").catch((x) => x);
+    expect(gone.transient).toBe(false);
   });
 });
 

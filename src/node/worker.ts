@@ -32,7 +32,7 @@ import { makeRegistry, type Registry } from "../queue/registry";
 import { makePubSub, type PubSub } from "../queue/pubsub";
 import { withSessionLock, HELD_BY_OTHER } from "../queue/locks";
 import type { TurnJob } from "../queue/turns";
-import { NodeClient } from "./client";
+import { NodeApiError, NodeClient } from "./client";
 import { makeAuthRecovery, makeSessionSeeder } from "./credentials";
 import { nodeConfigRoot, sessionConfigDir, existingSessionConfigDir } from "../agent/config-root";
 import { RestSessionStore } from "./session-store";
@@ -143,26 +143,60 @@ export const PROVIDER_ENV_KEYS = [
 ] as const;
 
 /**
+ * Every node variable that selects or authenticates a model provider, beyond
+ * the four a bundle can supply (review R2-F3): Bedrock and Vertex switches and
+ * their cloud credentials, custom headers, a Unix socket, and the model pins.
+ * Under the strict rule below a node's value for any of them must not reach a
+ * managed persona's child, or the persona would be steered to (or billed on)
+ * the node's provider.
+ */
+export const PROVIDER_SELECTING_ENV_NAMES: readonly string[] = [
+  ...PROVIDER_ENV_KEYS,
+  "ANTHROPIC_CUSTOM_HEADERS",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "AWS_PROFILE",
+  "ANTHROPIC_BEDROCK_BASE_URL",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "ANTHROPIC_UNIX_SOCKET",
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_SMALL_FAST_MODEL",
+];
+/** Families matched by pattern: ANTHROPIC_VERTEX_* and ANTHROPIC_DEFAULT_*_MODEL. */
+const PROVIDER_SELECTING_ENV_RE = /^(ANTHROPIC_VERTEX_.+|ANTHROPIC_DEFAULT_.+_MODEL)$/;
+
+/** The provider-selecting names to delete, given the node's environment. */
+export function providerSelectingNames(nodeEnv: Record<string, string | undefined>): string[] {
+  return [...PROVIDER_SELECTING_ENV_NAMES, ...Object.keys(nodeEnv).filter((k) => PROVIDER_SELECTING_ENV_RE.test(k))];
+}
+
+/**
  * The child-env overlay for a session, with the no-silent-fallback rule
  * (WS-A §5.4) applied to a MANAGED bundle. An unmanaged bundle (disk or env
  * tier) is additive exactly as before.
  *
- *   fallback on  (SLAUDE_PROVIDER_ENV_FALLBACK=1, the default): additive, plus
- *                `warn(persona, names)` when the node's own environment fills a
- *                provider variable the bundle left out — the persona fell back.
- *   fallback off (=0): a ChildEnvPatch that DELETES every provider variable the
- *                bundle did not supply; a bundle with no credential at all
- *                (no API key, auth token or OAuth token) fails the boot with
- *                PROVIDER_CREDENTIALS_UNAVAILABLE.
+ *   strict when the persona declares its own provider (`ownProvider`, whatever
+ *     the flag: its key is only ever sent to its own host, review M-1), or when
+ *     SLAUDE_PROVIDER_ENV_FALLBACK=0: a ChildEnvPatch that DELETES every
+ *     provider-selecting variable the bundle did not supply; a bundle with no
+ *     credential at all (no API key, auth token or OAuth token) fails the boot
+ *     with PROVIDER_CREDENTIALS_UNAVAILABLE.
+ *   otherwise (fallback on, the default, and no declared provider): additive,
+ *     plus `warn(persona, names)` when the node's own environment fills a
+ *     provider variable the bundle left out — the persona fell back.
  */
 export function nodeChildEnv(
-  bundle: Pick<RuntimeBundle, "providerCreds" | "slackUserId" | "managed">,
+  bundle: Pick<RuntimeBundle, "providerCreds" | "slackUserId" | "managed" | "ownProvider">,
   persona: string,
   opts: { fallback: boolean; nodeEnv: Record<string, string | undefined>; warn: (persona: string, names: string[]) => void },
 ): Record<string, string | undefined> | ChildEnvPatch {
   const overlay = bundleChildEnv(bundle, persona);
   if (!bundle.managed) return overlay;
-  if (opts.fallback) {
+  if (opts.fallback && !bundle.ownProvider) {
     const filled = PROVIDER_ENV_KEYS.filter((k) => !overlay[k] && opts.nodeEnv[k]);
     if (filled.length) opts.warn(persona, filled);
     return overlay;
@@ -171,12 +205,78 @@ export function nodeChildEnv(
   if (!c.apiKey && !c.authToken && !c.oauthToken) {
     throw new BootFailure(
       "PROVIDER_CREDENTIALS_UNAVAILABLE",
-      `persona '${persona}' has no provider credentials and SLAUDE_PROVIDER_ENV_FALLBACK=0`,
+      `persona '${persona}' has no provider credentials${bundle.ownProvider ? "" : " and SLAUDE_PROVIDER_ENV_FALLBACK=0"}`,
     );
   }
   const set: Record<string, string> = {};
   for (const [k, v] of Object.entries(overlay)) if (v !== undefined) set[k] = v;
-  return new ChildEnvPatch(set, PROVIDER_ENV_KEYS);
+  return new ChildEnvPatch(set, providerSelectingNames(opts.nodeEnv));
+}
+
+/** A getRuntime failure as a typed boot failure: the gateway's 503 says
+ *  whether it is transient; a network error or another 5xx is; a 4xx is not. */
+function bundleFetchFailure(e: unknown): BootFailure {
+  let transient = true;
+  if (e instanceof NodeApiError) {
+    if (e.status === 503) {
+      try {
+        transient = (JSON.parse(e.body) as { transient?: unknown }).transient === true;
+      } catch {
+        transient = true;
+      }
+    } else {
+      transient = e.status >= 500;
+    }
+  }
+  return new BootFailure("PROVIDER_CREDENTIALS_UNAVAILABLE", "runtime bundle fetch failed", { cause: e, transient });
+}
+
+/**
+ * The node's child-env resolver: the session's runtime bundle through
+ * nodeChildEnv. The flag is read once, at construction (a malformed value stops
+ * the node at start, never mid-turn). With fallback off, a session with no
+ * tenant or job token fails its boot instead of spawning on the node's own
+ * environment; with fallback on it keeps today's behaviour (no overlay).
+ */
+export function makeNodeChildEnvResolver(deps: {
+  client: Pick<NodeClient, "getRuntime">;
+  tenantFor: (sessionId: string) => string | undefined;
+  tokenFor: (sessionId: string) => string | undefined;
+  personaFor: (sessionId: string) => string | undefined;
+  fallback?: boolean;
+  nodeEnv?: Record<string, string | undefined>;
+  warn?: (message: string) => void;
+}): (sessionId: string) => Promise<Record<string, string | undefined> | ChildEnvPatch | undefined> {
+  const fallback = deps.fallback ?? env.providerEnvFallback();
+  const nodeEnv = deps.nodeEnv ?? process.env;
+  const warn = deps.warn ?? ((m: string) => console.warn(m));
+  const once = createOnceGuard();
+  return async (sessionId) => {
+    const tenant = deps.tenantFor(sessionId);
+    const token = deps.tokenFor(sessionId);
+    if (!tenant || !token) {
+      if (fallback) return undefined;
+      throw new BootFailure("PROVIDER_CREDENTIALS_UNAVAILABLE", `no tenant or job token for session ${sessionId}`);
+    }
+    const persona = deps.personaFor(sessionId) ?? "default";
+    let bundle: RuntimeBundle;
+    try {
+      bundle = await deps.client.getRuntime(tenant, persona, token);
+    } catch (e) {
+      throw bundleFetchFailure(e);
+    }
+    return nodeChildEnv(bundle, persona, {
+      fallback,
+      nodeEnv,
+      warn: (p, names) => {
+        if (!once(`${tenant}\u0000${p}`)) return;
+        warn(
+          `[node] persona '${p}' (tenant ${tenant}) is running on this node's own ${names.join(", ")}: ` +
+            `its bundle supplies none. Set SLAUDE_PROVIDER_ENV_FALLBACK=0 to refuse instead.`,
+        );
+      },
+    });
+  };
 }
 
 /**
@@ -386,28 +486,17 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // The persona's model (git or override) also comes from the bundle; a
   // per-thread /model on the session row still wins (see AgentManager).
   agent.setPersonaModelResolver(makeBundleModelResolver(bundleDeps));
-  // Read once: a malformed value stops the node at start, never mid-turn.
-  const providerEnvFallback = opts.providerEnvFallback ?? env.providerEnvFallback();
-  const warnFallbackOnce = createOnceGuard();
-  agent.setChildEnvResolver(async (sessionId) => {
-    const tenant = tenants.get(sessionId);
-    const token = store.tokenFor(sessionId);
-    if (!tenant || !token) return undefined;
-    const persona = personas.get(sessionId) ?? "default";
-    // A failure here (gateway 503 on an unresolvable reference, gateway
-    // unreachable) fails the boot with PROVIDER_CREDENTIALS_UNAVAILABLE.
-    return nodeChildEnv(await client.getRuntime(tenant, persona, token), persona, {
-      fallback: providerEnvFallback,
-      nodeEnv: process.env,
-      warn: (p, names) => {
-        if (!warnFallbackOnce(`${tenant}\u0000${p}`)) return;
-        console.warn(
-          `[node] persona '${p}' (tenant ${tenant}) is running on this node's own ${names.join(", ")}: ` +
-            `its bundle supplies none. Set SLAUDE_PROVIDER_ENV_FALLBACK=0 to refuse instead.`,
-        );
-      },
-    });
-  });
+  // A failure here (gateway 503 on an unresolvable reference, gateway
+  // unreachable) fails the boot with PROVIDER_CREDENTIALS_UNAVAILABLE.
+  agent.setChildEnvResolver(
+    makeNodeChildEnvResolver({
+      client,
+      tenantFor: (id) => tenants.get(id),
+      tokenFor: (id) => store.tokenFor(id),
+      personaFor: (id) => personas.get(id),
+      fallback: opts.providerEnvFallback,
+    }),
+  );
   // Remote mode (spec §4.5): target from the job token's signed claims; key
   // fetched per handle from the gateway (see ./remote).
   agent.setRemote(makeRemoteResolver(store), makeRemoteFactory({ client, store, tenants }));
@@ -606,11 +695,20 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       });
     } catch (e) {
       if (!(e instanceof BootFailure)) throw e;
-      // A typed boot failure (WS-A §5.4, §7): the code rides the turn's error
-      // event (the gateway posts its fixed text once per job) and is the job's
-      // failure reason, and the job fails WITHOUT a retry — another attempt
-      // would only fail the same way and post again.
-      console.error(`[node] session boot failed session=${data.sessionId} job=${job.id} code=${e.code}`);
+      // A typed boot failure (WS-A §5.4, §7). A transient one (the secret
+      // store or the gateway not answering, review R2-F4) with attempts left
+      // takes BullMQ's normal retry, silently. Otherwise the code rides the
+      // turn's error event (the gateway posts its fixed text once per job) and
+      // is the job's failure reason, and the job fails without a further retry.
+      const attemptsLeft = job.attemptsMade + 1 < (job.opts.attempts ?? 1);
+      console.error(
+        `[node] session boot failed session=${data.sessionId} job=${job.id} code=${e.code} ` +
+          `transient=${e.transient}${e.transient && attemptsLeft ? " (will retry)" : ""}`,
+      );
+      if (e.transient && attemptsLeft) {
+        metric.nodeTurnsTotal.inc({ result: "retried" });
+        throw new Error(e.code);
+      }
       agent.emit("event", { type: "error", sessionId: data.sessionId, error: "session boot failed", code: e.code } satisfies AgentEvent);
       metric.nodeTurnsTotal.inc({ result: "error" });
       void client.failJob(String(job.id), { sessionId: data.sessionId, code: e.code });

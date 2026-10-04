@@ -308,6 +308,32 @@ d("gateway↔node E2E (real Redis)", () => {
     }
   }, 30_000);
 
+  // R2-F4: a transient failure takes BullMQ's retry silently; the last attempt
+  // posts the fixed text once.
+  test("a transient boot failure is retried, then posts the fixed text once", async () => {
+    const { BootFailure, failureText } = await import("../../src/gateway/core/failure-codes");
+    const T_THREAD = "9060.0";
+    posts.length = 0;
+    bootFailure = new BootFailure("PROVIDER_CREDENTIALS_UNAVAILABLE", "vault not answering", { transient: true });
+    try {
+      await emitSlack("message", msg(T_THREAD, "9060.1", "<@USLAUDE> hello"));
+      const fixed = failureText("PROVIDER_CREDENTIALS_UNAVAILABLE");
+      await until(() => posts.some((p) => p.text === fixed), 20_000);
+      await sleep(600);
+      expect(posts.filter((p) => p.text === fixed)).toHaveLength(1);
+      const sid = await sessionIdOf(T_THREAD);
+      const failedJob = async () =>
+        [...(await turnsQ.queue("turns").getFailed()), ...(await turnsQ.queue(nodeTurnsQueueFn(NODE_ID)).getFailed())]
+          .find((j: any) => j.data?.sessionId === sid);
+      await until(async () => !!(await failedJob()), 10_000);
+      const job = await failedJob();
+      expect(job.attemptsMade).toBe(2);
+      expect(job.failedReason).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
+    } finally {
+      bootFailure = null;
+    }
+  }, 40_000);
+
   // A cron job created inside a /1on1 carries its lock owner. The cron run keys
   // on a synthetic thread with no lock, so the node can only learn the identity
   // from the job itself — and it must, or the turn runs as the agent instead of
