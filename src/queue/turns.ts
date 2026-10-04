@@ -101,8 +101,11 @@ const MOVED_TTL_MS = 60 * 60 * 1000;
  *  (#swap). Promoted at once on success; only a crash mid-move waits it out. */
 const SWAP_HOLD_MS = 30_000;
 
-/** How long the once-guard of a LABEL_MISMATCH re-dispatch is kept. */
-const REDISPATCH_TTL_MS = 60 * 60 * 1000;
+/** How long the once-guard of a LABEL_MISMATCH re-dispatch is kept. Short on
+ *  purpose: once the winner wrote its job-moved marker every follower follows
+ *  that instead, so the guard only matters while the winner works, and a
+ *  winner that died mid-way lets another follower redo it after this long. */
+const REDISPATCH_TTL_MS = 30_000;
 
 /**
  * Take a job off its queue ONLY if no worker holds it, in one step (review
@@ -570,7 +573,8 @@ export class TurnQueues {
    * it; the others get null and follow the job-moved marker the winner writes.
    * Through enqueueTurn, so it coalesces like any message (and a message the
    * pending job already holds is not added twice). A crash between the guard
-   * and the marker loses the re-dispatch (one Redis round trip).
+   * and the marker delays the re-dispatch until the guard lapses
+   * (REDISPATCH_TTL_MS), when a surviving follower redoes it.
    */
   async redispatch(failedJobId: string, job: TurnJob, label: string, newJobId: string): Promise<EnqueueResult | null> {
     const won = await this.#connection.set(this.keys.redispatch(failedJobId), newJobId, "PX", REDISPATCH_TTL_MS, "NX");
