@@ -24,6 +24,7 @@
 import { env } from "../../config/env";
 import { linkSlackIdentity, unlinkSlackIdentity, slackIdentitiesForAccount } from "../../db/accounts";
 import { deleteCredential } from "../../db/mcp-credentials";
+import { bumpMcpCredEpoch } from "../core/mcp-cred-epoch";
 import { oauthKey } from "../../agent/mcp-oauth/store";
 import { createPortalAuthRoutes, type PortalAuthRoutes } from "./auth-routes";
 import { guardPortal } from "./guard";
@@ -202,6 +203,9 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
           if (!linked.ok) {
             return json(409, { error: "that Slack user is already connected to another account" });
           }
+          // This Slack user now resolves to an account (and its integrations):
+          // its warm sessions re-list their bridged tools on the next turn.
+          await bumpMcpCredEpoch([{ kind: "user", team: verified.claims.team, slackUserId: verified.claims.slackUser }]);
           return json(200, { ok: true, created: linked.created });
         }
 
@@ -215,6 +219,7 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
           // Scoped to the caller's own account, so one person cannot remove
           // another's binding.
           const removed = await unlinkSlackIdentity(teamId, slackUserId, guarded.account.id);
+          if (removed) await bumpMcpCredEpoch([{ kind: "user", team: teamId, slackUserId }]);
           return removed ? json(200, { ok: true }) : json(404, { error: "no such connection on your account" });
         }
 
@@ -271,6 +276,7 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
         // Scoped to the caller's own account, so one person cannot disconnect
         // another's integration.
         const removed = await deleteCredential({ kind: "account", accountId: guarded.account.id }, oauthKey(server.name, server.cfg));
+        if (removed) await bumpMcpCredEpoch({ kind: "account", accountId: guarded.account.id });
         return json(200, { ok: true, removed });
       }
 
