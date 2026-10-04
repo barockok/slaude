@@ -447,6 +447,8 @@ export interface NodeWorkerHandle {
   kill(): void;
   /** TEST SEAM: the command Redis connection (break it to probe /healthz). */
   __cmd: Redis;
+  /** TEST SEAM: the BullMQ worker connections (one per label plus one). */
+  __bullConns: readonly Redis[];
 }
 
 export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWorkerHandle> {
@@ -947,7 +949,9 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     await pubsub.close().catch(() => {});
     await turnQueues.close().catch(() => {});
     http?.stop(true);
-    for (const c of [cmd, sub]) {
+    // The workers are closed: their own connections (one per label plus one)
+    // go too, or each stop would leak labels + 1 connections.
+    for (const c of [...bullConns, cmd, sub]) {
       try {
         await c.quit();
       } catch {
@@ -984,5 +988,6 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     stop,
     kill,
     __cmd: cmd,
+    __bullConns: bullConns,
   };
 }

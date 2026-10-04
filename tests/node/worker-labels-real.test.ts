@@ -148,6 +148,25 @@ d("worker label queues", () => {
     expect(await turns.queue("turns.label.finance").getWaitingCount()).toBe(1);
   });
 
+  test("stop() closes every worker connection (one per label plus its own queue)", async () => {
+    const { startNodeWorker } = await import("../../src/node/worker");
+    const { NodeClient } = await import("../../src/node/client");
+    const h = await startNodeWorker({
+      nodeId: "node-conns",
+      labels: ["conn-a", "conn-b"],
+      client: new NodeClient({ baseUrl: "http://127.0.0.1:1", token: "unused", attempts: 1, baseDelayMs: 1 }),
+      redisUrl: REAL_URL,
+      keys,
+      concurrency: 1,
+      heartbeatSec: 1,
+      port: null,
+    });
+    expect(h.__bullConns).toHaveLength(3);
+    await h.stop({ drainSec: 1 });
+    expect(h.__bullConns.map((c: any) => c.status)).toEqual(["end", "end", "end"]);
+    await obliterateQueues(redis, keys.bullPrefix, ["turns.label.conn-a", "turns.label.conn-b", "turns.node-conns"]);
+  });
+
   test("a node id that would collide with a label queue is refused at startup", async () => {
     const { startNodeWorker } = await import("../../src/node/worker");
     await expect(startNodeWorker({ nodeId: "label.finance", redisUrl: REAL_URL, keys, port: null })).rejects.toThrow(/reserved/);
