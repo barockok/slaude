@@ -65,6 +65,41 @@ describe("parseExternalMcp", () => {
   });
 });
 
+// .mcp.json lives on the shared volume a node's agent turn can write. A
+// placeholder naming a gateway-only variable must never expand to its value.
+describe("parseExternalMcp and gateway-only variables", () => {
+  const env = { SLAUDE_MASTER_KEY: "master-value", PERSONA_A_XOXP: "persona-value", SLAUDE_JOB_SECRET: "job-value", OK_TOKEN: "ok-value" };
+
+  it("leaves a gateway-only placeholder unexpanded and logs only its name", () => {
+    const lines: string[] = [];
+    const warn = console.warn;
+    console.warn = (...a: unknown[]) => void lines.push(a.join(" "));
+    try {
+      const out = parseExternalMcp(
+        {
+          mcpServers: {
+            h: { type: "http", url: "https://x.test/${SLAUDE_JOB_SECRET}", headers: { a: "Bearer ${SLAUDE_MASTER_KEY}", b: "${OK_TOKEN}" } },
+            s: { command: "run", args: ["${PERSONA_A_XOXP}"], env: { K: "${SLAUDE_MASTER_KEY}" } },
+          },
+        },
+        env,
+      );
+      const h = out.servers.h as any;
+      const s = out.servers.s as any;
+      expect(h.headers.a).toBe("Bearer ${SLAUDE_MASTER_KEY}");
+      expect(h.headers.b).toBe("ok-value");
+      expect(h.url).toBe("https://x.test/${SLAUDE_JOB_SECRET}");
+      expect(s.args).toEqual(["${PERSONA_A_XOXP}"]);
+      expect(s.env.K).toBe("${SLAUDE_MASTER_KEY}");
+      const all = lines.join("\n");
+      expect(all).toContain("SLAUDE_MASTER_KEY");
+      for (const v of ["master-value", "persona-value", "job-value"]) expect(all).not.toContain(v);
+    } finally {
+      console.warn = warn;
+    }
+  });
+});
+
 describe("privateOverrides", () => {
   const servers = {
     composio: { type: "http", url: "https://x", headers: { Authorization: "Bearer s" } },

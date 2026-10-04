@@ -9,6 +9,9 @@
  *   SLAUDE_NODE_CONCURRENCY  BullMQ concurrency (default 8)
  *   SLAUDE_NODE_PORT         /healthz + /metrics (default 8081)
  *   SLAUDE_NODE_DRAIN_SEC    SIGTERM grace (default 120)
+ *   SLAUDE_NODE_BOOT_CHECK   warn (default) | refuse: what to do when a
+ *                            gateway-only variable is in this environment
+ *   SLAUDE_NODE_ALLOW_GATEWAY_SECRETS  1 = refuse only warns (temporary escape)
  *
  * The node has no Slack client, no Postgres, no brain (spec §1) — sessions,
  * tools and credentials all come from the gateway over /v1. The persona soul
@@ -19,8 +22,13 @@
 import { ensureHome } from "../config/home";
 import { env } from "../config/env";
 import { startNodeWorker } from "./worker";
+import { enforceNodeBootCheck } from "./boot-check";
 
 async function main() {
+  // Before anything else: a node must not hold the gateway's secrets (the
+  // master key, the job secret, database URLs, Slack secrets). Warns by
+  // default; SLAUDE_NODE_BOOT_CHECK=refuse stops the boot. Names only.
+  if (!enforceNodeBootCheck(process.env)) process.exit(1);
   ensureHome();
   if (env.role() !== "node") {
     console.warn(`[node] SLAUDE_ROLE=${env.role()} — starting a node worker anyway (src/node/main.ts is the node entry)`);

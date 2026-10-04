@@ -5,6 +5,7 @@ import { loadKbs } from "./loader";
 import { PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, type BrainScope } from "./scope";
 import { isScopeWriteOp } from "./gated-dispatch";
 import { getBackend } from "./backend";
+import { NodeDbAccessError } from "../db/client";
 
 // Engine surface kept minimal on purpose: gbrain ships TS sources and its own
 // types stay internal to it; slaude only needs lifecycle + handler dispatch.
@@ -197,6 +198,11 @@ export function brainEngineConfig(): EngineCfg {
     return { engine: "postgres", database_url: url };
   }
   if (engine !== "pglite") throw new Error(`unknown SLAUDE_BRAIN_ENGINE "${engine}" (want pglite|postgres)`);
+  // A node holds no database: PGLite here would be a second writer on the
+  // gateway's single-writer brain on the shared volume.
+  if ((process.env.SLAUDE_ROLE ?? "").trim().toLowerCase() === "node") {
+    throw new NodeDbAccessError("a node must not open the brain's embedded PGLite; brain access goes through the gateway");
+  }
   return { engine: "pglite", database_path: join(brainHome(), "db") };
 }
 

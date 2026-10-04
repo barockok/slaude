@@ -46,6 +46,11 @@ export interface JobClaims {
    *  from an older gateway, and turns with no inbound app, resolve it from the
    *  team when that is unambiguous. */
   app?: string;
+  /** The thread's /1on1 lock at dispatch: null = unlocked; openScope null =
+   *  locked, a string = open mode with that scope. A node has no database, so
+   *  this is how its session-mode block learns the lock. Absent = a gateway
+   *  that predates the claim. */
+  lock?: { user: string; openScope: string | null } | null;
   /** Unix seconds. */
   exp: number;
   iat?: number;

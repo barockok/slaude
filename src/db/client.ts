@@ -185,6 +185,42 @@ export function normalizeRow<T = Row>(row: Row): T {
   return row as T;
 }
 
+/** A node tried to open embedded storage (see {@link assertNodeMayOpen}). */
+export class NodeDbAccessError extends Error {
+  override name = "NodeDbAccessError";
+}
+
+/**
+ * A node holds no database (node labels and routing spec §4.0): sessions,
+ * locks and credentials come from the gateway over /v1. Embedded storage in the
+ * node role is never right: PGLite without a URL is a private, empty, in-memory
+ * database (a /1on1 lock would always read null), and sqlite is a file on the
+ * shared volume. So the node role refuses both, loudly, instead of answering
+ * from an empty table. A real server URL is still opened: a cluster that has
+ * not split its Secrets keeps working (the node boot check warns about it).
+ */
+export function assertNodeMayOpen(cfg: DbConfig, role: "mono" | "gateway" | "node"): void {
+  if (role !== "node") return;
+  if (cfg.dialect === "pg" && cfg.driver === "bun-sql") return;
+  throw new NodeDbAccessError(
+    `a node must not open a database: this would be embedded ${cfg.dialect === "sqlite" ? "sqlite" : "PGLite"} ` +
+      `(SLAUDE_DB without SLAUDE_PG_URL). Whatever asked for it must get its data from the gateway.`,
+  );
+}
+
+let nodeRefusalLogged = false;
+function guardNode(cfg: DbConfig): void {
+  try {
+    assertNodeMayOpen(cfg, env.role());
+  } catch (e) {
+    if (!nodeRefusalLogged) {
+      nodeRefusalLogged = true;
+      console.error(`[db] ${(e as Error).message}\n${new Error("refused database access").stack ?? ""}`);
+    }
+    throw e;
+  }
+}
+
 /** Open a client for an explicit config (used by the facade and by migrate-sqlite). */
 export async function openDb(cfg: DbConfig): Promise<DbClient> {
   if (cfg.dialect === "sqlite") {
@@ -220,6 +256,13 @@ export function dbDialect(): Dialect {
 /** Open (once) and return the process-wide client. Postgres: migrations
  *  applied first, unless SLAUDE_MIGRATE_ON_BOOT=0 opts out (env.db.migrateOnBoot). */
 export function getDb(): Promise<DbClient> {
+  // Checked on every call, not only the first open: a client opened before
+  // the process took the node role must not be handed out either.
+  try {
+    guardNode(config());
+  } catch (e) {
+    return Promise.reject(e);
+  }
   if (activeSync) return Promise.resolve(activeSync);
   if (!activePromise) {
     const cfg = config();
@@ -261,6 +304,7 @@ export function getSqliteRaw(): import("bun:sqlite").Database | null {
 function sync(): DbClient | null {
   const cfg = config();
   if (cfg.dialect !== "sqlite") return null;
+  guardNode(cfg);
   return openSqliteSync(cfg.path);
 }
 

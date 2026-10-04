@@ -129,6 +129,96 @@ Two scripts, both against the local scale cluster from `deploy/k8s-local`:
 
 `verify-turns.sh` uses suppressed turns, so the whole lifecycle runs — claim, session lock, completion marker, ack — without a model call, and it costs no provider tokens. It reports how long recovery actually took, which is dominated by the session-lock TTL above (the local overlay's 45 seconds, not the 10-minute default). It prints every diagnostic to stdout and to a named log file, and pins the node autoscaler for the run so it cannot scale to a third node mid-check. `deploy/k8s-local/README.md` in the repository has the host sizing, the model setting and the port-forward helper.
 
+## The Secret split
+
+A node needs four things: its own credential, Redis, the gateway's URL and, while the provider env fallback exists, a provider key. Everything else the gateway holds lets its holder act as the gateway. With `SLAUDE_JOB_SECRET` a node can mint a job token for any persona and any `runAs`, and through the credential endpoints read any person's MCP tokens and remote-execution key. With `SLAUDE_MASTER_KEY` it can decrypt every stored credential. The database URLs give it every tenant's rows. Every agent child on a node runs as the node's user, so whatever the node holds, a prompt-injected turn can read.
+
+So each tier gets its own Secret:
+
+| Secret (`deploy/k8s-scale/10-secrets.yaml`) | Holds | Loaded by |
+|---|---|---|
+| `slaude-scale-secrets` | `SLAUDE_MASTER_KEY`, `SLAUDE_JOB_SECRET`, `SLAUDE_PG_URL`, `SLAUDE_BRAIN_DATABASE_URL`, the Slack client and signing secrets, `SLAUDE_OAUTH_STATE_SECRET`, deploy tokens, the gateway's provider key | gateways, through `envFrom` |
+| `slaude-scale-node-secrets` | `SLAUDE_NODE_TOKEN`, `SLAUDE_REDIS_URL`, the provider env fallback | nodes, through `envFrom`; gateways read `SLAUDE_NODE_TOKEN` and `SLAUDE_REDIS_URL` from it by key |
+
+`SLAUDE_GATEWAY_URL` is not secret and stays a plain variable in `50-node.yaml`. `docker-compose.scale.yaml` already gives each tier only its own variables.
+
+The manifests also give the gateway its own ServiceAccount (`slaude-gateway`, in `40-gateway.yaml`), and node pods mount no ServiceAccount token (`automountServiceAccountToken: false`). slaude makes no Kubernetes API call in either tier.
+
+**A node reads no database.** Before the split a node still read the `/1on1` lock straight from Postgres at session start. The gateway now signs the lock into the job token (the `lock` claim), and the node builds the session-mode block from it. Every dispatch also signs a session-config fingerprint over the run-as identity, the whole lock (owner, and whether it is locked or open with a scope) and the remote target. When the fingerprint changes, a warm node session reboots before the next turn, so a thread that goes from locked to open gets the open-mode instructions. One limit: a follow-up message that joins a job still waiting in the queue rides that job's token, and a token refresh copies its claims. Such a job runs on the lock as of its first message, exactly like `runAs`. This affects at most that one job; the next job carries the new lock. In the node role, embedded storage is refused: `SLAUDE_DB` without `SLAUDE_PG_URL`, sqlite, or the brain's embedded PGLite. Anything that still asks for it fails with `NodeDbAccessError` and a logged stack, rather than silently reading an empty in-process database. A job without a `lock` claim, minted by an older gateway, fails at session start on such a node, so the session never starts without its privacy instructions.
+
+**Note: episodic memory does not run on nodes.** In the scaled topology, node turns get no `<memory-context>`, and memory is not written. Before the split, nodes reached the brain's Postgres through the shared URL. Memory failures are logged and never break a turn. Serving memory through the gateway is a tracked follow-up, and the release candidate is not promoted to stable without it. Soul overrides are similar: on a node they apply only when the runtime bundle carries the structured soul.
+
+**The optional NetworkPolicy.** `deploy/k8s-scale/optional/node-egress-networkpolicy.yaml` allows node egress only to DNS, the gateway on 8080, port 6379 and port 443. It works by port: nodes cannot reach Postgres on 5432 or Vault on 8200, but a Postgres or Vault served on 443 or 6379 would still be reachable. Narrow the 6379 rule with a `to:` block naming your Redis. `/remote` sessions reach the initiator's machine over SSH through the tailnet, so add egress rules for those ports if you use `/remote`. The policy is optional because it only works on a CNI that enforces NetworkPolicy, and it may need your Redis and provider ports. Neither `kustomization.yaml` includes it.
+
+**The node boot check.** At boot a node looks for gateway-only variables in its environment. The list is in `src/config/gateway-only-env.ts`, and the [configuration reference](../reference/configuration.md#queue-redis) repeats it under `SLAUDE_NODE_BOOT_CHECK`. The node reports variable names, never values:
+
+- `SLAUDE_NODE_BOOT_CHECK=warn` (the default in this release): the node logs one warning, sets the gauge `slaude_node_gateway_secrets_present` to the number of offending variables, and boots. Alert on `max(slaude_node_gateway_secrets_present) > 0`.
+- `SLAUDE_NODE_BOOT_CHECK=refuse`: the node exits non-zero. `SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1` turns the refusal back into a warning. Use it only as a temporary escape.
+
+A later release makes `refuse` the default. Finish the split while the check only warns. The same list, plus `SLAUDE_NODE_TOKEN` and `SLAUDE_REDIS_URL`, is stripped from the agent child's environment in every role. A `${NAME}` placeholder in `.mcp.json` that names a gateway-only variable is left unexpanded, with the name logged. The runtime bundle never carries the MCP config.
+
+**Known gap: the gateway reads `.mcp.json` from the shared volume.** `${NAME}` placeholders in `$SLAUDE_HOME/.mcp.json` expand against the gateway's environment. Gateway-only names are refused, but any other variable the gateway holds can still be expanded into a server config: an embedding provider key, `ANTHROPIC_API_KEY`, or anything else set on it. The file is on the shared volume, which node turns can write. Keep gateway-only credentials on the gateway-only list, and watch that file.
+
+**Known gap: the gateway's `.env` is on the shared volume.** At boot every process loads `$SLAUDE_HOME/.env` (`/data/.env` in these manifests) into its environment, for any variable not already set. That file sits on the shared volume, which nodes and their agent turns can write. A turn on a node can therefore set a gateway variable the manifests leave unset, for example `SLAUDE_SLACK_API_URL`, and it takes effect when a gateway next restarts. The split does not close this. Until it is fixed, set every variable the gateway relies on explicitly in its Secret or ConfigMap, and watch that file.
+
+### Upgrading a cluster that used one Secret
+
+Before this release both Deployments loaded `slaude-scale-secrets`. That Secret is now the gateway's, so it keeps its name and contents. Upgrade gateways first, then nodes:
+
+1. Create the node Secret from the values the cluster already uses. The command copies the node token, the Redis URL, and whichever of the four provider variables are present. It never prints them:
+
+   ```sh
+   kubectl -n slaude-scale get secret slaude-scale-secrets -o json \
+     | jq '{apiVersion, kind, type,
+            metadata: {name: "slaude-scale-node-secrets", namespace: .metadata.namespace},
+            data: (.data | {SLAUDE_NODE_TOKEN, SLAUDE_REDIS_URL,
+                            ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN}
+                         | with_entries(select(.value != null)))}' \
+     | kubectl apply -f -
+   ```
+
+   You can leave the provider variables out if every tenant's runtime bundle carries provider credentials. A managed tenant (personas as code) or a database persona with no stored provider credentials needs them.
+2. Apply `40-gateway.yaml`, with gateways on this release's image. Gateways roll onto their ServiceAccount and read the node token and Redis URL from the node Secret, which holds the same values.
+3. **Let queued and running turns drain.** Wait until `slaude_queue_depth` is 0 and no turn is running. Two things can go wrong otherwise. A job minted by an older gateway carries no `lock` claim, so it fails at session start on a node with no database (`NodeDbAccessError`). And an older node image on the new manifests silently opens an empty in-memory database and reads every thread as unlocked.
+4. Apply `50-node.yaml`, with **the node image already at this release**: set the image in the same apply, never the manifest first. Nodes roll onto the node Secret, which holds no database URL. Each new node pod should log no gateway-secrets warning, and `slaude_node_gateway_secrets_present` should read 0. Each warm session reboots once on its first turn, because sessions started before this release carry no session-config fingerprint. The reboot is expected and does not repeat.
+5. Keep your copy of `10-secrets.yaml` (or its sealed form) in the two-Secret shape, so the next apply does not undo the split.
+6. Deal with what nodes were exposed to (below).
+
+On the local cluster (`deploy/k8s-local`), re-running `up.sh` does steps 1 to 5 (drain first if turns are running). It derives `node.env` from the existing `secrets.env`, so every value is kept.
+
+### What nodes were exposed to
+
+Any cluster that ran nodes with the shared Secret must treat `SLAUDE_JOB_SECRET` and `SLAUDE_MASTER_KEY` as exposed to every node pod and to every agent turn that ran on one. The same applies to the other values in that Secret: the database passwords inside the URLs, the Slack client and signing secrets, and `SLAUDE_OAUTH_STATE_SECRET`. Rotate those with each provider's own procedure.
+
+**Rotating `SLAUDE_JOB_SECRET`.** Job tokens are minted when a turn is enqueued and checked against the current secret. A token minted under the old secret fails after the change, including on refresh. Turns already queued or running would then lose their tool calls. Wait until `slaude_queue_depth` is 0 and no turn is running, then do this:
+
+1. Write the new value (`openssl rand -hex 24`) into `slaude-scale-secrets`.
+2. Run `kubectl -n slaude-scale rollout restart deploy/slaude-gateway`.
+
+Nodes never hold the job secret, so they need no change. While the rollout runs, replicas with the old secret and replicas with the new one serve side by side. A token minted by one can fail on the other, so expect a few failed tool calls if turns start during the rollout.
+
+**`SLAUDE_MASTER_KEY` cannot be rotated yet.** slaude has no command that re-encrypts stored data under a new key. That tool is a planned follow-up and does not exist. **Do not simply change the key.** Data encrypted under the old key then fails to decrypt with an error, and some of it is read at gateway boot. A managed tenant's personas are decrypted when the gateway loads persona state, so a gateway with a new key can fail to start. The persona sync that would repair them needs a running gateway.
+
+Until the tool exists there are two honest choices:
+
+- **Keep the key and record the exposure.** Finish the split, so the key stops reaching nodes, and rotate once the re-encryption tool ships.
+- **Rotate by discarding everything encrypted.** This loses data, so take a database backup first and try it on a copy. With every gateway stopped and **before** changing the key, remove each encrypted value:
+
+  ```sql
+  DELETE FROM slack_apps;          -- bot tokens and signing secrets
+  DELETE FROM provider_creds;      -- stored provider credentials
+  DELETE FROM mcp_credentials;     -- every MCP credential, the agents' and each person's
+  DELETE FROM remote_keys;         -- remote-execution key pairs
+  DELETE FROM portal_oauth_flows;  -- OAuth flows in progress
+  DELETE FROM slack_oauth_flows;
+  DELETE FROM persona_overrides;   -- runtime persona overrides, all of them
+  UPDATE personas SET user_token = NULL, mcp_json = NULL;
+  ```
+
+  Then set the new key and start the gateways. Next, recreate what was removed. Register every Slack app again with `bun run slack-app add`, or reinstall it through `/slack/oauth/start`. Enter the provider credentials again. Run the persona sync again, which re-encrypts user tokens and MCP config from the repository's `PERSONA_*` values. Runtime overrides are gone and must be set again. People reconnect their MCP servers with `/mcp connect`, and a manager reconnects the agents' shared identities. Each `/remote` user runs `/remote key` again, which generates a new key pair, and authorizes its public key on their machine. Soul-cache entries re-extract on their own.
+
+Either way, finish the split first. Rotating while nodes still load the gateway Secret only exposes the new key the same way.
+
 ## Control panel (`/panel`)
 
 The operator web panel mounts on the gateway tier (`mono`/`gateway` roles, never `node`) when `SLAUDE_PANEL=1` — see [Control panel](panel.md) for what it does, how to enable it, and OIDC setup.

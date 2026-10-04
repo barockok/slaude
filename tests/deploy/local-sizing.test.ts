@@ -3,10 +3,11 @@
  * node size and the provisional Docker VM floor are written down.
  */
 import { expect, test } from "bun:test";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
+import { stageLocal } from "./stage-local";
 
 const dir = new URL("../../deploy/k8s-local/", import.meta.url).pathname;
 
@@ -138,16 +139,8 @@ const haveKubectl = Bun.spawnSync(["kubectl", "version", "--client"]).exitCode =
 function render(model: string): string {
   const tmp = mkdtempSync(join(tmpdir(), "local-render-"));
   try {
-    cpSync(dir, join(tmp, "deploy/k8s-local"), { recursive: true });
-    cpSync(`${dir}../k8s-scale`, join(tmp, "deploy/k8s-scale"), { recursive: true });
+    stageLocal(tmp, { "model.env": model });
     const local = join(tmp, "deploy/k8s-local/");
-    for (const [f, text] of [
-      ["secrets.env", "PLACEHOLDER_SECRET=x\n"],
-      ["provider.env", "PLACEHOLDER_PROVIDER=x\n"],
-      ["deploy.env", "PLACEHOLDER_DEPLOY=x\n"],
-      ["model.env", model],
-    ] as const)
-      writeFileSync(local + f, text);
     const r = Bun.spawnSync(["kubectl", "kustomize", "--load-restrictor", "LoadRestrictionsNone", local]);
     expect(r.stderr.toString()).toBe("");
     return r.stdout.toString();

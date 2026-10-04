@@ -64,7 +64,7 @@ describe("dispatch remote claims", () => {
     await h.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTA" });
     expect(h.claims().runAs).toBe("user:UTESTA");
     expect(h.claims().remote).toEqual({ addr: "tcA", dir: "/r" });
-    expect(h.claims().sessionConfigFp).toBe(sessionConfigFp("UTESTA", { addr: "tcA", dir: "/r" }));
+    expect(h.claims().sessionConfigFp).toBe(sessionConfigFp({ runAs: "UTESTA", lock: { user: "UTESTA", openScope: null }, remote: { addr: "tcA", dir: "/r" } }));
     await h.dispatch.close();
   });
 
@@ -74,7 +74,7 @@ describe("dispatch remote claims", () => {
     const h = harness("UTESTMGR");
     await h.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTMGR" });
     expect(h.claims().remote).toBeUndefined();
-    expect(h.claims().sessionConfigFp).toBe(sessionConfigFp("UTESTMGR", null));
+    expect(h.claims().sessionConfigFp).toBe(sessionConfigFp({ runAs: "UTESTMGR", lock: { user: "UTESTMGR", openScope: null }, remote: null }));
     await h.dispatch.close();
   });
 
@@ -87,7 +87,7 @@ describe("dispatch remote claims", () => {
     await h.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTA" });
     expect(h.claims().runAs).toBe("user:UTESTB");
     expect(h.claims().remote).toBeUndefined();
-    expect(h.claims().sessionConfigFp).toBe(sessionConfigFp("UTESTB", null));
+    expect(h.claims().sessionConfigFp).toBe(sessionConfigFp({ runAs: "UTESTB", lock: { user: "UTESTA", openScope: null }, remote: null }));
     await h.dispatch.close();
   });
 
@@ -110,17 +110,33 @@ describe("dispatch remote claims", () => {
     const h = harness(undefined);
     await h.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTA" });
     expect(h.claims().remote).toBeUndefined();
-    expect(h.claims().sessionConfigFp).toBe(sessionConfigFp(null, null));
+    expect(h.claims().sessionConfigFp).toBe(sessionConfigFp({ runAs: null, lock: null, remote: null }));
     await h.dispatch.close();
   });
 
-  it("flag off: neither claim", async () => {
+  // The fingerprint is what reboots a warm node session when the /1on1 lock
+  // changes, so it is minted with remote mode off too.
+  it("flag off: no remote claim, but the fingerprint is still minted", async () => {
     delete process.env.SLAUDE_REMOTE;
+    await OneOnOne.lock({ channelId: "C1", threadTs: "1.1", lockedUser: "UTESTA", createdBy: "UTESTA" });
     const h = harness("UTESTA");
     await h.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTA" });
     expect(h.claims().remote).toBeUndefined();
-    expect(h.claims().sessionConfigFp).toBeUndefined();
+    expect(h.claims().sessionConfigFp).toBe(sessionConfigFp({ runAs: "UTESTA", lock: { user: "UTESTA", openScope: null }, remote: null }));
     await h.dispatch.close();
+  });
+
+  it("flag off: locked and open threads of the same owner get different fingerprints", async () => {
+    delete process.env.SLAUDE_REMOTE;
+    await OneOnOne.lock({ channelId: "C1", threadTs: "1.1", lockedUser: "UTESTA", createdBy: "UTESTA" });
+    const locked = harness("UTESTA");
+    await locked.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTA" });
+    await OneOnOne.setOpen("C1", "1.1", "billing only");
+    const open = harness("UTESTA");
+    await open.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTA" });
+    expect(open.claims().sessionConfigFp).not.toBe(locked.claims().sessionConfigFp);
+    await locked.dispatch.close();
+    await open.dispatch.close();
   });
 
   test("a refreshed job token keeps remote and sessionConfigFp", async () => {

@@ -282,7 +282,7 @@ existed, keep the model they were created with until `/model` changes it.
   (nothing when it has none; the default persona falls back to the global
   `.mcp.json`). Nodes do not mount external MCP servers from persona config:
   syncing or overriding `mcp` records it and has no effect on a node's turns.
-  The runtime bundle a node fetches carries `mcpJson: null` for a managed
+  The runtime bundle a node fetches always carries `mcpJson: null`, for every
   tenant, so resolved header and env values never leave the gateway.
 - **In `mono`, a named persona's channel mandate is the default persona's.**
   Nodes take each persona's channel mandate from its own structured soul; the
