@@ -95,7 +95,19 @@ The session restarts, and fetches the list again, on the next turn when:
   Each of these bumps a counter for that identity (in Redis); dispatch reads the
   counters of the turn's agent and person with one Redis read, and signs them
   into the session fingerprint. So a server that needed connecting when the
-  session started lists its tools on the turn after the connect.
+  session started lists its tools on the turn after the connect. The one-time
+  import of on-disk credentials bumps the counters of the identities it wrote
+  for, too.
+
+Two side effects of the counters:
+
+- **During a rolling upgrade**, a gateway replica from before this release does
+  not sign the counters, so once any counter is non-zero the fingerprint
+  alternates between old and new replicas and an affected session may restart
+  on every turn. It stops when every replica runs this release.
+- If Redis cannot be read at dispatch, the turn is dispatched without the
+  counters (dispatch never fails on this). That costs about two extra session
+  restarts (one without the counters, one when they are back).
 
 ## Which credential a call uses
 
@@ -156,11 +168,12 @@ contains the upstream server's response body or its error message.
 | The refresh fails, the server still refuses, or a static credential is refused (401) | `this agent's connection to S needs to be re-authorised` |
 | The server answers 403 | `S refused this call: permission denied for this identity` (no refresh, no card: re-authorising does not help) |
 | A private server and no connection for the person | `connect S: this conversation runs as you, and S uses your own connection, which is not set up yet` |
-| The upstream session is gone (a restart: 404 or 400 for the old session id) | the server rejected the request before running anything, so the pooled session is dropped and the call retried once on a fresh session |
+| The upstream session is gone (a restart: 404 or 400 for the old session id) | the server rejected the request before running anything, so the pooled session is dropped and the call retried once on a fresh session. (A server that ran the tool and then answered 404 or 400 with a session id would be classed the same and the call repeated once: rare, and the at-most-once guarantee covers 5xx answers, dropped connections and missing answers, not that case.) |
+| A sent call's answer stream breaks off or ends without an answer, or no answer arrives by the deadline | not retried: `the call to S was interrupted; it may have been executed — check before retrying` |
 | A tool **call** reached the server and then got a 5xx or lost its connection | **not retried**: calls are at most once, since the tool may already have run (created a ticket, sent a message). `the call to S was interrupted; it may have been executed — check before retrying` |
 | The same while opening the session or listing tools (nothing was run) | retried once on a fresh session; if that fails: `S is unavailable right now; try again later` |
 | The server answers with a JSON-RPC error | a fixed text per class: `S does not support this request`, `S rejected the call: unknown tool or invalid arguments`, `S rejected the request as invalid`, `S reported an internal error`, or `S returned an error (code N)` |
-| The call takes too long | `S did not answer within Ns` |
+| A tool list, or opening the session, takes too long | `S did not answer within Ns` |
 | The turn is aborted | `the call to S was cancelled`: the upstream gets `notifications/cancelled` and the call's HTTP connection is closed |
 | The outbound policy refuses the host | `S: outbound request refused: <host> …` (the host and the category, never the address) |
 | Too many calls in flight | `too many MCP calls are in flight for this identity; S was not called` |
