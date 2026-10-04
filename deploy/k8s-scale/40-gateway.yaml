@@ -5,8 +5,10 @@
 #
 # Its own ServiceAccount, so a Role bound for the gateway never reaches nodes
 # and nothing granted to `default` reaches the gateway. slaude makes no
-# Kubernetes API call, so no token is mounted; set it to true only if you bind
-# a Role that something in the pod uses.
+# Kubernetes API call, so the API token is not mounted; set it to true only if
+# you bind a Role that something in the pod uses. Vault's Kubernetes auth gets
+# its own short-lived token instead (the vault-token volume below), bound to
+# this ServiceAccount: the Vault role must name slaude-gateway and nothing else.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -52,6 +54,9 @@ spec:
                 name: slaude-scale-secrets
             - configMapRef:
                 name: slaude-scale-config
+            # Gateway only: Vault, the outbound policy, the node-credential door.
+            - configMapRef:
+                name: slaude-scale-gateway-config
           env:
             # The queues' Redis, shared with nodes, read by key from the node
             # Secret so the value has one source. The node credential is NOT
@@ -100,6 +105,10 @@ spec:
               mountPath: /data
             - name: soul-cache
               mountPath: /soul-cache
+            # SLAUDE_VAULT_K8S_TOKEN_PATH (20-config.yaml) points here.
+            - name: vault-token
+              mountPath: /var/run/secrets/vault
+              readOnly: true
           resources:
             requests:
               cpu: 250m
@@ -115,6 +124,16 @@ spec:
         - name: soul-cache
           emptyDir:
             sizeLimit: 64Mi
+        # A ServiceAccount token for Vault's Kubernetes login only: audience
+        # `vault`, ten minutes, refreshed by the kubelet. Unused until
+        # SLAUDE_VAULT_ADDR is set. Never mounted on a node.
+        - name: vault-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: vault
+                  expirationSeconds: 600
+                  path: token
 ---
 # Keep at least one gateway during voluntary disruptions (node drains,
 # upgrades) — it is the only Slack ingress and the nodes' control plane.

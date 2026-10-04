@@ -44,22 +44,57 @@ kubectl apply -f deploy/k8s-scale/30-pvc.yaml
 kubectl apply -f deploy/k8s-scale/40-gateway.yaml
 kubectl apply -f deploy/k8s-scale/50-node.yaml
 kubectl apply -f deploy/k8s-scale/60-ingress.yaml
-kubectl apply -f deploy/k8s-scale/70-autoscale.yaml   # KEDA ScaledObject (see file for the HPA fallback)
+kubectl apply -f deploy/k8s-scale/70-autoscale.yaml   # KEDA ScaledObjects, one per label (see file for the HPA fallback)
 # or, the same set in one build:
 kubectl apply -k deploy/k8s-scale
 # optional, on a CNI that enforces NetworkPolicy (read the file first):
 kubectl apply -f deploy/k8s-scale/optional/node-egress-networkpolicy.yaml
 ```
 
-`10-secrets.yaml` holds **two** Secrets: `slaude-scale-secrets` for the gateway
-only (master key, job secret, database URLs, Slack secrets) and
-`slaude-scale-node-secrets` for nodes (the node bearer, Redis, the provider env
-fallback). The gateway reads the node bearer and Redis URL from the node Secret
-by key. Never load the gateway Secret on a node: a node that finds a
-gateway-only variable logs a warning at boot and sets
-`slaude_node_gateway_secrets_present`, and a later release refuses to boot.
-Upgrading a cluster that used one Secret for both tiers, and the rotation that
-follows, is described in the multi-node deploy guide (the Secret split).
+`10-secrets.yaml` holds the gateway's Secret, `slaude-scale-secrets` (master
+key, job secret, node key, legacy node token, database URLs, Slack secrets),
+one Secret shared by every node deployment, `slaude-scale-node-secrets` (Redis,
+the provider env fallback), and one **credential Secret per node deployment**
+(`slaude-scale-node-cred-<label>`, holding only that deployment's
+`SLAUDE_NODE_TOKEN`). The gateway reads only the Redis URL from the node Secret,
+by key. Never load the gateway Secret on a node: the node Deployments set
+`SLAUDE_NODE_BOOT_CHECK=refuse`, so a node that finds a gateway-only variable
+stops at boot (naming the variable, never its value) and sets
+`slaude_node_gateway_secrets_present`; any `SLAUDE_VAULT_*` or `VAULT_*`
+variable stops it whatever that setting says. Upgrading a cluster that used one
+Secret for both tiers, and the rotation that follows, is described in the
+multi-node deploy guide (the Secret split).
+
+### Node labels
+
+`50-node.yaml` runs one Deployment per node label: `slaude-node` for label
+`default` (its selector is unchanged from earlier releases) and
+`slaude-node-finance` as the example of a second label. Each has its own
+credential Secret, PodDisruptionBudget and KEDA ScaledObject on its own queue
+(`turns` for `default`, `turns.label.<label>` for any other). Mint each
+credential on a gateway and pipe it into its Secret (the command is in
+`10-secrets.yaml`); a persona runs on a label through `runsOn` in its
+`persona.yaml`. Labels separate trust between **nodes**, not between personas
+on the same node, and queue names are routing, not access control: see the
+multi-node deploy guide.
+
+Upgrade order is **gateways first, then nodes**. Before the new node Secrets
+are applied, the node image must already be at this release (an older node
+does not read a credential Secret it does not know about) and queued turns
+should be drained.
+
+### Gateway-only configuration
+
+`20-config.yaml` adds `slaude-scale-gateway-config`, loaded by the gateway only:
+Vault (off until `SLAUDE_VAULT_ADDR` is set; Kubernetes auth through the
+projected `vault-token` volume in `40-gateway.yaml`, audience `vault`),
+`SLAUDE_OUTBOUND_INTERNAL_HOSTS` (list any in-cluster identity provider, MCP
+server or Vault the gateway reaches on a private address or over http),
+`SLAUDE_NODE_LEGACY` and the MCP bridge limits. Nothing in it may move to the
+shared ConfigMap: a node refuses to boot with any Vault variable.
+`slaude-node-manifest` is the nodes' stdio MCP manifest, mounted at
+`/etc/slaude/node.json`; it is empty, so nodes mount no stdio or plugin MCP
+server for any persona until you declare one.
 
 Then point the Slack app at the ingress host — `bun run manifest --mode http
 --url https://slaude-gw.example.com` emits the request URLs (and, when
@@ -78,4 +113,7 @@ Then point the Slack app at the ingress host — `bun run manifest --mode http
   gateway renders persona files onto it, nodes read them and the SDK writes
   session transcripts.
 - Scale gateways by bumping `replicas` in `40-gateway.yaml`; nodes scale
-  automatically on queue depth.
+  automatically on queue depth, per label.
+- `optional/node-egress-networkpolicy.yaml` selects every node deployment
+  (`slaude.dev/tier: node`) and leaves Postgres and Vault off the allowed
+  ports. It needs a CNI that enforces NetworkPolicy.

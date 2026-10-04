@@ -1,5 +1,13 @@
-# Non-secret runtime config shared by both Deployments. Role, ports and
-# gateway URL are set per-Deployment (40/50) — everything here is common.
+# Non-secret runtime config. Role, ports and gateway URL are set per-Deployment
+# (40/50).
+#
+# Three ConfigMaps:
+#   slaude-scale-config          shared by the gateway and every node deployment
+#   slaude-scale-gateway-config  the gateway only: Vault, the outbound policy,
+#                                the node-credential door, the MCP bridge. A
+#                                node refuses to boot with any SLAUDE_VAULT_* or
+#                                VAULT_* variable, so none may sit in the shared one.
+#   slaude-node-manifest         the nodes' stdio MCP manifest (node.json)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -15,14 +23,73 @@ data:
   SLAUDE_SLACK_MODE: "http"
   SLAUDE_MODEL: "claude-sonnet-4-6"
   # Redis key namespace — lets several slaude deploys share one Redis.
-  # The KEDA trigger in 70-autoscale.yaml hardcodes the BullMQ list name
+  # The KEDA triggers in 70-autoscale.yaml hardcode the BullMQ list names
   # derived from this prefix; change both together.
   SLAUDE_REDIS_PREFIX: "slaude"
   # SIGTERM grace for node workers: seconds to finish in-flight turns.
-  # terminationGracePeriodSeconds on the node Deployment MUST exceed this.
+  # terminationGracePeriodSeconds on the node Deployments MUST exceed this.
   SLAUDE_NODE_DRAIN_SEC: "120"
-  # BullMQ concurrency per node process.
+  # BullMQ concurrency per WORKER. A node runs one worker per label in its
+  # credential plus one for its own queue, so its ceiling is workers x this.
   SLAUDE_NODE_CONCURRENCY: "8"
   # Public redirect URL registered on the Slack app for the OAuth install
   # flow — must match the Ingress host in 60-ingress.yaml.
   SLACK_OAUTH_REDIRECT_URL: "https://slaude-gw.example.com/slack/oauth/callback"
+  # Nodes: whether a managed persona whose runtime bundle carries no provider
+  # credentials runs on the node's own (the fallback in the node Secret). "1"
+  # keeps the earlier behaviour. Set "0" once every persona declares a
+  # `provider` or has stored credentials, and drop the keys from the node Secret.
+  # SLAUDE_PROVIDER_ENV_FALLBACK: "0"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: slaude-scale-gateway-config
+  namespace: slaude-scale
+data:
+  # --- Vault (provider credentials by reference) ---------------------------
+  # Off until SLAUDE_VAULT_ADDR is set; the other settings are read only then.
+  # Kubernetes auth logs in with the gateway's projected ServiceAccount token
+  # (40-gateway.yaml), bound to the slaude-gateway ServiceAccount only.
+  # SLAUDE_VAULT_ADDR: "https://vault.example.com:8200"
+  SLAUDE_VAULT_AUTH: "kubernetes"
+  SLAUDE_VAULT_ROLE: "slaude-gateway"
+  SLAUDE_VAULT_K8S_TOKEN_PATH: "/var/run/secrets/vault/token"
+  # Every reference must resolve under one of these (`{persona}` is the
+  # persona's own name, so one persona cannot name another's secret).
+  SLAUDE_VAULT_ALLOWED_PREFIXES: "secret/slaude/personas/{persona}"
+  # SLAUDE_VAULT_MOUNTS: "secret"
+  # SLAUDE_VAULT_CACERT: "/etc/vault-ca/ca.crt"
+  # SLAUDE_VAULT_CACHE_TTL: "60"
+  # SLAUDE_VAULT_STALE_MAX: "600"
+  # --- Outbound policy ------------------------------------------------------
+  # Hosts the gateway may reach on a private address or over http: an
+  # in-cluster identity provider, MCP server or Vault. Exact names, comma list.
+  SLAUDE_OUTBOUND_INTERNAL_HOSTS: ""
+  # --- Node credentials -----------------------------------------------------
+  # "off" refuses the legacy shared token, so only signed credentials work.
+  # Close it once every node deployment holds a signed credential.
+  # SLAUDE_NODE_LEGACY: "off"
+  # SLAUDE_LABEL_UNSERVED_SECS: "60"
+  # --- MCP bridge (defaults shown) -----------------------------------------
+  # SLAUDE_MCP_BRIDGE_TIMEOUT_MS: "50000"
+  # SLAUDE_MCP_BRIDGE_SESSION_CONCURRENCY: "4"
+  # SLAUDE_MCP_BRIDGE_OWNER_CONCURRENCY: "8"
+---
+# The nodes' stdio MCP manifest, mounted at /etc/slaude (SLAUDE_NODE_MANIFEST).
+# A node mounts a stdio or plugin MCP server only when this declares it AND
+# allows it for the persona; empty means none, for every persona. A change
+# needs a pod roll. One manifest per node deployment is fine: give a label its
+# own ConfigMap when its servers differ.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: slaude-node-manifest
+  namespace: slaude-scale
+data:
+  node.json: |
+    {
+      "version": 1,
+      "mcpServers": {},
+      "allow": {}
+    }
