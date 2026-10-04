@@ -18,7 +18,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentManager, AgentEvent } from "../../agent/manager";
 import type { SessionRow } from "../../db/schema";
 import { encodeRunAs } from "../../agent/credential-owner";
-import { mintJobToken } from "../api/auth";
+import { mintJobToken, verifyJobToken } from "../api/auth";
 import { runsOnFor } from "../../persona/registry";
 import { env } from "../../config/env";
 import { activeRemoteTarget } from "../../remote/active";
@@ -28,7 +28,7 @@ import { makeKeys, type Keys } from "../../queue/keys";
 import { getRedis, getSubRedis } from "../../queue/redis";
 import { makeRegistry, type Registry } from "../../queue/registry";
 import { makePubSub, type PubSub } from "../../queue/pubsub";
-import { TurnQueues, type TurnTarget } from "../../queue/turns";
+import { TurnQueues, type TurnJob, type TurnTarget } from "../../queue/turns";
 import { isFailureCode } from "./failure-codes";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -116,6 +116,34 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
   let closed = false;
 
   /**
+   * Re-dispatch a job that failed with LABEL_MISMATCH to the persona's
+   * CURRENT label queue (node labels spec §4.6): same messages and claims, a
+   * fresh token signed for that label under a new job id, relabelAttempts + 1
+   * so a second mismatch is shown instead of looping. Returns where it went,
+   * null when another replica's follower did it (follow its marker), or
+   * "failed" when the job's own token cannot be read back (shown as the
+   * failure).
+   */
+  async function relabelRedispatch(failed: { id?: string; data: unknown }): Promise<{ queue: string; jobId: string } | null | "failed"> {
+    const data = failed.data as TurnJob;
+    const v = verifyJobToken(data.jobToken, { graceSec: Number.MAX_SAFE_INTEGER });
+    if (!v.ok) return "failed";
+    const label = runsOnFor(data.personaId);
+    const newId = randomUUID();
+    const { exp: _exp, iat: _iat, iat0: _iat0, ...claims } = v.claims;
+    const jobToken = mintJobToken({ ...claims, label, job: newId });
+    const res = await turns.redispatch(
+      String(failed.id),
+      { ...data, label, jobToken, relabelAttempts: (data.relabelAttempts ?? 0) + 1, enqueuedAt: Date.now() },
+      label,
+      newId,
+    );
+    if (!res) return null;
+    console.log(`[dispatch] LABEL_MISMATCH job=${failed.id} re-dispatched to queue=${res.queue} job=${res.jobId}`);
+    return { queue: res.queue, jobId: res.jobId };
+  }
+
+  /**
    * @param startAfter Stream id to read after when this call starts a new
    *   follower. It MUST be captured before the job was enqueued: see dispatch().
    *   Ignored when a follower for the session is already running, since that
@@ -156,6 +184,9 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
               lastId = entry.id;
               const e = entry.event as AgentEvent;
               if (!e || typeof e !== "object" || !("type" in e)) continue;
+              // LABEL_MISMATCH is held back: the job's failure decides whether
+              // the turn is re-dispatched (silently) or shown (see below).
+              if (e.type === "error" && e.code === "LABEL_MISMATCH") continue;
               if (e.type === "done" || e.type === "error") {
                 // Authoritative turn outcome. Attribute it to a job still
                 // awaiting one (outcomes are FIFO per session — turns are
@@ -200,6 +231,26 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
                   }
                   continue;
                 }
+                const reason = (j as { failedReason?: unknown } | undefined)?.failedReason;
+                // LABEL_MISMATCH (node labels spec §4.6): the node may not
+                // serve the agent (any more). Re-dispatch the turn ONCE to the
+                // persona's current label and post nothing; a second mismatch
+                // falls through to the one fixed message below.
+                if (jstate === "failed" && reason === "LABEL_MISMATCH" && j && ((j.data as TurnJob).relabelAttempts ?? 0) < 1) {
+                  const next = await relabelRedispatch(j).catch((e) => {
+                    console.error(`[dispatch] re-dispatch after LABEL_MISMATCH failed session=${sessionId} job=${jobId}:`, e);
+                    return "failed" as const;
+                  });
+                  // Another replica's follower won the once-guard: its
+                  // job-moved marker leads there on the next poll.
+                  if (next === null) continue;
+                  if (next !== "failed") {
+                    state.jobs.delete(jobId);
+                    if (!state.outcomeEmitted.has(next.jobId)) state.jobs.set(next.jobId, { queue: next.queue });
+                    state.deadline = Math.max(state.deadline, Date.now() + followMaxMs);
+                    continue;
+                  }
+                }
                 state.jobs.delete(jobId);
                 state.deadline = Math.min(state.deadline, Date.now() + followLingerMs);
                 // Synthesize the outcome only if the stream didn't already
@@ -215,7 +266,6 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
                   // A typed failure travels as the job's failure reason
                   // (the node throws UnrecoverableError(code)); anything
                   // else is a plain TURN_FAILED.
-                  const reason = (j as { failedReason?: unknown } | undefined)?.failedReason;
                   agent.emit("event", (jstate === "failed"
                     ? { type: "error", sessionId, error: "turn failed on the node (job failed; events stream gap)", code: isFailureCode(reason) ? reason : "TURN_FAILED", jobId }
                     : { type: "done", sessionId }) as AgentEvent);
