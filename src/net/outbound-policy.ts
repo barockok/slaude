@@ -1,9 +1,23 @@
 /**
  * One outbound-fetch policy (WS-D D5.3; the MCP bridge's SSRF policy, WS-C
- * §4.2.7). Every fetch to a URL that came from configuration or from a remote
- * server's response — OAuth discovery, client registration, code exchange,
- * refresh — goes through `safeFetch`, because the gateway attaches real
- * credentials to those URLs and runs next to the cluster's private services.
+ * §4.2.7). The MCP OAuth flows — discovery, client registration, code
+ * exchange and refresh (src/agent/mcp-oauth/*) — fetch through `safeFetch` by
+ * default, because the gateway attaches real credentials to those URLs, takes
+ * them from persona configuration and from the servers' own metadata, and runs
+ * next to the cluster's private services.
+ *
+ * Known gaps (not yet routed through this module):
+ * - panel/portal OIDC discovery and code exchange
+ *   (src/gateway/panel/auth/oidc.ts): the issuer is operator configuration,
+ *   often an internal IdP, so routing it would break login by default;
+ * - the remote-brain MCP transport (src/knowledge/remote/brain-client.ts),
+ *   which uses the MCP SDK's own fetch against SLAUDE_BRAIN_URL.
+ *
+ * Proxies: Bun's node:http honours HTTP_PROXY / HTTPS_PROXY (NO_PROXY
+ * excludes) and offers no per-request opt-out, so with a proxy set the
+ * request still goes to the checked address, but through the proxy: the
+ * trust boundary moves to the proxy, which must not reach private ranges on
+ * the gateway's behalf.
  *
  * - Only https. http only for loopback with SLAUDE_OUTBOUND_DEV_LOOPBACK=1
  *   (development), or for an operator-declared internal host.

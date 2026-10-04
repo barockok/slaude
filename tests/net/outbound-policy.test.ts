@@ -319,6 +319,33 @@ describe("safeFetch (against a local server, loopback admitted by the dev flag)"
     }
   });
 
+  test("documented: an env proxy (HTTP_PROXY) is honoured and receives the pinned address", async () => {
+    // Bun's node:http has no per-request opt-out from env proxies, so the
+    // policy cannot ignore them; the module header and the configuration
+    // reference say the trust boundary moves to the proxy. If Bun stops
+    // honouring the variable, this fails and those docs need revisiting.
+    const proxyHits: string[] = [];
+    const proxy = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (r) => { proxyHits.push(r.url); return new Response("via-proxy"); } });
+    try {
+      const code = `
+        const { safeFetch } = await import(${JSON.stringify(join(import.meta.dir, "../../src/net/outbound-policy.ts"))});
+        const res = await safeFetch("http://svc.example.test:${server.port}/json", {}, {
+          allowLoopback: true, allowedHosts: [], internalHosts: [],
+          resolver: async () => [{ address: "127.0.0.1", family: 4 }],
+        });
+        console.log(await res.text());`;
+      const proxyUrl = `http://127.0.0.1:${proxy.port}`;
+      const env: Record<string, string | undefined> = { ...process.env, HTTP_PROXY: proxyUrl, http_proxy: proxyUrl };
+      delete env.NO_PROXY; delete env.no_proxy;
+      const p = Bun.spawn([process.execPath, "-e", code], { env, stdout: "pipe", stderr: "pipe" });
+      const [out] = await Promise.all([new Response(p.stdout).text(), p.exited]);
+      expect(out.trim()).toBe("via-proxy");
+      expect(proxyHits).toEqual([`http://127.0.0.1:${server.port}/json`]);
+    } finally {
+      proxy.stop(true);
+    }
+  });
+
   test("a connection failure surfaces as an error", async () => {
     const closed = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("") });
     const port = closed.port;
