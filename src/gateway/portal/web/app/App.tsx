@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, CONNECT_RESULTS, type Integration, type Me } from "./api";
+import { IdentityList } from "./IdentityList";
 
 /** The result the OAuth callback redirected back with, read once at load and
  *  then removed from the URL so a reload does not repeat it. */
@@ -9,40 +10,6 @@ function useConnectResult(): string | null {
     if (result) history.replaceState(null, "", location.pathname);
   }, [result]);
   return result;
-}
-
-/** The Slack identities bound to this account, each with an Unlink button. */
-export function IdentityList({
-  identities,
-  busy,
-  onUnlink,
-}: {
-  identities: Me["slackIdentities"];
-  busy: string | null;
-  onUnlink: (teamId: string, slackUserId: string) => void;
-}) {
-  return (
-    <ul className="list">
-      {identities.map((s) => {
-        const key = `${s.teamId}:${s.slackUserId}`;
-        return (
-          <li key={key}>
-            <div>
-              <strong>Slack</strong>
-              <span className="host">
-                {s.slackUserId} in {s.teamId}
-              </span>
-            </div>
-            <div className="actions">
-              <button onClick={() => onUnlink(s.teamId, s.slackUserId)} disabled={busy === key}>
-                Unlink
-              </button>
-            </div>
-          </li>
-        );
-      })}
-    </ul>
-  );
 }
 
 export function App() {

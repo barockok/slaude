@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { IdentityList } from "../../../src/gateway/portal/web/app/App";
+import { IdentityList } from "../../../src/gateway/portal/web/app/IdentityList";
 import { api } from "../../../src/gateway/portal/web/app/api";
 
 const realFetch = globalThis.fetch;
