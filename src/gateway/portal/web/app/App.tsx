@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, CONNECT_RESULTS, type Integration, type Me } from "./api";
+import { IdentityList } from "./IdentityList";
 
 /** The result the OAuth callback redirected back with, read once at load and
  *  then removed from the URL so a reload does not repeat it. */
@@ -62,6 +63,19 @@ export function App() {
     }
   }
 
+  async function unlink(teamId: string, slackUserId: string) {
+    setBusy(`${teamId}:${slackUserId}`);
+    setError(null);
+    try {
+      await api.unlink(teamId, slackUserId);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not unlink.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <main>
       <header>
@@ -113,6 +127,13 @@ export function App() {
             </li>
           ))}
         </ul>
+      )}
+
+      {!!me?.slackIdentities.length && (
+        <>
+          <h2>Slack accounts</h2>
+          <IdentityList identities={me.slackIdentities} busy={busy} onUnlink={(t, u) => void unlink(t, u)} />
+        </>
       )}
 
       {me && me.slackIdentities.length === 0 && (

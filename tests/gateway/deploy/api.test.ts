@@ -46,6 +46,15 @@ pgOnly("POST /deploy/v1/tenants/:tenant/personas", () => {
     expect((await res!.json() as any).created).toEqual(["default", "ana"]);
   });
 
+  test("the response carries ignoredFields, and a newer version is a 422", async () => {
+    const res = await api().fetch(post(DEPLOY, { ...body, futureKnob: 1 }, "?dryRun=1"));
+    expect((await res!.json() as any).ignoredFields).toEqual(["futureKnob"]);
+    const clean = await api().fetch(post(DEPLOY, body, "?dryRun=1"));
+    expect((await clean!.json() as any).ignoredFields).toEqual([]);
+    const newer = await api().fetch(post(DEPLOY, { ...body, version: 99 }, "?dryRun=1"));
+    expect(newer!.status).toBe(422);
+  });
+
   test("without a configured deploy token every /deploy path is 404, before auth", async () => {
     delete process.env.SLAUDE_DEPLOY_TOKEN;
     expect((await api().fetch(post(DEPLOY)))!.status).toBe(404);

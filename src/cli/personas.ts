@@ -15,13 +15,21 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
-import { parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, type SyncPayload } from "../persona/sync/payload";
+import { parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, safeKey, capPaths, SUPPORTED_PAYLOAD_VERSION, type SyncPayload } from "../persona/sync/payload";
 
 const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : undefined);
 // The gateway only resolves ${PERSONA_UPPER_CASE_NAME}; persona names are lower-case with hyphens.
 const varFor = (name: string) => `${PERSONA_VAR_PREFIX}${name.replace(/-/g, "_").toUpperCase()}_XOXP`;
 
-export function renderDir(dir: string, meta: { revision: string; committedAt: string }): SyncPayload {
+const YAML_KEYS = new Set(["slackUserId", "userToken", "model"]);
+
+/** `onUnknown` receives `persona.<name>.<key>` for each persona.yaml key the payload has no field for (names only). */
+export function renderDir(
+  dir: string,
+  meta: { revision: string; committedAt: string },
+  onUnknown?: (paths: string[]) => void,
+): SyncPayload {
+  const unknown: string[] = [];
   const root = join(dir, "personas");
   if (!existsSync(root)) throw new PayloadError(`no personas/ directory in ${dir}`);
   const personas = [];
@@ -34,6 +42,9 @@ export function renderDir(dir: string, meta: { revision: string; committedAt: st
       cfg = ((yaml ? Bun.YAML.parse(yaml) : {}) ?? {}) as typeof cfg;
     } catch (e) {
       throw new PayloadError(`persona '${name}': persona.yaml is not valid YAML (${(e as Error).message})`);
+    }
+    if (cfg && typeof cfg === "object") {
+      for (const k of Object.keys(cfg)) if (!YAML_KEYS.has(k)) unknown.push(`persona.${name}.${safeKey(k)}`);
     }
     const soul = read(join(root, name, "SOUL.md"));
     if (soul === undefined) throw new PayloadError(`persona '${name}' has no SOUL.md`);
@@ -60,7 +71,8 @@ export function renderDir(dir: string, meta: { revision: string; committedAt: st
   if (personas.length > 0 && !personas.some((p) => p.name === "default")) {
     throw new PayloadError("personas/ has personas but no default/ — a non-empty sync must include a persona named 'default'");
   }
-  const payload = parsePayload({ ...meta, personas });
+  const payload = parsePayload({ version: SUPPORTED_PAYLOAD_VERSION, ...meta, personas });
+  if (unknown.length) onUnknown?.(capPaths(unknown));
   // Run the gateway's placeholder validation (with every name satisfied) so a
   // malformed ${...} fails the pull request instead of 422ing at deploy.
   const anyEnv = new Proxy({}, { get: () => "x" }) as Record<string, string>;
@@ -251,6 +263,8 @@ if (import.meta.main) {
       const p = renderDir(rest[0], {
         revision: flag("--revision") ?? process.env.GITHUB_SHA ?? "local",
         committedAt: flag("--committed-at") ?? new Date().toISOString(),
+      }, (paths) => {
+        if (flags.has("--check")) console.error(`[personas] unknown fields (the gateway will ignore them, or refuse under SLAUDE_DEPLOY_STRICT): ${paths.join(", ")}`);
       });
       if (!flags.has("--check")) console.log(JSON.stringify(p, null, 2));
     } else if (cmd === "export") {
