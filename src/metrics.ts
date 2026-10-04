@@ -199,6 +199,14 @@ export const m = {
   userTurnsTotal: metrics.counter("slaude_user_turns_total", "Inbound user turns, labeled by user_id + user_name (opt-in via SLAUDE_METRICS_PER_USER=1)."),
   httpRequestsTotal: metrics.counter("slaude_http_requests_total", "Slack ingress HTTP responses (/slack/*), labeled by route and status."),
   v1JobEventsTotal: metrics.counter("slaude_v1_job_events_total", "Node job telemetry received on /v1/jobs/:id (ack|fail), labeled by event."),
+  nodeCredentialExpirySeconds: metrics.gauge(
+    "slaude_node_credential_expiry_seconds",
+    "Seconds until a signed node credential the gateway has seen expires, labeled by credential id (bounded to 64 ids).",
+  ),
+  nodeLegacyAuthTotal: metrics.counter(
+    "slaude_node_legacy_auth_total",
+    "/v1 requests authenticated with the legacy shared token while SLAUDE_NODE_KEY is set.",
+  ),
   v1ToolCallsTotal: metrics.counter("slaude_v1_tool_calls_total", "REST tool-plane invocations on /v1/tools/<server>/<tool>, labeled by server + tool."),
   // Node runtime (spec §6).
   nodeSessionsLive: metrics.gauge("slaude_node_sessions_live", "Warm SDK Query sessions held by this node."),

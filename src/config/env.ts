@@ -29,6 +29,23 @@ function opt(name: string, fallback = ""): string {
   return process.env[name] ?? fallback;
 }
 
+/** Parse a duration: a bare number of seconds, or a number with an `s`, `m`,
+ *  `h` or `d` suffix. Returns null for anything else or a non-positive value. */
+export function parseDurationSec(raw: string): number | null {
+  const m = raw.trim().match(/^(\d+)([smhd]?)$/);
+  if (!m) return null;
+  const n = Number(m[1]) * ({ "": 1, s: 1, m: 60, h: 3600, d: 86400 } as const)[m[2] as "" | "s" | "m" | "h" | "d"];
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+function durationEnvSec(name: string, dflt: number): number {
+  const raw = opt(name).trim();
+  if (!raw) return dflt;
+  const n = parseDurationSec(raw);
+  if (n === null) throw new Error(`${name} must be seconds or a duration like 6h (got '${raw}')`);
+  return n;
+}
+
 /** Split a comma-separated env list into trimmed, non-empty entries. */
 function csv(raw: string): string[] {
   return raw.split(",").map((s) => s.trim()).filter(Boolean);
@@ -216,6 +233,28 @@ export const env = {
    *  every /v1 request. Empty (default) = /v1 auth refuses all requests, so a
    *  mono deploy without the var exposes nothing. Rotate via env. */
   nodeToken: () => opt("SLAUDE_NODE_TOKEN"),
+  /** Gateway: HS256 key for signed node credentials (WS-B §4.1). Its own key,
+   *  never the job secret. Empty = signed credentials are not accepted. */
+  nodeKey: () => opt("SLAUDE_NODE_KEY"),
+  /** Gateway: the previous node key, still accepted when verifying so a key
+   *  rotates without a flag day. */
+  nodeKeyPrevious: () => opt("SLAUDE_NODE_KEY_PREVIOUS"),
+  /** Gateway: the static shared token a legacy node presents. Falls back to
+   *  SLAUDE_NODE_TOKEN (the old gateway reading, deprecated) when unset. */
+  nodeLegacyToken: () => opt("SLAUDE_NODE_LEGACY_TOKEN"),
+  /** Gateway: SLAUDE_NODE_LEGACY=off closes the legacy door outright. */
+  nodeLegacyOff: (): boolean => opt("SLAUDE_NODE_LEGACY").trim().toLowerCase() === "off",
+  /** Gateway: accept a /v1/pending call with no job token from the legacy
+   *  identity (old nodes send none). Default on for one release. */
+  allowTokenlessPending: (): boolean => {
+    const raw = opt("SLAUDE_NODE_ALLOW_TOKENLESS_PENDING", "1").trim().toLowerCase();
+    return !(raw === "0" || raw === "false" || raw === "no" || raw === "off");
+  },
+  /** Cap on a job token's total life across refreshes, measured from its
+   *  first issue (`iat0`). Seconds, or a duration like `6h`. Default 6h. */
+  jobTokenMaxAgeSec: (): number => durationEnvSec("SLAUDE_JOB_TOKEN_MAX_AGE", 6 * 3600),
+  /** Cap on a job's total age for token-reissue. Default 24h. */
+  jobMaxAgeSec: (): number => durationEnvSec("SLAUDE_JOB_MAX_AGE", 24 * 3600),
   /** Pipeline credential for /deploy. Unset → /deploy does not exist. Never the
    *  node token: every node holds that one, and "nodes can't change identity"
    *  is the point of this endpoint having its own. Returned TRIMMED, and ""
