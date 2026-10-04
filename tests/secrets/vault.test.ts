@@ -120,10 +120,20 @@ describe("Vault client — 403 handling", () => {
     );
     expect(out.every((v) => v === "fake-key-a")).toBe(true);
     expect(fv.counts.login).toBe(2);
-    expect(fv.counts.lookup).toBe(1);
+    // one capability probe per login, plus ONE lookup for all 20 concurrent 403s
+    expect(fv.counts.lookup).toBe(3);
   });
 
-  test("re-login is rate limited: a second expiry inside the interval fails instead of logging in", async () => {
+  test("a revoked token on a role that can look itself up recovers at once via one login", async () => {
+    const c = client();
+    expect(await c.read("secret", "slaude/personas/a", "api_key")).toBe("fake-key-a");
+    fv.live.clear();
+    t += 100; // well inside the minimum login interval
+    expect(await c.read("secret", "slaude/personas/a", "api_key")).toBe("fake-key-a");
+    expect(fv.counts.login).toBe(2);
+  });
+
+  test("re-login is rate limited: at most two attempts per interval, then the login's own reason", async () => {
     const c = client();
     await c.read("secret", "slaude/personas/a", "api_key");
     t += 60_000;
@@ -132,12 +142,17 @@ describe("Vault client — 403 handling", () => {
     expect(fv.counts.login).toBe(2);
     t += 1_000;
     fv.live.clear();
-    // the 403 is reported as itself (denied), not as a transient auth failure
-    expect(await reason(c.read("secret", "slaude/personas/a", "api_key"))).toBe("denied");
-    expect(fv.counts.login).toBe(2);
+    await c.read("secret", "slaude/personas/a", "api_key");
+    expect(fv.counts.login).toBe(3);
+    t += 1_000;
+    fv.live.clear();
+    // two attempts in the window already: no login; the token is proven dead, so
+    // the rate-limited login's transient reason is passed on (stale may apply)
+    expect(await reason(c.read("secret", "slaude/personas/a", "api_key"))).toBe("auth");
+    expect(fv.counts.login).toBe(3);
     t += 30_000;
     expect(await c.read("secret", "slaude/personas/a", "api_key")).toBe("fake-key-a");
-    expect(fv.counts.login).toBe(3);
+    expect(fv.counts.login).toBe(4);
   });
 
   test("a policy denial does not cause a login storm (50 concurrent denied reads)", async () => {
@@ -178,13 +193,13 @@ describe("Vault client — a good token is never thrown away", () => {
     expect(fv.counts.lookup).toBe(1);
   });
 
-  test("a dead token whose replacement login fails reports the 403 as denied and keeps the old token", async () => {
+  test("a proven-dead token whose replacement login fails passes on the login's reason and keeps the old token", async () => {
     const c = client();
     await c.read("secret", "slaude/personas/a", "api_key");
     t += 60_000;
     fv.live.clear();
     fv.loginStatus = 503;
-    expect(await reason(c.read("secret", "slaude/personas/a", "api_key"))).toBe("denied");
+    expect(await reason(c.read("secret", "slaude/personas/a", "api_key"))).toBe("server_error");
     expect(fv.counts.login).toBe(2);
     // Vault comes back and re-validates the old token: no login needed, it is still used
     fv.loginStatus = undefined;
@@ -205,10 +220,12 @@ describe("Vault client — a good token is never thrown away", () => {
     expect(await c.read("secret", "slaude/personas/a", "api_key")).toBe("fake-key-a");
     t += 1_000;
     expect(await c.read("secret", "slaude/personas/a", "api_key")).toBe("fake-key-a");
+    t += 1_000;
+    expect(await c.read("secret", "slaude/personas/a", "api_key")).toBe("fake-key-a");
     expect(fv.kvTokens.every((x) => x === "fake-token-1")).toBe(true);
-    // renew and login are rate limited too: one attempt each in the window
+    // renew: one attempt per interval; login: at most two per interval
     expect(fv.counts.renew).toBe(1);
-    expect(fv.counts.login).toBe(2);
+    expect(fv.counts.login).toBe(3);
   });
 
   test("a renew that returns lease 0 forces a login (lease 0 = never expires only on login)", async () => {
@@ -222,13 +239,22 @@ describe("Vault client — a good token is never thrown away", () => {
     expect(fv.counts.login).toBe(2);
   });
 
-  test("a login lease of 0 never expires", async () => {
-    fv.leaseSeconds = 0;
+  test("a Kubernetes login with a zero or negative lease is a bad response, not 'never expires'", async () => {
+    for (const lease of [0, -5]) {
+      fv.leaseSeconds = lease;
+      expect(await reason(client().read("secret", "slaude/personas/a", "api_key"))).toBe("bad_response");
+    }
+  });
+
+  test("a tiny positive lease cannot cause a login storm", async () => {
+    fv.leaseSeconds = 0.0001;
     const c = client();
     await c.read("secret", "slaude/personas/a", "api_key");
-    t += 10 * 86_400_000;
-    await c.read("secret", "slaude/personas/a", "api_key");
-    expect(fv.counts.login).toBe(1);
+    for (let i = 0; i < 20; i++) {
+      t += 1_000;
+      await c.read("secret", "slaude/personas/a", "api_key").catch(() => {});
+    }
+    expect(fv.counts.login).toBe(2);
     expect(fv.counts.renew).toBe(0);
   });
 
@@ -275,7 +301,7 @@ describe("Vault client — KV parsing", () => {
     fv.denied.add("secret/data/slaude/personas/a");
     const c = client({ namespace: "team-a" });
     await reason(c.read("secret", "slaude/personas/a", "api_key"));
-    expect(fv.namespaces.map((x) => x.kind)).toEqual(["login", "kv", "lookup"]);
+    expect(fv.namespaces.map((x) => x.kind)).toEqual(["login", "lookup", "kv", "lookup"]);
     expect(fv.namespaces.every((x) => x.ns === "team-a")).toBe(true);
   });
 

@@ -121,6 +121,35 @@ describe("createSecretResolver", () => {
     expect(events.at(-1)).toMatchObject({ outcome: "error", reason: "server_error" });
   });
 
+  test("token proven dead and Vault login down: stale is served within STALE_MAX, logins stay rate limited", async () => {
+    const r = make({ SLAUDE_VAULT_CACHE_TTL: "1" });
+    await r.resolve(supportRef, { persona: "support-bot" });
+    fv.live.clear();
+    fv.loginStatus = 503;
+    for (const step of [1_000, 30_000, 31_000]) {
+      t += step;
+      expect(await r.resolve(supportRef, { persona: "support-bot" })).toBe("fake-support-key");
+      expect(events.at(-1)).toMatchObject({ outcome: "stale" });
+    }
+    expect(fv.counts.login).toBe(4);
+    for (let i = 0; i < 5; i++) {
+      t += 100;
+      await r.resolve(supportRef, { persona: "support-bot" });
+    }
+    expect(fv.counts.login).toBeLessThanOrEqual(5);
+    expect(stale).toBe(8);
+  });
+
+  test("policy revoked and lookup-self failing: the refused value is never served stale", async () => {
+    const r = make({ SLAUDE_VAULT_CACHE_TTL: "1" });
+    await r.resolve(supportRef, { persona: "support-bot" });
+    fv.denied.add("secret/data/slaude/personas/support-bot");
+    fv.lookupStatus = 503;
+    t += 2_000;
+    await expect(r.resolve(supportRef, { persona: "support-bot" })).rejects.toMatchObject({ reason: "denied" });
+    expect(stale).toBe(0);
+  });
+
   test("Vault policy denial is outcome 'denied'", async () => {
     fv.denied.add("secret/data/slaude/personas/support-bot");
     const r = make();

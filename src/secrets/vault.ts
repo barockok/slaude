@@ -10,14 +10,21 @@
  *
  * 403. Vault answers 403 both for "policy denies this path" and for "this
  * token is no longer valid". A 403 alone never triggers a login: the client
- * asks lookup-self first (single flight per token). lookup-self refusing is
- * not proof either (a role without the default policy cannot look itself up),
- * so a token a read accepted within the minimum login interval is kept and the
- * 403 reported as `denied`. Otherwise it logs in and retries the read once; if
- * that login fails, the original 403 is reported as `denied`. Logins and
- * renewals are single flight AND rate limited (one attempt per minimum
- * interval), so a policy-denied path — or a flapping Vault — cannot cause a
- * login per resolve.
+ * asks lookup-self first (single flight per token); accepted ⇒ `denied`, and
+ * if lookup-self cannot answer (5xx, timeout) the read's 403 also stands as
+ * `denied`, so a refused value is never served stale. Each login probes
+ * lookup-self once to learn whether the role can look itself up:
+ *   - it can: a refusal proves the token dead ⇒ log in at once and retry the
+ *     read once; if that login fails, its own reason is passed on (transient,
+ *     so the cache may serve a stale value);
+ *   - it cannot (a role without the default policy) or unknown: a refusal
+ *     proves nothing, so a token a read accepted within the minimum login
+ *     interval is kept and the 403 reported as `denied`; otherwise log in, and
+ *     a failed login leaves the 403 as `denied`.
+ * Logins are single flight AND rate limited (at most two attempts per minimum
+ * interval, so a revocation right after a login still recovers at once);
+ * renewals one per interval. A policy-denied path — or a flapping Vault —
+ * cannot cause a login per resolve.
  *
  * Clock. Intervals use an injectable MONOTONIC clock (default
  * performance.now()); a backwards step makes an age unknown, which never
@@ -63,11 +70,18 @@ export function createVaultClient(cfg: VaultConfig, deps: VaultClientDeps = {}):
       : undefined;
   let loginInflight: Promise<TokenState> | undefined;
   let renewInflight: Promise<TokenState> | undefined;
-  let lastLoginAttemptAt: number | undefined;
+  /** recent login attempt times; at most LOGIN_BURST within one minimum interval */
+  let loginAttempts: number[] = [];
   let lastRenewAttemptAt: number | undefined;
   const lookupInflight = new Map<string, Promise<boolean>>();
   /** the last token lookup-self refused, so late 403s on it skip the lookup */
   let lookupRefused: string | undefined;
+  /**
+   * Whether this role can look itself up, learned by probing lookup-self with
+   * each freshly logged-in token. true ⇒ a later lookup refusal PROVES the
+   * token dead. false/unknown ⇒ a refusal proves nothing.
+   */
+  let canLookup: boolean | undefined;
   /** the token that last got a non-403 answer from a read, and when */
   let lastOk: { token: string; at: number } | undefined;
   let caPromise: Promise<string> | undefined;
@@ -76,6 +90,17 @@ export function createVaultClient(cfg: VaultConfig, deps: VaultClientDeps = {}):
   const since = (at: number): number => {
     const d = now() - at;
     return d < 0 ? Infinity : d;
+  };
+  /**
+   * Login rate limit: at most LOGIN_BURST attempts per minimum interval — two,
+   * so a token revoked right after a login can still be replaced at once. A
+   * backwards clock step forgets the attempts rather than blocking.
+   */
+  const LOGIN_BURST = 2;
+  const loginAllowed = (): boolean => {
+    const t = now();
+    loginAttempts = loginAttempts.filter((a) => a <= t && t - a < minLoginIntervalMs);
+    return loginAttempts.length < LOGIN_BURST;
   };
   /** One attempt per minimum interval; a backwards clock step never blocks. */
   const attemptAllowed = (last: number | undefined): boolean =>
@@ -131,34 +156,54 @@ export function createVaultClient(cfg: VaultConfig, deps: VaultClientDeps = {}):
   }
 
   /**
-   * Lease 0 means "never expires" only on a LOGIN answer (root/dev tokens). A
-   * renew answering 0 has nothing left to give: it is a failure, which sends
-   * the caller to a (rate-limited) login.
+   * A login or renew answer must carry a finite positive lease. Only a static
+   * (token-auth) token never expires, and that one never comes through here.
+   * A login without one is a bad response; a renew without one has nothing
+   * left to give and sends the caller to a (rate-limited) login.
    */
   function tokenFrom(body: Record<string, unknown>, what: "login" | "renew"): TokenState {
     const auth = body.auth as { client_token?: unknown; lease_duration?: unknown; renewable?: unknown } | undefined;
     if (!auth || typeof auth.client_token !== "string" || auth.client_token === "") {
       return fail("bad_response", `Vault ${what} returned no client token`);
     }
-    const lease = typeof auth.lease_duration === "number" && auth.lease_duration > 0 ? auth.lease_duration : 0;
-    if (!lease && what === "renew") return fail("auth", "Vault renew returned no lease");
+    const lease = auth.lease_duration;
+    if (typeof lease !== "number" || !Number.isFinite(lease) || lease <= 0) {
+      return what === "renew"
+        ? fail("auth", "Vault renew returned no lease")
+        : fail("bad_response", "Vault login returned no usable lease");
+    }
     return {
       token: auth.client_token,
       obtainedAt: now(),
-      leaseMs: lease ? lease * 1000 : Infinity,
-      renewAfterMs: lease ? Math.floor((lease * 1000 * 2) / 3) : Infinity,
+      leaseMs: lease * 1000,
+      renewAfterMs: Math.floor((lease * 1000 * 2) / 3),
       renewable: auth.renewable === true,
     };
+  }
+
+  /** Probe whether a token we just obtained can look itself up (see canLookup). */
+  async function probeLookup(token: string): Promise<void> {
+    try {
+      const res = await request("GET", "auth/token/lookup-self", token);
+      void res.body?.cancel();
+      if (res.ok) canLookup = true;
+      else if (res.status === 401 || res.status === 403) {
+        canLookup = false;
+        lookupRefused = token;
+      }
+    } catch {
+      // unknown stays unknown
+    }
   }
 
   /** Single flight and rate limited. Replaces `state` only when a new token is actually obtained. */
   function login(): Promise<TokenState> {
     if (loginInflight) return loginInflight;
     if (cfg.auth === "token") return Promise.reject(new SecretResolutionError("auth", "Vault token is not valid"));
-    if (!attemptAllowed(lastLoginAttemptAt)) {
+    if (!loginAllowed()) {
       return Promise.reject(new SecretResolutionError("auth", "Vault login is rate limited"));
     }
-    lastLoginAttemptAt = now();
+    loginAttempts.push(now());
     loginInflight = (async () => {
       let jwt: string;
       try {
@@ -169,8 +214,10 @@ export function createVaultClient(cfg: VaultConfig, deps: VaultClientDeps = {}):
       if (!jwt) return fail("auth", "service-account token file is empty");
       const res = await request("POST", "auth/kubernetes/login", undefined, { role: cfg.role, jwt });
       if (!res.ok) authStatusFailure(res, "login");
-      state = tokenFrom(await json(res), "login");
-      return state;
+      const fresh = tokenFrom(await json(res), "login");
+      await probeLookup(fresh.token);
+      state = fresh;
+      return fresh;
     })().finally(() => {
       loginInflight = undefined;
     });
@@ -230,7 +277,10 @@ export function createVaultClient(cfg: VaultConfig, deps: VaultClientDeps = {}):
       p = (async () => {
         const res = await request("GET", "auth/token/lookup-self", token);
         void res.body?.cancel();
-        if (res.ok) return true;
+        if (res.ok) {
+          canLookup = true;
+          return true;
+        }
         if (res.status === 401 || res.status === 403) {
           lookupRefused = token;
           return false;
@@ -309,14 +359,28 @@ export function createVaultClient(cfg: VaultConfig, deps: VaultClientDeps = {}):
       let res = await kvGet(apiPath, token);
       if (res.status === 401 || res.status === 403) {
         void res.body?.cancel();
-        if (await lookupSelf(token)) return denied();
-        // lookup-self refused too: dead token, or a role that cannot look itself up.
-        if (recentlyAccepted(token)) return denied();
+        let valid: boolean;
+        try {
+          valid = await lookupSelf(token);
+        } catch {
+          // Vault cannot say whether the token is alive. The read itself was
+          // refused, so report that: a value the policy refuses is never served stale.
+          return denied();
+        }
+        if (valid) return denied();
+        // lookup-self refused too. On a role that can look itself up that PROVES
+        // the token dead; otherwise it proves nothing, and a recently accepted
+        // token is kept ("cannot tell").
+        const provenDead = canLookup === true;
+        if (!provenDead && recentlyAccepted(token)) return denied();
         try {
           token = await replaceToken(token);
-        } catch {
-          // No new token (refused, rate limited, Vault down): report the original
-          // 403 as itself, and keep the current token for the next caller.
+        } catch (err) {
+          // No new token. The current token is kept for the next caller. If the
+          // old token is proven dead, the login's own (transient) reason is the
+          // truth, so a cached value may be served stale; otherwise the 403
+          // stands as a denial.
+          if (provenDead && err instanceof SecretResolutionError) throw err;
           return denied();
         }
         res = await kvGet(apiPath, token);
