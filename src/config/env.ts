@@ -61,6 +61,32 @@ export function jobAgeEnvViolations(e: Record<string, string | undefined>): stri
   return out;
 }
 
+/** Boot check for the MCP bridge's variables (gateway and mono roles): each set
+ *  value must parse, so a typo stops the boot naming the variable instead of
+ *  failing every bridged call. */
+export function mcpBridgeEnvViolations(e: Record<string, string | undefined>): string[] {
+  const out: string[] = [];
+  for (const name of [
+    "SLAUDE_MCP_BRIDGE_TIMEOUT_MS",
+    "SLAUDE_MCP_BRIDGE_OWNER_CONCURRENCY",
+    "SLAUDE_MCP_BRIDGE_SESSION_CONCURRENCY",
+    "SLAUDE_MCP_BRIDGE_IDLE_MS",
+    "SLAUDE_MCP_BRIDGE_MAX_REQUEST_BYTES",
+    "SLAUDE_MCP_BRIDGE_MAX_RESULT_BYTES",
+    "SLAUDE_MCP_BRIDGE_MAX_LIST_BYTES",
+    "SLAUDE_MCP_BRIDGE_MAX_TOOLS",
+  ]) {
+    const raw = (e[name] ?? "").trim();
+    if (raw && !(Number.isSafeInteger(Number(raw)) && Number(raw) >= 1)) out.push(`${name} must be a positive integer (got '${raw}')`);
+  }
+  const flag = (e.SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG ?? "").trim();
+  if (flag !== "" && flag !== "0" && flag !== "1") out.push(`SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG must be 0 or 1 (got '${flag}')`);
+  for (const n of (e.SLAUDE_MCP_BRIDGE_ENV_ALLOW ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
+    if (!/^[A-Z0-9_]+$/.test(n)) out.push(`SLAUDE_MCP_BRIDGE_ENV_ALLOW entries must be variable names (A-Z, 0-9, _): '${n}'`);
+  }
+  return out;
+}
+
 function durationEnvSec(name: string, dflt: number): number {
   const raw = opt(name).trim();
   if (!raw) return dflt;

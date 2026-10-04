@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { env } from "../../src/config/env";
+import { env, mcpBridgeEnvViolations } from "../../src/config/env";
 
 const NAMES = {
   timeoutMs: "SLAUDE_MCP_BRIDGE_TIMEOUT_MS",
@@ -42,6 +42,24 @@ describe("SLAUDE_MCP_BRIDGE_* limits", () => {
     process.env[NAMES.ownerConcurrency] = " ";
     expect(env.mcpBridge.timeoutMs()).toBe(20_000);
     expect(env.mcpBridge.ownerConcurrency()).toBe(8);
+  });
+
+  test("the boot check names every malformed bridge variable, and passes a clean environment", () => {
+    expect(mcpBridgeEnvViolations({})).toEqual([]);
+    expect(mcpBridgeEnvViolations({ SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG: "1", SLAUDE_MCP_BRIDGE_ENV_ALLOW: "EXAMPLE_A, EXAMPLE_B", SLAUDE_MCP_BRIDGE_MAX_TOOLS: "10" })).toEqual([]);
+    const bad = mcpBridgeEnvViolations({
+      SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG: "true",
+      SLAUDE_MCP_BRIDGE_ENV_ALLOW: "ok_NAME,lower",
+      SLAUDE_MCP_BRIDGE_IDLE_MS: "5m",
+      SLAUDE_MCP_BRIDGE_TIMEOUT_MS: "0",
+    });
+    expect(bad).toEqual([
+      "SLAUDE_MCP_BRIDGE_TIMEOUT_MS must be a positive integer (got '0')",
+      "SLAUDE_MCP_BRIDGE_IDLE_MS must be a positive integer (got '5m')",
+      "SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG must be 0 or 1 (got 'true')",
+      "SLAUDE_MCP_BRIDGE_ENV_ALLOW entries must be variable names (A-Z, 0-9, _): 'ok_NAME'",
+      "SLAUDE_MCP_BRIDGE_ENV_ALLOW entries must be variable names (A-Z, 0-9, _): 'lower'",
+    ]);
   });
 
   test("anything else is refused, naming the variable", () => {
