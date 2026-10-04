@@ -162,6 +162,11 @@ beforeAll(async () => {
     abortedSessions: string[] = [];
     configDirResolver?: (sessionId: string, persona: string | undefined) => Promise<string>;
     lockResolver?: ((sessionId: string) => Promise<any>) | null;
+    childEnvResolver?: (sessionId: string) => Promise<unknown>;
+    override setChildEnvResolver(r: any) {
+      super.setChildEnvResolver(r);
+      this.childEnvResolver = r;
+    }
     override setSessionLockResolver(r: any) {
       super.setSessionLockResolver(r);
       this.lockResolver = r;
@@ -213,6 +218,10 @@ beforeAll(async () => {
     busts.push([t, p]);
     bust(t, p);
   };
+  // The worker reads SLAUDE_PROVIDER_ENV_FALLBACK once, at start (the stub
+  // agent never calls its child-env resolver, so no other case depends on it).
+  const savedFallback = process.env.SLAUDE_PROVIDER_ENV_FALLBACK;
+  process.env.SLAUDE_PROVIDER_ENV_FALLBACK = "0";
   workerHandle = await startNodeWorker({
     nodeId: NODE_ID,
     client,
@@ -228,6 +237,8 @@ beforeAll(async () => {
     turnTimeoutMs: 30_000,
     configRoot: nodeConfigRoot,
   });
+  if (savedFallback === undefined) delete process.env.SLAUDE_PROVIDER_ENV_FALLBACK;
+  else process.env.SLAUDE_PROVIDER_ENV_FALLBACK = savedFallback;
 });
 
 afterAll(async () => {
@@ -307,6 +318,16 @@ d("gateway↔node E2E (real Redis)", () => {
       bootFailure = null;
     }
   }, 30_000);
+
+  // R1-F6: the worker's child-env resolver follows SLAUDE_PROVIDER_ENV_FALLBACK
+  // (set to 0 for this worker): a session it knows nothing about fails typed.
+  test("the worker installs a child-env resolver that honours SLAUDE_PROVIDER_ENV_FALLBACK", async () => {
+    const { BootFailure } = await import("../../src/gateway/core/failure-codes");
+    expect(stub.childEnvResolver).toBeDefined();
+    const e = await stub.childEnvResolver!("no-such-session").catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(BootFailure);
+    expect((e as any).code).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
+  });
 
   // R2-F4: a transient failure takes BullMQ's retry silently; the last attempt
   // posts the fixed text once.
