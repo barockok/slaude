@@ -44,9 +44,12 @@ function fakeTransport(): Transport {
       conversations: { info: async () => ({}), members: async () => ({ members: [] }), replies: async () => ({ messages: [] }) },
       users: { info: async () => ({ user: { real_name: "Test" } }) },
     } as any,
-    action: () => {}, event: () => {}, use: () => {}, start: async () => {}, stop: async () => {},
+    action: () => {}, event: (name: string, fn: any) => handlers.set(name, fn), use: () => {}, start: async () => {}, stop: async () => {},
   };
 }
+const handlers = new Map<string, (args: any) => Promise<void>>();
+/** Session ids the gateway handed to the (stubbed) agent, in order. */
+const sent: string[] = [];
 
 /** A managed registry: finance reads kb-finance only, closed reads nothing,
  *  the default persona reads every installed KB (kbSources null). */
@@ -77,7 +80,9 @@ beforeAll(() => {
   setBackendForTest(backend);
   ensureHome();
   writeSoulFixture(WORLD);
-  handle = createGateway(new AgentManager(), fakeTransport());
+  const agent = new AgentManager();
+  agent.sendMessage = async (id: string) => void sent.push(id);
+  handle = createGateway(agent, fakeTransport());
 });
 afterAll(() => {
   resetBackend();
@@ -165,5 +170,68 @@ describe("list_kbs and search_kbs are persona-filtered and path-free", () => {
     expect(hits.map((k: any) => k.label)).toEqual(["finance"]);
     expect(JSON.stringify(hits)).not.toContain(paths.knowledge);
     expect(await tool("closed", "search_kbs", { query: "budget" })).toBe("(no knowledge bases available)");
+  });
+});
+
+describe("a retired persona", () => {
+  test("its KB tool calls are a 409 with one log line, never a retried 500", async () => {
+    for (const name of ["list_kbs", "search_kbs", "kb_search"]) {
+      const lines: unknown[][] = [];
+      const warn = console.warn; const error = console.error;
+      console.warn = (...a: unknown[]) => void lines.push(a);
+      console.error = (...a: unknown[]) => void lines.push(a);
+      let status = 0; let body: any;
+      try {
+        const token = mintJobToken({
+          tenant: "default", persona: "ghost", session: "S-ghost", team: "T1", channel: "C0TEAM", thread: "300.0",
+          initiator: WORLD.manager, scope: "turn",
+        });
+        const res = (await handle.fetchV1(new Request(`http://gw/v1/tools/kb/${name}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${NODE_TOKEN}`, [JOB_HEADER]: token, "content-type": "application/json" },
+          body: JSON.stringify(name === "list_kbs" ? {} : { query: "budget" }),
+        })))!;
+        status = res.status; body = await res.json();
+      } finally { console.warn = warn; console.error = error; }
+      expect({ name, status, code: body.code }).toEqual({ name, status: 409, code: "PERSONA_NOT_LIVE" });
+      expect(lines).toHaveLength(1);
+    }
+  });
+});
+
+// mono: the in-process slaude_kb server the gateway mounts for a session takes
+// the session persona's list too, not only the REST plane.
+describe("the in-process slaude_kb server (mono)", () => {
+  async function callTool(cfg: any, name: string, args: Record<string, unknown>) {
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    await cfg.instance.connect(serverT);
+    const client = new Client({ name: "t", version: "0.0.0" });
+    await client.connect(clientT);
+    try {
+      return (await client.callTool({ name, arguments: args })) as any;
+    } finally {
+      await client.close();
+    }
+  }
+
+  test("list_kbs and search_kbs list only the session persona's KBs", async () => {
+    kbOf.default = ["kb-finance"];
+    setPersonaRegistry(managedRegistry());
+    sent.length = 0;
+    await handlers.get("message")!({
+      event: { type: "message", channel: "D0MGR", channel_type: "im", user: WORLD.manager, team: "T", ts: "8100.1", text: "hello" },
+      client: fakeTransport().client,
+      context: { teamId: "T" },
+    });
+    const t0 = Date.now();
+    while (sent.length === 0 && Date.now() - t0 < 3000) await Bun.sleep(10);
+    const servers = (await handle.__resolveMcp(sent[0]!))!;
+    const kb = servers["slaude_kb"];
+    const list = JSON.parse((await callTool(kb, "list_kbs", {})).content[0].text);
+    expect(list.map((k: any) => k.label)).toEqual(["finance"]);
+    const hits = JSON.parse((await callTool(kb, "search_kbs", { query: "budget" })).content[0].text);
+    expect(hits.map((k: any) => k.label)).toEqual(["finance"]);
   });
 });
