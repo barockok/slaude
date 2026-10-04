@@ -14,8 +14,10 @@
 #   - Redis (6379) — narrow `to:` to your Redis address if you can;
 #   - HTTPS (443) anywhere: the LLM provider, remote MCP servers, git, package
 #     registries.
-# If an agent's stdio MCP servers or tools need another port, add a rule for it
-# here. If your Redis or LLM provider listens on a different port, change the
+# The rules are by port: a Postgres or Vault served on 443 or 6379 would still be
+# reachable. If an agent's stdio MCP servers or tools need another port, add a
+# rule for it here; /remote (SSH to the initiator's machine over the tailnet)
+# needs its own egress rules. If your Redis or LLM provider listens on a different port, change the
 # rule to match. Ingress to node pods (health and metrics on 8081) is left open.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -44,7 +46,8 @@ spec:
               app.kubernetes.io/component: gateway
       ports:
         - { protocol: TCP, port: 8080 }
-    # Redis: queues, the node registry, session locks.
+    # Redis: queues, the node registry, session locks. Recommended: add a `to:`
+    # naming your Redis (a podSelector or an ipBlock) instead of any address.
     - ports:
         - { protocol: TCP, port: 6379 }
     # HTTPS: the LLM provider and other remote services.
