@@ -24,6 +24,8 @@ import { effectivePersonas, isManaged } from "../../db/personas";
 import type { EffectivePersona } from "../../persona/effective";
 import { PROVIDER_FIELDS, type PersonaProvider } from "../../persona/sync/payload";
 import { createSecretResolver, parseRef, SecretResolutionError, type SecretRef, type SecretResolver } from "../../secrets";
+import { TRANSIENT_REASONS } from "../../secrets/errors";
+import { baseUrlProblem, internalHostsFrom } from "../../persona/provider-base-url";
 import { logResolveEvent } from "../core/provider-secrets";
 import { decrypt, masterKey, MasterKeyError } from "../../db/crypto";
 import { env } from "../../config/env";
@@ -58,6 +60,10 @@ export interface RuntimeBundle {
   /** Present (true) only on a managed tenant's bundle. Unmanaged bundles omit
    *  it, so their content and ETag are exactly as before. */
   managed?: true;
+  /** Present (true) when the persona declares its own `provider`: providerCreds
+   *  is exactly that set, and a node must not fill a missing field (or any
+   *  other provider-selecting variable) from its own environment. */
+  ownProvider?: true;
 }
 
 type PersonaRow = {
@@ -125,12 +131,16 @@ function providerSecretResolver(): SecretResolver {
 }
 
 /**
- * Overlay a persona's provider references (WS-A §5.3: reference > persona row >
- * tenant row > none, per field) by resolving each one. A literal baseUrl is
- * used as is. Any failure throws SecretResolutionError; the caller answers 503.
+ * A persona that DECLARES `provider` (any field set) gets exactly that set,
+ * resolved: nothing is filled in from the provider_creds rows here, nor from
+ * the node's environment there (the bundle says `ownProvider`). A persona's
+ * key therefore only ever goes to the host the same persona names, and its
+ * host only ever receives its own key (review M-1). The base URL, literal or
+ * resolved, is re-checked against the baseUrl policy, and a set with no
+ * credential is refused, so a row written some other way cannot bypass sync.
+ * Any failure throws SecretResolutionError; the caller answers 503.
  */
-async function applyProviderRefs(out: RuntimeBundle["providerCreds"], persona: string, provider: PersonaProvider | null | undefined) {
-  if (!provider) return;
+async function resolveDeclaredProvider(persona: string, provider: PersonaProvider): Promise<RuntimeBundle["providerCreds"]> {
   const resolver = providerSecretResolver();
   const resolved = await Promise.all(
     PROVIDER_FIELDS.map(async (field) => {
@@ -147,22 +157,41 @@ async function applyProviderRefs(out: RuntimeBundle["providerCreds"], persona: s
       return [field, await resolver.resolve(ref, { persona })] as const;
     }),
   );
+  const out: RuntimeBundle["providerCreds"] = {};
   for (const [field, value] of resolved) if (value !== undefined) out[field] = value;
+  if (!out.apiKey && !out.authToken && !out.oauthToken) {
+    throw new SecretResolutionError("invalid_value", "provider has no credential");
+  }
+  if (out.baseUrl !== undefined && baseUrlProblem(out.baseUrl, internalHostsFrom(process.env))) {
+    console.error(`[provider.cred.resolve] persona=${persona} field=baseUrl outcome=denied reason=invalid_value`);
+    throw new SecretResolutionError("invalid_value", "provider baseUrl is outside the baseUrl policy");
+  }
+  return out;
 }
+
+const declaresProvider = (p: PersonaProvider | null | undefined): p is PersonaProvider =>
+  !!p && PROVIDER_FIELDS.some((f) => p[f]);
 
 /** A managed tenant: effective state only. Self-contained, so tiers 2 and 3
  *  (disk, env) are unreachable from it. Missing or tombstoned persona -> null. */
 async function buildManagedBundle(tenantId: string, personaId: string): Promise<RuntimeBundle | null> {
   const effective = (await effectivePersonas(tenantId)).find((p) => p.name === personaId);
   if (!effective) return null;
-  const row = await db.one<{ id: string }>(`SELECT id FROM personas WHERE tenant_id = ? AND name = ?`, [tenantId, personaId]);
-  const providerCreds: RuntimeBundle["providerCreds"] = {};
-  await applyProviderCreds(providerCreds, tenantId, row?.id);
-  await applyProviderRefs(providerCreds, effective.name, effective.provider);
+  const own = declaresProvider(effective.provider);
+  let providerCreds: RuntimeBundle["providerCreds"];
+  if (own) {
+    providerCreds = await resolveDeclaredProvider(effective.name, effective.provider as PersonaProvider);
+  } else {
+    // No declared provider: the read-only rows, persona over tenant, per field.
+    const row = await db.one<{ id: string }>(`SELECT id FROM personas WHERE tenant_id = ? AND name = ?`, [tenantId, personaId]);
+    providerCreds = {};
+    await applyProviderCreds(providerCreds, tenantId, row?.id);
+  }
   return {
     tenantId,
     personaId: effective.name,
     providerCreds,
+    ...(own ? { ownProvider: true as const } : {}),
     soulMd: effective.soulMd,
     soulJson: effective.soulJson,
     slackUserId: effective.slackUserId ?? null,
@@ -301,11 +330,14 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
 }
 
 /** The whole 503 body when a provider credential cannot be resolved. A node
- *  maps it to the typed failure code; nothing else is said. */
-export const PROVIDER_UNAVAILABLE_BODY = {
-  error: "provider credentials unavailable",
-  code: "PROVIDER_CREDENTIALS_UNAVAILABLE",
-} as const;
+ *  maps it to the typed failure code; nothing else is said but whether the
+ *  cause is transient (Vault not answering: retry later) or definitive (a
+ *  denial, a missing secret, a bad reference: retrying cannot help). */
+export function providerUnavailableBody(transient: boolean) {
+  return { error: "provider credentials unavailable", code: "PROVIDER_CREDENTIALS_UNAVAILABLE", transient } as const;
+}
+/** Seconds a node should wait before retrying a transient failure. */
+export const PROVIDER_RETRY_AFTER_SEC = 5;
 
 /**
  * ETag = HMAC-SHA256 of the body (WS-A §8). The body holds plaintext provider
@@ -327,6 +359,12 @@ function etagKey(): Buffer {
 function bundleEtag(body: string): string {
   return createHmac("sha256", etagKey()).update(body).digest("hex");
 }
+/** TEST SEAM: a fresh per-process fallback key, as a new process would have. */
+export function __resetEtagKeyForTests(): void {
+  fallbackEtagKey = null;
+}
+/** TEST SEAM: the ETag this process gives a body. */
+export const bundleEtagForTests = bundleEtag;
 
 export async function handleTenantRuntime(
   req: Request,
@@ -339,7 +377,16 @@ export async function handleTenantRuntime(
   } catch (e) {
     // The resolver already logged persona, scheme and reason. The body is
     // fixed: the reason, path and value stay on the gateway (WS-A §7).
-    if (e instanceof SecretResolutionError) return json(503, PROVIDER_UNAVAILABLE_BODY);
+    if (e instanceof SecretResolutionError) {
+      const transient = TRANSIENT_REASONS.has(e.reason);
+      return new Response(JSON.stringify(providerUnavailableBody(transient)), {
+        status: 503,
+        headers: {
+          "content-type": "application/json",
+          ...(transient ? { "retry-after": String(PROVIDER_RETRY_AFTER_SEC) } : {}),
+        },
+      });
+    }
     throw e;
   }
   if (!bundle) return notFound("unknown tenant or persona");
