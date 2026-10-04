@@ -300,6 +300,26 @@ export class NodeClient {
   }
 
   /**
+   * Episodic memory, served by the gateway (POST /v1/tools/memory/<op>). The
+   * gateway takes the session, persona and scope from the job token; the body
+   * carries only the turn's text. "unsupported" = a gateway that predates the
+   * route (404). Other non-200s throw.
+   */
+  async memoryPrefetch(jobToken: string): Promise<string | null | "unsupported"> {
+    const res = await this.request("/v1/tools/memory/prefetch", { method: "POST", body: {}, jobToken });
+    if (res.status === 404) return "unsupported";
+    const body = await this.#json<{ block?: string | null }>(res);
+    return typeof body.block === "string" ? body.block : null;
+  }
+
+  async memorySync(turn: { user: string; assistant: string }, jobToken: string): Promise<"ok" | "unsupported"> {
+    const res = await this.request("/v1/tools/memory/sync", { method: "POST", body: turn, jobToken });
+    if (res.status === 404) return "unsupported";
+    await this.#json<unknown>(res);
+    return "ok";
+  }
+
+  /**
    * Exchange a job's (possibly aging or freshly-expired) token for a new one
    * with identical claims and a full TTL. The original token authenticates
    * the exchange; the gateway enforces the grace window and job binding.
