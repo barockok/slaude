@@ -32,7 +32,9 @@ describe("deploy tokens vs node credentials", () => {
     process.env.SLAUDE_DEPLOY_TOKEN = SHARED;
     expect(env.deployToken()).toBe("");
     expect(env.deployToken()).toBe("");
-    const hits = warn.mock.calls.map((c) => c.map(String).join(" ")).filter((l) => l.includes("SLAUDE_DEPLOY_TOKEN"));
+    const hits = (warn.mock.calls as unknown[][])
+      .map((c) => c.map(String).join(" "))
+      .filter((l) => l.includes("SLAUDE_DEPLOY_TOKEN"));
     expect(hits).toHaveLength(1);
     expect(hits[0]).toContain("SLAUDE_NODE_LEGACY_TOKEN");
     expect(hits[0]).not.toContain(SHARED);

@@ -102,6 +102,7 @@ async function requestApprovalOverRest(
   });
   if (outcome === "aborted") return errResult("approval request aborted");
   if (outcome === "notfound") return errResult("approval gate disappeared before a decision");
+  if ("refused" in outcome) return errResult(`the gateway refused the approval poll (${outcome.refused.status})`);
   const d = decisionFromApprovalRow({ status: outcome.status, resolvedBy: outcome.resolvedBy });
   return {
     content: [
