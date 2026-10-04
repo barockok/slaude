@@ -43,6 +43,7 @@ const EXPECTED_GATES: Record<string, "label" | "none"> = {
   "jobs.token-refresh": "label",
   "jobs.token-reissue": "label",
   tools: "label",
+  "tools.mcpx": "label",
 };
 
 /** One concrete request per label-gated route, scoped to the matrix's token. */
@@ -57,6 +58,7 @@ const SAMPLES: Record<string, { method: string; path: string; body?: string }> =
   "jobs.token-refresh": { method: "POST", path: "/v1/jobs/J-matrix/token-refresh" },
   "jobs.token-reissue": { method: "POST", path: "/v1/jobs/J-matrix/token-reissue", body: "{}" },
   tools: { method: "POST", path: "/v1/tools/kb/search_kbs", body: JSON.stringify({ query: "x" }) },
+  "tools.mcpx": { method: "POST", path: "/v1/tools/mcpx/example/list", body: "{}" },
 };
 
 const routes: RouteDef[] = v1Routes({ tools: stubTools }, new InMemoryPendingSource());
