@@ -48,6 +48,11 @@ gateway sends credentials. An operator who accepts that risk can opt in:
   never its value). Gateway-only variables are never expanded, even when
   listed.
 
+In the gateway role, `/mcp` in Slack and the portal's integrations page offer
+exactly these servers, with the same configuration, so a connect stores the
+credential under the key the bridge looks up. (`mono` offers its own mounts, as
+before.)
+
 The runtime bundle the node fetches carries only the server **names**
 (`mcpServers: ["crm", "docs"]`), and only the servers the gateway will serve. A
 node that predates the bridge ignores the field. A node with this release and a

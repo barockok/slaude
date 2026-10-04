@@ -4,6 +4,7 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { paths } from "../../config/home";
 import { isGatewayOnlyEnv } from "../../config/gateway-only-env";
 import { getPersonaRegistry, type PersonaRegistry } from "../../persona/registry";
+import { env } from "../../config/env";
 
 /** Return a copy of a server config with all injected secrets removed.
  *  stdio → env emptied; sse/http → headers emptied + url userinfo/query/hash stripped.
@@ -105,12 +106,22 @@ export function oauthHttpServers(
  *  sessions resolve them. Slack's `/mcp` and the portal both go through here
  *  (the portal unions it over personas), so a persona-only server is offered,
  *  and accepted on connect, identically on both. Declared before
- *  `sessionExternalMcp` in the file; a function declaration, so order is moot. */
+ *  `sessionExternalMcp` in the file; a function declaration, so order is moot.
+ *
+ *  In the gateway role the sessions run on nodes and reach these servers only
+ *  through the MCP bridge, so the list (and the config a connect keys its
+ *  credential on) is the bridge's own source: a server the bridge would not
+ *  serve is not offered, and the credential key matches the one the bridge
+ *  looks up. mono keeps its own mounts. */
 export function connectableServers(
   personaId: string | null | undefined,
   globalMcp: ExternalMcp,
   registry?: PersonaRegistry,
+  opts: { role?: string; bridge?: BridgeSourceOptions } = {},
 ): ReturnType<typeof oauthHttpServers> {
+  if ((opts.role ?? env.role()) === "gateway") {
+    return oauthHttpServers(bridgeExternalMcp(personaId, { ...(registry ? { registry } : {}), ...opts.bridge }).servers);
+  }
   return oauthHttpServers(sessionExternalMcp(personaId, globalMcp, registry).servers);
 }
 

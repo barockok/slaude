@@ -2,7 +2,8 @@ import { describe, it, expect } from "bun:test";
 import { clearCredentials } from "../../../src/gateway/core/external-mcp";
 import { parseExternalMcp } from "../../../src/gateway/core/external-mcp";
 import { privateOverrides } from "../../../src/gateway/core/external-mcp";
-import { bridgeAllowsFileConfig, bridgedServerNames, bridgeExternalMcp } from "../../../src/gateway/core/external-mcp";
+import { bridgeAllowsFileConfig, bridgedServerNames, bridgeExternalMcp, connectableServers, oauthHttpServers } from "../../../src/gateway/core/external-mcp";
+import { oauthKey } from "../../../src/agent/mcp-oauth/store";
 import { mkdirSync } from "node:fs";
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -186,6 +187,27 @@ describe("bridgeExternalMcp", () => {
       expect(Object.keys(bridgeExternalMcp(undefined, opts).servers)).toEqual(["a", "bb"]);
       rmSync(f);
       expect(bridgeExternalMcp(undefined, opts)).toEqual({ servers: {}, privateServices: [] });
+    } finally {
+      rmSync(f, { force: true });
+    }
+  });
+
+  it("gateway role: /mcp and the portal offer exactly the bridge's servers, with the config the bridge keys credentials on", () => {
+    try {
+      writeFileSync(f, JSON.stringify(PLANTED));
+      const global = parseExternalMcp(structuredClone(PLANTED), env);
+      // mono: its own mounts, fully expanded as before.
+      expect(Object.keys(connectableServers(undefined, global, undefined, { role: "mono" }))).toEqual(["web"]);
+      // gateway, no file opt-in: the bridge serves nothing, so nothing is offered.
+      expect(connectableServers(undefined, global, undefined, { role: "gateway", bridge: { allowFileConfig: false, env } })).toEqual({});
+      // gateway with the opt-in: the same (allowlist-only) expansion the bridge
+      // uses, hence the same oauthKey on connect and on every bridged call.
+      const bridge = { allowFileConfig: true, envAllow: ["EXAMPLE_ALLOWED"], env };
+      const offered = connectableServers(undefined, global, undefined, { role: "gateway", bridge });
+      const served = oauthHttpServers(bridgeExternalMcp(undefined, bridge).servers);
+      expect(offered).toEqual(served);
+      expect(oauthKey("web", offered.web!)).toBe(oauthKey("web", served.web!));
+      expect(offered.web!.headers).toEqual({ "x-k": "${SLAUDE_MASTER_KEY}", "x-a": "${ANTHROPIC_API_KEY}", "x-ok": "allowed-value" });
     } finally {
       rmSync(f, { force: true });
     }
