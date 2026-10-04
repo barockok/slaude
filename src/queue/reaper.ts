@@ -19,8 +19,9 @@
  * on the work list, so the next pass looks again. A job whose turn already
  * finished (its turn-done marker exists, read in the same atomic step) is
  * taken off the node's queue and dropped, never copied or merged into another
- * job: its turn ran. Any other rescued job's messages go BEFORE those of the
- * session's newer pending job when the two are merged.
+ * job: its turn ran. A node's active jobs are moved before its waiting ones,
+ * and a merge orders two jobs' messages by Slack ts (TurnQueues), so a
+ * rescued turn's messages run before those of the session's newer job.
  *
  * moveStalled additionally rescues jobs sitting unclaimed on a *live* node's
  * queue past a threshold (node too busy or its worker wedged): they too go
@@ -96,23 +97,30 @@ export function makeReaper(opts: ReaperOpts) {
   };
 
   /**
-   * Move every unclaimed job, and every active job whose lock has expired, on
+   * Move every active job whose lock has expired, then every unclaimed job, on
    * a dead node's queue to its label's queue. `held` counts active jobs whose
    * lock is still live: they are left alone this pass.
+   *
+   * Active jobs FIRST (review U10b-R1): a rescued active job is older than any
+   * job of its session still waiting on the node (that one was enqueued while
+   * it ran). Moved first, it is on the label queue, or merged into the waiting
+   * job ahead of its messages, before the newer job can reach a label worker.
+   * Moving the waiting job first let an idle worker claim it at once, and the
+   * older turn ran after it.
    */
   const drainNodeQueue = async (nodeId: string): Promise<{ moved: number; held: number }> => {
     const q = turns.queue(nodeTurnsQueue(nodeId));
     let moved = 0;
     let held = 0;
-    for (const job of (await q.getJobs([...MOVABLE_STATES])) as Job[]) {
-      if ((await moveHome(job, false)).taken) moved++;
-    }
     for (const job of (await q.getJobs(["active"])) as Job[]) {
       // moveTo re-checks the lock in the same atomic step that takes the job;
       // a job it leaves in place is still held by a live lock.
       const r = await moveHome(job, true);
       if (r.taken) moved++;
       if (!r.left) held++;
+    }
+    for (const job of (await q.getJobs([...MOVABLE_STATES])) as Job[]) {
+      if ((await moveHome(job, false)).taken) moved++;
     }
     return { moved, held };
   };

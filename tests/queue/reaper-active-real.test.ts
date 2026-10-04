@@ -168,19 +168,27 @@ describe.skipIf(!realEnabled)("queue/reaper rescues active jobs of dead nodes (r
     await until(lockGone(`turns.${node}`, ids[0]), 5000);
   };
 
+  // Review U10b-R1: with a label worker RUNNING during the reap, moving the
+  // waiting m2 first let the worker claim it at once; the rescued m1 then found
+  // no pending job and ran after it (m2, m1). The reaper now moves a node's
+  // rescued ACTIVE jobs before its waiting ones, and every merge orders the two
+  // jobs' messages by their Slack ts, not by which one arrived at the merge.
+  const labelRuns = (): string[][] => {
+    const ran: string[][] = [];
+    worker("turns.label.engineering", async (job) => {
+      ran.push((job.data as TurnJob).messages.map((m) => m.text));
+    });
+    return ran;
+  };
+
   test("a rescued active job whose turn already finished (turn-done) is taken without running any of it again", async () => {
     await ready;
     await strandPair("dead-e", "s-done", ["done-a", "done-b"]);
     // The node finished m1's turn (marker written before the ack) and died.
     await redis.set(keys.turnDone("done-a"), "done", "EX", 600);
+    const ran = labelRuns();
     const report = await reaper.reapDeadNodes();
     expect(report.jobsMoved).toBe(2);
-    // The label's worker starts after the reap, so the outcome does not hang
-    // on whether it claimed m2 before the rescue reached m1.
-    const ran: string[][] = [];
-    worker("turns.label.engineering", async (job) => {
-      ran.push((job.data as TurnJob).messages.map((m) => m.text));
-    });
     expect(await queues.queue("turns.dead-e").getJobCounts("active", "waiting", "delayed")).toEqual({ active: 0, waiting: 0, delayed: 0 });
     await until(() => ran.length >= 1, 5000);
     await new Promise((r) => setTimeout(r, 400)); // room for a duplicate to show
@@ -189,32 +197,43 @@ describe.skipIf(!realEnabled)("queue/reaper rescues active jobs of dead nodes (r
     await redis.del(keys.coalesce("s-done"), keys.turnDone("done-a"));
   });
 
-  test("a rescued active job without turn-done runs before the newer pending job, each message once", async () => {
+  test("a rescued active job without turn-done runs before the newer pending job, each message once, with the label worker running", async () => {
     await ready;
     await strandPair("dead-f", "s-order", ["ord-a", "ord-b"]);
+    const ran = labelRuns();
     const report = await reaper.reapDeadNodes();
     expect(report.jobsMoved).toBe(2);
-    const ran: string[][] = [];
-    worker("turns.label.engineering", async (job) => {
-      ran.push((job.data as TurnJob).messages.map((m) => m.text));
-    });
-    await until(() => ran.length >= 1, 5000);
+    await until(() => ran.flat().length >= 2, 5000);
     await new Promise((r) => setTimeout(r, 400));
     expect(ran.flat()).toEqual(["m1", "m2"]);
     const again = await reaper.reapDeadNodes();
     expect(again.jobsMoved).toBe(0);
     await new Promise((r) => setTimeout(r, 200));
     expect(ran.flat()).toEqual(["m1", "m2"]);
+    expect(await queues.queue("turns.label.engineering").getDelayedCount()).toBe(0);
     await redis.del(keys.coalesce("s-order"));
   });
 
-  const labelRuns = (): string[][] => {
-    const ran: string[][] = [];
-    worker("turns.label.engineering", async (job) => {
-      ran.push((job.data as TurnJob).messages.map((m) => m.text));
-    });
-    return ran;
-  };
+  test("two reapers racing over the same dead node run m1 then m2, each once, with the label worker running", async () => {
+    await ready;
+    const { TurnQueues: TQ } = await import("../../src/queue/turns");
+    const { makeRegistry } = await import("../../src/queue/registry");
+    const { makeReaper } = await import("../../src/queue/reaper");
+    const r2 = realRedis();
+    conns.push(r2);
+    const queues2 = new TQ({ connection: r2, keys });
+    const reaper2 = makeReaper({ redis: r2, keys, turns: queues2, registry: makeRegistry({ redis: r2, keys, heartbeatSec: 30, nodeTtlSec: 0.25 }) });
+    await strandPair("dead-g", "s-race", ["race-a", "race-b"]);
+    const ran = labelRuns();
+    await Promise.all([reaper.reapDeadNodes(), reaper2.reapDeadNodes()]);
+    await until(() => ran.flat().length >= 2, 5000);
+    await new Promise((r) => setTimeout(r, 400));
+    expect(ran.flat()).toEqual(["m1", "m2"]);
+    expect(await queues.queue("turns.dead-g").getJobCounts("active", "waiting", "delayed")).toEqual({ active: 0, waiting: 0, delayed: 0 });
+    expect(await queues.queue("turns.label.engineering").getDelayedCount()).toBe(0);
+    await queues2.close();
+    await redis.del(keys.coalesce("s-race"));
+  });
 
   // Review U10b-R2: with the coalesce index lost, the first move points it at
   // the OLDER job; a newer job moved later used to be put ahead of it.

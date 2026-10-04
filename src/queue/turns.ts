@@ -655,6 +655,14 @@ export class TurnQueues {
         await this.#markMoved(id, { queue: target, jobId: id });
         return { jobId: id, queue: target, coalesced: false };
       }
+      // `job` was read before the lock: another mover (a second reaper) may
+      // have merged a rescued turn's messages into it since, so an unclaimed
+      // job is read again under the lock. Gone = someone else took it.
+      if (!opts.claimed) {
+        const current = await this.queue(from).getJob(id);
+        if (!current) return { jobId: id, queue: from, coalesced: false };
+        job = current;
+      }
       const data = job.data as TurnJob;
       if (opts.claimed) {
         // The original stays locked by the caller, so the index cannot point

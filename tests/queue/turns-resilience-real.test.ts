@@ -270,6 +270,29 @@ describe.skipIf(!realEnabled)("queue/turns hardening against real Redis", () => 
     await redis.del(keys.coalesce("s-rdrl"));
   });
 
+  // A mover holding a handle read BEFORE the session lock (a second reaper)
+  // must not copy that stale data: another mover may have merged a rescued
+  // turn's messages into the job meanwhile.
+  test("a move re-reads the job under the session lock: a stale handle does not drop merged messages", async () => {
+    await ready;
+    await queues.enqueueTurn(turn("s-stale", ["m1"], "stale"), { node: "stnode" }, "st-a");
+    const nodeW = startWorker("turns.stnode", null, { autorun: false, lockDuration: 300 });
+    expect((await nodeW.getNextJob("tok-st"))!.id).toBe("st-a");
+    await queues.enqueueTurn(turn("s-stale", ["m2"], "stale"), { node: "stnode" }, "st-b");
+    const staleB = (await queues.queue("turns.stnode").getJob("st-b"))!;
+    await until(async () => (await redis.exists(`${keys.bullPrefix}:turns.stnode:st-a:lock`)) === 0, 5000);
+    // The rescued m1 is merged into st-b, ahead of m2...
+    const a = (await queues.queue("turns.stnode").getJob("st-a"))!;
+    expect(await queues.moveTo(a, "stale", { rescueActive: true })).toEqual({ jobId: "st-b", queue: "turns.stnode", coalesced: true });
+    // ...and a mover with the pre-merge handle moves st-b with both.
+    expect((staleB.data as TurnJob).messages.map((m) => m.text)).toEqual(["m2"]);
+    expect(await queues.moveTo(staleB, "stale")).toEqual({ jobId: "st-b", queue: "turns.label.stale", coalesced: false });
+    const moved = (await queues.queue("turns.label.stale").getJob("st-b"))!;
+    expect((moved.data as TurnJob).messages.map((m) => m.text)).toEqual(["m1", "m2"]);
+    await moved.remove();
+    await redis.del(keys.coalesce("s-stale"));
+  });
+
   test("mergesFirst orders by the earliest Slack ts; the caller's hint decides only when the ts cannot", async () => {
     await ready;
     const { mergesFirst } = await import("../../src/queue/turns");
