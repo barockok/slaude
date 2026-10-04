@@ -389,6 +389,8 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
                 tombstoned: p.tombstonedAt !== null,
                 slackUserId: p.slackUserId,
                 userToken: presence(p.userToken),
+                // Where the persona runs (node labels spec §4.5); git-only, never overridden.
+                runsOn: p.runsOn ?? null,
                 fields: {
                   soul: { git: d.soulMd, live: p.soulMd, overridden: overridden("soul") },
                   model: { git: d.model, live: p.model, overridden: overridden("model") },

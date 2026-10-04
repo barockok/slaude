@@ -12,6 +12,7 @@
 import { z } from "zod";
 import { redactSecrets } from "../../gateway/core/status-text";
 import { PERSONA_VAR_PREFIX, PERSONA_VAR_RE } from "../../secrets/persona-var";
+import { LABEL_RE } from "../../queue/keys";
 import { parseRef } from "../../secrets/ref";
 import { baseUrlProblem, internalHostsFrom } from "../provider-base-url";
 import { PayloadError } from "./errors";
@@ -31,17 +32,23 @@ export class UnresolvedVarError extends PayloadError {
  * might change what a persona means.
  *
  *   1  the personas-as-code fields
- *   2  adds `provider` (WS-A). `render` writes 2 only when some persona sets
- *      it, so a gateway that predates `provider` refuses such a payload
- *      instead of stripping the field and leaving the persona on node
- *      credentials; any other payload stays 1 and deploys to either.
+ *   2  adds the fields in V2_PERSONA_FIELDS: `provider` (WS-A) and `runsOn`
+ *      (node labels spec §4.5). `render` writes 2 only when some persona sets
+ *      one of them, so a gateway that predates them refuses such a payload
+ *      instead of stripping the field (leaving the persona on node credentials,
+ *      or on `default`); any other payload stays 1 and deploys to either.
  */
 export const SUPPORTED_PAYLOAD_VERSION = 2;
-export const PROVIDER_PAYLOAD_VERSION = 2;
 
-/** The version a payload needs: 2 when any persona sets `provider`, else 1. */
-export function payloadVersionFor(personas: ReadonlyArray<{ provider?: unknown }>): number {
-  return personas.some((p) => p.provider !== undefined) ? PROVIDER_PAYLOAD_VERSION : 1;
+/**
+ * Persona fields a version-1 gateway does not know. Adding a version-2 field
+ * is one entry here.
+ */
+export const V2_PERSONA_FIELDS = ["provider", "runsOn"] as const;
+
+/** The version a payload needs: 2 when any persona sets any version-2 field, else 1. */
+export function payloadVersionFor(personas: ReadonlyArray<object>): number {
+  return personas.some((p) => V2_PERSONA_FIELDS.some((f) => (p as Record<string, unknown>)[f] !== undefined)) ? 2 : 1;
 }
 
 const personaSpec = z.object({
@@ -51,6 +58,8 @@ const personaSpec = z.object({
   model: z.string().min(1).optional(),
   soul: z.string(),
   mcp: z.record(z.unknown()).optional(),
+  // The node label the persona runs on; absent = `default`. Not overridable.
+  runsOn: z.string().regex(LABEL_RE, `runsOn must match ${LABEL_RE.source}`).optional(),
   // Shape only here; parseProvider below checks every key and value with
   // messages that never echo a value (zod's would echo an unknown key).
   provider: z.record(z.unknown()).optional(),

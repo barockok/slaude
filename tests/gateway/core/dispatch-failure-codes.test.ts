@@ -42,6 +42,7 @@ function infra(opts: { streamError: boolean; failedReason?: string }) {
         failedReason: opts.failedReason,
       }),
     }),
+    movedTo: async () => null,
     close: async () => {},
   };
   return { pubsub, turns, registry: { lookup: async () => null, close: async () => {} } };

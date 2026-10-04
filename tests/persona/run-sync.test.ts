@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { db } from "../../src/db/schema";
 import { __resetMasterKeyCache } from "../../src/db/crypto";
 import * as P from "../../src/db/personas";
-import { runSync, SyncFailure } from "../../src/persona/sync/run";
+import { runSync, SyncFailure, unservedLabelWarnings } from "../../src/persona/sync/run";
 import { SUPPORTED_PAYLOAD_VERSION } from "../../src/persona/sync/payload";
 
 const T = "default";
@@ -188,6 +188,61 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync stage one reporting", (
   });
   test("a known-field payload reports an empty list", async () => {
     expect((await runSync(T, payload([ana]), { dryRun: true, env, by: "ci", extract: okExtract })).ignoredFields).toEqual([]);
+  });
+});
+
+// Node labels spec §4.5.
+describe("runsOn", () => {
+  test("a label no live node carries is a warning naming persona and label", () => {
+    expect(unservedLabelWarnings([{ name: "ana", runsOn: "finance" }, { name: "bea", runsOn: null }, { name: "cy", runsOn: "default" }],
+      new Set(["default"]))).toEqual(["persona 'ana': no live node carries label 'finance'; its turns wait until one does"]);
+    expect(unservedLabelWarnings([{ name: "ana", runsOn: "finance" }], new Set(["finance"]))).toEqual([]);
+  });
+
+  test("a malformed label is a 422 before any database access", async () => {
+    const e = await runSync(T, payload([{ ...ana, runsOn: "Finance" }]), { dryRun: true, env, by: "ci", extract: okExtract }).catch((x) => x);
+    expect(e).toBeInstanceOf(SyncFailure);
+    expect(e.status).toBe(422);
+    expect(e.message).toContain("runsOn");
+  });
+
+  test.skipIf(process.env.SLAUDE_DB !== "pg")("runsOn is stored, a relabel is an update, and an unserved label is applied with a warning", async () => {
+    const live = async () => new Set(["default", "engineering"]);
+    const r1 = await runSync(T, payload([{ ...ana, runsOn: "engineering" }]), { dryRun: false, env, by: "ci", extract: okExtract, liveLabels: live });
+    const labelW = (w: string[]) => w.filter((x) => x.includes("no live node carries"));
+    expect(labelW(r1.warnings)).toEqual([]);
+    expect((await P.effectivePersonas(T)).find((p) => p.name === "ana")!.runsOn).toBe("engineering");
+    const second = payload([{ ...ana, runsOn: "finance" }], { revision: "r2", committedAt: "2026-10-01T11:00:00Z" });
+    const dry = await runSync(T, second, { dryRun: true, env, by: "ci", extract: okExtract, liveLabels: live });
+    expect(dry.updated).toEqual(["ana"]);
+    expect(labelW(dry.warnings)).toHaveLength(1);
+    const r2 = await runSync(T, second, { dryRun: false, env, by: "ci", extract: okExtract, liveLabels: live });
+    expect(r2.updated).toEqual(["ana"]);
+    expect(labelW(r2.warnings)[0]).toContain("'finance'");
+    expect((await P.effectivePersonas(T)).find((p) => p.name === "ana")!.runsOn).toBe("finance");
+  });
+
+  test.skipIf(process.env.SLAUDE_DB !== "pg")("a failing label read does not fail the deploy", async () => {
+    const warn = console.warn; console.warn = () => {};
+    try {
+      const r = await runSync(T, payload([{ ...ana, runsOn: "engineering" }]), {
+        dryRun: false, env, by: "ci", extract: okExtract, liveLabels: async () => { throw new Error("redis down"); },
+      });
+      expect(r.warnings.filter((x) => x.includes("no live node carries"))).toEqual([]);
+      expect(r.created).toContain("ana");
+    } finally { console.warn = warn; }
+  });
+
+  test.skipIf(process.env.SLAUDE_DB !== "pg")("one warnings array carries both the provider and the label warnings", async () => {
+    const warn = console.warn; console.warn = () => {};
+    try {
+      const r = await runSync(T, payload([{ ...ana, runsOn: "finance", provider: { baseUrl: "https://llm.example.com", apiKey: "env://PERSONA_ANA_KEY" } }]), {
+        dryRun: true, env: { ...env, PERSONA_ANA_KEY: "k", SLAUDE_ROLE: "gateway" }, by: "ci", extract: okExtract,
+        liveLabels: async () => new Set(["default"]),
+      });
+      expect(r.warnings.some((w) => w.includes("no live node carries label 'finance'"))).toBe(true);
+      expect(r.warnings.some((w) => !w.includes("no live node carries") && w.includes("'ana'"))).toBe(true);
+    } finally { console.warn = warn; }
   });
 });
 

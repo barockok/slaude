@@ -55,6 +55,7 @@ function fakeInfra(opts: { failCursorRead?: boolean } = {}) {
     queue: () => ({
       getJob: async (id: string) => ({ getState: async () => (completed.has(id) ? "completed" : "active") }),
     }),
+    movedTo: async () => null,
     close: async () => {},
   };
 

@@ -20,10 +20,11 @@
 import { decodeJwt, encodeJwt } from "./jwt";
 import { env } from "../../config/env";
 import { m as metric } from "../../metrics";
+import { LABEL_RE } from "../../queue/keys";
 
 export const NODE_CREDENTIAL_VERSION = 1;
 export const NODE_CREDENTIAL_TYP = "node";
-export const LABEL_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+export { LABEL_RE };
 export const NODE_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 export const MAX_LABELS = 8;
 /** The id the legacy identity carries; a signed credential may not use it. */
@@ -80,6 +81,9 @@ export function labelsError(labels: unknown): string | null {
 export function nodeIdError(id: unknown): string | null {
   if (typeof id !== "string" || !NODE_ID_RE.test(id)) return `malformed id (want ${NODE_ID_RE.source})`;
   if (id === LEGACY_NODE_ID) return `'${LEGACY_NODE_ID}' is reserved for the legacy token`;
+  // A node's own queue is turns.<id>; `label.` would collide with a label
+  // queue (turns.label.<label>). The node refuses such an id at boot too.
+  if (id.startsWith("label.")) return "an id starting with 'label.' is reserved for label queues";
   return null;
 }
 

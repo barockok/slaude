@@ -42,11 +42,12 @@ export interface ApplyResult {
 
 type Row = {
   name: string; slack_user_id: string | null; user_token: string | null; model_default: string | null;
-  soul_md: string; soul_json: unknown; mcp_json: unknown; provider_json: unknown; origin: "git" | "runtime"; tombstoned_at: number | null;
+  soul_md: string; soul_json: unknown; mcp_json: unknown; provider_json: unknown; runs_on: string | null;
+  origin: "git" | "runtime"; tombstoned_at: number | null;
 };
 
 const ROW_COLUMNS =
-  "name, slack_user_id, user_token, model_default, soul_md, soul_json, mcp_json, provider_json, origin, tombstoned_at";
+  "name, slack_user_id, user_token, model_default, soul_md, soul_json, mcp_json, provider_json, runs_on, origin, tombstoned_at";
 
 // provider_json holds references only (WS-A §4), never a value, so it is
 // stored as plain JSONB: an operator can read which secret a persona names.
@@ -75,6 +76,7 @@ function toDesired(r: Row): DesiredPersona {
     soulJson: parseJson(r.soul_json),
     mcp: decJson(r.mcp_json),
     provider: (parseJson(r.provider_json) as DesiredPersona["provider"]) ?? null,
+    runsOn: r.runs_on ?? null,
     origin: r.origin,
     tombstonedAt: r.tombstoned_at == null ? null : Number(r.tombstoned_at),
   };
@@ -168,16 +170,16 @@ export async function applySync(
       else if (prev.origin === "git" && sameDesired(prev, r)) result.unchanged.push(r.name);
       else result.updated.push(r.name);
       await tx.run(
-        `INSERT INTO personas (id, tenant_id, name, soul_md, soul_json, soul_sha, model_default, mcp_json, provider_json,
+        `INSERT INTO personas (id, tenant_id, name, soul_md, soul_json, soul_sha, model_default, mcp_json, provider_json, runs_on,
                                slack_user_id, user_token, origin, source_revision, tombstoned_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 'git', ?, NULL, ?, ?)
+         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'git', ?, NULL, ?, ?)
          ON CONFLICT (tenant_id, name) DO UPDATE SET
            soul_md = excluded.soul_md, soul_json = excluded.soul_json, model_default = excluded.model_default,
-           mcp_json = excluded.mcp_json, provider_json = excluded.provider_json,
+           mcp_json = excluded.mcp_json, provider_json = excluded.provider_json, runs_on = excluded.runs_on,
            slack_user_id = excluded.slack_user_id, user_token = excluded.user_token,
            origin = 'git', source_revision = excluded.source_revision, tombstoned_at = NULL, updated_at = excluded.updated_at`,
         [randomUUID(), tenant, r.name, r.soulMd, JSON.stringify(r.soulJson ?? null), r.model, encJson(r.mcp),
-         providerJson(r.provider), r.slackUserId, r.userToken ? encrypt(r.userToken) : null, meta.revision, now, now]);
+         providerJson(r.provider), r.runsOn ?? null, r.slackUserId, r.userToken ? encrypt(r.userToken) : null, meta.revision, now, now]);
     }
     for (const [name, prev] of existing) {
       if (incoming.has(name) || prev.tombstonedAt !== null) continue;
@@ -234,18 +236,18 @@ export async function createRuntimePersona(tenant: string, row: DesiredPersona, 
     }
     const now = Date.now();
     const written = await tx.query<{ name: string }>(
-      `INSERT INTO personas (id, tenant_id, name, soul_md, soul_json, model_default, mcp_json, provider_json, slack_user_id, user_token,
+      `INSERT INTO personas (id, tenant_id, name, soul_md, soul_json, model_default, mcp_json, provider_json, runs_on, slack_user_id, user_token,
                              origin, source_revision, tombstoned_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'runtime', NULL, NULL, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'runtime', NULL, NULL, ?, ?)
        ON CONFLICT (tenant_id, name) DO UPDATE SET
          soul_md = excluded.soul_md, soul_json = excluded.soul_json, model_default = excluded.model_default,
-         mcp_json = excluded.mcp_json, provider_json = excluded.provider_json,
+         mcp_json = excluded.mcp_json, provider_json = excluded.provider_json, runs_on = excluded.runs_on,
          slack_user_id = excluded.slack_user_id, user_token = excluded.user_token,
          tombstoned_at = NULL, updated_at = excluded.updated_at
        WHERE personas.origin = 'runtime'
        RETURNING name`,
       [randomUUID(), tenant, row.name, row.soulMd, JSON.stringify(row.soulJson ?? null), row.model, encJson(row.mcp),
-       providerJson(row.provider), row.slackUserId, row.userToken ? encrypt(row.userToken) : null, now, now]);
+       providerJson(row.provider), row.runsOn ?? null, row.slackUserId, row.userToken ? encrypt(row.userToken) : null, now, now]);
     // A git row appeared after the read above: never overwrite it.
     if (!written.length) throw new NameTakenError(row.name);
     void by; // recorded in the audit log by the caller (Task 7)
