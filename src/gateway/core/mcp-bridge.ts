@@ -346,6 +346,8 @@ export interface BridgeLimits {
 
 export const DEFAULT_SESSION_CONCURRENCY = 4;
 export const DEFAULT_IDLE_MS = 5 * 60_000;
+/** How long ending a session upstream (DELETE) may take before it is dropped. */
+const TERMINATE_TIMEOUT_MS = 2_000;
 export const DEFAULT_MAX_LIST_BYTES = 1024 * 1024;
 export const DEFAULT_MAX_TOOLS = 500;
 
@@ -607,8 +609,28 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
     if (oldest) retire(oldest[0], oldest[1]);
   }
 
+  /** End the session upstream (DELETE), best effort and bounded, then close
+   *  the client, which also drops a DELETE still pending. Never awaited by a
+   *  call. */
   function closeSession(p: Pooled): void {
-    void p.client.then((c) => c.close()).catch(() => {});
+    void p.client
+      .then(async (c) => {
+        const transport = c.transport as StreamableHTTPClientTransport | undefined;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            transport?.terminateSession().catch(() => {}),
+            new Promise<void>((resolve) => {
+              timer = setTimeout(resolve, TERMINATE_TIMEOUT_MS);
+              timer.unref?.();
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+        await c.close();
+      })
+      .catch(() => {});
   }
 
   /** Take THIS session out of service: new calls open a fresh one; it closes

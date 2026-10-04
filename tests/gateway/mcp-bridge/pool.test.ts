@@ -123,3 +123,57 @@ describe("a shared session open", () => {
     }
   });
 });
+
+describe("a session taken out of service is ended upstream", () => {
+  test("an idle-expired session is terminated with DELETE", async () => {
+    const up = upstream();
+    let clock = Date.now();
+    const b = bridgeAt(up.url, { idleMs: 60_000 }, () => clock);
+    try {
+      await b.call(claims, "s", "echo", { text: "a" });
+      clock += 61_000;
+      await b.call(claims, "s", "echo", { text: "b" });
+      await until(() => deletes(up) === 1 && up.sessions() === 1);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("an interrupted call's session is terminated with DELETE", async () => {
+    const up = upstream();
+    const b = bridgeAt(up.url);
+    try {
+      expect((await b.call(claims, "s", "fault_502", {})).content).toEqual(text(interruptedText("s")));
+      await until(() => deletes(up) === 1 && up.sessions() === 0);
+    } finally {
+      await b.close();
+    }
+  });
+
+  test("closing the bridge terminates its sessions", async () => {
+    const up = upstream();
+    const b = bridgeAt(up.url);
+    await b.call(claims, "s", "echo", { text: "a" });
+    expect(up.sessions()).toBe(1);
+    await b.close();
+    await until(() => deletes(up) === 1 && up.sessions() === 0);
+  });
+
+  test("a DELETE the upstream never answers does not hold up a call and is given up after a bound", async () => {
+    const up = upstream({ hangDelete: true });
+    let clock = Date.now();
+    const b = bridgeAt(up.url, { idleMs: 60_000 }, () => clock);
+    try {
+      await b.call(claims, "s", "echo", { text: "a" });
+      clock += 61_000;
+      const t0 = Date.now();
+      expect((await b.call(claims, "s", "echo", { text: "b" })).content).toEqual(text("b"));
+      expect(Date.now() - t0).toBeLessThan(1000);
+      await until(() => deletes(up) === 1);
+      // The termination is abandoned (its connection dropped) after its bound.
+      await until(() => up.deleteAborts === 1, 4000);
+    } finally {
+      await b.close();
+    }
+  });
+});
