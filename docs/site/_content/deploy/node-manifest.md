@@ -57,7 +57,8 @@ servers as before. The manifest applies only to `SLAUDE_ROLE=node`.
 The file is read and checked once, when the node starts. A change needs a pod
 restart. The node refuses to start, with an error naming the field, when:
 
-- the file is not valid JSON, is empty, or has a duplicate key;
+- the file is not valid JSON, is empty, starts with a byte-order mark, or has a
+  duplicate key;
 - a key is unknown, `version` is not `1`, or a server is not stdio (a `url`, or
   `type` other than `"stdio"`);
 - a server name is malformed, or an `allow` entry names a server that is not in
@@ -93,6 +94,11 @@ entry from the plugin's `.mcp.json` into `mcpServers` (same name, command and
 arguments) and allow it for the personas that need it. An installed plugin
 whose server is not in the manifest runs without that server.
 
+Write the plugin's paths as **absolute paths** (where the plugin is installed
+in the node image). `${CLAUDE_PLUGIN_ROOT}` and the plugin's other variables
+are not supported: `${` in `command` or `args` stops the node (see
+[Environment](#environment)).
+
 ## Environment
 
 A plain `${VAR}` in an `env` value is expanded when the node starts, from the
@@ -123,7 +129,10 @@ Each server starts with an **explicit minimal environment**: its own `env`,
 plus `PATH`, `HOME`, `LANG` and `TMPDIR` from the node. A server's own `env`
 overrides one of the four. slaude starts the server through a small wrapper
 that receives the variable names in its arguments and the values in its
-environment, and starts the real command with only those. The server does not
+environment, and starts the real command with only those. The wrapper runs
+with an empty Bun configuration and no `.env` loading, so a `bunfig.toml` or
+`.env` in the session workspace (the server's working directory) does not run
+inside it. The server does not
 inherit the agent child's environment, and because no `${` reaches the CLI,
 the CLI cannot substitute one of the child's variables into the server's
 arguments or `env`.
@@ -138,7 +147,9 @@ credentials every persona on it may see.
 
 The node merges the manifest's servers first and the gateway-resolved servers
 after them. When both have a server with the same name, the gateway's server
-wins and the node logs a warning naming it.
+wins and the node logs a warning naming it. In a [`/remote`](../guides/remote.md)
+session the remote tools are mounted as `remote`, replacing a manifest server of
+that name, again with a warning; avoid the name.
 
 The node starts every agent child with `strictMcpConfig`: the CLI uses only the
 servers slaude passes and reads no project `.mcp.json`, user settings or plugin
