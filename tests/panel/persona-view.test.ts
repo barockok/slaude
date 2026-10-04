@@ -60,6 +60,10 @@ describe("mcpServersView", () => {
     for (const v of [null, undefined, "x", [], {}, { mcpServers: null }, { mcpServers: [] }]) {
       expect(mcpServersView(v, () => true)).toEqual([]);
     }
+    // An unparseable URL yields no host, never the raw string.
+    expect(mcpServersView({ mcpServers: { s: { type: "sse", url: "not a url QS-SECRET-1" } } }, () => true)).toEqual([
+      { name: "s", via: "none", type: "sse", host: null, oauth: false },
+    ]);
     expect(mcpServersView({ mcpServers: { a: null, b: "x" } }, () => true)).toEqual([
       { name: "a", via: "none", type: "other", host: null, oauth: false },
       { name: "b", via: "none", type: "other", host: null, oauth: false },

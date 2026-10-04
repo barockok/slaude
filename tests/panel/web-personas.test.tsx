@@ -1,21 +1,17 @@
 /**
  * Panel web app, persona screens (WS-C §4.4.3): the hash routes, the two views
- * rendered from the ?mock=1 fixtures, the 404/409 states, and the real
- * backend's two read calls.
+ * rendered from the ?mock=1 fixtures, and the 404/409 states.
  */
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseRoute } from "../../src/gateway/panel/web/app/lib";
+import { parseRoute, statusMeta, relTime, exactTime, clockTime, summarize } from "../../src/gateway/panel/web/app/lib";
 import { PersonaTable, PersonaLoadError, PersonaView } from "../../src/gateway/panel/web/app/PersonaViews";
+import { StatusDot, RelTime, Modal } from "../../src/gateway/panel/web/app/ui";
 import { FIXTURE_PERSONAS, FIXTURE_PERSONA_DETAILS } from "../../src/gateway/panel/web/app/fixtures";
 
-// The API client uses DOM types (EventSource) the server-side typecheck does not
-// load; the web app's own tsconfig checks it. Loaded untyped here on purpose.
-const API_MODULE: string = "../../src/gateway/panel/web/app/api";
-const { api, ApiError } = (await import(API_MODULE)) as { api: () => any; ApiError: new (s: number, b: unknown) => Error & { status: number } };
-
-const realFetch = globalThis.fetch;
-afterEach(() => { globalThis.fetch = realFetch; });
+// The shape of the client's ApiError (api.ts, which needs DOM types the
+// server-side typecheck does not load): an Error carrying the HTTP status.
+const httpError = (status: number, message: string) => Object.assign(new Error(message), { status });
 
 describe("hash routes", () => {
   test("sessions keep their route; #/p and #/p/<name> are the persona screens", () => {
@@ -68,31 +64,36 @@ describe("persona detail", () => {
   });
 
   test("404, 409 and other failures each have their own message", () => {
-    const nf = renderToStaticMarkup(<PersonaLoadError error={new ApiError(404, { error: "x" })} name="ghost" />);
+    const nf = renderToStaticMarkup(<PersonaLoadError error={httpError(404, "x")} name="ghost" />);
     expect(nf).toContain("No persona named ghost");
-    const pg = renderToStaticMarkup(<PersonaLoadError error={new ApiError(409, { error: "persona sync requires Postgres" })} />);
+    const pg = renderToStaticMarkup(<PersonaLoadError error={httpError(409, "persona sync requires Postgres")} />);
     expect(pg).toContain("not available here");
     expect(pg).toContain("persona sync requires Postgres");
     expect(renderToStaticMarkup(<PersonaLoadError error={new Error("network down")} />)).toContain("network down");
   });
 });
 
-describe("real backend", () => {
-  test("listPersonas and getPersona are GETs on the panel API, the name encoded", async () => {
-    const seen: string[] = [];
-    globalThis.fetch = (async (url: any, init: any) => {
-      seen.push(`${init?.method ?? "GET"} ${String(url)}`);
-      return new Response(JSON.stringify({ revision: "r", personas: [] }), { status: 200 });
-    }) as any;
-    await api().listPersonas();
-    await api().getPersona("a b");
-    expect(seen).toEqual(["GET /panel/api/personas", "GET /panel/api/personas/a%20b"]);
-  });
+// The real backend's two calls are exercised by the browser suite
+// (tests/panel-web), which drives them against the stub server.
 
-  test("a 404 surfaces as an ApiError with its status", async () => {
-    globalThis.fetch = (async () => new Response(JSON.stringify({ error: "no persona" }), { status: 404 })) as any;
-    const e = await api().getPersona("ghost").catch((x: unknown) => x);
-    expect(e).toBeInstanceOf(ApiError);
-    expect(e.status).toBe(404);
+describe("shared primitives the persona views render with", () => {
+  test("lib helpers and ui primitives", () => {
+    expect(statusMeta("running").running).toBe(true);
+    expect(statusMeta("").label).toBe("Unknown");
+    const base = 1_000_000_000;
+    expect([2, 30, 600, 7_200, 172_800].map((s) => relTime(base - s * 1000, base))).toEqual(["just now", "30s ago", "10m ago", "2h ago", "2d ago"]);
+    expect(exactTime(base)).toMatch(/GMT[+-]\d\d$/);
+    expect(clockTime(base)).toMatch(/^\d\d:\d\d:\d\d$/);
+    expect(summarize([{ status: "running", warm: true, engaged: 1 }, { status: "idle", warm: false, engaged: 0 }] as any)).toEqual({
+      total: 2, by: { running: 1, idle: 1 }, warm: 1, engaged: 1,
+    });
+    const html = renderToStaticMarkup(<>
+      <StatusDot status="running" />
+      <RelTime ts={base} base={base} />
+      <Modal title="t" onClose={() => {}}>body</Modal>
+    </>);
+    expect(html).toContain("Running");
+    expect(html).toContain("just now");
+    expect(html).toContain('role="dialog"');
   });
 });
