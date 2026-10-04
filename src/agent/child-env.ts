@@ -22,10 +22,15 @@ import { isGatewayOnlyEnv } from "../config/gateway-only-env";
 
 const ALSO_STRIPPED = new Set(["SLAUDE_ENCRYPTION_KEY", "SLAUDE_NODE_TOKEN", "SLAUDE_REDIS_URL"]);
 
+/** True for every name scrubChildEnv strips: no subprocess may hold it. */
+export function isChildScrubbedEnv(name: string): boolean {
+  return ALSO_STRIPPED.has(name) || isGatewayOnlyEnv(name);
+}
+
 export function scrubChildEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
   const out: Record<string, string | undefined> = {};
   for (const [k, v] of Object.entries(env)) {
-    if (ALSO_STRIPPED.has(k) || isGatewayOnlyEnv(k)) continue;
+    if (isChildScrubbedEnv(k)) continue;
     out[k] = v;
   }
   return out;
