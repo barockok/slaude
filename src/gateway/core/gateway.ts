@@ -31,6 +31,7 @@ import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME, type BrainToolDeps } from "../../knowledge/mcp-tools";
 import { createV1Api } from "../api";
 import type { PendingSource } from "../api/pending-source";
+import type { JobClaims } from "../api/auth";
 import { defaultGateBus } from "../../queue/gate-bus";
 import { makeQueueDispatch, type QueueDispatch } from "./dispatch";
 import { createOnceGuard, failureText } from "./failure-codes";
@@ -66,7 +67,9 @@ import * as Sessions from "../../db/sessions";
 import * as SeenEvents from "../../db/seen-events";
 import * as PendingGates from "../../db/pending-gates";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
-import { connectableServers, loadExternalMcp, privateOverrides, sessionExternalMcp } from "./external-mcp";
+import { bridgeExternalMcp, connectableServers, loadExternalMcp, privateOverrides, sessionExternalMcp } from "./external-mcp";
+import { connectText, createMcpBridge, reauthText } from "./mcp-bridge";
+import { parseRunAs } from "../../agent/credential-owner";
 import * as SlackOauthFlows from "../../db/slack-oauth-flows";
 import { randomBytes } from "node:crypto";
 import { ensureInitiatorConfigDir, agentConfigDir } from "../../agent/oauth-home";
@@ -896,6 +899,22 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     console.warn(`[gates] invalid SLAUDE_MCP_CARD_TTL '${raw}' (${d.error}) — using 24h`);
     return 24 * 60 * 60 * 1000;
   })();
+
+  /** One "Connect <server>" button: its pending_gates row, then the element.
+   *  The `/mcp` status card and the MCP bridge's re-authorise card share it,
+   *  so a click runs the same guarded connect either way. */
+  async function connectButton(sessionId: string, payload: McpGatePayload): Promise<Record<string, unknown>> {
+    const token = randomBytes(8).toString("hex");
+    await PendingGates.create({
+      id: token, kind: "mcp_connect", sessionId, payload,
+      ...(mcpCardTtlMs !== null ? { expiresAt: Date.now() + mcpCardTtlMs } : {}),
+    });
+    return {
+      type: "button",
+      text: { type: "plain_text", text: `Connect ${payload.serverName}` },
+      action_id: `slaude_mcp:connect:${token}`,
+    };
+  }
 
   // Paste-back: a started-but-not-completed OAuth flow, keyed by channel:thread:user
   // (one in-flight connect per initiator per thread). The initiator completes it by
@@ -1926,17 +1945,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (connectable.length) {
           const elements = [];
           for (const s of connectable) {
-            const token = randomBytes(8).toString("hex");
-            const payload: McpGatePayload = { channelId, threadTs, userId, serverName: s.name, scope, personaName: personaKey(dispatch?.personaId) };
-            await PendingGates.create({
-              id: token, kind: "mcp_connect", sessionId: session.id, payload,
-              ...(mcpCardTtlMs !== null ? { expiresAt: Date.now() + mcpCardTtlMs } : {}),
-            });
-            elements.push({
-              type: "button",
-              text: { type: "plain_text", text: `Connect ${s.name}` },
-              action_id: `slaude_mcp:connect:${token}`,
-            });
+            elements.push(
+              await connectButton(session.id, { channelId, threadTs, userId, serverName: s.name, scope, personaName: personaKey(dispatch?.personaId) }),
+            );
           }
           blocks.push({ type: "actions", elements });
         }
@@ -2876,8 +2887,41 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // scoping. The SessionContext is derived from the verified job token, never
   // from the request body. src/server.ts mounts fetchV1 on the health server
   // when SLAUDE_ROLE is mono/gateway.
+  //
+  // The MCP bridge (WS-C §4.2) serves a node's relayed tools/list and
+  // tools/call for the persona's remote MCP servers: the gateway is the MCP
+  // client, and the credential never leaves it. Its servers resolve exactly as
+  // the runtime bundle names them (bridgeExternalMcp: the managed persona's
+  // config; files only with the operator's opt-in). mono
+  // never calls it: its sessions mount external MCP directly, as before.
+  const mcpBridge = createMcpBridge({
+    servers: (claims) => bridgeExternalMcp(claims.persona && claims.persona !== "default" ? claims.persona : undefined),
+    onNeedsAuth: (claims, server, scope, reason) => postBridgeConnectCard(claims, server, scope, reason),
+  });
+  /** The `/mcp` connect card, posted in the turn's thread when a bridged server
+   *  needs connecting or re-authorising. The clicker must be who the connect
+   *  would be for: the runAs user (initiator), or the manager (the agent's
+   *  shared identity), exactly as the card's click handler checks. */
+  async function postBridgeConnectCard(claims: JobClaims, server: string, scope: ConnectScope, reason: "connect" | "reauth"): Promise<void> {
+    const personaId = claims.persona && claims.persona !== "default" ? claims.persona : undefined;
+    const runAs = parseRunAs(claims.runAs);
+    const userId = scope === "initiator" ? (runAs?.kind === "user" ? runAs.slackUserId : "") : soulData().manager.userId;
+    if (!userId) return; // nobody could click it
+    const text = `:warning: ${reason === "connect" ? connectText(server) : reauthText(server)}.`;
+    const button = await connectButton(claims.session, {
+      channelId: claims.channel, threadTs: claims.thread, userId, serverName: server, scope, personaName: personaKey(personaId),
+    });
+    await outClientForPersona(personaId, { apiAppId: claims.app, teamId: claims.team }).chat.postMessage({
+      channel: claims.channel,
+      thread_ts: claims.thread,
+      text,
+      blocks: [{ type: "section", text: { type: "mrkdwn", text } }, { type: "actions", elements: [button] }],
+      mrkdwn: true,
+    });
+  }
   const v1 = createV1Api({
     tools: {
+      mcpBridge,
       slackCtx: (claims) => {
         const personaId = claims.persona && claims.persona !== "default" ? claims.persona : undefined;
         // The turn's app rides in the signed token; an older token carries
@@ -3019,6 +3063,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (panelSweeper) clearInterval(panelSweeper);
       await panelResumeUnsub?.().catch(() => {});
       await panelHoldUnsub?.().catch(() => {});
+      await mcpBridge.close().catch(() => {});
       await t.stop();
     },
     fetchV1: (req: Request) => v1.fetch(req),

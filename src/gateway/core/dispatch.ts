@@ -24,6 +24,7 @@ import { env } from "../../config/env";
 import { activeRemoteTarget } from "../../remote/active";
 import * as OneOnOne from "../../db/one-on-one";
 import { sessionConfigFp } from "../../remote/fingerprint";
+import { defaultEpochs, localEpochs, turnMcpEpoch, type McpCredEpochs } from "./mcp-cred-epoch";
 import { makeKeys, type Keys } from "../../queue/keys";
 import { getRedis, getSubRedis } from "../../queue/redis";
 import { makeRegistry, type Registry } from "../../queue/registry";
@@ -79,6 +80,9 @@ export interface QueueDispatchOpts {
   followLingerMs?: number;
   /** Test seam: injected infra instead of the process-wide Redis. */
   infra?: { turns: TurnQueues; registry: Registry; pubsub: PubSub };
+  /** MCP credential epochs (one MGET per dispatch). Default: Redis with the
+   *  process-wide infra, in-process with injected infra (tests). */
+  epochs?: McpCredEpochs;
 }
 
 export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts = {}): QueueDispatch {
@@ -94,6 +98,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       };
     })();
   const { turns, registry, pubsub } = infra;
+  const epochs = opts.epochs ?? (opts.infra ? localEpochs() : defaultEpochs());
   const followPollMs = opts.followPollMs ?? 300;
   const followMaxMs = opts.followMaxMs ?? 20 * 60_000;
   const followLingerMs = opts.followLingerMs ?? 3_000;
@@ -290,7 +295,12 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
         // coalesces into a waiting job keeps that job's token (and refresh
         // copies its claims), so runAs, lock and fingerprint are as of the
         // job's first message: at most that one job runs on the old lock.
-        sessionConfigFp: sessionConfigFp({ runAs: runAsUser ?? null, lock: lockClaim, remote: remoteClaim ?? null }),
+        sessionConfigFp: sessionConfigFp({
+          runAs: runAsUser ?? null,
+          lock: lockClaim,
+          remote: remoteClaim ?? null,
+          mcpEpoch: await turnMcpEpoch({ tenant: tenantId, persona: personaId, team: meta.teamId, runAsUser }, epochs),
+        }),
         ...(remoteClaim ? { remote: remoteClaim } : {}),
       });
       // Routing (spec §2, node labels spec §4.6): warm + fresh on a node that

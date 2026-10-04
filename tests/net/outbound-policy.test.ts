@@ -6,6 +6,7 @@ import {
   OutboundBlockedError,
   checkOutbound,
   classifyAddress,
+  policyFetch,
   safeFetch,
   type Resolver,
 } from "../../src/net/outbound-policy";
@@ -343,6 +344,97 @@ describe("safeFetch (against a local server, loopback admitted by the dev flag)"
       expect(proxyHits).toEqual([`http://127.0.0.1:${server.port}/json`]);
     } finally {
       proxy.stop(true);
+    }
+  });
+
+  test("an abort signal destroys the request and rejects with an AbortError", async () => {
+    const ac = new AbortController();
+    const p = safeFetch(`${base()}/hang`, { signal: ac.signal }, dev({ timeoutMs: 5000 }));
+    setTimeout(() => ac.abort(), 20);
+    const err = await p.then(() => new Error("resolved"), (e: Error) => e);
+    expect(err.name).toBe("AbortError");
+    // Already aborted: refused before any connection.
+    hits = [];
+    await expect(safeFetch(`${base()}/json`, { signal: ac.signal }, dev())).rejects.toThrow(/aborted/);
+    expect(hits).toHaveLength(0);
+  });
+
+  test("policyFetch: a standard Response with status, headers and body", async () => {
+    const f = policyFetch(dev());
+    const res = await f(`${base()}/json`, { method: "POST", headers: new Headers({ "content-type": "text/plain" }), body: "hi" });
+    expect(res).toBeInstanceOf(Response);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-test")).toBe("1");
+    expect(await res.json()).toEqual({ ok: true, body: "hi" });
+  });
+
+  test("policyFetch: a redirect is returned, not followed", async () => {
+    const res = await policyFetch(dev())(`${base()}/redirect`, { headers: { authorization: "Bearer test-token" } });
+    expect(res.status).toBe(302);
+    expect(hits.some((h) => h.includes("/secret"))).toBe(false);
+  });
+
+  test("policyFetch: a request outside the pinned origin is refused before connecting", async () => {
+    const f = policyFetch({ ...dev(), pinnedOrigin: "https://mcp.example.com" });
+    await expect(f(`${base()}/json`)).rejects.toBeInstanceOf(OutboundBlockedError);
+    expect(hits).toHaveLength(0);
+    // The pinned origin itself is still subject to the address policy.
+    const g = policyFetch({ allowLoopback: false, allowedHosts: [], internalHosts: [], pinnedOrigin: base() });
+    await expect(g(`${base()}/json`)).rejects.toBeInstanceOf(OutboundBlockedError);
+    expect(hits).toHaveLength(0);
+  });
+
+  test("policyFetch streams: a held-open event stream delivers its first event at once; an abort closes it", async () => {
+    let closedByClient = false;
+    const s = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      idleTimeout: 0,
+      fetch: (req) => {
+        req.signal.addEventListener("abort", () => { closedByClient = true; });
+        return new Response(
+          new ReadableStream({
+            start(c) {
+              c.enqueue(new TextEncoder().encode("event: message\ndata: {\"ok\":true}\n\n"));
+              // never closed
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      },
+    });
+    try {
+      const ac = new AbortController();
+      const t0 = Date.now();
+      const res = await policyFetch(dev({ timeoutMs: 5000 }))(`http://127.0.0.1:${s.port}/`, { signal: ac.signal });
+      const reader = res.body!.getReader();
+      const first = new TextDecoder().decode((await reader.read()).value);
+      expect(first).toContain('data: {"ok":true}');
+      expect(Date.now() - t0).toBeLessThan(1000);
+      ac.abort();
+      await expect(reader.read()).rejects.toThrow(/aborted/);
+      const end = Date.now() + 2000;
+      while (!closedByClient && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+      expect(closedByClient).toBe(true);
+    } finally {
+      s.stop(true);
+    }
+  });
+
+  test("policyFetch: the size cap and the timeout bound a streamed body", async () => {
+    const big = await policyFetch(dev({ maxResponseBytes: 1000 }))(`${base()}/big`);
+    await expect(big.text()).rejects.toThrow(/exceeded 1000 bytes/);
+    await expect(policyFetch(dev({ timeoutMs: 100 }))(`${base()}/hang`)).rejects.toThrow(/timed out after 100ms/);
+  });
+
+  test("policyFetch: a 204 answer has no body", async () => {
+    const s = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response(null, { status: 204 }) });
+    try {
+      const res = await policyFetch(dev())(`http://127.0.0.1:${s.port}/`);
+      expect(res.status).toBe(204);
+      expect(res.body).toBeNull();
+    } finally {
+      s.stop(true);
     }
   });
 

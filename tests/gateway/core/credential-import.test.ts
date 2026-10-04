@@ -16,6 +16,7 @@ import * as Accounts from "../../../src/db/accounts";
 import * as Creds from "../../../src/db/mcp-credentials";
 import { __resetMasterKeyCache } from "../../../src/db/crypto";
 import { importOnDiskCredentials } from "../../../src/gateway/core/credential-import";
+import { __setDefaultEpochs, localEpochs } from "../../../src/gateway/core/mcp-cred-epoch";
 import type { CredentialOwner } from "../../../src/agent/credential-owner";
 
 const ISS = "https://idp.example.com";
@@ -70,6 +71,22 @@ describe("importOnDiskCredentials", () => {
     expect((await Creds.credentialsFor(AGENT))[KEY]!.accessToken).toBe("tok-agent");
     expect((await Creds.credentialsFor({ kind: "agent", tenant: "default", persona: "ana" }))[KEY]!.accessToken).toBe("tok-ana");
     expect((await Creds.credentialsFor({ kind: "account", accountId: personId }))[KEY]!.accessToken).toBe("tok-person");
+  });
+
+  test("an import bumps the MCP credential epoch of each owner it wrote for, and only those", async () => {
+    const epochs = localEpochs();
+    __setDefaultEpochs(epochs);
+    try {
+      writeCreds(agentHome, { [KEY]: entry("tok-agent") });
+      writeCreds(join(personasRoot, "ana", ".claude"), { [KEY]: entry("tok-ana") });
+      await run();
+      expect(await epochs.read([{ kind: "agent", tenant: "default", persona: "default" }, { kind: "agent", tenant: "default", persona: "ana" }])).toEqual([1, 1]);
+      // A second import writes nothing (never overwrites): no bump.
+      await run();
+      expect(await epochs.read([{ kind: "agent", tenant: "default", persona: "default" }])).toEqual([1]);
+    } finally {
+      __setDefaultEpochs(undefined);
+    }
   });
 
   test("the agent's credentials are found in the shared home too, when the process home differs", async () => {

@@ -44,6 +44,7 @@ const EXPECTED_GATES: Record<string, "label" | "none"> = {
   "jobs.token-reissue": "label",
   "tools.memory": "label",
   tools: "label",
+  "tools.mcpx": "label",
 };
 
 /** One concrete request per label-gated route, scoped to the matrix's token. */
@@ -59,6 +60,7 @@ const SAMPLES: Record<string, { method: string; path: string; body?: string }> =
   "jobs.token-reissue": { method: "POST", path: "/v1/jobs/J-matrix/token-reissue", body: "{}" },
   "tools.memory": { method: "POST", path: "/v1/tools/memory/prefetch", body: "{}" },
   tools: { method: "POST", path: "/v1/tools/kb/search_kbs", body: JSON.stringify({ query: "x" }) },
+  "tools.mcpx": { method: "POST", path: "/v1/tools/mcpx/example/list", body: "{}" },
 };
 
 const routes: RouteDef[] = v1Routes({ tools: stubTools }, new InMemoryPendingSource());
@@ -217,5 +219,14 @@ describe("routing is behaviour-identical to the old if-chain", () => {
     expect(newRoute("GET", "/v1/tools/memory/sync")).toBe(405);
     // Anything else under tools/memory falls through to the tool plane (404 there).
     expect(newRoute("POST", "/v1/tools/memory/other")).toBe("tools");
+  });
+
+  test("the bridge and memory routes do not shadow each other", () => {
+    // A bridged server named "memory" is still the bridge (four segments).
+    expect(newRoute("POST", "/v1/tools/mcpx/memory/list")).toBe("tools.mcpx");
+    expect(newRoute("POST", "/v1/tools/mcpx/memory/call")).toBe("tools.mcpx");
+    // A tool named "prefetch" on a server named "mcpx" is not the bridge (three segments).
+    expect(newRoute("POST", "/v1/tools/mcpx/prefetch")).toBe("tools");
+    expect(newRoute("POST", "/v1/tools/memory/prefetch")).toBe("tools.memory");
   });
 });

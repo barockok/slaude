@@ -30,6 +30,7 @@
  *   POST  /v1/jobs/:id/token-reissue  re-mint a long-queued job's token   (node+job any age, label)
  *   POST  /v1/tools/memory/prefetch|sync  episodic memory, run on the gateway (node+job, label)
  *   POST  /v1/tools/:server/:tool     contract-validated tool call        (node+job, label)
+ *   POST  /v1/tools/mcpx/:server/list|call   the MCP bridge (WS-C §4.2)   (node+job, label)
  */
 import {
   authenticateNode,
@@ -48,6 +49,7 @@ import { defaultCredentialRefresher } from "../core/credential-refresh";
 import { handlePending, type PendingOptions } from "./pending";
 import { handleJobEvent, handleTokenRefresh, handleTokenReissue, REFRESH_GRACE_SEC, type JobLookup } from "./jobs";
 import { executeToolCall } from "./tools";
+import { handleMcpx } from "./tools/mcpx";
 import type { ToolPlaneDeps } from "./tools/deps";
 import { defaultPendingSource, type PendingSource } from "./pending-source";
 import { json, methodNotAllowed, notFound, readBodyCapped, readJson } from "./http";
@@ -274,6 +276,18 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
         }
         return handleMemory(seg[2]!, body, claims!, memoryPlane);
       },
+    },
+    {
+      // The MCP bridge (WS-C §4.2): the persona's remote MCP servers, relayed.
+      // Four segments, so it never collides with "tools" (three) or "tools.memory".
+      // Same gate as every tool: the job's label among the node's labels;
+      // the server must be one the token's persona mounts.
+      name: "tools.mcpx",
+      methods: ["POST"],
+      pattern: ["tools", "mcpx", ":server", "list|call"],
+      auth: "node+job",
+      gate: "label",
+      handle: async ({ req, seg, claims }) => handleMcpx(req, seg[2]!, seg[3] as "list" | "call", claims!, opts.tools),
     },
     {
       name: "tools",
