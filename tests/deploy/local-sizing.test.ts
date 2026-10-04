@@ -14,7 +14,14 @@ const sizing = Object.fromEntries(
     .filter((l) => /^[A-Z_]+=\d+$/.test(l))
     .map((l) => l.split("=") as [string, string])
     .map(([k, v]) => [k, Number(v)]),
-) as Record<string, number>;
+) as {
+  LOCAL_NODE_CPUS: number;
+  LOCAL_NODE_MEMORY_MB: number;
+  LOCAL_VM_FLOOR_CPUS: number;
+  LOCAL_VM_FLOOR_MEMORY_MB: number;
+  LOCAL_SYSTEM_RESERVE_MILLICPU: number;
+  LOCAL_SYSTEM_RESERVE_MEMORY_MB: number;
+};
 
 const kustomization = parse(readFileSync(`${dir}kustomization.yaml`, "utf8")) as any;
 const patches = (kustomization.patches as { patch: string }[]).map((p) => parse(p.patch));
