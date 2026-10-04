@@ -2340,6 +2340,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.ctx.threadTs = threadTs;
       existing.ctx.inboundTs = eventTs;
       existing.ctx.userId = userId;
+      existing.ctx.botToken = context?.botToken;
       existing.ctx.personaId = dispatch?.personaId;
       existing.ctx.client = outClientForPersona(dispatch?.personaId);
       existing.ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
@@ -2358,6 +2359,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         inboundTs: eventTs,
         userId,
         teamId,
+        botToken: context?.botToken,
         personaId: dispatch?.personaId,
       };
       ctx.requestApproval = (req) =>
