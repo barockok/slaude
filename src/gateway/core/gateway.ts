@@ -267,6 +267,21 @@ export function bindingFor(ctx: SlackContext): SessionBinding {
   };
 }
 
+/** Dispatch meta for an operator-panel turn: the session row is the only
+ *  source, including the Slack app its thread arrives through (D1.2). */
+export function panelDispatchMeta(session: SessionRow, operatorId: string, eventTs: string): DispatchMeta {
+  const personaId = session.persona_id && session.persona_id !== "default" ? session.persona_id : undefined;
+  return {
+    teamId: session.slack_team_id ?? "",
+    channelId: session.slack_channel_id ?? "",
+    threadTs: session.slack_thread_ts ?? "",
+    eventTs,
+    userId: operatorId,
+    personaId,
+    ...(session.slack_app_id ? { apiAppId: session.slack_app_id } : {}),
+  };
+}
+
 export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOptions = {}): GatewayHandle {
 
   // Horizontal-scale dispatch (spec §2): in the gateway role turns are
@@ -1549,6 +1564,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       thread_ts: threadTs,
       persona_id: dispatch?.personaId,
     });
+    // Record the app the thread arrives through, so turns with no inbound
+    // event (the operator panel) post as it on any replica (D1.2).
+    if (app.apiAppId && session.slack_app_id !== app.apiAppId) {
+      await Sessions.setSlackApp(session.id, app.apiAppId);
+      session.slack_app_id = app.apiAppId;
+    }
 
     // Paste-back OAuth completion: if this user has a parked /mcp connect in this
     // thread and the message carries the callback (URL or bare code), finish the flow
@@ -2824,21 +2845,19 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // in-process AgentManager in mono. The operator identity rides as the turn
   // initiator/userId.
   async function panelEnqueue(session: SessionRow, text: string, operatorId: string): Promise<void> {
-    const channelId = session.slack_channel_id ?? "";
-    const threadTs = session.slack_thread_ts ?? "";
-    const teamId = session.slack_team_id ?? "";
     const eventTs = `${Date.now() / 1000}`;
-    const personaId = session.persona_id && session.persona_id !== "default" ? session.persona_id : undefined;
+    const meta = panelDispatchMeta(session, operatorId, eventTs);
+    const { channelId, threadTs } = meta;
+    // A session recorded before its app was: a live route on this replica
+    // may still know it; with neither, the token carries the team alone.
+    const liveApp = routes.get(session.id)?.ctx.apiAppId;
+    if (!meta.apiAppId && liveApp) meta.apiAppId = liveApp;
     const envelope =
       `<channel source="panel" channel_id="${channelId}" thread_ts="${threadTs}" ` +
       `inbound_ts="${eventTs}" user_id="${operatorId}" user_name="${escapeAttr(operatorId)}" ` +
       `trust="restricted" one_on_one="false" locked_user="">\n${text}\n</channel>\n\n` +
       `Reply to the user by calling the \`mcp__${SLACK_MCP_NAME}__reply\` tool. ` +
       `Plain assistant text is not delivered — only tool calls reach the operator.`;
-    // The session's app is known only from a live route on this replica; with
-    // none, the token carries the team alone and the app resolves from it.
-    const apiAppId = routes.get(session.id)?.ctx.apiAppId;
-    const meta: DispatchMeta = { teamId, channelId, threadTs, eventTs, userId: operatorId, personaId, ...(apiAppId ? { apiAppId } : {}) };
     if (queueDispatch) {
       await queueDispatch.dispatch(session, envelope, meta);
     } else {
