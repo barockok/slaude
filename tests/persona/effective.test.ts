@@ -42,6 +42,19 @@ describe("sameDesired", () => {
     expect(sameDesired(base, { ...base, userToken: "t" })).toBe(false);
     expect(sameDesired(base, { ...base, mcp: { a: 2 } })).toBe(false);
   });
+  test("differs on provider references; absent and null are the same", () => {
+    const withRef = { ...base, provider: { apiKey: "env://PERSONA_ANA_KEY" } };
+    expect(sameDesired(base, withRef)).toBe(false);
+    expect(sameDesired(withRef, { ...base, provider: { apiKey: "env://PERSONA_ANA_KEY2" } })).toBe(false);
+    expect(sameDesired(withRef, { ...base, provider: { apiKey: "env://PERSONA_ANA_KEY" } })).toBe(true);
+    expect(sameDesired(base, { ...base, provider: null })).toBe(true);
+  });
+  test("provider is not overridable: an override naming it changes nothing", () => {
+    const d = { ...base, provider: { apiKey: "env://PERSONA_ANA_KEY" } };
+    const e = mergeEffective(d, [{ field: "provider" as any, value: { apiKey: "env://PERSONA_EVIL" } }]);
+    expect(e.provider).toEqual({ apiKey: "env://PERSONA_ANA_KEY" });
+    expect(e.overridden).toEqual([]);
+  });
   test("a tombstoned persona is never the same", () => {
     expect(sameDesired({ ...base, tombstonedAt: 5 }, base)).toBe(false);
   });
