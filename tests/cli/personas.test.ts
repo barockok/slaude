@@ -109,6 +109,23 @@ describe("personas export and render", () => {
     expect(renderDir(without, meta).version).toBe(1);
   });
 
+  test("render carries kbSources from persona.yaml and writes version 3 for it (the highest required)", () => {
+    const out = repoWith("slackUserId: UTESTUSER1\nmodel: m\nprovider:\n  apiKey: env://PERSONA_ANA_KEY\nkbSources:\n  - kb-runbook\n");
+    const unknown: string[][] = [];
+    const p = renderDir(out, meta, (x) => unknown.push(x));
+    expect(p.personas.find((x) => x.name === "ana")!.kbSources).toEqual(["kb-runbook"]);
+    expect(p.version).toBe(3);
+    expect(unknown).toEqual([]);
+    const none = repoWith("slackUserId: UTESTUSER1\nmodel: m\nkbSources: []\n");
+    expect(renderDir(none, meta).personas.find((x) => x.name === "ana")!.kbSources).toEqual([]);
+    expect(renderDir(none, meta).version).toBe(3);
+  });
+
+  test("render --check refuses a malformed kbSources id with the gateway's parser", () => {
+    const out = repoWith("slackUserId: UTESTUSER1\nkbSources:\n  - Runbook\n");
+    expect(() => renderDir(out, meta)).toThrow(/persona 'ana': kbSources\[0\]/);
+  });
+
   test("render --check refuses a literal provider secret with the gateway's parser, never echoing it", () => {
     const out = repoWith("slackUserId: UTESTUSER1\nprovider:\n  apiKey: sk-literal-secret-value\n");
     const e = (() => { try { renderDir(out, meta); } catch (x) { return x as Error; } })()!;

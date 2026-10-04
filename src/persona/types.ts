@@ -30,4 +30,7 @@ export interface Persona {
   /** Managed personas only: provider credential REFERENCES (WS-A §4), or null
    *  when it names none. Never a value. Undefined for filesystem personas. */
   provider?: PersonaProvider | null;
+  /** Managed personas only: the `kb-*` sources it may read, or null for every
+   *  installed KB (WS-C §4.1). Undefined for filesystem personas (all). */
+  kbSources?: string[] | null;
 }

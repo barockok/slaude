@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { capPaths, MAX_REPORTED_FIELDS, SUPPORTED_PAYLOAD_VERSION, unknownFieldPaths, parsePayload, resolvePlaceholders, UnresolvedVarError, PayloadError, providerWarnings } from "../../src/persona/sync/payload";
+import { capPaths, MAX_REPORTED_FIELDS, SUPPORTED_PAYLOAD_VERSION, KB_SOURCES_PAYLOAD_VERSION, payloadVersionFor, unknownFieldPaths, parsePayload, resolvePlaceholders, UnresolvedVarError, PayloadError, providerWarnings } from "../../src/persona/sync/payload";
 
 const base = (personas: unknown[]) => ({ revision: "abc123", committedAt: "2026-10-01T10:00:00Z", personas });
 const ana = { name: "ana", slackUserId: "UTESTUSER1", soul: "You are Ana.", userToken: "${PERSONA_ANA_XOXP}" };
@@ -230,5 +230,41 @@ describe("providerWarnings", () => {
     expect(w.some((s) => s.includes("'ana'") && s.includes("provider.baseUrl"))).toBe(true);
     expect(w.some((s) => s.includes("'bea'") && s.includes("no model"))).toBe(true);
     expect(w.some((s) => s.includes("'default'"))).toBe(false);
+  });
+});
+
+describe("kbSources (WS-C §4.1)", () => {
+  const withKb = (kbSources: unknown) => base([{ ...ana, kbSources }]);
+  test("absent stays absent (all installed KBs); [] and a list are kept as written", () => {
+    expect(parsePayload(base([ana])).personas[0]!.kbSources).toBeUndefined();
+    expect(parsePayload(withKb([])).personas[0]!.kbSources).toEqual([]);
+    expect(parsePayload(withKb(["kb-runbook", "kb-finance-2"])).personas[0]!.kbSources).toEqual(["kb-runbook", "kb-finance-2"]);
+  });
+
+  test("a malformed id is a PayloadError naming the persona and field, never echoing the value", () => {
+    for (const bad of ["runbook", "kb-", "KB-runbook", "kb-Run", "kb-a_b", "kb-x.y", "shared", "agent-u1", "", 7]) {
+      const e = (() => { try { parsePayload(withKb([bad])); } catch (x) { return x as PayloadError; } })();
+      expect({ bad, err: e instanceof PayloadError }).toEqual({ bad, err: true });
+      expect(e!.message).toContain("persona 'ana': kbSources");
+      if (typeof bad === "string" && bad.length > 3) expect(e!.message).not.toContain(bad);
+    }
+    expect(() => parsePayload(withKb("kb-runbook"))).toThrow(PayloadError);
+  });
+
+  test("a duplicate id is refused", () => {
+    expect(() => parsePayload(withKb(["kb-a", "kb-a"]))).toThrow(/kbSources/);
+  });
+
+  test("kbSources needs payload version 3; render emits the highest version required", () => {
+    expect(SUPPORTED_PAYLOAD_VERSION).toBeGreaterThanOrEqual(KB_SOURCES_PAYLOAD_VERSION);
+    expect(KB_SOURCES_PAYLOAD_VERSION).toBe(3);
+    expect(payloadVersionFor([{}])).toBe(1);
+    expect(payloadVersionFor([{ provider: {} }])).toBe(2);
+    expect(payloadVersionFor([{ kbSources: [] }])).toBe(3);
+    expect(payloadVersionFor([{ provider: {} }, { kbSources: ["kb-a"] }])).toBe(3);
+  });
+
+  test("kbSources is a known field, so it is never reported as ignored", () => {
+    expect(unknownFieldPaths(withKb(["kb-a"]))).toEqual([]);
   });
 });

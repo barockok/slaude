@@ -21,7 +21,7 @@ const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : undefined
 // The gateway only resolves ${PERSONA_UPPER_CASE_NAME}; persona names are lower-case with hyphens.
 const varFor = (name: string) => `${PERSONA_VAR_PREFIX}${name.replace(/-/g, "_").toUpperCase()}_XOXP`;
 
-const YAML_KEYS = new Set(["slackUserId", "userToken", "model", "provider"]);
+const YAML_KEYS = new Set(["slackUserId", "userToken", "model", "provider", "kbSources"]);
 
 /** `onUnknown` receives `persona.<name>.<key>` for each persona.yaml key the payload has no field for (names only).
  *  `onWarnings` receives the gateway's provider/model sync warnings (WS-A §4). */
@@ -39,7 +39,7 @@ export function renderDir(
     if (!statSync(join(root, name)).isDirectory()) continue;
     if (!PERSONA_NAME_RE.test(name)) throw new PayloadError(`directory '${name}' is not a valid persona name`);
     const yaml = read(join(root, name, "persona.yaml"));
-    let cfg: { slackUserId?: string; userToken?: string; model?: string; provider?: unknown };
+    let cfg: { slackUserId?: string; userToken?: string; model?: string; provider?: unknown; kbSources?: unknown };
     try {
       cfg = ((yaml ? Bun.YAML.parse(yaml) : {}) ?? {}) as typeof cfg;
     } catch (e) {
@@ -68,6 +68,9 @@ export function renderDir(
       ...(cfg.model ? { model: String(cfg.model) } : {}),
       // Passed as written: parsePayload validates it with the gateway's own parser.
       ...(cfg.provider !== undefined ? { provider: cfg.provider } : {}),
+      // Absent = every installed KB; [] = none. A YAML `kbSources:` with no
+      // value (null) is absent too. Validated by the gateway's parser.
+      ...(cfg.kbSources != null ? { kbSources: cfg.kbSources } : {}),
       ...(mcp !== undefined ? { mcp } : {}),
     });
   }
