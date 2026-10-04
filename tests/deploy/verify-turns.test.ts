@@ -10,13 +10,13 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// each run waits out several 1 s probe timeouts
-setDefaultTimeout(30000);
+// each run waits out several 1 s probe timeouts, and may be repeated once
+setDefaultTimeout(60000);
 
 const script = new URL("../../deploy/k8s-local/verify-turns.sh", import.meta.url).pathname;
 let dir = "";
 
-beforeEach(() => {
+function freshDir() {
   dir = mkdtempSync(join(tmpdir(), "verify-turns-"));
   writeFileSync(
     join(dir, "kubectl"),
@@ -56,11 +56,30 @@ exit 0
   );
   chmodSync(join(dir, "kubectl"), 0o755);
   chmodSync(join(dir, "minikube"), 0o755);
-});
+  // personas.sh and vault.sh stand-ins: they record their arguments and fail
+  // (a refused sync, a failed rotation), so no real helper runs in a test.
+  for (const helper of ["personas.sh", "vault.sh"]) {
+    writeFileSync(join(dir, helper), `#!/usr/bin/env bash\necho "${helper} $*" >>"$STUB_DIR/helpers.log"\nexit 1\n`);
+    chmodSync(join(dir, helper), 0o755);
+  }
+}
+beforeEach(freshDir);
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-function run(env: Record<string, string> = {}) {
-  const r = Bun.spawnSync(["bash", script], {
+// A run normally takes a few seconds. On some hosts the OS occasionally stalls
+// the creation of a process for about 300 s: a bare loop that writes a stub and
+// runs it 3750 times showed one such stall, with no slaude code involved. A
+// process stuck there cannot be signalled until it is released, so the run is
+// started asynchronously, abandoned after RUN_TIMEOUT_MS (it keeps running in
+// its own temporary directory), and repeated once in a fresh directory.
+const RUN_TIMEOUT_MS = 20000;
+type Run = { code: number | null; timedOut: boolean; out: string; err: string; log: string };
+
+async function runOnce(env: Record<string, string>): Promise<Run> {
+  const proc = Bun.spawn(["bash", "-c", 'exec bash "$0" >"$1" 2>"$2"', script, join(dir, "out.txt"), join(dir, "err.txt")], {
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
     env: {
       PATH: `${dir}:${process.env.PATH}`,
       STUB_DIR: dir,
@@ -72,22 +91,47 @@ function run(env: Record<string, string> = {}) {
       POLL_FAST: "0",
       POLL_SLOW: "0",
       SETTLE_TIMEOUT: "1",
+      ROTATE_TIMEOUT: "1",
+      UNSERVED_TIMEOUT: "1",
+      HELPER_TIMEOUT: "10",
+      PERSONAS_SH: join(dir, "personas.sh"),
+      VAULT_SH: join(dir, "vault.sh"),
       ...env,
     },
   });
-  return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString(), log: readFileSync(join(dir, "run.log"), "utf8") };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const code = await Promise.race([
+    proc.exited,
+    new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), RUN_TIMEOUT_MS))),
+  ]);
+  clearTimeout(timer);
+  if (code === null) proc.kill(9);
+  const read = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : "");
+  return { code, timedOut: code === null, out: read("out.txt"), err: read("err.txt"), log: read("run.log") };
+}
+
+async function run(env: Record<string, string> = {}): Promise<Run> {
+  const first = await runOnce(env);
+  if (!first.timedOut) return first;
+  console.warn("[verify-turns.test] a run timed out (a stalled process launch); repeating it once in a fresh directory");
+  const abandoned = dir;
+  freshDir();
+  rmSync(abandoned, { recursive: true, force: true });
+  const second = await runOnce(env);
+  expect(second.timedOut, "the run timed out twice").toBe(false);
+  return second;
 }
 const calls = () => (existsSync(join(dir, "calls.log")) ? readFileSync(join(dir, "calls.log"), "utf8") : "");
 
-test("names its log file at the start, and the log holds what was printed", () => {
-  const r = run();
+test("names its log file at the start, and the log holds what was printed", async () => {
+  const r = await run();
   expect(r.out.split("\n")[0]).toContain(join(dir, "run.log"));
   expect(r.log).toContain("preconditions");
   expect(r.log).toContain("FAIL");
 });
 
-test("a probe that answers with something other than JSON says which probe and what it got", () => {
-  const r = run();
+test("a probe that answers with something other than JSON says which probe and what it got", async () => {
+  const r = await run();
   expect(r.code).not.toBe(0);
   // on stdout, not only stderr, and in the log
   for (const text of [r.out, r.log]) {
@@ -101,8 +145,8 @@ test("a probe that answers with something other than JSON says which probe and w
   expect(r.out).toContain("COULD NOT MEASURE");
 });
 
-test("a probe whose exec fails is reported on stdout with its exit status and output", () => {
-  const r = run({ STUB_PROBE_MODE: "fail" });
+test("a probe whose exec fails is reported on stdout with its exit status and output", async () => {
+  const r = await run({ STUB_PROBE_MODE: "fail" });
   expect(r.code).not.toBe(0);
   for (const text of [r.out, r.log]) {
     expect(text).toContain("!! probe enqueue failed (exit 1) on gw-1");
@@ -110,8 +154,8 @@ test("a probe whose exec fails is reported on stdout with its exit status and ou
   }
 });
 
-test("the HPA is pinned for the run and restored on the way out, even when the run fails", () => {
-  const r = run();
+test("the HPA is pinned for the run and restored on the way out, even when the run fails", async () => {
+  const r = await run();
   expect(r.code).not.toBe(0);
   const patches = calls().split("\n").filter((l) => l.includes("patch hpa"));
   expect(patches).toHaveLength(2);
@@ -119,50 +163,61 @@ test("the HPA is pinned for the run and restored on the way out, even when the r
   expect(patches[1]).toContain('"maxReplicas":3');
 });
 
-test("cleanup with no running gateway says so instead of silently doing nothing", () => {
-  const r = run({ STUB_NO_GATEWAY: "1" });
+test("cleanup with no running gateway says so instead of silently doing nothing", async () => {
+  const r = await run({ STUB_NO_GATEWAY: "1" });
   expect(r.code).not.toBe(0);
   expect(r.out).toContain("no running gateway pod");
   expect(r.log).toContain("no running gateway pod");
 });
 
-test("a failing cron trigger is a failure, not an ignored one", () => {
-  const r = run({ STUB_PROBE_MODE: "fail" });
+test("a failing cron trigger is a failure, not an ignored one", async () => {
+  const r = await run({ STUB_PROBE_MODE: "fail" });
   expect(r.out).toMatch(/FAIL .*cron/);
 });
 
-test("it waits for the node deployment to settle at two after pinning, and says when it did not", () => {
-  const r = run({ STUB_NODE_READY: "3" });
+test("it waits for the node deployment to settle at two after pinning, and says when it did not", async () => {
+  const r = await run({ STUB_NODE_READY: "3" });
   expect(r.out).toContain("node deployment did not settle at two replicas within 1s");
   expect(r.log).toContain("did not settle");
 });
 
-test("the label sections report COULD NOT MEASURE when their probes cannot answer, never a zero", () => {
-  const r = run();
+test("the label sections report COULD NOT MEASURE when their probes cannot answer, never a zero", async () => {
+  const r = await run();
   expect(r.out).toContain("node labels: a finance persona's turns run on finance nodes only");
   expect(r.out).toMatch(/FAIL\s+beta resolves to label finance .* COULD NOT MEASURE/);
   expect(r.out).toContain("finance routing — COULD NOT MEASURE");
   expect(r.out).toContain("provider rotation — COULD NOT MEASURE");
 });
 
-test("a job token reaches the node probe on stdin and is never logged or printed", () => {
-  const r = run();
+test("a job token reaches the node probe on stdin and is never logged or printed", async () => {
+  const r = await run();
   // The stub node probe answers 403 with the gate flag: the default-node check passes on it.
   expect(r.out).toContain("PASS  a default node is refused beta's bundle (403)");
   expect(r.out + r.log).not.toContain("STUBTOKEN");
   expect(calls()).not.toContain("STUBTOKEN");
 });
 
-test("stopping the finance nodes is undone on exit, even when the run fails", () => {
-  const r = run();
+test("stopping the finance nodes is undone on exit, even when the run fails", async () => {
+  const r = await run();
   expect(r.code).not.toBe(0);
   const scales = calls().split("\n").filter((l) => l.includes("scale deploy slaude-node-finance"));
   expect(scales[0]).toContain("--replicas=0");
   expect(scales.at(-1)).toContain("--replicas=1");
 });
 
-test("a failed container kill reports the reason instead of discarding it", () => {
-  const r = run({ STUB_KILL_FAIL: "1" });
+test("the relabel step goes through personas.sh, bounded, and reports a refused sync as a failure", async () => {
+  const r = await run();
+  expect(readFileSync(join(dir, "helpers.log"), "utf8")).toContain("personas.sh sync --relabel beta=default");
+  expect(r.out).toContain("relabel — could not sync beta onto default");
+});
+
+test("every kubectl call carries a request timeout", async () => {
+  await run();
+  for (const line of calls().split("\n").filter(Boolean)) expect(line).toContain("--request-timeout=");
+});
+
+test("a failed container kill reports the reason instead of discarding it", async () => {
+  const r = await run({ STUB_KILL_FAIL: "1" });
   expect(r.out).toContain("could not kill");
   expect(r.out).toContain("No such container: abc123");
   expect(r.log).toContain("No such container: abc123");

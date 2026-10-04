@@ -56,7 +56,12 @@ ROTATE_TIMEOUT="${ROTATE_TIMEOUT:-90}"
 UNSERVED_TIMEOUT="${UNSERVED_TIMEOUT:-150}"
 POLL_FAST="${POLL_FAST:-2}"
 POLL_SLOW="${POLL_SLOW:-5}"
+# The helper scripts the label sections call (overridable, so the script's own
+# tests can stand them in), each bounded by HELPER_TIMEOUT seconds.
+HELPER_TIMEOUT="${HELPER_TIMEOUT:-300}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PERSONAS_SH="${PERSONAS_SH:-$HERE/personas.sh}"
+VAULT_SH="${VAULT_SH:-$HERE/vault.sh}"
 # shellcheck source=/dev/null
 . "$HERE/lib.sh"
 
@@ -87,7 +92,8 @@ expect() { # <label> <failure-detail> <test...>
 # script for 34 minutes inside `probe cron`, with no output to say why.
 PROBE_TIMEOUT="${PROBE_TIMEOUT:-60s}"
 
-k() { kubectl --context "$PROFILE" -n "$NS" "$@"; }
+# Every call is bounded (PROBE_TIMEOUT), including the ones that look instant.
+k() { kubectl --context "$PROFILE" -n "$NS" --request-timeout="$PROBE_TIMEOUT" "$@"; }
 gateway() { k get pod -l app.kubernetes.io/component=gateway --field-selector=status.phase=Running -o name --request-timeout="$PROBE_TIMEOUT" 2>/dev/null | head -1; }
 gateways() { k get pod -l app.kubernetes.io/component=gateway --field-selector=status.phase=Running -o name --request-timeout="$PROBE_TIMEOUT" 2>/dev/null; }
 # The `default` label's nodes (slaude-node), and the `finance` label's.
@@ -303,6 +309,31 @@ wait_done() { # <want> <seconds> [probe status args...]
   printf '%s' "$v"
 }
 
+# Run a command with a wall-clock bound, without coreutils `timeout` (absent on
+# macOS). The watchdog's output goes to /dev/null so it never holds the pipe of a
+# $(...) that captures the command. Returns the command's status (143 if killed).
+bounded() { # <seconds> <command...>
+  local secs="$1" pid w rc
+  shift
+  "$@" &
+  pid=$!
+  (sleep "$secs" && kill -TERM "$pid") >/dev/null 2>&1 &
+  w=$!
+  wait "$pid"
+  rc=$?
+  kill "$w" >/dev/null 2>&1
+  wait "$w" 2>/dev/null
+  return "$rc"
+}
+
+# The local helper scripts, bounded, with no terminal on stdin.
+helper() { # personas|vault <args...>
+  local script="$VAULT_SH"
+  [[ "$1" == personas ]] && script="$PERSONAS_SH"
+  shift
+  SLAUDE_LOCAL_PROFILE="$PROFILE" bounded "$HELPER_TIMEOUT" "$script" "$@" </dev/null
+}
+
 # Kill a node's container outright — no SIGTERM, no drain — the way verify-ha
 # simulates a lost worker.
 crash_node() { # <pod>
@@ -323,11 +354,11 @@ cleanup() {
       || diag "  !! cleanup: could not scale slaude-node-finance back to $FINANCE_REPLICAS; do it by hand"
   fi
   if [[ -n "${RELABELED:-}" ]]; then
-    SLAUDE_LOCAL_PROFILE="$PROFILE" "$HERE/personas.sh" sync >/dev/null 2>&1 \
+    helper personas sync >/dev/null 2>&1 \
       || diag "  !! cleanup: could not re-sync the persona set; beta may still run on default (personas.sh sync)"
   fi
   if [[ -n "${ROTATED:-}" ]]; then
-    SLAUDE_LOCAL_PROFILE="$PROFILE" "$HERE/vault.sh" reseed beta >/dev/null 2>&1 \
+    helper vault reseed beta >/dev/null 2>&1 \
       || diag "  !! cleanup: could not restore beta's Vault secret (vault.sh reseed beta)"
   fi
   # The probe's stdout is a JSON ack nobody needs; its failures go through diag.
@@ -534,7 +565,7 @@ else
   if [[ -z "$before" || "$before" == None ]]; then
     bad "provider rotation — COULD NOT MEASURE (beta's bundle carries no provider key; is Vault seeded? vault.sh seed)"
   else
-    rot_out="$(printf 'local-rotated-%s-%s\n' "$(date +%s)" "$RANDOM" | SLAUDE_LOCAL_PROFILE="$PROFILE" "$HERE/vault.sh" rotate beta 2>&1)" && ROTATED=1
+    rot_out="$(printf 'local-rotated-%s-%s\n' "$(date +%s)" "$RANDOM" | SLAUDE_LOCAL_PROFILE="$PROFILE" bounded "$HELPER_TIMEOUT" "$VAULT_SH" rotate beta 2>&1)" && ROTATED=1
     want="$(sed -n 's/.* sha=\([0-9a-f]\{12\}\)$/\1/p' <<<"$rot_out")"
     if [[ -z "$want" ]]; then
       bad "provider rotation — could not rotate beta's key: ${rot_out:0:200}"
@@ -625,7 +656,7 @@ fi
 # dispatched it, which a probe-enqueued turn has none of: that half is the
 # real-Slack runbook's (README.md).
 section "relabel: the next turn follows the persona's new label"
-if ! sync_out="$(SLAUDE_LOCAL_PROFILE="$PROFILE" "$HERE/personas.sh" sync --relabel beta=default 2>&1)"; then
+if ! sync_out="$(helper personas sync --relabel beta=default 2>&1)"; then
   bad "relabel — could not sync beta onto default: ${sync_out:0:200}"
 else
   RELABELED=1
@@ -645,7 +676,7 @@ else
     sleep "$POLL_FAST"
   done
   expect_value "it booted on a default node" "$on_def" "1" "session found in default node logs"
-  if SLAUDE_LOCAL_PROFILE="$PROFILE" "$HERE/personas.sh" sync >/dev/null 2>&1; then
+  if helper personas sync >/dev/null 2>&1; then
     RELABELED=""
     expect_value "after the set is synced again, beta is back on finance" \
       "$(probe enqueue 1 --persona beta --label live | field label || true)" "finance" "label"
