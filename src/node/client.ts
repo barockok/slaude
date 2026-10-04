@@ -40,6 +40,8 @@ export interface SessionView {
   slack_team_id: string | null;
   slack_channel_id: string | null;
   slack_thread_ts: string | null;
+  /** Absent from an older gateway's response. */
+  slack_app_id?: string | null;
   created_at: number;
   updated_at: number;
 }
