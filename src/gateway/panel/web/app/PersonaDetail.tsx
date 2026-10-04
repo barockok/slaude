@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { PersonaDetail } from "./types";
-import { api } from "./api";
-import { PersonaLoadError, PersonaView } from "./PersonaViews";
+import { api, ApiError } from "./api";
+import { PersonaLoadError, PersonaView, isPersonaDetail, isPersonaName } from "./PersonaViews";
 
 /** One persona's definition (WS-C §4.4.3), route `#/p/<name>`, read only. */
 export function PersonaPage({ name, onBack }: { name: string; onBack: () => void }) {
@@ -12,8 +12,18 @@ export function PersonaPage({ name, onBack }: { name: string; onBack: () => void
     let alive = true;
     setPersona(null);
     setErr(null);
+    // Checked before the name reaches a URL: `.` or `%2e` would be normalised
+    // to the list route and come back as a list body.
+    if (!isPersonaName(name)) {
+      setErr(new ApiError(422, { error: "invalid persona name" }));
+      return;
+    }
     api().getPersona(name)
-      .then((p) => { if (alive) setPersona(p); })
+      .then((p) => {
+        if (!alive) return;
+        if (isPersonaDetail(p, name)) setPersona(p);
+        else setErr(new Error("unexpected response from the panel API"));
+      })
       .catch((e) => { if (alive) setErr(e); });
     return () => { alive = false; };
   }, [name]);

@@ -4,13 +4,50 @@
 // flag: the server never sends a credential value, an MCP URL, header, env or
 // argument.
 import type { ReactNode } from "react";
-import type { PersonaDetail, PersonaSummary } from "./types";
+import type { PersonaDetail, PersonaListBody, PersonaMcpServer, PersonaSummary } from "./types";
 import { personaColor, personaInitial } from "./lib";
 import { Copy } from "./ui";
 
 const KB_SHORT = { all: "all KBs", none: "no KB", list: "listed KBs" } as const;
 const KB_MODE = { all: "Every installed knowledge base", none: "No knowledge base", list: "Only the listed knowledge bases" } as const;
-const VIA_LABEL = { bridge: "gateway bridge", stdio: "node-local stdio", none: "not served on nodes" } as const;
+
+/** The server's persona-name rule (PERSONA_NAME_RE in src/persona/sync/payload.ts),
+ *  repeated here so the web bundle does not pull in the server's modules. A
+ *  name is checked before it is put in a URL: `.` or `%2e` would otherwise be
+ *  normalised to the list route. */
+const PERSONA_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+export const isPersonaName = (name: string): boolean => PERSONA_NAME_RE.test(name);
+
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+/** The detail body for exactly this persona, in the shape the view reads. */
+export function isPersonaDetail(v: unknown, name: string): v is PersonaDetail {
+  return isObj(v) && v.name === name && isObj(v.soul) && isObj(v.model) && isObj(v.provider) &&
+    Array.isArray(v.mcp) && isObj(v.kb) && Array.isArray(v.kb.sources) && Array.isArray(v.skills) &&
+    (v.nodes === null || Array.isArray(v.nodes));
+}
+
+/** The list body, in the shape the table reads. */
+export function isPersonaList(v: unknown): v is PersonaListBody {
+  return isObj(v) && Array.isArray(v.personas) && v.personas.every((p) => isObj(p) && typeof p.name === "string" && isObj(p.fields) && isObj(p.kb));
+}
+
+function routeLabel(s: PersonaMcpServer): string {
+  if (s.via === "bridge") return "gateway bridge";
+  if (s.via === "stdio") return "runs in the gateway process";
+  if (s.type === "stdio") return "not served here (stdio comes from the node manifest)";
+  return "not served on nodes";
+}
+
+/** The persona's AGENT identity only; per-user credentials are not shown. */
+function credentialChip(s: PersonaMcpServer, now: number) {
+  if (s.via !== "bridge") return <span className="cell-mute">-</span>;
+  if (!s.oauth) return <span className="chip cold">agent credential: none</span>;
+  if (s.expiresAt !== null && s.expiresAt <= now) {
+    return <span className="chip lock" title="The gateway refreshes it on the next call">agent credential: stored, expired; refreshes on use</span>;
+  }
+  return <span className="chip warm">agent credential: stored</span>;
+}
 
 /** The persona table (null = loading). */
 export function PersonaTable({ personas, onOpen }: { personas: PersonaSummary[] | null; onOpen: (name: string) => void }) {
@@ -64,6 +101,7 @@ export function PersonaLoadError({ error, name }: { error: Error; name?: string 
   const status = (error as { status?: unknown }).status;
   const [title, detail] =
     status === 404 ? [`No persona named ${name ?? "that"}`, "It may have been renamed, or never synced."]
+    : status === 422 ? ["Not a persona name", "Persona names are lowercase letters, digits and hyphens."]
     : status === 409 ? ["Personas are not available here", error.message]
     : ["Could not load personas", error.message];
   return (
@@ -75,7 +113,7 @@ export function PersonaLoadError({ error, name }: { error: Error; name?: string 
 }
 
 /** One persona's definition. */
-export function PersonaView({ persona: p }: { persona: PersonaDetail }) {
+export function PersonaView({ persona: p, now = Date.now() }: { persona: PersonaDetail; now?: number }) {
   return (
     <>
       <div className="ident">
@@ -109,15 +147,15 @@ export function PersonaView({ persona: p }: { persona: PersonaDetail }) {
       <Section title="MCP servers" testid="persona-mcp" note="Name, route and hostname only. URLs, headers, env and arguments are never shown.">
         {p.mcp.length === 0 ? <Empty>None configured.</Empty> : (
           <table className="fleet static">
-            <thead><tr><th>Server</th><th>Route</th><th>Type</th><th>Host</th><th>Agent OAuth</th></tr></thead>
+            <thead><tr><th>Server</th><th>Route</th><th>Type</th><th>Host</th><th title="The agent's own identity; per-user credentials are not shown">Agent credential</th></tr></thead>
             <tbody>
               {p.mcp.map((s) => (
                 <tr key={s.name} data-mcp={s.name}>
                   <td className="mono">{s.name}</td>
-                  <td className="cell-dim">{VIA_LABEL[s.via]}</td>
+                  <td className="cell-dim">{routeLabel(s)}</td>
                   <td className="cell-dim">{s.type}</td>
                   <td className="mono cell-dim">{s.host ?? "-"}</td>
-                  <td>{s.via !== "bridge" ? <span className="cell-mute">-</span> : s.oauth ? <span className="chip warm">connected</span> : <span className="chip cold">not connected</span>}</td>
+                  <td>{credentialChip(s, now)}</td>
                 </tr>
               ))}
             </tbody>

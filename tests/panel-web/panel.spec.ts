@@ -226,6 +226,19 @@ test("an unknown persona shows the 404 state", async ({ page }) => {
   await expect(page.locator('[data-testid="persona-error"]')).toContainText("No persona named ghost");
 });
 
+test("a dot name never reaches the API (it would normalise to the list) and shows the invalid-name state", async ({ page }) => {
+  await page.context().clearCookies();
+  await page.goto("/panel?role=operator");
+  await expect(page.locator("tbody tr[data-sid]").first()).toBeVisible();
+  const personaCalls: string[] = [];
+  page.on("request", (r) => { if (r.url().includes("/panel/api/personas")) personaCalls.push(r.url()); });
+  for (const hash of ["#/p/.", "#/p/%2e"]) {
+    await page.goto(`/panel/${hash}`);
+    await expect(page.locator('[data-testid="persona-error"]')).toContainText("Not a persona name");
+  }
+  expect(personaCalls).toEqual([]);
+});
+
 test("a deployment without persona tables shows the 409 state", async ({ page }) => {
   await page.goto(`/panel/?mock=1&sqlite=1#/p`);
   await expect(page.locator('[data-testid="persona-error"]')).toContainText("not available here");

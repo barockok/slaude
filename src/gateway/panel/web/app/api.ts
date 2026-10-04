@@ -5,7 +5,7 @@
 //   - mock: in-browser fixtures + a scripted emitter, for ?mock=1 (gauntlet
 //     screenshots with no backend at all).
 import type { SessionSummary, AgentEvent, TimelineEntry, Me, PersonaListBody, PersonaDetail } from "./types";
-import { FIXTURE_SESSIONS, SCRIPT, OPERATOR, DETAIL_ID, FIXTURE_PERSONAS, FIXTURE_PERSONA_DETAILS } from "./fixtures";
+import { FIXTURE_SESSIONS, SCRIPT, OPERATOR, DETAIL_ID, FIXTURE_PERSONAS, fixturePersona } from "./fixtures";
 
 export class ApiError extends Error {
   constructor(public status: number, public body: any) {
@@ -248,7 +248,7 @@ function mockBackend(): Backend {
     },
     async getPersona(name) {
       if (FORCE_409) throw new ApiError(409, { error: PERSONA_409 });
-      const d = FIXTURE_PERSONA_DETAILS[name];
+      const d = fixturePersona(name);
       if (!d) throw new ApiError(404, { error: `no persona named '${name}'` });
       return structuredClone(d);
     },

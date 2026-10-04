@@ -13,7 +13,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FIXTURE_SESSIONS, SCRIPT, DETAIL_ID, FIXTURE_PERSONAS, FIXTURE_PERSONA_DETAILS } from "../../src/gateway/panel/web/app/fixtures";
+import { FIXTURE_SESSIONS, SCRIPT, DETAIL_ID, FIXTURE_PERSONAS, fixturePersona } from "../../src/gateway/panel/web/app/fixtures";
 
 const PORT = Number(process.env.PORT ?? 4319);
 const ORIGIN = `http://localhost:${PORT}`;
@@ -205,7 +205,7 @@ async function fixtureApi(req: Request, url: URL, seg: string[]): Promise<Respon
     if (process.env.STUB_SQLITE === "1") return json(409, { error: "persona sync requires Postgres (SLAUDE_DB=pg); this deployment runs on sqlite" });
     if (seg.length === 3) return json(200, { revision: "fixture-rev", personas: FIXTURE_PERSONAS });
     if (seg.length === 4) {
-      const p = FIXTURE_PERSONA_DETAILS[decodeURIComponent(seg[3]!)];
+      const p = fixturePersona(decodeURIComponent(seg[3]!));
       return p ? json(200, p) : json(404, { error: "no persona with that name" });
     }
   }

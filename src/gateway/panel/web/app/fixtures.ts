@@ -125,9 +125,9 @@ export const FIXTURE_PERSONA_DETAILS: Record<string, PersonaDetail> = {
     runsOn: "finance",
     provider: { apiKey: "vault://kv/agents/ravi#api_key", authToken: "none", oauthToken: "none", baseUrl: "https://llm.example.com/v1" },
     mcp: [
-      { name: "ledger", via: "bridge", type: "http", host: "ledger.example.com", oauth: true },
-      { name: "warehouse", via: "bridge", type: "http", host: "warehouse.example.com", oauth: false },
-      { name: "sheets", via: "stdio", type: "stdio", host: null, oauth: false },
+      { name: "ledger", via: "bridge", type: "http", host: "ledger.example.com", oauth: true, expiresAt: mins(-1440) },
+      { name: "warehouse", via: "bridge", type: "http", host: "warehouse.example.com", oauth: false, expiresAt: null },
+      { name: "sheets", via: "none", type: "stdio", host: null, oauth: false, expiresAt: null },
     ],
     kb: { mode: "list", sources: [{ id: "kb-finance", installed: true }, { id: "kb-audit", installed: false }] },
     skills: [
@@ -142,7 +142,7 @@ export const FIXTURE_PERSONA_DETAILS: Record<string, PersonaDetail> = {
     model: { git: "claude-sonnet-4-6", live: "claude-opus-4-8", overridden: true },
     runsOn: "engineering",
     provider: { apiKey: "env://PERSONA_LENA_API_KEY", authToken: "none", oauthToken: "none", baseUrl: null },
-    mcp: [{ name: "tracker", via: "bridge", type: "http", host: "tracker.example.com", oauth: true }],
+    mcp: [{ name: "tracker", via: "bridge", type: "http", host: "tracker.example.com", oauth: true, expiresAt: mins(60) }],
     kb: { mode: "all", sources: [{ id: "kb-handbook", installed: true }, { id: "kb-runbooks", installed: true }, { id: "kb-finance", installed: true }] },
     skills: [{ slug: "release-notes", name: "release-notes", source: "global" }],
     // No live node carries `engineering`: the panel says so.
@@ -154,7 +154,7 @@ export const FIXTURE_PERSONA_DETAILS: Record<string, PersonaDetail> = {
     model: { git: null, live: null, overridden: false },
     runsOn: null,
     provider: { apiKey: "none", authToken: "none", oauthToken: "none", baseUrl: null },
-    mcp: [{ name: "legacy-feed", via: "none", type: "sse", host: "feed.example.com", oauth: false }],
+    mcp: [{ name: "legacy-feed", via: "none", type: "sse", host: "feed.example.com", oauth: false, expiresAt: null }],
     kb: { mode: "none", sources: [] },
     skills: [],
     nodes: [{ id: "gw-node-1", alive: true, labels: ["default"] }, { id: "gw-node-3", alive: true, labels: ["default", "finance"] }],
@@ -175,6 +175,12 @@ for (const [name, role] of [["default", "general assistant"], ["ravi", "finance 
   const text = soulText(name, role);
   const d = FIXTURE_PERSONA_DETAILS[name]!;
   d.soul = { ...d.soul, length: text.length, preview: text.slice(0, 200) };
+}
+
+/** One fixture persona by name, own entries only: a name like `__proto__` or
+ *  `constructor` must not reach the object's prototype. Null when unknown. */
+export function fixturePersona(name: string): PersonaDetail | null {
+  return Object.hasOwn(FIXTURE_PERSONA_DETAILS, name) ? FIXTURE_PERSONA_DETAILS[name]! : null;
 }
 
 /** The list route's rows for the same personas. */

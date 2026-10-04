@@ -89,10 +89,15 @@ export interface PersonaListBody {
 
 export interface PersonaMcpServer {
   name: string;
+  /** bridge: http via the gateway's bridge; stdio: mono only, runs in the
+   *  gateway process; none: not served from this definition. */
   via: "bridge" | "stdio" | "none";
   type: "http" | "sse" | "stdio" | "other";
   host: string | null;
+  /** The persona's AGENT identity holds a stored OAuth credential. */
   oauth: boolean;
+  /** That credential's expiry (epoch ms); null when none. */
+  expiresAt: number | null;
 }
 
 /** GET /panel/api/personas/:name. */

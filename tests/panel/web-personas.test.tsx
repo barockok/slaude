@@ -5,9 +5,11 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseRoute, statusMeta, relTime, exactTime, clockTime, summarize } from "../../src/gateway/panel/web/app/lib";
-import { PersonaTable, PersonaLoadError, PersonaView } from "../../src/gateway/panel/web/app/PersonaViews";
+import {
+  PersonaTable, PersonaLoadError, PersonaView, isPersonaName, isPersonaDetail, isPersonaList,
+} from "../../src/gateway/panel/web/app/PersonaViews";
 import { StatusDot, RelTime, Modal } from "../../src/gateway/panel/web/app/ui";
-import { FIXTURE_PERSONAS, FIXTURE_PERSONA_DETAILS } from "../../src/gateway/panel/web/app/fixtures";
+import { FIXTURE_PERSONAS, FIXTURE_PERSONA_DETAILS, fixturePersona } from "../../src/gateway/panel/web/app/fixtures";
 
 // The shape of the client's ApiError (api.ts, which needs DOM types the
 // server-side typecheck does not load): an Error carrying the HTTP status.
@@ -49,7 +51,7 @@ describe("persona detail", () => {
     }
     expect(html).toContain("vault://kv/agents/ravi#api_key");
     expect(html).toContain("ledger.example.com");
-    expect(html).toContain("connected");
+    expect(html).toContain("agent credential: stored");
     expect(html).toContain("kb-audit · not installed");
     expect(html).toContain("this persona");
     expect(html).toContain("gw-node-3");
@@ -61,6 +63,54 @@ describe("persona detail", () => {
     expect(max).toContain("No node registry answered");
     expect(max).toContain('data-testid="persona-retired"');
     expect(renderToStaticMarkup(<PersonaView persona={FIXTURE_PERSONA_DETAILS.toko!} />)).toContain("reads no knowledge base");
+  });
+
+  test("MCP route and the agent credential, worded for what they are", () => {
+    const now = Date.parse("2026-10-05T00:00:00Z");
+    const persona = {
+      ...FIXTURE_PERSONA_DETAILS.ravi!,
+      mcp: [
+        { name: "fresh", via: "bridge", type: "http", host: "a.example.com", oauth: true, expiresAt: now + 60_000 },
+        { name: "stale", via: "bridge", type: "http", host: "b.example.com", oauth: true, expiresAt: now - 60_000 },
+        { name: "unauthed", via: "bridge", type: "http", host: "c.example.com", oauth: false, expiresAt: null },
+        { name: "nodelocal", via: "none", type: "stdio", host: null, oauth: false, expiresAt: null },
+        { name: "inproc", via: "stdio", type: "stdio", host: null, oauth: false, expiresAt: null },
+        { name: "feed", via: "none", type: "sse", host: "d.example.com", oauth: false, expiresAt: null },
+      ],
+    } as const;
+    const cell = (html: string, name: string) => html.split(`data-mcp="${name}"`)[1]!.split("</tr>")[0]!;
+    const html = renderToStaticMarkup(<PersonaView persona={persona as any} now={now} />);
+    expect(cell(html, "fresh")).toContain("agent credential: stored");
+    expect(cell(html, "fresh")).not.toContain("expired");
+    expect(cell(html, "stale")).toContain("stored, expired; refreshes on use");
+    expect(cell(html, "unauthed")).toContain("agent credential: none");
+    expect(cell(html, "nodelocal")).toContain("not served here (stdio comes from the node manifest)");
+    expect(cell(html, "inproc")).toContain("runs in the gateway process");
+    expect(cell(html, "feed")).toContain("not served on nodes");
+    expect(html).not.toContain(">connected<");
+  });
+
+  test("persona names are validated before any fetch; a wrong-shaped body is refused", () => {
+    for (const ok of ["ravi", "default", "a-1"]) expect(isPersonaName(ok)).toBe(true);
+    for (const bad of [".", "..", "", "A", "a b", "a/b", "-a", "x".repeat(64)]) expect(isPersonaName(bad)).toBe(false);
+    expect(isPersonaDetail(FIXTURE_PERSONA_DETAILS.ravi, "ravi")).toBe(true);
+    // The list body (what `/personas/.` normalises to), another persona, junk.
+    expect(isPersonaDetail({ revision: "r", personas: FIXTURE_PERSONAS }, ".")).toBe(false);
+    expect(isPersonaDetail(FIXTURE_PERSONA_DETAILS.ravi, "lena")).toBe(false);
+    expect(isPersonaDetail(null, "ravi")).toBe(false);
+    expect(isPersonaDetail({ ...FIXTURE_PERSONA_DETAILS.ravi, mcp: "x" }, "ravi")).toBe(false);
+    expect(isPersonaList({ revision: "r", personas: FIXTURE_PERSONAS })).toBe(true);
+    expect(isPersonaList({ personas: "x" })).toBe(false);
+    expect(isPersonaList(FIXTURE_PERSONA_DETAILS.ravi)).toBe(false);
+    const bad = renderToStaticMarkup(<PersonaLoadError error={httpError(422, "x")} name="." />);
+    expect(bad).toContain("Not a persona name");
+    const shape = renderToStaticMarkup(<PersonaLoadError error={new Error("unexpected response from the panel API")} />);
+    expect(shape).toContain("unexpected response");
+  });
+
+  test("the fixture lookup takes only own personas", () => {
+    expect(fixturePersona("ravi")!.name).toBe("ravi");
+    for (const n of ["__proto__", "constructor", "toString", "hasOwnProperty", "ghost"]) expect(fixturePersona(n)).toBeNull();
   });
 
   test("404, 409 and other failures each have their own message", () => {

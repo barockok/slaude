@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { PersonaSummary } from "./types";
 import { api } from "./api";
-import { PersonaLoadError, PersonaTable } from "./PersonaViews";
+import { PersonaLoadError, PersonaTable, isPersonaList } from "./PersonaViews";
 
 /** Read-only persona list (WS-C §4.4.3), route `#/p`. Opens a persona's definition. */
 export function PersonaList({ onOpen }: { onOpen: (name: string) => void }) {
@@ -12,7 +12,12 @@ export function PersonaList({ onOpen }: { onOpen: (name: string) => void }) {
   useEffect(() => {
     let alive = true;
     api().listPersonas()
-      .then((b) => { if (alive) { setPersonas(b.personas); setRevision(b.revision); } })
+      .then((b) => {
+        if (!alive) return;
+        if (!isPersonaList(b)) { setErr(new Error("unexpected response from the panel API")); return; }
+        setPersonas(b.personas);
+        setRevision(b.revision);
+      })
       .catch((e) => { if (alive) setErr(e); });
     return () => { alive = false; };
   }, []);
