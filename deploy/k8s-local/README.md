@@ -396,13 +396,22 @@ the door with `SLAUDE_LOCAL_LEGACY_DOOR=closed up.sh`). To rehearse:
    without `runsOn` and `kbSources` (the `provider` blocks are added by the sync
    script; skip that by syncing with an older image, or accept the table in the
    runbook), or choose to accept the table.
-2. Build the older release's image as `slaude:local` (check out the older tag
-   and run `up.sh` from it, gateways first: `kubectl rollout status` the gateway
-   before the nodes roll), with `SLAUDE_LOCAL_NODE_AUTH=legacy` and the door open,
-   since an older gateway refuses signed credentials.
+2. Roll back to the older release, gateways first. From a checkout of the older
+   tag, run its `up.sh` with the node size this cluster was created with, or its
+   own sizing check stops it (an existing profile keeps its size):
+   `SLAUDE_LOCAL_CPUS=4 SLAUDE_LOCAL_MEMORY=4864 deploy/k8s-local/up.sh`. Its
+   overlay knows nothing of `slaude-node-finance`, `vault` or `mock-mcp`, so it
+   leaves them running: the finance pods keep a signed credential, which an older
+   gateway rejects (401), and they pause. Scale them away for the rehearsal
+   (`kubectl --context slaude-local -n slaude-scale scale deploy/slaude-node-finance --replicas=0`)
+   and expect `beta`'s turns to run on `default`, as the runbook's table says.
+   The default nodes must present the legacy token, since an older gateway
+   refuses signed credentials: bring this cluster up with
+   `SLAUDE_LOCAL_NODE_AUTH=legacy` (door open) before you roll back, so their
+   credential Secret already holds it.
 3. Check a turn for each persona and compare with the runbook's table; then roll
-   forward (this checkout's `up.sh`) and check each persona is back on its label,
-   scope and provider.
+   forward (this checkout's `up.sh`, which scales the finance node back to one)
+   and check each persona is back on its label, scope and provider.
 
 Record what ran and what differed. Steps 1 and 2 were written from the runbook,
 not yet run on this overlay.
