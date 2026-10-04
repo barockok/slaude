@@ -41,6 +41,11 @@ export interface JobClaims {
   remote?: { addr: string; dir: string };
   /** Hash of (lock owner, remote target). A node reboots a warm session when it changes. */
   sessionConfigFp?: string;
+  /** Slack app (api_app_id) the turn's event belongs to. With `team` it names
+   *  the registered app the /v1 tool plane posts as (D1.2). Optional: tokens
+   *  from an older gateway, and turns with no inbound app, resolve it from the
+   *  team when that is unambiguous. */
+  app?: string;
   /** Unix seconds. */
   exp: number;
   iat?: number;

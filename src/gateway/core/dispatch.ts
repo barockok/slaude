@@ -47,6 +47,9 @@ export interface DispatchMeta {
    *  slack_apps row; when absent the session row's own column is used, and
    *  'default' is the last resort (sqlite carries no tenant_id column). */
   tenantId?: string;
+  /** Slack app (api_app_id) the turn belongs to. Signed into the job token so
+   *  the /v1 tool plane posts as that app (D1.2). */
+  apiAppId?: string;
   suppress?: boolean;
 }
 
@@ -245,6 +248,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
         persona: personaId,
         session: session.id,
         team: meta.teamId,
+        ...(meta.apiAppId ? { app: meta.apiAppId } : {}),
         channel: meta.channelId,
         thread: meta.threadTs,
         initiator: meta.userId,
