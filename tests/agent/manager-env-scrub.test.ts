@@ -43,11 +43,17 @@ describe("scrubChildEnv", () => {
 
 describe("scrubChildEnv and the gateway-only list", () => {
   it("strips every gateway-only name and prefix, the single list the node boot check uses", () => {
-    const input: Record<string, string> = { KEEP: "yes", SLAUDE_REDIS_URL: "redis://r", ANTHROPIC_BASE_URL: "https://llm.example.com" };
+    const input: Record<string, string> = { KEEP: "yes", ANTHROPIC_BASE_URL: "https://llm.example.com" };
     for (const n of GATEWAY_ONLY_ENV_NAMES) input[n] = "fake";
     for (const p of GATEWAY_ONLY_ENV_PREFIXES) input[`${p}SOMETHING`] = "fake";
     const out = scrubChildEnv(input);
-    expect(out).toEqual({ KEEP: "yes", SLAUDE_REDIS_URL: "redis://r", ANTHROPIC_BASE_URL: "https://llm.example.com" });
+    expect(out).toEqual({ KEEP: "yes", ANTHROPIC_BASE_URL: "https://llm.example.com" });
+  });
+
+  // The node process needs Redis; the agent child does not, and Redis holds
+  // every session's queue, locks and event stream.
+  it("strips SLAUDE_REDIS_URL, which only the node process needs", () => {
+    expect(scrubChildEnv({ SLAUDE_REDIS_URL: "redis://r", KEEP: "1" })).toEqual({ KEEP: "1" });
   });
 
   it("strips the database URLs, Slack secrets, node keys and Vault variables by name", () => {

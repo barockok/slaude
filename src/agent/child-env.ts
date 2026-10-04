@@ -11,6 +11,8 @@
  * the database URLs, the Slack secrets, deploy tokens, PERSONA_* placeholders
  * and Vault settings), plus:
  *   - SLAUDE_NODE_TOKEN, the node's own /v1 credential;
+ *   - SLAUDE_REDIS_URL, every session's queue, locks and event stream (the
+ *     node process uses it; the child never does);
  *   - SLAUDE_ENCRYPTION_KEY, the connect broker's key.
  * Every consumer of these reads them in the slaude process itself (MCP
  * placeholders are expanded before the config reaches the child), so the
@@ -18,7 +20,7 @@
  */
 import { isGatewayOnlyEnv } from "../config/gateway-only-env";
 
-const ALSO_STRIPPED = new Set(["SLAUDE_ENCRYPTION_KEY", "SLAUDE_NODE_TOKEN"]);
+const ALSO_STRIPPED = new Set(["SLAUDE_ENCRYPTION_KEY", "SLAUDE_NODE_TOKEN", "SLAUDE_REDIS_URL"]);
 
 export function scrubChildEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
   const out: Record<string, string | undefined> = {};
