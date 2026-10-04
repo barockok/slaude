@@ -263,6 +263,16 @@ A node holding the old shared token authenticates as `{id: legacy, labels: [defa
 
 A job token is refreshed at claim, when it has used a fifth of its life in the queue. Its total life is capped by `SLAUDE_JOB_TOKEN_MAX_AGE` (6 hours) from its first issue. A job that waited in the queue longer than the refresh window (the 15-minute TTL plus a 1-hour grace) gets a new token through `POST /v1/jobs/:id/token-reissue`, which needs the label, the job still in the queue, and the job younger than `SLAUDE_JOB_MAX_AGE` (24 hours). A reissue restarts the token-life clock at the claim, so a job's token can live up to `SLAUDE_JOB_MAX_AGE` from its original enqueue in total, never beyond it.
 
+By the job token's age at claim (default 15-minute TTL):
+
+| Age at claim | What the node does |
+|---|---|
+| under 3 minutes (a fifth of the TTL) | uses the token as is |
+| 3 to 75 minutes (TTL plus the 1-hour grace) | `token-refresh`; a `token-reissue` in this band is refused with `409` ("use token-refresh") |
+| over 75 minutes | `token-reissue` |
+
+Refresh and reissue both re-check the persona's live `runsOn` and answer `409 LABEL_MISMATCH` when it is not the token's label (see [Relabel and LABEL_MISMATCH](#relabel-and-label_mismatch)).
+
 ### Metrics and an alert
 
 | Metric | Meaning |
@@ -360,7 +370,7 @@ When a persona's `runsOn` changes:
 - **new messages** go to the new label's queue;
 - **warm routing** ignores a node that lacks the new label, and that node's warm session idles out and unregisters;
 - **a pending message** (in a job of the session still waiting, on any queue) is moved to the new label's queue when the next message arrives, merged with it under a token signed for the new label. A waiting job that no new message follows keeps its old label and runs on a node carrying it;
-- **work in flight is invalidated** when a call it makes is refused. A turn whose node does not carry the label signed into its token gets `403` from the gate on its next call (a tool call becomes an error result for the model), and a token refresh at claim is refused with `409` and code `LABEL_MISMATCH` when the persona's live `runsOn` differs from the token's label. Either way the job **fails with `LABEL_MISMATCH`** (never acknowledged as done, never retried by BullMQ), and the gateway **re-dispatches it once** to the persona's current label, posting nothing. If that second attempt also fails with `LABEL_MISMATCH`, the user sees one fixed message ("No worker is available that matches this persona's requirements"). A `403` on the runtime bundle fails the same way.
+- **work in flight is invalidated** when a call it makes is refused. A turn whose node does not carry the label signed into its token gets `403` from the gate on its next call (a tool call becomes an error result for the model), and a token refresh or reissue at claim is refused with `409` and code `LABEL_MISMATCH` when the persona's live `runsOn` differs from the token's label. Either way the job **fails with `LABEL_MISMATCH`** (never acknowledged as done, never retried by BullMQ), and the gateway **re-dispatches it once** to the persona's current label, posting nothing. If that second attempt also fails with `LABEL_MISMATCH`, the user sees one fixed message ("No worker is available that matches this persona's requirements"). A `403` on the runtime bundle fails the same way.
 - A turn already running on a node that **still carries the old label** finishes there: the label signed into its token is still among the node's labels, and a token is refreshed only at claim. To stop such a turn, re-credential the old node without the label or abort the turn.
 
 The session-config fingerprint is not used for a relabel: it reboots a session on the same node, which is the wrong remedy.

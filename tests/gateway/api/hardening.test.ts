@@ -7,6 +7,7 @@ import { createV1Api } from "../../../src/gateway/api";
 import { __setNodeVerifier, JOB_HEADER, mintJobToken, verifyJobToken, type JobClaims } from "../../../src/gateway/api/auth";
 import { mintNodeCredential, NodeCredentialVerifier } from "../../../src/gateway/auth/node-credential";
 import { InMemoryPendingSource } from "../../../src/gateway/api/pending-source";
+import { __resetPersonaRegistry, setPersonaRegistry } from "../../../src/persona/registry";
 import { handleTokenReissue, JOB_EVENT_LOG_MAX, logSafe, type QueuedJob } from "../../../src/gateway/api/jobs";
 
 const stubTools = {} as any;
@@ -136,6 +137,20 @@ describe("POST /v1/jobs/:id/ack|fail", () => {
 
 describe("POST /v1/jobs/:id/token-reissue", () => {
   const NOW = Date.now();
+  // These tokens are signed for `finance`; the persona runs there, so the
+  // reissue label check (as at refresh) passes.
+  beforeAll(() => {
+    setPersonaRegistry({
+      lookupByUserId: () => null,
+      lookupByName: () => null,
+      list: () => [],
+      isMultiPersonaMode: () => false,
+      isManaged: () => true,
+      tombstonedPersonaFor: () => null,
+      defaultPersona: () => ({ model: null, mcp: null, runsOn: "finance" }),
+    } as any);
+  });
+  afterAll(() => __resetPersonaRegistry());
   const ancient = () => mintJobToken({ ...claims(), label: "finance" }, { now: NOW - 3 * 3600_000 }); // far past grace
   const reissueReq = (tok: string, body: unknown = { queue: "turns" }) =>
     new Request("http://gw/v1/jobs/J1/token-reissue", {

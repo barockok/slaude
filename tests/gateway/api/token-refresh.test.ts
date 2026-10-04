@@ -6,7 +6,7 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { JOB_HEADER, mintJobToken, verifyJobToken } from "../../../src/gateway/api/auth";
-import { handleTokenRefresh, REFRESH_GRACE_SEC } from "../../../src/gateway/api/jobs";
+import { handleTokenRefresh, handleTokenReissue, REFRESH_GRACE_SEC, type QueuedJob } from "../../../src/gateway/api/jobs";
 
 const SECRET = "refresh-test-secret";
 
@@ -154,6 +154,35 @@ describe("live label re-check at refresh (node labels spec §4.3, §4.8)", () =>
       expect((await handleTokenRefresh(req(onFin), "job-123")).status).toBe(200);
       // A token from before labels is `default`: refused while the persona is on finance.
       expect((await handleTokenRefresh(req(mintJobToken(baseClaims)), "job-123")).status).toBe(409);
+    } finally {
+      __resetPersonaRegistry();
+    }
+  });
+
+  // Review U10b-E: reissue re-mints the token's own label claim, so without
+  // the same check a long-queued job would get a fresh token for a label the
+  // persona no longer runs on.
+  test("reissue is refused with the same typed 409 once the persona runs on another label", async () => {
+    const { setPersonaRegistry, __resetPersonaRegistry } = await import("../../../src/persona/registry");
+    const { LABEL_MISMATCH_CODE } = await import("../../../src/gateway/api/auth");
+    const now = Date.now();
+    const reissue = (label: string) => {
+      const tok = mintJobToken({ ...baseClaims, label }, { now: now - 3 * 3600_000 }); // past the refresh grace
+      const claims = (verifyJobToken(tok, { graceSec: Number.MAX_SAFE_INTEGER }) as any).claims;
+      const job: QueuedJob = { data: { jobToken: tok, enqueuedAt: now - 3600_000 }, timestamp: now - 3600_000, state: "waiting" };
+      const r = new Request("http://gw/v1/jobs/job-123/token-reissue", {
+        method: "POST",
+        headers: { [JOB_HEADER]: tok, "content-type": "application/json" },
+        body: JSON.stringify({ queue: `turns.label.${label}` }),
+      });
+      return handleTokenReissue(r, "job-123", claims, async () => job, now);
+    };
+    try {
+      setPersonaRegistry(managedDefault("finance") as any);
+      const res = await reissue("engineering");
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: "the agent's node label changed", code: LABEL_MISMATCH_CODE });
+      expect((await reissue("finance")).status).toBe(200);
     } finally {
       __resetPersonaRegistry();
     }
