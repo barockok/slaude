@@ -152,6 +152,34 @@ describe("relay failures and limits", () => {
     }
   });
 
+  test("one deadline per call: time spent waiting for a slot counts against it", async () => {
+    // Two servers of one owner share its slots: `example` may run 5s, `quick` 300ms.
+    const b = createMcpBridge({
+      servers: () => ({
+        servers: { example: { type: "http", url: sse.url } as never, quick: { type: "http", url: sse.url, timeout: 300 } as never },
+        privateServices: [],
+      }),
+      accountFor: async () => null,
+      credentialsFor: async () => ({}),
+      policy: loopback,
+      limits: () => ({ ...LIMITS, ownerConcurrency: 1 }),
+    });
+    try {
+      const calls = toolCalls();
+      const ac = new AbortController();
+      const slow = b.call(claims(), "example", "slow", {}, ac.signal);
+      await untilCallReached(calls);
+      const t0 = Date.now();
+      const r = await b.call(claims(), "quick", "echo", { text: "late" });
+      expect(r).toEqual({ content: [{ type: "text", text: "too many MCP calls are in flight for this identity; quick was not called" }], isError: true });
+      expect(Date.now() - t0).toBeLessThan(1000);
+      ac.abort();
+      await slow;
+    } finally {
+      await b.close();
+    }
+  });
+
   test("an expired upstream session is re-initialised and the call retried once", async () => {
     expect((await bridge.call(claims(), "example", "echo", { text: "one" })).content).toEqual([{ type: "text", text: "one" }]);
     const inits = sse.methods.filter((m) => m === "initialize").length;

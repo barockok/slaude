@@ -474,6 +474,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
     server: string,
     cred: Exclude<BridgeCredential, { kind: "connect" }>,
     timeoutMs: number,
+    left: () => number,
     signal: AbortSignal | undefined,
     op: (c: Client) => Promise<T>,
   ): Promise<{ ok: true; value: T } | { ok: false; text: string }> {
@@ -483,7 +484,9 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
     let current = cred;
     for (;;) {
       try {
-        const client = await callSignal.run(signal, () => session(key, current, timeoutMs));
+        // Opening the session is not tied to this call's signal: other calls
+        // may be waiting on the same initialisation.
+        const client = await session(key, current, left());
         return { ok: true, value: await callSignal.run(signal, () => op(client)) };
       } catch (e) {
         if (e instanceof UpstreamSessionExpired && !reconnected) {
@@ -532,9 +535,9 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
     return unavailableText(server);
   }
 
-  async function withSlot<T>(ownerKey: string, timeoutMs: number, signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T | null> {
+  async function withSlot<T>(ownerKey: string, deadline: number, signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T | null> {
     const lim = limits();
-    if (!(await slots.acquire(ownerKey, lim.ownerConcurrency, now() + timeoutMs, signal))) return null;
+    if (!(await slots.acquire(ownerKey, lim.ownerConcurrency, deadline, signal))) return null;
     try {
       return await fn();
     } finally {
@@ -557,14 +560,18 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
         maybeCard(claims, server, "connect");
         return { tools: [], instructions: connectText(server), unavailable: true };
       }
+      // One deadline for the whole call: the wait for a slot, opening the
+      // session, a refresh and its retry all fit inside it.
       const timeoutMs = effectiveTimeout(cfg);
-      const out = await withSlot(cred.ownerKey, timeoutMs, signal, () =>
-        run(claims, server, cred, timeoutMs, signal, async (client) => {
+      const deadline = now() + timeoutMs;
+      const left = () => Math.max(1, deadline - now());
+      const out = await withSlot(cred.ownerKey, deadline, signal, () =>
+        run(claims, server, cred, timeoutMs, left, signal, async (client) => {
           const tools: unknown[] = [];
           let cursor: string | undefined;
           for (let page = 0; page < 50; page++) {
             const r = (await rawRequest(client, "tools/list", cursor ? { cursor } : {}, {
-              timeout: timeoutMs,
+              timeout: left(),
               ...(signal ? { signal } : {}),
             })) as { tools?: unknown[]; nextCursor?: string };
             tools.push(...(r.tools ?? []));
@@ -592,10 +599,12 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
         return errResult(connectText(server));
       }
       const timeoutMs = effectiveTimeout(cfg);
-      const out = await withSlot(cred.ownerKey, timeoutMs, signal, () =>
-        run(claims, server, cred, timeoutMs, signal, (client) =>
+      const deadline = now() + timeoutMs;
+      const left = () => Math.max(1, deadline - now());
+      const out = await withSlot(cred.ownerKey, deadline, signal, () =>
+        run(claims, server, cred, timeoutMs, left, signal, (client) =>
           rawRequest(client, "tools/call", { name, arguments: args ?? {} }, {
-            timeout: timeoutMs,
+            timeout: left(),
             ...(signal ? { signal } : {}),
           }) as Promise<CallToolResult>,
         ),
