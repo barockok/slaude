@@ -48,7 +48,7 @@ ensure_brain_database() {
   local tries="${PG_TRIES:-30}" nap="${PG_SLEEP:-2}" create_tries="${CREATE_TRIES:-5}" i out
   local up=false
   for ((i = 1; i <= tries; i++)); do
-    if kubectl -n "$NS" exec deploy/dev-postgres -c postgres -- pg_isready -h 127.0.0.1 -U slaude >/dev/null 2>&1; then
+    if kubectl --context "$PROFILE" -n "$NS" exec deploy/dev-postgres -c postgres -- pg_isready -h 127.0.0.1 -U slaude >/dev/null 2>&1; then
       up=true
       break
     fi
@@ -59,7 +59,7 @@ ensure_brain_database() {
     return 1
   fi
 
-  psql_pg() { kubectl -n "$NS" exec deploy/dev-postgres -c postgres -- psql -U slaude -v ON_ERROR_STOP=1 "$@"; }
+  psql_pg() { kubectl --context "$PROFILE" -n "$NS" exec deploy/dev-postgres -c postgres -- psql -U slaude -v ON_ERROR_STOP=1 "$@"; }
   for ((i = 1; i <= create_tries; i++)); do
     # stdout only, compared exactly: stderr text must not be able to match.
     if out="$(psql_pg -d postgres -tAc "select 1 from pg_database where datname = 'slaude_brain'" 2>/dev/null)" && [[ "$out" == 1 ]]; then
@@ -97,20 +97,20 @@ HPA_ANNOTATION="slaude.dev/original-max-replicas"
 pin_node_hpa() {
   local min max saved
   local err
-  min="$(kubectl --context "$PROFILE" -n "$NS" get hpa "$HPA_NAME" -o jsonpath='{.spec.minReplicas}' 2>&1)"
-  max="$(kubectl --context "$PROFILE" -n "$NS" get hpa "$HPA_NAME" -o jsonpath='{.spec.maxReplicas}' 2>&1)"
+  min="$(kubectl --context "$PROFILE" -n "$NS" --request-timeout="${PROBE_TIMEOUT:-60s}" get hpa "$HPA_NAME" -o jsonpath='{.spec.minReplicas}' 2>&1)"
+  max="$(kubectl --context "$PROFILE" -n "$NS" --request-timeout="${PROBE_TIMEOUT:-60s}" get hpa "$HPA_NAME" -o jsonpath='{.spec.maxReplicas}' 2>&1)"
   if [[ ! "$min" =~ ^[0-9]+$ || ! "$max" =~ ^[0-9]+$ ]]; then
     err="$(printf '%s %s' "$min" "$max" | tr '\n' ' ')"
     _say "  !! could not read minReplicas/maxReplicas of hpa/$HPA_NAME: ${err:0:300}"
     return 1
   fi
-  saved="$(kubectl --context "$PROFILE" -n "$NS" get hpa "$HPA_NAME" -o 'jsonpath={.metadata.annotations.slaude\.dev/original-max-replicas}' 2>/dev/null)"
+  saved="$(kubectl --context "$PROFILE" -n "$NS" --request-timeout="${PROBE_TIMEOUT:-60s}" get hpa "$HPA_NAME" -o 'jsonpath={.metadata.annotations.slaude\.dev/original-max-replicas}' 2>/dev/null)"
   if [[ "$saved" =~ ^[0-9]+$ ]]; then
     PINNED_ORIGINAL_MAX="$saved"
   else
     PINNED_ORIGINAL_MAX="$max"
   fi
-  if ! kubectl --context "$PROFILE" -n "$NS" patch hpa "$HPA_NAME" --type merge \
+  if ! kubectl --context "$PROFILE" -n "$NS" --request-timeout="${PROBE_TIMEOUT:-60s}" patch hpa "$HPA_NAME" --type merge \
     -p "{\"metadata\":{\"annotations\":{\"$HPA_ANNOTATION\":\"$PINNED_ORIGINAL_MAX\"}},\"spec\":{\"maxReplicas\":$min}}" >/dev/null; then
     _say "  !! could not pin hpa/$HPA_NAME to $min replicas"
     return 1
@@ -123,7 +123,7 @@ pin_node_hpa() {
 wait_deploy_ready() { # <deployment> <n> <timeout-seconds>
   local deadline=$(($(date +%s) + $3)) got
   while :; do
-    got="$(kubectl --context "$PROFILE" -n "$NS" get deploy "$1" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"
+    got="$(kubectl --context "$PROFILE" -n "$NS" --request-timeout="${PROBE_TIMEOUT:-60s}" get deploy "$1" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"
     [[ "$got" == "$2" ]] && return 0
     (($(date +%s) >= deadline)) && return 1
     sleep "${POLL_FAST:-2}"
@@ -132,7 +132,7 @@ wait_deploy_ready() { # <deployment> <n> <timeout-seconds>
 
 restore_node_hpa() {
   [[ "${PINNED_HPA:-0}" == 1 ]] || return 0
-  if kubectl --context "$PROFILE" -n "$NS" patch hpa "$HPA_NAME" --type merge \
+  if kubectl --context "$PROFILE" -n "$NS" --request-timeout="${PROBE_TIMEOUT:-60s}" patch hpa "$HPA_NAME" --type merge \
     -p "{\"metadata\":{\"annotations\":{\"$HPA_ANNOTATION\":null}},\"spec\":{\"maxReplicas\":$PINNED_ORIGINAL_MAX}}" >/dev/null; then
     PINNED_HPA=0
   else

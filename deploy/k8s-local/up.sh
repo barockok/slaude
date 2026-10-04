@@ -10,9 +10,11 @@
 # the app pods onto it. Secrets are generated once and reused.
 #
 # Environment (all optional):
-#   SLAUDE_LOCAL_PROFILE   minikube profile name             (default slaude-local)
-#   SLAUDE_LOCAL_CPUS      CPUs for the minikube node         (default 3, see sizing.env)
-#   SLAUDE_LOCAL_MEMORY    memory in MB for the minikube node (default 3500, see sizing.env)
+#   SLAUDE_LOCAL_PROFILE   minikube profile name             (default slaude-local);
+#                          every kubectl call names its context, so a run never
+#                          touches the current context of your shell
+#   SLAUDE_LOCAL_CPUS      CPUs for the minikube node         (default LOCAL_NODE_CPUS in sizing.env)
+#   SLAUDE_LOCAL_MEMORY    memory in MB for the minikube node (default LOCAL_NODE_MEMORY_MB in sizing.env)
 #   SLAUDE_LOCAL_MODEL     the cluster-wide default SLAUDE_MODEL, for a gateway whose
 #                          model names differ from the base ConfigMap's. Read from the
 #                          shell, else from SLAUDE_LOCAL_ENV_FILE. Written to model.env.
@@ -98,7 +100,15 @@ else
     die "minikube failed to start; the partial cluster was removed. Re-run to retry — downloads are cached."
   fi
 fi
-kubectl config use-context "$PROFILE" >/dev/null
+# Every kubectl call below names this context explicitly; nothing depends on, or
+# changes, the current context. Refuse to go on when minikube did not create it:
+# a context of that name pointing anywhere else is not this cluster.
+if ! kubectl config get-contexts -o name 2>/dev/null | grep -qxF "$PROFILE"; then
+  die "kubectl has no context named '$PROFILE' (minikube creates it); refusing to apply anything"
+fi
+if [[ "$(kubectl config view -o jsonpath="{.contexts[?(@.name==\"$PROFILE\")].context.cluster}" 2>/dev/null)" != "$PROFILE" ]]; then
+  die "kubectl context '$PROFILE' does not point at minikube's cluster '$PROFILE'; refusing to apply anything"
+fi
 
 # Refuse to continue on a node sized differently from what was asked for. An
 # existing profile keeps its original size no matter what flags are passed, so
@@ -284,20 +294,20 @@ minikube -p "$PROFILE" image build -t "$IMAGE" "$ROOT"
 
 # --- 4. Apply --------------------------------------------------------------
 existed=false
-kubectl -n "$NS" get deploy slaude-gateway >/dev/null 2>&1 && existed=true
+kubectl --context "$PROFILE" -n "$NS" get deploy slaude-gateway >/dev/null 2>&1 && existed=true
 
 log "applying overlay"
-kubectl kustomize --load-restrictor LoadRestrictionsNone "${SLAUDE_LOCAL_OVERLAY:-$HERE}" | kubectl apply -f -
+kubectl kustomize --load-restrictor LoadRestrictionsNone "${SLAUDE_LOCAL_OVERLAY:-$HERE}" | kubectl --context "$PROFILE" apply -f -
 
 # Same tag, new build: the Deployment spec is unchanged, so roll it explicitly.
 if $existed; then
   log "rolling app pods onto the new image"
-  kubectl -n "$NS" rollout restart deploy/slaude-gateway deploy/slaude-node deploy/slaude-node-finance deploy/mock-mcp
+  kubectl --context "$PROFILE" -n "$NS" rollout restart deploy/slaude-gateway deploy/slaude-node deploy/slaude-node-finance deploy/mock-mcp
 fi
 
 # --- 5. Wait ---------------------------------------------------------------
 log "waiting for rollouts"
-kubectl -n "$NS" rollout status deploy/dev-postgres --timeout=600s
+kubectl --context "$PROFILE" -n "$NS" rollout status deploy/dev-postgres --timeout=600s
 
 # Postgres creates the brain database from its init script, but only when its
 # data directory is first initialised. A volume created before that script
@@ -308,7 +318,7 @@ log "ensuring the brain database exists"
 ensure_brain_database
 
 for d in dev-redis vault mock-mcp slaude-gateway slaude-node slaude-node-finance; do
-  kubectl -n "$NS" rollout status "deploy/$d" --timeout=600s
+  kubectl --context "$PROFILE" -n "$NS" rollout status "deploy/$d" --timeout=600s
 done
 
 # --- 6. Vault and the persona set --------------------------------------------
@@ -322,8 +332,8 @@ if [[ "${SLAUDE_LOCAL_SYNC_PERSONAS:-1}" == 1 ]]; then
   log "creating the local knowledge bases"
   created="$(SLAUDE_LOCAL_PROFILE="$PROFILE" "$HERE/personas.sh" kb)"
   if [[ "$created" != 0 ]]; then
-    kubectl -n "$NS" rollout restart deploy/slaude-gateway
-    kubectl -n "$NS" rollout status deploy/slaude-gateway --timeout=600s
+    kubectl --context "$PROFILE" -n "$NS" rollout restart deploy/slaude-gateway
+    kubectl --context "$PROFILE" -n "$NS" rollout status deploy/slaude-gateway --timeout=600s
   fi
   log "syncing the local persona set (default, alpha on default, beta on finance)"
   SLAUDE_LOCAL_PROFILE="$PROFILE" "$HERE/personas.sh" sync \
@@ -333,7 +343,7 @@ else
 fi
 
 log "ready"
-kubectl -n "$NS" get pods -o wide
+kubectl --context "$PROFILE" -n "$NS" get pods -o wide
 cat <<EOF
 
 Next:
