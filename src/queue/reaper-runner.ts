@@ -64,48 +64,59 @@ export function startReaperLeader(opts: ReaperRunnerOpts): LeaderHandle {
   return leaderLoop(
     "reaper",
     async (signal) => {
-      while (!signal.aborted) {
-        try {
-          const report = await reaper.reapDeadNodes();
-          if (report.deadNodes.length) {
-            console.log(
-              `[reaper] reaped nodes=${report.deadNodes.join(",")} sessions=${report.sessionsCleared} jobs=${report.jobsMoved}`,
-            );
-          }
-          const alive = await registry.listNodes();
-          for (const nodeId of alive) {
-            const moved = await reaper.moveStalled(nodeId);
-            if (moved) console.log(`[reaper] rescued ${moved} stalled job(s) from ${nodeId}`);
-          }
-          // Gauges (leader-only — one writer per scrape target set).
-          // One series per label queue (node labels spec §4.7): `queue` keeps
-          // its meaning (`turns` is still label default) and `label` is added.
-          // Bounded by the labels in use, not by nodes.
-          for (const { queue, label } of await infra.turns.labelQueues()) {
-            const counts = await infra.turns.queue(queue).getJobCounts("waiting", "delayed", "prioritized");
-            metric.queueDepth.set(
-              (counts.waiting ?? 0) + (counts.delayed ?? 0) + (counts.prioritized ?? 0),
-              { queue, label },
-            );
-          }
-          // Logged on the transition only, not every pass.
-          for (const s of await labels.update()) {
-            if (s.unserved && !unservedLogged.has(s.label)) {
-              unservedLogged.add(s.label);
-              console.warn(`[reaper] label '${s.label}' is unserved: ${s.waiting} waiting, no live node`);
-            } else if (!s.unserved) unservedLogged.delete(s.label);
-          }
-          metric.nodesAlive.set(alive.length);
-          metric.sessionsWarm.set((await scanKeys(opts.redis, keys.sessPattern())).length);
-          metric.reaperLastRun.set(Math.floor(Date.now() / 1000));
-        } catch (e) {
-          onError(e);
-        }
-        // Abort-aware nap.
-        const napEnd = Date.now() + intervalMs;
-        while (!signal.aborted && Date.now() < napEnd) await sleep(Math.min(250, napEnd - Date.now()));
+      try {
+        await passes(signal);
+      } finally {
+        // Leadership lost or stopped: stop exporting label series that only
+        // a leader keeps current (review U10b-G).
+        labels.clearGauge();
+        unservedLogged.clear();
       }
     },
     { redis: opts.redis, keys, onError },
   );
+
+  async function passes(signal: AbortSignal): Promise<void> {
+    while (!signal.aborted) {
+      try {
+        const report = await reaper.reapDeadNodes();
+        if (report.deadNodes.length) {
+          console.log(
+            `[reaper] reaped nodes=${report.deadNodes.join(",")} sessions=${report.sessionsCleared} jobs=${report.jobsMoved}`,
+          );
+        }
+        const alive = await registry.listNodes();
+        for (const nodeId of alive) {
+          const moved = await reaper.moveStalled(nodeId);
+          if (moved) console.log(`[reaper] rescued ${moved} stalled job(s) from ${nodeId}`);
+        }
+        // Gauges (leader-only — one writer per scrape target set).
+        // One series per label queue (node labels spec §4.7): `queue` keeps
+        // its meaning (`turns` is still label default) and `label` is added.
+        // Bounded by the labels in use, not by nodes.
+        for (const { queue, label } of await infra.turns.labelQueues()) {
+          const counts = await infra.turns.queue(queue).getJobCounts("waiting", "delayed", "prioritized");
+          metric.queueDepth.set(
+            (counts.waiting ?? 0) + (counts.delayed ?? 0) + (counts.prioritized ?? 0),
+            { queue, label },
+          );
+        }
+        // Logged on the transition only, not every pass.
+        for (const s of await labels.update()) {
+          if (s.unserved && !unservedLogged.has(s.label)) {
+            unservedLogged.add(s.label);
+            console.warn(`[reaper] label '${s.label}' is unserved: ${s.waiting} waiting, no live node`);
+          } else if (!s.unserved) unservedLogged.delete(s.label);
+        }
+        metric.nodesAlive.set(alive.length);
+        metric.sessionsWarm.set((await scanKeys(opts.redis, keys.sessPattern())).length);
+        metric.reaperLastRun.set(Math.floor(Date.now() / 1000));
+      } catch (e) {
+        onError(e);
+      }
+      // Abort-aware nap.
+      const napEnd = Date.now() + intervalMs;
+      while (!signal.aborted && Date.now() < napEnd) await sleep(Math.min(250, napEnd - Date.now()));
+    }
+  }
 }

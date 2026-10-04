@@ -84,6 +84,29 @@ describe.skipIf(!realEnabled)("label status against real Redis", () => {
     await registry.nodeDown("n-eng");
   }, 20_000);
 
+  // Review U10b-G: one live-node listing per pass, not a SCAN per label.
+  test("a pass lists live nodes once, however many labels are in use", async () => {
+    const { makeRegistry } = await import("../../src/queue/registry");
+    const { makeLabelMonitor } = await import("../../src/queue/label-status");
+    const real = makeRegistry({ redis, keys, heartbeatSec: 30 });
+    const counts = { perLabel: 0, perLabelMap: 0 };
+    const registry = {
+      ...real,
+      nodesWithLabel: async (l: string) => (counts.perLabel++, real.nodesWithLabel(l)),
+      liveNodesPerLabel: async () => (counts.perLabelMap++, real.liveNodesPerLabel()),
+    };
+    await registry.nodeUp("n-g1", ["alpha", "beta"]);
+    await registry.nodeUp("n-g2", ["beta"]);
+    const mon = makeLabelMonitor({ redis, keys, turns, registry, personaLabels: () => ["alpha", "beta", "gamma"], unservedSecs: () => 60 });
+    const rows = await mon.update();
+    expect(counts).toEqual({ perLabel: 0, perLabelMap: 1 });
+    expect(rows.find((r) => r.label === "alpha")!.liveNodes).toBe(1);
+    expect(rows.find((r) => r.label === "beta")!.liveNodes).toBe(2);
+    expect(rows.find((r) => r.label === "gamma")!.liveNodes).toBe(0);
+    await registry.nodeDown("n-g1");
+    await registry.nodeDown("n-g2");
+  });
+
   // Review U10b-C: the list is truncated to MAX_LABELS; queue-only labels
   // (which any leftover or junk queue can create) must never push out a label
   // a live persona runs on.

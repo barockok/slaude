@@ -8,7 +8,8 @@
  * The reaper leader calls update() every pass: it records, per label, since
  * when the label has been without a node (a Redis hash, so every gateway
  * replica reads the same clock) and exports `slaude_label_unserved{label}`
- * (1/0), dropping the series of a label no longer in use. read() is the same
+ * (1/0), dropping the series of a label no longer in use, and every series
+ * when the replica stops leading (clearGauge). read() is the same
  * computation without writes, for the panel on any replica.
  *
  * Cardinality: labels match the label regex and come from persona rows and
@@ -74,6 +75,8 @@ export function makeLabelMonitor(opts: LabelMonitorOpts) {
   const measure = async () => {
     const labels = await inUse();
     const since = await redis.hgetall(hash);
+    // One live-node listing for every label, not a SCAN per label.
+    const nodes = await registry.liveNodesPerLabel();
     const rows: Array<{ label: string; liveNodes: number; waiting: number; since: number | null }> = [];
     for (const label of labels) {
       // Raw reads, not a Queue handle: opening a BullMQ queue writes its
@@ -84,7 +87,7 @@ export function makeLabelMonitor(opts: LabelMonitorOpts) {
       const s = Number(since[label]);
       rows.push({
         label,
-        liveNodes: (await registry.nodesWithLabel(label)).length,
+        liveNodes: nodes.get(label) ?? 0,
         waiting: wait + prio,
         since: Number.isFinite(s) && since[label] !== undefined ? s : null,
       });
@@ -124,6 +127,16 @@ export function makeLabelMonitor(opts: LabelMonitorOpts) {
         if (ls.label !== undefined && !live.has(ls.label)) metric.labelUnserved.remove(ls);
       }
       return out;
+    },
+
+    /**
+     * Drop every slaude_label_unserved series this replica exports. Called
+     * when it stops leading (review U10b-G): only the leader updates them, so
+     * an ex-leader's would otherwise freeze at their last value next to the
+     * new leader's.
+     */
+    clearGauge(): void {
+      for (const ls of metric.labelUnserved.labelSets()) metric.labelUnserved.remove(ls);
     },
 
     /** Read-only view for the panel: no writes, any replica. */

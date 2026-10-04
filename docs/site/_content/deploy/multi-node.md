@@ -343,7 +343,7 @@ Keep **at least two replicas per label** for HA. The cost is stated plainly: eve
 
 A label is **in use** when a live persona runs on it or its `turns.label.<label>` queue exists in Redis. Every reaper pass (about 30 s, on the leader) counts, for each label in use, the jobs waiting on its queue and the live nodes carrying it. When jobs wait and no live node carries the label for longer than `SLAUDE_LABEL_UNSERVED_SECS` (default 60), the label is **unserved**:
 
-- the gauge `slaude_label_unserved{label}` is 1 (0 otherwise; a label that leaves use loses its series; at most 100 labels are reported);
+- the gauge `slaude_label_unserved{label}` is 1 (0 otherwise; a label that leaves use loses its series; at most 100 labels are reported, labels a persona runs on ahead of labels that only have a queue). Only the reaper leader exports it, and a replica that stops leading drops all its series, so `max by (label)` across gateway pods reads the current leader;
 - `GET /panel/api/labels` reports it. Read-only, for any authenticated operator, with the same guard as the other panel reads; 503 without a node queue (mono):
 
   ```json
