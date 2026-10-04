@@ -35,7 +35,20 @@ export function baseUrlProblem(raw: string, internalHosts: readonly string[]): s
   if (url.protocol !== "https:" && url.protocol !== "http:") return "must be an https URL";
   if (url.username || url.password) return "must not carry credentials in the URL; use provider.apiKey or provider.authToken";
   if (url.search || url.hash) return "must not carry a query string or fragment";
-  const host = url.hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1");
+  let host = url.hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1");
+  // The URL parser already decodes %2e in a host; decode again defensively,
+  // then drop ONE trailing dot: `localhost.` is the fully qualified spelling of
+  // `localhost`, and must meet the same checks. An empty label left after that
+  // (`metadata..`) is not a host name at all.
+  if (host.includes("%")) {
+    try {
+      host = decodeURIComponent(host);
+    } catch {
+      return "must be an https URL";
+    }
+  }
+  if (host.endsWith(".")) host = host.slice(0, -1);
+  if (host === "" || host.startsWith(".") || host.endsWith(".") || host.includes("..")) return "must be an https URL";
   if (NEVER_HOSTS.has(host) || host.endsWith(".localhost")) return "must not name a loopback or metadata host";
   const internal = internalHosts.includes(host);
   if (/^[0-9.]+$/.test(host) || host.includes(":")) {

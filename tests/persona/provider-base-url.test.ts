@@ -27,6 +27,18 @@ describe("provider baseUrl policy (M-1)", () => {
     }
   });
 
+  // Re-check F1: a fully qualified name with its trailing dot is the same host.
+  test("a trailing dot (literal or percent-encoded) does not get past the never-list", () => {
+    for (const u of [
+      "https://localhost./", "https://metadata.google.internal./", "https://foo.localhost./",
+      "https://localhost%2e/", "https://localhost%2E/", "https://metadata.%2e/",
+    ]) {
+      expect(baseUrlProblem(u, [])).not.toBeNull();
+    }
+    expect(baseUrlProblem("http://llm.internal.example./", ["llm.internal.example"])).toBeNull();
+    expect(baseUrlProblem("https://llm.example.com./v1", [])).toBeNull();
+  });
+
   test("other schemes, userinfo and query strings are refused without echoing the URL", () => {
     for (const u of ["file:///etc/passwd", "ftp://llm.example.com", "https://user:hunter2@llm.example.com", "https://llm.example.com/?key=abc", "not a url"]) {
       const p = baseUrlProblem(u, []);

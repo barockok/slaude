@@ -113,8 +113,8 @@ describe.skipIf(!isPg)("runtime bundle: provider references", () => {
 
   // R2-F7: re-validated at bundle build, whatever wrote the row.
   test("a stored baseUrl outside the policy is refused at bundle build, literal or resolved", async () => {
-    install({ PERSONA_ANA_KEY: "k", PERSONA_ANA_URL: "http://169.254.169.254/latest" });
-    for (const baseUrl of ["file:///etc/passwd", "http://169.254.169.254/latest", "env://PERSONA_ANA_URL"]) {
+    install({ PERSONA_ANA_KEY: "k", PERSONA_ANA_URL: "http://169.254.169.254/latest", PERSONA_ANA_URL2: "https://metadata.google.internal./" });
+    for (const baseUrl of ["file:///etc/passwd", "http://169.254.169.254/latest", "env://PERSONA_ANA_URL", "env://PERSONA_ANA_URL2", "https://localhost./"]) {
       await clean();
       await P.applySync(T, [row("default"), row("ana", { provider: { baseUrl, apiKey: "env://PERSONA_ANA_KEY" } })],
         meta("r1", "2026-10-01T10:00:00Z"));
