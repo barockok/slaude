@@ -1,14 +1,13 @@
 /**
  * D1.2: a gate posts (and later edits) its card as the app the session belongs
- * to, never as the transport's app-level client, and records that app on the
- * durable row so another replica (or a restart) knows whose card it is.
+ * to, never as the transport's app-level client. (A click answers through its
+ * own response_url, which belongs to the app that posted the card.)
  */
 import { describe, it, expect, beforeEach } from "bun:test";
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { ApprovalGate } from "../../../src/gateway/slack/approval-gate";
 import { PermissionGate } from "../../../src/gateway/slack/permission-gate";
 import type { AppRef, Transport } from "../../../src/gateway/core/transport";
-import * as PendingGates from "../../../src/db/pending-gates";
 import { __resetSoulDataMemo } from "../../../src/soul/extract";
 import { paths } from "../../../src/config/home";
 
@@ -50,23 +49,20 @@ describe("gates resolve their client from the session's app", () => {
     __resetSoulDataMemo();
   });
 
-  it("ApprovalGate.request posts as the request's app, the timeout edit follows, and the row records it", async () => {
+  it("ApprovalGate.request posts as the request's app, and the timeout edit follows", async () => {
     const { t, calls } = multiAppTransport();
     const gate = new ApprovalGate(t, [], { timeoutSeconds: () => 0.05, gateBus: null });
     const d = await gate.request({ channel: "C1", threadTs: "1.0", summary: "do it", app: APP_B });
     expect(d.approved).toBe(false);
     await until(() => calls.some((c) => c.method === "chat.update"));
     expect(calls.map((c) => `${c.method}:${c.app}`)).toEqual(["chat.postMessage:A0TWO", "chat.update:A0TWO"]);
-    const id = calls[0]!.args.blocks.find((b: any) => b.type === "actions").elements[0].action_id.split(":")[2];
-    expect((await PendingGates.get(id))!.payload.app).toEqual(APP_B);
   });
 
   it("ApprovalGate.open (REST plane) posts as the request's app", async () => {
     const { t, calls } = multiAppTransport();
     const gate = new ApprovalGate(t, [], { timeoutSeconds: () => 0, gateBus: null });
-    const { pendingId } = await gate.open({ channel: "C1", threadTs: "1.0", summary: "do it", app: APP_B });
+    await gate.open({ channel: "C1", threadTs: "1.0", summary: "do it", app: APP_B });
     expect(calls.map((c) => `${c.method}:${c.app}`)).toEqual(["chat.postMessage:A0TWO"]);
-    expect((await PendingGates.get(pendingId))!.payload.app).toEqual(APP_B);
   });
 
   it("PermissionGate posts its card as the bound session's app", async () => {
@@ -79,7 +75,6 @@ describe("gates resolve their client from the session's app", () => {
     await until(() => calls.length > 0);
     ac.abort();
     expect(calls.map((c) => `${c.method}:${c.app}`)).toEqual(["chat.postMessage:A0TWO"]);
-    expect((await PendingGates.get(toolUseID))!.payload.app).toEqual(APP_B);
   });
 
   it("PermissionGate.open (REST plane) posts as the given app", async () => {

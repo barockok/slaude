@@ -396,7 +396,6 @@ export class PermissionGate {
         channel: args.channel,
         threadTs: args.threadTs,
         waiter: "poll",
-        ...(args.app ? { app: args.app } : {}),
         ...(args.suggestions?.length ? { suggestions: args.suggestions } : {}),
       },
       expiresAt: Date.now() + PERM_GATE_TTL_MS,
@@ -440,7 +439,7 @@ export class PermissionGate {
       id: toolUseId,
       kind: "perm",
       sessionId,
-      payload: { toolName, channel: route.channel, threadTs: route.threadTs, ...(route.app ? { app: route.app } : {}) },
+      payload: { toolName, channel: route.channel, threadTs: route.threadTs },
       expiresAt: Date.now() + PERM_GATE_TTL_MS,
     });
 

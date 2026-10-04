@@ -20,8 +20,9 @@ export type ApprovalRequest = {
    *  ids" SOUL format. Modern persona uses scope-described approvers, where
    *  the runtime keyword-matches the summary against each approver's scope. */
   category?: string;
-  /** Slack app the session belongs to (D1.2). The card is posted, and later
-   *  edited, as this app; it is recorded on the durable row too. */
+  /** Slack app the session belongs to (D1.2). The card is posted, and its
+   *  timeout edit made, as this app. A click needs no client: it answers
+   *  through the click's own response_url, which belongs to the posting app. */
   app?: AppRef;
 };
 
@@ -368,7 +369,6 @@ export class ApprovalGate {
         category: req.category ?? null,
         approvers: [...approvers],
         waiter: "poll",
-        ...(req.app ? { app: req.app } : {}),
       },
       expiresAt: timeoutSec > 0 ? Date.now() + timeoutSec * 1000 : undefined,
     });
@@ -430,7 +430,6 @@ export class ApprovalGate {
         summary: req.summary,
         category: req.category ?? null,
         approvers: [...approvers],
-        ...(req.app ? { app: req.app } : {}),
       },
       expiresAt: timeoutSec > 0 ? Date.now() + timeoutSec * 1000 : undefined,
     });
