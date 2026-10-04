@@ -149,7 +149,9 @@ overrides it would wipe.
 Behaviour to know:
 
 - `version` is the payload format; absent means 1, and `personas render` always
-  writes it. A payload whose `version` is newer than the gateway supports is
+  writes it: 2 when any persona sets `provider`, otherwise 1, so a payload
+  without `provider` still deploys to an older gateway, and one with it is
+  refused by a gateway that would ignore it. A payload whose `version` is newer than the gateway supports is
   refused with 422 before anything is applied: upgrade the gateway first.
 - A field the gateway does not know (at the top level or on a persona) is
   ignored, never stored, and listed in `ignoredFields` as `futureKnob` or

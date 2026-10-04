@@ -101,6 +101,14 @@ describe("personas export and render", () => {
     expect(unknown).toEqual([]);
   });
 
+  // R1-F2: a gateway that predates `provider` (but checks versions) refuses it.
+  test("render writes version 2 only when some persona sets provider, else 1", () => {
+    const withProvider = repoWith("slackUserId: UTESTUSER1\nmodel: m\nprovider:\n  apiKey: env://PERSONA_ANA_KEY\n");
+    expect(renderDir(withProvider, meta).version).toBe(2);
+    const without = repoWith("slackUserId: UTESTUSER1\nmodel: m\n");
+    expect(renderDir(without, meta).version).toBe(1);
+  });
+
   test("render --check refuses a literal provider secret with the gateway's parser, never echoing it", () => {
     const out = repoWith("slackUserId: UTESTUSER1\nprovider:\n  apiKey: sk-literal-secret-value\n");
     const e = (() => { try { renderDir(out, meta); } catch (x) { return x as Error; } })()!;

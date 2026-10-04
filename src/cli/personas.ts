@@ -15,7 +15,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
-import { parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, safeKey, capPaths, SUPPORTED_PAYLOAD_VERSION, providerWarnings, type SyncPayload } from "../persona/sync/payload";
+import { parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, safeKey, capPaths, payloadVersionFor, providerWarnings, type SyncPayload } from "../persona/sync/payload";
 
 const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : undefined);
 // The gateway only resolves ${PERSONA_UPPER_CASE_NAME}; persona names are lower-case with hyphens.
@@ -75,7 +75,7 @@ export function renderDir(
   if (personas.length > 0 && !personas.some((p) => p.name === "default")) {
     throw new PayloadError("personas/ has personas but no default/ — a non-empty sync must include a persona named 'default'");
   }
-  const payload = parsePayload({ version: SUPPORTED_PAYLOAD_VERSION, ...meta, personas });
+  const payload = parsePayload({ version: payloadVersionFor(personas), ...meta, personas });
   if (unknown.length) onUnknown?.(capPaths(unknown));
   const warnings = providerWarnings(payload);
   if (warnings.length) onWarnings?.(warnings);

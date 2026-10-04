@@ -29,8 +29,20 @@ export class UnresolvedVarError extends PayloadError {
  * The payload format this gateway understands. A payload with no `version` is
  * version 1. A newer one is refused rather than half-applied: its extra fields
  * might change what a persona means.
+ *
+ *   1  the personas-as-code fields
+ *   2  adds `provider` (WS-A). `render` writes 2 only when some persona sets
+ *      it, so a gateway that predates `provider` refuses such a payload
+ *      instead of stripping the field and leaving the persona on node
+ *      credentials; any other payload stays 1 and deploys to either.
  */
-export const SUPPORTED_PAYLOAD_VERSION = 1;
+export const SUPPORTED_PAYLOAD_VERSION = 2;
+export const PROVIDER_PAYLOAD_VERSION = 2;
+
+/** The version a payload needs: 2 when any persona sets `provider`, else 1. */
+export function payloadVersionFor(personas: ReadonlyArray<{ provider?: unknown }>): number {
+  return personas.some((p) => p.provider !== undefined) ? PROVIDER_PAYLOAD_VERSION : 1;
+}
 
 const personaSpec = z.object({
   name: z.string().regex(PERSONA_NAME_RE, "persona name must match ^[a-z0-9][a-z0-9-]{0,62}$"),
