@@ -20,10 +20,11 @@
 import { decodeJwt, encodeJwt } from "./jwt";
 import { env } from "../../config/env";
 import { m as metric } from "../../metrics";
+import { LABEL_RE } from "../../queue/keys";
 
 export const NODE_CREDENTIAL_VERSION = 1;
 export const NODE_CREDENTIAL_TYP = "node";
-export const LABEL_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+export { LABEL_RE };
 export const NODE_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 export const MAX_LABELS = 8;
 /** The id the legacy identity carries; a signed credential may not use it. */

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { makeKeys, nodeTurnsQueue, redisPrefix, TURNS_QUEUE } from "../../src/queue/keys";
+import { assertNodeIdUsable, labelTurnsQueue, makeKeys, nodeTurnsQueue, redisPrefix, TURNS_QUEUE } from "../../src/queue/keys";
+import { LABEL_RE as CREDENTIAL_LABEL_RE } from "../../src/gateway/auth/node-credential";
 
 // keys.ts is pure (no redis import) — the one queue module the redis-less
 // test leg loads and covers. Everything touching a server lives in the
@@ -39,6 +40,10 @@ describe("queue/keys", () => {
     expect(k.gateChannel("g1")).toBe("p:gate:g1");
     expect(k.eventsStream("s1")).toBe("p:events:s1");
     expect(k.turnDone("j1")).toBe("p:turn-done:j1");
+    expect(k.nodeLabels("n1")).toBe("p:nodelabels:n1");
+    expect(k.jobMoved("j1")).toBe("p:job-moved:j1");
+    // The labels key must never match the heartbeat SCAN pattern.
+    expect(k.nodeLabels("n1").startsWith("p:nodes:")).toBe(false);
   });
 
   test("queue names: shared is bare, per-node dots the nodeId in", () => {
@@ -49,5 +54,23 @@ describe("queue/keys", () => {
   test("nodeTurnsQueue sanitizes colons (BullMQ rejects ':' in queue names)", () => {
     expect(nodeTurnsQueue("host:8081:x")).toBe("turns.host-8081-x");
     expect(nodeTurnsQueue("host:8081:x")).not.toContain(":");
+  });
+
+  // Node labels spec §4.6.
+  test("label queues: default keeps the bare name, any other is turns.label.<label>", () => {
+    expect(labelTurnsQueue("default")).toBe(TURNS_QUEUE);
+    expect(labelTurnsQueue("finance")).toBe("turns.label.finance");
+    for (const bad of ["Finance", "a:b", "-x", "", "a".repeat(33)]) expect(() => labelTurnsQueue(bad)).toThrow();
+  });
+
+  test("a node id whose queue would be a label queue is refused", () => {
+    expect(() => assertNodeIdUsable("label.finance")).toThrow(/reserved/);
+    expect(() => assertNodeIdUsable("label:finance")).not.toThrow(); // turns.label-finance
+    expect(() => assertNodeIdUsable("host-ab12")).not.toThrow();
+    expect(() => assertNodeIdUsable("labels-host")).not.toThrow();
+  });
+
+  test("the queue layer and the node credential share one label pattern", () => {
+    expect(CREDENTIAL_LABEL_RE.source).toBe("^[a-z0-9][a-z0-9-]{0,31}$");
   });
 });
