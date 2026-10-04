@@ -57,7 +57,7 @@ import { syncKbWikis } from "../../knowledge/brain-sync";
 import { scheduleNightlyMaintenance } from "../../knowledge/brain-cycle";
 import { channelTrustFor, kbSourceId, resolveBrainScope } from "../../knowledge/scope";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
-import { getPersonaRegistry, livePersona, onPersonaRegistryInstalled } from "../../persona/registry";
+import { getPersonaRegistry, livePersona, managedPersonaProvider, onPersonaRegistryInstalled } from "../../persona/registry";
 import type { GateInput } from "../../knowledge/gated-dispatch";
 import { loadKbs } from "../../knowledge/loader";
 import { resolveUserName } from "../slack/users";
@@ -78,7 +78,7 @@ import { beginConnectShared } from "../../agent/mcp-oauth/shared-client";
 import { parseOAuthCallback } from "../../agent/mcp-oauth/callback";
 import { canTriggerIngest } from "../slack/ingest-auth";
 import { canChangeModel } from "../slack/model-auth";
-import { listModels } from "../../agent/models";
+import { listModelsFor, verifyModelChoice } from "../../agent/models";
 import * as kbIngest from "../../knowledge/ingest";
 import * as Ignores from "../../db/ignores";
 import * as CronJobs from "../../db/cron-jobs";
@@ -2214,12 +2214,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           await reply(":lock: `/model` — manager, approver, or DM-allowed users only.");
           return;
         }
+        // A persona on its own provider (WS-A §5.5) is not checked against the
+        // gateway's provider: its choice passes through unverified.
+        const personaProvider = managedPersonaProvider(session.persona_id !== "default" ? session.persona_id : undefined);
         if (!slash.id) {
           // A managed tenant's session follows its persona's model until a
           // /model pins one; show what it resolves to, not the empty row.
           const current = agent.effectiveModelOf(session);
           try {
-            const models = await listModels();
+            const models = await listModelsFor(personaProvider);
             const lines = models.map((m) => `• \`${m.id}\``).join("\n") || "_none returned_";
             await reply(`*available models*\n${lines}\n\ncurrent: \`${current}\``);
           } catch {
@@ -2227,12 +2230,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           }
           return;
         }
-        let verified = false;
-        try {
-          verified = (await listModels()).some((m) => m.id === slash.id);
-        } catch {
-          // provider has no /v1/models (non-Anthropic gateway) — pass through.
-        }
+        const verified = await verifyModelChoice(slash.id, personaProvider);
         await agent.setSessionModel(session.id, slash.id);
         agent.noteSessionEvent(session.id, `Model changed to \`${slash.id}\`.`);
         await reply(

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { makeQueueDispatch } from "../../../src/gateway/core/dispatch";
 import type { SessionRow } from "../../../src/db/schema";
 
-function infra(opts: { streamError: boolean }) {
+function infra(opts: { streamError: boolean; failedReason?: string }) {
   const stream: Array<{ id: string; event: any }> = [];
   let next = 1;
   const failed = new Set<string>();
@@ -36,7 +36,12 @@ function infra(opts: { streamError: boolean }) {
       failed.add(jobId);
       return { queue: "turns", jobId, coalesced: false };
     },
-    queue: () => ({ getJob: async (id: string) => ({ getState: async () => (failed.has(id) ? "failed" : "active") }) }),
+    queue: () => ({
+      getJob: async (id: string) => ({
+        getState: async () => (failed.has(id) ? "failed" : "active"),
+        failedReason: opts.failedReason,
+      }),
+    }),
     close: async () => {},
   };
   return { pubsub, turns, registry: { lookup: async () => null, close: async () => {} } };
@@ -56,9 +61,9 @@ describe("dispatch failure events", () => {
     await dispatch?.close();
   });
 
-  const run = async (streamError: boolean) => {
+  const run = async (streamError: boolean, failedReason?: string) => {
     dispatch = makeQueueDispatch({ emit: (_: string, e: unknown) => (events.push(e), true), resolveEffectiveIdentity: async () => undefined } as any, {
-      infra: infra({ streamError }) as any,
+      infra: infra({ streamError, failedReason }) as any,
       followPollMs: 5,
       followLingerMs: 30,
       followMaxMs: 2_000,
@@ -89,5 +94,18 @@ describe("dispatch failure events", () => {
     expect(errs).toHaveLength(1);
     expect(errs[0].code).toBe("TURN_FAILED");
     expect(typeof errs[0].jobId).toBe("string");
+  });
+
+  // WS-A §5.4: a typed boot failure is the job's failure reason.
+  test("a silent stream with a typed failure reason synthesizes that code", async () => {
+    await run(false, "PROVIDER_CREDENTIALS_UNAVAILABLE");
+    const errs = events.filter((e) => e.type === "error");
+    expect(errs).toHaveLength(1);
+    expect(errs[0].code).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
+  });
+
+  test("an untyped failure reason (raw text) stays TURN_FAILED", async () => {
+    await run(false, "Error: Invalid API key");
+    expect(events.filter((e) => e.type === "error")[0].code).toBe("TURN_FAILED");
   });
 });

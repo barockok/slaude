@@ -34,6 +34,26 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("persona repository", () => {
     await expect(P.setOverride(T, "bea", "model", "m", "ops")).rejects.toBeInstanceOf(P.PersonaNotFoundError);
   });
 
+  test("provider references round-trip through a sync, are desired-layer only, and a change is an update", async () => {
+    const provider = { apiKey: "vault://secret/slaude/personas/ana#api_key", baseUrl: "https://llm.example.com" };
+    await P.applySync(T, [row("ana", { provider })], meta("r1", "2026-10-01T10:00:00Z"));
+    expect((await P.desiredPersonas(T))[0]!.provider).toEqual(provider);
+    expect((await P.effectivePersonas(T))[0]!.provider).toEqual(provider);
+    const same = await P.applySync(T, [row("ana", { provider })], meta("r2", "2026-10-01T11:00:00Z"));
+    expect(same.unchanged).toEqual(["ana"]);
+    const changed = await P.applySync(T, [row("ana", { provider: { apiKey: "env://PERSONA_ANA_KEY" } })], meta("r3", "2026-10-01T12:00:00Z"));
+    expect(changed.updated).toEqual(["ana"]);
+    const cleared = await P.applySync(T, [row("ana")], meta("r4", "2026-10-01T13:00:00Z"));
+    expect(cleared.updated).toEqual(["ana"]);
+    expect((await P.desiredPersonas(T))[0]!.provider).toBeNull();
+  });
+
+  test("a runtime onboard stores provider references too", async () => {
+    await P.applySync(T, [row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
+    await P.createRuntimePersona(T, row("bea", { origin: "runtime", provider: { authToken: "env://PERSONA_BEA_TOKEN" } }), "ops");
+    expect((await P.desiredPersonas(T)).find((p) => p.name === "bea")!.provider).toEqual({ authToken: "env://PERSONA_BEA_TOKEN" });
+  });
+
   test("a tenant is unmanaged until its first sync", async () => {
     expect(await P.isManaged(T)).toBe(false);
     expect(await P.stateVersion(T)).toBe("unmanaged");

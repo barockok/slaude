@@ -31,6 +31,10 @@ const ALLOW: Record<string, string> = {
   ANTHROPIC_AUTH_TOKEN: "provider env fallback on nodes",
   ANTHROPIC_BASE_URL: "provider env fallback on nodes",
   CLAUDE_CODE_OAUTH_TOKEN: "provider env fallback on nodes",
+  // A prefix the node names only to DELETE its family from a managed persona's
+  // child (strict provider mode, review R2-F3); a node may hold them for its
+  // own fallback provider.
+  CLAUDE_CODE_API_KEY_: "provider env fallback family on nodes; removed in strict mode",
   // Third-party embedding provider keys the brain (gateway) uses. Generic names an
   // operator may also give agent tools on purpose, so they are not scrubbed or
   // flagged; set them on the gateway only for embeddings.

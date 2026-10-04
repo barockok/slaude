@@ -38,7 +38,10 @@ export type SecretFailureReason =
   /** Vault: 5xx (including sealed / standby errors) */
   | "server_error"
   /** Vault: an answer we cannot interpret (bad JSON, unexpected 4xx) */
-  | "bad_response";
+  | "bad_response"
+  /** a resolved or stored value the consumer refuses (a provider baseUrl
+   *  outside its policy, a provider object with no credential) */
+  | "invalid_value";
 
 export class SecretResolutionError extends Error {
   override readonly name = "SecretResolutionError";

@@ -20,7 +20,7 @@
  * Errors are PayloadErrors (422) so sync can surface them as-is. They name the
  * caller's label (persona and field) and never echo the input.
  */
-import { PayloadError } from "../persona/sync/payload";
+import { PayloadError } from "../persona/sync/errors";
 import { PERSONA_VAR_PREFIX, PERSONA_VAR_RE } from "./persona-var";
 
 export type VaultRef = { scheme: "vault"; path: string; field: string };

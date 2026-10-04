@@ -32,6 +32,27 @@ export function scrubChildEnv(env: Record<string, string | undefined>): Record<s
 }
 
 /**
+ * A child-env overlay that also REMOVES variables (WS-A §5.4). `set` is laid
+ * over the process-env-derived provider vars; every name in `unset` that `set`
+ * does not supply is deleted from the child's environment object — deleted, not
+ * set to undefined, since how a spawn treats an undefined value is unverified
+ * and a missing key cannot be misread. A plain record overlay only adds.
+ */
+export class ChildEnvPatch {
+  constructor(
+    readonly set: Record<string, string>,
+    readonly unset: readonly string[],
+  ) {}
+}
+
+/** `env` without the names in `unset` (a new object; the input is untouched). */
+export function withoutKeys(env: Record<string, string | undefined>, unset: readonly string[]): Record<string, string | undefined> {
+  const out = { ...env };
+  for (const k of unset) delete out[k];
+  return out;
+}
+
+/**
  * Defence in depth for model children that read untrusted content. Measured
  * against SDK 0.3.173 with a stub model: under `tools: []` alone the CLI still
  * offered these three; with them also in `disallowedTools` it offered none.

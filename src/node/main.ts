@@ -31,7 +31,8 @@ import { nodeHandshake } from "./handshake";
 async function main() {
   // Before anything else: a node must not hold the gateway's secrets (the
   // master key, the job secret, database URLs, Slack secrets). Warns by
-  // default; SLAUDE_NODE_BOOT_CHECK=refuse stops the boot. Names only.
+  // default; SLAUDE_NODE_BOOT_CHECK=refuse stops the boot. Any SLAUDE_VAULT_* or
+  // VAULT_* variable always stops it. Names only.
   if (!enforceNodeBootCheck(process.env)) process.exit(1);
   ensureHome();
   if (env.role() !== "node") {

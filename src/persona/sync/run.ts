@@ -5,22 +5,87 @@
  * two is the single transaction in applySync. Any failure in phase one applies
  * nothing. Messages name a variable, persona or revision, never a value.
  */
-import { parsePayload, resolvePlaceholders, unknownFieldPaths, capPaths, MAX_REPORTED_FIELDS, SUPPORTED_PAYLOAD_VERSION, PayloadError } from "./payload";
+import {
+  parsePayload, resolvePlaceholders, unknownFieldPaths, capPaths, providerWarnings, MAX_REPORTED_FIELDS,
+  PROVIDER_FIELDS, SUPPORTED_PAYLOAD_VERSION, PayloadError, type SyncPayload,
+} from "./payload";
 import { extractSoulData } from "../../soul/extract";
 import {
-  applySync, desiredPersonas, effectivePersonas, syncState, StaleRevisionError, type ApplyResult,
+  applySync, desiredPersonas, effectivePersonas, providerColumnPresent, syncState, StaleRevisionError, type ApplyResult,
 } from "../../db/personas";
 import { sameDesired, type DesiredPersona } from "../effective";
+import { loadVaultConfig, parseRef, SecretResolutionError, type VaultConfig } from "../../secrets";
+import { isAllowed, requestPathFor } from "../../secrets/allowlist";
+import { assertNoProviderRefsInMono } from "../../gateway/core/provider-secrets";
+import { internalHostsFrom } from "../provider-base-url";
 
 export class SyncFailure extends Error {
-  constructor(readonly status: 409 | 422 | 502, message: string) { super(message); }
+  constructor(readonly status: 409 | 422 | 502 | 503, message: string) { super(message); }
 }
-export type SyncReport = ApplyResult & { revision: string; dryRun: boolean; ignoredFields: string[]; ignoredFieldsTotal: number };
+export type SyncReport = ApplyResult & {
+  revision: string; dryRun: boolean; ignoredFields: string[]; ignoredFieldsTotal: number;
+  /** Provider/model pairing warnings (WS-A §4): applied anyway, reported by persona name. */
+  warnings: string[];
+};
+
+/**
+ * The allowed-prefix rule at sync (WS-A §6.3), so a reference the gateway would
+ * refuse fails the pipeline instead of every turn. The resolver checks again at
+ * resolution. A vault:// reference on a gateway with no Vault configured is
+ * refused too: it could never resolve. Messages name persona and field only.
+ */
+function checkVaultRefs(payload: SyncPayload, vault: VaultConfig | null): void {
+  for (const p of payload.personas) {
+    for (const field of PROVIDER_FIELDS) {
+      const v = p.provider?.[field];
+      if (!v || !v.startsWith("vault://")) continue;
+      const label = `persona '${p.name}': provider.${field}`;
+      const ref = parseRef(v, label);
+      if (ref.scheme !== "vault") continue;
+      if (!vault) throw new PayloadError(`${label} is a vault:// reference but this gateway has no Vault configured (SLAUDE_VAULT_ADDR)`);
+      let path: string;
+      try {
+        path = requestPathFor(ref, vault.mounts);
+      } catch (e) {
+        if (e instanceof SecretResolutionError) throw new PayloadError(`${label} is under no configured Vault mount (SLAUDE_VAULT_MOUNTS)`);
+        throw e;
+      }
+      if (!isAllowed(path, p.name, vault.prefixes)) {
+        throw new PayloadError(`${label} is outside SLAUDE_VAULT_ALLOWED_PREFIXES for this persona`);
+      }
+    }
+  }
+}
+
+/**
+ * An env:// reference must name a variable that is set (non-empty) in the
+ * gateway's environment, so a typo fails the sync like an unresolved
+ * `${PERSONA_*}` placeholder (review R2-F5). Presence only: the value is never
+ * read into the payload or echoed. vault:// is never resolved at sync.
+ */
+function checkEnvRefs(payload: SyncPayload, env: Record<string, string | undefined>): void {
+  for (const p of payload.personas) {
+    for (const field of PROVIDER_FIELDS) {
+      const v = p.provider?.[field];
+      if (!v || !v.startsWith("env://")) continue;
+      const ref = parseRef(v, `persona '${p.name}': provider.${field}`);
+      if (ref.scheme === "env" && !env[ref.name]) {
+        throw new PayloadError(
+          `persona '${p.name}': provider.${field} names ${ref.name}, which is unset or empty in the gateway's environment`,
+        );
+      }
+    }
+  }
+}
 
 export async function runSync(
   tenant: string,
   raw: unknown,
-  opts: { dryRun: boolean; env: Record<string, string | undefined>; by: string; extract?: (text: string) => Promise<unknown> },
+  opts: {
+    dryRun: boolean; env: Record<string, string | undefined>; by: string; extract?: (text: string) => Promise<unknown>;
+    /** Default: loadVaultConfig(env). Null = no Vault on this gateway. */
+    vault?: VaultConfig | null;
+  },
 ): Promise<SyncReport> {
   const extract = opts.extract ?? ((t: string) => extractSoulData(t, { strict: true }));
   let payload;
@@ -40,7 +105,7 @@ export async function runSync(
     if (allIgnored.length && opts.env.SLAUDE_DEPLOY_STRICT === "1") {
       throw new PayloadError(`unknown field(s) refused under SLAUDE_DEPLOY_STRICT: ${capPaths(allIgnored).join(", ")}`);
     }
-    payload = parsePayload(raw);
+    payload = parsePayload(raw, { internalHosts: internalHostsFrom(opts.env) });
     if (payload.personas.length === 0 && !payload.allowEmpty) {
       throw new PayloadError("refusing an empty persona set; set allowEmpty: true to retire every persona");
     }
@@ -51,10 +116,26 @@ export async function runSync(
       throw new PayloadError("payload must include the default persona");
     }
     payload = { ...payload, personas: payload.personas.map((p) => resolvePlaceholders(p, opts.env)) };
+    checkVaultRefs(payload, opts.vault !== undefined ? opts.vault : loadVaultConfig(opts.env));
+    const rawRole = (opts.env.SLAUDE_ROLE ?? "mono").trim().toLowerCase();
+    const role = rawRole === "gateway" || rawRole === "node" ? rawRole : "mono";
+    try {
+      assertNoProviderRefsInMono(role, payload.personas.filter((p) => p.provider).map((p) => p.name));
+    } catch (e) {
+      throw new PayloadError((e as Error).message);
+    }
+    checkEnvRefs(payload, opts.env);
   } catch (e) {
     if (e instanceof PayloadError) throw new SyncFailure(422, e.message);
     throw e;
   }
+  // Every write lists provider_json, so an older schema would fail with raw SQL
+  // mid-sync; refuse first, by name. A dry run checks too: it previews a write.
+  if (!(await providerColumnPresent())) {
+    throw new SyncFailure(503,
+      "the database schema predates this gateway (personas.provider_json is missing): apply migration 0014 before syncing personas");
+  }
+  const warnings = providerWarnings(payload);
 
   // Fail a stale payload before spending any model call. applySync's
   // transactional compare-and-set remains the authority; this is a fast path.
@@ -91,9 +172,19 @@ export async function runSync(
     }
     rows.push({
       name: p.name, slackUserId: p.slackUserId ?? null, userToken: p.userToken ?? null, model: p.model ?? null,
-      soulMd: p.soul, soulJson, mcp: p.mcp ?? null, origin: "git", tombstonedAt: null,
+      soulMd: p.soul, soulJson, mcp: p.mcp ?? null, provider: p.provider ?? null, origin: "git", tombstonedAt: null,
     });
   }
+
+  // A persona that drops `provider` silently returns to the provider_creds rows
+  // and the node's own environment; say so by name (review re-check F3).
+  for (const r of rows) {
+    const prev = desired.get(r.name);
+    if (prev && prev.tombstonedAt === null && prev.provider && !r.provider) {
+      warnings.push(`persona '${r.name}' no longer declares provider; it now uses tenant/node credentials`);
+    }
+  }
+  for (const w of warnings) console.warn(`[persona-sync] warning tenant=${tenant}: ${w}`);
 
   if (allIgnored.length) {
     console.warn(`[persona-sync] ignored unknown payload fields tenant=${tenant}: ${capPaths(allIgnored).join(", ")}`);
@@ -102,7 +193,7 @@ export async function runSync(
 
   if (opts.dryRun) {
     const incoming = new Set(rows.map((r) => r.name));
-    const report: SyncReport = { created: [], updated: [], unchanged: [], tombstoned: [], overridesWiped: 0, revision: meta.revision, dryRun: true, ignoredFields, ignoredFieldsTotal };
+    const report: SyncReport = { created: [], updated: [], unchanged: [], tombstoned: [], overridesWiped: 0, revision: meta.revision, dryRun: true, ignoredFields, ignoredFieldsTotal, warnings };
     // Same rule as applySync.
     for (const r of rows) {
       const prev = desired.get(r.name);
@@ -118,7 +209,7 @@ export async function runSync(
   }
 
   try {
-    return { ...(await applySync(tenant, rows, meta)), revision: meta.revision, dryRun: false, ignoredFields, ignoredFieldsTotal };
+    return { ...(await applySync(tenant, rows, meta)), revision: meta.revision, dryRun: false, ignoredFields, ignoredFieldsTotal, warnings };
   } catch (e) {
     if (e instanceof StaleRevisionError) throw new SyncFailure(409, e.message);
     throw e;

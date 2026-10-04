@@ -1,4 +1,5 @@
 import type { WebClient } from "@slack/web-api";
+import type { PersonaProvider } from "./sync/payload";
 
 export interface PersonaConfig {
   slackUserId: string;
@@ -26,4 +27,7 @@ export interface Persona {
   /** Managed personas only: the effective MCP config (`.mcp.json`-shaped), or
    *  null when it sets none. Undefined for filesystem personas. */
   mcp?: unknown;
+  /** Managed personas only: provider credential REFERENCES (WS-A §4), or null
+   *  when it names none. Never a value. Undefined for filesystem personas. */
+  provider?: PersonaProvider | null;
 }

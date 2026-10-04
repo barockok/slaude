@@ -40,6 +40,10 @@ let acquireLockFn: any;
 let sessionIdOf: (thread: string) => Promise<string>;
 let metricsRender: () => string;
 
+/** When set, the stub's session boot fails with this error (a BootFailure). */
+let bootFailure: Error | null = null;
+let busts: Array<[string, string | undefined]> = [];
+
 /** Current stub behavior; tests swap it. */
 let behavior: (a: { sessionId: string; text: string; servers: any; signal: AbortSignal }) => Promise<void>;
 
@@ -158,6 +162,11 @@ beforeAll(async () => {
     abortedSessions: string[] = [];
     configDirResolver?: (sessionId: string, persona: string | undefined) => Promise<string>;
     lockResolver?: ((sessionId: string) => Promise<any>) | null;
+    childEnvResolver?: (sessionId: string) => Promise<unknown>;
+    override setChildEnvResolver(r: any) {
+      super.setChildEnvResolver(r);
+      this.childEnvResolver = r;
+    }
     override setSessionLockResolver(r: any) {
       super.setSessionLockResolver(r);
       this.lockResolver = r;
@@ -183,6 +192,8 @@ beforeAll(async () => {
     override suppressNextTurn(_id: string) {}
     override async sendMessage(sessionId: string, text: string): Promise<void> {
       this.emit("event", { type: "turnStart", sessionId } as any);
+      // The real manager's boot fails this way when the child-env resolver throws.
+      if (bootFailure) throw bootFailure;
       const ac = new AbortController();
       this.aborts.set(sessionId, ac);
       const servers = (await this.mcp?.(sessionId)) ?? {};
@@ -202,6 +213,15 @@ beforeAll(async () => {
   stub = new NodeStubAgent();
 
   const client = new NodeClient({ baseUrl: `http://127.0.0.1:${server.port}`, token: NODE_TOKEN, baseDelayMs: 5 });
+  const bust = client.bustRuntime.bind(client);
+  client.bustRuntime = (t: string, p?: string) => {
+    busts.push([t, p]);
+    bust(t, p);
+  };
+  // The worker reads SLAUDE_PROVIDER_ENV_FALLBACK once, at start (the stub
+  // agent never calls its child-env resolver, so no other case depends on it).
+  const savedFallback = process.env.SLAUDE_PROVIDER_ENV_FALLBACK;
+  process.env.SLAUDE_PROVIDER_ENV_FALLBACK = "0";
   workerHandle = await startNodeWorker({
     nodeId: NODE_ID,
     client,
@@ -217,6 +237,8 @@ beforeAll(async () => {
     turnTimeoutMs: 30_000,
     configRoot: nodeConfigRoot,
   });
+  if (savedFallback === undefined) delete process.env.SLAUDE_PROVIDER_ENV_FALLBACK;
+  else process.env.SLAUDE_PROVIDER_ENV_FALLBACK = savedFallback;
 });
 
 afterAll(async () => {
@@ -264,6 +286,74 @@ d("gateway↔node E2E (real Redis)", () => {
     // Follower re-emitted the node's done → gateway stamped ✅ on the inbound.
     await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9000.1"), 10_000);
   }, 30_000);
+
+  // WS-A §5.4, §7: a typed boot failure reaches Slack as its fixed text, once,
+  // and is the job's failure reason with no retry; the session's cached bundle
+  // is evicted since no child holds it.
+  test("a provider-credential boot failure posts the fixed text once and fails the job without a retry", async () => {
+    const { BootFailure, failureText } = await import("../../src/gateway/core/failure-codes");
+    const FAIL_THREAD = "9050.0";
+    posts.length = 0;
+    busts = [];
+    bootFailure = new BootFailure("PROVIDER_CREDENTIALS_UNAVAILABLE", "resolver failed: raw-detail-never-posted");
+    try {
+      await emitSlack("message", msg(FAIL_THREAD, "9050.1", "<@USLAUDE> hello"));
+      const fixed = failureText("PROVIDER_CREDENTIALS_UNAVAILABLE");
+      await until(() => posts.some((p) => p.text === fixed), 15_000);
+      await sleep(600); // a retry or a second emitter would post again within the follower's linger
+      expect(posts.filter((p) => p.text === fixed)).toHaveLength(1);
+      expect(posts.map((p) => String(p.text)).join("\n")).not.toContain("raw-detail-never-posted");
+      const sid = await sessionIdOf(FAIL_THREAD);
+      // The error event can reach Slack before BullMQ records the failure.
+      const failedJob = async () =>
+        [...(await turnsQ.queue("turns").getFailed()), ...(await turnsQ.queue(nodeTurnsQueueFn(NODE_ID)).getFailed())]
+          .find((j: any) => j.data?.sessionId === sid);
+      await until(async () => !!(await failedJob()), 10_000);
+      const job = await failedJob();
+      expect(job?.failedReason).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
+      expect(job).toBeDefined();
+      expect(job.attemptsMade).toBe(1);
+      expect(busts.some(([t]) => t === "default")).toBe(true);
+    } finally {
+      bootFailure = null;
+    }
+  }, 30_000);
+
+  // R1-F6: the worker's child-env resolver follows SLAUDE_PROVIDER_ENV_FALLBACK
+  // (set to 0 for this worker): a session it knows nothing about fails typed.
+  test("the worker installs a child-env resolver that honours SLAUDE_PROVIDER_ENV_FALLBACK", async () => {
+    const { BootFailure } = await import("../../src/gateway/core/failure-codes");
+    expect(stub.childEnvResolver).toBeDefined();
+    const e = await stub.childEnvResolver!("no-such-session").catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(BootFailure);
+    expect((e as any).code).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
+  });
+
+  // R2-F4: a transient failure takes BullMQ's retry silently; the last attempt
+  // posts the fixed text once.
+  test("a transient boot failure is retried, then posts the fixed text once", async () => {
+    const { BootFailure, failureText } = await import("../../src/gateway/core/failure-codes");
+    const T_THREAD = "9060.0";
+    posts.length = 0;
+    bootFailure = new BootFailure("PROVIDER_CREDENTIALS_UNAVAILABLE", "vault not answering", { transient: true });
+    try {
+      await emitSlack("message", msg(T_THREAD, "9060.1", "<@USLAUDE> hello"));
+      const fixed = failureText("PROVIDER_CREDENTIALS_UNAVAILABLE");
+      await until(() => posts.some((p) => p.text === fixed), 20_000);
+      await sleep(600);
+      expect(posts.filter((p) => p.text === fixed)).toHaveLength(1);
+      const sid = await sessionIdOf(T_THREAD);
+      const failedJob = async () =>
+        [...(await turnsQ.queue("turns").getFailed()), ...(await turnsQ.queue(nodeTurnsQueueFn(NODE_ID)).getFailed())]
+          .find((j: any) => j.data?.sessionId === sid);
+      await until(async () => !!(await failedJob()), 10_000);
+      const job = await failedJob();
+      expect(job.attemptsMade).toBe(2);
+      expect(job.failedReason).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
+    } finally {
+      bootFailure = null;
+    }
+  }, 40_000);
 
   // A cron job created inside a /1on1 carries its lock owner. The cron run keys
   // on a synthetic thread with no lock, so the node can only learn the identity

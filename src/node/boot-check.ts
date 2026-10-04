@@ -4,6 +4,7 @@
  */
 import { nodeBootCheck } from "../config/gateway-only-env";
 import { m as metric } from "../metrics";
+import { assertVaultAllowedInRole, VaultConfigError } from "../secrets/config";
 
 /**
  * Runs the check against `env`, logs at most one line (variable names only),
@@ -16,11 +17,21 @@ export function enforceNodeBootCheck(
 ): boolean {
   const r = nodeBootCheck(env);
   if (r.message) log(r.message);
+  // Vault settings are new and nothing legitimate sets them on a node (WS-A
+  // §6.2, review R1-F3): refuse whatever SLAUDE_NODE_BOOT_CHECK says.
+  let vaultRefused = false;
+  try {
+    assertVaultAllowedInRole("node", env);
+  } catch (e) {
+    if (!(e instanceof VaultConfigError)) throw e;
+    log(`[node] refusing to boot: ${e.message}`);
+    vaultRefused = true;
+  }
   try {
     metric.nodeGatewaySecretsPresent.set(r.names.length);
   } catch (e) {
     // The gauge is a convenience; it must never decide whether a node boots.
     console.error("[node] could not set slaude_node_gateway_secrets_present:", e instanceof Error ? e.message : e);
   }
-  return r.action !== "refuse";
+  return r.action !== "refuse" && !vaultRefused;
 }
