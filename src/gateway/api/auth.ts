@@ -41,6 +41,11 @@ export interface JobClaims {
   remote?: { addr: string; dir: string };
   /** Hash of (lock owner, remote target). A node reboots a warm session when it changes. */
   sessionConfigFp?: string;
+  /** Slack app (api_app_id) the turn's event belongs to. With `team` it names
+   *  the registered app the /v1 tool plane posts as (D1.2). Optional: tokens
+   *  from an older gateway, and turns with no inbound app, resolve it from the
+   *  team when that is unambiguous. */
+  app?: string;
   /** The thread's /1on1 lock at dispatch: null = unlocked; openScope null =
    *  locked, a string = open mode with that scope. A node has no database, so
    *  this is how its session-mode block learns the lock. Absent = a gateway

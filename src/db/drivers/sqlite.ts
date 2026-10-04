@@ -362,6 +362,18 @@ export function bootstrapSqliteSchema(db: Database): void {
     db.run(`ALTER TABLE cron_jobs ADD COLUMN persona_id TEXT NOT NULL DEFAULT 'default'`);
   }
 
+  // Migration: the Slack app the job was created under (mirrors pg migration
+  // 0013), so a run posts as that app when several are registered.
+  if (!cronCols.some((c) => c.name === "slack_app_id")) {
+    db.run(`ALTER TABLE cron_jobs ADD COLUMN slack_app_id TEXT`);
+  }
+  // Same for sessions (also pg 0013), so panel-sourced turns carry the app.
+  // Read fresh: the persona_id migration above may have rebuilt the table.
+  const sessionAppCols = db.query(`PRAGMA table_info(sessions)`).all() as Array<{ name: string }>;
+  if (!sessionAppCols.some((c) => c.name === "slack_app_id")) {
+    db.run(`ALTER TABLE sessions ADD COLUMN slack_app_id TEXT`);
+  }
+
   // Migration: add pause lifecycle state. `active` remains the soft-delete bit;
   // paused jobs stay listed but don't fire on schedule.
   ensureCronPauseColumn(db);
