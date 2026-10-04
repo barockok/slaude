@@ -37,6 +37,8 @@ import { makeAuthRecovery, makeSessionSeeder } from "./credentials";
 import { nodeConfigRoot, sessionConfigDir, existingSessionConfigDir } from "../agent/config-root";
 import { RestSessionStore } from "./session-store";
 import { buildShimServers } from "./shims";
+import { buildBridgeServers } from "./bridge";
+import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { makeNodePermissionResolver } from "./shims/permission";
 import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
@@ -489,15 +491,46 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
 
   agent.setSessionStore(store);
   agent.setPermissionResolver(makeNodePermissionResolver({ client, tokenFor: (id) => store.tokenFor(id) }));
-  agent.setMcpResolver((sessionId) => ({
-    ...buildShimServers(sessionId, {
+  /** Sessions the gateway's label gate refused on a bridged MCP call. Marked
+   *  only for now: the worker's GateDenied handling (U10b) consumes it. */
+  const gateDenied = new Set<string>();
+  agent.setMcpResolver(async (sessionId) => {
+    const local: Record<string, McpServerConfig> = {
+      ...buildShimServers(sessionId, {
+        client,
+        tokenFor: (id) => store.tokenFor(id),
+        signalFor: (id) => turnAborts.get(id)?.signal,
+      }),
+      // Token budget stays node-local (spec §3): the live Query is here.
+      [SESSION_MCP_NAME]: createSessionMcp({ getSnapshot: () => agent.getTokenSnapshot(sessionId) }),
+    };
+    // The persona's remote MCP servers, through the gateway (WS-C §4.2): names
+    // from the runtime bundle, tool lists fetched once here at boot.
+    const bridged = await buildBridgeServers(sessionId, await bridgedNames(sessionId), {
       client,
       tokenFor: (id) => store.tokenFor(id),
-      signalFor: (id) => turnAborts.get(id)?.signal,
-    }),
-    // Token budget stays node-local (spec §3): the live Query is here.
-    [SESSION_MCP_NAME]: createSessionMcp({ getSnapshot: () => agent.getTokenSnapshot(sessionId) }),
-  }));
+      onGateDenied: (id) => {
+        gateDenied.add(id);
+        console.warn(`[node] gateway refused this node for session=${id} (label gate) on a bridged MCP call`);
+      },
+    }, new Set(Object.keys(local)));
+    return { ...bridged, ...local };
+  });
+  /** The bridged server names in the session's runtime bundle (ETag-cached:
+   *  the same fetch the soul resolver makes). An older gateway sends none; a
+   *  failed fetch mounts none, and the boot's own bundle fetch reports it. */
+  async function bridgedNames(sessionId: string): Promise<string[]> {
+    const tenant = tenants.get(sessionId);
+    const token = store.tokenFor(sessionId);
+    if (!tenant || !token) return [];
+    try {
+      const bundle = await client.getRuntime(tenant, personas.get(sessionId) ?? "default", token);
+      const names = (bundle as { mcpServers?: unknown }).mcpServers;
+      return Array.isArray(names) ? names.filter((n): n is string => typeof n === "string" && n.length > 0) : [];
+    } catch {
+      return [];
+    }
+  }
   // Every session's CLAUDE_CONFIG_DIR is pod-local, seeded from the gateway
   // with the access tokens for the turn's owner (the gateway resolves the owner
   // from the job token's runAs). Outside the node role — the simulator and the
