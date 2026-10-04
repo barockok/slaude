@@ -12,19 +12,31 @@
 # (default http://localhost:8080). Set it to a tunnel hostname such as
 # https://slaude.example.com to serve them there; the Keycloak client then
 # registers both that URL and the localhost one as redirect URIs.
+#
+# SLAUDE_LOCAL_PORT is the local gateway port (default 8080); forward.sh reads it
+# too. The Keycloak port is NOT free to change: the issuer URL, the Keycloak
+# --http-port and the Service all say 8180, and the issuer the browser sees must
+# equal the one the gateway pods see. SLAUDE_LOCAL_KEYCLOAK_PORT is therefore
+# checked, not applied.
 set -euo pipefail
 NS=slaude-scale
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REALM="$HERE/../../dev/keycloak/slaude-dev-realm.json"
-PUBLIC="${SLAUDE_LOCAL_PUBLIC_URL:-http://localhost:8080}"
+GW_PORT="${SLAUDE_LOCAL_PORT:-8080}"
+KC_PORT="${SLAUDE_LOCAL_KEYCLOAK_PORT:-8180}"
+if [[ "$KC_PORT" != 8180 ]]; then
+  echo "panel.sh: SLAUDE_LOCAL_KEYCLOAK_PORT=$KC_PORT, but the Keycloak issuer, its --http-port and its Service are fixed at 8180; a different local port breaks the login redirect." >&2
+  exit 1
+fi
+PUBLIC="${SLAUDE_LOCAL_PUBLIC_URL:-http://localhost:$GW_PORT}"
 PUBLIC="${PUBLIC%/}"
 
 # The dev realm registers only the localhost panel callback. Register the panel
 # and portal callbacks for both localhost and the configured public URL.
-python3 - "$REALM" "$PUBLIC" <<'PY' | kubectl -n $NS create configmap keycloak-realm --from-file=slaude-dev-realm.json=/dev/stdin --dry-run=client -o yaml | kubectl apply -f -
+python3 - "$REALM" "$PUBLIC" "http://localhost:$GW_PORT" <<'PY' | kubectl -n $NS create configmap keycloak-realm --from-file=slaude-dev-realm.json=/dev/stdin --dry-run=client -o yaml | kubectl apply -f -
 import json, sys
 r = json.load(open(sys.argv[1]))
-bases = ["http://localhost:8080"]
+bases = [sys.argv[3]]
 if sys.argv[2] not in bases:
     bases.append(sys.argv[2])
 for c in r["clients"]:
@@ -65,9 +77,9 @@ kubectl -n $NS rollout status deploy/slaude-gateway --timeout=300s
 
 cat <<MSG
 
-Panel ready. In two terminals:
-  kubectl -n $NS port-forward svc/keycloak 8180:8180
-  kubectl -n $NS port-forward svc/slaude-gateway 8080:8080
+Panel ready. In two terminals (each recycles itself after a rollout or crash):
+  $HERE/forward.sh keycloak
+  $HERE/forward.sh gateway
 Open $PUBLIC/panel/  — log in lead / dev (superadmin) or alice / dev (operator).
 Keycloak admin: http://keycloak.localtest.me:8180  admin / admin
 MSG
