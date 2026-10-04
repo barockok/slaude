@@ -2577,10 +2577,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // Union over every registered app, refreshed at most once a minute so an
   // app installed at runtime is picked up. An app whose auth.test fails is
   // left out of this round rather than failing the event.
+  const registeredApps = async () => (t.apps ? await t.apps() : [{ apiAppId: "", teamId: "", client: t.client }]);
   let selfBots: { userIds: Set<string>; botIds: Set<string>; at: number } | null = null;
   const getSelfBots = async (args: any): Promise<{ userIds: Set<string>; botIds: Set<string> }> => {
     if (!selfBots || Date.now() - selfBots.at > 60_000) {
-      const apps = t.apps ? await t.apps() : [{ apiAppId: "", teamId: "", client: t.client }];
+      const apps = await registeredApps();
       const userIds = new Set<string>();
       const botIds = new Set<string>();
       for (const a of apps) {
@@ -2597,8 +2598,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // The delivering app is always self, even before the next refresh.
     const own = await botIdsOf(`${args?.context?.apiAppId ?? ""}:${args?.context?.teamId ?? args?.event?.team ?? ""}`, args?.client ?? t.client);
     return {
-      userIds: new Set([...selfBots.userIds, own.userId].filter(Boolean)),
-      botIds: new Set([...selfBots.botIds, own.botId].filter(Boolean)),
+      userIds: new Set([...selfBots!.userIds, own.userId].filter(Boolean)),
+      botIds: new Set([...selfBots!.botIds, own.botId].filter(Boolean)),
     };
   };
   /** A message posted by any registered app's bot. */
@@ -2773,9 +2774,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // A thread already recorded under another registered app is continued by
     // that app's own copy of this message; answering here too would hand the
     // thread to whichever app's delivery won the dedup race.
+    // Only an app still in the registry can continue it: a removed app's thread
+    // falls through and is taken by this app (handleMessage records it).
+    const liveApps = new Set((await registeredApps()).map((a) => `${a.apiAppId}:${a.teamId}`));
     const otherApp = (row: SessionRow | null | undefined): boolean => {
       const own = args.context?.apiAppId;
       if (!own || !row?.slack_app_id || row.slack_app_id === own) return false;
+      if (!liveApps.has(`${row.slack_app_id}:${teamId}`)) return false;
       console.log(`[slack-rx] drop ch=${channelId} ts=${e.ts} — thread belongs to app ${row.slack_app_id}`);
       metric.slackDropsTotal.inc({ reason: "other_app" });
       return true;

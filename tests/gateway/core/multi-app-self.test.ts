@@ -14,27 +14,43 @@ import { db } from "../../../src/db/schema";
 import * as Sessions from "../../../src/db/sessions";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 
-const BOT = { A0ONE: { user: "U0BOTA", bot: "B0BOTA" }, A0TWO: { user: "U0BOTB", bot: "B0BOTB" } } as const;
+const BOT = {
+  A0ONE: { user: "U0BOTA", bot: "B0BOTA" },
+  A0TWO: { user: "U0BOTB", bot: "B0BOTB" },
+  A0THREE: { user: "U0BOTC", bot: "B0BOTC" },
+} as const;
 type AppId = keyof typeof BOT;
 
 function setup() {
   const handlers = new Map<string, (args: any) => Promise<void>>();
   const calls: string[] = [];
+  /** Apps currently in the registry; tests install and remove apps. */
+  const registered = new Set<AppId>(["A0ONE", "A0TWO"]);
+  /** Bot users in C0TEAM, as conversations.members reports them. */
+  const members = new Set<string>([WORLD.manager, BOT.A0ONE.user, BOT.A0TWO.user]);
+  /** Apps whose auth.test fails (a revoked install), and how often it was called. */
+  const revoked = new Set<AppId>();
+  const authCalls: Record<string, number> = {};
   const clientOf = (app: AppId): any => ({
-    auth: { test: async () => ({ user_id: BOT[app].user, bot_id: BOT[app].bot, team: "T", url: "x" }) },
+    auth: {
+      test: async () => {
+        authCalls[app] = (authCalls[app] ?? 0) + 1;
+        if (revoked.has(app)) throw Object.assign(new Error("invalid_auth"), { data: { error: "invalid_auth" } });
+        return { user_id: BOT[app].user, bot_id: BOT[app].bot, team: "T", url: "x" };
+      },
+    },
     chat: { postMessage: async () => (calls.push(`post:${app}`), { ok: true, ts: "1.1" }), update: async () => ({ ok: true }) },
     reactions: { add: async () => (calls.push(`react:${app}`), { ok: true }), remove: async () => ({ ok: true }) },
     assistant: { threads: { setStatus: async () => (calls.push(`status:${app}`), { ok: true }) } },
-    conversations: { info: async () => ({}), members: async () => ({}), replies: async () => ({}) },
+    conversations: { info: async () => ({}), members: async () => ({ ok: true, members: [...members] }), replies: async () => ({}) },
     users: { info: async () => ({ user: { real_name: "Test" } }), profile: { set: async () => ({}) } },
     search: { messages: async () => ({}) },
   });
-  const clients = { A0ONE: clientOf("A0ONE"), A0TWO: clientOf("A0TWO") };
+  const clients = { A0ONE: clientOf("A0ONE"), A0TWO: clientOf("A0TWO"), A0THREE: clientOf("A0THREE") };
   const t: Transport = {
     client: clients.A0ONE, // the oldest app, as in HTTP mode
     clientFor: (app: AppRef) => clients[(app.apiAppId ?? "A0ONE") as AppId],
-    apps: async () =>
-      (Object.keys(clients) as AppId[]).map((id) => ({ apiAppId: id, teamId: "T", botUserId: BOT[id].user, client: clients[id] })),
+    apps: async () => [...registered].map((id) => ({ apiAppId: id, teamId: "T", botUserId: BOT[id].user, client: clients[id] })),
     action: () => {}, use: () => {}, start: async () => {}, stop: async () => {},
     event: (name: string, fn: any) => void handlers.set(name, fn),
   };
@@ -49,7 +65,7 @@ function setup() {
       client: clients[app],
       context: { teamId: "T", apiAppId: app, botUserId: BOT[app].user },
     });
-  return { deliver, turns, calls };
+  return { deliver, turns, calls, registered, members, revoked, authCalls };
 }
 
 describe("two registered apps in one channel", () => {
@@ -113,6 +129,18 @@ describe("two registered apps in one channel", () => {
     await g.deliver("A0TWO", plain); // B's copy arrives first
     expect(g.turns).toHaveLength(1);
     await g.deliver("A0ONE", plain);
+    expect(g.turns).toHaveLength(2);
+    expect((await Sessions.findById(g.turns[1]!))!.slack_app_id).toBe("A0ONE");
+  });
+
+  // F1: a thread recorded under an app that is no longer registered must not be
+  // left to it — nobody would ever answer.
+  it("a thread recorded under a removed app is taken by the app that still receives it", async () => {
+    const g = setup();
+    await g.deliver("A0TWO", { user: WORLD.manager, ts: "935.1", text: `<@${BOT.A0TWO.user}> hi` });
+    expect(g.turns).toHaveLength(1);
+    g.registered.delete("A0TWO");
+    await g.deliver("A0ONE", { user: WORLD.manager, ts: "935.2", thread_ts: "935.1", text: "still there?" });
     expect(g.turns).toHaveLength(2);
     expect((await Sessions.findById(g.turns[1]!))!.slack_app_id).toBe("A0ONE");
   });
