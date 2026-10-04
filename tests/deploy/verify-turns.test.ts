@@ -5,10 +5,13 @@
  * probe whose exec fails, no running gateway. Each must say which probe and what
  * it received, on stdout AND in the named log file.
  */
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// each run waits out several 1 s probe timeouts
+setDefaultTimeout(30000);
 
 const script = new URL("../../deploy/k8s-local/verify-turns.sh", import.meta.url).pathname;
 let dir = "";
