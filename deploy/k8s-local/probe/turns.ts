@@ -2,15 +2,16 @@
 // Turn-delivery probe for verify-turns.sh. Runs INSIDE a gateway pod, so it uses
 // the deployment's own Redis, Postgres and key prefix — nothing is stubbed.
 //
-//   enqueue <n> [--persona <name>]
+//   enqueue <n> [--persona <name>] [--label <label>]
 //                 create n sessions and enqueue one turn each (default persona
 //                 unless --persona names another)
-//   again 1 [--persona <name>]
+//   again 1 [--persona <name>] [--label <label>]
 //                 enqueue one more turn into the FIRST session the last
 //                 `enqueue` created (same thread, same persona), and track only
 //                 that turn — a second turn in a session a node holds warm
 //   status        JSON: how many of those turns carry a completion marker, plus
-//                 what the shared queue still holds
+//                 what the label's queue (`turns` for default; reported as
+//                 `shared`) still holds
 //   cron          insert one already-due cron job
 //   cron-status   JSON: whether its schedule advanced, its result, and how many
 //                 turn jobs exist for its synthetic session
@@ -23,7 +24,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { getRedis } from "/app/src/queue/redis.ts";
-import { makeKeys, TURNS_QUEUE } from "/app/src/queue/keys.ts";
+import { labelTurnsQueue, LABEL_RE, makeKeys } from "/app/src/queue/keys.ts";
 import { TurnQueues } from "/app/src/queue/turns.ts";
 import { mintJobToken } from "/app/src/gateway/api/auth.ts";
 import { db } from "/app/src/db/schema.ts";
@@ -48,6 +49,16 @@ if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(PERSONA)) {
   console.error(`--persona needs a lowercase name (got '${PERSONA}')`);
   process.exit(2);
 }
+// `--label <label>`: the node label the turns run on (signed into the token,
+// carried in the payload, and the queue they land on). Absent = `default`, the
+// `turns` queue, exactly as before labels.
+const labelFlag = rest.indexOf("--label");
+const LABEL = labelFlag >= 0 ? (rest[labelFlag + 1] ?? "") : "default";
+if (!LABEL_RE.test(LABEL)) {
+  console.error(`--label needs a node label (got '${LABEL}')`);
+  process.exit(2);
+}
+const QUEUE = labelTurnsQueue(LABEL);
 const redis = getRedis();
 const keys = makeKeys();
 const turns = new TurnQueues({ connection: redis, keys });
@@ -63,7 +74,7 @@ const readIds = (): string[] => {
 async function enqueueOne(session: { id: string }, thread: string, i: number): Promise<string> {
   const jobId = randomUUID();
   const jobToken = mintJobToken({
-    tenant: "default", persona: PERSONA, session: session.id,
+    label: LABEL, tenant: "default", persona: PERSONA, session: session.id,
     team: TEAM, channel: CHANNEL, thread, initiator: "UVERIFY",
     scope: "turn", runAs: "agent", job: jobId,
   });
@@ -72,6 +83,7 @@ async function enqueueOne(session: { id: string }, thread: string, i: number): P
       sessionId: session.id,
       tenantId: "default",
       personaId: PERSONA,
+      label: LABEL,
       // suppress: the node runs the whole turn lifecycle — claim, session
       // lock, completion marker, ack — but the prompt hook stops the model, so
       // the probe costs no tokens and still proves delivery.
@@ -79,7 +91,7 @@ async function enqueueOne(session: { id: string }, thread: string, i: number): P
       jobToken,
       enqueuedAt: Date.now(),
     },
-    "shared",
+    { label: LABEL },
     jobId,
   );
   return r.jobId;
@@ -127,7 +139,7 @@ async function status() {
   let done = 0;
   for (const id of ids) if (await redis.exists(keys.turnDone(id))) done++;
   const counts = await turns
-    .queue(TURNS_QUEUE)
+    .queue(QUEUE)
     .getJobCounts("waiting", "active", "delayed", "completed", "failed");
   console.log(JSON.stringify({ tracked: ids.length, withCompletionMarker: done, shared: counts }));
 }
@@ -165,7 +177,7 @@ async function cronStatus() {
   let jobsForSession = 0;
   if (session) {
     const all = await turns
-      .queue(TURNS_QUEUE)
+      .queue(QUEUE)
       .getJobs(["waiting", "active", "completed", "failed", "delayed"], 0, 500);
     jobsForSession = all.filter((j) => j?.data?.sessionId === session.id).length;
   }
@@ -185,7 +197,7 @@ async function cleanup() {
   // Drain first: deleting a session row out from under a turn that is still
   // retrying turns a slow turn into "session not found", which reads as a
   // delivery failure and is not one.
-  const q = turns.queue(TURNS_QUEUE);
+  const q = turns.queue(QUEUE);
   const mine = (j: { data?: { messages?: Array<{ text?: string }> } } | undefined) =>
     (j?.data?.messages ?? []).some((m) => String(m?.text ?? "").startsWith(MARK));
   for (const j of await q.getJobs(["waiting", "active", "delayed", "failed"], 0, 500)) {
