@@ -216,8 +216,12 @@ is not rejected by the gateway's. The `model`-unset warning in §4 is the matchi
 | `SLAUDE_VAULT_ALLOWED_PREFIXES` | comma list of `<mount>/<path-prefix>` — **required** |
 | `SLAUDE_VAULT_NAMESPACE` | sent as `X-Vault-Namespace` when set |
 | `SLAUDE_VAULT_CACERT` | CA bundle path for a private Vault |
-| `SLAUDE_VAULT_CACHE_TTL` | seconds; default 60 (`0` = fetch on every session start) |
-| `SLAUDE_VAULT_STALE_MAX` | seconds a failed refresh may serve the last value; default 600 |
+| `SLAUDE_VAULT_CACHE_TTL` | seconds; default 60. `0` = fetch on every session start: nothing is cached, so no stale value is ever served |
+| `SLAUDE_VAULT_STALE_MAX` | seconds a refresh that fails because Vault cannot answer may serve the last value; default 600 |
+| `SLAUDE_VAULT_MOUNTS` | comma list of secrets-engine mounts, which may have more than one segment; defaults to the first segment of each allowed prefix. The mount is the longest configured mount that is a whole-segment prefix of the path; nested configured mounts are refused as ambiguous |
+| `SLAUDE_VAULT_TOKEN` | the client token for `token` auth (development only) |
+| `SLAUDE_VAULT_K8S_TOKEN_PATH` | service-account JWT path; default `/var/run/secrets/kubernetes.io/serviceaccount/token` |
+| `SLAUDE_VAULT_ALLOW_INSECURE` | development opt-in: allows an `http://` address and `token` auth. Without it both are refused, because the service-account JWT and the Vault token would travel in cleartext |
 
 Other auth methods (AppRole and so on) are not specified here.
 
@@ -270,12 +274,18 @@ the policy; it does not provision it.
 
 `GET /v1/<mount>/data/<path>` (KV v2). `data.data[<field>]` is the value. A missing secret or
 field, a non-string field, or a KV v1 mount is a resolution failure with a distinct internal
-reason. Values are never logged.
+reason. (A real KV v1 mount answers 404 to a KV v2 path, which is indistinguishable from a
+missing secret without reading `sys/mounts`, so it is reported as a missing secret; the docs
+say KV v2 is required.) Values are never logged.
 
 An in-process cache per normalised reference holds `{value, fetchedAt}`. Concurrent
 resolutions of the same reference share one request. Past `CACHE_TTL` the next caller
-refreshes; if the refresh fails and the entry is younger than `STALE_MAX`, the cached value
-is served and a counter increments; older, resolution fails.
+refreshes. **If the refresh fails because Vault cannot answer** (unreachable, timeout, 5xx,
+login failure, unreadable response) **and the entry is younger than `STALE_MAX`**, the cached
+value is served and a counter increments; older, resolution fails. **A definitive answer is
+never masked**: a missing secret or field, a non-string field, a KV v1 mount, or a policy
+denial fails and drops the entry, so revoking a policy or deleting a secret takes effect at
+once instead of being hidden for up to `STALE_MAX`.
 
 **Blast radius, stated.** The cache is per process and not persisted. A gateway that restarts
 during a Vault outage has no cache, so **a cold start cannot boot new sessions** until Vault
