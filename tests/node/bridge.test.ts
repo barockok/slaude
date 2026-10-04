@@ -18,6 +18,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import type { McpSdkServerConfigWithInstance, McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { buildBridgeServers, GATE_DENIED_TEXT } from "../../src/node/bridge";
+import { makeBridgedNamesResolver } from "../../src/node/worker";
 import { GateDenied, NodeApiError, NodeClient } from "../../src/node/client";
 import { createV1Api } from "../../src/gateway/api";
 import { mintJobToken } from "../../src/gateway/api/auth";
@@ -143,6 +144,33 @@ describe("node bridge against a stub gateway", () => {
     const gw = stubGateway();
     expect(await buildBridgeServers("S1", [], { client: gw.client, tokenFor: () => "t" })).toEqual({});
     expect(gw.calls).toEqual([]);
+  });
+});
+
+describe("the worker's bridged names come from the session's runtime bundle", () => {
+  const deps = (getRuntime: (t: string, p: string, tok: string) => Promise<unknown>, token: string | null = "tok") => ({
+    client: { getRuntime: getRuntime as never },
+    tenantFor: () => "t1",
+    tokenFor: () => token ?? undefined,
+    personaFor: () => "ana",
+  });
+
+  test("the bundle's mcpServers, for the session's tenant and persona, malformed entries dropped", async () => {
+    const asked: string[] = [];
+    const names = makeBridgedNamesResolver(
+      deps(async (t, p, tok) => {
+        asked.push(`${t}/${p}/${tok}`);
+        return { mcpServers: ["crm", 3, "", "docs"] };
+      }),
+    );
+    expect(await names("S1")).toEqual(["crm", "docs"]);
+    expect(asked).toEqual(["t1/ana/tok"]);
+  });
+
+  test("an older gateway's bundle, a failed fetch, or no job token: no bridged servers", async () => {
+    expect(await makeBridgedNamesResolver(deps(async () => ({ soulMd: "" })))("S1")).toEqual([]);
+    expect(await makeBridgedNamesResolver(deps(async () => { throw new Error("down"); }))("S1")).toEqual([]);
+    expect(await makeBridgedNamesResolver(deps(async () => ({ mcpServers: ["x"] }), null))("S1")).toEqual([]);
   });
 });
 

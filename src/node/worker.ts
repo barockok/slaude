@@ -362,6 +362,24 @@ async function sessionBundle(deps: BundleResolverDeps, sessionId: string, person
   return deps.client.getRuntime(tenant, asked, token);
 }
 
+/** The bridged MCP server names in the session's runtime bundle (ETag-cached:
+ *  the same fetch the soul resolver makes). An older gateway sends none; a
+ *  failed fetch mounts none, and the boot's own bundle fetch reports it. */
+export function makeBridgedNamesResolver(deps: BundleResolverDeps): (sessionId: string) => Promise<string[]> {
+  return async (sessionId) => {
+    const tenant = deps.tenantFor(sessionId);
+    const token = deps.tokenFor(sessionId);
+    if (!tenant || !token) return [];
+    try {
+      const bundle = await deps.client.getRuntime(tenant, deps.personaFor(sessionId) ?? "default", token);
+      const names = (bundle as { mcpServers?: unknown }).mcpServers;
+      return Array.isArray(names) ? names.filter((n): n is string => typeof n === "string" && n.length > 0) : [];
+    } catch {
+      return [];
+    }
+  };
+}
+
 export function makeBundleSoulResolver(deps: BundleResolverDeps): (sessionId: string, persona: string | undefined) => Promise<{ soulMd: string; soulJson: unknown }> {
   return async (sessionId, persona) => {
     const bundle = await sessionBundle(deps, sessionId, persona);
@@ -516,21 +534,12 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     }, new Set(Object.keys(local)));
     return { ...bridged, ...local };
   });
-  /** The bridged server names in the session's runtime bundle (ETag-cached:
-   *  the same fetch the soul resolver makes). An older gateway sends none; a
-   *  failed fetch mounts none, and the boot's own bundle fetch reports it. */
-  async function bridgedNames(sessionId: string): Promise<string[]> {
-    const tenant = tenants.get(sessionId);
-    const token = store.tokenFor(sessionId);
-    if (!tenant || !token) return [];
-    try {
-      const bundle = await client.getRuntime(tenant, personas.get(sessionId) ?? "default", token);
-      const names = (bundle as { mcpServers?: unknown }).mcpServers;
-      return Array.isArray(names) ? names.filter((n): n is string => typeof n === "string" && n.length > 0) : [];
-    } catch {
-      return [];
-    }
-  }
+  const bridgedNames = makeBridgedNamesResolver({
+    client,
+    tenantFor: (id) => tenants.get(id),
+    tokenFor: (id) => store.tokenFor(id),
+    personaFor: (id) => personas.get(id),
+  });
   // Every session's CLAUDE_CONFIG_DIR is pod-local, seeded from the gateway
   // with the access tokens for the turn's owner (the gateway resolves the owner
   // from the job token's runAs). Outside the node role — the simulator and the
