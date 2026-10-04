@@ -188,9 +188,55 @@ describe("POST /v1/jobs/:id/token-reissue", () => {
       delete process.env.SLAUDE_JOB_MAX_AGE;
     }
     expect((await handleTokenReissue(reissueReq(tok), "J2", c, lookupOf(live()), NOW)).status).toBe(403);
-    for (const queue of ["other", "turns.", "bull:turns", 7]) {
+    for (const queue of ["other", "turns.", "bull:turns", 7, "turns.a:b", "turns.a\u0007", "turns.a..b", "turns.a b", "turns." + "a".repeat(200)]) {
       expect((await handleTokenReissue(reissueReq(tok, { queue }), "J1", c, lookupOf(live()), NOW)).status).toBe(400);
     }
+  });
+
+  test("a token still inside the refresh window is refused with 409 (use token-refresh)", async () => {
+    // Expired 30 minutes ago: inside REFRESH_GRACE_SEC (1h).
+    const recent = mintJobToken({ ...claims(), label: "finance" }, { now: NOW - 45 * 60_000 });
+    const job: QueuedJob = { data: { jobToken: recent, enqueuedAt: NOW - 45 * 60_000 }, timestamp: NOW - 45 * 60_000, state: "active" };
+    const res = await handleTokenReissue(reissueReq(recent), "J1", verified(recent), lookupOf(job), NOW);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as any).error).toContain("token-refresh");
+    const fresh = mintJobToken({ ...claims(), label: "finance" }, { now: NOW });
+    const job2: QueuedJob = { data: { jobToken: fresh, enqueuedAt: NOW }, timestamp: NOW, state: "waiting" };
+    expect((await handleTokenReissue(reissueReq(fresh), "J1", verified(fresh), lookupOf(job2), NOW)).status).toBe(409);
+  });
+
+  test("repro: reissue near the 24h cap plus refreshes never keeps a token alive past enqueue + SLAUDE_JOB_MAX_AGE", async () => {
+    const T = NOW - 24 * 3600_000; // enqueued exactly 24h before NOW
+    const original = mintJobToken({ ...claims(), label: "finance" }, { now: T });
+    const job: QueuedJob = { data: { jobToken: original, enqueuedAt: T }, timestamp: T, state: "active" };
+    const at = T + (23 * 60 + 50) * 60_000; // 23h50 after enqueue
+    const res = await handleTokenReissue(reissueReq(original), "J1", verified(original), lookupOf(job), at);
+    expect(res.status).toBe(200);
+    let tok = ((await res.json()) as any).jobToken as string;
+    const capSec = Math.floor((T + 24 * 3600_000) / 1000);
+    let lastExp = (verified(tok) as JobClaims).exp;
+    expect(lastExp).toBeLessThanOrEqual(capSec);
+    // Refresh every 5 minutes for 36 rounds (3 hours): every token stays under the cap.
+    const { handleTokenRefresh } = await import("../../../src/gateway/api/jobs");
+    let refused = 0;
+    for (let i = 1; i <= 36; i++) {
+      const now = at + i * 5 * 60_000;
+      const r = await handleTokenRefresh(
+        new Request("http://gw/v1/jobs/J1/token-refresh", { method: "POST", headers: { [JOB_HEADER]: tok } }),
+        "J1",
+        now,
+      );
+      if (r.status !== 200) {
+        refused++;
+        continue;
+      }
+      tok = ((await r.json()) as any).jobToken;
+      lastExp = (verified(tok) as JobClaims).exp;
+      expect(lastExp).toBeLessThanOrEqual(capSec);
+    }
+    expect(refused).toBeGreaterThan(0);
+    // And a second reissue after the cap is refused.
+    expect((await handleTokenReissue(reissueReq(original), "J1", verified(original), lookupOf(job), T + 24 * 3600_000 + 1000)).status).toBe(410);
   });
 
   test("through the router: refused without the label, accepted with it", async () => {

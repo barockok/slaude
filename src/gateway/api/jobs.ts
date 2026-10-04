@@ -59,11 +59,15 @@ export async function handleTokenRefresh(req: Request, jobId: string, nowMs: num
     return json(403, { error: "token was not minted for this job" });
   }
   const iat0 = firstIssued(claims);
-  if (Math.floor(nowMs / 1000) - iat0 > env.jobTokenMaxAgeSec()) {
+  const nowSec = Math.floor(nowMs / 1000);
+  const lifeEnd = iat0 + env.jobTokenMaxAgeSec();
+  if (nowSec >= lifeEnd) {
     return json(401, { error: "token refresh refused: the job token is past its maximum age" });
   }
   metric.v1JobEventsTotal.inc({ event: "token_refresh" });
-  return json(200, { jobToken: mintJobToken({ ...reclaims(claims), iat0 }, { now: nowMs }) });
+  // The fresh token never outlives the cap either.
+  const exp = Math.min(nowSec + JOB_TOKEN_TTL_SEC, lifeEnd);
+  return json(200, { jobToken: mintJobToken({ ...reclaims(claims), iat0, exp }, { now: nowMs }) });
 }
 
 /** What token-reissue needs from the queue. */
@@ -77,9 +81,15 @@ export interface QueuedJob {
 }
 export type JobLookup = (queue: string, jobId: string) => Promise<QueuedJob | null>;
 
-/** Only turn queues: `turns` and `turns.<suffix>`. */
+/** Only turn queues: `turns` and `turns.<suffix>`, where the suffix is
+ *  dot-separated parts of letters, digits and `-` (a node id built from a
+ *  hostname, or `label.<label>`). No `:` (BullMQ's key separator) and no
+ *  control characters. */
+const TURN_QUEUE_SUFFIX_RE = /^(\.[A-Za-z0-9-]+)+$/;
 export function isTurnQueueName(q: string): boolean {
-  return q === TURNS_QUEUE || (q.startsWith(`${TURNS_QUEUE}.`) && q.length > TURNS_QUEUE.length + 1 && q.length <= 200);
+  if (q.length > 200) return false;
+  if (q === TURNS_QUEUE) return true;
+  return q.startsWith(TURNS_QUEUE) && TURN_QUEUE_SUFFIX_RE.test(q.slice(TURNS_QUEUE.length));
 }
 
 export async function handleTokenReissue(
@@ -102,14 +112,25 @@ export async function handleTokenReissue(
   if (typeof stored !== "string" || !timingSafeStringEqual(stored, presented)) {
     return json(403, { error: "token is not this job's token" });
   }
+  const nowSec = Math.floor(nowMs / 1000);
+  // Reissue is only for a token that refresh can no longer exchange.
+  if (claims.exp + REFRESH_GRACE_SEC > nowSec) {
+    return json(409, { error: "token is still refreshable: use token-refresh" });
+  }
+  // The job's age runs from its ORIGINAL enqueue, never from a reissue.
   const enqueuedAt = typeof job.data.enqueuedAt === "number" ? job.data.enqueuedAt : job.timestamp;
-  if (nowMs - Math.min(enqueuedAt, job.timestamp || enqueuedAt) > env.jobMaxAgeSec() * 1000) {
+  const bornMs = Math.min(enqueuedAt, job.timestamp || enqueuedAt);
+  const capSec = Math.floor((bornMs + env.jobMaxAgeSec() * 1000) / 1000);
+  if (nowSec >= capSec) {
     return json(410, { error: "job is past its maximum age" });
   }
-  // The run starts now: the reissued token's total-life clock starts with it.
-  const nowSec = Math.floor(nowMs / 1000);
+  // The run starts now, so the token-life clock restarts, but it may never
+  // reach past the job's own cap: iat0 + SLAUDE_JOB_TOKEN_MAX_AGE <= cap, and
+  // refresh caps every later token's exp at that sum.
+  const iat0 = Math.min(nowSec, capSec - env.jobTokenMaxAgeSec());
+  const exp = Math.min(nowSec + JOB_TOKEN_TTL_SEC, capSec);
   metric.v1JobEventsTotal.inc({ event: "token_reissue" });
-  return json(200, { jobToken: mintJobToken({ ...reclaims(claims), iat0: nowSec }, { now: nowMs }) });
+  return json(200, { jobToken: mintJobToken({ ...reclaims(claims), iat0, exp }, { now: nowMs }) });
 }
 
 /** Longest logged body; the rest is dropped. */
