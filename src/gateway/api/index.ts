@@ -114,7 +114,7 @@ const tenantScoped = (claims: JobClaims, tenant: string): Response | null =>
  *  "tools.memory" and "tools" do, and the narrower one comes first. */
 export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDef[] {
   const credentialRefresher = (): CredentialRefresher => opts.credentialRefresher ?? defaultCredentialRefresher();
-  const memoryPlane = opts.memory === undefined ? defaultMemoryPlane(opts.tools, processMemory) : (opts.memory ?? undefined);
+  const memoryPlane = opts.memory === undefined ? defaultMemoryPlane(opts.tools, () => processMemory) : (opts.memory ?? undefined);
   let warnedTokenlessPending = false;
   return [
     {

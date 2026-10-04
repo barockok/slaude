@@ -58,7 +58,8 @@ const defaultAssertLive = (claims: JobClaims): void => {
  * (SLAUDE_MEMORY=sqlite, keyed on the session alone) runs as it does in mono.
  */
 export function makeMemoryPlane(deps: {
-  provider: MemoryProvider;
+  /** The provider, or a getter read on every call (the process provider). */
+  provider: MemoryProvider | (() => MemoryProvider);
   gateFor(claims: JobClaims): Promise<GateInput | null>;
   /** Settles the process agent identity before a gate is computed, so the
    *  default persona never scopes by the "default" fallback. */
@@ -67,7 +68,7 @@ export function makeMemoryPlane(deps: {
   timeoutMs?: number;
   warn?: (msg: string) => void;
 }): MemoryPlane {
-  const { provider } = deps;
+  const providerNow = (): MemoryProvider => (typeof deps.provider === "function" ? deps.provider() : deps.provider);
   const ready = deps.ready ?? agentIdReady;
   const assertLive = deps.assertLive ?? defaultAssertLive;
   const timeoutMs = deps.timeoutMs ?? GATEWAY_MEMORY_TIMEOUT_MS;
@@ -102,12 +103,14 @@ export function makeMemoryPlane(deps: {
   return {
     async prefetch(claims) {
       assertLive(claims);
+      const provider = providerNow();
       if (!(provider instanceof BrainMemoryProvider)) return bounded("prefetch", provider.prefetch(claims.session), null);
       const s = await scope(claims);
       return s?.read ? bounded("prefetch", provider.prefetchIn(claims.session, s.read), null) : null;
     },
     async sync(claims, turn) {
       assertLive(claims);
+      const provider = providerNow();
       const t = { sessionId: claims.session, ...turn };
       if (!(provider instanceof BrainMemoryProvider)) return bounded("sync", provider.syncTurn(t), undefined);
       const s = await scope(claims);
@@ -118,7 +121,7 @@ export function makeMemoryPlane(deps: {
 
 /** The default plane: the process's provider, gated like the KB tools (the
  *  same SlackContext from the claims, the same brainGateFor behind brainDeps). */
-export function defaultMemoryPlane(tools: ToolPlaneDeps, provider: MemoryProvider): MemoryPlane {
+export function defaultMemoryPlane(tools: ToolPlaneDeps, provider: MemoryProvider | (() => MemoryProvider)): MemoryPlane {
   return makeMemoryPlane({
     provider,
     gateFor: async (claims) => {
