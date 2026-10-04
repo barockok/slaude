@@ -153,7 +153,6 @@ describe("createGateway", () => {
     it("manager adds an allowed channel — gate opens on the next message (immediacy)", async () => {
       await db.run("DELETE FROM sessions");
       await SO.clear();
-      process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
       writeSoulFixture(WORLD);
       const g = newGw();
 
@@ -253,8 +252,6 @@ describe("createGateway", () => {
       // Dedup is durable now (seen_events) — each test replays its own ts
       // values in the same channel, so clear claims from earlier tests.
       await db.run("DELETE FROM seen_events");
-      // handleMessage's attachment download resolves the bot token lazily.
-      process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
     };
 
     it("mention-only thread: plain follow-up recorded-but-suppressed, @mention still replies", async () => {

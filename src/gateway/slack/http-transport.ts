@@ -45,6 +45,8 @@ type AppEntry = {
   row: SlackAppRow;
   signingSecret: string;
   client: WebClientLike;
+  /** Decrypted bot token of THIS app, handed to event handlers (attachment download). */
+  botToken: string;
 };
 
 export type HttpTransportOptions = {
@@ -114,7 +116,7 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
     primary = null;
     for (const row of rows) {
       const { botToken, signingSecret } = decryptTokens(row);
-      const entry: AppEntry = { row, signingSecret, client: makeClient(botToken) };
+      const entry: AppEntry = { row, signingSecret, client: makeClient(botToken), botToken };
       entries.set(`${row.api_app_id}:${row.team_id}`, entry);
       const group = byApp.get(row.api_app_id) ?? [];
       group.push(entry);
@@ -150,6 +152,7 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
       teamId: body.team_id ?? event.team,
       apiAppId: body.api_app_id,
       botUserId: entry.row.bot_user_id ?? undefined,
+      botToken: entry.botToken,
     };
     for (const h of events.get(event.type) ?? []) {
       await h({ event, client: entry.client, context });

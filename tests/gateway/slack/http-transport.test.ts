@@ -302,6 +302,8 @@ describe("http slack transport — events", () => {
     expect(seen.length).toBe(1);
     expect(seen[0].context.teamId).toBe("T0BBB");
     expect(seen[0].client).toBe(clients.get("xoxb-fake-b")!);
+    // The context carries THIS app's token (attachment download), not the primary's.
+    expect(seen[0].context.botToken).toBe("xoxb-fake-b");
     // And a signature crossover (team B envelope signed with A's secret) fails.
     const res = await postEvents(base, SECRET_A, { ...eventEnvelope(), team_id: "T0BBB" });
     expect(res.status).toBe(401);

@@ -2248,14 +2248,25 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
 
     // Resolve username and download any file attachments into the session dir.
+    // The token is read only when there are files, and from the app the event
+    // belongs to (HTTP mode puts it on the context). The environment is the
+    // fallback in Socket Mode only: in HTTP mode it is absent by design (D1.1).
+    const inboundFiles = (event.files ?? []) as SlackFile[];
+    let attachToken: string | undefined;
+    if (inboundFiles.length) {
+      attachToken = context?.botToken ?? (env.slack.mode() === "socket" ? env.slack.botToken() : undefined);
+      if (!attachToken) console.error(`[slack-attach] no bot token for the event's app — skipping ${inboundFiles.length} file(s)`);
+    }
     const [userName, files] = await Promise.all([
       resolveUserName(client, userId),
-      downloadAttachments({
-        files: ((event.files ?? []) as SlackFile[]),
-        botToken: env.slack.botToken(),
-        workingDir: session.working_dir,
-        inboundTs: eventTs,
-      }),
+      attachToken
+        ? downloadAttachments({
+            files: inboundFiles,
+            botToken: attachToken,
+            workingDir: session.working_dir,
+            inboundTs: eventTs,
+          })
+        : Promise.resolve([]),
     ]);
     if (env.metricsPerUser()) {
       metric.userTurnsTotal.inc({ user_id: userId, user_name: userName });
