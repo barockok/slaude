@@ -710,6 +710,43 @@ describe("http slack transport — lifecycle and client proxy", () => {
     expect(got).toBeInstanceOf(TypeError);
   });
 
+  // B1: the root lazy client must not be callable. SlackSurface and Reactions
+  // treat a function argument as a resolver and CALL it, which would hand them a
+  // Promise instead of a client.
+  it("transport.client is a plain object, so surfaces and reactions use it as a client, not a resolver", async () => {
+    const posted: any[] = [];
+    const reacted: any[] = [];
+    const real: any = fakeClient("a");
+    real.chat.postMessage = async (a: any) => (posted.push(a), { ok: true, ts: "9.9" });
+    real.reactions.add = async (a: any) => (reacted.push(a), { ok: true });
+    const t = createHttpSlackTransport({ port: 0, loadApps: async () => [appRow()], makeClient: () => real, log: () => {} });
+    booted.push(t);
+    await t.start();
+    expect(typeof t.client).toBe("object");
+
+    const { makeSlackSurfaceFactory } = await import("../../../src/gateway/slack/surface");
+    const { Reactions } = await import("../../../src/gateway/slack/reactions");
+    const surface = makeSlackSurfaceFactory(t.client as any)({
+      conversationId: "C1", threadRef: "1.1", inboundRef: "1.1",
+      requestApproval: async () => ({ approved: false, by: "" }) as any,
+      reloadSession: () => false,
+    });
+    await surface.reply({ text: "hi" });
+    expect(posted.length).toBe(1);
+    await new Reactions(t.client).set("s1", "C1", "1.1", "eyes");
+    expect(reacted.length).toBe(1);
+  });
+
+  // m3: serializers and inspectors must not trigger a (possibly rejecting) call.
+  it("transport.client is safe to stringify and inspect", async () => {
+    const t = createHttpSlackTransport({ port: 0, loadApps: async () => [appRow()], makeClient: () => fakeClient("a"), log: () => {} });
+    booted.push(t);
+    await t.start();
+    const holder = { client: t.client, n: 1 };
+    expect(() => JSON.stringify(holder)).not.toThrow();
+    expect(() => require("node:util").inspect(holder)).not.toThrow();
+  });
+
   it("default makeClient constructs a real @slack/web-api WebClient (no network)", async () => {
     const t = createHttpSlackTransport({
       port: 0,

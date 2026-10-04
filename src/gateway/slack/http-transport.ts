@@ -362,10 +362,12 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
   // the call parks on `started`, then resolves the same path on the real client.
   // A hand-listed proxy missed methods twice, so a new Slack method must not need
   // a change here. Per-request client selection is a separate change (D1.2).
+  // Property names that serializers, inspectors and promise machinery probe: they
+  // must read as absent, not as a callable that fires a (rejecting) Slack call.
+  const PROBES = new Set(["then", "toJSON", "inspect", "valueOf", "toString", "asymmetricMatch", "$$typeof", "nodeType"]);
   const lazyAt = (path: string[]): any =>
     new Proxy(function () {}, {
-      // Not thenable, so `await t.client` / Promise.resolve(t.client) do not hang.
-      get: (_t, key) => (typeof key === "symbol" || key === "then" ? undefined : lazyAt([...path, key])),
+      get: (_t, key) => (typeof key === "symbol" || PROBES.has(key) ? undefined : lazyAt([...path, key])),
       apply: (_t, _this, args) =>
         started.then(() => {
           let parent: any = primary!.client;
@@ -378,7 +380,11 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
           return Reflect.apply(fn, parent, args);
         }),
     });
-  const lazyClient = lazyAt([]) as WebClientLike;
+  // The ROOT must not be callable: SlackSurface and Reactions treat a function
+  // argument as a client resolver and would call it, getting a Promise back.
+  const lazyClient = new Proxy({} as object, {
+    get: (_t, key) => (typeof key === "symbol" || PROBES.has(key) ? undefined : lazyAt([key])),
+  }) as WebClientLike;
 
   return {
     client: lazyClient,
