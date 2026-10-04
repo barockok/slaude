@@ -38,12 +38,13 @@ import { dbSessionStore, type SessionStore } from "./session-store";
 import * as OneOnOne from "../db/one-on-one";
 import type { OneOnOneLockRow } from "../db/one-on-one";
 import { memory } from "../memory";
-import { scrubChildEnv } from "./child-env";
+import { ChildEnvPatch, scrubChildEnv, withoutKeys } from "./child-env";
 import { resolveSessionConfigDir } from "./oauth-home";
 import { sessionIdOpts } from "./session-id-opts";
 import { sessionModeBlock } from "./session-mode";
 import { formatSessionNotes } from "./session-notes";
-import type { FailureCode } from "../gateway/core/failure-codes";
+import { BootFailure, type FailureCode } from "../gateway/core/failure-codes";
+import { redactSecrets } from "../gateway/core/status-text";
 import { REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, makeRemoteCanUseTool } from "../remote/mcp";
 import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/types";
 
@@ -99,6 +100,11 @@ export type AgentEvent =
   | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" };
 
 /** Permission resolver — called per tool use; given a sessionId so transports can present UI in the right thread. */
+/** Per-session child-env overlay: a plain record adds variables; a
+ *  ChildEnvPatch also removes them (WS-A §5.4). */
+export type ChildEnvOverlay = Record<string, string | undefined> | ChildEnvPatch | undefined;
+export type ChildEnvResolver = (sessionId: string) => Promise<ChildEnvOverlay> | ChildEnvOverlay;
+
 export type PermissionResolver = (
   sessionId: string,
   toolName: string,
@@ -230,7 +236,7 @@ export class AgentManager extends EventEmitter {
   #store: SessionStore = dbSessionStore;
   /** Optional per-session child-env overlay (node runtime bundle creds). */
   #childEnvResolver:
-    | ((sessionId: string) => Promise<Record<string, string | undefined> | undefined> | Record<string, string | undefined> | undefined)
+    | ChildEnvResolver
     | undefined;
   #resolver: PermissionResolver | undefined;
   /** Optional per-session CLAUDE_CONFIG_DIR override. Node workers install one
@@ -303,12 +309,10 @@ export class AgentManager extends EventEmitter {
   /** Install a per-session child-env overlay (spec §6: node workers source
    *  provider credentials from the tenant runtime bundle, not process env).
    *  Resolved at session boot, merged OVER the process-env-derived provider
-   *  vars; scrubChildEnv still applies afterwards. Unset = no change. */
-  setChildEnvResolver(
-    resolver:
-      | ((sessionId: string) => Promise<Record<string, string | undefined> | undefined> | Record<string, string | undefined> | undefined)
-      | undefined,
-  ) {
+   *  vars; a ChildEnvPatch also deletes names; scrubChildEnv still applies
+   *  afterwards. A throw fails the boot with a BootFailure (its own code, else
+   *  PROVIDER_CREDENTIALS_UNAVAILABLE). Unset = no change. */
+  setChildEnvResolver(resolver: ChildEnvResolver | undefined) {
     this.#childEnvResolver = resolver;
   }
 
@@ -936,11 +940,24 @@ export class AgentManager extends EventEmitter {
     // Node runtime (spec §6): overlay wins over process-env-derived provider
     // vars — a node's own env carries no tenant credentials, the runtime
     // bundle does. No resolver installed → no change (mono/gateway).
+    // A resolver failure is FATAL and typed (WS-A §5.4): spawning on the node's
+    // own environment would run the persona on someone else's credentials.
+    let unsetChildEnv: readonly string[] = [];
     if (this.#childEnvResolver) {
+      let overlay: ChildEnvOverlay;
       try {
-        Object.assign(providerEnv, (await this.#childEnvResolver(sessionId)) ?? {});
+        overlay = await this.#childEnvResolver(sessionId);
       } catch (e) {
-        console.error(`[mgr] child-env resolver failed session=${sessionId}:`, e);
+        console.error(`[mgr] child-env resolver failed session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+        throw e instanceof BootFailure
+          ? e
+          : new BootFailure("PROVIDER_CREDENTIALS_UNAVAILABLE", "child-env resolver failed", { cause: e });
+      }
+      if (overlay instanceof ChildEnvPatch) {
+        Object.assign(providerEnv, overlay.set);
+        unsetChildEnv = overlay.unset.filter((k) => !Object.hasOwn(overlay.set, k));
+      } else {
+        Object.assign(providerEnv, overlay ?? {});
       }
     }
     // /1on1 privacy: when this session's thread is locked, point the claude-code
@@ -1072,7 +1089,7 @@ export class AgentManager extends EventEmitter {
         // SLAUDE_MODEL MUST be set to a provider-qualified id.
         ...(model ? { model } : {}),
         abortController: abort,
-        env: scrubChildEnv({ ...process.env, ...providerEnv }),
+        env: scrubChildEnv(withoutKeys({ ...process.env, ...providerEnv }, unsetChildEnv)),
         ...(canUseTool ? { canUseTool } : {}),
         ...(hasMcpServers ? { mcpServers: mergedMcpServers } : {}),
         plugins: allPlugins,

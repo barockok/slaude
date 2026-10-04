@@ -73,3 +73,14 @@ describe("scrubChildEnv and the gateway-only list", () => {
     expect(out).toEqual({});
   });
 });
+
+describe("withoutKeys", () => {
+  it("deletes the names (absent, not undefined) and leaves the input untouched", async () => {
+    const { withoutKeys } = await import("../../src/agent/child-env");
+    const env = { ANTHROPIC_API_KEY: "k", ANTHROPIC_BASE_URL: "u", PATH: "/bin" };
+    const out = withoutKeys(env, ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
+    expect(out).toEqual({ PATH: "/bin" });
+    expect(Object.hasOwn(out, "ANTHROPIC_API_KEY")).toBe(false);
+    expect(env.ANTHROPIC_API_KEY).toBe("k");
+  });
+});

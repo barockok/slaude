@@ -8,7 +8,7 @@
  * leak is behaviorally a no-op. Every non-`query` export is re-exported from
  * the real module (session-mcp & friends need createSdkMcpServer/tool).
  */
-import { describe, it, expect, mock, beforeEach, afterAll, spyOn } from "bun:test";
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from "bun:test";
 
 // Must be set before src/memory/index.ts is first imported in this process.
 process.env.SLAUDE_MEMORY = "sqlite";
@@ -898,6 +898,79 @@ describe("AgentManager on a node: brain-slice anchor from the bundle", () => {
       if (saved === undefined) delete process.env.SLAUDE_AGENT_ID;
       else process.env.SLAUDE_AGENT_ID = saved;
     }
+  });
+});
+
+describe("AgentManager on a node: provider credentials from the child-env resolver (WS-A §5.4)", () => {
+  const KEYS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL"];
+  let saved: Record<string, string | undefined>;
+  beforeEach(() => {
+    saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+    process.env.ANTHROPIC_API_KEY = "node-own-key";
+    process.env.ANTHROPIC_AUTH_TOKEN = "node-own-token";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "node-own-oauth";
+    process.env.ANTHROPIC_BASE_URL = "https://node.example.com";
+  });
+  afterEach(() => {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  it("a ChildEnvPatch deletes the provider keys it does not supply: absent, not undefined", async () => {
+    const { ChildEnvPatch } = await import("../../src/agent/child-env");
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    mgr.setChildEnvResolver(async () => new ChildEnvPatch({ ANTHROPIC_API_KEY: "persona-key" }, KEYS));
+    const row = await mgr.ensureSession(thread());
+    const s = plan((x) => (x.onUser = () => x.emit(res())));
+    await mgr.sendMessage(row.id, "hi");
+    await until(() => events.some((e) => e.type === "done"), 3000, "done");
+    expect(s.options.env.ANTHROPIC_API_KEY).toBe("persona-key");
+    for (const k of ["ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL"]) {
+      expect(Object.hasOwn(s.options.env, k)).toBe(false);
+    }
+    await shutdown(mgr, row.id);
+  });
+
+  it("a plain overlay still only adds: the node's own values stand where it says nothing", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    mgr.setChildEnvResolver(async () => ({ ANTHROPIC_API_KEY: "persona-key" }));
+    const row = await mgr.ensureSession(thread());
+    const s = plan((x) => (x.onUser = () => x.emit(res())));
+    await mgr.sendMessage(row.id, "hi");
+    await until(() => events.some((e) => e.type === "done"), 3000, "done");
+    expect(s.options.env.ANTHROPIC_API_KEY).toBe("persona-key");
+    expect(s.options.env.ANTHROPIC_BASE_URL).toBe("https://node.example.com");
+    await shutdown(mgr, row.id);
+  });
+
+  it("a resolver failure is fatal and typed: the boot fails with PROVIDER_CREDENTIALS_UNAVAILABLE and nothing spawns", async () => {
+    const { BootFailure } = await import("../../src/gateway/core/failure-codes");
+    const mgr = new AgentManager();
+    mgr.setChildEnvResolver(async () => {
+      throw new Error("gateway /v1 request failed: 503");
+    });
+    const row = await mgr.ensureSession(thread());
+    const before = spawned.length;
+    const e = await mgr.sendMessage(row.id, "hi").catch((x) => x);
+    expect(e).toBeInstanceOf(BootFailure);
+    expect(e.code).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
+    expect(spawned.length).toBe(before);
+    expect(mgr.isLive(row.id)).toBe(false);
+  });
+
+  it("a BootFailure from the resolver keeps its own code", async () => {
+    const { BootFailure } = await import("../../src/gateway/core/failure-codes");
+    const mgr = new AgentManager();
+    mgr.setChildEnvResolver(async () => {
+      throw new BootFailure("LABEL_MISMATCH", "x");
+    });
+    const row = await mgr.ensureSession(thread());
+    const e = await mgr.sendMessage(row.id, "hi").catch((x) => x);
+    expect(e.code).toBe("LABEL_MISMATCH");
   });
 });
 
