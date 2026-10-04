@@ -16,6 +16,12 @@ deploy/k8s-local/verify-turns.sh # turn delivery, label routing and the gate, ro
 deploy/k8s-local/down.sh         # delete the cluster (add --purge to drop every generated secret)
 ```
 
+Every script names its kubectl context (the minikube profile, `slaude-local` by
+default) on every call and never changes your current context; `up.sh` refuses
+to run when that context is missing or points at another cluster. The plain
+`kubectl -n slaude-scale ...` commands in this file assume
+`kubectl config use-context slaude-local`, or add `--context slaude-local`.
+
 The step-by-step operator checklist for the mock HA test is
 `docs/superpowers/plans/2026-10-05-operator-mock-test-checklist.md`.
 
