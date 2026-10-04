@@ -135,6 +135,11 @@ describe("parseNodeManifest — schema", () => {
     expect(Object.keys(parseNodeManifest(ok, NODE_ENV, "node.json").servers)).toEqual(["gh", "tf"]);
   });
 
+  it("refuses a byte-order mark with a message that says so", () => {
+    const msg = refusal(() => parseNodeManifest("\uFEFF" + JSON.stringify(valid), NODE_ENV, "node.json"));
+    expect(msg).toContain("byte-order mark");
+  });
+
   it("refuses an empty file and invalid JSON", () => {
     expect(refusal(() => parseNodeManifest("", NODE_ENV, "node.json"))).toContain("empty");
     expect(refusal(() => parseNodeManifest("  \n", NODE_ENV, "node.json"))).toContain("empty");

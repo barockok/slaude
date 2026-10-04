@@ -180,6 +180,7 @@ export function parseNodeManifest(text: string, nodeEnv: Record<string, string |
   const fail = (msg: string): never => {
     throw new NodeManifestError(`node manifest ${source}: ${msg}`);
   };
+  if (text.charCodeAt(0) === 0xfeff) fail("the manifest has a byte-order mark (save it as UTF-8 without one)");
   if (text.trim() === "") fail("the file is empty (delete it for no servers, or write {\"version\": 1})");
   let raw: unknown;
   try {
