@@ -140,20 +140,23 @@ describe("soulView", () => {
 });
 
 describe("personaNodes", () => {
-  const labels: Record<string, string[]> = { "node-b": ["finance", "engineering"], "node-a": ["engineering"], "node-d": ["default"] };
+  // Shaped as the registry returns it (sorted, labels from the same MGET);
+  // the real method is tested in tests/queue/registry-real.test.ts.
+  const labels: Record<string, string[]> = { "node-a": ["engineering"], "node-b": ["engineering", "finance"], "node-d": ["default"] };
+  const asked: string[] = [];
   const registry = {
-    async nodesWithLabel(label: string) {
-      return Object.keys(labels).filter((n) => labels[n]!.includes(label));
-    },
-    async nodeLabels(node: string) {
-      return new Set(labels[node] ?? ["default"]);
+    async liveNodesHolding(label: string) {
+      asked.push(label);
+      return Object.keys(labels).filter((n) => labels[n]!.includes(label)).map((node) => ({ node, labels: labels[node]! }));
     },
   };
-  test("the live nodes holding the label, sorted, with their labels sorted", async () => {
+  test("the live nodes holding the label, with their labels, from one registry call", async () => {
+    asked.length = 0;
     expect(await personaNodes(registry, "engineering")).toEqual([
       { id: "node-a", alive: true, labels: ["engineering"] },
       { id: "node-b", alive: true, labels: ["engineering", "finance"] },
     ]);
+    expect(asked).toEqual(["engineering"]);
   });
   test("a persona with no runsOn runs on `default`", async () => {
     expect(await personaNodes(registry, null)).toEqual([{ id: "node-d", alive: true, labels: ["default"] }]);

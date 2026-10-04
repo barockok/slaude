@@ -146,10 +146,10 @@ export interface NodeView {
  * (mono, or no Redis): "unknown", not "no nodes".
  */
 export async function personaNodes(
-  registry: Pick<Registry, "nodesWithLabel" | "nodeLabels"> | null,
+  registry: Pick<Registry, "liveNodesHolding"> | null,
   runsOn: string | null | undefined,
 ): Promise<NodeView[] | null> {
   if (!registry) return null;
-  const ids = [...(await registry.nodesWithLabel(runsOn ?? DEFAULT_LABEL))].sort();
-  return Promise.all(ids.map(async (id) => ({ id, alive: true, labels: [...(await registry.nodeLabels(id))].sort() })));
+  // One read decides both membership and labels (no per-node second read).
+  return (await registry.liveNodesHolding(runsOn ?? DEFAULT_LABEL)).map((n) => ({ id: n.node, alive: true, labels: n.labels }));
 }

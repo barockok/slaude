@@ -168,6 +168,20 @@ export function makeRegistry(opts: RegistryOpts) {
       return live.filter((_, i) => decodeLabels(vals[i] ?? null).has(label));
     },
 
+    /** Live nodes that carry `label`, each with ALL its labels (sorted), from
+     *  the same listing and MGET that decide membership: a node's labels can
+     *  never come from a later read than the one that selected it. Sorted by node. */
+    async liveNodesHolding(label: string): Promise<Array<{ node: string; labels: string[] }>> {
+      const live = await listLive();
+      if (live.length === 0) return [];
+      const vals = await redis.mget(...live.map((n) => keys.nodeLabels(n)));
+      return live
+        .map((node, i) => ({ node, set: decodeLabels(vals[i] ?? null) }))
+        .filter((n) => n.set.has(label))
+        .map((n) => ({ node: n.node, labels: [...n.set].sort() }))
+        .sort((a, b) => a.node.localeCompare(b.node));
+    },
+
     /** How many live nodes carry each label, from ONE listing of the live
      *  nodes (label status reads every label in use per pass). */
     async liveNodesPerLabel(): Promise<Map<string, number>> {

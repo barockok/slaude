@@ -169,4 +169,27 @@ describe.skipIf(!realEnabled)("queue/registry against real Redis", () => {
     await reg.nodeDown("n-old");
     await reg.nodeDown("n-fin");
   });
+
+  test("liveNodesHolding: the live nodes carrying a label with all their labels, from one listing and one MGET", async () => {
+    await ready;
+    const reg = mkRegistry();
+    await reg.nodeUp("h-b", ["finance", "engineering"]);
+    await reg.nodeUp("h-a", ["engineering"]);
+    await reg.nodeUp("h-gone", ["engineering"]);
+    await redis.del(keys.node("h-gone")); // heartbeat lapsed: not live
+    const mget = redis.mget.bind(redis);
+    let mgets = 0;
+    (redis as any).mget = (...a: any[]) => { mgets++; return (mget as any)(...a); };
+    try {
+      expect(await reg.liveNodesHolding("engineering")).toEqual([
+        { node: "h-a", labels: ["engineering"] },
+        { node: "h-b", labels: ["engineering", "finance"] },
+      ]);
+      expect(mgets).toBe(1);
+      expect(await reg.liveNodesHolding("nobody")).toEqual([]);
+    } finally {
+      (redis as any).mget = mget;
+      for (const n of ["h-a", "h-b", "h-gone"]) await reg.nodeDown(n);
+    }
+  });
 });

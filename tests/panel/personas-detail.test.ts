@@ -62,8 +62,9 @@ const nodeLabels: Record<string, string[]> = {
   "node-d": ["default"],
 };
 const registry = {
-  async nodesWithLabel(label: string) { return Object.keys(nodeLabels).filter((n) => nodeLabels[n]!.includes(label)); },
-  async nodeLabels(node: string) { return new Set(nodeLabels[node] ?? ["default"]); },
+  async liveNodesHolding(label: string) {
+    return Object.keys(nodeLabels).filter((n) => nodeLabels[n]!.includes(label)).sort().map((node) => ({ node, labels: [...nodeLabels[node]!].sort() }));
+  },
 } as any;
 
 const mk = (o: { registry?: any; installed?: string[] } = {}) =>
@@ -260,7 +261,7 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("GET /panel/api/personas/:name",
 
   test("a registry failure leaves the rest of the view intact (nodes null)", async () => {
     await seedAna();
-    const broken = { nodesWithLabel: async () => { throw new Error("redis down"); }, nodeLabels: async () => new Set() };
+    const broken = { liveNodesHolding: async () => { throw new Error("redis down"); } };
     const err = spyOn(console, "error").mockImplementation(() => {});
     try {
       const r = await read("/panel/api/personas/ana", operator, mk({ registry: broken }));
