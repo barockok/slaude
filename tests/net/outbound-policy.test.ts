@@ -34,7 +34,9 @@ describe("classifyAddress", () => {
     ["192.168.1.1", "private"],
     ["100.64.0.1", "private"],
     ["fc00::1", "private"],
-    ["fd00:ec2::254", "private"],
+    ["fd00:ec2::254", "metadata"],
+    ["100.100.100.200", "metadata"],
+    ["fd00::1", "private"],
     ["169.254.169.254", "link-local"],
     ["169.254.0.1", "link-local"],
     ["fe80::1", "link-local"],
@@ -54,6 +56,13 @@ describe("classifyAddress", () => {
     ["64:ff9b::a9fe:a9fe", "link-local"],
     ["2002:7f00:1::", "loopback"],
     ["::127.0.0.1", "loopback"],
+    // IPv4-translated (::ffff:0:0:0/96, RFC 2765) and local-use NAT64 (64:ff9b:1::/48, RFC 8215).
+    ["::ffff:0:7f00:1", "loopback"],
+    ["::ffff:0:a9fe:a9fe", "link-local"],
+    ["64:ff9b:1::a00:1", "private"],
+    ["64:ff9b:1::7f00:1", "loopback"],
+    // Local-use NAT64 only ever reaches the operator's own network.
+    ["64:ff9b:1::5db8:d822", "private"],
   ];
   for (const [ip, kind] of blocked) {
     test(`${ip} is ${kind}`, () => expect(classifyAddress(ip)).toBe(kind as never));
@@ -173,6 +182,18 @@ describe("checkOutbound", () => {
     await expect(checkOutbound("https://evil.cluster.test/", opts)).rejects.toThrow(/link-local/);
     await expect(checkOutbound("https://lo.cluster.test/", opts)).rejects.toThrow(/loopback/);
     await expect(checkOutbound("https://idp2.cluster.test/", opts)).rejects.toThrow(/private/);
+  });
+
+  test("internal hosts are still refused the cloud metadata addresses inside private and shared ranges", async () => {
+    const resolver = fakeResolver({
+      "md4.cluster.test": ["100.100.100.200"],
+      "md6.cluster.test": ["fd00:ec2::254"],
+      "md-mapped.cluster.test": ["::ffff:100.100.100.200"],
+    });
+    const opts = { ...strict, resolver, internalHosts: ["md4.cluster.test", "md6.cluster.test", "md-mapped.cluster.test"] };
+    for (const host of ["md4.cluster.test", "md6.cluster.test", "md-mapped.cluster.test"]) {
+      await expect(checkOutbound(`https://${host}/`, opts)).rejects.toThrow(/metadata/);
+    }
   });
 
   describe("environment defaults", () => {

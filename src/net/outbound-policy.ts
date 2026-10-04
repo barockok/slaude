@@ -8,9 +8,9 @@
  * - Only https. http only for loopback with SLAUDE_OUTBOUND_DEV_LOOPBACK=1
  *   (development), or for an operator-declared internal host.
  * - The host is resolved once and EVERY address is checked: loopback, private,
- *   shared (CGNAT), link-local (cloud metadata), unspecified, multicast and
+ *   shared (CGNAT), link-local, cloud metadata, unspecified, multicast and
  *   reserved ranges are refused, v4 and v6, including IPv4 carried in IPv6
- *   (mapped, compatible, NAT64, 6to4).
+ *   (mapped, translated, compatible, NAT64 incl. local-use, 6to4).
  * - The connection goes to the checked address (a pinned `lookup`), so a
  *   second DNS answer cannot move it (no rebinding window).
  * - Redirects are never followed: a 3xx is returned as is, so a credential is
@@ -29,7 +29,7 @@ import https from "node:https";
 import { isIP } from "node:net";
 import { lookup as dnsLookup } from "node:dns/promises";
 
-export type AddressKind = "loopback" | "private" | "link-local" | "unspecified" | "reserved" | "invalid";
+export type AddressKind = "loopback" | "private" | "link-local" | "metadata" | "unspecified" | "reserved" | "invalid";
 
 export interface ResolvedAddress { address: string; family: number; }
 export type Resolver = (hostname: string) => Promise<ResolvedAddress[]>;
@@ -107,8 +107,11 @@ function parseV6(input: string): number[] | null {
   return bytes;
 }
 
-function classifyV4([a, b, c]: number[]): AddressKind | null {
+function classifyV4([a, b, c, d]: number[]): AddressKind | null {
   if (a === 0) return "unspecified";
+  // Cloud metadata services that sit inside ranges an internal host may use
+  // (Alibaba's in the shared range): refused even for internal hosts.
+  if (a === 100 && b === 100 && c === 100 && d === 200) return "metadata";
   if (a === 127) return "loopback";
   if (a === 10 || (a === 172 && b! >= 16 && b! <= 31) || (a === 192 && b === 168)) return "private";
   if (a === 100 && b! >= 64 && b! <= 127) return "private"; // shared address space (CGNAT)
@@ -123,11 +126,18 @@ function classifyV6(x: number[]): AddressKind | null {
   const zeroUpTo = (n: number) => x.slice(0, n).every((v) => v === 0);
   if (zeroUpTo(16)) return "unspecified";
   if (zeroUpTo(15) && x[15] === 1) return "loopback";
-  // IPv4-compatible (::/96) and IPv4-mapped (::ffff:0:0/96): judge the IPv4.
+  // IPv4-compatible (::/96), IPv4-mapped (::ffff:0:0/96) and IPv4-translated
+  // (::ffff:0:0:0/96): judge the IPv4.
   if (zeroUpTo(12) || (zeroUpTo(10) && x[10] === 0xff && x[11] === 0xff)) return classifyV4(x.slice(12));
+  if (zeroUpTo(8) && x[8] === 0xff && x[9] === 0xff && x[10] === 0 && x[11] === 0) return classifyV4(x.slice(12));
   // NAT64 well-known prefix 64:ff9b::/96 and 6to4 2002::/16 carry an IPv4 too.
   if (x[0] === 0 && x[1] === 0x64 && x[2] === 0xff && x[3] === 0x9b && x.slice(4, 12).every((v) => v === 0)) return classifyV4(x.slice(12));
+  // Local-use NAT64 64:ff9b:1::/48 (RFC 8215) only reaches the operator's own
+  // network: private at best, worse if the IPv4 it carries is.
+  if (x[0] === 0 && x[1] === 0x64 && x[2] === 0xff && x[3] === 0x9b && x[4] === 0 && x[5] === 1) return classifyV4(x.slice(12)) ?? "private";
   if (x[0] === 0x20 && x[1] === 0x02) return classifyV4(x.slice(2, 6));
+  // AWS's IPv6 metadata address, inside the unique-local range below.
+  if (x[0] === 0xfd && x[1] === 0 && x[2] === 0x0e && x[3] === 0xc2 && x.slice(4, 14).every((v) => v === 0) && x[14] === 0x02 && x[15] === 0x54) return "metadata";
   if ((x[0]! & 0xfe) === 0xfc) return "private"; // unique local fc00::/7
   if (x[0] === 0xfe && (x[1]! & 0xc0) === 0x80) return "link-local"; // fe80::/10
   if (x[0] === 0xfe && (x[1]! & 0xc0) === 0xc0) return "private"; // deprecated site-local fec0::/10
