@@ -4,6 +4,7 @@ import { db } from "../../src/db/schema";
 import { __resetMasterKeyCache } from "../../src/db/crypto";
 import * as P from "../../src/db/personas";
 import { runSync, SyncFailure } from "../../src/persona/sync/run";
+import { SUPPORTED_PAYLOAD_VERSION } from "../../src/persona/sync/payload";
 
 const T = "default";
 const bare = (personas: unknown[], extra: object = {}) =>
@@ -143,7 +144,7 @@ describe("runSync payload version and unknown fields", () => {
     expect(e.message).not.toContain("leaky-value");
   });
   test("strict mode plus a newer version gives the newer-version message", async () => {
-    const e = await runSync(T, payload([], { version: 2, v2Knob: 1 }), { dryRun: true, env: strictEnv, by: "ci", extract: okExtract }).catch((x) => x);
+    const e = await runSync(T, payload([], { version: SUPPORTED_PAYLOAD_VERSION + 1, v2Knob: 1 }), { dryRun: true, env: strictEnv, by: "ci", extract: okExtract }).catch((x) => x);
     expect(e.status).toBe(422);
     expect(e.message).toMatch(/newer than this gateway supports/);
     expect(e.message).not.toContain("v2Knob");
