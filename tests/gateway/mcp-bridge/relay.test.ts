@@ -93,6 +93,13 @@ describe("relay failures and limits", () => {
   });
   afterAll(() => bridge.close());
 
+  test("notifications are not bridged: the standalone SSE stream is never opened", async () => {
+    await bridge.call(claims(), "example", "echo", { text: "x" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(sse.verbs.length).toBeGreaterThan(0);
+    expect(sse.verbs).not.toContain("GET");
+  });
+
   test("an unknown tool is a tool error, not a failed request", async () => {
     const r = await bridge.call(claims(), "example", "no_such_tool", {});
     expect(r.isError).toBe(true);

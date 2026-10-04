@@ -75,6 +75,8 @@ export interface Upstream {
   slowAborted: number;
   /** Paths requested (to prove a redirect was not followed). */
   paths: string[];
+  /** HTTP methods, in order (a GET would be the standalone SSE stream). */
+  verbs: string[];
   /** Bearer values the server refuses with 401 (and a body that must not leak). */
   refuse: Set<string>;
   /** Drop every session: the next request on an old session id gets 404. */
@@ -94,6 +96,7 @@ export function startUpstream(opts: { json?: boolean; redirectTo?: string } = {}
     cancelled: [],
     slowAborted: 0,
     paths: [],
+    verbs: [],
     refuse: new Set(),
   };
 
@@ -140,6 +143,7 @@ export function startUpstream(opts: { json?: boolean; redirectTo?: string } = {}
     async fetch(req) {
       const u = new URL(req.url);
       state.paths.push(u.pathname);
+      state.verbs.push(req.method);
       if (opts.redirectTo && u.pathname === "/mcp") {
         return new Response(null, { status: 307, headers: { location: opts.redirectTo } });
       }
