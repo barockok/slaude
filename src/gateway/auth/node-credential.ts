@@ -30,6 +30,31 @@ export const MAX_LABELS = 8;
 export const LEGACY_NODE_ID = "legacy";
 /** The CLI's default lifetime. */
 export const DEFAULT_NODE_TTL_SEC = 90 * 86400;
+/** The longest lifetime a credential may have (mint and verify): 400 days. */
+export const MAX_NODE_TTL_SEC = 400 * 86400;
+/** Clock skew tolerated on `iat` (seconds). */
+export const MAX_IAT_SKEW_SEC = 300;
+/** Job-token claims; a token carrying any of them is not a node credential. */
+const JOB_CLAIM_FIELDS = ["tenant", "persona", "session", "scope", "job", "runAs"] as const;
+/** Shortest acceptable node key (characters). */
+export const MIN_NODE_KEY_LENGTH = 32;
+
+/**
+ * Gateway boot check on the node keys: each must be at least 32 characters and
+ * must differ from SLAUDE_JOB_SECRET (whoever can mint a job token must not be
+ * able to forge a node). Messages name variables, never values.
+ */
+export function nodeKeyViolations(e: Record<string, string | undefined>): string[] {
+  const out: string[] = [];
+  const job = e.SLAUDE_JOB_SECRET ?? "";
+  for (const name of ["SLAUDE_NODE_KEY", "SLAUDE_NODE_KEY_PREVIOUS"] as const) {
+    const v = e[name] ?? "";
+    if (!v) continue;
+    if (v.length < MIN_NODE_KEY_LENGTH) out.push(`${name} is shorter than ${MIN_NODE_KEY_LENGTH} characters`);
+    if (job && v === job) out.push(`${name} equals SLAUDE_JOB_SECRET; node credentials need their own key`);
+  }
+  return out;
+}
 
 export interface NodeCredentialClaims {
   v: 1;
@@ -70,6 +95,7 @@ export function mintNodeCredential(
   if (labErr) throw new Error(labErr);
   const ttl = input.ttlSec ?? DEFAULT_NODE_TTL_SEC;
   if (!Number.isSafeInteger(ttl) || ttl <= 0) throw new Error("ttl must be a positive number of seconds");
+  if (ttl > MAX_NODE_TTL_SEC) throw new Error(`lifetime is capped at ${MAX_NODE_TTL_SEC / 86400} days`);
   const iat = Math.floor((opts.now ?? Date.now()) / 1000);
   const claims: NodeCredentialClaims = {
     v: NODE_CREDENTIAL_VERSION,
@@ -104,13 +130,19 @@ export function verifyNodeCredentialSync(
       return { ok: false, reason: r.reason === "wrong_type" ? "bad_claims" : r.reason };
     }
     const c = r.payload;
+    const nowSec = now / 1000;
     if (
       c.v !== NODE_CREDENTIAL_VERSION ||
       c.typ !== NODE_CREDENTIAL_TYP ||
       nodeIdError(c.id) !== null ||
       labelsError(c.labels) !== null ||
       typeof c.iat !== "number" ||
-      typeof c.exp !== "number"
+      typeof c.exp !== "number" ||
+      // Issued in the future (beyond clock skew), or longer-lived than any mint.
+      c.iat > nowSec + MAX_IAT_SKEW_SEC ||
+      c.exp - c.iat > MAX_NODE_TTL_SEC ||
+      // A token carrying job claims is never a node credential.
+      JOB_CLAIM_FIELDS.some((k) => k in c)
     ) {
       return { ok: false, reason: "bad_claims" };
     }
@@ -127,6 +159,9 @@ export function verifyNodeCredentialSync(
 export type RevocationSource = (id: string) => Promise<number | null | undefined>;
 
 export const REVOCATION_CACHE_MS = 30_000;
+/** During a revocation-store outage, a cached answer is served for at most
+ *  this long after it expires; then requests fail with 503. */
+export const MAX_STALE_REVOCATION_MS = 5 * 60_000;
 
 let warnedNoRevocation = false;
 
@@ -170,8 +205,9 @@ export class NodeCredentialVerifier {
       this.#cache.set(id, { at: now, before });
       return before;
     } catch (e) {
-      // A stale answer beats none; with no answer at all, fail closed.
-      if (hit) return hit.before;
+      // A stale answer beats none, for a bounded time past the cache's expiry;
+      // beyond that, or with no answer at all, fail closed.
+      if (hit && now - hit.at < this.#cacheMs + MAX_STALE_REVOCATION_MS) return hit.before;
       throw e;
     }
   }

@@ -22,6 +22,7 @@ import {
 } from "./persona/registry";
 import { getDb, resolveDbConfig } from "./db/client";
 import { assertGatewayRequirements } from "./config/gateway-requirements";
+import { nodeKeyViolations } from "./gateway/auth/node-credential";
 import { brainEnabled, brainEngineConfig } from "./knowledge/brain";
 import { brainMode } from "./knowledge/brain-config";
 import * as SoulOverrides from "./db/soul-overrides";
@@ -35,6 +36,12 @@ async function main() {
   // anything is opened, since opening PGLite on the shared volume is itself the
   // harm. Resolved from env alone; nothing is connected yet.
   const dbCfg = resolveDbConfig();
+  // Node credential keys (node labels spec §4.1): every role that mounts /v1
+  // verifies them, so a weak key or one shared with the job secret stops boot.
+  if (env.role() !== "node") {
+    const bad = nodeKeyViolations(process.env);
+    if (bad.length) throw new Error(`refusing to start:\n${bad.map((v) => `  - ${v}`).join("\n")}`);
+  }
   assertGatewayRequirements({
     role: env.role(),
     slackMode: env.slack.mode(),

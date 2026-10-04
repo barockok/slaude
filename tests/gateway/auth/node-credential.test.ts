@@ -3,9 +3,14 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { encodeJwt } from "../../../src/gateway/auth/jwt";
+import { createHmac } from "node:crypto";
 import {
   __resetNodeCredentialState,
   MAX_GAUGED_CREDENTIALS,
+  MAX_NODE_TTL_SEC,
+  MAX_STALE_REVOCATION_MS,
+  nodeKeyViolations,
+  REVOCATION_CACHE_MS,
   mintNodeCredential,
   NodeCredentialVerifier,
   revocationSourceFor,
@@ -105,6 +110,65 @@ describe("mint / verify", () => {
   });
 });
 
+describe("claim hardening", () => {
+  test("a HYBRID token carrying both claim shapes under one key is refused by both verifiers", () => {
+    const hybrid = raw({
+      ...good,
+      tenant: "default", persona: "default", session: "S", team: "T", channel: "C", thread: "1", initiator: "U", scope: "turn",
+    });
+    expect(verifyJobToken(hybrid, { secret: KEY, now: NOW })).toEqual({ ok: false, reason: "bad_claims" });
+    expect(verifyNodeCredentialSync(hybrid, { keys: [KEY], now: NOW })).toEqual({ ok: false, reason: "bad_claims" });
+  });
+
+  test("iat more than 300 s in the future is refused", () => {
+    expect(verifyNodeCredentialSync(raw({ ...good, iat: NOW / 1000 + 301, exp: NOW / 1000 + 7200 }), { keys: [KEY], now: NOW }))
+      .toEqual({ ok: false, reason: "bad_claims" });
+    expect(verifyNodeCredentialSync(raw({ ...good, iat: NOW / 1000 + 299 }), { keys: [KEY], now: NOW }).ok).toBe(true);
+  });
+
+  test(`lifetime is capped at ${MAX_NODE_TTL_SEC / 86400} days`, () => {
+    const over = raw({ ...good, exp: good.iat + MAX_NODE_TTL_SEC + 1 });
+    expect(verifyNodeCredentialSync(over, { keys: [KEY], now: NOW })).toEqual({ ok: false, reason: "bad_claims" });
+    expect(verifyNodeCredentialSync(raw({ ...good, exp: good.iat + MAX_NODE_TTL_SEC }), { keys: [KEY], now: NOW }).ok).toBe(true);
+    expect(() => mint({ ttlSec: MAX_NODE_TTL_SEC + 1 })).toThrow(/lifetime/);
+  });
+
+  test("a non-object payload is refused, never thrown", () => {
+    const head = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+    for (const body of ["null", "5", '"x"', "[]", "true"]) {
+      const b = Buffer.from(body).toString("base64url");
+      const sig = createHmac("sha256", KEY).update(`${head}.${b}`).digest("base64url");
+      const tok = `${head}.${b}.${sig}`;
+      const r = verifyNodeCredentialSync(tok, { keys: [KEY], now: NOW });
+      expect(r.ok).toBe(false);
+      expect(verifyJobToken(tok, { secret: KEY, now: NOW }).ok).toBe(false);
+    }
+  });
+
+  test("a job token with an empty-string label is refused", () => {
+    const t = mintJobToken(
+      { tenant: "default", persona: "default", session: "S", team: "T", channel: "C", thread: "1", initiator: "U", scope: "turn", label: "" },
+      { secret: KEY, now: NOW },
+    );
+    expect(verifyJobToken(t, { secret: KEY, now: NOW })).toEqual({ ok: false, reason: "bad_claims" });
+  });
+});
+
+describe("node key configuration (gateway boot)", () => {
+  test("refuses a key equal to the job secret, and keys shorter than 32 characters", () => {
+    const long = "k".repeat(32);
+    expect(nodeKeyViolations({ SLAUDE_NODE_KEY: long, SLAUDE_JOB_SECRET: "j".repeat(32) })).toEqual([]);
+    expect(nodeKeyViolations({})).toEqual([]);
+    expect(nodeKeyViolations({ SLAUDE_NODE_KEY: long, SLAUDE_JOB_SECRET: long }).join()).toContain("SLAUDE_JOB_SECRET");
+    expect(nodeKeyViolations({ SLAUDE_NODE_KEY: "short" }).join()).toContain("SLAUDE_NODE_KEY");
+    expect(nodeKeyViolations({ SLAUDE_NODE_KEY: long, SLAUDE_NODE_KEY_PREVIOUS: "short" }).join()).toContain("SLAUDE_NODE_KEY_PREVIOUS");
+    expect(nodeKeyViolations({ SLAUDE_NODE_KEY: long, SLAUDE_NODE_KEY_PREVIOUS: "j".repeat(32), SLAUDE_JOB_SECRET: "j".repeat(32) }).join())
+      .toContain("SLAUDE_NODE_KEY_PREVIOUS");
+    // Messages name variables, never values.
+    expect(nodeKeyViolations({ SLAUDE_NODE_KEY: long, SLAUDE_JOB_SECRET: long }).join()).not.toContain(long);
+  });
+});
+
 describe("revocation", () => {
   test("a revoked id is refused when issued before revoked_before; a later credential passes", async () => {
     const before = NOW / 1000 + 10;
@@ -155,6 +219,10 @@ describe("revocation", () => {
     expect((await v.verify(mint(), { keys: [KEY], now: NOW })).ok).toBe(true);
     fail = true;
     expect((await v.verify(mint(), { keys: [KEY], now: NOW + 60_000 })).ok).toBe(true);
+    // The stale answer is served for at most 5 minutes past the cache's expiry.
+    const limit = NOW + REVOCATION_CACHE_MS + MAX_STALE_REVOCATION_MS;
+    expect((await v.verify(mint(), { keys: [KEY], now: limit - 1000 })).ok).toBe(true);
+    await expect(v.verify(mint(), { keys: [KEY], now: limit + 1000 })).rejects.toThrow(/db down/);
   });
 
   describe("node_revocations on Postgres (PGLite)", () => {

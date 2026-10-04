@@ -130,6 +130,7 @@ export function verifyJobToken(
   } catch {
     return { ok: false, reason: "malformed" };
   }
+  if (typeof claims !== "object" || claims === null || Array.isArray(claims)) return { ok: false, reason: "malformed" };
   const nowSec = Math.floor((opts.now ?? Date.now()) / 1000);
   const grace = Math.max(0, opts.graceSec ?? 0);
   if (typeof claims.exp !== "number" || claims.exp + grace <= nowSec) return { ok: false, reason: "expired" };
@@ -140,7 +141,10 @@ export function verifyJobToken(
   // keeps a node credential from passing as a job token even if an operator
   // gave both keys the same value.
   if ((claims as { typ?: unknown }).typ !== undefined) return { ok: false, reason: "bad_claims" };
-  if (claims.label !== undefined && typeof claims.label !== "string") return { ok: false, reason: "bad_claims" };
+  // An empty label would read as "default" through jobLabel; refuse it instead.
+  if (claims.label !== undefined && (typeof claims.label !== "string" || claims.label === "")) {
+    return { ok: false, reason: "bad_claims" };
+  }
   return { ok: true, claims };
 }
 
