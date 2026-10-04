@@ -56,6 +56,7 @@ export function createSecretResolver(opts: {
   /** from loadVaultConfig; null/undefined = no Vault backend */
   vault?: VaultConfig | null;
   fetch?: typeof fetch;
+  /** a monotonic clock in ms; default performance.now() */
   now?: () => number;
   readFile?: VaultClientDeps["readFile"];
   vaultDeps?: Omit<VaultClientDeps, "fetch" | "now" | "readFile">;
@@ -63,7 +64,9 @@ export function createSecretResolver(opts: {
   /** called each time a stale value is served (wire to a counter) */
   onStale?: () => void;
 }): SecretResolver {
-  const now = opts.now ?? Date.now;
+  // Monotonic: every interval here (TTL, stale age, login rate limit, duration)
+  // must not move when the wall clock is stepped.
+  const now = opts.now ?? (() => performance.now());
   const onEvent = opts.onEvent ?? defaultOnEvent;
   const envBackend = createEnvBackend(opts.env);
   const vaultCfg = opts.vault ?? null;

@@ -18,17 +18,33 @@ export type CacheOutcome = "ok" | "cached" | "stale";
 
 export type SecretCache = {
   get(key: string, fetch: () => Promise<string>): Promise<{ value: string; outcome: CacheOutcome }>;
+  /** number of entries held (tests) */
+  size(): number;
 };
 
 export function createSecretCache(opts: {
   ttlMs: number;
   staleMaxMs: number;
+  /** a MONOTONIC clock in ms; default performance.now() (wall time can step backwards) */
   now?: () => number;
   onStale?: () => void;
 }): SecretCache {
-  const now = opts.now ?? Date.now;
+  const now = opts.now ?? (() => performance.now());
   const entries = new Map<string, { value: string; fetchedAt: number }>();
   const inflight = new Map<string, Promise<{ value: string; outcome: CacheOutcome }>>();
+  // Past both windows an entry can neither be served nor rescue a failure.
+  const keepMs = Math.max(opts.ttlMs, opts.staleMaxMs);
+
+  /** Age of an entry; Infinity when the clock went backwards (age unknown ⇒ trust nothing). */
+  const ageOf = (e: { fetchedAt: number }): number => {
+    const age = now() - e.fetchedAt;
+    return age < 0 ? Infinity : age;
+  };
+
+  /** Drop entries nothing can use any more (deleted personas, rotated refs). */
+  function sweep(): void {
+    for (const [k, e] of entries) if (ageOf(e) >= keepMs) entries.delete(k);
+  }
 
   async function refresh(key: string, fetch: () => Promise<string>): Promise<{ value: string; outcome: CacheOutcome }> {
     try {
@@ -38,7 +54,7 @@ export function createSecretCache(opts: {
     } catch (err) {
       const entry = entries.get(key);
       const transient = err instanceof SecretResolutionError && TRANSIENT_REASONS.has(err.reason);
-      if (entry && transient && now() - entry.fetchedAt < opts.staleMaxMs) {
+      if (entry && transient && ageOf(entry) < opts.staleMaxMs) {
         opts.onStale?.();
         return { value: entry.value, outcome: "stale" };
       }
@@ -48,9 +64,11 @@ export function createSecretCache(opts: {
   }
 
   return {
+    size: () => entries.size,
     get(key, fetch) {
+      sweep();
       const entry = entries.get(key);
-      if (entry && opts.ttlMs > 0 && now() - entry.fetchedAt < opts.ttlMs) {
+      if (entry && opts.ttlMs > 0 && ageOf(entry) < opts.ttlMs) {
         return Promise.resolve({ value: entry.value, outcome: "cached" as const });
       }
       const running = inflight.get(key);

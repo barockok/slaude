@@ -140,6 +140,36 @@ describe("secret cache", () => {
     ).rejects.toMatchObject({ reason: "unreachable" });
   });
 
+  test("a clock that jumps backwards neither extends the TTL nor the stale window", async () => {
+    const c = clock();
+    let stale = 0;
+    const cache = createSecretCache({ ttlMs: 60_000, staleMaxMs: 600_000, now: c.now, onStale: () => stale++ });
+    let calls = 0;
+    await cache.get("k", async () => `v${++calls}`);
+    c.advance(-3_600_000);
+    // age unknown ⇒ not fresh: refresh
+    expect(await cache.get("k", async () => `v${++calls}`)).toEqual({ value: "v2", outcome: "ok" });
+    c.advance(-3_600_000);
+    // age unknown ⇒ not within STALE_MAX either
+    await expect(
+      cache.get("k", async () => {
+        throw new SecretResolutionError("unreachable", "down");
+      }),
+    ).rejects.toMatchObject({ reason: "unreachable" });
+    expect(stale).toBe(0);
+  });
+
+  test("entries older than STALE_MAX are evicted on access", async () => {
+    const c = clock();
+    const cache = createSecretCache({ ttlMs: 60_000, staleMaxMs: 600_000, now: c.now });
+    await cache.get("old-a", async () => "a");
+    await cache.get("old-b", async () => "b");
+    expect(cache.size()).toBe(2);
+    c.advance(600_000);
+    await cache.get("new", async () => "n");
+    expect(cache.size()).toBe(1);
+  });
+
   test("a failed fetch is not cached: the next caller tries again", async () => {
     const cache = createSecretCache({ ttlMs: 60_000, staleMaxMs: 600_000, now: clock().now });
     await expect(
