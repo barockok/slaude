@@ -172,7 +172,8 @@ async function main() {
   if (role === "gateway") {
     const { startReaperLeader } = await import("./queue/reaper-runner");
     const { getRedis } = await import("./queue/redis");
-    reaperHandle = startReaperLeader({ redis: getRedis() });
+    const { labelsInUse } = await import("./persona/registry");
+    reaperHandle = startReaperLeader({ redis: getRedis(), personaLabels: () => labelsInUse() });
     console.log("[slaude] reaper leader loop contending");
   }
 

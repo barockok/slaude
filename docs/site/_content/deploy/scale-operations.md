@@ -37,6 +37,7 @@ values, so never `sum()` these.
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `slaude_node_sessions_live` | gauge | — | Warm SDK `Query` sessions held by this node |
+| `slaude_node_auth_paused` | gauge | — | 1 while this node's claim loops are paused because the gateway refused its credential (401); `/healthz` stays 200 meanwhile, so alert on this |
 | `slaude_node_turns_total` | counter | `result` | Turn jobs processed (`done`\|`error`\|`skipped`\|`requeued`\|`deduped`\|`moved`). `moved`: a job for a label this node does not carry, moved to that label's queue |
 | `slaude_node_turn_duration_seconds` | histogram | — | Wall-clock turn duration |
 | `slaude_node_queue_claim_latency_seconds` | histogram | — | enqueue→claim latency (SLO: p95 < 500ms, spec §8) |

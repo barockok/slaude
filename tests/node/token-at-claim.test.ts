@@ -81,4 +81,45 @@ describe("tokenAtClaim", () => {
     );
     expect(await quiet(() => tokenAtClaim(both.client, "J1", "turns", old, NOW))).toBe(old);
   });
+
+  // Node labels spec §4.3, §4.8: the live label is re-checked at refresh.
+  test("a refresh refused because the agent was relabelled, or by the gate, is a LABEL_MISMATCH failure", async () => {
+    const { BootFailure } = await import("../../src/gateway/core/failure-codes");
+    const { GateDenied } = await import("../../src/node/client");
+    const old = tokenIssued(10 * 60_000);
+    const relabelled = fakeClient(async () => {
+      throw new NodeApiError(409, JSON.stringify({ error: "the agent's node label changed", code: "LABEL_MISMATCH" }));
+    });
+    const e = await tokenAtClaim(relabelled.client, "J1", "turns", old, NOW).catch((x) => x);
+    expect(e).toBeInstanceOf(BootFailure);
+    expect(e.code).toBe("LABEL_MISMATCH");
+    expect(relabelled.calls).toEqual(["refresh:J1"]); // no reissue
+    const gated = fakeClient(async () => {
+      throw new GateDenied(JSON.stringify({ code: "GATE_DENIED" }));
+    });
+    expect((await tokenAtClaim(gated.client, "J1", "turns", old, NOW).catch((x) => x)).code).toBe("LABEL_MISMATCH");
+    // Another 409 is not a label change: the original token stands.
+    const other = fakeClient(async () => {
+      throw new NodeApiError(409, "{}");
+    });
+    expect(await quiet(() => tokenAtClaim(other.client, "J1", "turns", old, NOW))).toBe(old);
+  });
+
+  // Review U10b-E: the gateway now re-checks the label at reissue too.
+  test("a reissue refused because the agent was relabelled is a LABEL_MISMATCH failure", async () => {
+    const { BootFailure } = await import("../../src/gateway/core/failure-codes");
+    const ancient = tokenIssued(3 * 3600_000);
+    const c = fakeClient(
+      async () => {
+        throw new NodeApiError(401, "{}");
+      },
+      async () => {
+        throw new NodeApiError(409, JSON.stringify({ error: "the agent's node label changed", code: "LABEL_MISMATCH" }));
+      },
+    );
+    const e = await tokenAtClaim(c.client, "J1", "turns", ancient, NOW).catch((x) => x);
+    expect(e).toBeInstanceOf(BootFailure);
+    expect(e.code).toBe("LABEL_MISMATCH");
+    expect(c.calls).toEqual(["refresh:J1", "reissue:J1:turns"]);
+  });
 });

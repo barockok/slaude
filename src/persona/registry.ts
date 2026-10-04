@@ -294,6 +294,16 @@ export function runsOnFor(personaId: string | undefined, r: PersonaRegistry = ge
   return label ?? "default";
 }
 
+/** Every node label a live persona (the default included) runs on — the
+ *  persona half of "labels in use" (node labels spec §4.7). */
+export function labelsInUse(r: PersonaRegistry = getPersonaRegistry()): string[] {
+  const out = new Set<string>(["default"]);
+  if (!r.isManaged()) return [...out];
+  out.add(runsOnFor("default", r));
+  for (const p of r.list()) out.add(p.runsOn ?? "default");
+  return [...out];
+}
+
 /**
  * Build the tenant's state and install it: the registry snapshot, plus the
  * default persona's soul pair — its text and its structured soul, always from

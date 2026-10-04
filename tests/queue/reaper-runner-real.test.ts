@@ -46,4 +46,15 @@ describe.skipIf(!realEnabled)("reaper leader gauges against real Redis", () => {
     expect(Number(line("turns.label.finance", "finance").exec(text)![1])).toBe(2);
     expect(Number(line("turns", "default").exec(text)![1])).toBe(1);
   }, 20_000);
+
+  // Review U10b-G: an ex-leader must not keep exporting a stale
+  // slaude_label_unserved series next to the new leader's.
+  test("the label_unserved series are cleared when this replica stops leading", async () => {
+    const { metrics } = await import("../../src/metrics");
+    const series = () => /^slaude_label_unserved\{/m.test(metrics.render());
+    await until(series, 10_000);
+    await stop!();
+    stop = null;
+    expect(series()).toBe(false);
+  }, 20_000);
 });

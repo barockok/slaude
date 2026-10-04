@@ -168,6 +168,17 @@ export function makeRegistry(opts: RegistryOpts) {
       return live.filter((_, i) => decodeLabels(vals[i] ?? null).has(label));
     },
 
+    /** How many live nodes carry each label, from ONE listing of the live
+     *  nodes (label status reads every label in use per pass). */
+    async liveNodesPerLabel(): Promise<Map<string, number>> {
+      const live = await listLive();
+      const out = new Map<string, number>();
+      if (live.length === 0) return out;
+      const vals = await redis.mget(...live.map((n) => keys.nodeLabels(n)));
+      for (const v of vals) for (const l of decodeLabels(v ?? null)) out.set(l, (out.get(l) ?? 0) + 1);
+      return out;
+    },
+
     /** Every label at least one live node carries. */
     async liveLabels(): Promise<Set<string>> {
       const live = await listLive();

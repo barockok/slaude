@@ -22,7 +22,17 @@
  * in the queue, its stored token is the one presented, and its total age is
  * under SLAUDE_JOB_MAX_AGE.
  */
-import { JOB_HEADER, JOB_TOKEN_TTL_SEC, mintJobToken, timingSafeStringEqual, verifyJobToken, type JobClaims } from "./auth";
+import {
+  JOB_HEADER,
+  JOB_TOKEN_TTL_SEC,
+  jobLabel,
+  LABEL_MISMATCH_CODE,
+  mintJobToken,
+  timingSafeStringEqual,
+  verifyJobToken,
+  type JobClaims,
+} from "./auth";
+import { runsOnFor } from "../../persona/registry";
 import { env } from "../../config/env";
 import { m as metric } from "../../metrics";
 import { json, readJson } from "./http";
@@ -45,6 +55,16 @@ function reclaims(c: JobClaims): Omit<JobClaims, "exp" | "iat"> {
   return rest;
 }
 
+/** A typed 409 when the persona no longer runs on the token's signed label
+ *  (node labels spec §4.3, §4.8), else null. Refresh and reissue both re-mint
+ *  the token's own label claim, so both refuse it. */
+function labelMismatch(claims: JobClaims, what: "refresh" | "reissue"): Response | null {
+  const live = runsOnFor(claims.persona);
+  if (live === jobLabel(claims)) return null;
+  console.warn(`[v1-jobs] token ${what} refused: persona=${claims.persona} label=${jobLabel(claims)} now runs on ${live}`);
+  return json(409, { error: "the agent's node label changed", code: LABEL_MISMATCH_CODE });
+}
+
 /** Verifies the original token itself (the router also does, for the gate). */
 export async function handleTokenRefresh(req: Request, jobId: string, nowMs: number = Date.now()): Promise<Response> {
   const r = verifyJobToken(req.headers.get(JOB_HEADER), { graceSec: REFRESH_GRACE_SEC, now: nowMs });
@@ -58,6 +78,12 @@ export async function handleTokenRefresh(req: Request, jobId: string, nowMs: num
   if (claims.job !== jobId) {
     return json(403, { error: "token was not minted for this job" });
   }
+  // The live label is re-checked here (node labels spec §4.3, §4.8): after a
+  // relabel the token's signed label is no longer where the persona runs. The
+  // node ends the turn with LABEL_MISMATCH and the gateway re-dispatches it
+  // once to the persona's current label.
+  const mismatch = labelMismatch(claims, "refresh");
+  if (mismatch) return mismatch;
   const iat0 = firstIssued(claims);
   const nowSec = Math.floor(nowMs / 1000);
   const lifeEnd = iat0 + env.jobTokenMaxAgeSec();
@@ -100,6 +126,9 @@ export async function handleTokenReissue(
   nowMs: number = Date.now(),
 ): Promise<Response> {
   if (claims.job !== jobId) return json(403, { error: "token was not minted for this job" });
+  // As at refresh: never re-mint a label the persona no longer runs on.
+  const mismatch = labelMismatch(claims, "reissue");
+  if (mismatch) return mismatch;
   const body = await readJson(req);
   if (body === null) return json(400, { error: "malformed JSON body" });
   const queue = (body as { queue?: unknown }).queue ?? TURNS_QUEUE;

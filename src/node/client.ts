@@ -10,7 +10,7 @@
  *   - ETag cache for the tenant runtime bundle (If-None-Match / 304).
  */
 import type { NodeCredential } from "../gateway/api/mcp-credentials";
-import { GATE_DENIED_CODE, JOB_HEADER } from "../gateway/api/auth";
+import { GATE_DENIED_CODE, JOB_HEADER, LABEL_MISMATCH_CODE, NODE_UNAUTHORIZED_CODE } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
 import { BootFailure } from "../gateway/core/failure-codes";
 
@@ -83,9 +83,16 @@ export class NodeApiError extends Error {
   }
 }
 
+export function labelMismatchBoot(e: unknown): BootFailure {
+  return new BootFailure("LABEL_MISMATCH", "the gateway refused this node for this agent (label gate)", { cause: e });
+}
+
 /** A getRuntime failure as a typed boot failure: the gateway's 503 says
  *  whether it is transient; a network error or another 5xx is; a 4xx is not. */
 export function bundleFetchFailure(e: unknown): BootFailure {
+  // A gate 403 on the bundle: this node may not serve the agent (node labels
+  // spec §4.6). Never transient; the gateway re-dispatches the turn once.
+  if (e instanceof GateDenied) return labelMismatchBoot(e);
   let transient = true;
   if (e instanceof NodeApiError) {
     if (e.status === 503) {
@@ -121,13 +128,47 @@ export interface NodeWhoami {
   expiresInSec: number | null;
 }
 
-function isGateDenied(status: number, body: string): boolean {
-  if (status !== 403) return false;
+function bodyCode(body: string): unknown {
   try {
-    return (JSON.parse(body) as { code?: unknown }).code === GATE_DENIED_CODE;
+    return (JSON.parse(body) as { code?: unknown }).code;
+  } catch {
+    return undefined;
+  }
+}
+
+function isGateDenied(status: number, body: string): boolean {
+  return status === 403 && bodyCode(body) === GATE_DENIED_CODE;
+}
+
+/** The text an older gateway's node-auth 401 carries, before it had a code. */
+const NODE_UNAUTHORIZED_TEXT = "invalid or missing bearer token";
+
+/**
+ * A 401 for the NODE's own credential (revoked or expired), as opposed to a
+ * job token the gateway would not accept: the typed code, or the fixed text
+ * an older gateway sends.
+ */
+export function isNodeUnauthorized(status: number, body: string): boolean {
+  if (status !== 401) return false;
+  if (bodyCode(body) === NODE_UNAUTHORIZED_CODE) return true;
+  try {
+    return (JSON.parse(body) as { error?: unknown }).error === NODE_UNAUTHORIZED_TEXT;
   } catch {
     return false;
   }
+}
+
+/** A token refresh refused because the persona's label changed (409). */
+export function isLabelMismatch(status: number, body: string): boolean {
+  return status === 409 && bodyCode(body) === LABEL_MISMATCH_CODE;
+}
+
+/** Observers of refusals, so the worker can act on the session or the node. */
+export interface NodeClientHooks {
+  /** A label-gate 403 on a request carrying this job token. */
+  onGateDenied?: (jobToken: string | undefined) => void;
+  /** A 401 for the node's own credential. */
+  onNodeUnauthorized?: () => void;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -144,6 +185,7 @@ export class NodeClient {
    *  node whichever persona was fetched first. The NUL separator cannot appear
    *  in either identifier, so no pair can collide on one key. */
   #runtimeCache = new Map<string, { etag: string; bundle: RuntimeBundle }>();
+  #hooks: NodeClientHooks = {};
 
   static runtimeKey(tenantId: string, personaId: string): string {
     return `${tenantId}\u0000${personaId}`;
@@ -156,6 +198,24 @@ export class NodeClient {
     this.#baseDelayMs = opts.baseDelayMs ?? 250;
     this.#fetch = opts.fetchImpl ?? fetch;
     this.#memoryTimeoutMs = opts.memoryTimeoutMs ?? MEMORY_TIMEOUT_MS;
+  }
+
+  /** Install refusal observers (the node worker). Replaces any earlier set. */
+  setHooks(hooks: NodeClientHooks): void {
+    this.#hooks = hooks;
+  }
+
+  /** Tell the observers about a refusal; never throws. */
+  async #observe(res: Response, jobToken: string | undefined): Promise<void> {
+    if (res.status !== 401 && res.status !== 403) return;
+    if (!this.#hooks.onGateDenied && !this.#hooks.onNodeUnauthorized) return;
+    try {
+      const body = await res.clone().text();
+      if (isGateDenied(res.status, body)) this.#hooks.onGateDenied?.(jobToken);
+      else if (isNodeUnauthorized(res.status, body)) this.#hooks.onNodeUnauthorized?.();
+    } catch {
+      /* an observer must never break the request */
+    }
   }
 
   /** Low-level request with bearer + optional job token + retry policy. */
@@ -185,6 +245,7 @@ export class NodeClient {
           lastErr = new NodeApiError(res.status, await res.text().catch(() => ""));
           continue;
         }
+        await this.#observe(res, o.jobToken);
         return res;
       } catch (e) {
         // Network-level failure (gateway restarting, DNS, conn refused).

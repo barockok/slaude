@@ -309,6 +309,9 @@ export const env = {
   jobTokenMaxAgeSec: (): number => durationEnvSec("SLAUDE_JOB_TOKEN_MAX_AGE", 6 * 3600),
   /** Cap on a job's total age for token-reissue. Default 24h. */
   jobMaxAgeSec: (): number => durationEnvSec("SLAUDE_JOB_MAX_AGE", 24 * 3600),
+  /** How long a label in use may have waiting jobs and no live node before it
+   *  is reported unserved (node labels spec §4.7). Default 60s. */
+  labelUnservedSec: (): number => durationEnvSec("SLAUDE_LABEL_UNSERVED_SECS", 60),
   /** Pipeline credential for /deploy. Unset → /deploy does not exist. Never the
    *  node token: every node holds that one, and "nodes can't change identity"
    *  is the point of this endpoint having its own. Returned TRIMMED, and ""

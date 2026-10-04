@@ -421,4 +421,18 @@ describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
     expect(await queues.queue(res.queue).getWaitingCount()).toBeGreaterThanOrEqual(1);
     await j!.remove();
   });
+
+  // Review U10b-C: the queue name comes from a token-reissue caller. A peek of
+  // a job that does not exist must not create the queue (a BullMQ handle
+  // writes the queue's `:meta` key), or junk names become "labels in use".
+  test("peekJob of a missing job creates no queue, so 100 junk names do not list as label queues", async () => {
+    await ready;
+    const fresh = mkQueues();
+    for (let i = 0; i < 100; i++) {
+      expect(await fresh.peekJob(`turns.label.junk-${i}`, "nope")).toBeUndefined();
+    }
+    const metas = await redis.keys(`${keys.bullPrefix}:turns.label.junk-*`);
+    expect(metas).toEqual([]);
+    expect((await queues.labelQueues()).some((q) => q.label.startsWith("junk-"))).toBe(false);
+  });
 });

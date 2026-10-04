@@ -58,7 +58,8 @@ import { syncKbWikis } from "../../knowledge/brain-sync";
 import { scheduleNightlyMaintenance } from "../../knowledge/brain-cycle";
 import { channelTrustFor, resolveBrainScope } from "../../knowledge/scope";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
-import { getPersonaRegistry, livePersona, managedPersonaProvider, onPersonaRegistryInstalled } from "../../persona/registry";
+import { getPersonaRegistry, labelsInUse, livePersona, managedPersonaProvider, onPersonaRegistryInstalled } from "../../persona/registry";
+import { makeLabelMonitor } from "../../queue/label-status";
 import type { GateInput } from "../../knowledge/gated-dispatch";
 import { personaKbs, personaKbSourceIds } from "../../knowledge/persona-kb";
 import { resolveUserName } from "../slack/users";
@@ -3052,6 +3053,20 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         onLockReleased: (sessionId) => broadcastPanelResume(sessionId),
         // A warm mono session keeps its remote tools until reloaded.
         onUnlock: (sessionId) => { agent.reload(sessionId); },
+        // Label status (node labels spec §4.7): only with a node queue.
+        labels: queueDispatch
+          ? (() => {
+              const mon = makeLabelMonitor({
+                redis: queueDispatch.turns.redis,
+                keys: queueDispatch.turns.keys,
+                turns: queueDispatch.turns,
+                registry: queueDispatch.registry,
+                personaLabels: () => labelsInUse(),
+                unservedSecs: () => env.labelUnservedSec(),
+              });
+              return () => mon.read();
+            })()
+          : null,
       })
     : null;
 
