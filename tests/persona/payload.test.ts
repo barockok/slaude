@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { capPaths, MAX_REPORTED_FIELDS, SUPPORTED_PAYLOAD_VERSION, payloadVersionFor, V2_PERSONA_FIELDS, unknownFieldPaths, parsePayload, resolvePlaceholders, UnresolvedVarError, PayloadError, providerWarnings } from "../../src/persona/sync/payload";
+import { capPaths, MAX_REPORTED_FIELDS, SUPPORTED_PAYLOAD_VERSION, PERSONA_FIELD_VERSION, KB_SOURCES_MAX, kbSourceWarnings, payloadVersionFor, unknownFieldPaths, parsePayload, resolvePlaceholders, UnresolvedVarError, PayloadError, providerWarnings } from "../../src/persona/sync/payload";
 
 const base = (personas: unknown[]) => ({ revision: "abc123", committedAt: "2026-10-01T10:00:00Z", personas });
 const ana = { name: "ana", slackUserId: "UTESTUSER1", soul: "You are Ana.", userToken: "${PERSONA_ANA_XOXP}" };
@@ -144,14 +144,6 @@ describe("payload version and unknown fields", () => {
       expect(() => parsePayload(base([{ ...ana, runsOn: bad }]))).toThrow(PayloadError);
     }
   });
-  test("payloadVersionFor: one rule, 2 when any persona sets any version-2 field", () => {
-    expect([...V2_PERSONA_FIELDS].sort()).toEqual(["provider", "runsOn"]);
-    expect(payloadVersionFor([ana])).toBe(1);
-    expect(payloadVersionFor([ana, { ...ana, runsOn: "finance" }])).toBe(2);
-    expect(payloadVersionFor([{ ...ana, provider: { apiKey: "env://PERSONA_ANA_KEY" } }])).toBe(2);
-    expect(payloadVersionFor([{ ...ana, provider: { apiKey: "env://PERSONA_ANA_KEY" }, runsOn: "finance" }])).toBe(2);
-    expect(SUPPORTED_PAYLOAD_VERSION).toBe(2);
-  });
   test("capPaths bounds a long list", () => {
     const many = Array.from({ length: 1000 }, (_, i) => `k${i}`);
     const c = capPaths(many);
@@ -245,5 +237,71 @@ describe("providerWarnings", () => {
     expect(w.some((s) => s.includes("'ana'") && s.includes("provider.baseUrl"))).toBe(true);
     expect(w.some((s) => s.includes("'bea'") && s.includes("no model"))).toBe(true);
     expect(w.some((s) => s.includes("'default'"))).toBe(false);
+  });
+});
+
+describe("kbSources (WS-C §4.1)", () => {
+  const withKb = (kbSources: unknown) => base([{ ...ana, kbSources }]);
+  test("absent stays absent (all installed KBs); [] and a list are kept as written", () => {
+    expect(parsePayload(base([ana])).personas[0]!.kbSources).toBeUndefined();
+    expect(parsePayload(withKb([])).personas[0]!.kbSources).toEqual([]);
+    expect(parsePayload(withKb(["kb-runbook", "kb-finance-2"])).personas[0]!.kbSources).toEqual(["kb-runbook", "kb-finance-2"]);
+  });
+
+  test("a malformed id is a PayloadError naming the persona and field, never echoing the value", () => {
+    for (const bad of ["runbook", "kb-", "KB-runbook", "kb-Run", "kb-a_b", "kb-x.y", "shared", "agent-u1", "", 7]) {
+      const e = (() => { try { parsePayload(withKb([bad])); } catch (x) { return x as PayloadError; } })();
+      expect({ bad, err: e instanceof PayloadError }).toEqual({ bad, err: true });
+      expect(e!.message).toContain("persona 'ana': kbSources");
+      if (typeof bad === "string" && bad.length > 3) expect(e!.message).not.toContain(bad);
+    }
+    expect(() => parsePayload(withKb("kb-runbook"))).toThrow(PayloadError);
+  });
+
+  test("a duplicate id is refused", () => {
+    expect(() => parsePayload(withKb(["kb-a", "kb-a"]))).toThrow(/kbSources/);
+  });
+
+  test("one version table: the payload needs the highest version of any field a persona sets", () => {
+    expect(PERSONA_FIELD_VERSION).toEqual({ provider: 2, runsOn: 2, kbSources: 3 });
+    expect(SUPPORTED_PAYLOAD_VERSION).toBe(3);
+    const key = { apiKey: "env://PERSONA_ANA_KEY" };
+    expect(payloadVersionFor([])).toBe(1);
+    expect(payloadVersionFor([ana])).toBe(1);
+    expect(payloadVersionFor([{ ...ana, provider: key }])).toBe(2);
+    expect(payloadVersionFor([ana, { ...ana, runsOn: "finance" }])).toBe(2);
+    expect(payloadVersionFor([{ ...ana, provider: key, runsOn: "finance" }])).toBe(2);
+    expect(payloadVersionFor([{ ...ana, kbSources: [] }])).toBe(3);
+    expect(payloadVersionFor([{ ...ana, runsOn: "finance", kbSources: ["kb-a"] }])).toBe(3);
+    expect(payloadVersionFor([{ ...ana, provider: key }, { ...ana, kbSources: ["kb-a"] }])).toBe(3);
+  });
+
+  test("a gateway that knows only version 2 refuses a version-3 payload instead of dropping kbSources", () => {
+    const v3 = { ...base([{ ...ana, kbSources: ["kb-a"] }]), version: payloadVersionFor([{ kbSources: ["kb-a"] }]) };
+    expect(() => parsePayload(v3, { supportedVersion: 2 })).toThrow(/newer than this gateway supports \(2\)/);
+    expect(parsePayload(v3).personas[0]!.kbSources).toEqual(["kb-a"]);
+  });
+
+  test("an id longer than 32 characters (kbSourceId never makes one) is refused", () => {
+    expect(() => parsePayload(withKb(["kb-" + "a".repeat(29)]))).not.toThrow();
+    expect(() => parsePayload(withKb(["kb-" + "a".repeat(30)]))).toThrow(/kbSources\[0\]/);
+  });
+
+  test("the list is capped", () => {
+    const ids = (n: number) => Array.from({ length: n }, (_, i) => `kb-k${i}`);
+    expect(() => parsePayload(withKb(ids(KB_SOURCES_MAX)))).not.toThrow();
+    expect(() => parsePayload(withKb(ids(KB_SOURCES_MAX + 1)))).toThrow(/at most/);
+  });
+
+  test("an id that several installed KBs normalise to is a warning", () => {
+    const p = parsePayload(withKb(["kb-my-wiki", "kb-runbook"]));
+    const w = kbSourceWarnings(p, ["kb-my-wiki", "kb-my-wiki", "kb-runbook"]);
+    expect(w).toEqual([expect.stringContaining("'ana'")]);
+    expect(w[0]).toContain("kb-my-wiki");
+    expect(w[0]).toContain("more than one");
+  });
+
+  test("kbSources is a known field, so it is never reported as ignored", () => {
+    expect(unknownFieldPaths(withKb(["kb-a"]))).toEqual([]);
   });
 });

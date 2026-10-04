@@ -65,7 +65,8 @@
             { "path": "deploy/multi-node", "label": "Multi-node scale-out" },
             { "path": "deploy/scale-operations", "label": "Scale operations" },
             { "path": "deploy/personas-as-code", "label": "Personas as code" },
-            { "path": "deploy/provider-credentials", "label": "Provider credentials" }
+            { "path": "deploy/provider-credentials", "label": "Provider credentials" },
+            { "path": "deploy/knowledge-scope", "label": "Knowledge scope" }
           ]
         }
       ]

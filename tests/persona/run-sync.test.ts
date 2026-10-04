@@ -191,6 +191,49 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync stage one reporting", (
   });
 });
 
+describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync kbSources (WS-C §4.1)", () => {
+  const withKb = (kbSources: unknown) => ({ ...ana, kbSources });
+  const run = (p: unknown, o: { dryRun?: boolean; installed?: string[] } = {}) =>
+    runSync(T, payload([p]), { dryRun: o.dryRun ?? false, env, by: "ci", extract: okExtract, installedKbSources: () => o.installed ?? ["kb-runbook"] });
+
+  test("null, [] and a list are stored as written", async () => {
+    await runSync(T, payload([withKb(["kb-runbook"]), { ...ana, name: "bea", slackUserId: "UTESTUSER2", kbSources: [] }]),
+      { dryRun: false, env, by: "ci", extract: okExtract, installedKbSources: () => ["kb-runbook"] });
+    const by = new Map((await P.desiredPersonas(T)).map((p) => [p.name, p.kbSources]));
+    expect(by.get("ana")).toEqual(["kb-runbook"]);
+    expect(by.get("bea")).toEqual([]);
+    expect(by.get("default")).toBeNull();
+  });
+
+  test("an id that matches no installed KB is a warning, and the persona is applied", async () => {
+    const r = await run(withKb(["kb-runbook", "kb-not-installed"]));
+    expect(r.created).toContain("ana");
+    expect(r.warnings.filter((w) => w.includes("kbSources"))).toEqual([
+      "persona 'ana' lists kb-not-installed in kbSources, but no such knowledge base is installed; it reads nothing from it until one is",
+    ]);
+  });
+
+  test("a malformed id is a 422 that applies nothing", async () => {
+    const e = await run(withKb(["Runbook"])).catch((x) => x);
+    expect(e).toBeInstanceOf(SyncFailure);
+    expect(e.status).toBe(422);
+    expect(e.message).toContain("persona 'ana': kbSources[0]");
+    expect(await P.isManaged(T)).toBe(false);
+  });
+
+  test("a database that predates kb_sources refuses the sync loudly", async () => {
+    await db.run(`ALTER TABLE personas DROP COLUMN kb_sources`);
+    try {
+      const e = await run(withKb([])).catch((x) => x);
+      expect(e).toBeInstanceOf(SyncFailure);
+      expect(e.status).toBe(503);
+      expect(e.message).toContain("kb_sources");
+    } finally {
+      await db.run(`ALTER TABLE personas ADD COLUMN IF NOT EXISTS kb_sources JSONB`);
+    }
+  });
+});
+
 // Node labels spec §4.5.
 describe("runsOn", () => {
   test("a label no live node carries is a warning naming persona and label", () => {
@@ -233,15 +276,16 @@ describe("runsOn", () => {
     } finally { console.warn = warn; }
   });
 
-  test.skipIf(process.env.SLAUDE_DB !== "pg")("one warnings array carries both the provider and the label warnings", async () => {
+  test.skipIf(process.env.SLAUDE_DB !== "pg")("one warnings array carries the provider, the label and the KB warnings", async () => {
     const warn = console.warn; console.warn = () => {};
     try {
-      const r = await runSync(T, payload([{ ...ana, runsOn: "finance", provider: { baseUrl: "https://llm.example.com", apiKey: "env://PERSONA_ANA_KEY" } }]), {
+      const r = await runSync(T, payload([{ ...ana, runsOn: "finance", kbSources: ["kb-not-installed"], provider: { baseUrl: "https://llm.example.com", apiKey: "env://PERSONA_ANA_KEY" } }]), {
         dryRun: true, env: { ...env, PERSONA_ANA_KEY: "k", SLAUDE_ROLE: "gateway" }, by: "ci", extract: okExtract,
-        liveLabels: async () => new Set(["default"]),
+        liveLabels: async () => new Set(["default"]), installedKbSources: () => ["kb-runbook"],
       });
       expect(r.warnings.some((w) => w.includes("no live node carries label 'finance'"))).toBe(true);
-      expect(r.warnings.some((w) => !w.includes("no live node carries") && w.includes("'ana'"))).toBe(true);
+      expect(r.warnings.some((w) => w.includes("provider.baseUrl") && w.includes("'ana'"))).toBe(true);
+      expect(r.warnings.some((w) => w.includes("kb-not-installed") && w.includes("'ana'"))).toBe(true);
     } finally { console.warn = warn; }
   });
 });

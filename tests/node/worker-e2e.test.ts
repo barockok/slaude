@@ -39,6 +39,8 @@ let nodeTurnsQueueFn: any;
 let acquireLockFn: any;
 let sessionIdOf: (thread: string) => Promise<string>;
 let metricsRender: () => string;
+/** Paths of every /v1/tools/memory request the gateway received. */
+const memoryHits: string[] = [];
 
 /** When set, the stub's session boot fails with this error (a BootFailure). */
 let bootFailure: Error | null = null;
@@ -144,7 +146,11 @@ beforeAll(async () => {
   server = Bun.serve({
     port: 0,
     idleTimeout: 0,
-    fetch: async (req: Request) => (await gw.fetchV1(req)) ?? new Response("nf", { status: 404 }),
+    fetch: async (req: Request) => {
+      const path = new URL(req.url).pathname;
+      if (path.startsWith("/v1/tools/memory/")) memoryHits.push(path);
+      return (await gw.fetchV1(req)) ?? new Response("nf", { status: 404 });
+    },
   });
 
   sessionIdOf = async (thread: string) =>
@@ -170,6 +176,11 @@ beforeAll(async () => {
     override setSessionLockResolver(r: any) {
       super.setSessionLockResolver(r);
       this.lockResolver = r;
+    }
+    memoryProvider?: any;
+    override setMemoryProvider(p: any) {
+      super.setMemoryProvider(p);
+      this.memoryProvider = p;
     }
     override setMcpResolver(r: any) {
       super.setMcpResolver(r);
@@ -328,6 +339,37 @@ d("gateway↔node E2E (real Redis)", () => {
     expect(e).toBeInstanceOf(BootFailure);
     expect((e as any).code).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
   });
+
+  // The release-blocking fix lives in the worker's wiring: a node has no
+  // database, so the agent's memory provider must be the gateway's routes.
+  // (tests/agent/node-memory.test.ts proves the manager puts that provider's
+  // block into the SDK's system prompt as <memory-context>.)
+  test("the worker routes the agent's memory through the gateway's /v1/tools/memory", async () => {
+    const { __setMemoryForTests, memory: original } = await import("../../src/memory");
+    const seen: string[] = [];
+    __setMemoryForTests({
+      prefetch: async (id: string) => (seen.push(id), "<recent-turns>worker memory</recent-turns>"),
+      syncTurn: async () => {},
+    });
+    const MEM_THREAD = "9070.0";
+    let block: string | null | undefined;
+    const prev = behavior;
+    behavior = async (a) => {
+      block = await stub.memoryProvider.prefetch(a.sessionId);
+      await prev(a);
+    };
+    try {
+      memoryHits.length = 0;
+      await emitSlack("message", msg(MEM_THREAD, "9070.1", "<@USLAUDE> remember this"));
+      await until(() => block !== undefined, 15_000);
+      expect(memoryHits).toContain("/v1/tools/memory/prefetch");
+      expect(block).toContain("worker memory");
+      expect(seen).toEqual([await sessionIdOf(MEM_THREAD)]);
+    } finally {
+      behavior = prev;
+      __setMemoryForTests(original);
+    }
+  }, 30_000);
 
   // R2-F4: a transient failure takes BullMQ's retry silently; the last attempt
   // posts the fixed text once.

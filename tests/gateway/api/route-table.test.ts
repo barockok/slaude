@@ -42,6 +42,7 @@ const EXPECTED_GATES: Record<string, "label" | "none"> = {
   "jobs.event": "none",
   "jobs.token-refresh": "label",
   "jobs.token-reissue": "label",
+  "tools.memory": "label",
   tools: "label",
 };
 
@@ -56,6 +57,7 @@ const SAMPLES: Record<string, { method: string; path: string; body?: string }> =
   pending: { method: "GET", path: "/v1/pending/P-matrix" },
   "jobs.token-refresh": { method: "POST", path: "/v1/jobs/J-matrix/token-refresh" },
   "jobs.token-reissue": { method: "POST", path: "/v1/jobs/J-matrix/token-reissue", body: "{}" },
+  "tools.memory": { method: "POST", path: "/v1/tools/memory/prefetch", body: "{}" },
   tools: { method: "POST", path: "/v1/tools/kb/search_kbs", body: JSON.stringify({ query: "x" }) },
 };
 
@@ -207,5 +209,13 @@ describe("routing is behaviour-identical to the old if-chain", () => {
     expect(newRoute("GET", "/v1/node/whoami")).toBe("node.whoami");
     expect(oldRoute("POST", "/v1/jobs/J1/token-reissue")).toBe(404);
     expect(newRoute("POST", "/v1/jobs/J1/token-reissue")).toBe("jobs.token-reissue");
+  });
+
+  test("memory narrows the tools pattern for exactly its two operations", () => {
+    expect(newRoute("POST", "/v1/tools/memory/prefetch")).toBe("tools.memory");
+    expect(newRoute("POST", "/v1/tools/memory/sync")).toBe("tools.memory");
+    expect(newRoute("GET", "/v1/tools/memory/sync")).toBe(405);
+    // Anything else under tools/memory falls through to the tool plane (404 there).
+    expect(newRoute("POST", "/v1/tools/memory/other")).toBe("tools");
   });
 });
