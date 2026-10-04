@@ -2763,6 +2763,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         return bus.subscribe(id, cb);
       },
     },
+    // token-reissue re-mints only for a job still in the turn queues (node
+    // labels spec §4.4); mono has no queue, so nothing is reissuable there.
+    ...(queueDispatch
+      ? {
+          jobLookup: async (queue: string, jobId: string) => {
+            const j = await queueDispatch.turns.peekJob(queue, jobId);
+            if (!j) return null;
+            return { data: j.data ?? {}, timestamp: j.timestamp, state: await j.getState() };
+          },
+        }
+      : {}),
   });
 
   // Unified panel-chat enqueue (design Refinement 2): build a panel-sourced

@@ -1,13 +1,17 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  __resetNodeAuthWarnings,
+  __setNodeVerifier,
+  authenticateNode,
   JOB_HEADER,
   mintJobToken,
-  requireBearer,
   requireJobToken,
   timingSafeStringEqual,
   verifyJobToken,
   type JobClaims,
 } from "../../../src/gateway/api/auth";
+import { mintNodeCredential, NodeCredentialVerifier } from "../../../src/gateway/auth/node-credential";
+import { metrics } from "../../../src/metrics";
 
 const SECRET = "test-job-secret";
 
@@ -88,27 +92,134 @@ describe("mintJobToken / verifyJobToken", () => {
   });
 });
 
-describe("requireBearer", () => {
+describe("authenticateNode", () => {
   const req = (auth?: string) =>
     new Request("http://localhost/v1/pending/x", { headers: auth ? { authorization: auth } : {} });
+  const VARS = ["SLAUDE_NODE_TOKEN", "SLAUDE_NODE_LEGACY_TOKEN", "SLAUDE_NODE_KEY", "SLAUDE_NODE_KEY_PREVIOUS", "SLAUDE_NODE_LEGACY"];
+  let saved: Record<string, string | undefined> = {};
+  let warns: string[] = [];
+  const origWarn = console.warn;
+  beforeEach(() => {
+    saved = Object.fromEntries(VARS.map((k) => [k, process.env[k]]));
+    for (const k of VARS) delete process.env[k];
+    __resetNodeAuthWarnings();
+    __setNodeVerifier(new NodeCredentialVerifier({ revocations: async () => null }));
+    warns = [];
+    console.warn = (m: string) => warns.push(String(m));
+  });
+  afterEach(() => {
+    console.warn = origWarn;
+    for (const k of VARS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    __setNodeVerifier(null);
+  });
+  const legacyCount = () => Number(metrics.render().match(/^slaude_node_legacy_auth_total(?:\{[^}]*\})? (\d+)/m)?.[1] ?? 0);
 
-  test("unset SLAUDE_NODE_TOKEN → 503", () => {
-    delete process.env.SLAUDE_NODE_TOKEN;
-    const res = requireBearer(req("Bearer anything"));
-    expect(res?.status).toBe(503);
+  test("neither a key nor a legacy token configured → 503", async () => {
+    const r = await authenticateNode(req("Bearer anything"));
+    expect(!r.ok && r.response.status).toBe(503);
   });
 
-  test("wrong / missing / matching token", () => {
+  test("legacy token under the new variable: wrong / missing / matching", async () => {
+    process.env.SLAUDE_NODE_LEGACY_TOKEN = "node-secret";
+    expect(((await authenticateNode(req())) as any).response.status).toBe(401);
+    expect(((await authenticateNode(req("Bearer wrong"))) as any).response.status).toBe(401);
+    expect(((await authenticateNode(req("node-secret"))) as any).response.status).toBe(401); // no Bearer prefix
+    const ok = await authenticateNode(req("bearer node-secret")); // case-insensitive scheme
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect({ ...ok.node, labels: [...ok.node.labels] }).toEqual({ id: "legacy", labels: ["default"], legacy: true });
+    expect(warns).toEqual([]);
+  });
+
+  test("legacy token under the old variable: accepted, with one deprecation warning", async () => {
     process.env.SLAUDE_NODE_TOKEN = "node-secret";
-    try {
-      expect(requireBearer(req())?.status).toBe(401);
-      expect(requireBearer(req("Bearer wrong"))?.status).toBe(401);
-      expect(requireBearer(req("node-secret"))?.status).toBe(401); // no Bearer prefix
-      expect(requireBearer(req("Bearer node-secret"))).toBeNull();
-      expect(requireBearer(req("bearer node-secret"))).toBeNull(); // case-insensitive scheme
-    } finally {
-      delete process.env.SLAUDE_NODE_TOKEN;
+    expect((await authenticateNode(req("Bearer node-secret"))).ok).toBe(true);
+    expect((await authenticateNode(req("Bearer node-secret"))).ok).toBe(true);
+    expect(warns.filter((w) => w.includes("SLAUDE_NODE_LEGACY_TOKEN"))).toHaveLength(1);
+  });
+
+  test("SLAUDE_NODE_LEGACY=off rejects the legacy token outright", async () => {
+    process.env.SLAUDE_NODE_LEGACY_TOKEN = "node-secret";
+    process.env.SLAUDE_NODE_LEGACY = "off";
+    // No key either: nothing is configured → 503.
+    expect(((await authenticateNode(req("Bearer node-secret"))) as any).response.status).toBe(503);
+    process.env.SLAUDE_NODE_KEY = "node-key";
+    expect(((await authenticateNode(req("Bearer node-secret"))) as any).response.status).toBe(401);
+    const cred = mintNodeCredential({ id: "eng-a", labels: ["engineering"] }, { key: "node-key" });
+    expect((await authenticateNode(req(`Bearer ${cred}`))).ok).toBe(true);
+  });
+
+  test("signed credential yields its claims; tampered or foreign-keyed → 401", async () => {
+    process.env.SLAUDE_NODE_KEY = "node-key";
+    const cred = mintNodeCredential({ id: "eng-a", labels: ["engineering", "eu"] }, { key: "node-key" });
+    const ok = await authenticateNode(req(`Bearer ${cred}`));
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.node.id).toBe("eng-a");
+      expect([...ok.node.labels].sort()).toEqual(["engineering", "eu"]);
+      expect(ok.node.legacy).toBe(false);
+      expect(typeof ok.expiresAt).toBe("number");
     }
+    const [h, p, sig] = cred.split(".") as [string, string, string];
+    const forged = JSON.parse(Buffer.from(p, "base64url").toString());
+    forged.labels = ["finance"];
+    const tampered = `${h}.${Buffer.from(JSON.stringify(forged)).toString("base64url")}.${sig}`;
+    expect(((await authenticateNode(req(`Bearer ${tampered}`))) as any).response.status).toBe(401);
+    const foreign = mintNodeCredential({ id: "eng-a", labels: ["engineering"] }, { key: "other-key" });
+    expect(((await authenticateNode(req(`Bearer ${foreign}`))) as any).response.status).toBe(401);
+    // A job token is not a node credential.
+    process.env.SLAUDE_JOB_SECRET = "node-key";
+    try {
+      const job = mintJobToken(baseClaims);
+      expect(((await authenticateNode(req(`Bearer ${job}`))) as any).response.status).toBe(401);
+    } finally {
+      delete process.env.SLAUDE_JOB_SECRET;
+    }
+  });
+
+  test("the previous key is accepted during rotation", async () => {
+    process.env.SLAUDE_NODE_KEY = "new-key";
+    process.env.SLAUDE_NODE_KEY_PREVIOUS = "old-key";
+    const old = mintNodeCredential({ id: "eng-a", labels: ["engineering"] }, { key: "old-key" });
+    expect((await authenticateNode(req(`Bearer ${old}`))).ok).toBe(true);
+  });
+
+  test("a revoked credential stops at the next call", async () => {
+    process.env.SLAUDE_NODE_KEY = "node-key";
+    let before: number | null = null;
+    __setNodeVerifier(new NodeCredentialVerifier({ revocations: async () => before, cacheMs: 0 }));
+    const cred = mintNodeCredential({ id: "eng-a", labels: ["engineering"] }, { key: "node-key", now: Date.now() - 5000 });
+    expect((await authenticateNode(req(`Bearer ${cred}`))).ok).toBe(true);
+    before = Math.floor(Date.now() / 1000);
+    expect(((await authenticateNode(req(`Bearer ${cred}`))) as any).response.status).toBe(401);
+  });
+
+  test("revocation store down → 503 (fail closed)", async () => {
+    process.env.SLAUDE_NODE_KEY = "node-key";
+    __setNodeVerifier(new NodeCredentialVerifier({ revocations: async () => { throw new Error("down"); } }));
+    const errs: string[] = [];
+    const origErr = console.error;
+    console.error = (...a: unknown[]) => errs.push(a.join(" "));
+    try {
+      const cred = mintNodeCredential({ id: "eng-a", labels: ["engineering"] }, { key: "node-key" });
+      expect(((await authenticateNode(req(`Bearer ${cred}`))) as any).response.status).toBe(503);
+    } finally {
+      console.error = origErr;
+    }
+  });
+
+  test("legacy use while SLAUDE_NODE_KEY is set: warns once and counts every use", async () => {
+    process.env.SLAUDE_NODE_LEGACY_TOKEN = "node-secret";
+    const before = legacyCount();
+    expect((await authenticateNode(req("Bearer node-secret"))).ok).toBe(true);
+    expect(legacyCount()).toBe(before); // no key: not counted
+    process.env.SLAUDE_NODE_KEY = "node-key";
+    await authenticateNode(req("Bearer node-secret"));
+    await authenticateNode(req("Bearer node-secret"));
+    expect(legacyCount()).toBe(before + 2);
+    expect(warns.filter((w) => w.includes("SLAUDE_NODE_LEGACY=off"))).toHaveLength(1);
   });
 });
 

@@ -57,8 +57,12 @@ describe("/v1/jobs/:id/token-refresh", () => {
     const v = verifyJobToken(jobToken);
     expect(v.ok).toBe(true);
     if (v.ok) {
-      const { exp, iat, ...rest } = v.claims;
+      const { exp, iat, iat0, ...rest } = v.claims;
       expect(rest).toEqual(baseClaims);
+      // The first issue time is carried: a token with no iat0 counts from its
+      // own iat.
+      const staleIat = (verifyJobToken(stale, { graceSec: REFRESH_GRACE_SEC }) as any).claims.iat;
+      expect(iat0).toBe(staleIat);
       // Full TTL again (15 min default) — not a copy of the stale expiry.
       expect(exp).toBeGreaterThan(Math.floor(Date.now() / 1000) + 10 * 60);
     }
@@ -93,6 +97,30 @@ describe("/v1/jobs/:id/token-refresh", () => {
     });
     const res = await handleTokenRefresh(req(ancient), "job-123");
     expect(res.status).toBe(401);
+  });
+
+  test("refused past SLAUDE_JOB_TOKEN_MAX_AGE from the first issue; iat0 survives repeated refreshes", async () => {
+    const now = Date.now();
+    // A recent token whose job was first issued 5 hours ago.
+    const carried = mintJobToken({ ...baseClaims, iat0: Math.floor((now - 5 * 3600_000) / 1000) }, { now: now - 60_000 });
+    const r1 = await handleTokenRefresh(req(carried), "job-123", now);
+    expect(r1.status).toBe(200);
+    const t1 = ((await r1.json()) as { jobToken: string }).jobToken;
+    const v1 = verifyJobToken(t1, { now });
+    expect(v1.ok && v1.claims.iat0).toBe(Math.floor((now - 5 * 3600_000) / 1000));
+    // An hour and a bit later the 6h cap is passed: refused, though the token
+    // itself is still inside the grace.
+    const later = now + 61 * 60_000;
+    const r2 = await handleTokenRefresh(req(t1), "job-123", later);
+    expect(r2.status).toBe(401);
+    expect(((await r2.json()) as { error: string }).error).toContain("maximum age");
+    // The cap is configurable.
+    process.env.SLAUDE_JOB_TOKEN_MAX_AGE = "12h";
+    try {
+      expect((await handleTokenRefresh(req(t1), "job-123", later)).status).toBe(200);
+    } finally {
+      delete process.env.SLAUDE_JOB_TOKEN_MAX_AGE;
+    }
   });
 
   test("missing token refused", async () => {
