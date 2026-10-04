@@ -182,6 +182,74 @@ describe("parseNodeManifest — schema", () => {
   });
 });
 
+/**
+ * The CLI expands `${NAME}` and `${NAME:-default}` in a stdio config's command,
+ * args and env values AGAIN, against the agent child's environment (provider
+ * credentials included). slaude expands plain `${NAME}` in env values once, so
+ * no `${` may survive into the config it hands the CLI.
+ */
+describe("parseNodeManifest — nothing for the CLI to expand", () => {
+  const ENV = { ...NODE_ENV, ANTHROPIC_API_KEY: "provider-fake", SLAUDE_JOB_SECRET: "job-fake" };
+  const one = (server: Record<string, unknown>, env: Record<string, string | undefined> = ENV) =>
+    parse({ version: 1, mcpServers: { tf: { command: "t", ...server } }, allow: { p: ["tf"] } }, env);
+
+  it("refuses a default or modifier form in an env value, naming the field and not the value", () => {
+    for (const v of [
+      "${ANTHROPIC_API_KEY:-}",
+      "${SLAUDE_JOB_SECRET:-}",
+      "${NODE_TF_TOKEN:-fallback}",
+      "x ${MISSING:-y}",
+      "${NODE_TF_TOKEN:=y}",
+      "${NODE_TF_TOKEN-y}",
+      "${#NODE_TF_TOKEN}",
+      "${}",
+      "${",
+      "${NODE_TF_TOKEN} and ${ANTHROPIC_API_KEY:-}",
+    ]) {
+      const msg = refusal(() => one({ env: { K: v } }));
+      expect(msg).toContain("mcpServers.tf.env.K");
+      expect(msg).not.toContain("provider-fake");
+      expect(msg).not.toContain("job-fake");
+    }
+  });
+
+  it("refuses any ${ in command or args (plain references included)", () => {
+    expect(refusal(() => one({ command: "${HOME}/bin/srv" }))).toContain("mcpServers.tf.command");
+    for (const a of ["${ANTHROPIC_API_KEY}", "${ANTHROPIC_API_KEY:-}", "--root=${CLAUDE_PLUGIN_ROOT}", "${"]) {
+      expect(refusal(() => one({ args: ["--stdio", a] }))).toContain("mcpServers.tf.args.1");
+    }
+  });
+
+  it("refuses an expanded value that itself contains ${ (it would be expanded again), without printing it", () => {
+    const env = { ...ENV, NODE_TF_TOKEN: "pre-${ANTHROPIC_API_KEY}-post" };
+    const msg = refusal(() => one({ env: { K: "${NODE_TF_TOKEN}" } }, env));
+    expect(msg).toContain("mcpServers.tf.env.K");
+    expect(msg).not.toContain("pre-");
+  });
+
+  it("refuses a base variable (PATH, HOME, LANG, TMPDIR) whose node value contains ${", () => {
+    const msg = refusal(() => one({}, { ...ENV, HOME: "/home/${ANTHROPIC_API_KEY}" }));
+    expect(msg).toContain("HOME");
+  });
+
+  it("still refuses a scrubbed name inside a plain reference", () => {
+    expect(refusal(() => one({ env: { K: "${SLAUDE_JOB_SECRET}" } }))).toContain("SLAUDE_JOB_SECRET");
+  });
+
+  it("no ${ reaches any field of the final config", () => {
+    const m = one({ args: ["--stdio", "$HOME", "plain"], env: { A: "${NODE_TF_TOKEN}", B: "lit$", C: "{x}" } });
+    const cfg = stdioServersFor(m, "p", ENV, "/opt/bun") as any;
+    const strings = [cfg.tf.command, ...cfg.tf.args, ...Object.keys(cfg.tf.env), ...Object.values(cfg.tf.env)];
+    for (const s of strings) expect(String(s)).not.toContain("${");
+  });
+
+  it("the final config refuses a ${ that arrives from outside the manifest (exec path, base env)", () => {
+    const m = one({});
+    expect(() => stdioServersFor(m, "p", ENV, "/opt/${X}/bun")).toThrow(NodeManifestError);
+    expect(() => stdioServersFor(m, "p", { ...ENV, TMPDIR: "/tmp/${ANTHROPIC_API_KEY:-}" }, "/opt/bun")).toThrow("TMPDIR");
+  });
+});
+
 describe("loadNodeManifest", () => {
   const dir = mkdtempSync(join(tmpdir(), "slaude-manifest-"));
 

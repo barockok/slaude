@@ -19,9 +19,16 @@
  *   (it holds no job secret), so before mounting anything it fetches that
  *   persona's runtime bundle with the token: the gateway answers only a token
  *   it signed for that persona.
- * - `${VAR}` in `env` is expanded once, at node start, from the node's own
- *   environment. A variable the agent child is scrubbed of (every gateway-only
- *   name, the node token, the Redis URL) can never be expanded.
+ * - A plain `${VAR}` in an `env` value is expanded once, at node start, from
+ *   the node's own environment. A variable the agent child is scrubbed of
+ *   (every gateway-only name, the node token, the Redis URL) can never be
+ *   expanded.
+ * - The CLI expands `${VAR}` and `${VAR:-default}` in a stdio config's command,
+ *   args and env values AGAIN, against the agent child's environment (the
+ *   persona's provider credentials included). So no `${` may survive into the
+ *   config: one in command or args, a default or modifier form, or an expanded
+ *   value containing `${` refuses the manifest; the final config is checked
+ *   once more for anything arriving from outside the file.
  * - A server is started through the exec wrapper (./mcp-exec.ts) with an
  *   explicit minimal environment: its own `env` plus PATH, HOME, LANG and
  *   TMPDIR from the node, and nothing the agent child inherited.
@@ -42,6 +49,9 @@ export const NODE_MANIFEST_DEFAULT_PATH = "/etc/slaude/node.json";
 const SERVER_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const ENV_REF_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+/** What the CLI would expand (any of its forms starts with this). */
+const CLI_REF = "${";
+const CLI_REFUSAL = "the CLI would expand it again against the agent child's environment";
 /** The node variables every stdio server gets, besides its own `env`. */
 export const MINIMAL_ENV_NAMES = ["PATH", "HOME", "LANG", "TMPDIR"] as const;
 /** The exec wrapper a stdio server is started through. */
@@ -122,12 +132,19 @@ function duplicateKey(text: string): string | null {
   return null;
 }
 
-/** Expand `${VAR}` from the node's environment. Refuses a scrubbed name or an unset variable, naming it. */
+/** Expand plain `${VAR}` from the node's environment. Refuses a scrubbed name,
+ *  an unset variable, any other `${` form, and a result still holding `${` —
+ *  naming the field and variable, never a value. */
 function expandEnv(where: string, raw: Record<string, string>, nodeEnv: Record<string, string | undefined>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(raw)) {
     if (isChildScrubbedEnv(key)) {
       throw new NodeManifestError(`${where}.${key}: ${key} is a gateway-only or node-held variable and may not be given to a stdio server`);
+    }
+    if (value.replace(ENV_REF_RE, "").includes(CLI_REF)) {
+      throw new NodeManifestError(
+        `${where}.${key}: only a plain \${NAME} reference is expanded; a default, a modifier or an unterminated "\${" is refused (${CLI_REFUSAL})`,
+      );
     }
     out[key] = value.replace(ENV_REF_RE, (_m, name: string) => {
       if (isChildScrubbedEnv(name)) {
@@ -139,8 +156,18 @@ function expandEnv(where: string, raw: Record<string, string>, nodeEnv: Record<s
       if (v === undefined) throw new NodeManifestError(`${where}.${key}: references ${name}, which is not set in this node's environment`);
       return v;
     });
+    if (out[key]!.includes(CLI_REF)) {
+      throw new NodeManifestError(`${where}.${key}: its expanded value contains "\${" (${CLI_REFUSAL})`);
+    }
   }
   return out;
+}
+
+/** Refuse `${` in a field slaude does not expand (command, args). */
+function refuseCliRef(where: string, value: string): void {
+  if (value.includes(CLI_REF)) {
+    throw new NodeManifestError(`${where}: contains "\${", which is expanded only in env values (${CLI_REFUSAL}); use an absolute path or an env variable`);
+  }
 }
 
 /** Parse and validate manifest text; `source` names it in errors. Throws NodeManifestError. */
@@ -164,7 +191,15 @@ export function parseNodeManifest(text: string, nodeEnv: Record<string, string |
   const servers: Record<string, NodeStdioServer> = {};
   try {
     for (const [name, s] of Object.entries(m.mcpServers)) {
+      refuseCliRef(`mcpServers.${name}.command`, s.command);
+      (s.args ?? []).forEach((a, i) => refuseCliRef(`mcpServers.${name}.args.${i}`, a));
       servers[name] = { command: s.command, args: s.args ?? [], env: expandEnv(`mcpServers.${name}.env`, s.env ?? {}, nodeEnv) };
+    }
+    // The base variables every server gets come from this node's environment.
+    if (Object.keys(servers).length > 0) {
+      for (const k of MINIMAL_ENV_NAMES) {
+        if (nodeEnv[k]?.includes(CLI_REF)) throw new NodeManifestError(`${k} in this node's environment contains "\${" (${CLI_REFUSAL})`);
+      }
     }
   } catch (e) {
     fail((e as Error).message);
@@ -239,12 +274,19 @@ export function stdioServersFor(
     const env: Record<string, string> = {};
     for (const k of MINIMAL_ENV_NAMES) if (nodeEnv[k] !== undefined) env[k] = nodeEnv[k]!;
     Object.assign(env, s.env);
-    out[name] = {
-      type: "stdio",
+    const cfg = {
+      type: "stdio" as const,
       command: execPath,
       args: [MCP_EXEC_ENTRY, Object.keys(env).join(","), "--", s.command, ...s.args],
       env,
     };
+    // The last word: nothing in what the CLI receives may be expandable.
+    refuseCliRef(`mcpServers.${name}: the exec path`, cfg.command);
+    cfg.args.forEach((a, i) => refuseCliRef(`mcpServers.${name}: wrapper argument ${i}`, a));
+    for (const [k, v] of Object.entries(env)) {
+      if (k.includes(CLI_REF) || v.includes(CLI_REF)) throw new NodeManifestError(`mcpServers.${name}.env.${k}: contains "\${" (${CLI_REFUSAL})`);
+    }
+    out[name] = cfg;
   }
   return out;
 }
