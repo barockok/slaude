@@ -199,3 +199,34 @@ test("a mid-session expiry refreshes the cookie and reopens the tail with the la
   expect(again.url()).toMatch(/lastId=stub-\d+/);
   expect(refreshes).toBeGreaterThanOrEqual(1);
 });
+
+// ---------------------------------------------------------------- personas --
+// Read-only persona screens (WS-C §4.4.3), on the stub's fixture API.
+
+test("the header opens the persona list; a row opens its definition", async ({ page }) => {
+  await page.context().clearCookies();
+  await page.goto("/panel?role=operator");
+  await page.locator('[data-testid="nav-personas"]').click();
+  await expect(page).toHaveURL(/#\/p$/);
+  await expect(page.locator("tbody tr[data-persona]")).toHaveCount(5);
+  await page.locator('tr[data-persona="ravi"]').click();
+  await expect(page).toHaveURL(/#\/p\/ravi$/);
+  await expect(page.locator('[data-testid="persona-provider"]')).toContainText("vault://kv/agents/ravi#api_key");
+  await expect(page.locator('[data-testid="persona-mcp"]')).toContainText("ledger.example.com");
+  await expect(page.locator('[data-testid="persona-nodes"]')).toContainText("gw-node-3");
+  // Read only: no override control is surfaced.
+  await expect(page.locator('[data-view="persona"] button:not(.copybtn)')).toHaveCount(0);
+});
+
+test("an unknown persona shows the 404 state", async ({ page }) => {
+  await page.context().clearCookies();
+  await page.goto("/panel?role=operator");
+  await expect(page.locator("tbody tr[data-sid]").first()).toBeVisible();
+  await page.goto("/panel/#/p/ghost");
+  await expect(page.locator('[data-testid="persona-error"]')).toContainText("No persona named ghost");
+});
+
+test("a deployment without persona tables shows the 409 state", async ({ page }) => {
+  await page.goto(`/panel/?mock=1&sqlite=1#/p`);
+  await expect(page.locator('[data-testid="persona-error"]')).toContainText("not available here");
+});
