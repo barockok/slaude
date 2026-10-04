@@ -23,6 +23,23 @@ describe("personas-as-code schema", () => {
     }
   });
 
+  test("runs_on is nullable (null = default) and checked against the label pattern", async () => {
+    const pg = await openDb({ dialect: "pg", driver: "pglite" });
+    try {
+      await runMigrations(pg, { log: () => {} });
+      await pg.run(
+        `INSERT INTO personas (id, tenant_id, name, soul_md, created_at, updated_at) VALUES ('p1','default','ana','',0,0)`);
+      expect((await pg.one<{ runs_on: string | null }>(`SELECT runs_on FROM personas WHERE id='p1'`))!.runs_on).toBeNull();
+      await pg.run(`UPDATE personas SET runs_on = 'engineering' WHERE id='p1'`);
+      await expect(pg.run(`UPDATE personas SET runs_on = 'Engineering' WHERE id='p1'`)).rejects.toThrow();
+      await expect(pg.run(`UPDATE personas SET runs_on = '-x' WHERE id='p1'`)).rejects.toThrow();
+      // Idempotent: running the migration set again is a no-op.
+      await runMigrations(pg, { log: () => {} });
+    } finally {
+      await pg.close();
+    }
+  });
+
   test("origin defaults to 'git' and is constrained", async () => {
     const pg = await openDb({ dialect: "pg", driver: "pglite" });
     try {

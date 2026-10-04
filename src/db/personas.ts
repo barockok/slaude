@@ -42,8 +42,11 @@ export interface ApplyResult {
 
 type Row = {
   name: string; slack_user_id: string | null; user_token: string | null; model_default: string | null;
-  soul_md: string; soul_json: unknown; mcp_json: unknown; origin: "git" | "runtime"; tombstoned_at: number | null;
+  soul_md: string; soul_json: unknown; mcp_json: unknown; runs_on: string | null; origin: "git" | "runtime";
+  tombstoned_at: number | null;
 };
+
+const ROW_COLUMNS = "name, slack_user_id, user_token, model_default, soul_md, soul_json, mcp_json, runs_on, origin, tombstoned_at";
 
 // mcp is stored as an encrypted string inside the JSONB column, so the column
 // type stays as 0001 defined it while the value is never plaintext at rest.
@@ -67,6 +70,7 @@ function toDesired(r: Row): DesiredPersona {
     soulMd: r.soul_md,
     soulJson: parseJson(r.soul_json),
     mcp: decJson(r.mcp_json),
+    runsOn: r.runs_on ?? null,
     origin: r.origin,
     tombstonedAt: r.tombstoned_at == null ? null : Number(r.tombstoned_at),
   };
@@ -89,7 +93,7 @@ export async function stateVersion(tenant: string): Promise<string> {
 
 async function desiredRows(tenant: string, opts: { includeTombstoned?: boolean }): Promise<Row[]> {
   return db.query<Row>(
-    `SELECT name, slack_user_id, user_token, model_default, soul_md, soul_json, mcp_json, origin, tombstoned_at
+    `SELECT ${ROW_COLUMNS}
      FROM personas WHERE tenant_id = ? ${opts.includeTombstoned ? "" : "AND tombstoned_at IS NULL"} ORDER BY name`,
     [tenant]);
 }
@@ -138,7 +142,7 @@ export async function applySync(
     }
 
     const existing = new Map(
-      (await tx.query<Row>(`SELECT name, slack_user_id, user_token, model_default, soul_md, soul_json, mcp_json, origin, tombstoned_at
+      (await tx.query<Row>(`SELECT ${ROW_COLUMNS}
                             FROM personas WHERE tenant_id = ?`, [tenant])).map((r) => [r.name, toDesired(r)]));
     const result: ApplyResult = { created: [], updated: [], unchanged: [], tombstoned: [], overridesWiped: 0 };
     const incoming = new Set(rows.map((r) => r.name));
@@ -149,14 +153,15 @@ export async function applySync(
       else if (prev.origin === "git" && sameDesired(prev, r)) result.unchanged.push(r.name);
       else result.updated.push(r.name);
       await tx.run(
-        `INSERT INTO personas (id, tenant_id, name, soul_md, soul_json, soul_sha, model_default, mcp_json,
+        `INSERT INTO personas (id, tenant_id, name, soul_md, soul_json, soul_sha, model_default, mcp_json, runs_on,
                                slack_user_id, user_token, origin, source_revision, tombstoned_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, 'git', ?, NULL, ?, ?)
+         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 'git', ?, NULL, ?, ?)
          ON CONFLICT (tenant_id, name) DO UPDATE SET
            soul_md = excluded.soul_md, soul_json = excluded.soul_json, model_default = excluded.model_default,
-           mcp_json = excluded.mcp_json, slack_user_id = excluded.slack_user_id, user_token = excluded.user_token,
+           mcp_json = excluded.mcp_json, runs_on = excluded.runs_on,
+           slack_user_id = excluded.slack_user_id, user_token = excluded.user_token,
            origin = 'git', source_revision = excluded.source_revision, tombstoned_at = NULL, updated_at = excluded.updated_at`,
-        [randomUUID(), tenant, r.name, r.soulMd, JSON.stringify(r.soulJson ?? null), r.model, encJson(r.mcp),
+        [randomUUID(), tenant, r.name, r.soulMd, JSON.stringify(r.soulJson ?? null), r.model, encJson(r.mcp), r.runsOn ?? null,
          r.slackUserId, r.userToken ? encrypt(r.userToken) : null, meta.revision, now, now]);
     }
     for (const [name, prev] of existing) {
@@ -214,17 +219,18 @@ export async function createRuntimePersona(tenant: string, row: DesiredPersona, 
     }
     const now = Date.now();
     const written = await tx.query<{ name: string }>(
-      `INSERT INTO personas (id, tenant_id, name, soul_md, soul_json, model_default, mcp_json, slack_user_id, user_token,
+      `INSERT INTO personas (id, tenant_id, name, soul_md, soul_json, model_default, mcp_json, runs_on, slack_user_id, user_token,
                              origin, source_revision, tombstoned_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'runtime', NULL, NULL, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'runtime', NULL, NULL, ?, ?)
        ON CONFLICT (tenant_id, name) DO UPDATE SET
          soul_md = excluded.soul_md, soul_json = excluded.soul_json, model_default = excluded.model_default,
-         mcp_json = excluded.mcp_json, slack_user_id = excluded.slack_user_id, user_token = excluded.user_token,
+         mcp_json = excluded.mcp_json, runs_on = excluded.runs_on,
+         slack_user_id = excluded.slack_user_id, user_token = excluded.user_token,
          tombstoned_at = NULL, updated_at = excluded.updated_at
        WHERE personas.origin = 'runtime'
        RETURNING name`,
       [randomUUID(), tenant, row.name, row.soulMd, JSON.stringify(row.soulJson ?? null), row.model, encJson(row.mcp),
-       row.slackUserId, row.userToken ? encrypt(row.userToken) : null, now, now]);
+       row.runsOn ?? null, row.slackUserId, row.userToken ? encrypt(row.userToken) : null, now, now]);
     // A git row appeared after the read above: never overwrite it.
     if (!written.length) throw new NameTakenError(row.name);
     void by; // recorded in the audit log by the caller (Task 7)

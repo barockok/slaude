@@ -14,6 +14,9 @@ export interface DesiredPersona {
   soulMd: string;
   soulJson: unknown;
   mcp: unknown;
+  /** The node label this persona runs on (node labels spec §4.5); null or
+   *  absent = `default`. Desired layer only: no override can set it. */
+  runsOn?: string | null;
   origin: "git" | "runtime";
   tombstonedAt: number | null;
 }
@@ -51,5 +54,6 @@ export function mergeEffective(desired: DesiredPersona, overrides: Override[]): 
  */
 export function sameDesired(a: DesiredPersona, b: DesiredPersona): boolean {
   return a.slackUserId === b.slackUserId && a.userToken === b.userToken && a.model === b.model &&
-    a.soulMd === b.soulMd && JSON.stringify(a.mcp) === JSON.stringify(b.mcp) && a.tombstonedAt === null;
+    a.soulMd === b.soulMd && JSON.stringify(a.mcp) === JSON.stringify(b.mcp) &&
+    (a.runsOn ?? null) === (b.runsOn ?? null) && a.tombstonedAt === null;
 }

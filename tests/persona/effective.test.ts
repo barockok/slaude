@@ -46,3 +46,17 @@ describe("sameDesired", () => {
     expect(sameDesired({ ...base, tombstonedAt: 5 }, base)).toBe(false);
   });
 });
+
+describe("runsOn (node labels spec §4.5)", () => {
+  const base: DesiredPersona = { ...desired, runsOn: "engineering" };
+  test("a change of label is a change, and null equals absent (both are default)", () => {
+    expect(sameDesired(base, { ...base, runsOn: "finance" })).toBe(false);
+    expect(sameDesired(base, { ...base, runsOn: null })).toBe(false);
+    expect(sameDesired({ ...desired, runsOn: null }, desired)).toBe(true);
+  });
+  test("no override can set it: an override naming runsOn is ignored", () => {
+    const e = mergeEffective(base, [{ field: "runsOn" as any, value: "finance" }]);
+    expect(e.runsOn).toBe("engineering");
+    expect(e.overridden).toEqual([]);
+  });
+});
