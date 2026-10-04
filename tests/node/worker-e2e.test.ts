@@ -80,6 +80,7 @@ beforeAll(async () => {
   const { Redis } = await import("ioredis");
   const { NodeClient } = await import("../../src/node/client");
   const { startNodeWorker } = await import("../../src/node/worker");
+  const { parseNodeManifest } = await import("../../src/node/manifest");
   const Sessions = await import("../../src/db/sessions");
   const { metrics } = await import("../../src/metrics");
 
@@ -175,6 +176,11 @@ beforeAll(async () => {
       super.setMcpResolver(r);
       this.mcp = r;
     }
+    localMcp?: (sessionId: string) => Promise<Record<string, unknown>>;
+    override setLocalMcpResolver(r: any) {
+      super.setLocalMcpResolver(r);
+      this.localMcp = r;
+    }
     override setSessionConfigDirResolver(r: any) {
       super.setSessionConfigDirResolver(r);
       this.configDirResolver = r;
@@ -236,6 +242,16 @@ beforeAll(async () => {
     lock: { ttlMs: 2000, extendEveryMs: 300 },
     turnTimeoutMs: 30_000,
     configRoot: nodeConfigRoot,
+    // The default persona may mount gh; ops-bot may mount everything.
+    manifest: parseNodeManifest(
+      JSON.stringify({
+        version: 1,
+        mcpServers: { gh: { command: "gh-mcp" }, tf: { command: "tf-mcp" } },
+        allow: { default: ["gh"], "ops-bot": "*" },
+      }),
+      {},
+      "node.json",
+    ),
   });
   if (savedFallback === undefined) delete process.env.SLAUDE_PROVIDER_ENV_FALLBACK;
   else process.env.SLAUDE_PROVIDER_ENV_FALLBACK = savedFallback;
@@ -398,6 +414,32 @@ d("gateway↔node E2E (real Redis)", () => {
       await OneOnOne.unlock("C0TEAM", LOCK_THREAD);
     }
   }, 30_000);
+
+  // Node labels spec §4.10: the manifest allow-list keys on the persona in the
+  // job token's claims. A queued payload naming another persona (unsigned) must
+  // not widen what the session mounts.
+  test("the manifest resolver keys on the job token's persona, never the payload's personaId", async () => {
+    const M_THREAD = "9300.0";
+    const replies = () => posts.filter((p) => String(p.text).includes("node-reply:")).length;
+    const before = replies();
+    await emitSlack("message", msg(M_THREAD, "9300.1", "<@USLAUDE> manifest"));
+    await until(() => replies() > before, 15_000);
+    const sid = await sessionIdOf(M_THREAD);
+    expect(typeof stub.localMcp).toBe("function");
+    expect(Object.keys(await stub.localMcp!(sid))).toEqual(["gh"]);
+
+    // Replay the same turn with a forged payload persona allowed everything.
+    const ran = async () =>
+      [...(await turnsQ.queue("turns").getCompleted()), ...(await turnsQ.queue(nodeTurnsQueueFn(NODE_ID)).getCompleted())].find(
+        (j: any) => j.data?.sessionId === sid,
+      );
+    await until(async () => !!(await ran()), 10_000);
+    const job = await ran();
+    const mid = replies();
+    await turnsQ.queue("turns").add("turn", { ...job.data, personaId: "ops-bot", enqueuedAt: Date.now() }, { jobId: `forged-${sid}` });
+    await until(() => replies() > mid, 15_000);
+    expect(Object.keys(await stub.localMcp!(sid))).toEqual(["gh"]);
+  }, 40_000);
 
   test("warm routing: second message rides the per-node queue", async () => {
     const sessionId = await sessionIdOf(THREAD);

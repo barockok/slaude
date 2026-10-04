@@ -45,6 +45,7 @@ import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
 import { decodeClaims, makeRemoteFactory, makeRemoteResolver } from "./remote";
 import { lockFromClaims } from "./session-lock";
+import { type NodeManifest, loadNodeManifest, makeNodeLocalMcpResolver } from "./manifest";
 import { ChildEnvPatch } from "../agent/child-env";
 import { BootFailure, createOnceGuard } from "../gateway/core/failure-codes";
 
@@ -408,6 +409,10 @@ export interface NodeWorkerOpts {
   errorWindowMs?: number;
   /** Session-lock knobs (tests shrink them). */
   lock?: { ttlMs?: number; extendEveryMs?: number };
+  /** The node stdio MCP manifest (node labels spec §4.10). Default: read from
+   *  SLAUDE_NODE_MANIFEST when SLAUDE_ROLE=node. null (the default in any other
+   *  role: the simulator, the in-process harness) = today's MCP behaviour. */
+  manifest?: NodeManifest | null;
   /** SLAUDE_PROVIDER_ENV_FALLBACK override (tests). Default: env. */
   providerEnvFallback?: boolean;
   /** Hard turn deadline in ms. Default: the job-token TTL (max turn duration). */
@@ -460,6 +465,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   if (labels.length === 0) throw new Error("a node needs at least one label");
   for (const l of labels) if (!LABEL_RE.test(l)) throw new Error(`malformed node label '${l}'`);
   const labelSet: ReadonlySet<string> = new Set(labels);
+  // Before any connection: an invalid manifest stops the node here.
+  const manifest = opts.manifest !== undefined ? opts.manifest : env.role() === "node" ? loadNodeManifest() : null;
   const keys = opts.keys ?? makeKeys();
   const url = opts.redisUrl ?? redisUrl();
   const client = opts.client ?? new NodeClient({ baseUrl: env.gatewayUrl(), token: env.nodeToken() });
@@ -517,6 +524,13 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     // Token budget stays node-local (spec §3): the live Query is here.
     [SESSION_MCP_NAME]: createSessionMcp({ getSnapshot: () => agent.getTokenSnapshot(sessionId) }),
   }));
+  // The manifest's stdio servers for the persona in the job token's claims
+  // (never the payload's personaId); merged before the resolver above.
+  if (manifest) {
+    agent.setLocalMcpResolver(
+      makeNodeLocalMcpResolver({ manifest, client, tenantFor: (id) => tenants.get(id), tokenFor: (id) => store.tokenFor(id) }),
+    );
+  }
   // Every session's CLAUDE_CONFIG_DIR is pod-local, seeded from the gateway
   // with the access tokens for the turn's owner (the gateway resolves the owner
   // from the job token's runAs). Outside the node role — the simulator and the
