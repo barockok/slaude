@@ -6,6 +6,8 @@
  * place for the persona and the reason, nothing more.
  */
 export type SecretFailureReason =
+  /** the reference does not parse (re-checked at resolution) */
+  | "invalid_ref"
   /** a vault:// ref but this process has no Vault configured */
   | "disabled"
   /** the ref's path is under no configured mount */
