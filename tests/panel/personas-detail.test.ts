@@ -170,7 +170,9 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("GET /panel/api/personas/:name",
     await sync([row("default"), row("ana", { userToken: S.userToken, mcp: MCP, provider: { apiKey: "vault://kv/agents/ana#api_key", authToken: S.rawProvider } })]);
     const sinks = (["log", "error", "warn", "info", "debug"] as const).map((m) => spyOn(console, m).mockImplementation(() => {}));
     let bodies = "";
+    let logged = "";
     try {
+      console.log("capture-canary");
       for (const who of [operator, superadmin]) {
         const r = await read("/panel/api/personas/ana", who);
         expect(r.status).toBe(200);
@@ -180,9 +182,14 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("GET /panel/api/personas/:name",
         bodies += list.text;
       }
     } finally {
-      for (const s of sinks) s.mockRestore();
+      // Copy the calls BEFORE restoring: mockRestore() clears them.
+      for (const s of sinks) {
+        logged += s.mock.calls.map((c) => c.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ")).join("\n");
+        s.mockRestore();
+      }
     }
-    const logged = sinks.flatMap((s) => s.mock.calls.map((c) => c.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "))).join("\n");
+    // The capture itself must work, or "nothing logged" proves nothing.
+    expect(logged).toContain("capture-canary");
     for (const v of Object.values(S)) {
       expect(bodies).not.toContain(v);
       expect(logged).not.toContain(v);
