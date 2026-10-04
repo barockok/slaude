@@ -22,6 +22,7 @@ import {
   whenPersonaRegistrySettled,
 } from "../../src/persona/registry";
 import { personaSoulText } from "../../src/persona/soul-source";
+import { personaKbList } from "../../src/knowledge/persona-kb";
 import { soulDataBase } from "../../src/soul/extract";
 import { SoulDataSchema } from "../../src/soul/data";
 import { loadSoul } from "../../src/soul/loader";
@@ -102,7 +103,7 @@ describe.skipIf(!isPg)("a database-backed registry", () => {
     const r = await buildPersonaRegistry("default");
     expect(r.lookupByName("ana")!.model).toBe("m-ana-live");
     expect(r.lookupByName("ana")!.mcp).toBeNull();
-    expect(r.defaultPersona!()).toEqual({ model: "m-default", mcp, provider: null, runsOn: null });
+    expect(r.defaultPersona!()).toEqual({ model: "m-default", mcp, provider: null, runsOn: null, kbSources: null });
     expect(managedPersonaModel("ana", r)).toBe("m-ana-live");
     expect(managedPersonaModel(undefined, r)).toBe("m-default");
     writeFsPersona("fsbot", "UFSBOT", "fs soul");
@@ -129,6 +130,26 @@ describe.skipIf(!isPg)("a database-backed registry", () => {
     const fsr = await buildPersonaRegistry("default");
     expect(managedPersonaProvider("ana", fsr)).toBeNull();
     expect(personasWithProvider(fsr)).toEqual([]);
+  });
+
+  test("the snapshot carries kbSources (null = all); a filesystem registry reads every KB", async () => {
+    await P.applySync("default", [
+      { ...row("default"), kbSources: [] },
+      { ...row("ana"), kbSources: ["kb-runbook"] },
+      row("bea"),
+    ], meta("r1", "2026-10-01T10:00:00Z"));
+    const r = await buildPersonaRegistry("default");
+    expect(personaKbList("ana", r)).toEqual(["kb-runbook"]);
+    expect(personaKbList("bea", r)).toBeNull();
+    expect(personaKbList(undefined, r)).toEqual([]);
+    expect(personaKbList("default", r)).toEqual([]);
+    // A retired persona reads nothing rather than the default's scope.
+    expect(() => personaKbList("ghost", r)).toThrow();
+    await db.run(`DELETE FROM persona_sync_state`);
+    await db.run(`DELETE FROM personas`);
+    const fsr = await buildPersonaRegistry("default");
+    expect(personaKbList("ana", fsr)).toBeNull();
+    expect(personaKbList(undefined, fsr)).toBeNull();
   });
 
   test("runsOnFor reads each managed persona's runs_on; null and an unknown name are 'default'", async () => {

@@ -217,6 +217,7 @@ export const m = {
     "slaude_node_legacy_auth_total",
     "/v1 requests authenticated with the legacy shared token while SLAUDE_NODE_KEY is set.",
   ),
+  memoryGatewayFailuresTotal: metrics.counter("slaude_memory_gateway_failures_total", "Node memory calls to the gateway that failed, labeled by kind (<op>:<status>|timeout|network|unsupported). The turn runs without memory."),
   v1ToolCallsTotal: metrics.counter("slaude_v1_tool_calls_total", "REST tool-plane invocations on /v1/tools/<server>/<tool>, labeled by server + tool."),
   // Node runtime (spec §6).
   nodeSessionsLive: metrics.gauge("slaude_node_sessions_live", "Warm SDK Query sessions held by this node."),

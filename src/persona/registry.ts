@@ -15,7 +15,11 @@ export type { Persona, PersonaConfig };
 
 /** A managed tenant's `default` row: its effective model and mcp, and its
  *  provider references (desired layer; not overridable). */
-export type DefaultPersonaFields = { model: string | null; mcp: unknown; provider?: PersonaProvider | null; runsOn?: string | null };
+export type DefaultPersonaFields = {
+  model: string | null; mcp: unknown; provider?: PersonaProvider | null; runsOn?: string | null;
+  /** Desired layer, not overridable: null = every installed KB. */
+  kbSources?: string[] | null;
+};
 
 export interface PersonaRegistry {
   lookupByUserId(slackUserId: string): Persona | null;
@@ -152,9 +156,12 @@ async function loadPersonaState(tenant: string): Promise<PersonaState> {
       mcp: p.mcp ?? null,
       provider: p.provider ?? null,
       runsOn: p.runsOn ?? null,
+      kbSources: p.kbSources ?? null,
     }));
   const def = all.find((p) => p.name === "default") ?? null;
-  const defaultFields = def ? { model: def.model, mcp: def.mcp ?? null, provider: def.provider ?? null, runsOn: def.runsOn ?? null } : null;
+  const defaultFields = def
+    ? { model: def.model, mcp: def.mcp ?? null, provider: def.provider ?? null, runsOn: def.runsOn ?? null, kbSources: def.kbSources ?? null }
+    : null;
   return { registry: snapshot(personas, { tombstoned, defaultPersona: defaultFields }), managed: { defaultPersona: def } };
 }
 

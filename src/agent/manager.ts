@@ -38,6 +38,7 @@ import { dbSessionStore, type SessionStore } from "./session-store";
 import * as OneOnOne from "../db/one-on-one";
 import type { OneOnOneLockRow } from "../db/one-on-one";
 import { memory } from "../memory";
+import type { MemoryProvider } from "../memory/provider";
 import { ChildEnvPatch, scrubChildEnv, withoutKeys } from "./child-env";
 import { resolveSessionConfigDir } from "./oauth-home";
 import { sessionIdOpts } from "./session-id-opts";
@@ -246,6 +247,9 @@ export class AgentManager extends EventEmitter {
   #personaSoulResolver: PersonaSoulResolver | undefined;
   #personaModelResolver: PersonaModelResolver | undefined;
   #mcpResolver: McpResolver | undefined;
+  /** Episodic memory. The process provider in mono and on the gateway; the
+   *  node worker installs a REST client of the gateway's memory routes. */
+  #memory: MemoryProvider = memory;
   #stopGuard: StopGuard | undefined;
   #remoteResolver: ((sessionId: string) => Promise<RemoteTarget | null>) | undefined;
   #remoteFactory: ((sessionId: string, t: RemoteTarget) => Promise<RemoteHandle> | RemoteHandle) | undefined;
@@ -389,6 +393,11 @@ export class AgentManager extends EventEmitter {
   /** Install a transport-level MCP server resolver. Called once per session start. */
   setMcpResolver(resolver: McpResolver | undefined) {
     this.#mcpResolver = resolver;
+  }
+
+  /** Replace the memory provider (the node role: memory served by the gateway). */
+  setMemoryProvider(provider: MemoryProvider) {
+    this.#memory = provider;
   }
 
   /** Install a transport-level Stop hook guard (e.g. Slack "must reply" enforcement). */
@@ -891,8 +900,9 @@ export class AgentManager extends EventEmitter {
     if (!row) throw new Error(`session not found: ${sessionId}`);
 
     // Memory must never break a turn (the brain provider's own policy). The
-    // sqlite provider throws where no database is open, as on a node.
-    const memBlock = await memory.prefetch(sessionId).catch((e) => {
+    // sqlite provider throws where no database is open; a node uses the
+    // gateway's memory routes instead (setMemoryProvider).
+    const memBlock = await this.#memory.prefetch(sessionId).catch((e) => {
       console.error(`[mgr] memory prefetch failed session=${sessionId}:`, e instanceof Error ? e.message : e);
       return null;
     });
@@ -1463,7 +1473,7 @@ export class AgentManager extends EventEmitter {
     const user = live.turn.user;
     const assistant = live.turn.assistant.join("\n");
     live.turn = { user: "", assistant: [] };
-    void memory.syncTurn({ sessionId: live.id, user, assistant }).catch((e) => {
+    void this.#memory.syncTurn({ sessionId: live.id, user, assistant }).catch((e) => {
       console.error(`[mgr] memory sync failed session=${live.id}:`, e instanceof Error ? e.message : e);
     });
   }
