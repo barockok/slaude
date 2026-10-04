@@ -24,6 +24,20 @@ export interface NodeClientOpts {
   baseDelayMs?: number;
   /** Injectable fetch (tests). */
   fetchImpl?: typeof fetch;
+  /** Bound on one memory call, body included. Default MEMORY_TIMEOUT_MS. */
+  memoryTimeoutMs?: number;
+}
+
+/** A memory call waits at most this long; longer than the gateway's own bound
+ *  on the brain (GATEWAY_MEMORY_TIMEOUT_MS), so the gateway answers first. */
+export const MEMORY_TIMEOUT_MS = 3000;
+
+/** A memory call gave up at its bound. */
+export class MemoryTimeoutError extends Error {
+  override name = "MemoryTimeoutError";
+  constructor(op: string, ms: number) {
+    super(`memory ${op} timed out after ${ms}ms`);
+  }
 }
 
 /** Session row view served by GET /v1/sessions/:id. */
@@ -105,6 +119,7 @@ export class NodeClient {
   #attempts: number;
   #baseDelayMs: number;
   #fetch: typeof fetch;
+  #memoryTimeoutMs: number;
   /** `tenantId\0personaId` → cached runtime bundle + its ETag. The bundle is
    *  per persona, so caching on the tenant alone handed every session on this
    *  node whichever persona was fetched first. The NUL separator cannot appear
@@ -121,6 +136,7 @@ export class NodeClient {
     this.#attempts = Math.max(1, opts.attempts ?? 3);
     this.#baseDelayMs = opts.baseDelayMs ?? 250;
     this.#fetch = opts.fetchImpl ?? fetch;
+    this.#memoryTimeoutMs = opts.memoryTimeoutMs ?? MEMORY_TIMEOUT_MS;
   }
 
   /** Low-level request with bearer + optional job token + retry policy. */
@@ -306,17 +322,52 @@ export class NodeClient {
    * route (404). Other non-200s throw.
    */
   async memoryPrefetch(jobToken: string): Promise<string | null | "unsupported"> {
-    const res = await this.request("/v1/tools/memory/prefetch", { method: "POST", body: {}, jobToken });
-    if (res.status === 404) return "unsupported";
-    const body = await this.#json<{ block?: string | null }>(res);
-    return typeof body.block === "string" ? body.block : null;
+    return this.#memoryCall("prefetch", {}, jobToken, async (res) => {
+      const body = await this.#json<{ block?: string | null }>(res);
+      return typeof body.block === "string" ? body.block : null;
+    });
   }
 
   async memorySync(turn: { user: string; assistant: string }, jobToken: string): Promise<"ok" | "unsupported"> {
-    const res = await this.request("/v1/tools/memory/sync", { method: "POST", body: turn, jobToken });
-    if (res.status === 404) return "unsupported";
-    await this.#json<unknown>(res);
-    return "ok";
+    return this.#memoryCall("sync", turn, jobToken, async (res) => {
+      await this.#json<unknown>(res);
+      return "ok" as const;
+    });
+  }
+
+  /**
+   * One bounded attempt: memory sits on the turn's boot path, so a hung
+   * gateway (or a socket that accepts and never answers) must cost at most
+   * `memoryTimeoutMs`, and a 5xx is not worth retrying. The whole exchange,
+   * body included, is raced against the bound, so a fetch that ignores the
+   * abort signal still gives up.
+   */
+  async #memoryCall<T>(op: "prefetch" | "sync", body: unknown, jobToken: string, read: (res: Response) => Promise<T>): Promise<T | "unsupported"> {
+    const ms = this.#memoryTimeoutMs;
+    const ac = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        ac.abort();
+        reject(new MemoryTimeoutError(op, ms));
+      }, ms);
+    });
+    const exchange = (async () => {
+      const res = await this.#fetch(`${this.#base}/v1/tools/memory/${op}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json", [JOB_HEADER]: jobToken },
+        body: JSON.stringify(body),
+        signal: ac.signal,
+      });
+      if (res.status === 404) return "unsupported" as const;
+      return read(res);
+    })();
+    exchange.catch(() => {}); // the loser of the race must not surface as unhandled
+    try {
+      return await Promise.race([exchange, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**

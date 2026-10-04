@@ -6,11 +6,20 @@
  *
  * Memory never breaks a turn. Every failure resolves (prefetch to null) and is
  * logged once per kind, not once per turn: a gateway that predates the routes
- * (404), a refusal (the label gate's 403, a 400), a gateway error, the network,
- * or a session with no job token.
+ * (404), a refusal (the label gate's 403, a 400, a retired persona's 409), a
+ * gateway error, the bound on the call (NodeClient.memoryTimeoutMs, no retry),
+ * the network, or a session with no job token. Every failure also counts in
+ * slaude_memory_gateway_failures_total{kind}.
  */
 import type { MemoryProvider, SyncTurn } from "../memory/provider";
-import { NodeApiError, type NodeClient } from "./client";
+import { m as metric } from "../metrics";
+import { MemoryTimeoutError, NodeApiError, type NodeClient } from "./client";
+
+/** Per side of a turn sent to the gateway. The brain provider keeps ~800
+ *  characters of each; a little more leaves the gateway's own truncation in
+ *  charge of the exact cut, and the request stays small. */
+export const MEMORY_TURN_MAX_CHARS = 2000;
+const clip = (s: string) => (s.length <= MEMORY_TURN_MAX_CHARS ? s : s.slice(0, MEMORY_TURN_MAX_CHARS) + "…");
 
 export function makeNodeMemoryProvider(deps: {
   client: Pick<NodeClient, "memoryPrefetch" | "memorySync">;
@@ -25,11 +34,16 @@ export function makeNodeMemoryProvider(deps: {
     warned.add(kind);
     warn(`[node-memory] ${msg} (logged once; turns continue without memory)`);
   };
-  const unsupported = () =>
+  const unsupported = () => {
+    metric.memoryGatewayFailuresTotal.inc({ kind: "unsupported" });
     once("unsupported", "the gateway does not serve /v1/tools/memory (older gateway): no <memory-context>, turns not recorded");
+  };
   const failed = (op: string, e: unknown) => {
-    if (e instanceof NodeApiError) once(`${op}:${e.status}`, `memory ${op} refused by the gateway: HTTP ${e.status}`);
-    else once(`${op}:network`, `memory ${op} failed: ${e instanceof Error ? e.message : String(e)}`);
+    const kind =
+      e instanceof NodeApiError ? String(e.status) : e instanceof MemoryTimeoutError ? "timeout" : "network";
+    metric.memoryGatewayFailuresTotal.inc({ kind: `${op}:${kind}` });
+    if (e instanceof NodeApiError) once(`${op}:${kind}`, `memory ${op} refused by the gateway: HTTP ${e.status}`);
+    else once(`${op}:${kind}`, `memory ${op} failed: ${e instanceof Error ? e.message : String(e)}`);
   };
   const token = (sessionId: string): string | undefined => {
     const t = deps.tokenFor(sessionId);
@@ -57,7 +71,7 @@ export function makeNodeMemoryProvider(deps: {
       const t = token(turn.sessionId);
       if (!t) return;
       try {
-        const r = await deps.client.memorySync({ user: turn.user, assistant: turn.assistant }, t);
+        const r = await deps.client.memorySync({ user: clip(turn.user), assistant: clip(turn.assistant) }, t);
         if (r === "unsupported") unsupported();
       } catch (e) {
         failed("sync", e);
