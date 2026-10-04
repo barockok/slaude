@@ -31,6 +31,14 @@ const ALLOW: Record<string, string> = {
   ANTHROPIC_AUTH_TOKEN: "provider env fallback on nodes",
   ANTHROPIC_BASE_URL: "provider env fallback on nodes",
   CLAUDE_CODE_OAUTH_TOKEN: "provider env fallback on nodes",
+  // Named by the node only to DELETE them from a managed persona's child
+  // (strict provider mode, review R2-F3); a node may hold them for its own
+  // fallback provider.
+  AWS_ACCESS_KEY_ID: "provider env fallback on nodes (Bedrock); removed in strict mode",
+  AWS_SECRET_ACCESS_KEY: "provider env fallback on nodes (Bedrock); removed in strict mode",
+  AWS_SESSION_TOKEN: "provider env fallback on nodes (Bedrock); removed in strict mode",
+  AWS_BEARER_TOKEN_BEDROCK: "provider env fallback on nodes (Bedrock); removed in strict mode",
+  ANTHROPIC_BEDROCK_BASE_URL: "provider env fallback on nodes (Bedrock); removed in strict mode",
   // Third-party embedding provider keys the brain (gateway) uses. Generic names an
   // operator may also give agent tools on purpose, so they are not scrubbed or
   // flagged; set them on the gateway only for embeddings.
