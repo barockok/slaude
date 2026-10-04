@@ -71,5 +71,24 @@ export function summarize(sessions: SessionSummary[]) {
   return { total: sessions.length, by, warm, engaged };
 }
 
+/** Hash routes: `#/s/<id>` a session, `#/p` the personas, `#/p/<name>` one persona; else the fleet. */
+export type Route =
+  | { kind: "fleet" }
+  | { kind: "session"; id: string }
+  | { kind: "personas" }
+  | { kind: "persona"; name: string };
+
+export function parseRoute(hash: string): Route {
+  const h = hash.replace(/^#/, "");
+  const s = h.match(/^\/s\/(.+)$/);
+  if (s) return { kind: "session", id: s[1]! };
+  const p = h.match(/^\/p\/(.+)$/);
+  if (p) {
+    try { return { kind: "persona", name: decodeURIComponent(p[1]!) }; } catch { return { kind: "personas" }; }
+  }
+  if (h === "/p" || h === "/p/") return { kind: "personas" };
+  return { kind: "fleet" };
+}
+
 export const PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"] as const;
 export const MODELS = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"] as const;
