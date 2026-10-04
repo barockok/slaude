@@ -164,4 +164,34 @@ describe("two registered apps in one channel", () => {
     expect(g.turns).toHaveLength(1);
     expect((await Sessions.findById(g.turns[0]!))!.engaged).toBe(1);
   });
+
+  // F4: an app installed at runtime is self at once, not after a cache expiry.
+  it("a newly installed app's bot is self as soon as the registry lists it", async () => {
+    const g = setup();
+    await g.deliver("A0ONE", { user: WORLD.manager, ts: "938.1", text: `<@${BOT.A0ONE.user}> hi` });
+    expect(g.turns).toHaveLength(1);
+    g.registered.add("A0THREE");
+    await g.deliver("A0ONE", { user: BOT.A0THREE.user, bot_id: BOT.A0THREE.bot, ts: "938.2", thread_ts: "938.1", text: "from C" });
+    expect(g.turns).toHaveLength(1);
+  });
+
+  // F5: a revoked install is not re-tried inline on every event, and concurrent
+  // events share one refresh.
+  it("a failing auth.test is cached, and concurrent events share one refresh", async () => {
+    const g = setup();
+    // Count only event-path calls: let the boot diagnostic's per-app auth.test finish first.
+    await new Promise((r) => setTimeout(r, 20));
+    for (const k of Object.keys(g.authCalls)) delete g.authCalls[k];
+    g.revoked.add("A0TWO");
+    await Promise.all([
+      g.deliver("A0ONE", { user: WORLD.manager, ts: "939.1", text: "chatter one" }),
+      g.deliver("A0ONE", { user: WORLD.manager, ts: "939.2", text: "chatter two" }),
+      g.deliver("A0ONE", { user: WORLD.manager, ts: "939.3", text: "chatter three" }),
+    ]);
+    expect(g.authCalls.A0TWO).toBe(1);
+    g.registered.add("A0THREE"); // a registry change refreshes, but the failure stays cached
+    await g.deliver("A0ONE", { user: WORLD.manager, ts: "939.4", text: "chatter four" });
+    expect(g.authCalls.A0TWO).toBe(1);
+    expect(g.authCalls.A0THREE).toBe(1);
+  });
 });

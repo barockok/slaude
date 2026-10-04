@@ -2574,26 +2574,42 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   /** The delivering app's own bot user id. */
   const getBotId = async (args: any) =>
     (await botIdsOf(`${args?.context?.apiAppId ?? ""}:${args?.context?.teamId ?? args?.event?.team ?? ""}`, args?.client ?? t.client)).userId;
-  // Union over every registered app, refreshed at most once a minute so an
-  // app installed at runtime is picked up. An app whose auth.test fails is
-  // left out of this round rather than failing the event.
+  // Union over every registered app. Rebuilt when the registry's app list
+  // changes (an install or removal counts at once) and at most once a minute
+  // otherwise. One rebuild runs at a time; concurrent events wait for it. An
+  // app whose auth.test fails (a revoked install) is left out and not retried
+  // for a minute, so it never costs a Slack call per event.
   const registeredApps = async () => (t.apps ? await t.apps() : [{ apiAppId: "", teamId: "", client: t.client }]);
-  let selfBots: { userIds: Set<string>; botIds: Set<string>; at: number } | null = null;
-  const getSelfBots = async (args: any): Promise<{ userIds: Set<string>; botIds: Set<string> }> => {
-    if (!selfBots || Date.now() - selfBots.at > 60_000) {
-      const apps = await registeredApps();
-      const userIds = new Set<string>();
-      const botIds = new Set<string>();
-      for (const a of apps) {
-        try {
-          const ids = await botIdsOf(`${a.apiAppId}:${a.teamId}`, a.client);
-          if (ids.userId) userIds.add(ids.userId);
-          if (ids.botId) botIds.add(ids.botId);
-        } catch (e: any) {
-          console.error(`[slack-auth] app=${a.apiAppId || "-"} auth.test failed:`, e?.data?.error ?? e?.message);
-        }
+  const authFailedAt = new Map<string, number>();
+  let selfBots: { sig: string; userIds: Set<string>; botIds: Set<string>; at: number } | null = null;
+  let selfBotsRefresh: Promise<void> | null = null;
+  const refreshSelfBots = async (apps: Awaited<ReturnType<typeof registeredApps>>, sig: string): Promise<void> => {
+    const userIds = new Set<string>();
+    const botIds = new Set<string>();
+    for (const a of apps) {
+      const key = `${a.apiAppId}:${a.teamId}`;
+      const failed = authFailedAt.get(key);
+      if (failed !== undefined && Date.now() - failed < 60_000) continue;
+      try {
+        const ids = await botIdsOf(key, a.client);
+        authFailedAt.delete(key);
+        if (ids.userId) userIds.add(ids.userId);
+        if (ids.botId) botIds.add(ids.botId);
+      } catch (e: any) {
+        authFailedAt.set(key, Date.now());
+        console.error(`[slack-auth] app=${a.apiAppId || "-"} auth.test failed:`, e?.data?.error ?? e?.message);
       }
-      selfBots = { userIds, botIds, at: Date.now() };
+    }
+    selfBots = { sig, userIds, botIds, at: Date.now() };
+  };
+  const getSelfBots = async (args: any): Promise<{ userIds: Set<string>; botIds: Set<string> }> => {
+    const apps = await registeredApps();
+    const sig = apps.map((a) => `${a.apiAppId}:${a.teamId}`).join(",");
+    if (!selfBots || selfBots.sig !== sig || Date.now() - selfBots.at > 60_000) {
+      selfBotsRefresh ??= refreshSelfBots(apps, sig).finally(() => {
+        selfBotsRefresh = null;
+      });
+      await selfBotsRefresh;
     }
     // The delivering app is always self, even before the next refresh.
     const own = await botIdsOf(`${args?.context?.apiAppId ?? ""}:${args?.context?.teamId ?? args?.event?.team ?? ""}`, args?.client ?? t.client);
