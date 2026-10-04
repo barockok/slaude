@@ -103,13 +103,17 @@ export class ApprovalGate {
         const id = m[2]!;
         const pending = this.#pending.get(id);
         const userId = (body as any).user?.id ?? "unknown";
-        const stale = async () => {
+        const stale = async (status?: string) => {
           try {
-            // Ephemeral note only: the decided card is the visible record.
+            // Ephemeral note only: a decided card is the visible record. An
+            // expired/cancelled row was never decided, so don't say it was.
             await respond({
               response_type: "ephemeral",
               replace_original: false,
-              text: `:lock: approval already decided`,
+              text:
+                status === "expired" || status === "cancelled"
+                  ? `:hourglass: this approval ${status}`
+                  : `:lock: approval already decided`,
             });
           } catch {}
         };
@@ -138,7 +142,7 @@ export class ApprovalGate {
             void pending.unsub?.().catch(() => {});
             pending.resolve({ approved: false, by: "system", note: row?.status ?? "missing" });
           }
-          return void (await stale());
+          return void (await stale(row?.status));
         }
         if (!pending) {
           const isPollRow = (row.payload as any)?.waiter === "poll";
@@ -204,7 +208,7 @@ export class ApprovalGate {
             void pending.unsub?.().catch(() => {});
             pending.resolve({ approved: false, by: "system", note: cur.status });
           }
-          return void (await stale());
+          return void (await stale(cur?.status));
         }
 
         if (pending.timer) clearTimeout(pending.timer);

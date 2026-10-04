@@ -230,15 +230,18 @@ export class PermissionGate {
         const toolUseId = m[2]!;
         const userId = (body as any).user?.id ?? "unknown";
         const status = decision === "deny" ? ("denied" as const) : ("approved" as const);
-        const stale = async () => {
-          // Already decided (duplicate click, expiry, abort, or another
-          // replica won). Answer ephemerally and leave the card alone: the
-          // first decision's rewrite is the only visible record.
+        const stale = async (status?: string) => {
+          // Duplicate click, expiry, abort, or another replica won. Answer
+          // ephemerally and leave the card alone: a decided card's rewrite is
+          // the only visible record. Expired/cancelled rows were never decided.
           try {
             await respond({
               response_type: "ephemeral",
               replace_original: false,
-              text: `:lock: \`${a.action_id.split(":")[2]}\` already decided`,
+              text:
+                status === "expired" || status === "cancelled"
+                  ? `:hourglass: \`${a.action_id.split(":")[2]}\` ${status}`
+                  : `:lock: \`${a.action_id.split(":")[2]}\` already decided`,
             });
           } catch {}
         };
@@ -254,7 +257,7 @@ export class PermissionGate {
         const pend = this.#pending.get(toolUseId);
         if (!pend) {
           const cur = await PendingGates.get(toolUseId);
-          if (!cur || cur.status !== "pending") return void (await stale());
+          if (!cur || cur.status !== "pending") return void (await stale(cur?.status));
           const isPollRow = (cur.payload as any)?.waiter === "poll";
           if (!isPollRow && cur.instanceId === PendingGates.INSTANCE_ID) {
             // Our own in-process row with no waiter: the abort raced the
@@ -305,7 +308,7 @@ export class PermissionGate {
             void pend.unsub?.().catch(() => {});
             pend.resolve({ behavior: "deny", message: cur.status === "expired" ? "expired before a decision" : "cancelled" });
           }
-          return void (await stale());
+          return void (await stale(cur?.status));
         }
         this.#pending.delete(toolUseId);
         void pend.unsub?.().catch(() => {});

@@ -1,4 +1,5 @@
 import { describe, expect, test, beforeEach } from "bun:test";
+import * as PendingGates from "../src/db/pending-gates";
 import { PermissionGate } from "../src/gateway/slack/permission-gate";
 
 type Handler = (a: any) => Promise<void>;
@@ -232,6 +233,24 @@ describe("PermissionGate", () => {
     expect(note.response_type).toBe("ephemeral");
     expect(note.blocks).toBeUndefined();
     expect(f.updates.length).toBe(updatesBefore);
+  });
+
+  test("click on a cancelled row says cancelled, not decided", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app);
+    gate.bindSession("S", "C", "T");
+    const ac = new AbortController();
+    const p = gate.resolver("S", "Bash", {}, ctx("UCXL1", ac.signal));
+    const allowId = (await firstPost(f)).blocks
+      .find((b: any) => b.type === "actions")
+      .elements.find((e: any) => e.action_id.includes("allow:")).action_id;
+    await PendingGates.resolve("UCXL1", "cancelled", "system");
+    const calls = await f.fire(allowId, "USR");
+    expect(calls[0].text).toContain("cancelled");
+    expect(calls[0].text).not.toContain("already decided");
+    expect(calls[0].replace_original).toBe(false);
+    expect(f.updates.length).toBe(0);
+    expect((await p).behavior).toBe("deny");
   });
 
   test("unbindSession + decisionReason rendered", async () => {

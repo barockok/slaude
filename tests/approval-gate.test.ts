@@ -1,6 +1,7 @@
 import { describe, expect, test, beforeEach } from "bun:test";
 import { writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { paths } from "../src/config/home";
+import * as PendingGates from "../src/db/pending-gates";
 import { ApprovalGate } from "../src/gateway/slack/approval-gate";
 import { setSoulData, __resetSoulDataMemo } from "../src/soul/extract";
 import { SoulDataSchema } from "../src/soul/data";
@@ -259,6 +260,25 @@ describe("ApprovalGate", () => {
     expect(note.response_type).toBe("ephemeral");
     expect(note.blocks).toBeUndefined();
     expect(f.updates.length).toBe(updatesBefore);
+  });
+
+  test("click on an expired row says expired, not decided, and leaves the card alone", async () => {
+    writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
+    const f = fakeApp();
+    const gate = new ApprovalGate(f.app, []);
+    const p = gate.request({ channel: "C", threadTs: "T", summary: "x" });
+    const id = (await firstPost(f)).blocks
+      .find((b: any) => b.type === "actions")
+      .elements.find((e: any) => e.action_id.includes("approve")).action_id;
+    // a sweep on another replica expired the row; the card's buttons are still live
+    await PendingGates.resolve(id.replace(/^slaude_appr:(approve|deny):/, ""), "expired", "system");
+    const respond = await f.fire(id, "U001");
+    const note = (respond as any).calls[0];
+    expect(note.text).toContain("expired");
+    expect(note.text).not.toContain("already decided");
+    expect(note.replace_original).toBe(false);
+    expect(f.updates.length).toBe(0);
+    expect((await p).approved).toBe(false);
   });
 
   test("empty summary → fallback text", async () => {
