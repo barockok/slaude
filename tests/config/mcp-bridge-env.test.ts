@@ -6,6 +6,10 @@ const NAMES = {
   ownerConcurrency: "SLAUDE_MCP_BRIDGE_OWNER_CONCURRENCY",
   maxRequestBytes: "SLAUDE_MCP_BRIDGE_MAX_REQUEST_BYTES",
   maxResultBytes: "SLAUDE_MCP_BRIDGE_MAX_RESULT_BYTES",
+  sessionConcurrency: "SLAUDE_MCP_BRIDGE_SESSION_CONCURRENCY",
+  idleMs: "SLAUDE_MCP_BRIDGE_IDLE_MS",
+  maxListBytes: "SLAUDE_MCP_BRIDGE_MAX_LIST_BYTES",
+  maxTools: "SLAUDE_MCP_BRIDGE_MAX_TOOLS",
 } as const;
 const saved = Object.fromEntries(Object.values(NAMES).map((n) => [n, process.env[n]]));
 afterEach(() => {
@@ -23,7 +27,14 @@ describe("SLAUDE_MCP_BRIDGE_* limits", () => {
       ownerConcurrency: env.mcpBridge.ownerConcurrency(),
       maxRequestBytes: env.mcpBridge.maxRequestBytes(),
       maxResultBytes: env.mcpBridge.maxResultBytes(),
-    }).toEqual({ timeoutMs: 50_000, ownerConcurrency: 8, maxRequestBytes: 1024 * 1024, maxResultBytes: 1024 * 1024 });
+      sessionConcurrency: env.mcpBridge.sessionConcurrency(),
+      idleMs: env.mcpBridge.idleMs(),
+      maxListBytes: env.mcpBridge.maxListBytes(),
+      maxTools: env.mcpBridge.maxTools(),
+    }).toEqual({
+      timeoutMs: 50_000, ownerConcurrency: 8, maxRequestBytes: 1024 * 1024, maxResultBytes: 1024 * 1024,
+      sessionConcurrency: 4, idleMs: 300_000, maxListBytes: 1024 * 1024, maxTools: 500,
+    });
   });
 
   test("a positive integer is taken; an empty value is the default", () => {

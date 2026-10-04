@@ -25,7 +25,7 @@ import type { CredentialOwner } from "../../../src/agent/credential-owner";
 import { clearCredentials, privateOverrides } from "../../../src/gateway/core/external-mcp";
 import { localLock, makeCredentialRefresher } from "../../../src/gateway/core/credential-refresh";
 import { handleMcpCredentials } from "../../../src/gateway/api/mcp-credentials";
-import { BridgeRefused, connectText, createMcpBridge, reauthText, type McpBridge } from "../../../src/gateway/core/mcp-bridge";
+import { BridgeRefused, connectText, createMcpBridge, forbiddenText, reauthText, type McpBridge } from "../../../src/gateway/core/mcp-bridge";
 import type { JobClaims } from "../../../src/gateway/api/auth";
 import { LEAKY_BODY, startUpstream } from "./upstream";
 
@@ -259,6 +259,51 @@ describe("refresh and re-authorisation", () => {
     const r = await bridge.call(claims("agent"), "example", "whoami", {});
     expect(r.content).toEqual([{ type: "text", text: reauthText("example") }]);
     expect(grants).toHaveLength(1);
+  });
+
+  test("403 (permission denied) is not 'needs re-authorising': no refresh, no card, its own fixed text", async () => {
+    up.forbid.add("tok-agent");
+    try {
+      const r = await bridge.call(claims("agent"), "example", "whoami", {});
+      expect(r).toEqual({ content: [{ type: "text", text: forbiddenText("example") }], isError: true });
+      expect(JSON.stringify(r)).not.toContain(LEAKY_BODY);
+      expect(grants).toHaveLength(0);
+      expect(cards).toHaveLength(0);
+    } finally {
+      up.forbid.clear();
+    }
+  });
+
+  test("no card when nobody could click it: a cron identity without the live lock, an agent turn in a locked thread", async () => {
+    // The card's click handler wants the runAs user holding the lock, or no lock.
+    await bridge.call(claims(`user:${NOGRANT}`, { lock: null }), "privsvc", "whoami", {});
+    await bridge.call(claims(`user:${NOGRANT}`, { lock: { user: "USOMEONEELSE", openScope: null }, session: "S2" }), "privsvc", "whoami", {});
+    up.refuse.add("tok-agent");
+    grantImpl = async () => {
+      throw new RefreshRejected(400, "invalid_grant");
+    };
+    await bridge.call(claims("agent", { lock: { user: NOGRANT, openScope: null }, session: "S3" }), "example", "whoami", {});
+    expect(cards).toEqual([]);
+    // With the lock it is posted.
+    await bridge.call(claims(`user:${NOGRANT}`, { lock: { user: NOGRANT, openScope: null }, session: "S4" }), "privsvc", "whoami", {});
+    expect(cards).toEqual([{ server: "privsvc", scope: "initiator", session: "S4", reason: "connect" }]);
+  });
+
+  test("the card rate-limit memory is bounded", async () => {
+    const posted: string[] = [];
+    const b = createMcpBridge({
+      servers: () => ({ servers: structuredClone(SERVERS) as never, privateServices: [...PRIVATE] }),
+      accountFor: async () => null,
+      credentialsFor: async () => ({}),
+      onNeedsAuth: (c) => void posted.push(c.session),
+    });
+    for (let i = 0; i < 1100; i++) await b.call(claims(`user:${UNBOUND}`, { session: `S-${i}` }), "privsvc", "whoami", {});
+    // The oldest keys were pruned: the first session may be carded again.
+    await b.call(claims(`user:${UNBOUND}`, { session: "S-0" }), "privsvc", "whoami", {});
+    expect(posted.filter((s) => s === "S-0")).toHaveLength(2);
+    // A recent one is still remembered.
+    await b.call(claims(`user:${UNBOUND}`, { session: "S-1099" }), "privsvc", "whoami", {});
+    expect(posted.filter((s) => s === "S-1099")).toHaveLength(1);
   });
 
   test("static credentials refused => fixed text and a card, no refresh attempted", async () => {

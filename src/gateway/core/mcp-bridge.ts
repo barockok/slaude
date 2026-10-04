@@ -71,6 +71,26 @@ export const cancelledText = (server: string) => `the call to ${server} was canc
 export const busyText = (server: string) => `too many MCP calls are in flight for this identity; ${server} was not called`;
 export const truncatedText = (size: number, cap: number) =>
   `[result truncated by the MCP bridge: ${size} bytes is over the ${cap}-byte limit]`;
+export const forbiddenText = (server: string) => `${server} refused this call: permission denied for this identity`;
+export const listTruncatedText = (shown: number, maxTools: number, maxBytes: number) =>
+  `[tool list truncated by the MCP bridge: ${shown} tools are available here; the limits are ${maxTools} tools and ${maxBytes} bytes]`;
+
+/** A JSON-RPC error the upstream answered with, as FIXED text per class: its
+ *  own message is never relayed (it can carry anything). */
+export function protocolErrorText(server: string, code: unknown): string {
+  switch (code) {
+    case ErrorCode.MethodNotFound:
+      return `${server} does not support this request`;
+    case ErrorCode.InvalidParams:
+      return `${server} rejected the call: unknown tool or invalid arguments`;
+    case ErrorCode.InvalidRequest:
+      return `${server} rejected the request as invalid`;
+    case ErrorCode.InternalError:
+      return `${server} reported an internal error`;
+    default:
+      return `${server} returned an error (code ${Number.isSafeInteger(code) ? code : "unknown"})`;
+  }
+}
 
 export type CallToolResult = {
   content?: unknown[];
@@ -268,9 +288,16 @@ const pinKey = (claims: JobClaims, server: string, headers: Record<string, strin
 // ── upstream errors, classified in the fetch (the SDK's own errors embed bodies) ──
 
 class UpstreamUnauthorized extends Error {
-  constructor(readonly status: 401 | 403) {
-    super(`upstream answered ${status}`);
+  constructor() {
+    super("upstream answered 401");
     this.name = "UpstreamUnauthorized";
+  }
+}
+/** 403: the identity is known but not permitted. Refreshing cannot help. */
+class UpstreamForbidden extends Error {
+  constructor() {
+    super("upstream answered 403");
+    this.name = "UpstreamForbidden";
   }
 }
 class UpstreamSessionExpired extends Error {
@@ -305,13 +332,29 @@ export interface BridgeLimits {
   ownerConcurrency: number;
   maxRequestBytes: number;
   maxResultBytes: number;
+  /** Calls in flight at once for one session on one server (within the owner's). */
+  sessionConcurrency?: number;
+  /** A pooled upstream session unused this long is closed and reopened. */
+  idleMs?: number;
+  /** Caps on one server's tool list: total bytes and number of tools. */
+  maxListBytes?: number;
+  maxTools?: number;
 }
+
+export const DEFAULT_SESSION_CONCURRENCY = 4;
+export const DEFAULT_IDLE_MS = 5 * 60_000;
+export const DEFAULT_MAX_LIST_BYTES = 1024 * 1024;
+export const DEFAULT_MAX_TOOLS = 500;
 
 export const envLimits = (): BridgeLimits => ({
   timeoutMs: env.mcpBridge.timeoutMs(),
   ownerConcurrency: env.mcpBridge.ownerConcurrency(),
   maxRequestBytes: env.mcpBridge.maxRequestBytes(),
   maxResultBytes: env.mcpBridge.maxResultBytes(),
+  sessionConcurrency: env.mcpBridge.sessionConcurrency(),
+  idleMs: env.mcpBridge.idleMs(),
+  maxListBytes: env.mcpBridge.maxListBytes(),
+  maxTools: env.mcpBridge.maxTools(),
 });
 
 /** Cap a result. Over the cap, text is kept up to the budget and everything
@@ -453,54 +496,97 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
 
   function resolveServer(claims: JobClaims, server: string): { cfg: BridgeServerConfig; isPrivate: boolean } {
     const mcp = deps.servers(claims);
-    const cfg = oauthHttpServers(mcp.servers)[server] as BridgeServerConfig | undefined;
-    if (!cfg) throw new BridgeRefused(404, NOT_MOUNTED);
+    const http = oauthHttpServers(mcp.servers);
+    // Own properties only: "constructor", "toString" or "__proto__" are not servers.
+    if (!Object.hasOwn(http, server) || !Object.hasOwn(mcp.servers, server)) throw new BridgeRefused(404, NOT_MOUNTED);
+    const cfg = http[server] as BridgeServerConfig;
     const timeout = (mcp.servers[server] as { timeout?: unknown }).timeout;
     if (typeof timeout === "number" && timeout > 0) cfg.timeout = timeout;
     const runAs = parseRunAs(claims.runAs);
     return { cfg, isPrivate: runAs?.kind === "user" && mcp.privateServices.includes(server) };
   }
 
+  /** Who could click a connect card for this turn, if anyone: the card's click
+   *  handler wants the runAs user still holding the thread's /1on1 lock
+   *  (initiator), or no lock at all (global, the manager). A cron turn with a
+   *  captured initiator and no live lock gets no card: nobody could use it. */
+  function cardScope(claims: JobClaims): "initiator" | "global" | null {
+    const runAs = parseRunAs(claims.runAs);
+    if (runAs?.kind === "user") {
+      if (claims.lock === undefined) return "initiator"; // an older gateway's token: unknown, try
+      return claims.lock?.user === runAs.slackUserId ? "initiator" : null;
+    }
+    return claims.lock ? null : "global";
+  }
+
+  const MAX_CARD_KEYS = 1000;
   function maybeCard(claims: JobClaims, server: string, reason: "connect" | "reauth"): void {
     if (!deps.onNeedsAuth) return;
+    const scope = cardScope(claims);
+    if (!scope) return;
     const k = `${claims.session}\u0000${server}`;
+    const t = now();
     const last = lastCard.get(k);
-    if (last !== undefined && now() - last < cardWindowMs) return;
-    lastCard.set(k, now());
-    const scope = parseRunAs(claims.runAs)?.kind === "user" ? "initiator" : "global";
+    if (last !== undefined && t - last < cardWindowMs) return;
+    lastCard.delete(k);
+    lastCard.set(k, t);
+    // Bounded: expired entries first, then the oldest (Map keeps insertion order).
+    if (lastCard.size > MAX_CARD_KEYS) {
+      for (const [key, at] of lastCard) if (t - at >= cardWindowMs) lastCard.delete(key);
+      for (const key of lastCard.keys()) {
+        if (lastCard.size <= MAX_CARD_KEYS) break;
+        lastCard.delete(key);
+      }
+    }
     void Promise.resolve()
       .then(() => deps.onNeedsAuth!(claims, server, scope, reason))
       .catch((e) => console.warn(`[mcp-bridge] connect card failed server=${server} error=${e instanceof Error ? e.name : typeof e}`));
   }
 
   function makeFetch(origin: string, holder: { headers: Record<string, string> }) {
-    const inner = policyFetch({ ...(deps.policy ?? {}), pinnedOrigin: origin, maxResponseBytes: Math.max(limits().maxResultBytes * 4, 4 * 1024 * 1024), timeoutMs: limits().timeoutMs + 5_000 });
+    const lim = limits();
+    const inner = policyFetch({
+      ...(deps.policy ?? {}),
+      pinnedOrigin: origin,
+      maxResponseBytes: Math.max(lim.maxResultBytes * 4, lim.maxListBytes ?? DEFAULT_MAX_LIST_BYTES, 1024 * 1024),
+      timeoutMs: lim.timeoutMs + 5_000,
+    });
     return async (input: string | URL | Request, init: RequestInit = {}): Promise<Response> => {
       // Notifications are not bridged: never open the standalone SSE stream.
       if ((init.method ?? "GET").toUpperCase() === "GET") return new Response(null, { status: 405 });
       const headers = new Headers(init.headers ?? undefined);
       for (const k of [...headers.keys()]) if (k === "authorization") headers.delete(k);
       for (const [k, v] of Object.entries(holder.headers)) headers.set(k, v);
-      // A request (not a notification) is tied to its call's signal, so an
-      // aborted call drops the upstream connection as well as sending
-      // notifications/cancelled.
+      // A request (not a notification) is tied to its call's own controller:
+      // aborting the call, its deadline, or its completion closes the
+      // connection, so a stream the upstream holds open never keeps the socket.
       let signal = init.signal ?? undefined;
       const call = callSignal.getStore();
       if (call && typeof init.body === "string" && /"id"\s*:/.test(init.body) && /"method"\s*:/.test(init.body)) {
         signal = signal ? AbortSignal.any([signal, call]) : call;
       }
       const res = await inner(input, { ...init, headers, ...(signal ? { signal } : {}) });
-      if (res.status === 401 || res.status === 403) throw new UpstreamUnauthorized(res.status);
-      if (res.status === 404 && headers.has("mcp-session-id")) throw new UpstreamSessionExpired();
+      const fail = async (e: Error): Promise<never> => {
+        await res.body?.cancel().catch(() => {});
+        throw e;
+      };
+      if (res.status === 401) return fail(new UpstreamUnauthorized());
+      if (res.status === 403) return fail(new UpstreamForbidden());
+      // Servers answer a session they no longer know with 404 (the spec) or 400.
+      if ((res.status === 404 || res.status === 400) && headers.has("mcp-session-id")) return fail(new UpstreamSessionExpired());
       return res;
     };
   }
 
-  /** Keep the pool bounded: close the least recently used session. */
-  function evictIdle(): void {
+  /** Keep the pool bounded and fresh: close sessions idle past the expiry, and
+   *  the least recently used one when full. */
+  function sweep(keep: string): void {
+    const idleMs = limits().idleMs ?? DEFAULT_IDLE_MS;
+    const t = now();
+    for (const [k, p] of pool) if (k !== keep && t - p.lastUsed > idleMs) drop(k);
     if (pool.size < maxPooled) return;
     let oldest: [string, number] | null = null;
-    for (const [k, p] of pool) if (!oldest || p.lastUsed < oldest[1]) oldest = [k, p.lastUsed];
+    for (const [k, p] of pool) if (k !== keep && (!oldest || p.lastUsed < oldest[1])) oldest = [k, p.lastUsed];
     if (oldest) drop(oldest[0]);
   }
 
@@ -510,22 +596,35 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
     void p?.client.then((c) => c.close()).catch(() => {});
   }
 
-  /** The pooled upstream session for `key`, opened on first use. The headers
-   *  are this call's: a refreshed token replaces the bearer in place. */
+  /** The pooled upstream session for `key`, opened on first use or after it
+   *  sat idle past the expiry. The headers are this call's: a refreshed token
+   *  replaces the bearer in place. */
   async function session(key: string, cred: Exclude<BridgeCredential, { kind: "connect" }>, timeoutMs: number): Promise<Client> {
     let p = pool.get(key);
+    if (p && now() - p.lastUsed > (limits().idleMs ?? DEFAULT_IDLE_MS)) {
+      drop(key);
+      p = undefined;
+    }
+    sweep(key);
     if (p) {
       p.holder.headers = cred.headers;
       p.lastUsed = now();
     } else {
-      evictIdle();
       const holder = { headers: cred.headers };
       const origin = originOf(cred.url);
       const client = (async () => {
         if (!origin) throw new OutboundBlockedError("invalid URL");
         const transport = new StreamableHTTPClientTransport(new URL(cred.url), { fetch: makeFetch(origin, holder) as typeof fetch });
         const c = new Client({ name: "slaude-mcp-bridge", version: "1.0.0" });
-        await c.connect(transport, { timeout: timeoutMs });
+        // The initialize request gets its own controller, closed once the
+        // session is open: an answer stream the upstream holds open must not
+        // keep the socket.
+        const opening = new AbortController();
+        try {
+          await callSignal.run(opening.signal, () => c.connect(transport, { timeout: timeoutMs }));
+        } finally {
+          opening.abort();
+        }
         return c;
       })();
       p = { client, holder, lastUsed: now() };
@@ -547,10 +646,22 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
       createHash("sha256").update(JSON.stringify({ url: cred.url, headers: withoutAuthorization(cred.headers) })).digest("hex"),
     ]);
 
+  /** A failure a fresh upstream session may cure: not the upstream's own
+   *  protocol answer, not a timeout or cancellation, not a policy refusal. */
+  function retriable(e: unknown, signal: AbortSignal | undefined, callSig: AbortSignal): boolean {
+    if (signal?.aborted || callSig.aborted) return false;
+    if (e instanceof UpstreamSessionExpired) return true;
+    if (e instanceof OutboundBlockedError || e instanceof UpstreamUnauthorized || e instanceof UpstreamForbidden) return false;
+    if (e instanceof McpError) return e.code === ErrorCode.ConnectionClosed;
+    return true;
+  }
+
   /**
-   * Run `op` against the upstream for this call's credential: one retry after a
-   * refreshed OAuth token (401), one after an expired upstream session. Any
-   * other failure maps to a fixed text.
+   * Run `op` against the upstream for this call's credential. A 401 refreshes
+   * the OAuth token once and retries once; any other failure a fresh session
+   * may cure (an expired or forgotten session, a dropped connection, a 5xx)
+   * drops the pooled session and retries once. Everything else maps to a
+   * fixed text.
    */
   async function run<T>(
     claims: JobClaims,
@@ -559,6 +670,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
     timeoutMs: number,
     left: () => number,
     signal: AbortSignal | undefined,
+    callSig: AbortSignal,
     op: (c: Client) => Promise<T>,
   ): Promise<{ ok: true; value: T } | { ok: false; text: string }> {
     const key = poolKey(cred, server);
@@ -570,16 +682,12 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
         // Opening the session is not tied to this call's signal: other calls
         // may be waiting on the same initialisation.
         const client = await session(key, current, left());
-        return { ok: true, value: await callSignal.run(signal, () => op(client)) };
+        return { ok: true, value: await callSignal.run(callSig, () => op(client)) };
       } catch (e) {
-        if (e instanceof UpstreamSessionExpired && !reconnected) {
-          reconnected = true;
-          drop(key);
-          continue;
-        }
+        if (e instanceof UpstreamForbidden) return { ok: false, text: forbiddenText(server) };
         if (e instanceof UpstreamUnauthorized) {
           drop(key);
-          if (e.status === 401 && current.kind === "oauth" && !refreshed) {
+          if (current.kind === "oauth" && !refreshed) {
             refreshed = true;
             let out;
             try {
@@ -600,33 +708,54 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
           maybeCard(claims, server, "reauth");
           return { ok: false, text: reauthText(server) };
         }
-        return { ok: false, text: describeFailure(e, server, timeoutMs, signal) };
+        if (!reconnected && retriable(e, signal, callSig)) {
+          reconnected = true;
+          drop(key);
+          continue;
+        }
+        return { ok: false, text: describeFailure(e, server, timeoutMs, signal, callSig) };
       }
     }
   }
 
-  function describeFailure(e: unknown, server: string, timeoutMs: number, signal?: AbortSignal): string {
+  function describeFailure(e: unknown, server: string, timeoutMs: number, signal: AbortSignal | undefined, callSig: AbortSignal): string {
     if (signal?.aborted) return cancelledText(server);
+    if (callSig.aborted) return timeoutText(server, timeoutMs);
     if (e instanceof OutboundBlockedError) return `${server}: ${e.message}`;
     if (e instanceof McpError) {
       if (e.code === ErrorCode.RequestTimeout) return timeoutText(server, timeoutMs);
-      // A JSON-RPC error the upstream answered with (an unknown tool, invalid
-      // arguments): the protocol's own message, as a direct connection shows it.
-      if (e.code !== ErrorCode.ConnectionClosed) return `MCP error ${e.code}: ${String(e.message).slice(0, 500)}`;
+      if (e.code !== ErrorCode.ConnectionClosed) return protocolErrorText(server, e.code);
     }
     console.warn(`[mcp-bridge] upstream failure server=${server} error=${e instanceof Error ? e.name : typeof e}`);
     return unavailableText(server);
   }
 
-  async function withSlot<T>(ownerKey: string, deadline: number, signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T | null> {
+  /** Two slots per call: one for this session on this server (so one thread's
+   *  slow calls cannot starve the persona's other threads), one for the owner
+   *  on this server (so one identity cannot exhaust the gateway's sockets). */
+  async function withSlots<T>(
+    claims: JobClaims,
+    server: string,
+    ownerKey: string,
+    deadline: number,
+    signal: AbortSignal | undefined,
+    fn: () => Promise<T>,
+  ): Promise<T | null> {
     const lim = limits();
-    if (!(await slots.acquire(ownerKey, lim.ownerConcurrency, deadline, signal))) return null;
+    const sessionKey = JSON.stringify(["session", ownerKey, server, claims.session]);
+    const ownerSlotKey = JSON.stringify(["owner", ownerKey, server]);
+    if (!(await slots.acquire(sessionKey, lim.sessionConcurrency ?? DEFAULT_SESSION_CONCURRENCY, deadline, signal))) return null;
     try {
-      // Granted, but the call was aborted meanwhile: give the slot back unused.
-      if (signal?.aborted) return null;
-      return await fn();
+      if (!(await slots.acquire(ownerSlotKey, lim.ownerConcurrency, deadline, signal))) return null;
+      try {
+        // Granted, but the call was aborted meanwhile: give the slots back unused.
+        if (signal?.aborted) return null;
+        return await fn();
+      } finally {
+        slots.release(ownerSlotKey);
+      }
     } finally {
-      slots.release(ownerKey);
+      slots.release(sessionKey);
     }
   }
 
@@ -634,6 +763,30 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
     const ceiling = limits().timeoutMs;
     return cfg.timeout && cfg.timeout < ceiling ? cfg.timeout : ceiling;
   };
+
+  /** One call's budget: a single deadline across the slot wait, opening the
+   *  session, a refresh and its retry; and its own controller, aborted by the
+   *  caller's signal, by the deadline, and when the call is over. */
+  async function budgeted<T>(
+    cfg: BridgeServerConfig,
+    signal: AbortSignal | undefined,
+    fn: (b: { timeoutMs: number; deadline: number; left: () => number; callSig: AbortSignal }) => Promise<T>,
+  ): Promise<T> {
+    const timeoutMs = effectiveTimeout(cfg);
+    const deadline = now() + timeoutMs;
+    const left = () => Math.max(1, deadline - now());
+    const ac = new AbortController();
+    const onAbort = () => ac.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
+    try {
+      return await fn({ timeoutMs, deadline, left, callSig: ac.signal });
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      ac.abort();
+    }
+  }
 
   return {
     limits,
@@ -646,33 +799,45 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
         return { tools: [], instructions: connectText(server), unavailable: true };
       }
       if (await pinRefused(claims, server, cred)) return { tools: [], instructions: pinnedElsewhereText(server), unavailable: true };
-      // One deadline for the whole call: the wait for a slot, opening the
-      // session, a refresh and its retry all fit inside it.
-      const timeoutMs = effectiveTimeout(cfg);
-      const deadline = now() + timeoutMs;
-      const left = () => Math.max(1, deadline - now());
-      const out = await withSlot(cred.ownerKey, deadline, signal, () =>
-        run(claims, server, cred, timeoutMs, left, signal, async (client) => {
-          const tools: unknown[] = [];
-          let cursor: string | undefined;
-          for (let page = 0; page < 50; page++) {
-            const r = (await rawRequest(client, "tools/list", cursor ? { cursor } : {}, {
-              timeout: left(),
-              ...(signal ? { signal } : {}),
-            })) as { tools?: unknown[]; nextCursor?: string };
-            tools.push(...(r.tools ?? []));
-            cursor = r.nextCursor;
-            if (!cursor) break;
-          }
-          return { tools, instructions: client.getInstructions(), serverInfo: client.getServerVersion() };
-        }),
+      const lim = limits();
+      const maxTools = lim.maxTools ?? DEFAULT_MAX_TOOLS;
+      const maxBytes = lim.maxListBytes ?? DEFAULT_MAX_LIST_BYTES;
+      const out = await budgeted(cfg, signal, ({ timeoutMs, deadline, left, callSig }) =>
+        withSlots(claims, server, cred.ownerKey, deadline, signal, () =>
+          run(claims, server, cred, timeoutMs, left, signal, callSig, async (client) => {
+            const tools: unknown[] = [];
+            let bytes = 0;
+            let truncated = false;
+            let cursor: string | undefined;
+            for (let page = 0; page < 50 && !truncated; page++) {
+              const r = (await rawRequest(client, "tools/list", cursor ? { cursor } : {}, {
+                timeout: left(),
+                ...(signal ? { signal } : {}),
+              })) as { tools?: unknown[]; nextCursor?: string };
+              for (const t of Array.isArray(r.tools) ? r.tools : []) {
+                const size = Buffer.byteLength(JSON.stringify(t));
+                if (tools.length >= maxTools || bytes + size > maxBytes) {
+                  truncated = true;
+                  break;
+                }
+                tools.push(t);
+                bytes += size;
+              }
+              cursor = r.nextCursor;
+              if (!cursor) break;
+            }
+            return { tools, truncated, instructions: client.getInstructions(), serverInfo: client.getServerVersion() };
+          }),
+        ),
       );
-      if (out === null) return { tools: [], instructions: busyText(server), unavailable: true };
+      if (out === null) return { tools: [], instructions: signal?.aborted ? cancelledText(server) : busyText(server), unavailable: true };
       if (!out.ok) return { tools: [], instructions: out.text, unavailable: true };
       const v = out.value;
+      const notice = v.truncated ? listTruncatedText(v.tools.length, maxTools, maxBytes) : "";
+      const instructions = [v.instructions, notice].filter(Boolean).join("\n\n");
       return {
         tools: v.tools,
-        ...(v.instructions ? { instructions: v.instructions } : {}),
+        ...(instructions ? { instructions } : {}),
         ...(v.serverInfo ? { serverInfo: v.serverInfo as ListOutcome["serverInfo"] } : {}),
       };
     },
@@ -685,15 +850,14 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
         return errResult(connectText(server));
       }
       if (await pinRefused(claims, server, cred)) return errResult(pinnedElsewhereText(server));
-      const timeoutMs = effectiveTimeout(cfg);
-      const deadline = now() + timeoutMs;
-      const left = () => Math.max(1, deadline - now());
-      const out = await withSlot(cred.ownerKey, deadline, signal, () =>
-        run(claims, server, cred, timeoutMs, left, signal, (client) =>
-          rawRequest(client, "tools/call", { name, arguments: args ?? {} }, {
-            timeout: left(),
-            ...(signal ? { signal } : {}),
-          }) as Promise<CallToolResult>,
+      const out = await budgeted(cfg, signal, ({ timeoutMs, deadline, left, callSig }) =>
+        withSlots(claims, server, cred.ownerKey, deadline, signal, () =>
+          run(claims, server, cred, timeoutMs, left, signal, callSig, (client) =>
+            rawRequest(client, "tools/call", { name, arguments: args ?? {} }, {
+              timeout: left(),
+              ...(signal ? { signal } : {}),
+            }) as Promise<CallToolResult>,
+          ),
         ),
       );
       if (out === null) return errResult(signal?.aborted ? cancelledText(server) : busyText(server));

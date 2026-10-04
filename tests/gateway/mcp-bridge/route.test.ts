@@ -99,6 +99,10 @@ describe("the mcpx routes", () => {
       ["/v1/tools/mcpx/nope/call", {}],
       ["/v1/tools/mcpx/stdio/list", {}],
       ["/v1/tools/mcpx/%E0%A4%A/list", {}],
+      ["/v1/tools/mcpx/constructor/call", {}],
+      ["/v1/tools/mcpx/toString/list", {}],
+      ["/v1/tools/mcpx/__proto__/list", {}],
+      ["/v1/tools/mcpx/hasOwnProperty/call", {}],
     ] as const) {
       const r = await post(path, JSON.stringify({ name: "echo" }), o);
       expect({ path, ...r }).toEqual({ path, status: 404, body: { error: NOT_MOUNTED } });

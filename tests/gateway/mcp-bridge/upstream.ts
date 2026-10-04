@@ -79,6 +79,12 @@ export interface Upstream {
   verbs: string[];
   /** Bearer values the server refuses with 401 (and a body that must not leak). */
   refuse: Set<string>;
+  /** Bearer values the server refuses with 403 (permission denied). */
+  forbid: Set<string>;
+  /** POST requests whose connection the client dropped before the response ended. */
+  httpAborts: number;
+  /** A restart: every session is forgotten (like expireSessions). */
+  restart(): void;
   /** Drop every session: the next request on an old session id gets 404. */
   expireSessions(): void;
   sessions(): number;
@@ -87,9 +93,19 @@ export interface Upstream {
 
 export const LEAKY_BODY = "upstream-secret-detail: token=leak-me-not";
 
-export function startUpstream(opts: { json?: boolean; redirectTo?: string } = {}): Upstream {
+export function startUpstream(
+  opts: {
+    json?: boolean;
+    redirectTo?: string;
+    /** The status for a session id the server does not know. Default 404 (the spec); many servers send 400. */
+    unknownSessionStatus?: 400 | 404;
+    /** Extra generated tools after TOOLS, and tools/list page size (default: one page). */
+    extraTools?: number;
+    pageSize?: number;
+  } = {},
+): Upstream {
   const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
-  const state: Omit<Upstream, "url" | "port" | "expireSessions" | "sessions" | "stop"> = {
+  const state: Omit<Upstream, "url" | "port" | "expireSessions" | "sessions" | "stop" | "restart"> = {
     auths: [],
     seen: [],
     methods: [],
@@ -98,11 +114,29 @@ export function startUpstream(opts: { json?: boolean; redirectTo?: string } = {}
     paths: [],
     verbs: [],
     refuse: new Set(),
+    forbid: new Set(),
+    httpAborts: 0,
   };
+  const allTools: unknown[] = [
+    ...TOOLS,
+    ...Array.from({ length: opts.extraTools ?? 0 }, (_, i) => ({
+      name: `gen_${i}`,
+      description: `generated tool ${i} `.padEnd(200, "."),
+      inputSchema: { type: "object", properties: {} },
+    })),
+  ];
 
   function newServer(): Server {
     const server = new Server({ name: "example-upstream", version: "9.9.9" }, { capabilities: { tools: {} }, instructions: INSTRUCTIONS });
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS as unknown as never[] }));
+    server.setRequestHandler(ListToolsRequestSchema, async (req) => {
+      const size = opts.pageSize ?? allTools.length;
+      const start = Number(req.params?.cursor ?? 0);
+      const next = start + size;
+      return {
+        tools: allTools.slice(start, next) as never[],
+        ...(next < allTools.length ? { nextCursor: String(next) } : {}),
+      };
+    });
     server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       const args = (req.params.arguments ?? {}) as Record<string, unknown>;
       switch (req.params.name) {
@@ -152,17 +186,24 @@ export function startUpstream(opts: { json?: boolean; redirectTo?: string } = {}
       state.seen.push({ auth, apiKey: req.headers.get("x-api-key"), search: u.search });
       const bearer = auth?.replace(/^Bearer /, "");
       if (bearer && state.refuse.has(bearer)) return new Response(LEAKY_BODY, { status: 401 });
+      if (bearer && state.forbid.has(bearer)) return new Response(LEAKY_BODY, { status: 403 });
+
       if (req.method === "POST") {
         const body = await req.clone().json().catch(() => null);
         for (const m of Array.isArray(body) ? body : [body]) {
           if (m?.method) state.methods.push(m.method);
           if (m?.method === "notifications/cancelled") state.cancelled.push(m.params?.requestId);
+          // A `slow` call never completes on its own: an abort of its HTTP
+          // request means the client dropped the connection.
+          if (m?.method === "tools/call" && m.params?.name === "slow") {
+            req.signal.addEventListener("abort", () => void state.httpAborts++, { once: true });
+          }
         }
       }
       const sid = req.headers.get("mcp-session-id");
       if (sid) {
         const t = transports.get(sid);
-        if (!t) return Response.json({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: null }, { status: 404 });
+        if (!t) return Response.json({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: null }, { status: opts.unknownSessionStatus ?? 404 });
         return t.handleRequest(req);
       }
       const t = new WebStandardStreamableHTTPServerTransport({
@@ -179,9 +220,13 @@ export function startUpstream(opts: { json?: boolean; redirectTo?: string } = {}
     get slowAborted() {
       return state.slowAborted;
     },
+    get httpAborts() {
+      return state.httpAborts;
+    },
     url: `http://127.0.0.1:${http.port}/mcp`,
     port: http.port!,
     expireSessions: () => transports.clear(),
+    restart: () => transports.clear(),
     sessions: () => transports.size,
     stop: () => http.stop(true),
   } as Upstream;

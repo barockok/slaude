@@ -8,7 +8,7 @@
  * and the per-owner concurrency limit queues.
  */
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { createMcpBridge, truncatedText, cancelledText, timeoutText, type BridgeLimits } from "../../../src/gateway/core/mcp-bridge";
+import { createMcpBridge, protocolErrorText, truncatedText, cancelledText, timeoutText, type BridgeLimits } from "../../../src/gateway/core/mcp-bridge";
 import type { JobClaims } from "../../../src/gateway/api/auth";
 import { INSTRUCTIONS, PNG_1PX, TOOLS, startUpstream } from "./upstream";
 
@@ -101,9 +101,9 @@ describe("relay failures and limits", () => {
   });
 
   test("an unknown tool is a tool error, not a failed request", async () => {
+    // Fixed text per JSON-RPC error class: the upstream's own message is not relayed.
     const r = await bridge.call(claims(), "example", "no_such_tool", {});
-    expect(r.isError).toBe(true);
-    expect(JSON.stringify(r.content)).toContain("no_such_tool");
+    expect(r).toEqual({ content: [{ type: "text", text: protocolErrorText("example", -32603) }], isError: true });
   });
 
   test("a result over the cap is truncated with a clear message", async () => {
@@ -152,29 +152,33 @@ describe("relay failures and limits", () => {
     }
   });
 
-  test("one deadline per call: time spent waiting for a slot counts against it", async () => {
-    // Two servers of one owner share its slots: `example` may run 5s, `quick` 300ms.
+  test("slots are per session and server: one thread's slow calls never block another thread or server", async () => {
     const b = createMcpBridge({
       servers: () => ({
-        servers: { example: { type: "http", url: sse.url } as never, quick: { type: "http", url: sse.url, timeout: 300 } as never },
+        servers: { example: { type: "http", url: sse.url } as never, other: { type: "http", url: sse.url } as never },
         privateServices: [],
       }),
       accountFor: async () => null,
       credentialsFor: async () => ({}),
       policy: loopback,
-      limits: () => ({ ...LIMITS, ownerConcurrency: 1 }),
+      limits: () => ({ ...LIMITS, sessionConcurrency: 1, ownerConcurrency: 4 }),
     });
     try {
       const calls = toolCalls();
       const ac = new AbortController();
       const slow = b.call(claims(), "example", "slow", {}, ac.signal);
       await untilCallReached(calls);
-      const t0 = Date.now();
-      const r = await b.call(claims(), "quick", "echo", { text: "late" });
-      expect(r).toEqual({ content: [{ type: "text", text: "too many MCP calls are in flight for this identity; quick was not called" }], isError: true });
-      expect(Date.now() - t0).toBeLessThan(1000);
+      // The same thread on another server, and another thread on this server: not held.
+      expect((await b.call(claims(), "other", "echo", { text: "a" })).content).toEqual([{ type: "text", text: "a" }]);
+      expect((await b.call({ ...claims(), session: "S2" }, "example", "echo", { text: "b" })).content).toEqual([{ type: "text", text: "b" }]);
+      // The same thread on the same server waits for its own slot.
+      let done = false;
+      const queued = b.call(claims(), "example", "echo", { text: "c" }).then((r) => ((done = true), r));
+      await new Promise((r) => setTimeout(r, 100));
+      expect(done).toBe(false);
       ac.abort();
       await slow;
+      expect((await queued).content).toEqual([{ type: "text", text: "c" }]);
     } finally {
       await b.close();
     }

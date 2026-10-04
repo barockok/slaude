@@ -346,6 +346,10 @@ export const env = {
     ownerConcurrency: (): number => positiveInt("SLAUDE_MCP_BRIDGE_OWNER_CONCURRENCY", 8),
     maxRequestBytes: (): number => positiveInt("SLAUDE_MCP_BRIDGE_MAX_REQUEST_BYTES", 1024 * 1024),
     maxResultBytes: (): number => positiveInt("SLAUDE_MCP_BRIDGE_MAX_RESULT_BYTES", 1024 * 1024),
+    sessionConcurrency: (): number => positiveInt("SLAUDE_MCP_BRIDGE_SESSION_CONCURRENCY", 4),
+    idleMs: (): number => positiveInt("SLAUDE_MCP_BRIDGE_IDLE_MS", 5 * 60_000),
+    maxListBytes: (): number => positiveInt("SLAUDE_MCP_BRIDGE_MAX_LIST_BYTES", 1024 * 1024),
+    maxTools: (): number => positiveInt("SLAUDE_MCP_BRIDGE_MAX_TOOLS", 500),
   },
   /** BullMQ worker concurrency per node process (spec §6). Default 8. */
   nodeConcurrency: (): number => {
