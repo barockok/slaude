@@ -31,11 +31,15 @@ const blocksToText = (c: unknown): string =>
       ? c.map((b) => (b && typeof b === "object" && "text" in b ? String((b as { text: unknown }).text) : "")).join("")
       : "";
 
+const SYNTHESIS_PREAMBLE = "Synthesis request follows.\n\n";
+
 export function sdkThinkClient(runner: typeof sdkQuery = sdkQuery): ThinkClient {
   return {
     async create(params) {
       const system = blocksToText(params.system) || undefined;
-      const userText = params.messages.map((m) => blocksToText(m.content)).join("\n\n");
+      // A fixed first line, so the prompt never starts with "/": the CLI
+      // would read page content there as a slash command.
+      const userText = SYNTHESIS_PREAMBLE + params.messages.map((m) => blocksToText(m.content)).join("\n\n");
       let text = "";
       const it = runner({
         prompt: (async function* () {
