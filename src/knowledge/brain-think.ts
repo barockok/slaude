@@ -1,5 +1,5 @@
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
-import { scrubChildEnv } from "../agent/child-env";
+import { scrubChildEnv, TOOLS_SURVIVING_EMPTY_SET } from "../agent/child-env";
 import { join } from "node:path";
 import { getBrain } from "./brain";
 import type { BrainScope } from "./scope";
@@ -31,11 +31,15 @@ const blocksToText = (c: unknown): string =>
       ? c.map((b) => (b && typeof b === "object" && "text" in b ? String((b as { text: unknown }).text) : "")).join("")
       : "";
 
+const SYNTHESIS_PREAMBLE = "Synthesis request follows.\n\n";
+
 export function sdkThinkClient(runner: typeof sdkQuery = sdkQuery): ThinkClient {
   return {
     async create(params) {
       const system = blocksToText(params.system) || undefined;
-      const userText = params.messages.map((m) => blocksToText(m.content)).join("\n\n");
+      // A fixed first line, so the prompt never starts with "/": the CLI
+      // would read page content there as a slash command.
+      const userText = SYNTHESIS_PREAMBLE + params.messages.map((m) => blocksToText(m.content)).join("\n\n");
       let text = "";
       const it = runner({
         prompt: (async function* () {
@@ -46,8 +50,17 @@ export function sdkThinkClient(runner: typeof sdkQuery = sdkQuery): ThinkClient 
           // Pure synthesis: no tools, no side effects, one turn. gbrain's
           // resolved model id is ignored on purpose — the SDK session default
           // (subscription / gateway env) is the one auth+model decision.
-          allowedTools: [],
-          permissionMode: "bypassPermissions" as const,
+          // The prompt carries untrusted page content, so tools are removed
+          // outright: `tools: []` is the SDK's "no built-ins" (`--tools ""`).
+          // `allowedTools: []` is NOT — it only auto-approves, and the SDK
+          // drops an empty list; with bypassPermissions that ran Bash (D5.2).
+          // dontAsk denies anything not pre-approved; no MCP servers or
+          // settings (hooks, plugins) are loaded either.
+          tools: [],
+          disallowedTools: [...TOOLS_SURVIVING_EMPTY_SET],
+          permissionMode: "dontAsk" as const,
+          strictMcpConfig: true,
+          settingSources: [],
           maxTurns: 1,
           // No tools, but the child still inherits the environment: scrub it.
           env: scrubChildEnv({ ...process.env }),
