@@ -260,11 +260,15 @@ export class TurnQueues {
   /**
    * Read one job by queue name without caching a handle for a name this
    * process has not used: the name can come from a caller (token-reissue), and
-   * the handle cache must not grow with whatever names callers send.
+   * the handle cache must not grow with whatever names callers send. Nor may
+   * Redis: opening a BullMQ handle writes the queue's `:meta` key, which makes
+   * the name list as a label queue (label status) for good. So the job's own
+   * key is checked first, and a handle is opened only for a job that exists.
    */
   async peekJob(name: string, jobId: string): Promise<Job | undefined> {
     const cached = this.#queues.get(name);
     if (cached) return cached.getJob(jobId);
+    if ((await this.#connection.exists(`${this.keys.bullPrefix}:${name}:${jobId}`)) === 0) return undefined;
     const q = new Queue(name, { connection: this.#connection, prefix: this.keys.bullPrefix });
     try {
       return await q.getJob(jobId);

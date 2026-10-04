@@ -83,4 +83,22 @@ describe.skipIf(!realEnabled)("label status against real Redis", () => {
     expect(idle.find((s) => s.label === "ops")).toMatchObject({ waiting: 0, liveNodes: 0, unserved: false });
     await registry.nodeDown("n-eng");
   }, 20_000);
+
+  // Review U10b-C: the list is truncated to MAX_LABELS; queue-only labels
+  // (which any leftover or junk queue can create) must never push out a label
+  // a live persona runs on.
+  test("a persona's label is kept ahead of 100 queue-only labels", async () => {
+    const { makeRegistry } = await import("../../src/queue/registry");
+    const { makeLabelMonitor, MAX_LABELS } = await import("../../src/queue/label-status");
+    const registry = makeRegistry({ redis, keys, heartbeatSec: 30 });
+    for (let i = 0; i < 100; i++) {
+      await redis.hset(`${keys.bullPrefix}:turns.label.aa-junk-${String(i).padStart(3, "0")}:meta`, "opts.maxLenEvents", "10000");
+    }
+    const mon = makeLabelMonitor({ redis, keys, turns, registry, personaLabels: () => ["zz-real"], unservedSecs: () => 60 });
+    const used = await mon.inUse();
+    expect(used).toHaveLength(MAX_LABELS);
+    expect(used[0]).toBe("default");
+    expect(used).toContain("zz-real");
+    await redis.del(...(await redis.keys(`${keys.bullPrefix}:turns.label.aa-junk-*`)));
+  });
 });

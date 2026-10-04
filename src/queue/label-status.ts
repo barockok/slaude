@@ -54,13 +54,20 @@ export function makeLabelMonitor(opts: LabelMonitorOpts) {
   const keys = opts.keys ?? makeKeys();
   const hash = keys.labelUnservedSince();
 
-  /** Labels in use, default first then sorted, bounded. */
+  /**
+   * Labels in use, default first then sorted, bounded. Persona labels are
+   * kept ahead of queue-only ones when the bound bites: a leftover queue must
+   * never push out a label a live persona runs on.
+   */
   const inUse = async (): Promise<string[]> => {
-    const set = new Set<string>([DEFAULT_LABEL]);
-    for (const l of opts.personaLabels()) if (LABEL_RE.test(l)) set.add(l);
-    for (const { label } of await turns.labelQueues()) set.add(label);
-    const rest = [...set].filter((l) => l !== DEFAULT_LABEL).sort();
-    return [DEFAULT_LABEL, ...rest].slice(0, MAX_LABELS);
+    const persona = new Set<string>();
+    for (const l of opts.personaLabels()) if (LABEL_RE.test(l) && l !== DEFAULT_LABEL) persona.add(l);
+    const queueOnly = new Set<string>();
+    for (const { label } of await turns.labelQueues()) {
+      if (label !== DEFAULT_LABEL && !persona.has(label)) queueOnly.add(label);
+    }
+    const kept = [...[...persona].sort(), ...[...queueOnly].sort()].slice(0, MAX_LABELS - 1);
+    return [DEFAULT_LABEL, ...kept.sort()];
   };
 
   /** Per label: live nodes and waiting jobs, plus the stored since-times. */
