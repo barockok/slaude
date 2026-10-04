@@ -718,11 +718,13 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
       // full configured timeout and each caller waits only its own deadline.
       const p = lease(key, current, timeoutMs);
       try {
-        const client = await p.client;
+        const client = await untilAborted(p.client, callSig);
         sent = true;
         return { ok: true, value: await callSignal.run(callSig, () => op(client)) };
       } catch (e) {
-        if (!sent) retire(key, p); // the open failed: nobody can use it
+        // The open failed: nobody can use it. A caller that only stopped
+        // waiting (its abort or deadline) leaves the open to the others.
+        if (!sent && !callSig.aborted) retire(key, p);
         if (e instanceof UpstreamForbidden) return { ok: false, text: forbiddenText(server) };
         if (e instanceof UpstreamUnauthorized) {
           retire(key, p);
@@ -769,6 +771,20 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
         unlease(p);
       }
     }
+  }
+
+  /** Wait for `p`, but no longer than `sig` stays unaborted (the promise
+   *  itself carries on for anyone else waiting on it). */
+  function untilAborted<T>(p: Promise<T>, sig: AbortSignal): Promise<T> {
+    if (sig.aborted) return Promise.reject(sig.reason);
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = () => reject(sig.reason);
+      sig.addEventListener("abort", onAbort, { once: true });
+      p.then(
+        (v) => (sig.removeEventListener("abort", onAbort), resolve(v)),
+        (e) => (sig.removeEventListener("abort", onAbort), reject(e)),
+      );
+    });
   }
 
   /** After the request was sent: a transport failure, or no answer by the

@@ -89,9 +89,35 @@ describe("a shared session open", () => {
       await sleep(450);
       gate.resolve();
       expect((await late).content).toEqual(text("b"));
-      await a;
+      expect((await a).content).toEqual(text(timeoutText("s", 1000)));
       expect(count(up, "initialize")).toBe(2);
     } finally {
+      gate.resolve();
+      await b.close();
+    }
+  });
+
+  test("a waiter that is aborted returns cancelled at once and frees its slots; the open carries on for others", async () => {
+    const gate = Promise.withResolvers<void>();
+    const up = upstream({ onInitialize: async () => void (await gate.promise) });
+    const b = bridgeAt(up.url, { sessionConcurrency: 1 });
+    // A safety net so a regression fails on the timing assertion, not on a hang.
+    const release = setTimeout(() => gate.resolve(), 1500);
+    try {
+      const ac = new AbortController();
+      const first = b.call(claims, "s", "echo", { text: "x" }, ac.signal);
+      await until(() => count(up, "initialize") === 1);
+      const t0 = Date.now();
+      ac.abort();
+      expect((await first).content).toEqual(text(cancelledText("s")));
+      expect(Date.now() - t0).toBeLessThan(500);
+      // Same thread, concurrency 1: it gets the slot, and joins the same open.
+      const next = b.call(claims, "s", "echo", { text: "y" });
+      gate.resolve();
+      expect((await next).content).toEqual(text("y"));
+      expect(count(up, "initialize")).toBe(1);
+    } finally {
+      clearTimeout(release);
       gate.resolve();
       await b.close();
     }
