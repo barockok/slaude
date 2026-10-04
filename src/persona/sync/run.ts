@@ -15,12 +15,32 @@ import { sameDesired, type DesiredPersona } from "../effective";
 export class SyncFailure extends Error {
   constructor(readonly status: 409 | 422 | 502, message: string) { super(message); }
 }
-export type SyncReport = ApplyResult & { revision: string; dryRun: boolean; ignoredFields: string[]; ignoredFieldsTotal: number };
+export type SyncReport = ApplyResult & {
+  revision: string; dryRun: boolean; ignoredFields: string[]; ignoredFieldsTotal: number;
+  /** Applied anyway, reported by persona name (e.g. a label no live node carries). */
+  warnings: string[];
+};
+
+/**
+ * A persona whose `runsOn` no live node carries is a warning, not an error
+ * (node labels spec §4.5): the nodes may simply not be up yet. Its turns wait
+ * on the label queue until a node with the label starts.
+ */
+export function unservedLabelWarnings(rows: ReadonlyArray<{ name: string; runsOn?: string | null }>, live: ReadonlySet<string>): string[] {
+  return rows
+    .filter((r) => r.runsOn && !live.has(r.runsOn))
+    .map((r) => `persona '${r.name}': no live node carries label '${r.runsOn}'; its turns wait until one does`);
+}
 
 export async function runSync(
   tenant: string,
   raw: unknown,
-  opts: { dryRun: boolean; env: Record<string, string | undefined>; by: string; extract?: (text: string) => Promise<unknown> },
+  opts: {
+    dryRun: boolean; env: Record<string, string | undefined>; by: string; extract?: (text: string) => Promise<unknown>;
+    /** The labels live nodes carry (the registry's node-label view). Absent
+     *  (no queue: a single process) = no label warnings. */
+    liveLabels?: () => Promise<ReadonlySet<string>>;
+  },
 ): Promise<SyncReport> {
   const extract = opts.extract ?? ((t: string) => extractSoulData(t, { strict: true }));
   let payload;
@@ -91,7 +111,7 @@ export async function runSync(
     }
     rows.push({
       name: p.name, slackUserId: p.slackUserId ?? null, userToken: p.userToken ?? null, model: p.model ?? null,
-      soulMd: p.soul, soulJson, mcp: p.mcp ?? null, origin: "git", tombstonedAt: null,
+      soulMd: p.soul, soulJson, mcp: p.mcp ?? null, runsOn: p.runsOn ?? null, origin: "git", tombstonedAt: null,
     });
   }
 
@@ -100,9 +120,20 @@ export async function runSync(
   }
   const meta = { revision: payload.revision, committedAt: Date.parse(payload.committedAt), by: opts.by };
 
+  let warnings: string[] = [];
+  if (opts.liveLabels && rows.some((r) => r.runsOn)) {
+    try {
+      warnings = unservedLabelWarnings(rows, await opts.liveLabels());
+    } catch (e) {
+      // The check is advisory: a Redis hiccup must not fail a deploy.
+      console.warn(`[persona-sync] could not read live node labels tenant=${tenant}: ${(e as Error).message}`);
+    }
+    for (const w of warnings) console.warn(`[persona-sync] tenant=${tenant} ${w}`);
+  }
+
   if (opts.dryRun) {
     const incoming = new Set(rows.map((r) => r.name));
-    const report: SyncReport = { created: [], updated: [], unchanged: [], tombstoned: [], overridesWiped: 0, revision: meta.revision, dryRun: true, ignoredFields, ignoredFieldsTotal };
+    const report: SyncReport = { created: [], updated: [], unchanged: [], tombstoned: [], overridesWiped: 0, revision: meta.revision, dryRun: true, ignoredFields, ignoredFieldsTotal, warnings };
     // Same rule as applySync.
     for (const r of rows) {
       const prev = desired.get(r.name);
@@ -118,7 +149,7 @@ export async function runSync(
   }
 
   try {
-    return { ...(await applySync(tenant, rows, meta)), revision: meta.revision, dryRun: false, ignoredFields, ignoredFieldsTotal };
+    return { ...(await applySync(tenant, rows, meta)), revision: meta.revision, dryRun: false, ignoredFields, ignoredFieldsTotal, warnings };
   } catch (e) {
     if (e instanceof StaleRevisionError) throw new SyncFailure(409, e.message);
     throw e;

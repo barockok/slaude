@@ -2987,7 +2987,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const portalApi = createPortalApi();
   // Reuses whichever pub/sub this gateway already holds; with none (mono, no
   // Redis) the reload is local-only, which is all there is to notify.
-  const deployApi = createDeployApi({ pubsub: queueDispatch?.pubsub ?? panelInfra?.pubsub ?? null });
+  // With a queue, a persona whose runsOn no live node carries is reported as a
+  // warning (node labels spec §4.5); mono has no nodes to ask.
+  const labelRegistry = queueDispatch?.registry ?? panelInfra?.registry;
+  const deployApi = createDeployApi({
+    pubsub: queueDispatch?.pubsub ?? panelInfra?.pubsub ?? null,
+    ...(labelRegistry ? { liveLabels: () => labelRegistry.liveLabels() } : {}),
+  });
 
   const panelApi = panelInfra
     ? createPanelApi({

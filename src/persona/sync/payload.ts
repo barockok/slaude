@@ -12,6 +12,7 @@
 import { z } from "zod";
 import { redactSecrets } from "../../gateway/core/status-text";
 import { PERSONA_VAR_PREFIX, PERSONA_VAR_RE } from "../../secrets/persona-var";
+import { LABEL_RE } from "../../queue/keys";
 
 export const PERSONA_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
@@ -28,8 +29,20 @@ export class UnresolvedVarError extends PayloadError {
  * The payload format this gateway understands. A payload with no `version` is
  * version 1. A newer one is refused rather than half-applied: its extra fields
  * might change what a persona means.
+ *
+ *   1  the personas-as-code fields
+ *   2  adds `runsOn` (node labels spec §4.5). `render` writes 2 only when some
+ *      persona sets it, so a gateway that predates `runsOn` refuses such a
+ *      payload instead of stripping the field and running the persona on
+ *      `default`; any other payload stays 1 and deploys to either.
  */
-export const SUPPORTED_PAYLOAD_VERSION = 1;
+export const SUPPORTED_PAYLOAD_VERSION = 2;
+export const RUNS_ON_PAYLOAD_VERSION = 2;
+
+/** The version a payload needs: the highest any field it uses requires. */
+export function payloadVersionFor(personas: ReadonlyArray<{ name: string; runsOn?: unknown }>): number {
+  return personas.some((p) => p.runsOn !== undefined) ? RUNS_ON_PAYLOAD_VERSION : 1;
+}
 
 const personaSpec = z.object({
   name: z.string().regex(PERSONA_NAME_RE, "persona name must match ^[a-z0-9][a-z0-9-]{0,62}$"),
@@ -38,6 +51,8 @@ const personaSpec = z.object({
   model: z.string().min(1).optional(),
   soul: z.string(),
   mcp: z.record(z.unknown()).optional(),
+  // The node label the persona runs on; absent = `default`. Not overridable.
+  runsOn: z.string().regex(LABEL_RE, `runsOn must match ${LABEL_RE.source}`).optional(),
 });
 export type PersonaSpec = z.infer<typeof personaSpec>;
 

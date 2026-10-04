@@ -322,6 +322,30 @@ describe("personas CLI entry", () => {
     expect(JSON.parse(run("render", out).stdout.toString()).version).toBe(1);
     expect(renderDir(out, meta).version).toBe(1);
   });
+  // Node labels spec §4.5: runsOn round-trips export → render, and render
+  // writes version 2 only when a persona uses it.
+  test("runsOn: export carries it only when present; render reads it and writes version 2", () => {
+    const h = home("bea");
+    const cfgFile = join(h, "personas", "ana", "config.json");
+    writeFileSync(cfgFile, JSON.stringify({ ...JSON.parse(readFileSync(cfgFile, "utf8")), runsOn: "engineering" }));
+    const out = tmp();
+    exportHome(h, out);
+    expect(readFileSync(join(out, "personas", "ana", "persona.yaml"), "utf8")).toContain('runsOn: "engineering"');
+    expect(readFileSync(join(out, "personas", "bea", "persona.yaml"), "utf8")).not.toContain("runsOn");
+    const p = renderDir(out, meta);
+    expect(p.version).toBe(2);
+    expect(p.personas.find((x) => x.name === "ana")!.runsOn).toBe("engineering");
+    expect(p.personas.find((x) => x.name === "bea")!.runsOn).toBeUndefined();
+    const f = join(out, "personas", "ana", "persona.yaml");
+    writeFileSync(f, readFileSync(f, "utf8").replace('runsOn: "engineering"', 'runsOn: "Not A Label"'));
+    expect(() => renderDir(out, meta)).toThrow(PayloadError);
+  });
+  test("export refuses a malformed runsOn in config.json, naming the persona", () => {
+    const h = home();
+    const cfgFile = join(h, "personas", "ana", "config.json");
+    writeFileSync(cfgFile, JSON.stringify({ ...JSON.parse(readFileSync(cfgFile, "utf8")), runsOn: "Bad Label" }));
+    expect(() => exportHome(h, tmp())).toThrow(/persona 'ana'.*runsOn/);
+  });
   test("--check reports unknown persona.yaml keys by name on stderr and still exits 0", () => {
     const out = tmp();
     exportHome(home(), out);

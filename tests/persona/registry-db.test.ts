@@ -14,6 +14,7 @@ import {
   getPersonaRegistry,
   invalidatePersonaRegistry,
   managedPersonaModel,
+  runsOnFor,
   setPersonaRegistry,
   startRegistryRevalidation,
   whenPersonaRegistrySettled,
@@ -68,6 +69,14 @@ describe("a filesystem registry (any dialect)", () => {
     expect(r.tombstonedPersonaFor("UFSBOT")).toBeNull();
   });
 
+  test("runsOnFor: every filesystem persona, and the default, runs on 'default'", async () => {
+    writeFsPersona("fsbot", "UFSBOT", "fs soul");
+    const r = await buildPersonaRegistry("default");
+    expect(runsOnFor("fsbot", r)).toBe("default");
+    expect(runsOnFor(undefined, r)).toBe("default");
+    expect(runsOnFor("unknown", r)).toBe("default");
+  });
+
   test("a filesystem persona is listed, and its soul is read from its file", async () => {
     writeFsPersona("fsbot", "UFSBOT", "fs soul");
     const r = await buildPersonaRegistry("default");
@@ -91,7 +100,7 @@ describe.skipIf(!isPg)("a database-backed registry", () => {
     const r = await buildPersonaRegistry("default");
     expect(r.lookupByName("ana")!.model).toBe("m-ana-live");
     expect(r.lookupByName("ana")!.mcp).toBeNull();
-    expect(r.defaultPersona!()).toEqual({ model: "m-default", mcp });
+    expect(r.defaultPersona!()).toEqual({ model: "m-default", mcp, runsOn: null });
     expect(managedPersonaModel("ana", r)).toBe("m-ana-live");
     expect(managedPersonaModel(undefined, r)).toBe("m-default");
     writeFsPersona("fsbot", "UFSBOT", "fs soul");
@@ -100,6 +109,20 @@ describe.skipIf(!isPg)("a database-backed registry", () => {
     const fsr = await buildPersonaRegistry("default");
     expect(fsr.defaultPersona).toBeUndefined();
     expect(managedPersonaModel("fsbot", fsr)).toBeUndefined();
+  });
+
+  test("runsOnFor reads each managed persona's runs_on; null and an unknown name are 'default'", async () => {
+    await P.applySync("default", [
+      { ...row("default"), runsOn: "ops" },
+      { ...row("ana"), runsOn: "engineering" },
+      row("bea"),
+    ], meta("r1", "2026-10-01T10:00:00Z"));
+    const r = await buildPersonaRegistry("default");
+    expect(runsOnFor("ana", r)).toBe("engineering");
+    expect(runsOnFor("bea", r)).toBe("default");
+    expect(runsOnFor(undefined, r)).toBe("ops");
+    expect(runsOnFor("default", r)).toBe("ops");
+    expect(runsOnFor("ghost", r)).toBe("default");
   });
 
   test("a managed tenant reads effective state, and tombstoned personas are gone", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { capPaths, MAX_REPORTED_FIELDS, SUPPORTED_PAYLOAD_VERSION, unknownFieldPaths, parsePayload, resolvePlaceholders, UnresolvedVarError, PayloadError } from "../../src/persona/sync/payload";
+import { capPaths, MAX_REPORTED_FIELDS, SUPPORTED_PAYLOAD_VERSION, payloadVersionFor, unknownFieldPaths, parsePayload, resolvePlaceholders, UnresolvedVarError, PayloadError } from "../../src/persona/sync/payload";
 
 const base = (personas: unknown[]) => ({ revision: "abc123", committedAt: "2026-10-01T10:00:00Z", personas });
 const ana = { name: "ana", slackUserId: "UTESTUSER1", soul: "You are Ana.", userToken: "${PERSONA_ANA_XOXP}" };
@@ -136,6 +136,18 @@ describe("payload version and unknown fields", () => {
   });
   test("a dotted top-level key cannot pose as a persona path", () => {
     expect(unknownFieldPaths({ ...base([ana]), "persona.default.soul": 1 })).toEqual(["<invalid-key>"]);
+  });
+  test("runsOn is a known field, validated against the label pattern", () => {
+    expect(parsePayload(base([{ ...ana, runsOn: "engineering" }])).personas[0]!.runsOn).toBe("engineering");
+    expect(unknownFieldPaths(base([{ ...ana, runsOn: "engineering" }]))).toEqual([]);
+    for (const bad of ["Engineering", "-x", "a".repeat(33), "a.b", ""]) {
+      expect(() => parsePayload(base([{ ...ana, runsOn: bad }]))).toThrow(PayloadError);
+    }
+  });
+  test("payloadVersionFor: 2 only when some persona sets runsOn", () => {
+    expect(payloadVersionFor([ana])).toBe(1);
+    expect(payloadVersionFor([ana, { ...ana, runsOn: "finance" }])).toBe(2);
+    expect(SUPPORTED_PAYLOAD_VERSION).toBeGreaterThanOrEqual(2);
   });
   test("capPaths bounds a long list", () => {
     const many = Array.from({ length: 1000 }, (_, i) => `k${i}`);
