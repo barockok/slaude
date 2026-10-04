@@ -285,7 +285,7 @@ describe("safeFetch (against a local server, loopback admitted by the dev flag)"
     // address. Bun's raw message embeds the IP it connected to; the error can
     // be posted into a Slack thread, so only the hostname may appear.
     const resolver = fakeResolver({ "idp.example.test": ["127.0.0.1"] });
-    const err = await safeFetch(`https://idp.example.test:${server.port}/x`, {}, dev({ resolver })).catch((e) => e as Error);
+    const err = await safeFetch(`https://idp.example.test:${server.port}/x`, {}, dev({ resolver })).then(() => new Error("resolved"), (e: Error) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toMatch(/^request to idp\.example\.test failed \([A-Za-z0-9_]+\)$/);
     expect(err.message).not.toContain("127.0.0.1");
@@ -308,7 +308,7 @@ describe("safeFetch (against a local server, loopback admitted by the dev flag)"
         // Self-signed and the wrong name: the raw runtime error reads
         // `… fetching "https://127.0.0.1:<port>/x"`.
         const resolver = fakeResolver({ "other.example.test": ["127.0.0.1"] });
-        const err = await safeFetch(`https://other.example.test:${tls.port}/x`, {}, dev({ resolver })).catch((e) => e as Error);
+        const err = await safeFetch(`https://other.example.test:${tls.port}/x`, {}, dev({ resolver })).then(() => new Error("resolved"), (e: Error) => e);
         expect(err.message).toMatch(/^request to other\.example\.test failed \([A-Za-z0-9_]+\)$/);
         expect(err.message).not.toContain("127.0.0.1");
       } finally {
