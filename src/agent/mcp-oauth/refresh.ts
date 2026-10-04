@@ -8,6 +8,7 @@
  */
 import type { OAuthTokens } from "./store";
 import type { FetchLike } from "./types";
+import { outboundFetch } from "../../net/outbound-policy";
 
 /** The provider refused the grant (400/401): the refresh token is spent,
  *  revoked or otherwise unusable. The owner has to reconnect. Distinct from a
@@ -41,7 +42,7 @@ export async function refreshGrant(p: {
   // no secret; a client registered with one sends it, client_secret_post.
   if (p.clientSecret) body.set("client_secret", p.clientSecret);
 
-  const res = await (p.fetchImpl ?? (fetch as unknown as FetchLike))(p.tokenEndpoint, {
+  const res = await (p.fetchImpl ?? outboundFetch)(p.tokenEndpoint, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body: body.toString(),

@@ -771,6 +771,9 @@ describe("gateway uncovered branches", () => {
     it("default loopback flow end-to-end against a fake IdP (discover → register → code → exchange)", async () => {
       writeSoulFixture(WORLD);
       const idp = startIdp();
+      // The fake IdP is plain http on loopback, which the outbound policy
+      // refuses unless the development flag admits it.
+      process.env.SLAUDE_OUTBOUND_DEV_LOOPBACK = "1";
       try {
         writeMcpJson({ svc: { type: "http", url: idp.url("/mcp") } });
         const g = makeGw(); // no oauthConnect override → real discover/beginConnect path
@@ -800,12 +803,16 @@ describe("gateway uncovered branches", () => {
         expect(JSON.stringify(creds.mcpOAuth)).toContain("atk");
       } finally {
         idp.server.stop(true);
+        delete process.env.SLAUDE_OUTBOUND_DEV_LOOPBACK;
       }
     });
 
     it("paste-back mode: prepare, plain-message passthrough, state mismatch, success, exchange failure, expiry, prepare failure", async () => {
       writeSoulFixture(WORLD);
       const idp = startIdp();
+      // The fake IdP is plain http on loopback, which the outbound policy
+      // refuses unless the development flag admits it.
+      process.env.SLAUDE_OUTBOUND_DEV_LOOPBACK = "1";
       try {
         writeMcpJson({
           svc: { type: "http", url: idp.url("/mcp") },
@@ -859,6 +866,7 @@ describe("gateway uncovered branches", () => {
         expect(g.sends.length).toBe(sendsBefore + 1); // expired → treated as a normal message
       } finally {
         idp.server.stop(true);
+        delete process.env.SLAUDE_OUTBOUND_DEV_LOOPBACK;
       }
     });
   });

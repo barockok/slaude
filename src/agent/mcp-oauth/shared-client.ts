@@ -6,6 +6,7 @@ import { exchangeAuthCode, type ExchangeParts } from "./client";
 import type { AuthServerMeta } from "./discovery";
 import type { OAuthServerConfig, OAuthTokens } from "./store";
 import type { FetchLike } from "./types";
+import { outboundFetch } from "../../net/outbound-policy";
 
 export interface BeginConnectSharedOpts {
   /** Session this flow belongs to; carried (signed) through `state` and read back
@@ -38,7 +39,7 @@ export interface SharedConnectHandle {
  * at once; each callback is routed back to its flow by `state`.
  */
 export async function beginConnectShared(opts: BeginConnectSharedOpts): Promise<SharedConnectHandle> {
-  const fetchImpl = opts.fetchImpl ?? (fetch as any);
+  const fetchImpl = opts.fetchImpl ?? outboundFetch;
   if (!opts.meta.authorizationEndpoint || !opts.meta.tokenEndpoint) {
     throw new Error("authorization-server metadata missing authorization_endpoint/token_endpoint");
   }
