@@ -374,6 +374,11 @@ export class TurnQueues {
    * order they were sent. Either way the merged job keeps the larger
    * relabelAttempts of the two, so merging a re-dispatched turn never resets
    * the one-re-dispatch bound.
+   *
+   * A pending job whose turn-done marker exists is treated as claimed (review
+   * U10b-R3): its node finished the turn and died before the ack, and stall
+   * recovery put it back to waiting. The worker that claims it skips it as
+   * done, so messages appended to it would never run.
    */
   async #tryAppend(
     ckey: string,
@@ -392,6 +397,7 @@ export class TurnQueues {
     const pending = await this.queue(ref.queue).getJob(ref.jobId);
     if (!pending) return null; // stale index (job done + removed)
     if (!PENDING_STATES.has(await pending.getState())) return null; // already claimed
+    if (await this.#turnRan(pending)) return null; // finished, then stalled back
     const prev = pending.data as TurnJob;
     // Only a LABEL change relocates (node labels spec §4.6). A warmth change
     // under the same label (the warm node came or went between messages)
@@ -423,7 +429,7 @@ export class TurnQueues {
     // Claim race: a worker may have claimed the job between updateData and
     // here, having read the PRE-update data. If the job is no longer pending
     // we cannot know which side won — re-enqueue this call's messages.
-    if (PENDING_STATES.has(await pending.getState())) {
+    if (PENDING_STATES.has(await pending.getState()) && !(await this.#turnRan(pending))) {
       await this.#connection.pexpire(ckey, COALESCE_TTL_MS);
       return { jobId: pending.id!, queue: ref.queue, coalesced: true };
     }
@@ -502,6 +508,11 @@ export class TurnQueues {
     // A failed promote only delays the turn by the hold; it is not lost.
     await copy.promote().catch(() => {});
     return "moved";
+  }
+
+  /** Whether `job`'s turn already ran (its turn-done marker exists). */
+  async #turnRan(job: Job): Promise<boolean> {
+    return (await this.#connection.exists(this.keys.turnDone(String(job.id)))) === 1;
   }
 
   async #markMoved(fromJobId: string, to: MovedRef): Promise<void> {

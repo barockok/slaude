@@ -270,6 +270,36 @@ describe.skipIf(!realEnabled)("queue/turns hardening against real Redis", () => 
     await redis.del(keys.coalesce("s-rdrl"));
   });
 
+  // Review U10b-R3: a job whose turn ran (turn-done) but whose node died
+  // before the ack goes back to waiting through stall recovery. The worker
+  // that claims it skips it as done, so a message coalesced into it was lost.
+  test("a new message is not coalesced into a finished job stalled back to waiting: it runs as its own job", async () => {
+    await ready;
+    await queues.enqueueTurn(turn("s-r3", ["m1"], "rthree"), { label: "rthree" }, "r3-ran");
+    const dead = startWorker("turns.label.rthree", null, { autorun: false, lockDuration: 30_000 });
+    const claimed = (await dead.getNextJob("tok-dead"))!;
+    expect(claimed.id).toBe("r3-ran");
+    // The turn ran (marker before the ack), the node died, and stall recovery
+    // returned the job to waiting.
+    await redis.set(keys.turnDone("r3-ran"), "done", "EX", 600);
+    await claimed.moveToWait("tok-dead");
+    expect(await (await queues.queue("turns.label.rthree").getJob("r3-ran"))!.getState()).toBe("waiting");
+    const res = await queues.enqueueTurn(turn("s-r3", ["m3"], "rthree"), { label: "rthree" }, "r3-new");
+    expect(res).toEqual({ jobId: "r3-new", queue: "turns.label.rthree", coalesced: false });
+    // The finished job was not written to at all.
+    expect(((await queues.queue("turns.label.rthree").getJob("r3-ran"))!.data as TurnJob).messages.map((m) => m.text)).toEqual(["m1"]);
+    // A worker that skips finished turns, as the node worker does.
+    const ran: string[][] = [];
+    startWorker("turns.label.rthree", async (job) => {
+      if (await redis.exists(keys.turnDone(String(job.id)))) return;
+      ran.push((job.data as TurnJob).messages.map((m) => m.text));
+    });
+    await until(() => ran.length >= 1, 5000);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(ran).toEqual([["m3"]]);
+    await redis.del(keys.coalesce("s-r3"), keys.turnDone("r3-ran"));
+  });
+
   // A mover holding a handle read BEFORE the session lock (a second reaper)
   // must not copy that stale data: another mover may have merged a rescued
   // turn's messages into the job meanwhile.
