@@ -36,7 +36,7 @@ const transport: Transport = {
 };
 
 const saved: Record<string, string | undefined> = {};
-const VARS = ["SLAUDE_NODE_TOKEN", "SLAUDE_JOB_SECRET", "SLAUDE_OUTBOUND_DEV_LOOPBACK"];
+const VARS = ["SLAUDE_NODE_TOKEN", "SLAUDE_JOB_SECRET", "SLAUDE_OUTBOUND_DEV_LOOPBACK", "SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG", "ANTHROPIC_API_KEY"];
 let gw: GatewayHandle;
 const mcpJson = () => join(paths.home, ".mcp.json");
 
@@ -46,6 +46,9 @@ beforeAll(() => {
   process.env.SLAUDE_JOB_SECRET = "card-job-secret";
   // The upstream listens on loopback: admitted for this test only.
   process.env.SLAUDE_OUTBOUND_DEV_LOOPBACK = "1";
+  // These servers come from the global .mcp.json: bridged only with the opt-in.
+  process.env.SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG = "1";
+  process.env.ANTHROPIC_API_KEY = "provider-key-value";
   ensureHome();
   writeSoulFixture(WORLD);
   writeFileSync(
@@ -54,6 +57,7 @@ beforeAll(() => {
       mcpServers: {
         open: { type: "http", url: up.url },
         locked: { type: "http", url: up.url, headers: { authorization: "Bearer refused-static" } },
+        leaky: { type: "http", url: up.url, headers: { "x-api-key": "${ANTHROPIC_API_KEY}" } },
         local: { command: "some-binary" },
       },
     }),
@@ -93,11 +97,32 @@ async function mcpx(path: string, body: unknown, session?: string) {
 describe("the bridge in the gateway", () => {
   test("the bundle names exactly the servers the routes serve", async () => {
     const bundle = (await (await handleTenantRuntime(new Request("http://gw/"), "default", "default")).json()) as { mcpServers: string[] };
-    expect(bundle.mcpServers).toEqual(["locked", "open"]);
+    expect(bundle.mcpServers).toEqual(["leaky", "locked", "open"]);
     const listed = await mcpx("open/list", {});
     expect(listed.status).toBe(200);
     expect(JSON.stringify(listed.body.tools)).toBe(JSON.stringify(TOOLS));
     expect((await mcpx("local/list", {})).status).toBe(404);
+  });
+
+  test("review M1 repro: a file placeholder naming gateway env reaches the upstream unexpanded", async () => {
+    const before = up.seen.length;
+    const r = await mcpx("leaky/call", { name: "whoami", arguments: {} });
+    expect(r.status).toBe(200);
+    expect(up.seen.slice(before).at(-1)?.apiKey).toBe("${ANTHROPIC_API_KEY}");
+    expect(JSON.stringify(up.seen)).not.toContain("provider-key-value");
+  });
+
+  test("without the opt-in no file-defined server is served or named", async () => {
+    delete process.env.SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG;
+    try {
+      const bundle = (await (await handleTenantRuntime(new Request("http://gw/"), "default", "default")).json()) as { mcpServers: string[] };
+      expect(bundle.mcpServers).toEqual([]);
+      const seen = up.paths.length;
+      expect((await mcpx("open/list", {})).status).toBe(404);
+      expect(up.paths.length).toBe(seen);
+    } finally {
+      process.env.SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG = "1";
+    }
   });
 
   test("a refused credential: fixed text, one connect card for the manager, no upstream body", async () => {

@@ -43,6 +43,7 @@ export interface ExternalMcp {
 export function parseExternalMcp(
   parsed: any,
   env: Record<string, string | undefined> = process.env,
+  opts: { allow?: ReadonlySet<string>; onUnlisted?: (name: string) => void } = {},
 ): ExternalMcp {
   // .mcp.json sits on $SLAUDE_HOME, which agent turns can write. A placeholder
   // naming a gateway-only variable (master key, job secret, database URLs, Slack
@@ -52,6 +53,11 @@ export function parseExternalMcp(
     s.replace(/\$\{([A-Z0-9_]+)\}/g, (whole, name: string) => {
       if (isGatewayOnlyEnv(name)) {
         console.warn(`[mcp] .mcp.json references gateway-only variable ${name}; left unexpanded`);
+        return whole;
+      }
+      // The MCP bridge's file opt-in: only operator-allowlisted names expand.
+      if (opts.allow && !opts.allow.has(name)) {
+        opts.onUnlisted?.(name);
         return whole;
       }
       return env[name] ?? "";
@@ -140,35 +146,95 @@ export function loadExternalMcp(personaName?: string): ExternalMcp {
   }
 }
 
-let globalCache: { stamp: string; value: ExternalMcp } | null = null;
+// ── the MCP bridge's source of server configs (WS-C §4.2) ───────────────────
 
-/** The global `.mcp.json`, re-read only when the file changes. The MCP bridge
- *  and the runtime bundle resolve it per request through here, so both agree on
- *  what a persona mounts without a file read per tool call. Callers get a deep
- *  copy: the cached value is never handed out to be mutated. */
-export function currentGlobalMcp(): ExternalMcp {
-  const f = join(paths.home, ".mcp.json");
-  let stamp: string;
-  try {
-    const st = statSync(f);
-    stamp = `${st.mtimeMs}:${st.size}:${st.ino}`;
-  } catch {
-    globalCache = null;
-    return { servers: {}, privateServices: [] };
-  }
-  if (!globalCache || globalCache.stamp !== stamp) globalCache = { stamp, value: loadExternalMcp() };
-  return structuredClone(globalCache.value);
+export interface BridgeSourceOptions {
+  registry?: PersonaRegistry;
+  /** Serve servers defined by FILES on $SLAUDE_HOME. Default:
+   *  SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG=1. */
+  allowFileConfig?: boolean;
+  /** With the file opt-in, the only `${VAR}` names expanded. Default:
+   *  SLAUDE_MCP_BRIDGE_ENV_ALLOW (empty). */
+  envAllow?: readonly string[];
+  env?: Record<string, string | undefined>;
 }
 
-/** The persona's servers the MCP bridge serves to a node (WS-C §4.2): its
- *  OAuth-connectable HTTP servers, exactly the set the mcpx routes accept and
- *  /mcp connect offers. stdio, sse and plugin servers are not bridged. */
-export function bridgedServerNames(
-  personaId: string | null | undefined,
-  globalMcp: ExternalMcp = currentGlobalMcp(),
-  registry?: PersonaRegistry,
-): string[] {
-  return Object.keys(connectableServers(personaId, globalMcp, registry)).sort();
+/** SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG: unset/0 = off, 1 = on, else refused. */
+export function bridgeAllowsFileConfig(raw = process.env.SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG): boolean {
+  const v = (raw ?? "").trim();
+  if (v === "" || v === "0") return false;
+  if (v === "1") return true;
+  throw new Error(`SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG must be 0 or 1 (got '${v}')`);
+}
+
+/** SLAUDE_MCP_BRIDGE_ENV_ALLOW: a comma list of variable names. */
+export const bridgeEnvAllow = (raw = process.env.SLAUDE_MCP_BRIDGE_ENV_ALLOW): string[] =>
+  (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+
+const fileCache = new Map<string, { stamp: string; value: ExternalMcp }>();
+const warnedUnlisted = new Set<string>();
+
+/** A config FILE read for the bridge: `${VAR}` expands only for allowlisted
+ *  names (on top of the gateway-only refusal); any other placeholder stays as
+ *  written and its NAME is logged once. Re-read only when the file changes. */
+function bridgeFileMcp(path: string, allow: readonly string[], env: Record<string, string | undefined>): ExternalMcp {
+  let stamp: string;
+  try {
+    const st = statSync(path);
+    stamp = `${st.mtimeMs}:${st.size}:${st.ino}:${[...allow].sort().join(",")}`;
+  } catch {
+    fileCache.delete(path);
+    return { servers: {}, privateServices: [] };
+  }
+  const hit = fileCache.get(path);
+  if (hit && hit.stamp === stamp) return structuredClone(hit.value);
+  let value: ExternalMcp = { servers: {}, privateServices: [] };
+  try {
+    value = parseExternalMcp(JSON.parse(readFileSync(path, "utf8")), env, {
+      allow: new Set(allow),
+      onUnlisted: (name) => {
+        if (warnedUnlisted.has(name)) return;
+        warnedUnlisted.add(name);
+        console.warn(`[mcp-bridge] a server config references \${${name}}, which is not in SLAUDE_MCP_BRIDGE_ENV_ALLOW; left unexpanded`);
+      },
+    });
+  } catch (err) {
+    console.error(`[mcp-bridge] failed to load ${path}: ${err instanceof Error ? err.name : typeof err}`);
+  }
+  fileCache.set(path, { stamp, value });
+  return structuredClone(value);
+}
+
+/**
+ * The servers the MCP bridge may serve for a persona, and only those.
+ *
+ * $SLAUDE_HOME is the volume agents write to, so a config FILE there (the
+ * global `.mcp.json`, `personas/<name>/mcp.json`) is not trusted to name where
+ * the gateway sends credentials. By default the bridge serves only the MANAGED
+ * persona's config: resolved at sync, stored encrypted in the database, out of
+ * an agent's reach. Files are served only with the operator's opt-in
+ * (SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG=1), and then expand only the
+ * `${VAR}` names in SLAUDE_MCP_BRIDGE_ENV_ALLOW.
+ */
+export function bridgeExternalMcp(personaId: string | null | undefined, opts: BridgeSourceOptions = {}): ExternalMcp {
+  const registry = opts.registry ?? getPersonaRegistry();
+  const named = personaId && personaId !== "default" ? personaId : undefined;
+  if (registry.isManaged()) {
+    const mcp = named ? registry.lookupByName(named)?.mcp : registry.defaultPersona?.()?.mcp;
+    if (mcp) return fromEffective(mcp);
+    if (named) return { servers: {}, privateServices: [] };
+    // The managed default persona without its own mcp falls back to the global file.
+  }
+  if (!(opts.allowFileConfig ?? bridgeAllowsFileConfig())) return { servers: {}, privateServices: [] };
+  const path = named ? join(paths.personas, named.toLowerCase(), "mcp.json") : join(paths.home, ".mcp.json");
+  return bridgeFileMcp(path, opts.envAllow ?? bridgeEnvAllow(), opts.env ?? process.env);
+}
+
+/** The persona's servers the MCP bridge serves to a node: the HTTP servers of
+ *  {@link bridgeExternalMcp}, exactly the set the mcpx routes accept. stdio, sse
+ *  and plugin servers are not bridged. */
+export function bridgedServerNames(personaId: string | null | undefined, opts: BridgeSourceOptions = {}): string[] {
+  return Object.keys(oauthHttpServers(bridgeExternalMcp(personaId, opts).servers)).sort();
 }
 
 /** A `.mcp.json`-shaped value from effective state, as an ExternalMcp. A deep

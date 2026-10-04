@@ -67,7 +67,7 @@ import * as Sessions from "../../db/sessions";
 import * as SeenEvents from "../../db/seen-events";
 import * as PendingGates from "../../db/pending-gates";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
-import { connectableServers, currentGlobalMcp, loadExternalMcp, privateOverrides, sessionExternalMcp } from "./external-mcp";
+import { bridgeExternalMcp, connectableServers, loadExternalMcp, privateOverrides, sessionExternalMcp } from "./external-mcp";
 import { connectText, createMcpBridge, reauthText } from "./mcp-bridge";
 import { parseRunAs } from "../../agent/credential-owner";
 import * as SlackOauthFlows from "../../db/slack-oauth-flows";
@@ -2888,11 +2888,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // The MCP bridge (WS-C §4.2) serves a node's relayed tools/list and
   // tools/call for the persona's remote MCP servers: the gateway is the MCP
   // client, and the credential never leaves it. Its servers resolve exactly as
-  // the runtime bundle names them (currentGlobalMcp + sessionExternalMcp). mono
+  // the runtime bundle names them (bridgeExternalMcp: the managed persona's
+  // config; files only with the operator's opt-in). mono
   // never calls it: its sessions mount external MCP directly, as before.
   const mcpBridge = createMcpBridge({
-    servers: (claims) =>
-      sessionExternalMcp(claims.persona && claims.persona !== "default" ? claims.persona : undefined, currentGlobalMcp()),
+    servers: (claims) => bridgeExternalMcp(claims.persona && claims.persona !== "default" ? claims.persona : undefined),
     onNeedsAuth: (claims, server, scope, reason) => postBridgeConnectCard(claims, server, scope, reason),
   });
   /** The `/mcp` connect card, posted in the turn's thread when a bridged server
