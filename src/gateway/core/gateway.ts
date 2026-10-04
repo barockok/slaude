@@ -65,7 +65,7 @@ import * as Sessions from "../../db/sessions";
 import * as SeenEvents from "../../db/seen-events";
 import * as PendingGates from "../../db/pending-gates";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
-import { loadExternalMcp, oauthHttpServers, privateOverrides, sessionExternalMcp } from "./external-mcp";
+import { connectableServers, loadExternalMcp, privateOverrides, sessionExternalMcp } from "./external-mcp";
 import * as SlackOauthFlows from "../../db/slack-oauth-flows";
 import { randomBytes } from "node:crypto";
 import { ensureInitiatorConfigDir, agentConfigDir } from "../../agent/oauth-home";
@@ -852,9 +852,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // that never ran the connect would otherwise know nothing about it.
   const pasteKey = (channelId: string, threadTs: string, userId: string) => `${channelId}:${threadTs}:${userId}`;
 
-  // Only HTTP servers participate in the OAuth connect flow. Shared with the
-  // portal's integrations list so the two surfaces offer the same servers.
-  const httpExternalServers = () => oauthHttpServers(externalMcp.servers);
+  // Only HTTP servers participate in the OAuth connect flow. Resolved per
+  // persona (as a session mounts them) through the function the portal's
+  // integrations list also uses, so the two surfaces offer the same servers.
+  const httpExternalServers = (personaId?: string | null) => connectableServers(personaId, externalMcp);
 
   /** Tenant and workspace that own a session's credentials, resolved exactly as
    *  the queue dispatcher resolves them, so a connect and the turns that later
@@ -1051,7 +1052,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
       scope = "global";
     }
-    const httpServers = httpExternalServers();
+    const httpServers = httpExternalServers(ctx.personaId);
     const cfg = httpServers[serverName];
     if (!cfg) {
       const names = Object.keys(httpServers);
@@ -1134,7 +1135,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
     // One click wins; a duplicate (or another replica) sees null and stops.
     if (!(await PendingGates.resolve(token, "approved", clicker))) return;
-    const cfg = httpExternalServers()[ctx.serverName];
+    const cfg = httpExternalServers(ctx.personaName)[ctx.serverName];
     if (!cfg) return;
     await connectServer({ ...ctx, sessionId: gate.sessionId, serverCfg: cfg, personaName: ctx.personaName });
   });
@@ -1780,7 +1781,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           await reply(":warning: `/mcp` connect is temporarily disabled (store-format canary failed) — see server logs.");
           return;
         }
-        const httpServers = httpExternalServers();
+        const httpServers = httpExternalServers(dispatch?.personaId);
 
         if (slash.action === "connect") {
           const name = slash.server;

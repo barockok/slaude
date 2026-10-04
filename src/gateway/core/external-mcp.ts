@@ -83,6 +83,19 @@ export function oauthHttpServers(
   return out;
 }
 
+/** The OAuth-connectable HTTP servers one persona mounts, resolved the way its
+ *  sessions resolve them. Slack's `/mcp` and the portal both go through here
+ *  (the portal unions it over personas), so a persona-only server is offered,
+ *  and accepted on connect, identically on both. Declared before
+ *  `sessionExternalMcp` in the file; a function declaration, so order is moot. */
+export function connectableServers(
+  personaId: string | null | undefined,
+  globalMcp: ExternalMcp,
+  registry?: PersonaRegistry,
+): ReturnType<typeof oauthHttpServers> {
+  return oauthHttpServers(sessionExternalMcp(personaId, globalMcp, registry).servers);
+}
+
 /** Per-session overrides: when the thread is /1on1-locked, return cleared copies of
  *  each whitelisted server so they mount anonymous. Empty when unlocked. Source map
  *  is never mutated (clearCredentials copies). */
