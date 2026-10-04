@@ -20,8 +20,11 @@ import { parseNodeManifest, stdioServersFor } from "../../src/node/manifest";
 function findCli(): string | null {
   const root = join(import.meta.dir, "../../node_modules/@anthropic-ai");
   if (!existsSync(root)) return null;
-  for (const d of readdirSync(root)) {
-    if (!d.startsWith("claude-agent-sdk-")) continue;
+  // A glibc host may have the musl variant installed too; it cannot run there.
+  const dirs = readdirSync(root)
+    .filter((d) => d.startsWith("claude-agent-sdk-"))
+    .sort((a, b) => Number(a.includes("musl")) - Number(b.includes("musl")));
+  for (const d of dirs) {
     const bin = join(root, d, "claude");
     if (existsSync(bin)) return bin;
   }
