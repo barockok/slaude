@@ -132,7 +132,7 @@ The gateway caches each resolved value per process for `SLAUDE_VAULT_CACHE_TTL`
 seconds (default 60; `0` disables the cache). When a refresh fails because
 Vault cannot answer, the last value is served for up to
 `SLAUDE_VAULT_STALE_MAX` seconds (default 600) and
-`provider_cred_stale_served_total` increments. A definitive answer (a deleted
+`slaude_provider_cred_stale_served_total` increments. A definitive answer (a deleted
 secret or field, a policy denial) is never masked. The cache is not persisted:
 a gateway that restarts while Vault is down cannot start new sessions until
 Vault returns; warm sessions keep running.
@@ -154,8 +154,8 @@ Raw error text never reaches Slack. The gateway logs one
 `provider.cred.resolve` line per resolution with the persona, scheme, outcome
 (`ok`, `cached`, `stale`, `denied`, `error`), duration and, on failure, an
 internal reason. It never logs the path, field or value. Metrics:
-`provider_cred_resolve_total{scheme,outcome}` and
-`provider_cred_stale_served_total`.
+`slaude_provider_cred_resolve_total{scheme,outcome}` and
+`slaude_provider_cred_stale_served_total`.
 
 ## The node's own provider variables
 

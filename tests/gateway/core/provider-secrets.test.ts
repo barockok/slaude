@@ -48,8 +48,8 @@ describe("provider credential resolver wiring", () => {
     expect(lines[0]).toBe("log [provider.cred.resolve] persona=ana scheme=vault outcome=ok duration_ms=3");
     expect(lines[1]).toBe("error [provider.cred.resolve] persona=ana scheme=vault outcome=denied duration_ms=1 reason=prefix");
     const out = metrics.render();
-    expect(out).toMatch(/provider_cred_resolve_total\{[^}]*outcome="denied"[^}]*\} \d+/);
-    expect(out).toMatch(/provider_cred_resolve_total\{[^}]*scheme="vault"/);
+    expect(out).toMatch(/slaude_provider_cred_resolve_total\{[^}]*outcome="denied"[^}]*\} \d+/);
+    expect(out).toMatch(/slaude_provider_cred_resolve_total\{[^}]*scheme="vault"/);
   });
 
   test("an env-only gateway resolves env:// through the project sink, never logging the value", async () => {
@@ -80,7 +80,7 @@ describe("provider credential resolver wiring", () => {
         SLAUDE_VAULT_ALLOWED_PREFIXES: "secret/slaude/personas/{persona}",
       }, { now: () => t, readFile: async () => "fake-sa-jwt" });
       const ref = { scheme: "vault" as const, path: "secret/slaude/personas/ana", field: "api_key" };
-      const staleCount = () => Number(/provider_cred_stale_served_total (\d+)/.exec(metrics.render())?.[1] ?? 0);
+      const staleCount = () => Number(/slaude_provider_cred_stale_served_total (\d+)/.exec(metrics.render())?.[1] ?? 0);
       const before = staleCount();
       const { result } = capture(() => r.resolve(ref, { persona: "ana" }));
       expect(await result).toBe("fake-ana-key");

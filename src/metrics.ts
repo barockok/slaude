@@ -230,6 +230,6 @@ export const m = {
   sessionsWarm: metrics.gauge("slaude_sessions_warm", "Sessions registered warm on some node."),
   // Persona provider credentials by reference (WS-A §7). Labels never carry a
   // path, field or value.
-  providerCredResolveTotal: metrics.counter("provider_cred_resolve_total", "Provider credential reference resolutions on this gateway, labeled by scheme (vault|env) and outcome (ok|cached|stale|denied|error)."),
-  providerCredStaleServedTotal: metrics.counter("provider_cred_stale_served_total", "Times a cached provider credential was served past its TTL because Vault could not answer."),
+  providerCredResolveTotal: metrics.counter("slaude_provider_cred_resolve_total", "Provider credential reference resolutions on this gateway, labeled by scheme (vault|env) and outcome (ok|cached|stale|denied|error)."),
+  providerCredStaleServedTotal: metrics.counter("slaude_provider_cred_stale_served_total", "Times a cached provider credential was served past its TTL because Vault could not answer."),
 };

@@ -5,8 +5,8 @@
  * Events go to the project's log and metrics instead of the secrets module's
  * default stdout sink: one `provider.cred.resolve` line with persona, scheme,
  * outcome, duration and (on failure) the internal reason — never the path,
- * field or value — plus `provider_cred_resolve_total{scheme,outcome}` and
- * `provider_cred_stale_served_total`. A refused (`denied`) or failed resolution
+ * field or value — plus `slaude_provider_cred_resolve_total{scheme,outcome}` and
+ * `slaude_provider_cred_stale_served_total`. A refused (`denied`) or failed resolution
  * logs at error level, as §7 requires for an allowlist refusal.
  */
 import { m as metric } from "../../metrics";
