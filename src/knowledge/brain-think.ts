@@ -1,5 +1,5 @@
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
-import { scrubChildEnv } from "../agent/child-env";
+import { scrubChildEnv, TOOLS_SURVIVING_EMPTY_SET } from "../agent/child-env";
 import { join } from "node:path";
 import { getBrain } from "./brain";
 import type { BrainScope } from "./scope";
@@ -46,8 +46,17 @@ export function sdkThinkClient(runner: typeof sdkQuery = sdkQuery): ThinkClient 
           // Pure synthesis: no tools, no side effects, one turn. gbrain's
           // resolved model id is ignored on purpose — the SDK session default
           // (subscription / gateway env) is the one auth+model decision.
-          allowedTools: [],
-          permissionMode: "bypassPermissions" as const,
+          // The prompt carries untrusted page content, so tools are removed
+          // outright: `tools: []` is the SDK's "no built-ins" (`--tools ""`).
+          // `allowedTools: []` is NOT — it only auto-approves, and the SDK
+          // drops an empty list; with bypassPermissions that ran Bash (D5.2).
+          // dontAsk denies anything not pre-approved; no MCP servers or
+          // settings (hooks, plugins) are loaded either.
+          tools: [],
+          disallowedTools: [...TOOLS_SURVIVING_EMPTY_SET],
+          permissionMode: "dontAsk" as const,
+          strictMcpConfig: true,
+          settingSources: [],
           maxTurns: 1,
           // No tools, but the child still inherits the environment: scrub it.
           env: scrubChildEnv({ ...process.env }),

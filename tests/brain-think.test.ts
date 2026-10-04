@@ -59,7 +59,8 @@ describe("sdkThinkClient", () => {
     } as never)) as { content: Array<{ type: string; text: string }> };
     expect(msg.content[0]!.text).toBe("synthesized answer");
     expect(captured.options!.systemPrompt).toBe("You are the brain.");
-    expect(captured.options!.allowedTools).toEqual([]);
+    expect(captured.options!.tools).toEqual([]);
+    expect(captured.options!.permissionMode).toBe("dontAsk");
     // gbrain's model id is intentionally ignored — subscription default rules
     expect(captured.options!.model).toBeUndefined();
   });

@@ -33,3 +33,12 @@ export function scrubChildEnv(env: Record<string, string | undefined>): Record<s
   }
   return out;
 }
+
+/**
+ * Tools the CLI still offers under an explicit `tools` set, even `[]`
+ * (measured against SDK 0.3.173 with a stub model). A non-bypass permission
+ * mode already denies them (Monitor runs a command); listing them in
+ * `disallowedTools` is the second layer, so a model child reading untrusted
+ * content is not offered them at all.
+ */
+export const TOOLS_SURVIVING_EMPTY_SET = ["Monitor", "PushNotification", "DesignSync"] as const;
