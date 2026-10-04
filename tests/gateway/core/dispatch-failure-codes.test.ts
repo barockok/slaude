@@ -37,6 +37,7 @@ function infra(opts: { streamError: boolean }) {
       return { queue: "turns", jobId, coalesced: false };
     },
     queue: () => ({ getJob: async (id: string) => ({ getState: async () => (failed.has(id) ? "failed" : "active") }) }),
+    movedTo: async () => null,
     close: async () => {},
   };
   return { pubsub, turns, registry: { lookup: async () => null, close: async () => {} } };

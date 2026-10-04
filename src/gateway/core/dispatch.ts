@@ -2,7 +2,8 @@
  * Gateway-role turn dispatch (spec §2): instead of running the agent
  * in-process, mint a job token, consult the warm-session registry, and
  * enqueue onto BullMQ — per-node queue when the session is warm somewhere,
- * shared `turns` otherwise. Coalescing lives inside TurnQueues.
+ * the persona's label queue otherwise (`turns` for `default`). Coalescing
+ * lives inside TurnQueues.
  *
  * Slack UX parity: nodes append every AgentEvent to the events:<session>
  * stream (spec §4). After each enqueue this module follows that stream and
@@ -187,6 +188,17 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
               const j = await turns.queue(ref.queue).getJob(jobId);
               const jstate = j ? await j.getState() : "missing";
               if (jstate === "completed" || jstate === "failed" || jstate === "missing") {
+                // A move (relabel, label mismatch at claim, reaper) removes or
+                // completes the job here: follow it to where it went rather
+                // than closing the turn before it ran.
+                const moved = await turns.movedTo(jobId).catch(() => null);
+                if (moved && (moved.queue !== ref.queue || moved.jobId !== jobId)) {
+                  state.jobs.delete(jobId);
+                  if (!state.jobs.has(moved.jobId) && !state.outcomeEmitted.has(moved.jobId)) {
+                    state.jobs.set(moved.jobId, { queue: moved.queue });
+                  }
+                  continue;
+                }
                 state.jobs.delete(jobId);
                 state.deadline = Math.min(state.deadline, Date.now() + followLingerMs);
                 // Synthesize the outcome only if the stream didn't already
@@ -276,11 +288,14 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
         sessionConfigFp: sessionConfigFp({ runAs: runAsUser ?? null, lock: lockClaim, remote: remoteClaim ?? null }),
         ...(remoteClaim ? { remote: remoteClaim } : {}),
       });
-      // Routing (spec §2): warm + fresh → the holding node's queue; anything
-      // else → shared. A node receiving a per-node job it no longer holds
-      // cold-resumes locally — it never bounces.
+      // Routing (spec §2, node labels spec §4.6): warm + fresh on a node that
+      // still carries the persona's label → that node's queue; anything else →
+      // the label's queue. A node receiving a per-node job it no longer holds
+      // cold-resumes locally — it never bounces. After a relabel the warm node
+      // may lack the new label: its session is left to idle out.
       const loc = await registry.lookup(session.id);
-      const target: TurnTarget = loc && loc.fresh ? { node: loc.node } : "shared";
+      const warmOk = !!loc && loc.fresh && (await registry.nodeCarries(loc.node, label));
+      const target: TurnTarget = warmOk ? { node: loc!.node } : { label };
       // Capture the follower's cursor BEFORE the job becomes claimable. Once it
       // is enqueued a node can claim it and append the whole turn before the
       // follower starts; a cursor read after that point would treat this
