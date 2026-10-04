@@ -169,6 +169,15 @@ test("restore does nothing when nothing was pinned, and says so when it cannot r
   expect(r.out).toContain("could not restore hpa/slaude-node-cpu-fallback maxReplicas to 3");
 });
 
+test("verify-ha.sh pins the node HPA before its baseline and restores it in its EXIT trap", () => {
+  const text = readFileSync(new URL("../../deploy/k8s-local/verify-ha.sh", import.meta.url).pathname, "utf8");
+  expect(text).toContain('. "$HERE/lib.sh"');
+  const body = /^cleanup\(\) \{[\s\S]*?^\}/m.exec(text)?.[0] ?? "";
+  expect(body).toContain("restore_node_hpa");
+  expect(text).toContain("trap cleanup EXIT");
+  expect(text.indexOf("pin_node_hpa")).toBeLessThan(text.indexOf('expect "two node replicas ready"'));
+});
+
 test("pin_node_hpa reports an HPA it cannot read instead of pinning blind", () => {
   set("hpa_min", "", 1);
   const r = run("pin_node_hpa");
