@@ -117,6 +117,7 @@ The tenant is `default` for a single-workspace deployment; it must match
 
 ```json
 {
+  "version": 1,
   "revision": "<commit sha>",
   "committedAt": "2026-10-01T09:00:00Z",
   "allowEmpty": false,
@@ -126,12 +127,24 @@ The tenant is `default` for a single-workspace deployment; it must match
 
 The body is capped at 4 MiB; a larger one is 413 and nothing is applied.
 `personas render` builds this body from the repository. The response reports
-`created`, `updated`, `unchanged`, `tombstoned` and `overridesWiped`. With
+`created`, `updated`, `unchanged`, `tombstoned`, `overridesWiped` and
+`ignoredFields`. With
 `?dryRun=1` nothing is written and nothing is published, and the report is
 what a real sync of the same body would produce, including how many runtime
 overrides it would wipe.
 
 Behaviour to know:
+
+- `version` is the payload format; absent means 1, and `personas render` always
+  writes it. A payload whose `version` is newer than the gateway supports is
+  refused with 422 before anything is applied: upgrade the gateway first.
+- A field the gateway does not know (at the top level or on a persona) is
+  ignored, never stored, and listed in `ignoredFields` as `futureKnob` or
+  `persona.<name>.<field>`. The gateway also logs a warning naming the fields.
+  Only names are reported, never values. Set `SLAUDE_DEPLOY_STRICT=1` on the
+  gateway to make an unknown field a 422 instead; it is off by default so a
+  pipeline can be upgraded ahead of its gateway. `personas render --check`
+  reports unknown `persona.yaml` keys on stderr.
 
 - A sync whose `committedAt` is older than the live revision is refused with
   409, before any model call. Rerunning an old CI job is safe.

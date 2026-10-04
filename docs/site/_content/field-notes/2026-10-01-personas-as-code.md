@@ -306,7 +306,7 @@ State plainly:
    the node token should get the same treatment.
 5. **MCP lists read the global `.mcp.json`.** The `/mcp connect` list and the
    portal integrations list still read it for a managed persona, so
-   connectable and mounted servers can differ.
+   connectable and mounted servers can differ. **Resolved:** `/mcp connect`, `/mcp disconnect` and the Connect cards now resolve per persona through `connectableServers`, the same function the portal unions over personas.
 6. **Export misses some tokens in MCP URLs.** A token in a URL's host or in a
    path segment shorter than 32 characters is not detected; review MCP URLs
    before committing.
