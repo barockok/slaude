@@ -16,6 +16,7 @@ manifest, script and test was validated offline only (see the last section).
 | 0.1 | `docker info --format '{{.NCPU}} {{.MemTotal}}'` | at least 5 CPUs and about 7.5 GB | the VM can host the 4 CPU / 4864 MB node (provisional floor, `sizing.env`) |
 | 0.2 | `command -v minikube kubectl openssl python3 bun` | all found | `up.sh` prerequisites (bun mints the node credentials) |
 | 0.3 | an existing `slaude-local` profile at the old 3 CPU / 3500 MB size: `deploy/k8s-local/down.sh` | profile deleted (secrets kept) | `up.sh` refuses a profile of another size |
+| 0.5 | `kubectl config use-context slaude-local` (after 1.1) | | `up.sh` no longer changes your current context; the plain `kubectl` commands below assume it (or add `--context slaude-local`) |
 | 0.4 | optional: `export SLAUDE_LOCAL_ENV_FILE=./.env` (real provider key), `SLAUDE_LOCAL_MODEL=...` | | real model turns for the Slack runbook; without them the verify scripts still pass |
 
 ## 1. Bring-up, signed credentials, legacy door open
@@ -108,23 +109,46 @@ the v0.45.0 notes; they are not assumed anywhere.
 
 ## Not verified offline
 
-Everything above. Offline, the implementer ran: `kubectl kustomize` of the base,
-the local overlay and the e2e overlay (with fake generated files) under the
-tests in `tests/deploy/topology.test.ts`, `secret-split.test.ts` and
+Offline, the implementer ran: `kubectl kustomize` of the base, the local overlay
+and the e2e overlay (with fake generated files) under the tests in
+`tests/deploy/topology.test.ts`, `secret-split.test.ts` and
 `local-sizing.test.ts`; shellcheck over every tracked `*.sh`; the scripts'
-stubbed-kubectl tests (`local-scripts.test.ts`, `verify-turns.test.ts`); the
-helper tests (`local-topology-lib.test.ts`, which mints and inspects a credential
-with the real CLI); the mock MCP server driven by the MCP SDK client
-(`mock-mcp.test.ts`). Specifically never run:
+stubbed-kubectl tests (`local-scripts.test.ts`, `verify-turns.test.ts`,
+`up-context.test.ts`); the helper tests (`local-topology-lib.test.ts`, which
+mints and inspects a credential with the real CLI); the mock MCP server driven
+by the MCP SDK client (`mock-mcp.test.ts`).
 
-- any pod of the new topology: the dev Vault image and its `vault` CLI calls
-  (`kv put/patch` with `-` on stdin, `kv metadata put -custom-metadata`,
-  `auth/token/create-orphan` with an `id`), the projected-token volume, the
-  finance deployment, the 4864 MB sizing;
-- the in-pod scripts `probe/personas.ts`, `probe/node.ts` and the new
-  `probe/turns.ts` commands (built with `bun build`, never run against
-  `/app/src`);
-- the soul-hash, unserved-gauge and log-line timings the verify scripts wait on;
-- whether the e2e nightly suite (which now also brings up Vault, the finance
-  node and the mock MCP server) still fits its runner and passes;
-- the real-Slack runbook, the alerts and the rollback rehearsal.
+Each item below is **UNVERIFIED**. Check it off when it has run on the cluster.
+
+- [ ] UNVERIFIED: the dev Vault CLI forms `vault.sh` uses, inside the vault pod:
+  - `vault kv put secret/slaude/personas/<p> -` (JSON data on stdin; `seed_one`);
+  - `vault kv patch secret/slaude/personas/<p> -` (JSON data on stdin; `rotate`);
+  - `vault kv metadata put -custom-metadata=seed=<hash> secret/slaude/personas/<p>`;
+  - `vault write -format=json auth/token/lookup -` (`{"token": ...}` on stdin);
+  - `vault write auth/token/create-orphan -` with `id`, `policies`, `period`,
+    `display_name` on stdin (a root token may set `id`);
+  - `vault policy write slaude-personas -`; the `hashicorp/vault:1.17` image in
+    dev mode with `SKIP_SETCAP=1`.
+- [ ] UNVERIFIED: the in-pod probes: `probe/personas.ts` (soul cache seed plus
+  `/deploy` post), `probe/node.ts` (`whoami`, `runtime`, `mcpx`), and the new
+  `probe/turns.ts` commands (`--label live`, `token`, `legacy-whoami`,
+  `unserved`). They were only built with `bun build`, never run against `/app/src`.
+- [ ] UNVERIFIED: `bun run node-token revoke <id>` against the cluster's Postgres,
+  and the node pausing on the following 401.
+- [ ] UNVERIFIED: the unserved-gauge timing: `slaude_label_unserved` reaching 1
+  within `UNSERVED_TIMEOUT` (150 s) with `SLAUDE_LABEL_UNSERVED_SECS=20` and the
+  30 s reaper pass; and the other waits (soul-hash log lines, the rotation within
+  the 10 s Vault cache TTL).
+- [ ] UNVERIFIED: the e2e nightly suite on the larger topology: the runner fitting
+  a 4 CPU / 4864 MB minikube node; `e2e/up.sh` with Vault, the finance node and
+  the mock MCP server; `e2e/ha/driver.ts` restarting `slaude-node-finance` with the
+  others; `scripts/e2e-ha.sh` waiting for `slaude-node-finance`, `vault` and
+  `mock-mcp`; the sanity stage's `verify-ha.sh` sync with Vault references.
+- [ ] UNVERIFIED: any pod of the new topology at all: the projected Vault token
+  volume, the finance deployment, the 4864 MB sizing, `up.sh`'s context guard on
+  a real kubeconfig.
+- [ ] UNVERIFIED: the real-Slack runbook (nine steps).
+- [ ] UNVERIFIED: every alert in the alerts table, fired and cleared.
+- [ ] UNVERIFIED: the rollback rehearsal (the older tag's `up.sh` with
+  `SLAUDE_LOCAL_CPUS=4 SLAUDE_LOCAL_MEMORY=4864`, the finance node it leaves
+  behind, legacy-token default nodes).
