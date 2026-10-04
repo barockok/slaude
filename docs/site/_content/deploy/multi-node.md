@@ -137,8 +137,8 @@ So each tier gets its own Secret:
 
 | Secret (`deploy/k8s-scale/10-secrets.yaml`) | Holds | Loaded by |
 |---|---|---|
-| `slaude-scale-secrets` | `SLAUDE_MASTER_KEY`, `SLAUDE_JOB_SECRET`, `SLAUDE_PG_URL`, `SLAUDE_BRAIN_DATABASE_URL`, the Slack client and signing secrets, `SLAUDE_OAUTH_STATE_SECRET`, deploy tokens, the gateway's provider key | gateways, through `envFrom` |
-| `slaude-scale-node-secrets` | `SLAUDE_NODE_TOKEN`, `SLAUDE_REDIS_URL`, the provider env fallback | nodes, through `envFrom`; gateways read `SLAUDE_NODE_TOKEN` and `SLAUDE_REDIS_URL` from it by key |
+| `slaude-scale-secrets` | `SLAUDE_MASTER_KEY`, `SLAUDE_JOB_SECRET`, `SLAUDE_NODE_KEY` (+ `_PREVIOUS`), `SLAUDE_NODE_LEGACY_TOKEN`, `SLAUDE_PG_URL`, `SLAUDE_BRAIN_DATABASE_URL`, the Slack client and signing secrets, `SLAUDE_OAUTH_STATE_SECRET`, deploy tokens, the gateway's provider key | gateways, through `envFrom` |
+| `slaude-scale-node-secrets` | `SLAUDE_NODE_TOKEN` (the node's own credential), `SLAUDE_REDIS_URL`, the provider env fallback | nodes, through `envFrom`; gateways read only `SLAUDE_REDIS_URL` from it, by key |
 
 `SLAUDE_GATEWAY_URL` is not secret and stays a plain variable in `50-node.yaml`. `docker-compose.scale.yaml` already gives each tier only its own variables.
 
@@ -178,13 +178,13 @@ Before this release both Deployments loaded `slaude-scale-secrets`. That Secret 
    ```
 
    You can leave the provider variables out if every tenant's runtime bundle carries provider credentials. A managed tenant (personas as code) or a database persona with no stored provider credentials needs them.
-2. Apply `40-gateway.yaml`, with gateways on this release's image. Gateways roll onto their ServiceAccount and read the node token and Redis URL from the node Secret, which holds the same values.
+2. Copy the node token into the gateway Secret as `SLAUDE_NODE_LEGACY_TOKEN` (the same value; see [Node credentials](#node-credentials)), then apply `40-gateway.yaml`, with gateways on this release's image. Gateways roll onto their ServiceAccount, accept the legacy token under its new name, and read the Redis URL from the node Secret.
 3. **Let queued and running turns drain.** Wait until `slaude_queue_depth` is 0 and no turn is running. Two things can go wrong otherwise. A job minted by an older gateway carries no `lock` claim, so it fails at session start on a node with no database (`NodeDbAccessError`). And an older node image on the new manifests silently opens an empty in-memory database and reads every thread as unlocked.
 4. Apply `50-node.yaml`, with **the node image already at this release**: set the image in the same apply, never the manifest first. Nodes roll onto the node Secret, which holds no database URL. Each new node pod should log no gateway-secrets warning, and `slaude_node_gateway_secrets_present` should read 0. Each warm session reboots once on its first turn, because sessions started before this release carry no session-config fingerprint. The reboot is expected and does not repeat.
 5. Keep your copy of `10-secrets.yaml` (or its sealed form) in the two-Secret shape, so the next apply does not undo the split.
 6. Deal with what nodes were exposed to (below).
 
-On the local cluster (`deploy/k8s-local`), re-running `up.sh` does steps 1 to 5 (drain first if turns are running). It derives `node.env` from the existing `secrets.env`, so every value is kept.
+On the local cluster (`deploy/k8s-local`), re-running `up.sh` does steps 1 to 5 (drain first if turns are running). It derives `node.env` from the existing `secrets.env`, so every value is kept; an older `secrets.env` line `SLAUDE_NODE_TOKEN=` is renamed in place to `SLAUDE_NODE_LEGACY_TOKEN=`, value unchanged.
 
 ### What nodes were exposed to
 
@@ -218,6 +218,60 @@ Until the tool exists there are two honest choices:
   Then set the new key and start the gateways. Next, recreate what was removed. Register every Slack app again with `bun run slack-app add`, or reinstall it through `/slack/oauth/start`. Enter the provider credentials again. Run the persona sync again, which re-encrypts user tokens and MCP config from the repository's `PERSONA_*` values. Runtime overrides are gone and must be set again. People reconnect their MCP servers with `/mcp connect`, and a manager reconnects the agents' shared identities. Each `/remote` user runs `/remote key` again, which generates a new key pair, and authorizes its public key on their machine. Soul-cache entries re-extract on their own.
 
 Either way, finish the split first. Rotating while nodes still load the gateway Secret only exposes the new key the same way.
+
+## Node credentials
+
+A node proves who it is, and which **labels** it carries, with a signed credential. The label decides which agents a node may serve: every request a node makes with a job token is checked against the label signed into that token at dispatch, and a node without it gets `403 this node may not serve this agent`, even holding a valid job token. Until personas carry their own label, every persona is `default`.
+
+**What the gate does not do.** A node is one trust domain: every agent turn on it runs as the node's user and can read the node's environment and other turns' processes. Labels separate nodes, not personas that share a node. Nodes also read Redis directly, so queue names are routing, not access control.
+
+### Minting
+
+The key lives only in the gateway Secret (`SLAUDE_NODE_KEY`, at least 32 characters, different from `SLAUDE_JOB_SECRET`; a gateway refuses to start otherwise). Run the CLI where the key is, on a gateway:
+
+```sh
+bun run node-token mint --label engineering [--label eu] [--id engineering-a] [--ttl 90d]
+bun run node-token inspect -        # reads the token on stdin; prints claims only, never the key
+bun run node-token revoke engineering-a
+```
+
+`mint` prints the token once, on stdout, and a warning on stderr. Put it in the **node** Secret as that node's `SLAUDE_NODE_TOKEN`; never give it to a gateway, a command line or a log. Labels are 1 to 8 entries of `[a-z0-9][a-z0-9-]{0,31}`; the default lifetime is 90 days and the maximum 400. `revoke` writes a `node_revocations` row (Postgres only; on sqlite revocation is skipped with a warning): every credential with that id issued **before** the revocation is refused within 30 seconds. Issue times are whole seconds, so a credential re-minted in the same second as the revoke is refused too; mint again a second later. If the revocation store is down, a cached answer is used for at most five minutes, then `/v1` answers 503.
+
+**Rotating the key.** Set the new key as `SLAUDE_NODE_KEY` and the old one as `SLAUDE_NODE_KEY_PREVIOUS`, re-mint and roll the nodes, then drop the previous key.
+
+### The handshake
+
+At boot a node calls `GET /v1/node/whoami`, which returns the verified `{id, labels, legacy, expiresInSec}`. The node exits only on a 401 (a wrong, expired or revoked credential), with a message that never contains the token. Network errors and every other status are retried with backoff, so a cluster cold start does not crash-loop. Fewer than 14 days left logs a warning. A gateway older than this endpoint answers 404, and the node continues.
+
+### The legacy token
+
+A node holding the old shared token authenticates as `{id: legacy, labels: [default]}`. The gateway reads that value as `SLAUDE_NODE_LEGACY_TOKEN` from its own Secret; a node keeps presenting it as `SLAUDE_NODE_TOKEN`. The gateway also accepts its own `SLAUDE_NODE_TOKEN` as the legacy value, with a deprecation warning, but **only while no `SLAUDE_NODE_KEY` is set**, and it refuses any legacy value that looks like a signed credential: a signed credential is never downgraded to the legacy identity. While the door is open every `default` persona is reachable with one shared secret, so close it with `SLAUDE_NODE_LEGACY=off` once every node has a signed credential.
+
+### Job tokens
+
+A job token is refreshed at claim and during a turn. Its total life is capped by `SLAUDE_JOB_TOKEN_MAX_AGE` (6 hours) from its first issue. A job that waited in the queue longer than the refresh window (the 15-minute TTL plus a 1-hour grace) gets a new token through `POST /v1/jobs/:id/token-reissue`, which needs the label, the job still in the queue, and the job younger than `SLAUDE_JOB_MAX_AGE` (24 hours). A reissue restarts the token-life clock at the claim, so a job's token can live up to `SLAUDE_JOB_MAX_AGE` from its original enqueue in total, never beyond it.
+
+### Metrics and an alert
+
+| Metric | Meaning |
+|---|---|
+| `slaude_node_credential_expiry_seconds{id}` | Seconds until a credential the gateway has seen expires (at most 64 ids are exported). |
+| `slaude_node_legacy_auth_total` | Requests authenticated with the legacy token while `SLAUDE_NODE_KEY` is set. |
+
+```yaml
+groups:
+  - name: slaude-node-credentials
+    rules:
+      - alert: SlaudeNodeCredentialExpiring
+        expr: min by (id) (slaude_node_credential_expiry_seconds) < 14 * 86400
+        for: 1h
+        annotations:
+          summary: "Node credential {{ $labels.id }} expires in under 14 days; mint a new one and roll the node."
+      - alert: SlaudeNodeLegacyTokenInUse
+        expr: sum(increase(slaude_node_legacy_auth_total[1h])) > 0
+        annotations:
+          summary: "A node still uses the legacy shared token; give it a signed credential, then set SLAUDE_NODE_LEGACY=off."
+```
 
 ## Control panel (`/panel`)
 
