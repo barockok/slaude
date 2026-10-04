@@ -46,6 +46,58 @@ Reset, permission-mode changes, and `force-release` require the
 **superadmin** role; everything else — including stop, model switch, chat,
 and `unlock-1on1` — is open to any operator listed for the panel.
 
+**Personas.** *Personas* in the header lists every persona (`#/p`); a row
+opens one persona's definition (`#/p/<name>`), which answers "what is this
+agent, and where does it run" without reading the database or a node's disk.
+It is read only and open to any operator. Definitions change through git
+([personas as code](personas-as-code.md)); the runtime override endpoints are
+not surfaced here. The page shows:
+
+| Section | What you see |
+|---|---|
+| Identity | origin (`git` or `runtime`), retired or not, Slack user id, the label it runs on (`default` when it names none), model from git and the live model, with an override marked |
+| Soul | its length, whether a runtime override replaced it, and the first 200 characters |
+| Provider | for `apiKey`, `authToken` and `oauthToken`: the reference (`vault://…#field` or `env://PERSONA_…`), `stored` for a value that is not a valid reference, or `none`; the base URL reduced to scheme, host and path |
+| MCP servers | name, transport, hostname only, the route, and the agent credential (below) |
+| Knowledge | `all` installed KBs, `none`, or the listed ids, each marked installed or not |
+| Skills | slug, name, and whether it is global or the persona's own overlay (which shadows a global skill of the same slug) |
+| Nodes | the live nodes whose heartbeat carries the persona's label, with their labels; "no node registry answered" in `mono` or without Redis |
+
+**An MCP server's route** (`via` in the API) says how the persona's agent
+gets its tools:
+
+- `bridge` (*gateway bridge*): an HTTP server, relayed by the gateway's MCP
+  bridge.
+- `stdio` (*runs in the gateway process*): `mono` only, where a persona's
+  stdio server runs beside the agent.
+- `none`: not served from this definition. In the gateway role a node mounts
+  only its own manifest's stdio and plugin servers, never a persona's, so a
+  persona's stdio server reads *not served here (stdio comes from the node
+  manifest)*; `sse` and unknown types are not bridged.
+
+`plugin` is never reported: plugin MCP servers are node-local software the
+gateway cannot see. A node's manifest servers are not listed here either.
+
+**The agent credential** is about the persona's **agent identity only**:
+*agent credential: stored* when the gateway holds an OAuth credential for that
+server's exact configuration, *stored, expired; refreshes on use* past its
+expiry (the gateway refreshes it on the next call), *none* otherwise.
+Per-user credentials (a person's own connection, used in a locked 1:1) are
+not shown. The API returns the expiry time (`expiresAt`), never the token.
+
+**What is deliberately not shown**, by the server rather than hidden by the
+page: any secret value; a provider credential's resolved value; the
+persona's Slack user token (the list says only `present` or `absent`); an
+MCP server's URL, path, query string, userinfo, port, headers, env, command
+or arguments; any OAuth token. A reference's path is visible to
+signed-in panel users only and the route logs nothing about the persona.
+Showing a reference tells an operator *which* secret a persona uses, which
+is the point; it does not let them read it.
+
+Persona pages need the persona tables, which exist on Postgres only: on a
+sqlite deployment the page says personas are not available (the API answers
+`409`), an unknown name shows a not-found state (`404`), and a string that is not a persona name is refused by the page before any request.
+
 ## Enabling it
 
 The panel is its own OIDC relying party — it does not trust an ingress

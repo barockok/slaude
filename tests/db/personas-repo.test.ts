@@ -260,6 +260,22 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("persona repository", () => {
     expect(r).toEqual({ soul_md: "ana soul", origin: "git" });
   });
 
+  test("one persona by name: both layers, overrides applied only to the effective one, tombstoned on request", async () => {
+    await P.applySync(T, [row("ana", { model: "m-git" }), row("bea")], meta("r1", "2026-10-01T10:00:00Z"));
+    await P.setOverride(T, "ana", "model", "m-live", "ops");
+    const one = await P.personaByName(T, "ana");
+    expect(one!.desired.model).toBe("m-git");
+    expect(one!.effective.model).toBe("m-live");
+    expect(one!.effective.overridden).toEqual(["model"]);
+    // Another persona's override never leaks in.
+    await P.setOverride(T, "bea", "model", "m-bea", "ops");
+    expect((await P.personaByName(T, "ana"))!.effective.model).toBe("m-live");
+    expect(await P.personaByName(T, "ghost")).toBeNull();
+    await P.applySync(T, [row("bea")], meta("r2", "2026-10-01T11:00:00Z"));
+    expect(await P.personaByName(T, "ana")).toBeNull();
+    expect((await P.personaByName(T, "ana", { includeTombstoned: true }))!.desired.tombstonedAt).not.toBeNull();
+  });
+
   test("a runtime onboard may not take another persona's Slack identity", async () => {
     await P.applySync(T, [row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
     await expect(P.createRuntimePersona(T, row("quick", { origin: "runtime", slackUserId: "UANA" }), "ops")).rejects.toBeInstanceOf(P.IdentityTakenError);
