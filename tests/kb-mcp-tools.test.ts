@@ -7,7 +7,7 @@ import {
   KB_MCP_NAME,
   kbHandlers,
 } from "../src/knowledge/mcp-tools";
-import { clearKbCache } from "../src/knowledge/loader";
+import { clearKbCache, loadKbs } from "../src/knowledge/loader";
 
 beforeEach(() => {
   ensureHome();
@@ -26,7 +26,7 @@ describe("kbHandlers.list_kbs", () => {
   test("returns no-KB message when empty", async () => {
     const r = await kbHandlers.list_kbs();
     expect(r.isError).toBeUndefined();
-    expect(r.content[0]!.text).toBe("(no knowledge bases installed)");
+    expect(r.content[0]!.text).toBe("(no knowledge bases available)");
   });
 
   test("returns JSON array when KBs exist", async () => {
@@ -41,17 +41,26 @@ describe("kbHandlers.list_kbs", () => {
     expect(labels).toEqual(["cookbook", "runbooks"]);
     const cookbook = parsed.find((e: any) => e.label === "cookbook");
     expect(cookbook.description).toBe("recipes");
-    expect(cookbook.index_file).toBe("README.md");
-    expect(typeof cookbook.path).toBe("string");
+    expect(cookbook.source).toBe("kb-cookbook");
     const runbooks = parsed.find((e: any) => e.label === "runbooks");
     expect(runbooks.label).toBe("runbooks");
   });
 
-  test("JSON keys match KbEntry shape", async () => {
+  // WS-C §4.1.4: no disk path or file name reaches the model.
+  test("JSON keys are label, description, tags and source; no path", async () => {
     seedKb("x", "# X");
     const r = await kbHandlers.list_kbs();
     const parsed = JSON.parse(r.content[0]!.text);
-    expect(Object.keys(parsed[0]).sort()).toEqual(["description", "index_file", "label", "path", "tags"]);
+    expect(Object.keys(parsed[0]).sort()).toEqual(["description", "label", "source", "tags"]);
+    expect(r.content[0]!.text).not.toContain(paths.knowledge);
+  });
+
+  test("lists only the KBs it is given (the persona's)", async () => {
+    seedKb("runbooks", "# Runbooks");
+    seedKb("cookbook", "# Cookbook");
+    const only = loadKbs().filter((k) => k.label === "cookbook");
+    expect(JSON.parse((await kbHandlers.list_kbs(only)).content[0]!.text).map((e: any) => e.label)).toEqual(["cookbook"]);
+    expect((await kbHandlers.list_kbs([])).content[0]!.text).toBe("(no knowledge bases available)");
   });
 });
 
@@ -59,7 +68,16 @@ describe("kbHandlers.search_kbs", () => {
   test("returns no-KB message when empty", async () => {
     const r = await kbHandlers.search_kbs({ query: "service-a" });
     expect(r.isError).toBeUndefined();
-    expect(r.content[0]!.text).toBe("(no knowledge bases installed)");
+    expect(r.content[0]!.text).toBe("(no knowledge bases available)");
+  });
+
+  test("searches only the KBs it is given, and returns no path", async () => {
+    seedKb("runbooks", ["---", "description: ops", "tags:", "  - service-a", "---", "# Runbooks"].join("\n"));
+    seedKb("cookbook", ["---", "description: ops", "tags:", "  - service-a", "---", "# Cookbook"].join("\n"));
+    const only = loadKbs().filter((k) => k.label === "cookbook");
+    const r = await kbHandlers.search_kbs({ query: "service-a" }, only);
+    expect(JSON.parse(r.content[0]!.text).map((e: any) => e.label)).toEqual(["cookbook"]);
+    expect(r.content[0]!.text).not.toContain(paths.knowledge);
   });
 
   test("matches by tag", async () => {

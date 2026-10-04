@@ -1,12 +1,12 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { loadKbs } from "./loader";
+import { loadKbs, type KbEntry } from "./loader";
 import { brainCall, brainEnabled } from "./brain";
 import { brainThink, sdkThinkClient } from "./brain-think";
 import { gather } from "./gather";
 import { gatedBrainCall, type ApprovalReq, type ApprovalRes, type GateInput } from "./gated-dispatch";
-import { SHARED_SOURCE, type BrainScope } from "./scope";
+import { SHARED_SOURCE, kbSourceId, type BrainScope } from "./scope";
 import { agentIdReady } from "./agent-identity";
 import { kbContract, KB_MEMOIZE_MAX_PAGES } from "../tools/contracts/kb";
 
@@ -42,16 +42,25 @@ function scoreKb(kb: ReturnType<typeof loadKbs>[number], queryTokens: string[]):
   return score;
 }
 
+/** What list_kbs/search_kbs return per KB: no disk path or file name (WS-C
+ *  §4.1.4). `source` is the brain source id kb_search reads it under. */
+const kbView = (kb: KbEntry) => ({ label: kb.label, description: kb.description, tags: kb.tags, source: kbSourceId(kb.label) });
+
+const NO_KBS = "(no knowledge bases available)";
+
+/**
+ * `kbs` is the caller's persona-filtered list (personaKbs); the default, every
+ * installed KB, is for callers with no persona. A persona never learns that a
+ * KB it may not read exists.
+ */
 export const kbHandlers = {
-  async list_kbs(): Promise<ToolResult> {
-    const kbs = loadKbs();
-    if (kbs.length === 0) return ok("(no knowledge bases installed)");
-    return ok(JSON.stringify(kbs, null, 2));
+  async list_kbs(kbs: KbEntry[] = loadKbs()): Promise<ToolResult> {
+    if (kbs.length === 0) return ok(NO_KBS);
+    return ok(JSON.stringify(kbs.map(kbView), null, 2));
   },
 
-  async search_kbs({ query, limit }: { query: string; limit?: number }): Promise<ToolResult> {
-    const kbs = loadKbs();
-    if (kbs.length === 0) return ok("(no knowledge bases installed)");
+  async search_kbs({ query, limit }: { query: string; limit?: number }, kbs: KbEntry[] = loadKbs()): Promise<ToolResult> {
+    if (kbs.length === 0) return ok(NO_KBS);
     const queryTokens = tokenize(query);
     if (queryTokens.length === 0) return err("query too short or empty after tokenization");
     const scored = kbs
@@ -59,7 +68,7 @@ export const kbHandlers = {
       .filter((s) => s.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit ?? 5)
-      .map((s) => s.kb);
+      .map((s) => kbView(s.kb));
     if (scored.length === 0) return ok("(no matching knowledge bases)");
     return ok(JSON.stringify(scored, null, 2));
   },
@@ -302,7 +311,10 @@ export const brainHandlers = {
     runGated("delete_page", { slug: p.slug }, `KB delete: ${p.slug} — ${p.reason}`, d),
 };
 
-export function createKbMcp(deps?: BrainToolDeps): McpSdkServerConfigWithInstance {
+/** `kbs`: the session persona's readable KBs, resolved per call (personaKbs);
+ *  default every installed KB. */
+export function createKbMcp(deps?: BrainToolDeps, opts: { kbs?: () => KbEntry[] } = {}): McpSdkServerConfigWithInstance {
+  const kbs = opts.kbs ?? loadKbs;
   const c = kbContract.tools;
   const brainTools = deps && brainEnabled()
     ? [
@@ -328,8 +340,9 @@ export function createKbMcp(deps?: BrainToolDeps): McpSdkServerConfigWithInstanc
     version: "0.2.0",
     tools: [
       ...brainTools,
-      tool(c.list_kbs.name, c.list_kbs.description, c.list_kbs.schema, kbHandlers.list_kbs),
-      tool(c.search_kbs.name, c.search_kbs.description, c.search_kbs.schema, kbHandlers.search_kbs),
+      tool(c.list_kbs.name, c.list_kbs.description, c.list_kbs.schema, () => kbHandlers.list_kbs(kbs())),
+      tool(c.search_kbs.name, c.search_kbs.description, c.search_kbs.schema,
+        (a: { query: string; limit?: number }) => kbHandlers.search_kbs(a, kbs())),
     ],
   });
 }
