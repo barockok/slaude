@@ -141,7 +141,9 @@ contains the upstream server's response body or its error message.
 | The refresh fails, the server still refuses, or a static credential is refused (401) | `this agent's connection to S needs to be re-authorised` |
 | The server answers 403 | `S refused this call: permission denied for this identity` (no refresh, no card: re-authorising does not help) |
 | A private server and no connection for the person | `connect S: this conversation runs as you, and S uses your own connection, which is not set up yet` |
-| The upstream session is gone (a restart: 404 or 400 for the old session id), the connection dropped, or a 5xx | the pooled session is dropped and the call retried once on a fresh one; if that fails: `S is unavailable right now; try again later` |
+| The upstream session is gone (a restart: 404 or 400 for the old session id) | the server rejected the request before running anything, so the pooled session is dropped and the call retried once on a fresh session |
+| A tool **call** reached the server and then got a 5xx or lost its connection | **not retried**: calls are at most once, since the tool may already have run (created a ticket, sent a message). `the call to S was interrupted; it may have been executed — check before retrying` |
+| The same while opening the session or listing tools (nothing was run) | retried once on a fresh session; if that fails: `S is unavailable right now; try again later` |
 | The server answers with a JSON-RPC error | a fixed text per class: `S does not support this request`, `S rejected the call: unknown tool or invalid arguments`, `S rejected the request as invalid`, `S reported an internal error`, or `S returned an error (code N)` |
 | The call takes too long | `S did not answer within Ns` |
 | The turn is aborted | `the call to S was cancelled`: the upstream gets `notifications/cancelled` and the call's HTTP connection is closed |
@@ -181,6 +183,8 @@ session. A connect then restarts the session on the next turn (see above).
 | `SLAUDE_MCP_BRIDGE_MAX_LIST_BYTES` | `1048576` | Most bytes of tool definitions listed for one server. Over either list cap the gateway stops asking for further pages and appends `[tool list truncated by the MCP bridge: …]` to the server's instructions. |
 | `SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG` | `0` | `1` also bridges servers defined in files under `$SLAUDE_HOME` (see [What is bridged](#what-is-bridged)). |
 | `SLAUDE_MCP_BRIDGE_ENV_ALLOW` | `""` | With the file opt-in, the variable names a file's `${VAR}` placeholders may expand. |
+
+The gateway and `mono` check every `SLAUDE_MCP_BRIDGE_*` value at boot and refuse to start, naming the variable, when one does not parse.
 
 ## Outbound policy
 
