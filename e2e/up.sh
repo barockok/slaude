@@ -30,7 +30,7 @@ if ! minikube -p "$PROFILE" status --format '{{.Host}}' 2>/dev/null | grep -q Ru
 fi
 "$ROOT/scripts/build-e2e-images.sh"
 
-SCRUB=(ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN SLAUDE_LOCAL_ENV_FILE)
+SCRUB=(ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN SLAUDE_LOCAL_ENV_FILE SLAUDE_LOCAL_MODEL)
 unset_args=()
 for name in "${SCRUB[@]}"; do unset_args+=(-u "$name"); done
 

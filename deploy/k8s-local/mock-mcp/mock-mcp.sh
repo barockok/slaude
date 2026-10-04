@@ -7,6 +7,12 @@
 set -euo pipefail
 NS=slaude-scale
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The server's public name and the Service both say 9000, so the local port is
+# checked rather than applied (forward.sh mock-mcp reads the same variable).
+if [[ "${SLAUDE_LOCAL_MOCK_MCP_PORT:-9000}" != 9000 ]]; then
+  echo "mock-mcp.sh: SLAUDE_LOCAL_MOCK_MCP_PORT must be 9000; the registered URL and the Service are fixed there." >&2
+  exit 1
+fi
 
 kubectl -n $NS create configmap mock-mcp-src --from-file=server.ts="$HERE/server.ts" --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f "$HERE/mock-mcp.yaml"
@@ -25,6 +31,6 @@ JSON
 cat <<MSG
 
 Mock MCP ready. Keep this running too:
-  kubectl -n $NS port-forward svc/mock-mcp 9000:9000
-The portal (http://localhost:8080/portal) should now list "mockmcp".
+  $HERE/../forward.sh mock-mcp
+The portal (http://localhost:${SLAUDE_LOCAL_PORT:-8080}/portal) should now list "mockmcp".
 MSG
