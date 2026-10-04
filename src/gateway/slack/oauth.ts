@@ -35,7 +35,7 @@ import { createHmac, randomBytes, timingSafeEqual, createHash } from "node:crypt
 import { env } from "../../config/env";
 import * as SlackApps from "../../db/slack-apps";
 import type { SlackAppInput, SlackAppRow } from "../../db/slack-apps";
-import { BOT_SCOPES } from "../../cli/manifest";
+import { BOT_SCOPES, USER_SCOPES } from "../../cli/manifest";
 import { makeKeys } from "../../queue/keys";
 import { getRedis } from "../../queue/redis";
 
@@ -143,6 +143,8 @@ export interface OAuthDeps {
   stateSecret?: string;
   redirectUrl?: string;
   scopes?: readonly string[];
+  /** User-token scopes (`user_scope`). Default USER_SCOPES. */
+  userScopes?: readonly string[];
   /** oauth.v2.access transport (test seam). */
   fetchFn?: typeof fetch;
   /** slack_apps upsert (test seam / explicit DbClient). */
@@ -222,6 +224,7 @@ export async function handleOAuth(
 
   if (path === "/slack/oauth/start") {
     const scopes = (deps.scopes ?? BOT_SCOPES).join(",");
+    const userScopes = (deps.userScopes ?? USER_SCOPES).join(",");
     const redirectUrl = deps.redirectUrl ?? env.slack.oauthRedirectUrl();
     const nonce = randomBytes(8).toString("base64url");
     const state = mintOAuthState({ secret: stateSecret, now: now(), nonce });
@@ -237,6 +240,7 @@ export async function handleOAuth(
     const authorize = new URL("https://slack.com/oauth/v2/authorize");
     authorize.searchParams.set("client_id", clientId);
     authorize.searchParams.set("scope", scopes);
+    if (userScopes) authorize.searchParams.set("user_scope", userScopes);
     authorize.searchParams.set("state", state);
     if (redirectUrl) authorize.searchParams.set("redirect_uri", redirectUrl);
     // Browser binding: the callback requires this cookie to equal `state`.

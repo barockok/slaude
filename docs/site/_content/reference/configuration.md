@@ -63,9 +63,9 @@ slaude is Socket Mode-only. The manifest at `src/cli/manifest.ts` declares these
         "reactions:read",
         "reactions:write",
         "users:read",
-        "users.profile:write",
         "assistant:write"
-      ]
+      ],
+      "user": ["users.profile:write"]
     }
   },
   "settings": {
