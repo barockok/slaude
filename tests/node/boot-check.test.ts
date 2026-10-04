@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { enforceNodeBootCheck } from "../../src/node/boot-check";
-import { metrics } from "../../src/metrics";
+import { m, metrics } from "../../src/metrics";
 
 const GAUGE = "slaude_node_gateway_secrets_present";
 const gaugeLine = () => metrics.render().split("\n").find((l) => l.startsWith(GAUGE));
@@ -54,6 +54,22 @@ describe("enforceNodeBootCheck", () => {
     );
     expect(ok).toBe(true);
     expect(c.lines[0]).toContain("SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1");
+  });
+});
+
+describe("enforceNodeBootCheck and a broken metric", () => {
+  test("a metrics failure never stops a node and never hides the warning", () => {
+    const spy = spyOn(m.nodeGatewaySecretsPresent, "set").mockImplementation(() => {
+      throw new Error("registry broken");
+    });
+    try {
+      const c = capture();
+      expect(enforceNodeBootCheck({ SLAUDE_MASTER_KEY: "fake" }, c.log)).toBe(true);
+      expect(c.lines[0]).toContain("SLAUDE_MASTER_KEY");
+      expect(enforceNodeBootCheck({}, c.log)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

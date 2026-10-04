@@ -15,7 +15,12 @@ export function enforceNodeBootCheck(
   log: (msg: string) => void = (msg) => console.warn(msg),
 ): boolean {
   const r = nodeBootCheck(env);
-  metric.nodeGatewaySecretsPresent.set(r.names.length);
   if (r.message) log(r.message);
+  try {
+    metric.nodeGatewaySecretsPresent.set(r.names.length);
+  } catch (e) {
+    // The gauge is a convenience; it must never decide whether a node boots.
+    console.error("[node] could not set slaude_node_gateway_secrets_present:", e instanceof Error ? e.message : e);
+  }
   return r.action !== "refuse";
 }
