@@ -93,6 +93,39 @@ export function tokenAgeFraction(token: string, nowMs: number = Date.now()): num
 export { decodeClaims };
 
 /**
+ * The token a claimed job runs on. Refresh an aging token at claim: it was
+ * minted at ENQUEUE, but the turn's deadline starts NOW, so a job that sat in
+ * the queue would otherwise run on a mostly-spent (or expired, within the
+ * refresh grace) token. A refresh refused with 401 means the job waited past
+ * the grace: ask the gateway to re-mint it from the queued job (node labels
+ * spec §4.4). Any failure keeps the original token.
+ */
+export async function tokenAtClaim(
+  client: Pick<NodeClient, "refreshJobToken" | "reissueJobToken">,
+  jobId: string,
+  queueName: string,
+  token: string,
+  nowMs: number = Date.now(),
+): Promise<string> {
+  const age = tokenAgeFraction(token, nowMs);
+  if (age === null || age <= 0.2) return token;
+  try {
+    return await client.refreshJobToken(jobId, token);
+  } catch (e) {
+    if (e instanceof NodeApiError && e.status === 401) {
+      try {
+        return await client.reissueJobToken(jobId, queueName, token);
+      } catch (e2) {
+        console.warn(`[node] token reissue failed job=${jobId} (continuing with the original):`, e2);
+      }
+    } else {
+      console.warn(`[node] token refresh failed job=${jobId} (continuing with the original):`, e);
+    }
+    return token;
+  }
+}
+
+/**
  * The node's response to a tenant's reload signal. Busting the runtime-bundle
  * cache alone changes nothing for a warm session: the soul is baked into the
  * system prompt at session boot. So every session of the signalled tenant is
@@ -475,25 +508,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     // Refresh an aging token at claim: minted at ENQUEUE, but the turn's
     // deadline starts NOW — a job that sat in the queue would otherwise run
     // on a mostly-spent (or expired, within the refresh grace) token.
-    let jobToken = data.jobToken;
-    const age = tokenAgeFraction(jobToken);
-    if (age !== null && age > 0.2) {
-      try {
-        jobToken = await client.refreshJobToken(String(job.id), jobToken);
-      } catch (e) {
-        if (e instanceof NodeApiError && e.status === 401) {
-          // Waited past the refresh grace (or the token's maximum age): ask the
-          // gateway to re-mint it from the queued job (node labels spec §4.4).
-          try {
-            jobToken = await client.reissueJobToken(String(job.id), job.queueName, jobToken);
-          } catch (e2) {
-            console.warn(`[node] token reissue failed job=${job.id} (continuing with the original):`, e2);
-          }
-        } else {
-          console.warn(`[node] token refresh failed job=${job.id} (continuing with the original):`, e);
-        }
-      }
-    }
+    const jobToken = await tokenAtClaim(client, String(job.id), job.queueName, data.jobToken);
     // The token is bound under the session lock (runLockedTurn), not here.
     tenants.set(data.sessionId, data.tenantId);
     personas.set(data.sessionId, data.personaId ?? "default");

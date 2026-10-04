@@ -3,7 +3,8 @@
  *
  *   - 401: the credential is bad, expired or revoked. The node must not run;
  *     the caller exits with a clear message (never the token).
- *   - network error or 5xx: the gateway is not up yet (cluster cold start).
+ *   - network error, 5xx or any other 4xx: the gateway is not up yet (cluster
+ *     cold start), or a proxy or a rollout is in the way.
  *     Retry with capped exponential backoff instead of crash-looping.
  *   - 404: a gateway that predates whoami. A legacy token still works there,
  *     so continue; a signed credential would have been refused with 401.
@@ -15,7 +16,7 @@ export const EXPIRY_WARN_SEC = 14 * 86400;
 
 export type HandshakeResult =
   | { ok: true; identity: NodeWhoami | null }
-  | { ok: false; reason: "unauthorized" | "refused"; message: string };
+  | { ok: false; reason: "unauthorized"; message: string };
 
 export interface HandshakeOpts {
   log?: (msg: string) => void;
@@ -60,9 +61,8 @@ export async function nodeHandshake(client: Pick<NodeClient, "whoami">, opts: Ha
           warn("[node] the gateway has no /v1/node/whoami (an older gateway); continuing without the handshake");
           return { ok: true, identity: null };
         }
-        if (e.status < 500) {
-          return { ok: false, reason: "refused", message: `[node] the gateway refused the handshake with ${e.status}. Not starting.` };
-        }
+        // Any other answer (429, 403, 400, 5xx) may be a proxy or a gateway
+        // mid-rollout: retry rather than crash-loop. Only 401 stops the node.
       }
       if (opts.maxAttempts !== undefined && attempt >= opts.maxAttempts) throw e;
       const delay = Math.min(max, base * 2 ** Math.min(attempt - 1, 16));

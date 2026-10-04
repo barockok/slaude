@@ -80,6 +80,23 @@ describe("nodeHandshake", () => {
     expect(c.logs.join("\n")).not.toContain(SECRET_TOKEN);
   });
 
+  test("only 401 stops the node: 400, 403 and 429 are retried with backoff", async () => {
+    const c = capture();
+    const sleeps: number[] = [];
+    const client = new NodeClient({
+      baseUrl: "http://gw", token: SECRET_TOKEN,
+      fetchImpl: fakeFetch([
+        new Response("{}", { status: 429 }),
+        new Response("{}", { status: 403 }),
+        new Response("{}", { status: 400 }),
+        whoamiBody(),
+      ]),
+    });
+    const r = await nodeHandshake(client, { ...c, sleep: async (ms) => void sleeps.push(ms), baseDelayMs: 10 });
+    expect(r.ok).toBe(true);
+    expect(sleeps).toEqual([10, 20, 40]);
+  });
+
   test("404 (a gateway older than whoami) continues", async () => {
     const c = capture();
     const client = new NodeClient({ baseUrl: "http://gw", token: SECRET_TOKEN, fetchImpl: fakeFetch([new Response("{}", { status: 404 })]) });
