@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { EMBEDDING_PROVIDER_KEY_ENV } from "./embedding-keys";
 import { join } from "node:path";
 import { paths } from "../config/home";
 import { loadKbs } from "./loader";
@@ -111,19 +112,9 @@ export function embeddingActive(): boolean {
   return embeddingActiveFlag;
 }
 
-// Provider prefix → required key env. null = keyless/optional-key provider.
-const PROVIDER_KEY_ENV: Record<string, string | null> = {
-  zeroentropyai: "ZEROENTROPY_API_KEY",
-  openai: "OPENAI_API_KEY",
-  voyage: "VOYAGE_API_KEY",
-  google: "GOOGLE_GENERATIVE_AI_API_KEY",
-  openrouter: "OPENROUTER_API_KEY",
-  minimax: "MINIMAX_API_KEY",
-  together: "TOGETHER_API_KEY",
-  litellm: null,
-  ollama: null,
-  "llama-server": null,
-};
+// Provider prefix → required key env (src/knowledge/embedding-keys.ts, also
+// the child scrub's list). null = keyless/optional-key provider.
+const PROVIDER_KEY_ENV = EMBEDDING_PROVIDER_KEY_ENV;
 
 async function configureEmbeddingGateway(): Promise<void> {
   embeddingActiveFlag = false;
