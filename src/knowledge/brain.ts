@@ -181,52 +181,44 @@ export const PROVIDER_KEY_DEFS: Record<string, ProviderKeyDef | null> = {
   "llama-server": null,
 };
 
-export const KNOWN_MODEL_DIMENSIONS: Record<string, number> = {
-  // OpenAI
-  "text-embedding-3-small": 1536,
-  "text-embedding-3-large": 3072,
-  "text-embedding-ada-002": 1536,
-  // Google / Gemini
-  "text-embedding-004": 768,
-  "gemini-embedding-001": 768,
-  // ZeroEntropy
-  "zembed-1": 1280,
-  // Voyage
-  "voyage-3-lite": 512,
-  "voyage-3": 1024,
-  "voyage-code-3": 1024,
-  "voyage-finance-2": 1024,
-  "voyage-law-2": 1024,
-  "voyage-4": 1024,
-  "voyage-4-large": 1024,
-  "voyage-multimodal-3": 1024,
-  // Open-source / local
-  "bge-small": 384,
-  "all-minilm": 384,
-  "all-minilm-l6-v2": 384,
-  "bge-base": 768,
-  "nomic-embed-text": 768,
-  "bge-m3": 1024,
-  "bge-large": 1024,
-};
-
-export const BARE_MODEL_TO_PROVIDER: Record<string, EmbeddingProvider> = {
-  "text-embedding-3-small": "openai",
-  "text-embedding-3-large": "openai",
-  "text-embedding-ada-002": "openai",
-  "text-embedding-004": "google",
-  "gemini-embedding-001": "google",
-  "zembed-1": "zeroentropyai",
-  "voyage-3": "voyage",
-  "voyage-3-lite": "voyage",
-  "voyage-code-3": "voyage",
-  "voyage-4": "voyage",
-  "voyage-4-large": "voyage",
-};
+/**
+ * Detects an embedding provider from available environment API keys.
+ */
+export function detectProviderFromEnv(): EmbeddingProvider | undefined {
+  if (process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.GEMINI_API_KEY) {
+    return "google";
+  }
+  if (process.env.OPENAI_API_KEY) {
+    return "openai";
+  }
+  if (process.env.VOYAGE_API_KEY) {
+    return "voyage";
+  }
+  if (process.env.ZEROENTROPY_API_KEY) {
+    return "zeroentropyai";
+  }
+  if (process.env.OPENROUTER_API_KEY) {
+    return "openrouter";
+  }
+  if (process.env.TOGETHER_API_KEY) {
+    return "together";
+  }
+  if (process.env.MINIMAX_API_KEY) {
+    return "minimax";
+  }
+  if (process.env.AZURE_OPENAI_API_KEY) {
+    return "azure-openai";
+  }
+  if (process.env.OLLAMA_API_KEY) {
+    return "ollama";
+  }
+  return undefined;
+}
 
 /**
  * Deterministically canonicalize an embedding model string based on provider
- * enum/setting, model string, or explicit base URL.
+ * enum/setting, model string, explicit base URL, or detected provider env vars.
+ * Decoupled from hardcoded model names so any model can be specified.
  */
 export function canonicalizeEmbeddingModel(
   rawModel?: string,
@@ -245,38 +237,33 @@ export function canonicalizeEmbeddingModel(
     return `${normalizedPrefix}:${modelRest}`;
   }
 
-  // Determine provider
+  // Determine provider: explicit provider > explicit url > env vars (when model requested)
   let provider = explicitProvider;
-
-  if (!provider) {
-    if (url) {
+  if (!provider && url) {
+    provider = "litellm";
+  }
+  if (!provider && trimmedModel) {
+    provider = detectProviderFromEnv();
+    if (!provider) {
       provider = "litellm";
-    } else if (trimmedModel) {
-      const autoProv = BARE_MODEL_TO_PROVIDER[trimmedModel.toLowerCase()];
-      if (autoProv) provider = autoProv;
     }
   }
 
   if (!provider) {
-    return trimmedModel ? `litellm:${trimmedModel}` : undefined;
+    return undefined;
   }
 
-  // Now we have a provider. Determine the model.
+  // With a deterministic provider, user can choose ANY model name, or fall back to provider default
   const chosenModel = trimmedModel || PROVIDER_CONFIGS[provider]?.defaultModel || "text-embedding-3-small";
   return `${provider}:${chosenModel}`;
 }
 
 /**
- * Returns default vector embedding dimensions for a model string.
- * Resolves model-specific dimensions first, then known provider defaults,
- * falling back to 2560 for unknown provider-qualified models and 1536 for generic litellm/OpenAI.
+ * Returns default vector embedding dimensions for a model string based on provider defaults.
+ * Falls back to 2560 for unknown provider-qualified models and 1536 for generic litellm/OpenAI.
  */
 export function defaultDimensionsForModel(modelString: string): number {
   const parts = modelString.split(":");
-  const modelName = (parts.length > 1 ? parts[1] : parts[0])!.toLowerCase();
-  for (const [known, dims] of Object.entries(KNOWN_MODEL_DIMENSIONS)) {
-    if (modelName === known || modelName.includes(known)) return dims;
-  }
   const provider = parts.length > 1 ? parts[0]!.toLowerCase() : "";
   const normProv = normalizeEmbeddingProvider(provider);
   if (normProv && PROVIDER_CONFIGS[normProv]?.defaultDims) {

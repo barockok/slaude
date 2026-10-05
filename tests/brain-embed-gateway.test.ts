@@ -124,10 +124,14 @@ describe("canonicalizeEmbeddingModel with provider enum", () => {
     expect(canonicalizeEmbeddingModel("gemini:text-embedding-004")).toBe("google:text-embedding-004");
   });
 
-  test("maps bare known model to its default provider if provider not specified", () => {
-    expect(canonicalizeEmbeddingModel("text-embedding-3-small")).toBe("openai:text-embedding-3-small");
-    expect(canonicalizeEmbeddingModel("text-embedding-004")).toBe("google:text-embedding-004");
-    expect(canonicalizeEmbeddingModel("zembed-1")).toBe("zeroentropyai:zembed-1");
+  test("infers provider from present environment API key when model is bare", () => {
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = "test-key";
+    expect(canonicalizeEmbeddingModel("any-custom-model")).toBe("google:any-custom-model");
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+
+    process.env.OPENAI_API_KEY = "test-key";
+    expect(canonicalizeEmbeddingModel("any-custom-model")).toBe("openai:any-custom-model");
+    delete process.env.OPENAI_API_KEY;
   });
 
   test("returns undefined when no provider, model, or url configured", () => {
