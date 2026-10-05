@@ -119,12 +119,14 @@ describe("gateway /bash command", () => {
     agent.sendMessage = async () => {};
     createGateway(agent, t);
     // Fake values, set only for this command (after the gateway is built).
-    const planted = [...GATEWAY_ONLY_ENV_NAMES, "SLAUDE_VAULT_ADDR", "VAULT_TOKEN", "PERSONA_FINANCE_KEY", "SLAUDE_NODE_TOKEN", "SLAUDE_REDIS_URL", "SLAUDE_ENCRYPTION_KEY"];
+    const planted = [...GATEWAY_ONLY_ENV_NAMES, "SLAUDE_VAULT_ADDR", "VAULT_TOKEN", "PERSONA_FINANCE_KEY", "SLAUDE_NODE_TOKEN", "SLAUDE_REDIS_URL", "SLAUDE_ENCRYPTION_KEY",
+      // Provider credentials (the output is posted to Slack) and a brain embedding key.
+      "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"];
     const saved = Object.fromEntries([...planted, "SLAUDE_U17_CANARY"].map((k) => [k, process.env[k]]));
     for (const k of planted) process.env[k] = "fake-value-for-test";
     process.env.SLAUDE_U17_CANARY = "1";
     try {
-      await emit(msgArgs(client, "/bash env | cut -d= -f1 | grep -E '^(SLAUDE|SLACK|PERSONA|VAULT|EMBEDDING|LITELLM)'", WORLD.manager));
+      await emit(msgArgs(client, "/bash env | cut -d= -f1 | grep -E '^(SLAUDE|SLACK|PERSONA|VAULT|EMBEDDING|LITELLM|ANTHROPIC|CLAUDE_CODE|OPENAI)'", WORLD.manager));
     } finally {
       for (const [k, v] of Object.entries(saved)) {
         if (v === undefined) delete process.env[k];

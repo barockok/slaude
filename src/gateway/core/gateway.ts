@@ -60,7 +60,8 @@ import { channelTrustFor, resolveBrainScope } from "../../knowledge/scope";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
 import { memory as processMemory } from "../../memory";
 import { makeScopedMemory } from "../../memory/scoped";
-import { scrubChildEnv } from "../../agent/child-env";
+import { scrubChildEnv, withoutKeys } from "../../agent/child-env";
+import { providerSelectingNames } from "../../agent/provider-env";
 import { memoryScopeFor } from "../../memory/scope";
 import { getPersonaRegistry, labelsInUse, livePersona, managedPersonaProvider, onPersonaRegistryInstalled } from "../../persona/registry";
 import { makeLabelMonitor } from "../../queue/label-status";
@@ -2344,9 +2345,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         const command = slash.command.replace(/<(https?:\/\/[^|>]+)(?:\|[^>]*)?>?/g, "$1");
         try {
           // mono shares the gateway's environment: the same scrub as the agent
-          // child, so no gateway-only variable can reach the posted output.
+          // child, so no gateway-only variable can reach the posted output,
+          // and every provider-selecting variable too (API key, auth token,
+          // OAuth token, cloud credentials): the shell needs none of them.
           const proc = Bun.spawn(["bash", "-c", command], {
-            env: scrubChildEnv(process.env),
+            env: withoutKeys(scrubChildEnv(process.env), providerSelectingNames(process.env)),
             stdout: "pipe",
             stderr: "pipe",
           });
