@@ -72,7 +72,7 @@ stating the **exposed-secrets rotation** (§5). `v0.44.1.md` is written for that
 |---|---|
 | new gateway, old nodes | old nodes use the static token, are label `default`, consume `turns`; personas without `runs_on` are `default`; nothing changes |
 | new nodes, old gateway | a node with the static token behaves as before; a node with a signed credential is rejected (401) at boot with a clear message |
-| bundle with `mcpServers` or provider references, old node | the old node ignores fields it does not know |
+| bundle with `mcpServers` or provider references, old node | the old node ignores fields it does not know. **Not safe for provider references:** it ignores `ownProvider`, so it fills every field the persona left out from its own environment and sends the persona's resolved key to the node's own `ANTHROPIC_BASE_URL`, a host the persona never named. Set provider references only after every node is upgraded (corrected in U17) |
 | `/deploy` payload with a newer field, **old** gateway | v0.44.1 reports the unknown field (`ignoredFields`); v0.45.0 refuses it; before v0.44.1 the old gateway **silently drops it** |
 | node pod that still loads the gateway Secret | v0.44.1 warns; v0.45.0 refuses to boot unless `SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1` |
 | `SLAUDE_PROVIDER_ENV_FALLBACK` | defaults to today's behaviour; the default is not changed in this plan (parked) |
