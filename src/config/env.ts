@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { paths } from "./home";
+import { flag } from "./security-switches";
 
 // Load a .env file if present (does not override existing process.env)
 export function loadDotenv(path: string) {
@@ -296,14 +297,12 @@ export const env = {
   /** Gateway: the static shared token a legacy node presents. Falls back to
    *  SLAUDE_NODE_TOKEN (the old gateway reading, deprecated) when unset. */
   nodeLegacyToken: () => opt("SLAUDE_NODE_LEGACY_TOKEN"),
-  /** Gateway: SLAUDE_NODE_LEGACY=off closes the legacy door outright. */
-  nodeLegacyOff: (): boolean => opt("SLAUDE_NODE_LEGACY").trim().toLowerCase() === "off",
+  /** Gateway: SLAUDE_NODE_LEGACY=off (any off spelling) closes the legacy door
+   *  outright. An unknown value refuses the boot; read here, it fails closed. */
+  nodeLegacyOff: (): boolean => !flag(opt("SLAUDE_NODE_LEGACY"), true, false),
   /** Gateway: accept a /v1/pending call with no job token from the legacy
    *  identity (old nodes send none). Default on for one release. */
-  allowTokenlessPending: (): boolean => {
-    const raw = opt("SLAUDE_NODE_ALLOW_TOKENLESS_PENDING", "1").trim().toLowerCase();
-    return !(raw === "0" || raw === "false" || raw === "no" || raw === "off");
-  },
+  allowTokenlessPending: (): boolean => flag(opt("SLAUDE_NODE_ALLOW_TOKENLESS_PENDING"), true, false),
   /** Cap on a job token's total life across refreshes, measured from its
    *  first issue (`iat0`). Seconds, or a duration like `6h`. Default 6h. */
   jobTokenMaxAgeSec: (): number => durationEnvSec("SLAUDE_JOB_TOKEN_MAX_AGE", 6 * 3600),

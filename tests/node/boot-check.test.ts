@@ -39,10 +39,27 @@ describe("enforceNodeBootCheck", () => {
     expect(gaugeLine()).toBe(`${GAUGE} 0`);
   });
 
-  test("warn (the default): one warning with the names, the gauge counts them, boot continues", () => {
+  test("refuse is the default (v0.45.0): a node holding a gateway-only variable does not boot", () => {
+    const c = capture();
+    expect(enforceNodeBootCheck({ SLAUDE_NODE_TOKEN: "fake-node", SLAUDE_MASTER_KEY: "fake-master-value" }, c.log)).toBe(false);
+    expect(c.lines.join("\n")).toContain("refusing to boot");
+    expect(c.lines.join("\n")).toContain("SLAUDE_MASTER_KEY");
+    expect(c.lines.join("\n")).not.toContain("fake-master-value");
+  });
+
+  test("an unknown value of a boot switch refuses the boot, naming the variable", () => {
+    for (const bad of [{ SLAUDE_NODE_BOOT_CHECK: "warnn" }, { SLAUDE_NODE_ALLOW_GATEWAY_SECRETS: "y" }]) {
+      const c = capture();
+      expect(enforceNodeBootCheck({ SLAUDE_NODE_TOKEN: "fake-node", ...bad }, c.log)).toBe(false);
+      expect(c.lines.join("\n")).toContain(Object.keys(bad)[0]!);
+      expect(c.lines.join("\n")).toContain("refusing to boot");
+    }
+  });
+
+  test("warn: one warning with the names, the gauge counts them, boot continues", () => {
     const c = capture();
     const ok = enforceNodeBootCheck(
-      { SLAUDE_NODE_TOKEN: "fake-node", SLAUDE_MASTER_KEY: "fake-master-value", SLAUDE_PG_URL: "postgres://u:fake-pw@h/db" },
+      { SLAUDE_NODE_BOOT_CHECK: "warn", SLAUDE_NODE_TOKEN: "fake-node", SLAUDE_MASTER_KEY: "fake-master-value", SLAUDE_PG_URL: "postgres://u:fake-pw@h/db" },
       c.log,
     );
     expect(ok).toBe(true);
@@ -82,7 +99,7 @@ describe("enforceNodeBootCheck and a broken metric", () => {
     });
     try {
       const c = capture();
-      expect(enforceNodeBootCheck({ SLAUDE_MASTER_KEY: "fake" }, c.log)).toBe(true);
+      expect(enforceNodeBootCheck({ SLAUDE_NODE_BOOT_CHECK: "warn", SLAUDE_MASTER_KEY: "fake" }, c.log)).toBe(true);
       expect(c.lines[0]).toContain("SLAUDE_MASTER_KEY");
       expect(enforceNodeBootCheck({}, c.log)).toBe(true);
     } finally {
@@ -95,7 +112,7 @@ describe("enforceNodeBootCheck and a broken metric", () => {
 // refusal exits non-zero without printing a value. Only the refusing path is
 // run as a process: a passing check would go on to connect to Redis.
 describe("src/node/main.ts", () => {
-  test("SLAUDE_NODE_BOOT_CHECK=refuse exits non-zero naming the variable, not its value", async () => {
+  test("the default (refuse) exits non-zero naming the variable, not its value", async () => {
     const home = mkdtempSync(join(tmpdir(), "slaude-boot-check-"));
     try {
       const proc = Bun.spawn(["bun", join(import.meta.dir, "../../src/node/main.ts")], {
@@ -105,7 +122,6 @@ describe("src/node/main.ts", () => {
           SLAUDE_HOME: home,
           SLAUDE_ROLE: "node",
           SLAUDE_NODE_TOKEN: "fake-node-token-value",
-          SLAUDE_NODE_BOOT_CHECK: "refuse",
           SLAUDE_MASTER_KEY: "fake-master-key-value",
           SLAUDE_REDIS_URL: "redis://127.0.0.1:1",
         },

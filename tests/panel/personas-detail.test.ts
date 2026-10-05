@@ -142,7 +142,11 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("GET /panel/api/personas/:name",
     await P.setOverride("default", "ana", "model", "m-live", "ops");
     const r = await read("/panel/api/personas/ana");
     expect(r.status).toBe(200);
-    expect(JSON.parse(r.text)).toEqual({
+    // Only this file's skills: the shared test $SLAUDE_HOME can hold global
+    // skills another file installed (the provenance test below covers skills).
+    const body = JSON.parse(r.text);
+    body.skills = body.skills.filter((s: { slug: string }) => s.slug.startsWith("u14-"));
+    expect(body).toEqual({
       name: "ana",
       origin: "git",
       tombstoned: false,

@@ -24,7 +24,7 @@ Two rules for reading the gauges below:
 | [Vault unreachable](#vault-unreachable) | `slaude_provider_cred_resolve_total{scheme="vault",outcome="error"}`, `slaude_provider_cred_stale_served_total` | gateway |
 | [A label with no live node](#a-label-with-no-live-node) | `slaude_label_unserved{label}` | gateway, leader only |
 | [A node credential close to expiry](#a-node-credential-close-to-expiry) | `slaude_node_credential_expiry_seconds{id}` | gateway |
-| [A rising rate of 403 from the gate](#a-rising-rate-of-403-from-the-gate) | the `[v1] gate denied:` log line (no metric) | gateway log |
+| [A rising rate of 403 from the gate](#a-rising-rate-of-403-from-the-gate) | `slaude_gate_denied_total{route}` | gateway |
 | [The legacy door in use](#the-legacy-door-in-use-while-a-node-key-is-set) | `slaude_node_legacy_auth_total` | gateway |
 | [A node holding gateway-only variables](#a-node-pod-holding-gateway-only-variables) | `slaude_node_gateway_secrets_present` | node |
 | [A node paused on a refused credential](#a-node-paused-on-a-refused-credential) | `slaude_node_auth_paused` | node |
@@ -44,6 +44,8 @@ groups:
       - alert: SlaudeNodeCredentialExpiring
         expr: min by (id) (slaude_node_credential_expiry_seconds) < 14 * 86400
         for: 1h
+      - alert: SlaudeGateDenied
+        expr: sum(increase(slaude_gate_denied_total[10m])) > 5
       - alert: SlaudeNodeLegacyTokenInUse
         expr: sum(increase(slaude_node_legacy_auth_total[1h])) > 0
       - alert: SlaudeNodeHoldsGatewaySecrets
@@ -108,6 +110,20 @@ reports the same, with live-node and waiting counts.
    `runsOn` in the persona repository and sync.
 3. Keep at least two replicas per label, so one pod's restart does not trip
    this alert.
+4. **Drain jobs stranded by a relabel.** When the label is unserved because a
+   persona moved off it (`runsOn` changed), its waiting jobs stay there: a
+   relabel moves a waiting job only when the session's next message arrives
+   within 10 minutes of the job's last enqueue (the coalesce index's TTL). A
+   job older than that stays on the old queue, with no message to the user,
+   until its token can no longer be reissued (`SLAUDE_JOB_MAX_AGE`, 24 h by
+   default). To drain it, run one node whose credential carries the old label
+   (`bun run node-token mint --label <old-label> --ttl 1d`, one replica) until
+   `GET /panel/api/labels` shows `waiting: 0` for that label, then scale it to
+   zero and revoke the credential. Each job it claims runs on the old label,
+   or, when its token is refreshed at claim, fails with `LABEL_MISMATCH` and
+   is re-dispatched once to the persona's current label. If the persona must
+   not run on the old label's nodes at all, do not drain: ask the affected
+   users to send their message again.
 
 ## A node credential close to expiry
 
@@ -137,17 +153,22 @@ See [Node credentials](multi-node.md#node-credentials).
 
 ## A rising rate of 403 from the gate
 
-**Signal.** There is no metric for gate refusals. Each refusal is an
-error-level gateway log line:
+**Signal.** `slaude_gate_denied_total{route}` counts every refusal, labeled
+by the route-table name (`tools`, `tenants.personas.runtime`,
+`jobs.token-refresh`, ...), never the path, so it has at most one series per
+label-gated route. Every gateway replica counts its own refusals: aggregate
+with `sum()`.
+
+```yaml
+- alert: SlaudeGateDenied
+  expr: sum(increase(slaude_gate_denied_total[10m])) > 5
+```
+
+The metric does not say which node was refused. Each refusal is also an
+error-level gateway log line that does:
 
 ```
 [v1] gate denied: node=<credential id> tenant=<t> persona=<p> label=<label> route=<route>
-```
-
-Alert on its rate in your log system, for example with Loki:
-
-```
-sum by (node) (count_over_time({app="slaude", component="gateway"} |= "[v1] gate denied:" [10m])) > 5
 ```
 
 Related metrics that move with it: `slaude_v1_job_events_total{event="fail"}`
@@ -189,8 +210,9 @@ split is done). The node also logs one line naming them, never their values.
 
 **What it means.** The node, and every agent turn on it, can read secrets that
 let it act as the gateway: mint job tokens, decrypt stored credentials, read
-every tenant's rows. With `SLAUDE_NODE_BOOT_CHECK=warn` (the default) the node
-boots anyway; with `refuse` it would not have started.
+every tenant's rows. The gauge is non-zero only on a node that booted anyway:
+`SLAUDE_NODE_BOOT_CHECK=warn` or `SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1`. With the
+default (`refuse`) it would not have started.
 
 **What to do.** Load only the node Secret on node pods
 ([the Secret split](multi-node.md#the-secret-split)), roll the nodes, and then

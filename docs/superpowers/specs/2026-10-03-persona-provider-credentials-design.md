@@ -368,6 +368,10 @@ set by slaude; whether to turn it on is a verified task for the plan, not an ass
 - **A `/deploy` payload carrying `provider` is refused by a gateway that does not know the
   field**, because the payload schema becomes strict and versioned (WS-D, foundations). An older
   gateway would otherwise strip it silently and leave the persona on node credentials.
+- **A node older than this release ignores `ownProvider`** and treats the persona's resolved set as
+  additive: a field the persona left out (typically `baseUrl`) is filled from the node's own
+  environment, so the persona's key goes to the node's `ANTHROPIC_BASE_URL`. Set provider
+  references only after every node is upgraded (added in U17).
 - `SLAUDE_PROVIDER_ENV_FALLBACK` defaults to today's behaviour, so an existing deployment changes
   only when an operator sets a reference or the flag to `0`.
 - `auth_token` is added as a `provider_creds` kind for completeness; with no writer it matters

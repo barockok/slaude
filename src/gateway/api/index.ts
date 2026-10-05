@@ -47,7 +47,7 @@ import { handleMcpCredentials, handleMcpCredentialRefresh, type CredentialRefres
 import { handleRemoteKey } from "./remote-key";
 import { defaultCredentialRefresher } from "../core/credential-refresh";
 import { handlePending, type PendingOptions } from "./pending";
-import { handleJobEvent, handleTokenRefresh, handleTokenReissue, REFRESH_GRACE_SEC, type JobLookup } from "./jobs";
+import { handleJobEvent, handleTokenRefresh, handleTokenReissue, REFRESH_GRACE_SEC, type JobLookup, type JobMovedTo } from "./jobs";
 import { executeToolCall } from "./tools";
 import { handleMcpx } from "./tools/mcpx";
 import type { ToolPlaneDeps } from "./tools/deps";
@@ -76,6 +76,8 @@ export interface V1Options {
   memory?: MemoryPlane | null;
   /** Turn-queue lookup for token-reissue. Absent (mono) = no job is reissuable. */
   jobLookup?: JobLookup;
+  /** The job-moved marker, for a held copy's token (refresh and reissue). */
+  jobMovedTo?: JobMovedTo;
 }
 
 export type RouteAuth = "node" | "node+job";
@@ -244,7 +246,7 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
       auth: "node+job",
       gate: "label",
       jobGraceSec: REFRESH_GRACE_SEC,
-      handle: async ({ req, seg }) => handleTokenRefresh(req, seg[1]!),
+      handle: async ({ req, seg }) => handleTokenRefresh(req, seg[1]!, Date.now(), opts.jobMovedTo, opts.jobLookup),
     },
     {
       // The job's own token at any age; bounded by the job's age instead.
@@ -254,7 +256,7 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
       auth: "node+job",
       gate: "label",
       jobGraceSec: Number.MAX_SAFE_INTEGER,
-      handle: async ({ req, seg, claims }) => handleTokenReissue(req, seg[1]!, claims!, opts.jobLookup),
+      handle: async ({ req, seg, claims }) => handleTokenReissue(req, seg[1]!, claims!, opts.jobLookup, Date.now(), opts.jobMovedTo),
     },
     {
       // Must precede "tools", whose pattern also matches this path. Label-gated

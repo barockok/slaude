@@ -16,9 +16,11 @@
 #     any other label `turns.label.<label>`. A label's backlog scales only its
 #     own nodes. Keep minReplicaCount at 2 or more per label for HA.
 #   - Known blind spot of the list trigger: it sees the label's wait list
-#     only. Per-node queues drain via the reaper's stall-rescue (jobs on
-#     a dead/busy node's queue move to `turns` within ~5s), and delayed jobs
-#     are retries/serialization backoffs — neither should drive scale-up.
+#     only. Per-node queues drain via the reaper's stall-rescue: jobs on a
+#     dead or busy node's queue move to their own label's queue (`turns` for
+#     `default`, `turns.label.<label>` otherwise) after ~30-60s (one or two
+#     reaper passes, leader only). Delayed jobs are retries/serialization
+#     backoffs. Neither should drive scale-up.
 #
 # List key derivation — keep in sync with src/queue/keys.ts (labelTurnsQueue):
 #   BullMQ key = <SLAUDE_REDIS_PREFIX>:bull:<queue>:wait

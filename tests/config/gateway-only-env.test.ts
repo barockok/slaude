@@ -77,12 +77,19 @@ describe("nodeBootCheck", () => {
     for (const mode of [undefined, "warn", "refuse"]) {
       const env: Record<string, string> = { SLAUDE_NODE_TOKEN: "fake-node", SLAUDE_REDIS_URL: "redis://r" };
       if (mode) env.SLAUDE_NODE_BOOT_CHECK = mode;
-      expect(nodeBootCheck(env)).toEqual({ action: "ok", mode: mode === "refuse" ? "refuse" : "warn", names: [] });
+      expect(nodeBootCheck(env)).toEqual({ action: "ok", mode: mode === "warn" ? "warn" : "refuse", names: [] });
     }
   });
 
-  test("defaults to warn: names the variables and lets the boot continue", () => {
+  test("defaults to refuse (v0.45.0): names the variables and stops the boot", () => {
     const r = nodeBootCheck(leaky);
+    expect(r.action).toBe("refuse");
+    expect(r.mode).toBe("refuse");
+    expect(r.names).toEqual(["SLAUDE_JOB_SECRET", "SLAUDE_MASTER_KEY"]);
+  });
+
+  test("warn names the variables and lets the boot continue", () => {
+    const r = nodeBootCheck({ ...leaky, SLAUDE_NODE_BOOT_CHECK: "warn" });
     expect(r.action).toBe("warn");
     expect(r.mode).toBe("warn");
     expect(r.names).toEqual(["SLAUDE_JOB_SECRET", "SLAUDE_MASTER_KEY"]);
@@ -97,16 +104,22 @@ describe("nodeBootCheck", () => {
     expect(r.message).toContain("SLAUDE_NODE_ALLOW_GATEWAY_SECRETS");
   });
 
-  test("SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1 downgrades refuse to warn", () => {
-    const r = nodeBootCheck({ ...leaky, SLAUDE_NODE_BOOT_CHECK: "refuse", SLAUDE_NODE_ALLOW_GATEWAY_SECRETS: "1" });
-    expect(r.action).toBe("warn");
-    expect(r.mode).toBe("refuse");
-    expect(r.names).toEqual(["SLAUDE_JOB_SECRET", "SLAUDE_MASTER_KEY"]);
+  test("SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1 (any on spelling) downgrades refuse to warn", () => {
+    for (const allow of ["1", "true", "yes", "on"]) {
+      const r = nodeBootCheck({ ...leaky, SLAUDE_NODE_ALLOW_GATEWAY_SECRETS: allow });
+      expect(r.action).toBe("warn");
+      expect(r.mode).toBe("refuse");
+      expect(r.names).toEqual(["SLAUDE_JOB_SECRET", "SLAUDE_MASTER_KEY"]);
+    }
+    for (const allow of ["0", "false", "maybe"]) {
+      expect(nodeBootCheck({ ...leaky, SLAUDE_NODE_ALLOW_GATEWAY_SECRETS: allow }).action).toBe("refuse");
+    }
   });
 
-  test("an unknown mode is treated as the default, warn", () => {
-    expect(nodeBootCheck({ ...leaky, SLAUDE_NODE_BOOT_CHECK: "nonsense" }).action).toBe("warn");
+  test("an unknown mode fails closed (refuse); the boot itself refuses it by name", () => {
+    expect(nodeBootCheck({ ...leaky, SLAUDE_NODE_BOOT_CHECK: "nonsense" }).action).toBe("refuse");
     expect(nodeBootCheck({ ...leaky, SLAUDE_NODE_BOOT_CHECK: " REFUSE " }).action).toBe("refuse");
+    expect(nodeBootCheck({ ...leaky, SLAUDE_NODE_BOOT_CHECK: " Warn " }).action).toBe("warn");
   });
 
   test("the message carries names only, never a value", () => {

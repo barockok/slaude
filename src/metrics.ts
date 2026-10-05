@@ -217,6 +217,10 @@ export const m = {
     "slaude_node_legacy_auth_total",
     "/v1 requests authenticated with the legacy shared token while SLAUDE_NODE_KEY is set.",
   ),
+  gateDeniedTotal: metrics.counter(
+    "slaude_gate_denied_total",
+    "/v1 requests the label gate refused with 403 (the job's label is not among the node's labels), labeled by route-table route name.",
+  ),
   memoryGatewayFailuresTotal: metrics.counter("slaude_memory_gateway_failures_total", "Node memory calls to the gateway that failed, labeled by kind (<op>:<status>|timeout|network|unsupported). The turn runs without memory."),
   v1ToolCallsTotal: metrics.counter("slaude_v1_tool_calls_total", "REST tool-plane invocations on /v1/tools/<server>/<tool>, labeled by server + tool."),
   // Node runtime (spec §6).
@@ -244,7 +248,7 @@ export const m = {
   // (post-signature, post-registry lookup), labeled by event type.
   gatewayEventsTotal: metrics.counter("slaude_gateway_events_total", "Slack events accepted and dispatched by this gateway replica, labeled by event type."),
   // Gateway queue-side (spec §6), set by the reaper leader loop.
-  queueDepth: metrics.gauge("slaude_queue_depth", "Turn jobs waiting or delayed, labeled by queue and node label."),
+  queueDepth: metrics.gauge("slaude_queue_depth", "Turn jobs waiting, delayed or prioritized (not yet claimed), labeled by queue and node label."),
   // Leader liveness: unix seconds of the last completed reaper pass. Lets
   // alerting distinguish "leader gone" from an ex-leader replica that keeps
   // rendering its stale last gauge values on every scrape.

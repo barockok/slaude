@@ -21,7 +21,14 @@ import { AGENT_SOURCE, PUBLIC_SOURCE, agentSourceId, resolveBrainScope, userSour
  *     every participant already saw; nothing private reaches the turn, and the
  *     transcript is never written to `public`;
  *   - someone else's locked thread: neither read nor written, so a 1:1's
- *     context cannot spread through a bystander's turn.
+ *     context cannot spread through a bystander's turn. This holds for the
+ *     manager too: the KB rules let a manager keep the persona's mind there,
+ *     but the thread's transcript is the lock owner's, and writing it to the
+ *     persona's slice would hand it to every trusted turn of other users;
+ *   - a turn that runs as a person (`runAsUser`: the job token's runAs, or a
+ *     cron job created inside a /1on1, whose synthetic thread has no lock):
+ *     that person's slice, exactly like their own /1on1. A speaker who is not
+ *     that person, or a lock owned by someone else, gets nothing.
  *
  * `agentId` is the persona's own identity (brainGateFor resolves it), so a
  * named persona never writes into another persona's `agent-<id>` slice.
@@ -39,13 +46,22 @@ const both = (clientId: string, source: string, reads: string[] = [source]): Mem
   write: { clientId, sourceId: source, allowedSources: [source] },
 });
 
-export function memoryScopeFor(g: GateInput, opts: { channel?: string } = {}): MemoryScope {
+const NONE: MemoryScope = { read: null, write: null };
+
+export function memoryScopeFor(g: GateInput, opts: { channel?: string; runAsUser?: string | null } = {}): MemoryScope {
+  // Someone else's locked thread: nothing, whoever speaks (manager included).
+  if (g.userId !== null && g.lockedUser !== null && g.lockedUser !== g.userId) return NONE;
+  const runAs = opts.runAsUser ?? null;
+  if (runAs !== null) {
+    if (g.userId !== null && g.userId !== runAs) return NONE;
+    if (g.lockedUser !== null && g.lockedUser !== runAs) return NONE;
+    return both(runAs, userSourceId(runAs));
+  }
   const r = resolveBrainScope({ ...g, kbSources: [] });
   const agentSrc = agentSourceId(g.agentId);
   if (r.sourceId !== PUBLIC_SOURCE) {
     return both(r.clientId, r.sourceId, r.sourceId === agentSrc ? [agentSrc, AGENT_SOURCE] : [r.sourceId]);
   }
-  if (g.userId !== null && g.lockedUser !== null && g.lockedUser !== g.userId) return { read: null, write: null };
   if (g.userId !== null && isDmChannel(opts.channel)) return both(g.userId, userSourceId(g.userId));
   return both(g.agentId, agentSrc);
 }

@@ -6,8 +6,8 @@
  * one `agent-default` slice. This pins that behaviour of the unscoped path, so
  * nothing may route node memory back through it; nodes use the gateway's
  * routes (tests/agent/node-memory.test.ts, tests/gateway/api/memory-gateway.test.ts).
- * mono still uses this path: a known follow-up (named personas' memory lands
- * in the process slice).
+ * mono no longer uses it either: createGateway installs a provider scoped by
+ * each turn's own context (tests/gateway/core/mono-memory-scope.test.ts).
  */
 import { afterEach, expect, test } from "bun:test";
 import { BrainMemoryProvider } from "../../src/memory/brain-provider";

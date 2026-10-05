@@ -19,6 +19,7 @@ coverage/
 data/
 verify-data/
 .env.verify
+.env.node
 jsonl/
 .playwright-cli/
 .playwright-mcp/

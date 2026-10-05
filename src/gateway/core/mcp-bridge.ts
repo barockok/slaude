@@ -348,6 +348,8 @@ export const DEFAULT_SESSION_CONCURRENCY = 4;
 export const DEFAULT_IDLE_MS = 5 * 60_000;
 /** How long ending a session upstream (DELETE) may take before it is dropped. */
 const TERMINATE_TIMEOUT_MS = 2_000;
+/** How long the bridge's close() waits for every session's teardown. */
+const CLOSE_TIMEOUT_MS = TERMINATE_TIMEOUT_MS + 1_000;
 export const DEFAULT_MAX_LIST_BYTES = 1024 * 1024;
 export const DEFAULT_MAX_TOOLS = 500;
 
@@ -611,9 +613,9 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
 
   /** End the session upstream (DELETE), best effort and bounded, then close
    *  the client, which also drops a DELETE still pending. Never awaited by a
-   *  call. */
-  function closeSession(p: Pooled): void {
-    void p.client
+   *  call; the bridge's close() awaits it. Never rejects. */
+  function closeSession(p: Pooled): Promise<void> {
+    return p.client
       .then(async (c) => {
         const transport = c.transport as StreamableHTTPClientTransport | undefined;
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -640,7 +642,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
     if (pool.get(key) === p) pool.delete(key);
     if (p.stale) return;
     p.stale = true;
-    if (p.inflight === 0) closeSession(p);
+    if (p.inflight === 0) void closeSession(p);
   }
 
   /** Lease the pooled session for `key` (opened on first use, after it went
@@ -687,7 +689,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
   function unlease(p: Pooled): void {
     p.inflight--;
     p.lastUsed = now();
-    if (p.stale && p.inflight === 0) closeSession(p);
+    if (p.stale && p.inflight === 0) void closeSession(p);
   }
 
   const poolKey = (cred: Exclude<BridgeCredential, { kind: "connect" }>, server: string) =>
@@ -966,12 +968,29 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
       return capResult(out.value, limits().maxResultBytes);
     },
 
+    // Awaits each session's teardown (DELETE upstream, bounded by
+    // TERMINATE_TIMEOUT_MS, then the client close), so a caller never sees a
+    // teardown request arrive after close() resolved. The whole wait is also
+    // bounded (a session still opening would otherwise hold it for the open's
+    // timeout); never throws.
     async close() {
-      const all = [...pool.keys()];
-      for (const k of all) {
-        const p = pool.get(k)!;
+      const closing: Promise<void>[] = [];
+      for (const [k, p] of [...pool]) {
         pool.delete(k);
-        closeSession(p);
+        closing.push(closeSession(p));
+      }
+      if (closing.length === 0) return;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.all(closing),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, CLOSE_TIMEOUT_MS);
+            timer.unref?.();
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
       }
     },
 

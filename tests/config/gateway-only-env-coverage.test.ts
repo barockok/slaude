@@ -35,16 +35,17 @@ const ALLOW: Record<string, string> = {
   // child (strict provider mode, review R2-F3); a node may hold them for its
   // own fallback provider.
   CLAUDE_CODE_API_KEY_: "provider env fallback family on nodes; removed in strict mode",
-  // Third-party embedding provider keys the brain (gateway) uses. Generic names an
-  // operator may also give agent tools on purpose, so they are not scrubbed or
-  // flagged; set them on the gateway only for embeddings.
-  OPENAI_API_KEY: "generic provider key, operator's choice",
-  VOYAGE_API_KEY: "generic provider key, operator's choice",
-  GOOGLE_GENERATIVE_AI_API_KEY: "generic provider key, operator's choice",
-  OPENROUTER_API_KEY: "generic provider key, operator's choice",
-  MINIMAX_API_KEY: "generic provider key, operator's choice",
-  TOGETHER_API_KEY: "generic provider key, operator's choice",
-  ZEROENTROPY_API_KEY: "generic provider key, operator's choice",
+  // Third-party embedding provider keys the brain (gateway) uses. Not
+  // gateway-only (a node holding one is not refused at boot), but on the
+  // child-scrub list: no agent child, node manifest server or .mcp.json
+  // placeholder receives them (tests/config/child-scrub-single-source.test.ts).
+  OPENAI_API_KEY: "embedding key; child-scrubbed, not gateway-only",
+  VOYAGE_API_KEY: "embedding key; child-scrubbed, not gateway-only",
+  GOOGLE_GENERATIVE_AI_API_KEY: "embedding key; child-scrubbed, not gateway-only",
+  OPENROUTER_API_KEY: "embedding key; child-scrubbed, not gateway-only",
+  MINIMAX_API_KEY: "embedding key; child-scrubbed, not gateway-only",
+  TOGETHER_API_KEY: "embedding key; child-scrubbed, not gateway-only",
+  ZEROENTROPY_API_KEY: "embedding key; child-scrubbed, not gateway-only",
   // Public addresses, not secrets.
   EMBEDDING_URL: "endpoint address",
   LITELLM_BASE_URL: "endpoint address",

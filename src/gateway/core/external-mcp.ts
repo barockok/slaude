@@ -2,7 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { paths } from "../../config/home";
-import { isGatewayOnlyEnv } from "../../config/gateway-only-env";
+import { isChildScrubbedEnv } from "../../agent/child-env";
 import { getPersonaRegistry, type PersonaRegistry } from "../../persona/registry";
 import { env } from "../../config/env";
 
@@ -47,12 +47,14 @@ export function parseExternalMcp(
   opts: { allow?: ReadonlySet<string>; onUnlisted?: (name: string) => void } = {},
 ): ExternalMcp {
   // .mcp.json sits on $SLAUDE_HOME, which agent turns can write. A placeholder
-  // naming a gateway-only variable (master key, job secret, database URLs, Slack
-  // secrets, PERSONA_*, ...) is left as written: expanding it would hand the
-  // gateway's secret to whatever server config the file names. Name logged only.
+  // naming a variable no subprocess may hold (the child-scrub list: every
+  // gateway-only variable, the node token, the Redis URL, the connect key, the
+  // brain's embedding keys) is left as written: expanding it would hand the
+  // gateway's secret to whatever server config the file names. The node
+  // manifest refuses the same list. Name logged only.
   const expand = (s: string) =>
     s.replace(/\$\{([A-Z0-9_]+)\}/g, (whole, name: string) => {
-      if (isGatewayOnlyEnv(name)) {
+      if (isChildScrubbedEnv(name)) {
         console.warn(`[mcp] .mcp.json references gateway-only variable ${name}; left unexpanded`);
         return whole;
       }

@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,6 +30,13 @@ mkdirSync(kbDir2, { recursive: true });
 writeFileSync(join(kbDir2, "README.md"), "---\ndescription: nogit kb\n---\n# NoGit\n");
 writeFileSync(join(kbDir2, "rates.md"), "# Rates\nLending margin xylophone fact.\n");
 clearKbCache();
+
+// An earlier file in the same process can leave the brain singleton open in
+// another home (tests/brain-server-roundtrip boots the real engine): close it
+// so this file's brain opens in brainDir.
+beforeAll(async () => {
+  await closeBrain();
+});
 
 afterAll(async () => {
   await closeBrain();

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { brainAdminCall, embeddingActive } from "./brain";
 import { loadKbs } from "./loader";
 import { kbSourceId } from "./scope";
+import { GIT_LOCAL_ARGS, localGitEnv } from "../config/safe-git";
 
 export interface KbSyncResult {
   label: string;
@@ -17,9 +18,15 @@ export interface KbSyncResult {
  * Self-init a local checkpoint repo — never pushed anywhere, purely so sync
  * can diff between runs. Re-runs commit any drift since the last sync.
  */
-function ensureGitRepo(repo: string): void {
+export function ensureGitRepo(repo: string): void {
+  // The KB sits on the shared, node-writable volume and this runs in the
+  // gateway: no hook, fsmonitor or sshCommand from the repository runs, and
+  // git gets a minimal environment (src/config/safe-git.ts).
   const git = (...args: string[]) =>
-    execFileSync("git", ["-C", repo, "-c", "user.email=slaude@local", "-c", "user.name=slaude", ...args], { stdio: "pipe" });
+    execFileSync("git", ["-C", repo, ...GIT_LOCAL_ARGS, "-c", "user.email=slaude@local", "-c", "user.name=slaude", ...args], {
+      stdio: "pipe",
+      env: localGitEnv(),
+    });
   if (!existsSync(join(repo, ".git"))) git("init", "-q");
   try {
     git("add", "-A");

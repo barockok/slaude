@@ -305,10 +305,13 @@ export const LABEL_MISMATCH_CODE = "LABEL_MISMATCH";
 export const GATE_DENIED_CODE = "GATE_DENIED";
 export const GATE_DENIED_MESSAGE = "this node may not serve this agent";
 
-/** Require the job's label among the node's labels. Null = allowed. */
+/** Require the job's label among the node's labels. Null = allowed. `route`
+ *  is the route table's NAME (a fixed set), never the path: it is the
+ *  refusal counter's only label, so its cardinality stays bounded. */
 export function gateLabel(node: NodeIdentity, claims: JobClaims, route: string): Response | null {
   const label = jobLabel(claims);
   if (node.labels.has(label)) return null;
+  metric.gateDeniedTotal.inc({ route });
   console.error(
     `[v1] gate denied: node=${node.id} tenant=${claims.tenant} persona=${claims.persona} label=${label} route=${route}`,
   );

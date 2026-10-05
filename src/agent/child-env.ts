@@ -13,14 +13,25 @@
  *   - SLAUDE_NODE_TOKEN, the node's own /v1 credential;
  *   - SLAUDE_REDIS_URL, every session's queue, locks and event stream (the
  *     node process uses it; the child never does);
- *   - SLAUDE_ENCRYPTION_KEY, the connect broker's key.
+ *   - SLAUDE_ENCRYPTION_KEY, the connect broker's key;
+ *   - the brain's embedding provider keys (src/knowledge/embedding-keys.ts:
+ *     OPENAI_API_KEY, VOYAGE_API_KEY, ...). The brain runs in the gateway
+ *     process; in mono the child shared its environment and could read them.
+ * This one predicate is also what the node manifest refuses and what
+ * `.mcp.json` placeholder expansion leaves unexpanded.
  * Every consumer of these reads them in the slaude process itself (MCP
  * placeholders are expanded before the config reaches the child), so the
  * child needs none of them.
  */
 import { isGatewayOnlyEnv } from "../config/gateway-only-env";
+import { EMBEDDING_PROVIDER_KEY_ENV } from "../knowledge/embedding-keys";
 
-const ALSO_STRIPPED = new Set(["SLAUDE_ENCRYPTION_KEY", "SLAUDE_NODE_TOKEN", "SLAUDE_REDIS_URL"]);
+const ALSO_STRIPPED = new Set([
+  "SLAUDE_ENCRYPTION_KEY",
+  "SLAUDE_NODE_TOKEN",
+  "SLAUDE_REDIS_URL",
+  ...Object.values(EMBEDDING_PROVIDER_KEY_ENV).filter((k): k is string => !!k),
+]);
 
 /** True for every name scrubChildEnv strips: no subprocess may hold it. */
 export function isChildScrubbedEnv(name: string): boolean {

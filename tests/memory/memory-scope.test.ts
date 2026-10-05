@@ -54,8 +54,30 @@ describe("memoryScopeFor", () => {
     expect(memoryScopeFor(g({ userId: "U2", lockedUser: "U1", channelTrust: "trusted" }))).toEqual({ read: null, write: null });
   });
 
-  test("a manager in someone else's locked thread keeps the manager's KB rule (agent slice)", () => {
-    expect(memoryScopeFor(g({ userId: "U2", lockedUser: "U1", isManager: true })).write?.sourceId).toBe(A);
+  test("a manager in someone else's locked thread reads and writes nothing (never the persona's shared slice)", () => {
+    expect(memoryScopeFor(g({ userId: "U2", lockedUser: "U1", isManager: true }))).toEqual({ read: null, write: null });
+    expect(memoryScopeFor(g({ userId: "U2", lockedUser: "U1", isManager: true }), { channel: "D0DM" })).toEqual({ read: null, write: null });
+  });
+});
+
+describe("memoryScopeFor honours runAs (whose identity the turn runs as)", () => {
+  test("a cron created inside a 1:1 runs as the user: the user's slice, even with the thread unlocked", () => {
+    for (const userId of [null, "U1"]) {
+      const s = memoryScopeFor(g({ userId, lockedUser: null, channelTrust: "trusted" }), { runAsUser: "U1" });
+      expect(s.write).toEqual({ clientId: "U1", sourceId: userSourceId("U1"), allowedSources: [userSourceId("U1")] });
+      expect(s.read?.allowedSources).toEqual([userSourceId("U1")]);
+    }
+  });
+  test("a speaker who is not the runAs user reads and writes nothing, manager included", () => {
+    for (const isManager of [false, true]) {
+      expect(memoryScopeFor(g({ userId: "U2", lockedUser: null, isManager }), { runAsUser: "U1" })).toEqual({ read: null, write: null });
+    }
+  });
+  test("runAs never widens: a runAs user in a thread locked by someone else reads and writes nothing", () => {
+    expect(memoryScopeFor(g({ userId: null, lockedUser: "U9" }), { runAsUser: "U1" })).toEqual({ read: null, write: null });
+  });
+  test("runAs = agent (absent) keeps the KB rules", () => {
+    expect(memoryScopeFor(g({}), { runAsUser: null }).write?.sourceId).toBe(A);
   });
 });
 

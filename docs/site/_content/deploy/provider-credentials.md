@@ -291,6 +291,14 @@ credentials do not outlive the session in the node's memory. The bundle's
 ETag is an HMAC of its body keyed by `SLAUDE_MASTER_KEY`, not a bare hash of a
 body that holds plaintext credentials.
 
+**Upgrade every node before setting a reference.** A node older than v0.45.0
+does not know `ownProvider`: it applies the persona's resolved set additively,
+as it would a `provider_creds` row, and fills every field the persona left out
+from its own environment. A persona that sets only a key then sends that key to
+the node's own `ANTHROPIC_BASE_URL`, a host the persona never named. Set
+`provider` on any persona only after every node in the cluster runs this
+release.
+
 ## Trust model
 
 **A provider key delivered to a node sits in the agent child's environment.**

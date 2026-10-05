@@ -21,8 +21,8 @@ step inside one.
 | new gateway, old nodes | old nodes use the static token, are label `default` and consume `turns`; personas without `runsOn` are `default`; nothing changes |
 | new nodes, old gateway | a node with the static token behaves as before; a node with a signed credential is rejected with 401 at boot, with a clear message |
 | a runtime bundle with `mcpServers` or provider references, old node | the old node ignores the fields it does not know |
-| a `/deploy` payload with a newer field, older gateway | from v0.44.1 the gateway reports the unknown field in `ignoredFields` (a 422 only with `SLAUDE_DEPLOY_STRICT=1`) and refuses a payload `version` newer than it supports; a gateway before v0.44.1 silently drops it |
-| a node pod that still loads the gateway Secret | the node logs a warning and sets `slaude_node_gateway_secrets_present`; with `SLAUDE_NODE_BOOT_CHECK=refuse` it does not boot unless `SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1` |
+| a `/deploy` payload with a newer field, older gateway | v0.44.1 reports the unknown field in `ignoredFields` (a 422 only with `SLAUDE_DEPLOY_STRICT=1`); from v0.45.0 it is a 422 unless `SLAUDE_DEPLOY_STRICT=0`. Both refuse a payload `version` newer than it supports; a gateway before v0.44.1 silently drops it |
+| a node pod that still loads the gateway Secret | v0.44.1 logs a warning and sets `slaude_node_gateway_secrets_present`; v0.45.0 does not boot (the default `SLAUDE_NODE_BOOT_CHECK=refuse`) unless `SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1` or `SLAUDE_NODE_BOOT_CHECK=warn` |
 | `SLAUDE_PROVIDER_ENV_FALLBACK` | defaults to `1` (today's behaviour); the default is not changed in this series |
 | `SLAUDE_NODE_KEY` unset | signed node credentials are not accepted; the legacy token is the only door |
 

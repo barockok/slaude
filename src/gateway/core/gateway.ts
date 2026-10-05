@@ -58,6 +58,11 @@ import { syncKbWikis } from "../../knowledge/brain-sync";
 import { scheduleNightlyMaintenance } from "../../knowledge/brain-cycle";
 import { channelTrustFor, resolveBrainScope } from "../../knowledge/scope";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
+import { memory as processMemory } from "../../memory";
+import { makeScopedMemory } from "../../memory/scoped";
+import { scrubChildEnv, withoutKeys } from "../../agent/child-env";
+import { providerSelectingNames } from "../../agent/provider-env";
+import { memoryScopeFor } from "../../memory/scope";
 import { getPersonaRegistry, labelsInUse, livePersona, managedPersonaProvider, onPersonaRegistryInstalled } from "../../persona/registry";
 import { makeLabelMonitor } from "../../queue/label-status";
 import type { GateInput } from "../../knowledge/gated-dispatch";
@@ -793,6 +798,24 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       threadKey: `${ctx.channel}:${ctx.threadTs}`,
     };
   };
+
+  // Episodic memory for turns that run in THIS process (mono): scoped by the
+  // turn's own context like the node routes (src/gateway/api/memory.ts), never
+  // the process-wide slice. The route's ctx is the current speaker; runAs is
+  // the same rule dispatch signs into a node's token (a cron job's carried
+  // identity, else the thread's lock). No route: nothing read or written.
+  agent.setMemoryProvider(
+    makeScopedMemory({
+      provider: () => processMemory,
+      scopeFor: async (sessionId) => {
+        const route = routes.get(sessionId);
+        if (!route) return null;
+        const { ctx } = route;
+        const runAsUser = await agent.resolveEffectiveIdentity(sessionId, ctx.channel, ctx.threadTs);
+        return memoryScopeFor(await brainGateFor(ctx), { channel: ctx.channel, runAsUser: runAsUser ?? null });
+      },
+    }),
+  );
 
   // Brain tool deps for a context + surface — shared by the per-session MCP
   // resolver and the REST tool plane so both run identical scoping and gating.
@@ -2308,10 +2331,25 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           await reply(":no_entry: `/bash` is manager-only");
           return;
         }
+        // A gateway holds the master key, the job secret, the node key and the
+        // database settings, and the output is posted to Slack: never run a
+        // shell next to them. Agent turns run on nodes; so does a shell.
+        if (env.role() === "gateway") {
+          await reply(
+            ":no_entry: `/bash` is not available on a gateway: it would run next to the gateway's secrets. " +
+              "Run the command on a node (`kubectl exec` into a node pod) or in a `/remote` thread.",
+          );
+          return;
+        }
         // Decode Slack's URL encoding: <https://url|label> → https://url
         const command = slash.command.replace(/<(https?:\/\/[^|>]+)(?:\|[^>]*)?>?/g, "$1");
         try {
+          // mono shares the gateway's environment: the same scrub as the agent
+          // child, so no gateway-only variable can reach the posted output,
+          // and every provider-selecting variable too (API key, auth token,
+          // OAuth token, cloud credentials): the shell needs none of them.
           const proc = Bun.spawn(["bash", "-c", command], {
+            env: withoutKeys(scrubChildEnv(process.env), providerSelectingNames(process.env)),
             stdout: "pipe",
             stderr: "pipe",
           });
@@ -2997,6 +3035,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             if (!j) return null;
             return { data: j.data ?? {}, timestamp: j.timestamp, state: await j.getState() };
           },
+          // A held copy of a moved job runs under a new id with the original
+          // token: refresh and reissue follow the job-moved marker to it (and
+          // check the copy carries that token).
+          jobMovedTo: (jobId: string) => queueDispatch.turns.movedTo(jobId),
         }
       : {}),
   });

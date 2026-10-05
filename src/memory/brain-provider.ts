@@ -70,7 +70,9 @@ export class BrainMemoryProvider implements MemoryProvider {
     return slug;
   }
 
-  /** The in-process path (mono): the process-wide agent identity's slice. */
+  /** UNSCOPED: the process-wide agent identity's slice. No turn path uses it:
+   *  mono installs makeScopedMemory (src/memory/scoped.ts) and nodes call the
+   *  gateway's routes, both of which use prefetchIn/syncTurnIn. */
   prefetch(sessionId: string): Promise<string | null> {
     return this.prefetchIn(sessionId, agentScope());
   }

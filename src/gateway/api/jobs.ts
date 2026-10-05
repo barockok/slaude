@@ -21,6 +21,12 @@
  * router); the gateway re-mints from the job's data only when the job is still
  * in the queue, its stored token is the one presented, and its total age is
  * under SLAUDE_JOB_MAX_AGE.
+ *
+ * A held copy: when a moved job is merged into another pending job, its
+ * messages wait in a held copy under a NEW id that carries the original token
+ * (whose `job` claim names the original id). Both routes accept that token for
+ * the copy's id when the job-moved marker chain leads from the claim's id to
+ * the path's id, and re-mint it naming the copy.
  */
 import {
   JOB_HEADER,
@@ -65,8 +71,50 @@ function labelMismatch(claims: JobClaims, what: "refresh" | "reissue"): Response
   return json(409, { error: "the agent's node label changed", code: LABEL_MISMATCH_CODE });
 }
 
+/** Where job `id` was moved to (the job-moved marker), or null. */
+export type JobMovedTo = (id: string) => Promise<{ queue: string; jobId: string } | null>;
+
+/** Marker hops followed from a claim's id; a copy can itself be moved again. */
+const MAX_MOVE_HOPS = 8;
+
+/**
+ * True when the token's `job` claim is `jobId`, or the job-moved marker chain
+ * leads from it to `jobId` AND that job carries the presented token itself (a
+ * held copy of a moved job). A marker also points a job MERGED into another
+ * pending job at that job; the merged job's token is not the target's stored
+ * token, so it never refreshes or reissues as the target.
+ */
+async function tokenIsForJob(
+  claims: JobClaims,
+  jobId: string,
+  presented: string,
+  movedTo: JobMovedTo | undefined,
+  lookup: JobLookup | undefined,
+): Promise<boolean> {
+  if (claims.job === jobId) return true;
+  if (!movedTo || !lookup || typeof claims.job !== "string") return false;
+  let id: string | null = claims.job;
+  for (let hop = 0; hop < MAX_MOVE_HOPS && id; hop++) {
+    const ref: { queue: string; jobId: string } | null = await movedTo(id).catch(() => null);
+    id = ref?.jobId ?? null;
+    if (ref && id === jobId) {
+      if (!isTurnQueueName(ref.queue)) return false;
+      const job = await lookup(ref.queue, jobId).catch(() => null);
+      const stored = job?.data.jobToken;
+      return typeof stored === "string" && timingSafeStringEqual(stored, presented);
+    }
+  }
+  return false;
+}
+
 /** Verifies the original token itself (the router also does, for the gate). */
-export async function handleTokenRefresh(req: Request, jobId: string, nowMs: number = Date.now()): Promise<Response> {
+export async function handleTokenRefresh(
+  req: Request,
+  jobId: string,
+  nowMs: number = Date.now(),
+  movedTo?: JobMovedTo,
+  lookup?: JobLookup,
+): Promise<Response> {
   const r = verifyJobToken(req.headers.get(JOB_HEADER), { graceSec: REFRESH_GRACE_SEC, now: nowMs });
   if (!r.ok) {
     if (r.reason === "unconfigured") {
@@ -75,7 +123,7 @@ export async function handleTokenRefresh(req: Request, jobId: string, nowMs: num
     return json(401, { error: `token refresh refused: ${r.reason}` });
   }
   const claims = r.claims;
-  if (claims.job !== jobId) {
+  if (!(await tokenIsForJob(claims, jobId, req.headers.get(JOB_HEADER) ?? "", movedTo, lookup))) {
     return json(403, { error: "token was not minted for this job" });
   }
   // The live label is re-checked here (node labels spec §4.3, §4.8): after a
@@ -93,7 +141,7 @@ export async function handleTokenRefresh(req: Request, jobId: string, nowMs: num
   metric.v1JobEventsTotal.inc({ event: "token_refresh" });
   // The fresh token never outlives the cap either.
   const exp = Math.min(nowSec + JOB_TOKEN_TTL_SEC, lifeEnd);
-  return json(200, { jobToken: mintJobToken({ ...reclaims(claims), iat0, exp }, { now: nowMs }) });
+  return json(200, { jobToken: mintJobToken({ ...reclaims(claims), job: jobId, iat0, exp }, { now: nowMs }) });
 }
 
 /** What token-reissue needs from the queue. */
@@ -124,8 +172,9 @@ export async function handleTokenReissue(
   claims: JobClaims,
   lookup: JobLookup | undefined,
   nowMs: number = Date.now(),
+  movedTo?: JobMovedTo,
 ): Promise<Response> {
-  if (claims.job !== jobId) return json(403, { error: "token was not minted for this job" });
+  if (!(await tokenIsForJob(claims, jobId, req.headers.get(JOB_HEADER) ?? "", movedTo, lookup))) return json(403, { error: "token was not minted for this job" });
   // As at refresh: never re-mint a label the persona no longer runs on.
   const mismatch = labelMismatch(claims, "reissue");
   if (mismatch) return mismatch;
@@ -164,7 +213,7 @@ export async function handleTokenReissue(
   const iat0 = Math.min(nowSec, capSec - env.jobTokenMaxAgeSec());
   const exp = Math.min(nowSec + JOB_TOKEN_TTL_SEC, capSec);
   metric.v1JobEventsTotal.inc({ event: "token_reissue" });
-  return json(200, { jobToken: mintJobToken({ ...reclaims(claims), iat0, exp }, { now: nowMs }) });
+  return json(200, { jobToken: mintJobToken({ ...reclaims(claims), job: jobId, iat0, exp }, { now: nowMs }) });
 }
 
 /** Longest logged body; the rest is dropped. */

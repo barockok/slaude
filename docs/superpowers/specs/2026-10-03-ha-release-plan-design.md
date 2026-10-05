@@ -72,15 +72,19 @@ stating the **exposed-secrets rotation** (§5). `v0.44.1.md` is written for that
 |---|---|
 | new gateway, old nodes | old nodes use the static token, are label `default`, consume `turns`; personas without `runs_on` are `default`; nothing changes |
 | new nodes, old gateway | a node with the static token behaves as before; a node with a signed credential is rejected (401) at boot with a clear message |
-| bundle with `mcpServers` or provider references, old node | the old node ignores fields it does not know |
+| bundle with `mcpServers` or provider references, old node | the old node ignores fields it does not know. **Not safe for provider references:** it ignores `ownProvider`, so it fills every field the persona left out from its own environment and sends the persona's resolved key to the node's own `ANTHROPIC_BASE_URL`, a host the persona never named. Set provider references only after every node is upgraded (corrected in U17) |
 | `/deploy` payload with a newer field, **old** gateway | v0.44.1 reports the unknown field (`ignoredFields`); v0.45.0 refuses it; before v0.44.1 the old gateway **silently drops it** |
 | node pod that still loads the gateway Secret | v0.44.1 warns; v0.45.0 refuses to boot unless `SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1` |
 | `SLAUDE_PROVIDER_ENV_FALLBACK` | defaults to today's behaviour; the default is not changed in this plan (parked) |
 | `SLAUDE_NODE_KEY` unset | signed credentials are not accepted; the legacy token is the only door |
 
 **The exposed-secrets rotation.** Any cluster that ran nodes with the shared Secret must treat
-`SLAUDE_JOB_SECRET` and `SLAUDE_MASTER_KEY` as exposed to node pods and rotate them after the split. Rotating
-the master key re-encrypts stored credentials; the plan includes the procedure and the release notes say so.
+`SLAUDE_JOB_SECRET` and `SLAUDE_MASTER_KEY` as exposed to node pods. Rotating `SLAUDE_JOB_SECRET` is supported
+(drain, write the new value, restart the gateways). **Master-key rotation is NOT supported in v0.45.0:** no tool
+re-encrypts stored credentials under a new key (decided in U17; an earlier draft of this paragraph assumed one).
+For the master key the procedure is: discard the stored credentials and re-enter them (re-run onboarding and the
+MCP and provider connects), or keep the key and record the exposure. The re-encryption tool is a **pre-stable
+follow-up**. The release notes and the multi-node guide state this.
 
 **Rollback is not inert once a feature is configured.** An earlier draft claimed it was. It is only true for
 a cluster that has not yet set a reference, a label or a KB list. After they are set:
@@ -123,7 +127,8 @@ boot *warning* visible in a `k8s-local` run.
    is configured; a node pod holding gateway-only variables.
 8. **A capacity check:** a run with several label queues and the node counts they imply, recording Redis
    connections (one per worker per node), memory, and the gateway's added load from the MCP bridge; the numbers are
-   in the notes, not assumed.
+   in the notes, not assumed. Recorded in a copy of
+   [the capacity check template](../plans/2026-10-05-capacity-check-template.md).
 9. The configured-then-rolled-back rehearsal (§5) has been run once.
 10. Docs and field notes are merged (§8).
 11. The soak below has completed with no open defect that affects a turn, a credential or a queue.

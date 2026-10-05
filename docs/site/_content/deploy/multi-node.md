@@ -96,7 +96,7 @@ Point your Slack app's Events API request URL at the gateway's `:8080/slack/even
 
 > **`SLAUDE_MASTER_KEY` is not rotatable in place.** It encrypts the Slack app secrets in the `slack_apps` registry and every MCP credential at rest. Regenerating it orphans every existing row — the old ciphertext can no longer be decrypted, the gateway will fail to resolve those apps, and every connected MCP integration has to be reconnected. Keep the key stable across restarts. A gateway refuses to boot without a usable key.
 
-The single-process deployment stays in `docker-compose.yaml` — the scale file never touches it.
+The single-process deployment stays in `docker-compose.yaml` — the scale file never touches it. Its optional `scale` profile (one gateway and one worker) gives the worker its own env file, `.env.node` (copy `.env.node.example`; `SLAUDE_NODE_ENV_FILE` points elsewhere): a node refuses to boot when it holds a gateway-only variable, and the gateway's `.env` holds Slack tokens and the job secret. `tests/deploy/compose-worker-env.test.ts` fails if any compose worker loads the gateway's env file or an example env file naming a gateway-only variable.
 
 ### MCP credentials
 
@@ -176,6 +176,8 @@ The manifests also give the gateway its own ServiceAccount (`slaude-gateway`, in
 - a public or unlisted channel: the thread's own page in the persona's slice. A prefetch only ever reads the session's own conversation page, so nothing from another thread reaches the turn, and the transcript is never written to `public`;
 - someone else's locked thread: neither read nor recorded.
 
+**In `mono`** the same rules apply in-process, but the scope is read from the session's route when the memory call runs, so it follows the route's **current** speaker, not the speaker of the turn being recorded. When someone else speaks in the thread before an earlier turn's memory is written, that write is scoped by the later speaker. It never widens: a write it can no longer place privately is dropped (a manager in someone else's locked thread reads and writes nothing), and otherwise it stays in the same thread's page or slice. Node turns carry their speaker in the job token and are not affected.
+
 Before this, a node that reached the brain directly wrote every persona's transcripts, `/1on1`s included, into one `agent-default` slice, because the node process never learns a persona's identity.
 
 Memory never breaks a turn. A node waits at most 3 seconds for each memory call and does not retry it; the gateway gives up on a hung brain after 2 seconds (prefetch answers empty). A refusal (403 from the label gate, 409 for a persona that is no longer live), a failure, a timeout, or a gateway that predates the routes (404, during a rolling upgrade) is logged once per kind and counted in `slaude_memory_gateway_failures_total{kind}`; the turn runs without memory. A persistent failure therefore shows only in that counter after its first log line, so alert on its rate. An older node on a newer gateway behaves as before: it does not call the routes. A persona sync reaches another gateway replica when that replica's persona registry reloads (the reload signal, or its poll every 10 seconds), so for a few seconds after a sync a turn may be scoped by the previous persona state.
@@ -186,8 +188,8 @@ Memory never breaks a turn. A node waits at most 3 seconds for each memory call 
 
 **The node boot check.** At boot a node looks for gateway-only variables in its environment. The list is in `src/config/gateway-only-env.ts`, and the [configuration reference](../reference/configuration.md#queue-redis) repeats it under `SLAUDE_NODE_BOOT_CHECK`. The node reports variable names, never values:
 
-- `SLAUDE_NODE_BOOT_CHECK=warn` (the default in this release): the node logs one warning, sets the gauge `slaude_node_gateway_secrets_present` to the number of offending variables, and boots. Alert on `max(slaude_node_gateway_secrets_present) > 0`.
-- `SLAUDE_NODE_BOOT_CHECK=refuse`: the node exits non-zero. `SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1` turns the refusal back into a warning. Use it only as a temporary escape.
+- `SLAUDE_NODE_BOOT_CHECK=warn`: the node logs one warning, sets the gauge `slaude_node_gateway_secrets_present` to the number of offending variables, and boots. Alert on `max(slaude_node_gateway_secrets_present) > 0`.
+- `SLAUDE_NODE_BOOT_CHECK=refuse` (the default since v0.45.0; v0.44.1 warned): the node exits non-zero, so a node pod that still loads the gateway Secret does not start after the upgrade. `SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1` turns the refusal back into a warning. Use it only as a temporary escape.
 
 A later release makes `refuse` the default. Finish the split while the check only warns. The same list, plus `SLAUDE_NODE_TOKEN` and `SLAUDE_REDIS_URL`, is stripped from the agent child's environment in every role. A `${NAME}` placeholder in `.mcp.json` that names a gateway-only variable is left unexpanded, with the name logged. The runtime bundle never carries the MCP config.
 
@@ -301,6 +303,7 @@ Refresh and reissue both re-check the persona's live `runsOn` and answer `409 LA
 |---|---|
 | `slaude_node_credential_expiry_seconds{id}` | Seconds until a credential the gateway has seen expires (at most 64 ids are exported). |
 | `slaude_node_legacy_auth_total` | Requests authenticated with the legacy token while `SLAUDE_NODE_KEY` is set. |
+| `slaude_gate_denied_total{route}` | Requests the label gate refused with `403`, by route-table name. See [the alerts runbook](alerts.md#a-rising-rate-of-403-from-the-gate). |
 
 ```yaml
 groups:
@@ -392,6 +395,7 @@ When a persona's `runsOn` changes:
 - **new messages** go to the new label's queue;
 - **warm routing** ignores a node that lacks the new label, and that node's warm session idles out and unregisters;
 - **a pending message** (in a job of the session still waiting, on any queue) is moved to the new label's queue when the next message arrives, merged with it under a token signed for the new label. A waiting job that no new message follows keeps its old label and runs on a node carrying it;
+- **the move has a time limit.** The next message finds the waiting job only through the session's coalesce index, which expires 10 minutes after the job was last enqueued or merged. A job that has waited longer on a label no live node carries is not moved: it stays stranded on the old label's queue, until its token can no longer be reissued (`SLAUDE_JOB_MAX_AGE`, 24 h by default), and **the user hears nothing**. `slaude_label_unserved{label}` reports it; drain it as in [the alerts runbook](alerts.md#a-label-with-no-live-node);
 - **work in flight is invalidated** when a call it makes is refused. A turn whose node does not carry the label signed into its token gets `403` from the gate on its next call (a tool call becomes an error result for the model), and a token refresh or reissue at claim is refused with `409` and code `LABEL_MISMATCH` when the persona's live `runsOn` differs from the token's label. Either way the job **fails with `LABEL_MISMATCH`** (never acknowledged as done, never retried by BullMQ), and the gateway **re-dispatches it once** to the persona's current label, posting nothing. If that second attempt also fails with `LABEL_MISMATCH`, the user sees one fixed message ("No worker is available that matches this persona's requirements"). A `403` on the runtime bundle fails the same way.
 - A turn already running on a node that **still carries the old label** finishes there: the label signed into its token is still among the node's labels, and a token is refreshed only at claim. To stop such a turn, re-credential the old node without the label or abort the turn.
 
@@ -408,7 +412,7 @@ Every move (relabel, a mismatch at claim, the reaper) adds the job's copy on the
 - the session's newer job was already claimed (running) when the older one is moved or re-dispatched: the older messages are a job of their own and run after it;
 - the coalesce index (10-minute TTL) has expired while the session has a pending job on a label queue and another stranded on a dead node: the move cannot see the sibling, the session ends up with two jobs, and they run in the order workers claim them, one at a time under the session lock.
 
-The reaper rescues a dead node's claimed (active) job only once its lock has expired; if that job's turn had already finished (its `turn-done` marker exists, read in the same atomic step), the job is dropped rather than moved, so nothing of it runs again. A `job-moved` marker tells the gateway's follower where the job went, so a move never reads as the end of the turn. Two crash windows remain, each one Redis round trip wide, and both are at-least-once rather than lost:
+The reaper rescues a dead node's claimed (active) job only once its lock has expired; if that job's turn had already finished (its `turn-done` marker exists, read in the same atomic step), the job is dropped rather than moved, so nothing of it runs again. A `job-moved` marker tells the gateway's follower where the job went, so a move never reads as the end of the turn. Token refresh and reissue follow the same marker for a **held copy**, which runs under a new id with the original job's token: the token is accepted for the copy's id only when the marker chain leads there **and** the copy stores that very token, so a job merged into another pending job never refreshes as that job. The marker is not an authentication boundary: forging one needs write access to Redis, and Redis already holds every queued job's token in its payload, so anyone who can write a marker can already read a token for any queued job. Two crash windows remain, each one Redis round trip wide, and both are at-least-once rather than lost:
 
 - dying after the original was taken and before the copy is released: the copy runs when its 30-second hold lapses, so the turn is late;
 - merging into another pending job of the session, dying after the append and before the held copy is dropped: the messages run twice.

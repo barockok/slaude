@@ -140,6 +140,18 @@ describe("memory routes", () => {
     expect(fb.sourcesOf("S-other")).toEqual([]);
   });
 
+  test("a job that runs as a person (a cron created inside a 1:1) is that person's slice, read and written", async () => {
+    const { fb, v1 } = setup();
+    liveLock = null; // a cron's synthetic thread holds no lock
+    const c = claims({ session: "S-cron", runAs: "user:U1" });
+    await post(v1, "sync", { user: "cron question", assistant: "a" }, c);
+    expect(fb.sourcesOf("S-cron")).toEqual([userSourceId("U1")]);
+    expect((await post(v1, "prefetch", {}, c)).body.block).toContain("cron question");
+    // A speaker other than the runAs user: nothing.
+    await post(v1, "sync", { user: "u", assistant: "a" }, claims({ session: "S-cron-2", runAs: "user:U1", initiator: "U2" }));
+    expect(fb.sourcesOf("S-cron-2")).toEqual([]);
+  });
+
   test("a retired persona is refused with 409 and one log line, for a flat provider too", async () => {
     const flat: MemoryProvider = { prefetch: async () => "x", syncTurn: async () => {} };
     const retired = (c: JobClaims) => { if (c.persona === "finance") throw new PersonaNotLiveError("finance"); };

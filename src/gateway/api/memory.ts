@@ -7,7 +7,8 @@
  * the session, the persona (whose own `agent-<id>` slice is used, never the
  * process-wide one), the gate input (channel trust, manager) through the same
  * brainGateFor the KB tools use, and the /1on1 lock (the more private of the
- * live lock and the token's `lock` claim). The body carries only the turn's
+ * live lock and the token's `lock` claim) and the signed `runAs` (a turn that
+ * runs as a person is that person's slice). The body carries only the turn's
  * text; any other field is a 400.
  *
  *   prefetch  {}                              → { block: string | null }
@@ -21,6 +22,7 @@
 import { z } from "zod";
 import type { GateInput } from "../../knowledge/gated-dispatch";
 import { agentIdReady } from "../../knowledge/agent-identity";
+import { parseRunAs } from "../../agent/credential-owner";
 import type { MemoryProvider } from "../../memory/provider";
 import { BrainMemoryProvider } from "../../memory/brain-provider";
 import { memoryScopeFor, withClaimLock } from "../../memory/scope";
@@ -97,7 +99,11 @@ export function makeMemoryPlane(deps: {
     await ready();
     const gate = await deps.gateFor(claims);
     if (!gate) return null;
-    return memoryScopeFor(withClaimLock(gate, claims.lock?.user), { channel: claims.channel });
+    // runAs is signed at dispatch: a cron created inside a /1on1 runs as its
+    // owner although its synthetic thread holds no lock.
+    const runAs = parseRunAs(claims.runAs);
+    const runAsUser = runAs?.kind === "user" ? runAs.slackUserId : null;
+    return memoryScopeFor(withClaimLock(gate, claims.lock?.user), { channel: claims.channel, runAsUser });
   }
 
   return {
