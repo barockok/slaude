@@ -100,11 +100,12 @@ the v0.45.0 notes; they are not assumed anywhere.
   per process.
 - Node-side MCP credential seeding and its endpoints stay until the bridge is
   proven on a cluster (this test is that proof; the cleanup is a follow-up).
-- The code's default for `SLAUDE_NODE_BOOT_CHECK` is still `warn`; the manifests
-  set `refuse`. The release plan says v0.45.0 refuses by default: decide before
-  the RC.
-- `/deploy` stage two (refusing unknown fields by default) is not implemented;
-  `SLAUDE_DEPLOY_STRICT=1` enables it.
+- `SLAUDE_NODE_BOOT_CHECK` defaults to `refuse` in code since U17, matching the
+  manifests and the release plan; `SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1` (or
+  `SLAUDE_NODE_BOOT_CHECK=warn`) is the documented escape.
+- `/deploy` stage two is the default since U17: an unknown field is a 422;
+  `SLAUDE_DEPLOY_STRICT=0` turns it off. An unknown value of any security switch
+  refuses the boot, naming the variable.
 - `slaude_node_credential_expiry_seconds` keeps a retired id's last value until
   the gateway restarts.
 - No metric for gate 403s: the alert reads the `[v1] gate denied:` log line.

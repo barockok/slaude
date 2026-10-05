@@ -62,7 +62,7 @@ the provider env fallback), and one **credential Secret per node deployment**
 (`slaude-scale-node-cred-<label>`, holding only that deployment's
 `SLAUDE_NODE_TOKEN`). The gateway reads only the Redis URL from the node Secret,
 by key. Never load the gateway Secret on a node: the node Deployments set
-`SLAUDE_NODE_BOOT_CHECK=refuse`, so a node that finds a gateway-only variable
+`SLAUDE_NODE_BOOT_CHECK=refuse` (also the code default since v0.45.0), so a node that finds a gateway-only variable
 stops at boot (naming the variable, never its value) and sets
 `slaude_node_gateway_secrets_present`; any `SLAUDE_VAULT_*` or `VAULT_*`
 variable stops it whatever that setting says. Upgrading a cluster that used one

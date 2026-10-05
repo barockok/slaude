@@ -182,9 +182,10 @@ Behaviour to know:
 - A field the gateway does not know (at the top level or on a persona) is
   ignored, never stored, and listed in `ignoredFields` as `futureKnob` or
   `persona.<name>.<field>`. The gateway also logs a warning naming the fields.
-  Only names are reported, never values. Set `SLAUDE_DEPLOY_STRICT=1` on the
-  gateway to make an unknown field a 422 instead; it is off by default so a
-  pipeline can be upgraded ahead of its gateway. `personas render --check`
+  Only names are reported, never values. That is with `SLAUDE_DEPLOY_STRICT=0`
+  on the gateway. Strict is the default since v0.45.0: an unknown field is a 422
+  naming it, so upgrade the gateways before the pipeline that renders new
+  fields, or set `SLAUDE_DEPLOY_STRICT=0` while they catch up. `personas render --check`
   reports unknown `persona.yaml` keys on stderr.
 
 - A sync whose `committedAt` is older than the live revision is refused with

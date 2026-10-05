@@ -189,8 +189,9 @@ split is done). The node also logs one line naming them, never their values.
 
 **What it means.** The node, and every agent turn on it, can read secrets that
 let it act as the gateway: mint job tokens, decrypt stored credentials, read
-every tenant's rows. With `SLAUDE_NODE_BOOT_CHECK=warn` (the default) the node
-boots anyway; with `refuse` it would not have started.
+every tenant's rows. The gauge is non-zero only on a node that booted anyway:
+`SLAUDE_NODE_BOOT_CHECK=warn` or `SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1`. With the
+default (`refuse`) it would not have started.
 
 **What to do.** Load only the node Secret on node pods
 ([the Secret split](multi-node.md#the-secret-split)), roll the nodes, and then

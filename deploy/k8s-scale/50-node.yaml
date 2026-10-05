@@ -70,9 +70,10 @@ spec:
                 secretKeyRef:
                   name: slaude-scale-node-cred-default
                   key: SLAUDE_NODE_TOKEN
-            # Refuse to boot holding a gateway-only variable, instead of only
-            # warning (the code default). The manifests split the Secrets, so a
-            # node that finds one was given the wrong Secret.
+            # Refuse to boot holding a gateway-only variable. The code default
+            # since v0.45.0 too; stated so the manifest does not depend on it.
+            # The manifests split the Secrets, so a node that finds one was
+            # given the wrong Secret.
             - name: SLAUDE_NODE_BOOT_CHECK
               value: refuse
             - name: SLAUDE_NODE_MANIFEST
