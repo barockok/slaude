@@ -340,7 +340,10 @@ crash_node() { # <pod>
   local pod="${1#pod/}" id out
   id="$(k get pod "$pod" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's|.*/||')"
   [[ -n "$id" ]] || { diag "  !! crash_node: no container id for $pod"; return 1; }
-  if ! out="$(minikube -p "$PROFILE" ssh -- docker kill --signal=KILL "$id" 2>&1)"; then
+  # minikube has no request timeout of its own; bound it by PROBE_TIMEOUT's seconds.
+  local secs="${PROBE_TIMEOUT%s}"
+  [[ "$secs" =~ ^[0-9]+$ ]] || secs=60
+  if ! out="$(bounded "$secs" minikube -p "$PROFILE" ssh -- docker kill --signal=KILL "$id" 2>&1)"; then
     diag "  !! docker kill of $pod failed: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"
     return 1
   fi
