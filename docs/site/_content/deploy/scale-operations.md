@@ -29,6 +29,7 @@ least `role=gateway|node` per Deployment so the series below are separable.
 | `slaude_v1_job_events_total` | counter | `event` | Node job telemetry (`ack`\|`fail`) |
 | `slaude_label_unserved` | gauge | `label` | 1 while a node label in use has waiting jobs and no live node for longer than `SLAUDE_LABEL_UNSERVED_SECS` † |
 | `slaude_node_credential_expiry_seconds` | gauge | `id` | Seconds until a signed node credential this replica has seen expires (at most 64 ids) |
+| `slaude_gate_denied_total` | counter | `route` | `/v1` requests the label gate refused with `403` (the job's label is not among the node's labels). `route` is the route-table name (`tools`, `tenants.personas.runtime`, `jobs.token-refresh`, ...), never the path, so there is at most one series per label-gated route |
 | `slaude_node_legacy_auth_total` | counter | — | `/v1` requests authenticated with the legacy shared token while `SLAUDE_NODE_KEY` is set |
 | `slaude_provider_cred_resolve_total` | counter | `scheme`, `outcome` | Provider credential reference resolutions (`vault`\|`env`; `ok`\|`cached`\|`stale`\|`denied`\|`error`) |
 | `slaude_provider_cred_stale_served_total` | counter | — | Cached provider credentials served past their TTL because Vault could not answer |

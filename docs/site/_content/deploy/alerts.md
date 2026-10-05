@@ -24,7 +24,7 @@ Two rules for reading the gauges below:
 | [Vault unreachable](#vault-unreachable) | `slaude_provider_cred_resolve_total{scheme="vault",outcome="error"}`, `slaude_provider_cred_stale_served_total` | gateway |
 | [A label with no live node](#a-label-with-no-live-node) | `slaude_label_unserved{label}` | gateway, leader only |
 | [A node credential close to expiry](#a-node-credential-close-to-expiry) | `slaude_node_credential_expiry_seconds{id}` | gateway |
-| [A rising rate of 403 from the gate](#a-rising-rate-of-403-from-the-gate) | the `[v1] gate denied:` log line (no metric) | gateway log |
+| [A rising rate of 403 from the gate](#a-rising-rate-of-403-from-the-gate) | `slaude_gate_denied_total{route}` | gateway |
 | [The legacy door in use](#the-legacy-door-in-use-while-a-node-key-is-set) | `slaude_node_legacy_auth_total` | gateway |
 | [A node holding gateway-only variables](#a-node-pod-holding-gateway-only-variables) | `slaude_node_gateway_secrets_present` | node |
 | [A node paused on a refused credential](#a-node-paused-on-a-refused-credential) | `slaude_node_auth_paused` | node |
@@ -44,6 +44,8 @@ groups:
       - alert: SlaudeNodeCredentialExpiring
         expr: min by (id) (slaude_node_credential_expiry_seconds) < 14 * 86400
         for: 1h
+      - alert: SlaudeGateDenied
+        expr: sum(increase(slaude_gate_denied_total[10m])) > 5
       - alert: SlaudeNodeLegacyTokenInUse
         expr: sum(increase(slaude_node_legacy_auth_total[1h])) > 0
       - alert: SlaudeNodeHoldsGatewaySecrets
@@ -151,17 +153,22 @@ See [Node credentials](multi-node.md#node-credentials).
 
 ## A rising rate of 403 from the gate
 
-**Signal.** There is no metric for gate refusals. Each refusal is an
-error-level gateway log line:
+**Signal.** `slaude_gate_denied_total{route}` counts every refusal, labeled
+by the route-table name (`tools`, `tenants.personas.runtime`,
+`jobs.token-refresh`, ...), never the path, so it has at most one series per
+label-gated route. Every gateway replica counts its own refusals: aggregate
+with `sum()`.
+
+```yaml
+- alert: SlaudeGateDenied
+  expr: sum(increase(slaude_gate_denied_total[10m])) > 5
+```
+
+The metric does not say which node was refused. Each refusal is also an
+error-level gateway log line that does:
 
 ```
 [v1] gate denied: node=<credential id> tenant=<t> persona=<p> label=<label> route=<route>
-```
-
-Alert on its rate in your log system, for example with Loki:
-
-```
-sum by (node) (count_over_time({app="slaude", component="gateway"} |= "[v1] gate denied:" [10m])) > 5
 ```
 
 Related metrics that move with it: `slaude_v1_job_events_total{event="fail"}`

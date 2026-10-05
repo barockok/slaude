@@ -301,6 +301,7 @@ Refresh and reissue both re-check the persona's live `runsOn` and answer `409 LA
 |---|---|
 | `slaude_node_credential_expiry_seconds{id}` | Seconds until a credential the gateway has seen expires (at most 64 ids are exported). |
 | `slaude_node_legacy_auth_total` | Requests authenticated with the legacy token while `SLAUDE_NODE_KEY` is set. |
+| `slaude_gate_denied_total{route}` | Requests the label gate refused with `403`, by route-table name. See [the alerts runbook](alerts.md#a-rising-rate-of-403-from-the-gate). |
 
 ```yaml
 groups:
