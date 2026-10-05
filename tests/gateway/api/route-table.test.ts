@@ -20,6 +20,7 @@ import {
 } from "../../../src/gateway/api/auth";
 import { mintNodeCredential, NodeCredentialVerifier } from "../../../src/gateway/auth/node-credential";
 import { InMemoryPendingSource } from "../../../src/gateway/api/pending-source";
+import { metrics } from "../../../src/metrics";
 
 const stubTools = {
   slackCtx: () => { throw new Error("unused"); },
@@ -153,6 +154,34 @@ describe("gate matrix", () => {
       expect({ route, ...(await call(route, cred(["engineering"]), token(undefined))) }).toEqual({ route, status: 403, gated: true });
     });
   }
+
+  /** slaude_gate_denied_total series as route -> count. */
+  const deniedSeries = (): Record<string, number> => {
+    const out: Record<string, number> = {};
+    for (const m of metrics.render().matchAll(/^slaude_gate_denied_total\{([^}]*)\} (\d+)$/gm)) {
+      const route = /(?:^|,)route="([^"]*)"/.exec(m[1]!)?.[1];
+      expect(route).toBeDefined();
+      out[route!] = Number(m[2]);
+    }
+    return out;
+  };
+
+  test("a refusal counts slaude_gate_denied_total{route} under the route NAME, never the path", async () => {
+    const before = deniedSeries();
+    for (const route of Object.keys(SAMPLES)) {
+      expect((await call(route, cred(["engineering"]), token("finance"))).gated).toBe(true);
+    }
+    // An allowed call counts nothing.
+    await call("tools", cred(["finance"]), token("finance"));
+    const after = deniedSeries();
+    for (const route of Object.keys(SAMPLES)) expect({ route, n: (after[route] ?? 0) - (before[route] ?? 0) }).toEqual({ route, n: 1 });
+    // Bounded cardinality: the label values are route-table names only (no
+    // session, job, tenant or tool ids from the path), so at most one series
+    // per label-gated route.
+    const gated = routes.filter((r) => r.gate === "label").map((r) => r.name);
+    for (const k of Object.keys(after)) expect(gated).toContain(k);
+    expect(Object.keys(after).length).toBeLessThanOrEqual(gated.length);
+  });
 });
 
 describe("routing is behaviour-identical to the old if-chain", () => {
