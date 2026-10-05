@@ -108,6 +108,20 @@ reports the same, with live-node and waiting counts.
    `runsOn` in the persona repository and sync.
 3. Keep at least two replicas per label, so one pod's restart does not trip
    this alert.
+4. **Drain jobs stranded by a relabel.** When the label is unserved because a
+   persona moved off it (`runsOn` changed), its waiting jobs stay there: a
+   relabel moves a waiting job only when the session's next message arrives
+   within 10 minutes of the job's last enqueue (the coalesce index's TTL). A
+   job older than that stays on the old queue, with no message to the user,
+   until its token can no longer be reissued (`SLAUDE_JOB_MAX_AGE`, 24 h by
+   default). To drain it, run one node whose credential carries the old label
+   (`bun run node-token mint --label <old-label> --ttl 1d`, one replica) until
+   `GET /panel/api/labels` shows `waiting: 0` for that label, then scale it to
+   zero and revoke the credential. Each job it claims runs on the old label,
+   or, when its token is refreshed at claim, fails with `LABEL_MISMATCH` and
+   is re-dispatched once to the persona's current label. If the persona must
+   not run on the old label's nodes at all, do not drain: ask the affected
+   users to send their message again.
 
 ## A node credential close to expiry
 
