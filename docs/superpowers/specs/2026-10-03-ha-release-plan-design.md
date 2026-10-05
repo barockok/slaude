@@ -79,8 +79,12 @@ stating the **exposed-secrets rotation** (§5). `v0.44.1.md` is written for that
 | `SLAUDE_NODE_KEY` unset | signed credentials are not accepted; the legacy token is the only door |
 
 **The exposed-secrets rotation.** Any cluster that ran nodes with the shared Secret must treat
-`SLAUDE_JOB_SECRET` and `SLAUDE_MASTER_KEY` as exposed to node pods and rotate them after the split. Rotating
-the master key re-encrypts stored credentials; the plan includes the procedure and the release notes say so.
+`SLAUDE_JOB_SECRET` and `SLAUDE_MASTER_KEY` as exposed to node pods. Rotating `SLAUDE_JOB_SECRET` is supported
+(drain, write the new value, restart the gateways). **Master-key rotation is NOT supported in v0.45.0:** no tool
+re-encrypts stored credentials under a new key (decided in U17; an earlier draft of this paragraph assumed one).
+For the master key the procedure is: discard the stored credentials and re-enter them (re-run onboarding and the
+MCP and provider connects), or keep the key and record the exposure. The re-encryption tool is a **pre-stable
+follow-up**. The release notes and the multi-node guide state this.
 
 **Rollback is not inert once a feature is configured.** An earlier draft claimed it was. It is only true for
 a cluster that has not yet set a reference, a label or a KB list. After they are set:
