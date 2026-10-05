@@ -408,16 +408,18 @@ the door with `SLAUDE_LOCAL_LEGACY_DOOR=closed up.sh`). To rehearse:
    `SLAUDE_LOCAL_CPUS=4 SLAUDE_LOCAL_MEMORY=4864 deploy/k8s-local/up.sh`. Its
    overlay knows nothing of `slaude-node-finance`, `vault` or `mock-mcp`, so it
    leaves them running: the finance pods keep a signed credential, which an older
-   gateway rejects (401), and they pause. Scale them away for the rehearsal
-   (`kubectl --context slaude-local -n slaude-scale scale deploy/slaude-node-finance --replicas=0`)
+   gateway rejects (401), and they pause; Vault and the mock MCP server would
+   keep using node memory the older sizing does not count. Remove all three for
+   the rehearsal:
+   `kubectl --context slaude-local -n slaude-scale delete deploy slaude-node-finance vault mock-mcp`
    and expect `beta`'s turns to run on `default`, as the runbook's table says.
    The default nodes must present the legacy token, since an older gateway
    refuses signed credentials: bring this cluster up with
    `SLAUDE_LOCAL_NODE_AUTH=legacy` (door open) before you roll back, so their
    credential Secret already holds it.
 3. Check a turn for each persona and compare with the runbook's table; then roll
-   forward (this checkout's `up.sh`, which scales the finance node back to one)
-   and check each persona is back on its label, scope and provider.
+   forward (this checkout's `up.sh`, which recreates the three Deployments and
+   re-seeds the empty dev Vault) and check each persona is back on its label, scope and provider.
 
 Record what ran and what differed. Steps 1 and 2 were written from the runbook,
 not yet run on this overlay.

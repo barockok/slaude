@@ -71,7 +71,9 @@ followed the runbook section, cleared.
 
 "Rollback rehearsal" in the README, with the procedure in
 `docs/site/_content/deploy/rollback.md`. Older gateways reject signed node
-credentials, so roll back with `SLAUDE_LOCAL_NODE_AUTH=legacy`. Record what
+credentials, so roll back with `SLAUDE_LOCAL_NODE_AUTH=legacy`, pass the older
+`up.sh` `SLAUDE_LOCAL_CPUS=4 SLAUDE_LOCAL_MEMORY=4864`, and delete the
+`slaude-node-finance`, `vault` and `mock-mcp` Deployments it leaves. Record what
 differed from the runbook's table.
 
 ## 8. Capacity numbers for the release notes (gate item 8)
@@ -150,5 +152,6 @@ Each item below is **UNVERIFIED**. Check it off when it has run on the cluster.
 - [ ] UNVERIFIED: the real-Slack runbook (nine steps).
 - [ ] UNVERIFIED: every alert in the alerts table, fired and cleared.
 - [ ] UNVERIFIED: the rollback rehearsal (the older tag's `up.sh` with
-  `SLAUDE_LOCAL_CPUS=4 SLAUDE_LOCAL_MEMORY=4864`, the finance node it leaves
-  behind, legacy-token default nodes).
+  `SLAUDE_LOCAL_CPUS=4 SLAUDE_LOCAL_MEMORY=4864`, deleting the
+  `slaude-node-finance`, `vault` and `mock-mcp` Deployments it leaves behind,
+  legacy-token default nodes, and the roll forward recreating them).
