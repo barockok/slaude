@@ -16,6 +16,10 @@ let dir = "";
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "up-context-"));
   cpSync(join(root, "deploy/k8s-local"), join(dir, "deploy/k8s-local"), { recursive: true });
+  // A developer's own generated, gitignored files must not leak into the copy.
+  for (const f of ["secrets.env", "deploy.env", "provider.env", "vault-root.env"]) {
+    rmSync(join(dir, "deploy/k8s-local", f), { force: true });
+  }
   writeFileSync(
     join(dir, "minikube"),
     `#!/usr/bin/env bash
