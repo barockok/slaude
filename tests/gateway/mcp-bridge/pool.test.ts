@@ -156,7 +156,20 @@ describe("a session taken out of service is ended upstream", () => {
     await b.call(claims, "s", "echo", { text: "a" });
     expect(up.sessions()).toBe(1);
     await b.close();
-    await until(() => deletes(up) === 1 && up.sessions() === 0);
+    // close() awaits the teardown: the DELETE has reached the upstream when it
+    // resolves, so a caller's next assertion cannot see it arrive late.
+    expect(deletes(up)).toBe(1);
+    expect(up.sessions()).toBe(0);
+  });
+
+  test("close() with a DELETE the upstream never answers resolves within the bound and does not throw", async () => {
+    const up = upstream({ hangDelete: true });
+    const b = bridgeAt(up.url);
+    await b.call(claims, "s", "echo", { text: "a" });
+    const t0 = Date.now();
+    await b.close();
+    expect(Date.now() - t0).toBeLessThan(3500);
+    expect(deletes(up)).toBe(1);
   });
 
   test("a DELETE the upstream never answers does not hold up a call and is given up after a bound", async () => {
