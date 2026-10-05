@@ -60,6 +60,7 @@ import { channelTrustFor, resolveBrainScope } from "../../knowledge/scope";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
 import { memory as processMemory } from "../../memory";
 import { makeScopedMemory } from "../../memory/scoped";
+import { scrubChildEnv } from "../../agent/child-env";
 import { memoryScopeFor } from "../../memory/scope";
 import { getPersonaRegistry, labelsInUse, livePersona, managedPersonaProvider, onPersonaRegistryInstalled } from "../../persona/registry";
 import { makeLabelMonitor } from "../../queue/label-status";
@@ -2329,10 +2330,23 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           await reply(":no_entry: `/bash` is manager-only");
           return;
         }
+        // A gateway holds the master key, the job secret, the node key and the
+        // database settings, and the output is posted to Slack: never run a
+        // shell next to them. Agent turns run on nodes; so does a shell.
+        if (env.role() === "gateway") {
+          await reply(
+            ":no_entry: `/bash` is not available on a gateway: it would run next to the gateway's secrets. " +
+              "Run the command on a node (`kubectl exec` into a node pod) or in a `/remote` thread.",
+          );
+          return;
+        }
         // Decode Slack's URL encoding: <https://url|label> → https://url
         const command = slash.command.replace(/<(https?:\/\/[^|>]+)(?:\|[^>]*)?>?/g, "$1");
         try {
+          // mono shares the gateway's environment: the same scrub as the agent
+          // child, so no gateway-only variable can reach the posted output.
           const proc = Bun.spawn(["bash", "-c", command], {
+            env: scrubChildEnv(process.env),
             stdout: "pipe",
             stderr: "pipe",
           });
