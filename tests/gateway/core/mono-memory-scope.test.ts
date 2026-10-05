@@ -25,6 +25,7 @@ import { BrainMemoryProvider } from "../../../src/memory/brain-provider";
 import { resetAgentId, setAgentId } from "../../../src/knowledge/agent-identity";
 import { agentSourceId, userSourceId } from "../../../src/knowledge/scope";
 import { fakeBrain } from "../../memory/fake-brain";
+import { closeBrain } from "../../../src/knowledge/brain";
 
 const PROCESS_ID = "U_SLAUDE";
 const PERSONA_SLACK_ID = "U0FIN";
@@ -84,10 +85,14 @@ afterEach(async () => {
   await db.run("DELETE FROM cron_jobs");
   __resetPersonaRegistry();
 });
-afterAll(() => {
+afterAll(async () => {
   AgentManager.prototype.setMemoryProvider = origSet;
   __setMemoryForTests(originalMemory);
   resetAgentId();
+  // The gateways and sim sessions above may boot the process brain (embedded
+  // PGLite); left open it keeps working in the background and slows the next
+  // file's timing-sensitive tests.
+  await closeBrain();
 });
 
 async function cronSession(opts: { personaId?: string; oauthUser?: string; threadTs: string }) {
