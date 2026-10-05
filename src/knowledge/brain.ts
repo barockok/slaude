@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
 import { loadKbs } from "./loader";
@@ -44,26 +44,291 @@ export function embeddingConfigured(): boolean {
   }
 }
 
+// Deterministic embedding provider enum & configuration
+export const EMBEDDING_PROVIDERS = [
+  "google",
+  "openai",
+  "voyage",
+  "zeroentropyai",
+  "openrouter",
+  "together",
+  "minimax",
+  "azure-openai",
+  "ollama",
+  "litellm",
+] as const;
+
+export type EmbeddingProvider = (typeof EMBEDDING_PROVIDERS)[number];
+
+export const PROVIDER_ALIASES: Record<string, EmbeddingProvider> = {
+  gemini: "google",
+  zeroentropy: "zeroentropyai",
+  azure: "azure-openai",
+};
+
+export function normalizeEmbeddingProvider(raw?: string): EmbeddingProvider | undefined {
+  if (!raw) return undefined;
+  const p = raw.trim().toLowerCase();
+  if ((EMBEDDING_PROVIDERS as readonly string[]).includes(p)) {
+    return p as EmbeddingProvider;
+  }
+  if (p in PROVIDER_ALIASES) {
+    return PROVIDER_ALIASES[p];
+  }
+  return undefined;
+}
+
+export interface ProviderConfig {
+  canonicalKey?: string;
+  aliases: string[];
+  defaultModel: string;
+  defaultDims: number;
+}
+
+export const PROVIDER_CONFIGS: Record<EmbeddingProvider, ProviderConfig> = {
+  google: {
+    canonicalKey: "GOOGLE_GENERATIVE_AI_API_KEY",
+    aliases: ["GEMINI_API_KEY", "EMBEDDING_API_KEY"],
+    defaultModel: "text-embedding-004",
+    defaultDims: 768,
+  },
+  openai: {
+    canonicalKey: "OPENAI_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultModel: "text-embedding-3-small",
+    defaultDims: 1536,
+  },
+  voyage: {
+    canonicalKey: "VOYAGE_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultModel: "voyage-3",
+    defaultDims: 1024,
+  },
+  zeroentropyai: {
+    canonicalKey: "ZEROENTROPY_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultModel: "zembed-1",
+    defaultDims: 1280,
+  },
+  openrouter: {
+    canonicalKey: "OPENROUTER_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultModel: "text-embedding-3-small",
+    defaultDims: 1536,
+  },
+  together: {
+    canonicalKey: "TOGETHER_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultModel: "togethercomputer/m2-bert-80M-8k-retrieval",
+    defaultDims: 768,
+  },
+  minimax: {
+    canonicalKey: "MINIMAX_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultModel: "embo-01",
+    defaultDims: 1536,
+  },
+  "azure-openai": {
+    canonicalKey: "AZURE_OPENAI_API_KEY",
+    aliases: ["OPENAI_API_KEY", "EMBEDDING_API_KEY"],
+    defaultModel: "text-embedding-3-small",
+    defaultDims: 1536,
+  },
+  ollama: {
+    canonicalKey: "OLLAMA_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultModel: "nomic-embed-text",
+    defaultDims: 768,
+  },
+  litellm: {
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultModel: "text-embedding-3-small",
+    defaultDims: 1536,
+  },
+};
+
+// Backward-compatibility export for PROVIDER_KEY_DEFS
+export interface ProviderKeyDef {
+  canonical: string;
+  aliases: string[];
+  defaultDims?: number;
+}
+
+export const PROVIDER_KEY_DEFS: Record<string, ProviderKeyDef | null> = {
+  ...Object.fromEntries(
+    Object.entries(PROVIDER_CONFIGS).map(([prov, def]) => [
+      prov,
+      def.canonicalKey
+        ? { canonical: def.canonicalKey, aliases: def.aliases, defaultDims: def.defaultDims }
+        : null,
+    ])
+  ),
+  gemini: {
+    canonical: "GOOGLE_GENERATIVE_AI_API_KEY",
+    aliases: ["GEMINI_API_KEY", "EMBEDDING_API_KEY"],
+    defaultDims: 768,
+  },
+  zeroentropy: {
+    canonical: "ZEROENTROPY_API_KEY",
+    aliases: ["EMBEDDING_API_KEY"],
+    defaultDims: 1280,
+  },
+  azure: {
+    canonical: "AZURE_OPENAI_API_KEY",
+    aliases: ["OPENAI_API_KEY", "EMBEDDING_API_KEY"],
+    defaultDims: 1536,
+  },
+  "llama-server": null,
+};
+
+/**
+ * Detects an embedding provider from available environment API keys.
+ */
+export function detectProviderFromEnv(): EmbeddingProvider | undefined {
+  if (process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.GEMINI_API_KEY) {
+    return "google";
+  }
+  if (process.env.OPENAI_API_KEY) {
+    return "openai";
+  }
+  if (process.env.VOYAGE_API_KEY) {
+    return "voyage";
+  }
+  if (process.env.ZEROENTROPY_API_KEY) {
+    return "zeroentropyai";
+  }
+  if (process.env.OPENROUTER_API_KEY) {
+    return "openrouter";
+  }
+  if (process.env.TOGETHER_API_KEY) {
+    return "together";
+  }
+  if (process.env.MINIMAX_API_KEY) {
+    return "minimax";
+  }
+  if (process.env.AZURE_OPENAI_API_KEY) {
+    return "azure-openai";
+  }
+  if (process.env.OLLAMA_API_KEY) {
+    return "ollama";
+  }
+  return undefined;
+}
+
+/**
+ * Deterministically canonicalize an embedding model string based on provider
+ * enum/setting, model string, explicit base URL, or detected provider env vars.
+ * Decoupled from hardcoded model names so any model can be specified.
+ */
+export function canonicalizeEmbeddingModel(
+  rawModel?: string,
+  url?: string,
+  rawProvider?: string
+): string | undefined {
+  const explicitProvider = normalizeEmbeddingProvider(rawProvider);
+  const trimmedModel = rawModel?.trim();
+
+  // If model already has a provider prefix "provider:model"
+  if (trimmedModel?.includes(":")) {
+    const colonIdx = trimmedModel.indexOf(":");
+    const provPrefix = trimmedModel.slice(0, colonIdx);
+    const modelRest = trimmedModel.slice(colonIdx + 1);
+    const normalizedPrefix = normalizeEmbeddingProvider(provPrefix) ?? provPrefix.toLowerCase();
+    return `${normalizedPrefix}:${modelRest}`;
+  }
+
+  // Determine provider: explicit provider > explicit url > env vars (when model requested)
+  let provider = explicitProvider;
+  if (!provider && url) {
+    provider = "litellm";
+  }
+  if (!provider && trimmedModel) {
+    provider = detectProviderFromEnv();
+    if (!provider) {
+      provider = "litellm";
+    }
+  }
+
+  if (!provider) {
+    return undefined;
+  }
+
+  // With a deterministic provider, user can choose ANY model name, or fall back to provider default
+  const chosenModel = trimmedModel || PROVIDER_CONFIGS[provider]?.defaultModel || "text-embedding-3-small";
+  return `${provider}:${chosenModel}`;
+}
+
+/**
+ * Returns default vector embedding dimensions for a model string based on provider defaults.
+ * Falls back to 2560 for unknown provider-qualified models and 1536 for generic litellm/OpenAI.
+ */
+export function defaultDimensionsForModel(modelString: string): number {
+  const parts = modelString.split(":");
+  const provider = parts.length > 1 ? parts[0]!.toLowerCase() : "";
+  const normProv = normalizeEmbeddingProvider(provider);
+  if (normProv && PROVIDER_CONFIGS[normProv]?.defaultDims) {
+    return PROVIDER_CONFIGS[normProv].defaultDims;
+  }
+  return modelString.includes(":") ? 2560 : 1536;
+}
+
+/**
+ * Resolves API key for an embedding provider across canonical name and declared aliases.
+ * When an alias is detected, sets the canonical env var so gbrain and downstream SDKs find it.
+ */
+export function resolveEmbeddingApiKey(provider: string): {
+  key?: string;
+  canonical?: string;
+  isRequired: boolean;
+} {
+  const norm = normalizeEmbeddingProvider(provider);
+  const def = norm ? PROVIDER_CONFIGS[norm] : undefined;
+  if (!def) {
+    if (provider.toLowerCase() === "llama-server") return { isRequired: false };
+    return {
+      key: process.env.EMBEDDING_API_KEY,
+      canonical: "EMBEDDING_API_KEY",
+      isRequired: false,
+    };
+  }
+  if (!def.canonicalKey) {
+    return {
+      key: process.env.LITELLM_API_KEY ?? process.env.EMBEDDING_API_KEY,
+      canonical: "LITELLM_API_KEY",
+      isRequired: false,
+    };
+  }
+
+  const { canonicalKey, aliases } = def;
+  let key = process.env[canonicalKey];
+
+  if (!key) {
+    for (const alias of aliases) {
+      const aliasVal = process.env[alias];
+      if (aliasVal) {
+        process.env[canonicalKey] = aliasVal;
+        key = aliasVal;
+        break;
+      }
+    }
+  }
+
+  return { key, canonical: canonicalKey, isRequired: true };
+}
+
 /**
  * Provider-generic embedding config, mirroring slaude's ANTHROPIC_BASE_URL
- * pattern: EMBEDDING_URL (+ EMBEDDING_API_KEY, EMBEDDING_MODEL,
- * EMBEDDING_DIMENSIONS) point at any OpenAI-compatible /v1/embeddings
- * endpoint. Mapped onto gbrain's `litellm:` recipe (its generic
- * base-URL+key passthrough). An explicit embedding_model already in
- * config.json always wins — env never clobbers operator config.
+ * pattern: EMBEDDING_PROVIDER + EMBEDDING_MODEL (+ EMBEDDING_URL,
+ * EMBEDDING_API_KEY, EMBEDDING_DIMENSIONS) configure the embedding provider
+ * and model deterministically. An explicit embedding_model already in
+ * config.json always wins unless env vars are explicitly set.
  */
 export function applyEmbeddingEnv(): void {
-  const url = process.env.EMBEDDING_URL;
-  const model = process.env.EMBEDDING_MODEL;
-  // Provider-qualified model ("zeroentropyai:zembed-1") needs no URL — the
-  // native recipe resolves its own endpoint from its provider key env.
-  const providerQualified = !!model && model.includes(":");
-  if (!url && !providerQualified) return;
-  if (url) {
-    process.env.LITELLM_BASE_URL = url;
-    if (process.env.EMBEDDING_API_KEY) process.env.LITELLM_API_KEY = process.env.EMBEDDING_API_KEY;
-  }
-  if (embeddingConfigured()) return;
+  const url = process.env.EMBEDDING_URL?.trim();
+  const rawProvider = process.env.EMBEDDING_PROVIDER?.trim();
+  const rawModel = process.env.EMBEDDING_MODEL?.trim();
+  const explicitDims = process.env.EMBEDDING_DIMENSIONS?.trim();
+
   const home = brainHome();
   mkdirSync(home, { recursive: true });
   const cfgPath = join(home, "config.json");
@@ -73,9 +338,76 @@ export function applyEmbeddingEnv(): void {
   } catch {
     // missing or unreadable → start fresh
   }
-  cfg.embedding_model = providerQualified ? model! : `litellm:${model ?? "text-embedding-3-small"}`;
-  cfg.embedding_dimensions = Number(process.env.EMBEDDING_DIMENSIONS ?? (providerQualified ? 2560 : 1536));
-  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n");
+
+  const resolvedModel = canonicalizeEmbeddingModel(rawModel, url, rawProvider);
+
+  // If neither env vars nor config.json configure an embedding model, do nothing
+  if (!resolvedModel && !cfg.embedding_model && !explicitDims) {
+    delete process.env.GBRAIN_EMBEDDING_MODEL;
+    delete process.env.GBRAIN_EMBEDDING_DIMENSIONS;
+    return;
+  }
+
+  if (url) {
+    process.env.LITELLM_BASE_URL = url;
+    if (process.env.EMBEDDING_API_KEY) process.env.LITELLM_API_KEY = process.env.EMBEDDING_API_KEY;
+  }
+
+  // Target model: explicit resolved env model takes precedence when rawModel or rawProvider is set,
+  // falling back to existing config.json model.
+  const targetModel =
+    rawModel || rawProvider
+      ? resolvedModel ?? (typeof cfg.embedding_model === "string" ? cfg.embedding_model : "litellm:text-embedding-3-small")
+      : typeof cfg.embedding_model === "string"
+        ? cfg.embedding_model
+        : (resolvedModel ?? "litellm:text-embedding-3-small");
+  const modelChanged = cfg.embedding_model !== targetModel;
+
+  // If model changed and operator didn't explicitly specify dims, reset to target model's default dims
+  const targetDims = Number(
+    explicitDims ??
+      (!modelChanged && typeof cfg.embedding_dimensions === "number"
+        ? cfg.embedding_dimensions
+        : defaultDimensionsForModel(targetModel))
+  );
+
+  const prevDims = typeof cfg.embedding_dimensions === "number" ? cfg.embedding_dimensions : undefined;
+  if (prevDims && prevDims !== targetDims) {
+    console.warn(`[brain] embedding dimensions changed from ${prevDims} to ${targetDims}. Backing up old PGLite store...`);
+    const storePaths = [
+      join(home, "db"),
+      join(home, "brain.pglite"),
+    ];
+    for (const storePath of storePaths) {
+      if (existsSync(storePath)) {
+        const bakPath = `${storePath}.${prevDims}.bak`;
+        try {
+          if (existsSync(bakPath)) rmSync(bakPath, { recursive: true, force: true });
+          renameSync(storePath, bakPath);
+          console.warn(`[brain] backed up ${storePath} -> ${bakPath}`);
+        } catch (err) {
+          console.warn(`[brain] could not backup ${storePath}:`, err);
+        }
+      }
+    }
+  }
+
+  const dimsChanged = cfg.embedding_dimensions !== targetDims;
+  if (modelChanged || dimsChanged) {
+    cfg.embedding_provider = targetModel.split(":")[0];
+    cfg.embedding_model = targetModel;
+    cfg.embedding_dimensions = targetDims;
+    const serialized = JSON.stringify(cfg, null, 2) + "\n";
+    writeFileSync(cfgPath, serialized);
+    const gbrainCfgDir = join(home, ".gbrain");
+    mkdirSync(gbrainCfgDir, { recursive: true });
+    writeFileSync(join(gbrainCfgDir, "config.json"), serialized);
+    console.log(`[brain] embedding configured: ${targetModel} (${targetDims} dims)`);
+  }
+
+  // Synchronize process env for gbrain internals
+  process.env.GBRAIN_EMBEDDING_MODEL = targetModel;
+  process.env.GBRAIN_EMBEDDING_DIMENSIONS = String(targetDims);
 }
 
 /**
@@ -91,13 +423,23 @@ export function applyEmbeddingEnv(): void {
 function takeoverStaleLock(dbDir: string): void {
   if (process.env.SLAUDE_BRAIN_TAKEOVER === "0") return;
   const lockDir = join(dbDir, ".gbrain-lock");
+  const pidFile = join(dbDir, "postmaster.pid");
+  let removed = false;
   try {
-    if (!readdirSync(lockDir).length && !existsSync(join(lockDir, "lock"))) return;
-  } catch {
-    return; // no lock dir — nothing to do
+    if (readdirSync(lockDir).length || existsSync(join(lockDir, "lock"))) {
+      rmSync(lockDir, { recursive: true, force: true });
+      removed = true;
+    }
+  } catch {}
+  try {
+    if (existsSync(pidFile)) {
+      rmSync(pidFile, { force: true });
+      removed = true;
+    }
+  } catch {}
+  if (removed) {
+    console.warn("[brain] removing leftover PGLite lock / postmaster.pid (previous process did not shut down cleanly)");
   }
-  console.warn("[brain] removing leftover PGLite lock (previous process did not shut down cleanly)");
-  rmSync(lockDir, { recursive: true, force: true });
 }
 
 let embeddingActiveFlag = false;
@@ -110,20 +452,6 @@ export function embeddingActive(): boolean {
   return embeddingActiveFlag;
 }
 
-// Provider prefix → required key env. null = keyless/optional-key provider.
-const PROVIDER_KEY_ENV: Record<string, string | null> = {
-  zeroentropyai: "ZEROENTROPY_API_KEY",
-  openai: "OPENAI_API_KEY",
-  voyage: "VOYAGE_API_KEY",
-  google: "GOOGLE_GENERATIVE_AI_API_KEY",
-  openrouter: "OPENROUTER_API_KEY",
-  minimax: "MINIMAX_API_KEY",
-  together: "TOGETHER_API_KEY",
-  litellm: null,
-  ollama: null,
-  "llama-server": null,
-};
-
 async function configureEmbeddingGateway(): Promise<void> {
   embeddingActiveFlag = false;
   if (!embeddingConfigured()) return;
@@ -135,9 +463,10 @@ async function configureEmbeddingGateway(): Promise<void> {
     return;
   }
   const provider = model.split(":")[0] ?? "";
-  const keyEnv = PROVIDER_KEY_ENV[provider];
-  if (keyEnv && !process.env[keyEnv]) {
-    console.warn(`[brain] embedding_model ${model} configured but ${keyEnv} is not set — embeds stay off`);
+
+  const { key, canonical, isRequired } = resolveEmbeddingApiKey(provider);
+  if (isRequired && !key) {
+    console.warn(`[brain] embedding_model ${model} configured but ${canonical} is not set — embeds stay off`);
     return;
   }
   try {
@@ -206,6 +535,9 @@ async function boot(): Promise<Engine> {
   // gbrain reads GBRAIN_HOME for config.json, lock files, clones.
   process.env.GBRAIN_HOME = home;
   applyEmbeddingEnv();
+  // Configure embedding gateway before engine connect & initSchema so schema migrations
+  // size the embedding columns to match the configured model dimensions.
+  await configureEmbeddingGateway();
   const cfg = brainEngineConfig();
   // Lock takeover assumes exclusive ownership at boot — true only for PGLite's
   // one-process-per-brain contract. Under shared Postgres another process (the
@@ -217,7 +549,6 @@ async function boot(): Promise<Engine> {
   await engine.connect(cfg);
   await engine.initSchema();
   if (cfg.engine === "pglite") await clearStaleDbLocks(engine);
-  await configureEmbeddingGateway();
   return engine;
 }
 
@@ -231,6 +562,8 @@ export async function closeBrain(): Promise<void> {
   enginePromise = null;
   ensureInFlight = null; // next boot may target a different brain home
   embeddingActiveFlag = false;
+  delete process.env.GBRAIN_EMBEDDING_MODEL;
+  delete process.env.GBRAIN_EMBEDDING_DIMENSIONS;
   await e.disconnect();
 }
 
@@ -362,10 +695,11 @@ export function ensureSources(extra: string[] = []): Promise<void> {
     for (const id of [...baselineSources(), ...extra]) {
       if (existing.has(id)) continue;
       const kb = kbs.find((k) => kbSourceId(k.label) === id);
+      const kbPath = kb ? (existsSync(join(kb.path, "wiki")) ? join(kb.path, "wiki") : kb.path) : undefined;
       try {
         await brainAdminCall(
           "sources_add",
-          kb ? { id, path: join(kb.path, "wiki"), federated: true } : { id, federated: true },
+          kbPath ? { id, path: kbPath, federated: true } : { id, federated: true },
         );
       } catch (e) {
         // lost a create race elsewhere — the source exists, which is all we need
