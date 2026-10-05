@@ -14,6 +14,7 @@ import { soulSystemBlock } from "../soul/loader";
 import { env } from "../config/env";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import { scrubChildEnv, TOOLS_SURVIVING_EMPTY_SET } from "../agent/child-env";
+import { SAFE_GIT, gitEnv } from "../config/safe-git";
 
 export type IngestResult = {
   ok: boolean;
@@ -142,28 +143,31 @@ async function defaultPushWiki(args: { repoUrl: string; ref: string; kbDir: stri
   const tmp = mkdtempSync(join(tmpdir(), "slaude-ingest-push-"));
   try {
     try {
-      execSync(`git clone --branch "${args.ref}" --depth 1 "${resolved}" "${tmp}"`, { stdio: "pipe" });
+      execSync(`${SAFE_GIT} clone --branch "${args.ref}" --depth 1 "${resolved}" "${tmp}"`, { stdio: "pipe", env: gitEnv() });
     } catch {
       mkdirSync(tmp, { recursive: true });
-      execSync(`git -c init.defaultBranch="${args.ref}" init`, { cwd: tmp, stdio: "pipe" });
-      execSync(`git remote add origin "${resolved}"`, { cwd: tmp, stdio: "pipe" });
+      execSync(`${SAFE_GIT} -c init.defaultBranch="${args.ref}" init`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
+      execSync(`${SAFE_GIT} remote add origin "${resolved}"`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
     }
-    execSync(`git checkout --orphan "${args.ref}" 2>/dev/null; git branch -M "${args.ref}" 2>/dev/null || true`, { cwd: tmp, stdio: "pipe" });
+    execSync(`${SAFE_GIT} checkout --orphan "${args.ref}" 2>/dev/null; ${SAFE_GIT} branch -M "${args.ref}" 2>/dev/null || true`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
     for (const sub of ["raw", "wiki"]) {
       const dest = join(tmp, sub);
       if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
       const src = join(args.kbDir, sub);
       if (existsSync(src)) execSync(`cp -r "${src}" "${dest}"`, { stdio: "pipe" });
     }
-    execSync("git add -A", { cwd: tmp, stdio: "pipe" });
+    execSync(`${SAFE_GIT} add -A`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
     try {
-      execSync(`git -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: ingest"`, { cwd: tmp, stdio: "pipe" });
-      execSync("git push origin HEAD", { cwd: tmp, stdio: "pipe" });
+      execSync(`${SAFE_GIT} -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: ingest"`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
+      execSync(`${SAFE_GIT} push origin HEAD`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
     } catch {
       // nothing to commit
     }
-    return { sha: execSync("git rev-parse HEAD", { cwd: tmp, encoding: "utf8" }).trim() };
+    return { sha: execSync(`${SAFE_GIT} rev-parse HEAD`, { cwd: tmp, encoding: "utf8", env: gitEnv() }).trim() };
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 }
+
+/** TEST SEAM: the default wiki push. */
+export const __defaultPushWiki = defaultPushWiki;
