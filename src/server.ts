@@ -17,6 +17,7 @@ import { getPersonaRegistry } from "./persona/registry";
 import { bootPersonaState } from "./persona/boot";
 import { getDb, resolveDbConfig } from "./db/client";
 import { assertGatewayRequirements } from "./config/gateway-requirements";
+import { securitySwitchViolations } from "./config/security-switches";
 import { nodeKeyViolations } from "./gateway/auth/node-credential";
 import { brainEnabled, brainEngineConfig } from "./knowledge/brain";
 import { brainMode } from "./knowledge/brain-config";
@@ -37,7 +38,12 @@ async function main() {
   // role that mounts /v1 uses them, so a weak key, one shared with the job
   // secret, or an unparsable cap stops boot.
   if (env.role() !== "node") {
-    const bad = [...nodeKeyViolations(process.env), ...jobAgeEnvViolations(process.env), ...mcpBridgeEnvViolations(process.env)];
+    const bad = [
+      ...nodeKeyViolations(process.env),
+      ...jobAgeEnvViolations(process.env),
+      ...mcpBridgeEnvViolations(process.env),
+      ...securitySwitchViolations(env.role(), process.env),
+    ];
     if (bad.length) throw new Error(`refusing to start:\n${bad.map((v) => `  - ${v}`).join("\n")}`);
   }
   assertGatewayRequirements({

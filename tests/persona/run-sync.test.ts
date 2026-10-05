@@ -156,10 +156,20 @@ describe("runSync payload version and unknown fields", () => {
     expect(e.message).toContain("…and 4950 more");
     expect(e.message.length).toBeLessThan(1000);
   });
-  test("strict mode is off unless the value is exactly 1", async () => {
+  test("strict is the default (v0.45.0): unset refuses an unknown field", async () => {
+    const e = await runSync(T, payload([], { futureKnob: 1 }), { dryRun: true, env, by: "ci", extract: okExtract }).catch((x) => x);
+    expect(e).toBeInstanceOf(SyncFailure);
+    expect(e.status).toBe(422);
+    expect(e.message).toContain("futureKnob");
+  });
+  test("SLAUDE_DEPLOY_STRICT=0 (any off spelling) turns strict mode off; an unknown value stays strict", async () => {
     // Not refused in phase one: it proceeds to the database (absent here), so any error is not the strict 422.
-    const e = await runSync(T, payload([], { futureKnob: 1 }), { dryRun: true, env: { ...env, SLAUDE_DEPLOY_STRICT: "0" }, by: "ci", extract: okExtract }).catch((x) => x);
-    expect(String(e?.message ?? "")).not.toContain("SLAUDE_DEPLOY_STRICT");
+    for (const off of ["0", "false", "no", "off"]) {
+      const e = await runSync(T, payload([], { futureKnob: 1 }), { dryRun: true, env: { ...env, SLAUDE_DEPLOY_STRICT: off }, by: "ci", extract: okExtract }).catch((x) => x);
+      expect(String(e?.message ?? "")).not.toContain("SLAUDE_DEPLOY_STRICT");
+    }
+    const e = await runSync(T, payload([], { futureKnob: 1 }), { dryRun: true, env: { ...env, SLAUDE_DEPLOY_STRICT: "loose" }, by: "ci", extract: okExtract }).catch((x) => x);
+    expect(e.status).toBe(422);
   });
 });
 

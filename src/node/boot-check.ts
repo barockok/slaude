@@ -3,6 +3,7 @@
  * Separate from main.ts, which runs on import, so it can be unit-tested.
  */
 import { nodeBootCheck } from "../config/gateway-only-env";
+import { securitySwitchViolations } from "../config/security-switches";
 import { m as metric } from "../metrics";
 import { assertVaultAllowedInRole, VaultConfigError } from "../secrets/config";
 
@@ -15,6 +16,9 @@ export function enforceNodeBootCheck(
   env: Record<string, string | undefined> = process.env,
   log: (msg: string) => void = (msg) => console.warn(msg),
 ): boolean {
+  // A typo in a boot switch must not silently pick a side: refuse, by name.
+  const bad = securitySwitchViolations("node", env);
+  for (const line of bad) log(`[node] refusing to boot: ${line}`);
   const r = nodeBootCheck(env);
   if (r.message) log(r.message);
   // Vault settings are new and nothing legitimate sets them on a node (WS-A
@@ -33,5 +37,5 @@ export function enforceNodeBootCheck(
     // The gauge is a convenience; it must never decide whether a node boots.
     console.error("[node] could not set slaude_node_gateway_secrets_present:", e instanceof Error ? e.message : e);
   }
-  return r.action !== "refuse" && !vaultRefused;
+  return bad.length === 0 && r.action !== "refuse" && !vaultRefused;
 }

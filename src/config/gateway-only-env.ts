@@ -1,3 +1,5 @@
+import { flag, parseBootCheckMode, type NodeBootCheckMode } from "./security-switches";
+
 /**
  * The variables only a gateway may hold (node labels and routing spec §4.0).
  *
@@ -58,7 +60,7 @@ export function gatewayOnlyEnvPresent(env: Record<string, string | undefined>): 
     .sort();
 }
 
-export type NodeBootCheckMode = "warn" | "refuse";
+export type { NodeBootCheckMode } from "./security-switches";
 
 export interface NodeBootCheckResult {
   /** ok: nothing found. warn: log and boot. refuse: exit non-zero. */
@@ -72,18 +74,18 @@ export interface NodeBootCheckResult {
 }
 
 /**
- * The node's boot check. SLAUDE_NODE_BOOT_CHECK=warn|refuse, default warn: a
- * cluster that has not split its Secrets yet sees the problem before it is
- * stopped. The default becomes refuse in a later release.
- * SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1 downgrades refuse to warn, a documented,
- * temporary escape.
+ * The node's boot check. SLAUDE_NODE_BOOT_CHECK=refuse|warn, default refuse
+ * since v0.45.0 (it was warn while clusters split their Secrets). An unknown
+ * value fails closed here, and the node's boot refuses it by name
+ * (securitySwitchViolations). SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1 (any on
+ * spelling) downgrades refuse to warn, a documented, temporary escape.
  */
 export function nodeBootCheck(env: Record<string, string | undefined>): NodeBootCheckResult {
-  const mode: NodeBootCheckMode = (env.SLAUDE_NODE_BOOT_CHECK ?? "").trim().toLowerCase() === "refuse" ? "refuse" : "warn";
+  const mode: NodeBootCheckMode = parseBootCheckMode(env.SLAUDE_NODE_BOOT_CHECK) ?? "refuse";
   const names = gatewayOnlyEnvPresent(env);
   if (names.length === 0) return { action: "ok", mode, names };
 
-  const allowed = (env.SLAUDE_NODE_ALLOW_GATEWAY_SECRETS ?? "").trim() === "1";
+  const allowed = flag(env.SLAUDE_NODE_ALLOW_GATEWAY_SECRETS, false, false);
   const list = names.join(", ");
   if (mode === "refuse" && !allowed) {
     return {
@@ -104,6 +106,6 @@ export function nodeBootCheck(env: Record<string, string | undefined>): NodeBoot
       `[node] WARNING: gateway-only variables are set in this node's environment: ${list}. ` +
       `A node holding them can act as the gateway; load only the node Secret on node pods ` +
       `(see the multi-node deploy guide)` +
-      (mode === "refuse" ? ". Booting because SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1." : ". A later release refuses to boot."),
+      (mode === "refuse" ? ". Booting because SLAUDE_NODE_ALLOW_GATEWAY_SECRETS=1." : ". Booting because SLAUDE_NODE_BOOT_CHECK=warn."),
   };
 }

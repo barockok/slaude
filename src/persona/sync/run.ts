@@ -5,6 +5,7 @@
  * two is the single transaction in applySync. Any failure in phase one applies
  * nothing. Messages name a variable, persona or revision, never a value.
  */
+import { flag } from "../../config/security-switches";
 import {
   parsePayload, resolvePlaceholders, unknownFieldPaths, capPaths, providerWarnings, kbSourceWarnings, MAX_REPORTED_FIELDS,
   PROVIDER_FIELDS, SUPPORTED_PAYLOAD_VERSION, PayloadError, type SyncPayload,
@@ -116,12 +117,11 @@ export async function runSync(
     // upgrade message, not a complaint about its new fields.
     const v = raw && typeof raw === "object" ? (raw as { version?: unknown }).version : undefined;
     if (typeof v === "number" && Number.isInteger(v) && v > SUPPORTED_PAYLOAD_VERSION) parsePayload(raw);
-    if (opts.env.SLAUDE_DEPLOY_STRICT !== undefined && !["0", "1"].includes(opts.env.SLAUDE_DEPLOY_STRICT)) {
-      console.warn("[persona-sync] SLAUDE_DEPLOY_STRICT is set to a value other than 0 or 1; strict mode is OFF");
-    }
-    // Stage two (opt-in): a field this gateway does not know is an error, not
-    // a silent drop. Names only, never values.
-    if (allIgnored.length && opts.env.SLAUDE_DEPLOY_STRICT === "1") {
+    // Stage two (the default since v0.45.0; SLAUDE_DEPLOY_STRICT=0 opts out):
+    // a field this gateway does not know is an error, not a silent drop. An
+    // unknown switch value refuses the gateway's boot; read here, it is strict.
+    // Names only, never values.
+    if (allIgnored.length && flag(opts.env.SLAUDE_DEPLOY_STRICT, true, true)) {
       throw new PayloadError(`unknown field(s) refused under SLAUDE_DEPLOY_STRICT: ${capPaths(allIgnored).join(", ")}`);
     }
     payload = parsePayload(raw, { internalHosts: internalHostsFrom(opts.env) });

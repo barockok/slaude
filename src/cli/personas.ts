@@ -283,7 +283,7 @@ if (import.meta.main) {
         revision: flag("--revision") ?? process.env.GITHUB_SHA ?? "local",
         committedAt: flag("--committed-at") ?? new Date().toISOString(),
       }, (paths) => {
-        if (flags.has("--check")) console.error(`[personas] unknown fields (the gateway will ignore them, or refuse under SLAUDE_DEPLOY_STRICT): ${paths.join(", ")}`);
+        if (flags.has("--check")) console.error(`[personas] unknown fields (the gateway refuses them, or ignores them with SLAUDE_DEPLOY_STRICT=0): ${paths.join(", ")}`);
       }, (warnings) => {
         for (const w of warnings) console.error(`[personas] warning: ${w}`);
       });
