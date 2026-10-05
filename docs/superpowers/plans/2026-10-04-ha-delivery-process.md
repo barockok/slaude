@@ -56,14 +56,15 @@ Status values: `todo`, `in progress`, `in review`, `accepted`, `blocked`.
 | U11 | Node-local stdio manifest, plugin allow-list, strict MCP config | WS-B §4.10 | accepted |
 | U12 | MCP bridge | WS-C §4.2 | accepted |
 | U13 | KB scope, scoped list tools, skills provenance, memory-provider check | WS-C §4.1, §4.3 | accepted |
-| U14 | Panel persona API and screens | WS-C §4.4 | in progress |
+| U14 | Panel persona API and screens | WS-C §4.4 | accepted |
 
 ### Stage 3 — cluster setup for the operator's mock test, docs, closeout
 
 | Unit | Content | Spec | Status |
 |---|---|---|---|
-| U15 | `k8s-local` for the full topology (split Secrets, labelled node deployments, dev Vault, bridge upstream, runbooks), docs, field notes, release-note drafts | WS-D, WS-E §8 | todo |
-| U16 | Whole-branch verification and cross-unit review | all | todo |
+| U15 | `k8s-local` for the full topology (split Secrets, labelled node deployments, dev Vault, bridge upstream, runbooks), docs, field notes, release-note drafts | WS-D, WS-E §8 | accepted |
+| U16 | Whole-branch verification and cross-unit review | all | accepted (verification done; findings fixed in U17) |
+| U17 | Cross-unit fixes from U16: mono memory scoping and runAs, `/bash` in the gateway role, refuse-by-default switches, one child-scrub list (embedding keys, `.mcp.json` expansion), bridge `close()` teardown, `slaude_gate_denied_total`, tool-plane own-key lookup, upgrade-order and relabel-limit docs, master-key rotation deferral | all | in review |
 
 ## Open issues and follow-ups found by review
 
@@ -86,6 +87,12 @@ Status values: `todo`, `in progress`, `in review`, `accepted`, `blocked`.
 - The MCP bridge keeps the node-side MCP credential seeding in place until the bridge is proven; a later cleanup removes it.
 - Cross-replica de-duplication of failure messages is per process (U2); a Redis-backed guard is a possible later step.
 - **Cleanup after the MCP bridge is proven in a cluster (U12, WS-C §4.2.11):** remove the node-side MCP credential seeding (`src/node/credentials.ts`, its wiring in `src/node/worker.ts`), the `needs-auth` recovery, and the `GET /v1/tenants/:t/mcp-credentials` and `…/refresh` endpoints. Left in place by U12 on purpose. The bridge's connect-card rate limit is also per process (one card per session and server per 10 minutes per replica).
+- **Pre-stable follow-ups recorded in U17 (do not block the RC; close before promoting to stable):**
+  - Master-key re-encryption tool: deferred (see the first item above).
+  - Stale configuration-reference entries: `SLAUDE_TOKEN_WARN_PCT`, `SLAUDE_TOKEN_CRITICAL_PCT` and `SLAUDE_ENABLE_CONNECT_BROKER` are documented in `reference/configuration.md` but no code reads them. Remove the rows, or implement them.
+  - `reference/guardrails.md` describes metrics that do not exist (`slaude_policy_*`, `slaude_role_resolver_*`, `slaude_embedding_*`, `slaude_onboarding_redirects_total`). Mark them as design, or remove them.
+  - The U13 follow-ups below are still open, except the mono memory scoping and `runAs` item, closed in U17.
+  - `.mcp.json` placeholder expansion now refuses the whole child-scrub list (U17); the gateway still reads `.mcp.json` and `.env` from the shared volume (item above, still open).
 - **Follow-ups from the U10–U13 reviews (not blocking the RC unless noted):**
   - U13: a manager speaking in someone else's locked thread, and a cron created inside a 1:1 (runs as the user), write episodic memory into the persona's shared slice (`memoryScopeFor` ignores `runAs`); the gateway memory handler bounds only the provider call, not `ready()`/lock lookup; with the brain disabled the baseline prompt still names `kb_memoize`/`kb_search`; node mounts `kb_*` shims even then.
   - U11: refuse runtime-control keys (`BUN_OPTIONS`, `NODE_OPTIONS`, `BUN_CONFIG_*`, `LD_PRELOAD`, `DYLD_*`) as manifest `env` keys; the manifest wrapper's `--config=/dev/null` assumes Linux; a Bun-based stdio server run from a workspace holding a `.env` loads it itself (operator's server).
