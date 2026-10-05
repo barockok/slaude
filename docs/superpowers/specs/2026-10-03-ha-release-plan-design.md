@@ -127,7 +127,8 @@ boot *warning* visible in a `k8s-local` run.
    is configured; a node pod holding gateway-only variables.
 8. **A capacity check:** a run with several label queues and the node counts they imply, recording Redis
    connections (one per worker per node), memory, and the gateway's added load from the MCP bridge; the numbers are
-   in the notes, not assumed.
+   in the notes, not assumed. Recorded in a copy of
+   [the capacity check template](../plans/2026-10-05-capacity-check-template.md).
 9. The configured-then-rolled-back rehearsal (§5) has been run once.
 10. Docs and field notes are merged (§8).
 11. The soak below has completed with no open defect that affects a turn, a credential or a queue.

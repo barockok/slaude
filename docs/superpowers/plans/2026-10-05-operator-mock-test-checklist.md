@@ -81,8 +81,11 @@ differed from the runbook's table.
 While 2.2 runs: `kubectl top pods -n slaude-scale`, Redis
 `INFO clients` (`kubectl -n slaude-scale exec deploy/dev-redis -- redis-cli info clients`;
 one connection per worker per node: each node runs one worker per label plus
-its own queue), and the gateway's CPU during the bridge step. Put the numbers in
-the v0.45.0 notes; they are not assumed anywhere.
+its own queue), and the gateway's CPU during the bridge step. Record them in a
+copy of the [capacity check template](2026-10-05-capacity-check-template.md),
+which lists the steps (idle, load, scale step, load without the bridge) and the
+table to fill, and link the copy from the v0.45.0 notes; the numbers are not
+assumed anywhere.
 
 ## Known limitations (from the tracker's follow-ups)
 
