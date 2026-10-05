@@ -246,7 +246,7 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
       auth: "node+job",
       gate: "label",
       jobGraceSec: REFRESH_GRACE_SEC,
-      handle: async ({ req, seg }) => handleTokenRefresh(req, seg[1]!, Date.now(), opts.jobMovedTo),
+      handle: async ({ req, seg }) => handleTokenRefresh(req, seg[1]!, Date.now(), opts.jobMovedTo, opts.jobLookup),
     },
     {
       // The job's own token at any age; bounded by the job's age instead.

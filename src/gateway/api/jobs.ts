@@ -72,20 +72,37 @@ function labelMismatch(claims: JobClaims, what: "refresh" | "reissue"): Response
 }
 
 /** Where job `id` was moved to (the job-moved marker), or null. */
-export type JobMovedTo = (id: string) => Promise<string | null>;
+export type JobMovedTo = (id: string) => Promise<{ queue: string; jobId: string } | null>;
 
 /** Marker hops followed from a claim's id; a copy can itself be moved again. */
 const MAX_MOVE_HOPS = 8;
 
-/** True when the token's `job` claim is `jobId`, or the job-moved marker chain
- *  leads from it to `jobId` (a held copy of a moved job). */
-async function tokenIsForJob(claims: JobClaims, jobId: string, movedTo: JobMovedTo | undefined): Promise<boolean> {
+/**
+ * True when the token's `job` claim is `jobId`, or the job-moved marker chain
+ * leads from it to `jobId` AND that job carries the presented token itself (a
+ * held copy of a moved job). A marker also points a job MERGED into another
+ * pending job at that job; the merged job's token is not the target's stored
+ * token, so it never refreshes or reissues as the target.
+ */
+async function tokenIsForJob(
+  claims: JobClaims,
+  jobId: string,
+  presented: string,
+  movedTo: JobMovedTo | undefined,
+  lookup: JobLookup | undefined,
+): Promise<boolean> {
   if (claims.job === jobId) return true;
-  if (!movedTo || typeof claims.job !== "string") return false;
+  if (!movedTo || !lookup || typeof claims.job !== "string") return false;
   let id: string | null = claims.job;
   for (let hop = 0; hop < MAX_MOVE_HOPS && id; hop++) {
-    id = await movedTo(id).catch(() => null);
-    if (id === jobId) return true;
+    const ref: { queue: string; jobId: string } | null = await movedTo(id).catch(() => null);
+    id = ref?.jobId ?? null;
+    if (ref && id === jobId) {
+      if (!isTurnQueueName(ref.queue)) return false;
+      const job = await lookup(ref.queue, jobId).catch(() => null);
+      const stored = job?.data.jobToken;
+      return typeof stored === "string" && timingSafeStringEqual(stored, presented);
+    }
   }
   return false;
 }
@@ -96,6 +113,7 @@ export async function handleTokenRefresh(
   jobId: string,
   nowMs: number = Date.now(),
   movedTo?: JobMovedTo,
+  lookup?: JobLookup,
 ): Promise<Response> {
   const r = verifyJobToken(req.headers.get(JOB_HEADER), { graceSec: REFRESH_GRACE_SEC, now: nowMs });
   if (!r.ok) {
@@ -105,7 +123,7 @@ export async function handleTokenRefresh(
     return json(401, { error: `token refresh refused: ${r.reason}` });
   }
   const claims = r.claims;
-  if (!(await tokenIsForJob(claims, jobId, movedTo))) {
+  if (!(await tokenIsForJob(claims, jobId, req.headers.get(JOB_HEADER) ?? "", movedTo, lookup))) {
     return json(403, { error: "token was not minted for this job" });
   }
   // The live label is re-checked here (node labels spec §4.3, §4.8): after a
@@ -156,7 +174,7 @@ export async function handleTokenReissue(
   nowMs: number = Date.now(),
   movedTo?: JobMovedTo,
 ): Promise<Response> {
-  if (!(await tokenIsForJob(claims, jobId, movedTo))) return json(403, { error: "token was not minted for this job" });
+  if (!(await tokenIsForJob(claims, jobId, req.headers.get(JOB_HEADER) ?? "", movedTo, lookup))) return json(403, { error: "token was not minted for this job" });
   // As at refresh: never re-mint a label the persona no longer runs on.
   const mismatch = labelMismatch(claims, "reissue");
   if (mismatch) return mismatch;
