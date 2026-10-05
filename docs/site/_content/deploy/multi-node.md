@@ -96,7 +96,7 @@ Point your Slack app's Events API request URL at the gateway's `:8080/slack/even
 
 > **`SLAUDE_MASTER_KEY` is not rotatable in place.** It encrypts the Slack app secrets in the `slack_apps` registry and every MCP credential at rest. Regenerating it orphans every existing row — the old ciphertext can no longer be decrypted, the gateway will fail to resolve those apps, and every connected MCP integration has to be reconnected. Keep the key stable across restarts. A gateway refuses to boot without a usable key.
 
-The single-process deployment stays in `docker-compose.yaml` — the scale file never touches it.
+The single-process deployment stays in `docker-compose.yaml` — the scale file never touches it. Its optional `scale` profile (one gateway and one worker) gives the worker its own env file, `.env.node` (copy `.env.node.example`; `SLAUDE_NODE_ENV_FILE` points elsewhere): a node refuses to boot when it holds a gateway-only variable, and the gateway's `.env` holds Slack tokens and the job secret. `tests/deploy/compose-worker-env.test.ts` fails if any compose worker loads the gateway's env file or an example env file naming a gateway-only variable.
 
 ### MCP credentials
 
