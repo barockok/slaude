@@ -64,7 +64,7 @@ Status values: `todo`, `in progress`, `in review`, `accepted`, `blocked`.
 |---|---|---|---|
 | U15 | `k8s-local` for the full topology (split Secrets, labelled node deployments, dev Vault, bridge upstream, runbooks), docs, field notes, release-note drafts | WS-D, WS-E §8 | accepted |
 | U16 | Whole-branch verification and cross-unit review | all | accepted (verification done; findings fixed in U17) |
-| U17 | Cross-unit fixes from U16: mono memory scoping and runAs, `/bash` in the gateway role, refuse-by-default switches, one child-scrub list (embedding keys, `.mcp.json` expansion), bridge `close()` teardown, `slaude_gate_denied_total`, tool-plane own-key lookup, upgrade-order and relabel-limit docs, master-key rotation deferral | all | in review |
+| U17 | Cross-unit fixes from U16: mono memory scoping and runAs, `/bash` in the gateway role, refuse-by-default switches, one child-scrub list (embedding keys, `.mcp.json` expansion), bridge `close()` teardown, `slaude_gate_denied_total`, tool-plane own-key lookup, upgrade-order and relabel-limit docs, master-key rotation deferral | all | accepted (two fix rounds) |
 
 ## Open issues and follow-ups found by review
 

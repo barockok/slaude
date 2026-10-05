@@ -1,7 +1,7 @@
 # Operator checklist: the mock HA test on the local cluster
 
 **Date:** 2026-10-05
-**Branch:** `ha/dev` with U15 merged (U1 to U14)
+**Branch:** `ha/dev` with every unit merged (U1 to U17)
 **Runbook:** `deploy/k8s-local/README.md` (topology, operating commands, real-Slack runbook, alerts)
 **Gate this feeds:** `docs/superpowers/specs/2026-10-03-ha-release-plan-design.md` §6
 
