@@ -3032,6 +3032,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             if (!j) return null;
             return { data: j.data ?? {}, timestamp: j.timestamp, state: await j.getState() };
           },
+          // A held copy of a moved job runs under a new id with the original
+          // token: refresh and reissue follow the job-moved marker to it.
+          jobMovedTo: async (jobId: string) => (await queueDispatch.turns.movedTo(jobId))?.jobId ?? null,
         }
       : {}),
   });
