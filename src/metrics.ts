@@ -248,7 +248,7 @@ export const m = {
   // (post-signature, post-registry lookup), labeled by event type.
   gatewayEventsTotal: metrics.counter("slaude_gateway_events_total", "Slack events accepted and dispatched by this gateway replica, labeled by event type."),
   // Gateway queue-side (spec §6), set by the reaper leader loop.
-  queueDepth: metrics.gauge("slaude_queue_depth", "Turn jobs waiting or delayed, labeled by queue and node label."),
+  queueDepth: metrics.gauge("slaude_queue_depth", "Turn jobs waiting, delayed or prioritized (not yet claimed), labeled by queue and node label."),
   // Leader liveness: unix seconds of the last completed reaper pass. Lets
   // alerting distinguish "leader gone" from an ex-leader replica that keeps
   // rendering its stale last gauge values on every scrape.
