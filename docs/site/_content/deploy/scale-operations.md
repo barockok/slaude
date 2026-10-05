@@ -27,6 +27,11 @@ least `role=gateway|node` per Deployment so the series below are separable.
 | `slaude_v1_tool_calls_total` | counter | `server`, `tool` | REST tool-plane invocations from nodes |
 | `slaude_memory_gateway_failures_total` | counter | `kind` | Node memory calls to the gateway that failed (`prefetch:timeout`, `sync:409`, `prefetch:network`, `unsupported`, ...). Each kind is also logged once per node; the turn runs without memory. A steady rise means node turns have no `<memory-context>` |
 | `slaude_v1_job_events_total` | counter | `event` | Node job telemetry (`ack`\|`fail`) |
+| `slaude_label_unserved` | gauge | `label` | 1 while a node label in use has waiting jobs and no live node for longer than `SLAUDE_LABEL_UNSERVED_SECS` † |
+| `slaude_node_credential_expiry_seconds` | gauge | `id` | Seconds until a signed node credential this replica has seen expires (at most 64 ids) |
+| `slaude_node_legacy_auth_total` | counter | — | `/v1` requests authenticated with the legacy shared token while `SLAUDE_NODE_KEY` is set |
+| `slaude_provider_cred_resolve_total` | counter | `scheme`, `outcome` | Provider credential reference resolutions (`vault`\|`env`; `ok`\|`cached`\|`stale`\|`denied`\|`error`) |
+| `slaude_provider_cred_stale_served_total` | counter | — | Cached provider credentials served past their TTL because Vault could not answer |
 
 † Exported only by the current **reaper leader** replica. Aggregate with
 `max()` across gateway pods; a replica that loses leadership keeps its last
@@ -58,6 +63,10 @@ values, so never `sum()` these.
 | `slaude_user_turns_total` | counter | `user_id`, `user_name` (opt-in `SLAUDE_METRICS_PER_USER=1`) |
 
 ## What to alert on
+
+The alerts specific to provider credentials, node credentials, labels and the
+Secret split, each with what to do when it fires, are in the
+[alerts runbook](alerts.md). The ones below cover the queue and the nodes.
 
 **No workers** — turns queue but nothing runs. Page immediately.
 
@@ -150,8 +159,9 @@ scrape_configs:
 ## Scaling behavior
 
 - **Nodes** scale on queue depth via KEDA (`deploy/k8s-scale/70-autoscale.yaml`
-  — redis list-length trigger on the BullMQ wait list. Prometheus and CPU-HPA
-  variants documented in the file). Scale-down is deliberately slow: a reaped
+  — redis list-length trigger on the BullMQ wait list, one ScaledObject per
+  label; a Prometheus variant is documented in the file). Without KEDA, apply
+  `deploy/k8s-scale/optional/node-cpu-fallback-hpa.yaml` instead, never both. Scale-down is deliberately slow: a reaped
   node's warm sessions cold-resume elsewhere from the shared volume, but the
   warmth is lost.
 - **Node labels.** Each label has its own queue: `turns` for `default` (the

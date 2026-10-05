@@ -6,7 +6,7 @@
 import { expect, test } from "bun:test";
 
 const root = new URL("../../", import.meta.url).pathname;
-const run = ["up.sh", "down.sh", "panel.sh", "verify-ha.sh", "verify-turns.sh", "forward.sh", "mock-mcp/mock-mcp.sh"].map(
+const run = ["up.sh", "down.sh", "panel.sh", "verify-ha.sh", "verify-turns.sh", "forward.sh", "vault.sh", "personas.sh", "mock-mcp/mock-mcp.sh"].map(
   (f) => `deploy/k8s-local/${f}`,
 ).concat(["scripts/e2e-ha.sh", "e2e/up.sh"]);
 const sourced = ["deploy/k8s-local/lib.sh", "deploy/k8s-local/sizing.env"];

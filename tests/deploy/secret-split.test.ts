@@ -93,28 +93,41 @@ for (const [label, build] of builds) {
   describe.skipIf(!hasKubectl)(`built ${label}`, () => {
     const docs = hasKubectl ? build() : [];
     const node = find(docs, "Deployment", "slaude-node");
+    // Every node deployment, one per label (slaude-node is label `default`).
+    const nodes: any[] = docs.filter(
+      (d) => d.kind === "Deployment" && d.spec.template.spec.containers.some((c: any) => c.name === "node"),
+    );
     const gateway = find(docs, "Deployment", "slaude-gateway");
 
-    test("the node pod can see no gateway-only variable", () => {
-      const leaked = visiblePod(docs, node.spec.template.spec).filter((v) => isGatewayOnlyEnv(v.name));
-      expect(leaked).toEqual([]);
+    test("every node deployment is found, slaude-node among them", () => {
+      expect(nodes.length).toBeGreaterThanOrEqual(2);
+      expect(nodes).toContain(node);
     });
 
-    test("the node loads the node Secret and not the gateway's", () => {
-      const refs = (container(node, "node").envFrom ?? []).map((s: any) => s.secretRef?.name).filter(Boolean);
-      expect(refs).toContain("slaude-scale-node-secrets");
-      expect(refs).not.toContain("slaude-scale-secrets");
+    test("no node pod can see a gateway-only variable", () => {
+      for (const n of nodes) {
+        const leaked = visiblePod(docs, n.spec.template.spec).filter((v) => isGatewayOnlyEnv(v.name));
+        expect(leaked, n.metadata.name).toEqual([]);
+      }
+    });
+
+    test("every node loads the node Secret and not the gateway's", () => {
+      for (const n of nodes) {
+        const refs = (container(n, "node").envFrom ?? []).map((s: any) => s.secretRef?.name).filter(Boolean);
+        expect(refs as string[], n.metadata.name).toContain("slaude-scale-node-secrets");
+        expect(refs as string[], n.metadata.name).not.toContain("slaude-scale-secrets");
+      }
     });
 
     test("node pods mount no ServiceAccount token", () => {
-      expect(node.spec.template.spec.automountServiceAccountToken).toBe(false);
+      for (const n of nodes) expect(n.spec.template.spec.automountServiceAccountToken as boolean, n.metadata.name).toBe(false);
     });
 
     test("the gateway runs under its own ServiceAccount", () => {
       const sa = gateway.spec.template.spec.serviceAccountName;
       expect(sa).toBe("slaude-gateway");
       expect(find(docs, "ServiceAccount", sa)).toBeDefined();
-      expect(node.spec.template.spec.serviceAccountName ?? "default").not.toBe(sa);
+      for (const n of nodes) expect(n.spec.template.spec.serviceAccountName ?? "default").not.toBe(sa);
     });
 
     test("the gateway still has what it shares with nodes", () => {
@@ -142,10 +155,20 @@ for (const [label, build] of builds) {
 describe("the optional node NetworkPolicy", () => {
   const [np] = parse(readFileSync(join(root, "deploy/k8s-scale/optional/node-egress-networkpolicy.yaml"), "utf8"));
 
-  test("selects node pods only and restricts their egress", () => {
+  test("selects every node deployment's pods (and only those) and restricts their egress", () => {
     expect(np.kind).toBe("NetworkPolicy");
-    expect(np.spec.podSelector.matchLabels).toEqual({ "app.kubernetes.io/name": "slaude", "app.kubernetes.io/component": "node" });
+    expect(np.spec.podSelector.matchLabels).toEqual({ "app.kubernetes.io/name": "slaude", "slaude.dev/tier": "node" });
     expect(np.spec.policyTypes).toEqual(["Egress"]);
+  });
+
+  test.skipIf(!hasKubectl)("its selector matches the pods of every node deployment in the base, and no gateway pod", () => {
+    const docs = kustomize(join(root, "deploy/k8s-scale"));
+    const sel = np.spec.podSelector.matchLabels as Record<string, string>;
+    const matches = (labels: Record<string, string>) => Object.entries(sel).every(([k, v]) => labels[k] === v);
+    for (const d of docs.filter((x) => x.kind === "Deployment")) {
+      const isNode = d.spec.template.spec.containers.some((c: any) => c.name === "node");
+      expect(matches(d.spec.template.metadata.labels), d.metadata.name).toBe(isNode);
+    }
   });
 
   test("allows no Postgres or Vault port", () => {

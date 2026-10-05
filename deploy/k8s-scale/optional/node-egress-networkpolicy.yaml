@@ -25,10 +25,11 @@ metadata:
   name: slaude-node-egress
   namespace: slaude-scale
 spec:
+  # Every node deployment, whatever its label (50-node.yaml marks all of them).
   podSelector:
     matchLabels:
       app.kubernetes.io/name: slaude
-      app.kubernetes.io/component: node
+      slaude.dev/tier: node
   policyTypes:
     - Egress
   egress:

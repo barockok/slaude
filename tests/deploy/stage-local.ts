@@ -18,11 +18,18 @@ export const LOCAL_GENERATED: Record<string, string> = {
     "SLAUDE_PG_URL=postgres://fake",
     "SLAUDE_REDIS_URL=redis://fake",
     "SLAUDE_BRAIN_DATABASE_URL=postgres://fake",
+    "SLAUDE_NODE_KEY=fake",
+    "SLAUDE_VAULT_TOKEN=fake",
+    "PERSONA_BETA_MOCKMCP_TOKEN=fake",
   ].join("\n") + "\n",
-  "node.env": "SLAUDE_NODE_TOKEN=fake\nSLAUDE_REDIS_URL=redis://fake\n",
+  "node.env": "SLAUDE_REDIS_URL=redis://fake\n",
+  "node-cred-default.env": "SLAUDE_NODE_TOKEN=fake-default\n",
+  "node-cred-finance.env": "SLAUDE_NODE_TOKEN=fake-finance\n",
   "provider.env": "ANTHROPIC_API_KEY=fake\n",
   "deploy.env": "SLAUDE_DEPLOY_TOKEN=fake\n",
+  "vault-root.env": "VAULT_DEV_ROOT_TOKEN_ID=fake\n",
   "model.env": "",
+  "gateway.env": "",
 };
 
 /** Copies deploy/k8s-scale, deploy/k8s-local and e2e/k8s under `tmp` and writes

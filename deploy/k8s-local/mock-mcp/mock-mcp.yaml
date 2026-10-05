@@ -1,5 +1,9 @@
-# Local-only. Applied by mock-mcp.sh; the server source is mounted from a
-# ConfigMap that script creates from server.ts. Runs on the slaude image (it has bun).
+# Local-only. Part of the local overlay (kustomization.yaml): it is the MCP
+# bridge's upstream for the `beta` persona, reached in-cluster as
+# http://mock-mcp:9000/mcp. mock-mcp.sh additionally registers it for the
+# portal's OAuth connect flow. The server source is mounted from the
+# mock-mcp-src ConfigMap, generated from server.ts. Runs on the slaude image
+# (it has bun).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,7 +28,7 @@ spec:
             - containerPort: 9000
           resources:
             requests: { cpu: 20m, memory: 64Mi }
-            limits: { memory: 256Mi }
+            limits: { cpu: 100m, memory: 192Mi }
           volumeMounts:
             - { name: src, mountPath: /mock, readOnly: true }
       volumes:

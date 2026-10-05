@@ -1,6 +1,25 @@
-# Node tier (spec §1, §6): M interchangeable BullMQ workers running the SDK
-# turns. No Slack client, no Postgres — Redis for queues/registry and the
-# gateway /v1 for everything else. Scaled by 70-autoscale.yaml.
+# Node tier (spec §1, §6): BullMQ workers running the SDK turns. No Slack
+# client, no Postgres, no Vault — Redis for queues/registry and the gateway /v1
+# for everything else. Scaled by 70-autoscale.yaml.
+#
+# One Deployment per node label. A node consumes the queues of the labels its
+# signed credential carries (`turns` for `default`, `turns.label.<label>` for
+# any other), and the gateway's label gate refuses it any persona of another
+# label. Each Deployment reads its credential from its OWN Secret
+# (10-secrets.yaml), so a node of one label never holds another's.
+#
+# Labels separate trust between nodes; they do not separate personas that
+# share a node (every agent child on a node runs as the same user). Queue names
+# are routing, not access control: any node can read Redis. Put personas that
+# must not see each other's secrets on different labels.
+#
+# slaude-node keeps its original selector (a Deployment's selector cannot be
+# changed in place). Every other label gets its own `component` value, so no
+# selector matches another Deployment's pods; `slaude.dev/tier: node` marks all
+# node pods for the NetworkPolicy, and `slaude.dev/node-label` names the label.
+#
+# To add a label: copy slaude-node-finance (Deployment and PDB), its credential
+# Secret, and its ScaledObject in 70-autoscale.yaml, renaming `finance`.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,6 +39,8 @@ spec:
       labels:
         app.kubernetes.io/name: slaude
         app.kubernetes.io/component: node
+        slaude.dev/tier: node
+        slaude.dev/node-label: default
     spec:
       # Nodes never call the Kubernetes API, and every agent child on a node
       # can read what the pod mounts: no ServiceAccount token.
@@ -42,6 +63,20 @@ spec:
             - configMapRef:
                 name: slaude-scale-config
           env:
+            # This deployment's credential, from its own Secret. Signed for
+            # label `default` (or the legacy token, while that door is open).
+            - name: SLAUDE_NODE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: slaude-scale-node-cred-default
+                  key: SLAUDE_NODE_TOKEN
+            # Refuse to boot holding a gateway-only variable, instead of only
+            # warning (the code default). The manifests split the Secrets, so a
+            # node that finds one was given the wrong Secret.
+            - name: SLAUDE_NODE_BOOT_CHECK
+              value: refuse
+            - name: SLAUDE_NODE_MANIFEST
+              value: /etc/slaude/node.json
             - name: SLAUDE_HOME
               value: /data
             - name: SLAUDE_ROLE
@@ -77,6 +112,9 @@ spec:
               mountPath: /data
             - name: config-home
               mountPath: /config-home
+            - name: node-manifest
+              mountPath: /etc/slaude
+              readOnly: true
           resources:
             # Turns spawn Claude Code SDK child processes — size for
             # SLAUDE_NODE_CONCURRENCY (default 8) concurrent children.
@@ -99,6 +137,10 @@ spec:
         - name: config-home
           emptyDir:
             sizeLimit: 1Gi
+        # The stdio MCP manifest (20-config.yaml). Read once at node start.
+        - name: node-manifest
+          configMap:
+            name: slaude-node-manifest
 ---
 # Voluntary disruptions may take nodes one at a time — never all at once —
 # so warm sessions migrate via drain + cold resume instead of being orphaned.
@@ -113,3 +155,115 @@ spec:
     matchLabels:
       app.kubernetes.io/name: slaude
       app.kubernetes.io/component: node
+---
+# Label `finance`: the same node, a credential signed for `finance` only. It
+# consumes `turns.label.finance` (and its own queue), and runs only personas
+# whose `runsOn` is `finance`. Keep at least two replicas per label: a label
+# with no live node leaves its turns waiting (slaude_label_unserved).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slaude-node-finance
+  namespace: slaude-scale
+  labels:
+    app.kubernetes.io/name: slaude
+    app.kubernetes.io/component: node-finance
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: slaude
+      app.kubernetes.io/component: node-finance
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: slaude
+        app.kubernetes.io/component: node-finance
+        slaude.dev/tier: node
+        slaude.dev/node-label: finance
+    spec:
+      automountServiceAccountToken: false
+      # MUST exceed SLAUDE_NODE_DRAIN_SEC, as for slaude-node.
+      terminationGracePeriodSeconds: 150
+      containers:
+        - name: node
+          image: ghcr.io/REPLACE/slaude:latest
+          imagePullPolicy: Always
+          command: ["bun", "run", "worker"]
+          envFrom:
+            - secretRef:
+                name: slaude-scale-node-secrets
+            - configMapRef:
+                name: slaude-scale-config
+          env:
+            - name: SLAUDE_NODE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: slaude-scale-node-cred-finance
+                  key: SLAUDE_NODE_TOKEN
+            - name: SLAUDE_NODE_BOOT_CHECK
+              value: refuse
+            - name: SLAUDE_NODE_MANIFEST
+              value: /etc/slaude/node.json
+            - name: SLAUDE_HOME
+              value: /data
+            - name: SLAUDE_ROLE
+              value: node
+            - name: SLAUDE_GATEWAY_URL
+              value: http://slaude-gateway:8080
+            - name: SLAUDE_NODE_PORT
+              value: "8081"
+            - name: SLAUDE_NODE_CONFIG_ROOT
+              value: /config-home
+          ports:
+            - name: health
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: slaude-home
+              mountPath: /data
+            - name: config-home
+              mountPath: /config-home
+            - name: node-manifest
+              mountPath: /etc/slaude
+              readOnly: true
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: slaude-home
+          persistentVolumeClaim:
+            claimName: slaude-home
+        - name: config-home
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: node-manifest
+          configMap:
+            name: slaude-node-manifest
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: slaude-node-finance
+  namespace: slaude-scale
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: slaude
+      app.kubernetes.io/component: node-finance

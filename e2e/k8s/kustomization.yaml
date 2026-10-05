@@ -15,6 +15,17 @@ patches:
         namespace: slaude-scale
       data:
         SLAUDE_SLACK_API_URL: "http://fake-slack:8080/api/"
+  # The personas' Vault secrets carry the mock LLM as their base URL (vault.sh
+  # mirrors provider.env), and a persona's http base URL must name a host listed
+  # here. Matters once a sync runs (verify-ha.sh in the sanity stage).
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: slaude-scale-gateway-config
+        namespace: slaude-scale
+      data:
+        SLAUDE_OUTBOUND_INTERNAL_HOSTS: "mock-mcp,vault,mock-llm"
   # The gateway's soul cache in the default directory under the shared $SLAUDE_HOME
   # ($SLAUDE_HOME/cache). Only gateways read it: nodes no longer read the soul cache, they take
   # the soul from the gateway's runtime bundle. The base keeps it pod-local (an emptyDir) so a
