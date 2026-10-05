@@ -58,6 +58,9 @@ import { syncKbWikis } from "../../knowledge/brain-sync";
 import { scheduleNightlyMaintenance } from "../../knowledge/brain-cycle";
 import { channelTrustFor, resolveBrainScope } from "../../knowledge/scope";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
+import { memory as processMemory } from "../../memory";
+import { makeScopedMemory } from "../../memory/scoped";
+import { memoryScopeFor } from "../../memory/scope";
 import { getPersonaRegistry, labelsInUse, livePersona, managedPersonaProvider, onPersonaRegistryInstalled } from "../../persona/registry";
 import { makeLabelMonitor } from "../../queue/label-status";
 import type { GateInput } from "../../knowledge/gated-dispatch";
@@ -793,6 +796,24 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       threadKey: `${ctx.channel}:${ctx.threadTs}`,
     };
   };
+
+  // Episodic memory for turns that run in THIS process (mono): scoped by the
+  // turn's own context like the node routes (src/gateway/api/memory.ts), never
+  // the process-wide slice. The route's ctx is the current speaker; runAs is
+  // the same rule dispatch signs into a node's token (a cron job's carried
+  // identity, else the thread's lock). No route: nothing read or written.
+  agent.setMemoryProvider(
+    makeScopedMemory({
+      provider: () => processMemory,
+      scopeFor: async (sessionId) => {
+        const route = routes.get(sessionId);
+        if (!route) return null;
+        const { ctx } = route;
+        const runAsUser = await agent.resolveEffectiveIdentity(sessionId, ctx.channel, ctx.threadTs);
+        return memoryScopeFor(await brainGateFor(ctx), { channel: ctx.channel, runAsUser: runAsUser ?? null });
+      },
+    }),
+  );
 
   // Brain tool deps for a context + surface — shared by the per-session MCP
   // resolver and the REST tool plane so both run identical scoping and gating.
