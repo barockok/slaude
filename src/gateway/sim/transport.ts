@@ -90,11 +90,12 @@ export class SimTransport implements Transport {
 
   async feedMessage(raw: { channel: string; user: string; text: string; channel_type?: string; thread_ts?: string; ts?: string; team?: string }) {
     const ts = raw.ts ?? `${++inboundSeq}.5`;
+    const team = raw.team ?? "T_SIM";
     const event = {
       type: "message", channel: raw.channel, user: raw.user, text: raw.text,
-      channel_type: raw.channel_type, thread_ts: raw.thread_ts, ts, team: raw.team,
+      channel_type: raw.channel_type, thread_ts: raw.thread_ts, ts, team,
     };
-    const args = { event, client: this.client, context: { teamId: raw.team } };
+    const args = { event, client: this.client, context: { teamId: team } };
     if (raw.text.includes(`<@${this.#botUserId}>`)) {
       await this.#events.get("app_mention")?.({ ...args, event: { ...event, type: "app_mention" } });
     }

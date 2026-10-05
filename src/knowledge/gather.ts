@@ -58,6 +58,14 @@ function hitKey(h: GatherHit): string {
 }
 
 /**
+ * Clean retrieval query: collapse excess whitespace and strip trailing punctuation.
+ */
+export function normalizeQuery(raw: string): string {
+  const cleaned = raw.trim().replace(/\s+/g, " ").replace(/[?!.]+$/, "").trim();
+  return cleaned.length > 0 ? cleaned : raw.trim();
+}
+
+/**
  * Gather ranked candidates for `query` within `scope`, with each allowed source
  * guaranteed its own top-K slots. Returns hits sorted by effective rank, deduped
  * by slug (best-ranked chunk per page wins), capped at finalLimit.
@@ -66,6 +74,7 @@ export async function gather(query: string, scope: BrainScope, opts: GatherOpts 
   const perSourceK = opts.perSourceK ?? 8;
   const finalLimit = opts.finalLimit ?? 20;
   const call = opts.call ?? brainCall;
+  const targetQuery = normalizeQuery(query);
 
   const sources = scope.allowedSources.length > 0 ? scope.allowedSources : [scope.sourceId];
 
@@ -80,7 +89,7 @@ export async function gather(query: string, scope: BrainScope, opts: GatherOpts 
     sources.map(async (s): Promise<GatherHit[]> => {
       const sub: BrainScope = { clientId: scope.clientId, sourceId: s, allowedSources: [s] };
       try {
-        const hits = await call("search", { query, limit: perSourceK }, sub);
+        const hits = await call("search", { query: targetQuery, limit: perSourceK }, sub);
         return Array.isArray(hits) ? (hits as GatherHit[]) : [];
       } catch (e) {
         failures++;

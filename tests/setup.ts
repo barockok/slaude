@@ -27,8 +27,11 @@ writeFileSync(
 process.env.SLAUDE_APPROVERS = "";
 process.env.SLAUDE_HEALTH_PORT = "0";
 process.env.SLAUDE_DEFAULT_MODE = "default";
-// Prevent leaked CLAUDE_CODE_OAUTH_TOKEN from operator shell affecting tests.
+// Prevent leaked credentials/embedding config from operator shell affecting tests.
 delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+delete process.env.EMBEDDING_PROVIDER;
+delete process.env.EMBEDDING_MODEL;
+delete process.env.EMBEDDING_DIMENSIONS;
 
 // Real-PG leg only: unlike the sqlite/PGLite legs (fresh store per run), the
 // test Postgres persists across runs while most tests emit deterministic

@@ -219,10 +219,11 @@ describe("syncManifest", () => {
   });
 
   test("existing manifest entries preserved", async () => {
+    const remote = await fakeBareRepoWithCommit("seed", "README.md", "# seed\n");
     writeManifest({
       plugins: [{ marketplace: "github:foo/bar", plugin: "x", ref: "v1" }],
       skills: [{ git: "github:foo/old-skill", ref: "main" }],
-      knowledge: [{ label: "old-kb", git: "github:foo/old-kb", ref: "main" }],
+      knowledge: [{ label: "old-kb", git: remote, ref: "main" }],
     });
     skillOps.write("new-skill", "New", "d", "b");
     const r = await syncManifest();
