@@ -162,6 +162,22 @@ describe("a session taken out of service is ended upstream", () => {
     expect(up.sessions()).toBe(0);
   });
 
+  test("close() with a session still opening resolves within its own bound (not the open's timeout)", async () => {
+    let release!: () => void;
+    const opened = new Promise<void>((r) => (release = r));
+    const up = upstream({ onInitialize: async () => { await opened; } });
+    const b = bridgeAt(up.url, { timeoutMs: 10_000 });
+    const pending = b.call(claims, "s", "echo", { text: "a" }).catch(() => null);
+    await until(() => count(up, "initialize") === 1);
+    const t0 = Date.now();
+    await b.close();
+    const took = Date.now() - t0;
+    release();
+    await pending;
+    expect(took).toBeGreaterThanOrEqual(2500);
+    expect(took).toBeLessThan(4500);
+  }, 15_000);
+
   test("close() with a DELETE the upstream never answers resolves within the bound and does not throw", async () => {
     const up = upstream({ hangDelete: true });
     const b = bridgeAt(up.url);
