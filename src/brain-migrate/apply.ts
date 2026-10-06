@@ -13,6 +13,21 @@ export interface ApplyResult {
   errorName?: string;
 }
 
+/** Writes a page's links; a target that is not in the brain is dropped and counted, a failing write is counted. */
+export async function applyLinks(
+  engine: MigrateEngine, slug: string, target: string, linkTargets: BundlePage["links"],
+): Promise<{ linksWritten: number; linksDropped: number; linksFailed: number }> {
+  let linksWritten = 0, linksDropped = 0, linksFailed = 0;
+  for (const l of linkTargets) {
+    try {
+      if ((await engine.getPage(l.toSlug, { sourceId: l.toSource })) === null) { linksDropped++; continue; }
+      await engine.addLink(slug, l.toSlug, l.context, l.type, "manual", undefined, undefined, { fromSourceId: target, toSourceId: l.toSource });
+      linksWritten++;
+    } catch { linksFailed++; }
+  }
+  return { linksWritten, linksDropped, linksFailed };
+}
+
 /**
  * Writes one page, whole or not at all. The whole write (page, chunks with the
  * carried embeddings, tags, timeline with its original dates, raw data) runs in
@@ -23,7 +38,7 @@ export interface ApplyResult {
 export async function applyPage(
   engine: MigrateEngine,
   a: ApplyPage,
-  o: { onConflict: OnConflict; dryRun: boolean; ensureSource: (id: string) => Promise<void> },
+  o: { onConflict: OnConflict; dryRun: boolean; ensureSource: (id: string) => Promise<void>; deferLinks?: boolean },
 ): Promise<ApplyResult> {
   const { page: p, target } = a;
   const so = { sourceId: target };
@@ -61,15 +76,10 @@ export async function applyPage(
       for (const r of p.raw) await tx.putRawData(p.slug, r.source, r.data, so);
     });
     stage = "error";
-    let linksWritten = 0, linksDropped = 0, linksFailed = 0;
-    for (const l of a.linkTargets) {
-      try {
-        if ((await engine.getPage(l.toSlug, { sourceId: l.toSource })) === null) { linksDropped++; continue; }
-        await engine.addLink(p.slug, l.toSlug, l.context, l.type, "manual", undefined, undefined, { fromSourceId: target, toSourceId: l.toSource });
-        linksWritten++;
-      } catch { linksFailed++; }
-    }
-    return { outcome: exists ? "overwritten" : "written", linksWritten, linksDropped, linksFailed, noEmbedding };
+    // A caller applying a batch defers links until every page of the batch exists
+    // (applyLinks): a link to a page later in the same batch would otherwise be dropped.
+    const l = o.deferLinks ? { linksWritten: 0, linksDropped: 0, linksFailed: 0 } : await applyLinks(engine, p.slug, target, a.linkTargets);
+    return { outcome: exists ? "overwritten" : "written", ...l, noEmbedding };
   } catch (e) {
     return { ...none("failed"), reason: stage, errorName: e instanceof Error ? e.constructor.name : typeof e };
   }

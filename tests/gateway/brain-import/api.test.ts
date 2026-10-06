@@ -201,6 +201,30 @@ describe("links", () => {
     expect(r.json.sources["shared"].linksDropped).toBe(0);
     expect(f.links.map((l) => l.toSource)).toEqual(["agent-uana1x"]);
   });
+  test("a link to a page LATER in the same batch is written, not dropped", async () => {
+    const written = new Set<string>();
+    const links: string[] = [];
+    const e: any = {
+      getPage: async (slug: string, o: any) => (written.has(`${o.sourceId}/${slug}`) ? { slug } : null),
+      transaction: async (fn: any) => fn(e),
+      db: { query: async () => ({ rows: [] }) },
+      putPage: async (slug: string, _p: any, o: any) => { written.add(`${o.sourceId}/${slug}`); },
+      upsertChunks: async () => {}, addTag: async () => {}, addTimelineEntry: async () => {}, putRawData: async () => {},
+      addLink: async (from: string, toSlug: string) => { links.push(`${from}->${toSlug}`); },
+    };
+    const a = api({ engine: async () => e as MigrateEngine });
+    const first = { ...pg("shared", "a-first"), links: [lk("shared", "z-later")] };
+    const r = await call(a, post(body([first, pg("shared", "z-later")])));
+    expect(r.json.sources["shared"]).toMatchObject({ written: 2, linksWritten: 1, linksDropped: 0, linksFailed: 0 });
+    expect(links).toEqual(["a-first->z-later"]);
+  });
+  test("a dry run writes and counts no links", async () => {
+    const f = linkEngine();
+    const a = api({ engine: async () => f.e });
+    const r = await call(a, post(body([{ ...pg("shared", "src"), links: [lk("shared", "s1")] }], { dryRun: true })));
+    expect(r.json.sources["shared"].linksWritten).toBe(0);
+    expect(f.links).toEqual([]);
+  });
 });
 
 describe("body validation", () => {

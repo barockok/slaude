@@ -11,7 +11,7 @@ import { z } from "zod";
 import { env } from "../../config/env";
 import { timingSafeStringEqual } from "../api/auth";
 import { json, readBodyCapped } from "../api/http";
-import { applyPage, type OnConflict } from "../../brain-migrate/apply";
+import { applyLinks, applyPage, type OnConflict } from "../../brain-migrate/apply";
 import type { BundlePage } from "../../brain-migrate/bundle";
 import { embeddingMismatch, readEmbeddingInfo, type BrainConfigFile, type EmbeddingInfo } from "../../brain-migrate/embedding-info";
 import type { MigrateEngine } from "../../brain-migrate/engine-types";
@@ -141,6 +141,9 @@ export function createBrainImportApi(deps: BrainImportDeps = {}) {
     const sources: Record<string, SourceCounts> = {};
     const failedSlugs: string[] = [];
     const failedReasons: Record<string, number> = {};
+    // Two passes: every page of the batch first, then links, so a link to a page
+    // that comes later in the batch is written instead of dropped.
+    const pending: Array<{ slug: string; target: string; linkTargets: BundlePage["links"]; unmappable: number }> = [];
     for (let i = 0; i < b.pages.length; i++) {
       const p = b.pages[i] as BundlePage;
       const t = targets[i]!;
@@ -152,15 +155,24 @@ export function createBrainImportApi(deps: BrainImportDeps = {}) {
         if (lr.ok && allowedTarget(lr.target, agentSource)) linkTargets.push({ ...l, toSource: lr.target });
       }
       const unmappable = p.links.length - linkTargets.length;
-      const r = await applyPage(engine, { page: p, target: t, linkTargets }, { onConflict, dryRun, ensureSource: ensure });
+      const r = await applyPage(engine, { page: p, target: t, linkTargets }, { onConflict, dryRun, ensureSource: ensure, deferLinks: true });
       const s = (sources[t] ??= { written: 0, skipped: 0, overwritten: 0, failed: 0, linksWritten: 0, linksDropped: 0, linksFailed: 0, noEmbedding: 0 });
-      s[r.outcome]++; s.linksWritten += r.linksWritten; s.linksDropped += r.linksDropped + (r.outcome === "written" || r.outcome === "overwritten" ? unmappable : 0); s.linksFailed += r.linksFailed; s.noEmbedding += r.noEmbedding;
+      s[r.outcome]++; s.noEmbedding += r.noEmbedding;
+      if (r.outcome === "written" || r.outcome === "overwritten") {
+        s.linksDropped += unmappable;
+        if (!dryRun) pending.push({ slug: p.slug, target: t, linkTargets, unmappable });
+      }
       if (r.outcome === "failed") {
         // Slugs of a person's slice are that person's content; only non-user slices list them.
         if (!t.startsWith("user-")) failedSlugs.push(p.slug);
         const why = r.reason === "error" ? `error:${r.errorName ?? "unknown"}` : (r.reason ?? "unknown");
         failedReasons[why] = (failedReasons[why] ?? 0) + 1;
       }
+    }
+    for (const x of pending) {
+      const l = await applyLinks(engine, x.slug, x.target, x.linkTargets);
+      const s = sources[x.target]!;
+      s.linksWritten += l.linksWritten; s.linksDropped += l.linksDropped; s.linksFailed += l.linksFailed;
     }
     const counts = Object.entries(sources).map(([k, v]) => `${k}:w${v.written}/s${v.skipped}/o${v.overwritten}/f${v.failed}`).join(",");
     log(`[brain-import] persona=${persona} dryRun=${dryRun} onConflict=${onConflict} ${counts}`);

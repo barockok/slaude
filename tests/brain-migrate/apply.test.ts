@@ -8,7 +8,7 @@ import { TEST_DIMS, vec } from "./seed";
 const home = mkdtempSync(join(tmpdir(), "bm-apply-"));
 process.env.SLAUDE_BRAIN_HOME = home;
 import { closeBrain, ensureSource, getBrain } from "../../src/knowledge/brain";
-import { applyPage } from "../../src/brain-migrate/apply";
+import { applyLinks, applyPage } from "../../src/brain-migrate/apply";
 import type { MigrateEngine } from "../../src/brain-migrate/engine-types";
 import type { BundlePage } from "../../src/brain-migrate/bundle";
 
@@ -111,6 +111,13 @@ describe("applyPage", () => {
     const r = await run(src, "agent-uone");
     expect(r.linksWritten).toBe(1);
     expect(r.linksDropped).toBe(1);
+  });
+  test("deferLinks writes the page but no links; applyLinks then writes them once the target exists", async () => {
+    const src = mk("dsrc", "source", { links: [{ toSource: "agent-uone", toSlug: "dtarget", type: "references", context: "c" }] });
+    const r = await applyPage(engine, { page: src, target: "agent-uone", linkTargets: src.links }, { ...opts("skip"), deferLinks: true });
+    expect(r).toMatchObject({ outcome: "written", linksWritten: 0, linksDropped: 0, linksFailed: 0 });
+    await run(mk("dtarget", "target"), "agent-uone");
+    expect(await applyLinks(engine, "dsrc", "agent-uone", src.links)).toEqual({ linksWritten: 1, linksDropped: 0, linksFailed: 0 });
   });
   test("overwrite keeps links from OTHER pages that point at the overwritten page", async () => {
     await run(mk("in-a", "a1", { tags: ["t1", "t2"], chunks: [
