@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach, beforeEach } from "bun:test";
-import { startHealthServer, healthRoutes, deployHandlerForRole } from "../src/health";
+import { startHealthServer, healthRoutes, deployHandlerForRole, brainImportHandlerForRole } from "../src/health";
 
 let server: ReturnType<typeof startHealthServer> = null;
 
@@ -86,6 +86,23 @@ describe("/deploy mount by role", () => {
 
   test("mono and node fall through (404 at the transport)", async () => {
     expect(await hit("mono")).toBeNull();
+    expect(await hit("node")).toBeNull();
+  });
+});
+
+describe("/brain-import mount by role", () => {
+  const served = async () => new Response("imported", { status: 200 });
+  const hit = async (role: string) => {
+    const routes = healthRoutes({ liveSessions: () => 0, brainImport: brainImportHandlerForRole(role, served) });
+    return routes(new Request("http://x/brain-import/v1/personas/ana", { method: "POST" }));
+  };
+
+  test("mono and gateway serve it", async () => {
+    expect((await hit("mono"))?.status).toBe(200);
+    expect((await hit("gateway"))?.status).toBe(200);
+  });
+
+  test("a node never mounts it", async () => {
     expect(await hit("node")).toBeNull();
   });
 });

@@ -44,6 +44,7 @@ import { makePanelLock, type PanelLock } from "../../queue/panel-lock";
 import { createPanelApi } from "../panel/api";
 import { createPortalApi } from "../portal/api";
 import { createDeployApi } from "../deploy/api";
+import { createBrainImportApi } from "../brain-import/api";
 import { persistConnect, persistDisconnect } from "../../agent/mcp-oauth/persist";
 import { importOnDiskCredentials } from "./credential-import";
 import { mintLinkToken } from "../portal/link-token";
@@ -117,6 +118,9 @@ export interface GatewayHandle {
   /** `/deploy/*` — the config pipeline's door (own token, not the node token).
    *  Optional so test doubles needn't implement it. */
   fetchDeploy?(req: Request): Promise<Response | null>;
+  /** `/brain-import/*` — persona memory migration (own token). Optional so
+   *  test doubles needn't implement it. */
+  fetchBrainImport?(req: Request): Promise<Response | null>;
   /** TEST/SIM SEAM ONLY. The pending-gate source behind /v1/pending. */
   __pendingSource(): PendingSource;
   /** TEST/SIM SEAM ONLY. Live per-session MCP contexts built by the resolver.
@@ -3083,6 +3087,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     ...(labelRegistry ? { liveLabels: () => labelRegistry.liveLabels() } : {}),
   });
 
+  const brainImportApi = createBrainImportApi();
+
   const panelApi = panelInfra
     ? createPanelApi({
         registry: panelInfra.registry,
@@ -3129,6 +3135,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     fetchPanel: (req: Request) => (panelApi ? panelApi.fetch(req) : Promise.resolve(null)),
     fetchPortal: (req: Request) => portalApi.fetch(req),
     fetchDeploy: (req: Request) => deployApi.fetch(req),
+    fetchBrainImport: (req: Request) => brainImportApi.fetch(req),
     __pendingSource: () => v1.pendingSource,
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),
