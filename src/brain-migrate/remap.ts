@@ -32,13 +32,15 @@ export function validateMap(map: Record<string, string>, agentSource: string): s
 }
 
 export function remapSource(source: string, o: RemapOptions): RemapResult {
-  const mapped = o.map?.[source];
-  if (mapped !== undefined) {
+  // kb-* is refused before the map is consulted: a map cannot opt a kb source in.
+  if (isKb(source)) return { ok: false, code: "kb_out_of_scope", source };
+  // Own-property only: a source named "constructor" must not read the prototype chain.
+  if (o.map && Object.hasOwn(o.map, source)) {
+    const mapped = o.map[source]!;
     return allowedTarget(mapped, o.agentSource)
       ? { ok: true, target: mapped }
       : { ok: false, code: "forbidden_target", source };
   }
-  if (isKb(source)) return { ok: false, code: "kb_out_of_scope", source };
   if (isAgentLike(source)) return { ok: true, target: o.agentSource };
   if (source === "shared" || source === "public" || isUser(source)) return { ok: true, target: source };
   return { ok: false, code: "no_mapping", source };

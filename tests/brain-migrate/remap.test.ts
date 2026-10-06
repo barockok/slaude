@@ -25,6 +25,14 @@ describe("remapSource", () => {
     expect(remapSource("scratch", { agentSource: AGENT, map: { scratch: "shared" } })).toEqual({ ok: true, target: "shared" });
     expect(remapSource("shared", { agentSource: AGENT, map: { shared: "public" } })).toEqual({ ok: true, target: "public" });
   });
+  test("a kb-* source is refused even when the map names it", () => {
+    expect(remapSource("kb-bulk-corpus", { agentSource: AGENT, map: { "kb-bulk-corpus": "shared" } })).toEqual({ ok: false, code: "kb_out_of_scope", source: "kb-bulk-corpus" });
+  });
+  test("the map is read by own property only", () => {
+    for (const s of ["constructor", "toString", "__proto__"]) {
+      expect(remapSource(s, { agentSource: AGENT, map: {} })).toEqual({ ok: false, code: "no_mapping", source: s });
+    }
+  });
   test("a map into kb-* or another persona's agent slice is forbidden", () => {
     expect(remapSource("scratch", { agentSource: AGENT, map: { scratch: "kb-x" } })).toMatchObject({ ok: false, code: "forbidden_target" });
     expect(remapSource("scratch", { agentSource: AGENT, map: { scratch: "agent-uother" } })).toMatchObject({ ok: false, code: "forbidden_target" });
