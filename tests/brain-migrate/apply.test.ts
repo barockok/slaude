@@ -147,6 +147,23 @@ describe("applyPage", () => {
     expect(r).toMatchObject({ outcome: "written", linksWritten: 1, linksFailed: 1, linksDropped: 0 });
     expect(await engine.getPage("lsrc2", { sourceId: "agent-uone" })).not.toBeNull();
   });
+  test("a skipped page still gets its links; fail-policy and dry-run pages get none", async () => {
+    const link = { toSource: "agent-uone", toSlug: "sk-target", type: "references", context: "c" };
+    await run(mk("sk-target", "t"), "agent-uone");
+    await run(mk("sk-src", "s"), "agent-uone"); // page exists, link was never written
+    const linkCount = async (slug: string) => (await engine.db.query("SELECT count(*)::int AS c FROM links WHERE from_page_id IN (SELECT id FROM pages WHERE slug = $1)", [slug])).rows[0]!.c as number;
+    const withLink = mk("sk-src", "s", { links: [link] });
+    const dry = await run(withLink, "agent-uone", opts("skip", true));
+    expect(dry).toMatchObject({ outcome: "skipped", linksWritten: 0 });
+    const fail = await run(withLink, "agent-uone", opts("fail"));
+    expect(fail).toMatchObject({ outcome: "failed", linksWritten: 0 });
+    expect(await linkCount("sk-src")).toBe(0);
+    const r = await run(withLink, "agent-uone", opts("skip"));
+    expect(r).toMatchObject({ outcome: "skipped", linksWritten: 1, linksDropped: 0, linksFailed: 0 });
+    expect(await linkCount("sk-src")).toBe(1);
+    expect(await run(withLink, "agent-uone", opts("skip"))).toMatchObject({ outcome: "skipped", linksWritten: 1 });
+    expect(await linkCount("sk-src")).toBe(1); // idempotent
+  });
   test("overwrite needs only executeRaw (Postgres engines have no .db)", async () => {
     await run(mk("nodb", "v1"), "agent-uone");
     const noDb = new Proxy(engine, { get(t, k) {

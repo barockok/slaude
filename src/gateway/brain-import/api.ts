@@ -158,7 +158,7 @@ export function createBrainImportApi(deps: BrainImportDeps = {}) {
       const r = await applyPage(engine, { page: p, target: t, linkTargets }, { onConflict, dryRun, ensureSource: ensure, deferLinks: true });
       const s = (sources[t] ??= { written: 0, skipped: 0, overwritten: 0, failed: 0, linksWritten: 0, linksDropped: 0, linksFailed: 0, noEmbedding: 0 });
       s[r.outcome]++; s.noEmbedding += r.noEmbedding;
-      if (r.outcome === "written" || r.outcome === "overwritten") {
+      if (r.outcome === "written" || r.outcome === "overwritten" || r.outcome === "skipped") {
         s.linksDropped += unmappable;
         if (!dryRun) pending.push({ slug: p.slug, target: t, linkTargets, unmappable });
       }

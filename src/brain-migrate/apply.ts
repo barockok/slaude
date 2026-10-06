@@ -47,7 +47,12 @@ export async function applyPage(
   const noEmbedding = p.chunks.filter((c) => c.embedding === null).length;
   try {
     const exists = (await engine.getPage(p.slug, { ...so, includeDeleted: true })) !== null;
-    if (exists && o.onConflict === "skip") return none("skipped");
+    if (exists && o.onConflict === "skip") {
+      // A skipped page still gets its links: a re-run heals links dropped earlier (target in a later
+      // batch, or lost to a crash before the links pass). addLink is idempotent.
+      if (o.dryRun || o.deferLinks) return none("skipped");
+      return { ...none("skipped"), ...(await applyLinks(engine, p.slug, target, a.linkTargets)) };
+    }
     if (exists && o.onConflict === "fail") return { ...none("failed"), reason: "exists" };
     if (o.dryRun) return { ...none(exists ? "overwritten" : "written"), noEmbedding };
     stage = "tx";

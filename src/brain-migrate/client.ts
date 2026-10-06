@@ -98,5 +98,9 @@ export async function runImport(o: ImportClientOptions): Promise<ImportSummary> 
     const e = expected[k] ?? 0, g = got[k] ?? 0;
     if (e !== g) mismatches.push(`${k === AGENT ? "agent slice" : k}: expected ${e} pages, gateway accounted for ${g}`);
   }
+  if (!(o.dryRun ?? false) && Object.values(sources).some((c) => c.linksDropped > 0)) {
+    const n = Object.values(sources).reduce((t, c) => t + c.linksDropped, 0);
+    log(`${n} links were not written because their target page was missing or out of scope; links to pages in a later batch are resolved by re-running the same command (skip is idempotent); links into kb-* or unmapped sources are never imported.`);
+  }
   return { agentSource, sources, failedSlugs, failedReasons, mismatches };
 }

@@ -129,6 +129,18 @@ describe("runImport", () => {
     expect(s.mismatches).toEqual([]);
     expect(hasProblems(s)).toBe(true);
   });
+  test("a real run with dropped links prints the re-run hint (no slugs); a dry run does not", async () => {
+    const mkFetch = () => (async () => reply({ shared: { written: 1, linksDropped: 2 } })) as unknown as typeof fetch;
+    const lines: string[] = [];
+    await runImport(base(await bundle([page("shared", "secret-slug")]), { fetchImpl: mkFetch(), log: (l) => lines.push(l) }));
+    const hint = lines.find((l) => l.startsWith("2 links were not written"));
+    expect(hint).toContain("re-running the same command (skip is idempotent)");
+    expect(hint).toContain("never imported");
+    expect(hint).not.toContain("secret-slug");
+    const dry: string[] = [];
+    await runImport(base(await bundle([page("shared", "a")]), { fetchImpl: mkFetch(), dryRun: true, log: (l) => dry.push(l) }));
+    expect(dry.some((l) => l.includes("links were not written"))).toBe(false);
+  });
   test("dryRun is forwarded", async () => {
     let body: { dryRun?: boolean } = {};
     const fetchImpl = (async (_u: string, init: RequestInit) => { body = JSON.parse(init.body as string); return ok({ shared: 1 }); }) as unknown as typeof fetch;

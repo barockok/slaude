@@ -218,6 +218,12 @@ describe("links", () => {
     expect(r.json.sources["shared"]).toMatchObject({ written: 2, linksWritten: 1, linksDropped: 0, linksFailed: 0 });
     expect(links).toEqual(["a-first->z-later"]);
   });
+  test("a skipped page's unmappable links are counted dropped too", async () => {
+    const f = linkEngine();
+    const a = api({ engine: async () => ({ ...f.e, getPage: async () => ({ slug: "x" }) } as any) });
+    const r = await call(a, post(body([{ ...pg("shared", "src"), links: [lk("kb-x")] }])));
+    expect(r.json.sources["shared"]).toMatchObject({ skipped: 1, linksDropped: 1, linksWritten: 0 });
+  });
   test("a dry run writes and counts no links", async () => {
     const f = linkEngine();
     const a = api({ engine: async () => f.e });
