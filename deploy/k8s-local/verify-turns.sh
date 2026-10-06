@@ -605,7 +605,10 @@ else
     expect_value "beta's call reaches the upstream and comes back" "$called" "echo: $word" "tool result text"
   fi
   tok_a="$(job_token alpha live || true)"
-  got="$([[ -n "$tok_a" ]] && printf '%s' "$tok_a" | node_probe "${def_pods[0]}" mcpx mockmcp list | field status || true)"
+  got=""
+  if [[ -n "$tok_a" ]]; then
+    got="$(printf '%s' "$tok_a" | node_probe "${def_pods[0]}" mcpx mockmcp list | field status || true)"
+  fi
   expect_value "alpha, which does not bridge mockmcp, gets 404 for it" "$got" "404" "status"
 fi
 
