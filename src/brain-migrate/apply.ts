@@ -57,8 +57,8 @@ export async function applyPage(
         // Keep the page row: deleting it would cascade away links from OTHER pages that point here.
         const me = "(SELECT id FROM pages WHERE slug = $1 AND source_id = $2)";
         const args = [p.slug, target];
-        for (const t of ["content_chunks", "tags", "timeline_entries", "raw_data"]) await tx.db.query(`DELETE FROM ${t} WHERE page_id = ${me}`, args);
-        await tx.db.query(`DELETE FROM links WHERE from_page_id = ${me}`, args);
+        for (const t of ["content_chunks", "tags", "timeline_entries", "raw_data"]) await tx.executeRaw(`DELETE FROM ${t} WHERE page_id = ${me}`, args);
+        await tx.executeRaw(`DELETE FROM links WHERE from_page_id = ${me}`, args);
       }
       await tx.putPage(p.slug, {
         type: p.type, title: p.title, compiled_truth: p.compiledTruth, timeline: p.timeline,

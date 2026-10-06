@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { embeddingMismatch, readEmbeddingInfo } from "../../src/brain-migrate/embedding-info";
 
-const eng = (atttypmod: number | null) => ({ db: { query: async () => ({ rows: atttypmod === null ? [] : [{ atttypmod }] }) } }) as any;
+const eng = (atttypmod: number | null) => ({ executeRaw: async () => (atttypmod === null ? [] : [{ atttypmod }]) }) as any;
 
 describe("readEmbeddingInfo", () => {
   test("the column width wins; a default brain has no model", async () => {

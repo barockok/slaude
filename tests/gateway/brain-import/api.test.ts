@@ -23,7 +23,7 @@ function fakeEngine() {
   const e = {
     getPage: async (slug: string, o: any) => (pages.has(`${o.sourceId}/${slug}`) ? { slug } : null),
     transaction: async (fn: any) => fn(e),
-    db: { query: async () => ({ rows: [] }) },
+    db: { query: async () => ({ rows: [] }) }, executeRaw: async () => [],
     putPage: async (slug: string, _p: any, o: any) => { pages.set(`${o.sourceId}/${slug}`, 1); writes.push(`${o.sourceId}/${slug}`); },
     upsertChunks: async () => {}, addTag: async () => {}, addTimelineEntry: async () => {}, putRawData: async () => {}, addLink: async () => {},
   };
@@ -178,7 +178,7 @@ describe("links", () => {
     const e: any = {
       getPage: async (slug: string, o: any) => (slug === "k" || o.sourceId === "shared" && slug === "s1" ? { slug } : null),
       transaction: async (fn: any) => fn(e),
-      db: { query: async () => ({ rows: [] }) },
+      db: { query: async () => ({ rows: [] }) }, executeRaw: async () => [],
       putPage: async () => {}, upsertChunks: async () => {}, addTag: async () => {}, addTimelineEntry: async () => {}, putRawData: async () => {},
       addLink: async (from: string, toSlug: string, _c: string, _t: string, _s: unknown, _a: unknown, _b: unknown, o: any) => { links.push({ from, toSource: o.toSourceId, toSlug }); },
     };
@@ -207,7 +207,7 @@ describe("links", () => {
     const e: any = {
       getPage: async (slug: string, o: any) => (written.has(`${o.sourceId}/${slug}`) ? { slug } : null),
       transaction: async (fn: any) => fn(e),
-      db: { query: async () => ({ rows: [] }) },
+      db: { query: async () => ({ rows: [] }) }, executeRaw: async () => [],
       putPage: async (slug: string, _p: any, o: any) => { written.add(`${o.sourceId}/${slug}`); },
       upsertChunks: async () => {}, addTag: async () => {}, addTimelineEntry: async () => {}, putRawData: async () => {},
       addLink: async (from: string, toSlug: string) => { links.push(`${from}->${toSlug}`); },

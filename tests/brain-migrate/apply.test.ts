@@ -147,6 +147,17 @@ describe("applyPage", () => {
     expect(r).toMatchObject({ outcome: "written", linksWritten: 1, linksFailed: 1, linksDropped: 0 });
     expect(await engine.getPage("lsrc2", { sourceId: "agent-uone" })).not.toBeNull();
   });
+  test("overwrite needs only executeRaw (Postgres engines have no .db)", async () => {
+    await run(mk("nodb", "v1"), "agent-uone");
+    const noDb = new Proxy(engine, { get(t, k) {
+      if (k === "db") return undefined;
+      if (k === "transaction") return (fn: any) => (t as any).transaction((tx: any) => fn(new Proxy(tx, { get(x, kk) { if (kk === "db") return undefined; const v = x[kk]; return typeof v === "function" ? v.bind(x) : v; } })));
+      const v = (t as any)[k]; return typeof v === "function" ? v.bind(t) : v;
+    } }) as MigrateEngine;
+    const r = await applyPage(noDb, { page: mk("nodb", "v2"), target: "agent-uone", linkTargets: [] }, opts("overwrite"));
+    expect(r.outcome).toBe("overwritten");
+    expect((await engine.getPage("nodb", { sourceId: "agent-uone" }) as any).compiled_truth).toBe("v2");
+  });
   test("failures carry a reason: exists (fail policy) vs tx (with errorName only)", async () => {
     await run(mk("rs1", "x"), "agent-uone");
     expect(await run(mk("rs1", "y"), "agent-uone", opts("fail"))).toMatchObject({ outcome: "failed", reason: "exists", linksFailed: 0 });

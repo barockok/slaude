@@ -11,11 +11,11 @@ export interface BrainConfigFile { embedding_model?: string; embedding_dimension
  * has no config.json at all. The model name only comes from config and is null
  * when none is configured.
  */
-export async function readEmbeddingInfo(engine: Pick<MigrateEngine, "db">, config: () => BrainConfigFile | null | undefined): Promise<EmbeddingInfo> {
+export async function readEmbeddingInfo(engine: Pick<MigrateEngine, "executeRaw">, config: () => BrainConfigFile | null | undefined): Promise<EmbeddingInfo> {
   let cfg: BrainConfigFile = {};
   try { cfg = config() ?? {}; } catch { /* absent or unreadable config: the column still answers */ }
-  const row = (await engine.db.query(
-    "SELECT atttypmod FROM pg_attribute WHERE attname = 'embedding' AND attrelid = 'content_chunks'::regclass")).rows[0];
+  const row = (await engine.executeRaw(
+    "SELECT atttypmod FROM pg_attribute WHERE attname = 'embedding' AND attrelid = 'content_chunks'::regclass"))[0];
   const colDims = row && Number(row.atttypmod) > 0 ? Number(row.atttypmod) : null;
   return { embeddingModel: cfg.embedding_model ?? null, embeddingDimensions: colDims ?? cfg.embedding_dimensions ?? null };
 }
