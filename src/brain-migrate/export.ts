@@ -3,6 +3,7 @@ import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { BundleWriter, type BundleManifest, type BundlePage } from "./bundle";
+import { readEmbeddingInfo } from "./embedding-info";
 import type { MigrateEngine } from "./engine-types";
 
 const gbrainImport = (subpath: string): Promise<Record<string, unknown>> =>
@@ -56,13 +57,9 @@ export async function exportBrain(o: ExportOptions): Promise<ExportResult> {
         for (const pg of batch) await w.writePage(await readPage(engine, source, pg));
       }
     }
-    const bc = readBrainConfig(copied);
     // The pgvector column width is the authoritative dimension (config.json may be absent).
-    const dimRow = (await engine.db.query(
-      "SELECT atttypmod FROM pg_attribute WHERE attname = 'embedding' AND attrelid = 'content_chunks'::regclass")).rows[0];
-    const colDims = dimRow && Number(dimRow.atttypmod) > 0 ? Number(dimRow.atttypmod) : null;
     const manifest = await w.finish({
-      engine: { schemaVersion: null, embeddingModel: bc.embedding_model ?? null, embeddingDimensions: colDims ?? bc.embedding_dimensions ?? null },
+      engine: { schemaVersion: null, ...(await readEmbeddingInfo(engine, () => readBrainConfig(copied))) },
       excluded,
     });
     return { manifest, copied };
