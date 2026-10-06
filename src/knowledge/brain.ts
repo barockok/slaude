@@ -238,6 +238,7 @@ export async function closeBrain(): Promise<void> {
   const e = await pending.catch(() => null);
   if (!e) return;
   ensureInFlight = null; // next boot may target a different brain home
+  ensuredSources.clear();
   embeddingActiveFlag = false;
   await e.disconnect();
 }
