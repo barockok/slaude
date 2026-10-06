@@ -149,7 +149,7 @@ describe("import", () => {
     expect(a.writes).toEqual([]);
     expect(r.json.sources["agent-uana1x"].written).toBe(1);
   });
-  test("a re-post under skip skips; failed slugs are slugs only", async () => {
+  test("a re-post under skip skips", async () => {
     const a = api();
     await call(a, post(body([pg("shared", "s1")])));
     const r = await call(a, post(body([pg("shared", "s1")])));
@@ -170,5 +170,64 @@ describe("import", () => {
     expect(a.lines).toHaveLength(1);
     expect(a.lines[0]).toMatch(/persona=ana/); expect(a.lines[0]).toMatch(/dryRun=false/); expect(a.lines[0]).toMatch(/onConflict=skip/);
     expect(a.lines[0]).not.toContain("SECRET-BODY"); expect(a.lines[0]).not.toContain("slug-xyz");
+  });
+});
+describe("links", () => {
+  const linkEngine = () => {
+    const links: Array<{ from: string; toSource: string; toSlug: string }> = [];
+    const e: any = {
+      getPage: async (slug: string, o: any) => (slug === "k" || o.sourceId === "shared" && slug === "s1" ? { slug } : null),
+      transaction: async (fn: any) => fn(e),
+      db: { query: async () => ({ rows: [] }) },
+      putPage: async () => {}, upsertChunks: async () => {}, addTag: async () => {}, addTimelineEntry: async () => {}, putRawData: async () => {},
+      addLink: async (from: string, toSlug: string, _c: string, _t: string, _s: unknown, _a: unknown, _b: unknown, o: any) => { links.push({ from, toSource: o.toSourceId, toSlug }); },
+    };
+    return { e: e as MigrateEngine, links };
+  };
+  const lk = (toSource: string, toSlug = "k") => ({ toSource, toSlug, type: "mentions", context: "" });
+  test("links into kb-* or an unmapped source are dropped and counted, never written", async () => {
+    const f = linkEngine();
+    const a = api({ engine: async () => f.e });
+    const r = await call(a, post(body([{ ...pg("shared", "src"), links: [lk("kb-x"), lk("scratch")] }])));
+    expect(r.status).toBe(200);
+    expect(r.json.sources["shared"].linksWritten).toBe(0);
+    expect(r.json.sources["shared"].linksDropped).toBe(2);
+    expect(f.links).toEqual([]);
+  });
+  test("a link to an agent-like source lands in the persona's agent slice", async () => {
+    const f = linkEngine();
+    const a = api({ engine: async () => ({ ...f.e, getPage: async (slug: string) => (slug === "k" ? { slug } : null) } as any) });
+    const r = await call(a, post(body([{ ...pg("shared", "src"), links: [lk("agent-default")] }])));
+    expect(r.json.sources["shared"].linksDropped).toBe(0);
+    expect(f.links.map((l) => l.toSource)).toEqual(["agent-uana1x"]);
+  });
+});
+
+describe("body validation", () => {
+  test("a 422 names paths and codes, never received values", async () => {
+    const p = pg("shared", "s"); (p.chunks[0] as any).source = "SECRET-SLUG-VALUE";
+    const r = await call(api(), post({ ...body([p]), "SECRET-KEY": 1 }));
+    expect(r.status).toBe(422);
+    expect(JSON.stringify(r.json)).not.toContain("SECRET-SLUG-VALUE");
+    expect(JSON.stringify(r.json)).not.toContain("SECRET-KEY");
+  });
+  test("dimensions must be a positive integer and every embedding must match them", async () => {
+    const a = api({ brainConfig: () => ({ embeddingModel: "m", embeddingDimensions: 3 }) });
+    expect((await call(a, post(body([], { engine: { embeddingModel: null, embeddingDimensions: 0 } })))).status).toBe(422);
+    expect((await call(a, post(body([], { engine: { embeddingModel: null, embeddingDimensions: 1.5 } })))).status).toBe(422);
+    const r = await call(a, post(body([pg("shared", "s")], { engine: { embeddingModel: "m", embeddingDimensions: 3 } })));
+    expect(r.status).toBe(422);
+    expect(r.json.error).toMatch(/does not match the declared dimensions/);
+    expect(a.writes).toEqual([]);
+  });
+});
+
+describe("persona path edge cases", () => {
+  const at = async (path: string) => (await call(api(), post(body([]), TOKEN, path))).status;
+  test("encoded slash, dot segments, uppercase and an empty name are 404", async () => {
+    for (const p of ["a%2Fb", "..", "%2e%2e", "Ana", "ANA", ""]) expect(await at(`https://gw.example.com/brain-import/v1/personas/${p}`)).toBe(404);
+  });
+  test("a trailing slash on a valid persona is accepted (empty segments are ignored)", async () => {
+    expect(await at("https://gw.example.com/brain-import/v1/personas/ana/")).toBe(200);
   });
 });

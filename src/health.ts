@@ -44,6 +44,10 @@ export function deployHandlerForRole(
  * /brain-import writes straight into the brain, so it is never mounted on a
  * node (its token is gateway-only and a node refuses to boot holding it).
  * Unlike /deploy it also serves mono, whose brain is the one being migrated.
+ *
+ * On mono the agent child runs as the same OS user as the token-holding process,
+ * so a token set there is readable by the agent: set SLAUDE_BRAIN_IMPORT_TOKEN
+ * only for the duration of an import and unset it afterwards.
  */
 export function brainImportHandlerForRole(
   role: string,

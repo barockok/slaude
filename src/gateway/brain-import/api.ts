@@ -15,7 +15,7 @@ import { applyPage, type OnConflict } from "../../brain-migrate/apply";
 import type { BundlePage } from "../../brain-migrate/bundle";
 import { embeddingMismatch, readEmbeddingInfo, type BrainConfigFile, type EmbeddingInfo } from "../../brain-migrate/embedding-info";
 import type { MigrateEngine } from "../../brain-migrate/engine-types";
-import { agentSourceForPersona, remapSource, validateMap } from "../../brain-migrate/remap";
+import { agentSourceForPersona, allowedTarget, remapSource, validateMap } from "../../brain-migrate/remap";
 import { agentIdReady } from "../../knowledge/agent-identity";
 import { brainEnabled, brainHome, ensureSource as ensureBrainSource, getBrain } from "../../knowledge/brain";
 import { brainMode } from "../../knowledge/brain-config";
@@ -50,7 +50,7 @@ const bodySchema = z.object({
   dryRun: z.boolean().optional(),
   onConflict: z.enum(["skip", "overwrite", "fail"]).optional(),
   map: z.record(z.string()).optional(),
-  engine: z.object({ embeddingModel: z.string().nullable(), embeddingDimensions: z.number().nullable() }),
+  engine: z.object({ embeddingModel: z.string().nullable(), embeddingDimensions: z.number().int().positive().nullable() }),
   pages: z.array(pageSchema).max(BRAIN_IMPORT_MAX_PAGES),
 }).strict();
 
@@ -102,7 +102,7 @@ export function createBrainImportApi(deps: BrainImportDeps = {}) {
     let raw: unknown;
     try { raw = JSON.parse(text); } catch { return json(422, { error: "body must be JSON" }); }
     const parsed = bodySchema.safeParse(raw);
-    if (!parsed.success) return json(422, { error: `invalid body: ${parsed.error.issues.slice(0, 3).map((i) => i.path.join(".") + " " + i.message).join("; ")}` });
+    if (!parsed.success) return json(422, { error: `invalid body: ${parsed.error.issues.slice(0, 3).map((i) => i.path.join(".") + " " + i.code).join("; ")}` });
     const b = parsed.data;
 
     const agentId = await (deps.resolveAgentId ?? defaultAgentId)(persona);
@@ -130,6 +130,11 @@ export function createBrainImportApi(deps: BrainImportDeps = {}) {
       if (bad) return json(409, { error: bad });
     }
 
+    // Cheap and value-free: a wrong-width vector would fail deep inside the engine.
+    if (b.engine.embeddingDimensions !== null && b.pages.some((p) => p.chunks.some((c) => c.embedding !== null && c.embedding.length !== b.engine.embeddingDimensions))) {
+      return json(422, { error: "embedding length does not match the declared dimensions" });
+    }
+
     const ensure = deps.ensureSource ?? ensureBrainSource;
     const onConflict: OnConflict = b.onConflict ?? "skip";
     const dryRun = b.dryRun ?? false;
@@ -139,13 +144,17 @@ export function createBrainImportApi(deps: BrainImportDeps = {}) {
     for (let i = 0; i < b.pages.length; i++) {
       const p = b.pages[i] as BundlePage;
       const t = targets[i]!;
-      const linkTargets = p.links.map((l) => {
+      // A link whose target source does not remap into this persona's slices is
+      // dropped and counted, never written under its raw source.
+      const linkTargets: BundlePage["links"] = [];
+      for (const l of p.links) {
         const lr = remapSource(l.toSource, { agentSource, map: b.map });
-        return { ...l, toSource: lr.ok ? lr.target : l.toSource };
-      });
+        if (lr.ok && allowedTarget(lr.target, agentSource)) linkTargets.push({ ...l, toSource: lr.target });
+      }
+      const unmappable = p.links.length - linkTargets.length;
       const r = await applyPage(engine, { page: p, target: t, linkTargets }, { onConflict, dryRun, ensureSource: ensure });
       const s = (sources[t] ??= { written: 0, skipped: 0, overwritten: 0, failed: 0, linksWritten: 0, linksDropped: 0, linksFailed: 0, noEmbedding: 0 });
-      s[r.outcome]++; s.linksWritten += r.linksWritten; s.linksDropped += r.linksDropped; s.linksFailed += r.linksFailed; s.noEmbedding += r.noEmbedding;
+      s[r.outcome]++; s.linksWritten += r.linksWritten; s.linksDropped += r.linksDropped + (r.outcome === "written" || r.outcome === "overwritten" ? unmappable : 0); s.linksFailed += r.linksFailed; s.noEmbedding += r.noEmbedding;
       if (r.outcome === "failed") {
         // Slugs of a person's slice are that person's content; only non-user slices list them.
         if (!t.startsWith("user-")) failedSlugs.push(p.slug);

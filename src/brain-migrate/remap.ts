@@ -20,7 +20,7 @@ const isUser = (s: string): boolean => /^user-[a-z0-9]+$/.test(s);
 const isKb = (s: string): boolean => s.startsWith("kb-");
 
 /** A target a `map` entry may point at: the persona's slice, a user slice, shared, public. */
-function allowedTarget(t: string, agentSource: string): boolean {
+export function allowedTarget(t: string, agentSource: string): boolean {
   return t === agentSource || t === "shared" || t === "public" || isUser(t);
 }
 

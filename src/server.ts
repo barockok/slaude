@@ -162,7 +162,7 @@ async function main() {
       liveSessions: () => agent.liveCount(),
       v1: role !== "node" ? (req) => slack.fetchV1(req) : undefined,
       deploy: deployHandlerForRole(role, (req) => slack.fetchDeploy?.(req) ?? Promise.resolve(null)),
-        brainImport: brainImportHandlerForRole(role, (req) => slack.fetchBrainImport?.(req) ?? Promise.resolve(null)),
+      brainImport: brainImportHandlerForRole(role, (req) => slack.fetchBrainImport?.(req) ?? Promise.resolve(null)),
       panel: panelMounted ? (req) => slack.fetchPanel(req) : undefined,
       portal: role !== "node" ? (req) => slack.fetchPortal(req) : undefined,
     });
