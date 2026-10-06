@@ -1,6 +1,6 @@
 // tests/brain-migrate/export.test.ts
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seedMonoBrain, TEST_DIMS } from "./seed";
@@ -52,6 +52,29 @@ describe("exportBrain", () => {
     const { manifest } = await exportBrain({ home, out });
     expect(manifest.sources).toEqual([]);
     expect(readManifest(out).files["pages.jsonl"]).toMatch(/^[0-9a-f]{64}$/);
+  }, 120_000);
+
+  test("a live lock in the original db dir is not copied and not touched", async () => {
+    const home = join(root, "locked");
+    await seedMonoBrain(home);
+    const lockDir = join(home, "db", ".gbrain-lock");
+    mkdirSync(lockDir);
+    writeFileSync(join(lockDir, "lock"), JSON.stringify({ pid: process.pid, acquired_at: Date.now(), command: "test" }));
+    const before = readdirSync(lockDir).sort();
+    const t0 = Date.now();
+    await exportBrain({ home, out: join(root, "locked-bundle") });
+    expect(Date.now() - t0).toBeLessThan(20_000);
+    expect(readdirSync(lockDir).sort()).toEqual(before);
+  }, 120_000);
+
+  test("a failure after the copy leaves no temp copy behind", async () => {
+    const home = join(root, "garbage");
+    mkdirSync(join(home, "db"), { recursive: true });
+    writeFileSync(join(home, "db", "PG_VERSION"), "not a database");
+    const list = () => readdirSync(tmpdir()).filter((n) => n.startsWith("brain-export-")).sort();
+    const before = list();
+    await expect(exportBrain({ home, out: join(root, "garbage-bundle") })).rejects.toThrow();
+    expect(list()).toEqual(before);
   }, 120_000);
 
   test("a missing home is a clear error", async () => {

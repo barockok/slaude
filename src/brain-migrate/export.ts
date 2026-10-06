@@ -1,7 +1,7 @@
 // src/brain-migrate/export.ts
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { BundleWriter, type BundleManifest, type BundlePage } from "./bundle";
 import type { MigrateEngine } from "./engine-types";
 
@@ -38,11 +38,13 @@ function readBrainConfig(home: string): { embedding_model?: string; embedding_di
 export async function exportBrain(o: ExportOptions): Promise<ExportResult> {
   if (!existsSync(join(o.home, "db"))) throw new Error(`brain home '${o.home}' has no db directory`);
   const copied = mkdtempSync(join(tmpdir(), "brain-export-"));
-  cpSync(o.home, copied, { recursive: true });
-  const cfg = { engine: "pglite", database_path: join(copied, "db") };
-  const { createEngine } = (await gbrainImport("engine-factory")) as { createEngine: (c: object) => Promise<MigrateEngine> };
-  const engine = await createEngine(cfg);
+  let engine: MigrateEngine | null = null;
   try {
+    // gbrain's PGLite lock lives inside the data dir; a copied live lock would make connect() wait on a foreign pid.
+    cpSync(o.home, copied, { recursive: true, filter: (src) => basename(src) !== ".gbrain-lock" });
+    const cfg = { engine: "pglite", database_path: join(copied, "db") };
+    const { createEngine } = (await gbrainImport("engine-factory")) as { createEngine: (c: object) => Promise<MigrateEngine> };
+    engine = await createEngine(cfg);
     await engine.connect(cfg);
     const ids = (await engine.db.query("SELECT id FROM sources ORDER BY id")).rows.map((r) => String(r.id));
     const { keep, excluded } = selectSources(ids, o.include, o.exclude);
@@ -65,7 +67,7 @@ export async function exportBrain(o: ExportOptions): Promise<ExportResult> {
     });
     return { manifest, copied };
   } finally {
-    await engine.disconnect().catch(() => {});
+    await engine?.disconnect().catch(() => {});
     rmSync(copied, { recursive: true, force: true });
   }
 }
@@ -76,7 +78,7 @@ async function readPage(engine: MigrateEngine, source: string, pg: Awaited<Retur
   const links = (await engine.db.query(
     `SELECT l.link_type, l.context, tp.slug AS to_slug, tp.source_id AS to_source
        FROM links l JOIN pages fp ON fp.id = l.from_page_id JOIN pages tp ON tp.id = l.to_page_id
-      WHERE fp.slug = $1 AND fp.source_id = $2`, [pg.slug, source])).rows;
+      WHERE fp.slug = $1 AND fp.source_id = $2 AND tp.deleted_at IS NULL`, [pg.slug, source])).rows;
   return {
     source, slug: pg.slug, type: pg.type, title: pg.title, compiledTruth: pg.compiled_truth, timeline: pg.timeline,
     frontmatter: pg.frontmatter ?? {}, contentHash: pg.content_hash ?? null,
