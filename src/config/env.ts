@@ -321,6 +321,14 @@ export const env = {
     if (t.length < 32) return "";
     return sameAsNodeToken(t, "SLAUDE_DEPLOY_TOKEN") ? "" : t;
   },
+  /** Credential for /brain-import (persona memory migration). Unset → the route
+   *  does not exist. Same trim, 32-character floor and node-token rule as the
+   *  deploy token: every node holds the node token, so it can never be this one. */
+  brainImportToken: () => {
+    const t = (opt("SLAUDE_BRAIN_IMPORT_TOKEN") ?? "").trim();
+    if (t.length < 32) return "";
+    return sameAsNodeToken(t, "SLAUDE_BRAIN_IMPORT_TOKEN") ? "" : t;
+  },
   /** Dry-run-only pipeline credential for /deploy, for pull-request jobs: it is
    *  accepted only with `?dryRun=1`, so a PR workflow holding it can preview a
    *  sync but never apply one. Same trim and 32-character floor as the deploy

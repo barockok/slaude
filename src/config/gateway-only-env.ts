@@ -40,6 +40,8 @@ export const GATEWAY_ONLY_ENV_NAMES: readonly string[] = [
   "SLAUDE_PANEL_OIDC_CLIENT_SECRET",
   // The brain's own credentials: a remote brain-server token, the embedding key.
   "SLAUDE_BRAIN_TOKEN",
+  // Write door to the brain (/brain-import); a node or agent child holding it could rewrite memory.
+  "SLAUDE_BRAIN_IMPORT_TOKEN",
   "EMBEDDING_API_KEY",
   "LITELLM_API_KEY",
 ];
