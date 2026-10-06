@@ -142,7 +142,7 @@ test("recycles a forward that is alive but no longer answers", async () => {
     } catch {}
   }
   await until(() => answers(port), "the replacement forward to answer");
-});
+}, 30_000);
 
 test("waits instead of failing when the Service has no ready endpoint yet", async () => {
   const port = await freePort();

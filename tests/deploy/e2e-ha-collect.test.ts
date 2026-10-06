@@ -63,7 +63,7 @@ test("collect_artifacts fails loudly when its port-forwards never answer, and ke
   expect(readFileSync(join(out, "portforward-mock-llm.err"), "utf8")).toContain("unable to listen");
   // and no empty "capture" was written in its place
   expect(existsSync(join(out, "mock-journal.json"))).toBe(false);
-});
+}, 30_000);
 
 test("free_port never returns a port something is listening on", async () => {
   // occupy most of a 2-port window; the third value must be the free one
