@@ -121,6 +121,11 @@ anything else is read, exactly as `/deploy` does. The name is added to the gatew
 (`src/config/gateway-only-env.ts`), so a node refuses to boot holding it and the agent child
 never sees it. The token is never the node token or the deploy token.
 
+**Mounting.** The route is mounted on the `gateway` and `mono` roles, not `node`
+(`brainImportHandlerForRole`). On `mono` the agent child runs as the same OS user and can read
+the token from the process environment, so the runbook tells the operator to set it only for the
+duration of the import.
+
 **Request** (JSON, body capped at 4 MB):
 
 | Field | Meaning |
@@ -136,10 +141,14 @@ never sees it. The token is never the node token or the deploy token.
 - brain disabled, or `SLAUDE_BRAIN_MODE=remote` (409);
 - the persona is not live (`livePersona` throws `PersonaNotLiveError`), or has no Slack user id
   (409);
-- `engine.embeddingModel` or `engine.embeddingDimensions` differs from the target brain's
-  configuration (409): vectors of another width or model would silently degrade search, so the
-  import refuses instead of re-embedding;
-- a source in the batch is `kb-*` (422: out of scope, not silently skipped);
+- the embedding shape is incompatible (409): vectors of another width would silently degrade
+  search, so the import refuses instead of re-embedding. As implemented: dimensions must match
+  exactly; the model is compared only when both sides name one (a default brain has no
+  `config.json`, so its model is null); a batch carrying no vectors skips the check. The target's
+  dimension is read from the pgvector column, falling back to `config.json`, the same helper the
+  export uses;
+- a source in the batch is `kb-*` (422: out of scope, not silently skipped), even if `map` names
+  it as a key;
 - an agent-like source with no mapping (§4.4) (422).
 
 **Writes**, per page, on the local engine through the same trusted path the brain's other admin
@@ -148,8 +157,12 @@ with the carried embeddings, `addTag`, `addTimelineEntry` with the original date
 `putRawData`, and `addLink` (endpoints remapped). A page is written whole or the batch reports
 it failed; one page failing does not abort the batch.
 
-**Response**: per target source `{ written, skipped, overwritten, failed, linksWritten,
-linksDropped }`, plus the list of failed slugs (slugs only).
+**Response**: `{ persona, agentSource, dryRun, sources, failedSlugs, failedReasons }`. `sources`
+holds per target source `{ written, skipped, overwritten, failed, linksWritten, linksDropped,
+linksFailed, noEmbedding }`. `failedSlugs` lists slugs only, and never for `user-*` slices.
+`failedReasons` counts failures by cause (`exists`, `tx`, `error:<ErrorClassName>`); no messages.
+Pages are written in one engine transaction each (`engine.transaction`); links are written in a
+second pass after every page of the batch, so a link to a later page of the same batch resolves.
 
 **Audit.** One log line per request: persona, the per-source counts, `dryRun`, `onConflict`.
 Never page text, titles or slugs of user slices.
@@ -160,29 +173,35 @@ A page's `source` is rewritten to a target source before anything else:
 
 | Bundle source | Target source |
 |---|---|
-| `agent`, `agent-default`, and any `agent-<id>` | `agent-<persona.slackUserId>` |
+| `agent`, `agent-default`, and any `agent-<id>` | the persona's agent slice (below) |
 | `user-<slackUserId>` | unchanged |
 | `shared`, `public` | unchanged |
 | `kb-*` | refused (out of scope) |
 | anything else | refused (no mapping) |
 
-`persona.slackUserId` comes from the gateway's registry for `:persona`; the operator never types
-it. `map` entries win over the table for the sources they name, so an operator can route an odd
-source explicitly. Every mapped target must itself be one of: the persona's agent slice,
+The persona's agent slice is derived with `agentSourceId(persona.slackUserId)` (sanitised, dashes
+dropped, 32 characters), the same function the gateway's own memory and KB paths use, so it is
+the slice the persona actually reads. It is not a hand-built `agent-<slackUserId>`, which would
+orphan data for any id the sanitiser changes. The id comes from the gateway's registry for
+`:persona` (the process agent's id for `default`); the operator never types it. `map` entries win over the table for the sources they name, so an operator can route an odd
+source explicitly, except that a `kb-*` source is refused before the map is consulted. Every mapped target must itself be one of: the persona's agent slice,
 `user-*`, `shared`, `public`; a `map` that points at a `kb-*` source or at another persona's
 agent slice is refused.
 
 Several bundle sources can map to one target (for example `agent-default` and `agent-U0OLD`
 both to `agent-U0NEW`). Slug collisions inside one target follow `onConflict`.
 
-Link endpoints are remapped with the same table. A link whose target page is not in the
-imported set (for example a link into a `kb-*` page) is **dropped and counted** in
-`linksDropped`, never written dangling.
+Link endpoints are remapped with the same table. A link whose target source is `kb-*` or does
+not remap into the persona's slices is **dropped and counted** in `linksDropped` and never
+written under its raw source; so is a link whose target page is not in the brain.
 
 ### 4.5 Conflicts
 
-- `skip` (default): a page whose `(target source, slug)` already exists is left alone. This
-  makes a re-run, or a resumed run, idempotent.
+- `skip` (default): a page whose `(target source, slug)` already exists keeps its content. Its
+  links are still written (`addLink` is idempotent), so a re-run heals links dropped earlier
+  because the target page was in a later batch or a crash intervened; rewriting an identical
+  edge resets its context to the bundle's. A re-run is idempotent. A soft-deleted target page
+  counts as existing and stays deleted.
 - `overwrite`: the page, its chunks, tags, timeline and raw data are replaced by the bundle's.
 - `fail`: the first existing page makes that page fail (reported), nothing else is changed
   for it.
@@ -279,6 +298,9 @@ brain-import --gateway <url> --persona <name> [--token-env VAR] [--dry-run]
   scrub removes it, `.mcp.json` placeholders do not expand it); error bodies and the audit line
   contain no page text.
 - **Client:** the batching boundary, retry on 5xx, stop on 4xx, and the final count comparison.
+- **Scenario:** a mono default-slice brain migrated into a gateway persona still recalls
+  everything (`tests/brain-migrate/scenario-mono-to-gateway.test.ts`), with a variant gated on a
+  Postgres container (`scenario-pg.test.ts`). It found three defects the unit tests missed.
 
 ## 8. Rollout
 
@@ -288,8 +310,7 @@ unless `SLAUDE_BRAIN_IMPORT_TOKEN` is set. Release notes link the runbook.
 
 ## 9. Open items the implementation plan resolves
 
-- The exact engine calls for writing a page with explicit chunks and embeddings in one
-  transaction (the stock `migrate` uses `putPage` then `upsertChunks`; the plan checks whether a
-  transactional form exists in the pinned `gbrain`).
-- Whether the bundle compresses (`pages.jsonl.gz`) by default; deferred unless real bundles are
-  large enough to matter.
+- Resolved: the page write is transactional through `engine.transaction` (putPage, chunks with
+  embeddings, tags, timeline, raw data), with a rollback test.
+- Deferred: whether the bundle compresses (`pages.jsonl.gz`) by default; revisit if real bundles
+  are large enough to matter.
