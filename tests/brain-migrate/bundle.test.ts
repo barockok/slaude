@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BUNDLE_VERSION, BundleWriter, batchPages, readManifest, readPages, verifyBundle, type BundlePage } from "../../src/brain-migrate/bundle";
@@ -71,5 +71,42 @@ describe("bundle", () => {
     const byBytes: number[] = [];
     for await (const b of batchPages(gen(4), 100, JSON.stringify(page("p0")).length + 10)) byBytes.push(b.length);
     expect(byBytes).toEqual([1, 1, 1, 1]);
+  });
+  test("a stream error mid-export rejects and leaves no manifest", async () => {
+    const d = tmp();
+    const w = new BundleWriter(d);
+    await w.writePage(page("a"));
+    (w as any).out.destroy(new Error("disk full"));
+    await new Promise((r) => setTimeout(r, 10));
+    await expect(w.writePage(page("b"))).rejects.toThrow(/disk full/);
+    await expect(w.finish(meta)).rejects.toThrow(/disk full/);
+    expect(existsSync(join(d, "manifest.json"))).toBe(false);
+  });
+  test("a stream error during finish rejects without a manifest", async () => {
+    const d = tmp();
+    const w = new BundleWriter(d);
+    await w.writePage(page("a"));
+    (w as any).out.destroy(new Error("disk full"));
+    await expect(w.finish(meta)).rejects.toThrow(/disk full/);
+    expect(existsSync(join(d, "manifest.json"))).toBe(false);
+  });
+  test("batchPages measures bytes, and an oversize page goes alone", async () => {
+    const big = (slug: string) => ({ ...page(slug), compiledTruth: "\u00e9".repeat(1000) });
+    const one = Buffer.byteLength(JSON.stringify(big("x")));
+    async function* gen() { yield big("a"); yield big("b"); }
+    const sizes: number[] = [];
+    // 1.5 pages in bytes; UTF-16 length would be ~1.3x smaller and fit two
+    for await (const b of batchPages(gen(), 100, Math.floor(one * 1.5))) sizes.push(b.length);
+    expect(sizes).toEqual([1, 1]);
+    const alone: number[] = [];
+    for await (const b of batchPages(gen(), 100, 10)) alone.push(b.length);
+    expect(alone).toEqual([1, 1]);
+  });
+  test("a new writer removes a stale manifest", async () => {
+    const d = tmp();
+    const w = new BundleWriter(d); await w.writePage(page("a")); await w.finish(meta);
+    expect(existsSync(join(d, "manifest.json"))).toBe(true);
+    new BundleWriter(d);
+    expect(existsSync(join(d, "manifest.json"))).toBe(false);
   });
 });

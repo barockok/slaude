@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync, type WriteStream } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, type WriteStream } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -26,23 +26,45 @@ export class BundleWriter {
   private hash = createHash("sha256");
   private inv = new Map<string, { pages: number; chunks: number; embedded: number }>();
 
+  private err: Error | null = null;
+
   constructor(private dir: string) {
     mkdirSync(dir, { recursive: true });
+    // A manifest left by an earlier export must not outlive the pages.jsonl we are about to rewrite.
+    rmSync(join(dir, "manifest.json"), { force: true });
     this.out = createWriteStream(join(dir, "pages.jsonl"), { flags: "w" });
+    this.out.on("error", (e) => { this.err = e; });
   }
 
   async writePage(p: BundlePage): Promise<void> {
+    if (this.err) throw this.err;
     const line = JSON.stringify(p) + "\n";
     this.hash.update(line);
     const s = this.inv.get(p.source) ?? { pages: 0, chunks: 0, embedded: 0 };
     s.pages++; s.chunks += p.chunks.length; s.embedded += p.chunks.filter((c) => c.embedding !== null).length;
     this.inv.set(p.source, s);
-    if (!this.out.write(line)) await new Promise<void>((r) => this.out.once("drain", () => r()));
+    if (!this.out.write(line)) {
+      await new Promise<void>((res, rej) => {
+        const onErr = (e: Error) => { this.out.off("drain", onDrain); rej(e); };
+        const onDrain = () => { this.out.off("error", onErr); res(); };
+        this.out.once("drain", onDrain);
+        this.out.once("error", onErr);
+      });
+    }
   }
 
   /** Closes pages.jsonl, then writes the manifest LAST (no manifest = interrupted export). */
   async finish(meta: { engine: BundleEngineInfo; excluded: string[] }): Promise<BundleManifest> {
-    await new Promise<void>((res, rej) => { this.out.once("error", rej); this.out.end(() => res()); });
+    if (!this.err && !this.out.destroyed) {
+      await new Promise<void>((res) => {
+        this.out.once("error", () => res());
+        this.out.end(() => res());
+      });
+    }
+    // destroy(err) reports the error on a later tick; let it land so the real cause is thrown.
+    if (!this.err && this.out.destroyed && !this.out.closed) await new Promise<void>((r) => this.out.once("close", () => r()));
+    if (this.err) throw this.err;
+    if (!this.out.writableFinished) throw new Error("pages.jsonl stream was closed before finish");
     const manifest: BundleManifest = {
       version: BUNDLE_VERSION,
       createdAt: new Date().toISOString(),
@@ -85,7 +107,7 @@ export async function* batchPages(pages: AsyncIterable<BundlePage>, maxPages = 1
   let batch: BundlePage[] = [];
   let bytes = 0;
   for await (const p of pages) {
-    const size = JSON.stringify(p).length;
+    const size = Buffer.byteLength(JSON.stringify(p));
     if (batch.length > 0 && (batch.length >= maxPages || bytes + size > maxBytes)) {
       yield batch; batch = []; bytes = 0;
     }
