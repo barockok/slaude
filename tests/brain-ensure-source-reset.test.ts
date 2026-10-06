@@ -25,3 +25,30 @@ test("closeBrain clears the ensured-source cache so a second brain home gets its
   const rows = (await e.db.query(`SELECT id FROM sources WHERE id = 'user-ureset'`)).rows;
   expect(rows.length).toBe(1);
 }, 120_000);
+
+test("an ensureSource whose sources_add straddles closeBrain does not cache for the next brain", async () => {
+  const { setBackendForTest, getBackend } = await import("../src/knowledge/backend");
+  const real = getBackend();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  let entered!: () => void;
+  const started = new Promise<void>((r) => { entered = r; });
+  setBackendForTest({
+    call: real.call.bind(real),
+    adminCall: async () => { entered(); await gate; return {}; },
+  } as typeof real);
+  try {
+    process.env.SLAUDE_BRAIN_HOME = join(root, "c");
+    const inflight = ensureSource("user-urace");
+    await started;
+    await closeBrain(); // clears the cache while sources_add is pending
+    release();
+    await inflight;
+  } finally {
+    setBackendForTest(undefined);
+  }
+  process.env.SLAUDE_BRAIN_HOME = join(root, "d");
+  await ensureSource("user-urace");
+  const e = (await getBrain()) as any;
+  expect((await e.db.query(`SELECT id FROM sources WHERE id = 'user-urace'`)).rows.length).toBe(1);
+}, 120_000);

@@ -239,6 +239,7 @@ export async function closeBrain(): Promise<void> {
   if (!e) return;
   ensureInFlight = null; // next boot may target a different brain home
   ensuredSources.clear();
+  ensureGeneration++;
   embeddingActiveFlag = false;
   await e.disconnect();
 }
@@ -280,8 +281,11 @@ async function findOp(name: string): Promise<Op> {
  * See docs/findings/2026-06-14-brain-memoize-failure.md.
  */
 const ensuredSources = new Set<string>();
+// Bumped by closeBrain: an ensure whose sources_add straddles a close must not cache for the next brain.
+let ensureGeneration = 0;
 export async function ensureSource(id: string): Promise<void> {
   if (ensuredSources.has(id)) return;
+  const generation = ensureGeneration;
   try {
     await brainAdminCall("sources_add", { id, federated: true });
   } catch (e) {
@@ -291,7 +295,7 @@ export async function ensureSource(id: string): Promise<void> {
     const code = (e as { code?: string })?.code;
     if (code !== "source_id_taken" && !/duplicate key|already exists|already registered/i.test(msg)) throw e;
   }
-  ensuredSources.add(id);
+  if (generation === ensureGeneration) ensuredSources.add(id);
 }
 
 /**
