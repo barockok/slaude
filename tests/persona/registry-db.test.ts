@@ -14,11 +14,15 @@ import {
   getPersonaRegistry,
   invalidatePersonaRegistry,
   managedPersonaModel,
+  managedPersonaProvider,
+  personasWithProvider,
+  runsOnFor,
   setPersonaRegistry,
   startRegistryRevalidation,
   whenPersonaRegistrySettled,
 } from "../../src/persona/registry";
 import { personaSoulText } from "../../src/persona/soul-source";
+import { personaKbList } from "../../src/knowledge/persona-kb";
 import { soulDataBase } from "../../src/soul/extract";
 import { SoulDataSchema } from "../../src/soul/data";
 import { loadSoul } from "../../src/soul/loader";
@@ -68,6 +72,14 @@ describe("a filesystem registry (any dialect)", () => {
     expect(r.tombstonedPersonaFor("UFSBOT")).toBeNull();
   });
 
+  test("runsOnFor: every filesystem persona, and the default, runs on 'default'", async () => {
+    writeFsPersona("fsbot", "UFSBOT", "fs soul");
+    const r = await buildPersonaRegistry("default");
+    expect(runsOnFor("fsbot", r)).toBe("default");
+    expect(runsOnFor(undefined, r)).toBe("default");
+    expect(runsOnFor("unknown", r)).toBe("default");
+  });
+
   test("a filesystem persona is listed, and its soul is read from its file", async () => {
     writeFsPersona("fsbot", "UFSBOT", "fs soul");
     const r = await buildPersonaRegistry("default");
@@ -91,7 +103,7 @@ describe.skipIf(!isPg)("a database-backed registry", () => {
     const r = await buildPersonaRegistry("default");
     expect(r.lookupByName("ana")!.model).toBe("m-ana-live");
     expect(r.lookupByName("ana")!.mcp).toBeNull();
-    expect(r.defaultPersona!()).toEqual({ model: "m-default", mcp });
+    expect(r.defaultPersona!()).toEqual({ model: "m-default", mcp, provider: null, runsOn: null, kbSources: null });
     expect(managedPersonaModel("ana", r)).toBe("m-ana-live");
     expect(managedPersonaModel(undefined, r)).toBe("m-default");
     writeFsPersona("fsbot", "UFSBOT", "fs soul");
@@ -100,6 +112,58 @@ describe.skipIf(!isPg)("a database-backed registry", () => {
     const fsr = await buildPersonaRegistry("default");
     expect(fsr.defaultPersona).toBeUndefined();
     expect(managedPersonaModel("fsbot", fsr)).toBeUndefined();
+  });
+
+  test("the snapshot carries provider references; the helpers name who sets them", async () => {
+    await P.applySync("default", [
+      { ...row("default"), provider: { authToken: "env://PERSONA_DEFAULT_TOKEN" } },
+      { ...row("ana"), provider: { apiKey: "env://PERSONA_ANA_KEY" } },
+      row("bea"),
+    ], meta("r1", "2026-10-01T10:00:00Z"));
+    const r = await buildPersonaRegistry("default");
+    expect(managedPersonaProvider("ana", r)).toEqual({ apiKey: "env://PERSONA_ANA_KEY" });
+    expect(managedPersonaProvider("bea", r)).toBeNull();
+    expect(managedPersonaProvider(undefined, r)).toEqual({ authToken: "env://PERSONA_DEFAULT_TOKEN" });
+    expect(personasWithProvider(r)).toEqual(["default", "ana"]);
+    await db.run(`DELETE FROM persona_sync_state`);
+    await db.run(`DELETE FROM personas`);
+    const fsr = await buildPersonaRegistry("default");
+    expect(managedPersonaProvider("ana", fsr)).toBeNull();
+    expect(personasWithProvider(fsr)).toEqual([]);
+  });
+
+  test("the snapshot carries kbSources (null = all); a filesystem registry reads every KB", async () => {
+    await P.applySync("default", [
+      { ...row("default"), kbSources: [] },
+      { ...row("ana"), kbSources: ["kb-runbook"] },
+      row("bea"),
+    ], meta("r1", "2026-10-01T10:00:00Z"));
+    const r = await buildPersonaRegistry("default");
+    expect(personaKbList("ana", r)).toEqual(["kb-runbook"]);
+    expect(personaKbList("bea", r)).toBeNull();
+    expect(personaKbList(undefined, r)).toEqual([]);
+    expect(personaKbList("default", r)).toEqual([]);
+    // A retired persona reads nothing rather than the default's scope.
+    expect(() => personaKbList("ghost", r)).toThrow();
+    await db.run(`DELETE FROM persona_sync_state`);
+    await db.run(`DELETE FROM personas`);
+    const fsr = await buildPersonaRegistry("default");
+    expect(personaKbList("ana", fsr)).toBeNull();
+    expect(personaKbList(undefined, fsr)).toBeNull();
+  });
+
+  test("runsOnFor reads each managed persona's runs_on; null and an unknown name are 'default'", async () => {
+    await P.applySync("default", [
+      { ...row("default"), runsOn: "ops" },
+      { ...row("ana"), runsOn: "engineering" },
+      row("bea"),
+    ], meta("r1", "2026-10-01T10:00:00Z"));
+    const r = await buildPersonaRegistry("default");
+    expect(runsOnFor("ana", r)).toBe("engineering");
+    expect(runsOnFor("bea", r)).toBe("default");
+    expect(runsOnFor(undefined, r)).toBe("ops");
+    expect(runsOnFor("default", r)).toBe("ops");
+    expect(runsOnFor("ghost", r)).toBe("default");
   });
 
   test("a managed tenant reads effective state, and tombstoned personas are gone", async () => {

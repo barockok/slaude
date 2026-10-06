@@ -42,7 +42,6 @@ const DEADLINE_MS = arg("deadline-ms", 180_000);
 process.env.SLAUDE_HOME = mkdtempSync(join(tmpdir(), "slaude-load-"));
 process.env.SLAUDE_HEALTH_PORT = "0";
 process.env.SLAUDE_BRAIN_DISABLED = "1";
-process.env.SLACK_BOT_TOKEN ??= "xoxb-load";
 
 const { ensureHome } = await import("../../src/config/home");
 ensureHome();

@@ -42,7 +42,48 @@ describe("sameDesired", () => {
     expect(sameDesired(base, { ...base, userToken: "t" })).toBe(false);
     expect(sameDesired(base, { ...base, mcp: { a: 2 } })).toBe(false);
   });
+  test("differs on provider references; absent and null are the same", () => {
+    const withRef = { ...base, provider: { apiKey: "env://PERSONA_ANA_KEY" } };
+    expect(sameDesired(base, withRef)).toBe(false);
+    expect(sameDesired(withRef, { ...base, provider: { apiKey: "env://PERSONA_ANA_KEY2" } })).toBe(false);
+    expect(sameDesired(withRef, { ...base, provider: { apiKey: "env://PERSONA_ANA_KEY" } })).toBe(true);
+    expect(sameDesired(base, { ...base, provider: null })).toBe(true);
+  });
+  test("provider is not overridable: an override naming it changes nothing", () => {
+    const d = { ...base, provider: { apiKey: "env://PERSONA_ANA_KEY" } };
+    const e = mergeEffective(d, [{ field: "provider" as any, value: { apiKey: "env://PERSONA_EVIL" } }]);
+    expect(e.provider).toEqual({ apiKey: "env://PERSONA_ANA_KEY" });
+    expect(e.overridden).toEqual([]);
+  });
+  test("differs on kbSources; absent and null (all KBs) are the same, [] (none) is not", () => {
+    const withKb = { ...base, kbSources: ["kb-a", "kb-b"] };
+    expect(sameDesired(base, withKb)).toBe(false);
+    expect(sameDesired(withKb, { ...base, kbSources: ["kb-a"] })).toBe(false);
+    expect(sameDesired(withKb, { ...base, kbSources: ["kb-a", "kb-b"] })).toBe(true);
+    expect(sameDesired(base, { ...base, kbSources: null })).toBe(true);
+    expect(sameDesired(base, { ...base, kbSources: [] })).toBe(false);
+  });
+  test("kbSources is not overridable: an override naming it changes nothing", () => {
+    const d = { ...base, kbSources: ["kb-a"] };
+    const e = mergeEffective(d, [{ field: "kbSources" as any, value: null }]);
+    expect(e.kbSources).toEqual(["kb-a"]);
+    expect(e.overridden).toEqual([]);
+  });
   test("a tombstoned persona is never the same", () => {
     expect(sameDesired({ ...base, tombstonedAt: 5 }, base)).toBe(false);
+  });
+});
+
+describe("runsOn (node labels spec §4.5)", () => {
+  const base: DesiredPersona = { ...desired, runsOn: "engineering" };
+  test("a change of label is a change, and null equals absent (both are default)", () => {
+    expect(sameDesired(base, { ...base, runsOn: "finance" })).toBe(false);
+    expect(sameDesired(base, { ...base, runsOn: null })).toBe(false);
+    expect(sameDesired({ ...desired, runsOn: null }, desired)).toBe(true);
+  });
+  test("no override can set it: an override naming runsOn is ignored", () => {
+    const e = mergeEffective(base, [{ field: "runsOn" as any, value: "finance" }]);
+    expect(e.runsOn).toBe("engineering");
+    expect(e.overridden).toEqual([]);
   });
 });

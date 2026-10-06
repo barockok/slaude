@@ -1,6 +1,14 @@
 /**
- * BullMQ turn queues: one shared `turns` queue plus per-node queues for warm
- * routing, with per-session message coalescing (spec §2).
+ * BullMQ turn queues: one queue per node label (`turns` for `default`,
+ * `turns.label.<label>` for any other) plus per-node queues for warm routing,
+ * with per-session message coalescing (spec §2, node labels spec §4.6).
+ *
+ * Relabel: when the session's pending job sits on a different queue than the
+ * one this enqueue computed (its persona was relabelled, or its warm node no
+ * longer carries the label), the pending job is moved to the computed queue
+ * with the new messages appended, carrying the new job token (the old one's
+ * label claim may no longer be the persona's), before anything else happens.
+ * A relabel must not strand a message on a queue no node of the label reads.
  *
  * Coalescing: messages arriving while a session already has a *pending*
  * (waiting/delayed — NOT active) job are appended to that job's messages[]
@@ -19,7 +27,7 @@
 import { randomUUID } from "node:crypto";
 import { Queue, type Job, type JobsOptions } from "bullmq";
 import type { Redis } from "ioredis";
-import { makeKeys, nodeTurnsQueue, TURNS_QUEUE, type Keys } from "./keys";
+import { DEFAULT_LABEL, LABEL_QUEUE_PREFIX, LABEL_RE, labelTurnsQueue, makeKeys, nodeTurnsQueue, TURNS_QUEUE, type Keys } from "./keys";
 import { acquireLock, releaseLock } from "./locks";
 
 export interface TurnMessage {
@@ -38,6 +46,9 @@ export interface TurnJob {
   sessionId: string;
   tenantId: string;
   personaId: string;
+  /** The node label this turn runs on (node labels spec §4.3); the same value
+   *  is signed into jobToken. Absent on jobs from an older gateway = "default". */
+  label?: string;
   messages: TurnMessage[];
   /** Identity the turn runs as when it is not the thread's /1on1 lock owner —
    *  currently a cron job's captured initiator. The node applies it before the
@@ -46,10 +57,28 @@ export interface TurnJob {
   /** Short-lived JWT minted by the gateway; nodes present it on tool calls. */
   jobToken: string;
   enqueuedAt: number;
+  /** How many times the gateway re-dispatched this turn after a
+   *  LABEL_MISMATCH failure (node labels spec §4.6). Bounded at one: a second
+   *  mismatch is shown to the user instead. Absent = 0. */
+  relabelAttempts?: number;
 }
 
-/** Where to enqueue: the shared queue, or a specific warm node's queue. */
-export type TurnTarget = "shared" | { node: string };
+/** Where to enqueue: a label's queue, or a specific warm node's queue.
+ *  `"shared"` is the pre-label spelling of `{ label: "default" }`, kept as a
+ *  compatibility shim for older call sites. */
+export type TurnTarget = { label: string } | { node: string } | "shared";
+
+/** The label a job runs on: its payload's, or `default` for a job from a
+ *  gateway that predates labels. */
+export function jobLabel(job: Pick<TurnJob, "label">): string {
+  return job.label ?? DEFAULT_LABEL;
+}
+
+/** Where a moved job went (the `job-moved:<id>` marker). */
+export interface MovedRef {
+  queue: string;
+  jobId: string;
+}
 
 export interface EnqueueResult {
   jobId: string;
@@ -65,12 +94,154 @@ const PENDING_STATES = new Set(["waiting", "delayed", "prioritized", "paused", "
 /** How long a coalesce index entry may outlive its job (safety TTL). */
 const COALESCE_TTL_MS = 10 * 60 * 1000;
 
+/** How long a job-moved marker is kept: longer than a follower lives (20 min). */
+const MOVED_TTL_MS = 60 * 60 * 1000;
+
+/** How long a move's copy is held unclaimable while the original is removed
+ *  (#swap). Promoted at once on success; only a crash mid-move waits it out. */
+const SWAP_HOLD_MS = 30_000;
+
+/** How long the once-guard of a LABEL_MISMATCH re-dispatch is kept. Short on
+ *  purpose: once the winner wrote its job-moved marker every follower follows
+ *  that instead, so the guard only matters while the winner works, and a
+ *  winner that died mid-way lets another follower redo it after this long. */
+const REDISPATCH_TTL_MS = 30_000;
+
+/**
+ * Take a job off its queue ONLY if no worker holds it, in one step (review
+ * F1). A check-then-remove from the client is not atomic: a job claimed AND
+ * finished between the check and the remove would be removed "successfully"
+ * after it ran, and the move's copy would run its messages a second time.
+ *
+ * KEYS[1] the queue's key prefix (`<bull prefix>:<queue>:`)
+ * KEYS[2] the job's `turn-done:<id>` marker
+ * ARGV[1] the job id
+ * ARGV[2] "1" to also take an ACTIVE job whose lock is gone (a dead node's
+ *         claim, which no surviving worker will stall-recover: the reaper)
+ *
+ * Returns where the job was taken from (`delayed|prioritized|wait|paused|
+ * active`), `done` when it was taken but its turn already ran (the turn-done
+ * marker exists: the caller must not copy its messages anywhere; review
+ * U10b-A), or why it was not taken: `missing`, `locked` (a worker holds it) or
+ * `claimed` (active without the flag, completed or failed). The marker is
+ * read in the same step, so a turn that finishes concurrently is never copied.
+ *
+ * Not Redis Cluster safe: the job's list and set keys are built inside the
+ * script rather than declared in KEYS. Neither are BullMQ's own scripts; a
+ * cluster deployment needs hash tags in the BullMQ prefix either way.
+ */
+const TAKE_UNCLAIMED_LUA = `
+local p = KEYS[1]
+local id = ARGV[1]
+local jobKey = p .. id
+if redis.call("EXISTS", jobKey) == 0 then return "missing" end
+if redis.call("EXISTS", jobKey .. ":lock") == 1 then return "locked" end
+local from
+if redis.call("ZREM", p .. "delayed", id) == 1 then from = "delayed"
+elseif redis.call("ZREM", p .. "prioritized", id) == 1 then from = "prioritized"
+elseif redis.call("LREM", p .. "wait", 1, id) == 1 then from = "wait"
+elseif redis.call("LREM", p .. "paused", 1, id) == 1 then from = "paused"
+elseif ARGV[2] == "1" and redis.call("LREM", p .. "active", 1, id) == 1 then
+  redis.call("SREM", p .. "stalled", id)
+  from = "active"
+else
+  return "claimed"
+end
+redis.call("DEL", jobKey, jobKey .. ":logs", jobKey .. ":dependencies", jobKey .. ":processed", jobKey .. ":failed", jobKey .. ":unsuccessful")
+if redis.call("EXISTS", KEYS[2]) == 1 then return "done" end
+return from
+`;
+
+/** TAKE_UNCLAIMED_LUA outcomes that mean the job was taken and its messages
+ *  still have to run somewhere. */
+const TAKEN = new Set(["delayed", "prioritized", "wait", "paused", "active"]);
+
+/** What #take did: taken (copy the messages on), taken but its turn already
+ *  ran (`done`: copy nothing), or refused (a worker holds or finished it). */
+type TakeOutcome = "taken" | "done" | "refused";
+
+/** Options for a move off a queue. */
+export interface MoveOpts {
+  /** The caller is the worker holding this job (a label mismatch at claim). */
+  claimed?: boolean;
+  /** Also move an ACTIVE job whose lock is gone (a dead node's own queue). */
+  rescueActive?: boolean;
+}
+
+/** The larger relabelAttempts of two jobs being merged (absent = 0). */
+function maxAttempts(a: TurnJob, b: TurnJob): number {
+  return Math.max(a.relabelAttempts ?? 0, b.relabelAttempts ?? 0);
+}
+
+/** One message's identity for de-duplication: a re-delivered message is the
+ *  same Slack message, so its ts, author and text all match. */
+const msgKey = (m: TurnMessage): string => `${m.ts}\u0000${m.user}\u0000${m.text}`;
+
+/** A Slack ts (`1700000000.000100`) as a comparable [seconds, nanos] pair;
+ *  null for anything else. Compared exactly: a double loses the last digits. */
+function tsOrder(ts: string): [bigint, number] | null {
+  const m = /^(\d+)(?:\.(\d{1,9}))?$/.exec(ts);
+  return m ? [BigInt(m[1]!), Number((m[2] ?? "").padEnd(9, "0"))] : null;
+}
+
+/** A job's earliest message ts, or null when it has no message or any of
+ *  its messages has no Slack ts. */
+function jobBirth(job: TurnJob): [bigint, number] | null {
+  let min: [bigint, number] | null = null;
+  for (const m of job.messages) {
+    const t = tsOrder(m.ts);
+    if (!t) return null;
+    if (!min || t[0] < min[0] || (t[0] === min[0] && t[1] < min[1])) min = t;
+  }
+  return min;
+}
+
+/**
+ * Whether `incoming`'s messages go BEFORE `pending`'s when the two jobs are
+ * merged (review U10b-R1/R2): the job whose earliest message is older goes
+ * first, whichever of the two reached the merge first. A rescued, moved or
+ * re-dispatched turn can reach it after a newer job of its session did (the
+ * coalesce index lost, two dead nodes reaped in either order), so the order
+ * of arrival is not the order the messages were sent in. Ordered by Slack ts,
+ * not `enqueuedAt`: a re-dispatch restamps enqueuedAt, and replicas' clocks
+ * differ. `hint` (the caller's own knowledge) decides only when the two are
+ * not comparable: a tie, or a message without a Slack ts.
+ */
+export function mergesFirst(pending: TurnJob, incoming: TurnJob, hint = false): boolean {
+  const a = jobBirth(incoming);
+  const b = jobBirth(pending);
+  if (a && b) {
+    if (a[0] !== b[0]) return a[0] < b[0];
+    if (a[1] !== b[1]) return a[1] < b[1];
+  }
+  return hint;
+}
+
+/** `extra` without the messages `base` already holds (review F3). */
+export function newMessages(base: readonly TurnMessage[], extra: readonly TurnMessage[]): TurnMessage[] {
+  const have = new Set(base.map(msgKey));
+  const out: TurnMessage[] = [];
+  for (const m of extra) {
+    const k = msgKey(m);
+    if (have.has(k)) continue;
+    have.add(k);
+    out.push(m);
+  }
+  return out;
+}
+
 export interface TurnQueuesOpts {
   connection: Redis;
   keys?: Keys;
   /** Test-only: awaited between updateData and the post-update state check,
    *  to force the claim race deterministically. */
   afterUpdateData?: () => Promise<void>;
+  /** Test-only: awaited inside a move between adding the held copy and
+   *  removing the original — the window a claim race needs. */
+  beforeSwapRemove?: () => Promise<void>;
+  /** Test-only: awaited right after a move took the original off its queue,
+   *  before its messages are merged anywhere (a throw here is a crash). */
+  afterTakeOriginal?: () => Promise<void>;
 }
 
 export class TurnQueues {
@@ -78,15 +249,41 @@ export class TurnQueues {
   #connection: Redis;
   #queues = new Map<string, Queue>();
   #afterUpdateData?: () => Promise<void>;
+  #beforeSwapRemove?: () => Promise<void>;
+  #afterTakeOriginal?: () => Promise<void>;
 
   constructor(opts: TurnQueuesOpts) {
     this.#connection = opts.connection;
     this.keys = opts.keys ?? makeKeys();
     this.#afterUpdateData = opts.afterUpdateData;
+    this.#beforeSwapRemove = opts.beforeSwapRemove;
+    this.#afterTakeOriginal = opts.afterTakeOriginal;
+  }
+
+  /** The command connection these queues share (label status reads). */
+  get redis(): Redis {
+    return this.#connection;
+  }
+
+  /**
+   * Take `job` off its queue if no worker holds it (TAKE_UNCLAIMED_LUA, one
+   * atomic step). Returns the script's outcome: a state name when taken.
+   */
+  async takeUnclaimed(job: Pick<Job, "id" | "queueName">, opts: { rescueActive?: boolean } = {}): Promise<string> {
+    const qprefix = `${this.keys.bullPrefix}:${job.queueName}:`;
+    const id = String(job.id);
+    return String(await this.#connection.eval(TAKE_UNCLAIMED_LUA, 2, qprefix, this.keys.turnDone(id), id, opts.rescueActive ? "1" : "0"));
+  }
+
+  async #take(job: Job, opts: { rescueActive?: boolean } = {}): Promise<TakeOutcome> {
+    const out = await this.takeUnclaimed(job, opts);
+    if (out === "done") return "done";
+    return TAKEN.has(out) ? "taken" : "refused";
   }
 
   queueName(target: TurnTarget): string {
-    return target === "shared" ? TURNS_QUEUE : nodeTurnsQueue(target.node);
+    if (target === "shared") return TURNS_QUEUE;
+    return "node" in target ? nodeTurnsQueue(target.node) : labelTurnsQueue(target.label);
   }
 
   /** Queue handle by BullMQ name (cached). Shared connection is fine: queues
@@ -98,6 +295,28 @@ export class TurnQueues {
       this.#queues.set(name, q);
     }
     return q;
+  }
+
+  /**
+   * Read one job by queue name without caching a handle for a name this
+   * process has not used: the name can come from a caller (token-reissue), and
+   * the handle cache must not grow with whatever names callers send. Nor may
+   * Redis: opening a BullMQ handle writes the queue's `:meta` key, which makes
+   * the name list as a label queue (label status) for good. So the job's own
+   * key is checked first, and a handle is opened only for a job that exists.
+   */
+  async peekJob(name: string, jobId: string): Promise<Job | undefined> {
+    const cached = this.#queues.get(name);
+    if (cached) return cached.getJob(jobId);
+    if ((await this.#connection.exists(`${this.keys.bullPrefix}:${name}:${jobId}`)) === 0) return undefined;
+    const q = new Queue(name, { connection: this.#connection, prefix: this.keys.bullPrefix });
+    try {
+      return await q.getJob(jobId);
+    } finally {
+      // close() would quit the shared connection only if BullMQ owned it; it
+      // does not here (an injected connection), so this just drops the handle.
+      await q.close().catch(() => {});
+    }
   }
 
   /** Spec §2: attempts 2 with backoff; keep a bounded tail for inspection. */
@@ -119,23 +338,54 @@ export class TurnQueues {
    * dispatcher mints it before the token so the token's `job` claim matches
    * the job it rides on (token-refresh binding). Ignored when the messages
    * coalesce into an existing pending job.
+   *
+   * A coalesce orders the two jobs' messages by Slack ts (mergesFirst);
+   * `first` says these messages are OLDER than the pending job's (a
+   * re-dispatch of a failed turn) for when the ts cannot tell.
    */
-  async enqueueTurn(job: TurnJob, target: TurnTarget = "shared", jobId?: string): Promise<EnqueueResult> {
+  async enqueueTurn(
+    job: TurnJob,
+    target: TurnTarget = { label: DEFAULT_LABEL },
+    jobId?: string,
+    opts: { first?: boolean } = {},
+  ): Promise<EnqueueResult> {
     const ckey = this.keys.coalesce(job.sessionId);
     const lockKey = this.keys.coalesceLock(job.sessionId);
     const lockOwner = randomUUID();
+    const qname = this.queueName(target);
     await this.#acquireAppendLock(lockKey, lockOwner);
     try {
-      const appended = await this.#tryAppend(ckey, job);
+      const appended = await this.#tryAppend(ckey, job, { queue: qname, jobId }, opts);
       if (appended) return appended;
-      return await this.#addFresh(job, this.queueName(target), ckey, jobId);
+      return await this.#addFresh(job, qname, ckey, jobId);
     } finally {
       await releaseLock(this.#connection, lockKey, lockOwner).catch(() => {});
     }
   }
 
-  /** Append onto the indexed pending job; null → caller should add fresh. */
-  async #tryAppend(ckey: string, job: TurnJob): Promise<EnqueueResult | null> {
+  /**
+   * Append onto the indexed pending job; null → caller should add fresh.
+   * With `want`, a pending job on a different queue is relocated there first
+   * (#relocate) instead of appended in place.
+   *
+   * The older job's messages go first (mergesFirst, by Slack ts; `first` is
+   * the caller's hint for when the ts cannot tell: a moved or re-dispatched
+   * turn; review U10b-A/B/R1), so the session's messages still run in the
+   * order they were sent. Either way the merged job keeps the larger
+   * relabelAttempts of the two, so merging a re-dispatched turn never resets
+   * the one-re-dispatch bound.
+   *
+   * A pending job whose turn-done marker exists is treated as claimed (review
+   * U10b-R3): its node finished the turn and died before the ack, and stall
+   * recovery put it back to waiting. The worker that claims it skips it as
+   * done, so messages appended to it would never run.
+   */
+  async #tryAppend(
+    ckey: string,
+    job: TurnJob,
+    want?: { queue: string; jobId?: string },
+    opts: { first?: boolean } = {},
+  ): Promise<EnqueueResult | null> {
     const existing = await this.#connection.get(ckey);
     if (!existing) return null;
     let ref: { queue: string; jobId: string };
@@ -147,10 +397,29 @@ export class TurnQueues {
     const pending = await this.queue(ref.queue).getJob(ref.jobId);
     if (!pending) return null; // stale index (job done + removed)
     if (!PENDING_STATES.has(await pending.getState())) return null; // already claimed
+    if (await this.#turnRan(pending)) return null; // finished, then stalled back
     const prev = pending.data as TurnJob;
+    // Only a LABEL change relocates (node labels spec §4.6). A warmth change
+    // under the same label (the warm node came or went between messages)
+    // appends in place exactly as before labels: same job id, same token.
+    if (want && ref.queue !== want.queue && jobLabel(prev) !== jobLabel(job)) {
+      return this.#relocate(pending, job, ckey, want, opts);
+    }
+    // A message the pending job already holds is not appended again (review
+    // F3): a re-delivery after a crash between an append and its marker, or a
+    // retry after the claim race below, would otherwise run it twice. With
+    // nothing new, the messages are already in a job that runs them.
+    const fresh = newMessages(prev.messages, job.messages);
+    const attempts = maxAttempts(prev, job);
+    if (fresh.length === 0 && attempts === (prev.relabelAttempts ?? 0)) {
+      await this.#connection.pexpire(ckey, COALESCE_TTL_MS);
+      return { jobId: pending.id!, queue: ref.queue, coalesced: true };
+    }
     await pending.updateData({
       ...prev,
-      messages: [...prev.messages, ...job.messages],
+      messages: mergesFirst(prev, job, opts.first) ? [...fresh, ...prev.messages] : [...prev.messages, ...fresh],
+      enqueuedAt: Math.min(prev.enqueuedAt ?? job.enqueuedAt, job.enqueuedAt),
+      ...(attempts > 0 ? { relabelAttempts: attempts } : {}),
       // Keep the ORIGINAL job's token: its `job` claim must keep matching the
       // job id for /v1/jobs/:id/token-refresh, and the worker refreshes an
       // aging token at claim time anyway — replacing it with the newest
@@ -160,11 +429,130 @@ export class TurnQueues {
     // Claim race: a worker may have claimed the job between updateData and
     // here, having read the PRE-update data. If the job is no longer pending
     // we cannot know which side won — re-enqueue this call's messages.
-    if (PENDING_STATES.has(await pending.getState())) {
+    if (PENDING_STATES.has(await pending.getState()) && !(await this.#turnRan(pending))) {
       await this.#connection.pexpire(ckey, COALESCE_TTL_MS);
       return { jobId: pending.id!, queue: ref.queue, coalesced: true };
     }
     return null;
+  }
+
+  /**
+   * Move the session's pending job to `want.queue`, with this call's messages
+   * appended, as ONE job under this call's id and token (node labels spec
+   * §4.6). The new token, not the pending job's: after a relabel the old
+   * token's label claim is not the persona's, and the /v1 gate would refuse
+   * every call the turn makes. Through #swap, so the original's messages run
+   * exactly once: if a worker claimed the original meanwhile, null tells the
+   * caller to add only this call's messages — the claimed job runs the
+   * earlier ones.
+   */
+  async #relocate(
+    pending: Job,
+    job: TurnJob,
+    ckey: string,
+    want: { queue: string; jobId?: string },
+    opts: { first?: boolean } = {},
+  ): Promise<EnqueueResult | null> {
+    const prev = pending.data as TurnJob;
+    const id = want.jobId ?? randomUUID();
+    const attempts = maxAttempts(prev, job);
+    const merged: TurnJob = {
+      ...job,
+      messages: mergesFirst(prev, job, opts.first)
+        ? [...job.messages, ...newMessages(job.messages, prev.messages)]
+        : [...prev.messages, ...newMessages(prev.messages, job.messages)],
+      enqueuedAt: Math.min(prev.enqueuedAt ?? job.enqueuedAt, job.enqueuedAt),
+      ...(attempts > 0 ? { relabelAttempts: attempts } : {}),
+    };
+    // "done": the pending job's turn already ran; add only this call's messages.
+    if ((await this.#swap(pending, want.queue, merged, id)) !== "moved") return null;
+    await this.#connection.set(ckey, JSON.stringify({ queue: want.queue, jobId: id }), "PX", COALESCE_TTL_MS);
+    return { jobId: id, queue: want.queue, coalesced: true };
+  }
+
+  /**
+   * Replace an UNCLAIMED job with a copy on `target`, so its messages run
+   * exactly once. The copy is added HELD (delayed), so no worker can claim it;
+   * then the original is taken off its queue in one atomic step that refuses a
+   * job a worker holds or has finished (TAKE_UNCLAIMED_LUA): a refusal means a
+   * worker claimed the original, so the held copy is dropped (still
+   * unclaimable) and false is returned. Only once the original is gone is the
+   * copy promoted. A crash in between leaves the copy to run when the hold
+   * lapses (at-least-once, never lost). The job-moved marker is written before
+   * the original disappears, so a follower never reads the move as the turn's
+   * end. `rescueActive` also takes an active job whose lock is gone (reaper).
+   *
+   * Returns "moved", "refused" (a worker holds or finished the original) or
+   * "done": the original was taken but its turn had already run (turn-done),
+   * so the copy is dropped too and the marker removed — a follower then reads
+   * the job's disappearance as the end of the turn, which it is.
+   */
+  async #swap(
+    original: Job,
+    target: string,
+    data: TurnJob,
+    id: string,
+    opts: { rescueActive?: boolean } = {},
+  ): Promise<"moved" | "done" | "refused"> {
+    const copy = await this.queue(target).add("turn", data, { ...this.defaultJobOpts(), jobId: id, delay: SWAP_HOLD_MS });
+    await this.#markMoved(String(original.id), { queue: target, jobId: id });
+    if (this.#beforeSwapRemove) await this.#beforeSwapRemove();
+    // A throw here (the outcome unknown) leaves the held copy in place: it runs
+    // when the hold lapses, a duplicate at worst rather than a lost turn.
+    const took = await this.#take(original, opts);
+    if (took !== "taken") {
+      await copy.remove().catch(() => {});
+      await this.#connection.del(this.keys.jobMoved(String(original.id))).catch(() => {});
+      return took === "done" ? "done" : "refused";
+    }
+    // A failed promote only delays the turn by the hold; it is not lost.
+    await copy.promote().catch(() => {});
+    return "moved";
+  }
+
+  /** Whether `job`'s turn already ran (its turn-done marker exists). */
+  async #turnRan(job: Job): Promise<boolean> {
+    return (await this.#connection.exists(this.keys.turnDone(String(job.id)))) === 1;
+  }
+
+  async #markMoved(fromJobId: string, to: MovedRef): Promise<void> {
+    await this.#connection.set(this.keys.jobMoved(fromJobId), JSON.stringify(to), "PX", MOVED_TTL_MS);
+  }
+
+  /**
+   * Every label queue that exists in Redis, as `{queue, label}`, `turns`
+   * (default) first. Found by its BullMQ `:meta` key; bounded by the labels in
+   * use, so it is safe as a metric label set.
+   */
+  async labelQueues(): Promise<Array<{ queue: string; label: string }>> {
+    const out = [{ queue: TURNS_QUEUE, label: DEFAULT_LABEL }];
+    const head = `${this.keys.bullPrefix}:${LABEL_QUEUE_PREFIX}`;
+    const seen = new Set<string>();
+    let cursor = "0";
+    do {
+      const [next, batch] = await this.#connection.scan(cursor, "MATCH", `${head}*:meta`, "COUNT", 200);
+      cursor = next;
+      for (const k of batch) {
+        const label = k.slice(head.length, -":meta".length);
+        if (LABEL_RE.test(label) && !seen.has(label)) {
+          seen.add(label);
+          out.push({ queue: labelTurnsQueue(label), label });
+        }
+      }
+    } while (cursor !== "0");
+    return out;
+  }
+
+  /** Where job `jobId` was last moved to, or null if it never was. */
+  async movedTo(jobId: string): Promise<MovedRef | null> {
+    const v = await this.#connection.get(this.keys.jobMoved(jobId));
+    if (!v) return null;
+    try {
+      const r = JSON.parse(v) as MovedRef;
+      return typeof r?.queue === "string" && typeof r?.jobId === "string" ? r : null;
+    } catch {
+      return null;
+    }
   }
 
   async #addFresh(job: TurnJob, qname: string, ckey: string, presetId?: string): Promise<EnqueueResult> {
@@ -177,54 +565,168 @@ export class TurnQueues {
   }
 
   /**
-   * Move an unclaimed job to the shared queue (reaper / stall rescue). NOT
-   * plain enqueueTurn: the coalesce index usually points at the very job
-   * being moved, and appending a job onto itself before removing it would
-   * lose the turn. Under the session's append lock:
+   * The append-elsewhere branch of moveTo: when the coalesce index points at
+   * ANOTHER pending job, merge `job`'s messages into it. The same held-copy
+   * pattern as #swap (review F4), so no crash point loses the messages:
    *
-   * - index points elsewhere (a different pending job exists): append these
-   *   messages there and drop the original;
-   * - otherwise: fresh add on shared (re-pointing the index), then remove the
-   *   original. If the original got claimed in that window (live-queue race)
-   *   its worker will run it — undo our copy to avoid a double turn; if even
-   *   the undo fails the duplicate stands (at-least-once, session-lock
-   *   serialized).
+   *   1. add a HELD copy of `job` on the indexed queue and point the job-moved
+   *      marker at it;
+   *   2. take `job` off its queue atomically (refused when a worker holds it:
+   *      drop the copy, its worker runs it);
+   *   3. merge the messages into the indexed job, the older job's first
+   *      (mergesFirst; review U10b-A/R2: with the index lost, the indexed job
+   *      can be the older one) and drop the held copy, or, when that job was
+   *      claimed meanwhile, promote the copy instead.
+   *
+   * If `job`'s turn already ran (turn-done, read in the same atomic step as
+   * the take), nothing is copied: the job is just taken off its queue.
+   *
+   * A crash after 2 leaves the held copy, which runs when its hold lapses; a
+   * crash between the append and dropping the copy runs the messages twice
+   * (at-least-once). Null = the index points at `job` itself (or nowhere): the
+   * caller moves it. A refused take returns the job's own location.
    */
-  async moveToShared(job: Job): Promise<EnqueueResult> {
+  async #moveIntoIndexed(job: Job, ckey: string, opts: { rescueActive?: boolean } = {}): Promise<EnqueueResult | null> {
+    const id = String(job.id);
+    const raw = await this.#connection.get(ckey);
+    if (!raw) return null;
+    let ref: MovedRef;
+    try {
+      ref = JSON.parse(raw) as MovedRef;
+    } catch {
+      return null; // corrupt index — treat as self
+    }
+    if (ref.jobId === id && ref.queue === job.queueName) return null;
+    const other = await this.queue(ref.queue).getJob(ref.jobId);
+    if (!other || !PENDING_STATES.has(await other.getState())) return null;
     const data = job.data as TurnJob;
-    const ckey = this.keys.coalesce(data.sessionId);
-    const lockKey = this.keys.coalesceLock(data.sessionId);
+    const holdId = randomUUID();
+    const hold = await this.queue(ref.queue).add("turn", data, { ...this.defaultJobOpts(), jobId: holdId, delay: SWAP_HOLD_MS });
+    await this.#markMoved(id, { queue: ref.queue, jobId: holdId });
+    if (this.#beforeSwapRemove) await this.#beforeSwapRemove();
+    const took = await this.#take(job, opts);
+    if (took !== "taken") {
+      await hold.remove().catch(() => {});
+      await this.#connection.del(this.keys.jobMoved(id)).catch(() => {});
+      return { jobId: id, queue: job.queueName, coalesced: false };
+    }
+    if (this.#afterTakeOriginal) await this.#afterTakeOriginal();
+    const appended = await this.#tryAppend(ckey, data, undefined, { first: true });
+    if (appended) {
+      // A refused take means the hold lapsed and a worker took the copy: the
+      // messages run twice (at-least-once), never zero times.
+      await this.#take(hold).catch(() => false);
+      // Both markers: a follower may be watching the original or the copy.
+      await this.#markMoved(holdId, { queue: appended.queue, jobId: appended.jobId });
+      await this.#markMoved(id, { queue: appended.queue, jobId: appended.jobId });
+      return appended;
+    }
+    // The indexed job was claimed meanwhile: the copy runs the messages.
+    await hold.promote().catch(() => {});
+    await this.#connection.set(ckey, JSON.stringify({ queue: ref.queue, jobId: holdId }), "PX", COALESCE_TTL_MS);
+    return { jobId: holdId, queue: ref.queue, coalesced: false };
+  }
+
+  /**
+   * Move a job to `label`'s queue (node labels spec §4.6): a pending job after
+   * a relabel, a job claimed by a node without its label, or the reaper
+   * draining a dead node's own queue. The job keeps its id, so its token's `job` claim keeps
+   * matching (token refresh and reissue bind on it) and the turn-done marker
+   * still dedups it. Under the session's append lock:
+   *
+   * - already on that queue: nothing to do;
+   * - already moved (a job-moved marker sends it away from this queue, or the
+   *   target already holds this id in any state): the move is DONE — return
+   *   where it went, add nothing. This makes a re-delivered claim idempotent:
+   *   a node that died after adding the copy but before completing the
+   *   original must not append the messages twice or start a second copy;
+   * - the coalesce index points at another pending job: append there;
+   * - otherwise put a copy on the label queue and re-point the index.
+   *
+   * `claimed`: the caller is the worker holding this job (a label mismatch at
+   * claim). The original cannot be removed while locked; the caller completes
+   * it instead. Unclaimed: through #swap, so the messages run exactly once.
+   * `rescueActive` (reaper, dead node): an active job whose lock has expired is
+   * moved too; one whose lock is live is left alone.
+   */
+  async moveTo(job: Job, label: string, opts: MoveOpts = {}): Promise<EnqueueResult> {
+    const target = labelTurnsQueue(label);
+    const from = job.queueName;
+    const id = String(job.id);
+    if (from === target) return { jobId: id, queue: target, coalesced: false };
+    const { sessionId } = job.data as TurnJob;
+    const ckey = this.keys.coalesce(sessionId);
+    const lockKey = this.keys.coalesceLock(sessionId);
     const lockOwner = randomUUID();
     await this.#acquireAppendLock(lockKey, lockOwner);
     try {
-      const existing = await this.#connection.get(ckey);
-      let indexedElsewhere = false;
-      if (existing) {
-        try {
-          indexedElsewhere = (JSON.parse(existing) as { jobId: string }).jobId !== job.id;
-        } catch {
-          /* corrupt index — treat as self */
+      const done = await this.movedTo(id);
+      if (done && done.queue !== from) return { jobId: done.jobId, queue: done.queue, coalesced: false };
+      if (await this.queue(target).getJob(id)) {
+        await this.#markMoved(id, { queue: target, jobId: id });
+        return { jobId: id, queue: target, coalesced: false };
+      }
+      // `job` was read before the lock: another mover (a second reaper) may
+      // have merged a rescued turn's messages into it since, so an unclaimed
+      // job is read again under the lock. Gone = someone else took it.
+      if (!opts.claimed) {
+        const current = await this.queue(from).getJob(id);
+        if (!current) return { jobId: id, queue: from, coalesced: false };
+        job = current;
+      }
+      const data = job.data as TurnJob;
+      if (opts.claimed) {
+        // The original stays locked by the caller, so the index cannot point
+        // at it usefully; append to another pending job if there is one.
+        const raw = await this.#connection.get(ckey);
+        const ref = raw ? (() => { try { return JSON.parse(raw) as MovedRef; } catch { return null; } })() : null;
+        if (ref && !(ref.jobId === id && ref.queue === from)) {
+          // Its messages are normally older than the pending job's: the hint
+          // for when their ts cannot tell (mergesFirst).
+          const appended = await this.#tryAppend(ckey, data, undefined, { first: true });
+          if (appended) {
+            await this.#markMoved(id, { queue: appended.queue, jobId: appended.jobId });
+            return appended;
+          }
         }
+        // Add, then mark: a crash in between leaves the copy on the target,
+        // which the target check above treats as done on re-delivery.
+        const res = await this.#addFresh(data, target, ckey, id);
+        await this.#markMoved(id, { queue: target, jobId: id });
+        return res;
       }
-      if (indexedElsewhere) {
-        const appended = await this.#tryAppend(ckey, data);
-        if (appended) {
-          await job.remove();
-          return appended;
-        }
-      }
-      const res = await this.#addFresh(data, TURNS_QUEUE, ckey);
-      try {
-        await job.remove();
-      } catch {
-        await this.queue(TURNS_QUEUE)
-          .remove(res.jobId)
-          .catch(() => {});
-      }
-      return res;
+      const take = { rescueActive: opts.rescueActive };
+      const appended = await this.#moveIntoIndexed(job, ckey, take);
+      if (appended) return appended;
+      // Refused or done: the job is not on the target. A done job is gone from
+      // its queue as well (the caller can tell by looking it up there).
+      if ((await this.#swap(job, target, data, id, take)) !== "moved") return { jobId: id, queue: from, coalesced: false };
+      await this.#connection.set(ckey, JSON.stringify({ queue: target, jobId: id }), "PX", COALESCE_TTL_MS);
+      return { jobId: id, queue: target, coalesced: false };
     } finally {
       await releaseLock(this.#connection, lockKey, lockOwner).catch(() => {});
     }
+  }
+
+  /**
+   * Re-dispatch the turn of a job that FAILED with LABEL_MISMATCH (node labels
+   * spec §4.6) as `job` (the caller sets its label, token and
+   * relabelAttempts) on `label`'s queue, under `newJobId`. Once per failed job
+   * across every gateway replica: a SET NX guard decides which follower does
+   * it; the others get null and follow the job-moved marker the winner writes.
+   * Through enqueueTurn, so it coalesces like any message (and a message the
+   * pending job already holds is not added twice). A crash between the guard
+   * and the marker delays the re-dispatch until the guard lapses
+   * (REDISPATCH_TTL_MS), when a surviving follower redoes it.
+   */
+  async redispatch(failedJobId: string, job: TurnJob, label: string, newJobId: string): Promise<EnqueueResult | null> {
+    const won = await this.#connection.set(this.keys.redispatch(failedJobId), newJobId, "PX", REDISPATCH_TTL_MS, "NX");
+    if (won !== "OK") return null;
+    // The failed turn's messages are normally older than any pending job's:
+    // the hint for when their ts cannot tell (mergesFirst).
+    const res = await this.enqueueTurn(job, { label }, newJobId, { first: true });
+    await this.#markMoved(failedJobId, { queue: res.queue, jobId: res.jobId });
+    return res;
   }
 
   /** Spin on the per-session append lock. TTL 2s covers a crashed appender;

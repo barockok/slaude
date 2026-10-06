@@ -20,6 +20,7 @@ import { deleteCredential, putCredential } from "../../db/mcp-credentials";
 import type { CredentialOwner } from "../credential-owner";
 import type { ConnectScope } from "./scope-home";
 import { oauthKey, toStoredEntry, type OAuthServerConfig, type OAuthTokens } from "./store";
+import { bumpMcpCredEpoch } from "../../gateway/core/mcp-cred-epoch";
 
 interface Target {
   scope: ConnectScope;
@@ -56,6 +57,9 @@ export async function persistConnectForOwner(
   tokens: OAuthTokens,
 ): Promise<void> {
   await putCredential(owner, oauthKey(serverName, cfg), toStoredEntry(serverName, cfg, tokens));
+  // Warm sessions of this identity reboot on their next turn and re-list
+  // their bridged tools (mcp-cred-epoch.ts).
+  await bumpMcpCredEpoch(owner);
 }
 
 export async function persistConnect(
@@ -72,5 +76,7 @@ export async function persistDisconnect(
 ): Promise<{ ok: true; removed: boolean } | { ok: false; reason: "no-account" }> {
   const owner = await ownerFor(t);
   if (!owner) return { ok: false, reason: "no-account" };
-  return { ok: true, removed: await deleteCredential(owner, oauthKey(t.serverName, t.cfg)) };
+  const removed = await deleteCredential(owner, oauthKey(t.serverName, t.cfg));
+  if (removed) await bumpMcpCredEpoch(owner);
+  return { ok: true, removed };
 }

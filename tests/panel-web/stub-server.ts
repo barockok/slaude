@@ -13,7 +13,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FIXTURE_SESSIONS, SCRIPT, DETAIL_ID } from "../../src/gateway/panel/web/app/fixtures";
+import { FIXTURE_SESSIONS, SCRIPT, DETAIL_ID, FIXTURE_PERSONAS, fixturePersona } from "../../src/gateway/panel/web/app/fixtures";
 
 const PORT = Number(process.env.PORT ?? 4319);
 const ORIGIN = `http://localhost:${PORT}`;
@@ -198,6 +198,17 @@ async function fixtureApi(req: Request, url: URL, seg: string[]): Promise<Respon
   const auth = guardRequest(req, { html: false });
   if (!auth.ok) return auth.response;
   const { operatorId: me, role } = auth;
+
+  // Persona reads (WS-C §4.4): any operator, like the real routes. STUB_SQLITE=1
+  // answers 409 as a sqlite deployment does.
+  if (seg[2] === "personas" && req.method === "GET") {
+    if (process.env.STUB_SQLITE === "1") return json(409, { error: "persona sync requires Postgres (SLAUDE_DB=pg); this deployment runs on sqlite" });
+    if (seg.length === 3) return json(200, { revision: "fixture-rev", personas: FIXTURE_PERSONAS });
+    if (seg.length === 4) {
+      const p = fixturePersona(decodeURIComponent(seg[3]!));
+      return p ? json(200, p) : json(404, { error: "no persona with that name" });
+    }
+  }
 
   if (seg.length === 3 && seg[2] === "sessions") {
     const q = url.searchParams;

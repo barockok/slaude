@@ -40,6 +40,15 @@ const err = (text: string): ToolResult => ({
  */
 export type SlackContext = {
   client: WebClient;
+  /** Bot token of the app this event belongs to. HTTP mode's lazy client has no
+   *  `.token`, so token-authenticated downloads (read_canvas) take it from here. */
+  botToken?: string;
+  /** Paths with no inbound event (cron, /v1) resolve the bot token from the
+   *  session's app through the registry instead; read per call. */
+  resolveBotToken?: () => string | undefined;
+  /** Slack app (api_app_id) this session belongs to. With `teamId` it names
+   *  the registered app outbound calls go out as (D1.2). */
+  apiAppId?: string;
   channel: string;
   threadTs: string;
   /** ts of the latest inbound user message in this thread. */
@@ -432,7 +441,10 @@ export const slackHandlers = {
       const info = await ctx.client.files.info({ file: canvasId });
       const url = (info.file as any)?.url_private_download;
       if (!url) return err("canvas has no downloadable content yet (empty canvas?)");
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${ctx.client.token}` } });
+      const token =
+        ctx.botToken ?? ctx.resolveBotToken?.() ?? (typeof ctx.client.token === "string" ? ctx.client.token : undefined);
+      if (!token) return err("canvas download needs a bot token and none is available for this app");
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) return err(`canvas download failed: HTTP ${res.status}`);
       return ok(await res.text());
     } catch (e: any) {

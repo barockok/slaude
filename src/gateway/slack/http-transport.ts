@@ -17,9 +17,10 @@
  *      same argument shapes the Socket Mode transport produces
  *
  * Multi-app: the transport holds one WebClient per registered (app, team) row
- * and resolves the client per request. `transport.client` (the gateway's
- * app-level singleton, used for boot-time auth.test etc.) lazily proxies to
- * the primary app — the oldest registered row — and blocks until start().
+ * and resolves the client per request. Outbound calls take `clientFor(app)`,
+ * which resolves the app a session, cron job or gate belongs to (D1.2);
+ * `transport.client` lazily proxies to the primary app — the oldest
+ * registered row — for callers with no identity. Both block until start().
  *
  * NOT here on purpose: `/slack/commands` — slaude has no Bolt slash-command
  * handlers; slash commands are plain message text parsed by commands.ts, so
@@ -27,6 +28,7 @@
  */
 import type {
   ActionHandler,
+  AppRef,
   EventHandler,
   Middleware,
   Transport,
@@ -45,6 +47,8 @@ type AppEntry = {
   row: SlackAppRow;
   signingSecret: string;
   client: WebClientLike;
+  /** Decrypted bot token of THIS app, handed to event handlers (attachment download). */
+  botToken: string;
 };
 
 export type HttpTransportOptions = {
@@ -114,7 +118,7 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
     primary = null;
     for (const row of rows) {
       const { botToken, signingSecret } = decryptTokens(row);
-      const entry: AppEntry = { row, signingSecret, client: makeClient(botToken) };
+      const entry: AppEntry = { row, signingSecret, client: makeClient(botToken), botToken };
       entries.set(`${row.api_app_id}:${row.team_id}`, entry);
       const group = byApp.get(row.api_app_id) ?? [];
       group.push(entry);
@@ -150,6 +154,7 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
       teamId: body.team_id ?? event.team,
       apiAppId: body.api_app_id,
       botUserId: entry.row.bot_user_id ?? undefined,
+      botToken: entry.botToken,
     };
     for (const h of events.get(event.type) ?? []) {
       await h({ event, client: entry.client, context });
@@ -353,41 +358,93 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
     return new Response("not found", { status: 404 });
   }
 
-  // Gateway construction touches transport.client before start() (boot-time
-  // agent-id resolution fires auth.test asynchronously). Every method of this
-  // proxy parks on the started promise and then delegates to the primary
-  // (oldest-registered) app's client.
-  const p = <T>(fn: (c: WebClientLike) => Promise<T>): Promise<T> =>
-    started.then(() => fn(primary!.client));
-  const lazyClient = {
-    auth: { test: (a?: any) => p((c) => c.auth.test(a)) },
-    chat: {
-      postMessage: (a: any) => p((c) => c.chat.postMessage(a)),
-      update: (a: any) => p((c) => c.chat.update(a)),
-      postEphemeral: (a: any) => p((c) => c.chat.postEphemeral(a)),
-    },
-    reactions: {
-      add: (a: any) => p((c) => c.reactions.add(a)),
-      remove: (a: any) => p((c) => c.reactions.remove(a)),
-    },
-    conversations: {
-      info: (a: any) => p((c) => c.conversations.info(a)),
-      members: (a: any) => p((c) => c.conversations.members(a)),
-      replies: (a: any) => p((c) => c.conversations.replies(a)),
-    },
-    users: {
-      info: (a: any) => p((c) => c.users.info(a)),
-      profile: { set: (a: any) => p((c) => c.users.profile.set(a)) },
-    },
-    search: { messages: (a: any) => p((c) => c.search.messages(a)) },
-    // Slack Agents status indicator — used behind an any-cast (status.ts).
-    assistant: {
-      threads: { setStatus: (a: any) => p((c) => (c as any).assistant.threads.setStatus(a)) },
-    },
-  } as unknown as WebClientLike;
+  /** The registered app `app` names (D1.2). An exact (app, team) pair wins; a
+   *  partial identity (rows written before the app was recorded) resolves only
+   *  when exactly one registered app matches it; with a single registered app
+   *  that app answers an identity naming NO app. An identity naming an app that
+   *  is not registered (uninstalled) never falls through to another app.
+   *  Anything else throws: posting as some other app is the defect this
+   *  replaces. */
+  function resolveEntry(app: AppRef): AppEntry {
+    if (app.apiAppId && app.teamId) {
+      const exact = entries.get(`${app.apiAppId}:${app.teamId}`);
+      if (exact) return exact;
+    } else if (app.apiAppId || app.teamId) {
+      const matches = [...entries.values()].filter(
+        (e) => (!app.apiAppId || e.row.api_app_id === app.apiAppId) && (!app.teamId || e.row.team_id === app.teamId),
+      );
+      if (matches.length === 1) return matches[0]!;
+    }
+    if (!app.apiAppId && entries.size === 1 && primary) return primary;
+    throw new Error(
+      `[slack-http] no registered Slack app for app=${app.apiAppId ?? "-"} team=${app.teamId ?? "-"} (${entries.size} registered)`,
+    );
+  }
+
+  // Gateway construction touches clients before start() (boot-time agent-id
+  // resolution fires auth.test asynchronously). A recursive Proxy forwards any
+  // `a.b.c(...)` to the client `resolve` picks: the call parks on `started`,
+  // then resolves the same path on the real client. A hand-listed proxy missed
+  // methods twice, so a new Slack method must not need a change here.
+  // Property names that serializers, inspectors and promise machinery probe: they
+  // must read as absent, not as a callable that fires a (rejecting) Slack call.
+  const PROBES = new Set(["then", "toJSON", "inspect", "valueOf", "toString", "asymmetricMatch", "$$typeof", "nodeType"]);
+  const lazyAt = (resolve: () => AppEntry, path: string[]): any =>
+    new Proxy(function () {}, {
+      get: (_t, key) => (typeof key === "symbol" || PROBES.has(key) ? undefined : lazyAt(resolve, [...path, key])),
+      apply: (_t, _this, args) =>
+        started.then(() => {
+          let parent: any = resolve().client;
+          let fn: any = parent;
+          for (const k of path) {
+            parent = fn;
+            fn = fn[k];
+          }
+          // An unknown method is not a function: this throws the TypeError a real client would.
+          return Reflect.apply(fn, parent, args);
+        }),
+    });
+  // The ROOT must not be callable: SlackSurface and Reactions treat a function
+  // argument as a client resolver and would call it, getting a Promise back.
+  const lazyRoot = (resolve: () => AppEntry): WebClientLike =>
+    new Proxy({} as object, {
+      get: (_t, key) => (typeof key === "symbol" || PROBES.has(key) ? undefined : lazyAt(resolve, [key])),
+    }) as WebClientLike;
+  /** App-level client: the primary (oldest-registered) app. Kept for callers
+   *  with no identity at all; outbound paths use clientFor(). */
+  const lazyClient = lazyRoot(() => primary!);
+  /** One lazy client per identity, resolved per call so a registry reload
+   *  (token rotation, a new install) reaches clients already held. */
+  const perApp = new Map<string, WebClientLike>();
 
   return {
     client: lazyClient,
+    clientFor(app: AppRef): WebClientLike {
+      const key = `${app.apiAppId ?? ""}:${app.teamId ?? ""}`;
+      let c = perApp.get(key);
+      if (!c) {
+        const ref = { apiAppId: app.apiAppId, teamId: app.teamId };
+        c = lazyRoot(() => resolveEntry(ref));
+        perApp.set(key, c);
+      }
+      return c;
+    },
+    botTokenFor(app: AppRef): string | undefined {
+      try {
+        return resolveEntry(app).botToken;
+      } catch {
+        return undefined;
+      }
+    },
+    async apps() {
+      await started;
+      return [...entries.values()].map((e) => ({
+        apiAppId: e.row.api_app_id,
+        teamId: e.row.team_id,
+        botUserId: e.row.bot_user_id ?? undefined,
+        client: e.client,
+      }));
+    },
     get port() {
       return server?.port ?? null;
     },

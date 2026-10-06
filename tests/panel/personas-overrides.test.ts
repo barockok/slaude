@@ -81,8 +81,15 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("panel persona overrides", () =>
     expect(ana.fields.model).toEqual({ git: "m-git", live: "m-live", overridden: true });
     expect(ana.fields.mcp).toEqual({ git: "present", live: "present", overridden: false });
     expect(ana.userToken).toBe("present");
+    expect(ana.runsOn).toBeNull();
     expect(text).not.toContain("user-token-");
     expect(text).not.toContain("http://x");
+  });
+
+  test("GET reports runsOn (node labels spec §4.5)", async () => {
+    await sync([row("ana", { runsOn: "engineering" })]);
+    const body = await (await panel.fetch(get("/panel/api/personas", superadmin)))!.json() as any;
+    expect(body.personas.find((p: any) => p.name === "ana").runsOn).toBe("engineering");
   });
 
   test("GET is readable by an operator (like sessions), still redacted", async () => {
@@ -104,6 +111,7 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("panel persona overrides", () =>
   test("only soul, model and mcp are overridable", async () => {
     await sync([row("ana")]);
     expect((await panel.fetch(put("/panel/api/personas/ana/overrides/slackUserId", { value: "UEVIL" }, superadmin)))!.status).toBe(422);
+    expect((await panel.fetch(put("/panel/api/personas/ana/overrides/runsOn", { value: "finance" }, superadmin)))!.status).toBe(422);
   });
 
   test("a soul override runs strict extraction; a failure refuses it", async () => {

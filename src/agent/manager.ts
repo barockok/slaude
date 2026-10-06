@@ -38,11 +38,14 @@ import { dbSessionStore, type SessionStore } from "./session-store";
 import * as OneOnOne from "../db/one-on-one";
 import type { OneOnOneLockRow } from "../db/one-on-one";
 import { memory } from "../memory";
-import { scrubChildEnv } from "./child-env";
+import type { MemoryProvider } from "../memory/provider";
+import { ChildEnvPatch, scrubChildEnv, withoutKeys } from "./child-env";
 import { resolveSessionConfigDir } from "./oauth-home";
 import { sessionIdOpts } from "./session-id-opts";
 import { sessionModeBlock } from "./session-mode";
 import { formatSessionNotes } from "./session-notes";
+import { BootFailure, type FailureCode } from "../gateway/core/failure-codes";
+import { redactSecrets } from "../gateway/core/status-text";
 import { REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, makeRemoteCanUseTool } from "../remote/mcp";
 import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/types";
 
@@ -91,11 +94,18 @@ export type AgentEvent =
   | { type: "thinking"; sessionId: string; text: string }
   | { type: "turnStart"; sessionId: string }
   | { type: "done"; sessionId: string; autoEvolve?: boolean }
-  | { type: "error"; sessionId: string; error: string }
+  // `error` is the RAW detail for logs only; Slack gets the fixed text for `code`
+  // (gateway/core/failure-codes.ts). `jobId` lets the gateway post once per job.
+  | { type: "error"; sessionId: string; error: string; code?: FailureCode; jobId?: string }
   | { type: "tokenUsage"; sessionId: string; snapshot: UsageSnapshot }
   | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" };
 
 /** Permission resolver — called per tool use; given a sessionId so transports can present UI in the right thread. */
+/** Per-session child-env overlay: a plain record adds variables; a
+ *  ChildEnvPatch also removes them (WS-A §5.4). */
+export type ChildEnvOverlay = Record<string, string | undefined> | ChildEnvPatch | undefined;
+export type ChildEnvResolver = (sessionId: string) => Promise<ChildEnvOverlay> | ChildEnvOverlay;
+
 export type PermissionResolver = (
   sessionId: string,
   toolName: string,
@@ -107,6 +117,21 @@ export type PermissionResolver = (
 export type McpResolver = (
   sessionId: string,
 ) => Record<string, McpServerConfig> | undefined | Promise<Record<string, McpServerConfig> | undefined>;
+
+/** A node's manifest servers with the transport resolver's laid over them: a
+ *  gateway-resolved server wins a name collision, with a warning naming it. */
+function mergeLocalMcp(
+  sessionId: string,
+  local: Record<string, McpServerConfig>,
+  resolved: Record<string, McpServerConfig> | undefined,
+): Record<string, McpServerConfig> {
+  for (const name of Object.keys(resolved ?? {})) {
+    if (Object.hasOwn(local, name)) {
+      console.warn(`[node] session=${sessionId} MCP server '${name}' is in the node manifest and also resolved by the gateway; the gateway's wins`);
+    }
+  }
+  return { ...local, ...(resolved ?? {}) };
+}
 
 /** Stop-hook guard. Return an instruction string to block the agent from
  *  stopping (SDK feeds reason back, agent continues). Return null to allow stop.
@@ -227,7 +252,7 @@ export class AgentManager extends EventEmitter {
   #store: SessionStore = dbSessionStore;
   /** Optional per-session child-env overlay (node runtime bundle creds). */
   #childEnvResolver:
-    | ((sessionId: string) => Promise<Record<string, string | undefined> | undefined> | Record<string, string | undefined> | undefined)
+    | ChildEnvResolver
     | undefined;
   #resolver: PermissionResolver | undefined;
   /** Optional per-session CLAUDE_CONFIG_DIR override. Node workers install one
@@ -237,6 +262,10 @@ export class AgentManager extends EventEmitter {
   #personaSoulResolver: PersonaSoulResolver | undefined;
   #personaModelResolver: PersonaModelResolver | undefined;
   #mcpResolver: McpResolver | undefined;
+  #localMcpResolver: McpResolver | undefined;
+  /** Episodic memory. The process provider in mono and on the gateway; the
+   *  node worker installs a REST client of the gateway's memory routes. */
+  #memory: MemoryProvider = memory;
   #stopGuard: StopGuard | undefined;
   #remoteResolver: ((sessionId: string) => Promise<RemoteTarget | null>) | undefined;
   #remoteFactory: ((sessionId: string, t: RemoteTarget) => Promise<RemoteHandle> | RemoteHandle) | undefined;
@@ -300,12 +329,10 @@ export class AgentManager extends EventEmitter {
   /** Install a per-session child-env overlay (spec §6: node workers source
    *  provider credentials from the tenant runtime bundle, not process env).
    *  Resolved at session boot, merged OVER the process-env-derived provider
-   *  vars; scrubChildEnv still applies afterwards. Unset = no change. */
-  setChildEnvResolver(
-    resolver:
-      | ((sessionId: string) => Promise<Record<string, string | undefined> | undefined> | Record<string, string | undefined> | undefined)
-      | undefined,
-  ) {
+   *  vars; a ChildEnvPatch also deletes names; scrubChildEnv still applies
+   *  afterwards. A throw fails the boot with a BootFailure (its own code, else
+   *  PROVIDER_CREDENTIALS_UNAVAILABLE). Unset = no change. */
+  setChildEnvResolver(resolver: ChildEnvResolver | undefined) {
     this.#childEnvResolver = resolver;
   }
 
@@ -382,6 +409,19 @@ export class AgentManager extends EventEmitter {
   /** Install a transport-level MCP server resolver. Called once per session start. */
   setMcpResolver(resolver: McpResolver | undefined) {
     this.#mcpResolver = resolver;
+  }
+
+  /** Node only (node labels spec §4.10): the session's stdio servers from the
+   *  node manifest. Installed, it REPLACES installed-plugin MCP servers, the
+   *  transport resolver's output is merged after it (and wins a name
+   *  collision), and the CLI reads no other MCP source (strictMcpConfig). */
+  setLocalMcpResolver(resolver: McpResolver | undefined) {
+    this.#localMcpResolver = resolver;
+  }
+
+  /** Replace the memory provider (the node role: memory served by the gateway). */
+  setMemoryProvider(provider: MemoryProvider) {
+    this.#memory = provider;
   }
 
   /** Install a transport-level Stop hook guard (e.g. Slack "must reply" enforcement). */
@@ -505,7 +545,24 @@ export class AgentManager extends EventEmitter {
     threadTs?: string | null,
   ): Promise<string | undefined> {
     return this.#cronOAuthUser.get(sessionId)
-      ?? (channel && threadTs ? (await OneOnOne.find(channel, threadTs))?.locked_user : undefined);
+      ?? (channel && threadTs ? (await this.#lockFor(sessionId, channel, threadTs))?.locked_user : undefined);
+  }
+
+  #lockResolver: ((sessionId: string) => Promise<OneOnOneLockRow | null | undefined>) | null = null;
+
+  /** Install where a session's /1on1 lock comes from. A node has no database:
+   *  its resolver reads the lock the gateway signed into the job token. The
+   *  resolver returns undefined when it does not know (a token from an older
+   *  gateway), which falls back to the database lookup. Unset = the database
+   *  (mono, gateway). */
+  setSessionLockResolver(fn: ((sessionId: string) => Promise<OneOnOneLockRow | null | undefined>) | null) {
+    this.#lockResolver = fn;
+  }
+
+  async #lockFor(sessionId: string, channel: string, threadTs: string): Promise<OneOnOneLockRow | null> {
+    const supplied = this.#lockResolver ? await this.#lockResolver(sessionId) : undefined;
+    if (supplied !== undefined) return supplied;
+    return OneOnOne.find(channel, threadTs);
   }
 
   /** Number of SDK Query sessions currently live in this process. */
@@ -784,7 +841,10 @@ export class AgentManager extends EventEmitter {
       channelId?: string | null;
       lock?: OneOnOneLockRow | null;
       remote?: { userId: string; dir: string } | null;
-      mcpServers?: Record<string, McpServerConfig>;
+      mcpServers?: Record<string, unknown>;
+      /** The CLI reads no MCP source but mcpServers (a node): the block is
+       *  the whole list. */
+      strictMcp?: boolean;
       memBlock?: string | null;
     },
   ): Promise<string> {
@@ -807,9 +867,11 @@ export class AgentManager extends EventEmitter {
       mcpServers
         ? `<mcp-servers>\nMCP server namespaces mounted this session. Call tools as \`mcp__<server>__<tool>\`.\n${Object.keys(mcpServers)
             .map((n) => `- ${n}`)
-            .join(
-              "\n",
-            )}\nAdditional servers may be available if configured in ~/.claude/mcp.json or .mcp.json in the working directory.\n</mcp-servers>`
+            .join("\n")}\n${
+            ctx.strictMcp
+              ? ""
+              : "Additional servers may be available if configured in ~/.claude/mcp.json or .mcp.json in the working directory.\n"
+          }</mcp-servers>`
         : "<mcp-servers>none</mcp-servers>",
       memBlock ? `<memory-context>\n${memBlock}\n</memory-context>` : "",
     ]
@@ -830,6 +892,18 @@ export class AgentManager extends EventEmitter {
   /** Boot a session, marked as booting (see ensureConfigFp) from the first
    *  synchronous step until it is live or the boot fails. A counter, since a
    *  retry path may start a boot for the same id while another is unwinding. */
+  /** A fire-and-forget reboot (resume-miss retry) has no caller to reject to:
+   *  its failure is the turn's error event, with its code when it is typed. */
+  #rebootFailed(sessionId: string, e: unknown) {
+    console.error(`[mgr] reboot failed session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+    this.emit("event", {
+      type: "error",
+      sessionId,
+      error: "session reboot failed",
+      code: e instanceof BootFailure ? e.code : "TURN_FAILED",
+    } satisfies AgentEvent);
+  }
+
   async #startSession(sessionId: string, firstText: string) {
     this.#booting.set(sessionId, (this.#booting.get(sessionId) ?? 0) + 1);
     let marked = true;
@@ -854,7 +928,13 @@ export class AgentManager extends EventEmitter {
     const row = await this.#store.findById(sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);
 
-    const memBlock = await memory.prefetch(sessionId);
+    // Memory must never break a turn (the brain provider's own policy). The
+    // sqlite provider throws where no database is open; a node uses the
+    // gateway's memory routes instead (setMemoryProvider).
+    const memBlock = await this.#memory.prefetch(sessionId).catch((e) => {
+      console.error(`[mgr] memory prefetch failed session=${sessionId}:`, e instanceof Error ? e.message : e);
+      return null;
+    });
     const abort = new AbortController();
     const queue: string[] = [firstText];
     let resolveNext: (() => void) | null = null;
@@ -911,11 +991,24 @@ export class AgentManager extends EventEmitter {
     // Node runtime (spec §6): overlay wins over process-env-derived provider
     // vars — a node's own env carries no tenant credentials, the runtime
     // bundle does. No resolver installed → no change (mono/gateway).
+    // A resolver failure is FATAL and typed (WS-A §5.4): spawning on the node's
+    // own environment would run the persona on someone else's credentials.
+    let unsetChildEnv: readonly string[] = [];
     if (this.#childEnvResolver) {
+      let overlay: ChildEnvOverlay;
       try {
-        Object.assign(providerEnv, (await this.#childEnvResolver(sessionId)) ?? {});
+        overlay = await this.#childEnvResolver(sessionId);
       } catch (e) {
-        console.error(`[mgr] child-env resolver failed session=${sessionId}:`, e);
+        console.error(`[mgr] child-env resolver failed session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+        throw e instanceof BootFailure
+          ? e
+          : new BootFailure("PROVIDER_CREDENTIALS_UNAVAILABLE", "child-env resolver failed", { cause: e });
+      }
+      if (overlay instanceof ChildEnvPatch) {
+        Object.assign(providerEnv, overlay.set);
+        unsetChildEnv = overlay.unset.filter((k) => !Object.hasOwn(overlay.set, k));
+      } else {
+        Object.assign(providerEnv, overlay ?? {});
       }
     }
     // /1on1 privacy: when this session's thread is locked, point the claude-code
@@ -926,7 +1019,7 @@ export class AgentManager extends EventEmitter {
     // re-resolution (CLAUDE_CONFIG_DIR is read once at child boot).
     const lock =
       row.slack_channel_id && row.slack_thread_ts
-        ? await OneOnOne.find(row.slack_channel_id, row.slack_thread_ts)
+        ? await this.#lockFor(sessionId, row.slack_channel_id, row.slack_thread_ts)
         : null;
     const oauthUser = await this.resolveEffectiveIdentity(
       sessionId,
@@ -953,14 +1046,22 @@ export class AgentManager extends EventEmitter {
 
     const mode = (row.permission_mode || "default") as PermissionMode;
     const mcpServers = await this.#mcpResolver?.(sessionId);
+    // Node: the manifest's stdio servers for this persona, and nothing else
+    // local (no plugin MCP from disk, no CLI discovery). The transport's
+    // servers go after them, so a gateway-resolved name wins a collision.
+    const localMcp = this.#localMcpResolver ? ((await this.#localMcpResolver(sessionId)) ?? {}) : null;
+    const baseMcpServers = localMcp ? mergeLocalMcp(sessionId, localMcp, mcpServers) : mcpServers;
     // Remote mode: tools for this session run on the lock owner's machine.
     const remoteTarget = this.#remoteResolver ? await this.#remoteResolver(sessionId) : null;
     const model = await this.#sessionModel(sessionId, row.model, personaName);
+    // Strict (node): the prompt lists exactly what the CLI will mount.
+    const strictNames = localMcp ? { ...baseMcpServers, ...(remoteTarget ? { [REMOTE_MCP_NAME]: true } : {}) } : null;
     const systemAppend = await this.#buildSystemAppend(sessionId, personaName, {
       channelId: row.slack_channel_id,
       lock,
       remote: remoteTarget ? { userId: remoteTarget.userId, dir: remoteTarget.dir } : null,
-      mcpServers,
+      mcpServers: strictNames ? (Object.keys(strictNames).length > 0 ? strictNames : undefined) : mcpServers,
+      strictMcp: !!localMcp,
       memBlock,
     });
     const preCompact: HookCallback = async (input) => {
@@ -1011,8 +1112,13 @@ export class AgentManager extends EventEmitter {
     // each plugin's skills/commands for this session. The SDK's `--plugin-dir`
     // path does NOT auto-mount the plugin's .mcp.json servers (CLI landmine),
     // so we also read each plugin's .mcp.json and merge into mcpServers.
-    const pluginPaths = loadInstalledPluginPaths();
-    const pluginMcps = loadInstalledPluginMcps();
+    // On a node (a local MCP resolver installed) plugin MCP servers run only
+    // when the node manifest declares them: none are read from disk, and every
+    // plugin skips the CLI's own .mcp.json discovery.
+    const pluginPaths = localMcp
+      ? loadInstalledPluginPaths().map((p) => ({ ...p, skipMcpDiscovery: true }))
+      : loadInstalledPluginPaths();
+    const pluginMcps = localMcp ? {} : loadInstalledPluginMcps();
     // Always mount ~/.slaude/ as a local plugin so the SDK discovers
     // ~/.slaude/skills/<slug>/SKILL.md and injects them into <system-reminder>.
     // skipMcpDiscovery prevents the SDK from reading slaude's own mcp.json
@@ -1029,10 +1135,15 @@ export class AgentManager extends EventEmitter {
     const canUseTool: CanUseTool | undefined = remoteHandle
       ? makeRemoteCanUseTool(baseCanUse, () => this.#live.get(sessionId)?.mode ?? mode)
       : baseCanUse;
+    if (remoteHandle && localMcp && Object.hasOwn(localMcp, REMOTE_MCP_NAME)) {
+      console.warn(
+        `[node] session=${sessionId} MCP server '${REMOTE_MCP_NAME}' is in the node manifest; this session runs remotely, so the remote tools replace it`,
+      );
+    }
     let options: Options;
     try {
       const mergedMcpServers = {
-        ...(mcpServers ?? {}),
+        ...(baseMcpServers ?? {}),
         ...pluginMcps,
         ...(remoteHandle && remoteTarget
           ? { [REMOTE_MCP_NAME]: createRemoteMcp({ exec: remoteHandle.exec, root: remoteTarget.dir, sessionKey: sessionId }) }
@@ -1047,9 +1158,10 @@ export class AgentManager extends EventEmitter {
         // SLAUDE_MODEL MUST be set to a provider-qualified id.
         ...(model ? { model } : {}),
         abortController: abort,
-        env: scrubChildEnv({ ...process.env, ...providerEnv }),
+        env: scrubChildEnv(withoutKeys({ ...process.env, ...providerEnv }, unsetChildEnv)),
         ...(canUseTool ? { canUseTool } : {}),
         ...(hasMcpServers ? { mcpServers: mergedMcpServers } : {}),
+        ...(localMcp ? { strictMcpConfig: true } : {}),
         plugins: allPlugins,
         // The aliased built-ins stay enabled (an alias needs its source tool, spike §8);
         // local-only tools with no remote counterpart are removed outright.
@@ -1141,7 +1253,7 @@ export class AgentManager extends EventEmitter {
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           // Fire and forget — restart with the same first prompt.
-          void this.#startSession(sessionId, firstText);
+          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e));
           return;
         }
         // Mirror failure: we seeded --session-id but a transcript with that id
@@ -1153,7 +1265,7 @@ export class AgentManager extends EventEmitter {
           await this.#store.markStarted(sessionId);
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
-          void this.#startSession(sessionId, firstText);
+          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e));
           return;
         }
         if (live?.reloading) {
@@ -1163,7 +1275,7 @@ export class AgentManager extends EventEmitter {
           this.emit("event", { type: "done", sessionId } satisfies AgentEvent);
         } else {
           metric.errorsTotal.inc({ kind: "sdk" });
-          this.emit("event", { type: "error", sessionId, error: message } satisfies AgentEvent);
+          this.emit("event", { type: "error", sessionId, error: message, code: "TURN_FAILED" } satisfies AgentEvent);
         }
       } finally {
         // A session detached by sendMessage's bounded reload wait no longer owns
@@ -1315,6 +1427,7 @@ export class AgentManager extends EventEmitter {
               type: "error",
               sessionId,
               error: `MCP stream closed ${count}× in a row — circuit open, not auto-reloading. Send any message to restart.`,
+              code: "TURN_FAILED",
             } satisfies AgentEvent);
             // A config reload still applies: it is not an MCP recovery attempt.
             if (deferredReload) this.reload(sessionId);
@@ -1374,6 +1487,7 @@ export class AgentManager extends EventEmitter {
               type: "error",
               sessionId,
               error: errStr,
+              code: "TURN_FAILED",
             } satisfies AgentEvent);
             if (live) live.turnTools = [];
           }
@@ -1407,7 +1521,9 @@ export class AgentManager extends EventEmitter {
     const user = live.turn.user;
     const assistant = live.turn.assistant.join("\n");
     live.turn = { user: "", assistant: [] };
-    void memory.syncTurn({ sessionId: live.id, user, assistant });
+    void this.#memory.syncTurn({ sessionId: live.id, user, assistant }).catch((e) => {
+      console.error(`[mgr] memory sync failed session=${live.id}:`, e instanceof Error ? e.message : e);
+    });
   }
 
   /**

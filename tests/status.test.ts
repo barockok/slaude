@@ -47,6 +47,26 @@ describe("Status", () => {
     expect(f.calls.length).toBe(1);
   });
 
+  // D1.2: each session's status goes out as that session's app.
+  test("a per-session resolver picks the client for each set and clear", async () => {
+    const a = fake();
+    const b = fake();
+    const s = new Status((sid: string) => (sid === "SB" ? b.client : a.client));
+    await s.set("SB", "C", "T", "thinking");
+    await s.set("SA", "C", "T2", "thinking");
+    await s.clear("SB");
+    expect(b.calls.map((c) => c.status)).toEqual(["thinking", ""]);
+    expect(a.calls.map((c) => c.status)).toEqual(["thinking"]);
+  });
+
+  test("a resolver that throws is a failed set, not an unhandled rejection", async () => {
+    const s = new Status(() => {
+      throw new Error("no registered Slack app");
+    });
+    await s.set("S", "C", "T", "x");
+    await s.clear("S");
+  });
+
   test("clear swallows error", async () => {
     const f = fake((args) => (args.status === "" ? new Error("boom") : null));
     const s = new Status(f.client);

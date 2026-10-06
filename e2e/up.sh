@@ -25,19 +25,26 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export SLAUDE_LOCAL_PROFILE="$PROFILE"
 
+# The node size up.sh checks for, from the one place it is written down.
+# shellcheck source=/dev/null
+. "$ROOT/deploy/k8s-local/sizing.env"
 if ! minikube -p "$PROFILE" status --format '{{.Host}}' 2>/dev/null | grep -q Running; then
-  minikube start -p "$PROFILE" --driver=docker --cpus="${SLAUDE_LOCAL_CPUS:-3}" --memory="${SLAUDE_LOCAL_MEMORY:-3500}" --addons=metrics-server
+  minikube start -p "$PROFILE" --driver=docker --cpus="${SLAUDE_LOCAL_CPUS:-$LOCAL_NODE_CPUS}" \
+    --memory="${SLAUDE_LOCAL_MEMORY:-$LOCAL_NODE_MEMORY_MB}" --addons=metrics-server
 fi
 "$ROOT/scripts/build-e2e-images.sh"
 
-SCRUB=(ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN SLAUDE_LOCAL_ENV_FILE)
+SCRUB=(ANTHROPIC_API_KEY ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN SLAUDE_LOCAL_ENV_FILE SLAUDE_LOCAL_MODEL)
 unset_args=()
 for name in "${SCRUB[@]}"; do unset_args+=(-u "$name"); done
 
+# SLAUDE_LOCAL_SYNC_PERSONAS=0: the cases seed a never-synced tenant (a synced one
+# takes its souls from the database), so the local persona set is not synced here.
 env "${unset_args[@]}" \
   ANTHROPIC_BASE_URL="http://mock-llm:8080" \
   ANTHROPIC_API_KEY="sk-mock" \
   SLAUDE_LOCAL_OVERLAY="$ROOT/e2e/k8s" \
+  SLAUDE_LOCAL_SYNC_PERSONAS=0 \
   "$ROOT/deploy/k8s-local/up.sh"
 
 kubectl --context "$PROFILE" -n slaude-scale rollout status deploy/mock-llm deploy/fake-slack --timeout=300s

@@ -10,6 +10,11 @@
 #              Set SLAUDE_ROLE=gateway in env, add SLAUDE_REDIS_URL + SLAUDE_NODE_TOKEN.
 #              A gateway refuses to boot unless it also has SLAUDE_SLACK_MODE=http,
 #              SLAUDE_DB=pg + SLAUDE_PG_URL, and SLAUDE_BRAIN_ENGINE=postgres.
+#              The worker reads its OWN env file: copy .env.node.example ->
+#              .env.node (or set SLAUDE_NODE_ENV_FILE). A node refuses to boot
+#              when it holds a gateway-only variable (Slack tokens, the job
+#              secret, the master key, database URLs, ...), so it must never
+#              load the gateway's .env.
 #              For horizontally scaled gateways use docker-compose.scale.yaml.
 
 services:
@@ -70,14 +75,15 @@ services:
         condition: service_healthy
       slaude:
         condition: service_started
+    # Node variables only (.env.node.example): never the gateway's .env.
     env_file:
-      - path: ${SLAUDE_ENV_FILE:-.env}
+      - path: ${SLAUDE_NODE_ENV_FILE:-.env.node}
         required: false
     environment:
       SLAUDE_HOME: /data
       SLAUDE_ROLE: node
       # Redis + gateway URL are docker-network-specific; set here as defaults.
-      # SLAUDE_NODE_TOKEN and SLAUDE_JOB_SECRET come from env_file.
+      # SLAUDE_NODE_TOKEN comes from the node env file.
       SLAUDE_REDIS_URL: ${SLAUDE_REDIS_URL:-redis://redis:6379}
       SLAUDE_GATEWAY_URL: ${SLAUDE_GATEWAY_URL:-http://slaude:8080}
     volumes:

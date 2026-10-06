@@ -13,7 +13,8 @@ import { tryAcquire, release, heartbeat } from "../db/ingest-jobs";
 import { soulSystemBlock } from "../soul/loader";
 import { env } from "../config/env";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
-import { scrubChildEnv } from "../agent/child-env";
+import { scrubChildEnv, TOOLS_SURVIVING_EMPTY_SET } from "../agent/child-env";
+import { SAFE_GIT, gitEnv } from "../config/safe-git";
 
 export type IngestResult = {
   ok: boolean;
@@ -85,6 +86,9 @@ export async function run(opts: IngestOptions): Promise<IngestResult> {
   }
 }
 
+/** Built-in tools the ingest child may use: files only. */
+const INGEST_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep"] as const;
+
 export async function defaultRunSubQuery(
   args: { kbDir: string; readme: string; rawFiles: string[] },
   _query = sdkQuery,
@@ -94,7 +98,7 @@ export async function defaultRunSubQuery(
     "\n\n<ingest-mode>",
     `You are running an ingest pass against the writable knowledge base mounted at ${args.kbDir}.`,
     "The KB's schema is below. Follow it. Read raw/ entries that are not yet reflected in wiki/, update wiki/ pages, append to wiki/log.md, and stop when done.",
-    "Do NOT call mcp__slaude_surface__* or mcp__slaude_slack__*. Do NOT call mcp__slaude_skills__write_skill or sync_manifest. Use Read/Write/Edit/Bash directly.",
+    "Do NOT call mcp__slaude_surface__* or mcp__slaude_slack__*. Do NOT call mcp__slaude_skills__write_skill or sync_manifest. Use Read/Write/Edit/Glob/Grep directly.",
     "</ingest-mode>",
     "\n\n<kb-schema source=\"README.md\">",
     args.readme,
@@ -110,7 +114,16 @@ export async function defaultRunSubQuery(
       systemPrompt,
       cwd: args.kbDir,
       model: env.model() || undefined,
-      permissionMode: "bypassPermissions",
+      // The raw files are untrusted input. File tools only (no shell, web or
+      // subagents), and acceptEdits instead of bypassPermissions: edits are
+      // auto-approved inside the KB dir (cwd) and anything that would need a
+      // prompt is denied, since this child has no one to ask. No MCP servers
+      // or settings-borne tools (WS-D D5.2).
+      tools: [...INGEST_TOOLS],
+      disallowedTools: [...TOOLS_SURVIVING_EMPTY_SET],
+      permissionMode: "acceptEdits",
+      strictMcpConfig: true,
+      settingSources: [],
       // The child runs Bash; hand it no deploy token, master key or PERSONA_*.
       env: scrubChildEnv({ ...process.env }),
     },
@@ -130,28 +143,31 @@ async function defaultPushWiki(args: { repoUrl: string; ref: string; kbDir: stri
   const tmp = mkdtempSync(join(tmpdir(), "slaude-ingest-push-"));
   try {
     try {
-      execSync(`git clone --branch "${args.ref}" --depth 1 "${resolved}" "${tmp}"`, { stdio: "pipe" });
+      execSync(`${SAFE_GIT} clone --branch "${args.ref}" --depth 1 "${resolved}" "${tmp}"`, { stdio: "pipe", env: gitEnv() });
     } catch {
       mkdirSync(tmp, { recursive: true });
-      execSync(`git -c init.defaultBranch="${args.ref}" init`, { cwd: tmp, stdio: "pipe" });
-      execSync(`git remote add origin "${resolved}"`, { cwd: tmp, stdio: "pipe" });
+      execSync(`${SAFE_GIT} -c init.defaultBranch="${args.ref}" init`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
+      execSync(`${SAFE_GIT} remote add origin "${resolved}"`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
     }
-    execSync(`git checkout --orphan "${args.ref}" 2>/dev/null; git branch -M "${args.ref}" 2>/dev/null || true`, { cwd: tmp, stdio: "pipe" });
+    execSync(`${SAFE_GIT} checkout --orphan "${args.ref}" 2>/dev/null; ${SAFE_GIT} branch -M "${args.ref}" 2>/dev/null || true`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
     for (const sub of ["raw", "wiki"]) {
       const dest = join(tmp, sub);
       if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
       const src = join(args.kbDir, sub);
       if (existsSync(src)) execSync(`cp -r "${src}" "${dest}"`, { stdio: "pipe" });
     }
-    execSync("git add -A", { cwd: tmp, stdio: "pipe" });
+    execSync(`${SAFE_GIT} add -A`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
     try {
-      execSync(`git -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: ingest"`, { cwd: tmp, stdio: "pipe" });
-      execSync("git push origin HEAD", { cwd: tmp, stdio: "pipe" });
+      execSync(`${SAFE_GIT} -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: ingest"`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
+      execSync(`${SAFE_GIT} push origin HEAD`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
     } catch {
       // nothing to commit
     }
-    return { sha: execSync("git rev-parse HEAD", { cwd: tmp, encoding: "utf8" }).trim() };
+    return { sha: execSync(`${SAFE_GIT} rev-parse HEAD`, { cwd: tmp, encoding: "utf8", env: gitEnv() }).trim() };
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 }
+
+/** TEST SEAM: the default wiki push. */
+export const __defaultPushWiki = defaultPushWiki;

@@ -10,8 +10,9 @@
  *   - ETag cache for the tenant runtime bundle (If-None-Match / 304).
  */
 import type { NodeCredential } from "../gateway/api/mcp-credentials";
-import { JOB_HEADER } from "../gateway/api/auth";
+import { GATE_DENIED_CODE, JOB_HEADER, LABEL_MISMATCH_CODE, NODE_UNAUTHORIZED_CODE } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
+import { BootFailure } from "../gateway/core/failure-codes";
 
 export interface NodeClientOpts {
   /** Gateway base URL (SLAUDE_GATEWAY_URL), e.g. http://gateway:8080 */
@@ -24,6 +25,20 @@ export interface NodeClientOpts {
   baseDelayMs?: number;
   /** Injectable fetch (tests). */
   fetchImpl?: typeof fetch;
+  /** Bound on one memory call, body included. Default MEMORY_TIMEOUT_MS. */
+  memoryTimeoutMs?: number;
+}
+
+/** A memory call waits at most this long; longer than the gateway's own bound
+ *  on the brain (GATEWAY_MEMORY_TIMEOUT_MS), so the gateway answers first. */
+export const MEMORY_TIMEOUT_MS = 3000;
+
+/** A memory call gave up at its bound. */
+export class MemoryTimeoutError extends Error {
+  override name = "MemoryTimeoutError";
+  constructor(op: string, ms: number) {
+    super(`memory ${op} timed out after ${ms}ms`);
+  }
 }
 
 /** Session row view served by GET /v1/sessions/:id. */
@@ -40,6 +55,8 @@ export interface SessionView {
   slack_team_id: string | null;
   slack_channel_id: string | null;
   slack_thread_ts: string | null;
+  /** Absent from an older gateway's response. */
+  slack_app_id?: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -66,6 +83,94 @@ export class NodeApiError extends Error {
   }
 }
 
+export function labelMismatchBoot(e: unknown): BootFailure {
+  return new BootFailure("LABEL_MISMATCH", "the gateway refused this node for this agent (label gate)", { cause: e });
+}
+
+/** A getRuntime failure as a typed boot failure: the gateway's 503 says
+ *  whether it is transient; a network error or another 5xx is; a 4xx is not. */
+export function bundleFetchFailure(e: unknown): BootFailure {
+  // A gate 403 on the bundle: this node may not serve the agent (node labels
+  // spec §4.6). Never transient; the gateway re-dispatches the turn once.
+  if (e instanceof GateDenied) return labelMismatchBoot(e);
+  let transient = true;
+  if (e instanceof NodeApiError) {
+    if (e.status === 503) {
+      try {
+        transient = (JSON.parse(e.body) as { transient?: unknown }).transient === true;
+      } catch {
+        transient = true;
+      }
+    } else {
+      transient = e.status >= 500;
+    }
+  }
+  return new BootFailure("PROVIDER_CREDENTIALS_UNAVAILABLE", "runtime bundle fetch failed", { cause: e, transient });
+}
+
+/**
+ * The gateway's label gate refused this node (node labels spec §4.3): the
+ * node's credential does not carry the job's label. Typed so the worker can
+ * fail the job instead of retrying it; the client never retries it.
+ */
+export class GateDenied extends NodeApiError {
+  constructor(body: string) {
+    super(403, body, "the gateway refused this node for this agent (label gate)");
+  }
+}
+
+/** The verified identity GET /v1/node/whoami returns. */
+export interface NodeWhoami {
+  id: string;
+  labels: string[];
+  legacy: boolean;
+  /** Null for the legacy identity (it does not expire). */
+  expiresInSec: number | null;
+}
+
+function bodyCode(body: string): unknown {
+  try {
+    return (JSON.parse(body) as { code?: unknown }).code;
+  } catch {
+    return undefined;
+  }
+}
+
+function isGateDenied(status: number, body: string): boolean {
+  return status === 403 && bodyCode(body) === GATE_DENIED_CODE;
+}
+
+/** The text an older gateway's node-auth 401 carries, before it had a code. */
+const NODE_UNAUTHORIZED_TEXT = "invalid or missing bearer token";
+
+/**
+ * A 401 for the NODE's own credential (revoked or expired), as opposed to a
+ * job token the gateway would not accept: the typed code, or the fixed text
+ * an older gateway sends.
+ */
+export function isNodeUnauthorized(status: number, body: string): boolean {
+  if (status !== 401) return false;
+  if (bodyCode(body) === NODE_UNAUTHORIZED_CODE) return true;
+  try {
+    return (JSON.parse(body) as { error?: unknown }).error === NODE_UNAUTHORIZED_TEXT;
+  } catch {
+    return false;
+  }
+}
+
+/** A token refresh refused because the persona's label changed (409). */
+export function isLabelMismatch(status: number, body: string): boolean {
+  return status === 409 && bodyCode(body) === LABEL_MISMATCH_CODE;
+}
+
+/** Observers of refusals, so the worker can act on the session or the node. */
+export interface NodeClientHooks {
+  /** A label-gate 403 on a request carrying this job token. */
+  onGateDenied?: (jobToken: string | undefined) => void;
+  /** A 401 for the node's own credential. */
+  onNodeUnauthorized?: () => void;
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export class NodeClient {
@@ -74,11 +179,13 @@ export class NodeClient {
   #attempts: number;
   #baseDelayMs: number;
   #fetch: typeof fetch;
+  #memoryTimeoutMs: number;
   /** `tenantId\0personaId` → cached runtime bundle + its ETag. The bundle is
    *  per persona, so caching on the tenant alone handed every session on this
    *  node whichever persona was fetched first. The NUL separator cannot appear
    *  in either identifier, so no pair can collide on one key. */
   #runtimeCache = new Map<string, { etag: string; bundle: RuntimeBundle }>();
+  #hooks: NodeClientHooks = {};
 
   static runtimeKey(tenantId: string, personaId: string): string {
     return `${tenantId}\u0000${personaId}`;
@@ -90,12 +197,31 @@ export class NodeClient {
     this.#attempts = Math.max(1, opts.attempts ?? 3);
     this.#baseDelayMs = opts.baseDelayMs ?? 250;
     this.#fetch = opts.fetchImpl ?? fetch;
+    this.#memoryTimeoutMs = opts.memoryTimeoutMs ?? MEMORY_TIMEOUT_MS;
+  }
+
+  /** Install refusal observers (the node worker). Replaces any earlier set. */
+  setHooks(hooks: NodeClientHooks): void {
+    this.#hooks = hooks;
+  }
+
+  /** Tell the observers about a refusal; never throws. */
+  async #observe(res: Response, jobToken: string | undefined): Promise<void> {
+    if (res.status !== 401 && res.status !== 403) return;
+    if (!this.#hooks.onGateDenied && !this.#hooks.onNodeUnauthorized) return;
+    try {
+      const body = await res.clone().text();
+      if (isGateDenied(res.status, body)) this.#hooks.onGateDenied?.(jobToken);
+      else if (isNodeUnauthorized(res.status, body)) this.#hooks.onNodeUnauthorized?.();
+    } catch {
+      /* an observer must never break the request */
+    }
   }
 
   /** Low-level request with bearer + optional job token + retry policy. */
   async request(
     path: string,
-    o: { method?: string; body?: unknown; jobToken?: string; headers?: Record<string, string>; retry?: boolean } = {},
+    o: { method?: string; body?: unknown; jobToken?: string; headers?: Record<string, string>; retry?: boolean; signal?: AbortSignal } = {},
   ): Promise<Response> {
     const headers: Record<string, string> = {
       authorization: `Bearer ${this.#token}`,
@@ -112,12 +238,14 @@ export class NodeClient {
           method: o.method ?? "GET",
           headers,
           ...(o.body !== undefined ? { body: JSON.stringify(o.body) } : {}),
+          ...(o.signal ? { signal: o.signal } : {}),
         });
         // 5xx: transient server trouble — retry. Everything else returns.
         if (res.status >= 500 && retry && attempt < this.#attempts - 1) {
           lastErr = new NodeApiError(res.status, await res.text().catch(() => ""));
           continue;
         }
+        await this.#observe(res, o.jobToken);
         return res;
       } catch (e) {
         // Network-level failure (gateway restarting, DNS, conn refused).
@@ -129,8 +257,21 @@ export class NodeClient {
   }
 
   async #json<T>(res: Response): Promise<T> {
-    if (!res.ok) throw new NodeApiError(res.status, await res.text().catch(() => ""));
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      if (isGateDenied(res.status, body)) throw new GateDenied(body);
+      throw new NodeApiError(res.status, body);
+    }
     return (await res.json()) as T;
+  }
+
+  /**
+   * The node's verified identity. No retry here: the boot handshake owns its
+   * backoff (it must retry network errors but exit on a 401).
+   */
+  async whoami(): Promise<NodeWhoami> {
+    const res = await this.request("/v1/node/whoami", { retry: false });
+    return this.#json<NodeWhoami>(res);
   }
 
   async getSession(id: string, jobToken: string): Promise<SessionView | null> {
@@ -231,8 +372,10 @@ export class NodeClient {
    * long-poll IS the retry loop, and a network error should surface to the
    * caller's loop rather than double-wait.
    */
-  async getPending(id: string): Promise<PendingView | "timeout" | "notfound"> {
-    const res = await this.request(`/v1/pending/${id}`, { retry: false });
+  async getPending(id: string, jobToken?: string): Promise<PendingView | "timeout" | "notfound"> {
+    // The job token binds the poll to this turn's session (node labels spec
+    // §4.4); only a legacy node may poll without one, and only for a while.
+    const res = await this.request(`/v1/pending/${id}`, { retry: false, ...(jobToken ? { jobToken } : {}) });
     if (res.status === 204) return "timeout";
     if (res.status === 404) return "notfound";
     return this.#json<PendingView>(res);
@@ -254,12 +397,103 @@ export class NodeClient {
   }
 
   /**
+   * The MCP bridge (WS-C §4.2): relay one `tools/list` or `tools/call` for a
+   * bridged server to the gateway, which is the MCP client to the real server.
+   * The body and the answer are relayed unchanged. A call is never retried (a
+   * tool may not be idempotent); a list is. `signal` aborts the request, which
+   * the gateway propagates to the upstream. Throws GateDenied on the label
+   * gate's 403 and NodeApiError on any other non-200.
+   */
+  async postMcpx(
+    server: string,
+    op: "list" | "call",
+    body: Record<string, unknown>,
+    jobToken: string,
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    const res = await this.request(`/v1/tools/mcpx/${encodeURIComponent(server)}/${op}`, {
+      method: "POST",
+      body,
+      jobToken,
+      retry: op === "list",
+      ...(signal ? { signal } : {}),
+    });
+    return this.#json<Record<string, unknown>>(res);
+  }
+
+  /**
+   * Episodic memory, served by the gateway (POST /v1/tools/memory/<op>). The
+   * gateway takes the session, persona and scope from the job token; the body
+   * carries only the turn's text. "unsupported" = a gateway that predates the
+   * route (404). Other non-200s throw.
+   */
+  async memoryPrefetch(jobToken: string): Promise<string | null | "unsupported"> {
+    return this.#memoryCall("prefetch", {}, jobToken, async (res) => {
+      const body = await this.#json<{ block?: string | null }>(res);
+      return typeof body.block === "string" ? body.block : null;
+    });
+  }
+
+  async memorySync(turn: { user: string; assistant: string }, jobToken: string): Promise<"ok" | "unsupported"> {
+    return this.#memoryCall("sync", turn, jobToken, async (res) => {
+      await this.#json<unknown>(res);
+      return "ok" as const;
+    });
+  }
+
+  /**
+   * One bounded attempt: memory sits on the turn's boot path, so a hung
+   * gateway (or a socket that accepts and never answers) must cost at most
+   * `memoryTimeoutMs`, and a 5xx is not worth retrying. The whole exchange,
+   * body included, is raced against the bound, so a fetch that ignores the
+   * abort signal still gives up.
+   */
+  async #memoryCall<T>(op: "prefetch" | "sync", body: unknown, jobToken: string, read: (res: Response) => Promise<T>): Promise<T | "unsupported"> {
+    const ms = this.#memoryTimeoutMs;
+    const ac = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        ac.abort();
+        reject(new MemoryTimeoutError(op, ms));
+      }, ms);
+    });
+    const exchange = (async () => {
+      const res = await this.#fetch(`${this.#base}/v1/tools/memory/${op}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json", [JOB_HEADER]: jobToken },
+        body: JSON.stringify(body),
+        signal: ac.signal,
+      });
+      if (res.status === 404) return "unsupported" as const;
+      return read(res);
+    })();
+    exchange.catch(() => {}); // the loser of the race must not surface as unhandled
+    try {
+      return await Promise.race([exchange, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
    * Exchange a job's (possibly aging or freshly-expired) token for a new one
    * with identical claims and a full TTL. The original token authenticates
    * the exchange; the gateway enforces the grace window and job binding.
    */
   async refreshJobToken(jobId: string, currentToken: string): Promise<string> {
     const res = await this.request(`/v1/jobs/${jobId}/token-refresh`, { method: "POST", jobToken: currentToken });
+    const body = await this.#json<{ jobToken: string }>(res);
+    return body.jobToken;
+  }
+
+  /**
+   * Re-mint the token of a job that waited past the refresh grace (node labels
+   * spec §4.4). Presents the job's own token and the queue it was claimed from;
+   * the gateway checks the job is still queued and under its maximum age.
+   */
+  async reissueJobToken(jobId: string, queue: string, jobToken: string): Promise<string> {
+    const res = await this.request(`/v1/jobs/${jobId}/token-reissue`, { method: "POST", body: { queue }, jobToken });
     const body = await this.#json<{ jobToken: string }>(res);
     return body.jobToken;
   }

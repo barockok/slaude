@@ -66,6 +66,10 @@ docker compose up -d --build
 curl localhost:8080/healthz   # {"status":"ok"}
 ```
 
+The `scale` compose profile adds a worker that reads its own `.env.node`
+(copy `.env.node.example`): a node refuses to boot with the gateway's `.env`,
+which holds Slack tokens and the job secret.
+
 Next: [Getting Started](https://barockok.github.io/slaude/start/getting-started.html) → [Configuration](https://barockok.github.io/slaude/reference/configuration.html) → [Deployment](https://barockok.github.io/slaude/deploy/index.html)
 
 ## Project

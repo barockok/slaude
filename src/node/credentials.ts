@@ -10,6 +10,13 @@
  *
  * Nothing here logs a token. Failures name the directory's session, never
  * contents.
+ *
+ * To be retired (WS-C §4.2.11): gateway-managed remote MCP servers now reach a
+ * node through the MCP bridge (src/node/bridge.ts), where the credential never
+ * leaves the gateway. This seeding, the needs-auth recovery and the two
+ * /v1/tenants/:t/mcp-credentials endpoints stay until the bridge is proven in a
+ * cluster; a cleanup task then removes the node-side parts (tracked in
+ * docs/superpowers/plans/2026-10-04-ha-delivery-process.md).
  */
 import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";

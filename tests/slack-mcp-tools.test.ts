@@ -644,6 +644,51 @@ describe("slackHandlers — new tools (post_message/delete/ephemeral/pin/topic/c
     }
   });
 
+  test("read_canvas uses the event app's token from the context, not the client", async () => {
+    const originalFetch = global.fetch;
+    let capturedAuth: string | undefined;
+    (global as any).fetch = async (_url: string, opts: any) => {
+      capturedAuth = opts?.headers?.Authorization;
+      return { ok: true, status: 200, text: async () => "x" } as any;
+    };
+    try {
+      const ctx = fakeCtx({
+        convInfo: () => ({ channel: { properties: { canvas: { file_id: "F_C1" } } } }),
+        filesInfo: () => ({ file: { url_private_download: "https://files.example.com/f1" } }),
+      });
+      (ctx.client as any).token = new Proxy(function () {}, {}); // HTTP-mode lazy client: not a string
+      ctx.botToken = "xoxb-app-two";
+      await slackHandlers.read_canvas(ctx, {});
+      expect(capturedAuth).toBe("Bearer xoxb-app-two");
+    } finally {
+      (global as any).fetch = originalFetch;
+    }
+  });
+
+  // F1: the cron and /v1 contexts have no inbound event to take a token from;
+  // they resolve it from the session's app through the registry.
+  test("read_canvas falls back to the context's token resolver when no event token is set", async () => {
+    const originalFetch = global.fetch;
+    let capturedAuth: string | undefined;
+    (global as any).fetch = async (_url: string, opts: any) => {
+      capturedAuth = opts?.headers?.Authorization;
+      return { ok: true, status: 200, text: async () => "x" } as any;
+    };
+    try {
+      const ctx = fakeCtx({
+        convInfo: () => ({ channel: { properties: { canvas: { file_id: "F_C1" } } } }),
+        filesInfo: () => ({ file: { url_private_download: "https://files.example.com/f1" } }),
+      });
+      (ctx.client as any).token = new Proxy(function () {}, {});
+      ctx.resolveBotToken = () => "registry-token-b";
+      const res = await slackHandlers.read_canvas(ctx, {});
+      expect(res.isError).toBeFalsy();
+      expect(capturedAuth).toBe("Bearer registry-token-b");
+    } finally {
+      (global as any).fetch = originalFetch;
+    }
+  });
+
   test("read_canvas errors when the channel has no canvas yet", async () => {
     const ctx = fakeCtx({ convInfo: () => ({ channel: {} }) });
     const res = await slackHandlers.read_canvas(ctx, {});

@@ -2,6 +2,23 @@
 # Slack ingress (/slack/events, /slack/interactions, /slack/oauth/*), the
 # /v1 REST for nodes, cron + reaper leadership (Redis-lock elected), and
 # /healthz /readyz /metrics on the same port.
+#
+# Its own ServiceAccount, so a Role bound for the gateway never reaches nodes
+# and nothing granted to `default` reaches the gateway. slaude makes no
+# Kubernetes API call, so the API token is not mounted; set it to true only if
+# you bind a Role that something in the pod uses. Vault's Kubernetes auth gets
+# its own short-lived token instead (the vault-token volume below), bound to
+# this ServiceAccount: the Vault role must name slaude-gateway and nothing else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: slaude-gateway
+  namespace: slaude-scale
+  labels:
+    app.kubernetes.io/name: slaude
+    app.kubernetes.io/component: gateway
+automountServiceAccountToken: false
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,6 +39,7 @@ spec:
         app.kubernetes.io/name: slaude
         app.kubernetes.io/component: gateway
     spec:
+      serviceAccountName: slaude-gateway
       # Gateways hold no in-flight turns; default grace is plenty for
       # draining HTTP + long-polls (Slack retries anything cut off).
       terminationGracePeriodSeconds: 30
@@ -29,12 +47,28 @@ spec:
         - name: gateway
           image: ghcr.io/REPLACE/slaude:latest
           imagePullPolicy: Always
+          # The gateway's own Secret, whole. Never the node's: that one may hold
+          # a node-side provider fallback the gateway must not pick up.
           envFrom:
             - secretRef:
                 name: slaude-scale-secrets
             - configMapRef:
                 name: slaude-scale-config
+            # Gateway only: Vault, the outbound policy, the node-credential door.
+            - configMapRef:
+                name: slaude-scale-gateway-config
           env:
+            # The queues' Redis, shared with nodes, read by key from the node
+            # Secret so the value has one source. The node credential is NOT
+            # read from there: a node's SLAUDE_NODE_TOKEN may be a signed
+            # credential, which the gateway verifies with SLAUDE_NODE_KEY and
+            # must never accept as the legacy shared token. The legacy value
+            # is SLAUDE_NODE_LEGACY_TOKEN in the gateway's own Secret.
+            - name: SLAUDE_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: slaude-scale-node-secrets
+                  key: SLAUDE_REDIS_URL
             - name: SLAUDE_HOME
               value: /data
             - name: SLAUDE_ROLE
@@ -71,6 +105,10 @@ spec:
               mountPath: /data
             - name: soul-cache
               mountPath: /soul-cache
+            # SLAUDE_VAULT_K8S_TOKEN_PATH (20-config.yaml) points here.
+            - name: vault-token
+              mountPath: /var/run/secrets/vault
+              readOnly: true
           resources:
             requests:
               cpu: 250m
@@ -86,6 +124,16 @@ spec:
         - name: soul-cache
           emptyDir:
             sizeLimit: 64Mi
+        # A ServiceAccount token for Vault's Kubernetes login only: audience
+        # `vault`, ten minutes, refreshed by the kubelet. Unused until
+        # SLAUDE_VAULT_ADDR is set. Never mounted on a node.
+        - name: vault-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: vault
+                  expirationSeconds: 600
+                  path: token
 ---
 # Keep at least one gateway during voluntary disruptions (node drains,
 # upgrades) — it is the only Slack ingress and the nodes' control plane.

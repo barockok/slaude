@@ -68,6 +68,16 @@ spec:
             - { name: POSTGRES_PASSWORD, value: slaude }
             - { name: POSTGRES_DB, value: slaude }
           ports: [{ containerPort: 5432 }]
+          # Over TCP on purpose. On first initialisation the image runs a
+          # temporary server that listens on the unix socket only, runs the init
+          # scripts, then restarts; a probe without -h passes against it, and
+          # "ready" would then precede the real server (and the brain database).
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "slaude"]
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 3
           volumeMounts:
             - { name: data, mountPath: /var/lib/postgresql/data }
             # Runs only when the data directory is first initialised.
@@ -116,6 +126,12 @@ spec:
           # BullMQ requirement: never evict queue keys under memory pressure.
           args: ["redis-server", "--maxmemory-policy", "noeviction"]
           ports: [{ containerPort: 6379 }]
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 3
           volumeMounts:
             - { name: data, mountPath: /data }
       volumes:

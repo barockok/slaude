@@ -39,6 +39,12 @@ let nodeTurnsQueueFn: any;
 let acquireLockFn: any;
 let sessionIdOf: (thread: string) => Promise<string>;
 let metricsRender: () => string;
+/** Paths of every /v1/tools/memory request the gateway received. */
+const memoryHits: string[] = [];
+
+/** When set, the stub's session boot fails with this error (a BootFailure). */
+let bootFailure: Error | null = null;
+let busts: Array<[string, string | undefined]> = [];
 
 /** Current stub behavior; tests swap it. */
 let behavior: (a: { sessionId: string; text: string; servers: any; signal: AbortSignal }) => Promise<void>;
@@ -61,7 +67,6 @@ beforeAll(async () => {
   if (!realEnabled) return;
   process.env.SLAUDE_NODE_TOKEN = NODE_TOKEN;
   process.env.SLAUDE_JOB_SECRET = JOB_SECRET;
-  process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
   process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 5).toString("base64");
 
   const { ensureHome } = await import("../../src/config/home");
@@ -77,6 +82,7 @@ beforeAll(async () => {
   const { Redis } = await import("ioredis");
   const { NodeClient } = await import("../../src/node/client");
   const { startNodeWorker } = await import("../../src/node/worker");
+  const { parseNodeManifest } = await import("../../src/node/manifest");
   const Sessions = await import("../../src/db/sessions");
   const { metrics } = await import("../../src/metrics");
 
@@ -141,7 +147,11 @@ beforeAll(async () => {
   server = Bun.serve({
     port: 0,
     idleTimeout: 0,
-    fetch: async (req: Request) => (await gw.fetchV1(req)) ?? new Response("nf", { status: 404 }),
+    fetch: async (req: Request) => {
+      const path = new URL(req.url).pathname;
+      if (path.startsWith("/v1/tools/memory/")) memoryHits.push(path);
+      return (await gw.fetchV1(req)) ?? new Response("nf", { status: 404 });
+    },
   });
 
   sessionIdOf = async (thread: string) =>
@@ -158,9 +168,29 @@ beforeAll(async () => {
     aborts = new Map<string, AbortController>();
     abortedSessions: string[] = [];
     configDirResolver?: (sessionId: string, persona: string | undefined) => Promise<string>;
+    lockResolver?: ((sessionId: string) => Promise<any>) | null;
+    childEnvResolver?: (sessionId: string) => Promise<unknown>;
+    override setChildEnvResolver(r: any) {
+      super.setChildEnvResolver(r);
+      this.childEnvResolver = r;
+    }
+    override setSessionLockResolver(r: any) {
+      super.setSessionLockResolver(r);
+      this.lockResolver = r;
+    }
+    memoryProvider?: any;
+    override setMemoryProvider(p: any) {
+      super.setMemoryProvider(p);
+      this.memoryProvider = p;
+    }
     override setMcpResolver(r: any) {
       super.setMcpResolver(r);
       this.mcp = r;
+    }
+    localMcp?: (sessionId: string) => Promise<Record<string, unknown>>;
+    override setLocalMcpResolver(r: any) {
+      super.setLocalMcpResolver(r);
+      this.localMcp = r;
     }
     override setSessionConfigDirResolver(r: any) {
       super.setSessionConfigDirResolver(r);
@@ -179,6 +209,8 @@ beforeAll(async () => {
     override suppressNextTurn(_id: string) {}
     override async sendMessage(sessionId: string, text: string): Promise<void> {
       this.emit("event", { type: "turnStart", sessionId } as any);
+      // The real manager's boot fails this way when the child-env resolver throws.
+      if (bootFailure) throw bootFailure;
       const ac = new AbortController();
       this.aborts.set(sessionId, ac);
       const servers = (await this.mcp?.(sessionId)) ?? {};
@@ -198,6 +230,15 @@ beforeAll(async () => {
   stub = new NodeStubAgent();
 
   const client = new NodeClient({ baseUrl: `http://127.0.0.1:${server.port}`, token: NODE_TOKEN, baseDelayMs: 5 });
+  const bust = client.bustRuntime.bind(client);
+  client.bustRuntime = (t: string, p?: string) => {
+    busts.push([t, p]);
+    bust(t, p);
+  };
+  // The worker reads SLAUDE_PROVIDER_ENV_FALLBACK once, at start (the stub
+  // agent never calls its child-env resolver, so no other case depends on it).
+  const savedFallback = process.env.SLAUDE_PROVIDER_ENV_FALLBACK;
+  process.env.SLAUDE_PROVIDER_ENV_FALLBACK = "0";
   workerHandle = await startNodeWorker({
     nodeId: NODE_ID,
     client,
@@ -212,7 +253,19 @@ beforeAll(async () => {
     lock: { ttlMs: 2000, extendEveryMs: 300 },
     turnTimeoutMs: 30_000,
     configRoot: nodeConfigRoot,
+    // The default persona may mount gh; ops-bot may mount everything.
+    manifest: parseNodeManifest(
+      JSON.stringify({
+        version: 1,
+        mcpServers: { gh: { command: "gh-mcp" }, tf: { command: "tf-mcp" } },
+        allow: { default: ["gh"], "ops-bot": "*" },
+      }),
+      {},
+      "node.json",
+    ),
   });
+  if (savedFallback === undefined) delete process.env.SLAUDE_PROVIDER_ENV_FALLBACK;
+  else process.env.SLAUDE_PROVIDER_ENV_FALLBACK = savedFallback;
 });
 
 afterAll(async () => {
@@ -261,6 +314,105 @@ d("gateway↔node E2E (real Redis)", () => {
     await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9000.1"), 10_000);
   }, 30_000);
 
+  // WS-A §5.4, §7: a typed boot failure reaches Slack as its fixed text, once,
+  // and is the job's failure reason with no retry; the session's cached bundle
+  // is evicted since no child holds it.
+  test("a provider-credential boot failure posts the fixed text once and fails the job without a retry", async () => {
+    const { BootFailure, failureText } = await import("../../src/gateway/core/failure-codes");
+    const FAIL_THREAD = "9050.0";
+    posts.length = 0;
+    busts = [];
+    bootFailure = new BootFailure("PROVIDER_CREDENTIALS_UNAVAILABLE", "resolver failed: raw-detail-never-posted");
+    try {
+      await emitSlack("message", msg(FAIL_THREAD, "9050.1", "<@USLAUDE> hello"));
+      const fixed = failureText("PROVIDER_CREDENTIALS_UNAVAILABLE");
+      await until(() => posts.some((p) => p.text === fixed), 15_000);
+      await sleep(600); // a retry or a second emitter would post again within the follower's linger
+      expect(posts.filter((p) => p.text === fixed)).toHaveLength(1);
+      expect(posts.map((p) => String(p.text)).join("\n")).not.toContain("raw-detail-never-posted");
+      const sid = await sessionIdOf(FAIL_THREAD);
+      // The error event can reach Slack before BullMQ records the failure.
+      const failedJob = async () =>
+        [...(await turnsQ.queue("turns").getFailed()), ...(await turnsQ.queue(nodeTurnsQueueFn(NODE_ID)).getFailed())]
+          .find((j: any) => j.data?.sessionId === sid);
+      await until(async () => !!(await failedJob()), 10_000);
+      const job = await failedJob();
+      expect(job?.failedReason).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
+      expect(job).toBeDefined();
+      expect(job.attemptsMade).toBe(1);
+      expect(busts.some(([t]) => t === "default")).toBe(true);
+    } finally {
+      bootFailure = null;
+    }
+  }, 30_000);
+
+  // R1-F6: the worker's child-env resolver follows SLAUDE_PROVIDER_ENV_FALLBACK
+  // (set to 0 for this worker): a session it knows nothing about fails typed.
+  test("the worker installs a child-env resolver that honours SLAUDE_PROVIDER_ENV_FALLBACK", async () => {
+    const { BootFailure } = await import("../../src/gateway/core/failure-codes");
+    expect(stub.childEnvResolver).toBeDefined();
+    const e = await stub.childEnvResolver!("no-such-session").catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(BootFailure);
+    expect((e as any).code).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
+  });
+
+  // The release-blocking fix lives in the worker's wiring: a node has no
+  // database, so the agent's memory provider must be the gateway's routes.
+  // (tests/agent/node-memory.test.ts proves the manager puts that provider's
+  // block into the SDK's system prompt as <memory-context>.)
+  test("the worker routes the agent's memory through the gateway's /v1/tools/memory", async () => {
+    const { __setMemoryForTests, memory: original } = await import("../../src/memory");
+    const seen: string[] = [];
+    __setMemoryForTests({
+      prefetch: async (id: string) => (seen.push(id), "<recent-turns>worker memory</recent-turns>"),
+      syncTurn: async () => {},
+    });
+    const MEM_THREAD = "9070.0";
+    let block: string | null | undefined;
+    const prev = behavior;
+    behavior = async (a) => {
+      block = await stub.memoryProvider.prefetch(a.sessionId);
+      await prev(a);
+    };
+    try {
+      memoryHits.length = 0;
+      await emitSlack("message", msg(MEM_THREAD, "9070.1", "<@USLAUDE> remember this"));
+      await until(() => block !== undefined, 15_000);
+      expect(memoryHits).toContain("/v1/tools/memory/prefetch");
+      expect(block).toContain("worker memory");
+      expect(seen).toEqual([await sessionIdOf(MEM_THREAD)]);
+    } finally {
+      behavior = prev;
+      __setMemoryForTests(original);
+    }
+  }, 30_000);
+
+  // R2-F4: a transient failure takes BullMQ's retry silently; the last attempt
+  // posts the fixed text once.
+  test("a transient boot failure is retried, then posts the fixed text once", async () => {
+    const { BootFailure, failureText } = await import("../../src/gateway/core/failure-codes");
+    const T_THREAD = "9060.0";
+    posts.length = 0;
+    bootFailure = new BootFailure("PROVIDER_CREDENTIALS_UNAVAILABLE", "vault not answering", { transient: true });
+    try {
+      await emitSlack("message", msg(T_THREAD, "9060.1", "<@USLAUDE> hello"));
+      const fixed = failureText("PROVIDER_CREDENTIALS_UNAVAILABLE");
+      await until(() => posts.some((p) => p.text === fixed), 20_000);
+      await sleep(600);
+      expect(posts.filter((p) => p.text === fixed)).toHaveLength(1);
+      const sid = await sessionIdOf(T_THREAD);
+      const failedJob = async () =>
+        [...(await turnsQ.queue("turns").getFailed()), ...(await turnsQ.queue(nodeTurnsQueueFn(NODE_ID)).getFailed())]
+          .find((j: any) => j.data?.sessionId === sid);
+      await until(async () => !!(await failedJob()), 10_000);
+      const job = await failedJob();
+      expect(job.attemptsMade).toBe(2);
+      expect(job.failedReason).toBe("PROVIDER_CREDENTIALS_UNAVAILABLE");
+    } finally {
+      bootFailure = null;
+    }
+  }, 40_000);
+
   // A cron job created inside a /1on1 carries its lock owner. The cron run keys
   // on a synthetic thread with no lock, so the node can only learn the identity
   // from the job itself — and it must, or the turn runs as the agent instead of
@@ -282,6 +434,55 @@ d("gateway↔node E2E (real Redis)", () => {
 
     await until(async () => (await stub.resolveEffectiveIdentity(sid)) === "UTESTOWNER1", 15_000);
     expect(await stub.resolveEffectiveIdentity(sid)).toBe("UTESTOWNER1");
+  }, 40_000);
+
+  // A node has no database: the /1on1 lock it builds the session-mode block
+  // from must come from the job token's signed claim, through the resolver the
+  // worker installs (removing that wiring fails here).
+  test("the worker installs a lock resolver that reads the job token's lock claim", async () => {
+    const LOCK_THREAD = "9200.0";
+    const OneOnOne = await import("../../src/db/one-on-one");
+    await OneOnOne.lock({ channelId: "C0TEAM", threadTs: LOCK_THREAD, lockedUser: "U0MGR", createdBy: "U0MGR" });
+    try {
+      posts.length = 0;
+      await emitSlack("message", msg(LOCK_THREAD, "9200.1", "<@USLAUDE> locked hello"));
+      // This thread's own reply: an earlier test's late reply must not end the wait.
+      await until(() => posts.some((p) => p.thread_ts === LOCK_THREAD && String(p.text).includes("node-reply:")), 15_000);
+      const sid = await sessionIdOf(LOCK_THREAD);
+      expect(typeof stub.lockResolver).toBe("function");
+      const lock = await stub.lockResolver(sid);
+      expect(lock?.locked_user).toBe("U0MGR");
+      expect(lock?.open_scope).toBeNull();
+    } finally {
+      await OneOnOne.unlock("C0TEAM", LOCK_THREAD);
+    }
+  }, 30_000);
+
+  // Node labels spec §4.10: the manifest allow-list keys on the persona in the
+  // job token's claims. A queued payload naming another persona (unsigned) must
+  // not widen what the session mounts.
+  test("the manifest resolver keys on the job token's persona, never the payload's personaId", async () => {
+    const M_THREAD = "9300.0";
+    // Only this thread's replies: an earlier session's late reply must not count.
+    const replies = () => posts.filter((p) => p.thread_ts === M_THREAD && String(p.text).includes("node-reply:")).length;
+    const before = replies();
+    await emitSlack("message", msg(M_THREAD, "9300.1", "<@USLAUDE> manifest"));
+    await until(() => replies() > before, 15_000);
+    const sid = await sessionIdOf(M_THREAD);
+    expect(typeof stub.localMcp).toBe("function");
+    expect(Object.keys(await stub.localMcp!(sid))).toEqual(["gh"]);
+
+    // Replay the same turn with a forged payload persona allowed everything.
+    const ran = async () =>
+      [...(await turnsQ.queue("turns").getCompleted()), ...(await turnsQ.queue(nodeTurnsQueueFn(NODE_ID)).getCompleted())].find(
+        (j: any) => j.data?.sessionId === sid,
+      );
+    await until(async () => !!(await ran()), 10_000);
+    const job = await ran();
+    const mid = replies();
+    await turnsQ.queue("turns").add("turn", { ...job.data, personaId: "ops-bot", enqueuedAt: Date.now() }, { jobId: `forged-${sid}` });
+    await until(() => replies() > mid, 15_000);
+    expect(Object.keys(await stub.localMcp!(sid))).toEqual(["gh"]);
   }, 40_000);
 
   test("warm routing: second message rides the per-node queue", async () => {

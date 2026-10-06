@@ -81,6 +81,65 @@ describe("personas export and render", () => {
     expect(() => renderDir(out, meta)).toThrow(/default/);
     expect(() => renderDir(out, meta)).toThrow(PayloadError);
   });
+
+  const repoWith = (yaml: string) => {
+    const out = tmp();
+    mkdirSync(join(out, "personas", "default"), { recursive: true });
+    writeFileSync(join(out, "personas", "default", "SOUL.md"), "x");
+    mkdirSync(join(out, "personas", "ana"), { recursive: true });
+    writeFileSync(join(out, "personas", "ana", "SOUL.md"), "x");
+    writeFileSync(join(out, "personas", "ana", "persona.yaml"), yaml);
+    return out;
+  };
+
+  test("render carries provider references from persona.yaml", () => {
+    const out = repoWith(
+      "slackUserId: UTESTUSER1\nmodel: m-1\nprovider:\n  apiKey: vault://secret/slaude/personas/ana#api_key\n  baseUrl: https://llm.example.com\n");
+    const unknown: string[][] = [];
+    const ana = renderDir(out, meta, (p) => unknown.push(p)).personas.find((x) => x.name === "ana")!;
+    expect(ana.provider).toEqual({ apiKey: "vault://secret/slaude/personas/ana#api_key", baseUrl: "https://llm.example.com" });
+    expect(unknown).toEqual([]);
+  });
+
+  // R1-F2: a gateway that predates `provider` (but checks versions) refuses it.
+  test("render writes version 2 only when some persona sets provider, else 1", () => {
+    const withProvider = repoWith("slackUserId: UTESTUSER1\nmodel: m\nprovider:\n  apiKey: env://PERSONA_ANA_KEY\n");
+    expect(renderDir(withProvider, meta).version).toBe(2);
+    const without = repoWith("slackUserId: UTESTUSER1\nmodel: m\n");
+    expect(renderDir(without, meta).version).toBe(1);
+  });
+
+  test("render carries kbSources from persona.yaml and writes version 3 for it (the highest required)", () => {
+    const out = repoWith("slackUserId: UTESTUSER1\nmodel: m\nprovider:\n  apiKey: env://PERSONA_ANA_KEY\nkbSources:\n  - kb-runbook\n");
+    const unknown: string[][] = [];
+    const p = renderDir(out, meta, (x) => unknown.push(x));
+    expect(p.personas.find((x) => x.name === "ana")!.kbSources).toEqual(["kb-runbook"]);
+    expect(p.version).toBe(3);
+    expect(unknown).toEqual([]);
+    const none = repoWith("slackUserId: UTESTUSER1\nmodel: m\nkbSources: []\n");
+    expect(renderDir(none, meta).personas.find((x) => x.name === "ana")!.kbSources).toEqual([]);
+    expect(renderDir(none, meta).version).toBe(3);
+  });
+
+  test("render --check refuses a malformed kbSources id with the gateway's parser", () => {
+    const out = repoWith("slackUserId: UTESTUSER1\nkbSources:\n  - Runbook\n");
+    expect(() => renderDir(out, meta)).toThrow(/persona 'ana': kbSources\[0\]/);
+  });
+
+  test("render --check refuses a literal provider secret with the gateway's parser, never echoing it", () => {
+    const out = repoWith("slackUserId: UTESTUSER1\nprovider:\n  apiKey: sk-literal-secret-value\n");
+    const e = (() => { try { renderDir(out, meta); } catch (x) { return x as Error; } })()!;
+    expect(e).toBeInstanceOf(PayloadError);
+    expect(e.message).toContain("persona 'ana': provider.apiKey");
+    expect(e.message).not.toContain("sk-literal-secret-value");
+  });
+
+  test("render reports provider/model warnings through its callback", () => {
+    const out = repoWith("slackUserId: UTESTUSER1\nprovider:\n  baseUrl: https://llm.example.com\n  apiKey: env://PERSONA_ANA_KEY\n");
+    const warnings: string[] = [];
+    renderDir(out, meta, undefined, (w) => warnings.push(...w));
+    expect(warnings.some((w) => w.includes("'ana'") && w.includes("provider.baseUrl"))).toBe(true);
+  });
 });
 
 describe("personas export hardening", () => {
@@ -315,6 +374,46 @@ describe("personas CLI entry", () => {
       expect(r.exitCode).toBe(0);
       expect(r.stdout.toString()).toBe("");
     }
+  });
+  test("render emits the payload version", () => {
+    const out = tmp();
+    exportHome(home(), out);
+    expect(JSON.parse(run("render", out).stdout.toString()).version).toBe(1);
+    expect(renderDir(out, meta).version).toBe(1);
+  });
+  // Node labels spec §4.5: runsOn round-trips export → render, and render
+  // writes version 2 only when a persona uses it.
+  test("runsOn: export carries it only when present; render reads it and writes version 2", () => {
+    const h = home("bea");
+    const cfgFile = join(h, "personas", "ana", "config.json");
+    writeFileSync(cfgFile, JSON.stringify({ ...JSON.parse(readFileSync(cfgFile, "utf8")), runsOn: "engineering" }));
+    const out = tmp();
+    exportHome(h, out);
+    expect(readFileSync(join(out, "personas", "ana", "persona.yaml"), "utf8")).toContain('runsOn: "engineering"');
+    expect(readFileSync(join(out, "personas", "bea", "persona.yaml"), "utf8")).not.toContain("runsOn");
+    const p = renderDir(out, meta);
+    expect(p.version).toBe(2);
+    expect(p.personas.find((x) => x.name === "ana")!.runsOn).toBe("engineering");
+    expect(p.personas.find((x) => x.name === "bea")!.runsOn).toBeUndefined();
+    const f = join(out, "personas", "ana", "persona.yaml");
+    writeFileSync(f, readFileSync(f, "utf8").replace('runsOn: "engineering"', 'runsOn: "Not A Label"'));
+    expect(() => renderDir(out, meta)).toThrow(PayloadError);
+  });
+  test("export refuses a malformed runsOn in config.json, naming the persona", () => {
+    const h = home();
+    const cfgFile = join(h, "personas", "ana", "config.json");
+    writeFileSync(cfgFile, JSON.stringify({ ...JSON.parse(readFileSync(cfgFile, "utf8")), runsOn: "Bad Label" }));
+    expect(() => exportHome(h, tmp())).toThrow(/persona 'ana'.*runsOn/);
+  });
+  test("--check reports unknown persona.yaml keys by name on stderr and still exits 0", () => {
+    const out = tmp();
+    exportHome(home(), out);
+    const f = join(out, "personas", "ana", "persona.yaml");
+    writeFileSync(f, readFileSync(f, "utf8") + 'visibility: "leaky-value"\n');
+    const r = run("render", out, "--check");
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr.toString()).toContain("persona.ana.visibility");
+    expect(r.stderr.toString()).not.toContain("leaky-value");
   });
   test("an invalid repo exits 1 with [personas] on stderr", () => {
     const out = tmp();

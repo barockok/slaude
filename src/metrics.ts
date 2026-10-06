@@ -93,6 +93,10 @@ export class Registry {
 
   gauge(name: string, help: string): {
     set: (value: number, labels?: LabelMap) => void;
+    /** Drop one series (a label set that no longer exists). */
+    remove: (labels: LabelMap) => void;
+    /** The label sets currently exported. */
+    labelSets: () => LabelMap[];
   } {
     let m = this.#metrics.get(name);
     if (!m) {
@@ -106,6 +110,12 @@ export class Registry {
         gauge.series.set(key, value);
         labelStore.set(`${name}|${key}`, labels);
       },
+      remove: (labels) => {
+        const key = seriesKey(labels);
+        gauge.series.delete(key);
+        labelStore.delete(`${name}|${key}`);
+      },
+      labelSets: () => [...gauge.series.keys()].map((k) => labelStore.get(`${name}|${k}`) ?? {}),
     };
   }
 
@@ -199,10 +209,31 @@ export const m = {
   userTurnsTotal: metrics.counter("slaude_user_turns_total", "Inbound user turns, labeled by user_id + user_name (opt-in via SLAUDE_METRICS_PER_USER=1)."),
   httpRequestsTotal: metrics.counter("slaude_http_requests_total", "Slack ingress HTTP responses (/slack/*), labeled by route and status."),
   v1JobEventsTotal: metrics.counter("slaude_v1_job_events_total", "Node job telemetry received on /v1/jobs/:id (ack|fail), labeled by event."),
+  nodeCredentialExpirySeconds: metrics.gauge(
+    "slaude_node_credential_expiry_seconds",
+    "Seconds until a signed node credential the gateway has seen expires, labeled by credential id (bounded to 64 ids).",
+  ),
+  nodeLegacyAuthTotal: metrics.counter(
+    "slaude_node_legacy_auth_total",
+    "/v1 requests authenticated with the legacy shared token while SLAUDE_NODE_KEY is set.",
+  ),
+  gateDeniedTotal: metrics.counter(
+    "slaude_gate_denied_total",
+    "/v1 requests the label gate refused with 403 (the job's label is not among the node's labels), labeled by route-table route name.",
+  ),
+  memoryGatewayFailuresTotal: metrics.counter("slaude_memory_gateway_failures_total", "Node memory calls to the gateway that failed, labeled by kind (<op>:<status>|timeout|network|unsupported). The turn runs without memory."),
   v1ToolCallsTotal: metrics.counter("slaude_v1_tool_calls_total", "REST tool-plane invocations on /v1/tools/<server>/<tool>, labeled by server + tool."),
   // Node runtime (spec §6).
   nodeSessionsLive: metrics.gauge("slaude_node_sessions_live", "Warm SDK Query sessions held by this node."),
-  nodeTurnsTotal: metrics.counter("slaude_node_turns_total", "Turn jobs processed by this node, labeled by result (done|error|skipped|requeued)."),
+  nodeAuthPaused: metrics.gauge(
+    "slaude_node_auth_paused",
+    "1 while this node has paused its claim loops because the gateway refused its credential (401), else 0. /healthz stays 200 meanwhile; alert on this.",
+  ),
+  nodeGatewaySecretsPresent: metrics.gauge(
+    "slaude_node_gateway_secrets_present",
+    "Gateway-only variables found in this node's environment at boot (0 = the Secret split is done).",
+  ),
+  nodeTurnsTotal: metrics.counter("slaude_node_turns_total", "Turn jobs processed by this node, labeled by result (done|error|skipped|requeued|moved|deduped)."),
   nodeTurnDuration: metrics.histogram(
     "slaude_node_turn_duration_seconds",
     "Wall-clock duration of turn jobs run on this node (lock wait included).",
@@ -217,11 +248,19 @@ export const m = {
   // (post-signature, post-registry lookup), labeled by event type.
   gatewayEventsTotal: metrics.counter("slaude_gateway_events_total", "Slack events accepted and dispatched by this gateway replica, labeled by event type."),
   // Gateway queue-side (spec §6), set by the reaper leader loop.
-  queueDepth: metrics.gauge("slaude_queue_depth", "Turn jobs waiting or delayed, labeled by queue."),
+  queueDepth: metrics.gauge("slaude_queue_depth", "Turn jobs waiting, delayed or prioritized (not yet claimed), labeled by queue and node label."),
   // Leader liveness: unix seconds of the last completed reaper pass. Lets
   // alerting distinguish "leader gone" from an ex-leader replica that keeps
   // rendering its stale last gauge values on every scrape.
   reaperLastRun: metrics.gauge("slaude_reaper_last_run_timestamp_seconds", "Unix time of the last completed reaper pass on this replica (leader only)."),
+  labelUnserved: metrics.gauge(
+    "slaude_label_unserved",
+    "1 when a node label in use has had waiting turn jobs and no live node for longer than SLAUDE_LABEL_UNSERVED_SECS, else 0; labeled by label (leader only).",
+  ),
   nodesAlive: metrics.gauge("slaude_nodes_alive", "Node heartbeat keys currently live."),
   sessionsWarm: metrics.gauge("slaude_sessions_warm", "Sessions registered warm on some node."),
+  // Persona provider credentials by reference (WS-A §7). Labels never carry a
+  // path, field or value.
+  providerCredResolveTotal: metrics.counter("slaude_provider_cred_resolve_total", "Provider credential reference resolutions on this gateway, labeled by scheme (vault|env) and outcome (ok|cached|stale|denied|error)."),
+  providerCredStaleServedTotal: metrics.counter("slaude_provider_cred_stale_served_total", "Times a cached provider credential was served past its TTL because Vault could not answer."),
 };

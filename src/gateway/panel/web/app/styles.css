@@ -423,6 +423,25 @@ table.fleet { width: 100%; border-collapse: collapse; }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-1); padding: 16px 18px; }
 
+/* header nav: sessions | personas */
+.topnav { display: flex; gap: 4px; }
+.topnav a { font-size: 12.5px; font-weight: 600; color: var(--text-dim); padding: 6px 10px; border-radius: var(--r-md); cursor: pointer; text-decoration: none; }
+.topnav a:hover { background: var(--surface-3); color: var(--text); }
+.topnav a.on { background: var(--accent-tint); color: var(--accent); }
+
+/* persona definition (read only) */
+.persona-section { margin-bottom: 14px; overflow-x: auto; }
+.persona-section-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.persona-section-head h2 { font-size: 14px; font-weight: 700; margin: 0; }
+.persona-section-head .cell-mute { font-size: 12px; }
+.persona-soul { margin: 0; border: 1px solid var(--border); border-radius: var(--r-md); }
+.persona-empty { font-size: 12.5px; }
+.meta-grid.flat { margin-top: 0; padding-top: 0; border-top: none; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+table.fleet.static tbody tr { cursor: default; }
+table.fleet.static tbody td { height: 38px; }
+.fleet tbody tr.tombstoned { opacity: 0.6; }
+
 /* modal */
 .modal-scrim { position: fixed; inset: 0; background: rgba(10,8,14,0.5); display: grid; place-items: center; z-index: 40; padding: 20px; }
 .modal { width: min(440px, 100%); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-lg); box-shadow: var(--shadow-2); padding: 20px; }

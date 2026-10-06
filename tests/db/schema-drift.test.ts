@@ -19,6 +19,7 @@ const PG_ONLY_TABLES = new Set([
   "persona_overrides", // persona_overrides + persona_sync_state: personas-as-code, Postgres-only like personas
   "persona_sync_state",
   "schema_migrations",
+  "node_revocations", // gateway-side node credential revocation; sqlite skips revocation
 ]);
 
 // Shared tables that intentionally carry no tenant_id on Postgres: dedup and

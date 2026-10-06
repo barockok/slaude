@@ -23,7 +23,11 @@ test("the dev datastores ConfigMap inlines the same brain-database SQL as the co
 });
 
 test("the gateway config and compose both point the brain at Postgres", () => {
-  const cfg = parse(readFileSync(new URL("deploy/k8s-scale/20-config.yaml", root), "utf8")) as any;
+  // 20-config.yaml holds several ConfigMaps; the shared one reaches the gateway.
+  const cfg = readFileSync(new URL("deploy/k8s-scale/20-config.yaml", root), "utf8")
+    .split(/^---$/m)
+    .map((d) => parse(d) as any)
+    .find((d) => d?.metadata?.name === "slaude-scale-config");
   expect(cfg.data.SLAUDE_BRAIN_ENGINE).toBe("postgres");
 
   const compose = parse(readFileSync(new URL("docker-compose.scale.yaml", root), "utf8")) as any;

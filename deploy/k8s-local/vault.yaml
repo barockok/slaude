@@ -1,0 +1,57 @@
+# Local-only: a single Vault in DEV MODE, for provider credentials by reference.
+# Never deploy this anywhere else: dev mode is unsealed, keeps everything in
+# memory (a pod restart loses every secret, policy and token, so re-run
+# ./vault.sh seed or ./up.sh), and serves plain http.
+#
+# KV v2 is mounted at `secret/` by dev mode. vault.sh seeds a read-only policy
+# for secret/slaude/personas/*, a gateway token with that policy (the value is
+# SLAUDE_VAULT_TOKEN in the gateway Secret), and one placeholder provider key
+# per local persona. The root token is in its own Secret, loaded by this pod
+# only; nothing else in the cluster can read it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault
+  namespace: slaude-scale
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: vault }
+  template:
+    metadata:
+      labels: { app: vault }
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: vault
+          image: hashicorp/vault:1.17
+          args: ["server", "-dev"]
+          env:
+            - name: VAULT_DEV_ROOT_TOKEN_ID
+              valueFrom:
+                secretKeyRef:
+                  name: slaude-local-vault
+                  key: VAULT_DEV_ROOT_TOKEN_ID
+            - { name: VAULT_DEV_LISTEN_ADDRESS, value: "0.0.0.0:8200" }
+            # The image would otherwise try to grant itself IPC_LOCK; dev mode
+            # does not lock memory.
+            - { name: SKIP_SETCAP, value: "1" }
+          ports:
+            - containerPort: 8200
+          readinessProbe:
+            httpGet: { path: /v1/sys/health, port: 8200 }
+            periodSeconds: 5
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { cpu: 200m, memory: 192Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault
+  namespace: slaude-scale
+spec:
+  selector: { app: vault }
+  ports:
+    - { port: 8200, targetPort: 8200 }

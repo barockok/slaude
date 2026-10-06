@@ -20,12 +20,19 @@ least `role=gateway|node` per Deployment so the series below are separable.
 | `slaude_gateway_events_total` | counter | `type` | Slack events accepted + dispatched (post-signature, post-app-lookup) |
 | `slaude_http_requests_total` | counter | `route`, `status` | Every `/slack/*` ingress response, 200s and rejects |
 | `slaude_slack_drops_total` | counter | `reason` | Events dropped by gates before a turn |
-| `slaude_queue_depth` | gauge | `queue` | Turn jobs waiting + delayed + prioritized on the shared queue † |
+| `slaude_queue_depth` | gauge | `queue`, `label` | Turn jobs waiting + delayed + prioritized, one series per label queue: `queue="turns",label="default"` and `queue="turns.label.<label>",label="<label>"` for every other label in use † |
 | `slaude_nodes_alive` | gauge | — | Live node heartbeat keys † |
 | `slaude_sessions_warm` | gauge | — | Sessions registered warm on some node † |
 | `slaude_reaper_last_run_timestamp_seconds` | gauge | — | Unix time of the last completed reaper pass † |
 | `slaude_v1_tool_calls_total` | counter | `server`, `tool` | REST tool-plane invocations from nodes |
+| `slaude_memory_gateway_failures_total` | counter | `kind` | Node memory calls to the gateway that failed (`prefetch:timeout`, `sync:409`, `prefetch:network`, `unsupported`, ...). Each kind is also logged once per node; the turn runs without memory. A steady rise means node turns have no `<memory-context>` |
 | `slaude_v1_job_events_total` | counter | `event` | Node job telemetry (`ack`\|`fail`) |
+| `slaude_label_unserved` | gauge | `label` | 1 while a node label in use has waiting jobs and no live node for longer than `SLAUDE_LABEL_UNSERVED_SECS` † |
+| `slaude_node_credential_expiry_seconds` | gauge | `id` | Seconds until a signed node credential this replica has seen expires (at most 64 ids) |
+| `slaude_gate_denied_total` | counter | `route` | `/v1` requests the label gate refused with `403` (the job's label is not among the node's labels). `route` is the route-table name (`tools`, `tenants.personas.runtime`, `jobs.token-refresh`, ...), never the path, so there is at most one series per label-gated route |
+| `slaude_node_legacy_auth_total` | counter | — | `/v1` requests authenticated with the legacy shared token while `SLAUDE_NODE_KEY` is set |
+| `slaude_provider_cred_resolve_total` | counter | `scheme`, `outcome` | Provider credential reference resolutions (`vault`\|`env`; `ok`\|`cached`\|`stale`\|`denied`\|`error`) |
+| `slaude_provider_cred_stale_served_total` | counter | — | Cached provider credentials served past their TTL because Vault could not answer |
 
 † Exported only by the current **reaper leader** replica. Aggregate with
 `max()` across gateway pods; a replica that loses leadership keeps its last
@@ -36,9 +43,11 @@ values, so never `sum()` these.
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `slaude_node_sessions_live` | gauge | — | Warm SDK `Query` sessions held by this node |
-| `slaude_node_turns_total` | counter | `result` | Turn jobs processed (`done`\|`error`\|`skipped`\|`requeued`) |
+| `slaude_node_auth_paused` | gauge | — | 1 while this node's claim loops are paused because the gateway refused its credential (401); `/healthz` stays 200 meanwhile, so alert on this |
+| `slaude_node_turns_total` | counter | `result` | Turn jobs processed (`done`\|`error`\|`skipped`\|`requeued`\|`deduped`\|`moved`). `moved`: a job for a label this node does not carry, moved to that label's queue |
 | `slaude_node_turn_duration_seconds` | histogram | — | Wall-clock turn duration |
 | `slaude_node_queue_claim_latency_seconds` | histogram | — | enqueue→claim latency (SLO: p95 < 500ms, spec §8) |
+| `slaude_node_gateway_secrets_present` | gauge | — | Gateway-only variables found in the node's environment at boot. Anything above 0 means the node still loads the gateway's Secret; see [the Secret split](multi-node.md#the-secret-split) |
 
 ### Agent runtime (emitted wherever the `AgentManager` runs — nodes in this topology, the single process in mono)
 
@@ -56,6 +65,10 @@ values, so never `sum()` these.
 
 ## What to alert on
 
+The alerts specific to provider credentials, node credentials, labels and the
+Secret split, each with what to do when it fires, are in the
+[alerts runbook](alerts.md). The ones below cover the queue and the nodes.
+
 **No workers** — turns queue but nothing runs. Page immediately.
 
 ```promql
@@ -68,6 +81,14 @@ health/scaling before the backlog turns into user-visible latency.
 ```promql
 max(slaude_queue_depth{queue="turns"}) > 25
 and deriv(max(slaude_queue_depth{queue="turns"})[10m:1m]) > 0
+```
+
+With node labels, alert per label instead, so a backlog on one label is not
+hidden by the others:
+
+```promql
+max by (label) (slaude_queue_depth) > 25
+and deriv(max by (label) (slaude_queue_depth)[10m:1m]) > 0
 ```
 
 **Claim latency SLO** — spec §8: p95 enqueue→claim under 500ms.
@@ -139,10 +160,37 @@ scrape_configs:
 ## Scaling behavior
 
 - **Nodes** scale on queue depth via KEDA (`deploy/k8s-scale/70-autoscale.yaml`
-  — redis list-length trigger on the BullMQ wait list. Prometheus and CPU-HPA
-  variants documented in the file). Scale-down is deliberately slow: a reaped
+  — redis list-length trigger on the BullMQ wait list, one ScaledObject per
+  label; a Prometheus variant is documented in the file). Without KEDA, apply
+  `deploy/k8s-scale/optional/node-cpu-fallback-hpa.yaml` instead, never both. Scale-down is deliberately slow: a reaped
   node's warm sessions cold-resume elsewhere from the shared volume, but the
   warmth is lost.
+- **Node labels.** Each label has its own queue: `turns` for `default` (the
+  name predates labels, so nodes of any version keep consuming it) and
+  `turns.label.<label>` for every other label. A label's node Deployment
+  therefore needs its own KEDA ScaledObject whose Redis list trigger reads
+  that queue's wait list, `slaude:bull:turns.label.<label>:wait`; a
+  Prometheus trigger or alert selects `slaude_queue_depth{label="<label>"}`.
+  The existing `queue="turns"` queries keep matching label `default`. Keep at
+  least two replicas per label for availability: that is two nodes per label,
+  not two in total.
+- **Per-node ceiling.** A node runs one BullMQ worker per label its
+  credential carries plus one for its own warm-session queue, each with
+  `SLAUDE_NODE_CONCURRENCY` (default 8) and no node-wide cap, so a node can
+  run up to `(labels + 1) × SLAUDE_NODE_CONCURRENCY` turns at once. Size the
+  pod for that number, or lower the concurrency on nodes with many labels.
+- **Label heartbeat.** A node publishes its labels in `nodelabels:<id>`
+  beside its heartbeat. The key's TTL is the larger of the node key's (30 s)
+  and 3× `SLAUDE_HEARTBEAT_SEC`, refreshed on every beat, so it outlives every
+  warm session on the node (a session is fresh for 2× the heartbeat). A node
+  with no such key (an older node) counts as `default`.
+- **Depth series.** The reaper leader finds label queues by their BullMQ
+  `:meta` key in Redis (`<prefix>:bull:turns.label.<label>:meta`), so
+  `slaude_queue_depth` has one series per label queue that exists, including
+  one that no persona uses any more until its keys are removed. The series set
+  is bounded by the label pattern (at most 32 characters, lower-case letters,
+  digits and `-`) and in practice by the labels in use, never by nodes or
+  sessions.
 - **Gateways** are stateless. Scale `replicas` manually on ingress volume.
   Leaders (cron, reaper) elect via Redis locks — any replica count is safe.
 - **Draining**: node SIGTERM stops claiming, finishes in-flight turns within

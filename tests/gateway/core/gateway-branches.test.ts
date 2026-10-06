@@ -65,7 +65,6 @@ function richTransport(o: { botUserId?: string; authThrows?: boolean } = {}) {
 }
 
 function makeGw(o: { transport?: Rich; gwOpts?: GatewayOptions; agent?: AgentManager } = {}) {
-  process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
   const cap = o.transport ?? richTransport();
   const agent = o.agent ?? new AgentManager();
   const sends: string[] = [];
@@ -411,6 +410,9 @@ describe("gateway uncovered branches", () => {
 
   it("file attachments are downloaded and wrapped in <attachment> blocks", async () => {
     writeSoulFixture(WORLD);
+    // Socket Mode reads the bot token from the environment, only when files exist.
+    const prevToken = process.env.SLACK_BOT_TOKEN;
+    process.env.SLACK_BOT_TOKEN = "xoxb-test";
     const fileServer = Bun.serve({ port: 0, fetch: async () => new Response("hello attachment") });
     try {
       const g = makeGw();
@@ -422,6 +424,8 @@ describe("gateway uncovered branches", () => {
       expect(g.sends[0]!).toContain("User attached 1 file(s)");
     } finally {
       fileServer.stop(true);
+      if (prevToken === undefined) delete process.env.SLACK_BOT_TOKEN;
+      else process.env.SLACK_BOT_TOKEN = prevToken;
     }
   });
 
@@ -771,6 +775,9 @@ describe("gateway uncovered branches", () => {
     it("default loopback flow end-to-end against a fake IdP (discover → register → code → exchange)", async () => {
       writeSoulFixture(WORLD);
       const idp = startIdp();
+      // The fake IdP is plain http on loopback, which the outbound policy
+      // refuses unless the development flag admits it.
+      process.env.SLAUDE_OUTBOUND_DEV_LOOPBACK = "1";
       try {
         writeMcpJson({ svc: { type: "http", url: idp.url("/mcp") } });
         const g = makeGw(); // no oauthConnect override → real discover/beginConnect path
@@ -800,12 +807,16 @@ describe("gateway uncovered branches", () => {
         expect(JSON.stringify(creds.mcpOAuth)).toContain("atk");
       } finally {
         idp.server.stop(true);
+        delete process.env.SLAUDE_OUTBOUND_DEV_LOOPBACK;
       }
     });
 
     it("paste-back mode: prepare, plain-message passthrough, state mismatch, success, exchange failure, expiry, prepare failure", async () => {
       writeSoulFixture(WORLD);
       const idp = startIdp();
+      // The fake IdP is plain http on loopback, which the outbound policy
+      // refuses unless the development flag admits it.
+      process.env.SLAUDE_OUTBOUND_DEV_LOOPBACK = "1";
       try {
         writeMcpJson({
           svc: { type: "http", url: idp.url("/mcp") },
@@ -859,6 +870,7 @@ describe("gateway uncovered branches", () => {
         expect(g.sends.length).toBe(sendsBefore + 1); // expired → treated as a normal message
       } finally {
         idp.server.stop(true);
+        delete process.env.SLAUDE_OUTBOUND_DEV_LOOPBACK;
       }
     });
   });
@@ -920,6 +932,51 @@ describe("gateway uncovered branches", () => {
       } finally {
         if (prevKey) process.env.ANTHROPIC_API_KEY = prevKey;
         if (prevOauth) process.env.CLAUDE_CODE_OAUTH_TOKEN = prevOauth;
+      }
+    });
+  });
+
+  // R1-F5 / WS-A §5.5: a persona on its own provider is never checked against
+  // the gateway's provider, even when the gateway's would "verify" the id.
+  describe("/model for a managed persona that sets provider", () => {
+    it("passes the choice through unverified and does not list the gateway's models", async () => {
+      writeSoulFixture(WORLD);
+      const { setPersonaRegistry, __resetPersonaRegistry } = await import("../../../src/persona/registry");
+      const prevKey = process.env.ANTHROPIC_API_KEY;
+      const prevFetch = globalThis.fetch;
+      process.env.ANTHROPIC_API_KEY = "gateway-key";
+      let modelCalls = 0;
+      globalThis.fetch = (async (url: any, init?: any) => {
+        if (String(url).includes("/v1/models")) {
+          modelCalls++;
+          return new Response(JSON.stringify({ data: [{ id: "gw-model" }] }), { status: 200 });
+        }
+        return prevFetch(url, init);
+      }) as any;
+      __resetModelCache();
+      setPersonaRegistry({
+        lookupByUserId: () => null,
+        lookupByName: () => null,
+        list: () => [],
+        isMultiPersonaMode: () => false,
+        isManaged: () => true,
+        tombstonedPersonaFor: () => null,
+        defaultPersona: () => ({ model: null, mcp: null, provider: { apiKey: "env://PERSONA_DEFAULT_KEY" } }),
+      });
+      try {
+        const g = makeGw();
+        await g.emit("message", dmArgs(g, "/model gw-model", { ts: nextTs() }));
+        await waitFor(() => g.posts.some((p) => String(p.text).includes("model →")));
+        expect(g.posts.some((p) => String(p.text).includes("couldn't verify"))).toBe(true);
+        await g.emit("message", dmArgs(g, "/model", { ts: nextTs() }));
+        await waitFor(() => g.posts.some((p) => String(p.text).includes("can't fetch model list")));
+        expect(modelCalls).toBe(0);
+      } finally {
+        __resetPersonaRegistry();
+        globalThis.fetch = prevFetch;
+        if (prevKey) process.env.ANTHROPIC_API_KEY = prevKey;
+        else delete process.env.ANTHROPIC_API_KEY;
+        __resetModelCache();
       }
     });
   });

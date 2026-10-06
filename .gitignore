@@ -19,6 +19,7 @@ coverage/
 data/
 verify-data/
 .env.verify
+.env.node
 jsonl/
 .playwright-cli/
 .playwright-mcp/
@@ -39,3 +40,9 @@ docs/site/_site/
 deploy/k8s-local/secrets.env
 deploy/k8s-local/provider.env
 deploy/k8s-local/deploy.env
+deploy/k8s-local/node.env
+deploy/k8s-local/model.env
+deploy/k8s-local/gateway.env
+deploy/k8s-local/vault-root.env
+deploy/k8s-local/node-credentials.env
+deploy/k8s-local/node-cred-*.env

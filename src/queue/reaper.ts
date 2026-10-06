@@ -5,27 +5,40 @@
  * A node is dead when its `nodes:<id>` heartbeat key is gone but it still has
  * leftovers: `sess:*` registry entries pointing at it, or jobs parked on its
  * per-node queue. The reaper deletes the session entries (so routing falls
- * back to cold resume) and moves the jobs to the shared `turns` queue through
- * the normal coalescing enqueue (payload preserved; attempts/backoff policy
- * re-applied).
+ * back to cold resume) and moves the jobs to the queue of the job's own label
+ * (`turns` for `default`, `turns.label.<label>` otherwise; node labels spec
+ * §4.6) with TurnQueues.moveTo: same job id, payload preserved, the coalesce
+ * index and the job-moved marker kept right.
+ *
+ * Active jobs (H27): a warm-routed turn the dead node had CLAIMED sits active
+ * on the node's own queue. No surviving worker consumes that queue, so
+ * BullMQ's stall recovery never runs for it: the reaper moves an active job
+ * whose BullMQ lock has expired, atomically (the lock is checked in the same
+ * Redis step that takes the job). An active job whose lock is still live (the
+ * process may be partitioned, not dead) is never touched; the node then stays
+ * on the work list, so the next pass looks again. A job whose turn already
+ * finished (its turn-done marker exists, read in the same atomic step) is
+ * taken off the node's queue and dropped, never copied or merged into another
+ * job: its turn ran. A node's active jobs are moved before its waiting ones,
+ * and a merge orders two jobs' messages by Slack ts (TurnQueues), so a
+ * rescued turn's messages run before those of the session's newer job.
  *
  * moveStalled additionally rescues jobs sitting unclaimed on a *live* node's
  * queue past a threshold (node too busy or its worker wedged): they too go
- * back to the shared queue for anyone to pick up.
+ * back to their label's queue for anyone to pick up.
  *
- * Duplicate-delivery window: moveToShared coalesces via the coalesce index,
- * but that index has its own TTL. A session with a job stranded on a dead
- * node's queue AND an already-pending shared job whose index entry has
- * expired ends up with TWO shared jobs after the reap — the move can no
- * longer see the sibling. This is accepted at-least-once behavior: the
- * session lock serializes the two turns, and the consumer's Slack-ts dedup
- * drops the repeated messages downstream.
+ * Duplicate-delivery window: moveTo coalesces via the coalesce index, but
+ * that index has its own TTL. A session with a job stranded on a dead node's
+ * queue AND an already-pending label job whose index entry has expired ends
+ * up with TWO jobs after the reap — the move can no longer see the sibling.
+ * This is accepted at-least-once behavior: the session lock serializes the
+ * two turns.
  */
 import type { Redis } from "ioredis";
 import type { Job } from "bullmq";
 import { makeKeys, nodeTurnsQueue, TURNS_QUEUE, type Keys } from "./keys";
 import { scanKeys, type Registry } from "./registry";
-import type { TurnQueues } from "./turns";
+import { jobLabel, type TurnJob, type TurnQueues } from "./turns";
 
 /** Job states that are safe to move: not yet claimed by any worker. */
 const MOVABLE_STATES = ["waiting", "delayed", "prioritized"] as const;
@@ -35,7 +48,8 @@ export interface ReapReport {
   deadNodes: string[];
   /** sess:* entries deleted. */
   sessionsCleared: number;
-  /** Jobs moved from per-node queues to the shared queue. */
+  /** Jobs this pass took off per-node queues: moved to their label queues,
+   *  merged into the session's pending job, or (turn already done) dropped. */
   jobsMoved: number;
 }
 
@@ -69,20 +83,46 @@ export function makeReaper(opts: ReaperOpts) {
     return byNode;
   };
 
-  /** Move every unclaimed job on a per-node queue to the shared queue. */
-  const drainNodeQueue = async (nodeId: string): Promise<number> => {
+  /**
+   * Move one job to its own label's queue. `taken`: this call took it off the
+   * node's queue (it is gone from there now). `left`: the move did not report
+   * it as still here — also true when an earlier pass already moved it, so a
+   * job only `held` by a live lock keeps its node on the work list.
+   */
+  const moveHome = async (job: Job, rescueActive: boolean): Promise<{ taken: boolean; left: boolean }> => {
+    const res = await turns.moveTo(job, jobLabel(job.data as TurnJob), { rescueActive });
+    const left = !(res.queue === job.queueName && res.jobId === String(job.id));
+    const taken = !(await turns.queue(job.queueName).getJob(String(job.id)));
+    return { taken, left: left || taken };
+  };
+
+  /**
+   * Move every active job whose lock has expired, then every unclaimed job, on
+   * a dead node's queue to its label's queue. `held` counts active jobs whose
+   * lock is still live: they are left alone this pass.
+   *
+   * Active jobs FIRST (review U10b-R1): a rescued active job is older than any
+   * job of its session still waiting on the node (that one was enqueued while
+   * it ran). Moved first, it is on the label queue, or merged into the waiting
+   * job ahead of its messages, before the newer job can reach a label worker.
+   * Moving the waiting job first let an idle worker claim it at once, and the
+   * older turn ran after it.
+   */
+  const drainNodeQueue = async (nodeId: string): Promise<{ moved: number; held: number }> => {
     const q = turns.queue(nodeTurnsQueue(nodeId));
-    const jobs: Job[] = await q.getJobs([...MOVABLE_STATES]);
     let moved = 0;
-    for (const job of jobs) {
-      // moveToShared is coalesce-index-aware: it appends into another pending
-      // job for the same session when one exists, and otherwise re-adds on
-      // shared before removing the original (add-first: a crash between the
-      // two duplicates — at-least-once — rather than losing the turn).
-      await turns.moveToShared(job);
-      moved++;
+    let held = 0;
+    for (const job of (await q.getJobs(["active"])) as Job[]) {
+      // moveTo re-checks the lock in the same atomic step that takes the job;
+      // a job it leaves in place is still held by a live lock.
+      const r = await moveHome(job, true);
+      if (r.taken) moved++;
+      if (!r.left) held++;
     }
-    return moved;
+    for (const job of (await q.getJobs([...MOVABLE_STATES])) as Job[]) {
+      if ((await moveHome(job, false)).taken) moved++;
+    }
+    return { moved, held };
   };
 
   return {
@@ -92,7 +132,8 @@ export function makeReaper(opts: ReaperOpts) {
      * One reap pass. Candidates = nodes that ever registered (nodeset) plus
      * any node referenced by a sess:* entry (covers a lost/flushed nodeset).
      * A candidate whose heartbeat key is missing is dead: clear its sessions,
-     * drain its queue, drop it from nodeset.
+     * drain its queue, drop it from nodeset — unless an active job on its
+     * queue still holds a live lock, in which case it stays for the next pass.
      */
     async reapDeadNodes(): Promise<ReapReport> {
       const byNode = await sessionsByNode();
@@ -105,8 +146,9 @@ export function makeReaper(opts: ReaperOpts) {
           await redis.del(...sessKeys);
           report.sessionsCleared += sessKeys.length;
         }
-        report.jobsMoved += await drainNodeQueue(nodeId);
-        await registry.forgetNode(nodeId);
+        const { moved, held } = await drainNodeQueue(nodeId);
+        report.jobsMoved += moved;
+        if (held === 0) await registry.forgetNode(nodeId);
         report.deadNodes.push(nodeId);
       }
       return report;
@@ -114,7 +156,7 @@ export function makeReaper(opts: ReaperOpts) {
 
     /**
      * Rescue jobs unclaimed on a per-node queue for longer than the threshold
-     * (default 5s): move them to the shared queue. Returns the count moved.
+     * (default 5s): move them to their label's queue. Returns the count moved.
      *
      * Guarded on the node's HEARTBEAT, not just the job's age: a busy-but-
      * alive node keeps its warm queue (moving its jobs would churn sessions
@@ -131,8 +173,7 @@ export function makeReaper(opts: ReaperOpts) {
       let moved = 0;
       for (const job of await q.getJobs(["waiting"])) {
         if (now - job.timestamp <= thresholdMs) continue;
-        await turns.moveToShared(job);
-        moved++;
+        if ((await moveHome(job, false)).taken) moved++;
       }
       return moved;
     },

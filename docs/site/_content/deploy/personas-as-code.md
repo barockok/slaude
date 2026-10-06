@@ -45,7 +45,38 @@ personas/
 slackUserId: "UTESTUSER1"
 model: "provider/model-name"
 userToken: "${PERSONA_SUPPORT_BOT_XOXP}"
+provider:                       # optional: this persona's own LLM credentials
+  baseUrl: "https://llm.example.com"
+  apiKey: "vault://secret/slaude/personas/support-bot#api_key"
+kbSources:                      # optional: the knowledge bases it may read
+  - kb-runbook
+runsOn: "engineering"           # optional: the node label this persona runs on
 ```
+
+`kbSources` lists the `kb-<label>` knowledge-base sources the persona may read.
+Absent means every installed knowledge base; `[]` means none. It filters
+retrieval and is not isolation. See [Knowledge scope](knowledge-scope.md).
+
+`runsOn` names the node label whose nodes run this persona's turns: lower-case
+letters, digits and `-`, at most 32 characters (`^[a-z0-9][a-z0-9-]{0,31}$`).
+Absent means `default`, the label every unlabelled node and every legacy node
+carries; filesystem and sqlite personas are always `default`. It is set in git
+only: it is not a runtime override, so the panel cannot change where an agent
+runs. A sync that names a label no live node carries is applied anyway and
+reported as a warning in `warnings` (`no live node carries label '<label>'`):
+the persona's turns wait on that label's queue until a node with the label
+starts. `export` writes `runsOn` only when the persona's `config.json` already
+has it.
+
+`provider` holds references (`vault://…#field` or `env://PERSONA_*`), never a
+credential; `baseUrl` may also be a literal `https` URL, and needs a credential
+reference beside it. The set is atomic: a persona that sets `provider` never
+receives a key from anywhere else. The gateway resolves them when it builds the
+persona's runtime bundle. See
+[Provider credentials](provider-credentials.md). A persona that sets
+`provider.baseUrl` without `model`, or a named persona with no `model`, gets a
+sync warning. `export` never writes `provider` (filesystem personas have
+none); add it to `persona.yaml` by hand.
 
 `personas/default/` is required. A sync without it is refused with 422,
 because the default persona's soul would otherwise have to come from disk,
@@ -117,6 +148,7 @@ The tenant is `default` for a single-workspace deployment; it must match
 
 ```json
 {
+  "version": 1,
   "revision": "<commit sha>",
   "committedAt": "2026-10-01T09:00:00Z",
   "allowEmpty": false,
@@ -126,12 +158,35 @@ The tenant is `default` for a single-workspace deployment; it must match
 
 The body is capped at 4 MiB; a larger one is 413 and nothing is applied.
 `personas render` builds this body from the repository. The response reports
-`created`, `updated`, `unchanged`, `tombstoned` and `overridesWiped`. With
+`created`, `updated`, `unchanged`, `tombstoned`, `overridesWiped`,
+`ignoredFields` and `warnings` (provider/model pairing, a `runsOn` label no
+live node carries, and `kbSources` ids that match no installed knowledge base,
+by persona name).
+Migrations 0014 (`personas.provider_json`), 0016 (`personas.runs_on`) and 0017
+(`personas.kb_sources`) apply at boot by default. With `SLAUDE_MIGRATE_ON_BOOT=0`
+and a migration not applied, a gateway whose tenant is already managed fails at
+boot with a database error about the missing column; one whose tenant is not
+managed yet refuses its first sync with 503 naming the migration. With
 `?dryRun=1` nothing is written and nothing is published, and the report is
 what a real sync of the same body would produce, including how many runtime
 overrides it would wipe.
 
 Behaviour to know:
+
+- `version` is the payload format; absent means 1, and `personas render` always
+  writes the highest version any field needs: 3 when any persona sets
+  `kbSources`, else 2 when any persona sets `provider` or `runsOn`, otherwise 1.
+  A payload without those fields still deploys to an older gateway, and one
+  with them is refused by a gateway that would ignore them. A payload whose `version` is newer than the gateway supports is
+  refused with 422 before anything is applied: upgrade the gateway first.
+- A field the gateway does not know (at the top level or on a persona) is
+  ignored, never stored, and listed in `ignoredFields` as `futureKnob` or
+  `persona.<name>.<field>`. The gateway also logs a warning naming the fields.
+  Only names are reported, never values. That is with `SLAUDE_DEPLOY_STRICT=0`
+  on the gateway. Strict is the default since v0.45.0: an unknown field is a 422
+  naming it, so upgrade the gateways before the pipeline that renders new
+  fields, or set `SLAUDE_DEPLOY_STRICT=0` while they catch up. `personas render --check`
+  reports unknown `persona.yaml` keys on stderr.
 
 - A sync whose `committedAt` is older than the live revision is refused with
   409, before any model call. Rerunning an old CI job is safe.
@@ -223,7 +278,11 @@ exposes the routes below. They always act on the tenant `default`.
 - `GET /panel/api/personas`: git versus live per field, for every persona
   including tombstoned ones (each entry says `tombstoned: true|false`). Any
   authenticated operator can read it. Tokens appear only as present or absent;
-  soul text and model are shown.
+  soul text and model are shown, plus `runsOn` and a `kb.mode` summary
+  (`all`, `none` or `list`).
+- `GET /panel/api/personas/<name>`: one persona's definition, references and
+  presence only (see [the control panel's persona page](panel.md)). Any
+  authenticated operator; `404` for an unknown name.
 - `PUT /panel/api/personas/<name>/overrides/<field>` with `{ "value": ... }`
   and `DELETE` of the same path. Superadmin only. `<field>` is `soul`, `model`
   or `mcp`; nothing else can be overridden.
@@ -258,19 +317,25 @@ existed, keep the model they were created with until `/model` changes it.
 
 ## Known gaps
 
-- **Connectable and mounted MCP servers can differ.** The `/mcp connect` list
-  and the portal integrations list still read the global `.mcp.json` for a
-  managed persona, while the persona's turns mount its synced `mcp`.
+- **Connectable and mounted MCP servers can differ in `mono`.** In the
+  gateway role, `/mcp connect` and the portal's integrations page offer exactly
+  the servers the [MCP bridge](mcp-bridge.md) serves for the persona. In
+  `mono` they still read the global `.mcp.json` for a managed persona, while
+  the persona's turns mount its synced `mcp`.
 - **Export does not catch every token in an MCP URL.** It does not detect a
   token in a URL's host, or in a URL path segment shorter than 32 characters.
   Review MCP URLs before committing an export.
-- **Per-persona `mcp` is not consumed on nodes.** In `mono` on Postgres a
-  managed persona's external MCP servers come from its effective `mcp`
-  (nothing when it has none; the default persona falls back to the global
-  `.mcp.json`). Nodes do not mount external MCP servers from persona config:
-  syncing or overriding `mcp` records it and has no effect on a node's turns.
-  The runtime bundle a node fetches carries `mcpJson: null` for a managed
-  tenant, so resolved header and env values never leave the gateway.
+- **On nodes, per-persona `mcp` reaches the agent only through the MCP
+  bridge.** A managed persona's remote `http` servers are served by the
+  [MCP bridge](mcp-bridge.md): the runtime bundle carries only their names
+  (`mcpServers`), and every call goes through the gateway, so resolved header
+  and env values never leave it (`mcpJson` in the bundle is always `null`).
+  stdio, legacy `sse` and plugin servers in a persona's `mcp` are not bridged;
+  a node runs a stdio server only when its own
+  [node MCP manifest](node-manifest.md) declares it for that persona. In `mono`
+  on Postgres a managed persona's external MCP servers come from its effective
+  `mcp` (nothing when it has none; the default persona falls back to the
+  global `.mcp.json`).
 - **In `mono`, a named persona's channel mandate is the default persona's.**
   Nodes take each persona's channel mandate from its own structured soul; the
   `mono` process still uses the default persona's channel overrides for every

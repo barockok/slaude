@@ -6,7 +6,7 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { JOB_HEADER, mintJobToken, verifyJobToken } from "../../../src/gateway/api/auth";
-import { handleTokenRefresh, REFRESH_GRACE_SEC } from "../../../src/gateway/api/jobs";
+import { handleTokenRefresh, handleTokenReissue, REFRESH_GRACE_SEC, type QueuedJob } from "../../../src/gateway/api/jobs";
 
 const SECRET = "refresh-test-secret";
 
@@ -57,8 +57,12 @@ describe("/v1/jobs/:id/token-refresh", () => {
     const v = verifyJobToken(jobToken);
     expect(v.ok).toBe(true);
     if (v.ok) {
-      const { exp, iat, ...rest } = v.claims;
+      const { exp, iat, iat0, ...rest } = v.claims;
       expect(rest).toEqual(baseClaims);
+      // The first issue time is carried: a token with no iat0 counts from its
+      // own iat.
+      const staleIat = (verifyJobToken(stale, { graceSec: REFRESH_GRACE_SEC }) as any).claims.iat;
+      expect(iat0).toBe(staleIat);
       // Full TTL again (15 min default) — not a copy of the stale expiry.
       expect(exp).toBeGreaterThan(Math.floor(Date.now() / 1000) + 10 * 60);
     }
@@ -95,7 +99,92 @@ describe("/v1/jobs/:id/token-refresh", () => {
     expect(res.status).toBe(401);
   });
 
+  test("refused past SLAUDE_JOB_TOKEN_MAX_AGE from the first issue; iat0 survives repeated refreshes", async () => {
+    const now = Date.now();
+    // A recent token whose job was first issued 5 hours ago.
+    const carried = mintJobToken({ ...baseClaims, iat0: Math.floor((now - 5 * 3600_000) / 1000) }, { now: now - 60_000 });
+    const r1 = await handleTokenRefresh(req(carried), "job-123", now);
+    expect(r1.status).toBe(200);
+    const t1 = ((await r1.json()) as { jobToken: string }).jobToken;
+    const v1 = verifyJobToken(t1, { now });
+    expect(v1.ok && v1.claims.iat0).toBe(Math.floor((now - 5 * 3600_000) / 1000));
+    // An hour and a bit later the 6h cap is passed: refused, though the token
+    // itself is still inside the grace.
+    const later = now + 61 * 60_000;
+    const r2 = await handleTokenRefresh(req(t1), "job-123", later);
+    expect(r2.status).toBe(401);
+    expect(((await r2.json()) as { error: string }).error).toContain("maximum age");
+    // The cap is configurable.
+    process.env.SLAUDE_JOB_TOKEN_MAX_AGE = "12h";
+    try {
+      expect((await handleTokenRefresh(req(t1), "job-123", later)).status).toBe(200);
+    } finally {
+      delete process.env.SLAUDE_JOB_TOKEN_MAX_AGE;
+    }
+  });
+
   test("missing token refused", async () => {
     expect((await handleTokenRefresh(req(null), "job-123")).status).toBe(401);
+  });
+});
+
+describe("live label re-check at refresh (node labels spec §4.3, §4.8)", () => {
+  /** A managed registry snapshot whose default persona runs on `label`. */
+  const managedDefault = (label: string | null) => ({
+    lookupByUserId: () => null,
+    lookupByName: () => null,
+    list: () => [],
+    isMultiPersonaMode: () => false,
+    isManaged: () => true,
+    tombstonedPersonaFor: () => null,
+    defaultPersona: () => ({ model: null, mcp: null, runsOn: label }),
+  });
+
+  test("refresh is refused with a typed 409 once the persona runs on another label", async () => {
+    const { setPersonaRegistry, __resetPersonaRegistry } = await import("../../../src/persona/registry");
+    const { LABEL_MISMATCH_CODE } = await import("../../../src/gateway/api/auth");
+    try {
+      setPersonaRegistry(managedDefault("finance") as any);
+      const onEng = mintJobToken({ ...baseClaims, label: "engineering" });
+      const res = await handleTokenRefresh(req(onEng), "job-123");
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: "the agent's node label changed", code: LABEL_MISMATCH_CODE });
+      // The token's label is still the persona's: refreshed as before.
+      const onFin = mintJobToken({ ...baseClaims, label: "finance" });
+      expect((await handleTokenRefresh(req(onFin), "job-123")).status).toBe(200);
+      // A token from before labels is `default`: refused while the persona is on finance.
+      expect((await handleTokenRefresh(req(mintJobToken(baseClaims)), "job-123")).status).toBe(409);
+    } finally {
+      __resetPersonaRegistry();
+    }
+  });
+
+  // Review U10b-E: reissue re-mints the token's own label claim, so without
+  // the same check a long-queued job would get a fresh token for a label the
+  // persona no longer runs on.
+  test("reissue is refused with the same typed 409 once the persona runs on another label", async () => {
+    const { setPersonaRegistry, __resetPersonaRegistry } = await import("../../../src/persona/registry");
+    const { LABEL_MISMATCH_CODE } = await import("../../../src/gateway/api/auth");
+    const now = Date.now();
+    const reissue = (label: string) => {
+      const tok = mintJobToken({ ...baseClaims, label }, { now: now - 3 * 3600_000 }); // past the refresh grace
+      const claims = (verifyJobToken(tok, { graceSec: Number.MAX_SAFE_INTEGER }) as any).claims;
+      const job: QueuedJob = { data: { jobToken: tok, enqueuedAt: now - 3600_000 }, timestamp: now - 3600_000, state: "waiting" };
+      const r = new Request("http://gw/v1/jobs/job-123/token-reissue", {
+        method: "POST",
+        headers: { [JOB_HEADER]: tok, "content-type": "application/json" },
+        body: JSON.stringify({ queue: `turns.label.${label}` }),
+      });
+      return handleTokenReissue(r, "job-123", claims, async () => job, now);
+    };
+    try {
+      setPersonaRegistry(managedDefault("finance") as any);
+      const res = await reissue("engineering");
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: "the agent's node label changed", code: LABEL_MISMATCH_CODE });
+      expect((await reissue("finance")).status).toBe(200);
+    } finally {
+      __resetPersonaRegistry();
+    }
   });
 });

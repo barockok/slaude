@@ -38,7 +38,6 @@ function replica(opts: { send?: (a: any) => Promise<void>; isLive?: boolean } = 
   } as any;
   const scheduler = new CronScheduler({
     agent,
-    client: { chat: { postMessage: async () => ({}) } } as any,
     send: async (a: any) => {
       sent.push(a);
       if (opts.send) await opts.send(a);

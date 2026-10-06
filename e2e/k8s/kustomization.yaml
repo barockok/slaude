@@ -15,11 +15,17 @@ patches:
         namespace: slaude-scale
       data:
         SLAUDE_SLACK_API_URL: "http://fake-slack:8080/api/"
-        # Workaround for a gateway bug: in HTTP mode the gateway still reads SLACK_BOT_TOKEN on
-        # every inbound message (for attachment downloads) and drops the turn when it is unset,
-        # although real deploys register bot tokens in slack_apps. The sim seeds a dummy for the
-        # same reason. Never validated, only used for attachments, which e2e messages lack.
-        SLACK_BOT_TOKEN: "e2e-unused-placeholder"
+  # The personas' Vault secrets carry the mock LLM as their base URL (vault.sh
+  # mirrors provider.env), and a persona's http base URL must name a host listed
+  # here. Matters once a sync runs (verify-ha.sh in the sanity stage).
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: slaude-scale-gateway-config
+        namespace: slaude-scale
+      data:
+        SLAUDE_OUTBOUND_INTERNAL_HOSTS: "mock-mcp,vault,mock-llm"
   # The gateway's soul cache in the default directory under the shared $SLAUDE_HOME
   # ($SLAUDE_HOME/cache). Only gateways read it: nodes no longer read the soul cache, they take
   # the soul from the gateway's runtime bundle. The base keeps it pod-local (an emptyDir) so a
@@ -44,6 +50,14 @@ patches:
                 env:
                   - name: SLAUDE_SOUL_CACHE_DIR
                     value: /data/cache
+                  # Workaround for a gateway bug: in HTTP mode the gateway still reads
+                  # SLACK_BOT_TOKEN on every inbound message (for attachment downloads) and
+                  # drops the turn when it is unset, although real deploys register bot tokens
+                  # in slack_apps. The sim seeds a dummy for the same reason. Never validated,
+                  # only used for attachments, which e2e messages lack. Gateway only: it is a
+                  # gateway-only variable, and the ConfigMap is loaded by nodes too.
+                  - name: SLACK_BOT_TOKEN
+                    value: "e2e-unused-placeholder"
   # On a fresh volume the postgres entrypoint first runs a temporary server for the init scripts,
   # listening on the Unix socket only, then shuts it down and starts the real one. With no
   # readiness probe, up.sh's rollout wait passes at once, its in-pod `pg_isready` (socket) answers

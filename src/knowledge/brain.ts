@@ -1,10 +1,12 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { EMBEDDING_PROVIDER_KEY_ENV } from "./embedding-keys";
 import { join } from "node:path";
 import { paths } from "../config/home";
 import { loadKbs } from "./loader";
 import { PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, type BrainScope } from "./scope";
 import { isScopeWriteOp } from "./gated-dispatch";
 import { getBackend } from "./backend";
+import { NodeDbAccessError } from "../db/client";
 
 // Engine surface kept minimal on purpose: gbrain ships TS sources and its own
 // types stay internal to it; slaude only needs lifecycle + handler dispatch.
@@ -110,19 +112,9 @@ export function embeddingActive(): boolean {
   return embeddingActiveFlag;
 }
 
-// Provider prefix → required key env. null = keyless/optional-key provider.
-const PROVIDER_KEY_ENV: Record<string, string | null> = {
-  zeroentropyai: "ZEROENTROPY_API_KEY",
-  openai: "OPENAI_API_KEY",
-  voyage: "VOYAGE_API_KEY",
-  google: "GOOGLE_GENERATIVE_AI_API_KEY",
-  openrouter: "OPENROUTER_API_KEY",
-  minimax: "MINIMAX_API_KEY",
-  together: "TOGETHER_API_KEY",
-  litellm: null,
-  ollama: null,
-  "llama-server": null,
-};
+// Provider prefix → required key env (src/knowledge/embedding-keys.ts, also
+// the child scrub's list). null = keyless/optional-key provider.
+const PROVIDER_KEY_ENV = EMBEDDING_PROVIDER_KEY_ENV;
 
 async function configureEmbeddingGateway(): Promise<void> {
   embeddingActiveFlag = false;
@@ -197,6 +189,11 @@ export function brainEngineConfig(): EngineCfg {
     return { engine: "postgres", database_url: url };
   }
   if (engine !== "pglite") throw new Error(`unknown SLAUDE_BRAIN_ENGINE "${engine}" (want pglite|postgres)`);
+  // A node holds no database: PGLite here would be a second writer on the
+  // gateway's single-writer brain on the shared volume.
+  if ((process.env.SLAUDE_ROLE ?? "").trim().toLowerCase() === "node") {
+    throw new NodeDbAccessError("a node must not open the brain's embedded PGLite; brain access goes through the gateway");
+  }
   return { engine: "pglite", database_path: join(brainHome(), "db") };
 }
 
@@ -222,13 +219,24 @@ async function boot(): Promise<Engine> {
 }
 
 export function getBrain(): Promise<Engine> {
-  return (enginePromise ??= boot());
+  if (!enginePromise) {
+    const p: Promise<Engine> = boot();
+    // A failed boot is not cached: the next call retries (a refused role or a
+    // transient connect error must not poison the process for good).
+    p.catch(() => {
+      if (enginePromise === p) enginePromise = null;
+    });
+    enginePromise = p;
+  }
+  return enginePromise;
 }
 
 export async function closeBrain(): Promise<void> {
   if (!enginePromise) return;
-  const e = await enginePromise;
+  const pending = enginePromise;
   enginePromise = null;
+  const e = await pending.catch(() => null);
+  if (!e) return;
   ensureInFlight = null; // next boot may target a different brain home
   embeddingActiveFlag = false;
   await e.disconnect();

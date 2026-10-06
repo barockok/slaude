@@ -118,6 +118,55 @@ Full variable reference, including `SLAUDE_HTTP_MAX_BODY_BYTES` and the
 registry-vs-env token precedence: [Configuration → Slack —
 optional](../reference/configuration.md#slack).
 
+## Several apps in one deployment
+
+Each registered app is its own Slack identity, and everything slaude sends goes
+out as the app the conversation belongs to: replies, reactions, the thinking
+status, approval cards, error messages, scheduled (cron) runs and tool calls a
+node makes over `/v1`. The app is recorded where it is needed later. A session
+records the app its thread arrives through. A cron job records the app the
+`/cron` command arrived through. A node's job token carries the turn's app.
+When two apps share a channel, each app treats every registered app's bot as
+itself, so the bots never answer each other. A mention of one app's bot is
+answered by that app only.
+
+An identity that names an app which is no longer registered is refused, never
+sent as another app. If you remove an app, its sessions and cron jobs stop
+posting rather than appearing under a different bot.
+
+Two cases resolve the app from the team alone, because the app was never
+recorded:
+
+- **Cron jobs created before the app column existed.** Such a job posts as the
+  one app installed in its team. If its original app was removed and a
+  different app remains in that team, the job posts as that remaining app.
+  With two or more apps in the team, the job is refused until it is recreated.
+- **Turns from a gateway older than this change during a rolling upgrade.**
+  Their job tokens carry no app. With one app in the team they resolve as
+  before. With two or more apps in the same team, every `/v1` Slack call
+  for those turns is refused (fail closed) until the next turn is dispatched
+  by an upgraded gateway, which mints a token that names the app.
+
+Known limits when two apps share a channel:
+
+- **A thread's app is not in the channel any more.** If the app a thread is
+  recorded under is still registered but its bot was removed from the
+  channel, that app never receives the thread's messages, and the other app
+  leaves them to it. Nobody answers plain replies there. An `@mention` of the
+  bot that is still in the channel takes the thread over.
+- **A message that mentions both bots** gets one reply. The app whose copy
+  arrives first takes it, and the other copy is dropped as a duplicate.
+- **Threads from before the app was recorded** (`slack_app_id` is NULL) are
+  taken by whichever app's copy of the next message arrives first. From then
+  on the thread stays with that app.
+- **One registered app, team-only identity.** With a single registered app,
+  an identity that names no app resolves to that app even if it names a
+  different team, as it did before several apps were supported.
+
+Set `SLAUDE_AGENT_ID` in a deployment with several apps. The brain's agent
+identity is one per process. Without the variable it comes from the oldest
+registered app.
+
 ## Troubleshooting
 
 | Symptom | Likely cause |

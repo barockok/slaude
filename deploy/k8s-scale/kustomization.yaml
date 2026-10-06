@@ -1,0 +1,21 @@
+# The production manifests as one build: `kubectl apply -k deploy/k8s-scale`
+# once every REPLACE_ value is filled in (or 10-secrets.yaml is replaced by its
+# sealed variant). Applying the files one by one, as README.md shows, is the
+# same set.
+#
+# Not included, on purpose:
+#   - 90-dev-datastores.yaml: in-cluster Postgres and Redis for dev clusters only.
+#   - optional/node-egress-networkpolicy.yaml: needs a CNI that enforces
+#     NetworkPolicy and your own Postgres/Redis addresses; see that file.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - 00-namespace.yaml
+  - 10-secrets.yaml
+  - 20-config.yaml
+  - 30-pvc.yaml
+  - 40-gateway.yaml
+  - 50-node.yaml
+  - 60-ingress.yaml
+  - 70-autoscale.yaml

@@ -53,6 +53,8 @@ export function decodeJwt<T>(
   } catch {
     return { ok: false, reason: "malformed" };
   }
+  // A signed `null`, number or array is not a claim set.
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return { ok: false, reason: "malformed" };
   if (typeof payload.exp !== "number" || payload.exp * 1000 <= nowMs) return { ok: false, reason: "expired" };
   return { ok: true, payload };
 }

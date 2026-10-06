@@ -63,8 +63,14 @@
             { "path": "deploy/webhook-mode", "label": "Webhook (Events API) mode" },
             { "path": "deploy/panel", "label": "Control panel" },
             { "path": "deploy/multi-node", "label": "Multi-node scale-out" },
+            { "path": "deploy/node-manifest", "label": "Node MCP manifest" },
             { "path": "deploy/scale-operations", "label": "Scale operations" },
-            { "path": "deploy/personas-as-code", "label": "Personas as code" }
+            { "path": "deploy/personas-as-code", "label": "Personas as code" },
+            { "path": "deploy/provider-credentials", "label": "Provider credentials" },
+            { "path": "deploy/mcp-bridge", "label": "MCP bridge" },
+            { "path": "deploy/knowledge-scope", "label": "Knowledge scope" },
+            { "path": "deploy/alerts", "label": "Alerts runbook" },
+            { "path": "deploy/rollback", "label": "Rollback runbook" }
           ]
         }
       ]

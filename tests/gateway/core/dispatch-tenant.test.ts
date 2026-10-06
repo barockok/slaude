@@ -59,6 +59,17 @@ describe("dispatch tenant propagation", () => {
     await dispatch.close();
   });
 
+  // D1.2: the /v1 tool plane posts as the app the turn belongs to.
+  test("the turn's Slack app is signed into the job token, and absent when unknown", async () => {
+    const { enqueued, dispatch } = harness();
+    await dispatch.dispatch({ id: "S1" } as unknown as SessionRow, "hello", { ...META, apiAppId: "A0TWO" });
+    await dispatch.dispatch({ id: "S2" } as unknown as SessionRow, "hello", META);
+    const [withApp, without] = enqueued.map((j) => verifyJobToken(j.jobToken));
+    expect(withApp!.ok && withApp!.claims.app).toBe("A0TWO");
+    expect(without!.ok && "app" in without!.claims).toBe(false);
+    await dispatch.close();
+  });
+
   test("the session row's tenant is used when meta omits one", async () => {
     const { enqueued, dispatch } = harness();
 

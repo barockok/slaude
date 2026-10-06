@@ -3,6 +3,7 @@
  * it. This is the single merge; nothing else combines the two layers, so the
  * gateway, the runtime bundle and the panel cannot disagree about what is live.
  */
+import { PROVIDER_FIELDS, type PersonaProvider } from "./sync/payload";
 export type OverrideField = "soul" | "model" | "mcp";
 export const OVERRIDE_FIELDS: readonly OverrideField[] = ["soul", "model", "mcp"];
 
@@ -14,6 +15,17 @@ export interface DesiredPersona {
   soulMd: string;
   soulJson: unknown;
   mcp: unknown;
+  /** The node label this persona runs on (node labels spec §4.5); null or
+   *  absent = `default`. Desired layer only: no override can set it. */
+  runsOn?: string | null;
+  /** Provider credential REFERENCES (WS-A §4), never values. Desired layer
+   *  only: not an override field, so a reference changes only through a sync.
+   *  Absent and null both mean "this persona names no provider". */
+  provider?: PersonaProvider | null;
+  /** The `kb-*` sources this persona may read (WS-C §4.1). Absent and null
+   *  both mean every installed KB; [] means none. Desired layer only, like
+   *  provider: not an override field. */
+  kbSources?: string[] | null;
   origin: "git" | "runtime";
   tombstonedAt: number | null;
 }
@@ -51,5 +63,14 @@ export function mergeEffective(desired: DesiredPersona, overrides: Override[]): 
  */
 export function sameDesired(a: DesiredPersona, b: DesiredPersona): boolean {
   return a.slackUserId === b.slackUserId && a.userToken === b.userToken && a.model === b.model &&
-    a.soulMd === b.soulMd && JSON.stringify(a.mcp) === JSON.stringify(b.mcp) && a.tombstonedAt === null;
+    a.soulMd === b.soulMd && JSON.stringify(a.mcp) === JSON.stringify(b.mcp) &&
+    (a.runsOn ?? null) === (b.runsOn ?? null) &&
+    canonicalProvider(a.provider) === canonicalProvider(b.provider) &&
+    JSON.stringify(a.kbSources ?? null) === JSON.stringify(b.kbSources ?? null) && a.tombstonedAt === null;
+}
+
+/** Key-order-independent form, so a row read back from JSONB compares equal. */
+function canonicalProvider(p: PersonaProvider | null | undefined): string {
+  if (!p) return "null";
+  return JSON.stringify(PROVIDER_FIELDS.map((f) => p[f] ?? null));
 }

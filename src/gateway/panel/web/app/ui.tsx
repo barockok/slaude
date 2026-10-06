@@ -14,7 +14,9 @@ export function StatusDot({ status, withLabel = true }: { status: string; withLa
 export function Copy({ text, label }: { text: string; label?: string }) {
   const [done, setDone] = useState(false);
   const onCopy = useCallback(() => {
-    navigator.clipboard?.writeText(text).catch(() => {});
+    // Typed structurally so the server-side typecheck (no DOM lib), which sees
+    // this file through the persona view tests, accepts it too.
+    (navigator as { clipboard?: { writeText(t: string): Promise<void> } }).clipboard?.writeText(text).catch(() => {});
     setDone(true);
     setTimeout(() => setDone(false), 1200);
   }, [text]);

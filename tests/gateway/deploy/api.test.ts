@@ -46,6 +46,27 @@ pgOnly("POST /deploy/v1/tenants/:tenant/personas", () => {
     expect((await res!.json() as any).created).toEqual(["default", "ana"]);
   });
 
+  test("an unknown field is a 422 by default; with SLAUDE_DEPLOY_STRICT=0 the response carries ignoredFields; a newer version is a 422", async () => {
+    const strict = await api().fetch(post(DEPLOY, { ...body, futureKnob: 1 }, "?dryRun=1"));
+    expect(strict!.status).toBe(422);
+    expect(await strict!.text()).toContain("futureKnob");
+    const lenient = createDeployApi({ pubsub: null, env: () => ({ PERSONA_ANA_XOXP: "user-token-secret-value", SLAUDE_DEPLOY_STRICT: "0" }), extract: async () => ({ approvers: [] }) });
+    const res = await lenient.fetch(post(DEPLOY, { ...body, futureKnob: 1 }, "?dryRun=1"));
+    expect((await res!.json() as any).ignoredFields).toEqual(["futureKnob"]);
+    const clean = await api().fetch(post(DEPLOY, body, "?dryRun=1"));
+    expect((await clean!.json() as any).ignoredFields).toEqual([]);
+    const newer = await api().fetch(post(DEPLOY, { ...body, version: 99 }, "?dryRun=1"));
+    expect(newer!.status).toBe(422);
+  });
+
+  test("an unreadable SLAUDE_DEPLOY_STRICT at runtime is strict, never off: an unknown field is a 422", async () => {
+    for (const v of ["loose", "2", "enabled"]) {
+      const odd = createDeployApi({ pubsub: null, env: () => ({ PERSONA_ANA_XOXP: "user-token-secret-value", SLAUDE_DEPLOY_STRICT: v }), extract: async () => ({ approvers: [] }) });
+      const res = await odd.fetch(post(DEPLOY, { ...body, futureKnob: 1 }, "?dryRun=1"));
+      expect({ v, status: res!.status }).toEqual({ v, status: 422 });
+    }
+  });
+
   test("without a configured deploy token every /deploy path is 404, before auth", async () => {
     delete process.env.SLAUDE_DEPLOY_TOKEN;
     expect((await api().fetch(post(DEPLOY)))!.status).toBe(404);

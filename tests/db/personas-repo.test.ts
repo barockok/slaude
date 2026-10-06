@@ -34,6 +34,92 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("persona repository", () => {
     await expect(P.setOverride(T, "bea", "model", "m", "ops")).rejects.toBeInstanceOf(P.PersonaNotFoundError);
   });
 
+  test("runs_on round-trips through the sync, a relabel is an update, and no override reaches it", async () => {
+    const r1 = await P.applySync(T, [row("ana", { runsOn: "engineering" }), row("bea")], meta("r1", "2026-10-01T10:00:00Z"));
+    expect(r1.created.sort()).toEqual(["ana", "bea"]);
+    const byName = async () => new Map((await P.effectivePersonas(T)).map((p) => [p.name, p]));
+    expect((await byName()).get("ana")!.runsOn).toBe("engineering");
+    expect((await byName()).get("bea")!.runsOn).toBeNull();
+    const r2 = await P.applySync(T, [row("ana", { runsOn: "finance" }), row("bea")], meta("r2", "2026-10-01T11:00:00Z"));
+    expect(r2.updated).toEqual(["ana"]);
+    expect(r2.unchanged).toEqual(["bea"]);
+    expect((await byName()).get("ana")!.runsOn).toBe("finance");
+    // The override set stays soul|model|mcp: the table refuses any other field.
+    await expect(P.setOverride(T, "ana", "runsOn" as any, "engineering", "ops")).rejects.toThrow();
+    expect((await byName()).get("ana")!.runsOn).toBe("finance");
+    // Dropping the field puts the persona back on default.
+    await P.applySync(T, [row("ana"), row("bea")], meta("r3", "2026-10-01T12:00:00Z"));
+    expect((await byName()).get("ana")!.runsOn).toBeNull();
+  });
+
+  test("the column refuses a malformed label", async () => {
+    await expect(P.applySync(T, [row("ana", { runsOn: "Not A Label" })], meta("r1", "2026-10-01T10:00:00Z"))).rejects.toThrow();
+  });
+
+  test("provider references round-trip through a sync, are desired-layer only, and a change is an update", async () => {
+    const provider = { apiKey: "vault://secret/slaude/personas/ana#api_key", baseUrl: "https://llm.example.com" };
+    await P.applySync(T, [row("ana", { provider })], meta("r1", "2026-10-01T10:00:00Z"));
+    expect((await P.desiredPersonas(T))[0]!.provider).toEqual(provider);
+    expect((await P.effectivePersonas(T))[0]!.provider).toEqual(provider);
+    const same = await P.applySync(T, [row("ana", { provider })], meta("r2", "2026-10-01T11:00:00Z"));
+    expect(same.unchanged).toEqual(["ana"]);
+    const changed = await P.applySync(T, [row("ana", { provider: { apiKey: "env://PERSONA_ANA_KEY" } })], meta("r3", "2026-10-01T12:00:00Z"));
+    expect(changed.updated).toEqual(["ana"]);
+    const cleared = await P.applySync(T, [row("ana")], meta("r4", "2026-10-01T13:00:00Z"));
+    expect(cleared.updated).toEqual(["ana"]);
+    expect((await P.desiredPersonas(T))[0]!.provider).toBeNull();
+  });
+
+  test("kbSources round-trips: null (all) and [] (none) stay distinct, a change is an update", async () => {
+    await P.applySync(T, [row("ana", { kbSources: ["kb-runbook"] }), row("bea", { kbSources: [] }), row("cy")], meta("r1", "2026-10-01T10:00:00Z"));
+    const by = async () => new Map((await P.effectivePersonas(T)).map((p) => [p.name, p.kbSources]));
+    expect(await by()).toEqual(new Map<string, string[] | null | undefined>([["ana", ["kb-runbook"]], ["bea", []], ["cy", null]]));
+    const same = await P.applySync(T, [row("ana", { kbSources: ["kb-runbook"] }), row("bea", { kbSources: [] }), row("cy")], meta("r2", "2026-10-01T11:00:00Z"));
+    expect(same.unchanged.sort()).toEqual(["ana", "bea", "cy"]);
+    const changed = await P.applySync(T, [row("ana", { kbSources: ["kb-runbook", "kb-finance"] }), row("bea"), row("cy")], meta("r3", "2026-10-01T12:00:00Z"));
+    expect(changed.updated.sort()).toEqual(["ana", "bea"]);
+    expect((await by()).get("bea")).toBeNull();
+  });
+
+  // Three migrations (0014, 0016, 0017) add one column each to the same two
+  // upserts: one row must carry all three through both.
+  test("provider, runsOn and kbSources persist together in one row through both upserts", async () => {
+    const provider = { apiKey: "env://PERSONA_ANA_KEY" };
+    const all = { provider, runsOn: "engineering", kbSources: ["kb-runbook"] };
+    await P.applySync(T, [row("ana", all)], meta("r1", "2026-10-01T10:00:00Z"));
+    const git = (await P.desiredPersonas(T)).find((p) => p.name === "ana")!;
+    expect({ provider: git.provider, runsOn: git.runsOn, kbSources: git.kbSources }).toEqual(all);
+    expect((await P.applySync(T, [row("ana", all)], meta("r2", "2026-10-01T11:00:00Z"))).unchanged).toEqual(["ana"]);
+    const changed = await P.applySync(T, [row("ana", { ...all, runsOn: "finance" })], meta("r3", "2026-10-01T12:00:00Z"));
+    expect(changed.updated).toEqual(["ana"]);
+
+    const rt = { provider: { authToken: "env://PERSONA_BEA_TOKEN" }, runsOn: "ops", kbSources: [] as string[] };
+    await P.createRuntimePersona(T, row("bea", { origin: "runtime", ...rt }), "ops");
+    const runtime = (await P.desiredPersonas(T)).find((p) => p.name === "bea")!;
+    expect({ provider: runtime.provider, runsOn: runtime.runsOn, kbSources: runtime.kbSources }).toEqual(rt);
+  });
+
+  test("a runtime onboard stores provider references too", async () => {
+    await P.applySync(T, [row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
+    await P.createRuntimePersona(T, row("bea", { origin: "runtime", provider: { authToken: "env://PERSONA_BEA_TOKEN" } }), "ops");
+    expect((await P.desiredPersonas(T)).find((p) => p.name === "bea")!.provider).toEqual({ authToken: "env://PERSONA_BEA_TOKEN" });
+  });
+
+  // Review R1-F5: both version-2 columns in one row, through both upserts.
+  test("provider and runsOn persist together in one row, via the sync and a runtime onboard", async () => {
+    const provider = { apiKey: "env://PERSONA_ANA_KEY" };
+    await P.applySync(T, [row("ana", { provider, runsOn: "engineering" })], meta("r1", "2026-10-01T10:00:00Z"));
+    const ana = (await P.desiredPersonas(T)).find((p) => p.name === "ana")!;
+    expect(ana.provider).toEqual(provider);
+    expect(ana.runsOn).toBe("engineering");
+    const r2 = await P.applySync(T, [row("ana", { provider, runsOn: "engineering" })], meta("r2", "2026-10-01T11:00:00Z"));
+    expect(r2.unchanged).toEqual(["ana"]);
+    await P.createRuntimePersona(T, row("bea", { origin: "runtime", provider: { authToken: "env://PERSONA_BEA_TOKEN" }, runsOn: "finance" }), "ops");
+    const bea = (await P.effectivePersonas(T)).find((p) => p.name === "bea")!;
+    expect(bea.provider).toEqual({ authToken: "env://PERSONA_BEA_TOKEN" });
+    expect(bea.runsOn).toBe("finance");
+  });
+
   test("a tenant is unmanaged until its first sync", async () => {
     expect(await P.isManaged(T)).toBe(false);
     expect(await P.stateVersion(T)).toBe("unmanaged");
@@ -172,6 +258,22 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("persona repository", () => {
     await expect(P.createRuntimePersona(T, row("ana", { origin: "runtime", soulMd: "evil" }), "ops")).rejects.toBeInstanceOf(P.NameTakenError);
     const r = await db.one<{ soul_md: string; origin: string }>(`SELECT soul_md, origin FROM personas WHERE name='ana'`);
     expect(r).toEqual({ soul_md: "ana soul", origin: "git" });
+  });
+
+  test("one persona by name: both layers, overrides applied only to the effective one, tombstoned on request", async () => {
+    await P.applySync(T, [row("ana", { model: "m-git" }), row("bea")], meta("r1", "2026-10-01T10:00:00Z"));
+    await P.setOverride(T, "ana", "model", "m-live", "ops");
+    const one = await P.personaByName(T, "ana");
+    expect(one!.desired.model).toBe("m-git");
+    expect(one!.effective.model).toBe("m-live");
+    expect(one!.effective.overridden).toEqual(["model"]);
+    // Another persona's override never leaks in.
+    await P.setOverride(T, "bea", "model", "m-bea", "ops");
+    expect((await P.personaByName(T, "ana"))!.effective.model).toBe("m-live");
+    expect(await P.personaByName(T, "ghost")).toBeNull();
+    await P.applySync(T, [row("bea")], meta("r2", "2026-10-01T11:00:00Z"));
+    expect(await P.personaByName(T, "ana")).toBeNull();
+    expect((await P.personaByName(T, "ana", { includeTombstoned: true }))!.desired.tombstonedAt).not.toBeNull();
   });
 
   test("a runtime onboard may not take another persona's Slack identity", async () => {

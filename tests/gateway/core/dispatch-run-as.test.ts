@@ -4,6 +4,7 @@ import { handleTokenRefresh } from "../../../src/gateway/api/jobs";
 import { makeQueueDispatch } from "../../../src/gateway/core/dispatch";
 import { encodeRunAs, parseRunAs } from "../../../src/agent/credential-owner";
 import type { SessionRow } from "../../../src/db/schema";
+import * as OneOnOne from "../../../src/db/one-on-one";
 
 /**
  * Whose credentials a turn gets is decided once, at dispatch, and signed into
@@ -114,6 +115,38 @@ describe("runAs at dispatch", () => {
     const { jobToken } = (await res.json()) as { jobToken: string };
     const v = verifyJobToken(jobToken);
     expect(v.ok && v.claims.runAs).toBe("user:UTESTUSER1");
+  });
+});
+
+// A node has no database: the /1on1 lock that shapes its session-mode block is
+// signed into the job token here, where the database is.
+describe("the lock claim at dispatch", () => {
+  beforeEach(() => {
+    process.env.SLAUDE_JOB_SECRET = "test-secret";
+  });
+
+  test("an unlocked thread signs lock: null, so a node can tell it from an older gateway", async () => {
+    const h = harness(undefined);
+    await h.dispatch.dispatch(SESSION, "hi", { ...META, channelId: "CLOCKTEST1", threadTs: "9.1", userId: "UTESTUSER2" });
+    const c = h.claims();
+    expect("lock" in c).toBe(true);
+    expect(c.lock).toBeNull();
+    await h.dispatch.close();
+  });
+
+  test("a locked thread signs the owner; an open one also signs its scope", async () => {
+    await OneOnOne.lock({ channelId: "CLOCKTEST2", threadTs: "9.2", lockedUser: "UTESTUSER1", createdBy: "UTESTUSER1" });
+    const h = harness("UTESTUSER1");
+    await h.dispatch.dispatch(SESSION, "hi", { ...META, channelId: "CLOCKTEST2", threadTs: "9.2", userId: "UTESTUSER1" });
+    expect(h.claims().lock).toEqual({ user: "UTESTUSER1", openScope: null });
+    await h.dispatch.close();
+
+    await OneOnOne.setOpen("CLOCKTEST2", "9.2", "billing only");
+    const h2 = harness("UTESTUSER1");
+    await h2.dispatch.dispatch(SESSION, "hi", { ...META, channelId: "CLOCKTEST2", threadTs: "9.2", userId: "UTESTUSER1" });
+    expect(h2.claims().lock).toEqual({ user: "UTESTUSER1", openScope: "billing only" });
+    await h2.dispatch.close();
+    await OneOnOne.unlock("CLOCKTEST2", "9.2");
   });
 });
 
