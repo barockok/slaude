@@ -15,11 +15,24 @@ const monoHome = join(root, "mono");
 const gwHome = join(root, "gateway");
 const bundleDir = join(root, "bundle");
 const keys = ["SLAUDE_BRAIN_HOME", "SLAUDE_AGENT_ID", "SLAUDE_BRAIN_ENGINE", "SLAUDE_BRAIN_DATABASE_URL"] as const;
+let cleanup = false;
 const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
 
 afterAll(async () => {
   const { closeBrain } = await import("../../src/knowledge/brain");
   const { resetAgentId } = await import("../../src/knowledge/agent-identity");
+  if (cleanup && url) {
+    // Leave the database as found (it was verified empty): a second run must work.
+    try {
+      process.env.SLAUDE_BRAIN_ENGINE = "postgres";
+      process.env.SLAUDE_BRAIN_DATABASE_URL = url;
+      process.env.SLAUDE_BRAIN_HOME = gwHome;
+      const { getBrain } = await import("../../src/knowledge/brain");
+      const e = (await getBrain()) as any;
+      await e.executeRaw("DELETE FROM pages");
+      await e.executeRaw("DELETE FROM sources WHERE id <> 'default'");
+    } catch { /* best effort */ }
+  }
   await closeBrain();
   resetAgentId();
   for (const k of keys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
@@ -43,6 +56,11 @@ describe.skipIf(!url)("mono (PGLite) -> gateway persona on Postgres", () => {
     process.env.SLAUDE_BRAIN_DATABASE_URL = url!;
     process.env.SLAUDE_BRAIN_HOME = gwHome;
     await identity("UANA-1x");
+    const { getBrain } = await import("../../src/knowledge/brain");
+    const pre = (await getBrain()) as any;
+    const n = (await pre.executeRaw("SELECT count(*)::int AS n FROM pages"))[0].n;
+    if (n !== 0) throw new Error("SLAUDE_BRAIN_PG_TEST_URL must point at an EMPTY throwaway database; it already holds pages");
+    cleanup = true;
     await dryRunStep(bundleDir);
   }, 120_000);
 

@@ -22,7 +22,8 @@ export const importer = async (bundleDir: string, persona: string, agentId: stri
   const { runImport } = await import("../../src/brain-migrate/client");
   const api = createBrainImportApi({
     env: () => ({ SLAUDE_BRAIN_IMPORT_TOKEN: TOKEN }),
-    resolveAgentId: async (n) => (n === persona ? agentId : null),
+    // The default persona resolves through the real path (the process agent id, set by identity()).
+    ...(persona === "default" ? {} : { resolveAgentId: async (n: string) => (n === persona ? agentId : null) }),
     log: () => {},
   });
   return (extra: Record<string, unknown> = {}) => runImport({
@@ -43,7 +44,7 @@ export async function dryRunStep(bundleDir: string) {
   const run = await importer(bundleDir, "ana", "UANA-1x");
   const s = await run({ dryRun: true });
   expect(s.agentSource).toBe("agent-uana1x");
-  expect(s.sources["agent-uana1x"]!.written).toBeGreaterThan(0);
+  expect(s.sources["agent-uana1x"]!.written).toBe(3);
   const { getBrain } = await import("../../src/knowledge/brain");
   const e = (await getBrain()) as any;
   expect((await e.executeRaw("SELECT count(*)::int AS n FROM pages"))[0].n).toBe(0);
@@ -115,6 +116,13 @@ export async function rerunStep(bundleDir: string) {
   const s2 = await run();
   expect(s2.sources["agent-uana1x"]!.written).toBe(1);
   expect(s2.sources["shared"]!.written).toBe(1);
+  // learned/index was deleted with its outgoing link; the resumed write restores it.
+  expect(s2.sources["agent-uana1x"]!.linksWritten).toBe(1);
+  const restored = (await e.executeRaw(
+    `SELECT count(*)::int AS n FROM links l JOIN pages f ON f.id = l.from_page_id JOIN pages t ON t.id = l.to_page_id
+     WHERE f.slug = 'learned/index' AND t.slug = 'learned/runbook' AND f.source_id = 'agent-uana1x' AND t.source_id = 'agent-uana1x'`,
+  ))[0].n;
+  expect(restored).toBe(1);
   expect(Object.values(s2.sources).reduce((n, c) => n + c.written, 0)).toBe(2);
   expect(s2.mismatches).toEqual([]);
   expect(s2.failedSlugs).toEqual([]);
