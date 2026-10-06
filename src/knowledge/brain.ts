@@ -219,13 +219,24 @@ async function boot(): Promise<Engine> {
 }
 
 export function getBrain(): Promise<Engine> {
-  return (enginePromise ??= boot());
+  if (!enginePromise) {
+    const p: Promise<Engine> = boot();
+    // A failed boot is not cached: the next call retries (a refused role or a
+    // transient connect error must not poison the process for good).
+    p.catch(() => {
+      if (enginePromise === p) enginePromise = null;
+    });
+    enginePromise = p;
+  }
+  return enginePromise;
 }
 
 export async function closeBrain(): Promise<void> {
   if (!enginePromise) return;
-  const e = await enginePromise;
+  const pending = enginePromise;
   enginePromise = null;
+  const e = await pending.catch(() => null);
+  if (!e) return;
   ensureInFlight = null; // next boot may target a different brain home
   embeddingActiveFlag = false;
   await e.disconnect();
