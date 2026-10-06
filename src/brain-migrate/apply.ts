@@ -5,7 +5,13 @@ import type { MigrateEngine } from "./engine-types";
 export type OnConflict = "skip" | "overwrite" | "fail";
 export type PageOutcome = "written" | "skipped" | "overwritten" | "failed";
 export interface ApplyPage { page: BundlePage; target: string; linkTargets: BundlePage["links"] }
-export interface ApplyResult { outcome: PageOutcome; linksWritten: number; linksDropped: number; noEmbedding: number }
+export interface ApplyResult {
+  outcome: PageOutcome; linksWritten: number; linksDropped: number; linksFailed: number; noEmbedding: number;
+  /** Only for outcome "failed": "exists" = fail-policy conflict, "tx" = ensureSource/transaction failure, "error" = anything else. */
+  reason?: "exists" | "tx" | "error";
+  /** Class name of the thrown error only; never its message, which can embed values. */
+  errorName?: string;
+}
 
 /**
  * Writes one page, whole or not at all. The whole write (page, chunks with the
@@ -21,16 +27,24 @@ export async function applyPage(
 ): Promise<ApplyResult> {
   const { page: p, target } = a;
   const so = { sourceId: target };
-  const none = (outcome: PageOutcome): ApplyResult => ({ outcome, linksWritten: 0, linksDropped: 0, noEmbedding: 0 });
+  const none = (outcome: PageOutcome): ApplyResult => ({ outcome, linksWritten: 0, linksDropped: 0, linksFailed: 0, noEmbedding: 0 });
+  let stage: "error" | "tx" = "error";
   const noEmbedding = p.chunks.filter((c) => c.embedding === null).length;
   try {
     const exists = (await engine.getPage(p.slug, { ...so, includeDeleted: true })) !== null;
     if (exists && o.onConflict === "skip") return none("skipped");
-    if (exists && o.onConflict === "fail") return none("failed");
+    if (exists && o.onConflict === "fail") return { ...none("failed"), reason: "exists" };
     if (o.dryRun) return { ...none(exists ? "overwritten" : "written"), noEmbedding };
+    stage = "tx";
     await o.ensureSource(target);
     await engine.transaction(async (tx) => {
-      if (exists) await tx.db.query("DELETE FROM pages WHERE slug = $1 AND source_id = $2", [p.slug, target]);
+      if (exists) {
+        // Keep the page row: deleting it would cascade away links from OTHER pages that point here.
+        const me = "(SELECT id FROM pages WHERE slug = $1 AND source_id = $2)";
+        const args = [p.slug, target];
+        for (const t of ["content_chunks", "tags", "timeline_entries", "raw_data"]) await tx.db.query(`DELETE FROM ${t} WHERE page_id = ${me}`, args);
+        await tx.db.query(`DELETE FROM links WHERE from_page_id = ${me}`, args);
+      }
       await tx.putPage(p.slug, {
         type: p.type, title: p.title, compiled_truth: p.compiledTruth, timeline: p.timeline,
         frontmatter: p.frontmatter, ...(p.contentHash ? { content_hash: p.contentHash } : {}),
@@ -46,14 +60,17 @@ export async function applyPage(
       for (const e of p.timelineEntries) await tx.addTimelineEntry(p.slug, { date: e.date, source: e.source, summary: e.summary, detail: e.detail }, { ...so, skipExistenceCheck: true });
       for (const r of p.raw) await tx.putRawData(p.slug, r.source, r.data, so);
     });
-    let linksWritten = 0, linksDropped = 0;
+    stage = "error";
+    let linksWritten = 0, linksDropped = 0, linksFailed = 0;
     for (const l of a.linkTargets) {
-      if ((await engine.getPage(l.toSlug, { sourceId: l.toSource })) === null) { linksDropped++; continue; }
-      await engine.addLink(p.slug, l.toSlug, l.context, l.type, "manual", undefined, undefined, { fromSourceId: target, toSourceId: l.toSource });
-      linksWritten++;
+      try {
+        if ((await engine.getPage(l.toSlug, { sourceId: l.toSource })) === null) { linksDropped++; continue; }
+        await engine.addLink(p.slug, l.toSlug, l.context, l.type, "manual", undefined, undefined, { fromSourceId: target, toSourceId: l.toSource });
+        linksWritten++;
+      } catch { linksFailed++; }
     }
-    return { outcome: exists ? "overwritten" : "written", linksWritten, linksDropped, noEmbedding };
-  } catch {
-    return none("failed");
+    return { outcome: exists ? "overwritten" : "written", linksWritten, linksDropped, linksFailed, noEmbedding };
+  } catch (e) {
+    return { ...none("failed"), reason: stage, errorName: e instanceof Error ? e.constructor.name : typeof e };
   }
 }

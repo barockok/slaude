@@ -112,4 +112,41 @@ describe("applyPage", () => {
     expect(r.linksWritten).toBe(1);
     expect(r.linksDropped).toBe(1);
   });
+  test("overwrite keeps links from OTHER pages that point at the overwritten page", async () => {
+    await run(mk("in-a", "a1", { tags: ["t1", "t2"], chunks: [
+      { index: 0, text: "a", source: "compiled_truth", embedding: vec(1), model: "m", tokens: 1 },
+      { index: 1, text: "b", source: "compiled_truth", embedding: vec(2), model: "m", tokens: 1 },
+    ] }), "agent-uone");
+    await run(mk("in-b", "b", { links: [{ toSource: "agent-uone", toSlug: "in-a", type: "references", context: "c" }] }), "agent-uone");
+    const incoming = async () => (await engine.db.query("SELECT count(*)::int AS c FROM links WHERE to_page_id IN (SELECT id FROM pages WHERE slug = 'in-a') AND from_page_id IN (SELECT id FROM pages WHERE slug = 'in-b')")).rows[0]!.c;
+    expect(await incoming()).toBe(1);
+    await run(mk("in-a", "a2", { tags: ["t3"], raw: [], timelineEntries: [] }), "agent-uone", opts("overwrite"));
+    expect(await incoming()).toBe(1);
+    expect(await rowsFor("in-a")).toEqual({ pages: 1, chunks: 1, tags: 1, timeline: 0, raw: 0 });
+    expect(await engine.getTags("in-a", { sourceId: "agent-uone" })).toEqual(["t3"]);
+  });
+  test("a link that fails to write does not fail the page; others still land", async () => {
+    await run(mk("lt1", "t"), "agent-uone");
+    await run(mk("lt2", "t"), "agent-uone");
+    const flaky = new Proxy(engine, { get(t, k) {
+      if (k === "addLink") return async (_f: string, to: string, ...rest: unknown[]) => { if (to === "lt1") throw new Error("boom"); return (t.addLink as any)(_f, to, ...rest); };
+      const v = (t as any)[k]; return typeof v === "function" ? v.bind(t) : v;
+    } }) as MigrateEngine;
+    const src = mk("lsrc2", "s", { links: [
+      { toSource: "agent-uone", toSlug: "lt1", type: "references", context: "c" },
+      { toSource: "agent-uone", toSlug: "lt2", type: "references", context: "c" },
+    ] });
+    const r = await applyPage(flaky, { page: src, target: "agent-uone", linkTargets: src.links }, opts("skip"));
+    expect(r).toMatchObject({ outcome: "written", linksWritten: 1, linksFailed: 1, linksDropped: 0 });
+    expect(await engine.getPage("lsrc2", { sourceId: "agent-uone" })).not.toBeNull();
+  });
+  test("failures carry a reason: exists (fail policy) vs tx (with errorName only)", async () => {
+    await run(mk("rs1", "x"), "agent-uone");
+    expect(await run(mk("rs1", "y"), "agent-uone", opts("fail"))).toMatchObject({ outcome: "failed", reason: "exists", linksFailed: 0 });
+    const bad = mk("rs2", "boom", { timelineEntries: [{ date: "not-a-date", source: "s", summary: "x", detail: "" }] });
+    const r = await run(bad, "agent-uone");
+    expect(r).toMatchObject({ outcome: "failed", reason: "tx" });
+    expect(typeof r.errorName).toBe("string");
+    expect(JSON.stringify(r)).not.toContain("not-a-date");
+  });
 });
