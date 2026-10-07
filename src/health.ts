@@ -12,6 +12,10 @@ export type HealthDeps = {
    *  the gateway role only (never node or mono; see deployHandlerForRole); it 404s every path while neither
    *  SLAUDE_DEPLOY_TOKEN nor SLAUDE_DEPLOY_PREVIEW_TOKEN is set. */
   deploy?: (req: Request) => Promise<Response | null>;
+  /** Optional persona-memory migration handler (GatewayHandle.fetchBrainImport).
+   *  Mounted for mono and gateway, never node (see brainImportHandlerForRole); it
+   *  404s every path while SLAUDE_BRAIN_IMPORT_TOKEN is unset. */
+  brainImport?: (req: Request) => Promise<Response | null>;
   /** Optional operator control-panel handler (GatewayHandle.fetchPanel).
    *  Mounted only when provided — src/server.ts passes it for mono/gateway
    *  roles with SLAUDE_PANEL enabled, and omits it otherwise. Returns null for
@@ -34,6 +38,22 @@ export function deployHandlerForRole(
   handler: (req: Request) => Promise<Response | null>,
 ): ((req: Request) => Promise<Response | null>) | undefined {
   return role === "gateway" ? handler : undefined;
+}
+
+/**
+ * /brain-import writes straight into the brain, so it is never mounted on a
+ * node (its token is gateway-only and a node refuses to boot holding it).
+ * Unlike /deploy it also serves mono, whose brain is the one being migrated.
+ *
+ * On mono the agent child runs as the same OS user as the token-holding process,
+ * so a token set there is readable by the agent: set SLAUDE_BRAIN_IMPORT_TOKEN
+ * only for the duration of an import and unset it afterwards.
+ */
+export function brainImportHandlerForRole(
+  role: string,
+  handler: (req: Request) => Promise<Response | null>,
+): ((req: Request) => Promise<Response | null>) | undefined {
+  return role === "gateway" || role === "mono" ? handler : undefined;
 }
 
 /**
@@ -80,6 +100,10 @@ export function healthRoutes(deps: HealthDeps, startedAt = Date.now()) {
     }
     if (deps.deploy && (url.pathname === "/deploy" || url.pathname.startsWith("/deploy/"))) {
       const res = await deps.deploy(req);
+      if (res) return res;
+    }
+    if (deps.brainImport && (url.pathname === "/brain-import" || url.pathname.startsWith("/brain-import/"))) {
+      const res = await deps.brainImport(req);
       if (res) return res;
     }
     if (deps.panel && (url.pathname === "/panel" || url.pathname.startsWith("/panel/"))) {

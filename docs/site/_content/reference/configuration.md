@@ -511,6 +511,7 @@ The brain is the gbrain engine behind the `kb_*` tools and episodic memory (`src
 | `SLAUDE_BRAIN_MODE` | No | `local` | `remote` sends brain calls to a separate `slaude brain-server` over OAuth-protected MCP instead of the in-process engine. |
 | `SLAUDE_BRAIN_URL` | With `remote` | none | URL of the remote brain MCP server. |
 | `SLAUDE_BRAIN_TOKEN` | No | none | **Gateway only.** Non-interactive bearer for the remote brain (bootstrap and testing); otherwise run `slaude brain connect`. |
+| `SLAUDE_BRAIN_IMPORT_TOKEN` | For brain migration | none | **Gateway only.** Bearer for `/brain-import`, the endpoint that writes an exported brain bundle into a persona's memory. At least 32 characters and different from the node token, or it counts as unset. Unset = the route does not exist (404 for every path and method). Mounted on the `gateway` and `mono` roles, never `node`; a node refuses to boot holding it and the agent child never inherits it. On `mono` the agent child can read it, so set it only for the duration of the import. See [Brain migration](../deploy/brain-migration.md). |
 | `SLAUDE_BRAIN_SERVER_PORT` / `SLAUDE_BRAIN_SERVER_HOST` | No | `4319` / `0.0.0.0` | Listen address of `slaude brain-server`. |
 | `SLAUDE_BRAIN_PUBLIC_URL` | No | none | The brain server's external base URL (protected-resource metadata and redirects). |
 | `SLAUDE_BRAIN_OIDC_ISSUER` / `SLAUDE_BRAIN_OIDC_AUDIENCE` | No | none | Issuer (JWKS and `iss` check) and expected audience for the brain server's bearer tokens. |

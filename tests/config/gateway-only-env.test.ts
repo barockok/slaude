@@ -28,6 +28,7 @@ describe("the gateway-only variable list", () => {
       "SLAUDE_PANEL_SECRET",
       "SLAUDE_PANEL_OIDC_CLIENT_SECRET",
       "SLAUDE_BRAIN_TOKEN",
+      "SLAUDE_BRAIN_IMPORT_TOKEN",
       "EMBEDDING_API_KEY",
       "LITELLM_API_KEY",
     ]) {

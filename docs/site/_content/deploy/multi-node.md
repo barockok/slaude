@@ -25,7 +25,7 @@ flowchart TB
   N2 -->|/v1| GW
 ```
 
-**Limits, stated first.** Nodes reach Redis directly, so queue names are routing, not access control: a node can read another label's queue and its job payloads (message text). What node labels enforce is the credential path: a node without a persona's label cannot run that persona's turns with its credentials. Files on the shared volume are shared until sandboxing exists, and every agent turn on a node runs as the node's user, so labels separate nodes, not personas that share a node. Details: [Labels and routing](#labels-and-routing). Alerts: [alerts runbook](alerts.md). Rolling back a configured cluster: [rollback runbook](rollback.md).
+**Limits, stated first.** Nodes reach Redis directly, so queue names are routing, not access control: a node can read another label's queue and its job payloads (message text). What node labels enforce is the credential path: a node without a persona's label cannot run that persona's turns with its credentials. Files on the shared volume are shared until sandboxing exists, and every agent turn on a node runs as the node's user, so labels separate nodes, not personas that share a node. Details: [Labels and routing](#labels-and-routing). Alerts: [alerts runbook](alerts.md). Rolling back a configured cluster: [rollback runbook](rollback.md). Moving a standalone deployment's brain into a persona: [brain migration runbook](brain-migration.md).
 
 Roles are env flags. `SLAUDE_ROLE=mono` (the default) keeps the single-process behavior, and nothing here changes the mono deploy.
 

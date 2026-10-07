@@ -24,6 +24,8 @@
     "start": "bun src/server.ts",
     "worker": "bun src/node/main.ts",
     "sim": "bun src/gateway/sim/cli.ts",
+    "brain-export": "bun src/cli/brain-export.ts",
+    "brain-import": "bun src/cli/brain-import.ts",
     "typecheck": "tsc --noEmit",
     "docs": "bun docs/site/build.mjs",
     "panel:dev": "vite --config src/gateway/panel/web/vite.config.ts",
