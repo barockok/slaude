@@ -116,7 +116,11 @@ export async function recallStep() {
   const truth = (await e.executeRaw(`SELECT compiled_truth AS t FROM pages WHERE slug = 'learned/runbook' AND source_id = 'agent-uana1x'`))[0].t as string;
   expect(truth).toContain("zebra procedure");
   expect(truth).not.toContain("okapi");
-  expect((await e.executeRaw(`SELECT count(*)::int AS n FROM sources WHERE id LIKE 'kb-%'`))[0].n).toBe(0);
+  // The brain's own boot may register kb-* sources for KBs installed in the test home (CI shares one
+  // process and home across files), so assert on what the IMPORT could have written: no kb-* pages,
+  // and the mono brain's kb source never arrived.
+  expect((await e.executeRaw(`SELECT count(*)::int AS n FROM pages WHERE source_id LIKE 'kb-%'`))[0].n).toBe(0);
+  expect((await e.executeRaw(`SELECT count(*)::int AS n FROM sources WHERE id = 'kb-bulk-corpus'`))[0].n).toBe(0);
   expect((await e.executeRaw(`SELECT count(*)::int AS n FROM pages WHERE slug = 'kb/page'`))[0].n).toBe(0);
 }
 
