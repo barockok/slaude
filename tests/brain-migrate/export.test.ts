@@ -8,7 +8,7 @@ import { seedMonoBrain, TEST_DIMS } from "./seed";
 const root = mkdtempSync(join(tmpdir(), "bm-export-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-import { exportBrain, selectSources } from "../../src/brain-migrate/export";
+import { exportBrain, orderSources, selectSources } from "../../src/brain-migrate/export";
 import { readManifest, readPages, verifyBundle, type BundlePage } from "../../src/brain-migrate/bundle";
 
 describe("selectSources", () => {
@@ -20,13 +20,22 @@ describe("selectSources", () => {
   });
 });
 
+describe("orderSources", () => {
+  test("agent-like sources go most specific first (real id, agent-default, legacy agent); others keep their slots", () => {
+    expect(orderSources(["agent", "agent-default", "agent-ubb", "agent-uaa", "public", "shared", "user-u1"]))
+      .toEqual(["agent-uaa", "agent-ubb", "agent-default", "agent", "public", "shared", "user-u1"]);
+    expect(orderSources(["agent", "agent-default", "shared"])).toEqual(["agent-default", "agent", "shared"]);
+    expect(orderSources(["shared", "public"])).toEqual(["shared", "public"]);
+  });
+});
+
 describe("exportBrain", () => {
   test("exports a mono brain without touching the original", async () => {
     const home = join(root, "mono");
     await seedMonoBrain(home);
     const out = join(root, "bundle");
     const { manifest } = await exportBrain({ home, out });
-    expect(manifest.sources.map((s) => s.id).sort()).toEqual(["agent-default", "public", "shared", "user-ualice"]);
+    expect(manifest.sources.map((s) => s.id).sort()).toEqual(["agent", "agent-default", "public", "shared", "user-ualice"]);
     expect(manifest.excluded).toContain("kb-bulk-corpus");
     expect(manifest.engine.embeddingDimensions).toBe(TEST_DIMS);
     await verifyBundle(out);
@@ -39,6 +48,12 @@ describe("exportBrain", () => {
     const withTimeline = pages.find((p) => p.slug === "learned/runbook")!; // the conversation page also has (today-dated) entries
     expect(withTimeline.timelineEntries[0]!.date).toBe("2024-03-05"); // original date, not today
     expect(pages.some((p) => p.tags.includes("ops"))).toBe(true);
+    // the current agent-default copy precedes the legacy agent copy of the same slug
+    const order = pages.filter((p) => p.slug === "learned/runbook").map((p) => p.source);
+    expect(order).toEqual(["agent-default", "agent"]);
+    // link provenance travels: both a manual and a markdown edge, without an origin here
+    const idx = pages.find((p) => p.source === "agent-default" && p.slug === "learned/index")!;
+    expect(idx.links.map((l) => l.linkSource).sort()).toEqual(["manual", "markdown"]);
     expect(pages.some((p) => p.links.length > 0)).toBe(true);
     expect(pages.every((p) => !p.source.startsWith("kb-"))).toBe(true);
     // original brain dir still opens (no lock taken, nothing deleted)

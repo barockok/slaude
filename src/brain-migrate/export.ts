@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { BundleWriter, type BundleManifest, type BundlePage } from "./bundle";
 import { readEmbeddingInfo } from "./embedding-info";
+import { isAgentLike } from "./remap";
 import type { MigrateEngine } from "./engine-types";
 
 const gbrainImport = (subpath: string): Promise<Record<string, unknown>> =>
@@ -25,6 +26,20 @@ export function selectSources(all: string[], include: string[] | undefined, excl
     (dropped || explicitExclude ? excluded : keep).push(id);
   }
   return { keep, excluded };
+}
+
+/**
+ * Agent-like sources are written most specific first: `agent-<real id>`, then
+ * `agent-default`, then the legacy `agent` slice. All of them import into one
+ * slice and the default skip policy keeps the FIRST copy of a slug, so the
+ * current copy must come before the oldest. Other sources keep their order, and
+ * the agent-like ones are placed into the slots the agent-like ids occupied.
+ */
+export function orderSources(keep: string[]): string[] {
+  const rank = (s: string): number => (s === "agent" ? 2 : s === "agent-default" ? 1 : 0);
+  const agents = keep.filter(isAgentLike).sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  let i = 0;
+  return keep.map((s) => (isAgentLike(s) ? agents[i++]! : s));
 }
 
 function readBrainConfig(home: string): { embedding_model?: string; embedding_dimensions?: number } {
@@ -50,7 +65,7 @@ export async function exportBrain(o: ExportOptions): Promise<ExportResult> {
     const ids = (await engine.db.query("SELECT id FROM sources ORDER BY id")).rows.map((r) => String(r.id));
     const { keep, excluded } = selectSources(ids, o.include, o.exclude);
     const w = new BundleWriter(o.out);
-    for (const source of keep) {
+    for (const source of orderSources(keep)) {
       for (let offset = 0; ; offset += 200) {
         const batch = await engine.listPages({ sourceId: source, limit: 200, offset, sort: "slug" });
         if (batch.length === 0) break;
@@ -73,8 +88,10 @@ async function readPage(engine: MigrateEngine, source: string, pg: Awaited<Retur
   const so = { sourceId: source };
   const chunks = await engine.getChunksWithEmbeddings(pg.slug, so);
   const links = (await engine.db.query(
-    `SELECT l.link_type, l.context, tp.slug AS to_slug, tp.source_id AS to_source
+    `SELECT l.link_type, l.context, l.link_source, l.origin_field, tp.slug AS to_slug, tp.source_id AS to_source,
+            op.slug AS origin_slug, op.source_id AS origin_source
        FROM links l JOIN pages fp ON fp.id = l.from_page_id JOIN pages tp ON tp.id = l.to_page_id
+       LEFT JOIN pages op ON op.id = l.origin_page_id
       WHERE fp.slug = $1 AND fp.source_id = $2 AND tp.deleted_at IS NULL`, [pg.slug, source])).rows;
   return {
     source, slug: pg.slug, type: pg.type, title: pg.title, compiledTruth: pg.compiled_truth, timeline: pg.timeline,
@@ -86,6 +103,9 @@ async function readPage(engine: MigrateEngine, source: string, pg: Awaited<Retur
     tags: await engine.getTags(pg.slug, so),
     timelineEntries: (await engine.getTimeline(pg.slug, { ...so, limit: 100000 })).map((t) => ({ date: typeof t.date === "string" ? t.date.slice(0, 10) : t.date.toISOString().slice(0, 10), source: t.source, summary: t.summary, detail: t.detail })),
     raw: (await engine.getRawData(pg.slug, undefined, so)).map((r) => ({ source: r.source, data: r.data })),
-    links: links.map((l) => ({ toSource: String(l.to_source), toSlug: String(l.to_slug), type: String(l.link_type), context: String(l.context) })),
+    links: links.map((l) => ({ toSource: String(l.to_source), toSlug: String(l.to_slug), type: String(l.link_type), context: String(l.context),
+      ...(l.link_source != null ? { linkSource: String(l.link_source) } : {}),
+      ...(l.origin_slug != null && l.origin_source != null ? { originSlug: String(l.origin_slug), originSource: String(l.origin_source), ...(l.origin_field != null ? { originField: String(l.origin_field) } : {}) } : {}),
+    })),
   };
 }

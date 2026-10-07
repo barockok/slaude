@@ -12,7 +12,12 @@ export interface BundlePage {
   chunks: BundleChunk[]; tags: string[];
   timelineEntries: Array<{ date: string; source: string; summary: string; detail: string }>;
   raw: Array<{ source: string; data: Record<string, unknown> }>;
-  links: Array<{ toSource: string; toSlug: string; type: string; context: string }>;
+  links: BundleLink[];
+}
+/** Provenance fields are optional: a bundle without them imports as manual links, as before. */
+export interface BundleLink {
+  toSource: string; toSlug: string; type: string; context: string;
+  linkSource?: string; originSlug?: string; originSource?: string; originField?: string;
 }
 export interface BundleEngineInfo { schemaVersion: number | null; embeddingModel: string | null; embeddingDimensions: number | null }
 export interface BundleManifest {
