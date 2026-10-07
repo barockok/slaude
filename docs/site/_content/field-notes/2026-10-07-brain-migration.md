@@ -73,6 +73,20 @@ any difference.
   shares the OS user and can read the token. This is stated in the runbook: set it
   for the duration of the import only.
 
+- **Two copies of one slug, and the oldest won.** A brain that predates per-agent
+  slices holds the legacy `agent` slice beside `agent-<id>`; all of them import into
+  one slice, and the export ordered sources by id, so under the default `skip` the
+  oldest copy was written first and the current one was counted skipped, with
+  reconciliation passing and exit 0. The export now writes the most specific source
+  first and the client reports collisions (source pairs, never slugs).
+- **Links lost their provenance.** Every imported link became `manual` with no
+  origin, but gbrain's link reconciliation never touches manual edges: a later edit
+  would have added a `markdown` edge beside the manual copy, and former `mentions`
+  edges would have started counting in ranking. Provenance (source, origin page and
+  field) now travels with the link, with the origin dropped when its page is not in
+  the target. "Migrate once, exit 0" also had to mean complete, so the client runs
+  one automatic heal pass for links whose target arrived in a later batch.
+
 ## Not verified
 
 - Bundles over a few gigabytes. The whole home is copied and pages are streamed,

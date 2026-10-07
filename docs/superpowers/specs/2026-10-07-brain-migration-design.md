@@ -92,6 +92,14 @@ A `pages.jsonl` line:
 Embeddings are plain number arrays (a 1280-dimension vector is about 12 KB as JSON; the bundle
 is large but streamable, and never held in memory whole).
 
+**Amendments (final review).** Each link may carry optional provenance: `linkSource`
+(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`, at most 64 characters, as the database check), `originSlug`,
+`originSource`, `originField`. The bundle version stays 1; a link without them imports as
+`manual`, as before. The importer remaps `originSource` like any link endpoint and drops the
+origin (not the link) when its page is not in the target or its source is out of scope. This
+keeps gbrain's later link reconciliation correct: `markdown` and `frontmatter` edges stay
+reconcilable, and a later edit does not add a second copy beside a `manual` one.
+
 ### 4.2 Export: `bun run brain-export`
 
 ```
@@ -213,6 +221,13 @@ written under its raw source; so is a link whose target page is not in the brain
 one gateway: the first import wins under `skip`. The runbook states this and recommends
 importing `shared` once, from the agent whose `shared` slice is the reference.
 
+**Amendment: in-bundle collisions.** Several agent-like sources import into one slice, so the
+same slug can appear twice. The export therefore writes agent-like sources most specific first
+(`agent-<id>`, then `agent-default`, then the legacy `agent`); `pages.jsonl` order is preserved,
+so under `skip` the current copy wins. The client counts collisions while streaming (a digest
+per target and slug, bounded memory) and reports `N in-bundle slug collision(s)` with the source
+pairs only, never slugs, in a dry run too. Under `overwrite` the last copy wins (the legacy one).
+
 ### 4.6 Import client: `bun run brain-import`
 
 ```
@@ -225,8 +240,13 @@ brain-import --gateway <url> --persona <name> [--token-env VAR] [--dry-run]
 - Verifies `manifest.json` and the sha256 of `pages.jsonl` before sending anything; a mismatch
   exits non-zero.
 - Streams `pages.jsonl` in batches (at most 100 pages or 1 MB, whichever first).
-- Retries a batch on a network error or 5xx with backoff; a 4xx stops the run with the
-  gateway's message.
+- Retries a batch on a network error, a 5xx or a 429 with backoff, each attempt abandoned after
+  120 s; any other 4xx stops the run with the gateway's message.
+- **Heal pass.** The server counts `linksOutOfScope` (the permanent part of `linksDropped`:
+  `kb-*`, unmapped, forbidden targets). After a non-dry run, if any source dropped links that were
+  not out of scope, the client runs ONE more `skip` pass over the same bundle (not after
+  `--on-conflict fail`), reports `heal pass: N links written`, and prints a hint only if healable
+  drops remain. Reconciliation uses the first pass's counts.
 - `--dry-run` sends every batch with `dryRun: true` and prints the mapping and the counts.
 - Ends by comparing the accumulated per-source counts with the manifest's inventory (after
   mapping) and **exits non-zero** on any mismatch other than pages the chosen `onConflict`
