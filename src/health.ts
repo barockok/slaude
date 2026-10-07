@@ -53,7 +53,7 @@ export function brainImportHandlerForRole(
   role: string,
   handler: (req: Request) => Promise<Response | null>,
 ): ((req: Request) => Promise<Response | null>) | undefined {
-  return role === "node" ? undefined : handler;
+  return role === "gateway" || role === "mono" ? handler : undefined;
 }
 
 /**

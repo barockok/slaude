@@ -105,4 +105,7 @@ describe("/brain-import mount by role", () => {
   test("a node never mounts it", async () => {
     expect(await hit("node")).toBeNull();
   });
+  test("any other or future role fails closed", async () => {
+    for (const role of ["worker", "", "Gateway", "future-role"]) expect(await hit(role)).toBeNull();
+  });
 });
