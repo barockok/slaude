@@ -13,7 +13,7 @@ process.env.SLAUDE_BRAIN_HOME = home;
 import { closeBrain, getBrain } from "../../../src/knowledge/brain";
 import { createBrainImportApi } from "../../../src/gateway/brain-import/api";
 import { BundleWriter, type BundlePage } from "../../../src/brain-migrate/bundle";
-import { runImport } from "../../../src/brain-migrate/client";
+import { hasProblems, runImport } from "../../../src/brain-migrate/client";
 
 afterAll(async () => { await closeBrain(); rmSync(home, { recursive: true, force: true }); rmSync(bundleDir, { recursive: true, force: true }); });
 
@@ -28,7 +28,7 @@ const page = (i: number): BundlePage => ({
   links: i === 0 ? [{ toSource: "agent-default", toSlug: slug(N - 1), type: "references", context: "far" }] : [],
 });
 
-test("a link to a page in a later batch is dropped first and written by a re-run", async () => {
+test("a link to a page in a later batch is dropped first and healed within the same command", async () => {
   const w = new BundleWriter(bundleDir);
   for (let i = 0; i < N; i++) await w.writePage(page(i));
   await w.finish({ engine: { schemaVersion: 1, embeddingModel: null, embeddingDimensions: TEST_DIMS }, excluded: [] });
@@ -45,11 +45,15 @@ test("a link to a page in a later batch is dropped first and written by a re-run
 
   const lines: string[] = [];
   const first = await run((l) => lines.push(l));
+  // ONE command: pass 1 drops the cross-batch link, the automatic heal pass writes it.
   expect(first.mismatches).toEqual([]);
+  expect(hasProblems(first)).toBe(false);
   expect(first.sources["agent-uana1x"]!.written).toBe(N);
   expect(first.sources["agent-uana1x"]!.linksDropped).toBeGreaterThanOrEqual(1);
-  expect(await linkCount()).toBe(0);
-  expect(lines.some((l) => l.includes("re-running the same command"))).toBe(true);
+  expect(first.linksHealed).toBeGreaterThanOrEqual(1);
+  expect(lines.some((l) => l.startsWith("heal pass:"))).toBe(true);
+  expect(lines.some((l) => l.includes("were not written because their target page was missing"))).toBe(false);
+  expect(await linkCount()).toBe(1);
 
   const second = await run();
   expect(second.mismatches).toEqual([]);
@@ -57,5 +61,6 @@ test("a link to a page in a later batch is dropped first and written by a re-run
   expect(second.sources["agent-uana1x"]!.written).toBe(0);
   expect(second.sources["agent-uana1x"]!.linksWritten).toBe(1);
   expect(second.sources["agent-uana1x"]!.linksDropped).toBe(0);
+  expect(second.linksHealed).toBe(0);
   expect(await linkCount()).toBe(1);
 }, 180_000);

@@ -44,7 +44,10 @@ export async function dryRunStep(bundleDir: string) {
   const run = await importer(bundleDir, "ana", "UANA-1x");
   const s = await run({ dryRun: true });
   expect(s.agentSource).toBe("agent-uana1x");
-  expect(s.sources["agent-uana1x"]!.written).toBe(3);
+  // learned/runbook, learned/index, the conversation page, and the legacy `agent` copy of
+  // learned/runbook: a dry run writes nothing, so it cannot see that the last one collides.
+  expect(s.sources["agent-uana1x"]!.written).toBe(4);
+  expect(s.collisions).toEqual({ count: 1, sources: ["agent vs agent-default"] });
   const { getBrain } = await import("../../src/knowledge/brain");
   const e = (await getBrain()) as any;
   expect((await e.executeRaw("SELECT count(*)::int AS n FROM pages"))[0].n).toBe(0);
@@ -57,12 +60,16 @@ export async function importStep(bundleDir: string) {
   expect(s.mismatches).toEqual([]);
   expect(s.failedSlugs).toEqual([]);
   // agent-default holds learned/runbook, learned/index and the one conversation page
-  // BrainMemoryProvider created for SESSION (two syncTurns, same page).
+  // BrainMemoryProvider created for SESSION (two syncTurns, same page): 3 written. The legacy
+  // `agent` slice holds an OLDER learned/runbook; the export writes it after agent-default's, so
+  // under skip it is the one skipped, and the summary reports the collision.
   expect(s.sources["agent-uana1x"]!.written).toBe(3);
+  expect(s.sources["agent-uana1x"]!.skipped).toBe(1);
+  expect(s.collisions).toEqual({ count: 1, sources: ["agent vs agent-default"] });
   expect(s.sources["user-ualice"]!.written).toBe(1);
   expect(s.sources["shared"]!.written).toBe(1);
   expect(s.sources["public"]!.written).toBe(1);
-  expect(s.sources["agent-uana1x"]!.linksWritten).toBe(1);
+  expect(s.sources["agent-uana1x"]!.linksWritten).toBe(2); // the manual edge and the markdown edge learned/index -> learned/runbook
   for (const c of Object.values(s.sources)) { expect(c.failed).toBe(0); expect(c.linksFailed).toBe(0); }
   expect(Object.keys(s.sources).some((k) => k.startsWith("kb-"))).toBe(false);
   expect(Object.keys(s.sources)).not.toContain("agent-default");
@@ -99,7 +106,16 @@ export async function recallStep() {
     `SELECT count(*)::int AS n FROM links l JOIN pages f ON f.id = l.from_page_id JOIN pages t ON t.id = l.to_page_id
      WHERE f.slug = 'learned/index' AND t.slug = 'learned/runbook' AND f.source_id = 'agent-uana1x' AND t.source_id = 'agent-uana1x'`,
   ))[0].n;
-  expect(links).toBe(1);
+  expect(links).toBe(2);
+  const bySource = (await e.executeRaw(
+    `SELECT l.link_source AS s FROM links l JOIN pages f ON f.id = l.from_page_id
+     WHERE f.slug = 'learned/index' AND f.source_id = 'agent-uana1x' ORDER BY 1`,
+  )).map((r: { s: string }) => r.s);
+  expect(bySource).toEqual(["manual", "markdown"]); // provenance survived the move
+  // the persona's copy is the current (agent-default) text, not the legacy slice's older one
+  const truth = (await e.executeRaw(`SELECT compiled_truth AS t FROM pages WHERE slug = 'learned/runbook' AND source_id = 'agent-uana1x'`))[0].t as string;
+  expect(truth).toContain("zebra procedure");
+  expect(truth).not.toContain("okapi");
   expect((await e.executeRaw(`SELECT count(*)::int AS n FROM sources WHERE id LIKE 'kb-%'`))[0].n).toBe(0);
   expect((await e.executeRaw(`SELECT count(*)::int AS n FROM pages WHERE slug = 'kb/page'`))[0].n).toBe(0);
 }
@@ -117,12 +133,12 @@ export async function rerunStep(bundleDir: string) {
   expect(s2.sources["agent-uana1x"]!.written).toBe(1);
   expect(s2.sources["shared"]!.written).toBe(1);
   // learned/index was deleted with its outgoing link; the resumed write restores it.
-  expect(s2.sources["agent-uana1x"]!.linksWritten).toBe(1);
+  expect(s2.sources["agent-uana1x"]!.linksWritten).toBe(2);
   const restored = (await e.executeRaw(
     `SELECT count(*)::int AS n FROM links l JOIN pages f ON f.id = l.from_page_id JOIN pages t ON t.id = l.to_page_id
      WHERE f.slug = 'learned/index' AND t.slug = 'learned/runbook' AND f.source_id = 'agent-uana1x' AND t.source_id = 'agent-uana1x'`,
   ))[0].n;
-  expect(restored).toBe(1);
+  expect(restored).toBe(2);
   expect(Object.values(s2.sources).reduce((n, c) => n + c.written, 0)).toBe(2);
   expect(s2.mismatches).toEqual([]);
   expect(s2.failedSlugs).toEqual([]);

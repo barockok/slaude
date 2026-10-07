@@ -21,7 +21,10 @@ export async function applyLinks(
   for (const l of linkTargets) {
     try {
       if ((await engine.getPage(l.toSlug, { sourceId: l.toSource })) === null) { linksDropped++; continue; }
-      await engine.addLink(slug, l.toSlug, l.context, l.type, "manual", undefined, undefined, { fromSourceId: target, toSourceId: l.toSource });
+      // Provenance travels with the link; the origin is dropped when its page is not in the target.
+      const origin = l.originSlug && l.originSource && (await engine.getPage(l.originSlug, { sourceId: l.originSource })) !== null;
+      await engine.addLink(slug, l.toSlug, l.context, l.type, l.linkSource ?? "manual", origin ? l.originSlug : undefined, origin ? l.originField : undefined,
+        { fromSourceId: target, toSourceId: l.toSource, ...(origin ? { originSourceId: l.originSource } : {}) });
       linksWritten++;
     } catch { linksFailed++; }
   }

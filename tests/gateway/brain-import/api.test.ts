@@ -192,6 +192,7 @@ describe("links", () => {
     expect(r.status).toBe(200);
     expect(r.json.sources["shared"].linksWritten).toBe(0);
     expect(r.json.sources["shared"].linksDropped).toBe(2);
+    expect(r.json.sources["shared"].linksOutOfScope).toBe(2); // permanent: never healed by a re-run
     expect(f.links).toEqual([]);
   });
   test("a link to an agent-like source lands in the persona's agent slice", async () => {
@@ -223,6 +224,26 @@ describe("links", () => {
     const a = api({ engine: async () => ({ ...f.e, getPage: async () => ({ slug: "x" }) } as any) });
     const r = await call(a, post(body([{ ...pg("shared", "src"), links: [lk("kb-x")] }])));
     expect(r.json.sources["shared"]).toMatchObject({ skipped: 1, linksDropped: 1, linksWritten: 0 });
+  });
+  test("link provenance: the origin is remapped like an endpoint, an out-of-scope origin is dropped, a bad linkSource is a 422", async () => {
+    const calls: Array<{ src: unknown; origin: unknown; field: unknown; o: any }> = [];
+    const e: any = {
+      getPage: async () => ({ slug: "x" }), transaction: async (fn: any) => fn(e), executeRaw: async () => [], db: { query: async () => ({ rows: [] }) },
+      putPage: async () => {}, upsertChunks: async () => {}, addTag: async () => {}, addTimelineEntry: async () => {}, putRawData: async () => {},
+      addLink: async (_f: string, _t: string, _c: string, _ty: string, src: unknown, origin: unknown, field: unknown, o: any) => { calls.push({ src, origin, field, o }); },
+    };
+    const a = api({ engine: async () => e as MigrateEngine });
+    const links = [
+      { ...lk("shared", "k"), linkSource: "frontmatter", originSlug: "o1", originSource: "agent-default", originField: "f" },
+      { ...lk("shared", "k"), type: "m2", linkSource: "frontmatter", originSlug: "o2", originSource: "kb-x", originField: "f" },
+    ];
+    const r = await call(a, post(body([{ ...pg("shared", "src"), links }])));
+    expect(r.status).toBe(200);
+    expect(calls[0]).toMatchObject({ src: "frontmatter", origin: "o1", field: "f", o: { originSourceId: "agent-uana1x" } });
+    expect(calls[1]).toMatchObject({ src: "frontmatter", origin: undefined, field: undefined });
+    expect(calls[1]!.o.originSourceId).toBeUndefined();
+    const bad = await call(a, post(body([{ ...pg("shared", "src"), links: [{ ...lk("shared", "k"), linkSource: "Bad Source" }] }])));
+    expect(bad.status).toBe(422);
   });
   test("a dry run writes and counts no links", async () => {
     const f = linkEngine();

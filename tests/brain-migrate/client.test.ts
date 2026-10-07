@@ -18,7 +18,7 @@ async function bundle(pages: BundlePage[]): Promise<string> {
   return d;
 }
 const base = (b: string, over: Partial<Parameters<typeof runImport>[0]> = {}) => ({ gateway: "https://gw.example.com", persona: "ana", token: "tok", bundle: b, sleep: async () => {}, log: () => {}, ...over });
-const zero = { written: 0, skipped: 0, overwritten: 0, failed: 0, linksWritten: 0, linksDropped: 0, linksFailed: 0, noEmbedding: 0 };
+const zero = { written: 0, skipped: 0, overwritten: 0, failed: 0, linksWritten: 0, linksDropped: 0, linksFailed: 0, linksOutOfScope: 0, noEmbedding: 0 };
 const reply = (sources: Record<string, Partial<typeof zero>>, extra: Record<string, unknown> = {}) =>
   new Response(JSON.stringify({ persona: "ana", agentSource: "agent-uana", dryRun: false, sources: Object.fromEntries(Object.entries(sources).map(([k, v]) => [k, { ...zero, ...v }])), failedSlugs: [], failedReasons: {}, ...extra }), { status: 200 });
 const ok = (counts: Record<string, number>) => reply(Object.fromEntries(Object.entries(counts).map(([k, n]) => [k, { written: n }])));
@@ -129,17 +129,72 @@ describe("runImport", () => {
     expect(s.mismatches).toEqual([]);
     expect(hasProblems(s)).toBe(true);
   });
-  test("a real run with dropped links prints the re-run hint (no slugs); a dry run does not", async () => {
-    const mkFetch = () => (async () => reply({ shared: { written: 1, linksDropped: 2 } })) as unknown as typeof fetch;
+  test("healable drops trigger ONE automatic skip pass that reports what it wrote; the hint appears only if drops remain", async () => {
+    const bodies: Array<{ onConflict: string; dryRun: boolean }> = [];
+    let n = 0;
+    const fetchImpl = (async (_u: string, init: RequestInit) => {
+      bodies.push(JSON.parse(init.body as string)); n++;
+      return n === 1 ? reply({ shared: { written: 1, linksWritten: 1, linksDropped: 3, linksOutOfScope: 1 } })
+        : reply({ shared: { skipped: 1, linksWritten: 3, linksDropped: 1, linksOutOfScope: 1 } });
+    }) as unknown as typeof fetch;
     const lines: string[] = [];
-    await runImport(base(await bundle([page("shared", "secret-slug")]), { fetchImpl: mkFetch(), log: (l) => lines.push(l) }));
-    const hint = lines.find((l) => l.startsWith("2 links were not written"));
-    expect(hint).toContain("re-running the same command (skip is idempotent)");
-    expect(hint).toContain("never imported");
-    expect(hint).not.toContain("secret-slug");
-    const dry: string[] = [];
-    await runImport(base(await bundle([page("shared", "a")]), { fetchImpl: mkFetch(), dryRun: true, log: (l) => dry.push(l) }));
-    expect(dry.some((l) => l.includes("links were not written"))).toBe(false);
+    const s = await runImport(base(await bundle([page("shared", "secret-slug")]), { fetchImpl, log: (l) => lines.push(l) }));
+    expect(bodies.map((b) => [b.onConflict, b.dryRun])).toEqual([["skip", false], ["skip", false]]);
+    expect(s.linksHealed).toBe(2); // 3 links exist after pass 2, 1 was written in pass 1
+    expect(s.sources.shared!.written).toBe(1); // reconciliation uses pass-1 counts
+    expect(s.mismatches).toEqual([]);
+    expect(lines).toContain("heal pass: 2 links written");
+    expect(lines.some((l) => l.startsWith("1 links were not written because their target page was missing"))).toBe(false);
+    expect(lines.some((l) => l.includes("kb-* or unmapped sources were not imported"))).toBe(true);
+    expect(lines.join("\n")).not.toContain("secret-slug");
+  });
+  test("drops that survive the heal pass print the re-run hint; out-of-scope drops alone cause no heal pass; dry run and fail policy never heal", async () => {
+    const count = async (over: Record<string, unknown>, counts: Record<string, number>) => {
+      let n = 0; const lines: string[] = [];
+      const fetchImpl = (async () => { n++; return reply({ shared: { written: 1, ...counts } }); }) as unknown as typeof fetch;
+      await runImport(base(await bundle([page("shared", "a")]), { fetchImpl, log: (l) => lines.push(l), ...over }));
+      return { n, lines };
+    };
+    const stuck = await count({}, { linksDropped: 2 });
+    expect(stuck.n).toBe(2);
+    expect(stuck.lines.some((l) => l.startsWith("2 links were not written") && l.includes("re-run the same command"))).toBe(true);
+    expect((await count({}, { linksDropped: 2, linksOutOfScope: 2 })).n).toBe(1);
+    expect((await count({ dryRun: true }, { linksDropped: 2 })).n).toBe(1);
+    expect((await count({ onConflict: "fail" }, { linksDropped: 2 })).n).toBe(1);
+  });
+  test("in-bundle slug collisions are reported by source pair, never by slug, in a dry run too; same-source repeats are not collisions", async () => {
+    const d = await bundle([page("agent-default", "cur"), page("agent", "cur"), page("agent", "only-legacy"), page("shared", "cur")]);
+    const fetchImpl = (async () => ok({ "agent-uana": 3, shared: 1 })) as unknown as typeof fetch;
+    for (const dryRun of [false, true]) {
+      const lines: string[] = [];
+      const s = await runImport(base(d, { fetchImpl, dryRun, log: (l) => lines.push(l) }));
+      expect(s.collisions).toEqual({ count: 1, sources: ["agent vs agent-default"] });
+      const line = lines.find((l) => l.includes("in-bundle slug collision"))!;
+      expect(line).toContain("1 in-bundle slug collision(s)");
+      expect(line).toContain("agent vs agent-default");
+      expect(line).not.toContain("cur");
+    }
+  });
+  test("each attempt carries a timeout signal; a hung attempt is aborted and retried", async () => {
+    let n = 0; const waits: number[] = [];
+    const fetchImpl = ((_u: string, init: RequestInit) => {
+      n++;
+      if (n === 1) return new Promise<Response>((_r, rej) => init.signal!.addEventListener("abort", () => rej(new Error("aborted"))));
+      return Promise.resolve(ok({ shared: 1 }));
+    }) as unknown as typeof fetch;
+    const s = await runImport(base(await bundle([page("shared", "a")]), { fetchImpl, timeoutMs: 20, sleep: async (ms) => { waits.push(ms); } }));
+    expect(n).toBe(2);
+    expect(waits).toEqual([500]);
+    expect(s.sources.shared!.written).toBe(1);
+  });
+  test("429 is retried like a 5xx, with the same backoff; a persistent 429 fails clearly", async () => {
+    let n = 0; const waits: number[] = [];
+    const f1 = (async () => (++n < 3 ? new Response("slow down", { status: 429 }) : ok({ shared: 1 }))) as unknown as typeof fetch;
+    await runImport(base(await bundle([page("shared", "a")]), { fetchImpl: f1, sleep: async (ms) => { waits.push(ms); } }));
+    expect(n).toBe(3);
+    expect(waits).toEqual([500, 1000]);
+    const f2 = (async () => new Response("x", { status: 429 })) as unknown as typeof fetch;
+    await expect(runImport(base(await bundle([page("shared", "a")]), { fetchImpl: f2 }))).rejects.toThrow(/after retries \(429\)/);
   });
   test("dryRun is forwarded", async () => {
     let body: { dryRun?: boolean } = {};

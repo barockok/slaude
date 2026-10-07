@@ -14,7 +14,7 @@ export interface MigrateEngine {
   addTag(slug: string, tag: string, o?: { sourceId?: string }): Promise<void>;
   addTimelineEntry(slug: string, e: { date: string; source?: string; summary: string; detail?: string }, o?: { sourceId?: string; skipExistenceCheck?: boolean }): Promise<void>;
   putRawData(slug: string, source: string, data: object, o?: { sourceId?: string }): Promise<void>;
-  addLink(from: string, to: string, context?: string, linkType?: string, linkSource?: string, originSlug?: string, originField?: string, o?: { fromSourceId?: string; toSourceId?: string }): Promise<void>;
+  addLink(from: string, to: string, context?: string, linkType?: string, linkSource?: string, originSlug?: string, originField?: string, o?: { fromSourceId?: string; toSourceId?: string; originSourceId?: string }): Promise<void>;
   /** Both engines (PGLite and Postgres) have it, inside a transaction too; `db` is PGLite-only (the mono export side). */
   executeRaw<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
   db: { query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }> };

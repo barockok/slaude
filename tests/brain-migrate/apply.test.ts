@@ -164,6 +164,28 @@ describe("applyPage", () => {
     expect(await run(withLink, "agent-uone", opts("skip"))).toMatchObject({ outcome: "skipped", linksWritten: 1 });
     expect(await linkCount("sk-src")).toBe(1); // idempotent
   });
+  test("link provenance round-trips: markdown stays markdown, a frontmatter link keeps its origin, an absent source falls back to manual", async () => {
+    await run(mk("pv-target", "t"), "agent-uone");
+    await run(mk("pv-origin", "o"), "agent-uone");
+    const L = (extra: object) => ({ toSource: "agent-uone", toSlug: "pv-target", type: "references", context: "c", ...extra });
+    const src = mk("pv-src", "s", { links: [
+      L({ linkSource: "markdown" }),
+      L({ type: "mentions", linkSource: "frontmatter", originSlug: "pv-origin", originSource: "agent-uone", originField: "related" }),
+      L({ type: "cites" }),
+      L({ type: "ghost-origin", linkSource: "frontmatter", originSlug: "no-such-page", originSource: "agent-uone", originField: "x" }),
+    ] });
+    const r = await run(src, "agent-uone");
+    expect(r).toMatchObject({ linksWritten: 4, linksFailed: 0 });
+    const rows = (await engine.db.query(
+      `SELECT l.link_type AS t, l.link_source AS s, l.origin_field AS f, o.slug AS o FROM links l JOIN pages p ON p.id = l.from_page_id
+       LEFT JOIN pages o ON o.id = l.origin_page_id WHERE p.slug = 'pv-src' ORDER BY l.link_type`)).rows;
+    expect(rows).toEqual([
+      { t: "cites", s: "manual", f: null, o: null },
+      { t: "ghost-origin", s: "frontmatter", f: null, o: null },
+      { t: "mentions", s: "frontmatter", f: "related", o: "pv-origin" },
+      { t: "references", s: "markdown", f: null, o: null },
+    ]);
+  });
   test("overwrite needs only executeRaw (Postgres engines have no .db)", async () => {
     await run(mk("nodb", "v1"), "agent-uone");
     const noDb = new Proxy(engine, { get(t, k) {

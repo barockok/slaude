@@ -44,7 +44,11 @@ const pageSchema = z.object({
   tags: z.array(z.string()),
   timelineEntries: z.array(z.object({ date: z.string(), source: z.string(), summary: z.string(), detail: z.string() })),
   raw: z.array(z.object({ source: z.string(), data: z.record(z.unknown()) })),
-  links: z.array(z.object({ toSource: z.string(), toSlug: z.string(), type: z.string(), context: z.string() })),
+  links: z.array(z.object({
+    toSource: z.string(), toSlug: z.string(), type: z.string(), context: z.string(),
+    linkSource: z.string().max(64).regex(/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/).optional(),
+    originSlug: z.string().max(512).optional(), originSource: z.string().max(256).optional(), originField: z.string().max(256).optional(),
+  })),
 });
 const bodySchema = z.object({
   dryRun: z.boolean().optional(),
@@ -68,7 +72,7 @@ async function defaultBrainConfig(engine: MigrateEngine): Promise<EmbeddingInfo>
   return readEmbeddingInfo(engine, readConfigFile);
 }
 
-interface SourceCounts { written: number; skipped: number; overwritten: number; failed: number; linksWritten: number; linksDropped: number; linksFailed: number; noEmbedding: number }
+interface SourceCounts { written: number; skipped: number; overwritten: number; failed: number; linksWritten: number; linksDropped: number; linksFailed: number; linksOutOfScope: number; noEmbedding: number }
 
 export function createBrainImportApi(deps: BrainImportDeps = {}) {
   const log = deps.log ?? ((l: string) => console.log(l));
@@ -152,14 +156,21 @@ export function createBrainImportApi(deps: BrainImportDeps = {}) {
       const linkTargets: BundlePage["links"] = [];
       for (const l of p.links) {
         const lr = remapSource(l.toSource, { agentSource, map: b.map });
-        if (lr.ok && allowedTarget(lr.target, agentSource)) linkTargets.push({ ...l, toSource: lr.target });
+        if (lr.ok && allowedTarget(lr.target, agentSource)) {
+          // The origin follows the same remap; one that does not land in an allowed slice is dropped, not the link.
+          const { originSlug, originSource, originField, ...rest } = l;
+          const or = originSlug && originSource ? remapSource(originSource, { agentSource, map: b.map }) : null;
+          linkTargets.push(or && or.ok && allowedTarget(or.target, agentSource)
+            ? { ...rest, toSource: lr.target, originSlug, originSource: or.target, ...(originField !== undefined ? { originField } : {}) }
+            : { ...rest, toSource: lr.target });
+        }
       }
       const unmappable = p.links.length - linkTargets.length;
       const r = await applyPage(engine, { page: p, target: t, linkTargets }, { onConflict, dryRun, ensureSource: ensure, deferLinks: true });
-      const s = (sources[t] ??= { written: 0, skipped: 0, overwritten: 0, failed: 0, linksWritten: 0, linksDropped: 0, linksFailed: 0, noEmbedding: 0 });
+      const s = (sources[t] ??= { written: 0, skipped: 0, overwritten: 0, failed: 0, linksWritten: 0, linksDropped: 0, linksFailed: 0, linksOutOfScope: 0, noEmbedding: 0 });
       s[r.outcome]++; s.noEmbedding += r.noEmbedding;
       if (r.outcome === "written" || r.outcome === "overwritten" || r.outcome === "skipped") {
-        s.linksDropped += unmappable;
+        s.linksDropped += unmappable; s.linksOutOfScope += unmappable;
         if (!dryRun) pending.push({ slug: p.slug, target: t, linkTargets, unmappable });
       }
       if (r.outcome === "failed") {

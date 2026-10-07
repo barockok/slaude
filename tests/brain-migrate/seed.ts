@@ -25,7 +25,7 @@ export async function seedMonoBrain(home: string, o: { empty?: boolean } = {}): 
     const engine = (await getBrain()) as unknown as import("../../src/brain-migrate/engine-types").MigrateEngine;
     if (o.empty) return;
     // Not ensureSource(): its process-wide cache would skip sources_add for a second brain home in the same process.
-    for (const s of ["agent-default", "shared", "public", "user-ualice", "kb-bulk-corpus"]) {
+    for (const s of ["agent", "agent-default", "shared", "public", "user-ualice", "kb-bulk-corpus"]) {
       await brainAdminCall("sources_add", { id: s, federated: true }).catch((e) => { if (!/duplicate key|already exists|already registered/i.test(String(e))) throw e; });
     }
     const { BrainMemoryProvider } = await import("../../src/memory/brain-provider");
@@ -42,6 +42,10 @@ export async function seedMonoBrain(home: string, o: { empty?: boolean } = {}): 
     await engine.addTimelineEntry("learned/runbook", { date: "2024-03-05", source: "ops", summary: "wrote runbook" }, { sourceId: "agent-default" });
     await put("agent-default", "learned/index", "Index of runbooks. See [[learned/runbook]].", { seed: 3 });
     await engine.addLink("learned/index", "learned/runbook", "see", "references", "manual", undefined, undefined, { fromSourceId: "agent-default", toSourceId: "agent-default" });
+    // A markdown-sourced edge beside the manual one (the unique key includes link_source), as put_page would write.
+    await engine.addLink("learned/index", "learned/runbook", "body ref", "references", "markdown", undefined, undefined, { fromSourceId: "agent-default", toSourceId: "agent-default" });
+    // The legacy pre-per-agent slice holds an OLDER copy of the same slug (agent-default is current).
+    await put("agent", "learned/runbook", "Legacy note: restart the worker with the okapi procedure.", { seed: 8 });
     await engine.putRawData("learned/runbook", "ops-import", { k: "v" }, { sourceId: "agent-default" });
     await put("user-ualice", "people/alice", "Alice prefers quokka-themed standups.", { seed: 4 });
     await put("shared", "team/norms", "Team norm: narwhal reviews on Fridays.", { seed: 5 });
