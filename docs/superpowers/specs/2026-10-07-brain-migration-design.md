@@ -183,9 +183,11 @@ The persona's agent slice is derived with `agentSourceId(persona.slackUserId)` (
 dropped, 32 characters), the same function the gateway's own memory and KB paths use, so it is
 the slice the persona actually reads. It is not a hand-built `agent-<slackUserId>`, which would
 orphan data for any id the sanitiser changes. The id comes from the gateway's registry for
-`:persona` (the process agent's id for `default`); the operator never types it. `map` entries win over the table for the sources they name, so an operator can route an odd
-source explicitly, except that a `kb-*` source is refused before the map is consulted. Every mapped target must itself be one of: the persona's agent slice,
-`user-*`, `shared`, `public`; a `map` that points at a `kb-*` source or at another persona's
+`:persona` (the process agent's id for `default`); the operator never types it.
+
+`map` entries win over the table for the sources they name, so an operator can route an odd
+source explicitly, except that a `kb-*` source is refused before the map is consulted. Every
+mapped target must itself be one of: the persona's agent slice, `user-*`, `shared`, `public`; a `map` that points at a `kb-*` source or at another persona's
 agent slice is refused.
 
 Several bundle sources can map to one target (for example `agent-default` and `agent-U0OLD`
@@ -202,7 +204,8 @@ written under its raw source; so is a link whose target page is not in the brain
   because the target page was in a later batch or a crash intervened; rewriting an identical
   edge resets its context to the bundle's. A re-run is idempotent. A soft-deleted target page
   counts as existing and stays deleted.
-- `overwrite`: the page, its chunks, tags, timeline and raw data are replaced by the bundle's.
+- `overwrite`: the page row and incoming links are kept; its content, chunks, tags, timeline,
+  raw data and outgoing links are replaced by the bundle's.
 - `fail`: the first existing page makes that page fail (reported), nothing else is changed
   for it.
 

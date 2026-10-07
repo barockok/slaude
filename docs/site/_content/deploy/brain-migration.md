@@ -11,7 +11,7 @@ Moves the memory slices of a standalone (mono) brain into one persona of a gatew
 
 | Moves | Does not move |
 |---|---|
-| The agent's own slice (`agent`, `agent-default` or any `agent-<id>`), remapped to the persona's slice | `kb-*` sources. They are re-synced from their git sources, never copied. The export skips them and the import refuses them. |
+| The agent's own slice (`agent`, `agent-default` or any `agent-<id>`), remapped to the persona's slice | `kb-*` sources. They are re-synced from their git sources, never copied. The export skips them by default (an explicit `--include kb-...` exports them, and the import then refuses them) and the import refuses them. |
 | `user-<id>` slices, with the same source id | Sessions and cron jobs. Use `migrate-sqlite` for those. |
 | `shared` and `public` | A brain in `SLAUDE_BRAIN_MODE=remote`. Import refuses it. |
 | Per page: chunks and their embeddings, tags, timeline entries with their original dates, raw data, links | |
@@ -79,7 +79,7 @@ DRY RUN target agent slice: agent-uana1x
   shared                             written=9 skipped=0 overwritten=0 failed=0 links=0 written/0 dropped/0 failed no-embedding=0
 ```
 
-A dry run predicts page outcomes only; it does not predict transaction failures or links. Check `target agent slice` first.
+A dry run predicts page outcomes only; it does not predict transaction failures. It counts links whose target is in `kb-*` or an unmapped source as dropped, but not links whose target page is missing, and it prints no re-run hint. Check `target agent slice` first.
 
 **The default persona** (`--persona default`) maps to the gateway process's own agent id. If that id resolved to the literal `default` (the Slack identity was not resolved), the import would land in `agent-default`. The dry run prints the real target; if it is not the slice you expect, stop and fix the identity before applying.
 
@@ -99,7 +99,15 @@ Same output as the dry run without the `DRY RUN` prefix. Exit codes:
 | 1 | A failure (failed page, failed links, a refused batch, an unreachable gateway) or a count mismatch between the manifest and what the gateway reports. Failed slugs and reasons are printed on stderr; slugs of `user-*` slices are never listed. |
 | 2 | Usage error: missing flag, missing token variable, bad `--on-conflict` or `--map`. |
 
-Batches are 100 pages or 1 MB. A 5xx or network error is retried up to five times with backoff; a 4xx stops the run with the gateway's message.
+After an exit 1 the client prints `failed pages: <slugs>` (never for `user-*` slices) and `failure reasons: ...`. Each reason means:
+
+| Reason | Meaning | What to do |
+|---|---|---|
+| `exists=N` | N pages already exist and `--on-conflict fail` was used | Re-run with `skip` (keep existing) or `overwrite` (replace) |
+| `tx=N` | The source could not be created or the page's transaction failed (for example a vector of the wrong width or an invalid date); nothing of that page was written | Check the gateway log for the cause, fix the target or re-export, then re-run under `skip` |
+| `error:<Name>=N` | Any other thrown error, reported by class name only | Read the gateway log around the import time; re-run under `skip` once fixed |
+
+Batches are 100 pages or 1 MB. Each batch gets up to five attempts in total (four retries with backoff) on a 5xx or network error; a 4xx stops the run with the gateway's message.
 
 `--on-conflict skip|overwrite|fail` chooses what happens to a page that already exists (default `skip`). `--map from=to` routes a source explicitly, and a target must be the persona's slice, a `user-*` slice, `shared` or `public`.
 
@@ -116,7 +124,7 @@ Batches are 100 pages or 1 MB. A 5xx or network error is retried up to five time
 
 1. Ask the persona something only the old agent knew; it should recall it from memory.
 2. Compare the printed counts with the inventory from the export. The client already fails with `MISMATCH agent slice: expected N pages, gateway accounted for M` when they differ.
-3. Check the persona's view in the control panel.
+3. Compare the written and skipped counts with the export's inventory. The control panel's persona page shows the persona definition, not its memory, so it is not a check.
 
 ## 9. Cleanup
 
@@ -124,7 +132,16 @@ Unset `SLAUDE_BRAIN_IMPORT_TOKEN` and roll the gateway. Delete the bundle direct
 
 ## 10. Rollback
 
-Nothing outside the persona's slices (its `agent-*` slice plus any `user-*`, `shared` and `public` pages in the bundle) was written. To undo, restore the `pg_dump` taken in section 2.
+Nothing outside the persona's slices (its `agent-*` slice plus any `user-*`, `shared` and `public` pages in the bundle) was written.
+
+- **Full restore:** restore the `pg_dump` taken in section 2. This also discards every write made to the brain after the dump.
+- **Lighter, removing only what the import wrote:** in the brain database, a page's chunks, tags, timeline, raw data and links are deleted with the page (`ON DELETE CASCADE`), so for the persona's own slice (take the id from the `target agent slice` line) this is enough:
+
+  ```sql
+  DELETE FROM pages WHERE source_id = 'agent-uana1x';
+  ```
+
+  This also drops links from other slices that point into it. For `user-*`, `shared` and `public`, which may hold pages that were not imported, delete only the slugs listed in the bundle; do not delete by source. Take a fresh `pg_dump` first.
 
 ## 11. Troubleshooting
 
@@ -132,12 +149,12 @@ Gateway refusals:
 
 | Status and message | Cause | Fix |
 |---|---|---|
-| 404 `not found` | Token unset or under 32 characters (or equal to the node token), node role, wrong path | Set the token on the gateway and roll it; the route is `/brain-import/v1/personas/<persona>` |
+| 404 `not found` | Token unset or under 32 characters (or equal to the node token), node role, wrong path, or a persona name that does not match `^[a-z0-9][a-z0-9-]{0,62}$` | Set the token on the gateway and roll it; the route is `/brain-import/v1/personas/<persona>` |
 | 401 `invalid or missing brain-import token` | Wrong or missing bearer | Export the same value the gateway holds |
 | 405 `method not allowed` | Not a POST | Use the CLI |
 | 409 `the brain is disabled on this gateway` | `SLAUDE_BRAIN_DISABLED` | Enable the brain |
 | 409 `brain import is not supported with SLAUDE_BRAIN_MODE=remote` | Remote brain mode | Import on a gateway with the local engine |
-| 413 `body exceeds 4194304 bytes` | Batch over 4 MB | Re-export; a single page larger than the cap cannot be imported |
+| 413 `body exceeds 4194304 bytes` | The client batches at 1 MB, so this means one page is larger than 4 MiB | That page cannot be imported and re-exporting does not shrink it: trim or split it in the source brain, or exclude its source with `--exclude` |
 | 422 `body must be JSON` / `invalid body: <path> <code>` | Client/gateway version skew or a damaged bundle | Use CLI and gateway from the same release; re-export |
 | 409 `persona '<name>' is not live or has no Slack user id` | Unknown persona, or its Slack user id is empty | Create the persona with a Slack user id first |
 | 422 `map target '<to>' (from '<from>') is not the persona's agent slice, a user slice, shared or public` | `--map` points elsewhere | Map only to allowed targets |
@@ -151,6 +168,8 @@ Client and export errors:
 
 | Message | Cause and fix |
 |---|---|
+| `usage: brain-export --home <brain-dir> --out <bundle-dir> ...` (exit 2) | Missing `--home` or `--out` |
+| An unknown flag or a flag missing its value | `brain-import` prints the parser's message and the usage line and exits 2. `brain-export` does not catch it: the parser's error is thrown uncaught and the exit code is non-zero (not 2). Check the flag names against the usage line |
 | `usage: brain-import --gateway <url> --persona <name> ...` (exit 2) | Missing `--gateway`, `--persona` or bundle |
 | `set SLAUDE_BRAIN_IMPORT_TOKEN in the environment (never a flag)` (exit 2) | Export the token variable |
 | `--on-conflict must be skip, overwrite or fail` / `--map expects from=to, got '...'` (exit 2) | Fix the flag |
