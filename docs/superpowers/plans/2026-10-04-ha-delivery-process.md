@@ -66,6 +66,19 @@ Status values: `todo`, `in progress`, `in review`, `accepted`, `blocked`.
 | U16 | Whole-branch verification and cross-unit review | all | accepted (verification done; findings fixed in U17) |
 | U17 | Cross-unit fixes from U16: mono memory scoping and runAs, `/bash` in the gateway role, refuse-by-default switches, one child-scrub list (embedding keys, `.mcp.json` expansion), bridge `close()` teardown, `slaude_gate_denied_total`, tool-plane own-key lookup, upgrade-order and relabel-limit docs, master-key rotation deferral | all | accepted (two fix rounds) |
 
+### Brain migration (separate branch `feat/brain-migration`)
+
+Plan: `docs/superpowers/plans/2026-10-07-brain-migration.md`; spec: `docs/superpowers/specs/2026-10-07-brain-migration-design.md`; runbook: `docs/site/_content/deploy/brain-migration.md`. Not a release candidate; no schema, queue or agent-loop change.
+
+| Item | Status |
+|---|---|
+| Export, bundle, import endpoint, client, scenario tests (embedded and Postgres) | accepted |
+| Spec amendments and runbook | done |
+| Soft-deleted target pages: skip leaves them deleted, overwrite may leave them hidden | open (documented; purge first) |
+| Postgres at scale and bundles over a few GB | not verified |
+| Crash between a page and its links pass | open (a re-run under skip heals it) |
+| A real gateway cluster run | for the operator's mock HA test |
+
 ## Open issues and follow-ups found by review
 
 - **Master-key rotation is NOT supported in v0.45.0 (deferred in U17, pre-stable follow-up).** No tool re-encrypts stored credentials under a new `SLAUDE_MASTER_KEY`; a managed gateway fails at boot after a key change. Supported in this release: the exposed-secrets rotation of `SLAUDE_JOB_SECRET`. For the master key the documented procedure is "discard the stored credentials and re-enter them (re-run onboarding and connect)", or keep the key and record the exposure. Stated in WS-E §5, the v0.45.0 notes and multi-node.md. Building the re-encryption command is a follow-up before the stable release.
