@@ -226,3 +226,26 @@ describe("/v1/jobs/:id/token-refresh — the thread's current identity", () => {
     expect(body.identity).toBeUndefined();
   });
 });
+
+describe("/v1/jobs/:id/token-refresh — identity lookup failure", () => {
+  test("a failing lock lookup omits the identity but still refreshes the token", async () => {
+    const OneOnOne = await import("../../../src/db/one-on-one");
+    const { spyOn } = await import("bun:test");
+    const find = spyOn(OneOnOne, "find").mockImplementation(async () => { throw new Error("db down"); });
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const res = await handleTokenRefresh(req(mintJobToken({ ...baseClaims, runAs: "agent", lock: null })), "job-123");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { jobToken: string; identity?: unknown };
+      expect(typeof body.jobToken).toBe("string");
+      expect("identity" in body).toBe(false);
+      expect(find).toHaveBeenCalled();
+      // The node side fails closed on the missing field.
+      const { voiceRefusalFromClaims } = await import("../../../src/voice/hosts");
+      expect(voiceRefusalFromClaims((body.identity as any) ?? null)).toBe("VOICE_UNAVAILABLE");
+    } finally {
+      find.mockRestore();
+      warn.mockRestore();
+    }
+  });
+});
