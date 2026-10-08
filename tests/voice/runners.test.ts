@@ -108,6 +108,18 @@ describe("runner failure paths", () => {
     expect(voiceTurns.active("x4")).toBe(false);
     expect(injectedTurns.active("x4")).toBe(false);
   });
+  it("node runner: a lock lost before the send sends nothing and aborts nothing", async () => {
+    const a = new StubAgent();
+    const ac = new AbortController();
+    // The lock is lost during the token refresh, before the turn is sent.
+    const r = nodeRunner({ agent: a as any, lock: async (_id, fn) => fn(ac.signal), refreshToken: async () => ac.abort() });
+    await expect(r.run("x6", "t", { suppress: true, voice: true, cancelled: no })).rejects.toThrow(/lock lost/);
+    expect(a.sent).toEqual([]);
+    expect(a.suppressed).toEqual([]);
+    expect(a.aborted).toEqual([]);
+    expect(voiceTurns.active("x6")).toBe(false);
+    expect(injectedTurns.active("x6")).toBe(false);
+  });
   it("node runner propagates a turn error while holding the lock and clears flags", async () => {
     const a = new StubAgent();
     a.outcome = "error";

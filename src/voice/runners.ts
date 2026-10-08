@@ -91,6 +91,10 @@ async function runOnce(
   // code follows until sendMessage).
   if (o.cancelled()) throw new VoiceTurnCancelled();
   if (!agent.isLive(sessionId)) throw new Error("session is not live: the voice turn would boot a new one");
+  // The session lock was lost before the send (e.g. during the token
+  // refresh): another node may own the session now. Nothing was sent, so
+  // there is no turn to abort.
+  if (signal?.aborted) throw new TurnStuckError("session lock lost before the voice turn was sent");
   injectedTurns.enter(sessionId);
   if (o.voice) voiceTurns.enter(sessionId);
   // `local` lets the finally release the listeners and timer when we leave
