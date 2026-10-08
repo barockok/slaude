@@ -28,6 +28,7 @@ type Rich = ReturnType<typeof richTransport>;
 function richTransport(o: { botUserId?: string; authThrows?: boolean } = {}) {
   const posts: any[] = [];
   const edits: any[] = [];
+  const reacts: any[] = [];
   const handlers = new Map<string, (args: any) => Promise<void>>();
   const actions: { pattern: RegExp | string; fn: any }[] = [];
   const middlewares: any[] = [];
@@ -42,7 +43,7 @@ function richTransport(o: { botUserId?: string; authThrows?: boolean } = {}) {
       postMessage: async (a: any) => { const ts = `${Date.now()}.${posts.length}`; posts.push({ ...a, ts }); return { ok: true, ts }; },
       update: async (a: any) => { edits.push(a); return { ok: true }; },
     },
-    reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
+    reactions: { add: async (a: any) => { reacts.push(a); return { ok: true }; }, remove: async () => ({ ok: true }) },
     conversations: { info: async () => ({}), members: async () => ({}), replies: async () => ({}) },
     users: { info: async () => ({ user: { real_name: "Test" } }), profile: { set: async () => ({}) } },
     search: { messages: async () => ({}) },
@@ -62,7 +63,7 @@ function richTransport(o: { botUserId?: string; authThrows?: boolean } = {}) {
       if (hit) await fn({ ack: async () => {}, action: { action_id: actionId }, body: { user: { id: userId } }, respond: async () => {} });
     }
   };
-  return { t, client, posts, edits, emit, emitAction, middlewares };
+  return { t, client, posts, edits, reacts, emit, emitAction, middlewares };
 }
 
 function makeGw(o: { transport?: Rich; gwOpts?: GatewayOptions; agent?: AgentManager } = {}) {
@@ -322,6 +323,36 @@ describe("gateway uncovered branches", () => {
     g.agent.emit("event", { type: "error", sessionId: session.id, error: "boom", code: "UNKNOWN" } as any);
     await new Promise((r) => setTimeout(r, 30));
     expect(g.posts.length).toBe(before2 + 1);
+  });
+
+  it("voice turn: toolCall sets no reaction/spoke, done cleans per-turn state without posting", async () => {
+    writeSoulFixture(WORLD);
+    const agent = new AgentManager();
+    let guard: ((id: string) => string | null) | undefined;
+    const orig = agent.setStopGuard.bind(agent);
+    agent.setStopGuard = ((fn: any) => { guard = fn; orig(fn); }) as any;
+    const g = makeGw({ agent });
+    const ts = nextTs();
+    await g.emit("message", dmArgs(g, "hello voice2", { ts }));
+    const session = await g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+    await new Promise((r) => setTimeout(r, 30));
+    const reactsBefore = g.reacts.length;
+    const postsBefore = g.posts.length;
+    voiceTurns.enter(session.id);
+    try {
+      g.agent.emit("event", { type: "toolCall", sessionId: session.id, tool: "Read", input: { file_path: "/x" } } as any);
+      g.agent.emit("event", { type: "toolCall", sessionId: session.id, tool: "mcp__slaude_surface__reply", input: {} } as any);
+      g.agent.emit("event", { type: "toolCall", sessionId: session.id, tool: "TodoWrite", input: { todos: [{ content: "a", status: "pending", activeForm: "a" }] } } as any);
+      g.agent.emit("event", { type: "done", sessionId: session.id } as any);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(g.reacts.length).toBe(reactsBefore);
+      expect(g.posts.length).toBe(postsBefore);
+      expect(g.edits.length).toBe(0);
+    } finally {
+      voiceTurns.exit(session.id);
+    }
+    // the suppressed reply did not count as the agent speaking
+    expect(typeof guard!(session.id)).toBe("string");
   });
 
   it("KB MCP deps evaluate gate/scope/managers from the live route (brain enabled)", async () => {

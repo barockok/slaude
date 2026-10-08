@@ -634,7 +634,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           ...req,
         });
       ctx.reloadSession = (prompt?) => agent.reload(sessionId, prompt);
-      routes.set(sessionId, { ctx, surface: surfaceForCtx(ctx), spoke: false, silent: true });
+      routes.set(sessionId, { ctx, surface: wrapSurface(surfaceForCtx(ctx), sessionId), spoke: false, silent: true });
     },
   });
   agent.setPermissionResolver(permissions.resolver);
@@ -1274,6 +1274,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
     switch (e.type) {
       case "toolCall": {
+        // Voice-origin turn: no status, no reaction, no task tracker, and a
+        // (suppressed) reply must not count as the agent having spoken.
+        if (voiceTurns.active(e.sessionId)) break;
         // Any user-visible tool counts as "spoke" — reply, edit, upload all
         // surface content. (react alone doesn't satisfy: an emoji isn't a real
         // answer.) Matches the canonical surface namespace + the deprecated
@@ -1387,9 +1390,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         break;
       }
       case "done": {
-        // Voice-origin turn: the thread stays quiet (no ✅, no task-block edits).
-        if (voiceTurns.active(e.sessionId)) break;
         void (async () => {
+          // Voice-origin turn: the thread stays quiet (no ✅, no task-block
+          // edits), but the per-turn state is still cleaned up.
+          if (voiceTurns.active(e.sessionId)) {
+            route.tasksRef = undefined;
+            route.tasksMap = undefined;
+            reactions.forget(e.sessionId);
+            presence.exit(e.sessionId);
+            await status.clear(e.sessionId);
+            return;
+          }
           // Suppressed (disengaged) turns set no 👀/status and must not stamp a
           // ✅ on the recorded-but-unprocessed message. Nothing to clean up.
           if (route.suppress) return;
@@ -2325,7 +2336,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
             routes.set(session.id, {
               ctx,
-              surface: surfaceForCtx(ctx),
+              surface: wrapSurface(surfaceForCtx(ctx), session.id),
               spoke: false,
               wasCompacting: true,
             });
