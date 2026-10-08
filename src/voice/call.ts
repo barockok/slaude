@@ -14,7 +14,9 @@ import { VoiceAuthLost } from "./runners";
 export type { LoopChild } from "./spawn";
 
 export interface TurnRunner {
-  run(sessionId: string, text: string, o: { suppress: boolean; voice: boolean }): Promise<void>;
+  /** `cancelled` is required: the runner re-reads it after any wait, right
+   *  before sending, and refuses the turn once it is true. */
+  run(sessionId: string, text: string, o: { suppress: boolean; voice: boolean; cancelled(): boolean }): Promise<void>;
 }
 
 export const TRANSCRIPT_FLUSH_PREFIX = "[voice call transcript]";
@@ -176,7 +178,7 @@ export class VoiceCall {
   /** One injected turn. The runner re-checks the thread's identity at the
    *  point of use and throws VoiceAuthLost when it is no longer the agent. */
   #run(text: string, o: { suppress: boolean; voice: boolean }): Promise<void> {
-    return this.d.runner.run(this.d.sessionId, text, o);
+    return this.d.runner.run(this.d.sessionId, text, { ...o, cancelled: () => this.#cancelled });
   }
   /** End the call `auth_lost` (any turn path). Not stop(): it waits for the
    *  turn queue, which the caller is on. */
@@ -208,6 +210,10 @@ export class VoiceCall {
   }
   async stop(reason: EndReason): Promise<void> {
     if (this.#endReason) return void (await this.done);
+    // A rebooted session or a lost identity: cancel now, not when the child's
+    // `ended` arrives — queued turns and a turn waiting in the runner must not
+    // reach the (new) session in the meantime.
+    if (reason === "session_rebooted" || reason === "auth_lost") this.#cancelled = true;
     this.#stopReason ??= reason;
     this.d.child.send({ type: "stop", reason });
     const t = setTimeout(() => this.d.child.kill(), 5_000).unref();

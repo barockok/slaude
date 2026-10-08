@@ -37,6 +37,14 @@ const BUSY_MESSAGE = "session busy: could not start the voice turn";
  *  `auth_lost`. */
 export class VoiceAuthLost extends Error {}
 
+/** The call was cancelled (session rebooted, identity lost) while the turn
+ *  waited: nothing is sent. */
+export class VoiceTurnCancelled extends Error {
+  constructor() {
+    super("voice call ended: turn not sent");
+  }
+}
+
 /** The turn may still be running: the runner must abort it. */
 class TurnStuckError extends Error {}
 
@@ -75,10 +83,13 @@ async function runOnce(
   agent: TurnAgent,
   sessionId: string,
   text: string,
-  o: { suppress: boolean; voice: boolean },
+  o: { suppress: boolean; voice: boolean; cancelled(): boolean },
   timeoutMs: number,
   signal?: AbortSignal,
 ) {
+  // Re-read after every wait, immediately before the send (only synchronous
+  // code follows until sendMessage).
+  if (o.cancelled()) throw new VoiceTurnCancelled();
   if (!agent.isLive(sessionId)) throw new Error("session is not live: the voice turn would boot a new one");
   injectedTurns.enter(sessionId);
   if (o.voice) voiceTurns.enter(sessionId);
@@ -153,6 +164,8 @@ export function nodeRunner(o: {
       const deadline = Date.now() + (o.maxWaitMs ?? DEFAULT_MAX_WAIT_MS);
       while (true) {
         const r = await o.lock(sid, async (signal) => {
+          // Cancelled while waiting for the lock: no refresh, no bind, no send.
+          if (ro.cancelled()) throw new VoiceTurnCancelled();
           await o.refreshToken(sid);
           await runOnce(o.agent, sid, text, ro, o.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS, signal);
           return true as const;

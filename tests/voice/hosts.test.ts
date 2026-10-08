@@ -18,6 +18,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { VoiceConfig } from "../../src/voice/config";
 
+/** A turn whose call was not cancelled. */
+const no = () => false;
+
 /** An agent that finishes every turn at once and records what it was asked. */
 class FakeAgent extends EventEmitter {
   sent: string[] = [];
@@ -132,18 +135,18 @@ describe("mono voice host", () => {
   it("a lock appearing mid-call refuses the next injected turn before it is sent", async () => {
     const { host, agent } = mono();
     const r = host.runner("s1");
-    await r.run("s1", "a", { suppress: false, voice: true });
+    await r.run("s1", "a", { suppress: false, voice: true, cancelled: no });
     expect(await host.stillAllowed("s1")).toBe(true);
     agent.identity = "U1"; // /1on1 lock row
     expect(await host.stillAllowed("s1")).toBe(false);
-    await expect(r.run("s1", "b", { suppress: true, voice: true })).rejects.toBeInstanceOf(VoiceAuthLost);
+    await expect(r.run("s1", "b", { suppress: true, voice: true, cancelled: no })).rejects.toBeInstanceOf(VoiceAuthLost);
     expect(agent.sent).toEqual(["a"]);
   });
   it("an identity check that throws refuses the turn (fail closed)", async () => {
     const { host, agent } = mono();
     agent.resolveEffectiveIdentity = async () => { throw new Error("db down"); };
     const err = spyOn(console, "error").mockImplementation(() => {});
-    await expect(host.runner("s1").run("s1", "a", { suppress: false, voice: true })).rejects.toBeInstanceOf(VoiceAuthLost);
+    await expect(host.runner("s1").run("s1", "a", { suppress: false, voice: true, cancelled: no })).rejects.toBeInstanceOf(VoiceAuthLost);
     expect(agent.sent).toEqual([]);
     err.mockRestore();
   });
@@ -178,7 +181,7 @@ describe("mono voice host", () => {
     expect(await host.config("s1")).toEqual(cfg);
     expect(await host.transcriptDir("s7")).toBe("/work/s7");
     expect(await host.instructions("s1", "b")).toBe(instructionsFrom(soul, "b"));
-    await host.runner("s1").run("s1", "hello", { suppress: false, voice: true });
+    await host.runner("s1").run("s1", "hello", { suppress: false, voice: true, cancelled: no });
     expect(agent.sent).toEqual(["hello"]);
   });
 });
@@ -250,8 +253,8 @@ describe("node voice host", () => {
     expect(refreshed).toEqual([]);
     expect(await h.stillAllowed("s1")).toBe(false); // no chain before the runner
     const r = h.runner("s1");
-    await r.run("s1", "a", { suppress: false, voice: true });
-    await r.run("s1", "b", { suppress: true, voice: true });
+    await r.run("s1", "a", { suppress: false, voice: true, cancelled: no });
+    await r.run("s1", "b", { suppress: true, voice: true, cancelled: no });
     expect(refreshed).toEqual([["j1", t0], ["j1", t0 + "+"]]);
     expect(bound).toEqual([t0 + "+", t0 + "++"]);
     expect(agent.sent).toEqual(["a", "b"]);
@@ -270,7 +273,7 @@ describe("node voice host", () => {
     });
     expect(await h.refusal("s1")).toBeNull();
     current = personTok; // job j2 (a /1on1 turn) bound for the session meanwhile
-    await h.runner("s1").run("s1", "a", { suppress: false, voice: true });
+    await h.runner("s1").run("s1", "a", { suppress: false, voice: true, cancelled: no });
     expect(refreshed).toEqual([["j1", agentTok]]);
     expect(bound).toEqual(["j1-fresh"]);
   });
@@ -284,7 +287,7 @@ describe("node voice host", () => {
     });
     expect(await h.refusal("s1")).toBeNull();
     const r = h.runner("s1");
-    await r.run("s1", "a", { suppress: false, voice: true });
+    await r.run("s1", "a", { suppress: false, voice: true, cancelled: no });
     for (const changed of [
       { runAs: "user:U1", lock: { user: "U1", openScope: null }, remote: false },
       undefined, // an older gateway reports no identity: fail closed
@@ -292,11 +295,11 @@ describe("node voice host", () => {
       identity = changed;
       const h2 = makeNodeVoiceHost({ ...base, agent: agent as any, refresh: async (_j, t) => ({ jobToken: t + "+", identity }) });
       expect(await h2.refusal("s2")).toBeNull();
-      await expect(h2.runner("s2").run("s2", "x", { suppress: false, voice: true })).rejects.toBeInstanceOf(VoiceAuthLost);
+      await expect(h2.runner("s2").run("s2", "x", { suppress: false, voice: true, cancelled: no })).rejects.toBeInstanceOf(VoiceAuthLost);
       expect(await h2.stillAllowed("s2")).toBe(false);
     }
     identity = { runAs: "agent", lock: null, remote: true };
-    await expect(r.run("s1", "b", { suppress: false, voice: true })).rejects.toBeInstanceOf(VoiceAuthLost);
+    await expect(r.run("s1", "b", { suppress: false, voice: true, cancelled: no })).rejects.toBeInstanceOf(VoiceAuthLost);
     expect(agent.sent).toEqual(["a"]);
     expect(bound).toHaveLength(1);
     expect(await h.stillAllowed("s1")).toBe(false);
@@ -304,11 +307,11 @@ describe("node voice host", () => {
   it("a refused refresh surfaces as VoiceAuthLost", async () => {
     const h = makeNodeVoiceHost({ ...base, refresh: async () => { throw new Error("401 label changed"); } });
     expect(await h.refusal("s1")).toBeNull();
-    await expect(h.runner("s1").run("s1", "a", { suppress: false, voice: true })).rejects.toBeInstanceOf(VoiceAuthLost);
+    await expect(h.runner("s1").run("s1", "a", { suppress: false, voice: true, cancelled: no })).rejects.toBeInstanceOf(VoiceAuthLost);
   });
   it("a runner with no checked token is auth lost", async () => {
     const h = makeNodeVoiceHost({ ...base });
-    await expect(h.runner("s1").run("s1", "a", { suppress: false, voice: true })).rejects.toBeInstanceOf(VoiceAuthLost);
+    await expect(h.runner("s1").run("s1", "a", { suppress: false, voice: true, cancelled: no })).rejects.toBeInstanceOf(VoiceAuthLost);
   });
   it("instructions come from the bundle's soul; holdIdle forwards and releases the chain", async () => {
     const agent = new FakeAgent();
@@ -316,7 +319,7 @@ describe("node voice host", () => {
     expect(await h.instructions("s1", "b")).toBe(instructionsFrom(soul, "b"));
     expect(await h.transcriptDir("s1")).toBe("/tmp");
     await h.refusal("s1");
-    await h.runner("s1").run("s1", "a", { suppress: false, voice: true });
+    await h.runner("s1").run("s1", "a", { suppress: false, voice: true, cancelled: no });
     expect(await h.stillAllowed("s1")).toBe(true);
     agent.holdResult = false;
     expect(h.holdIdle("s1", true)).toBe(false);

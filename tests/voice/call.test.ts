@@ -177,6 +177,50 @@ describe("VoiceCall", () => {
     expect(ran[0]).toContain("first");
   });
 
+  it("stop(session_rebooted) before ended: a queued delegate does not run", async () => {
+    const child = fakeChild();
+    const ran: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const runner: TurnRunner = { run: async (_s, text) => { ran.push(text); if (ran.length === 1) await gate; } };
+    const call = new VoiceCall({ sessionId: "s1", runner, child, transcriptDir: tmp(), holdIdle: () => true, onClosed: () => {} });
+    const p = call.start(init(call.callId));
+    child.push({ type: "started", callId: call.callId, sampleRate: 24000 });
+    await p;
+    child.push({ type: "delegate", id: "1", task: "first", asOf: 0 });
+    child.push({ type: "delegate", id: "2", task: "second", asOf: 0 });
+    await until(() => ran.length === 1);
+    const stopping = call.stop("session_rebooted");
+    release();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(ran).toHaveLength(1);
+    child.push({ type: "ended", reason: "session_rebooted" });
+    await stopping;
+    expect(ran).toHaveLength(1);
+  });
+
+  it("a turn waiting in the runner when stop(session_rebooted) lands sees it cancelled", async () => {
+    const child = fakeChild();
+    const seen: boolean[] = [];
+    let release!: () => void;
+    const waiting = new Promise<void>((r) => (release = r));
+    // Stands in for the runner's in-flight / lock wait: cancellation is
+    // re-read after the wait, right before the send.
+    const runner: TurnRunner = { run: async (_s, _t, o) => { await waiting; seen.push(o.cancelled()); } };
+    const call = new VoiceCall({ sessionId: "s1", runner, child, transcriptDir: tmp(), holdIdle: () => true, onClosed: () => {} });
+    const p = call.start(init(call.callId));
+    child.push({ type: "started", callId: call.callId, sampleRate: 24000 });
+    await p;
+    child.push({ type: "delegate", id: "1", task: "x", asOf: 0 });
+    await new Promise((r) => setTimeout(r, 20));
+    const stopping = call.stop("session_rebooted");
+    release();
+    await until(() => seen.length === 1);
+    expect(seen).toEqual([true]);
+    child.push({ type: "ended", reason: "session_rebooted" });
+    await stopping;
+  });
+
   it("an identity change refused by the runner ends the call auth_lost; queued turns are dropped", async () => {
     const child = fakeChild();
     const runs: string[] = [];
