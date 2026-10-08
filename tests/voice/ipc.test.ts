@@ -22,6 +22,8 @@ describe("ipc", () => {
   });
   it("parses child messages including workbench end reasons", () => {
     expect(parseChildMsg('{"type":"ended","reason":"workbench:tab_closed"}')).toEqual({ type: "ended", reason: "workbench:tab_closed" });
+    expect(parseChildMsg('{"type":"ended","reason":"workbench:tab_closed2"}')).toEqual({ type: "ended", reason: "workbench:tab_closed2" });
+    expect(parseChildMsg('{"type":"ended","reason":"workbench:Tab-Closed"}')).toBeNull();
     expect(parseChildMsg('{"type":"ended","reason":"bogus"}')).toBeNull();
     expect(parseChildMsg('{"type":"delegate","id":"1","task":"t","asOf":0}')).toEqual({ type: "delegate", id: "1", task: "t", asOf: 0 });
   });

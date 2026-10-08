@@ -15,7 +15,7 @@ const BASE_REASONS = [
 ] as const;
 export type EndReason = (typeof BASE_REASONS)[number] | `workbench:${string}`;
 const endReason = z.string().refine(
-  (s) => (BASE_REASONS as readonly string[]).includes(s) || /^workbench:[a-z_]+$/.test(s),
+  (s) => (BASE_REASONS as readonly string[]).includes(s) || /^workbench:[a-z0-9_]{1,64}$/.test(s),
 ) as unknown as z.ZodType<EndReason>;
 
 export interface AudioEndpoints {
