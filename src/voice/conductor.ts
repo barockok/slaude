@@ -210,8 +210,11 @@ export class Conductor {
     this.#responseActive = true;
   }
   async #flush(): Promise<void> {
-    const { playedMs } = await this.io.audio.clear();
+    // Capture the item before the clear round trip: the provider's next item may
+    // start during it, and that one must not be the one marked flushed.
     const item = this.#currentItem;
+    this.#flushedItem = item;
+    const { playedMs } = await this.io.audio.clear();
     if (item && this.io.provider.caps.truncate && playedMs < this.#sentMs) {
       const start = this.#itemStart.get(item) ?? 0;
       this.io.provider.truncate(item, Math.max(0, Math.round(playedMs - start)));
@@ -219,8 +222,7 @@ export class Conductor {
     // Everything not yet played was discarded by workbench: the uplink clock
     // resumes from what actually played.
     this.#sentMs = playedMs;
-    this.#flushedItem = item;
-    this.#currentItem = null;
+    if (this.#currentItem === item) this.#currentItem = null;
   }
   #finish(reason: EndReason): void {
     if (this.#ended) return;

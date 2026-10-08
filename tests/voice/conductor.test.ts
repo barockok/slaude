@@ -185,6 +185,24 @@ describe("Conductor", () => {
     expect(audio.written.length).toBe(2);
   });
 
+  it("audio of the next item arriving while the flush's clear is pending is kept", async () => {
+    const { c, audio } = setup({ truncate: false });
+    let release!: () => void;
+    audio.clear = async () => {
+      audio.clears++;
+      await new Promise<void>((r) => (release = r));
+      return audio.clearResult;
+    };
+    c.onAudio(pcm(1), "A");
+    const flushing = c.onSpeechStarted();
+    c.onAudio(pcm(2), "B"); // the provider's next item, during the clear round trip
+    release();
+    await flushing;
+    c.onAudio(pcm(3), "B");
+    c.onAudio(pcm(4), "A"); // the flushed item's late audio is still dropped
+    expect(audio.written.map((p) => p.length)).toEqual([1, 2, 3]);
+  });
+
   it("does not drain at speechStopped; waits for the provider's own reply", async () => {
     const { c, provider } = setup();
     await c.onSpeechStarted();

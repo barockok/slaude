@@ -433,6 +433,30 @@ describe("OpenAILive with the real Conductor", () => {
     await p.close();
   });
 
+  it("the agent's next turn starting during the barge-in clear round trip is not marked flushed", async () => {
+    srv = fakeServer(ack);
+    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, outputGapMs: 5000 });
+    const { audio } = wire(p);
+    let release: (() => void) | null = null;
+    audio.clear = async () => {
+      audio.clears++;
+      await new Promise<void>((r) => (release = r));
+      return audio.clearResult;
+    };
+    await p.connect({ instructions: "", tools: [] });
+    srv.send(audioDelta());
+    await until(() => audio.written.length === 1);
+    srv.send({ type: "session.input_transcript.delta", event_id: "t1", delta: "hold on", start_ms: 0, end_ms: 100 });
+    await until(() => release !== null); // clear is in flight; the adapter already ended a1
+    srv.send(audioDelta()); // a2, during the clear
+    await until(() => audio.written.length === 2);
+    release!();
+    await Bun.sleep(10);
+    srv.send(audioDelta()); // more of a2, after the clear
+    await until(() => audio.written.length === 3);
+    await p.close();
+  });
+
   it("say now during output flushes, speaks, and the spoken answer is not dropped as the flushed item", async () => {
     srv = fakeServer(ack);
     const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, outputGapMs: 5000 });
