@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { voiceTurns, VOICE_SUPPRESSED_RESULT } from "../../voice/turn-flags";
 import {
   createSdkMcpServer,
   tool,
@@ -726,7 +727,8 @@ export const adminHandlers = {
 
 /** Build an SDK MCP server bound to a session's SlackContext. Tool names,
  *  descriptions and schemas come from the shared contract (src/tools/contracts). */
-export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstance {
+export function createSlackMcp(ctx: SlackContext, sessionId?: string): McpSdkServerConfigWithInstance {
+  const voiceQuiet = () => !!sessionId && voiceTurns.active(sessionId);
   const c = slackContract.tools;
   return createSdkMcpServer({
     name: SLACK_MCP_NAME,
@@ -736,12 +738,14 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
       // get_thread_history) moved to the platform-neutral `mcp__slaude_surface__*` server.
       // This `reply` alias remains for one release so in-flight sessions / personas that
       // reference the old name keep working. Remove next release.
-      tool(c.reply.name, c.reply.description, c.reply.schema, (args) => slackHandlers.reply(ctx, args)),
+      tool(c.reply.name, c.reply.description, c.reply.schema, async (args) =>
+        voiceQuiet() ? VOICE_SUPPRESSED_RESULT : slackHandlers.reply(ctx, args)),
       tool(c.get_user_profile.name, c.get_user_profile.description, c.get_user_profile.schema, (args) => slackHandlers.get_user_profile(ctx, args)),
       tool(c.get_channel_info.name, c.get_channel_info.description, c.get_channel_info.schema, () => slackHandlers.get_channel_info(ctx)),
       tool(c.list_users_in_channel.name, c.list_users_in_channel.description, c.list_users_in_channel.schema, (args) => slackHandlers.list_users_in_channel(ctx, args)),
       tool(c.search_messages.name, c.search_messages.description, c.search_messages.schema, (args) => slackHandlers.search_messages(ctx, args)),
-      tool(c.post_message.name, c.post_message.description, c.post_message.schema, (args) => slackHandlers.post_message(ctx, args)),
+      tool(c.post_message.name, c.post_message.description, c.post_message.schema, async (args) =>
+        voiceQuiet() ? VOICE_SUPPRESSED_RESULT : slackHandlers.post_message(ctx, args)),
       tool(c.delete.name, c.delete.description, c.delete.schema, (args) => slackHandlers.delete(ctx, args)),
       tool(c.post_ephemeral.name, c.post_ephemeral.description, c.post_ephemeral.schema, (args) => slackHandlers.post_ephemeral(ctx, args)),
       tool(c.pin.name, c.pin.description, c.pin.schema, (args) => slackHandlers.pin(ctx, args)),

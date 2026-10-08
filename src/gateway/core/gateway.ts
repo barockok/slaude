@@ -16,6 +16,7 @@ import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slac
 import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extract";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
+import { quietForVoice, voiceTurns } from "../../voice/turn-flags";
 import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, createConnectMcp, CONNECT_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
 import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
@@ -476,7 +477,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // the panel lock is held (design §Active-surface lock, outbound gate). No-op
   // passthrough when the panel is off, so non-panel deploys are byte-identical.
   const wrapSurface = (surface: Surface, sessionId: string): Surface =>
-    panelInfra ? suppressibleSurface(surface, sessionId, panelHeldAsync) : surface;
+    quietForVoice(panelInfra ? suppressibleSurface(surface, sessionId, panelHeldAsync) : surface, sessionId);
 
   // Outbound content client. When SLACK_USER_TOKEN (xoxp) is set, agent replies,
   // edits, reactions and uploads go out AS the real Slack user account rather than
@@ -781,6 +782,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // (reply / edit / upload), block the stop once with an instruction that
   // forces the agent to call `mcp__slaude_slack__reply` before exiting.
   agent.setStopGuard((sessionId) => {
+    if (voiceTurns.active(sessionId)) return null;
     const route = routes.get(sessionId);
     if (!route) return null;
     if (route.spoke) return null;
@@ -859,7 +861,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }),
       [RUNTIME_MCP_NAME]: createRuntimeMcp(route.ctx),
       [CONNECT_MCP_NAME]: createConnectMcp({ connect: (server) => agentConnect(sessionId, route.ctx, server) }),
-      [SLACK_MCP_NAME]: createSlackMcp(route.ctx),
+      [SLACK_MCP_NAME]: createSlackMcp(route.ctx, sessionId),
       [SKILLS_MCP_NAME]: createSkillsMcp(route.ctx.personaId),
       [SESSION_MCP_NAME]: createSessionMcp({
         getSnapshot: () => agent.getTokenSnapshot(sessionId),
@@ -1385,6 +1387,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         break;
       }
       case "done": {
+        // Voice-origin turn: the thread stays quiet (no ✅, no task-block edits).
+        if (voiceTurns.active(e.sessionId)) break;
         void (async () => {
           // Suppressed (disengaged) turns set no 👀/status and must not stamp a
           // ✅ on the recorded-but-unprocessed message. Nothing to clean up.
@@ -1425,6 +1429,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // The raw error (provider/CLI text, stack fragments) stays in the server
         // log; Slack only ever gets the fixed text for the failure code (D1.6).
         console.error(`[turn-error] session=${e.sessionId} code=${e.code ?? "UNKNOWN"} job=${e.jobId ?? "-"}: ${redactSecrets(String(e.error))}`);
+        // Voice-origin turn: no failure text or ❌ in the thread (the call voices it).
+        if (voiceTurns.active(e.sessionId)) break;
         void (async () => {
           // One message per failed turn. With a job id (queue mode) the key is the
           // job, so a client retry or a queue attempt that surfaces the same failure

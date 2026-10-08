@@ -33,6 +33,7 @@ import { mcpMountedTools, type ServerContract } from "../../tools/contracts/type
 import { decisionFromApprovalRow } from "../../gateway/slack/approval-gate";
 import type { NodeClient, ToolResult } from "../client";
 import { pollPending } from "../pending";
+import { VOICE_QUIET_SLACK_TOOLS, VOICE_QUIET_TOOLS, VOICE_SUPPRESSED_RESULT } from "../../voice/turn-flags";
 
 /** Contract server name → REST path segment (spec §3 tool plane). */
 export const REST_SERVER_SEGMENT: Record<string, string> = {
@@ -51,6 +52,9 @@ export interface ShimDeps {
   /** Abort signal for the session's current turn, when available — stops the
    *  request_approval long-poll on /abort. */
   signalFor?(sessionId: string): AbortSignal | undefined;
+  /** True while this session runs a voice-origin turn (voice mode, plan
+   *  deviation 3): user-visible surface writes are dropped locally. */
+  voiceActive?(sessionId: string): boolean;
 }
 
 const errResult = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
@@ -66,6 +70,10 @@ function shimServer(contract: ServerContract, sessionId: string, deps: ShimDeps)
       tool(t.name, t.description, t.schema, async (args: Record<string, unknown>): Promise<any> => {
         const token = deps.tokenFor(sessionId);
         if (!token) return errResult(`no job token for session ${sessionId} — turn not started via the queue?`);
+        const quiet =
+          (contract.server === surfaceContract.server && VOICE_QUIET_TOOLS.has(t.name)) ||
+          (contract.server === slackContract.server && VOICE_QUIET_SLACK_TOOLS.has(t.name));
+        if (quiet && deps.voiceActive?.(sessionId)) return VOICE_SUPPRESSED_RESULT;
         try {
           if (contract.server === surfaceContract.server && t.name === surfaceContract.tools.request_approval.name) {
             return await requestApprovalOverRest(sessionId, args, token, deps);
