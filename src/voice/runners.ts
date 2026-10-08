@@ -19,37 +19,82 @@ import { injectedTurns, voiceTurns } from "./turn-flags";
 export interface TurnAgent {
   suppressNextTurn(id: string): void;
   sendMessage(id: string, text: string): Promise<void>;
-  on(ev: "event", cb: (e: any) => void): unknown;
-  off(ev: "event", cb: (e: any) => void): unknown;
+  /** Cancel the session's in-flight turn (AgentManager has it). */
+  abort?(id: string): void;
+  on(ev: "event" | "sessionExit", cb: (e: any) => void): unknown;
+  off(ev: "event" | "sessionExit", cb: (e: any) => void): unknown;
 }
 
 const DEFAULT_TURN_TIMEOUT_MS = 15 * 60_000;
 const DEFAULT_MAX_WAIT_MS = 120_000;
 const BUSY_MESSAGE = "session busy: could not start the voice turn";
 
-export function waitTurnDone(agent: TurnAgent, sessionId: string, timeoutMs: number): Promise<void> {
+/** The turn may still be running: the runner must abort it. */
+class TurnStuckError extends Error {}
+
+/**
+ * Resolves on a non-autoEvolve `done`, rejects on `error`, on the session
+ * exiting (AgentManager emits no done/error then), on timeout, or when
+ * `signal` aborts. Listeners and timer are released on every outcome.
+ */
+export function waitTurnDone(agent: TurnAgent, sessionId: string, timeoutMs: number, signal?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    const t = setTimeout(() => { agent.off("event", on); reject(new Error("voice turn timed out")); }, timeoutMs);
-    const on = (e: any) => {
-      if (e?.sessionId !== sessionId) return;
-      if (e.type === "done" && !e.autoEvolve) { clearTimeout(t); agent.off("event", on); resolve(); }
-      else if (e.type === "error") { clearTimeout(t); agent.off("event", on); reject(new Error(String(e.error ?? "turn error"))); }
+    const settle = (fn: () => void) => {
+      clearTimeout(t);
+      agent.off("event", onEvent);
+      agent.off("sessionExit", onExit);
+      signal?.removeEventListener("abort", onAbort);
+      fn();
     };
-    agent.on("event", on);
+    const t = setTimeout(() => settle(() => reject(new TurnStuckError("voice turn timed out"))), timeoutMs);
+    const onEvent = (e: any) => {
+      if (e?.sessionId !== sessionId) return;
+      if (e.type === "done" && !e.autoEvolve) settle(resolve);
+      else if (e.type === "error") settle(() => reject(new Error(String(e.error ?? "turn error"))));
+    };
+    const onExit = (id: unknown) => {
+      if (id === sessionId) settle(() => reject(new Error("session exited during the voice turn")));
+    };
+    const onAbort = () => settle(() => reject(new TurnStuckError("session lock lost during the voice turn")));
+    agent.on("event", onEvent);
+    agent.on("sessionExit", onExit);
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort);
   });
 }
 
-async function runOnce(agent: TurnAgent, sessionId: string, text: string, o: { suppress: boolean; voice: boolean }, timeoutMs: number) {
+async function runOnce(
+  agent: TurnAgent,
+  sessionId: string,
+  text: string,
+  o: { suppress: boolean; voice: boolean },
+  timeoutMs: number,
+  signal?: AbortSignal,
+) {
   injectedTurns.enter(sessionId);
   if (o.voice) voiceTurns.enter(sessionId);
+  // `local` lets the finally release the listeners and timer when we leave
+  // before the turn settles (sendMessage threw); it also relays the lock signal.
+  const local = new AbortController();
+  const relay = () => local.abort();
+  if (signal?.aborted) local.abort();
+  else signal?.addEventListener("abort", relay);
+  const done = waitTurnDone(agent, sessionId, timeoutMs, local.signal);
+  // Swallow so a throwing sendMessage cannot leave `done` unhandled.
+  done.catch(() => {});
   try {
-    const done = waitTurnDone(agent, sessionId, timeoutMs);
-    // sendMessage may throw before any event: don't leave `done` rejecting unhandled.
-    done.catch(() => {});
     if (o.suppress) agent.suppressNextTurn(sessionId);
     await agent.sendMessage(sessionId, text);
     await done;
+  } catch (err) {
+    if (err instanceof TurnStuckError) {
+      console.warn(`[voice] ${err.message}; aborting turn session=${sessionId}`);
+      agent.abort?.(sessionId);
+    }
+    throw err;
   } finally {
+    signal?.removeEventListener("abort", relay);
+    local.abort();
     if (o.voice) voiceTurns.exit(sessionId);
     injectedTurns.exit(sessionId);
   }
@@ -73,7 +118,7 @@ export function monoRunner(
 
 export function nodeRunner(o: {
   agent: TurnAgent;
-  lock<T>(sessionId: string, fn: () => Promise<T>): Promise<T | typeof HELD_BY_OTHER>;
+  lock<T>(sessionId: string, fn: (signal: AbortSignal) => Promise<T>): Promise<T | typeof HELD_BY_OTHER>;
   refreshToken(sessionId: string): Promise<void>;
   turnTimeoutMs?: number;
   retryMs?: number;
@@ -83,9 +128,9 @@ export function nodeRunner(o: {
     async run(sid, text, ro) {
       const deadline = Date.now() + (o.maxWaitMs ?? DEFAULT_MAX_WAIT_MS);
       while (true) {
-        const r = await o.lock(sid, async () => {
+        const r = await o.lock(sid, async (signal) => {
           await o.refreshToken(sid);
-          await runOnce(o.agent, sid, text, ro, o.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS);
+          await runOnce(o.agent, sid, text, ro, o.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS, signal);
           return true as const;
         });
         if (r !== HELD_BY_OTHER) return;
