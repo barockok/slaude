@@ -636,6 +636,16 @@ d("gateway↔node E2E (real Redis)", () => {
     expect(text).not.toContain("tok-agent-e2e");
   }, 30_000);
 
+  test("a session exit ends that session's voice call session_rebooted", async () => {
+    const stops: string[] = [];
+    workerHandle.__voiceCalls.add("voice-exit-s1", { stop: async (r: string) => { stops.push(r); } } as any);
+    stub.emit("sessionExit", "voice-exit-other");
+    expect(stops).toEqual([]);
+    stub.emit("sessionExit", "voice-exit-s1");
+    expect(stops).toEqual(["session_rebooted"]);
+    workerHandle.__voiceCalls.remove("voice-exit-s1");
+  });
+
   test("SIGTERM drain: in-flight turn finishes, node + session keys deregistered", async () => {
     behavior = async ({ servers, text }) => {
       await sleep(700); // in-flight while stop() begins

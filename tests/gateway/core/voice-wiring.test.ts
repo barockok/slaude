@@ -65,6 +65,39 @@ describe("mono voice wiring", () => {
     }
   });
 
+  /** A registered call that records how it was ended. */
+  const fakeCall = () => {
+    const stops: string[] = [];
+    return { stops, call: { stop: async (r: string) => { stops.push(r); } } as any };
+  };
+
+  it("a session exit ends that session's call session_rebooted", async () => {
+    setEnv(VOICE_ENV);
+    const { s, sid } = await sessionWith("T-VOICE-EXIT");
+    try {
+      const f = fakeCall();
+      s.handle.__voiceCalls!.add(sid, f.call);
+      (s.agent as any).emit("sessionExit", "some-other-session");
+      expect(f.stops).toEqual([]);
+      (s.agent as any).emit("sessionExit", sid);
+      expect(f.stops).toEqual(["session_rebooted"]);
+    } finally {
+      await s.dispose();
+    }
+  });
+
+  it("with voice off nothing listens for session exit", async () => {
+    const { s, sid } = await sessionWith("T-VOICE-EXIT-OFF");
+    try {
+      const f = fakeCall();
+      s.handle.__voiceCalls!.add(sid, f.call);
+      (s.agent as any).emit("sessionExit", sid);
+      expect(f.stops).toEqual([]);
+    } finally {
+      await s.dispose();
+    }
+  });
+
   it("mounts it when enabled and configured; a /1on1-locked thread is refused", async () => {
     setEnv(VOICE_ENV);
     const { s, sid } = await sessionWith("T-VOICE-ON");

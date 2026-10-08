@@ -1,9 +1,12 @@
 import { describe, it, expect } from "bun:test";
 import { EventEmitter } from "node:events";
-import { monoRunner, nodeRunner, makeTokenKeeper, waitTurnDone } from "../../src/voice/runners";
+import { monoRunner, nodeRunner, makeTokenKeeper, waitTurnDone, VoiceAuthLost } from "../../src/voice/runners";
 import { voiceTurns, injectedTurns } from "../../src/voice/turn-flags";
 import { HELD_BY_OTHER } from "../../src/queue/locks";
 import { until } from "./fakes";
+
+/** The identity check every mono runner needs: here, always the agent. */
+const allowAgent = async () => {};
 
 class StubAgent extends EventEmitter {
   sent: string[] = [];
@@ -62,7 +65,7 @@ describe("runner failure paths", () => {
   it("clears flags and listeners when the session exits mid-turn", async () => {
     const a = new StubAgent();
     a.outcome = "hang";
-    const p = monoRunner(a as any, { pollMs: 1 }).run("x1", "t", { suppress: false, voice: true });
+    const p = monoRunner(a as any, { check: allowAgent, pollMs: 1 }).run("x1", "t", { suppress: false, voice: true });
     await until(() => a.sent.length === 1);
     a.emit("sessionExit", "x1");
     await expect(p).rejects.toThrow(/session exited/);
@@ -74,7 +77,7 @@ describe("runner failure paths", () => {
   it("aborts the session turn on timeout and clears flags", async () => {
     const a = new StubAgent();
     a.outcome = "hang";
-    await expect(monoRunner(a as any, { turnTimeoutMs: 15 }).run("x2", "t", { suppress: false, voice: true })).rejects.toThrow(/timed out/);
+    await expect(monoRunner(a as any, { check: allowAgent, turnTimeoutMs: 15 }).run("x2", "t", { suppress: false, voice: true })).rejects.toThrow(/timed out/);
     expect(a.aborted).toEqual(["x2"]);
     expect(voiceTurns.active("x2")).toBe(false);
     expect(injectedTurns.active("x2")).toBe(false);
@@ -82,7 +85,7 @@ describe("runner failure paths", () => {
   it("clears flags and listeners when sendMessage throws", async () => {
     const a = new StubAgent();
     a.outcome = "throw";
-    await expect(monoRunner(a as any).run("x3", "t", { suppress: false, voice: true })).rejects.toThrow(/send failed/);
+    await expect(monoRunner(a as any, { check: allowAgent }).run("x3", "t", { suppress: false, voice: true })).rejects.toThrow(/send failed/);
     expect(voiceTurns.active("x3")).toBe(false);
     expect(injectedTurns.active("x3")).toBe(false);
     expect(a.listenerCount("event")).toBe(0);
@@ -117,7 +120,7 @@ describe("runner failure paths", () => {
 describe("monoRunner", () => {
   it("suppresses when asked, flags voice turns, clears the flags after", async () => {
     const a = new StubAgent();
-    const r = monoRunner(a as any);
+    const r = monoRunner(a as any, { check: allowAgent });
     await r.run("s1", "t", { suppress: true, voice: true });
     expect(a.suppressed).toEqual(["s1"]);
     expect(a.activeDuringSend).toEqual([true]);
@@ -131,14 +134,14 @@ describe("monoRunner", () => {
   it("propagates turn errors and still clears the flags", async () => {
     const a = new StubAgent();
     a.outcome = "error";
-    await expect(monoRunner(a as any).run("s2", "t", { suppress: false, voice: true })).rejects.toThrow(/boom/);
+    await expect(monoRunner(a as any, { check: allowAgent }).run("s2", "t", { suppress: false, voice: true })).rejects.toThrow(/boom/);
     expect(voiceTurns.active("s2")).toBe(false);
     expect(injectedTurns.active("s2")).toBe(false);
   });
   it("waits for an in-flight Slack turn instead of correlating its done", async () => {
     const a = new StubAgent();
     a.inFlight = true;
-    const r = monoRunner(a as any, { pollMs: 5 });
+    const r = monoRunner(a as any, { check: allowAgent, pollMs: 5 });
     let finished = false;
     const p = r.run("s5", "t", { suppress: false, voice: true }).then(() => { finished = true; });
     // the other turn's done must not satisfy or start the voice turn
@@ -155,7 +158,7 @@ describe("monoRunner", () => {
   it("fails the turn when a Slack turn stays in flight past maxWaitMs", async () => {
     const a = new StubAgent();
     a.inFlight = true;
-    await expect(monoRunner(a as any, { pollMs: 1, maxWaitMs: 20 }).run("s6", "t", { suppress: false, voice: true })).rejects.toThrow(/session busy/);
+    await expect(monoRunner(a as any, { check: allowAgent, pollMs: 1, maxWaitMs: 20 }).run("s6", "t", { suppress: false, voice: true })).rejects.toThrow(/session busy/);
     expect(a.sent).toEqual([]);
   });
 });
@@ -183,11 +186,42 @@ describe("nodeRunner", () => {
   });
 });
 
+describe("mono identity check", () => {
+  it("runs after the in-flight wait, right before the send; a refusal sends nothing", async () => {
+    const a = new StubAgent();
+    const order: string[] = [];
+    a.inFlight = true;
+    setTimeout(() => { a.inFlight = false; }, 20);
+    let refuse = false;
+    const r = monoRunner(a as any, { pollMs: 5, check: async () => {
+      order.push(`check inFlight=${a.inFlight}`);
+      if (refuse) throw new VoiceAuthLost("locked");
+    } });
+    await r.run("s1", "x", { suppress: false, voice: true });
+    expect(order).toEqual(["check inFlight=false"]);
+    expect(a.sent).toEqual(["x"]);
+    refuse = true;
+    await expect(r.run("s1", "y", { suppress: false, voice: true })).rejects.toBeInstanceOf(VoiceAuthLost);
+    expect(a.sent).toEqual(["x"]);
+  });
+  it("re-checks when a turn started during the check", async () => {
+    const a = new StubAgent();
+    let checks = 0;
+    const r = monoRunner(a as any, { pollMs: 5, check: async () => {
+      checks++;
+      if (checks === 1) { a.inFlight = true; setTimeout(() => { a.inFlight = false; }, 10); }
+    } });
+    await r.run("s1", "x", { suppress: false, voice: true });
+    expect(checks).toBe(2);
+    expect(a.sent).toEqual(["x"]);
+  });
+});
+
 describe("runners never boot a session", () => {
   it("mono refuses a turn when the session is not live", async () => {
     const a = new StubAgent();
     a.live = false;
-    await expect(monoRunner(a as any).run("s1", "x", { suppress: false, voice: true })).rejects.toThrow(/not live/);
+    await expect(monoRunner(a as any, { check: allowAgent }).run("s1", "x", { suppress: false, voice: true })).rejects.toThrow(/not live/);
     expect(a.sent).toEqual([]);
     expect(injectedTurns.active("s1")).toBe(false);
   });
@@ -201,13 +235,34 @@ describe("runners never boot a session", () => {
 });
 
 describe("makeTokenKeeper", () => {
+  const agentId = { runAs: "agent", lock: null, remote: false };
+  const allow = (id: unknown) => (id as { runAs?: string } | undefined)?.runAs === "agent";
   it("refreshes the call's own token chain and binds each fresh token", async () => {
     const bound: string[] = [];
     const seen: Array<[string, string]> = [];
-    const k = makeTokenKeeper({ jobId: "j1", token: "t0", refresh: async (j, t) => { seen.push([j, t]); return `${t}+`; }, bind: (t) => bound.push(t) });
+    const k = makeTokenKeeper({ jobId: "j1", token: "t0", allow, refresh: async (j, t) => { seen.push([j, t]); return { jobToken: `${t}+`, identity: agentId }; }, bind: (t) => bound.push(t) });
     await k.refresh();
     await k.refresh();
     expect(seen).toEqual([["j1", "t0"], ["j1", "t0+"]]);
     expect(bound).toEqual(["t0+", "t0++"]);
+    expect(k.allowed()).toBe(true);
+  });
+  it("a changed identity binds nothing, throws VoiceAuthLost and stays refused", async () => {
+    const bound: string[] = [];
+    let identity: unknown = agentId;
+    let calls = 0;
+    const k = makeTokenKeeper({ jobId: "j1", token: "t0", allow, refresh: async (_j, t) => { calls++; return { jobToken: `${t}+`, identity }; }, bind: (t) => bound.push(t) });
+    await k.refresh();
+    identity = { runAs: "user:U1", lock: { user: "U1", openScope: null }, remote: false };
+    await expect(k.refresh()).rejects.toBeInstanceOf(VoiceAuthLost);
+    expect(bound).toEqual(["t0+"]);
+    expect(k.allowed()).toBe(false);
+    await expect(k.refresh()).rejects.toBeInstanceOf(VoiceAuthLost);
+    expect(calls).toBe(2);
+  });
+  it("a refused refresh is auth lost", async () => {
+    const k = makeTokenKeeper({ jobId: "j1", token: "t0", allow, refresh: async () => { throw new Error("401"); }, bind: () => {} });
+    await expect(k.refresh()).rejects.toBeInstanceOf(VoiceAuthLost);
+    expect(k.allowed()).toBe(false);
   });
 });

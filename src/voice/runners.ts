@@ -111,14 +111,27 @@ async function runOnce(
 
 export function monoRunner(
   agent: TurnAgent & { isTurnInFlight(sessionId: string): boolean },
-  o: { turnTimeoutMs?: number; maxWaitMs?: number; pollMs?: number } = {},
+  o: {
+    turnTimeoutMs?: number;
+    maxWaitMs?: number;
+    pollMs?: number;
+    /** Required identity re-check at the point of use: throws (VoiceAuthLost)
+     *  when the thread no longer runs as the agent. Runs after the in-flight
+     *  wait, and only synchronous code separates it from sendMessage. */
+    check(sessionId: string): Promise<void>;
+  },
 ): TurnRunner {
   return {
     async run(sid, text, ro) {
       const deadline = Date.now() + (o.maxWaitMs ?? DEFAULT_MAX_WAIT_MS);
-      while (agent.isTurnInFlight(sid)) {
-        if (Date.now() >= deadline) throw new Error(BUSY_MESSAGE);
-        await Bun.sleep(o.pollMs ?? 100);
+      while (true) {
+        while (agent.isTurnInFlight(sid)) {
+          if (Date.now() >= deadline) throw new Error(BUSY_MESSAGE);
+          await Bun.sleep(o.pollMs ?? 100);
+        }
+        await o.check(sid);
+        // A turn may have started during the check: check again after it.
+        if (!agent.isTurnInFlight(sid)) break;
       }
       await runOnce(agent, sid, text, ro, o.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS);
     },
@@ -128,6 +141,8 @@ export function monoRunner(
 export function nodeRunner(o: {
   agent: TurnAgent;
   lock<T>(sessionId: string, fn: (signal: AbortSignal) => Promise<T>): Promise<T | typeof HELD_BY_OTHER>;
+  /** Required: refresh the call's token AND re-check the thread's identity
+   *  (the token bound is the token checked); throws VoiceAuthLost to refuse. */
   refreshToken(sessionId: string): Promise<void>;
   turnTimeoutMs?: number;
   retryMs?: number;
@@ -150,17 +165,39 @@ export function nodeRunner(o: {
   };
 }
 
+/**
+ * A call's job-token chain on a node. Each refresh is also the identity
+ * re-check: the gateway reports the thread's identity as of NOW alongside the
+ * fresh token, and the token is bound for the turn only when `allow` accepts
+ * that identity — the token used is the token checked. A refused refresh or
+ * identity throws VoiceAuthLost and the chain stays refused.
+ */
 export function makeTokenKeeper(o: {
   jobId: string;
   token: string;
-  refresh(jobId: string, token: string): Promise<string>;
+  refresh(jobId: string, token: string): Promise<{ jobToken: string; identity?: unknown }>;
+  allow(identity: unknown): boolean;
   bind(token: string): void;
-}): { refresh(): Promise<void> } {
+}): { refresh(): Promise<void>; allowed(): boolean } {
   let token = o.token;
+  let ok = true;
   return {
     async refresh() {
-      token = await o.refresh(o.jobId, token);
+      if (!ok) throw new VoiceAuthLost("the call's identity was already refused");
+      let r: { jobToken: string; identity?: unknown };
+      try {
+        r = await o.refresh(o.jobId, token);
+      } catch (e) {
+        ok = false;
+        throw new VoiceAuthLost(e instanceof Error ? e.message : String(e));
+      }
+      token = r.jobToken;
+      if (!o.allow(r.identity)) {
+        ok = false;
+        throw new VoiceAuthLost("the thread no longer runs as the agent");
+      }
       o.bind(token);
     },
+    allowed: () => ok,
   };
 }

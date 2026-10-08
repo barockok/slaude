@@ -48,9 +48,6 @@ export interface VoiceCallDeps {
    *  turn it runs, since a turn boots the session. */
   holdIdle(hold: boolean): boolean | void;
   onClosed(): void;
-  /** Re-checked before every injected turn: false (or a throw) means the
-   *  thread no longer runs as the agent, and the call ends `auth_lost`. */
-  stillAllowed?(): Promise<boolean>;
   idleFlushMs?: number;
   startTimeoutMs?: number;
   /** How long to wait for the stdout stream to drain after the child exits
@@ -176,21 +173,13 @@ export class VoiceCall {
     if (this.#flushTimer) clearTimeout(this.#flushTimer);
     this.#flushTimer = setTimeout(() => this.#flushPending(), this.d.idleFlushMs ?? 30_000);
   }
-  /** One injected turn, after the identity re-check. */
-  async #run(text: string, o: { suppress: boolean; voice: boolean }): Promise<void> {
-    if (this.d.stillAllowed) {
-      let ok = false;
-      try {
-        ok = await this.d.stillAllowed();
-      } catch (e) {
-        console.error(`[voice] identity check failed session=${this.d.sessionId}:`, e instanceof Error ? e.message : e);
-      }
-      if (!ok) throw new VoiceAuthLost("the thread no longer runs as the agent");
-    }
-    await this.d.runner.run(this.d.sessionId, text, o);
+  /** One injected turn. The runner re-checks the thread's identity at the
+   *  point of use and throws VoiceAuthLost when it is no longer the agent. */
+  #run(text: string, o: { suppress: boolean; voice: boolean }): Promise<void> {
+    return this.d.runner.run(this.d.sessionId, text, o);
   }
-  /** End the call `auth_lost` from inside a turn. Not stop(): it waits for
-   *  the turn queue, which the caller is on. */
+  /** End the call `auth_lost` (any turn path). Not stop(): it waits for the
+   *  turn queue, which the caller is on. */
   #authLost(): void {
     this.#cancelled = true;
     if (this.#endReason || this.#stopReason) return;

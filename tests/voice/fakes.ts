@@ -1,3 +1,5 @@
+import type { ChildMsg, ParentMsg } from "../../src/voice/ipc";
+import type { LoopChild } from "../../src/voice/spawn";
 import { TypedEmitter, type ProviderConnect, type ProviderEvents, type VoiceProvider, type VoiceProviderCaps } from "../../src/voice/provider/types";
 
 export class FakeProvider extends TypedEmitter<ProviderEvents> implements VoiceProvider {
@@ -63,4 +65,21 @@ export function chan<T>() {
       return new Promise((r) => waiters.push(r));
     },
   };
+}
+
+/** A voice-loop child driven by the test: push() what it says, read sent. */
+export function fakeChild() {
+  const sent: ParentMsg[] = [];
+  const q: ChildMsg[] = [];
+  let wake: (() => void) | null = null;
+  let exit!: (n: number) => void;
+  const child: LoopChild & { push(m: ChildMsg): void; sent: ParentMsg[]; killed: boolean } = {
+    sent, killed: false,
+    send: (m) => sent.push(m),
+    push: (m) => { q.push(m); wake?.(); },
+    exited: new Promise<number>((r) => (exit = r)),
+    kill() { this.killed = true; exit(137); wake?.(); },
+    messages: { async *[Symbol.asyncIterator]() { while (true) { if (q.length) { const m = q.shift()!; yield m; if (m.type === "ended") return; continue; } if (child.killed) return; await new Promise<void>((r) => (wake = r)); } } },
+  };
+  return child;
 }

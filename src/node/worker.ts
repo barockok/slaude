@@ -51,7 +51,7 @@ import { lockFromClaims } from "./session-lock";
 import { type NodeManifest, loadNodeManifest, makeNodeLocalMcpResolver } from "./manifest";
 import { ChildEnvPatch } from "../agent/child-env";
 import { VoiceCalls } from "../voice/call";
-import { drainVoiceCalls, makeNodeVoiceHost, voiceServersFor } from "../voice/hosts";
+import { drainVoiceCalls, endCallsOnSessionExit, makeNodeVoiceHost, voiceServersFor } from "../voice/hosts";
 import { injectedTurns, voiceTurns } from "../voice/turn-flags";
 import { BootFailure, createOnceGuard, type FailureCode } from "../gateway/core/failure-codes";
 
@@ -432,6 +432,8 @@ export interface NodeWorkerHandle {
    *  so a surviving worker's stalled checker recovers the claim — exactly the
    *  failure surface a killed pod leaves behind (spec §6 failure matrix). */
   kill(): void;
+  /** TEST SEAM: the node's voice call registry. */
+  __voiceCalls: VoiceCalls;
   /** TEST SEAM: the command Redis connection (break it to probe /healthz). */
   __cmd: Redis;
   /** TEST SEAM: the BullMQ worker connections (one per label plus one). */
@@ -482,8 +484,6 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   /** sessionId → persona. The runtime bundle is per (tenant, persona), so the
    *  child-env resolver needs both or it would fetch another agent's bundle. */
   const personas = new Map<string, string>();
-  /** sessionId → the newest claimed job; a voice call's token chain starts here. */
-  const currentJobs = new Map<string, { jobId: string; token: string }>();
   /** sessionId → the current turn's abort controller (shim long-poll teardown). */
   const turnAborts = new Map<string, AbortController>();
   /** Sessions registered warm in the Redis registry by this node. */
@@ -561,9 +561,10 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   const voiceCalls = new VoiceCalls();
   const voiceHost = makeNodeVoiceHost({
     agent,
-    currentJob: (id) => currentJobs.get(id),
+    tokenFor: (id) => store.tokenFor(id),
+    claims: (t) => decodeClaims(t),
     bindToken: (id, t) => store.bindToken(id, t),
-    refresh: (jobId, t) => client.refreshJobToken(jobId, t),
+    refresh: (jobId, t) => client.refreshJobTokenWithIdentity(jobId, t),
     lock: (id, fn) => withSessionLock(id, `${nodeId}:voice`, fn, { redis: cmd, keys, ...sessionLockOpts, ...opts.lock }),
     bundle: async (id) => {
       const tenant = tenants.get(id);
@@ -576,12 +577,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       return r.working_dir;
     },
     draining: () => state === "draining" || state === "stopped",
-    claims: (id) => {
-      const tok = store.tokenFor(id);
-      return tok ? decodeClaims(tok) : null;
-    },
   });
-  agent.on("sessionExit", (sid: string) => void voiceCalls.end(sid, "session_rebooted"));
+  endCallsOnSessionExit(agent, voiceCalls);
   const configRoot = opts.configRoot ?? nodeConfigRoot() ?? mkdtempSync(join(tmpdir(), `slaude-node-${nodeId}-`));
   const seeder = makeSessionSeeder({
     fetch: (tenant, token) => client.getMcpCredentials(tenant, token),
@@ -865,7 +862,6 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     // The token is bound under the session lock (runLockedTurn), not here.
     tenants.set(data.sessionId, data.tenantId);
     personas.set(data.sessionId, data.personaId ?? "default");
-    currentJobs.set(data.sessionId, { jobId: String(job.id), token: jobToken });
     // A cron job created inside a /1on1 carries its lock owner. The cron run
     // keys on a synthetic thread with no lock, so this is the only way the node
     // learns whose credentials the turn runs under; without it the turn would
@@ -1004,7 +1000,6 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
             store.unbindToken(sessionId);
             tenants.delete(sessionId);
             personas.delete(sessionId);
-            currentJobs.delete(sessionId);
             await registry.unregister(sessionId);
           }
         }
@@ -1142,5 +1137,6 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     kill,
     __cmd: cmd,
     __bullConns: bullConns,
+    __voiceCalls: voiceCalls,
   };
 }

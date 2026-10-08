@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VoiceCall, VoiceCalls, TRANSCRIPT_FLUSH_PREFIX, type LoopChild, type TurnRunner } from "../../src/voice/call";
 import type { ChildMsg, ParentMsg, VoiceInit } from "../../src/voice/ipc";
-import { until } from "./fakes";
+import { fakeChild, until } from "./fakes";
+import { VoiceAuthLost } from "../../src/voice/runners";
 
 const dirs: string[] = [];
 const tmp = () => {
@@ -33,21 +34,6 @@ function scriptedChild(stream: () => AsyncGenerator<ChildMsg>) {
 }
 const never = () => new Promise<never>(() => {});
 
-function fakeChild() {
-  const sent: ParentMsg[] = [];
-  const q: ChildMsg[] = [];
-  let wake: (() => void) | null = null;
-  let exit!: (n: number) => void;
-  const child: LoopChild & { push(m: ChildMsg): void; sent: ParentMsg[]; killed: boolean } = {
-    sent, killed: false,
-    send: (m) => sent.push(m),
-    push: (m) => { q.push(m); wake?.(); },
-    exited: new Promise<number>((r) => (exit = r)),
-    kill() { this.killed = true; exit(137); wake?.(); },
-    messages: { async *[Symbol.asyncIterator]() { while (true) { if (q.length) { const m = q.shift()!; yield m; if (m.type === "ended") return; continue; } if (child.killed) return; await new Promise<void>((r) => (wake = r)); } } },
-  };
-  return child;
-}
 function recRunner(fail = false) {
   const runs: Array<{ text: string; suppress: boolean; voice: boolean }> = [];
   const runner: TurnRunner = { run: async (_s, text, o) => { runs.push({ text, ...o }); if (fail && o.voice && !o.suppress) throw new Error("turn failed"); } };
@@ -191,33 +177,45 @@ describe("VoiceCall", () => {
     expect(ran[0]).toContain("first");
   });
 
-  it("an identity change before an injected turn ends the call auth_lost and runs nothing", async () => {
+  it("an identity change refused by the runner ends the call auth_lost; queued turns are dropped", async () => {
     const child = fakeChild();
-    const { runner, runs } = recRunner();
+    const runs: string[] = [];
     let allowed = true;
-    const call = new VoiceCall({ sessionId: "s1", runner, child, transcriptDir: tmp(), holdIdle: () => true, onClosed: () => {},
-      stillAllowed: async () => allowed });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const runner: TurnRunner = {
+      run: async (_s, text) => {
+        if (!allowed) throw new VoiceAuthLost("the thread no longer runs as the agent");
+        runs.push(text);
+        await gate;
+      },
+    };
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    const call = new VoiceCall({ sessionId: "s1", runner, child, transcriptDir: tmp(), holdIdle: () => true, onClosed: () => {} });
     const p = call.start(init(call.callId));
     child.push({ type: "started", callId: call.callId, sampleRate: 24000 });
     await p;
     child.push({ type: "delegate", id: "1", task: "x", asOf: 0 });
     await until(() => runs.length === 1);
+    child.push({ type: "delegate", id: "2", task: "y", asOf: 0 });
+    child.push({ type: "delegate", id: "3", task: "z", asOf: 0 });
     allowed = false;
-    child.push({ type: "transcript", seq: 1, role: "user", text: "after the lock" });
-    child.push({ type: "delegate", id: "2", task: "y", asOf: 1 });
+    release();
     await until(() => child.sent.some((m) => m.type === "stop"));
     expect(child.sent.at(-1)).toEqual({ type: "stop", reason: "auth_lost" });
     child.push({ type: "ended", reason: "auth_lost" });
     expect(await call.done).toBe("auth_lost");
-    // Only the first delegate ran: no second delegate, no flush, no summary.
+    // #2 was refused, #3 was dropped; no flush, no summary.
     expect(runs).toHaveLength(1);
+    expect(child.sent.some((m) => m.type === "say")).toBe(false);
+    err.mockRestore();
   });
 
-  it("a stillAllowed throw counts as refused, also for the idle flush", async () => {
+  it("auth lost on the idle flush ends the call too", async () => {
     const child = fakeChild();
-    const { runner, runs } = recRunner();
-    const call = new VoiceCall({ sessionId: "s1", runner, child, transcriptDir: tmp(), holdIdle: () => true, onClosed: () => {},
-      idleFlushMs: 10, stillAllowed: async () => { throw new Error("lookup failed"); } });
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    const runner: TurnRunner = { run: async () => { throw new VoiceAuthLost("refused"); } };
+    const call = new VoiceCall({ sessionId: "s1", runner, child, transcriptDir: tmp(), holdIdle: () => true, onClosed: () => {}, idleFlushMs: 10 });
     const p = call.start(init(call.callId));
     child.push({ type: "started", callId: call.callId, sampleRate: 24000 });
     await p;
@@ -226,7 +224,7 @@ describe("VoiceCall", () => {
     expect(child.sent.at(-1)).toEqual({ type: "stop", reason: "auth_lost" });
     child.kill();
     expect(await call.done).toBe("auth_lost");
-    expect(runs).toHaveLength(0);
+    err.mockRestore();
   });
 
   it("child crash ends loop_crashed", async () => {

@@ -19,7 +19,8 @@ import * as SoulOverrides from "../../db/soul-overrides";
 import { quietForVoice, voiceTurns } from "../../voice/turn-flags";
 import { VoiceCalls } from "../../voice/call";
 import { voiceConfigFromEnv, type VoiceConfig } from "../../voice/config";
-import { makeMonoVoiceHost, voiceServersFor } from "../../voice/hosts";
+import { endCallsOnSessionExit, makeMonoVoiceHost, voiceServersFor } from "../../voice/hosts";
+import { monoPersonaSoul } from "../../voice/mono-soul";
 import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, createConnectMcp, CONNECT_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
 import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
@@ -136,6 +137,8 @@ export interface GatewayHandle {
    *  Requires the session's route to exist (feed a message first). Production
    *  never calls this. */
   __resolveMcp(sessionId: string): Promise<Record<string, McpServerConfig> | undefined>;
+  /** TEST SEAM: the mono process's voice call registry. */
+  __voiceCalls?: VoiceCalls;
   /** TEST/SIM SEAM ONLY. Drive the natural-language connect path (what the
    *  mcp__slaude_connect__connect_mcp tool calls) for a live session. */
   __agentConnect(sessionId: string, server: string): Promise<string>;
@@ -866,13 +869,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       return null;
     }
     if (!cfg) return null;
-    agent.on("sessionExit", (sid: string) => void voiceCalls.end(sid, "session_rebooted"));
+    endCallsOnSessionExit(agent, voiceCalls);
     return makeMonoVoiceHost({
       agent,
       config: () => cfg,
       findThread: async (sid) => {
         const r = await Sessions.findById(sid);
-        return r?.slack_channel_id && r.slack_thread_ts ? { channel: r.slack_channel_id, threadTs: r.slack_thread_ts } : null;
+        return r?.slack_channel_id && r.slack_thread_ts
+          ? { channel: r.slack_channel_id, threadTs: r.slack_thread_ts, personaId: r.persona_id ?? null }
+          : null;
       },
       remoteTarget: (c, t) => activeRemoteTarget(c, t),
       workingDir: async (sid) => {
@@ -880,7 +885,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (!r) throw new Error(`unknown session ${sid}`);
         return r.working_dir;
       },
-      soul: () => soulData(),
+      soul: (t) => monoPersonaSoul(t.personaId, t.channel),
     });
   })();
 
@@ -3204,6 +3209,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     __pendingSource: () => v1.pendingSource,
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),
+    __voiceCalls: voiceCalls,
     __agentConnect: (sessionId: string, server: string) => {
       const route = routes.get(sessionId);
       if (!route) return Promise.resolve("no active thread for this session");

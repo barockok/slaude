@@ -16,6 +16,10 @@ export const VOICE_MCP_NAME = "slaude_voice";
 export interface VoiceHost {
   config(sessionId: string): Promise<VoiceConfig | null>;
   refusal(sessionId: string): Promise<"VOICE_AGENT_ONLY" | "VOICE_UNAVAILABLE" | null>;
+  /** Whether the thread still runs as the agent. Required: the host's runner
+   *  re-checks it before every injected turn (delegate, flush, summary) and
+   *  refuses the turn with VoiceAuthLost, which ends the call `auth_lost`. */
+  stillAllowed(sessionId: string): Promise<boolean>;
   runner(sessionId: string): TurnRunner;
   transcriptDir(sessionId: string): Promise<string>;
   spawn(o: { apiKey: string; streamToken: string }): LoopChild;

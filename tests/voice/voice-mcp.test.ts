@@ -39,6 +39,7 @@ function host(over: Partial<VoiceHost> = {}) {
   const h: VoiceHost = {
     config: async () => cfg,
     refusal: async () => null,
+    stillAllowed: async () => true,
     runner: () => ({ run: async () => {} }),
     transcriptDir: async () => mkdtempSync(join(tmpdir(), "vm-")),
     spawn: (o) => {
