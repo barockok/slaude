@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "bun:test";
-import { OpenAILive } from "../../src/voice/provider/openai-live";
+import { OpenAILive, chunkForAppend, estimateTokens } from "../../src/voice/provider/openai-live";
 import { createProvider } from "../../src/voice/provider";
 import { pcmToBase64 } from "../../src/voice/provider/types";
 import { Conductor, AUTO_RESPONSE_WAIT_MS } from "../../src/voice/conductor";
@@ -45,12 +45,19 @@ const FAST = { outputGapMs: 40, inputGapMs: 40, delegateSettleMs: 0, closeTimeou
 const audioDelta = () => ({ type: "session.output_audio.delta", delta: pcmToBase64(new Int16Array(4)) });
 
 let srv: Srv | null = null;
-afterEach(() => { void srv?.stop(); });
+// Every provider a test opens is closed in teardown, including the error-path ones.
+let opened: OpenAILive[] = [];
+const track = (p: OpenAILive): OpenAILive => (opened.push(p), p);
+afterEach(async () => {
+  await Promise.all(opened.map((p) => p.close().catch(() => {})));
+  opened = [];
+  void srv?.stop();
+});
 
 describe("OpenAILive", () => {
   it("connects with bearer auth and no query, and starts a client-delegation session", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "sk-test", model: "gpt-live-1", url: srv.url, ...FAST });
+    const p = track(new OpenAILive({ apiKey: "sk-test", model: "gpt-live-1", url: srv.url, ...FAST }));
     await p.connect({ instructions: "be brief", tools: [{ name: "delegate", description: "ask the brain", parameters: { type: "object" } }], voice: "marin" });
     expect(srv.headers!.get("authorization")).toBe("Bearer sk-test");
     expect(srv.path).toBe("/v1/live/sessions");
@@ -72,7 +79,7 @@ describe("OpenAILive", () => {
 
   it("restores the seed as startup history, not as a later append", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "gpt-live-1", url: srv.url, ...FAST });
+    const p = track(new OpenAILive({ apiKey: "k", model: "gpt-live-1", url: srv.url, ...FAST }));
     await p.connect({ instructions: "", tools: [], seed: "earlier: user asked X" });
     const input = srv.frames[0].session.input;
     expect(input).toHaveLength(1);
@@ -87,7 +94,7 @@ describe("OpenAILive", () => {
 
   it("maps client methods to frames", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST }));
     await p.connect({ instructions: "", tools: [] });
     p.sendAudio(new Int16Array([1, 2]));
     p.addContext("fact");
@@ -113,19 +120,48 @@ describe("OpenAILive", () => {
     await p.close();
   });
 
-  it("caps append content at the 500-token limit", async () => {
+  it("a long answer goes out as several appends of at most 500 tokens, split at sentences", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST }));
     await p.connect({ instructions: "", tools: [] });
-    p.addContext("x".repeat(5000));
-    await until(() => srv!.frames.length >= 2);
-    expect(srv.frames[1].content.length).toBe(1800);
+    const sentences = Array.from({ length: 60 }, (_, i) => `Sentence number ${i} explains one more detail of the answer.`);
+    const answer = sentences.join(" ");
+    p.addContext(answer);
+    p.respond();
+    p.toolResult("del_7", answer);
+    await until(() => srv!.frames.some((f) => f.delegation_id === "del_7"));
+    await Bun.sleep(30);
+    const spoken = srv.frames.filter((f) => f.type === "session.commentary.append");
+    const tied = srv.frames.filter((f) => f.type === "session.thinking.append" && f.delegation_id === "del_7");
+    expect(spoken.length).toBeGreaterThan(1);
+    expect(tied.length).toBeGreaterThan(1);
+    for (const f of spoken) {
+      expect(f.delegation_id).toBeNull();
+      expect(estimateTokens(f.content)).toBeLessThanOrEqual(500);
+      expect(f.content).toMatch(/\.$/); // whole sentences, never cut mid-sentence
+      expect(f.content).not.toContain("…");
+    }
+    expect(spoken.map((f) => f.content).join(" ")).toBe(answer);
     await p.close();
+  });
+
+  it("chunking is conservative for non-Latin text and splits an over-long sentence at words", () => {
+    const cjk = "这是一个很长的句子".repeat(150); // 1350 chars, no sentence end
+    const parts = chunkForAppend(cjk);
+    expect(parts.length).toBeGreaterThanOrEqual(3);
+    for (const c of parts) expect(estimateTokens(c)).toBeLessThanOrEqual(500);
+    expect(parts.join("")).toBe(cjk);
+    const words = Array.from({ length: 800 }, (_, i) => `w${i}`).join(" ");
+    const wparts = chunkForAppend(words);
+    expect(wparts.length).toBeGreaterThan(1);
+    for (const c of wparts) expect(c).toMatch(/^w\d+( w\d+)*$/);
+    expect(wparts.join(" ")).toBe(words);
+    expect(chunkForAppend("short")).toEqual(["short"]);
   });
 
   it("synthesizes turns, item ids, speech and responseDone from quiet gaps", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST }));
     const got: any[] = [];
     p.on("audio", (pcm, item) => got.push(["audio", pcm.length, item]));
     p.on("transcript", (t) => got.push(["transcript", t.role, t.text, t.itemId]));
@@ -154,7 +190,7 @@ describe("OpenAILive", () => {
 
   it("maps a client delegation to a delegate tool call built from the participant transcript", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, inputGapMs: 200 });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, inputGapMs: 200 }));
     const got: any[] = [];
     p.on("speechStarted", () => got.push(["speechStarted"]));
     p.on("transcript", (t) => got.push(["transcript", t.role, t.text]));
@@ -179,7 +215,7 @@ describe("OpenAILive", () => {
 
   it("classifies errors and treats an unsolicited session.closed as a drop", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST }));
     const got: any[] = [];
     p.on("error", (e) => got.push(["error", e.fatal]));
     p.on("closed", () => got.push(["closed"]));
@@ -195,7 +231,7 @@ describe("OpenAILive", () => {
 
   it("a safety close is fatal", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST }));
     const got: any[] = [];
     p.on("error", (e) => got.push(["error", e.fatal]));
     p.on("closed", () => got.push(["closed"]));
@@ -207,7 +243,7 @@ describe("OpenAILive", () => {
 
   it("an unexpected socket close is non-fatal and fires closed", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST }));
     const got: any[] = [];
     p.on("error", (e) => got.push(["error", e.fatal]));
     p.on("closed", () => got.push(["closed"]));
@@ -223,7 +259,7 @@ describe("OpenAILive", () => {
         s.send({ type: "error", event_id: "e1", error: { type: "invalid_request_error", code: "unknown_parameter", message: "Unknown parameter: 'session.voice'.", param: "session.voice", client_event_id: f.event_id } });
       }
     });
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST }));
     const got: any[] = [];
     p.on("error", (e) => got.push(["error", e.fatal]));
     p.on("closed", () => got.push(["closed"]));
@@ -235,7 +271,7 @@ describe("OpenAILive", () => {
 
   it("connect() replaces an existing socket without firing closed", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST }));
     const got: any[] = [];
     p.on("closed", () => got.push(["closed"]));
     p.on("audio", (_pcm, item) => got.push(["audio", item]));
@@ -251,7 +287,7 @@ describe("OpenAILive", () => {
 
   it("close() sends session.close, waits for session.closed, flushes partial transcript, and does not fire closed", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, outputGapMs: 5000 });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, outputGapMs: 5000 }));
     const got: any[] = [];
     p.on("closed", () => got.push("closed"));
     p.on("transcript", (t) => got.push(t.text));
@@ -266,7 +302,7 @@ describe("OpenAILive", () => {
 
   it("close() is bounded when session.closed never arrives", async () => {
     srv = fakeServer((f, s) => { if (f.type === "session.start") ack(f, s); });
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST }));
     await p.connect({ instructions: "", tools: [] });
     const t0 = Date.now();
     await p.close();
@@ -275,7 +311,7 @@ describe("OpenAILive", () => {
 
   it("close() during the handshake rejects the pending connect at once", async () => {
     srv = fakeServer(); // never acks session.start
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST }));
     const c = p.connect({ instructions: "", tools: [] });
     await until(() => srv!.frames.length >= 1);
     const t0 = Date.now();
@@ -288,7 +324,7 @@ describe("OpenAILive", () => {
 describe("OpenAILive synthetic turns under the Conductor's flow", () => {
   it("participant speech during output ends that output turn: later audio gets a new item id", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, outputGapMs: 5000 });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, outputGapMs: 5000 }));
     const got: any[] = [];
     p.on("audio", (_pcm, item) => got.push(["audio", item]));
     p.on("speechStarted", () => got.push(["speechStarted"]));
@@ -307,7 +343,7 @@ describe("OpenAILive synthetic turns under the Conductor's flow", () => {
 
   it("respond() during output starts a new item, so the Conductor's flushed item does not swallow the answer", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, outputGapMs: 5000 });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, outputGapMs: 5000 }));
     const got: any[] = [];
     p.on("audio", (_pcm, item) => got.push(["audio", item]));
     p.on("responseDone", () => got.push(["responseDone"]));
@@ -326,7 +362,7 @@ describe("OpenAILive synthetic turns under the Conductor's flow", () => {
 
   it("a respond() that produces no audio still ends with a responseDone", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, respondTimeoutMs: 60 });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, respondTimeoutMs: 60 }));
     let dones = 0;
     p.on("responseDone", () => dones++);
     await p.connect({ instructions: "", tools: [] });
@@ -339,7 +375,7 @@ describe("OpenAILive synthetic turns under the Conductor's flow", () => {
 
   it("a respond() answered with audio does not fire a second, watchdog responseDone", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, respondTimeoutMs: 80 });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, respondTimeoutMs: 80 }));
     let dones = 0;
     p.on("responseDone", () => dones++);
     await p.connect({ instructions: "", tools: [] });
@@ -353,7 +389,7 @@ describe("OpenAILive synthetic turns under the Conductor's flow", () => {
 
   it("no event reaches listeners after close()", async () => {
     srv = fakeServer((f, s) => { if (f.type === "session.start") ack(f, s); }); // never answers session.close
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST }));
     const got: string[] = [];
     for (const k of ["audio", "transcript", "speechStarted", "speechStopped", "responseDone", "toolCall", "error", "closed"] as const) {
       p.on(k, () => got.push(k));
@@ -390,7 +426,7 @@ describe("OpenAILive with the real Conductor", () => {
 
   it("a next_gap steer waits for the synthetic responseDone, then is spoken", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST }));
     const { c, audio } = wire(p);
     await p.connect({ instructions: "", tools: [] });
     srv.send(audioDelta());
@@ -404,7 +440,7 @@ describe("OpenAILive with the real Conductor", () => {
 
   it("after participant speech the steer waits for the auto-response window, then drains on tick", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST }));
     const { c, emitted } = wire(p);
     await p.connect({ instructions: "", tools: [] });
     const t0 = Date.now();
@@ -421,7 +457,7 @@ describe("OpenAILive with the real Conductor", () => {
 
   it("a barge-in flushes queued audio, and the agent's next audio still plays", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, outputGapMs: 5000 });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, outputGapMs: 5000 }));
     const { audio } = wire(p);
     await p.connect({ instructions: "", tools: [] });
     srv.send(audioDelta());
@@ -435,7 +471,7 @@ describe("OpenAILive with the real Conductor", () => {
 
   it("the agent's next turn starting during the barge-in clear round trip is not marked flushed", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, outputGapMs: 5000 });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, outputGapMs: 5000 }));
     const { audio } = wire(p);
     let release: (() => void) | null = null;
     audio.clear = async () => {
@@ -459,7 +495,7 @@ describe("OpenAILive with the real Conductor", () => {
 
   it("say now during output flushes, speaks, and the spoken answer is not dropped as the flushed item", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, outputGapMs: 5000 });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, outputGapMs: 5000 }));
     const { c, audio } = wire(p);
     await p.connect({ instructions: "", tools: [] });
     srv.send(audioDelta());
@@ -474,7 +510,7 @@ describe("OpenAILive with the real Conductor", () => {
 
   it("a client delegation reaches the Conductor as a delegate with the participant's words, transcript first", async () => {
     srv = fakeServer(ack);
-    const p = new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, inputGapMs: 500 });
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, inputGapMs: 500 }));
     const { emitted } = wire(p);
     await p.connect({ instructions: "", tools: [] });
     srv.send({ type: "session.input_transcript.delta", event_id: "t1", delta: "check the queue depth", start_ms: 0, end_ms: 100 });

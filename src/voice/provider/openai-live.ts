@@ -29,7 +29,7 @@ const isFatal = (e: any): boolean => FATAL_ERRORS.has(e?.code) || FATAL_ERRORS.h
 /** The slaude tool every GPT-Live client delegation maps to (Conductor's VOICE_TOOLS). */
 export const DELEGATE_TOOL = "delegate";
 const START_EVENT_ID = "slaude_session_start";
-const APPEND_MAX_CHARS = 1800; // append content is capped at 500 tokens
+const APPEND_MAX_TOKENS = 500; // per append event
 const SEED_MAX_CHARS = 24_000; // session.input is capped at 8,192 tokens
 const TASK_MAX_CHARS = 1000;
 const HISTORY_LINES = 20;
@@ -53,7 +53,65 @@ export interface OpenAILiveOptions {
   respondTimeoutMs?: number;
 }
 
-const clip = (s: string, n: number): string => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+
+/**
+ * Conservative token estimate for the append limit: ~3.5 ASCII characters per
+ * token, and one token per non-ASCII character (which holds for CJK and other
+ * non-Latin scripts, where a character is often a whole token or more than one).
+ */
+export function estimateTokens(s: string): number {
+  let ascii = 0;
+  let other = 0;
+  for (const ch of s) {
+    if (ch.charCodeAt(0) < 128) ascii++;
+    else other++;
+  }
+  return Math.ceil(ascii / 3.5) + other;
+}
+
+/**
+ * Split text into pieces that each fit one append (≤ 500 estimated tokens):
+ * whole sentences where they fit, else words, else characters. Nothing is
+ * dropped or elided.
+ */
+export function chunkForAppend(text: string, maxTokens = APPEND_MAX_TOKENS): string[] {
+  if (estimateTokens(text) <= maxTokens) return [text];
+  const out: string[] = [];
+  let cur = "";
+  const add = (piece: string, sep: string) => {
+    const next = cur ? cur + sep + piece : piece;
+    if (estimateTokens(next) <= maxTokens) cur = next;
+    else {
+      if (cur) out.push(cur);
+      cur = piece;
+    }
+  };
+  for (const sentence of text.split(/(?<=[.!?])\s+/)) {
+    if (estimateTokens(sentence) <= maxTokens) {
+      add(sentence, " ");
+      continue;
+    }
+    for (const word of sentence.split(/\s+/)) {
+      if (estimateTokens(word) <= maxTokens) {
+        add(word, " ");
+        continue;
+      }
+      let piece = "";
+      let first = true;
+      for (const ch of word) {
+        if (estimateTokens(piece + ch) > maxTokens) {
+          add(piece, first ? " " : "");
+          first = false;
+          piece = "";
+        }
+        piece += ch;
+      }
+      if (piece) add(piece, first ? " " : "");
+    }
+  }
+  if (cur) out.push(cur);
+  return out;
+}
 const tail = (s: string, n: number): string => (s.length > n ? "…" + s.slice(s.length - n + 1) : s);
 const text = (data: unknown): string => (typeof data === "string" ? data : new TextDecoder().decode(data as ArrayBuffer));
 
@@ -244,14 +302,15 @@ export class OpenAILive extends TypedEmitter<ProviderEvents> implements VoicePro
     if (this.#outTimer) clearTimeout(this.#outTimer);
     this.#outTimer = setTimeout(() => this.#endOutput(), this.o.outputGapMs ?? 600);
   }
-  #endOutput(): void {
+  /** End the open output turn; `done: false` skips the responseDone (respond() starts the next response). */
+  #endOutput({ done }: { done: boolean } = { done: true }): void {
     if (this.#outTimer) clearTimeout(this.#outTimer);
     this.#outTimer = null;
     const hadAudio = this.#outAudio;
     this.#flushOutputText();
     this.#outOpen = false;
     this.#outAudio = false;
-    if (hadAudio) this.fire("responseDone");
+    if (done && hadAudio) this.fire("responseDone");
   }
   #flushOutputText(): void {
     const t = this.#outText.trim();
@@ -337,7 +396,7 @@ export class OpenAILive extends TypedEmitter<ProviderEvents> implements VoicePro
     if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify(o));
   }
   #append(type: string, delegationId: string | null, content: string): void {
-    this.#send({ type, delegation_id: delegationId, content: clip(content, APPEND_MAX_CHARS) });
+    for (const part of chunkForAppend(content)) this.#send({ type, delegation_id: delegationId, content: part });
   }
   #flushContext(): void {
     const t = this.#pendingContext;
@@ -364,12 +423,7 @@ export class OpenAILive extends TypedEmitter<ProviderEvents> implements VoicePro
     else this.#append("session.instructions.append", null, RESPOND_NOW);
     // The answer is a new response: end the open output turn without a responseDone
     // (the Conductor marks its own response active right after this call).
-    if (this.#outOpen) {
-      if (this.#outTimer) clearTimeout(this.#outTimer);
-      this.#outTimer = null;
-      this.#flushOutputText();
-      this.#outOpen = this.#outAudio = false;
-    }
+    if (this.#outOpen) this.#endOutput({ done: false });
     this.#clearRespondTimer();
     this.#respondTimer = setTimeout(() => {
       this.#respondTimer = null;
