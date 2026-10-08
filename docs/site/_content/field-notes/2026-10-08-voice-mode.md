@@ -3,8 +3,8 @@ title: "Voice mode: a realtime voice in front, the thread's session behind it"
 date: 2026-10-08
 ---
 
-Voice mode puts the agent in a live call. A realtime voice model (OpenAI Realtime
-or Gemini Live) handles the audio and the turn-taking; whenever it needs facts or
+Voice mode puts the agent in a live call. A realtime voice model (OpenAI Realtime,
+OpenAI GPT-Live or Gemini Live) handles the audio and the turn-taking; whenever it needs facts or
 tools it delegates a request to the thread's own Claude session and speaks the
 answer. This note records the mechanisms and, mostly, what review found.
 
@@ -158,6 +158,43 @@ The agent-only rule is only as good as the moment it is checked.
   turn now rejects on the session's exit and a timed-out voice turn aborts the
   session turn.
 
+## Final whole-branch review
+
+- **The voice tools hit the approval gate.** The static permission policy
+  allowed slaude's own servers but not the voice server, and sessions run in the
+  default permission mode, so `voice_say`, `voice_context` and `voice_stop`
+  posted an approval card mid-call, and `voice_start`'s card printed its input,
+  stream token included, into the thread. The mid-call controls are now allowed
+  without a card; `voice_start` keeps its approval (joining a meeting and
+  capturing its audio is a high-impact action), and every approval card redacts
+  secret-named keys at any depth and all route-header values.
+- **The voice key reached agent children.** The child-env scrub strips only
+  gateway-only names; `SLAUDE_VOICE_API_KEY` was not one, so in `mono` the agent
+  child (which runs Bash on requests that came from speech) and the brain-think
+  child could read it. It is gateway-only now: scrubbed from every child, and a
+  node holding it refuses to boot. The voice loop still gets the key, under its
+  own variable.
+- **The stale downgrade never fired.** A reply was stamped with the newest
+  sequence number the child had sent at tool-call time, so it was never behind.
+  A reply now carries the sequence its delegate was asked at, and a plain
+  `voice_say` the newest one handed to the session.
+- **A failed or hung workbench clear ended or froze the call.** The clear is
+  now bounded and a failure skips the truncate (a failed clear used to truncate
+  to 0 ms and reset the uplink clock). Say and context run on their own chain,
+  so a slow say no longer holds up a stop, and during a provider reconnect they
+  wait for the new provider instead of going to the closed one.
+- **Audio link lifecycle.** An uplink that settled while the call was open
+  (any status) left the agent mute for the rest of the call; it now ends the
+  call `audio_lost`. Closing is bounded and closes the provider at the same
+  time, and no workbench request follows a redirect.
+- **Node event stream.** Only an injected turn's done/error was kept off the
+  stream, so a gateway follower replaying a voice turn's tool events put status
+  lines, reactions and task lists into the quiet thread. A voice turn's events
+  now stay off entirely.
+- **A turn sent after its session lock was lost.** The node runner now refuses
+  before the send when the lock signal already fired.
+- `mono` shutdown now ends live calls before the transport stops.
+
 ## Orphan children
 
 The child holds the provider key and stream token, so a child left running is a
@@ -188,10 +225,12 @@ the reconnect gap.
   tests cover those paths instead, and the exit-code wiring after init is
   untested.
 - **Long silent calls versus job-token age.** The session's job token is not
-  refreshed while the call is silent; a call past the token's maximum age may
-  fail its closing summary with `auth_lost`.
-- **A tab may stay in the meeting** after a call ended by a session reboot,
-  because no cleanup turn runs on a session whose identity is unknown. Someone
+  refreshed while the call is silent. A job token lives 15 minutes and can be
+  refreshed until 60 minutes after it expires, so after about 75 minutes with
+  no injected turn the closing summary may fail with `auth_lost`.
+- **A tab may stay in the meeting** after a call ended by a session reboot or
+  a lost identity (`auth_lost`), because no summary or cleanup turn runs on a
+  session that may no longer run as the agent. Someone
   has to leave the meeting by hand.
 - **No thread notice when a node dies mid-call.** The call ends; nothing is
   posted.

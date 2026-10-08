@@ -16,6 +16,8 @@ Ask the agent in a thread to join a meeting, for example "join https://meet.exam
 
 The agent's voice then speaks into the call. The thread's session is held open for the duration, so it does not idle out mid-call.
 
+**Approval.** Under the normal permission mode, `voice_start` asks for approval like any other gated tool: joining a meeting and capturing its audio is a high-impact action. The approval card shows the tool input with the stream token and every route-header value redacted. The mid-call controls (`voice_say`, `voice_context`, `voice_stop`) never ask: a card during the call would break the quiet thread, and stopping a call must not wait on a click.
+
 ## 2. Tools
 
 | Tool | What it does |
@@ -36,7 +38,7 @@ The thread's identity is re-checked:
 - once more right before the voice process is spawned,
 - before **every** turn the call injects into the session (delegated requests, transcript flushes, the closing summary).
 
-If the identity changes during the call (someone runs `/1on1` or `/remote` in the thread), the next check fails and the call ends with reason `auth_lost`. If the thread's session reboots (for example because its configuration changed), the call ends with `session_rebooted`. No cleanup turn runs in that case, because the rebooted session may no longer be agent-only. The transcript file is still written, but the browser tab may stay in the meeting; leave it manually.
+If the identity changes during the call (someone runs `/1on1` or `/remote` in the thread), the next check fails and the call ends with reason `auth_lost`. If the thread's session reboots (for example because its configuration changed), the call ends with `session_rebooted`. In both cases no summary or cleanup turn runs, because the session may no longer run as the agent. The transcript file is still written, but the browser tab may stay in the meeting; leave it manually.
 
 ## 4. Configuration
 
@@ -69,12 +71,12 @@ If the identity changes during the call (someone runs `/1on1` or `/remote` in th
 
 **The voice process.** Each call runs as a separate child process. The provider key and the stream token reach it only through its environment, never through arguments or its stdin protocol. Its environment is otherwise minimal: `PATH`, `HOME`, and, so that proxied or private-CA deployments can reach the provider, the usual `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (and lowercase forms), `NODE_EXTRA_CA_CERTS` and `SSL_CERT_FILE`. It does not read a `.env` file.
 
-**How a call ends.** Normal reasons are `stopped` (the agent called `voice_stop`), `ended_by_voice`, `max_duration` and `workbench:<reason>` (the tab or meeting closed). Failures are `provider_failed`, `provider_lost` (reconnects exhausted), `audio_lost`, `auth_lost`, `session_rebooted`, `node_drain` (a node shutting down) and `loop_crashed`.
+**How a call ends.** Normal reasons are `stopped` (the agent called `voice_stop`), `ended_by_voice`, `max_duration` and `workbench:<reason>` (the tab or meeting closed). Failures are `provider_failed`, `provider_lost` (reconnects exhausted), `audio_lost`, `auth_lost`, `session_rebooted`, `node_drain` (a node, or a `mono` process, shutting down), `parent_gone` (the process that started the voice loop went away) and `loop_crashed`.
 
 ## 6. Limits to know about
 
 - Providers cap a connection's lifetime (Gemini around ten minutes; GPT-Live reports an expiry time when the session starts). The loop reconnects at a pause in the conversation and re-seeds the model with the last lines of the transcript. It does not re-send a summary.
-- A very long, silent call can outlive the session's job token, in which case the closing summary may fail with `auth_lost`.
+- On a node, a very long, silent call can outlive the session's job token (15 minutes, refreshable for up to 60 minutes after it expires, so about 75 minutes of silence), in which case the closing summary may fail with `auth_lost`.
 - If a node dies mid-call, the call ends but nothing is posted in the thread.
 
 ### GPT-Live (`openai-live`) differences
