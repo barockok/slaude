@@ -17,6 +17,9 @@ import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extr
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
 import { quietForVoice, voiceTurns } from "../../voice/turn-flags";
+import { VoiceCalls } from "../../voice/call";
+import { voiceConfigFromEnv, type VoiceConfig } from "../../voice/config";
+import { makeMonoVoiceHost, voiceServersFor } from "../../voice/hosts";
 import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, createConnectMcp, CONNECT_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
 import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
@@ -849,6 +852,38 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         }
       : undefined;
 
+  // Voice calls (voice mode spec §3): mono only — a gateway never runs a
+  // session; a node gets its config through the runtime bundle. Registered
+  // only when voice is enabled AND configured.
+  const voiceCalls = new VoiceCalls();
+  const voiceHost = (() => {
+    if (env.role() === "gateway") return null;
+    let cfg: VoiceConfig | null;
+    try {
+      cfg = voiceConfigFromEnv();
+    } catch (e) {
+      console.warn(`[voice] disabled: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }
+    if (!cfg) return null;
+    agent.on("sessionExit", (sid: string) => void voiceCalls.end(sid, "session_rebooted"));
+    return makeMonoVoiceHost({
+      agent,
+      config: () => cfg,
+      findThread: async (sid) => {
+        const r = await Sessions.findById(sid);
+        return r?.slack_channel_id && r.slack_thread_ts ? { channel: r.slack_channel_id, threadTs: r.slack_thread_ts } : null;
+      },
+      remoteTarget: (c, t) => activeRemoteTarget(c, t),
+      workingDir: async (sid) => {
+        const r = await Sessions.findById(sid);
+        if (!r) throw new Error(`unknown session ${sid}`);
+        return r.working_dir;
+      },
+      soul: () => soulData(),
+    });
+  })();
+
   const mcpResolver = async (sessionId: string): Promise<Record<string, McpServerConfig> | undefined> => {
     const route = routes.get(sessionId);
     if (!route) return undefined;
@@ -879,6 +914,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // auth). Other sessions/threads keep the agent identity (source map untouched).
     const effectiveIdentity = await agent.resolveEffectiveIdentity(sessionId, route.ctx.channel, route.ctx.threadTs);
     Object.assign(servers, privateOverrides(sessionMcp.servers, new Set(sessionMcp.privateServices), !!effectiveIdentity));
+    if (voiceHost) Object.assign(servers, await voiceServersFor(sessionId, voiceHost, voiceCalls));
     sessionCtx.set(sessionId, { slack: route.ctx, surface: route.surface });
     return servers;
   };
