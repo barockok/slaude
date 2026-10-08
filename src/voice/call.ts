@@ -61,6 +61,8 @@ export class VoiceCall {
   #seq = 0;
   #queue: Promise<void> = Promise.resolve();
   #flushTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Epoch ms when the voice loop reported started (0 before). */
+  startedAt = 0;
   #started = false;
   #timedOut = false;
   #exited = false;
@@ -101,6 +103,7 @@ export class VoiceCall {
             if (this.#timedOut && m.type !== "ended") continue;
             if (m.type === "started" && !this.#started) {
               this.#started = true;
+              this.startedAt = Date.now();
               clearTimeout(timer);
               this.#hold();
               resolve();

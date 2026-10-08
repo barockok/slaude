@@ -138,6 +138,8 @@ describe("AudioLink", () => {
     const mk = (e: Partial<typeof endpoints>) => () => new AudioLink({ baseUrl: "http://localhost:1234", endpoints: { ...endpoints, ...e }, streamToken: "tok" });
     expect(mk({ streamUrl: "http://evil.example/x" })).toThrow("workbench endpoint origin mismatch");
     expect(mk({ clearUrl: "//other.example/x" })).toThrow("workbench endpoint origin mismatch");
+    expect(mk({ streamUrl: "http://user:pw@localhost:1234/x" })).toThrow("workbench endpoint origin mismatch");
+    expect(mk({ clearUrl: "http://user@localhost:1234/x" })).toThrow("workbench endpoint origin mismatch");
     expect(mk({})).not.toThrow();
     expect(mk({ streamUrl: "http://localhost:1234/abs/stream" })).not.toThrow();
     try { mk({ streamUrl: "http://evil.example/x" })(); } catch (e) { expect(String(e)).not.toContain("tok"); }

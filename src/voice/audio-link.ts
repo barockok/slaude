@@ -18,6 +18,21 @@ export interface AudioLinkLike {
   close(): Promise<void>;
 }
 
+/** Headers a model-supplied endpoint may never set: the link adds its own bearer. */
+export const FORBIDDEN_HEADERS: ReadonlySet<string> = new Set(["authorization", "cookie", "host"]);
+
+/** True when `path` resolves against `base` to the same origin, without
+ *  embedded credentials. Unparseable input is false. */
+export function sameOrigin(path: string, base: string): boolean {
+  try {
+    const b = new URL(base);
+    const u = new URL(path, b);
+    return u.origin === b.origin && !u.username && !u.password;
+  } catch {
+    return false;
+  }
+}
+
 export class AudioLink implements AudioLinkLike {
   #h: AudioHandlers | null = null;
   #closed = false;
@@ -32,17 +47,14 @@ export class AudioLink implements AudioLinkLike {
   constructor(private o: { baseUrl: string; endpoints: AudioEndpoints; streamToken: string; maxSseRetries?: number; retryDelayMs?: number }) {
     // Endpoints are model-supplied: pin them to the operator's origin so the
     // bearer token can never be sent elsewhere.
-    const base = new URL(o.baseUrl);
     const pin = (path: string): string => {
-      let u: URL;
-      try { u = new URL(path, base); } catch { throw new Error("workbench endpoint origin mismatch"); }
-      if (u.origin !== base.origin) throw new Error("workbench endpoint origin mismatch");
-      return u.toString();
+      if (!sameOrigin(path, o.baseUrl)) throw new Error("workbench endpoint origin mismatch");
+      return new URL(path, o.baseUrl).toString();
     };
     this.#streamUrl = pin(o.endpoints.streamUrl);
     this.#clearUrl = pin(o.endpoints.clearUrl);
     this.#routeHeaders = Object.fromEntries(
-      Object.entries(o.endpoints.headers).filter(([k]) => !["authorization", "cookie", "host"].includes(k.toLowerCase())),
+      Object.entries(o.endpoints.headers).filter(([k]) => !FORBIDDEN_HEADERS.has(k.toLowerCase())),
     );
   }
 

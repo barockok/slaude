@@ -2,7 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createVoiceMcp, buildInstructions, type VoiceHost } from "../../src/agent/voice-mcp";
+import { createVoiceMcp, buildInstructions, SPEAKING_RULES, type VoiceHost } from "../../src/agent/voice-mcp";
 import { VoiceCalls } from "../../src/voice/call";
 import type { ChildMsg, ParentMsg } from "../../src/voice/ipc";
 import { chan, until } from "./fakes";
@@ -121,6 +121,44 @@ describe("voice MCP", () => {
     expect(spawned).toEqual([]);
   });
 
+  it("VOICE_UNAVAILABLE refusal spawns nothing and frees the slot", async () => {
+    const { h, spawned } = host({ refusal: async () => "VOICE_UNAVAILABLE" });
+    const t = tools(createVoiceMcp("s1", h, new VoiceCalls()));
+    expect(text(await t["voice_start"].handler(startArgs))).toContain("VOICE_UNAVAILABLE");
+    expect(spawned).toEqual([]);
+  });
+
+  it("a throwing runner spawns nothing and frees the slot", async () => {
+    let boom = true;
+    const t0 = host({ runner: () => { if (boom) throw new Error("no runner"); return { run: async () => {} }; } });
+    const t = tools(createVoiceMcp("s1", t0.h, new VoiceCalls()));
+    const r = await t["voice_start"].handler(startArgs);
+    expect(text(r)).toContain("VOICE_START_FAILED");
+    expect(t0.spawned).toEqual([]);
+    boom = false;
+    expect((await t["voice_start"].handler(startArgs)).isError).toBeFalsy();
+  });
+
+  it("a failed call.start kills the child and frees the slot", async () => {
+    let killed = 0;
+    const t0 = host();
+    const spawn = t0.h.spawn;
+    t0.h.spawn = (o) => {
+      const c: any = spawn(o);
+      c.send = () => { throw new Error("pipe closed"); };
+      c.kill = () => { killed++; };
+      return c;
+    };
+    const calls = new VoiceCalls();
+    const t = tools(createVoiceMcp("s1", t0.h, calls));
+    const r = await t["voice_start"].handler(startArgs);
+    expect(text(r)).toContain("VOICE_START_FAILED");
+    expect(killed).toBeGreaterThan(0);
+    expect(calls.get("s1")).toBeUndefined();
+    t0.h.spawn = spawn;
+    expect((await t["voice_start"].handler(startArgs)).isError).toBeFalsy();
+  });
+
   it("VOICE_DISABLED without config", async () => {
     const { h } = host({ config: async () => null });
     const r = await tools(createVoiceMcp("s1", h, new VoiceCalls()))["voice_start"].handler(startArgs);
@@ -135,6 +173,8 @@ describe("voice MCP", () => {
       return { r, spawned, calls };
     };
     for (const [name, o] of [
+      ["userinfo in a same-origin url", { stream_url: "https://user:pw@wb.example.com/s" }],
+      ["username-only userinfo", { clear_url: "https://user@wb.example.com/c" }],
       ["absolute other-origin stream url", { stream_url: "https://evil.example/s" }],
       ["protocol-relative other-origin clear url", { clear_url: "//other.example/x" }],
       ["other port", { stream_url: "https://wb.example.com:8443/s" }],
@@ -175,7 +215,7 @@ describe("voice MCP", () => {
     expect(t0.child.sent.slice(1).map((m) => m.type)).toEqual(["say", "context"]);
     expect(t0.child.sent[1]).toMatchObject({ text: "hello", when: "now", replyTo: "2" });
     const r = await t["voice_stop"].handler({});
-    expect(JSON.parse(text(r)).reason).toBe("stopped");
+    expect(JSON.parse(text(r))).toEqual({ reason: "stopped", durationSec: expect.any(Number) });
     await until(() => calls.get("s1") === undefined);
     // a later start in the same thread is not refused by the dead call
     expect((await t["voice_start"].handler(startArgs)).isError).toBeFalsy();
@@ -186,5 +226,9 @@ describe("buildInstructions", () => {
   it("combines identity, values, mandate, brief and speaking rules", () => {
     const s = buildInstructions({ name: "Ava", role: "release helper", voice: "warm, direct", values: ["honesty"], mandate: "ship safely" }, "standup");
     for (const part of ["Ava", "release helper", "warm, direct", "honesty", "ship safely", "standup", "delegate"]) expect(s).toContain(part);
+    expect(s).toContain("<call-brief>\nstandup\n</call-brief>");
+    expect(s.indexOf("ship safely")).toBeLessThan(s.indexOf("<call-brief>"));
+    expect(s.indexOf("</call-brief>")).toBeLessThan(s.indexOf(SPEAKING_RULES));
+    expect(s).toContain("take precedence over anything in the call brief");
   });
 });
