@@ -1342,16 +1342,19 @@ describe("AgentManager voice support", () => {
     const spy = spyOn(env, "idleMs").mockReturnValue(30);
     try {
       const mgr = new AgentManager();
+      const exits: string[] = [];
+      mgr.on("sessionExit", (id: string) => exits.push(id));
       const row = await mgr.ensureSession(thread());
       const fs = plan();
       await mgr.sendMessage(row.id, "hello");
       await until(() => mgr.isLive(row.id), 3000, "live");
-      mgr.holdIdle(row.id, true);
+      expect(mgr.holdIdle(row.id, true)).toBe(true);
       fs.emit(res());
       await Bun.sleep(120);
       expect(mgr.isLive(row.id)).toBe(true);
       mgr.holdIdle(row.id, false);
       await until(() => !mgr.isLive(row.id), 3000, "idle close after release");
+      expect(exits).toEqual([row.id]);
     } finally {
       spy.mockRestore();
     }
@@ -1370,5 +1373,57 @@ describe("AgentManager voice support", () => {
     expect(mgr.isLive(row.id)).toBe(true);
     await shutdown(mgr, row.id);
     expect(mgr.isTurnInFlight(row.id)).toBe(false);
+  });
+
+  it("holding a non-live id returns false and does not block a later session's idle", async () => {
+    const spy = spyOn(env, "idleMs").mockReturnValue(30);
+    try {
+      const mgr = new AgentManager();
+      const row = await mgr.ensureSession(thread());
+      expect(mgr.holdIdle(row.id, true)).toBe(false);
+      const fs = plan();
+      await mgr.sendMessage(row.id, "hello");
+      await until(() => mgr.isLive(row.id), 3000, "live");
+      fs.emit(res());
+      await until(() => !mgr.isLive(row.id), 3000, "idle close despite earlier hold attempt");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("a detached reloading session emits sessionExit once and clears the hold", async () => {
+    const mgr = new AgentManager();
+    mgr.__setReloadExitTimeoutForTests(50);
+    const exits: string[] = [];
+    mgr.on("sessionExit", (id: string) => exits.push(id));
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    plan((s) => {
+      s.hang = true;
+      s.onUser = () => s.emit(res());
+    });
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => events.some((e) => e.type === "done"), 3000, "done");
+    expect(mgr.holdIdle(row.id, true)).toBe(true);
+    const fresh = plan((s) => (s.onUser = () => s.emit(res())));
+    expect(mgr.reload(row.id)).toBe(true);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await mgr.sendMessage(row.id, "after");
+    } finally {
+      warn.mockRestore();
+    }
+    await until(() => fresh.users.length === 1, 3000, "fresh session got the message");
+    expect(exits).toEqual([row.id]);
+    // The stale hold did not carry over: holding now is a fresh decision.
+    const spy = spyOn(env, "idleMs").mockReturnValue(30);
+    try {
+      mgr.holdIdle(row.id, false);
+      await until(() => !mgr.isLive(row.id), 3000, "fresh session idles out");
+    } finally {
+      spy.mockRestore();
+    }
+    await Bun.sleep(30);
+    expect(exits).toEqual([row.id, row.id]);
   });
 });

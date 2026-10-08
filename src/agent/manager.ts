@@ -622,17 +622,31 @@ export class AgentManager extends EventEmitter {
 
   /** Suspend (true) or restore (false) the idle TTL for a live session. A voice
    *  call holds it so the warm session — and its warm-node registration — stays
-   *  up for the whole call; release re-arms the normal timer. */
-  holdIdle(sessionId: string, hold: boolean) {
-    if (hold) this.#idleHeld.add(sessionId);
-    else this.#idleHeld.delete(sessionId);
+   *  up for the whole call; release re-arms the normal timer. Holding a session
+   *  that is not live does nothing and returns false (a stale hold would block
+   *  the idle TTL of a later session under the same id). */
+  holdIdle(sessionId: string, hold: boolean): boolean {
     const live = this.#live.get(sessionId);
-    if (!live) return;
-    if (hold) {
-      if (live.idleTimer) clearTimeout(live.idleTimer);
-      live.idleTimer = undefined;
-    } else {
-      this.#armIdle(live);
+    if (!hold) {
+      this.#idleHeld.delete(sessionId);
+      if (live) this.#armIdle(live);
+      return true;
+    }
+    if (!live) return false;
+    this.#idleHeld.add(sessionId);
+    if (live.idleTimer) clearTimeout(live.idleTimer);
+    live.idleTimer = undefined;
+    return true;
+  }
+
+  /** Clear the hold and tell listeners (voice calls) the live session is gone.
+   *  A throwing listener must not stall teardown. */
+  #signalSessionExit(sessionId: string) {
+    this.#idleHeld.delete(sessionId);
+    try {
+      this.emit("sessionExit", sessionId);
+    } catch (e) {
+      console.error(`[mgr] sessionExit listener failed session=${sessionId}:`, e);
     }
   }
 
@@ -666,7 +680,12 @@ export class AgentManager extends EventEmitter {
         console.warn(`[mgr] reloading session=${sessionId} did not exit within ${this.#reloadExitTimeoutMs}ms; aborting it and booting fresh`);
         this.abort(sessionId);
         if (old.idleTimer) clearTimeout(old.idleTimer);
-        if (this.#live.get(sessionId) === old) this.#live.delete(sessionId);
+        if (this.#live.get(sessionId) === old) {
+          this.#live.delete(sessionId);
+          // The detached instance's own teardown no longer owns the id and
+          // stays silent, so this is its one exit signal (a voice call must learn).
+          this.#signalSessionExit(sessionId);
+        }
         live = undefined;
         break;
       }
@@ -1334,9 +1353,8 @@ export class AgentManager extends EventEmitter {
         this.#budget.forget(sessionId);
         this.#stopBlocked.delete(sessionId);
         metric.sessionsLive.set(this.#live.size);
-        this.#idleHeld.delete(sessionId);
-        this.emit("sessionExit", sessionId);
         markExited();
+        this.#signalSessionExit(sessionId);
         // After a stream_closed auto-reload, inject a synthetic "continue"
         // prompt so the resumed session picks up without human input.
         if (live.reloading && this.#autoContinue.has(sessionId)) {
