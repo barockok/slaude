@@ -20,6 +20,10 @@ export interface VoiceHost {
    *  re-checks it before every injected turn (delegate, flush, summary) and
    *  refuses the turn with VoiceAuthLost, which ends the call `auth_lost`. */
   stillAllowed(sessionId: string): Promise<boolean>;
+  /** Required last check before the child is spawned, after runner(): the
+   *  thread's identity as of now (a node does one fresh token refresh through
+   *  the call's chain). Non-null refuses the start and nothing is spawned. */
+  confirmStart(sessionId: string): Promise<"VOICE_AGENT_ONLY" | "VOICE_UNAVAILABLE" | null>;
   runner(sessionId: string): TurnRunner;
   transcriptDir(sessionId: string): Promise<string>;
   spawn(o: { apiKey: string; streamToken: string }): LoopChild;
@@ -72,9 +76,12 @@ export const voiceHandlers = {
     let child: LoopChild | undefined;
     let registered = false;
     try {
+      const refuse = (code: "VOICE_AGENT_ONLY" | "VOICE_UNAVAILABLE") =>
+        code === "VOICE_AGENT_ONLY"
+          ? err(code, "voice calls run as the agent only; not available in a /1on1-locked or /remote thread")
+          : err(code, "voice is unavailable on this node right now");
       const refusal = await host.refusal(sessionId);
-      if (refusal === "VOICE_AGENT_ONLY") return err(refusal, "voice calls run as the agent only; not available in a /1on1-locked or /remote thread");
-      if (refusal) return err(refusal, "voice is unavailable on this node right now");
+      if (refusal) return refuse(refusal);
       const cfg = await host.config(sessionId);
       if (!cfg) return err("VOICE_DISABLED", "voice mode is not configured");
       const { audio } = args;
@@ -95,6 +102,8 @@ export const voiceHandlers = {
         staleSeq: cfg.staleSeq,
       };
       const runner = host.runner(sessionId);
+      const confirmed = await host.confirmStart(sessionId);
+      if (confirmed) return refuse(confirmed);
       child = host.spawn({ apiKey: cfg.apiKey, streamToken: audio.stream_token });
       const call: VoiceCall = new VoiceCall({
         sessionId,

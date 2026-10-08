@@ -88,6 +88,8 @@ export function makeMonoVoiceHost(o: {
     config: async () => o.config(),
     refusal,
     stillAllowed,
+    // The refusal reads the database live; re-read it right before the spawn.
+    confirmStart: refusal,
     runner: () => runner,
     transcriptDir: (sid) => o.workingDir(sid),
     spawn: (s) => spawnVoiceLoop(s),
@@ -119,8 +121,14 @@ export function makeNodeVoiceHost(o: {
    *  Data only: the chain (keeper) is started from it in runner(). */
   const checked = new Map<string, { jobId: string; token: string }>();
   const chains = new Map<string, ReturnType<typeof makeTokenKeeper>>();
-  const allow = (identity: unknown) =>
-    voiceRefusalFromClaims(identity && typeof identity === "object" ? (identity as JobClaimsExcerpt) : null) === null;
+  /** Why the chain's last identity check refused, per session. */
+  const verdicts = new Map<string, "VOICE_AGENT_ONLY" | "VOICE_UNAVAILABLE">();
+  const allowFor = (sid: string) => (identity: unknown) => {
+    const r = voiceRefusalFromClaims(identity && typeof identity === "object" ? (identity as JobClaimsExcerpt) : null);
+    if (r) verdicts.set(sid, r);
+    else verdicts.delete(sid);
+    return r === null;
+  };
   return {
     config: async (sid) => voiceConfigFromBundle((await o.bundle(sid))?.voice),
     refusal: async (sid) => {
@@ -137,6 +145,22 @@ export function makeNodeVoiceHost(o: {
     // The node's identity check is the refresh itself (makeTokenKeeper): this
     // reports what the last one found.
     stillAllowed: async (sid) => chains.get(sid)?.allowed() ?? false,
+    // The claims voice_start checked are as of the last dispatch; a lock set
+    // since must refuse the start, not the first injected turn. One fresh
+    // refresh through the call's own chain. voice_start runs inside the
+    // checked job's turn, which holds the session lock, so binding the fresh
+    // token of that same job here is safe.
+    confirmStart: async (sid) => {
+      const keeper = chains.get(sid);
+      if (!keeper) return "VOICE_UNAVAILABLE";
+      verdicts.delete(sid);
+      try {
+        await keeper.refresh();
+        return null;
+      } catch {
+        return verdicts.get(sid) ?? "VOICE_UNAVAILABLE";
+      }
+    },
     // voice_start asks for the runner only after config() succeeded, so the
     // chain starts here, once per call, from the token checked at the start —
     // never from a newer job claimed for the session since.
@@ -144,7 +168,7 @@ export function makeNodeVoiceHost(o: {
       const start = checked.get(sid);
       checked.delete(sid);
       const keeper = start
-        ? makeTokenKeeper({ jobId: start.jobId, token: start.token, refresh: o.refresh, allow, bind: (t) => o.bindToken(sid, t) })
+        ? makeTokenKeeper({ jobId: start.jobId, token: start.token, refresh: o.refresh, allow: allowFor(sid), bind: (t) => o.bindToken(sid, t) })
         : null;
       if (keeper) chains.set(sid, keeper);
       else chains.delete(sid);
@@ -162,7 +186,10 @@ export function makeNodeVoiceHost(o: {
     transcriptDir: (sid) => o.workingDir(sid),
     spawn: (s) => spawnVoiceLoop(s),
     holdIdle: (sid, h) => {
-      if (!h) chains.delete(sid);
+      if (!h) {
+        chains.delete(sid);
+        verdicts.delete(sid);
+      }
       return o.agent.holdIdle(sid, h);
     },
     instructions: async (sid, brief) => instructionsFrom((await o.bundle(sid))?.soulJson, brief),

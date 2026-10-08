@@ -9,7 +9,7 @@ import {
   drainVoiceCalls,
   voiceServersFor,
 } from "../../src/voice/hosts";
-import { VOICE_MCP_NAME, type VoiceHost } from "../../src/agent/voice-mcp";
+import { VOICE_MCP_NAME, voiceHandlers, type VoiceHost } from "../../src/agent/voice-mcp";
 import { VoiceAuthLost } from "../../src/voice/runners";
 import { VoiceCall, VoiceCalls } from "../../src/voice/call";
 import { fakeChild, until } from "./fakes";
@@ -303,6 +303,38 @@ describe("node voice host", () => {
     expect(agent.sent).toEqual(["a"]);
     expect(bound).toHaveLength(1);
     expect(await h.stillAllowed("s1")).toBe(false);
+  });
+  it("voice_start confirms the identity with one fresh refresh before spawning (lock set after dispatch)", async () => {
+    const lockedLater = { runAs: "user:U1", lock: { user: "U1", openScope: null }, remote: false };
+    for (const [identity, want] of [[lockedLater, "VOICE_AGENT_ONLY"], [undefined, "VOICE_UNAVAILABLE"]] as const) {
+      const refreshed: string[] = [];
+      const bound: string[] = [];
+      const h = makeNodeVoiceHost({
+        ...base, bundle: async () => ({ voice, soulJson: null }), bindToken: (_id, t) => bound.push(t),
+        refresh: async (j, t) => { refreshed.push(j); return { jobToken: t + "+", identity }; },
+      });
+      let spawned = 0;
+      const host = { ...h, spawn: () => { spawned++; throw new Error("must not spawn"); } };
+      const calls = new VoiceCalls();
+      const r = await voiceHandlers.start("s1", host, calls, {
+        brief: "b",
+        audio: { stream_url: "/s", clear_url: "/c", headers: {}, sample_rate: 24000, stream_token: "st" },
+      });
+      expect((r as { isError?: boolean }).isError).toBe(true);
+      expect(r.content[0]!.text).toStartWith(want);
+      expect(spawned).toBe(0);
+      expect(refreshed).toEqual(["j1"]);
+      expect(bound).toEqual([]);
+    }
+  });
+  it("confirmStart passes for a thread still run by the agent, binding the fresh token", async () => {
+    const bound: string[] = [];
+    const h = makeNodeVoiceHost({ ...base, bindToken: (_id, t) => bound.push(t) });
+    expect(await h.refusal("s1")).toBeNull();
+    h.runner("s1");
+    expect(await h.confirmStart("s1")).toBeNull();
+    expect(bound).toHaveLength(1);
+    expect(await makeNodeVoiceHost({ ...base }).confirmStart("s9")).toBe("VOICE_UNAVAILABLE"); // no chain
   });
   it("a refused refresh surfaces as VoiceAuthLost", async () => {
     const h = makeNodeVoiceHost({ ...base, refresh: async () => { throw new Error("401 label changed"); } });

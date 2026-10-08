@@ -40,6 +40,7 @@ function host(over: Partial<VoiceHost> = {}) {
     config: async () => cfg,
     refusal: async () => null,
     stillAllowed: async () => true,
+    confirmStart: async () => null,
     runner: () => ({ run: async () => {} }),
     transcriptDir: async () => mkdtempSync(join(tmpdir(), "vm-")),
     spawn: (o) => {
@@ -120,6 +121,17 @@ describe("voice MCP", () => {
     const r = await tools(createVoiceMcp("s1", h, new VoiceCalls()))["voice_start"].handler(startArgs);
     expect(text(r)).toContain("VOICE_AGENT_ONLY");
     expect(spawned).toEqual([]);
+  });
+
+  it("the pre-spawn confirmation refuses; nothing spawned, slot freed", async () => {
+    for (const code of ["VOICE_AGENT_ONLY", "VOICE_UNAVAILABLE"] as const) {
+      const { h, spawned } = host({ confirmStart: async () => code });
+      const calls = new VoiceCalls();
+      const t = tools(createVoiceMcp("s1", h, calls));
+      expect(text(await t["voice_start"].handler(startArgs))).toStartWith(code);
+      expect(spawned).toEqual([]);
+      expect(calls.reserve("s1")).toBe(true);
+    }
   });
 
   it("VOICE_UNAVAILABLE refusal spawns nothing and frees the slot", async () => {
