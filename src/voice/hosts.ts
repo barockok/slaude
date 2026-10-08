@@ -14,14 +14,17 @@ import { spawnVoiceLoop } from "./spawn";
 
 type JobClaimsExcerpt = { lock?: unknown; remote?: unknown; runAs?: string };
 
-/** A job token's claims → the agent-only refusal: a /1on1 lock, a /remote
- *  target, or a turn that runs as a person. Fails closed: no claims means the
- *  identity is unknown, so no call. */
+/** A job token's claims (or the gateway's fresh thread identity) → the
+ *  agent-only refusal: a /1on1 lock, a /remote target, or a turn that runs as
+ *  a person. Fails closed: allowed only when the identity is positively the
+ *  agent and the lock is positively absent (`lock: null`; a token from an older
+ *  gateway has no lock claim at all). */
 export function voiceRefusalFromClaims(c: JobClaimsExcerpt | null): "VOICE_AGENT_ONLY" | "VOICE_UNAVAILABLE" | null {
   if (!c) return "VOICE_UNAVAILABLE";
   if (c.lock) return "VOICE_AGENT_ONLY";
   if (c.remote) return "VOICE_AGENT_ONLY";
-  if (c.runAs && c.runAs !== "agent") return "VOICE_AGENT_ONLY";
+  if (c.runAs !== undefined && c.runAs !== "agent") return "VOICE_AGENT_ONLY";
+  if (c.runAs !== "agent" || !("lock" in c)) return "VOICE_UNAVAILABLE";
   return null;
 }
 

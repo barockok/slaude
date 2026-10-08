@@ -48,6 +48,10 @@ describe("voiceRefusalFromClaims", () => {
   });
   it("fails closed when the claims are unknown", () => {
     expect(voiceRefusalFromClaims(null)).toBe("VOICE_UNAVAILABLE");
+    // Strict: an allowed call needs runAs "agent" AND an explicit lock claim.
+    expect(voiceRefusalFromClaims({})).toBe("VOICE_UNAVAILABLE");
+    expect(voiceRefusalFromClaims({ lock: null })).toBe("VOICE_UNAVAILABLE");
+    expect(voiceRefusalFromClaims({ runAs: "agent" })).toBe("VOICE_UNAVAILABLE");
   });
 });
 
