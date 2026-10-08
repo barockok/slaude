@@ -34,6 +34,7 @@ import { soulData } from "../../soul/extract";
 import { skillRootsFor } from "../../skills/loader";
 import { json, notFound } from "./http";
 import { bridgedServerNames } from "../core/external-mcp";
+import { voiceBundleFromEnv, type VoiceBundle } from "../../voice/config";
 
 export interface RuntimeBundle {
   tenantId: string;
@@ -69,6 +70,9 @@ export interface RuntimeBundle {
    *  is exactly that set, and a node must not fill a missing field (or any
    *  other provider-selecting variable) from its own environment. */
   ownProvider?: true;
+  /** Voice provider config for voice mode (plan deviation 2): gateway env →
+   *  node. Holds a plaintext key; evicted with the bundle like providerCreds. */
+  voice?: VoiceBundle | null;
 }
 
 type PersonaRow = {
@@ -398,7 +402,15 @@ export async function handleTenantRuntime(
     throw e;
   }
   if (!bundle) return notFound("unknown tenant or persona");
-  const body = JSON.stringify(bundle);
+  let voiceBundle: VoiceBundle | null;
+  try {
+    voiceBundle = voiceBundleFromEnv();
+  } catch (e) {
+    // Log warning but don't fail the bundle (PF1)
+    console.warn(`failed to build voice bundle: ${e instanceof Error ? e.message : String(e)}`);
+    voiceBundle = null;
+  }
+  const body = JSON.stringify({ ...bundle, voice: voiceBundle });
   const etag = `"${bundleEtag(body)}"`;
   const inm = req.headers.get("if-none-match");
   // RFC 7232 §3.2: "*" matches any current representation; otherwise compare
