@@ -83,6 +83,37 @@ describe("runVoiceLoop", () => {
     expect(made.length).toBe(4); // initial + 3 failed attempts
   });
 
+  it("holds say/context during a provider reconnect and replays them on the new provider", async () => {
+    const made: FakeProvider[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const ib = inbox();
+    const out: ChildMsg[] = [];
+    const done = runVoiceLoop({
+      init, audio: new FakeAudio(), inbox: ib, emit: (m) => out.push(m), tickMs: 5, reconnectDelayMs: 1,
+      makeProvider: () => {
+        const p = new FakeProvider();
+        if (made.length >= 1) { const c = p.connect.bind(p); p.connect = async (i) => { await gate; return c(i); }; }
+        made.push(p);
+        return p;
+      },
+    });
+    await until(() => out.some((m) => m.type === "started"));
+    made[0]!.emitEvent("closed");
+    await until(() => made.length === 2);
+    ib.push({ type: "context", text: "fact during reconnect" });
+    ib.push({ type: "say", text: "answer during reconnect", when: "next_gap", asOf: 0 });
+    await Bun.sleep(30);
+    expect(made[0]!.named("addContext")).toEqual([]);
+    expect(made[1]!.named("addContext")).toEqual([]);
+    release();
+    await until(() => made[1]!.named("respond").length === 1);
+    expect(made[1]!.named("addContext")[0]).toEqual(["addContext", "fact during reconnect"]);
+    expect(made[0]!.named("addContext")).toEqual([]);
+    ib.push({ type: "stop", reason: "stopped" });
+    expect(await done).toBe("stopped");
+  });
+
   it("ends provider_failed on a fatal provider error", async () => {
     const p = new FakeProvider();
     const done = runVoiceLoop({ init, makeProvider: () => p, audio: new FakeAudio(), inbox: inbox(), emit: () => {}, tickMs: 5 });

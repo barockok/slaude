@@ -37,6 +37,10 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
 
   let provider = d.makeProvider();
   let reconnecting = false;
+  // Pending while a reconnect runs: say/context wait for the new provider
+  // instead of going to the closed one.
+  let providerReady: Promise<void> = Promise.resolve();
+  let markReady = () => {};
   // Providers whose connect() has resolved. Error events from a provider still
   // handshaking are ignored: the connect() rejection is the failed attempt.
   const connected = new WeakSet<VoiceProvider>();
@@ -80,6 +84,7 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
   async function reconnect(why: "planned" | "dropped"): Promise<void> {
     if (reconnecting || finished) return;
     reconnecting = true;
+    providerReady = new Promise<void>((r) => (markReady = r));
     const old = provider;
     await old.close().catch(() => {});
     for (let attempt = 1; attempt <= MAX_RECONNECTS && !finished; attempt++) {
@@ -92,6 +97,7 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
         conductor.onReconnected(now());
         d.emit({ type: "log", level: "info", message: `provider reconnected (${why}, attempt ${attempt})` });
         reconnecting = false;
+        markReady();
         return;
       } catch {
         await p.close().catch(() => {});
@@ -99,6 +105,7 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
       }
     }
     reconnecting = false;
+    markReady();
     end("provider_lost");
   }
 
@@ -133,10 +140,16 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
     end("loop_crashed");
   };
   // say/context run in order on their own chain so a slow say (a flush's
-  // clear round trip) never holds up reading a stop.
+  // clear round trip) never holds up reading a stop. During a reconnect the
+  // chain waits for the new provider, then replays in order.
   let steer: Promise<void> = Promise.resolve();
   const onSteer = (fn: () => void | Promise<void>) => {
-    steer = steer.then(() => (finished ? undefined : fn())).catch(inboxFailed);
+    steer = steer
+      .then(async () => {
+        while (reconnecting && !finished) await Promise.race([providerReady, ended]);
+        if (!finished) await fn();
+      })
+      .catch(inboxFailed);
   };
   void (async () => {
     for await (const m of d.inbox) {
