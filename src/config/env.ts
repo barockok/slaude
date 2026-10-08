@@ -123,6 +123,18 @@ function sameAsNodeToken(token: string, name: string): boolean {
 export function __resetDeployTokenWarnings() { warnedSameAsNode.clear(); }
 
 export const env = {
+  voice: {
+    enabled: (): boolean => {
+      const raw = opt("SLAUDE_VOICE_ENABLED", "0").toLowerCase();
+      return raw === "1" || raw === "true" || raw === "yes";
+    },
+    model: (): string => opt("SLAUDE_VOICE_MODEL", "openai/gpt-realtime"),
+    voiceName: (): string | undefined => opt("SLAUDE_VOICE_NAME", "") || undefined,
+    apiKey: (): string | undefined => opt("SLAUDE_VOICE_API_KEY", "") || undefined,
+    workbenchUrl: (): string | undefined => opt("SLAUDE_VOICE_WORKBENCH_URL", "") || undefined,
+    maxMinutes: (): number => positiveInt("SLAUDE_VOICE_MAX_MINUTES", 120),
+    staleSeq: (): number => positiveInt("SLAUDE_VOICE_STALE_SEQ", 6),
+  },
   slack: {
     /**
      * Slack ingress mode (spec §5 / milestone M3):
