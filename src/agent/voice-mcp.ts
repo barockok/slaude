@@ -19,7 +19,8 @@ export interface VoiceHost {
   runner(sessionId: string): TurnRunner;
   transcriptDir(sessionId: string): Promise<string>;
   spawn(o: { apiKey: string; streamToken: string }): LoopChild;
-  holdIdle(sessionId: string, hold: boolean): void;
+  /** `false` = the session was not live, nothing held (the call retries). */
+  holdIdle(sessionId: string, hold: boolean): boolean | void;
   instructions(sessionId: string, brief: string): Promise<string>;
 }
 
