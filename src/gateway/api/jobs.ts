@@ -43,6 +43,34 @@ import { env } from "../../config/env";
 import { m as metric } from "../../metrics";
 import { json, readJson } from "./http";
 import { TURNS_QUEUE } from "../../queue/keys";
+import { encodeRunAs, parseRunAs } from "../../agent/credential-owner";
+import { threadIdentity } from "../core/thread-identity";
+
+/** The thread's identity as of now, as the token-refresh response carries it
+ *  (voice mode: a call re-checks it before every injected turn). */
+export interface FreshIdentity {
+  runAs: string;
+  lock: { user: string; openScope: string | null } | null;
+  remote: boolean;
+}
+
+/** Computed with dispatch's rule; a person carried in the token (a cron job's
+ *  initiator, a /1on1 turn) stays that person. Null when it cannot be
+ *  computed (no runAs claim, a lookup failed): the field is then omitted and
+ *  a voice call on the node fails closed. */
+async function freshIdentity(claims: JobClaims): Promise<FreshIdentity | null> {
+  const carried = parseRunAs(claims.runAs);
+  if (!carried) return null;
+  try {
+    const id = await threadIdentity(claims.channel, claims.thread, (lock) =>
+      carried.kind === "user" ? carried.slackUserId : lock?.locked_user,
+    );
+    return { runAs: encodeRunAs(id.runAsUser), lock: id.lock, remote: !!id.remote };
+  } catch (e) {
+    console.warn(`[v1-jobs] token refresh: thread identity unavailable: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+}
 
 /** How long past exp a token may still be exchanged. */
 export const REFRESH_GRACE_SEC = 60 * 60;
@@ -141,7 +169,9 @@ export async function handleTokenRefresh(
   metric.v1JobEventsTotal.inc({ event: "token_refresh" });
   // The fresh token never outlives the cap either.
   const exp = Math.min(nowSec + JOB_TOKEN_TTL_SEC, lifeEnd);
-  return json(200, { jobToken: mintJobToken({ ...reclaims(claims), job: jobId, iat0, exp }, { now: nowMs }) });
+  const jobToken = mintJobToken({ ...reclaims(claims), job: jobId, iat0, exp }, { now: nowMs });
+  const identity = await freshIdentity(claims);
+  return json(200, identity ? { jobToken, identity } : { jobToken });
 }
 
 /** What token-reissue needs from the queue. */

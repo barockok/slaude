@@ -21,8 +21,7 @@ import { encodeRunAs } from "../../agent/credential-owner";
 import { mintJobToken, verifyJobToken } from "../api/auth";
 import { runsOnFor } from "../../persona/registry";
 import { env } from "../../config/env";
-import { activeRemoteTarget } from "../../remote/active";
-import * as OneOnOne from "../../db/one-on-one";
+import { threadIdentity } from "./thread-identity";
 import { sessionConfigFp } from "../../remote/fingerprint";
 import { defaultEpochs, localEpochs, turnMcpEpoch, type McpCredEpochs } from "./mcp-cred-epoch";
 import { makeKeys, type Keys } from "../../queue/keys";
@@ -313,15 +312,14 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       // identity wins: it keys on a synthetic thread with no lock of its own.
       // A failed lookup throws rather than defaulting to the agent, because
       // defaulting would run a 1:1 turn with the agent's shared credentials.
-      const runAsUser = meta.oauthUser ?? (await agent.resolveEffectiveIdentity(session.id, meta.channelId, meta.threadTs));
-      // Remote mode (spec §4.5): only a target owned by the runAs user is signed in.
-      const remoteTarget = env.remote.enabled() ? await activeRemoteTarget(meta.channelId, meta.threadTs) : null;
-      const remoteClaim = remoteTarget && remoteTarget.userId === runAsUser ? { addr: remoteTarget.addr, dir: remoteTarget.dir } : undefined;
-      // The thread's /1on1 lock, for the node's session-mode block: a node has
-      // no database. Always present (null = unlocked) so a node can tell it from
-      // a token minted by an older gateway. A failed lookup fails the dispatch.
-      const lockRow = await OneOnOne.find(meta.channelId, meta.threadTs);
-      const lockClaim = lockRow ? { user: lockRow.locked_user, openScope: lockRow.open_scope } : null;
+      // The lock rides the token for the node's session-mode block (a node has
+      // no database): always present (null = unlocked) so a node can tell it
+      // from a token minted by an older gateway.
+      const { runAsUser, lock: lockClaim, remote: remoteClaim } = await threadIdentity(
+        meta.channelId,
+        meta.threadTs,
+        async () => meta.oauthUser ?? (await agent.resolveEffectiveIdentity(session.id, meta.channelId, meta.threadTs)),
+      );
       // The node label the persona runs on, signed into the token (the /v1
       // gate checks it against the node's credential) and carried in the payload.
       const label = runsOnFor(personaId);
