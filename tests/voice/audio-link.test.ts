@@ -133,4 +133,32 @@ describe("AudioLink", () => {
     expect(await link.clear()).toEqual({ playedMs: 1500, clearedMs: 900 });
     await link.close();
   });
+
+  it("rejects endpoints that leave the configured origin", () => {
+    const mk = (e: Partial<typeof endpoints>) => () => new AudioLink({ baseUrl: "http://localhost:1234", endpoints: { ...endpoints, ...e }, streamToken: "tok" });
+    expect(mk({ streamUrl: "http://evil.example/x" })).toThrow("workbench endpoint origin mismatch");
+    expect(mk({ clearUrl: "//other.example/x" })).toThrow("workbench endpoint origin mismatch");
+    expect(mk({})).not.toThrow();
+    expect(mk({ streamUrl: "http://localhost:1234/abs/stream" })).not.toThrow();
+    try { mk({ streamUrl: "http://evil.example/x" })(); } catch (e) { expect(String(e)).not.toContain("tok"); }
+  });
+
+  it("never lets endpoint headers override authorization", async () => {
+    wb = fakeWorkbench();
+    const link = new AudioLink({ baseUrl: wb.base, endpoints: { ...endpoints, headers: { ...endpoints.headers, Authorization: "x", Cookie: "c" } }, streamToken: "stok" });
+    await link.start({ onAudio: () => {}, onEnded: () => {} });
+    await link.clear();
+    await link.close();
+    expect(wb.auth.every((a: string) => a === "Bearer stok")).toBe(true);
+  });
+
+  it("write after uplink loss does not throw", async () => {
+    wb = fakeWorkbench({ postStatus: 404 });
+    const link = new AudioLink({ baseUrl: wb.base, endpoints, streamToken: "s" });
+    let reason = "";
+    await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+    await until(() => reason === "audio_lost");
+    expect(() => link.write(new Int16Array(4))).not.toThrow();
+    await link.close();
+  });
 });

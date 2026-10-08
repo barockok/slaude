@@ -25,13 +25,29 @@ export class AudioLink implements AudioLinkLike {
   #sseAbort = new AbortController();
   #uplinkCtl: ReadableStreamDefaultController<Uint8Array> | null = null;
   #uplinkDone: Promise<void> = Promise.resolve();
-  constructor(private o: { baseUrl: string; endpoints: AudioEndpoints; streamToken: string; maxSseRetries?: number; retryDelayMs?: number }) {}
+  readonly #streamUrl: string;
+  readonly #clearUrl: string;
+  readonly #routeHeaders: Record<string, string>;
 
-  #url(path: string): string {
-    return new URL(path, this.o.baseUrl).toString();
+  constructor(private o: { baseUrl: string; endpoints: AudioEndpoints; streamToken: string; maxSseRetries?: number; retryDelayMs?: number }) {
+    // Endpoints are model-supplied: pin them to the operator's origin so the
+    // bearer token can never be sent elsewhere.
+    const base = new URL(o.baseUrl);
+    const pin = (path: string): string => {
+      let u: URL;
+      try { u = new URL(path, base); } catch { throw new Error("workbench endpoint origin mismatch"); }
+      if (u.origin !== base.origin) throw new Error("workbench endpoint origin mismatch");
+      return u.toString();
+    };
+    this.#streamUrl = pin(o.endpoints.streamUrl);
+    this.#clearUrl = pin(o.endpoints.clearUrl);
+    this.#routeHeaders = Object.fromEntries(
+      Object.entries(o.endpoints.headers).filter(([k]) => !["authorization", "cookie", "host"].includes(k.toLowerCase())),
+    );
   }
+
   #headers(extra: Record<string, string> = {}): Record<string, string> {
-    return { ...this.o.endpoints.headers, authorization: `Bearer ${this.o.streamToken}`, ...extra };
+    return { ...this.#routeHeaders, authorization: `Bearer ${this.o.streamToken}`, ...extra };
   }
   #end(reason: string): void {
     if (this.#ended || this.#closed) return;
@@ -43,7 +59,7 @@ export class AudioLink implements AudioLinkLike {
     this.#h = h;
     void this.#sseLoop();
     const body = new ReadableStream<Uint8Array>({ start: (c) => { this.#uplinkCtl = c; } });
-    this.#uplinkDone = fetch(this.#url(this.o.endpoints.streamUrl), {
+    this.#uplinkDone = fetch(this.#streamUrl, {
       method: "POST",
       headers: this.#headers({ "content-type": "audio/pcm" }),
       body,
@@ -60,7 +76,7 @@ export class AudioLink implements AudioLinkLike {
     while (!this.#closed && !this.#ended) {
       let gotData = false;
       try {
-        const r = await fetch(this.#url(this.o.endpoints.streamUrl), {
+        const r = await fetch(this.#streamUrl, {
           headers: this.#headers({ accept: "text/event-stream" }),
           signal: this.#sseAbort.signal,
         });
@@ -91,12 +107,16 @@ export class AudioLink implements AudioLinkLike {
   }
 
   write(pcm: Int16Array): void {
-    if (this.#closed || !this.#uplinkCtl) return;
-    this.#uplinkCtl.enqueue(new Uint8Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength)));
+    if (this.#closed || this.#ended || !this.#uplinkCtl) return;
+    try {
+      this.#uplinkCtl.enqueue(new Uint8Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength)));
+    } catch {
+      // uplink already errored or cancelled; audio_lost is reported separately
+    }
   }
 
   async clear(): Promise<{ playedMs: number; clearedMs: number }> {
-    const r = await fetch(this.#url(this.o.endpoints.clearUrl), { method: "POST", headers: this.#headers() });
+    const r = await fetch(this.#clearUrl, { method: "POST", headers: this.#headers() });
     if (!r.ok) return { playedMs: 0, clearedMs: 0 };
     const j = (await r.json()) as { played_ms?: number; cleared_ms?: number };
     return { playedMs: j.played_ms ?? 0, clearedMs: j.cleared_ms ?? 0 };
@@ -112,8 +132,8 @@ export class AudioLink implements AudioLinkLike {
 }
 
 /** The reason comes from the external workbench; keep it inside the ipc EndReason grammar. */
-function sanitizeReason(raw: string | undefined): string {
-  const s = (raw ?? "stopped").toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 64);
+function sanitizeReason(raw: unknown): string {
+  const s = (typeof raw === "string" ? raw : "").toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 64);
   return s || "stopped";
 }
 
