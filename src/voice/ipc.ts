@@ -62,7 +62,7 @@ const parentSchema = z.discriminatedUnion("type", [
       audio: audioEndpoints,
       workbenchUrl: z.string().url(),
       instructions: z.string(),
-      provider: z.enum(["openai", "gemini"]),
+      provider: z.enum(["openai", "openai-live", "gemini"]),
       model: z.string().min(1),
       voice: z.string().optional(),
       maxMinutes: z.number().int().positive(),

@@ -6,8 +6,8 @@
  */
 import { env } from "../config/env";
 
-export type VoiceProviderId = "openai" | "gemini";
-const PROVIDERS: readonly VoiceProviderId[] = ["openai", "gemini"];
+export type VoiceProviderId = "openai" | "openai-live" | "gemini";
+const PROVIDERS: readonly VoiceProviderId[] = ["openai", "openai-live", "gemini"];
 
 export interface VoiceConfig {
   provider: VoiceProviderId;

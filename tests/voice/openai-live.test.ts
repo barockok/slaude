@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { OpenAILive } from "../../src/voice/provider/openai-live";
+import { createProvider } from "../../src/voice/provider";
 import { pcmToBase64 } from "../../src/voice/provider/types";
 import { Conductor, AUTO_RESPONSE_WAIT_MS } from "../../src/voice/conductor";
 import type { ChildMsg } from "../../src/voice/ipc";
@@ -459,5 +460,11 @@ describe("OpenAILive with the real Conductor", () => {
     expect(emitted[1]).toMatchObject({ type: "delegate", id: "1", task: "check the queue depth", asOf: 1 });
     await until(() => srv!.frames.some((f) => f.type === "session.thinking.append" && f.delegation_id === "del_9"));
     await p.close();
+  });
+});
+
+describe("createProvider openai-live", () => {
+  it("builds the GPT-Live adapter", () => {
+    expect(createProvider({ provider: "openai-live", model: "gpt-live-1", apiKey: "k" })).toBeInstanceOf(OpenAILive);
   });
 });

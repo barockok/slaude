@@ -20,6 +20,18 @@ describe("ipc", () => {
     expect(parseParentMsg('{"type":"say","text":"x","when":"later","asOf":3}')).toBeNull();
     expect(parseParentMsg("not json")).toBeNull();
   });
+  it("accepts every voice provider id in init and rejects unknown ones", () => {
+    const init = {
+      callId: "c1", audio: { streamUrl: "s", clearUrl: "c", headers: {}, sampleRate: 24000 },
+      workbenchUrl: "https://wb.example.com", instructions: "", provider: "openai-live", model: "gpt-live-1",
+      maxMinutes: 10, staleSeq: 6,
+    };
+    for (const provider of ["openai", "openai-live", "gemini"]) {
+      expect(parseParentMsg(JSON.stringify({ type: "init", init: { ...init, provider } }))).not.toBeNull();
+    }
+    expect(parseParentMsg(JSON.stringify({ type: "init", init: { ...init, provider: "nope" } }))).toBeNull();
+  });
+
   it("parses child messages including workbench end reasons", () => {
     expect(parseChildMsg('{"type":"ended","reason":"workbench:tab_closed"}')).toEqual({ type: "ended", reason: "workbench:tab_closed" });
     expect(parseChildMsg('{"type":"ended","reason":"workbench:tab_closed2"}')).toEqual({ type: "ended", reason: "workbench:tab_closed2" });

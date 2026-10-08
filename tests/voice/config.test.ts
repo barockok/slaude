@@ -9,6 +9,7 @@ describe("parseVoiceModel", () => {
   it("splits provider and model", () => {
     expect(parseVoiceModel("openai/gpt-realtime")).toEqual({ provider: "openai", model: "gpt-realtime" });
     expect(parseVoiceModel("gemini/gemini-live-2.5-flash")).toEqual({ provider: "gemini", model: "gemini-live-2.5-flash" });
+    expect(parseVoiceModel("openai-live/gpt-live-1")).toEqual({ provider: "openai-live", model: "gpt-live-1" });
   });
   it("rejects unknown provider and unqualified names", () => {
     expect(() => parseVoiceModel("nope/x")).toThrow(/unknown voice provider/);
