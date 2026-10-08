@@ -55,6 +55,44 @@ shaped the adapters:
   audio after an interruption, or turn completion); without it the conductor
   stayed in "user speaking" after the first barge-in forever.
 
+## GPT-Live adapter (`openai-live`)
+
+GPT-Live's client delegation sends a delegation event to the application
+instead of calling a tool, so Claude stays the brain; its alternative, tools on
+a hosted Responses backend, would put an OpenAI model in front of Claude and was
+rejected. The mapping onto the provider interface is lossy:
+
+- **One tool.** Every client delegation becomes a `delegate` call. The event
+  carries no task text, so the task is the participant transcript since the
+  previous delegation, emitted after the transcript line so the session sees the
+  words first. `end_call` cannot happen; leaving goes through Claude's
+  `voice_stop`.
+- **No truncate, no cancel.** The model yields on its own; an urgent utterance
+  still flushes queued audio. Context goes out as silent `thinking`; a spoken
+  utterance (context immediately followed by respond, in the same tick) goes out
+  as one `commentary`, not a silent note plus a nudge.
+- **Synthetic events.** There are no item ids, speech-start/stop or
+  response-done events. Agent turns end after 600 ms of quiet output,
+  participant turns after 800 ms of quiet input transcript; ids count these
+  turns. Without the synthetic response-done the conductor's active-response
+  flag latched after the first audio and the steer queue never drained again.
+- **Ids follow the conductor's model.** Wiring the adapter to the real conductor
+  showed two ways to go silent: after a flush the conductor drops late audio of
+  the flushed item, and GPT-Live answering a barge-in or a spoken steer without
+  a quiet gap kept the old id, so the answer was dropped. Participant speech
+  and respond() now end the open output turn. A respond() that produces no
+  audio still gets a response-done after a timeout, so a steer the model
+  ignores cannot latch the queue.
+- **Session limit** comes from `expires_at` at start; there is no fixed
+  duration and the model compacts its own context, so a planned reconnect
+  happens only near expiry.
+- **To measure live:** output-audio pacing against real time (it decides how
+  much a false-positive barge-in flushes), transcript lag behind speech (how
+  late barge-in is detected, and whether a backchannel cuts the agent off),
+  `expires_at` at start, and whether a commentary with no delegation id is
+  spoken while a delegation is open. The opt-in live test prints the first two
+  figures it can see.
+
 ## Conductor races found in review
 
 - A stale `done` from a response the conductor itself cancelled cleared the
@@ -150,5 +188,7 @@ the reconnect gap.
 - **Gemini context lands up to a turn late** (above); a provider error during a
   request that never produced a response can leave the conductor's active flag
   set.
-- **Not run against real infrastructure:** a live call against either provider
-  is covered only by the opt-in test, which needs a workbench tab and a key.
+- **Not run against real infrastructure:** a live call against any provider
+  is covered only by the opt-in tests, which need a key (and, for the full
+  loop, a workbench tab). The GPT-Live adapter has been run only against a fake
+  server built from the documented protocol.

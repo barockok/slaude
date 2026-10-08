@@ -43,7 +43,7 @@ If the identity changes during the call (someone runs `/1on1` or `/remote` in th
 | Variable | Default | Meaning |
 |---|---|---|
 | `SLAUDE_VOICE_ENABLED` | `0` | `1`, `true` or `yes` turns voice mode on. |
-| `SLAUDE_VOICE_MODEL` | `openai/gpt-realtime` | Provider-qualified voice model. Providers: `openai`, `gemini`. A bad value fails loudly. |
+| `SLAUDE_VOICE_MODEL` | `openai/gpt-realtime` | Provider-qualified voice model. Providers: `openai` (e.g. `openai/gpt-realtime`), `openai-live` (e.g. `openai-live/gpt-live-1`; client delegation, no truncate, leaving the call goes through Claude), `gemini` (e.g. `gemini/gemini-live-2.5-flash`). A bad value fails loudly. |
 | `SLAUDE_VOICE_NAME` | provider default | Voice name passed to the provider. `voice_start` may override it per call. |
 | `SLAUDE_VOICE_API_KEY` | (none) | The provider key. Required, together with the workbench URL, or voice stays off. |
 | `SLAUDE_VOICE_WORKBENCH_URL` | (none) | The workbench base URL. Required. |
@@ -73,6 +73,14 @@ If the identity changes during the call (someone runs `/1on1` or `/remote` in th
 
 ## 6. Limits to know about
 
-- Providers cap a connection's lifetime (Gemini around ten minutes). The loop reconnects at a pause in the conversation and re-seeds the model with the last lines of the transcript. It does not re-send a summary.
+- Providers cap a connection's lifetime (Gemini around ten minutes; GPT-Live reports an expiry time when the session starts). The loop reconnects at a pause in the conversation and re-seeds the model with the last lines of the transcript. It does not re-send a summary.
 - A very long, silent call can outlive the session's job token, in which case the closing summary may fail with `auth_lost`.
 - If a node dies mid-call, the call ends but nothing is posted in the thread.
+
+### GPT-Live (`openai-live`) differences
+
+GPT-Live runs in client-delegation mode: when it needs facts or tools it hands the request to the thread's Claude session, so Claude stays the brain. The protocol is a looser fit than the other two providers:
+
+- **No truncate, no cancel.** GPT-Live yields to a speaker on its own. An urgent `now` utterance still flushes the audio already queued in the tab, but the model's memory is not trimmed to what was heard.
+- **Synthetic turn events.** GPT-Live sends no turn boundaries, so the adapter derives "participant started/stopped speaking" and "agent finished speaking" from short quiet gaps in the transcript and audio. Barge-in is detected from the transcript, so it is a little late, and a short "mm-hmm" while the agent talks can cut off its queued audio.
+- **The call cannot end itself by voice.** GPT-Live calls no tools of its own, so there is no `end_call`: a request to leave reaches Claude as an ordinary delegated request, and Claude ends the call with `voice_stop` (reason `stopped`, never `ended_by_voice`). The delegated task text is the participant's recent words, since the delegation event carries none.
