@@ -71,7 +71,8 @@ export interface RuntimeBundle {
    *  other provider-selecting variable) from its own environment. */
   ownProvider?: true;
   /** Voice provider config for voice mode (plan deviation 2): gateway env →
-   *  node. Holds a plaintext key; evicted with the bundle like providerCreds. */
+   *  node, only for authorized tenants (SLAUDE_VOICE_TENANTS gating). Holds a
+   *  plaintext key; added after buildBundle, outside the bundle cache. */
   voice?: VoiceBundle | null;
 }
 
@@ -402,13 +403,17 @@ export async function handleTenantRuntime(
     throw e;
   }
   if (!bundle) return notFound("unknown tenant or persona");
-  let voiceBundle: VoiceBundle | null;
-  try {
-    voiceBundle = voiceBundleFromEnv();
-  } catch (e) {
-    // Log warning but don't fail the bundle (PF1)
-    console.warn(`failed to build voice bundle: ${e instanceof Error ? e.message : String(e)}`);
-    voiceBundle = null;
+  let voiceBundle: VoiceBundle | null = null;
+  // Tenant isolation (PF49): only ship voice config to authorized tenants.
+  const allowedTenants = env.voice.tenants();
+  if (allowedTenants === "*" || allowedTenants.includes(tenantId)) {
+    try {
+      voiceBundle = voiceBundleFromEnv();
+    } catch (e) {
+      // Log warning but don't fail the bundle (a bad voice model must not 500 every bundle).
+      console.warn(`failed to build voice bundle: ${e instanceof Error ? e.message : String(e)}`);
+      voiceBundle = null;
+    }
   }
   const body = JSON.stringify({ ...bundle, voice: voiceBundle });
   const etag = `"${bundleEtag(body)}"`;

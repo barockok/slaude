@@ -134,6 +134,13 @@ export const env = {
     workbenchUrl: (): string | undefined => opt("SLAUDE_VOICE_WORKBENCH_URL", "") || undefined,
     maxMinutes: (): number => positiveInt("SLAUDE_VOICE_MAX_MINUTES", 120),
     staleSeq: (): number => positiveInt("SLAUDE_VOICE_STALE_SEQ", 6),
+    /** Tenant ids allowed to receive voice config in their runtime bundle. "*"
+     *  means all tenants. Unset or empty means no tenants. */
+    tenants: (): string[] | "*" => {
+      const raw = opt("SLAUDE_VOICE_TENANTS", "").trim();
+      if (raw === "*") return "*";
+      return csv(raw);
+    },
   },
   slack: {
     /**
