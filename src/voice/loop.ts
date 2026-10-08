@@ -21,6 +21,8 @@ export interface LoopDeps {
 }
 
 const MAX_RECONNECTS = 3;
+/** Upper bound on closing the provider and audio link at the end of a call. */
+const CLOSE_WAIT_MS = 2_500;
 
 export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
   const now = d.now ?? Date.now;
@@ -148,8 +150,12 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
 
   const reason = await ended;
   clearInterval(ticker);
-  await d.audio.close().catch(() => {});
-  await provider.close().catch(() => {});
+  // Close both at once and bound the wait: a hung audio close must not leave
+  // the provider socket open or the parent without its `ended`.
+  await Promise.race([
+    Promise.all([provider.close().catch(() => {}), d.audio.close().catch(() => {})]),
+    Bun.sleep(CLOSE_WAIT_MS),
+  ]);
   d.emit({ type: "ended", reason });
   return reason;
 }

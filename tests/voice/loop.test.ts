@@ -165,6 +165,19 @@ describe("runVoiceLoop", () => {
     expect(r).toBe("stopped");
   });
 
+  it("a hung audio.close() still closes the provider and emits ended", async () => {
+    const provider = new FakeProvider();
+    const audio = new FakeAudio();
+    audio.close = () => new Promise<never>(() => {});
+    const ib = inbox();
+    const out: ChildMsg[] = [];
+    void runVoiceLoop({ init, makeProvider: () => provider, audio, inbox: ib, emit: (m) => out.push(m), tickMs: 5 });
+    await until(() => out.some((m) => m.type === "started"));
+    ib.push({ type: "stop", reason: "stopped" });
+    await until(() => provider.named("close").length === 1);
+    await until(() => out.some((m) => m.type === "ended"), 3000);
+  });
+
   it("survives a rejecting audio.clear() on speechStarted and still ends exactly once", async () => {
     const provider = new FakeProvider();
     const audio = new FakeAudio();

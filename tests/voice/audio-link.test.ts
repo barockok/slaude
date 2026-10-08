@@ -4,12 +4,13 @@ import { pcmToBase64 } from "../../src/voice/provider/types";
 import { until } from "./fakes";
 
 const sse = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-function fakeWorkbench(opts: { getStatus?: number; postStatus?: number; dropFirstSse?: boolean; clearStatus?: number; clearHang?: boolean } = {}) {
+function fakeWorkbench(opts: { getStatus?: number; postStatus?: number; dropFirstSse?: boolean; clearStatus?: number; clearHang?: boolean; postHang?: boolean; postEarly?: boolean; redirectTo?: string } = {}) {
   const st: any = { gets: 0, auth: [] as string[], route: [] as string[], uplinkBytes: 0, clears: 0, sseCtl: null as any };
   const server = Bun.serve({
     port: 0,
     async fetch(req) {
       const url = new URL(req.url);
+      if (opts.redirectTo) return new Response("", { status: 307, headers: { location: opts.redirectTo + url.pathname } });
       st.auth.push(req.headers.get("authorization") ?? "");
       st.route.push(req.headers.get("x-browser-session") ?? "");
       if (url.pathname.endsWith("/audio/clear")) {
@@ -32,6 +33,8 @@ function fakeWorkbench(opts: { getStatus?: number; postStatus?: number; dropFirs
         }), { headers: { "content-type": "text/event-stream" } });
       }
       if (req.method === "POST") {
+        if (opts.postHang) return new Promise<Response>(() => {});
+        if (opts.postEarly) return Response.json({ ok: true });
         if (opts.postStatus) return new Response("", { status: opts.postStatus });
         for await (const chunk of req.body as any) st.uplinkBytes += chunk.byteLength;
         return Response.json({ played_ms: 0 });
@@ -126,6 +129,53 @@ describe("AudioLink", () => {
     await until(() => reason !== "");
     expect(reason).toBe("audio_lost");
     await link.close();
+  });
+
+  it("ends audio_lost when the uplink fails with a 5xx", async () => {
+    wb = fakeWorkbench({ postStatus: 503 });
+    const link = new AudioLink({ baseUrl: wb.base, endpoints, streamToken: "s" });
+    let reason = "";
+    await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+    await until(() => reason !== "");
+    expect(reason).toBe("audio_lost");
+    await link.close();
+  });
+
+  it("ends audio_lost when the uplink is answered (200) while the call is open", async () => {
+    wb = fakeWorkbench({ postEarly: true });
+    const link = new AudioLink({ baseUrl: wb.base, endpoints, streamToken: "s" });
+    let reason = "";
+    await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+    await until(() => reason !== "");
+    expect(reason).toBe("audio_lost");
+    await link.close();
+  });
+
+  it("close is bounded when the uplink never settles", async () => {
+    wb = fakeWorkbench({ postHang: true });
+    const link = new AudioLink({ baseUrl: wb.base, endpoints, streamToken: "s", closeTimeoutMs: 100 });
+    await link.start({ onAudio: () => {}, onEnded: () => {} });
+    const t0 = Date.now();
+    await link.close();
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+
+  it("does not follow redirects (the bearer never leaves the pinned origin)", async () => {
+    const hits: string[] = [];
+    const evil = Bun.serve({ port: 0, fetch(req) { hits.push(req.headers.get("authorization") ?? ""); return new Response("x"); } });
+    try {
+      wb = fakeWorkbench({ redirectTo: `http://localhost:${evil.port}` });
+      const link = new AudioLink({ baseUrl: wb.base, endpoints, streamToken: "s", maxSseRetries: 0, retryDelayMs: 1 });
+      let reason = "";
+      await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+      await until(() => reason !== "");
+      expect(reason).toBe("audio_lost");
+      expect(await link.clear()).toBeNull();
+      await link.close();
+      expect(hits).toEqual([]);
+    } finally {
+      void evil.stop();
+    }
   });
 
   it("clear returns played and cleared ms", async () => {

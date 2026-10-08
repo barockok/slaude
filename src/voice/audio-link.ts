@@ -39,13 +39,14 @@ export class AudioLink implements AudioLinkLike {
   #closed = false;
   #ended = false;
   #sseAbort = new AbortController();
+  #uplinkAbort = new AbortController();
   #uplinkCtl: ReadableStreamDefaultController<Uint8Array> | null = null;
   #uplinkDone: Promise<void> = Promise.resolve();
   readonly #streamUrl: string;
   readonly #clearUrl: string;
   readonly #routeHeaders: Record<string, string>;
 
-  constructor(private o: { baseUrl: string; endpoints: AudioEndpoints; streamToken: string; maxSseRetries?: number; retryDelayMs?: number; clearTimeoutMs?: number }) {
+  constructor(private o: { baseUrl: string; endpoints: AudioEndpoints; streamToken: string; maxSseRetries?: number; retryDelayMs?: number; clearTimeoutMs?: number; closeTimeoutMs?: number }) {
     // Endpoints are model-supplied: pin them to the operator's origin so the
     // bearer token can never be sent elsewhere.
     const pin = (path: string): string => {
@@ -72,13 +73,17 @@ export class AudioLink implements AudioLinkLike {
     this.#h = h;
     void this.#sseLoop();
     const body = new ReadableStream<Uint8Array>({ start: (c) => { this.#uplinkCtl = c; } });
+    // The uplink lives for the whole call: it settling (any status, or an
+    // error) while the call is open means the agent can no longer be heard.
     this.#uplinkDone = fetch(this.#streamUrl, {
       method: "POST",
       headers: this.#headers({ "content-type": "audio/pcm" }),
       body,
       duplex: "half",
+      redirect: "error",
+      signal: this.#uplinkAbort.signal,
     }).then(
-      (r) => { if (r.status === 404 || r.status === 401 || r.status === 403) this.#end("audio_lost"); },
+      () => this.#end("audio_lost"),
       () => this.#end("audio_lost"),
     );
   }
@@ -91,6 +96,7 @@ export class AudioLink implements AudioLinkLike {
       try {
         const r = await fetch(this.#streamUrl, {
           headers: this.#headers({ accept: "text/event-stream" }),
+          redirect: "error",
           signal: this.#sseAbort.signal,
         });
         if (r.ok && r.body) {
@@ -134,6 +140,7 @@ export class AudioLink implements AudioLinkLike {
       const r = await fetch(this.#clearUrl, {
         method: "POST",
         headers: this.#headers(),
+        redirect: "error",
         signal: AbortSignal.timeout(this.o.clearTimeoutMs ?? 2_000),
       });
       if (!r.ok) return null;
@@ -149,7 +156,14 @@ export class AudioLink implements AudioLinkLike {
     this.#closed = true;
     try { this.#uplinkCtl?.close(); } catch {}
     this.#sseAbort.abort();
-    await this.#uplinkDone.catch(() => {});
+    // Let the workbench finish the uplink cleanly, but not forever.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settled = await Promise.race([
+      this.#uplinkDone.then(() => true, () => true),
+      new Promise<false>((r) => (timer = setTimeout(() => r(false), this.o.closeTimeoutMs ?? 2_000))),
+    ]);
+    clearTimeout(timer);
+    if (!settled) this.#uplinkAbort.abort();
   }
 }
 
