@@ -98,7 +98,7 @@ describe("OpenAIRealtime", () => {
     p.on("error", (e) => got.push(["error", e.fatal]));
     p.on("closed", () => got.push(["closed"]));
     await p.connect({ instructions: "", tools: [] });
-    srv.send({ type: "error", error: { type: "authentication_error", message: "no" } });
+    srv.send({ type: "error", error: { type: "invalid_request_error", code: "invalid_api_key", message: "no" } });
     srv.closeClient();
     await until(() => got.length >= 3);
     expect(got).toEqual([["error", true], ["error", false], ["closed"]]);
@@ -111,5 +111,17 @@ describe("OpenAIRealtime", () => {
     await until(() => srv!.frames.length >= 2);
     expect(srv.frames[1].item.content[0].text).toContain("earlier: user asked X");
     await p.close();
+  });
+
+  it("a failed connect closes its socket and a stale close does not fire closed", async () => {
+    srv = fakeServer((f, s) => { if (f.type === "session.update") s.send({ type: "error", error: { type: "invalid_request_error", code: "invalid_api_key", message: "bad key" } }); });
+    const p = new OpenAIRealtime({ apiKey: "k", model: "m", url: srv.url });
+    const got: any[] = [];
+    p.on("error", (e) => got.push(["error", e.fatal]));
+    p.on("closed", () => got.push(["closed"]));
+    await expect(p.connect({ instructions: "", tools: [] })).rejects.toThrow("bad key");
+    srv.closeClient();
+    await Bun.sleep(100);
+    expect(got).toEqual([["error", true]]);
   });
 });

@@ -9,7 +9,10 @@ import {
   type ProviderConnect, type ProviderEvents, type VoiceProvider, type VoiceProviderCaps,
 } from "./types";
 
-const FATAL_ERROR_TYPES = new Set(["authentication_error", "permission_error", "insufficient_quota", "invalid_api_key"]);
+// Documented error.type values are invalid_request_error / server_error; auth and
+// quota failures arrive as error.code. The type names are matched too, on either field.
+const FATAL_ERRORS = new Set(["authentication_error", "permission_error", "invalid_api_key", "insufficient_quota"]);
+const isFatal = (e: any): boolean => FATAL_ERRORS.has(e?.code) || FATAL_ERRORS.has(e?.type);
 
 export class OpenAIRealtime extends TypedEmitter<ProviderEvents> implements VoiceProvider {
   readonly caps: VoiceProviderCaps = { inputRate: 24000, outputRate: 24000, truncate: true, maxSessionSec: 3600 };
@@ -20,13 +23,27 @@ export class OpenAIRealtime extends TypedEmitter<ProviderEvents> implements Voic
   }
 
   async connect(init: ProviderConnect): Promise<void> {
-    const url = `${this.o.url ?? "wss://api.openai.com/v1/realtime"}?model=${encodeURIComponent(this.o.model)}`;
+    const u = new URL(this.o.url ?? "wss://api.openai.com/v1/realtime");
+    u.searchParams.set("model", this.o.model);
     // Bun's WebSocket accepts request headers as a second-argument option.
-    const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${this.o.apiKey}` } } as any);
+    const ws = new WebSocket(u.toString(), { headers: { Authorization: `Bearer ${this.o.apiKey}` } } as any);
     this.#ws = ws;
     this.#closing = false;
     await new Promise<void>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error("realtime connect timeout")), 10_000);
+      let ready = false;
+      let settled = false;
+      // Every failed-handshake path: detach, close the socket, reject once.
+      const fail = (message: string, fatal: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+        if (this.#ws === ws) this.#ws = null;
+        try { ws.close(1000, "connect failed"); } catch {}
+        if (fatal) this.fire("error", { fatal: true, message });
+        reject(new Error(message));
+      };
+      const timer = setTimeout(() => fail("realtime connect timeout", false), 10_000);
       ws.onopen = () => {
         this.#send({
           type: "session.update",
@@ -46,20 +63,29 @@ export class OpenAIRealtime extends TypedEmitter<ProviderEvents> implements Voic
         });
       };
       ws.onmessage = (ev) => {
-        const m = JSON.parse(String(ev.data));
-        if (m.type === "session.updated") {
-          clearTimeout(t);
+        if (ws !== this.#ws) return;
+        let m: any;
+        try { m = JSON.parse(String(ev.data)); } catch { return; }
+        if (!ready && m?.type === "error" && isFatal(m.error)) {
+          return fail(String(m.error?.message ?? "realtime error"), true);
+        }
+        if (!ready && m?.type === "session.updated") {
+          ready = true;
+          settled = true;
+          clearTimeout(timer);
           if (init.seed) this.addContext(seedText(init.seed));
           resolve();
-        } else if (m.type === "error" && FATAL_ERROR_TYPES.has(m.error?.type)) {
-          clearTimeout(t);
-          reject(new Error(m.error?.message ?? "realtime error"));
         }
         this.#onServer(m);
       };
-      ws.onerror = () => { clearTimeout(t); reject(new Error("realtime websocket error")); };
+      // A refused upgrade (e.g. a bad key) surfaces here before session.updated: fatal.
+      ws.onerror = () => {
+        if (ws !== this.#ws) return;
+        if (!ready) fail("realtime websocket error during handshake", true);
+      };
       ws.onclose = () => {
-        clearTimeout(t);
+        if (ws !== this.#ws) return;
+        if (!ready) return fail("realtime connection closed during handshake", true);
         if (!this.#closing) {
           this.fire("error", { fatal: false, message: "realtime connection closed" });
           this.fire("closed");
@@ -95,7 +121,7 @@ export class OpenAIRealtime extends TypedEmitter<ProviderEvents> implements Voic
         this.fire("responseDone");
         break;
       case "error":
-        this.fire("error", { fatal: FATAL_ERROR_TYPES.has(m.error?.type), message: String(m.error?.message ?? "error") });
+        this.fire("error", { fatal: isFatal(m.error), message: String(m.error?.message ?? "error") });
         break;
     }
   }
