@@ -1,0 +1,156 @@
+// tests/voice/conductor.test.ts
+import { describe, it, expect } from "bun:test";
+import { Conductor, STILL_WORKING_MS, CAP_WARNING_MS, RECONNECT_LEAD_MS } from "../../src/voice/conductor";
+import { FakeProvider, FakeAudio, pcm } from "./fakes";
+import type { ChildMsg, EndReason } from "../../src/voice/ipc";
+
+function setup(over: Partial<{ truncate: boolean; maxSessionSec: number; maxMs: number; staleSeq: number }> = {}) {
+  const provider = new FakeProvider();
+  provider.caps = { inputRate: 24000, outputRate: 24000, truncate: over.truncate ?? true, maxSessionSec: over.maxSessionSec };
+  const audio = new FakeAudio();
+  const emitted: ChildMsg[] = [];
+  const ended: EndReason[] = [];
+  let reconnects = 0;
+  const c = new Conductor(
+    { provider, audio, emit: (m) => emitted.push(m), end: (r) => ended.push(r), reconnect: () => reconnects++ },
+    { outputRate: 24000, staleSeq: over.staleSeq ?? 6, maxMs: over.maxMs ?? 3_600_000, startedAt: 0 },
+  );
+  return { c, provider, audio, emitted, ended, reconnects: () => reconnects };
+}
+
+describe("Conductor", () => {
+  it("forwards model audio to the uplink and marks a response active", async () => {
+    const { c, audio, provider } = setup();
+    c.onAudio(pcm(2400), "i1");
+    expect(audio.written.length).toBe(1);
+    await c.say({ type: "say", text: "later", when: "next_gap", asOf: 0 });
+    expect(provider.named("respond")).toEqual([]); // held: a response is active
+  });
+
+  it("flush truncates to played audio and resets the uplink clock", async () => {
+    const { c, provider, audio } = setup();
+    c.onAudio(pcm(24000), "i1"); // 1000 ms on the uplink clock
+    c.onAudio(pcm(24000), "i2"); // i2 starts at 1000 ms
+    audio.clearResult = { playedMs: 1400, clearedMs: 600 };
+    await c.onSpeechStarted();
+    expect(audio.clears).toBe(1);
+    expect(provider.named("truncate")).toEqual([["truncate", "i2", 400]]);
+    expect(provider.named("cancel")).toEqual([]); // provider cancels itself
+    c.onAudio(pcm(24000), "i3"); // starts at the reset clock: 1400
+    audio.clearResult = { playedMs: 1500, clearedMs: 900 };
+    await c.onSpeechStarted();
+    expect(provider.named("truncate").at(-1)).toEqual(["truncate", "i3", 100]);
+  });
+
+  it("flush skips truncate when the provider cannot", async () => {
+    const { c, provider, audio } = setup({ truncate: false });
+    c.onAudio(pcm(2400), "g1");
+    await c.onSpeechStarted();
+    expect(audio.clears).toBe(1);
+    expect(provider.named("truncate")).toEqual([]);
+  });
+
+  it("numbers transcripts and emits them", () => {
+    const { c, emitted } = setup();
+    c.onTranscript({ role: "user", text: "hello", itemId: "u1" });
+    c.onTranscript({ role: "assistant", text: "hi", itemId: "i1" });
+    expect(emitted).toEqual([
+      { type: "transcript", seq: 1, role: "user", text: "hello" },
+      { type: "transcript", seq: 2, role: "assistant", text: "hi" },
+    ]);
+    expect(c.seq).toBe(2);
+    expect(c.recentTranscript(1)).toBe("voice: hi");
+  });
+
+  it("delegate returns working at once and emits a delegate with asOf", () => {
+    const { c, provider, emitted } = setup();
+    c.onTranscript({ role: "user", text: "check the deploy", itemId: "u1" });
+    c.onToolCall({ callId: "c1", name: "delegate", args: { task: "check the deploy" } }, 0);
+    expect(provider.named("toolResult")).toEqual([["toolResult", "c1", { id: "1", status: "working" }]]);
+    expect(emitted.at(-1)).toEqual({ type: "delegate", id: "1", task: "check the deploy", asOf: 1 });
+  });
+
+  it("end_call ends the call; unknown tools get an error result", () => {
+    const { c, provider, ended } = setup();
+    c.onToolCall({ callId: "c1", name: "end_call", args: { reason: "asked to leave" } }, 0);
+    c.onToolCall({ callId: "c2", name: "nope", args: {} }, 0);
+    expect(ended).toEqual(["ended_by_voice"]);
+    expect(provider.named("toolResult")[1]![2]).toEqual({ error: "unknown tool nope" });
+  });
+
+  it("next_gap waits until nobody speaks and no response is active", async () => {
+    const { c, provider } = setup();
+    c.onAudio(pcm(10), "i1"); // response active
+    await c.say({ type: "say", text: "the deploy is green", when: "next_gap", asOf: 0 });
+    expect(provider.named("respond")).toEqual([]);
+    c.onResponseDone();
+    expect(provider.named("addContext").at(-1)![1]).toContain("the deploy is green");
+    expect(provider.named("respond").length).toBe(1);
+  });
+
+  it("now preempts: cancel, flush, speak", async () => {
+    const { c, provider, audio } = setup();
+    c.onAudio(pcm(10), "i1");
+    await c.say({ type: "say", text: "correction: it failed", when: "now", asOf: 0 });
+    expect(provider.calls.map((x) => x[0])).toEqual(["cancel", "truncate", "addContext", "respond"]);
+    expect(audio.clears).toBe(1);
+  });
+
+  it("stale now steer downgrades to next_gap", async () => {
+    const { c, provider, audio } = setup({ staleSeq: 2 });
+    for (let i = 0; i < 5; i++) c.onTranscript({ role: "user", text: `t${i}`, itemId: `u${i}` });
+    c.onAudio(pcm(10), "i1"); // response active → no gap
+    await c.say({ type: "say", text: "old news", when: "now", asOf: 1 }); // 5-1 > 2
+    expect(provider.named("cancel")).toEqual([]);
+    expect(audio.clears).toBe(0);
+    c.onResponseDone();
+    expect(provider.named("respond").length).toBe(1);
+  });
+
+  it("nudges once when a delegate is still working after 60s, at a gap", () => {
+    const { c, provider } = setup();
+    c.onToolCall({ callId: "c1", name: "delegate", args: { task: "x" } }, 0);
+    c.tick(STILL_WORKING_MS - 1);
+    expect(provider.named("addContext")).toEqual([]);
+    c.tick(STILL_WORKING_MS);
+    expect(provider.named("addContext").length).toBe(1);
+    c.onResponseDone();
+    c.tick(STILL_WORKING_MS * 2);
+    expect(provider.named("addContext").length).toBe(1);
+  });
+
+  it("a reply_to say closes the delegate so no nudge follows", async () => {
+    const { c, provider } = setup();
+    c.onToolCall({ callId: "c1", name: "delegate", args: { task: "x" } }, 0);
+    await c.say({ type: "say", text: "answer", when: "next_gap", replyTo: "1", asOf: 0 });
+    c.onResponseDone();
+    c.tick(STILL_WORKING_MS);
+    expect(provider.named("addContext").length).toBe(1); // the answer only
+  });
+
+  it("warns before the cap and ends at the cap", () => {
+    const { c, provider, ended } = setup({ maxMs: 600_000 });
+    c.tick(600_000 - CAP_WARNING_MS);
+    expect(provider.named("addContext").length).toBe(1);
+    c.onResponseDone();
+    c.tick(600_000 - CAP_WARNING_MS + 1);
+    expect(provider.named("addContext").length).toBe(1);
+    c.tick(600_000);
+    expect(ended).toEqual(["max_duration"]);
+  });
+
+  it("asks for a planned reconnect before the provider session limit, only at a gap", () => {
+    const s = setup({ maxSessionSec: 600 });
+    s.c.onAudio(pcm(10), "i1");
+    s.c.tick(600_000 - RECONNECT_LEAD_MS);
+    expect(s.reconnects()).toBe(0);
+    s.c.onResponseDone();
+    s.c.tick(600_000 - RECONNECT_LEAD_MS + 1);
+    expect(s.reconnects()).toBe(1);
+    s.c.tick(600_000 - RECONNECT_LEAD_MS + 2);
+    expect(s.reconnects()).toBe(1);
+    s.c.onReconnected(700_000);
+    s.c.tick(700_000 + 600_000 - RECONNECT_LEAD_MS);
+    expect(s.reconnects()).toBe(2);
+  });
+});
