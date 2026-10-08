@@ -22,6 +22,7 @@ class FakeAgent extends EventEmitter {
   identityCalls: Array<[string, string | null | undefined, string | null | undefined]> = [];
   suppressNextTurn() {}
   isTurnInFlight() { return false; }
+  isLive() { return true; }
   holdIdle(id: string, h: boolean) { this.holds.push([id, h]); return this.holdResult; }
   async resolveEffectiveIdentity(sid: string, ch?: string | null, ts?: string | null) {
     this.identityCalls.push([sid, ch, ts]);

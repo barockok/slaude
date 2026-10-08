@@ -157,18 +157,76 @@ describe("VoiceCall", () => {
     expect(t.closed()).toBe(1);
   });
 
-  it("session_rebooted flushes and writes the transcript but skips the summary turn", async () => {
+  it("session_rebooted writes the transcript only: no flush, no summary", async () => {
     const t = make();
     await started(t);
     t.child.push({ type: "transcript", seq: 1, role: "user", text: "hi" });
     t.child.push({ type: "ended", reason: "session_rebooted" });
     expect(await t.call.done).toBe("session_rebooted");
-    expect(t.runs).toHaveLength(1);
-    expect(t.runs[0]).toMatchObject({ suppress: true, voice: true });
+    expect(t.runs).toHaveLength(0);
     const files = readdirSync(t.dir);
     expect(files).toHaveLength(1);
     expect(readFileSync(join(t.dir, files[0]!), "utf8")).toContain("participant: hi");
     expect(t.closed()).toBe(1);
+  });
+
+  it("session_rebooted drops delegate turns still queued", async () => {
+    const child = fakeChild();
+    const ran: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const runner: TurnRunner = { run: async (_s, text) => { ran.push(text); if (ran.length === 1) await gate; } };
+    const call = new VoiceCall({ sessionId: "s1", runner, child, transcriptDir: tmp(), holdIdle: () => true, onClosed: () => {} });
+    const p = call.start(init(call.callId));
+    child.push({ type: "started", callId: call.callId, sampleRate: 24000 });
+    await p;
+    child.push({ type: "delegate", id: "1", task: "first", asOf: 0 });
+    child.push({ type: "delegate", id: "2", task: "second", asOf: 0 });
+    await until(() => ran.length === 1);
+    child.push({ type: "ended", reason: "session_rebooted" });
+    await until(() => true);
+    release();
+    expect(await call.done).toBe("session_rebooted");
+    expect(ran).toHaveLength(1);
+    expect(ran[0]).toContain("first");
+  });
+
+  it("an identity change before an injected turn ends the call auth_lost and runs nothing", async () => {
+    const child = fakeChild();
+    const { runner, runs } = recRunner();
+    let allowed = true;
+    const call = new VoiceCall({ sessionId: "s1", runner, child, transcriptDir: tmp(), holdIdle: () => true, onClosed: () => {},
+      stillAllowed: async () => allowed });
+    const p = call.start(init(call.callId));
+    child.push({ type: "started", callId: call.callId, sampleRate: 24000 });
+    await p;
+    child.push({ type: "delegate", id: "1", task: "x", asOf: 0 });
+    await until(() => runs.length === 1);
+    allowed = false;
+    child.push({ type: "transcript", seq: 1, role: "user", text: "after the lock" });
+    child.push({ type: "delegate", id: "2", task: "y", asOf: 1 });
+    await until(() => child.sent.some((m) => m.type === "stop"));
+    expect(child.sent.at(-1)).toEqual({ type: "stop", reason: "auth_lost" });
+    child.push({ type: "ended", reason: "auth_lost" });
+    expect(await call.done).toBe("auth_lost");
+    // Only the first delegate ran: no second delegate, no flush, no summary.
+    expect(runs).toHaveLength(1);
+  });
+
+  it("a stillAllowed throw counts as refused, also for the idle flush", async () => {
+    const child = fakeChild();
+    const { runner, runs } = recRunner();
+    const call = new VoiceCall({ sessionId: "s1", runner, child, transcriptDir: tmp(), holdIdle: () => true, onClosed: () => {},
+      idleFlushMs: 10, stillAllowed: async () => { throw new Error("lookup failed"); } });
+    const p = call.start(init(call.callId));
+    child.push({ type: "started", callId: call.callId, sampleRate: 24000 });
+    await p;
+    child.push({ type: "transcript", seq: 1, role: "user", text: "hi" });
+    await until(() => child.sent.some((m) => m.type === "stop"));
+    expect(child.sent.at(-1)).toEqual({ type: "stop", reason: "auth_lost" });
+    child.kill();
+    expect(await call.done).toBe("auth_lost");
+    expect(runs).toHaveLength(0);
   });
 
   it("child crash ends loop_crashed", async () => {

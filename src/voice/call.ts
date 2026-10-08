@@ -48,6 +48,9 @@ export interface VoiceCallDeps {
    *  turn it runs, since a turn boots the session. */
   holdIdle(hold: boolean): boolean | void;
   onClosed(): void;
+  /** Re-checked before every injected turn: false (or a throw) means the
+   *  thread no longer runs as the agent, and the call ends `auth_lost`. */
+  stillAllowed?(): Promise<boolean>;
   idleFlushMs?: number;
   startTimeoutMs?: number;
   /** How long to wait for the stdout stream to drain after the child exits
@@ -69,6 +72,9 @@ export class VoiceCall {
   #exited = false;
   #held = false;
   #stopReason: EndReason | null = null;
+  /** No further injected turn may run (the session rebooted or the identity
+   *  changed): queued turns are dropped, nothing is flushed or summarized. */
+  #cancelled = false;
   #endReason: EndReason | null = null;
   #resolveDone!: (r: EndReason) => void;
   readonly done: Promise<EndReason> = new Promise((r) => (this.#resolveDone = r));
@@ -140,17 +146,12 @@ export class VoiceCall {
       const transcript = this.#takePending();
       this.#enqueue(async () => {
         try {
-          await this.d.runner.run(this.d.sessionId, delegatePrompt(m.id, m.task, transcript), { suppress: false, voice: true });
+          await this.#run(delegatePrompt(m.id, m.task, transcript), { suppress: false, voice: true });
         } catch (e) {
           console.error(`[voice] request #${m.id} failed session=${this.d.sessionId}:`, e instanceof Error ? e.message : e);
           // Claude never saw this chunk; carry it in the next flush.
           if (transcript) this.#pending.unshift(transcript);
-          if (e instanceof VoiceAuthLost) {
-            // Not stop(): it waits for the turn queue, which this turn is on.
-            this.#stopReason ??= "auth_lost";
-            this.d.child.send({ type: "stop", reason: "auth_lost" });
-            return;
-          }
+          if (e instanceof VoiceAuthLost) return this.#authLost();
           this.say(`Request #${m.id} failed. Tell the participants you could not get that.`, "next_gap", m.id);
         }
       });
@@ -169,16 +170,41 @@ export class VoiceCall {
   /** Feed the unsent transcript into the session as a suppressed turn. */
   #flushPending(): void {
     const t = this.#takePending();
-    if (t) this.#enqueue(() => this.d.runner.run(this.d.sessionId, `${TRANSCRIPT_FLUSH_PREFIX}\n${t}`, { suppress: true, voice: true }));
+    if (t) this.#enqueue(() => this.#run(`${TRANSCRIPT_FLUSH_PREFIX}\n${t}`, { suppress: true, voice: true }));
   }
   #armFlush(): void {
     if (this.#flushTimer) clearTimeout(this.#flushTimer);
     this.#flushTimer = setTimeout(() => this.#flushPending(), this.d.idleFlushMs ?? 30_000);
   }
+  /** One injected turn, after the identity re-check. */
+  async #run(text: string, o: { suppress: boolean; voice: boolean }): Promise<void> {
+    if (this.d.stillAllowed) {
+      let ok = false;
+      try {
+        ok = await this.d.stillAllowed();
+      } catch (e) {
+        console.error(`[voice] identity check failed session=${this.d.sessionId}:`, e instanceof Error ? e.message : e);
+      }
+      if (!ok) throw new VoiceAuthLost("the thread no longer runs as the agent");
+    }
+    await this.d.runner.run(this.d.sessionId, text, o);
+  }
+  /** End the call `auth_lost` from inside a turn. Not stop(): it waits for
+   *  the turn queue, which the caller is on. */
+  #authLost(): void {
+    this.#cancelled = true;
+    if (this.#endReason || this.#stopReason) return;
+    this.#stopReason = "auth_lost";
+    this.d.child.send({ type: "stop", reason: "auth_lost" });
+    setTimeout(() => this.d.child.kill(), 5_000).unref();
+  }
   #enqueue(fn: () => Promise<void>): void {
     this.#queue = this.#queue
-      .then(fn)
-      .catch((e) => console.error(`[voice] turn failed session=${this.d.sessionId}:`, e instanceof Error ? e.message : e))
+      .then(() => (this.#cancelled ? undefined : fn()))
+      .catch((e) => {
+        console.error(`[voice] turn failed session=${this.d.sessionId}:`, e instanceof Error ? e.message : e);
+        if (e instanceof VoiceAuthLost) this.#authLost();
+      })
       .then(() => {
         // The session may not have been live when the call started; a turn boots it.
         if (this.#started && !this.#held && !this.#endReason) this.#hold();
@@ -226,10 +252,13 @@ export class VoiceCall {
         path = null;
       }
     }
-    this.#flushPending();
-    // A rebooted session is not the one that held the call: no summary on it.
-    if (this.#started && reason !== "session_rebooted") {
-      this.#enqueue(() => this.d.runner.run(this.d.sessionId, summaryPrompt(reason, path), { suppress: false, voice: false }));
+    // A rebooted session is not the one that held the call, and a lost
+    // identity may not run as the agent: queued turns are dropped and nothing
+    // is fed into the session — the transcript file is all that remains.
+    if (reason === "session_rebooted" || reason === "auth_lost") this.#cancelled = true;
+    if (!this.#cancelled) {
+      this.#flushPending();
+      if (this.#started) this.#enqueue(() => this.#run(summaryPrompt(reason, path), { suppress: false, voice: false }));
     }
     await this.#queue;
     if (this.#started) this.d.holdIdle(false);

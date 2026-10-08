@@ -16,6 +16,8 @@ class StubAgent extends EventEmitter {
   abort(id: string) { this.aborted.push(id); }
   suppressNextTurn(id: string) { this.suppressed.push(id); }
   isTurnInFlight(_id: string) { return this.inFlight; }
+  live = true;
+  isLive(_id: string) { return this.live; }
   async sendMessage(id: string, text: string) {
     this.sent.push(text);
     this.activeDuringSend.push(voiceTurns.active(id));
@@ -178,6 +180,23 @@ describe("nodeRunner", () => {
   it("gives up after maxWaitMs", async () => {
     const r = nodeRunner({ agent: new StubAgent() as any, lock: async () => HELD_BY_OTHER, refreshToken: async () => {}, retryMs: 1, maxWaitMs: 20 });
     await expect(r.run("s4", "t", { suppress: false, voice: true })).rejects.toThrow(/session busy/);
+  });
+});
+
+describe("runners never boot a session", () => {
+  it("mono refuses a turn when the session is not live", async () => {
+    const a = new StubAgent();
+    a.live = false;
+    await expect(monoRunner(a as any).run("s1", "x", { suppress: false, voice: true })).rejects.toThrow(/not live/);
+    expect(a.sent).toEqual([]);
+    expect(injectedTurns.active("s1")).toBe(false);
+  });
+  it("node refuses a turn when the session is not live", async () => {
+    const a = new StubAgent();
+    a.live = false;
+    const r = nodeRunner({ agent: a as any, lock: async (_id, fn) => fn(new AbortController().signal), refreshToken: async () => {} });
+    await expect(r.run("s1", "x", { suppress: false, voice: true })).rejects.toThrow(/not live/);
+    expect(a.sent).toEqual([]);
   });
 });
 

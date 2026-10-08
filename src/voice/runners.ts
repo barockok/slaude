@@ -19,6 +19,9 @@ import { injectedTurns, voiceTurns } from "./turn-flags";
 export interface TurnAgent {
   suppressNextTurn(id: string): void;
   sendMessage(id: string, text: string): Promise<void>;
+  /** A voice turn never boots a session: sendMessage would start a fresh one,
+   *  possibly under another identity. */
+  isLive(id: string): boolean;
   /** Cancel the session's in-flight turn (AgentManager has it). */
   abort?(id: string): void;
   on(ev: "event" | "sessionExit", cb: (e: any) => void): unknown;
@@ -76,6 +79,7 @@ async function runOnce(
   timeoutMs: number,
   signal?: AbortSignal,
 ) {
+  if (!agent.isLive(sessionId)) throw new Error("session is not live: the voice turn would boot a new one");
   injectedTurns.enter(sessionId);
   if (o.voice) voiceTurns.enter(sessionId);
   // `local` lets the finally release the listeners and timer when we leave
