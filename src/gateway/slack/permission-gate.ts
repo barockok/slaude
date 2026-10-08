@@ -37,6 +37,12 @@ export function autoAllowFromEnv(): Set<string> {
   );
 }
 
+const VOICE_MID_CALL_TOOLS = new Set([
+  "mcp__slaude_voice__voice_say",
+  "mcp__slaude_voice__voice_context",
+  "mcp__slaude_voice__voice_stop",
+]);
+
 /**
  * Static permission policy — every short-circuit that never needs a human.
  * Returns the decision, or null when a prompt is required. Pure over its
@@ -94,10 +100,11 @@ export function permissionPolicy(
   if (toolName.startsWith("mcp__slaude_kb__")) {
     return { behavior: "allow", updatedInput: input };
   }
-  // Voice call control. A call cannot pause on a card: voice_say/context run
-  // mid-conversation, and voice_start's input carries the tab-audio bearer
-  // token, which an approval card would post into the thread.
-  if (toolName.startsWith("mcp__slaude_voice__")) {
+  // Mid-call voice controls. A card posted during a call would break the
+  // quiet thread and stall the answer, and stopping a call must never wait on
+  // a click. voice_start is NOT here: joining a meeting and capturing its
+  // audio keeps the normal approval (its card is redacted by permBlocks).
+  if (VOICE_MID_CALL_TOOLS.has(toolName)) {
     return { behavior: "allow", updatedInput: input };
   }
   return null;
@@ -150,13 +157,17 @@ export function decisionFromPermRow(
  *  into a shared thread). Matched at any depth of the tool input. */
 const SECRET_KEY = /token|secret|key|password|authorization|cookie|credential/i;
 
-/** Copy of `value` with every secret-named key's value replaced. */
+/** Copy of `value` with every secret-named key's value replaced, and every
+ *  value under a `headers` object (route headers may carry auth of any name). */
 export function redactForCard(value: unknown, depth = 0): unknown {
   if (depth > 20 || value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map((v) => redactForCard(v, depth + 1));
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    out[k] = SECRET_KEY.test(k) ? "[redacted]" : redactForCard(v, depth + 1);
+    if (SECRET_KEY.test(k)) out[k] = "[redacted]";
+    else if (/^headers$/i.test(k) && v !== null && typeof v === "object" && !Array.isArray(v)) {
+      out[k] = Object.fromEntries(Object.keys(v as Record<string, unknown>).map((h) => [h, "[redacted]"]));
+    } else out[k] = redactForCard(v, depth + 1);
   }
   return out;
 }

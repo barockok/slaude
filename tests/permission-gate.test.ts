@@ -133,28 +133,53 @@ describe("PermissionGate", () => {
     expect(r.behavior).toBe("allow");
   });
 
-  test("mcp__slaude_voice__* always allowed (a call must never wait on a card)", async () => {
+  test("mid-call voice tools are allowed without a card", async () => {
     const f = fakeApp();
     const gate = new PermissionGate(f.app);
     gate.bindSession("S", "C", "T");
     const ac = new AbortController();
-    for (const t of [
-      "mcp__slaude_voice__voice_start",
-      "mcp__slaude_voice__voice_say",
-      "mcp__slaude_voice__voice_context",
-      "mcp__slaude_voice__voice_stop",
-    ]) {
-      const r = await gate.resolver("S", t, { stream_token: "tok-secret" }, ctx("TV", ac.signal));
+    for (const t of ["mcp__slaude_voice__voice_say", "mcp__slaude_voice__voice_context", "mcp__slaude_voice__voice_stop"]) {
+      const r = await gate.resolver("S", t, { text: "x" }, ctx("TV", ac.signal));
       expect(r.behavior).toBe("allow");
     }
     expect(f.posts.length).toBe(0);
   });
 
-  test("permissionPolicy (shared by gateway and node) allows the voice tools", () => {
-    for (const t of ["voice_start", "voice_say", "voice_context", "voice_stop"]) {
+  test("permissionPolicy (shared by gateway and node): mid-call voice tools allowed, voice_start asks", () => {
+    for (const t of ["voice_say", "voice_context", "voice_stop"]) {
       expect(permissionPolicy(`mcp__slaude_voice__${t}`, {}, new Set())?.behavior).toBe("allow");
     }
-    expect(permissionPolicy("mcp__slaude_voicex__voice_start", {}, new Set())).toBeNull();
+    expect(permissionPolicy("mcp__slaude_voice__voice_start", {}, new Set())).toBeNull();
+  });
+
+  test("voice_start still asks, and its card carries no token or header value", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app);
+    gate.bindSession("S", "C", "T");
+    const ac = new AbortController();
+    const p = gate.resolver(
+      "S",
+      "mcp__slaude_voice__voice_start",
+      {
+        brief: "standup",
+        audio: {
+          stream_url: "https://wb.example/s",
+          clear_url: "https://wb.example/c",
+          headers: { "x-route": "hdr-EEE" },
+          sample_rate: 24000,
+          stream_token: "tok-AAA",
+        },
+      },
+      ctx("UV", ac.signal),
+    );
+    const text = JSON.stringify((await firstPost(f)).blocks);
+    expect(text).toContain("mcp__slaude_voice__voice_start");
+    expect(text).not.toContain("tok-AAA");
+    expect(text).not.toContain("hdr-EEE");
+    expect(text).toContain("x-route");
+    expect(text).toContain("https://wb.example/s");
+    ac.abort();
+    expect((await p).behavior).toBe("deny");
   });
 
   test("approval card redacts token/secret/key/password values, nested too", async () => {
@@ -167,7 +192,7 @@ describe("PermissionGate", () => {
       "mcp__other__tool",
       {
         stream_token: "tok-AAA",
-        endpoints: { apiKey: "key-BBB", headers: { "x-secret": "sec-CCC" } },
+        endpoints: { apiKey: "key-BBB", nested: { "x-secret": "sec-CCC" } },
         list: [{ password: "pw-DDD" }],
         url: "https://wb.example/x",
       },
