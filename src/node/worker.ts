@@ -61,9 +61,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * A voice call's runner turn (delegate, transcript flush, summary) runs
  * outside any job. Its done/error must not reach events:<session>: the
  * gateway follower credits an end to the oldest job still owed an outcome,
- * which would be a Slack job queued behind the call's turn.
+ * which would be a Slack job queued behind the call's turn. A voice turn's
+ * events stay off entirely: the voice flag is local to this node, so a
+ * gateway follower replaying them would post status, reactions and task
+ * lists into the quiet thread.
  */
-export function isInjectedTurnEnd(e: AgentEvent): boolean {
+export function keepOffEventStream(e: AgentEvent): boolean {
+  if (voiceTurns.active(e.sessionId)) return true;
   return (e.type === "done" || e.type === "error") && injectedTurns.active(e.sessionId);
 }
 
@@ -703,7 +707,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       ends && gateDenied.has(e.sessionId)
         ? { type: "error", sessionId: e.sessionId, error: "label gate refused this node", code: "LABEL_MISMATCH" }
         : e;
-    if (!isInjectedTurnEnd(e)) void pubsub.appendEvent(e.sessionId, out, { exact: true }).catch(() => {});
+    if (!keepOffEventStream(e)) void pubsub.appendEvent(e.sessionId, out, { exact: true }).catch(() => {});
     if (e.type === "toolResult" && (e.result as { is_error?: unknown } | undefined)?.is_error) {
       void recovery.onToolError(e.sessionId).catch(() => {});
     }
