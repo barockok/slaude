@@ -230,6 +230,18 @@ export class VoiceCall {
 
 export class VoiceCalls {
   #calls = new Map<string, VoiceCall>();
+  #reserved = new Set<string>();
+  /** Claim the thread's slot synchronously, before any await, so two parallel
+   *  starts cannot both pass the busy check. False when a call or another
+   *  start already holds it. Pair with release() on every path. */
+  reserve(sessionId: string): boolean {
+    if (this.#calls.has(sessionId) || this.#reserved.has(sessionId)) return false;
+    this.#reserved.add(sessionId);
+    return true;
+  }
+  release(sessionId: string): void {
+    this.#reserved.delete(sessionId);
+  }
   get(sessionId: string): VoiceCall | undefined {
     return this.#calls.get(sessionId);
   }
