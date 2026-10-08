@@ -245,6 +245,9 @@ export class VoiceCall {
   async #close(reason: EndReason, graceful = false): Promise<void> {
     if (this.#endReason) return;
     this.#endReason = reason;
+    // A cancelled close never flushes: disarm the idle flush either way.
+    if (this.#flushTimer) clearTimeout(this.#flushTimer);
+    this.#flushTimer = null;
     this.#reap(graceful);
     let path: string | null = null;
     if (this.#lines.length) {

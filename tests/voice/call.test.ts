@@ -7,6 +7,10 @@ import type { ChildMsg, ParentMsg, VoiceInit } from "../../src/voice/ipc";
 import { fakeChild, until } from "./fakes";
 import { VoiceAuthLost } from "../../src/voice/runners";
 
+// The unpatched timer functions, for tests that spy on setTimeout/clearTimeout.
+(globalThis as any).__realSetTimeout = setTimeout;
+(globalThis as any).__realClearTimeout = clearTimeout;
+
 const dirs: string[] = [];
 const tmp = () => {
   const d = mkdtempSync(join(tmpdir(), "voice-call-"));
@@ -179,6 +183,31 @@ describe("VoiceCall", () => {
     expect(files).toHaveLength(1);
     expect(readFileSync(join(t.dir, files[0]!), "utf8")).toContain("participant: hi");
     expect(t.closed()).toBe(1);
+  });
+
+  it("a cancelled close disarms the idle-flush timer", async () => {
+    const t = make({ idleFlushMs: 4_321 });
+    await started(t);
+    const armed: unknown[] = [];
+    const cleared: unknown[] = [];
+    const st = spyOn(globalThis, "setTimeout");
+    const ct = spyOn(globalThis, "clearTimeout");
+    try {
+      st.mockImplementation(((fn: any, ms?: number, ...a: any[]) => {
+        const timer = (globalThis as any).__realSetTimeout(fn, ms, ...a);
+        if (ms === 4_321) armed.push(timer);
+        return timer;
+      }) as any);
+      ct.mockImplementation(((h: any) => { cleared.push(h); (globalThis as any).__realClearTimeout(h); }) as any);
+      t.child.push({ type: "transcript", seq: 1, role: "user", text: "hi" });
+      await until(() => armed.length === 1);
+      t.child.push({ type: "ended", reason: "session_rebooted" });
+      expect(await t.call.done).toBe("session_rebooted");
+      expect(cleared).toContain(armed[0]);
+    } finally {
+      st.mockRestore();
+      ct.mockRestore();
+    }
   });
 
   it("session_rebooted drops delegate turns still queued", async () => {
