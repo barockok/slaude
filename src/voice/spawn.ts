@@ -21,8 +21,19 @@ export interface SpawnSecrets {
   streamToken: string;
 }
 
-export function childEnv(o: SpawnSecrets): Record<string, string> {
-  return { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", [ENV_API_KEY]: o.apiKey, [ENV_STREAM_TOKEN]: o.streamToken };
+/** Non-secret variables the child may need to reach the provider through a
+ *  proxy or a private CA; passed through only when set. */
+const PASSTHROUGH = [
+  "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
+  "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE",
+] as const;
+
+export function childEnv(o: SpawnSecrets, from: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env: Record<string, string> = { PATH: from.PATH ?? "", HOME: from.HOME ?? "" };
+  for (const k of PASSTHROUGH) if (from[k] !== undefined) env[k] = from[k]!;
+  env[ENV_API_KEY] = o.apiKey;
+  env[ENV_STREAM_TOKEN] = o.streamToken;
+  return env;
 }
 
 export function spawnVoiceLoop(o: SpawnSecrets & { execPath?: string }): LoopChild {
@@ -30,22 +41,42 @@ export function spawnVoiceLoop(o: SpawnSecrets & { execPath?: string }): LoopChi
     stdio: ["pipe", "pipe", "inherit"],
     env: childEnv(o),
   });
-  const exited = new Promise<number>((r) => cp.on("exit", (code) => r(code ?? 1)));
+  let dead = false;
+  const exited = new Promise<number>((r) => {
+    cp.on("exit", (code) => {
+      dead = true;
+      r(code ?? 1);
+    });
+    // Spawn failure (bad execPath, EAGAIN, EMFILE...): 'exit' may never fire,
+    // and an unhandled 'error' would crash the host process.
+    cp.on("error", (e) => {
+      dead = true;
+      console.error(`[voice] voice-loop child error: ${e.message}`);
+      cp.stdout?.destroy();
+      r(1);
+    });
+  });
   // A write after the child died raises EPIPE on the stream; the exit path ends the call.
-  cp.stdin!.on("error", () => {});
-  const stdout = Readable.toWeb(cp.stdout!) as unknown as ReadableStream<Uint8Array>;
+  cp.stdin?.on("error", () => {});
   return {
     send: (m) => {
-      if (!cp.stdin!.destroyed && cp.stdin!.writable) cp.stdin!.write(encodeMsg(m));
+      if (!dead && cp.stdin && !cp.stdin.destroyed && cp.stdin.writable) cp.stdin.write(encodeMsg(m));
     },
     messages: (async function* () {
-      for await (const line of readLines(stdout)) {
-        const m = parseChildMsg(line);
-        if (m) yield m;
+      if (!cp.stdout) return;
+      const stdout = Readable.toWeb(cp.stdout) as unknown as ReadableStream<Uint8Array>;
+      try {
+        for await (const line of readLines(stdout)) {
+          const m = parseChildMsg(line);
+          if (m) yield m;
+        }
+      } catch {
+        // stream destroyed (spawn error / kill): the iterator just ends
       }
     })(),
     exited,
     kill: () => {
+      if (dead) return;
       try {
         cp.kill("SIGKILL");
       } catch {}
