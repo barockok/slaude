@@ -15,7 +15,7 @@ const FATAL_ERRORS = new Set(["authentication_error", "permission_error", "inval
 const isFatal = (e: any): boolean => FATAL_ERRORS.has(e?.code) || FATAL_ERRORS.has(e?.type);
 
 export class OpenAIRealtime extends TypedEmitter<ProviderEvents> implements VoiceProvider {
-  readonly caps: VoiceProviderCaps = { inputRate: 24000, outputRate: 24000, truncate: true, maxSessionSec: 3600 };
+  readonly caps: VoiceProviderCaps = { inputRate: 24000, outputRate: 24000, truncate: true, maxSessionSec: 3600, cancelEmitsDone: true };
   #ws: WebSocket | null = null;
   #closing = false;
   constructor(private o: { apiKey: string; model: string; url?: string; transcribeModel?: string }) {

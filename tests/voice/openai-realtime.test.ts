@@ -29,6 +29,11 @@ let srv: Srv | null = null;
 afterEach(() => { void srv?.stop(); });
 
 describe("OpenAIRealtime", () => {
+  it("declares that a cancelled response still emits done", () => {
+    const p = new OpenAIRealtime({ apiKey: "k", model: "m", url: "ws://unused" });
+    expect(p.caps.cancelEmitsDone).toBe(true);
+  });
+
   it("connects with bearer auth and sends session.update with tools and audio format", async () => {
     srv = fakeServer(ack);
     const p = new OpenAIRealtime({ apiKey: "sk-test", model: "gpt-realtime", url: srv.url });

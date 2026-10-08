@@ -14,6 +14,8 @@ import type { ToolSpec, VoiceProvider } from "./provider/types";
 export const STILL_WORKING_MS = 60_000;
 export const CAP_WARNING_MS = 120_000;
 export const RECONNECT_LEAD_MS = 60_000;
+/** How long after speechStopped we wait for the provider's own reply before treating it as a gap. */
+export const AUTO_RESPONSE_WAIT_MS = 1_500;
 
 export const VOICE_TOOLS: ToolSpec[] = [
   {
@@ -59,9 +61,14 @@ export class Conductor {
   #ended = false;
   #sessionStartedAt: number;
   #reconnectRequested = false;
+  #awaitingAuto: number | null = null;
+  #lastTick: number;
+  #staleDones = 0;
+  #flushedItem: string | null = null;
 
   constructor(private io: ConductorIO, private o: ConductorOpts) {
     this.#sessionStartedAt = o.startedAt;
+    this.#lastTick = o.startedAt;
   }
 
   get seq(): number {
@@ -72,6 +79,8 @@ export class Conductor {
   }
 
   onAudio(pcm: Int16Array, itemId: string): void {
+    if (itemId === this.#flushedItem) return; // late deltas of an answer we already cut off
+    this.#awaitingAuto = null;
     if (!this.#itemStart.has(itemId)) this.#itemStart.set(itemId, this.#sentMs);
     this.#currentItem = itemId;
     this.#responseActive = true;
@@ -85,9 +94,14 @@ export class Conductor {
   }
   onSpeechStopped(): void {
     this.#userSpeaking = false;
-    this.#drain();
+    // Both providers answer user speech on their own; draining now would collide with that reply.
+    this.#awaitingAuto = this.#lastTick;
   }
   onResponseDone(): void {
+    if (this.#staleDones > 0) {
+      this.#staleDones--; // the cancelled response's done, not the live one's
+      return;
+    }
     this.#responseActive = false;
     this.#drain();
   }
@@ -103,6 +117,7 @@ export class Conductor {
   }
 
   onToolCall(c: { callId: string; name: string; args: unknown }, now: number): void {
+    if (this.#ended) return;
     const args = (c.args ?? {}) as Record<string, unknown>;
     if (c.name === "delegate") {
       const id = String(this.#nextDelegate++);
@@ -120,11 +135,15 @@ export class Conductor {
   }
 
   async say(m: SayMsg): Promise<void> {
+    if (this.#ended) return;
     if (m.replyTo) this.#delegates.delete(m.replyTo);
     const stale = this.#seq - m.asOf > this.o.staleSeq;
     if (m.when === "now" && !stale) {
-      this.io.provider.cancel();
-      await this.#flush();
+      if (this.#responseActive) {
+        if (this.io.provider.caps.cancelEmitsDone) this.#staleDones++;
+        this.io.provider.cancel();
+        await this.#flush();
+      }
       this.#speak(m.text);
       return;
     }
@@ -138,6 +157,8 @@ export class Conductor {
 
   tick(now: number): void {
     if (this.#ended) return;
+    this.#lastTick = now;
+    if (this.#awaitingAuto !== null && now - this.#awaitingAuto >= AUTO_RESPONSE_WAIT_MS) this.#awaitingAuto = null;
     const elapsed = now - this.o.startedAt;
     if (elapsed >= this.o.maxMs) {
       this.#finish("max_duration");
@@ -166,12 +187,16 @@ export class Conductor {
     this.#sessionStartedAt = now;
     this.#reconnectRequested = false;
     this.#responseActive = false;
+    this.#userSpeaking = false;
+    this.#awaitingAuto = null;
+    this.#staleDones = 0;
+    this.#flushedItem = null;
     this.#itemStart.clear();
     this.#currentItem = null;
   }
 
   #gap(): boolean {
-    return !this.#userSpeaking && !this.#responseActive;
+    return !this.#userSpeaking && !this.#responseActive && this.#awaitingAuto === null;
   }
   #drain(): void {
     if (!this.#gap()) return;
@@ -193,6 +218,7 @@ export class Conductor {
     // Everything not yet played was discarded by workbench: the uplink clock
     // resumes from what actually played.
     this.#sentMs = playedMs;
+    this.#flushedItem = item;
     this.#currentItem = null;
   }
   #finish(reason: EndReason): void {

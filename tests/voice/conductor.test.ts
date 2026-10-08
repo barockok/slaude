@@ -1,12 +1,12 @@
 // tests/voice/conductor.test.ts
 import { describe, it, expect } from "bun:test";
-import { Conductor, STILL_WORKING_MS, CAP_WARNING_MS, RECONNECT_LEAD_MS } from "../../src/voice/conductor";
+import { Conductor, AUTO_RESPONSE_WAIT_MS, STILL_WORKING_MS, CAP_WARNING_MS, RECONNECT_LEAD_MS } from "../../src/voice/conductor";
 import { FakeProvider, FakeAudio, pcm } from "./fakes";
 import type { ChildMsg, EndReason } from "../../src/voice/ipc";
 
-function setup(over: Partial<{ truncate: boolean; maxSessionSec: number; maxMs: number; staleSeq: number }> = {}) {
+function setup(over: Partial<{ cancelEmitsDone: boolean; truncate: boolean; maxSessionSec: number; maxMs: number; staleSeq: number }> = {}) {
   const provider = new FakeProvider();
-  provider.caps = { inputRate: 24000, outputRate: 24000, truncate: over.truncate ?? true, maxSessionSec: over.maxSessionSec };
+  provider.caps = { inputRate: 24000, outputRate: 24000, truncate: over.truncate ?? true, maxSessionSec: over.maxSessionSec, cancelEmitsDone: over.cancelEmitsDone };
   const audio = new FakeAudio();
   const emitted: ChildMsg[] = [];
   const ended: EndReason[] = [];
@@ -72,10 +72,10 @@ describe("Conductor", () => {
 
   it("end_call ends the call; unknown tools get an error result", () => {
     const { c, provider, ended } = setup();
-    c.onToolCall({ callId: "c1", name: "end_call", args: { reason: "asked to leave" } }, 0);
     c.onToolCall({ callId: "c2", name: "nope", args: {} }, 0);
+    c.onToolCall({ callId: "c1", name: "end_call", args: { reason: "asked to leave" } }, 0);
     expect(ended).toEqual(["ended_by_voice"]);
-    expect(provider.named("toolResult")[1]![2]).toEqual({ error: "unknown tool nope" });
+    expect(provider.named("toolResult")[0]![2]).toEqual({ error: "unknown tool nope" });
   });
 
   it("next_gap waits until nobody speaks and no response is active", async () => {
@@ -152,5 +152,90 @@ describe("Conductor", () => {
     s.c.onReconnected(700_000);
     s.c.tick(700_000 + 600_000 - RECONNECT_LEAD_MS);
     expect(s.reconnects()).toBe(2);
+  });
+
+  it("a reconnect clears a stuck user-speaking flag", async () => {
+    const { c, provider } = setup();
+    await c.onSpeechStarted();
+    await c.say({ type: "say", text: "after", when: "next_gap", asOf: 0 });
+    expect(provider.named("respond")).toEqual([]);
+    c.onReconnected(1000);
+    c.tick(1001);
+    expect(provider.named("respond").length).toBe(1);
+  });
+
+  it("ignores the done of a cancelled response", async () => {
+    const { c, provider } = setup({ cancelEmitsDone: true });
+    c.onAudio(pcm(10), "i1");
+    await c.say({ type: "say", text: "now thing", when: "now", asOf: 0 });
+    await c.say({ type: "say", text: "queued", when: "next_gap", asOf: 0 });
+    c.onResponseDone(); // the cancelled one
+    expect(provider.named("respond").length).toBe(1);
+    c.onResponseDone(); // the live one
+    expect(provider.named("respond").length).toBe(2);
+  });
+
+  it("drops late audio of a flushed item", async () => {
+    const { c, audio } = setup();
+    c.onAudio(pcm(10), "A");
+    await c.say({ type: "say", text: "now", when: "now", asOf: 0 });
+    c.onAudio(pcm(10), "A");
+    expect(audio.written.length).toBe(1);
+    c.onAudio(pcm(10), "B");
+    expect(audio.written.length).toBe(2);
+  });
+
+  it("does not drain at speechStopped; waits for the provider's own reply", async () => {
+    const { c, provider } = setup();
+    await c.onSpeechStarted();
+    await c.say({ type: "say", text: "steer", when: "next_gap", asOf: 0 });
+    c.onSpeechStopped();
+    expect(provider.named("respond")).toEqual([]);
+    c.onAudio(pcm(10), "i1");
+    expect(provider.named("respond")).toEqual([]);
+    c.onResponseDone();
+    expect(provider.named("respond").length).toBe(1);
+  });
+
+  it("speaks at the tick when no auto-response arrives", async () => {
+    const { c, provider } = setup();
+    c.tick(1000);
+    await c.onSpeechStarted();
+    await c.say({ type: "say", text: "steer", when: "next_gap", asOf: 0 });
+    c.onSpeechStopped();
+    c.tick(1000 + AUTO_RESPONSE_WAIT_MS - 1);
+    expect(provider.named("respond")).toEqual([]);
+    c.tick(1000 + AUTO_RESPONSE_WAIT_MS);
+    expect(provider.named("respond").length).toBe(1);
+  });
+
+  it("an idle now skips cancel and truncate", async () => {
+    const { c, provider } = setup();
+    await c.say({ type: "say", text: "hi", when: "now", asOf: 0 });
+    expect(provider.calls.map((x) => x[0])).toEqual(["addContext", "respond"]);
+  });
+
+  it("does nothing after the call ended", async () => {
+    const { c, provider } = setup();
+    c.onToolCall({ callId: "c1", name: "end_call", args: {} }, 0);
+    c.onToolCall({ callId: "c2", name: "delegate", args: { task: "x" } }, 0);
+    await c.say({ type: "say", text: "late", when: "now", asOf: 0 });
+    expect(provider.calls.map((x) => x[0])).toEqual(["toolResult"]);
+  });
+
+  it("setProvider routes later calls to the new provider", () => {
+    const { c, provider } = setup();
+    const next = new FakeProvider();
+    c.setProvider(next);
+    c.onToolCall({ callId: "c1", name: "delegate", args: { task: "x" } }, 0);
+    c.tick(STILL_WORKING_MS);
+    expect(provider.calls).toEqual([]);
+    expect(next.named("addContext").length).toBe(1);
+  });
+
+  it("context passes text straight to the provider", () => {
+    const { c, provider } = setup();
+    c.context("fyi");
+    expect(provider.named("addContext")).toEqual([["addContext", "fyi"]]);
   });
 });

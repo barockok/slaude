@@ -8,6 +8,8 @@ export interface VoiceProviderCaps {
   outputRate: 16000 | 24000;
   truncate: boolean;
   maxSessionSec?: number;
+  /** True when cancelling a response still yields a responseDone for it. */
+  cancelEmitsDone?: boolean;
 }
 
 export interface ToolSpec {
