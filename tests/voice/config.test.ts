@@ -57,3 +57,12 @@ describe("voiceConfigFromEnv", () => {
     expect(voiceConfigFromBundle(null)).toBeNull();
   });
 });
+
+describe("SLAUDE_VOICE_API_KEY is gateway-only", () => {
+  it("the agent and brain-think children never inherit it; a node refuses to boot with it", async () => {
+    const { scrubChildEnv } = await import("../../src/agent/child-env");
+    const { nodeBootCheck } = await import("../../src/config/gateway-only-env");
+    expect(scrubChildEnv({ SLAUDE_VOICE_API_KEY: "k", KEEP: "1" })).toEqual({ KEEP: "1" });
+    expect(nodeBootCheck({ SLAUDE_VOICE_API_KEY: "k" }).names).toEqual(["SLAUDE_VOICE_API_KEY"]);
+  });
+});

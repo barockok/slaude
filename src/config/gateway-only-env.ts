@@ -44,6 +44,10 @@ export const GATEWAY_ONLY_ENV_NAMES: readonly string[] = [
   "SLAUDE_BRAIN_IMPORT_TOKEN",
   "EMBEDDING_API_KEY",
   "LITELLM_API_KEY",
+  // The voice provider key. The gateway ships it to nodes inside the voice
+  // bundle and the voice loop gets it as SLAUDE_VOICE_LOOP_API_KEY; no agent
+  // child (which runs Bash on speech-driven requests) may hold it.
+  "SLAUDE_VOICE_API_KEY",
 ];
 
 /** Every variable starting with one of these is gateway-only. Case-sensitive. */
