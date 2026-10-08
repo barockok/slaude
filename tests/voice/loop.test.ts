@@ -150,6 +150,21 @@ describe("runVoiceLoop", () => {
     expect(out.filter((m) => m.type === "ended")).toEqual([{ type: "ended", reason: "provider_failed" }]);
   });
 
+  it("a hung audio.clear() during a now-say does not block a following stop", async () => {
+    const provider = new FakeProvider();
+    const audio = new FakeAudio();
+    audio.clear = () => new Promise<never>(() => {});
+    const ib = inbox();
+    const out: ChildMsg[] = [];
+    const done = runVoiceLoop({ init, makeProvider: () => provider, audio, inbox: ib, emit: (m) => out.push(m), tickMs: 5 });
+    await until(() => out.some((m) => m.type === "started"));
+    provider.emitEvent("audio", pcm(240), "i1");
+    ib.push({ type: "say", text: "now", when: "now", asOf: 0 });
+    ib.push({ type: "stop", reason: "stopped" });
+    const r = await Promise.race([done, Bun.sleep(500).then(() => "hung")]);
+    expect(r).toBe("stopped");
+  });
+
   it("survives a rejecting audio.clear() on speechStarted and still ends exactly once", async () => {
     const provider = new FakeProvider();
     const audio = new FakeAudio();
@@ -164,7 +179,7 @@ describe("runVoiceLoop", () => {
       await until(() => out.some((m) => m.type === "started"));
       provider.emitEvent("audio", pcm(240), "i1");
       provider.emitEvent("speechStarted");
-      await until(() => out.some((m) => m.type === "log" && m.message.startsWith("speech flush failed")));
+      await until(() => out.some((m) => m.type === "log" && m.message.startsWith("audio clear failed")));
       ib.push({ type: "stop", reason: "stopped" });
       expect(await done).toBe("stopped");
       await Bun.sleep(20);

@@ -126,18 +126,25 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
   if (!finished) d.emit({ type: "started", callId: d.init.callId, sampleRate: d.init.audio.sampleRate });
 
   const ticker = setInterval(() => conductor.tick(now()), d.tickMs ?? 250);
+  const inboxFailed = (e: unknown) => {
+    d.emit({ type: "log", level: "error", message: `inbox failed: ${errMsg(e)}` });
+    end("loop_crashed");
+  };
+  // say/context run in order on their own chain so a slow say (a flush's
+  // clear round trip) never holds up reading a stop.
+  let steer: Promise<void> = Promise.resolve();
+  const onSteer = (fn: () => void | Promise<void>) => {
+    steer = steer.then(() => (finished ? undefined : fn())).catch(inboxFailed);
+  };
   void (async () => {
     for await (const m of d.inbox) {
       if (finished) break;
-      if (m.type === "say") await conductor.say(m);
-      else if (m.type === "context") conductor.context(m.text);
+      if (m.type === "say") onSteer(() => conductor.say(m));
+      else if (m.type === "context") onSteer(() => conductor.context(m.text));
       else if (m.type === "stop") end(m.reason);
     }
     end("parent_gone");
-  })().catch((e) => {
-    d.emit({ type: "log", level: "error", message: `inbox failed: ${errMsg(e)}` });
-    end("loop_crashed");
-  });
+  })().catch(inboxFailed);
 
   const reason = await ended;
   clearInterval(ticker);

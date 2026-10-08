@@ -14,7 +14,8 @@ export interface AudioHandlers {
 export interface AudioLinkLike {
   start(h: AudioHandlers): Promise<void>;
   write(pcm: Int16Array): void;
-  clear(): Promise<{ playedMs: number; clearedMs: number }>;
+  /** Null when the clear failed or timed out: what played is then unknown. */
+  clear(): Promise<{ playedMs: number; clearedMs: number } | null>;
   close(): Promise<void>;
 }
 
@@ -44,7 +45,7 @@ export class AudioLink implements AudioLinkLike {
   readonly #clearUrl: string;
   readonly #routeHeaders: Record<string, string>;
 
-  constructor(private o: { baseUrl: string; endpoints: AudioEndpoints; streamToken: string; maxSseRetries?: number; retryDelayMs?: number }) {
+  constructor(private o: { baseUrl: string; endpoints: AudioEndpoints; streamToken: string; maxSseRetries?: number; retryDelayMs?: number; clearTimeoutMs?: number }) {
     // Endpoints are model-supplied: pin them to the operator's origin so the
     // bearer token can never be sent elsewhere.
     const pin = (path: string): string => {
@@ -127,11 +128,20 @@ export class AudioLink implements AudioLinkLike {
     }
   }
 
-  async clear(): Promise<{ playedMs: number; clearedMs: number }> {
-    const r = await fetch(this.#clearUrl, { method: "POST", headers: this.#headers() });
-    if (!r.ok) return { playedMs: 0, clearedMs: 0 };
-    const j = (await r.json()) as { played_ms?: number; cleared_ms?: number };
-    return { playedMs: j.played_ms ?? 0, clearedMs: j.cleared_ms ?? 0 };
+  async clear(): Promise<{ playedMs: number; clearedMs: number } | null> {
+    // Bounded: a hung clear must not hold up the steer, or a stop behind it.
+    try {
+      const r = await fetch(this.#clearUrl, {
+        method: "POST",
+        headers: this.#headers(),
+        signal: AbortSignal.timeout(this.o.clearTimeoutMs ?? 2_000),
+      });
+      if (!r.ok) return null;
+      const j = (await r.json()) as { played_ms?: number; cleared_ms?: number };
+      return { playedMs: j.played_ms ?? 0, clearedMs: j.cleared_ms ?? 0 };
+    } catch {
+      return null;
+    }
   }
 
   async close(): Promise<void> {

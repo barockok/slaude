@@ -34,7 +34,7 @@ export const VOICE_TOOLS: ToolSpec[] = [
 
 export interface ConductorIO {
   provider: Pick<VoiceProvider, "caps" | "addContext" | "respond" | "cancel" | "truncate" | "toolResult">;
-  audio: { write(pcm: Int16Array): void; clear(): Promise<{ playedMs: number }> };
+  audio: { write(pcm: Int16Array): void; clear(): Promise<{ playedMs: number } | null> };
   emit(m: ChildMsg): void;
   end(reason: EndReason): void;
   reconnect(): void;
@@ -214,7 +214,16 @@ export class Conductor {
     // start during it, and that one must not be the one marked flushed.
     const item = this.#currentItem;
     this.#flushedItem = item;
-    const { playedMs } = await this.io.audio.clear();
+    const cleared = await this.io.audio.clear().catch(() => null);
+    if (this.#currentItem === item) this.#currentItem = null;
+    // A failed clear: what played is unknown, so neither truncate the model's
+    // memory nor move the uplink clock (0 ms would be a lie). The item's late
+    // audio is still dropped through #flushedItem.
+    if (!cleared) {
+      this.io.emit({ type: "log", level: "warn", message: "audio clear failed; queued audio may still play" });
+      return;
+    }
+    const { playedMs } = cleared;
     if (item && this.io.provider.caps.truncate && playedMs < this.#sentMs) {
       const start = this.#itemStart.get(item) ?? 0;
       this.io.provider.truncate(item, Math.max(0, Math.round(playedMs - start)));
@@ -222,7 +231,6 @@ export class Conductor {
     // Everything not yet played was discarded by workbench: the uplink clock
     // resumes from what actually played.
     this.#sentMs = playedMs;
-    if (this.#currentItem === item) this.#currentItem = null;
   }
   #finish(reason: EndReason): void {
     if (this.#ended) return;

@@ -42,6 +42,27 @@ describe("Conductor", () => {
     expect(provider.named("truncate").at(-1)).toEqual(["truncate", "i3", 100]);
   });
 
+  it("a failed clear (null) skips truncate and keeps the uplink clock", async () => {
+    const { c, provider, audio } = setup();
+    c.onAudio(pcm(24000), "i1"); // 1000 ms
+    (audio as any).clearResult = null;
+    await c.onSpeechStarted();
+    expect(provider.named("truncate")).toEqual([]);
+    c.onAudio(pcm(24000), "i2"); // starts at 1000 ms: the clock was not reset to 0
+    audio.clearResult = { playedMs: 1500, clearedMs: 500 };
+    await c.onSpeechStarted();
+    expect(provider.named("truncate")).toEqual([["truncate", "i2", 500]]);
+  });
+
+  it("a rejecting clear does not throw out of a now-say; the steer is still spoken", async () => {
+    const { c, provider, audio } = setup();
+    audio.clear = async () => { throw new Error("workbench down"); };
+    c.onAudio(pcm(2400), "i1");
+    await c.say({ type: "say", text: "stop, the deploy failed", when: "now", asOf: 0 });
+    expect(provider.named("respond").length).toBe(1);
+    expect(provider.named("truncate")).toEqual([]);
+  });
+
   it("flush skips truncate when the provider cannot", async () => {
     const { c, provider, audio } = setup({ truncate: false });
     c.onAudio(pcm(2400), "g1");

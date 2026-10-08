@@ -4,7 +4,7 @@ import { pcmToBase64 } from "../../src/voice/provider/types";
 import { until } from "./fakes";
 
 const sse = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-function fakeWorkbench(opts: { getStatus?: number; postStatus?: number; dropFirstSse?: boolean } = {}) {
+function fakeWorkbench(opts: { getStatus?: number; postStatus?: number; dropFirstSse?: boolean; clearStatus?: number; clearHang?: boolean } = {}) {
   const st: any = { gets: 0, auth: [] as string[], route: [] as string[], uplinkBytes: 0, clears: 0, sseCtl: null as any };
   const server = Bun.serve({
     port: 0,
@@ -14,6 +14,8 @@ function fakeWorkbench(opts: { getStatus?: number; postStatus?: number; dropFirs
       st.route.push(req.headers.get("x-browser-session") ?? "");
       if (url.pathname.endsWith("/audio/clear")) {
         st.clears++;
+        if (opts.clearHang) return new Promise<Response>(() => {});
+        if (opts.clearStatus) return new Response("", { status: opts.clearStatus });
         return Response.json({ played_ms: 1500, cleared_ms: 900 });
       }
       if (req.method === "GET") {
@@ -131,6 +133,29 @@ describe("AudioLink", () => {
     const link = new AudioLink({ baseUrl: wb.base, endpoints, streamToken: "s" });
     await link.start({ onAudio: () => {}, onEnded: () => {} });
     expect(await link.clear()).toEqual({ playedMs: 1500, clearedMs: 900 });
+    await link.close();
+  });
+
+  it("clear returns null on a non-OK answer (no fake 0 ms)", async () => {
+    wb = fakeWorkbench({ clearStatus: 500 });
+    const link = new AudioLink({ baseUrl: wb.base, endpoints, streamToken: "s" });
+    await link.start({ onAudio: () => {}, onEnded: () => {} });
+    expect(await link.clear()).toBeNull();
+    await link.close();
+  });
+
+  it("clear returns null when the workbench cannot be reached", async () => {
+    const link = new AudioLink({ baseUrl: "http://127.0.0.1:1", endpoints, streamToken: "s" });
+    expect(await link.clear()).toBeNull();
+  });
+
+  it("a hung clear gives up after its timeout and returns null", async () => {
+    wb = fakeWorkbench({ clearHang: true });
+    const link = new AudioLink({ baseUrl: wb.base, endpoints, streamToken: "s", clearTimeoutMs: 100 });
+    await link.start({ onAudio: () => {}, onEnded: () => {} });
+    const t0 = Date.now();
+    expect(await link.clear()).toBeNull();
+    expect(Date.now() - t0).toBeLessThan(1000);
     await link.close();
   });
 
