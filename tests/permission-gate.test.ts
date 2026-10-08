@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach } from "bun:test";
 import * as PendingGates from "../src/db/pending-gates";
-import { PermissionGate } from "../src/gateway/slack/permission-gate";
+import { PermissionGate, permissionPolicy } from "../src/gateway/slack/permission-gate";
 
 type Handler = (a: any) => Promise<void>;
 
@@ -131,6 +131,54 @@ describe("PermissionGate", () => {
     const ac = new AbortController();
     const r = await gate.resolver("S", "mcp__slaude_runtime__reload_session", {}, ctx("T2", ac.signal));
     expect(r.behavior).toBe("allow");
+  });
+
+  test("mcp__slaude_voice__* always allowed (a call must never wait on a card)", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app);
+    gate.bindSession("S", "C", "T");
+    const ac = new AbortController();
+    for (const t of [
+      "mcp__slaude_voice__voice_start",
+      "mcp__slaude_voice__voice_say",
+      "mcp__slaude_voice__voice_context",
+      "mcp__slaude_voice__voice_stop",
+    ]) {
+      const r = await gate.resolver("S", t, { stream_token: "tok-secret" }, ctx("TV", ac.signal));
+      expect(r.behavior).toBe("allow");
+    }
+    expect(f.posts.length).toBe(0);
+  });
+
+  test("permissionPolicy (shared by gateway and node) allows the voice tools", () => {
+    for (const t of ["voice_start", "voice_say", "voice_context", "voice_stop"]) {
+      expect(permissionPolicy(`mcp__slaude_voice__${t}`, {}, new Set())?.behavior).toBe("allow");
+    }
+    expect(permissionPolicy("mcp__slaude_voicex__voice_start", {}, new Set())).toBeNull();
+  });
+
+  test("approval card redacts token/secret/key/password values, nested too", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app);
+    gate.bindSession("S", "C", "T");
+    const ac = new AbortController();
+    const p = gate.resolver(
+      "S",
+      "mcp__other__tool",
+      {
+        stream_token: "tok-AAA",
+        endpoints: { apiKey: "key-BBB", headers: { "x-secret": "sec-CCC" } },
+        list: [{ password: "pw-DDD" }],
+        url: "https://wb.example/x",
+      },
+      ctx("UR", ac.signal),
+    );
+    const text = JSON.stringify((await firstPost(f)).blocks);
+    for (const leaked of ["tok-AAA", "key-BBB", "sec-CCC", "pw-DDD"]) expect(text).not.toContain(leaked);
+    expect(text).toContain("[redacted]");
+    expect(text).toContain("https://wb.example/x");
+    ac.abort();
+    await p;
   });
 
   test("no route bound → deny", async () => {

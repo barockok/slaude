@@ -94,6 +94,12 @@ export function permissionPolicy(
   if (toolName.startsWith("mcp__slaude_kb__")) {
     return { behavior: "allow", updatedInput: input };
   }
+  // Voice call control. A call cannot pause on a card: voice_say/context run
+  // mid-conversation, and voice_start's input carries the tab-audio bearer
+  // token, which an approval card would post into the thread.
+  if (toolName.startsWith("mcp__slaude_voice__")) {
+    return { behavior: "allow", updatedInput: input };
+  }
   return null;
 }
 
@@ -140,8 +146,23 @@ export function decisionFromPermRow(
   return { behavior: "deny", message: row.status === "expired" ? "expired before a decision" : "cancelled" };
 }
 
+/** Keys whose values never appear on an approval card (the card is posted
+ *  into a shared thread). Matched at any depth of the tool input. */
+const SECRET_KEY = /token|secret|key|password|authorization|cookie|credential/i;
+
+/** Copy of `value` with every secret-named key's value replaced. */
+export function redactForCard(value: unknown, depth = 0): unknown {
+  if (depth > 20 || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((v) => redactForCard(v, depth + 1));
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    out[k] = SECRET_KEY.test(k) ? "[redacted]" : redactForCard(v, depth + 1);
+  }
+  return out;
+}
+
 function permBlocks(toolName: string, input: Record<string, unknown>, toolUseId: string, decisionReason?: string) {
-  const inputPreview = truncate(JSON.stringify(input, null, 2), 2500);
+  const inputPreview = truncate(JSON.stringify(redactForCard(input), null, 2), 2500);
   return [
     {
       type: "section",
