@@ -235,6 +235,16 @@ describe("voice MCP", () => {
   });
 });
 
+describe("voice_stop before the call started", () => {
+  it("reports durationSec 0, not seconds since the epoch", async () => {
+    const t0 = host();
+    const calls = new VoiceCalls();
+    calls.add("s1", { startedAt: 0, stop: async () => {} } as any);
+    const t = tools(createVoiceMcp("s1", t0.h, calls));
+    expect(JSON.parse(text(await t["voice_stop"].handler({})))).toEqual({ reason: "stopped", durationSec: 0 });
+  });
+});
+
 describe("buildInstructions", () => {
   it("combines identity, values, mandate, brief and speaking rules", () => {
     const s = buildInstructions({ name: "Ava", role: "release helper", voice: "warm, direct", values: ["honesty"], mandate: "ship safely" }, "standup");

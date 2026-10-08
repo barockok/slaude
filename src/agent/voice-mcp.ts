@@ -153,7 +153,9 @@ export const voiceHandlers = {
     // Not awaited: voice_stop runs inside a turn, and the call's closing summary
     // turn needs the session (the lock, on a node) — waiting here would deadlock.
     call.stop("stopped").catch(() => {});
-    return ok({ reason: "stopped", durationSec: Math.round((Date.now() - call.startedAt) / 1000) });
+    // startedAt is 0 until the loop reports started.
+    const durationSec = call.startedAt ? Math.round((Date.now() - call.startedAt) / 1000) : 0;
+    return ok({ reason: "stopped", durationSec });
   },
 };
 
