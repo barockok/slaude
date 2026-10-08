@@ -9,6 +9,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { transcriptLine, type ChildMsg, type EndReason, type VoiceInit } from "./ipc";
 import type { LoopChild } from "./spawn";
+import { VoiceAuthLost } from "./runners";
 
 export type { LoopChild } from "./spawn";
 
@@ -144,6 +145,12 @@ export class VoiceCall {
           console.error(`[voice] request #${m.id} failed session=${this.d.sessionId}:`, e instanceof Error ? e.message : e);
           // Claude never saw this chunk; carry it in the next flush.
           if (transcript) this.#pending.unshift(transcript);
+          if (e instanceof VoiceAuthLost) {
+            // Not stop(): it waits for the turn queue, which this turn is on.
+            this.#stopReason ??= "auth_lost";
+            this.d.child.send({ type: "stop", reason: "auth_lost" });
+            return;
+          }
           this.say(`Request #${m.id} failed. Tell the participants you could not get that.`, "next_gap", m.id);
         }
       });

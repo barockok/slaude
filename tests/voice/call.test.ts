@@ -243,6 +243,24 @@ describe("VoiceCall", () => {
     expect(runs).toHaveLength(0);
   });
 
+  it("auth lost on a delegate stops the call with auth_lost", async () => {
+    const { VoiceAuthLost } = await import("../../src/voice/runners");
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    const child = fakeChild();
+    const call = new VoiceCall({ sessionId: "s1", child, transcriptDir: tmp(), holdIdle: () => {}, onClosed: () => {},
+      runner: { run: async (_s, _t, o) => { if (o.voice && !o.suppress) throw new VoiceAuthLost("refused"); } } });
+    const p = call.start(init(call.callId));
+    child.push({ type: "started", callId: call.callId, sampleRate: 24000 });
+    await p;
+    child.push({ type: "delegate", id: "1", task: "x", asOf: 0 });
+    await until(() => child.sent.some((m) => m.type === "stop"));
+    expect(child.sent.at(-1)).toEqual({ type: "stop", reason: "auth_lost" });
+    expect(child.sent.some((m) => m.type === "say")).toBe(false);
+    child.kill();
+    expect(await call.done).toBe("auth_lost");
+    err.mockRestore();
+  });
+
   it("a failed delegate's transcript chunk is carried by the next flush", async () => {
     const err = spyOn(console, "error").mockImplementation(() => {});
     const t = make({ fail: true, idleFlushMs: 20 });

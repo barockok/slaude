@@ -29,6 +29,11 @@ const DEFAULT_TURN_TIMEOUT_MS = 15 * 60_000;
 const DEFAULT_MAX_WAIT_MS = 120_000;
 const BUSY_MESSAGE = "session busy: could not start the voice turn";
 
+/** The gateway refused to refresh the call's job token (label changed, past
+ *  the token's maximum age): the call cannot run turns any more and ends with
+ *  `auth_lost`. */
+export class VoiceAuthLost extends Error {}
+
 /** The turn may still be running: the runner must abort it. */
 class TurnStuckError extends Error {}
 
