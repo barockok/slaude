@@ -311,6 +311,8 @@ export class AgentManager extends EventEmitter {
   /** Sessions whose next turn must be suppressed (mention-only plain message).
    *  Consumed once by the UserPromptSubmit hook; set by suppressNextTurn(). */
   #suppressNextTurn = new Set<string>();
+  /** Sessions whose idle TTL is suspended (an active voice call, spec §6). */
+  #idleHeld = new Set<string>();
   #budget = new TokenBudget({
     fallbackContextWindow: env.tokenFallbackContextWindow(),
   });
@@ -618,6 +620,28 @@ export class AgentManager extends EventEmitter {
     this.#suppressNextTurn.add(sessionId);
   }
 
+  /** Suspend (true) or restore (false) the idle TTL for a live session. A voice
+   *  call holds it so the warm session — and its warm-node registration — stays
+   *  up for the whole call; release re-arms the normal timer. */
+  holdIdle(sessionId: string, hold: boolean) {
+    if (hold) this.#idleHeld.add(sessionId);
+    else this.#idleHeld.delete(sessionId);
+    const live = this.#live.get(sessionId);
+    if (!live) return;
+    if (hold) {
+      if (live.idleTimer) clearTimeout(live.idleTimer);
+      live.idleTimer = undefined;
+    } else {
+      this.#armIdle(live);
+    }
+  }
+
+  /** True while a live session has inputs pushed whose result has not arrived.
+   *  False for unknown or not-live sessions. */
+  isTurnInFlight(sessionId: string): boolean {
+    return (this.#live.get(sessionId)?.pendingInputs ?? 0) > 0;
+  }
+
   /** Send user input. Starts session loop if not already live. */
   async sendMessage(sessionId: string, text: string) {
     // Signal that a real user turn is starting for this session. Slash commands
@@ -667,6 +691,7 @@ export class AgentManager extends EventEmitter {
   #armIdle(live: LiveSession) {
     const ms = env.idleMs();
     if (live.idleTimer) clearTimeout(live.idleTimer);
+    if (this.#idleHeld.has(live.id)) return;
     if (ms <= 0) return;
     live.idleTimer = setTimeout(() => {
       // Flush any buffered assistant content; close the prompt iterable so
@@ -1309,6 +1334,8 @@ export class AgentManager extends EventEmitter {
         this.#budget.forget(sessionId);
         this.#stopBlocked.delete(sessionId);
         metric.sessionsLive.set(this.#live.size);
+        this.#idleHeld.delete(sessionId);
+        this.emit("sessionExit", sessionId);
         markExited();
         // After a stream_closed auto-reload, inject a synthetic "continue"
         // prompt so the resumed session picks up without human input.
