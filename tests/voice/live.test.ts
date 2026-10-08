@@ -7,6 +7,7 @@ import { describe, it, expect } from "bun:test";
 import { runVoiceLoop } from "../../src/voice/loop";
 import { AudioLink, type AudioLinkLike } from "../../src/voice/audio-link";
 import { OpenAIRealtime } from "../../src/voice/provider/openai-realtime";
+import { OpenAILive } from "../../src/voice/provider/openai-live";
 import type { ChildMsg, ParentMsg } from "../../src/voice/ipc";
 
 const live = process.env.VOICE_E2E === "1";
@@ -54,4 +55,40 @@ describe.skipIf(!live)("voice live", () => {
     expect(out.some((m) => m.type === "transcript" && m.role === "user")).toBe(true);
     expect(written).toBeGreaterThan(0);
   }, 90_000);
+});
+
+// GPT-Live provider check: needs only VOICE_E2E=1 and SLAUDE_VOICE_API_KEY (OpenAI), no
+// workbench. Prints the numbers the field note asks for; no audio is written anywhere.
+describe.skipIf(!live)("voice live: openai-live", () => {
+  it("starts a session, speaks a commentary, ends it with a synthetic responseDone, and closes", async () => {
+    const p = new OpenAILive({ apiKey: process.env.SLAUDE_VOICE_API_KEY!, model: "gpt-live-1" });
+    let samples = 0;
+    let firstAt = 0;
+    let lastAt = 0;
+    let dones = 0;
+    p.on("audio", (pcm) => {
+      const t = Date.now();
+      if (!firstAt) firstAt = t;
+      lastAt = t;
+      samples += pcm.length;
+    });
+    p.on("responseDone", () => dones++);
+    await p.connect({ instructions: "You are a test assistant. Keep every answer to one short sentence.", tools: [] });
+    expect(p.caps.maxSessionSec).toBeGreaterThan(0);
+    const silence = new Int16Array(2400); // 100 ms at 24 kHz
+    for (let i = 0; i < 30; i++) {
+      p.sendAudio(silence);
+      await Bun.sleep(100);
+    }
+    p.addContext("Say hello to the participants.");
+    p.respond();
+    const deadline = Date.now() + 20_000;
+    while (dones === 0 && Date.now() < deadline) await Bun.sleep(100);
+    expect(samples).toBeGreaterThan(0);
+    expect(dones).toBe(1);
+    const audioSec = samples / 24000;
+    const wallSec = Math.max(0.001, (lastAt - firstAt) / 1000);
+    console.log(`[gpt-live] expires in ${p.caps.maxSessionSec}s; ${audioSec.toFixed(2)}s of audio over ${wallSec.toFixed(2)}s wall (x${(audioSec / wallSec).toFixed(2)} real time)`);
+    await p.close();
+  }, 60_000);
 });
