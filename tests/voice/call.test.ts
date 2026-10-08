@@ -1,10 +1,37 @@
-import { describe, it, expect, spyOn } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { afterAll, describe, it, expect, spyOn } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VoiceCall, VoiceCalls, TRANSCRIPT_FLUSH_PREFIX, type LoopChild, type TurnRunner } from "../../src/voice/call";
 import type { ChildMsg, ParentMsg, VoiceInit } from "../../src/voice/ipc";
 import { until } from "./fakes";
+
+const dirs: string[] = [];
+const tmp = () => {
+  const d = mkdtempSync(join(tmpdir(), "voice-call-"));
+  dirs.push(d);
+  return d;
+};
+afterAll(() => {
+  for (const d of dirs) rmSync(d, { recursive: true, force: true });
+});
+
+/** A child whose message stream is driven by the test; `exit()` simulates the
+ *  process dying without (necessarily) its stream ending. */
+function scriptedChild(stream: () => AsyncGenerator<ChildMsg>) {
+  let exit!: (n: number) => void;
+  const sent: ParentMsg[] = [];
+  const child = {
+    sent, kills: 0,
+    send: (m: ParentMsg) => void sent.push(m),
+    exited: new Promise<number>((r) => (exit = r)),
+    exit: (n: number) => exit(n),
+    kill() { this.kills++; },
+    messages: { [Symbol.asyncIterator]: stream },
+  };
+  return child;
+}
+const never = () => new Promise<never>(() => {});
 
 function fakeChild() {
   const sent: ParentMsg[] = [];
@@ -35,7 +62,7 @@ function make(over: { fail?: boolean; idleFlushMs?: number; holdResults?: boolea
   const holds: boolean[] = [];
   const holdResults = [...(over.holdResults ?? [])];
   let closed = 0;
-  const dir = mkdtempSync(join(tmpdir(), "voice-call-"));
+  const dir = tmp();
   const call = new VoiceCall({
     sessionId: "s1", runner, child, transcriptDir: dir,
     holdIdle: (h) => { holds.push(h); return holdResults.length ? holdResults.shift()! : true; },
@@ -160,11 +187,73 @@ describe("VoiceCall", () => {
       messages: { async *[Symbol.asyncIterator]() { yield { type: "started", callId: "x", sampleRate: 24000 } as ChildMsg; await new Promise(() => {}); } },
     };
     const { runner } = recRunner();
-    const call = new VoiceCall({ sessionId: "s1", runner, child, transcriptDir: mkdtempSync(join(tmpdir(), "voice-call-")),
+    const call = new VoiceCall({ sessionId: "s1", runner, child, transcriptDir: tmp(),
       holdIdle: () => true, onClosed: () => {}, exitGraceMs: 10 });
     await call.start(init(call.callId));
     exit(1);
     expect(await call.done).toBe("loop_crashed");
+  });
+
+  it("a stream failure closes the call and kills the child", async () => {
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    const child = scriptedChild(async function* () {
+      yield { type: "started", callId: "x", sampleRate: 24000 } as ChildMsg;
+      throw new Error("stdout broke");
+    });
+    const { runner } = recRunner();
+    const call = new VoiceCall({ sessionId: "s1", runner, child, transcriptDir: tmp(), holdIdle: () => true, onClosed: () => {} });
+    await call.start(init(call.callId));
+    expect(await call.done).toBe("loop_crashed");
+    expect(child.kills).toBe(1);
+    err.mockRestore();
+  });
+
+  it("a requested stop closes with that reason when the child exits without ended", async () => {
+    const child = scriptedChild(async function* () {
+      yield { type: "started", callId: "x", sampleRate: 24000 } as ChildMsg;
+      await never();
+    });
+    const { runner, runs } = recRunner();
+    const call = new VoiceCall({ sessionId: "s1", runner, child, transcriptDir: tmp(), holdIdle: () => true, onClosed: () => {}, exitGraceMs: 10 });
+    await call.start(init(call.callId));
+    const stopping = call.stop("session_rebooted");
+    child.exit(0);
+    await stopping;
+    expect(await call.done).toBe("session_rebooted");
+    expect(runs).toHaveLength(0); // no summary on a rebooted session
+  });
+
+  it("start timeout rejects, kills the child, ignores a late start and runs no summary", async () => {
+    let late!: () => void;
+    const lateGate = new Promise<void>((r) => (late = r));
+    const child = scriptedChild(async function* () {
+      await lateGate;
+      yield { type: "started", callId: "x", sampleRate: 24000 } as ChildMsg;
+      yield { type: "ended", reason: "stopped" } as ChildMsg;
+    });
+    const { runner, runs } = recRunner();
+    const holds: boolean[] = [];
+    const call = new VoiceCall({ sessionId: "s1", runner, child, transcriptDir: tmp(),
+      holdIdle: (h) => { holds.push(h); return true; }, onClosed: () => {}, startTimeoutMs: 10 });
+    await expect(call.start(init(call.callId))).rejects.toThrow(/did not start in time/);
+    expect(child.kills).toBeGreaterThanOrEqual(1);
+    late();
+    expect(await call.done).toBe("stopped");
+    expect(holds).toEqual([]);
+    expect(runs).toHaveLength(0);
+  });
+
+  it("a failed delegate's transcript chunk is carried by the next flush", async () => {
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    const t = make({ fail: true, idleFlushMs: 20 });
+    await started(t);
+    t.child.push({ type: "transcript", seq: 1, role: "user", text: "first" });
+    t.child.push({ type: "delegate", id: "1", task: "x", asOf: 1 });
+    await until(() => t.child.sent.some((m) => m.type === "say"));
+    t.child.push({ type: "transcript", seq: 2, role: "assistant", text: "second" });
+    await until(() => t.runs.some((r) => r.suppress));
+    expect(t.runs.find((r) => r.suppress)!.text).toBe(`${TRANSCRIPT_FLUSH_PREFIX}\nparticipant: first\nvoice: second`);
+    err.mockRestore();
   });
 
   it("start rejects when the child ends before starting", async () => {

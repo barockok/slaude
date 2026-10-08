@@ -62,6 +62,8 @@ export class VoiceCall {
   #queue: Promise<void> = Promise.resolve();
   #flushTimer: ReturnType<typeof setTimeout> | null = null;
   #started = false;
+  #timedOut = false;
+  #exited = false;
   #held = false;
   #stopReason: EndReason | null = null;
   #endReason: EndReason | null = null;
@@ -73,6 +75,7 @@ export class VoiceCall {
   start(init: VoiceInit): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
+        this.#timedOut = true;
         reject(new Error("voice loop did not start in time"));
         this.d.child.kill();
       }, this.d.startTimeoutMs ?? 20_000);
@@ -83,15 +86,19 @@ export class VoiceCall {
       this.d.child.send({ type: "init", init });
       // A child that exits before its final `ended` line is flushed (or whose
       // stdout never closes) is a crash, unless we asked it to stop.
-      void this.d.child.exited.then(() =>
+      void this.d.child.exited.then(() => {
+        this.#exited = true;
         setTimeout(() => {
           notStarted("voice loop exited before start");
           void this.#close(this.#stopReason ?? "loop_crashed");
-        }, this.d.exitGraceMs ?? 1_000),
-      );
+        }, this.d.exitGraceMs ?? 1_000).unref();
+      });
       void (async () => {
         try {
           for await (const m of this.d.child.messages) {
+            // After the start timeout the child is being killed: ignore a late
+            // start (and anything it says) so no hold or summary turn happens.
+            if (this.#timedOut && m.type !== "ended") continue;
             if (m.type === "started" && !this.#started) {
               this.#started = true;
               clearTimeout(timer);
@@ -99,7 +106,7 @@ export class VoiceCall {
               resolve();
             } else if (m.type === "ended") {
               notStarted(`voice loop ended before start: ${m.reason}`);
-              await this.#close(m.reason);
+              await this.#close(m.reason, true);
               return;
             } else {
               this.#onChild(m);
@@ -132,6 +139,8 @@ export class VoiceCall {
           await this.d.runner.run(this.d.sessionId, delegatePrompt(m.id, m.task, transcript), { suppress: false, voice: true });
         } catch (e) {
           console.error(`[voice] request #${m.id} failed session=${this.d.sessionId}:`, e instanceof Error ? e.message : e);
+          // Claude never saw this chunk; carry it in the next flush.
+          if (transcript) this.#pending.unshift(transcript);
           this.say(`Request #${m.id} failed. Tell the participants you could not get that.`, "next_gap", m.id);
         }
       });
@@ -176,14 +185,27 @@ export class VoiceCall {
     if (this.#endReason) return void (await this.done);
     this.#stopReason ??= reason;
     this.d.child.send({ type: "stop", reason });
-    const t = setTimeout(() => this.d.child.kill(), 5_000);
+    const t = setTimeout(() => this.d.child.kill(), 5_000).unref();
     await this.done;
     clearTimeout(t);
   }
 
-  async #close(reason: EndReason): Promise<void> {
+  /** Make sure the child is gone. The stream may have ended (or failed) while
+   *  the process lives on with its provider socket open. After a clean `ended`
+   *  the child may still be closing its provider and audio, so it gets a grace
+   *  period first. */
+  #reap(graceful: boolean): void {
+    if (this.#exited) return;
+    if (!graceful) return this.d.child.kill();
+    setTimeout(() => {
+      if (!this.#exited) this.d.child.kill();
+    }, this.d.exitGraceMs ?? 1_000).unref();
+  }
+
+  async #close(reason: EndReason, graceful = false): Promise<void> {
     if (this.#endReason) return;
     this.#endReason = reason;
+    this.#reap(graceful);
     let path: string | null = null;
     if (this.#lines.length) {
       path = join(this.d.transcriptDir, `voice-call-${this.callId}.txt`);
