@@ -19,7 +19,10 @@ import * as SoulOverrides from "../../db/soul-overrides";
 import { quietForVoice, voiceTurns } from "../../voice/turn-flags";
 import { VoiceCalls } from "../../voice/call";
 import { voiceConfigFromEnv, type VoiceConfig } from "../../voice/config";
-import { endCallsOnSessionExit, makeMonoVoiceHost, voiceServersFor } from "../../voice/hosts";
+import { drainVoiceCalls, endCallsOnSessionExit, makeMonoVoiceHost, voiceServersFor } from "../../voice/hosts";
+
+/** Mono shutdown: how long live voice calls get to say goodbye and end. */
+const VOICE_SHUTDOWN_GRACE_MS = 5_000;
 import { monoPersonaSoul } from "../../voice/mono-soul";
 import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, createConnectMcp, CONNECT_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
 import { makeSlackSurfaceFactory } from "../slack/surface";
@@ -3189,6 +3192,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   return {
     start: () => t.start(),
     stop: async () => {
+      // End live voice calls first, while the transport can still carry each
+      // call's summary turn; bounded so shutdown never hangs on a call.
+      await drainVoiceCalls(voiceCalls, VOICE_SHUTDOWN_GRACE_MS);
       cancelNightlyMaintenance();
       await cronLeader?.stop().catch(() => {});
       cronScheduler.stop();

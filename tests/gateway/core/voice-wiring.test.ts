@@ -68,8 +68,19 @@ describe("mono voice wiring", () => {
   /** A registered call that records how it was ended. */
   const fakeCall = () => {
     const stops: string[] = [];
-    return { stops, call: { stop: async (r: string) => { stops.push(r); } } as any };
+    const says: string[] = [];
+    return { stops, says, call: { say: (t: string) => { says.push(t); }, stop: async (r: string) => { stops.push(r); } } as any };
   };
+
+  it("mono shutdown ends every live call (goodbye, then node_drain) before the transport stops", async () => {
+    setEnv(VOICE_ENV);
+    const { s, sid } = await sessionWith("T-VOICE-SHUTDOWN");
+    const f = fakeCall();
+    s.handle.__voiceCalls!.add(sid, f.call);
+    await s.dispose();
+    expect(f.says.length).toBe(1);
+    expect(f.stops).toEqual(["node_drain"]);
+  });
 
   it("a session exit ends that session's call session_rebooted", async () => {
     setEnv(VOICE_ENV);
@@ -82,6 +93,7 @@ describe("mono voice wiring", () => {
       (s.agent as any).emit("sessionExit", sid);
       expect(f.stops).toEqual(["session_rebooted"]);
     } finally {
+      s.handle.__voiceCalls!.remove(sid);
       await s.dispose();
     }
   });
@@ -94,6 +106,7 @@ describe("mono voice wiring", () => {
       (s.agent as any).emit("sessionExit", sid);
       expect(f.stops).toEqual([]);
     } finally {
+      s.handle.__voiceCalls!.remove(sid);
       await s.dispose();
     }
   });

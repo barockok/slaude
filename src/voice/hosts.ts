@@ -201,7 +201,7 @@ export function endCallsOnSessionExit(agent: { on(ev: "sessionExit", cb: (sid: s
   agent.on("sessionExit", (sid: string) => void calls.end(sid, "session_rebooted").catch(() => {}));
 }
 
-/** Node drain (spec §8): end every call, but never past the drain grace. */
+/** Node drain (spec §8) and mono shutdown: end every call, but never past the grace. */
 export async function drainVoiceCalls(calls: VoiceCalls, graceMs: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([
