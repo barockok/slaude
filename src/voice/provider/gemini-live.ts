@@ -11,7 +11,7 @@ import {
 } from "./types";
 
 export class GeminiLive extends TypedEmitter<ProviderEvents> implements VoiceProvider {
-  readonly caps: VoiceProviderCaps = { inputRate: 16000, outputRate: 24000, truncate: false, maxSessionSec: 840 };
+  readonly caps: VoiceProviderCaps = { inputRate: 16000, outputRate: 24000, truncate: false, maxSessionSec: 540 };
   #ws: WebSocket | null = null;
   #closing = false;
   #turn = 0;
@@ -19,6 +19,12 @@ export class GeminiLive extends TypedEmitter<ProviderEvents> implements VoicePro
   #userText = "";
   #modelText = "";
   #callNames = new Map<string, string>();
+  /** Context queued while the model speaks: a clientContent message would interrupt it. */
+  #pendingContext: string[] = [];
+  /** We sent a completed clientContent mid-turn; the server's `interrupted` is ours, not the user's. */
+  #selfInterrupt = false;
+  /** A user barge-in was reported; speechStopped is owed once the user's turn ends. */
+  #userSpeaking = false;
   constructor(private o: { apiKey: string; model: string; url?: string }) {
     super();
   }
@@ -35,6 +41,8 @@ export class GeminiLive extends TypedEmitter<ProviderEvents> implements VoicePro
     this.#inTurn = false;
     this.#userText = this.#modelText = "";
     this.#callNames.clear();
+    this.#pendingContext = [];
+    this.#selfInterrupt = this.#userSpeaking = false;
     const base = this.o.url ??
       "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
     const ws = new WebSocket(`${base}?key=${encodeURIComponent(this.o.apiKey)}`);
@@ -117,6 +125,7 @@ export class GeminiLive extends TypedEmitter<ProviderEvents> implements VoicePro
             this.#inTurn = true;
             this.#turn++;
             this.#flushUser();
+            this.#endUserSpeech();
           }
           this.fire("audio", base64ToPcm(part.inlineData.data), `g${this.#turn}`);
         }
@@ -124,14 +133,34 @@ export class GeminiLive extends TypedEmitter<ProviderEvents> implements VoicePro
       if (sc.outputTranscription?.text) this.#modelText += sc.outputTranscription.text;
       if (sc.interrupted) {
         this.#endModelTurn(false);
-        this.fire("speechStarted");
+        if (this.#selfInterrupt) this.#selfInterrupt = false;
+        else {
+          this.#userSpeaking = true;
+          this.fire("speechStarted");
+        }
       }
-      if (sc.turnComplete) this.#endModelTurn(true);
+      if (sc.turnComplete) {
+        this.#selfInterrupt = false;
+        this.#endUserSpeech();
+        this.#endModelTurn(true);
+        this.#flushContext();
+      }
     }
     for (const fc of m.toolCall?.functionCalls ?? []) {
       this.#callNames.set(fc.id, fc.name);
       this.fire("toolCall", { callId: fc.id, name: fc.name, args: fc.args ?? {} });
     }
+  }
+  #endUserSpeech(): void {
+    if (!this.#userSpeaking) return;
+    this.#userSpeaking = false;
+    this.fire("speechStopped");
+  }
+  #flushContext(): void {
+    for (const text of this.#pendingContext.splice(0)) this.#sendContext(text);
+  }
+  #sendContext(text: string): void {
+    this.#send({ clientContent: { turns: [{ role: "user", parts: [{ text: `[context] ${text}` }] }], turnComplete: false } });
   }
   #flushUser(): void {
     const t = this.#userText.trim();
@@ -154,9 +183,13 @@ export class GeminiLive extends TypedEmitter<ProviderEvents> implements VoicePro
     this.#send({ realtimeInput: { audio: { data: pcmToBase64(pcm), mimeType: "audio/pcm;rate=16000" } } });
   }
   addContext(text: string): void {
-    this.#send({ clientContent: { turns: [{ role: "user", parts: [{ text: `[context] ${text}` }] }], turnComplete: false } });
+    if (this.#inTurn) this.#pendingContext.push(text);
+    else this.#sendContext(text);
   }
   respond(): void {
+    this.#flushContext();
+    // Sending mid-turn interrupts the model by design; swallow the resulting `interrupted`.
+    if (this.#inTurn) this.#selfInterrupt = true;
     this.#send({ clientContent: { turns: [], turnComplete: true } });
   }
   cancel(): void {

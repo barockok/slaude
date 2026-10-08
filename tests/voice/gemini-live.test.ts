@@ -44,6 +44,7 @@ describe("GeminiLive", () => {
     expect(setup.generationConfig.responseModalities).toEqual(["AUDIO"]);
     expect(setup.generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName).toBe("Puck");
     expect(p.caps.truncate).toBe(false);
+    expect(p.caps.maxSessionSec).toBe(540);
     await p.close();
   });
 
@@ -83,6 +84,61 @@ describe("GeminiLive", () => {
       ["transcript", "user", "hello"], ["audio", 6, "g1"], ["transcript", "assistant", "hi"], ["responseDone"],
       ["speechStarted"], ["toolCall", "fc2", "delegate", { task: "t" }],
     ]);
+    await p.close();
+  });
+
+  it("emits speechStopped after a barge-in, at the next model audio", async () => {
+    srv = fakeServer();
+    const p = new GeminiLive({ apiKey: "k", model: "m", url: srv.url });
+    const got: string[] = [];
+    p.on("speechStarted", () => got.push("started"));
+    p.on("speechStopped", () => got.push("stopped"));
+    p.on("audio", () => got.push("audio"));
+    await p.connect({ instructions: "", tools: [] });
+    srv.send({ serverContent: { interrupted: true } });
+    await until(() => got.length >= 1);
+    srv.send({ serverContent: { modelTurn: { parts: [{ inlineData: { data: pcmToBase64(new Int16Array(2)) } }] } } });
+    srv.send({ serverContent: { turnComplete: true } });
+    await until(() => got.length >= 3);
+    await Bun.sleep(20);
+    expect(got).toEqual(["started", "stopped", "audio"]);
+    // Barge-in with no further audio: stopped at turnComplete.
+    got.length = 0;
+    srv.send({ serverContent: { interrupted: true } });
+    srv.send({ serverContent: { turnComplete: true } });
+    await until(() => got.length >= 2);
+    expect(got).toEqual(["started", "stopped"]);
+    await p.close();
+  });
+
+  it("holds addContext while the model speaks; its own interrupt is not a barge-in", async () => {
+    srv = fakeServer();
+    const p = new GeminiLive({ apiKey: "k", model: "m", url: srv.url });
+    const got: string[] = [];
+    p.on("speechStarted", () => got.push("started"));
+    p.on("responseDone", () => got.push("done"));
+    p.on("audio", () => got.push("audio"));
+    await p.connect({ instructions: "", tools: [] });
+    const audio = { serverContent: { modelTurn: { parts: [{ inlineData: { data: pcmToBase64(new Int16Array(2)) } }] } } };
+    srv.send(audio);
+    await until(() => got.length >= 1);
+    p.addContext("later");
+    await Bun.sleep(40);
+    expect(srv.frames.length).toBe(1);
+    srv.send({ serverContent: { turnComplete: true } });
+    await until(() => srv.frames.length >= 2);
+    expect(srv.frames[1].clientContent.turns[0].parts[0].text).toContain("later");
+
+    srv.send(audio);
+    await until(() => got.filter((g) => g === "audio").length >= 2);
+    p.addContext("queued");
+    p.respond();
+    await until(() => srv.frames.length >= 4);
+    expect(srv.frames[2].clientContent).toMatchObject({ turnComplete: false });
+    expect(srv.frames[3].clientContent).toMatchObject({ turnComplete: true });
+    srv.send({ serverContent: { interrupted: true } });
+    await Bun.sleep(40);
+    expect(got.includes("started")).toBe(false);
     await p.close();
   });
 
