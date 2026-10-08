@@ -142,8 +142,9 @@ export class Conductor {
       if (this.#responseActive) {
         if (this.io.provider.caps.cancelEmitsDone) this.#staleDones++;
         this.io.provider.cancel();
-        await this.#flush();
       }
+      // Models emit faster than real time: audio may still be queued after the response is done.
+      await this.#flush();
       this.#speak(m.text);
       return;
     }
@@ -211,7 +212,7 @@ export class Conductor {
   async #flush(): Promise<void> {
     const { playedMs } = await this.io.audio.clear();
     const item = this.#currentItem;
-    if (item && this.io.provider.caps.truncate) {
+    if (item && this.io.provider.caps.truncate && playedMs < this.#sentMs) {
       const start = this.#itemStart.get(item) ?? 0;
       this.io.provider.truncate(item, Math.max(0, Math.round(playedMs - start)));
     }

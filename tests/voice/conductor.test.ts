@@ -238,4 +238,15 @@ describe("Conductor", () => {
     c.context("fyi");
     expect(provider.named("addContext")).toEqual([["addContext", "fyi"]]);
   });
+
+  it("now after responseDone still flushes queued audio, without cancel", async () => {
+    const { c, provider, audio } = setup();
+    c.onAudio(pcm(24000), "A");
+    c.onResponseDone();
+    audio.clearResult = { playedMs: 300, clearedMs: 700 };
+    await c.say({ type: "say", text: "now", when: "now", asOf: 0 });
+    expect(audio.clears).toBe(1);
+    expect(provider.named("cancel")).toEqual([]);
+    expect(provider.named("truncate")).toEqual([["truncate", "A", 300]]);
+  });
 });
