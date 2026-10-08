@@ -86,12 +86,24 @@ rejected. The mapping onto the provider interface is lossy:
 - **Session limit** comes from `expires_at` at start; there is no fixed
   duration and the model compacts its own context, so a planned reconnect
   happens only near expiry.
-- **To measure live:** output-audio pacing against real time (it decides how
-  much a false-positive barge-in flushes), transcript lag behind speech (how
-  late barge-in is detected, and whether a backchannel cuts the agent off),
-  `expires_at` at start, and whether a commentary with no delegation id is
-  spoken while a delegation is open. The opt-in live test prints the first two
-  figures it can see.
+- **Long answers are chunked**, not clipped: an append is capped at 500
+  tokens, so text is split at sentences (then words) into several appends of
+  the same type and delegation id, sized by a conservative estimate (about 3.5
+  ASCII characters per token, one token per non-ASCII character).
+- **To measure live:**
+  - output-audio pacing against real time (it decides how much a
+    false-positive barge-in flushes);
+  - transcript lag behind speech (how late barge-in is detected, and whether a
+    backchannel cuts the agent off);
+  - `expires_at` at start;
+  - whether a commentary with no delegation id is spoken while a delegation is
+    open: answers carry `delegation_id: null`, so confirm the model accepts
+    and speaks them;
+  - whether a `now` utterance replays the tail of the old one: with no cancel,
+    the model may finish its previous sentence after the flush.
+
+  The opt-in live test prints the audio pacing and `expires_at`; the rest needs
+  a real call.
 
 ## Conductor races found in review
 
