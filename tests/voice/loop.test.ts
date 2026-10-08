@@ -118,4 +118,60 @@ describe("runVoiceLoop", () => {
     expect(reason).toBe("audio_lost");
     expect(out.at(-1)).toEqual({ type: "ended", reason: "audio_lost" });
   });
+
+  it("keeps retrying when connect fires a fatal error before rejecting (real adapter behaviour)", async () => {
+    const made: FakeProvider[] = [];
+    const done = runVoiceLoop({
+      init, audio: new FakeAudio(), inbox: inbox(), emit: () => {}, tickMs: 5, reconnectDelayMs: 1,
+      makeProvider: () => {
+        const p = new FakeProvider();
+        if (made.length >= 1) {
+          p.connect = async () => { p.emitEvent("error", { fatal: true, message: "handshake" }); throw new Error("down"); };
+        }
+        made.push(p);
+        return p;
+      },
+    });
+    await until(() => made.length === 1 && made[0]!.connects.length === 1);
+    made[0]!.emitEvent("closed");
+    expect(await done).toBe("provider_lost");
+    expect(made.length).toBe(4);
+  });
+
+  it("ends provider_failed and closes the provider when the initial connect fails", async () => {
+    const p = new FakeProvider();
+    p.connectError = new Error("nope");
+    const audio = new FakeAudio();
+    const out: ChildMsg[] = [];
+    const reason = await runVoiceLoop({ init, makeProvider: () => p, audio, inbox: inbox(), emit: (m) => out.push(m), tickMs: 5 });
+    expect(reason).toBe("provider_failed");
+    expect(p.named("close").length).toBe(1);
+    expect(audio.closed).toBe(true);
+    expect(out.filter((m) => m.type === "ended")).toEqual([{ type: "ended", reason: "provider_failed" }]);
+  });
+
+  it("survives a rejecting audio.clear() on speechStarted and still ends exactly once", async () => {
+    const provider = new FakeProvider();
+    const audio = new FakeAudio();
+    audio.clear = async () => { throw new Error("workbench down"); };
+    const ib = inbox();
+    const out: ChildMsg[] = [];
+    const unhandled: unknown[] = [];
+    const h = (e: unknown) => unhandled.push(e);
+    process.on("unhandledRejection", h);
+    try {
+      const done = runVoiceLoop({ init, makeProvider: () => provider, audio, inbox: ib, emit: (m) => out.push(m), tickMs: 5 });
+      await until(() => out.some((m) => m.type === "started"));
+      provider.emitEvent("audio", pcm(240), "i1");
+      provider.emitEvent("speechStarted");
+      await until(() => out.some((m) => m.type === "log" && m.message.startsWith("speech flush failed")));
+      ib.push({ type: "stop", reason: "stopped" });
+      expect(await done).toBe("stopped");
+      await Bun.sleep(20);
+      expect(unhandled).toEqual([]);
+      expect(out.filter((m) => m.type === "ended")).toEqual([{ type: "ended", reason: "stopped" }]);
+    } finally {
+      process.off("unhandledRejection", h);
+    }
+  });
 });

@@ -8,7 +8,21 @@ import { ENV_API_KEY, ENV_STREAM_TOKEN, encodeMsg, parseParentMsg, readLines, ty
 import { runVoiceLoop } from "./loop";
 import { createProvider } from "./provider";
 
-const emit = (m: ChildMsg) => process.stdout.write(encodeMsg(m));
+let endedEmitted = false;
+const emit = (m: ChildMsg) => {
+  if (m.type === "ended") {
+    if (endedEmitted) return;
+    endedEmitted = true;
+  }
+  process.stdout.write(encodeMsg(m));
+};
+const crash = (e: unknown) => {
+  emit({ type: "log", level: "error", message: `voice-loop crashed: ${e instanceof Error ? e.message : String(e)}` });
+  emit({ type: "ended", reason: "loop_crashed" });
+  process.exit(1);
+};
+process.on("unhandledRejection", crash);
+process.on("uncaughtException", crash);
 const apiKey = process.env[ENV_API_KEY] ?? "";
 const streamToken = process.env[ENV_STREAM_TOKEN] ?? "";
 delete process.env[ENV_API_KEY];

@@ -35,6 +35,10 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
 
   let provider = d.makeProvider();
   let reconnecting = false;
+  // Providers whose connect() has resolved. Error events from a provider still
+  // handshaking are ignored: the connect() rejection is the failed attempt.
+  const connected = new WeakSet<VoiceProvider>();
+  const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
   const conductor = new Conductor(
     {
@@ -50,11 +54,14 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
   const attach = (p: VoiceProvider) => {
     p.on("audio", (pcm, item) => conductor.onAudio(resample(pcm, p.caps.outputRate, d.init.audio.sampleRate), item));
     p.on("transcript", (t) => conductor.onTranscript(t));
-    p.on("speechStarted", () => void conductor.onSpeechStarted());
+    p.on("speechStarted", () => {
+      conductor.onSpeechStarted().catch((e) => d.emit({ type: "log", level: "warn", message: `speech flush failed: ${errMsg(e)}` }));
+    });
     p.on("speechStopped", () => conductor.onSpeechStopped());
     p.on("responseDone", () => conductor.onResponseDone());
     p.on("toolCall", (c) => conductor.onToolCall(c, now()));
     p.on("error", (e) => {
+      if (!connected.has(p)) return;
       if (e.fatal) end("provider_failed");
       else d.emit({ type: "log", level: "warn", message: `provider: ${e.message}` });
     });
@@ -63,8 +70,10 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
     });
   };
 
-  const connect = (p: VoiceProvider, seed?: string) =>
-    p.connect({ instructions: d.init.instructions, tools: VOICE_TOOLS, voice: d.init.voice, seed });
+  const connect = async (p: VoiceProvider, seed?: string) => {
+    await p.connect({ instructions: d.init.instructions, tools: VOICE_TOOLS, voice: d.init.voice, seed });
+    connected.add(p);
+  };
 
   async function reconnect(why: "planned" | "dropped"): Promise<void> {
     if (reconnecting || finished) return;
@@ -84,7 +93,7 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
         return;
       } catch {
         await p.close().catch(() => {});
-        await Bun.sleep((d.reconnectDelayMs ?? 500) * attempt);
+        if (attempt < MAX_RECONNECTS) await Bun.sleep((d.reconnectDelayMs ?? 500) * attempt);
       }
     }
     reconnecting = false;
@@ -95,8 +104,9 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
   try {
     await connect(provider);
   } catch (e) {
-    d.emit({ type: "log", level: "error", message: `provider connect failed: ${e instanceof Error ? e.message : e}` });
+    d.emit({ type: "log", level: "error", message: `provider connect failed: ${errMsg(e)}` });
     d.emit({ type: "ended", reason: "provider_failed" });
+    await provider.close().catch(() => {});
     await d.audio.close().catch(() => {});
     return "provider_failed";
   }
@@ -110,7 +120,7 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
       onEnded: (reason) => end(reason as EndReason),
     });
   } catch (e) {
-    d.emit({ type: "log", level: "error", message: `audio start failed: ${e instanceof Error ? e.message : e}` });
+    d.emit({ type: "log", level: "error", message: `audio start failed: ${errMsg(e)}` });
     end("audio_lost");
   }
   if (!finished) d.emit({ type: "started", callId: d.init.callId, sampleRate: d.init.audio.sampleRate });
@@ -124,7 +134,10 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
       else if (m.type === "stop") end(m.reason);
     }
     end("parent_gone");
-  })();
+  })().catch((e) => {
+    d.emit({ type: "log", level: "error", message: `inbox failed: ${errMsg(e)}` });
+    end("loop_crashed");
+  });
 
   const reason = await ended;
   clearInterval(ticker);
