@@ -95,6 +95,30 @@ describe("VoiceCall", () => {
     expect(t.runs[0]!.text).toContain('voice_say(reply_to="1")');
   });
 
+  it("a reply is stamped with its delegate's asOf, not the latest seq (stale downgrade can fire)", async () => {
+    const t = make();
+    await started(t);
+    t.child.push({ type: "transcript", seq: 1, role: "user", text: "check the deploy" });
+    t.child.push({ type: "delegate", id: "1", task: "check deploy", asOf: 1 });
+    for (let i = 2; i <= 11; i++) t.child.push({ type: "transcript", seq: i, role: "user", text: `line ${i}` });
+    await until(() => t.runs.length === 1);
+    await Bun.sleep(10); // the ten later lines reach the parent
+    t.call.say("it is green", "now", "1");
+    expect(t.child.sent.find((m) => m.type === "say")).toMatchObject({ when: "now", replyTo: "1", asOf: 1 });
+  });
+
+  it("a say without reply_to is stamped with the newest seq handed to the session", async () => {
+    const t = make();
+    await started(t);
+    for (let i = 1; i <= 3; i++) t.child.push({ type: "transcript", seq: i, role: "user", text: `line ${i}` });
+    t.child.push({ type: "delegate", id: "1", task: "x", asOf: 3 });
+    for (let i = 4; i <= 10; i++) t.child.push({ type: "transcript", seq: i, role: "user", text: `line ${i}` });
+    await until(() => t.runs.length === 1);
+    await Bun.sleep(10);
+    t.call.say("heads up", "now");
+    expect(t.child.sent.find((m) => m.type === "say")).toMatchObject({ when: "now", asOf: 3 });
+  });
+
   it("flushes the transcript as a suppressed turn after idle", async () => {
     const t = make({ idleFlushMs: 20 });
     await started(t);
@@ -128,7 +152,8 @@ describe("VoiceCall", () => {
     t.call.context("fact");
     const stopping = t.call.stop("stopped");
     expect(t.child.sent.map((m) => m.type)).toEqual(["init", "say", "context", "stop"]);
-    expect((t.child.sent[1] as any).asOf).toBe(1);
+    // No delegate "1" and nothing handed to the session yet: asOf is 0.
+    expect((t.child.sent[1] as any).asOf).toBe(0);
     t.child.push({ type: "ended", reason: "stopped" });
     await stopping;
     expect(await t.call.done).toBe("stopped");

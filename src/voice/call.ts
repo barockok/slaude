@@ -61,7 +61,13 @@ export class VoiceCall {
   readonly callId = randomUUID();
   #lines: string[] = [];
   #pending: string[] = [];
-  #seq = 0;
+  /** Seq of the newest transcript line buffered in #pending. */
+  #pendingSeq = 0;
+  /** Seq of the newest transcript line handed to the session. */
+  #seenSeq = 0;
+  /** Delegate id → the seq it was asked at, so its reply is judged stale
+   *  against what Claude knew, not what the child had heard at tool time. */
+  #delegateAsOf = new Map<string, number>();
   #queue: Promise<void> = Promise.resolve();
   #flushTimer: ReturnType<typeof setTimeout> | null = null;
   /** Epoch ms when the voice loop reported started (0 before). */
@@ -136,12 +142,13 @@ export class VoiceCall {
 
   #onChild(m: ChildMsg): void {
     if (m.type === "transcript") {
-      this.#seq = m.seq;
+      this.#pendingSeq = m.seq;
       const line = transcriptLine(m.role, m.text);
       this.#lines.push(line);
       this.#pending.push(line);
       this.#armFlush();
     } else if (m.type === "delegate") {
+      this.#delegateAsOf.set(m.id, m.asOf);
       const transcript = this.#takePending();
       this.#enqueue(async () => {
         try {
@@ -164,6 +171,7 @@ export class VoiceCall {
     this.#flushTimer = null;
     const t = this.#pending.join("\n");
     this.#pending = [];
+    if (this.#pendingSeq > this.#seenSeq) this.#seenSeq = this.#pendingSeq;
     return t;
   }
   /** Feed the unsent transcript into the session as a suppressed turn. */
@@ -203,7 +211,8 @@ export class VoiceCall {
   }
 
   say(text: string, when: "next_gap" | "now", replyTo?: string): void {
-    this.d.child.send({ type: "say", text, when, replyTo, asOf: this.#seq });
+    const asOf = (replyTo !== undefined ? this.#delegateAsOf.get(replyTo) : undefined) ?? this.#seenSeq;
+    this.d.child.send({ type: "say", text, when, replyTo, asOf });
   }
   context(text: string): void {
     this.d.child.send({ type: "context", text });
