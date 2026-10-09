@@ -90,6 +90,17 @@ describe("gateway brain bootstrap lifecycle", () => {
     }
   }, 60_000);
 
+  // The shared teardown in tests/setup.ts: work from a gateway a test never
+  // stopped is drained after that test, so it cannot run into the next one.
+  test("(setup drain, part 1) leave a gateway running", async () => {
+    await SimSession.create({ agent: "stub" });
+    expect(pendingBrainWork()).toBe(1);
+  }, 60_000);
+
+  test("(setup drain, part 2) nothing from the previous test is still running", () => {
+    expect(pendingBrainWork()).toBe(0);
+  });
+
   test("stop() cancels the nightly maintenance timer it armed", async () => {
     let cancelled = 0;
     const spy = spyOn(Cycle, "scheduleNightlyMaintenance").mockImplementation(() => () => void cancelled++);
