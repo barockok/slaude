@@ -7,6 +7,8 @@ import { PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, type BrainScope } from "./sco
 import { isScopeWriteOp } from "./gated-dispatch";
 import { getBackend } from "./backend";
 import { NodeDbAccessError } from "../db/client";
+import { settleBrainWork, whileClosing } from "./brain-work";
+import { keepingExitCode } from "../db/wasm-exit-code";
 
 // Engine surface kept minimal on purpose: gbrain ships TS sources and its own
 // types stay internal to it; slaude only needs lifecycle + handler dispatch.
@@ -210,9 +212,13 @@ async function boot(): Promise<Engine> {
   // the PGLite file-lock rm nor the blanket cycle-lock sweep is safe there.
   if (cfg.engine === "pglite") takeoverStaleLock(cfg.database_path);
   const { createEngine } = (await gbrainImport("engine-factory")) as { createEngine: (c: object) => Promise<Engine> };
-  const engine = (await createEngine(cfg)) as Engine;
-  await engine.connect(cfg);
-  await engine.initSchema();
+  // keepingExitCode: a fresh PGLite data dir's initdb leaves 99 in process.exitCode.
+  const engine = await keepingExitCode(async () => {
+    const e = (await createEngine(cfg)) as Engine;
+    await e.connect(cfg);
+    await e.initSchema();
+    return e;
+  });
   if (cfg.engine === "pglite") await clearStaleDbLocks(engine);
   await configureEmbeddingGateway();
   return engine;
@@ -232,6 +238,10 @@ export function getBrain(): Promise<Engine> {
 }
 
 export async function closeBrain(): Promise<void> {
+  // Background work (the gateway's boot-time import) holds the engine across
+  // awaits: let it finish first (it stops between KBs while brainClosing()),
+  // or it fails mid-import against a disconnected engine.
+  await whileClosing(settleBrainWork);
   if (!enginePromise) return;
   const pending = enginePromise;
   enginePromise = null;
@@ -241,7 +251,7 @@ export async function closeBrain(): Promise<void> {
   ensuredSources.clear();
   ensureGeneration++;
   embeddingActiveFlag = false;
-  await e.disconnect();
+  await keepingExitCode(() => e.disconnect());
 }
 
 const quietLogger = {

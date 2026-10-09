@@ -6,6 +6,7 @@ import { BundleWriter, type BundleManifest, type BundlePage } from "./bundle";
 import { readEmbeddingInfo } from "./embedding-info";
 import { isAgentLike } from "./remap";
 import type { MigrateEngine } from "./engine-types";
+import { keepingExitCode } from "../db/wasm-exit-code";
 
 const gbrainImport = (subpath: string): Promise<Record<string, unknown>> =>
   import(("gbrain/" + subpath) as string) as Promise<Record<string, unknown>>;
@@ -60,8 +61,12 @@ export async function exportBrain(o: ExportOptions): Promise<ExportResult> {
     cpSync(o.home, copied, { recursive: true, filter: (src) => basename(src) !== ".gbrain-lock" });
     const cfg = { engine: "pglite", database_path: join(copied, "db") };
     const { createEngine } = (await gbrainImport("engine-factory")) as { createEngine: (c: object) => Promise<MigrateEngine> };
-    engine = await createEngine(cfg);
-    await engine.connect(cfg);
+    // keepingExitCode: PGLite's WASM runtime writes its own status into process.exitCode.
+    engine = await keepingExitCode(async () => {
+      const e = await createEngine(cfg);
+      await e.connect(cfg);
+      return e;
+    });
     const ids = (await engine.db.query("SELECT id FROM sources ORDER BY id")).rows.map((r) => String(r.id));
     const { keep, excluded } = selectSources(ids, o.include, o.exclude);
     const w = new BundleWriter(o.out);
@@ -79,7 +84,8 @@ export async function exportBrain(o: ExportOptions): Promise<ExportResult> {
     });
     return { manifest, copied };
   } finally {
-    await engine?.disconnect().catch(() => {});
+    const e = engine;
+    if (e) await keepingExitCode(() => e.disconnect()).catch(() => {});
     rmSync(copied, { recursive: true, force: true });
   }
 }

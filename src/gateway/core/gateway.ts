@@ -57,6 +57,7 @@ import { brainEnabled, ensureSources } from "../../knowledge/brain";
 import { brainMode } from "../../knowledge/brain-config";
 import { syncKbWikis } from "../../knowledge/brain-sync";
 import { scheduleNightlyMaintenance } from "../../knowledge/brain-cycle";
+import { trackBrainWork, whileClosing } from "../../knowledge/brain-work";
 import { channelTrustFor, resolveBrainScope } from "../../knowledge/scope";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
 import { memory as processMemory } from "../../memory";
@@ -756,18 +757,25 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // several registered apps the auth.test fallback names the oldest one, so
   // such deployments should set SLAUDE_AGENT_ID, which wins without a call.
   if (brainEnabled()) void resolveAgentId(() => outClient.auth.test());
+  // Both are owned by this gateway: stop() cancels the timer and waits for the
+  // bootstrap, so no brain work outlives the handle (and closeBrain() waits
+  // for the tracked bootstrap instead of disconnecting the engine under it).
+  let brainBootstrap: Promise<void> | null = null;
+  let cancelNightlyMaintenance: () => void = () => {};
   if (brainEnabled() && brainMode() === "local") {
-    void ensureSources()
-      .then(() => syncKbWikis())
-      .then((rs) => {
-        for (const r of rs) {
-          if (r.ok) console.log(`[brain] kb wiki indexed: ${r.label}`);
-          else console.error(`[brain] kb sync failed for ${r.label}: ${r.error}`);
-        }
-      })
-      .catch((e) => console.error("[brain] source bootstrap failed:", e));
+    brainBootstrap = trackBrainWork(
+      ensureSources()
+        .then(() => syncKbWikis())
+        .then((rs) => {
+          for (const r of rs) {
+            if (r.ok) console.log(`[brain] kb wiki indexed: ${r.label}`);
+            else console.error(`[brain] kb sync failed for ${r.label}: ${r.error}`);
+          }
+        })
+        .catch((e) => console.error("[brain] source bootstrap failed:", e)),
+    );
     // Nightly maintenance (03:00 local default; SLAUDE_BRAIN_CYCLE="HH:MM"|"off").
-    scheduleNightlyMaintenance();
+    cancelNightlyMaintenance = scheduleNightlyMaintenance();
   }
   // Stop-hook enforcement: if a turn ends without any user-visible Slack tool
   // (reply / edit / upload), block the stop once with an instruction that
@@ -3123,6 +3131,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   return {
     start: () => t.start(),
     stop: async () => {
+      cancelNightlyMaintenance();
       await cronLeader?.stop().catch(() => {});
       cronScheduler.stop();
       if (panelSweeper) clearInterval(panelSweeper);
@@ -3130,6 +3139,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await panelHoldUnsub?.().catch(() => {});
       await mcpBridge.close().catch(() => {});
       await t.stop();
+      // Never rejects (errors are logged above). While closing, the KB import
+      // stops before its next KB, so shutdown does not wait for a full import.
+      if (brainBootstrap) await whileClosing(() => brainBootstrap!);
     },
     fetchV1: (req: Request) => v1.fetch(req),
     fetchPanel: (req: Request) => (panelApi ? panelApi.fetch(req) : Promise.resolve(null)),

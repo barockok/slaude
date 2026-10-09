@@ -1,6 +1,10 @@
+import { afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+// Import-free module: safe to load before SLAUDE_HOME is set below.
+import { settleBrainWork, whileClosing } from "../src/knowledge/brain-work";
+import { stopRunningLoops } from "../src/gateway/core/running-loops";
 
 // Isolate every test run under a fresh $SLAUDE_HOME so db/schema bootstrap and
 // soul/loader writes don't touch the operator's real ~/.slaude.
@@ -29,6 +33,20 @@ process.env.SLAUDE_HEALTH_PORT = "0";
 process.env.SLAUDE_DEFAULT_MODE = "default";
 // Prevent leaked CLAUDE_CODE_OAUTH_TOKEN from operator shell affecting tests.
 delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+
+// Every createGateway() starts the brain's boot-time source bootstrap and KB
+// import in the background. Many tests never stop their gateway, and all test
+// files share one process, so that work used to run on into later tests and
+// files: event-loop stalls that tripped 5s hook timeouts, gbrain sync lock
+// contention, and a later closeBrain() disconnecting the engine under it.
+// Drain it after every test (as a close would: the import stops between KBs).
+// A no-op when nothing is in flight. The timeout covers a first brain boot.
+afterEach(() => whileClosing(settleBrainWork), 60_000);
+// Same for poll loops: each gateway starts a cron scheduler (a 60s interval on
+// the shared DB facade). One left running by a gateway nobody stopped polled
+// into later files, e.g. while facade.test pointed the facade at an
+// unmigrated PGLite. Stop any still running after each test.
+afterEach(() => stopRunningLoops());
 
 // Real-PG leg only: unlike the sqlite/PGLite legs (fresh store per run), the
 // test Postgres persists across runs while most tests emit deterministic

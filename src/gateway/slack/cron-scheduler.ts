@@ -3,6 +3,7 @@ import type { SessionRow } from "../../db/schema";
 import * as CronJobs from "../../db/cron-jobs";
 import { getNextRun } from "./cron-parser";
 import { getPersonaRegistry } from "../../persona/registry";
+import { registerLoop } from "../core/running-loops";
 
 export type CronSchedulerDeps = {
   agent: AgentManager;
@@ -35,6 +36,7 @@ export class CronScheduler {
   #send?: CronSchedulerDeps["send"];
   #isLive?: CronSchedulerDeps["isLive"];
   #timer: ReturnType<typeof setInterval> | null = null;
+  #unregister: (() => void) | null = null;
   #running = new Set<string>(); // job ids currently executing
 
   constructor(deps: CronSchedulerDeps) {
@@ -46,9 +48,12 @@ export class CronScheduler {
 
   start(): void {
     if (this.#timer) return;
-    this.#timer = setInterval(() => this.#tick(), 60_000);
+    this.#timer = setInterval(() => this.#poll(), 60_000);
+    // Registered so an owner that never stops (a test's gateway) can still be
+    // ended by stopRunningLoops(); stop() unregisters.
+    this.#unregister = registerLoop(() => this.stop());
     // Run once immediately
-    void this.#tick();
+    this.#poll();
   }
 
   stop(): void {
@@ -56,6 +61,14 @@ export class CronScheduler {
       clearInterval(this.#timer);
       this.#timer = null;
     }
+    this.#unregister?.();
+    this.#unregister = null;
+  }
+
+  /** One poll from the timer. Nothing awaits it, so a failure (a DB blip, a
+   *  missing table) must end here: an unhandled rejection exits the process. */
+  #poll(): void {
+    this.#tick().catch((e) => console.error("[cron] poll failed:", e instanceof Error ? e.message : e));
   }
 
   async #tick(): Promise<void> {
