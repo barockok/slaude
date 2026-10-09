@@ -84,7 +84,11 @@ beforeAll(() => {
   agent.sendMessage = async (id: string) => void sent.push(id);
   handle = createGateway(agent, fakeTransport());
 });
-afterAll(() => {
+afterAll(async () => {
+  await handle.stop();
+  // Shared test home: KBs left behind would be imported by every later gateway.
+  rmSync(paths.knowledge, { recursive: true, force: true });
+  clearKbCache();
   resetBackend();
   __resetPersonaRegistry();
   for (const k of ENV) {

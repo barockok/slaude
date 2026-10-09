@@ -3,7 +3,7 @@
  * kb_think's synthesis scope and its gather fan-out see only the persona's
  * kb-* sources, and the in-process slaude_kb server lists only its KBs.
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { ensureHome, paths } from "../../src/config/home";
@@ -19,6 +19,12 @@ beforeEach(() => {
     mkdirSync(join(paths.knowledge, label), { recursive: true });
     writeFileSync(join(paths.knowledge, label, "README.md"), `# ${label}\n`);
   }
+  clearKbCache();
+});
+// The test home is shared by every file in the run: an installed KB left
+// behind makes each later gateway import it into the brain.
+afterAll(() => {
+  rmSync(paths.knowledge, { recursive: true, force: true });
   clearKbCache();
 });
 
