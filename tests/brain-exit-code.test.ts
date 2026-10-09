@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeBrain, getBrain } from "../src/knowledge/brain";
 import { openDb } from "../src/db/client";
+import { exportBrain } from "../src/brain-migrate/export";
 
 const brainDir = mkdtempSync(join(tmpdir(), "slaude-brain-exitcode-"));
 const savedHome = process.env.SLAUDE_BRAIN_HOME;
@@ -35,6 +36,18 @@ describe("embedded PGLite and process.exitCode", () => {
     expect(process.exitCode).toBe(7);
     await closeBrain();
     expect(process.exitCode).toBe(7);
+  }, 60_000);
+
+  test("exporting a brain (its own engine on a copy) leaves the exit code alone", async () => {
+    // brainDir holds a booted brain from the first test.
+    const out = mkdtempSync(join(tmpdir(), "slaude-brain-exitcode-bundle-"));
+    try {
+      process.exitCode = 7;
+      await exportBrain({ home: brainDir, out: join(out, "bundle") });
+      expect(process.exitCode).toBe(7);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
   }, 60_000);
 
   test("a process that boots a brain and sets no exit code exits 0", async () => {
