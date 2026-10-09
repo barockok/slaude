@@ -71,3 +71,20 @@ describe("CronScheduler lifecycle", () => {
     }
   });
 });
+
+// The shared teardown in tests/setup.ts: a loop left running by one test is
+// stopped after it, so it cannot poll into the next test or file.
+describe("setup teardown", () => {
+  test("(part 1) leave a scheduler running", () => {
+    const find = spyOn(CronJobs, "findDue").mockResolvedValue([]);
+    try {
+      new CronScheduler({ agent }).start();
+      expect(runningLoops()).toBe(1);
+    } finally {
+      find.mockRestore();
+    }
+  });
+  test("(part 2) nothing from the previous test is still running", () => {
+    expect(runningLoops()).toBe(0);
+  });
+});
