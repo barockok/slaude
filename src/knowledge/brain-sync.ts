@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { brainAdminCall, embeddingActive } from "./brain";
+import { brainClosing } from "./brain-work";
 import { loadKbs } from "./loader";
 import { kbSourceId } from "./scope";
 import { GIT_LOCAL_ARGS, localGitEnv } from "../config/safe-git";
@@ -46,6 +47,8 @@ export function ensureGitRepo(repo: string): void {
 export async function syncKbWikis(): Promise<KbSyncResult[]> {
   const out: KbSyncResult[] = [];
   for (const kb of loadKbs()) {
+    // A close is waiting on this run: stop between KBs, not mid-import.
+    if (brainClosing()) break;
     const wikiDir = join(kb.path, "wiki");
     const repo = existsSync(wikiDir) ? wikiDir : kb.path;
     const sourceId = kbSourceId(kb.label);

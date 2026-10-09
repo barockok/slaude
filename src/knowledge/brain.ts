@@ -7,6 +7,7 @@ import { PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, type BrainScope } from "./sco
 import { isScopeWriteOp } from "./gated-dispatch";
 import { getBackend } from "./backend";
 import { NodeDbAccessError } from "../db/client";
+import { settleBrainWork, whileClosing } from "./brain-work";
 
 // Engine surface kept minimal on purpose: gbrain ships TS sources and its own
 // types stay internal to it; slaude only needs lifecycle + handler dispatch.
@@ -232,6 +233,10 @@ export function getBrain(): Promise<Engine> {
 }
 
 export async function closeBrain(): Promise<void> {
+  // Background work (the gateway's boot-time import) holds the engine across
+  // awaits: let it finish first (it stops between KBs while brainClosing()),
+  // or it fails mid-import against a disconnected engine.
+  await whileClosing(settleBrainWork);
   if (!enginePromise) return;
   const pending = enginePromise;
   enginePromise = null;
