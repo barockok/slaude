@@ -87,6 +87,12 @@ function readCacheEntry(text: string): { data: SoulData; why?: undefined } | { d
   }
 }
 
+/** The cached (verified, grounded) SoulData for a soul text, or null on a
+ *  miss. Never runs an extraction. */
+export function cachedSoulData(text: string): SoulData | null {
+  return readCacheEntry(text).data;
+}
+
 /**
  * Write the cache entry for `text`: signed with the master-key-derived key when
  * one is configured, plain SoulData otherwise. The single writer, used by

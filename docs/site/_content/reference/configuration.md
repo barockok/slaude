@@ -521,6 +521,21 @@ The brain is the gbrain engine behind the `kb_*` tools and episodic memory (`src
 | `SLAUDE_KB_GRANT_TTL_MS` | No | `28800000` (8 h) | How long a manager's approval of a KB write stands for further writes by the same trusted writer, so the approval card is not repeated. `0` cards every write. Destructive and manager-tier operations always card. |
 | `SLAUDE_MCP_CARD_TTL` | No | `24h` | Lifetime of a `Connect <server>` card's pending row: `30m`, `12h`, or `permanent`, at most 24 h. Invalid values log a warning and use 24 h. |
 
+### Voice mode <a id="voice"></a>
+
+Voice mode lets the agent talk in a live call through a workbench browser tab (see the [voice mode guide](../guides/voice-mode.md)). Off unless enabled **and** both the key and the workbench URL are set. In `mono` the process reads these itself; in the gateway topology only the **gateway** sets them and ships a voice block to nodes in the runtime bundle (nodes never read voice variables).
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `SLAUDE_VOICE_ENABLED` | No | `0` | `1`, `true` or `yes` turns voice mode on. |
+| `SLAUDE_VOICE_MODEL` | No | `openai/gpt-realtime` | Provider-qualified voice model: `openai/…`, `openai-live/…` (GPT-Live) or `gemini/…`. A bad value fails loudly. |
+| `SLAUDE_VOICE_NAME` | No | provider default | Voice name passed to the provider; `voice_start` may override it per call. |
+| `SLAUDE_VOICE_API_KEY` | With voice | none | The voice provider key. **Gateway only** in the gateway topology: it reaches nodes only inside the voice bundle, a node refuses to boot holding it, and no agent child inherits it (the voice-loop child gets it in its own environment). |
+| `SLAUDE_VOICE_WORKBENCH_URL` | With voice | none | The workbench base URL. Endpoints passed to `voice_start` must be same-origin with it. |
+| `SLAUDE_VOICE_MAX_MINUTES` | No | `120` | Hard cap on one call; it ends with `max_duration`. |
+| `SLAUDE_VOICE_STALE_SEQ` | No | `6` | A `now` utterance more than this many transcript lines behind the conversation is downgraded to the next pause. |
+| `SLAUDE_VOICE_TENANTS` | No | empty | Gateway only. Comma-separated tenant ids, or `*`, that receive the voice block. Empty means no tenant gets voice. Not used in `mono`. |
+
 ### Skills repo & evolution
 
 | Name | Required | Default | Description |

@@ -16,6 +16,14 @@ import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slac
 import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extract";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
+import { quietForVoice, voiceTurns } from "../../voice/turn-flags";
+import { VoiceCalls } from "../../voice/call";
+import { voiceConfigFromEnv, type VoiceConfig } from "../../voice/config";
+import { drainVoiceCalls, endCallsOnSessionExit, makeMonoVoiceHost, voiceServersFor } from "../../voice/hosts";
+
+/** Mono shutdown: how long live voice calls get to say goodbye and end. */
+const VOICE_SHUTDOWN_GRACE_MS = 5_000;
+import { monoPersonaSoul } from "../../voice/mono-soul";
 import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, createConnectMcp, CONNECT_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
 import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
@@ -132,6 +140,8 @@ export interface GatewayHandle {
    *  Requires the session's route to exist (feed a message first). Production
    *  never calls this. */
   __resolveMcp(sessionId: string): Promise<Record<string, McpServerConfig> | undefined>;
+  /** TEST SEAM: the mono process's voice call registry. */
+  __voiceCalls?: VoiceCalls;
   /** TEST/SIM SEAM ONLY. Drive the natural-language connect path (what the
    *  mcp__slaude_connect__connect_mcp tool calls) for a live session. */
   __agentConnect(sessionId: string, server: string): Promise<string>;
@@ -476,7 +486,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // the panel lock is held (design §Active-surface lock, outbound gate). No-op
   // passthrough when the panel is off, so non-panel deploys are byte-identical.
   const wrapSurface = (surface: Surface, sessionId: string): Surface =>
-    panelInfra ? suppressibleSurface(surface, sessionId, panelHeldAsync) : surface;
+    quietForVoice(panelInfra ? suppressibleSurface(surface, sessionId, panelHeldAsync) : surface, sessionId);
 
   // Outbound content client. When SLACK_USER_TOKEN (xoxp) is set, agent replies,
   // edits, reactions and uploads go out AS the real Slack user account rather than
@@ -633,7 +643,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           ...req,
         });
       ctx.reloadSession = (prompt?) => agent.reload(sessionId, prompt);
-      routes.set(sessionId, { ctx, surface: surfaceForCtx(ctx), spoke: false, silent: true });
+      routes.set(sessionId, { ctx, surface: wrapSurface(surfaceForCtx(ctx), sessionId), spoke: false, silent: true });
     },
   });
   agent.setPermissionResolver(permissions.resolver);
@@ -781,6 +791,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // (reply / edit / upload), block the stop once with an instruction that
   // forces the agent to call `mcp__slaude_slack__reply` before exiting.
   agent.setStopGuard((sessionId) => {
+    if (voiceTurns.active(sessionId)) return null;
     const route = routes.get(sessionId);
     if (!route) return null;
     if (route.spoke) return null;
@@ -847,6 +858,40 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         }
       : undefined;
 
+  // Voice calls (voice mode spec §3): mono only — a gateway never runs a
+  // session; a node gets its config through the runtime bundle. Registered
+  // only when voice is enabled AND configured.
+  const voiceCalls = new VoiceCalls();
+  const voiceHost = (() => {
+    if (env.role() === "gateway") return null;
+    let cfg: VoiceConfig | null;
+    try {
+      cfg = voiceConfigFromEnv();
+    } catch (e) {
+      console.warn(`[voice] disabled: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }
+    if (!cfg) return null;
+    endCallsOnSessionExit(agent, voiceCalls);
+    return makeMonoVoiceHost({
+      agent,
+      config: () => cfg,
+      findThread: async (sid) => {
+        const r = await Sessions.findById(sid);
+        return r?.slack_channel_id && r.slack_thread_ts
+          ? { channel: r.slack_channel_id, threadTs: r.slack_thread_ts, personaId: r.persona_id ?? null }
+          : null;
+      },
+      remoteTarget: (c, t) => activeRemoteTarget(c, t),
+      workingDir: async (sid) => {
+        const r = await Sessions.findById(sid);
+        if (!r) throw new Error(`unknown session ${sid}`);
+        return r.working_dir;
+      },
+      soul: (t) => monoPersonaSoul(t.personaId, t.channel),
+    });
+  })();
+
   const mcpResolver = async (sessionId: string): Promise<Record<string, McpServerConfig> | undefined> => {
     const route = routes.get(sessionId);
     if (!route) return undefined;
@@ -859,7 +904,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }),
       [RUNTIME_MCP_NAME]: createRuntimeMcp(route.ctx),
       [CONNECT_MCP_NAME]: createConnectMcp({ connect: (server) => agentConnect(sessionId, route.ctx, server) }),
-      [SLACK_MCP_NAME]: createSlackMcp(route.ctx),
+      [SLACK_MCP_NAME]: createSlackMcp(route.ctx, sessionId),
       [SKILLS_MCP_NAME]: createSkillsMcp(route.ctx.personaId),
       [SESSION_MCP_NAME]: createSessionMcp({
         getSnapshot: () => agent.getTokenSnapshot(sessionId),
@@ -877,6 +922,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // auth). Other sessions/threads keep the agent identity (source map untouched).
     const effectiveIdentity = await agent.resolveEffectiveIdentity(sessionId, route.ctx.channel, route.ctx.threadTs);
     Object.assign(servers, privateOverrides(sessionMcp.servers, new Set(sessionMcp.privateServices), !!effectiveIdentity));
+    if (voiceHost) Object.assign(servers, await voiceServersFor(sessionId, voiceHost, voiceCalls));
     sessionCtx.set(sessionId, { slack: route.ctx, surface: route.surface });
     return servers;
   };
@@ -1272,6 +1318,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
     switch (e.type) {
       case "toolCall": {
+        // Voice-origin turn: no status, no reaction, no task tracker, and a
+        // (suppressed) reply must not count as the agent having spoken.
+        if (voiceTurns.active(e.sessionId)) break;
         // Any user-visible tool counts as "spoke" — reply, edit, upload all
         // surface content. (react alone doesn't satisfy: an emoji isn't a real
         // answer.) Matches the canonical surface namespace + the deprecated
@@ -1386,6 +1435,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
       case "done": {
         void (async () => {
+          // Voice-origin turn: the thread stays quiet (no ✅, no task-block
+          // edits), but the per-turn state is still cleaned up.
+          if (voiceTurns.active(e.sessionId)) {
+            route.tasksRef = undefined;
+            route.tasksMap = undefined;
+            reactions.forget(e.sessionId);
+            presence.exit(e.sessionId);
+            await status.clear(e.sessionId);
+            return;
+          }
           // Suppressed (disengaged) turns set no 👀/status and must not stamp a
           // ✅ on the recorded-but-unprocessed message. Nothing to clean up.
           if (route.suppress) return;
@@ -1425,6 +1484,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // The raw error (provider/CLI text, stack fragments) stays in the server
         // log; Slack only ever gets the fixed text for the failure code (D1.6).
         console.error(`[turn-error] session=${e.sessionId} code=${e.code ?? "UNKNOWN"} job=${e.jobId ?? "-"}: ${redactSecrets(String(e.error))}`);
+        // Voice-origin turn: no failure text or ❌ in the thread (the call voices it).
+        if (voiceTurns.active(e.sessionId)) break;
         void (async () => {
           // One message per failed turn. With a job id (queue mode) the key is the
           // job, so a client retry or a queue attempt that surfaces the same failure
@@ -2319,7 +2380,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
             routes.set(session.id, {
               ctx,
-              surface: surfaceForCtx(ctx),
+              surface: wrapSurface(surfaceForCtx(ctx), session.id),
               spoke: false,
               wasCompacting: true,
             });
@@ -3131,6 +3192,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   return {
     start: () => t.start(),
     stop: async () => {
+      // End live voice calls first, while the transport can still carry each
+      // call's summary turn; bounded so shutdown never hangs on a call.
+      await drainVoiceCalls(voiceCalls, VOICE_SHUTDOWN_GRACE_MS);
       cancelNightlyMaintenance();
       await cronLeader?.stop().catch(() => {});
       cronScheduler.stop();
@@ -3151,6 +3215,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     __pendingSource: () => v1.pendingSource,
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),
+    __voiceCalls: voiceCalls,
     __agentConnect: (sessionId: string, server: string) => {
       const route = routes.get(sessionId);
       if (!route) return Promise.resolve("no active thread for this session");

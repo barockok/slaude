@@ -37,6 +37,12 @@ export function autoAllowFromEnv(): Set<string> {
   );
 }
 
+const VOICE_MID_CALL_TOOLS = new Set([
+  "mcp__slaude_voice__voice_say",
+  "mcp__slaude_voice__voice_context",
+  "mcp__slaude_voice__voice_stop",
+]);
+
 /**
  * Static permission policy — every short-circuit that never needs a human.
  * Returns the decision, or null when a prompt is required. Pure over its
@@ -94,6 +100,13 @@ export function permissionPolicy(
   if (toolName.startsWith("mcp__slaude_kb__")) {
     return { behavior: "allow", updatedInput: input };
   }
+  // Mid-call voice controls. A card posted during a call would break the
+  // quiet thread and stall the answer, and stopping a call must never wait on
+  // a click. voice_start is NOT here: joining a meeting and capturing its
+  // audio keeps the normal approval (its card is redacted by permBlocks).
+  if (VOICE_MID_CALL_TOOLS.has(toolName)) {
+    return { behavior: "allow", updatedInput: input };
+  }
   return null;
 }
 
@@ -140,8 +153,27 @@ export function decisionFromPermRow(
   return { behavior: "deny", message: row.status === "expired" ? "expired before a decision" : "cancelled" };
 }
 
+/** Keys whose values never appear on an approval card (the card is posted
+ *  into a shared thread). Matched at any depth of the tool input. */
+const SECRET_KEY = /token|secret|key|password|authorization|cookie|credential/i;
+
+/** Copy of `value` with every secret-named key's value replaced, and every
+ *  value under a `headers` object (route headers may carry auth of any name). */
+export function redactForCard(value: unknown, depth = 0): unknown {
+  if (depth > 20 || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((v) => redactForCard(v, depth + 1));
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (SECRET_KEY.test(k)) out[k] = "[redacted]";
+    else if (/^headers$/i.test(k) && v !== null && typeof v === "object" && !Array.isArray(v)) {
+      out[k] = Object.fromEntries(Object.keys(v as Record<string, unknown>).map((h) => [h, "[redacted]"]));
+    } else out[k] = redactForCard(v, depth + 1);
+  }
+  return out;
+}
+
 function permBlocks(toolName: string, input: Record<string, unknown>, toolUseId: string, decisionReason?: string) {
-  const inputPreview = truncate(JSON.stringify(input, null, 2), 2500);
+  const inputPreview = truncate(JSON.stringify(redactForCard(input), null, 2), 2500);
   return [
     {
       type: "section",

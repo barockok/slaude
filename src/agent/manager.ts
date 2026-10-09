@@ -311,6 +311,8 @@ export class AgentManager extends EventEmitter {
   /** Sessions whose next turn must be suppressed (mention-only plain message).
    *  Consumed once by the UserPromptSubmit hook; set by suppressNextTurn(). */
   #suppressNextTurn = new Set<string>();
+  /** Sessions whose idle TTL is suspended (an active voice call, spec §6). */
+  #idleHeld = new Set<string>();
   #budget = new TokenBudget({
     fallbackContextWindow: env.tokenFallbackContextWindow(),
   });
@@ -618,6 +620,42 @@ export class AgentManager extends EventEmitter {
     this.#suppressNextTurn.add(sessionId);
   }
 
+  /** Suspend (true) or restore (false) the idle TTL for a live session. A voice
+   *  call holds it so the warm session — and its warm-node registration — stays
+   *  up for the whole call; release re-arms the normal timer. Holding a session
+   *  that is not live does nothing and returns false (a stale hold would block
+   *  the idle TTL of a later session under the same id). */
+  holdIdle(sessionId: string, hold: boolean): boolean {
+    const live = this.#live.get(sessionId);
+    if (!hold) {
+      this.#idleHeld.delete(sessionId);
+      if (live) this.#armIdle(live);
+      return true;
+    }
+    if (!live) return false;
+    this.#idleHeld.add(sessionId);
+    if (live.idleTimer) clearTimeout(live.idleTimer);
+    live.idleTimer = undefined;
+    return true;
+  }
+
+  /** Clear the hold and tell listeners (voice calls) the live session is gone.
+   *  A throwing listener must not stall teardown. */
+  #signalSessionExit(sessionId: string) {
+    this.#idleHeld.delete(sessionId);
+    try {
+      this.emit("sessionExit", sessionId);
+    } catch (e) {
+      console.error(`[mgr] sessionExit listener failed session=${sessionId}:`, e);
+    }
+  }
+
+  /** True while a live session has inputs pushed whose result has not arrived.
+   *  False for unknown or not-live sessions. */
+  isTurnInFlight(sessionId: string): boolean {
+    return (this.#live.get(sessionId)?.pendingInputs ?? 0) > 0;
+  }
+
   /** Send user input. Starts session loop if not already live. */
   async sendMessage(sessionId: string, text: string) {
     // Signal that a real user turn is starting for this session. Slash commands
@@ -642,7 +680,12 @@ export class AgentManager extends EventEmitter {
         console.warn(`[mgr] reloading session=${sessionId} did not exit within ${this.#reloadExitTimeoutMs}ms; aborting it and booting fresh`);
         this.abort(sessionId);
         if (old.idleTimer) clearTimeout(old.idleTimer);
-        if (this.#live.get(sessionId) === old) this.#live.delete(sessionId);
+        if (this.#live.get(sessionId) === old) {
+          this.#live.delete(sessionId);
+          // The detached instance's own teardown no longer owns the id and
+          // stays silent, so this is its one exit signal (a voice call must learn).
+          this.#signalSessionExit(sessionId);
+        }
         live = undefined;
         break;
       }
@@ -667,6 +710,7 @@ export class AgentManager extends EventEmitter {
   #armIdle(live: LiveSession) {
     const ms = env.idleMs();
     if (live.idleTimer) clearTimeout(live.idleTimer);
+    if (this.#idleHeld.has(live.id)) return;
     if (ms <= 0) return;
     live.idleTimer = setTimeout(() => {
       // Flush any buffered assistant content; close the prompt iterable so
@@ -1310,6 +1354,7 @@ export class AgentManager extends EventEmitter {
         this.#stopBlocked.delete(sessionId);
         metric.sessionsLive.set(this.#live.size);
         markExited();
+        this.#signalSessionExit(sessionId);
         // After a stream_closed auto-reload, inject a synthetic "continue"
         // prompt so the resumed session picks up without human input.
         if (live.reloading && this.#autoContinue.has(sessionId)) {

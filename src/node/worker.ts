@@ -50,9 +50,26 @@ import { decodeClaims, makeRemoteFactory, makeRemoteResolver } from "./remote";
 import { lockFromClaims } from "./session-lock";
 import { type NodeManifest, loadNodeManifest, makeNodeLocalMcpResolver } from "./manifest";
 import { ChildEnvPatch } from "../agent/child-env";
+import { VoiceCalls } from "../voice/call";
+import { drainVoiceCalls, endCallsOnSessionExit, makeNodeVoiceHost, voiceServersFor } from "../voice/hosts";
+import { injectedTurns, voiceTurns } from "../voice/turn-flags";
 import { BootFailure, createOnceGuard, type FailureCode } from "../gateway/core/failure-codes";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * A voice call's runner turn (delegate, transcript flush, summary) runs
+ * outside any job. Its done/error must not reach events:<session>: the
+ * gateway follower credits an end to the oldest job still owed an outcome,
+ * which would be a Slack job queued behind the call's turn. A voice turn's
+ * events stay off entirely: the voice flag is local to this node, so a
+ * gateway follower replaying them would post status, reactions and task
+ * lists into the quiet thread.
+ */
+export function keepOffEventStream(e: AgentEvent): boolean {
+  if (voiceTurns.active(e.sessionId)) return true;
+  return (e.type === "done" || e.type === "error") && injectedTurns.active(e.sessionId);
+}
 
 /** Locked-turn result: the warm session is not on this job's config yet. */
 export const STALE_CONFIG = Symbol("stale-config");
@@ -419,6 +436,8 @@ export interface NodeWorkerHandle {
    *  so a surviving worker's stalled checker recovers the claim — exactly the
    *  failure surface a killed pod leaves behind (spec §6 failure matrix). */
   kill(): void;
+  /** TEST SEAM: the node's voice call registry. */
+  __voiceCalls: VoiceCalls;
   /** TEST SEAM: the command Redis connection (break it to probe /healthz). */
   __cmd: Redis;
   /** TEST SEAM: the BullMQ worker connections (one per label plus one). */
@@ -501,9 +520,12 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         client,
         tokenFor: (id) => store.tokenFor(id),
         signalFor: (id) => turnAborts.get(id)?.signal,
+        voiceActive: (id) => voiceTurns.active(id),
       }),
       // Token budget stays node-local (spec §3): the live Query is here.
       [SESSION_MCP_NAME]: createSessionMcp({ getSnapshot: () => agent.getTokenSnapshot(sessionId) }),
+      // Voice only when the gateway shipped a voice block for this tenant.
+      ...(await voiceServersFor(sessionId, voiceHost, voiceCalls)),
     };
     // The persona's remote MCP servers, through the gateway (WS-C §4.2): names
     // from the runtime bundle, tool lists fetched once here at boot.
@@ -537,6 +559,30 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // in-process integration harness — a per-process temp root stands in for the
   // pod's emptyDir.
   const sessionLockOpts = env.sessionLock();
+  // Voice calls (voice mode spec §6): config and the soul come from the
+  // runtime bundle (nodes never read voice env); a call's turns take the
+  // session lock like a job, under their own owner id.
+  const voiceCalls = new VoiceCalls();
+  const voiceHost = makeNodeVoiceHost({
+    agent,
+    tokenFor: (id) => store.tokenFor(id),
+    claims: (t) => decodeClaims(t),
+    bindToken: (id, t) => store.bindToken(id, t),
+    refresh: (jobId, t) => client.refreshJobTokenWithIdentity(jobId, t),
+    lock: (id, fn) => withSessionLock(id, `${nodeId}:voice`, fn, { redis: cmd, keys, ...sessionLockOpts, ...opts.lock }),
+    bundle: async (id) => {
+      const tenant = tenants.get(id);
+      const tok = store.tokenFor(id);
+      return tenant && tok ? client.getRuntime(tenant, personas.get(id) ?? "default", tok) : null;
+    },
+    workingDir: async (id) => {
+      const r = await store.findById(id);
+      if (!r) throw new Error(`unknown session ${id}`);
+      return r.working_dir;
+    },
+    draining: () => state === "draining" || state === "stopped",
+  });
+  endCallsOnSessionExit(agent, voiceCalls);
   const configRoot = opts.configRoot ?? nodeConfigRoot() ?? mkdtempSync(join(tmpdir(), `slaude-node-${nodeId}-`));
   const seeder = makeSessionSeeder({
     fetch: (tenant, token) => client.getMcpCredentials(tenant, token),
@@ -661,7 +707,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       ends && gateDenied.has(e.sessionId)
         ? { type: "error", sessionId: e.sessionId, error: "label gate refused this node", code: "LABEL_MISMATCH" }
         : e;
-    void pubsub.appendEvent(e.sessionId, out, { exact: true }).catch(() => {});
+    if (!keepOffEventStream(e)) void pubsub.appendEvent(e.sessionId, out, { exact: true }).catch(() => {});
     if (e.type === "toolResult" && (e.result as { is_error?: unknown } | undefined)?.is_error) {
       void recovery.onToolError(e.sessionId).catch(() => {});
     }
@@ -1032,11 +1078,14 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     stopped = true;
     state = "draining";
     const grace = (o.drainSec ?? drainSecDefault) * 1000;
+    const deadline = Date.now() + grace;
     console.log(`[node] ${nodeId} draining (grace ${grace}ms)`);
     clearInterval(hbTimer);
-    // Stop claiming; wait for in-flight turns up to the grace, then force.
+    // Stop claiming; end every voice call (goodbye line, transcript, summary
+    // turn) and wait for in-flight turns, all within the one grace, then force.
     const closing = Promise.all(workers.map((w) => w.close()));
-    const timedOut = await Promise.race([closing.then(() => false), sleep(grace).then(() => true)]);
+    await drainVoiceCalls(voiceCalls, grace);
+    const timedOut = await Promise.race([closing.then(() => false), sleep(Math.max(0, deadline - Date.now())).then(() => true)]);
     if (timedOut) {
       console.error(`[node] ${nodeId} drain grace expired — force-closing`);
       await Promise.all(workers.map((w) => w.close(true))).catch(() => {});
@@ -1092,5 +1141,6 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     kill,
     __cmd: cmd,
     __bullConns: bullConns,
+    __voiceCalls: voiceCalls,
   };
 }

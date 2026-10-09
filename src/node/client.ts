@@ -482,9 +482,15 @@ export class NodeClient {
    * the exchange; the gateway enforces the grace window and job binding.
    */
   async refreshJobToken(jobId: string, currentToken: string): Promise<string> {
+    return (await this.refreshJobTokenWithIdentity(jobId, currentToken)).jobToken;
+  }
+
+  /** As refreshJobToken, plus the thread's identity as of now when the gateway
+   *  reports it (absent from an older gateway, or when it could not compute it). */
+  async refreshJobTokenWithIdentity(jobId: string, currentToken: string): Promise<{ jobToken: string; identity?: unknown }> {
     const res = await this.request(`/v1/jobs/${jobId}/token-refresh`, { method: "POST", jobToken: currentToken });
-    const body = await this.#json<{ jobToken: string }>(res);
-    return body.jobToken;
+    const body = await this.#json<{ jobToken: string; identity?: unknown }>(res);
+    return body.identity === undefined ? { jobToken: body.jobToken } : { jobToken: body.jobToken, identity: body.identity };
   }
 
   /**

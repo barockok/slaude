@@ -188,3 +188,64 @@ describe("live label re-check at refresh (node labels spec §4.3, §4.8)", () =>
     }
   });
 });
+
+describe("/v1/jobs/:id/token-refresh — the thread's current identity", () => {
+  const OneOnOne = () => import("../../../src/db/one-on-one");
+  const refresh = async (claims: Record<string, unknown>) => {
+    const res = await handleTokenRefresh(req(mintJobToken({ ...baseClaims, ...claims })), "job-123");
+    expect(res.status).toBe(200);
+    return (await res.json()) as { jobToken: string; identity?: { runAs: string; lock: unknown; remote: boolean } };
+  };
+
+  test("an unlocked thread reports the agent, unlocked, no remote", async () => {
+    const body = await refresh({ runAs: "agent", lock: null });
+    expect(body.identity).toEqual({ runAs: "agent", lock: null, remote: false });
+  });
+
+  test("a lock set after dispatch shows up in the refresh, while the token keeps its claims", async () => {
+    const O = await OneOnOne();
+    await O.lock({ channelId: "C1", threadTs: "1.0", lockedUser: "U0LOCKED1", createdBy: "U0LOCKED1" });
+    try {
+      const body = await refresh({ runAs: "agent", lock: null });
+      expect(body.identity).toEqual({ runAs: "user:U0LOCKED1", lock: { user: "U0LOCKED1", openScope: null }, remote: false });
+      const v = verifyJobToken(body.jobToken);
+      expect(v.ok && v.claims.runAs).toBe("agent");
+      expect(v.ok && v.claims.lock).toBeNull();
+    } finally {
+      await O.unlock("C1", "1.0");
+    }
+  });
+
+  test("a carried person identity stays a person after the lock is gone", async () => {
+    const body = await refresh({ runAs: "user:U0CRON1", lock: null });
+    expect(body.identity?.runAs).toBe("user:U0CRON1");
+  });
+
+  test("a token without a runAs claim gets no identity (the node fails closed)", async () => {
+    const body = await refresh({});
+    expect(body.identity).toBeUndefined();
+  });
+});
+
+describe("/v1/jobs/:id/token-refresh — identity lookup failure", () => {
+  test("a failing lock lookup omits the identity but still refreshes the token", async () => {
+    const OneOnOne = await import("../../../src/db/one-on-one");
+    const { spyOn } = await import("bun:test");
+    const find = spyOn(OneOnOne, "find").mockImplementation(async () => { throw new Error("db down"); });
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const res = await handleTokenRefresh(req(mintJobToken({ ...baseClaims, runAs: "agent", lock: null })), "job-123");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { jobToken: string; identity?: unknown };
+      expect(typeof body.jobToken).toBe("string");
+      expect("identity" in body).toBe(false);
+      expect(find).toHaveBeenCalled();
+      // The node side fails closed on the missing field.
+      const { voiceRefusalFromClaims } = await import("../../../src/voice/hosts");
+      expect(voiceRefusalFromClaims((body.identity as any) ?? null)).toBe("VOICE_UNAVAILABLE");
+    } finally {
+      find.mockRestore();
+      warn.mockRestore();
+    }
+  });
+});

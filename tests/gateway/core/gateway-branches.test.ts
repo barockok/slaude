@@ -15,6 +15,7 @@ import * as SO from "../../../src/db/soul-overrides";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 import { __resetModelCache } from "../../../src/agent/models";
 import { paths } from "../../../src/config/home";
+import { voiceTurns } from "../../../src/voice/turn-flags";
 import { KB_MCP_NAME } from "../../../src/knowledge/mcp-tools";
 
 // ————————————————————————————————————————————————————————————————————————————
@@ -27,6 +28,7 @@ type Rich = ReturnType<typeof richTransport>;
 function richTransport(o: { botUserId?: string; authThrows?: boolean } = {}) {
   const posts: any[] = [];
   const edits: any[] = [];
+  const reacts: any[] = [];
   const handlers = new Map<string, (args: any) => Promise<void>>();
   const actions: { pattern: RegExp | string; fn: any }[] = [];
   const middlewares: any[] = [];
@@ -41,7 +43,7 @@ function richTransport(o: { botUserId?: string; authThrows?: boolean } = {}) {
       postMessage: async (a: any) => { const ts = `${Date.now()}.${posts.length}`; posts.push({ ...a, ts }); return { ok: true, ts }; },
       update: async (a: any) => { edits.push(a); return { ok: true }; },
     },
-    reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
+    reactions: { add: async (a: any) => { reacts.push(a); return { ok: true }; }, remove: async () => ({ ok: true }) },
     conversations: { info: async () => ({}), members: async () => ({}), replies: async () => ({}) },
     users: { info: async () => ({ user: { real_name: "Test" } }), profile: { set: async () => ({}) } },
     search: { messages: async () => ({}) },
@@ -61,7 +63,7 @@ function richTransport(o: { botUserId?: string; authThrows?: boolean } = {}) {
       if (hit) await fn({ ack: async () => {}, action: { action_id: actionId }, body: { user: { id: userId } }, respond: async () => {} });
     }
   };
-  return { t, client, posts, edits, emit, emitAction, middlewares };
+  return { t, client, posts, edits, reacts, emit, emitAction, middlewares };
 }
 
 function makeGw(o: { transport?: Rich; gwOpts?: GatewayOptions; agent?: AgentManager } = {}) {
@@ -271,6 +273,86 @@ describe("gateway uncovered branches", () => {
     g.agent.emit("event", { type: "toolCall", sessionId: session.id, tool: "mcp__slaude_slack__get_thread_history", input: {} } as any);
     g.agent.emit("event", { type: "toolCall", sessionId: session.id, tool: "mcp__slaude_surface__react", input: { name: "eyes" } } as any);
     await new Promise((r) => setTimeout(r, 10));
+  });
+
+  it("voice turn: stop guard passes, done/error post nothing, slack reply/post_message and surface reply are quiet", async () => {
+    writeSoulFixture(WORLD);
+    const agent = new AgentManager();
+    let guard: ((id: string) => string | null) | undefined;
+    const orig = agent.setStopGuard.bind(agent);
+    agent.setStopGuard = ((fn: any) => { guard = fn; orig(fn); }) as any;
+    const g = makeGw({ agent });
+    const ts = nextTs();
+    await g.emit("message", dmArgs(g, "hello voice", { ts }));
+    const session = await g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+    const servers = (await g.h.__resolveMcp(session.id))! as any;
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const clients = new Map<string, InstanceType<typeof Client>>();
+    const call = async (server: string, name: string, args: any) => {
+      let client = clients.get(server);
+      if (!client) {
+        const [ct, st] = InMemoryTransport.createLinkedPair();
+        await servers[server].instance.connect(st);
+        client = new Client({ name: "t", version: "0.0.0" });
+        await client.connect(ct);
+        clients.set(server, client);
+      }
+      return client.callTool({ name, arguments: args });
+    };
+    voiceTurns.enter(session.id);
+    try {
+      expect(guard!(session.id)).toBeNull();
+      const before = g.posts.length;
+      g.agent.emit("event", { type: "error", sessionId: session.id, error: "boom", code: "UNKNOWN" } as any);
+      g.agent.emit("event", { type: "done", sessionId: session.id } as any);
+      const r1: any = await call("slaude_slack", "reply", { text: "voice-secret" });
+      const r2: any = await call("slaude_slack", "post_message", { channel: "D_MGR", text: "voice-secret" });
+      const r3: any = await call("slaude_surface", "reply", { text: "voice-secret" });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(g.posts.slice(before).map((p: any) => p.text)).toEqual([]);
+      expect(r1.content[0].text).toContain("voice-suppressed");
+      expect(r2.content[0].text).toContain("voice-suppressed");
+      expect(r3.content[0].text).toContain("suppressed");
+    } finally {
+      voiceTurns.exit(session.id);
+    }
+    // a normal turn still gets the stop-guard nudge and the failure text
+    expect(typeof guard!(session.id)).toBe("string");
+    const before2 = g.posts.length;
+    g.agent.emit("event", { type: "error", sessionId: session.id, error: "boom", code: "UNKNOWN" } as any);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(g.posts.length).toBe(before2 + 1);
+  });
+
+  it("voice turn: toolCall sets no reaction/spoke, done cleans per-turn state without posting", async () => {
+    writeSoulFixture(WORLD);
+    const agent = new AgentManager();
+    let guard: ((id: string) => string | null) | undefined;
+    const orig = agent.setStopGuard.bind(agent);
+    agent.setStopGuard = ((fn: any) => { guard = fn; orig(fn); }) as any;
+    const g = makeGw({ agent });
+    const ts = nextTs();
+    await g.emit("message", dmArgs(g, "hello voice2", { ts }));
+    const session = await g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+    await new Promise((r) => setTimeout(r, 30));
+    const reactsBefore = g.reacts.length;
+    const postsBefore = g.posts.length;
+    voiceTurns.enter(session.id);
+    try {
+      g.agent.emit("event", { type: "toolCall", sessionId: session.id, tool: "Read", input: { file_path: "/x" } } as any);
+      g.agent.emit("event", { type: "toolCall", sessionId: session.id, tool: "mcp__slaude_surface__reply", input: {} } as any);
+      g.agent.emit("event", { type: "toolCall", sessionId: session.id, tool: "TodoWrite", input: { todos: [{ content: "a", status: "pending", activeForm: "a" }] } } as any);
+      g.agent.emit("event", { type: "done", sessionId: session.id } as any);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(g.reacts.length).toBe(reactsBefore);
+      expect(g.posts.length).toBe(postsBefore);
+      expect(g.edits.length).toBe(0);
+    } finally {
+      voiceTurns.exit(session.id);
+    }
+    // the suppressed reply did not count as the agent speaking
+    expect(typeof guard!(session.id)).toBe("string");
   });
 
   it("KB MCP deps evaluate gate/scope/managers from the live route (brain enabled)", async () => {

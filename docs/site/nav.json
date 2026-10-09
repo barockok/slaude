@@ -33,6 +33,7 @@
             { "path": "guides/index", "label": "Guides overview" },
             { "path": "guides/engagement", "label": "Engagement and approvals" },
             { "path": "guides/remote", "label": "Remote mode" },
+            { "path": "guides/voice-mode", "label": "Voice mode" },
             { "path": "guides/examples", "label": "Examples" }
           ]
         }
