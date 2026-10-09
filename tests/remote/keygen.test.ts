@@ -3,12 +3,20 @@ import { utils } from "ssh2";
 import { generateSshKeyPair, isValidSshKeyPair } from "../../src/remote/keygen";
 
 const real = (c: string) => utils.generateKeyPairSync("ed25519", { comment: c });
+// A pair known to parse: ssh2 emits an unparseable key ~1/256, which would make
+// a call-count assertion flaky.
+const valid = (c: string) => {
+  for (;;) {
+    const p = real(c);
+    if (isValidSshKeyPair(p.private, p.public)) return p;
+  }
+};
 const garbage = () => ({ private: "not a key", public: "ssh-ed25519 AAAA" });
 
 describe("generateSshKeyPair", () => {
   it("retries past invalid results and returns the first valid pair", () => {
     let calls = 0;
-    const pair = generateSshKeyPair("slaude:U1", (c) => (++calls <= 5 ? garbage() : real(c)));
+    const pair = generateSshKeyPair("slaude:U1", (c) => (++calls <= 5 ? garbage() : valid(c)));
     expect(calls).toBe(6);
     expect(isValidSshKeyPair(pair.privateKey, pair.publicKey)).toBe(true);
     expect(pair.publicKey).toContain("slaude:U1");
