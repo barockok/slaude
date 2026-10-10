@@ -27,6 +27,12 @@ export interface AudioLinkLike {
  *  routing that the capability URL must not be combined with. */
 export const FORBIDDEN_HEADERS: ReadonlySet<string> = new Set(["authorization", "cookie", "host"]);
 
+/** The only route headers voice_start accepts (lower-case): naming them keeps
+ *  every header that can change routing visible on the approval card. */
+export const ROUTE_HEADER_ALLOWLIST: ReadonlySet<string> = new Set(["x-browser-session"]);
+export const routeHeadersAllowed = (h: Record<string, string>): boolean =>
+  Object.keys(h).every((k) => ROUTE_HEADER_ALLOWLIST.has(k.toLowerCase()));
+
 /** True when `path` resolves against `base` to the same origin, without
  *  embedded credentials. Unparseable input is false. */
 export function sameOrigin(path: string, base: string): boolean {

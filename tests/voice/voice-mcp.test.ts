@@ -95,6 +95,13 @@ describe("voice MCP", () => {
     expect(JSON.stringify(t0.child.sent)).not.toContain("old-tok");
   });
 
+  it("the schema caps the brief at 500 and the voice name at 64, so a card can show them whole", () => {
+    const schema = tools(createVoiceMcp("s1", host().h, new VoiceCalls()))["voice_start"].inputSchema;
+    expect(schema.safeParse({ brief: "b".repeat(500), audio }).success).toBe(true);
+    expect(schema.safeParse({ brief: "b".repeat(501), audio }).success).toBe(false);
+    expect(schema.safeParse({ brief: "b", audio, voice: "v".repeat(65) }).success).toBe(false);
+  });
+
   it("the voice_start description no longer asks for a stream_token", () => {
     const t = tools(createVoiceMcp("s1", host().h, new VoiceCalls()));
     expect(String(t["voice_start"].inputSchema.shape.audio.description ?? "")).not.toContain("stream_token");
@@ -244,11 +251,20 @@ describe("voice MCP", () => {
       expect(r.isError).toBeFalsy();
     });
 
-    it("drops authorization, cookie and host headers", async () => {
+    it("refuses any route header but X-Browser-Session (schema and handler), spawning nothing", async () => {
       const t0 = host();
       const t = tools(createVoiceMcp("s1", t0.h, new VoiceCalls()));
-      await t["voice_start"].handler(withAudio({ headers: { Authorization: "Bearer z", cookie: "a=b", HOST: "evil", "X-Browser-Session": "rk" } }));
-      expect((t0.child.sent[0] as any).init.audio.headers).toEqual({ "X-Browser-Session": "rk" });
+      for (const h of [{ Authorization: "Bearer z" }, { cookie: "a=b" }, { HOST: "evil" }, { "X-Other": "1" }] as Record<string, string>[]) {
+        const headers = { ...h, "X-Browser-Session": "rk" };
+        expect(t["voice_start"].inputSchema.safeParse({ brief: "x", audio: { ...audio, headers } }).success).toBe(false);
+        const r = await t["voice_start"].handler(withAudio({ headers }));
+        expect(text(r)).toStartWith("VOICE_BAD_ENDPOINT");
+        expect(text(r)).not.toContain("Bearer z");
+      }
+      expect(t0.spawned).toEqual([]);
+      // Case-insensitive, and the known header is passed through.
+      await t["voice_start"].handler(withAudio({ headers: { "x-browser-session": "rk" } }));
+      expect((t0.child.sent[0] as any).init.audio.headers).toEqual({ "x-browser-session": "rk" });
     });
   });
 

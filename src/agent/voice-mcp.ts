@@ -9,9 +9,12 @@ import { z } from "zod";
 import type { VoiceConfig } from "../voice/config";
 import { VoiceCall, VoiceCalls, type LoopChild, type TurnRunner } from "../voice/call";
 import type { VoiceInit } from "../voice/ipc";
-import { FORBIDDEN_HEADERS, redactCapabilityUrls, sameOrigin } from "../voice/audio-link";
+import { FORBIDDEN_HEADERS, redactCapabilityUrls, routeHeadersAllowed, sameOrigin } from "../voice/audio-link";
 
 export const VOICE_MCP_NAME = "slaude_voice";
+/** Schema caps on voice_start's free text; the approval card shows both whole. */
+export const BRIEF_MAX = 500;
+export const VOICE_NAME_MAX = 64;
 
 export interface VoiceHost {
   config(sessionId: string): Promise<VoiceConfig | null>;
@@ -69,7 +72,8 @@ const err = (code: string, msg: string) => ({ content: [{ type: "text" as const,
 const audioShape = z.object({
   stream_url: z.string(),
   clear_url: z.string(),
-  headers: z.record(z.string()).default({}),
+  headers: z.record(z.string()).default({})
+    .refine(routeHeadersAllowed, { message: "only the X-Browser-Session route header is accepted" }),
   sample_rate: z.union([z.literal(16000), z.literal(24000), z.literal(48000)]).default(24000),
 }).strip();
 
@@ -99,6 +103,9 @@ export const voiceHandlers = {
       if (!cfg) return err("VOICE_DISABLED", "voice mode is not configured");
       base = cfg.workbenchUrl;
       const { audio } = args;
+      if (!routeHeadersAllowed(audio.headers ?? {})) {
+        return err("VOICE_BAD_ENDPOINT", "only the X-Browser-Session route header is accepted");
+      }
       if (![audio.stream_url, audio.clear_url].every((u) => sameOrigin(u, cfg.workbenchUrl))) {
         return err("VOICE_BAD_ENDPOINT", "audio endpoints must be on the configured workbench origin");
       }
@@ -182,9 +189,10 @@ export function createVoiceMcp(sessionId: string, host: VoiceHost, calls: VoiceC
         "voice_start",
         "Start talking in a call you have joined in a workbench browser tab. First call browser_audio_start for that tab, then pass its result as `audio`. Runs as the agent identity.",
         {
-          brief: z.string().describe("What this call is about and what you should do in it."),
+          // Capped so the approval card can show the whole brief that will run.
+          brief: z.string().max(BRIEF_MAX).describe(`What this call is about and what you should do in it (at most ${BRIEF_MAX} characters).`),
           audio: audioShape.describe("The result of browser_audio_start, passed as is: stream_url, clear_url, headers, sample_rate."),
-          voice: z.string().optional(),
+          voice: z.string().max(VOICE_NAME_MAX).optional(),
         },
         (a: any) => voiceHandlers.start(sessionId, host, calls, a),
       ),
