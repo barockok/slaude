@@ -5,6 +5,7 @@
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
+import { redactCapabilityUrls } from "./audio-link";
 import { ENV_API_KEY, encodeMsg, parseChildMsg, readLines, type ChildMsg, type ParentMsg } from "./ipc";
 
 const ENTRY = fileURLToPath(new URL("./loop-entry.ts", import.meta.url));
@@ -34,11 +35,26 @@ export function childEnv(o: SpawnSecrets, from: NodeJS.ProcessEnv = process.env)
   return env;
 }
 
-export function spawnVoiceLoop(o: SpawnSecrets & { execPath?: string }): LoopChild {
-  const cp = spawn(o.execPath ?? process.execPath, ["--no-env-file", ENTRY], {
-    stdio: ["pipe", "pipe", "inherit"],
+/** `entry` replaces the child script (tests use a stand-in). */
+export function spawnVoiceLoop(o: SpawnSecrets & { execPath?: string; entry?: string }): LoopChild {
+  // stderr is piped, not inherited: whatever the child or Bun writes there
+  // passes the same capability-URL scrubber as its log lines.
+  const cp = spawn(o.execPath ?? process.execPath, ["--no-env-file", o.entry ?? ENTRY], {
+    stdio: ["pipe", "pipe", "pipe"],
     env: childEnv(o),
   });
+  // Set when init is sent: the child only learns the capability URLs from it.
+  let scrub = (s: string) => s;
+  if (cp.stderr) {
+    const stderr = Readable.toWeb(cp.stderr) as unknown as ReadableStream<Uint8Array>;
+    void (async () => {
+      try {
+        for await (const line of readLines(stderr)) process.stderr.write(`${scrub(line)}\n`);
+      } catch {
+        // stream destroyed (spawn error / kill)
+      }
+    })();
+  }
   let dead = false;
   const exited = new Promise<number>((r) => {
     cp.on("exit", (code) => {
@@ -58,6 +74,10 @@ export function spawnVoiceLoop(o: SpawnSecrets & { execPath?: string }): LoopChi
   cp.stdin?.on("error", () => {});
   return {
     send: (m) => {
+      if (m.type === "init") {
+        const { audio, workbenchUrl } = m.init;
+        scrub = (s) => redactCapabilityUrls(s, audio, workbenchUrl);
+      }
       if (!dead && cp.stdin && !cp.stdin.destroyed && cp.stdin.writable) cp.stdin.write(encodeMsg(m));
     },
     messages: (async function* () {
@@ -66,7 +86,7 @@ export function spawnVoiceLoop(o: SpawnSecrets & { execPath?: string }): LoopChi
       try {
         for await (const line of readLines(stdout)) {
           const m = parseChildMsg(line);
-          if (m) yield m;
+          if (m) yield m.type === "log" ? { ...m, message: scrub(m.message) } : m;
         }
       } catch {
         // stream destroyed (spawn error / kill): the iterator just ends
