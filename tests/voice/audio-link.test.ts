@@ -247,6 +247,18 @@ describe("AudioLink", () => {
     await link.close();
   });
 
+  it("an ended event with reason page_left maps to workbench:page_left", async () => {
+    wb = fakeWorkbench();
+    const link = new AudioLink({ baseUrl: wb.base, endpoints });
+    let reason = "";
+    await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+    await until(() => wb.sseCtl !== null);
+    wb.sseCtl.enqueue(new TextEncoder().encode(sse("ended", { reason: "page_left" })));
+    await until(() => reason !== "");
+    expect(reason).toBe("workbench:page_left");
+    await link.close();
+  });
+
   it("an ended event with reason idle maps to workbench:idle", async () => {
     wb = fakeWorkbench();
     const link = new AudioLink({ baseUrl: wb.base, endpoints });

@@ -154,6 +154,22 @@ describe("voice MCP", () => {
     expect(schema.safeParse({ brief: "b", audio, voice: "v".repeat(65) }).success).toBe(false);
   });
 
+  it("voice_start's description gives the call order; voice_stop's names the post-hangup page", () => {
+    const t = tools(createVoiceMcp("s1", host().h, new VoiceCalls()));
+    const d = String(t["voice_start"].description);
+    const order = ["browser_start", "browser_audio_start", "blank", "voice_start", "browser_navigate", "join"];
+    let at = -1;
+    for (const k of order) {
+      const i = d.indexOf(k, at + 1);
+      expect(i).toBeGreaterThan(at);
+      at = i;
+    }
+    expect(d).toContain("reload");
+    expect(d).toContain("startWithVideoMuted=true");
+    expect(d.length).toBeLessThan(900);
+    expect(String(t["voice_stop"].description)).toContain("close3");
+  });
+
   it("the voice_start description no longer asks for a stream_token", () => {
     const t = tools(createVoiceMcp("s1", host().h, new VoiceCalls()));
     expect(String(t["voice_start"].inputSchema.shape.audio.description ?? "")).not.toContain("stream_token");

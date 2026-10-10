@@ -278,7 +278,7 @@ export function createVoiceMcp(sessionId: string, host: VoiceHost, calls: VoiceC
     tools: [
       tool(
         "voice_start",
-        "Start talking in a call you have joined in a workbench browser tab. First call browser_audio_start for that tab, then pass its result as `audio`. Runs as the agent identity.",
+        "Start talking in a meeting. Follow this order exactly: (1) browser_start; (2) browser_audio_start on the blank tab, before any meeting page loads; (3) voice_start right away, passing that result as `audio` (an unattached capability is revoked after 60 s); (4) browser_navigate to the meeting URL, then (5) join. If the meeting page was already loaded, reload it after browser_audio_start. For Jitsi append #config.startWithVideoMuted=true to the URL. Runs as the agent identity.",
         voiceStartShape,
         (a: any) => voiceHandlers.start(sessionId, host, calls, a),
       ),
@@ -294,7 +294,7 @@ export function createVoiceMcp(sessionId: string, host: VoiceHost, calls: VoiceC
         { text: z.string() },
         async (a: any) => voiceHandlers.context(sessionId, calls, a),
       ),
-      tool("voice_stop", "End the call.", {}, () => voiceHandlers.stop(sessionId, calls)),
+      tool("voice_stop", "End the call. If the tab lands on Jitsi's post-hangup page (close3.html) the call has ended: call this, then browser_audio_stop.", {}, () => voiceHandlers.stop(sessionId, calls)),
     ],
   });
 }

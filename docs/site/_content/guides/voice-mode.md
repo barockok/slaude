@@ -20,6 +20,25 @@ The agent's voice then speaks into the call. The thread's session is held open f
 
 **Approval.** Under the normal permission mode, `voice_start` asks for approval like any other gated tool: joining a meeting and capturing its audio is a high-impact action. The approval card is rendered from the exact input that runs and shows everything that changes behaviour: the origin of each URL (flagged if it is not the pinned workbench), the sample rate, the format and channels when given, and whether a session id was passed (never its value), the route header names (values `[hidden]`), the voice and the configured model, any ignored fields, and the whole brief. Only the URL paths and header values are hidden. Before any card, the input is checked against the tool's strict schema: an unknown field, a wrongly typed value, a URL with credentials, a brief over 500 characters or a brief that quotes a whole stream or clear URL is denied with no card. The brief is shown whole and literally, never truncated; each of its lines is prefixed with `| `, and line breaks, zero-width and other invisible characters are shown as escapes, so a brief cannot imitate the card or close its code block. The mid-call controls (`voice_say`, `voice_context`, `voice_stop`) never ask: a card during the call would break the quiet thread, and stopping a call must not wait on a click.
 
+## Joining a call
+
+The order matters. Jitsi asks for the microphone as soon as the page loads, and the workbench grants it inside `browser_audio_start`. A page that loaded before the grant ends up with a muted or ended microphone. A capability with nothing attached for 60 seconds is revoked. So the agent works in this order:
+
+1. `browser_start`.
+2. `browser_audio_start` on the blank tab, before any meeting page loads.
+3. `voice_start`, immediately, so the stream and uplink attach.
+4. `browser_navigate` to the meeting URL (for example `https://meet.example.com/room`).
+5. Join.
+
+If the meeting page was already loaded, reload it after `browser_audio_start`.
+
+Jitsi notes:
+
+- Append `#config.startWithVideoMuted=true` to the URL, for example `https://meet.example.com/room#config.startWithVideoMuted=true`.
+- A fresh room on the public meet.jit.si service may sit in "waiting for moderator" until someone with the moderator role joins.
+- If the tab lands on Jitsi's post-hangup page (`close3.html`), the call has ended. The agent calls `voice_stop` and `browser_audio_stop`.
+- The workbench ends the audio stream with a reason such as `idle` or `page_left`; the thread sees it as `workbench:idle` or `workbench:page_left`.
+
 ## 2. Tools
 
 | Tool | What it does |
