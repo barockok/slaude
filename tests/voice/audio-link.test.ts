@@ -343,3 +343,39 @@ describe("redactCapabilityUrls: every form of the secret", () => {
     expect(r("audio stream clear api browser attempt 1")).toBe("audio stream clear api browser attempt 1");
   });
 });
+
+describe("redactCapabilityUrls: exact match, whatever the secret's shape", () => {
+  const base = "https://wb.example.com";
+  it("a short secret segment is masked in every form", () => {
+    const eps = { streamUrl: "/api/browser/audio/ab12/stream", clearUrl: "/api/browser/audio/ab12/clear" };
+    for (const t of ["GET https://wb.example.com/api/browser/audio/ab12/stream", "path /api/browser/audio/ab12/clear", "key ab12 rejected", `enc ${encodeURIComponent("/api/browser/audio/ab12/stream")}`]) {
+      expect(redactCapabilityUrls(t, eps, base)).not.toContain("ab12");
+    }
+  });
+  it("an all-letter 8-character secret is masked, alone in an unrelated log line too", () => {
+    const eps = { streamUrl: "/api/browser/audio/qwertyui/stream", clearUrl: "/api/browser/audio/qwertyui/clear" };
+    expect(redactCapabilityUrls("provider said: token qwertyui is not valid", eps, base)).toBe("provider said: token … is not valid");
+    expect(redactCapabilityUrls("wb.example.com/api/browser/audio/qwertyui/clear", eps, base)).not.toContain("qwertyui");
+  });
+  it("a short query value is masked wherever it appears", () => {
+    const eps = { streamUrl: "/api/browser/audio/stream?sig=k9Zp", clearUrl: "/api/browser/audio/clear?sig=k9Zp" };
+    expect(redactCapabilityUrls("bad signature k9Zp", eps, base)).not.toContain("k9Zp");
+    expect(redactCapabilityUrls("q ?sig=k9Zp", eps, base)).not.toContain("k9Zp");
+  });
+  it("the encodeURI form of a secret is masked", () => {
+    const eps = { streamUrl: "/api/browser/audio/s3c%20r3t/stream", clearUrl: "/api/browser/audio/s3c%20r3t/clear" };
+    for (const t of ["raw s3c r3t", "enc s3c%20r3t", `full ${encodeURI("https://wb.example.com/api/browser/audio/s3c r3t/stream")}`]) {
+      const out = redactCapabilityUrls(t, eps, base);
+      expect(out).not.toContain("s3c r3t");
+      expect(out).not.toContain("s3c%20r3t");
+    }
+  });
+  it("route words stay readable", () => {
+    const eps = { streamUrl: "/api/browser/tabs/audio/ab12/stream", clearUrl: "/api/browser/tabs/audio/ab12/clear" };
+    expect(redactCapabilityUrls("api browser tabs audio stream clear: audio stream restarted", eps, base)).toBe("api browser tabs audio stream clear: audio stream restarted");
+  });
+  it("a one-letter test path does not eat letters inside words", () => {
+    const eps = { streamUrl: "/s", clearUrl: "/c" };
+    expect(redactCapabilityUrls("session=s1 closed cleanly", eps, base)).toBe("session=s1 closed cleanly");
+  });
+});
