@@ -228,6 +228,26 @@ describe("PermissionGate", () => {
     expect(fenced(await voiceCard({ brief: "call 1 at 10:01, room 11", audio: oneAudio }))).toContain("| call 1 at 10:01, room 11");
   });
 
+  const realAudio = { stream_url: "https://wb.example/api/browser/audio/cap-Q1w2e3r4/stream", clear_url: "/api/browser/audio/cap-Q1w2e3r4/clear", sample_rate: 24000, format: "pcm_s16le", channels: 1, session_id: "739ABAE16CD3D97F52C6D5A29164ACC9", restarted: false, headers: { "X-Browser-Session": "hdr-ZZZ" } };
+
+  test("the full browser_audio_start result gets a card (not a denial) that shows session id, format and channels", async () => {
+    const text = fenced(await voiceCard({ brief: "standup", audio: realAudio }));
+    expect(text).toContain("739ABAE16CD3D97F52C6D5A29164ACC9");
+    expect(text).toContain("pcm_s16le");
+    for (const leaked of ["cap-Q1w2e3r4", "hdr-ZZZ"]) expect(text).not.toContain(leaked);
+    await deniedWithoutCard({ brief: "x", audio: { ...realAudio, extra: 1 } });
+    await deniedWithoutCard({ brief: "x", audio: { ...realAudio, format: "opus" } });
+    await deniedWithoutCard({ brief: "x", audio: { ...realAudio, channels: 2 } });
+  });
+
+  test("a session_id with a newline renders escaped on the card", async () => {
+    const text = fenced(await voiceCard({ brief: "x", audio: { ...realAudio, session_id: "ab\ncd" } }));
+    expect(text).not.toContain("ab\ncd");
+    expect(text).toContain("ab");
+    expect(text).toContain("cd");
+    expect(text.split("\n").filter((l) => l.startsWith("cd"))).toEqual([]);
+  });
+
   test("voice_start's card is a fixed summary: origin, sample rate, header names, brief", async () => {
     const text = fenced(await voiceCard({ brief: "weekly sync", audio: voiceAudio, voice: "alloy" }));
     expect(text).toContain("https://wb.example/…");

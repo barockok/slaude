@@ -84,6 +84,17 @@ describe("voice MCP", () => {
     expect(calls.get("s1")).toBeDefined();
   });
 
+  it("accepts browser_audio_start's full real-shaped result; still strict about the rest", () => {
+    const real = { stream_url: "https://workbench.example.com/api/browser/audio/cap-1/stream", clear_url: "/api/browser/audio/cap-1/clear", sample_rate: 24000, format: "pcm_s16le", channels: 1, session_id: "739ABAE16CD3D97F52C6D5A29164ACC9", restarted: false, headers: { "X-Browser-Session": "x" } };
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: real }).success).toBe(true);
+    expect(voiceStartProblem({ brief: "x", audio: real })).toBeNull();
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...real, unknown_key: 1 } }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...real, format: "opus" } }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...real, channels: 2 } }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...real, session_id: "" } }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...real, restarted: "no" } }).success).toBe(false);
+  });
+
   it("the exported schema is strict: a stream_token or any extra key is rejected, not stripped", () => {
     expect(voiceStartSchema.safeParse({ brief: "x", audio }).success).toBe(true);
     expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, stream_token: "old-tok" } }).success).toBe(false);

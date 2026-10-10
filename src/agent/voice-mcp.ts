@@ -87,12 +87,18 @@ const audioShape = z.object({
   headers: z.record(z.string()).default({})
     .refine(routeHeadersAllowed, { message: "only the X-Browser-Session route header is accepted" }),
   sample_rate: z.union([z.literal(16000), z.literal(24000), z.literal(48000)]).default(24000),
+  // The rest of browser_audio_start's real result. Typed and otherwise inert:
+  // nothing reads them, they are accepted so a faithful pass-through works.
+  format: z.literal("pcm_s16le").optional(),
+  channels: z.literal(1).optional(),
+  session_id: z.string().min(1).max(128).optional(),
+  restarted: z.boolean().optional(),
 }).strict();
 
 const voiceStartShape = {
   // Capped so the approval card can show the whole brief that will run.
   brief: z.string().max(BRIEF_MAX).describe(`What this call is about and what you should do in it (at most ${BRIEF_MAX} characters).`),
-  audio: audioShape.describe("The result of browser_audio_start, passed as is: stream_url, clear_url, headers, sample_rate."),
+  audio: audioShape.describe("The result of browser_audio_start, passed as is: stream_url, clear_url, headers, sample_rate, and the optional format (pcm_s16le), channels (1), session_id and restarted."),
   voice: z.string().max(VOICE_NAME_MAX).optional(),
 };
 /** voice_start's input, strict at both levels. The permission gate validates
