@@ -523,7 +523,7 @@ The brain is the gbrain engine behind the `kb_*` tools and episodic memory (`src
 
 ### Voice mode <a id="voice"></a>
 
-Voice mode lets the agent talk in a live call through a workbench browser tab (see the [voice mode guide](../guides/voice-mode.md)). Off unless enabled **and** both the key and the workbench URL are set. In `mono` the process reads these itself; in the gateway topology only the **gateway** sets them and ships a voice block to nodes in the runtime bundle (nodes never read voice variables).
+Voice mode lets the agent talk in a live call through a browser tab and a browser audio pipe (an audio provider; see the [voice mode guide](../guides/voice-mode.md) for the audio contract). Off unless enabled **and** both the key and the audio-origin allowlist are set: the allowlist is deny by default. In `mono` the process reads these itself; in the gateway topology only the **gateway** sets them and ships a voice block to nodes in the runtime bundle (nodes never read voice variables).
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
@@ -531,7 +531,10 @@ Voice mode lets the agent talk in a live call through a workbench browser tab (s
 | `SLAUDE_VOICE_MODEL` | No | `openai/gpt-realtime` | Provider-qualified voice model: `openai/…`, `openai-live/…` (GPT-Live) or `gemini/…`. A bad value fails loudly. |
 | `SLAUDE_VOICE_NAME` | No | provider default | Voice name passed to the provider; `voice_start` may override it per call. |
 | `SLAUDE_VOICE_API_KEY` | With voice | none | The voice provider key. **Gateway only** in the gateway topology: it reaches nodes only inside the voice bundle, a node refuses to boot holding it, and no agent child inherits it (the voice-loop child gets it in its own environment). |
-| `SLAUDE_VOICE_WORKBENCH_URL` | With voice | none | The workbench base URL. Endpoints passed to `voice_start` must be same-origin with it. |
+| `SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS` | With voice | empty (deny) | Comma-separated audio-origin allowlist. Each entry is an exact origin (`https://audio.example.com`, optional port) or a scheme plus host wildcard (`https://*.example.com`: one or more labels under the domain, never the bare domain or a lookalike suffix). No path, query, userinfo or bare `*`; scheme and port match exactly, default ports normalised. `voice_start`'s stream and clear URLs must be absolute and match an entry. Unset or empty turns voice off with one log line; a malformed entry is a loud error and voice off. Not a secret: shipped to nodes in the voice bundle. |
+| `SLAUDE_VOICE_AUDIO_ALLOWED_HEADERS` | No | `X-Browser-Session` | Route header names `voice_start` may pass (case-insensitive). `Authorization`, `Cookie` and `Host` can never be listed; a list naming one is invalid and voice stays off. |
+| `SLAUDE_VOICE_AUDIO_REQUIRED_HEADERS` | No | `X-Browser-Session` | Route headers that must be present and non-empty; a subset of the allowed headers. Empty requires none. |
+| `SLAUDE_VOICE_WORKBENCH_URL` | No | none | **Deprecated.** Seeds the allowlist with its origin when `SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS` is unset (with a warning); ignored, with a warning, when both are set. |
 | `SLAUDE_VOICE_MAX_MINUTES` | No | `120` | Hard cap on one call; it ends with `max_duration`. |
 | `SLAUDE_VOICE_STALE_SEQ` | No | `6` | A `now` utterance more than this many transcript lines behind the conversation is downgraded to the next pause. |
 | `SLAUDE_VOICE_TENANTS` | No | empty | Gateway only. Comma-separated tenant ids, or `*`, that receive the voice block. Empty means no tenant gets voice. Not used in `mono`. |
