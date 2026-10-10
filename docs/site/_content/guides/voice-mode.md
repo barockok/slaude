@@ -12,7 +12,7 @@ Ask the agent in a thread to join a meeting, for example "join https://meet.exam
 
 1. Opens the meeting in a workbench browser tab with the workbench's own browser tools.
 2. Calls the workbench's `browser_audio_start` for that tab.
-3. Calls `voice_start`, passing a short brief and the `browser_audio_start` result (stream URL, clear URL, route headers and sample rate; the result's `format` (`pcm_s16le`), `channels` (1), `session_id` and `restarted` are accepted too, and nothing else).
+3. Calls `voice_start`, passing a short brief and the `browser_audio_start` result (stream URL, clear URL, route headers (X-Browser-Session is required) and sample rate; the result's `format` (`pcm_s16le`), `channels` (1), `session_id` and `restarted` are accepted too, and nothing else).
 
 **Capability URLs.** The stream and clear URLs are ephemeral capability URLs: each carries an unguessable secret for that audio session in its path, is valid only while the audio session is open, and stops working when audio stops, the call ends or the tab closes. They are the only authorization for the audio routes. Slaude sends no `Authorization` header to them, only the route headers (for example `X-Browser-Session`). Because the URLs are the secret, slaude never shows them in full: logs, the voice process's log lines and stderr, error messages, the approval card and the panel timeline show the origin only (`https://workbench.example.com/…`). Masking is by exact match: every piece of the URLs the call received (path, segments other than route words, query values, in every URL encoding) is masked wherever it appears, whatever its shape.
 

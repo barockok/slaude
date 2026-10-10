@@ -95,6 +95,16 @@ describe("voice MCP", () => {
     expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...real, restarted: "no" } }).success).toBe(false);
   });
 
+  it("X-Browser-Session is required: missing, empty or other-only headers are VOICE_BAD_INPUT", () => {
+    const { headers: _h, ...none } = audio;
+    for (const a of [none, { ...audio, headers: {} }, { ...audio, headers: { "X-Browser-Session": "" } }]) {
+      expect(voiceStartSchema.safeParse({ brief: "x", audio: a }).success).toBe(false);
+      expect(voiceStartProblem({ brief: "x", audio: a })?.code).toBe("VOICE_BAD_INPUT");
+    }
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, headers: { "x-browser-session": "k" } } }).success).toBe(true);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, headers: { "X-Browser-Session": "k", "X-Other": "1" } } }).success).toBe(false);
+  });
+
   it("the exported schema is strict: a stream_token or any extra key is rejected, not stripped", () => {
     expect(voiceStartSchema.safeParse({ brief: "x", audio }).success).toBe(true);
     expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, stream_token: "old-tok" } }).success).toBe(false);

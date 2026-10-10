@@ -149,7 +149,7 @@ describe("PermissionGate", () => {
     for (const t of ["voice_say", "voice_context", "voice_stop"]) {
       expect(permissionPolicy(`mcp__slaude_voice__${t}`, {}, new Set())?.behavior).toBe("allow");
     }
-    expect(permissionPolicy("mcp__slaude_voice__voice_start", { brief: "b", audio: { stream_url: "/s", clear_url: "/c" } }, new Set())).toBeNull();
+    expect(permissionPolicy("mcp__slaude_voice__voice_start", { brief: "b", audio: { stream_url: "/s", clear_url: "/c", headers: { "X-Browser-Session": "k" } } }, new Set())).toBeNull();
     expect(permissionPolicy("mcp__slaude_voice__voice_start", {}, new Set())?.behavior).toBe("deny");
   });
 
@@ -212,6 +212,10 @@ describe("PermissionGate", () => {
     await deniedWithoutCard({ brief: "x", audio: JSON.stringify(voiceAudio) });
     await deniedWithoutCard({ brief: "x", audio: { ...voiceAudio, stream_url: "https://u:p@wb.example/s" } });
     await deniedWithoutCard({ brief: "x", audio: { ...voiceAudio, headers: { "X-Other": "1" } } });
+    const { headers: _h, ...noHeaders } = voiceAudio;
+    await deniedWithoutCard({ brief: "x", audio: noHeaders });
+    await deniedWithoutCard({ brief: "x", audio: { ...voiceAudio, headers: {} } });
+    await deniedWithoutCard({ brief: "x", audio: { ...voiceAudio, headers: { "X-Browser-Session": "" } } });
     const r = await deniedWithoutCard({ brief: `go to ${voiceAudio.stream_url}`, audio: voiceAudio });
     expect(r.message).not.toContain("cap-Q1w2e3r4");
   });

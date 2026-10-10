@@ -346,7 +346,7 @@ describe("node voice host", () => {
       const calls = new VoiceCalls();
       const r = await voiceHandlers.start("s1", host, calls, {
         brief: "b",
-        audio: { stream_url: "/s", clear_url: "/c", headers: {}, sample_rate: 24000 },
+        audio: { stream_url: "/s", clear_url: "/c", headers: { "X-Browser-Session": "rk" }, sample_rate: 24000 },
       });
       expect((r as { isError?: boolean }).isError).toBe(true);
       expect(r.content[0]!.text).toStartWith(want);

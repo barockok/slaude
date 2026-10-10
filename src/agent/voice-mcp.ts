@@ -81,11 +81,18 @@ const endpointUrl = z.string().min(1).refine((u) => {
  *  URLs (the audio session's secret is in the path), so they are the only
  *  authorization. Strict: an unknown key (e.g. a legacy stream_token) is
  *  refused, so the approval card can show everything that runs. */
+const MISSING_SESSION_HEADER = "the X-Browser-Session route header is required";
+const hasBrowserSession = (h: Record<string, string>): boolean =>
+  Object.entries(h).some(([k, v]) => k.toLowerCase() === "x-browser-session" && v.length > 0);
+
 const audioShape = z.object({
   stream_url: endpointUrl,
   clear_url: endpointUrl,
-  headers: z.record(z.string()).default({})
-    .refine(routeHeadersAllowed, { message: "only the X-Browser-Session route header is accepted" }),
+  // Required: the workbench needs X-Browser-Session on every request to
+  // forward it across pods.
+  headers: z.record(z.string())
+    .refine(routeHeadersAllowed, { message: "only the X-Browser-Session route header is accepted" })
+    .refine(hasBrowserSession, { message: MISSING_SESSION_HEADER }),
   sample_rate: z.union([z.literal(16000), z.literal(24000), z.literal(48000)]).default(24000),
   // The rest of browser_audio_start's real result. Typed and otherwise inert:
   // nothing reads them, they are accepted so a faithful pass-through works.
@@ -124,8 +131,10 @@ export function voiceStartProblem(input: unknown): { code: "VOICE_BAD_INPUT" | "
   const r = voiceStartSchema.safeParse(input);
   if (!r.success) {
     const paths = r.error.issues.map((i) => i.path.join(".") || "(input)");
-    // Endpoint and header issues keep their established code.
-    const endpoint = paths.every((p) => /^audio\.(stream_url|clear_url|headers)/.test(p));
+    // Endpoint and header issues keep their established code; a missing
+    // headers object or session header is a plain bad input.
+    const missingHeader = r.error.issues.some((i) => i.code === "invalid_type" && i.path.join(".") === "audio.headers" || i.message === MISSING_SESSION_HEADER);
+    const endpoint = !missingHeader && paths.every((p) => /^audio\.(stream_url|clear_url|headers)/.test(p));
     return { code: endpoint ? "VOICE_BAD_ENDPOINT" : "VOICE_BAD_INPUT", message: `voice_start input is invalid (${paths.join(", ")})` };
   }
   const { brief, audio } = r.data;
