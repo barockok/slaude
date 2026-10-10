@@ -224,6 +224,27 @@ card. The card shows the brief literally (never through the redactor: the
 model chooses the path segments, so masking them in the brief could hide
 ordinary words), and a brief quoting a whole stream or clear URL is refused.
 
+## Changed in rc.4: an audio-origin allowlist, not a pinned workbench
+
+The single trusted origin (`SLAUDE_VOICE_WORKBENCH_URL`) is replaced by an
+allowlist, `SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS`, deny by default. Two reasons.
+Voice should not depend on one audio provider: anything that speaks the audio
+contract (SSE `audio`/`ended`, a chunked PCM POST, `clear` returning
+`played_ms`, 404 revoked, 409 busy) can serve a call, and the code no longer
+names one. And the ACL is the real security boundary: the stream and clear URLs
+come from the model, the call's audio and route headers follow them, so what
+decides where they may go has to be explicit, strict and checked everywhere
+the URLs are used. Entries are exact origins or `scheme://*.domain` wildcards
+(one or more labels, never the apex, never a lookalike suffix); scheme and port
+match exactly, hosts compare in punycode, a trailing-dot host never matches,
+and one malformed entry disables voice loudly rather than being skipped. The
+URLs must now be absolute: resolving a relative URL against a base was what
+made "the configured origin" implicit. The check runs at the approval gate
+(gateway or `mono`, which hold the policy), in `voice_start`, and again in the
+voice child against the allowlist shipped in its init message. The
+route-header allowlist moved to config for the same reason, with
+`authorization`, `cookie` and `host` refused even if an operator lists them.
+
 ## Measured
 
 Not yet. To fill during the release-candidate soak: flush latency, the accuracy
