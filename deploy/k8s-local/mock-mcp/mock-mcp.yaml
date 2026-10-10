@@ -17,6 +17,7 @@ spec:
     metadata:
       labels: { app: mock-mcp }
     spec:
+      enableServiceLinks: false
       containers:
         - name: mock-mcp
           image: slaude:local
