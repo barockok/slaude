@@ -245,6 +245,25 @@ voice child against the allowlist shipped in its init message. The
 route-header allowlist moved to config for the same reason, with
 `authorization`, `cookie` and `host` refused even if an operator lists them.
 
+Review found the first cut decoded before it checked: `https://%2A.example.com`
+passed the `*` test, became an exact rule for the literal host `*.example.com`,
+was serialised as `https://*.example.com`, and the node read that back as a
+real wildcard. Hosts are now literal (no `%` in an entry or a matched URL's
+authority, no `*` left in a parsed host, no tab, newline or backslash in a
+URL), and a test parses every serialised rule again and requires the identical
+rule. Also from review: with voice off the gate skipped the policy and still
+rendered a card (now denied `VOICE_DISABLED`); wildcards over common public
+suffixes and hosts with empty labels are refused (`https://.example.com`
+matched `*.example.com`); a malformed-entry error no longer quotes userinfo;
+and an explicitly empty allowlist is a deliberate deny the alias cannot undo.
+
+Mixed versions fail closed, both ways. An old gateway's bundle has
+`workbenchUrl` and no allowlist: a new node refuses it with "the gateway's voice
+bundle carries no audio allowlist (gateway older than rc.4?)". A new gateway's
+bundle has no `workbenchUrl`: an old node has nothing to compare against and
+refuses every `voice_start` with `VOICE_BAD_ENDPOINT`. No call starts either
+way; gateway and nodes upgrade together.
+
 ## Measured
 
 Not yet. To fill during the release-candidate soak: flush latency, the accuracy

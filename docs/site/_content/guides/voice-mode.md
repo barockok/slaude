@@ -83,10 +83,10 @@ If the identity changes during the call (someone runs `/1on1` or `/remote` in th
 | `SLAUDE_VOICE_MODEL` | `openai/gpt-realtime` | Provider-qualified voice model. Providers: `openai` (e.g. `openai/gpt-realtime`), `openai-live` (e.g. `openai-live/gpt-live-1`; client delegation, no truncate, leaving the call goes through Claude), `gemini` (e.g. `gemini/gemini-live-2.5-flash`). A bad value fails loudly. |
 | `SLAUDE_VOICE_NAME` | provider default | Voice name passed to the provider. `voice_start` may override it per call. |
 | `SLAUDE_VOICE_API_KEY` | (none) | The provider key. Required, together with the audio allowlist, or voice stays off. |
-| `SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS` | (empty: deny) | The audio-origin allowlist. Required. Comma-separated entries, each an exact origin (`https://audio.example.com`, optional port) or a scheme plus a host wildcard (`https://*.example.com`). Unset or empty turns voice off. See below. |
+| `SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS` | (unset: deny) | The audio-origin allowlist. Required. Comma-separated entries, each an exact origin (`https://audio.example.com`, optional port) or a scheme plus a host wildcard (`https://*.example.com`). Unset or empty turns voice off; set but empty (`SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS=`) is a deliberate deny that the deprecated alias below cannot override. See below. |
 | `SLAUDE_VOICE_AUDIO_ALLOWED_HEADERS` | `X-Browser-Session` | Route header names `voice_start` may pass, comma-separated, matched case-insensitively. `Authorization`, `Cookie` and `Host` can never be listed: such a list is invalid and turns voice off. |
 | `SLAUDE_VOICE_AUDIO_REQUIRED_HEADERS` | `X-Browser-Session` | Route headers that must be present and non-empty. Must be a subset of the allowed headers. Set it empty to require none. |
-| `SLAUDE_VOICE_WORKBENCH_URL` | (none) | **Deprecated.** If set while `SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS` is not, its origin seeds the allowlist, with a warning. If both are set, the allowlist wins and a warning says the old variable is ignored. |
+| `SLAUDE_VOICE_WORKBENCH_URL` | (none) | **Deprecated.** If set while `SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS` is unset, its origin seeds the allowlist, with a warning. If the allowlist is set (even to empty), the allowlist wins and a warning says the old variable is ignored. |
 | `SLAUDE_VOICE_MAX_MINUTES` | `120` | Hard cap on one call; it ends with `max_duration`. |
 | `SLAUDE_VOICE_STALE_SEQ` | `6` | A `now` utterance is downgraded to `next_gap` when the conversation has moved more than this many transcript lines since the request. |
 | `SLAUDE_VOICE_TENANTS` | (empty) | Gateway only. Comma-separated tenant ids, or `*`. See below. |
@@ -95,9 +95,10 @@ If the identity changes during the call (someone runs `/1on1` or `/remote` in th
 
 The allowlist is the security boundary for the call's audio: the stream and clear URLs come from a model, and the call's audio and route headers go wherever they point. So the list is deny by default and strict:
 
-- An entry is `scheme://host[:port]` or `scheme://*.domain[:port]`, with `http` or `https`. No path (a lone trailing `/` is tolerated), query, fragment, userinfo or bare `*`. A wildcard is only the whole first label, and its domain needs at least two labels (`https://*.com` is refused).
+- An entry is `scheme://host[:port]` or `scheme://*.domain[:port]`, with `http` or `https`. No path (a lone trailing `/` is tolerated), query, fragment, userinfo, bare `*`, empty labels or `%` (hosts are taken literally, so `https://%2A.example.com` is refused rather than decoded into a wildcard). A wildcard is only the whole first label, and its domain needs at least two labels (`https://*.com` is refused).
+- A wildcard over a public suffix is refused (`https://*.co.uk`, `https://*.com.au`, `https://*.github.io`), because it would match every domain registered under it. slaude checks a short built-in list of common suffixes, not the full Public Suffix List, so review wildcards over unusual suffixes yourself.
 - `https://*.example.com` matches `audio.example.com` and `a.b.example.com`, never `example.com` itself and never a lookalike such as `evilexample.com`.
-- Scheme and port must match exactly; default ports are normalised (`https://audio.example.com:443` is `https://audio.example.com`). Hosts compare case-insensitively, and internationalised names in their punycode form. A host ending in a dot never matches.
+- Scheme and port must match exactly; default ports are normalised (`https://audio.example.com:443` is `https://audio.example.com`). Hosts compare case-insensitively, and internationalised names in their punycode form. A host ending in a dot, or with an empty label, never matches. A URL is checked as written: one with a tab, newline or backslash anywhere, `%` in its host, or `https:host` without the two slashes never matches.
 - One malformed entry makes the whole configuration invalid: slaude logs a loud error at boot and voice stays off. An unset or empty list logs one line saying voice is off and why.
 
 For example, `SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS=https://audio.example.com,https://*.media.example.net:8443`.
@@ -107,6 +108,13 @@ For example, `SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS=https://audio.example.com,https
 **Single process (`mono`).** Set the `SLAUDE_VOICE_*` variables on the process. The `SLAUDE_VOICE_TENANTS` variable is not used.
 
 **Gateway plus nodes.** Only the **gateway** sets these variables. Nodes never read voice variables from their own environment. They receive the voice block (model, voice name, key, the audio allowlist and route header lists, max minutes and stale threshold) in their runtime bundle, and validate the allowlist again before using it. If the gateway's allowlist is unset or invalid, the bundle carries no voice block at all.
+
+**Mixed versions.** The bundle's audio fields changed in `v0.45.0-rc.4` (the allowlist replaced the workbench URL), so gateway and nodes must both run rc.4 or later for voice:
+
+- *Old gateway, new node.* The bundle still carries `workbenchUrl` and no allowlist. `voice_start` fails with `VOICE_START_FAILED: the gateway's voice bundle carries no audio allowlist (gateway older than rc.4?)`.
+- *New gateway, old node.* The bundle carries the allowlist and no `workbenchUrl`. The old node has no origin to compare against, so every `voice_start` is refused with `VOICE_BAD_ENDPOINT`.
+
+In both cases no call starts and nothing leaves the node. Upgrade the gateway and nodes together.
 
 `SLAUDE_VOICE_TENANTS` decides which tenants get that block. Unset or empty means **no tenant gets voice**. This is deliberate: the voice key is one gateway-wide credential, and shipping it in every bundle would hand it to nodes serving tenants that never opted in, undoing the per-tenant credential isolation the rest of the gateway keeps. List the tenant ids that should have voice, or use `*` to allow all.
 
