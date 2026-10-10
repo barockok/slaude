@@ -110,6 +110,15 @@ describe("voice MCP", () => {
     expect(text(r)).toContain("https://wb.example.com/…");
   });
 
+  it("a failure before the workbench is known masks a relative capability URL to [redacted]", async () => {
+    const t0 = host({ config: async () => { throw new Error(`lookup failed near ${audio.stream_url}`); } });
+    const r = await tools(createVoiceMcp("s1", t0.h, new VoiceCalls()))["voice_start"].handler(startArgs);
+    expect(text(r)).toContain("VOICE_START_FAILED");
+    expect(text(r)).not.toContain(CAP);
+    expect(text(r)).not.toContain("invalid");
+    expect(text(r)).toContain("[redacted]");
+  });
+
   it("VOICE_BUSY on a second start", async () => {
     const { h } = host();
     const t = tools(createVoiceMcp("s1", h, new VoiceCalls()));

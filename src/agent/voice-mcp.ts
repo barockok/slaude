@@ -86,7 +86,7 @@ export const voiceHandlers = {
     let base = "";
     const startFailed = (e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e);
-      return err("VOICE_START_FAILED", redactCapabilityUrls(msg, { streamUrl: args.audio.stream_url, clearUrl: args.audio.clear_url }, base || "http://invalid"));
+      return err("VOICE_START_FAILED", redactCapabilityUrls(msg, { streamUrl: args.audio.stream_url, clearUrl: args.audio.clear_url }, base));
     };
     try {
       const refuse = (code: "VOICE_AGENT_ONLY" | "VOICE_UNAVAILABLE") =>
