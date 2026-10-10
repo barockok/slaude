@@ -183,11 +183,17 @@ export class AudioLink implements AudioLinkLike {
   #uplinkAbort = new AbortController();
   #uplinkCtl: ReadableStreamDefaultController<Uint8Array> | null = null;
   #uplinkDone: Promise<void> = Promise.resolve();
+  #closeAbort = new AbortController();
+  // The newest PCM written, bounded (about replayMs of audio). A busy-409'd
+  // uplink attempt never delivered its body, so the next attempt replays this.
+  #ring: Uint8Array[] = [];
+  #ringBytes = 0;
+  #ringDropped = 0;
   readonly #streamUrl: string;
   readonly #clearUrl: string;
   readonly #routeHeaders: Record<string, string>;
 
-  constructor(private o: { baseUrl: string; endpoints: AudioEndpoints; maxSseRetries?: number; retryDelayMs?: number; busyWindowMs?: number; busyBackoffMs?: number; clearTimeoutMs?: number; closeTimeoutMs?: number }) {
+  constructor(private o: { baseUrl: string; endpoints: AudioEndpoints; maxSseRetries?: number; retryDelayMs?: number; busyWindowMs?: number; busyBackoffMs?: number; replayMs?: number; log?: (line: string) => void; clearTimeoutMs?: number; closeTimeoutMs?: number }) {
     // Endpoints are model-supplied: pin them to the operator's origin so the
     // capability URL (and the route headers) can never be sent elsewhere. The
     // error names neither URL: the path is the secret.
@@ -223,7 +229,17 @@ export class AudioLink implements AudioLinkLike {
   async #busyWait(since: number, attempt: number): Promise<boolean> {
     const base = this.o.busyBackoffMs ?? 1_000;
     if (Date.now() - since >= (this.o.busyWindowMs ?? 15_000)) return false;
-    await Bun.sleep(Math.min(base * 2 ** attempt, base * 4));
+    const closed = this.#closeAbort.signal;
+    if (closed.aborted) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    await new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, Math.min(base * 2 ** attempt, base * 4));
+      onAbort = resolve;
+      closed.addEventListener("abort", onAbort, { once: true });
+    });
+    clearTimeout(timer);
+    if (onAbort) closed.removeEventListener("abort", onAbort);
     return !this.#closed && !this.#ended;
   }
 
@@ -233,7 +249,16 @@ export class AudioLink implements AudioLinkLike {
   async #uplinkLoop(): Promise<void> {
     let busySince = 0;
     for (let attempt = 0; ; attempt++) {
-      const body = new ReadableStream<Uint8Array>({ start: (c) => { this.#uplinkCtl = c; } });
+      const body = new ReadableStream<Uint8Array>({
+        start: (c) => {
+          for (const chunk of this.#ring) c.enqueue(chunk);
+          if (this.#ringDropped > 0) {
+            this.o.log?.(`uplink replay buffer: dropped ${this.#ringDropped} bytes of the oldest audio while the workbench was busy`);
+            this.#ringDropped = 0;
+          }
+          this.#uplinkCtl = c;
+        },
+      });
       let status = 0;
       const attemptAbort = new AbortController();
       const onAbort = () => attemptAbort.abort();
@@ -253,10 +278,12 @@ export class AudioLink implements AudioLinkLike {
         status = r.status;
         // Refused with its body unread: drop that connection so the retry
         // starts on a clean one.
-        if (status === 409) attemptAbort.abort();
+        if (status === 409) { void r.body?.cancel().catch(() => {}); attemptAbort.abort(); }
+        else if (status === 404) void r.body?.cancel().catch(() => {});
       } catch {}
       this.#uplinkAbort.signal.removeEventListener("abort", onAbort);
       if (status === 409 && !this.#closed && !this.#ended) {
+        this.#uplinkCtl = null; // writes go to the replay buffer only
         busySince ||= Date.now();
         if (await this.#busyWait(busySince, attempt)) continue;
       }
@@ -278,6 +305,7 @@ export class AudioLink implements AudioLinkLike {
           redirect: "error",
           signal: this.#sseAbort.signal,
         });
+        if (r.status === 404 || r.status === 409) void r.body?.cancel().catch(() => {});
         if (r.status === 404) { this.#end("audio_lost"); return; }
         if (r.status === 409) {
           // The old reader is not released yet: wait, without spending the
@@ -315,9 +343,19 @@ export class AudioLink implements AudioLinkLike {
   }
 
   write(pcm: Int16Array): void {
-    if (this.#closed || this.#ended || !this.#uplinkCtl) return;
+    if (this.#closed || this.#ended) return;
+    const chunk = new Uint8Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength));
+    this.#ring.push(chunk);
+    this.#ringBytes += chunk.byteLength;
+    const bound = Math.floor(this.o.endpoints.sampleRate * 2 * ((this.o.replayMs ?? 5_000) / 1000));
+    while (this.#ringBytes > bound && this.#ring.length > 1) {
+      const old = this.#ring.shift()!;
+      this.#ringBytes -= old.byteLength;
+      this.#ringDropped += old.byteLength;
+    }
+    if (!this.#uplinkCtl) return;
     try {
-      this.#uplinkCtl.enqueue(new Uint8Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength)));
+      this.#uplinkCtl.enqueue(chunk);
     } catch {
       // uplink already errored or cancelled; audio_lost is reported separately
     }
@@ -343,6 +381,7 @@ export class AudioLink implements AudioLinkLike {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#closeAbort.abort();
     try { this.#uplinkCtl?.close(); } catch {}
     this.#sseAbort.abort();
     // Let the workbench finish the uplink cleanly, but not forever.
