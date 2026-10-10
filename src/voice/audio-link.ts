@@ -187,7 +187,7 @@ export class AudioLink implements AudioLinkLike {
   readonly #clearUrl: string;
   readonly #routeHeaders: Record<string, string>;
 
-  constructor(private o: { baseUrl: string; endpoints: AudioEndpoints; maxSseRetries?: number; retryDelayMs?: number; clearTimeoutMs?: number; closeTimeoutMs?: number }) {
+  constructor(private o: { baseUrl: string; endpoints: AudioEndpoints; maxSseRetries?: number; retryDelayMs?: number; busyWindowMs?: number; busyBackoffMs?: number; clearTimeoutMs?: number; closeTimeoutMs?: number }) {
     // Endpoints are model-supplied: pin them to the operator's origin so the
     // capability URL (and the route headers) can never be sent elsewhere. The
     // error names neither URL: the path is the secret.
@@ -214,25 +214,62 @@ export class AudioLink implements AudioLinkLike {
   async start(h: AudioHandlers): Promise<void> {
     this.#h = h;
     void this.#sseLoop();
-    const body = new ReadableStream<Uint8Array>({ start: (c) => { this.#uplinkCtl = c; } });
-    // The uplink lives for the whole call: it settling (any status, or an
-    // error) while the call is open means the agent can no longer be heard.
-    this.#uplinkDone = fetch(this.#streamUrl, {
-      method: "POST",
-      headers: this.#headers({ "content-type": "audio/pcm" }),
-      body,
-      duplex: "half",
-      redirect: "error",
-      signal: this.#uplinkAbort.signal,
-    }).then(
-      () => this.#end("audio_lost"),
-      () => this.#end("audio_lost"),
-    );
+    this.#uplinkDone = this.#uplinkLoop();
+  }
+
+  /** Wait out a 409 (the workbench still holds the previous reader/uplink): a
+   *  growing backoff (base, x2, capped at 4x base) until the window closes.
+   *  Returns false when the window is spent or the call is over. */
+  async #busyWait(since: number, attempt: number): Promise<boolean> {
+    const base = this.o.busyBackoffMs ?? 1_000;
+    if (Date.now() - since >= (this.o.busyWindowMs ?? 15_000)) return false;
+    await Bun.sleep(Math.min(base * 2 ** attempt, base * 4));
+    return !this.#closed && !this.#ended;
+  }
+
+  /** The uplink lives for the whole call: it settling (any status other than a
+   *  busy 409 inside the window, or an error) while the call is open means the
+   *  agent can no longer be heard. */
+  async #uplinkLoop(): Promise<void> {
+    let busySince = 0;
+    for (let attempt = 0; ; attempt++) {
+      const body = new ReadableStream<Uint8Array>({ start: (c) => { this.#uplinkCtl = c; } });
+      let status = 0;
+      const attemptAbort = new AbortController();
+      const onAbort = () => attemptAbort.abort();
+      this.#uplinkAbort.signal.addEventListener("abort", onAbort, { once: true });
+      try {
+        const r = await fetch(this.#streamUrl, {
+          method: "POST",
+          headers: this.#headers({ "content-type": "audio/pcm" }),
+          body,
+          duplex: "half",
+          redirect: "error",
+          // A refused streaming body leaves its connection unusable (the next
+          // request on it is rejected), so the uplink never reuses one.
+          keepalive: false,
+          signal: attemptAbort.signal,
+        });
+        status = r.status;
+        // Refused with its body unread: drop that connection so the retry
+        // starts on a clean one.
+        if (status === 409) attemptAbort.abort();
+      } catch {}
+      this.#uplinkAbort.signal.removeEventListener("abort", onAbort);
+      if (status === 409 && !this.#closed && !this.#ended) {
+        busySince ||= Date.now();
+        if (await this.#busyWait(busySince, attempt)) continue;
+      }
+      this.#end("audio_lost");
+      return;
+    }
   }
 
   async #sseLoop(): Promise<void> {
     const max = this.o.maxSseRetries ?? 3;
     let failures = 0;
+    let busySince = 0;
+    let busyN = 0;
     while (!this.#closed && !this.#ended) {
       let gotData = false;
       try {
@@ -241,6 +278,16 @@ export class AudioLink implements AudioLinkLike {
           redirect: "error",
           signal: this.#sseAbort.signal,
         });
+        if (r.status === 404) { this.#end("audio_lost"); return; }
+        if (r.status === 409) {
+          // The old reader is not released yet: wait, without spending the
+          // failure budget, until the busy window is spent.
+          busySince ||= Date.now();
+          if (!(await this.#busyWait(busySince, busyN++))) { this.#end("audio_lost"); return; }
+          continue;
+        }
+        busySince = 0;
+        busyN = 0;
         if (r.ok && r.body) {
           for await (const ev of parseSse(r.body)) {
             gotData = true;

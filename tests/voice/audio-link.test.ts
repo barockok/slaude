@@ -4,8 +4,8 @@ import { pcmToBase64 } from "../../src/voice/provider/types";
 import { until } from "./fakes";
 
 const sse = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-function fakeWorkbench(opts: { getStatus?: number; postStatus?: number; dropFirstSse?: boolean; clearStatus?: number; clearHang?: boolean; postHang?: boolean; postEarly?: boolean; redirectTo?: string } = {}) {
-  const st: any = { gets: 0, auth: [] as string[], cookie: [] as string[], route: [] as string[], uplinkBytes: 0, clears: 0, sseCtl: null as any };
+function fakeWorkbench(opts: { getStatus?: number; postStatus?: number; dropFirstSse?: boolean; clearStatus?: number; clearHang?: boolean; postHang?: boolean; postEarly?: boolean; redirectTo?: string; getSeq?: number[]; postSeq?: number[] } = {}) {
+  const st: any = { gets: 0, posts: 0, auth: [] as string[], cookie: [] as string[], route: [] as string[], uplinkBytes: 0, clears: 0, sseCtl: null as any };
   const server = Bun.serve({
     port: 0,
     async fetch(req) {
@@ -22,6 +22,8 @@ function fakeWorkbench(opts: { getStatus?: number; postStatus?: number; dropFirs
       }
       if (req.method === "GET") {
         st.gets++;
+        const seq = opts.getSeq?.[st.gets - 1];
+        if (seq) return Response.json({ error: seq === 409 ? "stream_busy" : "audio_not_found" }, { status: seq });
         if (opts.getStatus) return new Response("", { status: opts.getStatus });
         const first = st.gets === 1;
         return new Response(new ReadableStream({
@@ -34,6 +36,9 @@ function fakeWorkbench(opts: { getStatus?: number; postStatus?: number; dropFirs
         }), { headers: { "content-type": "text/event-stream" } });
       }
       if (req.method === "POST") {
+        st.posts++;
+        const pseq = opts.postSeq?.[st.posts - 1];
+        if (pseq) return Response.json({ error: "uplink_busy" }, { status: pseq });
         if (opts.postHang) return new Promise<Response>(() => {});
         if (opts.postEarly) return Response.json({ ok: true });
         if (opts.postStatus) return new Response("", { status: opts.postStatus });
@@ -123,6 +128,73 @@ describe("AudioLink", () => {
     await until(() => reason !== "");
     expect(reason).toBe("audio_lost");
     expect(wb.gets).toBe(4);
+  });
+
+  it("a 409 stream_busy on reconnect is waited out: 409 x3 then 200 continues", async () => {
+    wb = fakeWorkbench({ getSeq: [409, 409, 409] });
+    const link = new AudioLink({ baseUrl: wb.base, endpoints, retryDelayMs: 5, maxSseRetries: 3, busyBackoffMs: 5, busyWindowMs: 2000 });
+    let n = 0, reason = "";
+    await link.start({ onAudio: () => n++, onEnded: (r) => (reason = r) });
+    await until(() => n >= 1);
+    expect(wb.gets).toBe(4);
+    expect(reason).toBe("");
+    await link.close();
+  });
+
+  it("a 409 that outlasts the busy window ends audio_lost", async () => {
+    wb = fakeWorkbench({ getStatus: 409 });
+    const link = new AudioLink({ baseUrl: wb.base, endpoints, retryDelayMs: 5, maxSseRetries: 3, busyBackoffMs: 10, busyWindowMs: 120 });
+    let reason = "";
+    await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+    await until(() => reason !== "");
+    expect(reason).toBe("audio_lost");
+    expect(wb.gets).toBeGreaterThan(4);
+    await link.close();
+  });
+
+  it("a 404 on the SSE GET (capability revoked) ends audio_lost at once", async () => {
+    wb = fakeWorkbench({ getStatus: 404 });
+    const link = new AudioLink({ baseUrl: wb.base, endpoints, retryDelayMs: 5, maxSseRetries: 3 });
+    let reason = "";
+    await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+    await until(() => reason !== "");
+    expect(reason).toBe("audio_lost");
+    expect(wb.gets).toBe(1);
+    await link.close();
+  });
+
+  it("a 409 uplink_busy on the POST is retried within the window", async () => {
+    wb = fakeWorkbench({ postSeq: [409, 409] });
+    const link = new AudioLink({ baseUrl: wb.base, endpoints, busyBackoffMs: 5, busyWindowMs: 2000 });
+    let reason = "";
+    await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+    await until(() => wb.posts === 3);
+    link.write(new Int16Array([1, 2, 3]));
+    expect(reason).toBe("");
+    await link.close();
+    await until(() => wb.uplinkBytes === 6);
+  });
+
+  it("a POST 409 that outlasts the window ends audio_lost", async () => {
+    wb = fakeWorkbench({ postSeq: Array(500).fill(409) });
+    const link = new AudioLink({ baseUrl: wb.base, endpoints, busyBackoffMs: 10, busyWindowMs: 100 });
+    let reason = "";
+    await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+    await until(() => reason !== "");
+    expect(reason).toBe("audio_lost");
+    await link.close();
+  });
+
+  it("an ended event with reason idle maps to workbench:idle", async () => {
+    wb = fakeWorkbench();
+    const link = new AudioLink({ baseUrl: wb.base, endpoints });
+    let reason = "";
+    await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+    await until(() => wb.sseCtl !== null);
+    wb.sseCtl.enqueue(new TextEncoder().encode(sse("ended", { reason: "idle" })));
+    await until(() => reason !== "");
+    expect(reason).toBe("workbench:idle");
+    await link.close();
   });
 
   it("ends audio_lost when the uplink is refused with 404", async () => {
