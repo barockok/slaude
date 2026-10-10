@@ -36,4 +36,13 @@ describe("humanizeToolStatus", () => {
     const out = humanizeToolStatus("Bash", { command: "PASS='a b' deploy" });
     expect(out).toBe("running command");
   });
+
+  it("voice_start shows only its name, never the capability URLs in its args", () => {
+    const out = humanizeToolStatus("mcp__slaude_voice__voice_start", {
+      brief: "standup",
+      audio: { stream_url: "https://wb.example.com/api/browser/audio/cap-SEC/stream", clear_url: "/api/browser/audio/cap-SEC/clear", headers: { "X-Browser-Session": "rk" } },
+    });
+    expect(out).toBe("running voice_start (slaude_voice)");
+    expect(out).not.toContain("cap-SEC");
+  });
 });
