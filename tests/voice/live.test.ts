@@ -1,12 +1,13 @@
 // Runs only with VOICE_E2E=1 and real credentials; skipped otherwise.
-// Needs: SLAUDE_VOICE_API_KEY (OpenAI), VOICE_E2E_WORKBENCH_URL, VOICE_E2E_STREAM_URL,
-// VOICE_E2E_CLEAR_URL, VOICE_E2E_ROUTE — from a workbench tab on a local test page where
-// browser_audio_start was already called. The stream and clear URLs are capability URLs
-// (the audio session's secret is in the path; no bearer) and must be on the same origin
-// as VOICE_E2E_WORKBENCH_URL (the link refuses others).
+// Needs: SLAUDE_VOICE_API_KEY (OpenAI), VOICE_E2E_AUDIO_ORIGIN, VOICE_E2E_STREAM_URL,
+// VOICE_E2E_CLEAR_URL, VOICE_E2E_ROUTE — from a browser tab on a local test page where
+// the browser audio pipe was already started. The stream and clear URLs are absolute
+// capability URLs (the audio session's secret is in the path; no bearer) and must be on
+// an origin VOICE_E2E_AUDIO_ORIGIN allowlists (the link refuses others).
 import { describe, it, expect } from "bun:test";
 import { runVoiceLoop } from "../../src/voice/loop";
 import { AudioLink, type AudioLinkLike } from "../../src/voice/audio-link";
+import { parseAudioOrigins } from "../../src/voice/audio-acl";
 import { OpenAIRealtime } from "../../src/voice/provider/openai-realtime";
 import { OpenAILive } from "../../src/voice/provider/openai-live";
 import type { ChildMsg, ParentMsg } from "../../src/voice/ipc";
@@ -17,7 +18,7 @@ describe.skipIf(!live)("voice live", () => {
     const e = process.env;
     const out: ChildMsg[] = [];
     const link = new AudioLink({
-      baseUrl: e.VOICE_E2E_WORKBENCH_URL!,
+      allowedOrigins: parseAudioOrigins(e.VOICE_E2E_AUDIO_ORIGIN!),
       endpoints: {
         streamUrl: e.VOICE_E2E_STREAM_URL!,
         clearUrl: e.VOICE_E2E_CLEAR_URL!,
@@ -40,7 +41,7 @@ describe.skipIf(!live)("voice live", () => {
       init: {
         callId: "live",
         audio: { streamUrl: e.VOICE_E2E_STREAM_URL!, clearUrl: e.VOICE_E2E_CLEAR_URL!, headers: {}, sampleRate: 24000 },
-        workbenchUrl: e.VOICE_E2E_WORKBENCH_URL!,
+        audioAllowedOrigins: [e.VOICE_E2E_AUDIO_ORIGIN!],
         instructions: "You are a test assistant. Answer any question in one short sentence.",
         provider: "openai",
         model: "gpt-realtime",
@@ -58,7 +59,7 @@ describe.skipIf(!live)("voice live", () => {
 });
 
 // GPT-Live provider check: needs only VOICE_E2E=1 and SLAUDE_VOICE_API_KEY (OpenAI), no
-// workbench. Prints the numbers the field note asks for; no audio is written anywhere.
+// audio pipe. Prints the numbers the field note asks for; no audio is written anywhere.
 describe.skipIf(!live)("voice live: openai-live", () => {
   it("starts a session, speaks a commentary, ends it with a synthetic responseDone, and closes", async () => {
     const p = new OpenAILive({ apiKey: process.env.SLAUDE_VOICE_API_KEY!, model: "gpt-live-1" });

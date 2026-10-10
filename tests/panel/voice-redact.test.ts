@@ -4,12 +4,12 @@ import { PanelVoiceRedactor } from "../../src/gateway/panel/voice-redact";
 const CAP = "cap-7Hq2Lm";
 const audio = {
   stream_url: `https://wb.example.com/api/browser/audio/${CAP}/stream`,
-  clear_url: `/api/browser/audio/${CAP}/clear`,
+  clear_url: `https://wb.example.com/api/browser/audio/${CAP}/clear`,
   headers: { "X-Browser-Session": "rk-55" },
   sample_rate: 24000,
 };
 const startCall = { type: "toolCall", sessionId: "S", tool: "mcp__slaude_voice__voice_start", input: { brief: "standup", audio } };
-const audioResult = { type: "toolResult", sessionId: "S", tool: "mcp__workbench__browser_audio_start", result: JSON.stringify(audio) };
+const audioResult = { type: "toolResult", sessionId: "S", tool: "mcp__browser__browser_audio_start", result: JSON.stringify(audio) };
 
 describe("PanelVoiceRedactor (panel event stream)", () => {
   it("masks voice_start's capability URLs and route header values in the timeline event", () => {

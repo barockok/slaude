@@ -4,8 +4,8 @@ import { FakeProvider, FakeAudio, pcm, until } from "./fakes";
 import type { ChildMsg, ParentMsg, VoiceInit } from "../../src/voice/ipc";
 
 const init: VoiceInit = {
-  callId: "call-1", audio: { streamUrl: "/s", clearUrl: "/c", headers: {}, sampleRate: 24000 },
-  workbenchUrl: "https://wb.example.com", instructions: "persona", provider: "openai", model: "m", maxMinutes: 120, staleSeq: 6,
+  callId: "call-1", audio: { streamUrl: "https://wb.example.com/s", clearUrl: "https://wb.example.com/c", headers: {}, sampleRate: 24000 },
+  audioAllowedOrigins: ["https://wb.example.com"], instructions: "persona", provider: "openai", model: "m", maxMinutes: 120, staleSeq: 6,
 };
 function inbox() {
   const q: ParentMsg[] = [];
@@ -61,13 +61,13 @@ describe("runVoiceLoop", () => {
     expect(await done).toBe("parent_gone");
   });
 
-  it("ends with the workbench reason", async () => {
+  it("ends with the audio provider reason", async () => {
     const audio = new FakeAudio();
     const out: ChildMsg[] = [];
     const done = runVoiceLoop({ init, makeProvider: () => new FakeProvider(), audio, inbox: inbox(), emit: (m) => out.push(m), tickMs: 5 });
     await until(() => audio.handlers !== null);
-    audio.handlers!.onEnded("workbench:tab_closed");
-    expect(await done).toBe("workbench:tab_closed");
+    audio.handlers!.onEnded("audio:tab_closed");
+    expect(await done).toBe("audio:tab_closed");
   });
 
   it("reconnects on a non-fatal provider drop, then gives up after 3 failed attempts", async () => {
@@ -122,7 +122,7 @@ describe("runVoiceLoop", () => {
     expect(await done).toBe("provider_failed");
   });
 
-  it("resamples provider output to the workbench rate before it reaches the uplink", async () => {
+  it("resamples provider output to the audio pipe rate before it reaches the uplink", async () => {
     const provider = new FakeProvider();
     provider.caps = { inputRate: 24000, outputRate: 24000, truncate: true };
     const audio = new FakeAudio();
@@ -143,7 +143,7 @@ describe("runVoiceLoop", () => {
 
   it("ends audio_lost when the audio link fails to start", async () => {
     const audio = new FakeAudio();
-    audio.start = async () => { throw new Error("workbench endpoint origin mismatch"); };
+    audio.start = async () => { throw new Error("audio endpoint origin not allowed"); };
     const out: ChildMsg[] = [];
     const reason = await runVoiceLoop({ init, makeProvider: () => new FakeProvider(), audio, inbox: inbox(), emit: (m) => out.push(m), tickMs: 5 });
     expect(reason).toBe("audio_lost");
@@ -212,7 +212,7 @@ describe("runVoiceLoop", () => {
   it("survives a rejecting audio.clear() on speechStarted and still ends exactly once", async () => {
     const provider = new FakeProvider();
     const audio = new FakeAudio();
-    audio.clear = async () => { throw new Error("workbench down"); };
+    audio.clear = async () => { throw new Error("audio provider down"); };
     const ib = inbox();
     const out: ChildMsg[] = [];
     const unhandled: unknown[] = [];

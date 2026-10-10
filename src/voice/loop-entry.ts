@@ -5,6 +5,7 @@
  * are scrubbed from every log line. stdin EOF (parent died) ends the call.
  */
 import { AudioLink, CapabilityRedactor } from "./audio-link";
+import { parseAudioOrigins } from "./audio-acl";
 import { ENV_API_KEY, encodeMsg, parseParentMsg, readLines, type ChildMsg, type ParentMsg } from "./ipc";
 import { runVoiceLoop } from "./loop";
 import { createProvider } from "./provider";
@@ -39,7 +40,7 @@ if (!initMsg || initMsg.type !== "init" || !apiKey) {
   process.exit(2);
 }
 const init = initMsg.init;
-const redactor = new CapabilityRedactor(init.audio, init.workbenchUrl);
+const redactor = new CapabilityRedactor(init.audio);
 scrub = (s) => redactor.redact(s);
 
 async function* inbox(): AsyncGenerator<ParentMsg> {
@@ -51,9 +52,9 @@ async function* inbox(): AsyncGenerator<ParentMsg> {
 
 let audio: AudioLink;
 try {
-  audio = new AudioLink({ baseUrl: init.workbenchUrl, endpoints: init.audio, log: (message) => emit({ type: "log", level: "warn", message }) });
+  audio = new AudioLink({ allowedOrigins: parseAudioOrigins(init.audioAllowedOrigins), endpoints: init.audio, log: (message) => emit({ type: "log", level: "warn", message }) });
 } catch (e) {
-  // e.g. endpoints not same-origin as the workbench: end cleanly, never crash.
+  // e.g. endpoints off the audio allowlist, or a malformed list: end cleanly, never crash.
   emit({ type: "log", level: "error", message: `audio link rejected: ${e instanceof Error ? e.message : String(e)}` });
   emit({ type: "ended", reason: "audio_lost" });
   process.exit(1);

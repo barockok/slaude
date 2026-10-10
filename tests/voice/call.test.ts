@@ -43,8 +43,8 @@ function recRunner(fail = false) {
   const runner: TurnRunner = { run: async (_s, text, o) => { runs.push({ text, ...o }); if (fail && o.voice && !o.suppress) throw new Error("turn failed"); } };
   return { runner, runs };
 }
-const init = (callId: string): VoiceInit => ({ callId, audio: { streamUrl: "/s", clearUrl: "/c", headers: {}, sampleRate: 24000 },
-  workbenchUrl: "https://wb.example.com", instructions: "x", provider: "openai", model: "m", maxMinutes: 120, staleSeq: 6 });
+const init = (callId: string): VoiceInit => ({ callId, audio: { streamUrl: "https://wb.example.com/s", clearUrl: "https://wb.example.com/c", headers: {}, sampleRate: 24000 },
+  audioAllowedOrigins: ["https://wb.example.com"], instructions: "x", provider: "openai", model: "m", maxMinutes: 120, staleSeq: 6 });
 
 function make(over: { fail?: boolean; idleFlushMs?: number; holdResults?: boolean[] } = {}) {
   const child = fakeChild();

@@ -7,7 +7,8 @@ import { env } from "../../config/env";
 import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
 import { voiceStartProblem } from "../../agent/voice-mcp";
-import { ROUTE_HEADER_ALLOWLIST } from "../../voice/audio-link";
+import { matchAudioOrigin, type AudioPolicy } from "../../voice/audio-acl";
+import { audioPolicyFromEnv } from "../../voice/config";
 
 type PendingKey = string; // toolUseID
 
@@ -56,11 +57,14 @@ export function permissionPolicy(
   toolName: string,
   input: Record<string, unknown>,
   autoAllow: Set<string>,
+  /** The deployment's audio policy, where it is known (gateway, mono): an
+   *  off-allowlist endpoint or a header breach is then denied before a card. */
+  voiceAudio?: AudioPolicy | null,
 ): PermissionDecision | null {
   // voice_start is validated strictly before anything else, so no card is
   // ever rendered from input the call would not run as shown.
   if (toolName === VOICE_START) {
-    const problem = voiceStartProblem(input);
+    const problem = voiceStartProblem(input, voiceAudio);
     if (problem) return { behavior: "deny", message: `${problem.code}: ${problem.message}` };
   }
   if (autoAllow.has(toolName)) {
@@ -242,16 +246,19 @@ function unfence(s: string): string {
   return s.replace(/`{3,}/g, (run) => run.split("").join("\u200b"));
 }
 
-/** What voice_start's card needs from the deployment: the pinned workbench and
+/** What voice_start's card needs from the deployment: the audio allowlist and
  *  the defaults a call without `voice` will use. */
 export interface VoiceCardConfig {
-  workbenchUrl?: string;
+  audio?: AudioPolicy | null;
   model?: string;
   voiceName?: string;
 }
 export function voiceCardConfig(): VoiceCardConfig {
-  return { workbenchUrl: env.voice.workbenchUrl(), model: env.voice.model(), voiceName: env.voice.voiceName() };
+  return { audio: audioPolicyFromEnv(), model: env.voice.model(), voiceName: env.voice.voiceName() };
 }
+/** voice_start's policy at the gate: the deployment's, read only for voice_start. */
+const gateVoiceAudio = (toolName: string): AudioPolicy | null | undefined =>
+  toolName === VOICE_START ? audioPolicyFromEnv() : undefined;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 /** Room for one fenced block's body under Slack's 3000-character section text. */
@@ -262,37 +269,46 @@ const CARD_BLOCK_MAX = 2900;
  * deterministic rendering of the exact input that will run (the approved
  * `updatedInput` is this same object, and the gate has already validated it
  * against the strict schema). It shows every field that changes behaviour and
- * hides only secrets: each capability URL as its origin (the path holds the
- * audio session's secret), route header names with values [hidden]. The
+ * hides only secrets: each capability URL as its own origin (the path holds
+ * the audio session's secret), flagged when no allowlist entry matches it,
+ * and route header names with values [hidden]. The
  * brief is shown whole and literally (never redacted, never truncated), one
  * prefixed line per source line, in as many blocks as Slack's limits need.
  */
 export function voiceStartCard(input: Record<string, unknown>, cfg: VoiceCardConfig): string[] {
   const a = isRecord(input.audio) ? input.audio : {};
-  let pinned = "";
-  try { pinned = cfg.workbenchUrl ? new URL(cfg.workbenchUrl).origin : ""; } catch {}
+  const policy = cfg.audio ?? null;
   const lines = ["voice_start: the values below are what will run; only secrets are hidden."];
   for (const name of ["stream", "clear"] as const) {
-    const u = a[`${name}_url`];
+    const u = String(a[`${name}_url`]);
     let origin = "";
-    try { origin = new URL(String(u), pinned || undefined).origin; } catch {}
-    if (!origin || origin === "null") lines.push(`${name}: (unresolvable; voice_start will refuse it)`);
+    try {
+      const p = new URL(u);
+      if (p.protocol === "http:" || p.protocol === "https:") origin = p.origin;
+    } catch {}
+    if (!origin || origin === "null") lines.push(`${name}: (not an absolute URL; voice_start will refuse it)`);
     else {
-      const off = origin !== pinned ? " (not the pinned workbench; voice_start will refuse it)" : "";
+      const off = policy && matchAudioOrigin(u, policy.origins) ? "" : " (not on the audio allowlist; voice_start will refuse it)";
       lines.push(`${name}: ${cardLiteral(origin)}/… (path hidden: capability secret)${off}`);
     }
   }
-  lines.push(`pinned workbench: ${pinned ? cardLiteral(pinned) : "(not configured)"}`);
+  lines.push(`audio allowlist: ${policy ? policy.origins.map((r) => cardLiteral(r.entry)).join(", ") : "(not configured; voice_start will refuse it)"}`);
   lines.push(`sample rate: ${a.sample_rate === undefined ? "24000 (default)" : cardLiteral(String(a.sample_rate))}`);
   if (a.format !== undefined) lines.push(`format: ${cardLiteral(String(a.format))}`);
   if (a.channels !== undefined) lines.push(`channels: ${cardLiteral(String(a.channels))}`);
   // The value is never printed: it is not used, and an id could carry a secret.
   if (a.session_id !== undefined) lines.push("session_id: (present)");
   if (a.restarted !== undefined) lines.push(`restarted: ${cardLiteral(String(a.restarted))} (informational; not used)`);
-  const headers = isRecord(a.headers) ? Object.keys(a.headers) : [];
+  const headerMap = isRecord(a.headers) ? a.headers : {};
+  const headers = Object.keys(headerMap);
+  const allowed = policy?.allowedHeaders ?? [];
   lines.push(`route headers: ${headers.length
-    ? headers.map((h) => `${cardLiteral(h)}=[hidden]${ROUTE_HEADER_ALLOWLIST.has(h.toLowerCase()) ? "" : " (not allowed; voice_start will refuse it)"}`).join(", ")
+    ? headers.map((h) => `${cardLiteral(h)}=[hidden]${allowed.includes(h.toLowerCase()) ? "" : " (not allowed; voice_start will refuse it)"}`).join(", ")
     : "(none)"}`);
+  for (const req of policy?.requiredHeaders ?? []) {
+    const present = Object.entries(headerMap).some(([k, v]) => k.toLowerCase() === req && typeof v === "string" && v.length > 0);
+    if (!present) lines.push(`missing required route header: ${cardLiteral(req)} (voice_start will refuse it)`);
+  }
   lines.push(`voice: ${typeof input.voice === "string"
     ? cardLiteral(input.voice)
     : cfg.voiceName ? `${cardLiteral(cfg.voiceName)} (configured default)` : "(provider default)"}`);
@@ -571,7 +587,7 @@ export class PermissionGate {
     /** Slack app the session belongs to (D1.2). */
     app?: AppRef;
   }): Promise<{ decision: PermissionDecision } | { pendingId: string }> {
-    const policy = permissionPolicy(args.toolName, args.input, this.#autoAllow);
+    const policy = permissionPolicy(args.toolName, args.input, this.#autoAllow, gateVoiceAudio(args.toolName));
     if (policy) return { decision: policy };
 
     await PendingGates.create({
@@ -609,7 +625,7 @@ export class PermissionGate {
     input,
     ctx,
   ) => {
-    const policy = permissionPolicy(toolName, input, this.#autoAllow);
+    const policy = permissionPolicy(toolName, input, this.#autoAllow, gateVoiceAudio(toolName));
     if (policy) return policy;
     const route = this.#routes.get(sessionId);
     if (!route) {

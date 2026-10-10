@@ -41,8 +41,8 @@ describe("spawnVoiceLoop", () => {
 
   it("a child without the provider key ends loop_crashed and exits 2", async () => {
     const child = spawnVoiceLoop({ apiKey: "" });
-    child.send({ type: "init", init: { callId: "c", audio: { streamUrl: "/s", clearUrl: "/c", headers: {}, sampleRate: 24000 },
-      workbenchUrl: "https://wb.example.com", instructions: "x", provider: "openai", model: "m", maxMinutes: 1, staleSeq: 6 } });
+    child.send({ type: "init", init: { callId: "c", audio: { streamUrl: "https://wb.example.com/s", clearUrl: "https://wb.example.com/c", headers: {}, sampleRate: 24000 },
+      audioAllowedOrigins: ["https://wb.example.com"], instructions: "x", provider: "openai", model: "m", maxMinutes: 1, staleSeq: 6 } });
     const got: ChildMsg[] = [];
     for await (const m of child.messages) got.push(m);
     expect(got.at(-1)).toEqual({ type: "ended", reason: "loop_crashed" });

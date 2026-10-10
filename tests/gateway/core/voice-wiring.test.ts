@@ -12,14 +12,14 @@ import { VOICE_MCP_NAME } from "../../../src/agent/voice-mcp";
 const VOICE_ENV = {
   SLAUDE_VOICE_ENABLED: "1",
   SLAUDE_VOICE_API_KEY: "test-key",
-  SLAUDE_VOICE_WORKBENCH_URL: "https://wb.example.com",
+  SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS: "https://wb.example.com",
 };
 
 function setEnv(vars: Record<string, string>) {
   for (const [k, v] of Object.entries(vars)) process.env[k] = v;
 }
 afterEach(async () => {
-  for (const k of Object.keys(VOICE_ENV)) delete process.env[k];
+  for (const k of [...Object.keys(VOICE_ENV), "SLAUDE_VOICE_WORKBENCH_URL"]) delete process.env[k];
   await OneOnOne._wipeForTests();
 });
 
@@ -62,6 +62,40 @@ describe("mono voice wiring", () => {
       expect((await s.handle.__resolveMcp(sid))![VOICE_MCP_NAME]).toBeUndefined();
     } finally {
       await s.dispose();
+    }
+  });
+
+  it("deny by default: enabled with a key but no audio allowlist does not mount it, and says why", async () => {
+    const { __resetVoiceConfigLogs } = await import("../../../src/voice/config");
+    __resetVoiceConfigLogs();
+    setEnv({ SLAUDE_VOICE_ENABLED: "1", SLAUDE_VOICE_API_KEY: "test-key" });
+    const warned: string[] = [];
+    const warn = console.warn;
+    console.warn = (...a: unknown[]) => { warned.push(a.join(" ")); };
+    let s: Awaited<ReturnType<typeof sessionWith>>["s"] | undefined;
+    try {
+      const made = await sessionWith("T-VOICE-NOACL");
+      s = made.s;
+      expect((await s.handle.__resolveMcp(made.sid))![VOICE_MCP_NAME]).toBeUndefined();
+    } finally {
+      console.warn = warn;
+      await s?.dispose();
+    }
+    expect(warned.filter((l) => l.includes("SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS")).length).toBe(1);
+  });
+
+  it("the deprecated SLAUDE_VOICE_WORKBENCH_URL alone still mounts it", async () => {
+    setEnv({ SLAUDE_VOICE_ENABLED: "1", SLAUDE_VOICE_API_KEY: "test-key", SLAUDE_VOICE_WORKBENCH_URL: "https://wb.example.com/ui" });
+    const warn = console.warn;
+    console.warn = () => {};
+    let s: Awaited<ReturnType<typeof sessionWith>>["s"] | undefined;
+    try {
+      const made = await sessionWith("T-VOICE-ALIAS");
+      s = made.s;
+      expect((await s.handle.__resolveMcp(made.sid))![VOICE_MCP_NAME]).toBeDefined();
+    } finally {
+      console.warn = warn;
+      await s?.dispose();
     }
   });
 

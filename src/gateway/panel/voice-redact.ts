@@ -62,11 +62,7 @@ export class PanelVoiceRedactor {
       const key = `${streamUrl}\n${clearUrl}`;
       if (this.#seen.has(key)) continue;
       this.#seen.add(key);
-      let base = "";
-      for (const u of [streamUrl, clearUrl]) {
-        try { base ||= new URL(u).origin; } catch {}
-      }
-      this.#redactors.push(new CapabilityRedactor({ streamUrl, clearUrl }, base));
+      this.#redactors.push(new CapabilityRedactor({ streamUrl, clearUrl }));
     }
   }
 

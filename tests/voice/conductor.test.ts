@@ -56,7 +56,7 @@ describe("Conductor", () => {
 
   it("a rejecting clear does not throw out of a now-say; the steer is still spoken", async () => {
     const { c, provider, audio } = setup();
-    audio.clear = async () => { throw new Error("workbench down"); };
+    audio.clear = async () => { throw new Error("audio provider down"); };
     c.onAudio(pcm(2400), "i1");
     await c.say({ type: "say", text: "stop, the deploy failed", when: "now", asOf: 0 });
     expect(provider.named("respond").length).toBe(1);

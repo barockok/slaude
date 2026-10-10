@@ -19,8 +19,8 @@ const ENTRY = fileURLToPath(new URL("../../src/voice/loop-entry.ts", import.meta
 
 const init = (over: Partial<VoiceInit> = {}, audio: Partial<VoiceInit["audio"]> = {}): VoiceInit => ({
   callId: "c1",
-  audio: { streamUrl: "/s", clearUrl: "/c", headers: {}, sampleRate: 24000, ...audio },
-  workbenchUrl: "https://wb.example.com",
+  audio: { streamUrl: "https://wb.example.com/s", clearUrl: "https://wb.example.com/c", headers: {}, sampleRate: 24000, ...audio },
+  audioAllowedOrigins: ["https://wb.example.com"],
   instructions: "x",
   provider: "openai",
   model: "m",
@@ -80,7 +80,7 @@ describe("voice-loop child entry (real process)", () => {
     child.send({ type: "init", init: init({}, { streamUrl: "https://evil.example.net/s" }) });
     const got = await drain(child);
     expect(ended(got)).toEqual([{ type: "ended", reason: "audio_lost" }]);
-    expect(got.some((m) => m.type === "log" && m.level === "error" && m.message.includes("origin mismatch"))).toBe(true);
+    expect(got.some((m) => m.type === "log" && m.level === "error" && m.message.includes("origin not allowed"))).toBe(true);
     expect(await child.exited).toBe(1);
   });
 });
@@ -97,7 +97,7 @@ const reader = Bun.stdin.stream().getReader();
 let buf = "";
 while (!buf.includes("\\n")) { const { value, done } = await reader.read(); if (done) break; buf += new TextDecoder().decode(value); }
 const init = JSON.parse(buf.split("\\n")[0]).init;
-const url = new URL(init.audio.streamUrl, init.workbenchUrl).toString();
+const url = new URL(init.audio.streamUrl, init.audioAllowedOrigins[0]).toString();
 process.stderr.write("fetch failed: " + url + "\\n");
 process.stdout.write(JSON.stringify({ type: "log", level: "error", message: "fetch " + url + " failed" }) + "\\n");
 process.stdout.write(JSON.stringify({ type: "ended", reason: "audio_lost" }) + "\\n");

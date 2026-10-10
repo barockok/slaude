@@ -1,5 +1,5 @@
 /**
- * The voice loop (voice mode spec §5): provider ⇄ conductor ⇄ workbench audio,
+ * The voice loop (voice mode spec §5): provider ⇄ conductor ⇄ browser audio pipe,
  * plus the parent's inbox (say/context/stop). Runs in the `slaude voice-loop`
  * child; dependencies are injected so tests run it in-process with fakes.
  */

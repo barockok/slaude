@@ -1,4 +1,5 @@
 import { describe, it, expect, spyOn } from "bun:test";
+import { buildAudioPolicy } from "../../src/voice/audio-acl";
 import { EventEmitter } from "node:events";
 import {
   voiceRefusalFromClaims,
@@ -43,7 +44,7 @@ class FakeAgent extends EventEmitter {
 }
 
 const cfg: VoiceConfig = {
-  provider: "openai", model: "gpt-realtime", apiKey: "k", workbenchUrl: "https://wb.example.com", maxMinutes: 90, staleSeq: 4,
+  provider: "openai", model: "gpt-realtime", apiKey: "k", audio: buildAudioPolicy({ origins: "https://wb.example.com" }), maxMinutes: 90, staleSeq: 4,
 };
 const soul = { identity: { name: "Ada", role: "release helper", voice: "calm" }, values: ["be brief"], mandate: "ship safely" };
 
@@ -180,8 +181,8 @@ describe("mono voice host", () => {
     const child = fakeChild();
     const call = new VoiceCall({ sessionId: "s1", runner: host.runner("s1"), child, transcriptDir: mkdtempSync(join(tmpdir(), "vh-")),
       holdIdle: () => true, onClosed: () => {} });
-    const p = call.start({ callId: call.callId, audio: { streamUrl: "/s", clearUrl: "/c", headers: {}, sampleRate: 24000 },
-      workbenchUrl: "https://wb.example.com", instructions: "x", provider: "openai", model: "m", maxMinutes: 120, staleSeq: 6 });
+    const p = call.start({ callId: call.callId, audio: { streamUrl: "https://wb.example.com/s", clearUrl: "https://wb.example.com/c", headers: {}, sampleRate: 24000 },
+      audioAllowedOrigins: ["https://wb.example.com"], instructions: "x", provider: "openai", model: "m", maxMinutes: 120, staleSeq: 6 });
     child.push({ type: "started", callId: call.callId, sampleRate: 24000 });
     await p;
     child.push({ type: "delegate", id: "1", task: "x", asOf: 0 });
@@ -221,7 +222,10 @@ describe("node voice host", () => {
     lock: async <T>(_id: string, fn: (s: AbortSignal) => Promise<T>) => fn(new AbortController().signal), workingDir: async () => "/tmp",
     tokenFor: (): string | undefined => tok(AGENT), bundle: async () => null, draining: () => false,
   };
-  const voice = { model: "openai/gpt-realtime", apiKey: "k", workbenchUrl: "https://wb.example.com", maxMinutes: 30, staleSeq: 3 };
+  const voice = {
+    model: "openai/gpt-realtime", apiKey: "k", audioAllowedOrigins: ["https://wb.example.com"],
+    audioAllowedHeaders: ["x-browser-session"], audioRequiredHeaders: ["x-browser-session"], maxMinutes: 30, staleSeq: 3,
+  };
 
   it("is unavailable while draining", async () => {
     const h = makeNodeVoiceHost({ ...base, draining: () => true });
@@ -346,7 +350,7 @@ describe("node voice host", () => {
       const calls = new VoiceCalls();
       const r = await voiceHandlers.start("s1", host, calls, {
         brief: "b",
-        audio: { stream_url: "/s", clear_url: "/c", headers: { "X-Browser-Session": "rk" }, sample_rate: 24000 },
+        audio: { stream_url: "https://wb.example.com/s", clear_url: "https://wb.example.com/c", headers: { "X-Browser-Session": "rk" }, sample_rate: 24000 },
       });
       expect((r as { isError?: boolean }).isError).toBe(true);
       expect(r.content[0]!.text).toStartWith(want);

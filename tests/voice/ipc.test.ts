@@ -23,7 +23,7 @@ describe("ipc", () => {
   it("accepts every voice provider id in init and rejects unknown ones", () => {
     const init = {
       callId: "c1", audio: { streamUrl: "s", clearUrl: "c", headers: {}, sampleRate: 24000 },
-      workbenchUrl: "https://wb.example.com", instructions: "", provider: "openai-live", model: "gpt-live-1",
+      audioAllowedOrigins: ["https://wb.example.com"], instructions: "", provider: "openai-live", model: "gpt-live-1",
       maxMinutes: 10, staleSeq: 6,
     };
     for (const provider of ["openai", "openai-live", "gemini"]) {
@@ -32,10 +32,11 @@ describe("ipc", () => {
     expect(parseParentMsg(JSON.stringify({ type: "init", init: { ...init, provider: "nope" } }))).toBeNull();
   });
 
-  it("parses child messages including workbench end reasons", () => {
-    expect(parseChildMsg('{"type":"ended","reason":"workbench:tab_closed"}')).toEqual({ type: "ended", reason: "workbench:tab_closed" });
-    expect(parseChildMsg('{"type":"ended","reason":"workbench:tab_closed2"}')).toEqual({ type: "ended", reason: "workbench:tab_closed2" });
-    expect(parseChildMsg('{"type":"ended","reason":"workbench:Tab-Closed"}')).toBeNull();
+  it("parses child messages including audio provider end reasons", () => {
+    expect(parseChildMsg('{"type":"ended","reason":"audio:tab_closed"}')).toEqual({ type: "ended", reason: "audio:tab_closed" });
+    expect(parseChildMsg('{"type":"ended","reason":"audio:tab_closed2"}')).toEqual({ type: "ended", reason: "audio:tab_closed2" });
+    expect(parseChildMsg('{"type":"ended","reason":"audio:Tab-Closed"}')).toBeNull();
+    expect(parseChildMsg('{"type":"ended","reason":"workbench:tab_closed"}')).toBeNull();
     expect(parseChildMsg('{"type":"ended","reason":"bogus"}')).toBeNull();
     expect(parseChildMsg('{"type":"delegate","id":"1","task":"t","asOf":0}')).toEqual({ type: "delegate", id: "1", task: "t", asOf: 0 });
   });

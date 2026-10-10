@@ -91,7 +91,7 @@ export class VoiceCall {
   constructor(private d: VoiceCallDeps) {}
 
   start(init: VoiceInit): Promise<void> {
-    const r = new CapabilityRedactor(init.audio, init.workbenchUrl);
+    const r = new CapabilityRedactor(init.audio);
     this.#scrub = (s) => r.redact(s);
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {

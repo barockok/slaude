@@ -1,11 +1,11 @@
 /**
- * Conversation glue between the realtime provider, workbench audio and the
+ * Conversation glue between the realtime provider, the browser audio pipe and the
  * Claude session (voice mode spec §5.4). No I/O of its own: everything goes
  * through ConductorIO, and time comes in through tick(now), so tests drive it
  * with scripted events.
  *
  * It makes no interruption decisions — the provider does. It only flushes the
- * audio it already handed to workbench (a realtime model emits faster than real
+ * audio it already handed to the audio pipe (a realtime model emits faster than real
  * time) and truncates the model's item to what was actually heard.
  */
 import { transcriptLine, type ChildMsg, type EndReason, type SayMsg } from "./ipc";
@@ -228,7 +228,7 @@ export class Conductor {
       const start = this.#itemStart.get(item) ?? 0;
       this.io.provider.truncate(item, Math.max(0, Math.round(playedMs - start)));
     }
-    // Everything not yet played was discarded by workbench: the uplink clock
+    // Everything not yet played was discarded by the audio pipe: the uplink clock
     // resumes from what actually played.
     this.#sentMs = playedMs;
   }

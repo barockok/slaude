@@ -2,7 +2,7 @@
  * OpenAI Realtime over WebSocket (server-to-server). Event names are pinned
  * here and in tests/voice/openai-realtime.test.ts only. Server VAD with
  * interrupt_response: the provider decides and cancels interruptions itself;
- * flushing audio already handed to workbench is the Conductor's job (spec §5.4).
+ * flushing audio already handed to the audio pipe is the Conductor's job (spec §5.4).
  */
 import {
   TypedEmitter, base64ToPcm, pcmToBase64, seedText,

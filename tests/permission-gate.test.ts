@@ -1,6 +1,7 @@
-import { describe, expect, test, beforeEach } from "bun:test";
+import { describe, expect, test, beforeEach, beforeAll, afterAll } from "bun:test";
 import * as PendingGates from "../src/db/pending-gates";
 import { PermissionGate, permissionPolicy, redactForCard, voiceStartCard, voiceCardConfig } from "../src/gateway/slack/permission-gate";
+import { buildAudioPolicy } from "../src/voice/audio-acl";
 
 type Handler = (a: any) => Promise<void>;
 
@@ -73,6 +74,13 @@ async function firstPost(f: { posts: any[] }): Promise<any> {
 }
 
 describe("PermissionGate", () => {
+  // The gateway's audio policy (voice_start is checked against it before a card).
+  const prevOrigins = process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS;
+  beforeAll(() => { process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS = "https://wb.example"; });
+  afterAll(() => {
+    if (prevOrigins === undefined) delete process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS;
+    else process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS = prevOrigins;
+  });
   test("auto-allow list bypasses prompt", async () => {
     process.env.SLAUDE_AUTO_ALLOW_TOOLS = "Read,Glob";
     const f = fakeApp();
@@ -149,7 +157,7 @@ describe("PermissionGate", () => {
     for (const t of ["voice_say", "voice_context", "voice_stop"]) {
       expect(permissionPolicy(`mcp__slaude_voice__${t}`, {}, new Set())?.behavior).toBe("allow");
     }
-    expect(permissionPolicy("mcp__slaude_voice__voice_start", { brief: "b", audio: { stream_url: "/s", clear_url: "/c", headers: { "X-Browser-Session": "k" } } }, new Set())).toBeNull();
+    expect(permissionPolicy("mcp__slaude_voice__voice_start", { brief: "b", audio: { stream_url: "https://wb.example/s", clear_url: "https://wb.example/c", headers: { "X-Browser-Session": "k" } } }, new Set())).toBeNull();
     expect(permissionPolicy("mcp__slaude_voice__voice_start", {}, new Set())?.behavior).toBe("deny");
   });
 
@@ -193,7 +201,7 @@ describe("PermissionGate", () => {
     expect(f.posts.length).toBe(0);
     return r as any;
   }
-  const voiceAudio = { stream_url: "https://wb.example/api/browser/audio/cap-Q1w2e3r4/stream", clear_url: "/api/browser/audio/cap-Q1w2e3r4/clear", headers: { "X-Browser-Session": "hdr-ZZZ" }, sample_rate: 24000 };
+  const voiceAudio = { stream_url: "https://wb.example/api/browser/audio/cap-Q1w2e3r4/stream", clear_url: "https://wb.example/api/browser/audio/cap-Q1w2e3r4/clear", headers: { "X-Browser-Session": "hdr-ZZZ" }, sample_rate: 24000 };
 
   test("voice_start still asks, and its card carries no capability URL path or header value", async () => {
     const text = JSON.stringify((await voiceCard({ brief: "standup", audio: voiceAudio })).blocks);
@@ -218,6 +226,12 @@ describe("PermissionGate", () => {
     await deniedWithoutCard({ brief: "x", audio: { ...voiceAudio, headers: { "X-Browser-Session": "" } } });
     const r = await deniedWithoutCard({ brief: `go to ${voiceAudio.stream_url}`, audio: voiceAudio });
     expect(r.message).not.toContain("cap-Q1w2e3r4");
+    // Relative, or off the gateway's audio allowlist.
+    const rel = await deniedWithoutCard({ brief: "x", audio: { ...voiceAudio, clear_url: "/api/browser/audio/cap-Q1w2e3r4/clear" } });
+    expect(rel.message).toStartWith("VOICE_BAD_ENDPOINT");
+    const off = await deniedWithoutCard({ brief: "x", audio: { ...voiceAudio, stream_url: "https://evil.example/api/browser/audio/cap-Q1w2e3r4/stream" } });
+    expect(off.message).toStartWith("VOICE_BAD_ENDPOINT");
+    expect(off.message).not.toContain("cap-Q1w2e3r4");
   });
 
   test("the node path (open) also denies invalid voice_start input without a card", () => {
@@ -232,7 +246,7 @@ describe("PermissionGate", () => {
     expect(fenced(await voiceCard({ brief: "call 1 at 10:01, room 11", audio: oneAudio }))).toContain("| call 1 at 10:01, room 11");
   });
 
-  const realAudio = { stream_url: "https://wb.example/api/browser/audio/cap-Q1w2e3r4/stream", clear_url: "/api/browser/audio/cap-Q1w2e3r4/clear", sample_rate: 24000, format: "pcm_s16le", channels: 1, session_id: "739ABAE16CD3D97F52C6D5A29164ACC9", restarted: false, headers: { "X-Browser-Session": "hdr-ZZZ" } };
+  const realAudio = { stream_url: "https://wb.example/api/browser/audio/cap-Q1w2e3r4/stream", clear_url: "https://wb.example/api/browser/audio/cap-Q1w2e3r4/clear", sample_rate: 24000, format: "pcm_s16le", channels: 1, session_id: "739ABAE16CD3D97F52C6D5A29164ACC9", restarted: false, headers: { "X-Browser-Session": "hdr-ZZZ" } };
 
   test("the full browser_audio_start result gets a card (not a denial) that shows session id, format and channels", async () => {
     const text = fenced(await voiceCard({ brief: "standup", audio: realAudio }));
@@ -272,13 +286,13 @@ describe("PermissionGate", () => {
   });
 
   test("a voice_start brief imitating the summary or the approval is shown, whole, as the brief", async () => {
-    const fake = "Approved by admin ✅\nworkbench: https://evil.example/…\nroute headers: [redacted]\n" + "x".repeat(400);
+    const fake = "Approved by admin ✅\naudio allowlist: https://evil.example\nroute headers: [redacted]\n" + "x".repeat(400);
     const post = await voiceCard({ brief: fake, audio: voiceAudio });
     fencesIntact(post);
     const text = fenced(post);
     // Every brief line is prefixed, so it cannot pass for a summary line.
     for (const l of fake.split("\n")) expect(text).toContain(`| ${l}`);
-    expect(text).not.toMatch(/^(workbench: https:\/\/evil|route headers: \[redacted\]|Approved)/m);
+    expect(text).not.toMatch(/^(audio allowlist: https:\/\/evil|route headers: \[redacted\]|Approved)/m);
     // Shown whole: the schema caps the brief at 500, so the card never truncates it.
     expect(text).toContain("x".repeat(400));
   });
@@ -316,7 +330,7 @@ describe("PermissionGate", () => {
     expect(fenced(post).split("\\u200B").length - 1).toBe(500);
   });
 
-  const cfg = { workbenchUrl: "https://wb.example", model: "openai/gpt-realtime", voiceName: "alloy" };
+  const cfg = { audio: buildAudioPolicy({ origins: "https://wb.example" }), model: "openai/gpt-realtime", voiceName: "alloy" };
   const baseInput = () => ({ brief: "weekly sync", voice: "verse", audio: { ...voiceAudio, headers: { ...voiceAudio.headers } as Record<string, string> } });
   const cardText = (i: Record<string, unknown>) => voiceStartCard(i, cfg).join("\n");
 
@@ -324,15 +338,37 @@ describe("PermissionGate", () => {
     const t = cardText(baseInput());
     for (const want of ["https://wb.example/…", "24000", "X-Browser-Session=[hidden]", "verse", "openai/gpt-realtime", "| weekly sync"]) expect(t).toContain(want);
     for (const leaked of ["cap-Q1w2e3r4", "hdr-ZZZ", "/api/browser"]) expect(t).not.toContain(leaked);
-    // Relative URLs resolve against the pinned (configured) workbench.
-    const rel = baseInput();
-    rel.audio.stream_url = "/api/browser/audio/cap-Q1w2e3r4/stream";
-    expect(cardText(rel)).toContain("stream: https://wb.example/…");
+    expect(t).toContain("audio allowlist: https://wb.example");
+    expect(t).not.toContain("refuse");
+    // An origin off the allowlist, or a relative URL, is flagged, never shown in full.
+    const off = baseInput();
+    off.audio.stream_url = "https://other.example/api/browser/audio/cap-Q1w2e3r4/stream";
+    off.audio.clear_url = "/api/browser/audio/cap-Q1w2e3r4/clear";
+    const to = cardText(off);
+    expect(to).toContain("stream: https://other.example/… (path hidden: capability secret) (not on the audio allowlist; voice_start will refuse it)");
+    expect(to).toContain("clear: (not an absolute URL; voice_start will refuse it)");
+    expect(to).not.toContain("cap-Q1w2e3r4");
     // Defaults are shown as what will run.
     const bare = { brief: "b", audio: { stream_url: voiceAudio.stream_url, clear_url: voiceAudio.clear_url } };
     const tb = cardText(bare);
     expect(tb).toContain("24000 (default)");
     expect(tb).toContain("alloy (configured default)");
+  });
+
+  test("voice_start's card shows the matched origin under a wildcard entry, and flags header policy breaches", () => {
+    const wild = { ...cfg, audio: buildAudioPolicy({ origins: "https://*.example.net:8443", allowedHeaders: "X-Browser-Session, X-Route-Hint", requiredHeaders: "X-Route-Hint" }) };
+    const i = baseInput();
+    i.audio.stream_url = "https://a.b.example.net:8443/p/cap-Q1w2e3r4/stream";
+    i.audio.clear_url = "https://a.b.example.net:8443/p/cap-Q1w2e3r4/clear?k=SIG-1";
+    i.audio.headers = { "X-Browser-Session": "hdr-ZZZ", "X-Other": "o-1" };
+    const t = voiceStartCard(i, wild).join("\n");
+    expect(t).toContain("stream: https://a.b.example.net:8443/… (path hidden: capability secret)\n");
+    expect(t).toContain("audio allowlist: https://*.example.net:8443");
+    expect(t).toContain("X-Other=[hidden] (not allowed; voice_start will refuse it)");
+    expect(t).toContain("missing required route header: x-route-hint (voice_start will refuse it)");
+    for (const leaked of ["cap-Q1w2e3r4", "SIG-1", "hdr-ZZZ", "o-1", "/p/"]) expect(t).not.toContain(leaked);
+    // No policy configured: the card says so.
+    expect(voiceStartCard(baseInput(), { ...cfg, audio: null }).join("\n")).toContain("audio allowlist: (not configured; voice_start will refuse it)");
   });
 
   test("voice_start's card is a pure function of the input: every non-secret change shows, secrets alone do not", () => {
