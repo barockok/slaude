@@ -58,12 +58,15 @@ export function permissionPolicy(
   input: Record<string, unknown>,
   autoAllow: Set<string>,
   /** The deployment's audio policy, where it is known (gateway, mono): an
-   *  off-allowlist endpoint or a header breach is then denied before a card. */
+   *  off-allowlist endpoint or a header breach is then denied before a card.
+   *  null = known and off (voice disabled or no allowlist): voice_start is
+   *  denied outright. undefined = not known here (a node): schema only. */
   voiceAudio?: AudioPolicy | null,
 ): PermissionDecision | null {
   // voice_start is validated strictly before anything else, so no card is
   // ever rendered from input the call would not run as shown.
   if (toolName === VOICE_START) {
+    if (voiceAudio === null) return { behavior: "deny", message: "VOICE_DISABLED: voice mode is not configured" };
     const problem = voiceStartProblem(input, voiceAudio);
     if (problem) return { behavior: "deny", message: `${problem.code}: ${problem.message}` };
   }
@@ -256,9 +259,10 @@ export interface VoiceCardConfig {
 export function voiceCardConfig(): VoiceCardConfig {
   return { audio: audioPolicyFromEnv(), model: env.voice.model(), voiceName: env.voice.voiceName() };
 }
-/** voice_start's policy at the gate: the deployment's, read only for voice_start. */
+/** voice_start's policy at the gate (gateway or mono, which hold the voice
+ *  env): null when voice is off. Read only for voice_start. */
 const gateVoiceAudio = (toolName: string): AudioPolicy | null | undefined =>
-  toolName === VOICE_START ? audioPolicyFromEnv() : undefined;
+  toolName !== VOICE_START ? undefined : env.voice.enabled() ? audioPolicyFromEnv() : null;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 /** Room for one fenced block's body under Slack's 3000-character section text. */

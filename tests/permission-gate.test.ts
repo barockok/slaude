@@ -75,12 +75,16 @@ async function firstPost(f: { posts: any[] }): Promise<any> {
 
 describe("PermissionGate", () => {
   // The gateway's audio policy (voice_start is checked against it before a card).
-  const prevOrigins = process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS;
-  beforeAll(() => { process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS = "https://wb.example"; });
-  afterAll(() => {
-    if (prevOrigins === undefined) delete process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS;
-    else process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS = prevOrigins;
-  });
+  const VOICE_ENV: Record<string, string> = { SLAUDE_VOICE_ENABLED: "1", SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS: "https://wb.example" };
+  const prevVoiceEnv = Object.fromEntries(Object.keys(VOICE_ENV).map((k) => [k, process.env[k]]));
+  const restoreVoiceEnv = () => {
+    for (const [k, v] of Object.entries(prevVoiceEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+  beforeAll(() => { Object.assign(process.env, VOICE_ENV); });
+  afterAll(restoreVoiceEnv);
   test("auto-allow list bypasses prompt", async () => {
     process.env.SLAUDE_AUTO_ALLOW_TOOLS = "Read,Glob";
     const f = fakeApp();
@@ -232,6 +236,28 @@ describe("PermissionGate", () => {
     const off = await deniedWithoutCard({ brief: "x", audio: { ...voiceAudio, stream_url: "https://evil.example/api/browser/audio/cap-Q1w2e3r4/stream" } });
     expect(off.message).toStartWith("VOICE_BAD_ENDPOINT");
     expect(off.message).not.toContain("cap-Q1w2e3r4");
+  });
+
+  test("voice off at the gate (no policy): voice_start is denied VOICE_DISABLED with no card", async () => {
+    const input = { brief: "x", audio: voiceAudio };
+    const d = permissionPolicy("mcp__slaude_voice__voice_start", input, new Set(), null);
+    expect(d?.behavior).toBe("deny");
+    expect((d as any).message).toStartWith("VOICE_DISABLED");
+    // The node passes no policy (undefined): schema only, so a valid input asks.
+    expect(permissionPolicy("mcp__slaude_voice__voice_start", input, new Set(), undefined)).toBeNull();
+    const quiet = console.warn;
+    console.warn = () => {};
+    try {
+      for (const off of [{ SLAUDE_VOICE_ENABLED: "0" }, { SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS: "" }]) {
+        Object.assign(process.env, off);
+        const r = await deniedWithoutCard(input);
+        expect(r.message).toStartWith("VOICE_DISABLED");
+        Object.assign(process.env, VOICE_ENV);
+      }
+    } finally {
+      console.warn = quiet;
+      Object.assign(process.env, VOICE_ENV);
+    }
   });
 
   test("the node path (open) also denies invalid voice_start input without a card", () => {
