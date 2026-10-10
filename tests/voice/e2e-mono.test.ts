@@ -21,7 +21,7 @@ import { FakeAudio, FakeProvider, chan, until } from "./fakes";
 
 const SID = "s-e2e";
 const cfg = { provider: "openai" as const, model: "m", apiKey: "k", workbenchUrl: "https://wb.example.com", maxMinutes: 120, staleSeq: 6 };
-const audioArg = { stream_url: "/s", clear_url: "/c", headers: {}, sample_rate: 24000, stream_token: "st" };
+const audioArg = { stream_url: "/s", clear_url: "/c", headers: {}, sample_rate: 24000 };
 
 /** A LoopChild whose far end is runVoiceLoop in this process. */
 function inProcessChild(provider: FakeProvider, audio: FakeAudio) {

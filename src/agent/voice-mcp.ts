@@ -9,7 +9,7 @@ import { z } from "zod";
 import type { VoiceConfig } from "../voice/config";
 import { VoiceCall, VoiceCalls, type LoopChild, type TurnRunner } from "../voice/call";
 import type { VoiceInit } from "../voice/ipc";
-import { FORBIDDEN_HEADERS, sameOrigin } from "../voice/audio-link";
+import { FORBIDDEN_HEADERS, redactCapabilityUrls, sameOrigin } from "../voice/audio-link";
 
 export const VOICE_MCP_NAME = "slaude_voice";
 
@@ -26,7 +26,7 @@ export interface VoiceHost {
   confirmStart(sessionId: string): Promise<"VOICE_AGENT_ONLY" | "VOICE_UNAVAILABLE" | null>;
   runner(sessionId: string): TurnRunner;
   transcriptDir(sessionId: string): Promise<string>;
-  spawn(o: { apiKey: string; streamToken: string }): LoopChild;
+  spawn(o: { apiKey: string }): LoopChild;
   /** `false` = the session was not live, nothing held (the call retries). */
   holdIdle(sessionId: string, hold: boolean): boolean | void;
   instructions(sessionId: string, brief: string): Promise<string>;
@@ -63,13 +63,15 @@ export function buildInstructions(
 const ok = (v: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(v) }] });
 const err = (code: string, msg: string) => ({ content: [{ type: "text" as const, text: `${code}: ${msg}` }], isError: true });
 
+/** browser_audio_start's result. stream_url and clear_url are capability
+ *  URLs (the audio session's secret is in the path), so they are the only
+ *  authorization. Unknown keys (e.g. a legacy stream_token) are stripped. */
 const audioShape = z.object({
   stream_url: z.string(),
   clear_url: z.string(),
   headers: z.record(z.string()).default({}),
   sample_rate: z.union([z.literal(16000), z.literal(24000), z.literal(48000)]).default(24000),
-  stream_token: z.string().min(1),
-});
+}).strip();
 
 function safeHeaders(h: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(h).filter(([k]) => !FORBIDDEN_HEADERS.has(k.toLowerCase())));
@@ -80,6 +82,12 @@ export const voiceHandlers = {
     if (!calls.reserve(sessionId)) return err("VOICE_BUSY", "a call is already active in this thread");
     let child: LoopChild | undefined;
     let registered = false;
+    // The result goes back to the model and into the transcript: never echo a capability URL.
+    let base = "";
+    const startFailed = (e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      return err("VOICE_START_FAILED", redactCapabilityUrls(msg, { streamUrl: args.audio.stream_url, clearUrl: args.audio.clear_url }, base || "http://invalid"));
+    };
     try {
       const refuse = (code: "VOICE_AGENT_ONLY" | "VOICE_UNAVAILABLE") =>
         code === "VOICE_AGENT_ONLY"
@@ -89,6 +97,7 @@ export const voiceHandlers = {
       if (refusal) return refuse(refusal);
       const cfg = await host.config(sessionId);
       if (!cfg) return err("VOICE_DISABLED", "voice mode is not configured");
+      base = cfg.workbenchUrl;
       const { audio } = args;
       if (![audio.stream_url, audio.clear_url].every((u) => sameOrigin(u, cfg.workbenchUrl))) {
         return err("VOICE_BAD_ENDPOINT", "audio endpoints must be on the configured workbench origin");
@@ -109,7 +118,7 @@ export const voiceHandlers = {
       const runner = host.runner(sessionId);
       const confirmed = await host.confirmStart(sessionId);
       if (confirmed) return refuse(confirmed);
-      child = host.spawn({ apiKey: cfg.apiKey, streamToken: audio.stream_token });
+      child = host.spawn({ apiKey: cfg.apiKey });
       const call: VoiceCall = new VoiceCall({
         sessionId,
         runner,
@@ -127,15 +136,15 @@ export const voiceHandlers = {
         await call.start(init);
       } catch (e) {
         if (calls.get(sessionId) === call) calls.remove(sessionId);
-        return err("VOICE_START_FAILED", e instanceof Error ? e.message : String(e));
+        return startFailed(e);
       }
       registered = true;
       return ok({ callId: call.callId });
     } catch (e) {
-      return err("VOICE_START_FAILED", e instanceof Error ? e.message : String(e));
+      return startFailed(e);
     } finally {
-      // No call took ownership of the child (it holds the API key and stream
-      // token in its env): don't leave it running.
+      // No call took ownership of the child (it holds the API key in its env
+      // and the capability URLs): don't leave it running.
       if (!registered) child?.kill();
       calls.release(sessionId);
     }
@@ -174,7 +183,7 @@ export function createVoiceMcp(sessionId: string, host: VoiceHost, calls: VoiceC
         "Start talking in a call you have joined in a workbench browser tab. First call browser_audio_start for that tab, then pass its result as `audio`. Runs as the agent identity.",
         {
           brief: z.string().describe("What this call is about and what you should do in it."),
-          audio: audioShape.describe("The result of browser_audio_start: stream_url, clear_url, headers, sample_rate, stream_token."),
+          audio: audioShape.describe("The result of browser_audio_start, passed as is: stream_url, clear_url, headers, sample_rate."),
           voice: z.string().optional(),
         },
         (a: any) => voiceHandlers.start(sessionId, host, calls, a),

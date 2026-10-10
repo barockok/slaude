@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { transcriptLine, type ChildMsg, type EndReason, type VoiceInit } from "./ipc";
 import type { LoopChild } from "./spawn";
 import { VoiceAuthLost } from "./runners";
+import { redactCapabilityUrls } from "./audio-link";
 
 export type { LoopChild } from "./spawn";
 
@@ -84,9 +85,13 @@ export class VoiceCall {
   #resolveDone!: (r: EndReason) => void;
   readonly done: Promise<EndReason> = new Promise((r) => (this.#resolveDone = r));
 
+  /** Masks the call's capability URLs (secret-bearing paths) in log text. */
+  #scrub: (s: string) => string = (s) => s;
+
   constructor(private d: VoiceCallDeps) {}
 
   start(init: VoiceInit): Promise<void> {
+    this.#scrub = (s) => redactCapabilityUrls(s, init.audio, init.workbenchUrl);
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#timedOut = true;
@@ -162,7 +167,7 @@ export class VoiceCall {
         }
       });
     } else if (m.type === "log") {
-      console[m.level === "error" ? "error" : m.level === "warn" ? "warn" : "log"](`[voice] session=${this.d.sessionId} ${m.message}`);
+      console[m.level === "error" ? "error" : m.level === "warn" ? "warn" : "log"](`[voice] session=${this.d.sessionId} ${this.#scrub(m.message)}`);
     }
   }
 

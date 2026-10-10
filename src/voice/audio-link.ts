@@ -1,8 +1,12 @@
 /**
  * Workbench browser-audio client (voice mode spec §5.5; workbench
  * browser-audio-pipeline design). SSE out (call audio), one long-lived chunked
- * POST in (agent audio), `clear` for interruption. Authorized by the call's
- * stream_token (plan deviation 1). Audio content is never logged.
+ * POST in (agent audio), `clear` for interruption. The stream and clear URLs
+ * are ephemeral capability URLs: an unguessable per-audio-session secret sits
+ * in their paths, and they die when the audio session stops. They are the only
+ * authorization, so no Authorization header is sent and the URLs themselves are
+ * never logged or echoed (see redactCapabilityUrls). Audio content is never
+ * logged.
  */
 import type { AudioEndpoints } from "./ipc";
 import { base64ToPcm } from "./provider/types";
@@ -19,7 +23,8 @@ export interface AudioLinkLike {
   close(): Promise<void>;
 }
 
-/** Headers a model-supplied endpoint may never set: the link adds its own bearer. */
+/** Headers a model-supplied endpoint may never set: ambient credentials and
+ *  routing that the capability URL must not be combined with. */
 export const FORBIDDEN_HEADERS: ReadonlySet<string> = new Set(["authorization", "cookie", "host"]);
 
 /** True when `path` resolves against `base` to the same origin, without
@@ -34,6 +39,34 @@ export function sameOrigin(path: string, base: string): boolean {
   }
 }
 
+/** `text` with every form of the capability URLs (as given, resolved against
+ *  `baseUrl`, and path plus query) replaced by the origin and "/…". Use on any
+ *  text that leaves the voice loop: logs, ipc `log` lines, error messages. */
+export function redactCapabilityUrls(text: string, endpoints: { streamUrl: string; clearUrl: string }, baseUrl: string): string {
+  const forms = new Map<string, string>();
+  for (const raw of [endpoints.streamUrl, endpoints.clearUrl]) {
+    if (!raw) continue;
+    let origin = "";
+    try {
+      const u = new URL(raw, baseUrl);
+      origin = u.origin === "null" ? "" : u.origin;
+      const masked = `${origin}/…`;
+      forms.set(u.toString(), masked);
+      if (u.pathname.length > 1) {
+        forms.set(u.pathname + u.search, masked);
+        forms.set(u.pathname, masked);
+      }
+    } catch {}
+    if (!forms.has(raw)) forms.set(raw, `${origin}/…`);
+  }
+  // Longest first, so a full URL is masked whole before its path is.
+  let out = text;
+  for (const [form, masked] of [...forms].sort((a, b) => b[0].length - a[0].length)) {
+    out = out.split(form).join(masked);
+  }
+  return out;
+}
+
 export class AudioLink implements AudioLinkLike {
   #h: AudioHandlers | null = null;
   #closed = false;
@@ -46,9 +79,10 @@ export class AudioLink implements AudioLinkLike {
   readonly #clearUrl: string;
   readonly #routeHeaders: Record<string, string>;
 
-  constructor(private o: { baseUrl: string; endpoints: AudioEndpoints; streamToken: string; maxSseRetries?: number; retryDelayMs?: number; clearTimeoutMs?: number; closeTimeoutMs?: number }) {
+  constructor(private o: { baseUrl: string; endpoints: AudioEndpoints; maxSseRetries?: number; retryDelayMs?: number; clearTimeoutMs?: number; closeTimeoutMs?: number }) {
     // Endpoints are model-supplied: pin them to the operator's origin so the
-    // bearer token can never be sent elsewhere.
+    // capability URL (and the route headers) can never be sent elsewhere. The
+    // error names neither URL: the path is the secret.
     const pin = (path: string): string => {
       if (!sameOrigin(path, o.baseUrl)) throw new Error("workbench endpoint origin mismatch");
       return new URL(path, o.baseUrl).toString();
@@ -61,7 +95,7 @@ export class AudioLink implements AudioLinkLike {
   }
 
   #headers(extra: Record<string, string> = {}): Record<string, string> {
-    return { ...this.#routeHeaders, authorization: `Bearer ${this.o.streamToken}`, ...extra };
+    return { ...this.#routeHeaders, ...extra };
   }
   #end(reason: string): void {
     if (this.#ended || this.#closed) return;

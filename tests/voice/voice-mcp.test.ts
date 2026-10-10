@@ -34,7 +34,7 @@ function fakeChild() {
   return child;
 }
 function host(over: Partial<VoiceHost> = {}) {
-  const spawned: Array<{ apiKey: string; streamToken: string }> = [];
+  const spawned: Array<{ apiKey: string }> = [];
   const children: Array<ReturnType<typeof fakeChild>> = [];
   const h: VoiceHost = {
     config: async () => cfg,
@@ -56,32 +56,58 @@ function host(over: Partial<VoiceHost> = {}) {
   return { h, spawned, children, get child() { return children[0]!; } };
 }
 const tools = (cfgObj: any) => cfgObj.instance._registeredTools;
-const audio: { stream_url: string; clear_url: string; headers: Record<string, string>; sample_rate: number; stream_token: string } = {
-  stream_url: "/api/browser/tabs/t1/audio/stream",
-  clear_url: "/api/browser/tabs/t1/audio/clear",
+// The capability URLs carry the audio session's secret in their paths.
+const CAP = "cap-9f2c7d1e";
+const audio: { stream_url: string; clear_url: string; headers: Record<string, string>; sample_rate: number } = {
+  stream_url: `/api/browser/audio/${CAP}/stream`,
+  clear_url: `/api/browser/audio/${CAP}/clear`,
   headers: { "X-Browser-Session": "rk" },
   sample_rate: 24000,
-  stream_token: "stok",
 };
 const startArgs = { brief: "weekly sync", audio };
 const withAudio = (o: Partial<typeof audio>) => ({ brief: "x", audio: { ...audio, ...o } });
 const text = (r: any) => r.content[0].text as string;
 
 describe("voice MCP", () => {
-  it("voice_start spawns with secrets in env only and returns a call id", async () => {
+  it("voice_start spawns with only the provider key and returns a call id", async () => {
     const t0 = host();
     const calls = new VoiceCalls();
     const t = tools(createVoiceMcp("s1", t0.h, calls));
     const r = await t["voice_start"].handler(startArgs);
     expect(r.isError).toBeFalsy();
     expect(JSON.parse(text(r)).callId).toBeString();
-    expect(t0.spawned).toEqual([{ apiKey: "sk-x", streamToken: "stok" }]);
+    expect(t0.spawned).toEqual([{ apiKey: "sk-x" }]);
     const init = (t0.child.sent[0] as any).init;
-    expect(JSON.stringify(init)).not.toContain("stok");
     expect(JSON.stringify(init)).not.toContain("sk-x");
     expect(init.audio).toEqual({ streamUrl: audio.stream_url, clearUrl: audio.clear_url, headers: { "X-Browser-Session": "rk" }, sampleRate: 24000 });
     expect(init.instructions).toContain("weekly sync");
     expect(calls.get("s1")).toBeDefined();
+  });
+
+  it("a stream_token the model still passes is stripped by the schema, never forwarded", async () => {
+    const t0 = host();
+    const t = tools(createVoiceMcp("s1", t0.h, new VoiceCalls()));
+    const parsed = t["voice_start"].inputSchema.parse({ brief: "x", audio: { ...audio, stream_token: "old-tok" } });
+    expect(parsed.audio).not.toHaveProperty("stream_token");
+    const r = await t["voice_start"].handler(parsed);
+    expect(r.isError).toBeFalsy();
+    expect(JSON.stringify(t0.spawned)).not.toContain("old-tok");
+    expect(JSON.stringify(t0.child.sent)).not.toContain("old-tok");
+  });
+
+  it("the voice_start description no longer asks for a stream_token", () => {
+    const t = tools(createVoiceMcp("s1", host().h, new VoiceCalls()));
+    expect(String(t["voice_start"].inputSchema.shape.audio.description ?? "")).not.toContain("stream_token");
+    expect(t["voice_start"].description).not.toContain("stream_token");
+  });
+
+  it("a start failure never echoes the capability URL", async () => {
+    const t0 = host();
+    t0.h.spawn = () => { throw new Error(`connect failed for https://wb.example.com${audio.stream_url}`); };
+    const r = await tools(createVoiceMcp("s1", t0.h, new VoiceCalls()))["voice_start"].handler(startArgs);
+    expect(text(r)).toContain("VOICE_START_FAILED");
+    expect(text(r)).not.toContain(CAP);
+    expect(text(r)).toContain("https://wb.example.com/…");
   });
 
   it("VOICE_BUSY on a second start", async () => {
@@ -194,11 +220,11 @@ describe("voice MCP", () => {
       ["other scheme", { clear_url: "http://wb.example.com/c" }],
       ["unparseable", { stream_url: "http://" }],
     ] as const) {
-      it(`refuses ${name} before spawning, without echoing the token`, async () => {
+      it(`refuses ${name} before spawning, without echoing the url`, async () => {
         const { r, spawned, calls } = await refused(withAudio(o as any));
         expect(r.isError).toBe(true);
         expect(text(r)).toContain("VOICE_BAD_ENDPOINT");
-        expect(text(r)).not.toContain("stok");
+        for (const v of Object.values(o)) expect(text(r)).not.toContain(v);
         expect(spawned).toEqual([]);
         expect(calls.get("s1")).toBeUndefined();
       });

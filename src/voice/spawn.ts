@@ -5,7 +5,7 @@
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
-import { ENV_API_KEY, ENV_STREAM_TOKEN, encodeMsg, parseChildMsg, readLines, type ChildMsg, type ParentMsg } from "./ipc";
+import { ENV_API_KEY, encodeMsg, parseChildMsg, readLines, type ChildMsg, type ParentMsg } from "./ipc";
 
 const ENTRY = fileURLToPath(new URL("./loop-entry.ts", import.meta.url));
 
@@ -18,7 +18,6 @@ export interface LoopChild {
 
 export interface SpawnSecrets {
   apiKey: string;
-  streamToken: string;
 }
 
 /** Non-secret variables the child may need to reach the provider through a
@@ -32,7 +31,6 @@ export function childEnv(o: SpawnSecrets, from: NodeJS.ProcessEnv = process.env)
   const env: Record<string, string> = { PATH: from.PATH ?? "", HOME: from.HOME ?? "" };
   for (const k of PASSTHROUGH) if (from[k] !== undefined) env[k] = from[k]!;
   env[ENV_API_KEY] = o.apiKey;
-  env[ENV_STREAM_TOKEN] = o.streamToken;
   return env;
 }
 
