@@ -6,7 +6,6 @@ import type {
 import { env } from "../../config/env";
 import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
-import { redactCapabilityUrls } from "../../voice/audio-link";
 
 type PendingKey = string; // toolUseID
 
@@ -193,28 +192,53 @@ export function redactForCard(value: unknown, depth = 0, parentKey = ""): unknow
 
 const VOICE_START = "mcp__slaude_voice__voice_start";
 
-/** voice_start's `audio` may arrive as a JSON string, which redactForCard
- *  cannot see into: mask its capability URLs in the rendered text too. */
-function redactVoiceStartPreview(preview: string, input: Record<string, unknown>): string {
+const BRIEF_MAX = 500;
+
+/** Text that cannot close the card's code fence or form a Slack mention or link. */
+function cardSafe(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/`/g, "\u02cb");
+}
+
+/** Three or more backticks cannot end the card's fence early. */
+function unfence(s: string): string {
+  return s.replace(/`{3,}/g, (run) => run.split("").join("\u200b"));
+}
+
+/** voice_start's card is a fixed summary built from parsed fields, never the
+ *  raw input: the capability URLs (secret paths) show as their origin, route
+ *  headers by name only, and the model-written brief is capped, escaped and
+ *  prefixed line by line so it cannot pass for a summary line. */
+function voiceStartSummary(input: Record<string, unknown>): string {
   let audio: unknown = input.audio;
   if (typeof audio === "string") {
     try { audio = JSON.parse(audio); } catch { audio = null; }
   }
-  if (!audio || typeof audio !== "object") return preview;
-  const a = audio as Record<string, unknown>;
-  const streamUrl = typeof a.stream_url === "string" ? a.stream_url : "";
-  const clearUrl = typeof a.clear_url === "string" ? a.clear_url : "";
-  let base = "";
-  for (const u of [streamUrl, clearUrl]) {
-    try { base ||= new URL(u).origin; } catch {}
+  const a = audio && typeof audio === "object" && !Array.isArray(audio) ? (audio as Record<string, unknown>) : {};
+  let origin = "";
+  for (const u of [a.stream_url, a.clear_url]) {
+    if (origin || typeof u !== "string") continue;
+    try {
+      const o = new URL(u).origin;
+      if (o && o !== "null") origin = o;
+    } catch {}
   }
-  return redactCapabilityUrls(preview, { streamUrl, clearUrl }, base);
+  const headers = a.headers && typeof a.headers === "object" && !Array.isArray(a.headers) ? Object.keys(a.headers as object) : [];
+  const rate = typeof a.sample_rate === "number" ? String(a.sample_rate) : "default";
+  const rawBrief = typeof input.brief === "string" ? input.brief : "";
+  const brief = rawBrief.length > BRIEF_MAX ? `${rawBrief.slice(0, BRIEF_MAX)}…(truncated)` : rawBrief;
+  const lines = [
+    `workbench: ${origin ? `${origin}/…` : "(relative; pinned to the configured workbench)"}`,
+    `sample rate: ${rate}`,
+    `route headers: ${headers.length ? headers.map((h) => h.slice(0, 64)).join(", ") : "(none)"}`,
+  ];
+  if (typeof input.voice === "string") lines.push(`voice: ${input.voice.slice(0, 64)}`);
+  lines.push("brief (written by the agent):", ...brief.split("\n").map((l) => `| ${l}`));
+  return cardSafe(lines.join("\n"));
 }
 
 function permBlocks(toolName: string, input: Record<string, unknown>, toolUseId: string, decisionReason?: string) {
-  let rendered = JSON.stringify(redactForCard(input), null, 2);
-  if (toolName === VOICE_START) rendered = redactVoiceStartPreview(rendered, input);
-  const inputPreview = truncate(rendered, 2500);
+  const rendered = toolName === VOICE_START ? voiceStartSummary(input) : JSON.stringify(redactForCard(input), null, 2);
+  const inputPreview = truncate(unfence(rendered), 2500);
   return [
     {
       type: "section",
