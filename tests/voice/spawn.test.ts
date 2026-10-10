@@ -1,5 +1,5 @@
 import { describe, it, expect, spyOn } from "bun:test";
-import { spawnVoiceLoop, childEnv } from "../../src/voice/spawn";
+import { spawnVoiceLoop, childEnv, boundedLines } from "../../src/voice/spawn";
 import * as ipc from "../../src/voice/ipc";
 import { ENV_API_KEY, type ChildMsg } from "../../src/voice/ipc";
 
@@ -47,5 +47,28 @@ describe("spawnVoiceLoop", () => {
     for await (const m of child.messages) got.push(m);
     expect(got.at(-1)).toEqual({ type: "ended", reason: "loop_crashed" });
     expect(await child.exited).toBe(2);
+  });
+});
+
+describe("boundedLines (child stderr)", () => {
+  const streamOf = (...chunks: string[]) => new ReadableStream<Uint8Array>({
+    start(c) { for (const ch of chunks) c.enqueue(new TextEncoder().encode(ch)); c.close(); },
+  });
+  const collect = async (s: ReadableStream<Uint8Array>, max: number) => {
+    const out: string[] = [];
+    for await (const l of boundedLines(s, max)) out.push(l);
+    return out;
+  };
+  it("splits lines and keeps leading indentation", async () => {
+    expect(await collect(streamOf("a\n  at f (x)\n", "tail"), 100)).toEqual(["a", "  at f (x)", "tail"]);
+  });
+  it("an over-long line is flushed truncated at a word break, and the rest of it is dropped", async () => {
+    const long = "error near " + "Z".repeat(500);
+    const out = await collect(streamOf(long.slice(0, 200), long.slice(200) + "\nnext\n"), 64);
+    expect(out).toEqual(["error near …(truncated)", "next"]);
+  });
+  it("an over-long line with no word break yields only the marker", async () => {
+    const out = await collect(streamOf("Q".repeat(300) + "\nok\n"), 64);
+    expect(out).toEqual(["…(truncated)", "ok"]);
   });
 });

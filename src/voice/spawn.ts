@@ -35,6 +35,44 @@ export function childEnv(o: SpawnSecrets, from: NodeJS.ProcessEnv = process.env)
   return env;
 }
 
+/** Longest child stderr line passed on; longer lines are cut. */
+export const STDERR_LINE_MAX = 64 * 1024;
+const TRUNCATED = "…(truncated)";
+
+/** Lines of `stream` (trailing "\r" dropped, indentation kept), each at most
+ *  `max` characters. An over-long line is flushed cut back to its last
+ *  whitespace (so no partial token, which the exact-match scrubber could not
+ *  recognise, is passed on) plus a marker, and the rest of it is dropped. */
+export async function* boundedLines(stream: ReadableStream<Uint8Array>, max = STDERR_LINE_MAX): AsyncGenerator<string> {
+  const dec = new TextDecoder();
+  let buf = "";
+  let dropping = false;
+  const cut = (s: string) => {
+    const i = Math.max(s.lastIndexOf(" "), s.lastIndexOf("\t"));
+    return (i > 0 ? s.slice(0, i + 1) : "") + TRUNCATED;
+  };
+  for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
+    buf += dec.decode(chunk, { stream: true });
+    let i: number;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i).replace(/\r$/, "");
+      buf = buf.slice(i + 1);
+      if (dropping) { dropping = false; continue; }
+      if (line.length > max) { yield cut(line.slice(0, max)); continue; }
+      if (line) yield line;
+    }
+    if (!dropping && buf.length > max) {
+      yield cut(buf.slice(0, max));
+      buf = "";
+      dropping = true;
+    } else if (dropping) {
+      buf = "";
+    }
+  }
+  const tail = buf + dec.decode();
+  if (tail && !dropping) yield tail.length > max ? cut(tail.slice(0, max)) : tail;
+}
+
 /** `entry` replaces the child script (tests use a stand-in). */
 export function spawnVoiceLoop(o: SpawnSecrets & { execPath?: string; entry?: string }): LoopChild {
   // stderr is piped, not inherited: whatever the child or Bun writes there
@@ -49,7 +87,7 @@ export function spawnVoiceLoop(o: SpawnSecrets & { execPath?: string; entry?: st
     const stderr = Readable.toWeb(cp.stderr) as unknown as ReadableStream<Uint8Array>;
     void (async () => {
       try {
-        for await (const line of readLines(stderr)) process.stderr.write(`${scrub(line)}\n`);
+        for await (const line of boundedLines(stderr)) process.stderr.write(`${scrub(line)}\n`);
       } catch {
         // stream destroyed (spawn error / kill)
       }
