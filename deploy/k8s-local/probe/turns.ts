@@ -92,7 +92,7 @@ async function enqueueOne(session: { id: string }, thread: string, i: number): P
   const jobToken = mintJobToken({
     label: LABEL, tenant: "default", persona: PERSONA, session: session.id,
     team: TEAM, channel: CHANNEL, thread, initiator: "UVERIFY",
-    scope: "turn", runAs: "agent", job: jobId,
+    scope: "turn", runAs: "agent", job: jobId, lock: null,
   });
   const r = await turns.enqueueTurn(
     {
@@ -148,7 +148,7 @@ async function token() {
     mintJobToken({
       label: LABEL, tenant: "default", persona: PERSONA, session: session.id,
       team: TEAM, channel: CHANNEL, thread, initiator: "UVERIFY",
-      scope: "turn", runAs: "agent", job: randomUUID(),
+      scope: "turn", runAs: "agent", job: randomUUID(), lock: null,
     }),
   );
 }

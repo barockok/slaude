@@ -315,7 +315,10 @@ wait_done() { # <want> <seconds> [probe status args...]
 bounded() { # <seconds> <command...>
   local secs="$1" pid w rc
   shift
-  "$@" &
+  # <&0: a backgrounded command in a non-interactive bash otherwise gets /dev/null,
+  # which dropped the key piped into `vault.sh rotate`. Callers that want no input
+  # redirect </dev/null themselves.
+  "$@" <&0 &
   pid=$!
   (sleep "$secs" && kill -TERM "$pid") >/dev/null 2>&1 &
   w=$!
@@ -343,7 +346,7 @@ crash_node() { # <pod>
   # minikube has no request timeout of its own; bound it by PROBE_TIMEOUT's seconds.
   local secs="${PROBE_TIMEOUT%s}"
   [[ "$secs" =~ ^[0-9]+$ ]] || secs=60
-  if ! out="$(bounded "$secs" minikube -p "$PROFILE" ssh -- docker kill --signal=KILL "$id" 2>&1)"; then
+  if ! out="$(bounded "$secs" minikube -p "$PROFILE" ssh -- docker kill --signal=KILL "$id" 2>&1 </dev/null)"; then
     diag "  !! docker kill of $pod failed: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"
     return 1
   fi
