@@ -66,23 +66,81 @@ export function buildInstructions(
 const ok = (v: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(v) }] });
 const err = (code: string, msg: string) => ({ content: [{ type: "text" as const, text: `${code}: ${msg}` }], isError: true });
 
+/** A URL string that parses (relative ones against a placeholder) and carries
+ *  no userinfo. */
+const endpointUrl = z.string().min(1).refine((u) => {
+  try {
+    const p = new URL(u, "http://placeholder.invalid");
+    return !p.username && !p.password;
+  } catch {
+    return false;
+  }
+}, { message: "must be a URL without embedded credentials" });
+
 /** browser_audio_start's result. stream_url and clear_url are capability
  *  URLs (the audio session's secret is in the path), so they are the only
- *  authorization. Unknown keys (e.g. a legacy stream_token) are stripped. */
+ *  authorization. Strict: an unknown key (e.g. a legacy stream_token) is
+ *  refused, so the approval card can show everything that runs. */
 const audioShape = z.object({
-  stream_url: z.string(),
-  clear_url: z.string(),
+  stream_url: endpointUrl,
+  clear_url: endpointUrl,
   headers: z.record(z.string()).default({})
     .refine(routeHeadersAllowed, { message: "only the X-Browser-Session route header is accepted" }),
   sample_rate: z.union([z.literal(16000), z.literal(24000), z.literal(48000)]).default(24000),
-}).strip();
+}).strict();
+
+const voiceStartShape = {
+  // Capped so the approval card can show the whole brief that will run.
+  brief: z.string().max(BRIEF_MAX).describe(`What this call is about and what you should do in it (at most ${BRIEF_MAX} characters).`),
+  audio: audioShape.describe("The result of browser_audio_start, passed as is: stream_url, clear_url, headers, sample_rate."),
+  voice: z.string().max(VOICE_NAME_MAX).optional(),
+};
+/** voice_start's input, strict at both levels. The permission gate validates
+ *  the raw input with it before rendering any approval card. */
+export const voiceStartSchema = z.object(voiceStartShape).strict();
+export type VoiceStartInput = z.infer<typeof voiceStartSchema>;
+
+/** Every whole form of the URLs: as given, path, path plus query, encoded. */
+function wholeUrlForms(u: string): string[] {
+  const out = [u];
+  try {
+    const p = new URL(u, "http://placeholder.invalid");
+    if (p.pathname.length > 1) out.push(p.pathname + p.search, p.pathname);
+  } catch {}
+  return [...new Set(out.flatMap((f) => [f, encodeURIComponent(f)]))].filter((f) => f.length > 1);
+}
+
+/** Why a voice_start input must be refused, or null. The strict schema, plus
+ *  a brief that quotes a whole stream/clear URL or path: the brief is shown
+ *  literally on the approval card, so it may not carry the secret. (Single
+ *  segments are not checked: a segment can be an ordinary word.) */
+export function voiceStartProblem(input: unknown): { code: "VOICE_BAD_INPUT" | "VOICE_BAD_ENDPOINT"; message: string } | null {
+  const r = voiceStartSchema.safeParse(input);
+  if (!r.success) {
+    const paths = r.error.issues.map((i) => i.path.join(".") || "(input)");
+    // Endpoint and header issues keep their established code.
+    const endpoint = paths.every((p) => /^audio\.(stream_url|clear_url|headers)/.test(p));
+    return { code: endpoint ? "VOICE_BAD_ENDPOINT" : "VOICE_BAD_INPUT", message: `voice_start input is invalid (${paths.join(", ")})` };
+  }
+  const { brief, audio } = r.data;
+  for (const u of [audio.stream_url, audio.clear_url]) {
+    if (wholeUrlForms(u).some((f) => brief.includes(f))) {
+      return { code: "VOICE_BAD_INPUT", message: "the brief may not contain the stream or clear URL" };
+    }
+  }
+  return null;
+}
 
 function safeHeaders(h: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(h).filter(([k]) => !FORBIDDEN_HEADERS.has(k.toLowerCase())));
 }
 
 export const voiceHandlers = {
-  async start(sessionId: string, host: VoiceHost, calls: VoiceCalls, args: { brief: string; audio: z.infer<typeof audioShape>; voice?: string }) {
+  async start(sessionId: string, host: VoiceHost, calls: VoiceCalls, args: VoiceStartInput) {
+    // Re-checked here, not only by the SDK's parse: the brief cap, the header
+    // allowlist and the brief-quotes-URL rule.
+    const problem = voiceStartProblem(args);
+    if (problem) return err(problem.code, problem.message);
     if (!calls.reserve(sessionId)) return err("VOICE_BUSY", "a call is already active in this thread");
     let child: LoopChild | undefined;
     let registered = false;
@@ -188,12 +246,7 @@ export function createVoiceMcp(sessionId: string, host: VoiceHost, calls: VoiceC
       tool(
         "voice_start",
         "Start talking in a call you have joined in a workbench browser tab. First call browser_audio_start for that tab, then pass its result as `audio`. Runs as the agent identity.",
-        {
-          // Capped so the approval card can show the whole brief that will run.
-          brief: z.string().max(BRIEF_MAX).describe(`What this call is about and what you should do in it (at most ${BRIEF_MAX} characters).`),
-          audio: audioShape.describe("The result of browser_audio_start, passed as is: stream_url, clear_url, headers, sample_rate."),
-          voice: z.string().max(VOICE_NAME_MAX).optional(),
-        },
+        voiceStartShape,
         (a: any) => voiceHandlers.start(sessionId, host, calls, a),
       ),
       tool(

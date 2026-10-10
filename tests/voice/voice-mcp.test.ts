@@ -2,7 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createVoiceMcp, buildInstructions, SPEAKING_RULES, type VoiceHost } from "../../src/agent/voice-mcp";
+import { createVoiceMcp, buildInstructions, SPEAKING_RULES, voiceStartSchema, voiceStartProblem, type VoiceHost } from "../../src/agent/voice-mcp";
 import { VoiceCalls } from "../../src/voice/call";
 import type { ChildMsg, ParentMsg } from "../../src/voice/ipc";
 import { chan, until } from "./fakes";
@@ -84,15 +84,33 @@ describe("voice MCP", () => {
     expect(calls.get("s1")).toBeDefined();
   });
 
-  it("a stream_token the model still passes is stripped by the schema, never forwarded", async () => {
+  it("the exported schema is strict: a stream_token or any extra key is rejected, not stripped", () => {
+    expect(voiceStartSchema.safeParse({ brief: "x", audio }).success).toBe(true);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, stream_token: "old-tok" } }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio, extra: 1 }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: JSON.stringify(audio) }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, sample_rate: "24000" } }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, stream_url: "https://u:p@wb.example.com/s" } }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, clear_url: "https://u@wb.example.com/c" } }).success).toBe(false);
+  });
+
+  it("a brief quoting a whole capability URL or path is refused; a lone segment word is not", () => {
+    expect(voiceStartProblem({ brief: `stream at https://wb.example.com${audio.stream_url}`, audio })?.message).toContain("brief");
+    expect(voiceStartProblem({ brief: `path ${audio.clear_url}`, audio })?.message).toContain("brief");
+    expect(voiceStartProblem({ brief: `mention ${CAP} only`, audio })).toBeNull();
+    const notAudio = { ...audio, stream_url: "/api/browser/audio/not/stream", clear_url: "/api/browser/audio/not/clear" };
+    expect(voiceStartProblem({ brief: "do not hang up", audio: notAudio })).toBeNull();
+  });
+
+  it("the handler re-checks the brief itself, not only through the SDK's schema", async () => {
     const t0 = host();
     const t = tools(createVoiceMcp("s1", t0.h, new VoiceCalls()));
-    const parsed = t["voice_start"].inputSchema.parse({ brief: "x", audio: { ...audio, stream_token: "old-tok" } });
-    expect(parsed.audio).not.toHaveProperty("stream_token");
-    const r = await t["voice_start"].handler(parsed);
-    expect(r.isError).toBeFalsy();
-    expect(JSON.stringify(t0.spawned)).not.toContain("old-tok");
-    expect(JSON.stringify(t0.child.sent)).not.toContain("old-tok");
+    for (const brief of ["b".repeat(501), `here: ${audio.stream_url}`]) {
+      const r = await t["voice_start"].handler({ brief, audio });
+      expect(text(r)).toStartWith("VOICE_BAD_INPUT");
+      expect(text(r)).not.toContain(CAP);
+    }
+    expect(t0.spawned).toEqual([]);
   });
 
   it("the schema caps the brief at 500 and the voice name at 64, so a card can show them whole", () => {
