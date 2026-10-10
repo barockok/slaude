@@ -1293,7 +1293,7 @@ export class AgentManager extends EventEmitter {
         if (RESUME_MISS_RE.test(stderrBuf)) {
           retried = true;
           console.log(`[mgr] clearing stale claude_started + retrying session=${sessionId}`);
-          await this.#store.clearStarted(sessionId);
+          await this.#bestEffortStore(sessionId, "clearStarted", () => this.#store.clearStarted(sessionId));
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           // Fire and forget — restart with the same first prompt.
@@ -1306,7 +1306,7 @@ export class AgentManager extends EventEmitter {
         if (/session.*(already in use|already exists)/i.test(stderrBuf)) {
           retried = true;
           console.log(`[mgr] session id already has a transcript — retrying with resume session=${sessionId}`);
-          await this.#store.markStarted(sessionId);
+          await this.#bestEffortStore(sessionId, "markStarted", () => this.#store.markStarted(sessionId));
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e));
@@ -1335,7 +1335,7 @@ export class AgentManager extends EventEmitter {
           markExited();
           return;
         }
-        await this.#store.setStatus(sessionId, "idle");
+        await this.#bestEffortStore(sessionId, "setStatus(idle)", () => this.#store.setStatus(sessionId, "idle"));
         if (!owns()) {
           markExited();
           return;
@@ -1360,7 +1360,7 @@ export class AgentManager extends EventEmitter {
         if (live.reloading && this.#autoContinue.has(sessionId)) {
           this.#autoContinue.delete(sessionId);
           console.log(`[mgr] auto-continuing after stream_closed reload session=${sessionId}`);
-          void this.sendMessage(sessionId, "The MCP stream was restored. Please continue where you left off.");
+          void this.sendMessage(sessionId, "The MCP stream was restored. Please continue where you left off.").catch((e) => this.#rebootFailed(sessionId, e));
         }
         // After a manual reload_session with a prompt, inject it so the user
         // doesn't need to type anything to resume the flow.
@@ -1368,10 +1368,32 @@ export class AgentManager extends EventEmitter {
           const p = this.#reloadPrompt.get(sessionId)!;
           this.#reloadPrompt.delete(sessionId);
           console.log(`[mgr] injecting reload prompt session=${sessionId}`);
-          void this.sendMessage(sessionId, p);
+          void this.sendMessage(sessionId, p).catch((e) => this.#rebootFailed(sessionId, e));
         }
       }
-    })();
+    })().catch((e) =>
+      // Last resort: nothing awaits this loop, so a throw here would be an
+      // unhandled rejection, which ends the whole process (a node worker
+      // serves many sessions). Every known throw is handled above.
+      console.error(`[mgr] session loop failed session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`),
+    );
+  }
+
+  /**
+   * A session-row write from the detached query loop (teardown status, the
+   * started flag). Nothing awaits that loop, so a rejection would be
+   * unhandled and end the process; and teardown must still finish (drop the
+   * live entry, signal sessionExit to a voice call). On a node the store is
+   * the gateway's /v1, authenticated by the last job token bound for the
+   * session, which a session that outlived its job may hold expired. The
+   * write is lost and logged; the row is corrected by the next turn.
+   */
+  async #bestEffortStore(sessionId: string, what: string, write: () => Promise<void>): Promise<void> {
+    try {
+      await write();
+    } catch (e) {
+      console.error(`[mgr] session store ${what} failed session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+    }
   }
 
   #fanout(sessionId: string, msg: SDKMessage, owner: LiveSession) {
@@ -1383,7 +1405,7 @@ export class AgentManager extends EventEmitter {
     const live = owner;
     switch (msg.type) {
       case "assistant": {
-        void this.#store.markStarted(sessionId);
+        void this.#bestEffortStore(sessionId, "markStarted", () => this.#store.markStarted(sessionId));
         // The SDK's BetaContentBlock union types only text + tool_use, but the
         // model also emits thinking blocks at runtime. Widen so the thinking
         // branch type-checks (both the discriminant and `.thinking`).
