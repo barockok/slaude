@@ -121,7 +121,7 @@ describe("mono voice wiring", () => {
       expect(servers[VOICE_MCP_NAME]).toBeDefined();
       const r = await callTool(servers[VOICE_MCP_NAME], "voice_start", {
         brief: "standup",
-        audio: { stream_url: "https://wb.example.com/s", clear_url: "https://wb.example.com/c" },
+        audio: { stream_url: "https://wb.example.com/s", clear_url: "https://wb.example.com/c", headers: { "X-Browser-Session": "rk" } },
       });
       expect(r.isError).toBe(true);
       expect(r.content[0].text).toStartWith("VOICE_AGENT_ONLY");
