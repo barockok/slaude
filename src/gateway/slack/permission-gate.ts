@@ -6,6 +6,8 @@ import type {
 import { env } from "../../config/env";
 import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
+import { BRIEF_MAX } from "../../agent/voice-mcp";
+import { CapabilityRedactor, ROUTE_HEADER_ALLOWLIST } from "../../voice/audio-link";
 
 type PendingKey = string; // toolUseID
 
@@ -192,52 +194,99 @@ export function redactForCard(value: unknown, depth = 0, parentKey = ""): unknow
 
 const VOICE_START = "mcp__slaude_voice__voice_start";
 
-const BRIEF_MAX = 500;
-
-/** Text that cannot close the card's code fence or form a Slack mention or link. */
-function cardSafe(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/`/g, "\u02cb");
+/** Text shown literally inside the card's code fence: Slack's control
+ *  characters are entity-escaped (so no mention, link or channel ping forms),
+ *  runs of three backticks are broken up (so the fence cannot be closed), and
+ *  control and bidi-override characters are replaced (so nothing reorders or
+ *  hides what is shown). Everything else is shown as is. */
+function cardLiteral(s: string): string {
+  return unfence(
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/[\u0000-\u0008\u000b-\u001f\u007f‎‏‪-‮⁦-⁩]/g, "�"),
+  );
 }
 
 /** Three or more backticks cannot end the card's fence early. */
 function unfence(s: string): string {
-  return s.replace(/`{3,}/g, (run) => run.split("").join("\u200b"));
+  return s.replace(/`{3,}/g, (run) => run.split("").join("​"));
 }
 
-/** voice_start's card is a fixed summary built from parsed fields, never the
- *  raw input: the capability URLs (secret paths) show as their origin, route
- *  headers by name only, and the model-written brief is capped, escaped and
- *  prefixed line by line so it cannot pass for a summary line. */
-function voiceStartSummary(input: Record<string, unknown>): string {
+/** What voice_start's card needs from the deployment: the pinned workbench and
+ *  the defaults a call without `voice` will use. */
+export interface VoiceCardConfig {
+  workbenchUrl?: string;
+  model?: string;
+  voiceName?: string;
+}
+export function voiceCardConfig(): VoiceCardConfig {
+  return { workbenchUrl: env.voice.workbenchUrl(), model: env.voice.model(), voiceName: env.voice.voiceName() };
+}
+
+const VOICE_START_KEYS = new Set(["brief", "audio", "voice"]);
+const VOICE_AUDIO_KEYS = new Set(["stream_url", "clear_url", "headers", "sample_rate"]);
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+/**
+ * voice_start's approval card: a deterministic rendering of the exact input
+ * that will run (the approved `updatedInput` is this same object), showing
+ * every field that changes behaviour and hiding only secrets. The capability
+ * URLs show as their origin (the path holds the audio session's secret), route
+ * headers by name with values hidden, and the brief whole (the schema caps it
+ * at BRIEF_MAX), each line prefixed so it cannot pass for a summary line.
+ */
+export function voiceStartCard(input: Record<string, unknown>, cfg: VoiceCardConfig): string {
   let audio: unknown = input.audio;
+  const audioWasString = typeof audio === "string";
   if (typeof audio === "string") {
     try { audio = JSON.parse(audio); } catch { audio = null; }
   }
-  const a = audio && typeof audio === "object" && !Array.isArray(audio) ? (audio as Record<string, unknown>) : {};
-  let origin = "";
-  for (const u of [a.stream_url, a.clear_url]) {
-    if (origin || typeof u !== "string") continue;
-    try {
-      const o = new URL(u).origin;
-      if (o && o !== "null") origin = o;
-    } catch {}
+  const a = isRecord(audio) ? audio : {};
+  let pinned = "";
+  try { pinned = cfg.workbenchUrl ? new URL(cfg.workbenchUrl).origin : ""; } catch {}
+  const streamUrl = typeof a.stream_url === "string" ? a.stream_url : "";
+  const clearUrl = typeof a.clear_url === "string" ? a.clear_url : "";
+  const lines = ["voice_start: the values below are what will run; only secrets are hidden."];
+  if (audioWasString) lines.push("audio: given as a JSON string (voice_start will refuse it)");
+  for (const [name, u] of [["stream", streamUrl], ["clear", clearUrl]] as const) {
+    let origin = "";
+    try { origin = new URL(u, pinned || undefined).origin; } catch {}
+    if (!u) lines.push(`${name}: (missing; voice_start will refuse it)`);
+    else if (!origin || origin === "null") lines.push(`${name}: (unresolvable; voice_start will refuse it)`);
+    else {
+      const off = origin !== pinned ? " (not the pinned workbench; voice_start will refuse it)" : "";
+      lines.push(`${name}: ${origin}/… (path hidden: capability secret)${off}`);
+    }
   }
-  const headers = a.headers && typeof a.headers === "object" && !Array.isArray(a.headers) ? Object.keys(a.headers as object) : [];
-  const rate = typeof a.sample_rate === "number" ? String(a.sample_rate) : "default";
-  const rawBrief = typeof input.brief === "string" ? input.brief : "";
-  const brief = rawBrief.length > BRIEF_MAX ? `${rawBrief.slice(0, BRIEF_MAX)}…(truncated)` : rawBrief;
-  const lines = [
-    `workbench: ${origin ? `${origin}/…` : "(relative; pinned to the configured workbench)"}`,
-    `sample rate: ${rate}`,
-    `route headers: ${headers.length ? headers.map((h) => h.slice(0, 64)).join(", ") : "(none)"}`,
+  lines.push(`pinned workbench: ${pinned || "(not configured)"}`);
+  lines.push(`sample rate: ${a.sample_rate === undefined ? "24000 (default)" : cardLiteral(JSON.stringify(a.sample_rate))}`);
+  const headers = isRecord(a.headers) ? Object.keys(a.headers) : [];
+  lines.push(`route headers: ${headers.length
+    ? headers.map((h) => `${cardLiteral(h)}=[hidden]${ROUTE_HEADER_ALLOWLIST.has(h.toLowerCase()) ? "" : " (not allowed; voice_start will refuse it)"}`).join(", ")
+    : "(none)"}`);
+  lines.push(`voice: ${typeof input.voice === "string"
+    ? cardLiteral(input.voice)
+    : cfg.voiceName ? `${cardLiteral(cfg.voiceName)} (configured default)` : "(provider default)"}`);
+  lines.push(`model: ${cfg.model ? cardLiteral(cfg.model) : "(not configured)"} (configured; not set by the call)`);
+  const ignored = [
+    ...Object.keys(input).filter((k) => !VOICE_START_KEYS.has(k)),
+    ...Object.keys(a).filter((k) => !VOICE_AUDIO_KEYS.has(k)).map((k) => `audio.${k}`),
   ];
-  if (typeof input.voice === "string") lines.push(`voice: ${input.voice.slice(0, 64)}`);
-  lines.push("brief (written by the agent):", ...brief.split("\n").map((l) => `| ${l}`));
-  return cardSafe(lines.join("\n"));
+  if (ignored.length) lines.push(`ignored fields (dropped before running): ${ignored.map(cardLiteral).join(", ")}`);
+  const rawBrief = typeof input.brief === "string" ? input.brief : "";
+  // Hide only the secrets: a brief quoting the capability URLs shows them masked.
+  const brief = new CapabilityRedactor({ streamUrl, clearUrl }, pinned).redact(rawBrief);
+  if (rawBrief.length > BRIEF_MAX) {
+    lines.push(`brief: ${rawBrief.length} characters, over the ${BRIEF_MAX} limit (voice_start will refuse it); first ${BRIEF_MAX}:`);
+    lines.push(...cardLiteral(brief.slice(0, BRIEF_MAX)).split("\n").map((l) => `| ${l}`));
+  } else {
+    lines.push(`brief (${rawBrief.length} characters, written by the agent):`);
+    lines.push(...cardLiteral(brief).split("\n").map((l) => `| ${l}`));
+  }
+  return lines.join("\n");
 }
 
 function permBlocks(toolName: string, input: Record<string, unknown>, toolUseId: string, decisionReason?: string) {
-  const rendered = toolName === VOICE_START ? voiceStartSummary(input) : JSON.stringify(redactForCard(input), null, 2);
+  const rendered = toolName === VOICE_START ? voiceStartCard(input, voiceCardConfig()) : JSON.stringify(redactForCard(input), null, 2);
   const inputPreview = truncate(unfence(rendered), 2500);
   return [
     {

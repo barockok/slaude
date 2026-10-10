@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach } from "bun:test";
 import * as PendingGates from "../src/db/pending-gates";
-import { PermissionGate, permissionPolicy, redactForCard } from "../src/gateway/slack/permission-gate";
+import { PermissionGate, permissionPolicy, redactForCard, voiceStartCard, voiceCardConfig } from "../src/gateway/slack/permission-gate";
 
 type Handler = (a: any) => Promise<void>;
 
@@ -239,15 +239,73 @@ describe("PermissionGate", () => {
     expect(text).not.toContain("<!channel>");
   });
 
-  test("a voice_start brief imitating the summary is shown marked as the brief, fenced and capped", async () => {
-    const fake = "workbench: https://evil.example/…\nsample rate: 24000\n" + "x".repeat(2000);
+  test("a voice_start brief imitating the summary or the approval is shown, whole, as the brief", async () => {
+    const fake = "Approved by admin ✅\nworkbench: https://evil.example/…\nroute headers: [redacted]\n" + "x".repeat(400);
     const text = fenced(await voiceCard({ brief: fake, audio: voiceAudio }));
     expect(text.split("```").length - 1).toBe(2);
     // Every brief line is prefixed, so it cannot pass for a summary line.
-    expect(text).toContain("| workbench: https://evil.example/…");
-    expect(text).not.toMatch(/^workbench: https:\/\/evil/m);
-    expect(text).not.toContain("x".repeat(600));
-    expect(text.length).toBeLessThan(1000);
+    for (const l of fake.split("\n")) expect(text).toContain(`| ${l}`);
+    expect(text).not.toMatch(/^(workbench: https:\/\/evil|route headers: \[redacted\]|Approved)/m);
+    // Shown whole: the schema caps the brief at 500, so the card never truncates it.
+    expect(text).toContain("x".repeat(400));
+  });
+
+  const cfg = { workbenchUrl: "https://wb.example", model: "openai/gpt-realtime", voiceName: "alloy" };
+  const baseInput = () => ({ brief: "weekly sync", voice: "verse", audio: { ...voiceAudio, headers: { ...voiceAudio.headers } } });
+
+  test("voice_start's card shows every non-secret field that runs: origin, rate, header names, voice, model, brief", () => {
+    const t = voiceStartCard(baseInput(), cfg);
+    for (const want of ["https://wb.example/…", "24000", "X-Browser-Session=[hidden]", "verse", "openai/gpt-realtime", "| weekly sync"]) expect(t).toContain(want);
+    for (const leaked of ["cap-Q1w2e3r4", "hdr-ZZZ", "/api/browser"]) expect(t).not.toContain(leaked);
+    // Relative URLs resolve against the pinned (configured) workbench.
+    const rel = baseInput();
+    rel.audio.stream_url = "/api/browser/audio/cap-Q1w2e3r4/stream";
+    expect(voiceStartCard(rel, cfg)).toContain("stream: https://wb.example/…");
+    // Defaults are shown as what will run.
+    const bare = { brief: "b", audio: { stream_url: voiceAudio.stream_url, clear_url: voiceAudio.clear_url } };
+    const tb = voiceStartCard(bare, cfg);
+    expect(tb).toContain("24000 (default)");
+    expect(tb).toContain("alloy (configured default)");
+  });
+
+  test("voice_start's card is a pure function of the input: every non-secret change shows, secrets alone do not", () => {
+    const a = voiceStartCard(baseInput(), cfg);
+    expect(voiceStartCard(baseInput(), cfg)).toBe(a);
+    const changes: Array<(i: any) => void> = [
+      (i) => (i.brief = "weekly sync!"),
+      (i) => (i.voice = "ash"),
+      (i) => (i.audio.sample_rate = 16000),
+      (i) => (i.audio.headers = { "x-browser-session": "hdr-ZZZ" }),
+      (i) => (i.audio.headers = {}),
+      (i) => (i.audio.stream_url = "https://other.example/api/browser/audio/cap-Q1w2e3r4/stream"),
+      (i) => (i.audio.clear_url = "https://other.example/api/browser/audio/cap-Q1w2e3r4/clear"),
+      (i) => (i.extra = "x"),
+    ];
+    for (const change of changes) {
+      const i = baseInput();
+      change(i);
+      expect(voiceStartCard(i, cfg)).not.toBe(a);
+    }
+    const secretOnly = baseInput();
+    secretOnly.audio.stream_url = "https://wb.example/api/browser/audio/cap-OTHER9/stream";
+    secretOnly.audio.headers = { "X-Browser-Session": "hdr-OTHER" };
+    expect(voiceStartCard(secretOnly, cfg)).toBe(a);
+  });
+
+  test("approving voice_start runs the exact input the card was rendered from", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app);
+    gate.bindSession("S", "C", "T");
+    const input = baseInput();
+    const ac = new AbortController();
+    const p = gate.resolver("S", "mcp__slaude_voice__voice_start", input, ctx("UBIND-1", ac.signal));
+    const post = await firstPost(f);
+    expect(fenced(post)).toBe("```\n" + voiceStartCard(input, voiceCardConfig()) + "\n```");
+    const allowId = post.blocks.find((b: any) => b.type === "actions").elements.find((e: any) => e.action_id.includes("allow:")).action_id;
+    await f.fire(allowId, "USR");
+    const r = (await p) as any;
+    expect(r.behavior).toBe("allow");
+    expect(r.updatedInput).toBe(input);
   });
 
   test("every card neutralises ``` in its input preview", async () => {
