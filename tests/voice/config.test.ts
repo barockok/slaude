@@ -86,6 +86,10 @@ describe("voiceConfigFromEnv", () => {
     expect(cfg.audio.requiredHeaders).toEqual(["x-route-hint"]);
     expect(voiceConfigFromBundle(null)).toBeNull();
   });
+  it("a bundle from a gateway older than rc.4 (workbenchUrl, no allowlist) names the cause", () => {
+    const old = { model: "openai/gpt-realtime", apiKey: "k", workbenchUrl: "https://wb.example.com", maxMinutes: 1, staleSeq: 1 };
+    expect(() => voiceConfigFromBundle(old as any)).toThrow("the gateway's voice bundle carries no audio allowlist (gateway older than rc.4?)");
+  });
   it("refuses a bundle whose allowlist is empty or malformed", () => {
     const b = { model: "openai/gpt-realtime", apiKey: "k", audioAllowedHeaders: ["x-browser-session"], audioRequiredHeaders: ["x-browser-session"], maxMinutes: 1, staleSeq: 1 };
     expect(() => voiceConfigFromBundle({ ...b, audioAllowedOrigins: [] })).toThrow();
@@ -103,10 +107,11 @@ describe("audio allowlist from env: deny by default", () => {
       expect(voiceBundleFromEnv()).toBeNull();
       expect(voiceConfigFromEnv()).toBeNull();
     } finally { l.restore(); }
+    // One line per cause (unset, then set but empty), each once.
     const lines = [...l.warn, ...l.error];
-    expect(lines.length).toBe(1);
-    expect(lines[0]).toMatch(/SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS/);
-    expect(lines[0]).toMatch(/deny/i);
+    expect(lines.length).toBe(2);
+    expect(lines[0]).toMatch(/SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS is unset.*deny/i);
+    expect(lines[1]).toMatch(/SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS is set but empty.*deny/i);
   });
   it("a malformed entry disables voice with a loud error", () => {
     const l = logs();
@@ -169,6 +174,19 @@ describe("deprecated SLAUDE_VOICE_WORKBENCH_URL", () => {
     expect(b!.audioAllowedOrigins).toEqual([ORIGIN]);
     expect(l.warn.length).toBe(1);
     expect(l.warn[0]).toMatch(/SLAUDE_VOICE_WORKBENCH_URL.*ignored/);
+  });
+  it("an explicitly empty SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS is a deliberate deny: the alias is not used", () => {
+    const l = logs();
+    try {
+      enable();
+      process.env.SLAUDE_VOICE_WORKBENCH_URL = "https://wb.example.com";
+      process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS = "";
+      expect(voiceBundleFromEnv()).toBeNull();
+      process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS = "  ";
+      expect(voiceBundleFromEnv()).toBeNull();
+    } finally { l.restore(); }
+    expect(l.warn.some((w) => /SLAUDE_VOICE_WORKBENCH_URL.*ignored/.test(w))).toBe(true);
+    expect(l.warn.some((w) => /SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS.*empty.*deny/i.test(w))).toBe(true);
   });
   it("an unparseable legacy URL disables voice", () => {
     const l = logs();

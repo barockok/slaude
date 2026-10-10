@@ -60,12 +60,14 @@ export function __resetVoiceConfigLogs(): void { logged.clear(); }
  * empty SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS turns voice off with one log line;
  * an invalid entry or header list does the same with a loud error. The
  * deprecated SLAUDE_VOICE_WORKBENCH_URL seeds the list with its origin only
- * when the list itself is unset.
+ * when the list itself is unset (not when it is set to empty).
  */
 export function audioPolicyFromEnv(): AudioPolicy | null {
   let origins = env.voice.audioAllowedOrigins();
   const legacy = env.voice.deprecatedWorkbenchUrl();
-  if (legacy && origins) {
+  // Only an UNSET allowlist falls back to the alias: set but empty is a
+  // deliberate deny.
+  if (legacy && origins !== undefined) {
     logOnce("warn", "[voice] SLAUDE_VOICE_WORKBENCH_URL is deprecated and ignored: SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS is set");
   } else if (legacy) {
     try {
@@ -76,8 +78,12 @@ export function audioPolicyFromEnv(): AudioPolicy | null {
     }
     logOnce("warn", "[voice] SLAUDE_VOICE_WORKBENCH_URL is deprecated: its origin seeds the audio allowlist; set SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS instead");
   }
+  if (origins === undefined) {
+    logOnce("warn", "[voice] disabled: SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS is unset (deny by default); list the audio provider origins voice may send call audio to");
+    return null;
+  }
   if (!origins.split(",").some((s) => s.trim())) {
-    logOnce("warn", "[voice] disabled: SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS is unset or empty (deny by default); list the audio provider origins voice may send call audio to");
+    logOnce("warn", "[voice] disabled: SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS is set but empty (deliberate deny)");
     return null;
   }
   try {
@@ -114,8 +120,12 @@ export function voiceBundleFromEnv(): VoiceBundle | null {
 export function voiceConfigFromBundle(b: VoiceBundle | null | undefined): VoiceConfig | null {
   if (!b) return null;
   const { provider, model } = parseVoiceModel(b.model);
+  // A gateway before rc.4 ships workbenchUrl and no allowlist: say so.
+  if (!Array.isArray(b.audioAllowedOrigins)) {
+    throw new Error("the gateway's voice bundle carries no audio allowlist (gateway older than rc.4?)");
+  }
   const audio = buildAudioPolicy({
-    origins: b.audioAllowedOrigins ?? [],
+    origins: b.audioAllowedOrigins,
     allowedHeaders: b.audioAllowedHeaders ?? [],
     requiredHeaders: b.audioRequiredHeaders ?? [],
   });

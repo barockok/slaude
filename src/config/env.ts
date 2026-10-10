@@ -131,9 +131,10 @@ export const env = {
     model: (): string => opt("SLAUDE_VOICE_MODEL", "openai/gpt-realtime"),
     voiceName: (): string | undefined => opt("SLAUDE_VOICE_NAME", "") || undefined,
     apiKey: (): string | undefined => opt("SLAUDE_VOICE_API_KEY", "") || undefined,
-    /** The audio-origin allowlist, raw (src/voice/audio-acl.ts). Unset or
-     *  empty means deny: voice stays off. */
-    audioAllowedOrigins: (): string => opt("SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS", "").trim(),
+    /** The audio-origin allowlist, raw (src/voice/audio-acl.ts); undefined
+     *  when unset. Unset or empty means deny: voice stays off. Set but empty
+     *  is a deliberate deny that the deprecated alias does not override. */
+    audioAllowedOrigins: (): string | undefined => process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS?.trim(),
     audioAllowedHeaders: (): string => opt("SLAUDE_VOICE_AUDIO_ALLOWED_HEADERS", "X-Browser-Session"),
     audioRequiredHeaders: (): string => opt("SLAUDE_VOICE_AUDIO_REQUIRED_HEADERS", "X-Browser-Session"),
     /** Deprecated alias: its origin seeds the allowlist when that is unset. */
