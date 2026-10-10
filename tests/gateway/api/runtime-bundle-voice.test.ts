@@ -9,7 +9,7 @@ const { ensureHome } = await import("../../../src/config/home");
 const { handleTenantRuntime } = await import("../../../src/gateway/api/tenants");
 const { __resetPersonaRegistry } = await import("../../../src/persona/registry");
 
-const KEYS = ["SLAUDE_VOICE_ENABLED", "SLAUDE_VOICE_API_KEY", "SLAUDE_VOICE_WORKBENCH_URL", "SLAUDE_VOICE_MODEL", "SLAUDE_VOICE_TENANTS"];
+const KEYS = ["SLAUDE_VOICE_ENABLED", "SLAUDE_VOICE_API_KEY", "SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS", "SLAUDE_VOICE_WORKBENCH_URL", "SLAUDE_VOICE_MODEL", "SLAUDE_VOICE_TENANTS"];
 beforeAll(() => {
   ensureHome();
   __resetPersonaRegistry();
@@ -35,7 +35,7 @@ describe.skipIf(process.env.SLAUDE_DB === "pg")("runtime bundle voice block", ()
   it("is null when SLAUDE_VOICE_TENANTS is unset, even if voice is configured", async () => {
     process.env.SLAUDE_VOICE_ENABLED = "1";
     process.env.SLAUDE_VOICE_API_KEY = "k";
-    process.env.SLAUDE_VOICE_WORKBENCH_URL = "https://wb.example.com";
+    process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS = "https://audio.example.com";
     process.env.SLAUDE_VOICE_MODEL = "openai/gpt-realtime";
     // SLAUDE_VOICE_TENANTS not set
     const r = await fetchBundle();
@@ -46,7 +46,7 @@ describe.skipIf(process.env.SLAUDE_DB === "pg")("runtime bundle voice block", ()
   it("carries voice to allowed tenant in SLAUDE_VOICE_TENANTS", async () => {
     process.env.SLAUDE_VOICE_ENABLED = "1";
     process.env.SLAUDE_VOICE_API_KEY = "k";
-    process.env.SLAUDE_VOICE_WORKBENCH_URL = "https://wb.example.com";
+    process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS = "https://audio.example.com";
     process.env.SLAUDE_VOICE_MODEL = "openai/gpt-realtime";
     process.env.SLAUDE_VOICE_TENANTS = "default";
 
@@ -55,16 +55,36 @@ describe.skipIf(process.env.SLAUDE_DB === "pg")("runtime bundle voice block", ()
     expect(((await r.json()) as any).voice).toEqual({
       model: "openai/gpt-realtime",
       apiKey: "k",
-      workbenchUrl: "https://wb.example.com",
+      audioAllowedOrigins: ["https://audio.example.com"],
+      audioAllowedHeaders: ["x-browser-session"],
+      audioRequiredHeaders: ["x-browser-session"],
       maxMinutes: 120,
       staleSeq: 6,
     });
   });
 
+  it("ships voice null when the audio allowlist is unset (deny by default) or malformed", async () => {
+    process.env.SLAUDE_VOICE_ENABLED = "1";
+    process.env.SLAUDE_VOICE_API_KEY = "k";
+    process.env.SLAUDE_VOICE_MODEL = "openai/gpt-realtime";
+    process.env.SLAUDE_VOICE_TENANTS = "default";
+    const quiet = { warn: console.warn, error: console.error };
+    console.warn = () => {};
+    console.error = () => {};
+    try {
+      expect(((await (await fetchBundle()).json()) as any).voice).toBeNull();
+      process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS = "*";
+      expect(((await (await fetchBundle()).json()) as any).voice).toBeNull();
+    } finally {
+      console.warn = quiet.warn;
+      console.error = quiet.error;
+    }
+  });
+
   it("does not carry voice to tenant not in SLAUDE_VOICE_TENANTS", async () => {
     process.env.SLAUDE_VOICE_ENABLED = "1";
     process.env.SLAUDE_VOICE_API_KEY = "k";
-    process.env.SLAUDE_VOICE_WORKBENCH_URL = "https://wb.example.com";
+    process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS = "https://audio.example.com";
     process.env.SLAUDE_VOICE_MODEL = "openai/gpt-realtime";
     process.env.SLAUDE_VOICE_TENANTS = "other-tenant";
 
@@ -76,7 +96,7 @@ describe.skipIf(process.env.SLAUDE_DB === "pg")("runtime bundle voice block", ()
   it("carries voice to all tenants when SLAUDE_VOICE_TENANTS is *", async () => {
     process.env.SLAUDE_VOICE_ENABLED = "1";
     process.env.SLAUDE_VOICE_API_KEY = "k";
-    process.env.SLAUDE_VOICE_WORKBENCH_URL = "https://wb.example.com";
+    process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS = "https://audio.example.com";
     process.env.SLAUDE_VOICE_MODEL = "openai/gpt-realtime";
     process.env.SLAUDE_VOICE_TENANTS = "*";
 
@@ -85,7 +105,9 @@ describe.skipIf(process.env.SLAUDE_DB === "pg")("runtime bundle voice block", ()
     expect(((await r.json()) as any).voice).toEqual({
       model: "openai/gpt-realtime",
       apiKey: "k",
-      workbenchUrl: "https://wb.example.com",
+      audioAllowedOrigins: ["https://audio.example.com"],
+      audioAllowedHeaders: ["x-browser-session"],
+      audioRequiredHeaders: ["x-browser-session"],
       maxMinutes: 120,
       staleSeq: 6,
     });
@@ -96,14 +118,16 @@ describe.skipIf(process.env.SLAUDE_DB === "pg")("runtime bundle voice block", ()
     const before = (await fetchBundle()).headers.get("etag")!;
     process.env.SLAUDE_VOICE_ENABLED = "1";
     process.env.SLAUDE_VOICE_API_KEY = "k";
-    process.env.SLAUDE_VOICE_WORKBENCH_URL = "https://wb.example.com";
+    process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS = "https://audio.example.com";
     process.env.SLAUDE_VOICE_MODEL = "openai/gpt-realtime";
     const r = await fetchBundle("default", before);
     expect(r.status).toBe(200);
     expect(((await r.json()) as any).voice).toEqual({
       model: "openai/gpt-realtime",
       apiKey: "k",
-      workbenchUrl: "https://wb.example.com",
+      audioAllowedOrigins: ["https://audio.example.com"],
+      audioAllowedHeaders: ["x-browser-session"],
+      audioRequiredHeaders: ["x-browser-session"],
       maxMinutes: 120,
       staleSeq: 6,
     });
@@ -112,7 +136,7 @@ describe.skipIf(process.env.SLAUDE_DB === "pg")("runtime bundle voice block", ()
   it("bad SLAUDE_VOICE_MODEL does not 500, ships voice null instead", async () => {
     process.env.SLAUDE_VOICE_ENABLED = "1";
     process.env.SLAUDE_VOICE_API_KEY = "k";
-    process.env.SLAUDE_VOICE_WORKBENCH_URL = "https://wb.example.com";
+    process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS = "https://audio.example.com";
     process.env.SLAUDE_VOICE_MODEL = "nope/x";
     process.env.SLAUDE_VOICE_TENANTS = "default";
     const r = await fetchBundle();
@@ -123,7 +147,7 @@ describe.skipIf(process.env.SLAUDE_DB === "pg")("runtime bundle voice block", ()
   it("another bad SLAUDE_VOICE_MODEL shape also ships voice null", async () => {
     process.env.SLAUDE_VOICE_ENABLED = "1";
     process.env.SLAUDE_VOICE_API_KEY = "k";
-    process.env.SLAUDE_VOICE_WORKBENCH_URL = "https://wb.example.com";
+    process.env.SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS = "https://audio.example.com";
     process.env.SLAUDE_VOICE_MODEL = "x";
     process.env.SLAUDE_VOICE_TENANTS = "default";
     const r = await fetchBundle();

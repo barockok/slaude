@@ -1,7 +1,8 @@
 /**
- * Workbench browser-audio client (voice mode spec §5.5; workbench
- * browser-audio-pipeline design). SSE out (call audio), one long-lived chunked
- * POST in (agent audio), `clear` for interruption. The stream and clear URLs
+ * Browser audio pipe client (voice mode spec §5.5). Speaks a generic contract
+ * to any audio provider on the operator's allowlist (src/voice/audio-acl.ts):
+ * SSE out (call audio), one long-lived chunked POST in (agent audio), `clear`
+ * for interruption. The stream and clear URLs
  * are ephemeral capability URLs: an unguessable per-audio-session secret sits
  * in their paths, and they die when the audio session stops. They are the only
  * authorization, so no Authorization header is sent and the URLs themselves are
@@ -10,6 +11,9 @@
  */
 import type { AudioEndpoints } from "./ipc";
 import { base64ToPcm } from "./provider/types";
+import { FORBIDDEN_HEADERS, matchAudioOrigin, type AudioOriginRule } from "./audio-acl";
+
+export { FORBIDDEN_HEADERS };
 
 export interface AudioHandlers {
   onAudio(pcm: Int16Array): void;
@@ -21,28 +25,6 @@ export interface AudioLinkLike {
   /** Null when the clear failed or timed out: what played is then unknown. */
   clear(): Promise<{ playedMs: number; clearedMs: number } | null>;
   close(): Promise<void>;
-}
-
-/** Headers a model-supplied endpoint may never set: ambient credentials and
- *  routing that the capability URL must not be combined with. */
-export const FORBIDDEN_HEADERS: ReadonlySet<string> = new Set(["authorization", "cookie", "host"]);
-
-/** The only route headers voice_start accepts (lower-case): naming them keeps
- *  every header that can change routing visible on the approval card. */
-export const ROUTE_HEADER_ALLOWLIST: ReadonlySet<string> = new Set(["x-browser-session"]);
-export const routeHeadersAllowed = (h: Record<string, string>): boolean =>
-  Object.keys(h).every((k) => ROUTE_HEADER_ALLOWLIST.has(k.toLowerCase()));
-
-/** True when `path` resolves against `base` to the same origin, without
- *  embedded credentials. Unparseable input is false. */
-export function sameOrigin(path: string, base: string): boolean {
-  try {
-    const b = new URL(base);
-    const u = new URL(path, b);
-    return u.origin === b.origin && !u.username && !u.password;
-  } catch {
-    return false;
-  }
 }
 
 const PLACEHOLDER_BASE = "http://placeholder.invalid";
@@ -58,7 +40,7 @@ function encodings(piece: string): string[] {
   return [piece, dec, safeEncodeURI(dec), safeEncodeURIComponent(dec)];
 }
 
-/** Path segments of the workbench's audio routes that carry no secret. */
+/** Common path segments of browser audio routes that carry no secret. */
 export const ROUTE_WORDS: ReadonlySet<string> = new Set(["api", "browser", "tabs", "audio", "stream", "clear"]);
 /** Pieces this short are masked only as a whole token, so a one-letter test
  *  path cannot eat letters inside words. */
@@ -82,7 +64,8 @@ function looksSecret(seg: string): boolean {
  *    all) to its origin and "/…";
  *  - a path form not attached to a host likewise;
  *  - any remaining piece (lone, encoded, after a scheme-less host) becomes "…".
- * With no usable `baseUrl`, a relative form masks to "[redacted]".
+ * Endpoints are absolute (voice_start refuses relative ones); a relative form
+ * has no origin to show and masks to "[redacted]".
  */
 export class CapabilityRedactor {
   readonly #whole: Array<[string, string]> = [];
@@ -90,10 +73,8 @@ export class CapabilityRedactor {
   readonly #pieces: string[];
   readonly #empty: boolean;
 
-  constructor(endpoints: { streamUrl: string; clearUrl: string }, baseUrl: string) {
-    let base: URL | null = null;
-    try { base = baseUrl ? new URL(baseUrl) : null; } catch {}
-    const routeWords = new Set([...ROUTE_WORDS, ...(base?.pathname ?? "").split("/").filter(Boolean)]);
+  constructor(endpoints: { streamUrl: string; clearUrl: string }) {
+    const routeWords = ROUTE_WORDS;
     const pieces: string[] = [];
     for (const raw of [endpoints.streamUrl, endpoints.clearUrl]) {
       if (!raw) continue;
@@ -106,8 +87,7 @@ export class CapabilityRedactor {
         absolute = true;
       } catch {
         try {
-          u = new URL(raw, base ?? PLACEHOLDER_BASE);
-          origin = base ? u.origin : "";
+          u = new URL(raw, PLACEHOLDER_BASE);
         } catch {}
       }
       if (origin === "null") origin = "";
@@ -171,8 +151,8 @@ export class CapabilityRedactor {
 /** One-shot form of CapabilityRedactor. Use on any text that leaves the voice
  *  loop: logs, ipc `log` lines, child stderr, error messages, approval cards,
  *  the panel timeline. */
-export function redactCapabilityUrls(text: string, endpoints: { streamUrl: string; clearUrl: string }, baseUrl: string): string {
-  return new CapabilityRedactor(endpoints, baseUrl).redact(text);
+export function redactCapabilityUrls(text: string, endpoints: { streamUrl: string; clearUrl: string }): string {
+  return new CapabilityRedactor(endpoints).redact(text);
 }
 
 export class AudioLink implements AudioLinkLike {
@@ -193,13 +173,14 @@ export class AudioLink implements AudioLinkLike {
   readonly #clearUrl: string;
   readonly #routeHeaders: Record<string, string>;
 
-  constructor(private o: { baseUrl: string; endpoints: AudioEndpoints; maxSseRetries?: number; retryDelayMs?: number; busyWindowMs?: number; busyBackoffMs?: number; replayMs?: number; log?: (line: string) => void; clearTimeoutMs?: number; closeTimeoutMs?: number }) {
-    // Endpoints are model-supplied: pin them to the operator's origin so the
-    // capability URL (and the route headers) can never be sent elsewhere. The
-    // error names neither URL: the path is the secret.
-    const pin = (path: string): string => {
-      if (!sameOrigin(path, o.baseUrl)) throw new Error("workbench endpoint origin mismatch");
-      return new URL(path, o.baseUrl).toString();
+  constructor(private o: { allowedOrigins: readonly AudioOriginRule[]; endpoints: AudioEndpoints; maxSseRetries?: number; retryDelayMs?: number; busyWindowMs?: number; busyBackoffMs?: number; replayMs?: number; log?: (line: string) => void; clearTimeoutMs?: number; closeTimeoutMs?: number }) {
+    // Endpoints are model-supplied: re-check them against the operator's
+    // allowlist (voice_start already did) so the capability URL and the route
+    // headers can never be sent elsewhere. Absolute only. The error names
+    // neither URL: the path is the secret.
+    const pin = (url: string): string => {
+      if (!matchAudioOrigin(url, o.allowedOrigins)) throw new Error("audio endpoint origin not allowed");
+      return new URL(url).toString();
     };
     this.#streamUrl = pin(o.endpoints.streamUrl);
     this.#clearUrl = pin(o.endpoints.clearUrl);
@@ -223,7 +204,7 @@ export class AudioLink implements AudioLinkLike {
     this.#uplinkDone = this.#uplinkLoop();
   }
 
-  /** Wait out a 409 (the workbench still holds the previous reader/uplink): a
+  /** Wait out a 409 (the audio provider still holds the previous reader/uplink): a
    *  growing backoff (base, x2, capped at 4x base) until the window closes.
    *  Returns false when the window is spent or the call is over. */
   async #busyWait(since: number, attempt: number): Promise<boolean> {
@@ -253,7 +234,7 @@ export class AudioLink implements AudioLinkLike {
         start: (c) => {
           for (const chunk of this.#ring) c.enqueue(chunk);
           if (this.#ringDropped > 0) {
-            this.o.log?.(`uplink replay buffer: dropped ${this.#ringDropped} bytes of the oldest audio while the workbench was busy`);
+            this.o.log?.(`uplink replay buffer: dropped ${this.#ringDropped} bytes of the oldest audio while the audio provider was busy`);
             this.#ringDropped = 0;
           }
           this.#uplinkCtl = c;
@@ -324,7 +305,7 @@ export class AudioLink implements AudioLinkLike {
               this.#h?.onAudio(base64ToPcm(d.pcm));
             } else if (ev.event === "ended") {
               const d = JSON.parse(ev.data) as { reason?: string };
-              this.#end(`workbench:${sanitizeReason(d.reason)}`);
+              this.#end(`audio:${sanitizeReason(d.reason)}`);
               return;
             }
           }
@@ -384,7 +365,7 @@ export class AudioLink implements AudioLinkLike {
     this.#closeAbort.abort();
     try { this.#uplinkCtl?.close(); } catch {}
     this.#sseAbort.abort();
-    // Let the workbench finish the uplink cleanly, but not forever.
+    // Let the audio provider finish the uplink cleanly, but not forever.
     let timer: ReturnType<typeof setTimeout> | undefined;
     const settled = await Promise.race([
       this.#uplinkDone.then(() => true, () => true),
@@ -395,7 +376,7 @@ export class AudioLink implements AudioLinkLike {
   }
 }
 
-/** The reason comes from the external workbench; keep it inside the ipc EndReason grammar. */
+/** The reason comes from the external audio provider; keep it inside the ipc EndReason grammar. */
 function sanitizeReason(raw: unknown): string {
   const s = (typeof raw === "string" ? raw : "").toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 64);
   return s || "stopped";

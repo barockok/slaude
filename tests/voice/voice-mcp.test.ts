@@ -4,10 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createVoiceMcp, buildInstructions, SPEAKING_RULES, voiceStartSchema, voiceStartProblem, type VoiceHost } from "../../src/agent/voice-mcp";
 import { VoiceCalls } from "../../src/voice/call";
+import { buildAudioPolicy } from "../../src/voice/audio-acl";
 import type { ChildMsg, ParentMsg } from "../../src/voice/ipc";
 import { chan, until } from "./fakes";
 
-const cfg = { provider: "openai" as const, model: "gpt-realtime", apiKey: "sk-x", workbenchUrl: "https://wb.example.com", maxMinutes: 120, staleSeq: 6 };
+const WB = "https://wb.example.com";
+const policy = buildAudioPolicy({ origins: WB });
+const cfg = { provider: "openai" as const, model: "gpt-realtime", apiKey: "sk-x", audio: policy, maxMinutes: 120, staleSeq: 6 };
 
 function fakeChild() {
   const sent: ParentMsg[] = [];
@@ -59,8 +62,8 @@ const tools = (cfgObj: any) => cfgObj.instance._registeredTools;
 // The capability URLs carry the audio session's secret in their paths.
 const CAP = "cap-9f2c7d1e";
 const audio: { stream_url: string; clear_url: string; headers: Record<string, string>; sample_rate: number } = {
-  stream_url: `/api/browser/audio/${CAP}/stream`,
-  clear_url: `/api/browser/audio/${CAP}/clear`,
+  stream_url: `${WB}/api/browser/audio/${CAP}/stream`,
+  clear_url: `${WB}/api/browser/audio/${CAP}/clear`,
   headers: { "X-Browser-Session": "rk" },
   sample_rate: 24000,
 };
@@ -81,13 +84,15 @@ describe("voice MCP", () => {
     expect(JSON.stringify(init)).not.toContain("sk-x");
     expect(init.audio).toEqual({ streamUrl: audio.stream_url, clearUrl: audio.clear_url, headers: { "X-Browser-Session": "rk" }, sampleRate: 24000 });
     expect(init.instructions).toContain("weekly sync");
+    expect(init.audioAllowedOrigins).toEqual([WB]);
     expect(calls.get("s1")).toBeDefined();
   });
 
   it("accepts browser_audio_start's full real-shaped result; still strict about the rest", () => {
-    const real = { stream_url: "https://workbench.example.com/api/browser/audio/cap-1/stream", clear_url: "/api/browser/audio/cap-1/clear", sample_rate: 24000, format: "pcm_s16le", channels: 1, session_id: "739ABAE16CD3D97F52C6D5A29164ACC9", restarted: false, headers: { "X-Browser-Session": "x" } };
+    const real = { stream_url: `${WB}/api/browser/audio/cap-1/stream`, clear_url: `${WB}/api/browser/audio/cap-1/clear`, sample_rate: 24000, format: "pcm_s16le", channels: 1, session_id: "739ABAE16CD3D97F52C6D5A29164ACC9", restarted: false, headers: { "X-Browser-Session": "x" } };
     expect(voiceStartSchema.safeParse({ brief: "x", audio: real }).success).toBe(true);
     expect(voiceStartProblem({ brief: "x", audio: real })).toBeNull();
+    expect(voiceStartProblem({ brief: "x", audio: real }, policy)).toBeNull();
     expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...real, unknown_key: 1 } }).success).toBe(false);
     expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...real, format: "opus" } }).success).toBe(false);
     expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...real, channels: 2 } }).success).toBe(false);
@@ -95,18 +100,28 @@ describe("voice MCP", () => {
     expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...real, restarted: "no" } }).success).toBe(false);
   });
 
-  it("X-Browser-Session is required: missing, empty or other-only headers are VOICE_BAD_INPUT", () => {
+  it("the required route header (X-Browser-Session by default) is enforced by the policy: missing or empty is VOICE_BAD_INPUT", () => {
     const { headers: _h, ...none } = audio;
     for (const a of [none, { ...audio, headers: {} }, { ...audio, headers: { "X-Browser-Session": "" } }]) {
-      expect(voiceStartSchema.safeParse({ brief: "x", audio: a }).success).toBe(false);
-      expect(voiceStartProblem({ brief: "x", audio: a })?.code).toBe("VOICE_BAD_INPUT");
+      expect(voiceStartProblem({ brief: "x", audio: a }, policy)?.code).toBe("VOICE_BAD_INPUT");
     }
-    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, headers: { "x-browser-session": "k" } } }).success).toBe(true);
-    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, headers: { "X-Browser-Session": "k", "X-Other": "1" } } }).success).toBe(false);
+    expect(voiceStartProblem({ brief: "x", audio: { ...audio, headers: { "x-browser-session": "k" } } }, policy)).toBeNull();
+    expect(voiceStartProblem({ brief: "x", audio: { ...audio, headers: { "X-Browser-Session": "k", "X-Other": "1" } } }, policy)?.code).toBe("VOICE_BAD_INPUT");
+  });
+
+  it("the header allowlist and required headers come from the policy, case-insensitively", () => {
+    const p = buildAudioPolicy({ origins: WB, allowedHeaders: "X-Browser-Session, X-Route-Hint", requiredHeaders: "X-Route-Hint" });
+    const h = (headers: Record<string, string>) => voiceStartProblem({ brief: "x", audio: { ...audio, headers } }, p);
+    expect(h({ "x-route-hint": "r" })).toBeNull();
+    expect(h({ "X-ROUTE-HINT": "r", "X-Browser-Session": "s" })).toBeNull();
+    expect(h({ "X-Browser-Session": "s" })?.message).toMatch(/x-route-hint.*required/);
+    expect(h({ "X-Route-Hint": "r", "X-Other": "o" })?.message).toMatch(/X-Other.*not allowed/);
+    const none = buildAudioPolicy({ origins: WB, requiredHeaders: "" });
+    expect(voiceStartProblem({ brief: "x", audio: { ...audio, headers: {} } }, none)).toBeNull();
   });
 
   it("refuses a session_id equal to a URL path segment or a header value", () => {
-    const base = { ...audio, stream_url: "https://workbench.example.com/api/browser/audio/cap-77/stream", clear_url: "/api/browser/audio/cap-77/clear" };
+    const base = { ...audio, stream_url: `${WB}/api/browser/audio/cap-77/stream`, clear_url: `${WB}/api/browser/audio/cap-77/clear` };
     expect(voiceStartProblem({ brief: "x", audio: { ...base, session_id: "sess-ok" } })).toBeNull();
     expect(voiceStartProblem({ brief: "x", audio: { ...base, session_id: "cap-77" } })?.code).toBe("VOICE_BAD_INPUT");
     expect(voiceStartProblem({ brief: "x", audio: { ...base, session_id: "clear" } })?.code).toBe("VOICE_BAD_INPUT");
@@ -114,7 +129,7 @@ describe("voice MCP", () => {
   });
 
   it("a disallowed header is VOICE_BAD_INPUT whether or not X-Browser-Session is present", () => {
-    expect(voiceStartProblem({ brief: "x", audio: { ...audio, headers: { "X-Other": "1" } } })?.code).toBe("VOICE_BAD_INPUT");
+    expect(voiceStartProblem({ brief: "x", audio: { ...audio, headers: { "X-Other": "1" } } }, policy)?.code).toBe("VOICE_BAD_INPUT");
     expect(voiceStartProblem({ brief: "x", audio: { ...audio, headers: { "X-Browser-Session": "rk", Cookie: "a=b" } } })?.code).toBe("VOICE_BAD_INPUT");
   });
 
@@ -128,11 +143,24 @@ describe("voice MCP", () => {
     expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, clear_url: "https://u@wb.example.com/c" } }).success).toBe(false);
   });
 
+  it("stream_url and clear_url must be absolute: a relative URL is VOICE_BAD_ENDPOINT", () => {
+    for (const o of [{ stream_url: "/api/browser/audio/x/stream" }, { clear_url: "api/clear" }, { clear_url: "//wb.example.com/c" }, { stream_url: "ws://wb.example.com/s" }]) {
+      expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, ...o } }).success).toBe(false);
+      expect(voiceStartProblem({ brief: "x", audio: { ...audio, ...o } })?.code).toBe("VOICE_BAD_ENDPOINT");
+    }
+  });
+
+  it("forbidden route headers are refused by the schema itself, whatever the policy", () => {
+    for (const k of ["Authorization", "cookie", "HOST"]) {
+      expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, headers: { [k]: "v", "X-Browser-Session": "rk" } } }).success).toBe(false);
+    }
+  });
+
   it("a brief quoting a whole capability URL or path is refused; a lone segment word is not", () => {
-    expect(voiceStartProblem({ brief: `stream at https://wb.example.com${audio.stream_url}`, audio })?.message).toContain("brief");
-    expect(voiceStartProblem({ brief: `path ${audio.clear_url}`, audio })?.message).toContain("brief");
+    expect(voiceStartProblem({ brief: `stream at ${audio.stream_url}`, audio })?.message).toContain("brief");
+    expect(voiceStartProblem({ brief: `path ${new URL(audio.clear_url).pathname}`, audio })?.message).toContain("brief");
     expect(voiceStartProblem({ brief: `mention ${CAP} only`, audio })).toBeNull();
-    const notAudio = { ...audio, stream_url: "/api/browser/audio/not/stream", clear_url: "/api/browser/audio/not/clear" };
+    const notAudio = { ...audio, stream_url: `${WB}/api/browser/audio/not/stream`, clear_url: `${WB}/api/browser/audio/not/clear` };
     expect(voiceStartProblem({ brief: "do not hang up", audio: notAudio })).toBeNull();
   });
 
@@ -157,7 +185,7 @@ describe("voice MCP", () => {
   it("voice_start's description gives the call order; voice_stop's names the post-hangup page", () => {
     const t = tools(createVoiceMcp("s1", host().h, new VoiceCalls()));
     const d = String(t["voice_start"].description);
-    const order = ["browser_start", "browser_audio_start", "blank", "voice_start", "browser_navigate", "join"];
+    const order = ["blank", "browser audio pipe", "voice_start", "navigate", "join"];
     let at = -1;
     for (const k of order) {
       const i = d.indexOf(k, at + 1);
@@ -167,6 +195,7 @@ describe("voice MCP", () => {
     expect(d).toContain("reload");
     expect(d).toContain("startWithVideoMuted=true");
     expect(d.length).toBeLessThan(900);
+    expect(d.toLowerCase()).not.toContain("workbench");
     expect(String(t["voice_stop"].description)).toContain("close3");
   });
 
@@ -178,20 +207,20 @@ describe("voice MCP", () => {
 
   it("a start failure never echoes the capability URL", async () => {
     const t0 = host();
-    t0.h.spawn = () => { throw new Error(`connect failed for https://wb.example.com${audio.stream_url}`); };
+    t0.h.spawn = () => { throw new Error(`connect failed for ${audio.stream_url}`); };
     const r = await tools(createVoiceMcp("s1", t0.h, new VoiceCalls()))["voice_start"].handler(startArgs);
     expect(text(r)).toContain("VOICE_START_FAILED");
     expect(text(r)).not.toContain(CAP);
     expect(text(r)).toContain("https://wb.example.com/…");
   });
 
-  it("a failure before the workbench is known masks a relative capability URL to [redacted]", async () => {
+  it("a failure before the config is known still masks the capability URL to its origin", async () => {
     const t0 = host({ config: async () => { throw new Error(`lookup failed near ${audio.stream_url}`); } });
     const r = await tools(createVoiceMcp("s1", t0.h, new VoiceCalls()))["voice_start"].handler(startArgs);
     expect(text(r)).toContain("VOICE_START_FAILED");
     expect(text(r)).not.toContain(CAP);
     expect(text(r)).not.toContain("invalid");
-    expect(text(r)).toContain("[redacted]");
+    expect(text(r)).toContain(`${WB}/…`);
   });
 
   it("VOICE_BUSY on a second start", async () => {
@@ -303,6 +332,9 @@ describe("voice MCP", () => {
       ["other port", { stream_url: "https://wb.example.com:8443/s" }],
       ["other scheme", { clear_url: "http://wb.example.com/c" }],
       ["unparseable", { stream_url: "http://" }],
+      ["relative stream url", { stream_url: "/api/browser/audio/rel-1/stream" }],
+      ["relative clear url", { clear_url: "/api/browser/audio/rel-2/clear" }],
+      ["trailing-dot host", { stream_url: "https://wb.example.com./s" }],
     ] as const) {
       it(`refuses ${name} before spawning, without echoing the url`, async () => {
         const { r, spawned, calls } = await refused(withAudio(o as any));
@@ -314,17 +346,29 @@ describe("voice MCP", () => {
       });
     }
 
-    it("accepts relative and same-origin absolute urls", async () => {
-      const { r } = await refused(withAudio({ stream_url: "https://wb.example.com/api/s", clear_url: "/c" }));
+    it("accepts absolute urls on an allowlisted origin", async () => {
+      const { r } = await refused(withAudio({ stream_url: "https://WB.example.com/api/s", clear_url: "https://wb.example.com:443/c" }));
       expect(r.isError).toBeFalsy();
     });
 
-    it("refuses any route header but X-Browser-Session (schema and handler), spawning nothing", async () => {
+    it("a wildcard entry admits subdomains, never the apex or a lookalike", async () => {
+      const wild = { ...cfg, audio: buildAudioPolicy({ origins: "https://*.example.com" }) };
+      const go = async (u: string) => {
+        const t0 = host({ config: async () => wild });
+        return text(await tools(createVoiceMcp("s1", t0.h, new VoiceCalls()))["voice_start"].handler(withAudio({ stream_url: u, clear_url: u })));
+      };
+      expect(await go("https://audio.example.com/s")).not.toContain("VOICE_BAD_ENDPOINT");
+      expect(await go("https://example.com/s")).toStartWith("VOICE_BAD_ENDPOINT");
+      expect(await go("https://evilexample.com/s")).toStartWith("VOICE_BAD_ENDPOINT");
+    });
+
+    it("refuses any route header off the allowlist (forbidden ones in the schema too), spawning nothing", async () => {
       const t0 = host();
       const t = tools(createVoiceMcp("s1", t0.h, new VoiceCalls()));
       for (const h of [{ Authorization: "Bearer z" }, { cookie: "a=b" }, { HOST: "evil" }, { "X-Other": "1" }] as Record<string, string>[]) {
         const headers = { ...h, "X-Browser-Session": "rk" };
-        expect(t["voice_start"].inputSchema.safeParse({ brief: "x", audio: { ...audio, headers } }).success).toBe(false);
+        const forbidden = !("X-Other" in h);
+        expect(t["voice_start"].inputSchema.safeParse({ brief: "x", audio: { ...audio, headers } }).success).toBe(!forbidden);
         const r = await t["voice_start"].handler(withAudio({ headers }));
         expect(text(r)).toStartWith("VOICE_BAD_INPUT");
         expect(text(r)).not.toContain("Bearer z");

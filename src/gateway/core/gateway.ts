@@ -18,7 +18,7 @@ import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
 import { quietForVoice, voiceTurns } from "../../voice/turn-flags";
 import { VoiceCalls } from "../../voice/call";
-import { voiceConfigFromEnv, type VoiceConfig } from "../../voice/config";
+import { voiceBundleFromEnv, voiceConfigFromEnv, type VoiceConfig } from "../../voice/config";
 import { drainVoiceCalls, endCallsOnSessionExit, makeMonoVoiceHost, voiceServersFor } from "../../voice/hosts";
 
 /** Mono shutdown: how long live voice calls get to say goodbye and end. */
@@ -863,7 +863,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // only when voice is enabled AND configured.
   const voiceCalls = new VoiceCalls();
   const voiceHost = (() => {
-    if (env.role() === "gateway") return null;
+    if (env.role() === "gateway") {
+      // The gateway only ships voice config in runtime bundles; validate it
+      // here so a bad or missing audio allowlist is reported at boot.
+      if (env.voice.enabled()) {
+        try {
+          voiceBundleFromEnv();
+        } catch (e) {
+          console.warn(`[voice] disabled: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      return null;
+    }
     let cfg: VoiceConfig | null;
     try {
       cfg = voiceConfigFromEnv();

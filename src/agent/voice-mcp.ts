@@ -1,15 +1,17 @@
 /**
  * Claude's voice tools (voice mode spec §3). One server per session (the
- * resolver captures sessionId, like session-mcp). Claude joins the meeting with
- * workbench's browser tools, calls browser_audio_start, then voice_start with
- * that result (plan deviation 1). Calls run as the agent only.
+ * resolver captures sessionId, like session-mcp). Claude opens a blank browser
+ * tab, starts the browser audio pipe on it, then calls voice_start with that
+ * result (plan deviation 1). The audio endpoints must be on an origin the
+ * operator allowlisted (src/voice/audio-acl.ts). Calls run as the agent only.
  */
 import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { VoiceConfig } from "../voice/config";
 import { VoiceCall, VoiceCalls, type LoopChild, type TurnRunner } from "../voice/call";
 import type { VoiceInit } from "../voice/ipc";
-import { FORBIDDEN_HEADERS, redactCapabilityUrls, routeHeadersAllowed, sameOrigin } from "../voice/audio-link";
+import { redactCapabilityUrls } from "../voice/audio-link";
+import { FORBIDDEN_HEADERS, audioHeadersProblem, matchAudioOrigin, type AudioPolicy } from "../voice/audio-acl";
 
 export const VOICE_MCP_NAME = "slaude_voice";
 /** Schema caps on voice_start's free text; the approval card shows both whole. */
@@ -66,33 +68,31 @@ export function buildInstructions(
 const ok = (v: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(v) }] });
 const err = (code: string, msg: string) => ({ content: [{ type: "text" as const, text: `${code}: ${msg}` }], isError: true });
 
-/** A URL string that parses (relative ones against a placeholder) and carries
- *  no userinfo. */
+/** An absolute http(s) URL without userinfo. Relative URLs are refused: the
+ *  origin is what the allowlist checks, so it must be explicit. */
 const endpointUrl = z.string().min(1).refine((u) => {
   try {
-    const p = new URL(u, "http://placeholder.invalid");
-    return !p.username && !p.password;
+    const p = new URL(u);
+    return (p.protocol === "http:" || p.protocol === "https:") && !p.username && !p.password;
   } catch {
     return false;
   }
-}, { message: "must be a URL without embedded credentials" });
+}, { message: "must be an absolute http(s) URL without embedded credentials" });
 
-/** browser_audio_start's result. stream_url and clear_url are capability
- *  URLs (the audio session's secret is in the path), so they are the only
- *  authorization. Strict: an unknown key (e.g. a legacy stream_token) is
- *  refused, so the approval card can show everything that runs. */
-const MISSING_SESSION_HEADER = "the X-Browser-Session route header is required";
-const hasBrowserSession = (h: Record<string, string>): boolean =>
-  Object.entries(h).some(([k, v]) => k.toLowerCase() === "x-browser-session" && v.length > 0);
-
+/** The browser audio pipe's start result. stream_url and clear_url are
+ *  capability URLs (the audio session's secret is in the path), so they are
+ *  the only authorization. Strict: an unknown key (e.g. a legacy stream_token)
+ *  is refused, so the approval card can show everything that runs. */
 const audioShape = z.object({
   stream_url: endpointUrl,
   clear_url: endpointUrl,
-  // Required: the workbench needs X-Browser-Session on every request to
-  // forward it across pods.
+  // Which route headers are allowed and required is the operator's policy
+  // (checked against the config); ambient credentials never are.
   headers: z.record(z.string())
-    .refine(routeHeadersAllowed, { message: "only the X-Browser-Session route header is accepted" })
-    .refine(hasBrowserSession, { message: MISSING_SESSION_HEADER }),
+    .refine((h) => Object.keys(h).every((k) => !FORBIDDEN_HEADERS.has(k.toLowerCase())), {
+      message: "authorization, cookie and host route headers are never accepted",
+    })
+    .default({}),
   sample_rate: z.union([z.literal(16000), z.literal(24000), z.literal(48000)]).default(24000),
   // The rest of browser_audio_start's real result. Typed and otherwise inert:
   // nothing reads them, they are accepted so a faithful pass-through works.
@@ -105,7 +105,7 @@ const audioShape = z.object({
 const voiceStartShape = {
   // Capped so the approval card can show the whole brief that will run.
   brief: z.string().max(BRIEF_MAX).describe(`What this call is about and what you should do in it (at most ${BRIEF_MAX} characters).`),
-  audio: audioShape.describe("The result of browser_audio_start, passed as is: stream_url, clear_url, headers, sample_rate, and the optional format (pcm_s16le), channels (1), session_id and restarted."),
+  audio: audioShape.describe("The browser audio pipe's start result, passed as is: stream_url and clear_url (absolute URLs on an allowed audio origin), headers, sample_rate, and the optional format (pcm_s16le), channels (1), session_id and restarted."),
   voice: z.string().max(VOICE_NAME_MAX).optional(),
 };
 /** voice_start's input, strict at both levels. The permission gate validates
@@ -117,7 +117,7 @@ export type VoiceStartInput = z.infer<typeof voiceStartSchema>;
 function wholeUrlForms(u: string): string[] {
   const out = [u];
   try {
-    const p = new URL(u, "http://placeholder.invalid");
+    const p = new URL(u);
     if (p.pathname.length > 1) out.push(p.pathname + p.search, p.pathname);
   } catch {}
   return [...new Set(out.flatMap((f) => [f, encodeURIComponent(f)]))].filter((f) => f.length > 1);
@@ -126,8 +126,10 @@ function wholeUrlForms(u: string): string[] {
 /** Why a voice_start input must be refused, or null. The strict schema, plus
  *  a brief that quotes a whole stream/clear URL or path: the brief is shown
  *  literally on the approval card, so it may not carry the secret. (Single
- *  segments are not checked: a segment can be an ordinary word.) */
-export function voiceStartProblem(input: unknown): { code: "VOICE_BAD_INPUT" | "VOICE_BAD_ENDPOINT"; message: string } | null {
+ *  segments are not checked: a segment can be an ordinary word.) With the
+ *  deployment's audio policy, also: both URLs on an allowlisted origin, and
+ *  the route headers allowed and required by it. */
+export function voiceStartProblem(input: unknown, policy?: AudioPolicy | null): { code: "VOICE_BAD_INPUT" | "VOICE_BAD_ENDPOINT"; message: string } | null {
   const r = voiceStartSchema.safeParse(input);
   if (!r.success) {
     const paths = r.error.issues.map((i) => i.path.join(".") || "(input)");
@@ -148,7 +150,7 @@ export function voiceStartProblem(input: unknown): { code: "VOICE_BAD_INPUT" | "
     const secrets = new Set<string>(Object.values(audio.headers));
     for (const u of [audio.stream_url, audio.clear_url]) {
       try {
-        const p = new URL(u, "http://placeholder.invalid");
+        const p = new URL(u);
         for (const seg of p.pathname.split("/")) {
           if (!seg) continue;
           secrets.add(seg);
@@ -161,6 +163,13 @@ export function voiceStartProblem(input: unknown): { code: "VOICE_BAD_INPUT" | "
       return { code: "VOICE_BAD_INPUT", message: "session_id may not equal a URL path segment or a header value" };
     }
   }
+  if (policy) {
+    if (![audio.stream_url, audio.clear_url].every((u) => matchAudioOrigin(u, policy.origins))) {
+      return { code: "VOICE_BAD_ENDPOINT", message: "audio endpoints must be on an allowed audio origin (SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS)" };
+    }
+    const h = audioHeadersProblem(audio.headers, policy);
+    if (h) return { code: "VOICE_BAD_INPUT", message: h };
+  }
   return null;
 }
 
@@ -170,18 +179,18 @@ function safeHeaders(h: Record<string, string>): Record<string, string> {
 
 export const voiceHandlers = {
   async start(sessionId: string, host: VoiceHost, calls: VoiceCalls, args: VoiceStartInput) {
-    // Re-checked here, not only by the SDK's parse: the brief cap, the header
-    // allowlist and the brief-quotes-URL rule.
+    // Re-checked here, not only by the SDK's parse: the brief cap, the
+    // forbidden headers and the brief-quotes-URL rule. The policy checks
+    // (origins, header allowlist) follow once the config is known.
     const problem = voiceStartProblem(args);
     if (problem) return err(problem.code, problem.message);
     if (!calls.reserve(sessionId)) return err("VOICE_BUSY", "a call is already active in this thread");
     let child: LoopChild | undefined;
     let registered = false;
     // The result goes back to the model and into the transcript: never echo a capability URL.
-    let base = "";
     const startFailed = (e: unknown) => {
       const msg = e instanceof Error ? e.message : String(e);
-      return err("VOICE_START_FAILED", redactCapabilityUrls(msg, { streamUrl: args.audio.stream_url, clearUrl: args.audio.clear_url }, base));
+      return err("VOICE_START_FAILED", redactCapabilityUrls(msg, { streamUrl: args.audio.stream_url, clearUrl: args.audio.clear_url }));
     };
     try {
       const refuse = (code: "VOICE_AGENT_ONLY" | "VOICE_UNAVAILABLE") =>
@@ -192,20 +201,15 @@ export const voiceHandlers = {
       if (refusal) return refuse(refusal);
       const cfg = await host.config(sessionId);
       if (!cfg) return err("VOICE_DISABLED", "voice mode is not configured");
-      base = cfg.workbenchUrl;
       const { audio } = args;
-      if (!routeHeadersAllowed(audio.headers ?? {})) {
-        return err("VOICE_BAD_INPUT", "only the X-Browser-Session route header is accepted");
-      }
-      if (![audio.stream_url, audio.clear_url].every((u) => sameOrigin(u, cfg.workbenchUrl))) {
-        return err("VOICE_BAD_ENDPOINT", "audio endpoints must be on the configured workbench origin");
-      }
+      const denied = voiceStartProblem(args, cfg.audio);
+      if (denied) return err(denied.code, denied.message);
       const transcriptDir = await host.transcriptDir(sessionId);
       const instructions = await host.instructions(sessionId, args.brief);
       const init: VoiceInit = {
         callId: "",
         audio: { streamUrl: audio.stream_url, clearUrl: audio.clear_url, headers: safeHeaders(audio.headers), sampleRate: audio.sample_rate },
-        workbenchUrl: cfg.workbenchUrl,
+        audioAllowedOrigins: cfg.audio.origins.map((r) => r.entry),
         instructions,
         provider: cfg.provider,
         model: cfg.model,
@@ -278,7 +282,7 @@ export function createVoiceMcp(sessionId: string, host: VoiceHost, calls: VoiceC
     tools: [
       tool(
         "voice_start",
-        "Start talking in a meeting. Follow this order exactly: (1) browser_start; (2) browser_audio_start on the blank tab, before any meeting page loads; (3) voice_start right away, passing that result as `audio` (an unattached capability is revoked after 60 s); (4) browser_navigate to the meeting URL, then (5) join. If the meeting page was already loaded, reload it after browser_audio_start. For Jitsi append #config.startWithVideoMuted=true to the URL. Runs as the agent identity.",
+        "Start talking in a meeting. Follow this order exactly: (1) open a blank browser tab; (2) start the browser audio pipe on that tab (e.g. browser_audio_start), before any meeting page loads; (3) call voice_start right away, passing that result as `audio` (an audio provider may revoke an unattached capability within a minute); (4) navigate the tab to the meeting URL, then (5) join. If the meeting page was already loaded, reload it after starting the audio pipe. For Jitsi append #config.startWithVideoMuted=true to the URL. Runs as the agent identity.",
         voiceStartShape,
         (a: any) => voiceHandlers.start(sessionId, host, calls, a),
       ),
@@ -294,7 +298,7 @@ export function createVoiceMcp(sessionId: string, host: VoiceHost, calls: VoiceC
         { text: z.string() },
         async (a: any) => voiceHandlers.context(sessionId, calls, a),
       ),
-      tool("voice_stop", "End the call. If the tab lands on Jitsi's post-hangup page (close3.html) the call has ended: call this, then browser_audio_stop.", {}, () => voiceHandlers.stop(sessionId, calls)),
+      tool("voice_stop", "End the call. If the tab lands on Jitsi's post-hangup page (close3.html) the call has ended: call this, then stop the browser audio pipe (e.g. browser_audio_stop).", {}, () => voiceHandlers.stop(sessionId, calls)),
     ],
   });
 }

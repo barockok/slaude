@@ -14,9 +14,10 @@ const BASE_REASONS = [
   "stopped", "ended_by_voice", "max_duration", "provider_lost", "provider_failed", "audio_lost",
   "auth_lost", "session_rebooted", "node_drain", "loop_crashed", "parent_gone",
 ] as const;
-export type EndReason = (typeof BASE_REASONS)[number] | `workbench:${string}`;
+/** `audio:<reason>`: the audio provider ended the stream (its SSE `ended` event). */
+export type EndReason = (typeof BASE_REASONS)[number] | `audio:${string}`;
 const endReason = z.string().refine(
-  (s) => (BASE_REASONS as readonly string[]).includes(s) || /^workbench:[a-z0-9_]{1,64}$/.test(s),
+  (s) => (BASE_REASONS as readonly string[]).includes(s) || /^audio:[a-z0-9_]{1,64}$/.test(s),
 ) as unknown as z.ZodType<EndReason>;
 
 export interface AudioEndpoints {
@@ -28,7 +29,8 @@ export interface AudioEndpoints {
 export interface VoiceInit {
   callId: string;
   audio: AudioEndpoints;
-  workbenchUrl: string;
+  /** Normalised allowlist entries; the child re-checks the endpoints against them. */
+  audioAllowedOrigins: string[];
   instructions: string;
   provider: VoiceProviderId;
   model: string;
@@ -61,7 +63,7 @@ const parentSchema = z.discriminatedUnion("type", [
     init: z.object({
       callId: z.string().min(1),
       audio: audioEndpoints,
-      workbenchUrl: z.string().url(),
+      audioAllowedOrigins: z.array(z.string().min(1)).min(1),
       instructions: z.string(),
       provider: z.enum(["openai", "openai-live", "gemini"]),
       model: z.string().min(1),

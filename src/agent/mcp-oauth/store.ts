@@ -64,8 +64,8 @@ export function oauthKey(serverName: string, cfg: OAuthServerConfig): string {
 /** Boot-time canary: our oauthKey replica must still reproduce the pinned golden.
  *  Returns false (caller disables /mcp + logs loud) if the formula drifts. */
 export function assertOAuthKeyCanary(): boolean {
-  return oauthKey("workbench", { type: "http", url: "https://mcp.example.com/sse", headers: {} })
-    === "workbench|c17ea65c6b709142";
+  return oauthKey("example", { type: "http", url: "https://mcp.example.com/sse", headers: {} })
+    === "example|c17ea65c6b709142";
 }
 
 /** The CLI's credential-entry shape for freshly exchanged tokens. The single

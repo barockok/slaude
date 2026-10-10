@@ -113,8 +113,7 @@ export function spawnVoiceLoop(o: SpawnSecrets & { execPath?: string; entry?: st
   return {
     send: (m) => {
       if (m.type === "init") {
-        const { audio, workbenchUrl } = m.init;
-        const r = new CapabilityRedactor(audio, workbenchUrl);
+        const r = new CapabilityRedactor(m.init.audio);
         scrub = (s) => r.redact(s);
       }
       if (!dead && cp.stdin && !cp.stdin.destroyed && cp.stdin.writable) cp.stdin.write(encodeMsg(m));

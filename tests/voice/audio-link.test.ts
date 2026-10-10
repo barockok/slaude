@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { AudioLink, redactCapabilityUrls } from "../../src/voice/audio-link";
+import { parseAudioOrigins } from "../../src/voice/audio-acl";
 import { pcmToBase64 } from "../../src/voice/provider/types";
 import { until } from "./fakes";
 
@@ -55,13 +56,22 @@ function fakeWorkbench(opts: { getStatus?: number; postStatus?: number; dropFirs
 // Capability URLs: the per-audio-session secret lives in the path.
 const CAP = "cap-5e1b0a77";
 const endpoints = { streamUrl: `/api/browser/audio/${CAP}/audio/stream`, clearUrl: `/api/browser/audio/${CAP}/audio/clear`, headers: { "X-Browser-Session": "rk" }, sampleRate: 24000 };
+/** An AudioLink on the fake's origin: absolute endpoints, the origin allowlisted. */
+function newLink(o: { baseUrl: string; endpoints: { streamUrl: string; clearUrl: string; headers: Record<string, string>; sampleRate: number }; log?: (l: string) => void } & Record<string, any>) {
+  const { baseUrl, endpoints: e, ...rest } = o;
+  return new AudioLink({
+    ...rest,
+    allowedOrigins: parseAudioOrigins(baseUrl),
+    endpoints: { ...e, streamUrl: new URL(e.streamUrl, baseUrl).toString(), clearUrl: new URL(e.clearUrl, baseUrl).toString() },
+  });
+}
 let wb: any = null;
 afterEach(() => wb?.stop());
 
 describe("AudioLink", () => {
   it("streams audio frames, sends routing headers but no authorization, and uplinks PCM", async () => {
     wb = fakeWorkbench();
-    const link = new AudioLink({ baseUrl: wb.base, endpoints });
+    const link = newLink({ baseUrl: wb.base, endpoints });
     const got: number[][] = [];
     await link.start({ onAudio: (p) => got.push([...p]), onEnded: () => {} });
     await until(() => got.length === 1);
@@ -74,45 +84,45 @@ describe("AudioLink", () => {
     expect(wb.route.every((r: string) => r === "rk")).toBe(true);
   });
 
-  it("maps the ended event to workbench:<reason>", async () => {
+  it("maps the ended event to audio:<reason>", async () => {
     wb = fakeWorkbench();
-    const link = new AudioLink({ baseUrl: wb.base, endpoints });
+    const link = newLink({ baseUrl: wb.base, endpoints });
     let reason = "";
     await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
     await until(() => wb.sseCtl !== null);
     wb.sseCtl.enqueue(new TextEncoder().encode(sse("ended", { reason: "tab_closed" })));
     await until(() => reason !== "");
-    expect(reason).toBe("workbench:tab_closed");
+    expect(reason).toBe("audio:tab_closed");
     await link.close();
   });
 
-  it("sanitizes the workbench end reason", async () => {
+  it("sanitizes the audio provider end reason", async () => {
     wb = fakeWorkbench();
-    const link = new AudioLink({ baseUrl: wb.base, endpoints });
+    const link = newLink({ baseUrl: wb.base, endpoints });
     let reason = "";
     await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
     await until(() => wb.sseCtl !== null);
     wb.sseCtl.enqueue(new TextEncoder().encode(sse("ended", { reason: "Tab-Closed" })));
     await until(() => reason !== "");
-    expect(reason).toBe("workbench:tab_closed");
+    expect(reason).toBe("audio:tab_closed");
     await link.close();
   });
 
   it("caps the sanitized reason at 64 chars", async () => {
     wb = fakeWorkbench();
-    const link = new AudioLink({ baseUrl: wb.base, endpoints });
+    const link = newLink({ baseUrl: wb.base, endpoints });
     let reason = "";
     await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
     await until(() => wb.sseCtl !== null);
     wb.sseCtl.enqueue(new TextEncoder().encode(sse("ended", { reason: "x".repeat(200) })));
     await until(() => reason !== "");
-    expect(reason).toBe(`workbench:${"x".repeat(64)}`);
+    expect(reason).toBe(`audio:${"x".repeat(64)}`);
     await link.close();
   });
 
   it("re-GETs the stream after a blip", async () => {
     wb = fakeWorkbench({ dropFirstSse: true });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints, retryDelayMs: 10 });
+    const link = newLink({ baseUrl: wb.base, endpoints, retryDelayMs: 10 });
     let n = 0;
     await link.start({ onAudio: () => n++, onEnded: () => {} });
     await until(() => wb.gets === 2 && n === 2);
@@ -122,7 +132,7 @@ describe("AudioLink", () => {
 
   it("gives up with audio_lost after the retry budget", async () => {
     wb = fakeWorkbench({ getStatus: 500 });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints, retryDelayMs: 5, maxSseRetries: 3 });
+    const link = newLink({ baseUrl: wb.base, endpoints, retryDelayMs: 5, maxSseRetries: 3 });
     let reason = "";
     await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
     await until(() => reason !== "");
@@ -132,7 +142,7 @@ describe("AudioLink", () => {
 
   it("a 409 stream_busy on reconnect is waited out: 409 x6 (past the 3-failure budget) then 200 continues", async () => {
     wb = fakeWorkbench({ getSeq: [409, 409, 409, 409, 409, 409] });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints, retryDelayMs: 5, maxSseRetries: 3, busyBackoffMs: 5, busyWindowMs: 2000 });
+    const link = newLink({ baseUrl: wb.base, endpoints, retryDelayMs: 5, maxSseRetries: 3, busyBackoffMs: 5, busyWindowMs: 2000 });
     let n = 0, reason = "";
     await link.start({ onAudio: () => n++, onEnded: (r) => (reason = r) });
     await until(() => n >= 1);
@@ -143,7 +153,7 @@ describe("AudioLink", () => {
 
   it("a 409 that outlasts the busy window ends audio_lost", async () => {
     wb = fakeWorkbench({ getStatus: 409 });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints, retryDelayMs: 5, maxSseRetries: 3, busyBackoffMs: 10, busyWindowMs: 120 });
+    const link = newLink({ baseUrl: wb.base, endpoints, retryDelayMs: 5, maxSseRetries: 3, busyBackoffMs: 10, busyWindowMs: 120 });
     let reason = "";
     await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
     await until(() => reason !== "");
@@ -154,7 +164,7 @@ describe("AudioLink", () => {
 
   it("the busy window resets after a success", async () => {
     wb = fakeWorkbench({ getSeq: [409, 409, 0, 409, 409], dropGets: [3] });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints, retryDelayMs: 5, busyBackoffMs: 30, busyWindowMs: 120 });
+    const link = newLink({ baseUrl: wb.base, endpoints, retryDelayMs: 5, busyBackoffMs: 30, busyWindowMs: 120 });
     let n = 0, reason = "";
     await link.start({ onAudio: () => n++, onEnded: (r) => (reason = r) });
     await until(() => wb.gets === 6 && n >= 2, 3000);
@@ -164,7 +174,7 @@ describe("AudioLink", () => {
 
   it("a 404 on the POST is terminal without a retry", async () => {
     wb = fakeWorkbench({ postStatus: 404 });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints, busyBackoffMs: 5 });
+    const link = newLink({ baseUrl: wb.base, endpoints, busyBackoffMs: 5 });
     let reason = "";
     await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
     await until(() => reason !== "");
@@ -176,7 +186,7 @@ describe("AudioLink", () => {
 
   it("audio written during a POST 409 wait arrives in the retried body", async () => {
     wb = fakeWorkbench({ postSeq: [409] });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints, busyBackoffMs: 150, busyWindowMs: 3000 });
+    const link = newLink({ baseUrl: wb.base, endpoints, busyBackoffMs: 150, busyWindowMs: 3000 });
     await link.start({ onAudio: () => {}, onEnded: () => {} });
     await until(() => wb.posts === 1);
     link.write(new Int16Array([11, 12]));
@@ -192,7 +202,7 @@ describe("AudioLink", () => {
     wb = fakeWorkbench({ postSeq: [409] });
     const logs: string[] = [];
     // 24 kHz, 100 ms bound: 2400 samples.
-    const link = new AudioLink({ baseUrl: wb.base, endpoints, busyBackoffMs: 150, busyWindowMs: 3000, replayMs: 100, log: (l) => logs.push(l) });
+    const link = newLink({ baseUrl: wb.base, endpoints, busyBackoffMs: 150, busyWindowMs: 3000, replayMs: 100, log: (l) => logs.push(l) });
     await link.start({ onAudio: () => {}, onEnded: () => {} });
     await until(() => wb.posts === 1);
     for (const v of [1, 2, 3]) link.write(new Int16Array(1200).fill(v));
@@ -206,7 +216,7 @@ describe("AudioLink", () => {
 
   it("close during a busy wait returns promptly", async () => {
     wb = fakeWorkbench({ getStatus: 409, postSeq: Array(50).fill(409) });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints, busyBackoffMs: 5000, busyWindowMs: 60_000 });
+    const link = newLink({ baseUrl: wb.base, endpoints, busyBackoffMs: 5000, busyWindowMs: 60_000 });
     await link.start({ onAudio: () => {}, onEnded: () => {} });
     await until(() => wb.gets >= 1 && wb.posts >= 1);
     const t0 = Date.now();
@@ -216,7 +226,7 @@ describe("AudioLink", () => {
 
   it("a 404 on the SSE GET (capability revoked) ends audio_lost at once", async () => {
     wb = fakeWorkbench({ getStatus: 404 });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints, retryDelayMs: 5, maxSseRetries: 3 });
+    const link = newLink({ baseUrl: wb.base, endpoints, retryDelayMs: 5, maxSseRetries: 3 });
     let reason = "";
     await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
     await until(() => reason !== "");
@@ -227,7 +237,7 @@ describe("AudioLink", () => {
 
   it("a 409 uplink_busy on the POST is retried within the window", async () => {
     wb = fakeWorkbench({ postSeq: [409, 409] });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints, busyBackoffMs: 5, busyWindowMs: 2000 });
+    const link = newLink({ baseUrl: wb.base, endpoints, busyBackoffMs: 5, busyWindowMs: 2000 });
     let reason = "";
     await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
     await until(() => wb.posts === 3);
@@ -239,7 +249,7 @@ describe("AudioLink", () => {
 
   it("a POST 409 that outlasts the window ends audio_lost", async () => {
     wb = fakeWorkbench({ postSeq: Array(500).fill(409) });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints, busyBackoffMs: 10, busyWindowMs: 100 });
+    const link = newLink({ baseUrl: wb.base, endpoints, busyBackoffMs: 10, busyWindowMs: 100 });
     let reason = "";
     await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
     await until(() => reason !== "");
@@ -247,33 +257,33 @@ describe("AudioLink", () => {
     await link.close();
   });
 
-  it("an ended event with reason page_left maps to workbench:page_left", async () => {
+  it("an ended event with reason page_left maps to audio:page_left", async () => {
     wb = fakeWorkbench();
-    const link = new AudioLink({ baseUrl: wb.base, endpoints });
+    const link = newLink({ baseUrl: wb.base, endpoints });
     let reason = "";
     await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
     await until(() => wb.sseCtl !== null);
     wb.sseCtl.enqueue(new TextEncoder().encode(sse("ended", { reason: "page_left" })));
     await until(() => reason !== "");
-    expect(reason).toBe("workbench:page_left");
+    expect(reason).toBe("audio:page_left");
     await link.close();
   });
 
-  it("an ended event with reason idle maps to workbench:idle", async () => {
+  it("an ended event with reason idle maps to audio:idle", async () => {
     wb = fakeWorkbench();
-    const link = new AudioLink({ baseUrl: wb.base, endpoints });
+    const link = newLink({ baseUrl: wb.base, endpoints });
     let reason = "";
     await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
     await until(() => wb.sseCtl !== null);
     wb.sseCtl.enqueue(new TextEncoder().encode(sse("ended", { reason: "idle" })));
     await until(() => reason !== "");
-    expect(reason).toBe("workbench:idle");
+    expect(reason).toBe("audio:idle");
     await link.close();
   });
 
   it("ends audio_lost when the uplink is refused with 404", async () => {
     wb = fakeWorkbench({ postStatus: 404 });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints });
+    const link = newLink({ baseUrl: wb.base, endpoints });
     let reason = "";
     await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
     await until(() => reason !== "");
@@ -283,7 +293,7 @@ describe("AudioLink", () => {
 
   it("ends audio_lost when the uplink fails with a 5xx", async () => {
     wb = fakeWorkbench({ postStatus: 503 });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints });
+    const link = newLink({ baseUrl: wb.base, endpoints });
     let reason = "";
     await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
     await until(() => reason !== "");
@@ -293,7 +303,7 @@ describe("AudioLink", () => {
 
   it("ends audio_lost when the uplink is answered (200) while the call is open", async () => {
     wb = fakeWorkbench({ postEarly: true });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints });
+    const link = newLink({ baseUrl: wb.base, endpoints });
     let reason = "";
     await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
     await until(() => reason !== "");
@@ -303,7 +313,7 @@ describe("AudioLink", () => {
 
   it("close is bounded when the uplink never settles", async () => {
     wb = fakeWorkbench({ postHang: true });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints, closeTimeoutMs: 100 });
+    const link = newLink({ baseUrl: wb.base, endpoints, closeTimeoutMs: 100 });
     await link.start({ onAudio: () => {}, onEnded: () => {} });
     const t0 = Date.now();
     await link.close();
@@ -315,7 +325,7 @@ describe("AudioLink", () => {
     const evil = Bun.serve({ port: 0, fetch(req) { hits.push(req.headers.get("authorization") ?? ""); return new Response("x"); } });
     try {
       wb = fakeWorkbench({ redirectTo: `http://localhost:${evil.port}` });
-      const link = new AudioLink({ baseUrl: wb.base, endpoints, maxSseRetries: 0, retryDelayMs: 1 });
+      const link = newLink({ baseUrl: wb.base, endpoints, maxSseRetries: 0, retryDelayMs: 1 });
       let reason = "";
       await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
       await until(() => reason !== "");
@@ -330,7 +340,7 @@ describe("AudioLink", () => {
 
   it("clear returns played and cleared ms", async () => {
     wb = fakeWorkbench();
-    const link = new AudioLink({ baseUrl: wb.base, endpoints });
+    const link = newLink({ baseUrl: wb.base, endpoints });
     await link.start({ onAudio: () => {}, onEnded: () => {} });
     expect(await link.clear()).toEqual({ playedMs: 1500, clearedMs: 900 });
     await link.close();
@@ -338,20 +348,20 @@ describe("AudioLink", () => {
 
   it("clear returns null on a non-OK answer (no fake 0 ms)", async () => {
     wb = fakeWorkbench({ clearStatus: 500 });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints });
+    const link = newLink({ baseUrl: wb.base, endpoints });
     await link.start({ onAudio: () => {}, onEnded: () => {} });
     expect(await link.clear()).toBeNull();
     await link.close();
   });
 
-  it("clear returns null when the workbench cannot be reached", async () => {
-    const link = new AudioLink({ baseUrl: "http://127.0.0.1:1", endpoints });
+  it("clear returns null when the audio provider cannot be reached", async () => {
+    const link = newLink({ baseUrl: "http://127.0.0.1:1", endpoints });
     expect(await link.clear()).toBeNull();
   });
 
   it("a hung clear gives up after its timeout and returns null", async () => {
     wb = fakeWorkbench({ clearHang: true });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints, clearTimeoutMs: 100 });
+    const link = newLink({ baseUrl: wb.base, endpoints, clearTimeoutMs: 100 });
     await link.start({ onAudio: () => {}, onEnded: () => {} });
     const t0 = Date.now();
     expect(await link.clear()).toBeNull();
@@ -359,24 +369,29 @@ describe("AudioLink", () => {
     await link.close();
   });
 
-  it("rejects endpoints that leave the configured origin", () => {
-    const mk = (e: Partial<typeof endpoints>) => () => new AudioLink({ baseUrl: "http://localhost:1234", endpoints: { ...endpoints, ...e } });
-    expect(mk({ streamUrl: "http://evil.example/x" })).toThrow("workbench endpoint origin mismatch");
-    expect(mk({ clearUrl: "//other.example/x" })).toThrow("workbench endpoint origin mismatch");
-    expect(mk({ streamUrl: "http://user:pw@localhost:1234/x" })).toThrow("workbench endpoint origin mismatch");
-    expect(mk({ clearUrl: "http://user@localhost:1234/x" })).toThrow("workbench endpoint origin mismatch");
+  it("rejects endpoints that are relative or off the allowlist (defense in depth)", () => {
+    const rules = parseAudioOrigins("http://localhost:1234");
+    const ok = { ...endpoints, streamUrl: "http://localhost:1234/a/stream", clearUrl: "http://localhost:1234/a/clear" };
+    const mk = (e: Partial<typeof endpoints>) => () => new AudioLink({ allowedOrigins: rules, endpoints: { ...ok, ...e } });
+    const NOT_ALLOWED = "audio endpoint origin not allowed";
+    expect(mk({ streamUrl: "http://evil.example/x" })).toThrow(NOT_ALLOWED);
+    expect(mk({ clearUrl: "//other.example/x" })).toThrow(NOT_ALLOWED);
+    expect(mk({ streamUrl: "/api/browser/audio/x/stream" })).toThrow(NOT_ALLOWED);
+    expect(mk({ streamUrl: "https://localhost:1234/x" })).toThrow(NOT_ALLOWED);
+    expect(mk({ streamUrl: "http://user:pw@localhost:1234/x" })).toThrow(NOT_ALLOWED);
+    expect(mk({ clearUrl: "http://user@localhost:1234/x" })).toThrow(NOT_ALLOWED);
     expect(mk({})).not.toThrow();
-    expect(mk({ streamUrl: "http://localhost:1234/abs/stream" })).not.toThrow();
+    expect(() => new AudioLink({ allowedOrigins: [], endpoints: ok })).toThrow(NOT_ALLOWED);
     let msg = "";
     try { mk({ streamUrl: `http://evil.example/${CAP}/x` })(); } catch (e) { msg = String(e); }
-    expect(msg).toContain("origin mismatch");
+    expect(msg).toContain("not allowed");
     expect(msg).not.toContain(CAP);
     expect(msg).not.toContain("evil.example");
   });
 
   it("drops authorization and cookie route headers; sends no authorization at all", async () => {
     wb = fakeWorkbench();
-    const link = new AudioLink({ baseUrl: wb.base, endpoints: { ...endpoints, headers: { ...endpoints.headers, Authorization: "x", Cookie: "c" } } });
+    const link = newLink({ baseUrl: wb.base, endpoints: { ...endpoints, headers: { ...endpoints.headers, Authorization: "x", Cookie: "c" } } });
     await link.start({ onAudio: () => {}, onEnded: () => {} });
     await link.clear();
     await link.close();
@@ -388,7 +403,7 @@ describe("AudioLink", () => {
 
   it("write after uplink loss does not throw", async () => {
     wb = fakeWorkbench({ postStatus: 404 });
-    const link = new AudioLink({ baseUrl: wb.base, endpoints });
+    const link = newLink({ baseUrl: wb.base, endpoints });
     let reason = "";
     await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
     await until(() => reason === "audio_lost");
@@ -398,8 +413,7 @@ describe("AudioLink", () => {
 });
 
 describe("redactCapabilityUrls", () => {
-  const base = "https://wb.example.com";
-  const eps = { streamUrl: `/api/browser/audio/${CAP}/stream`, clearUrl: `https://wb.example.com/api/browser/audio/${CAP}/clear?x=1` };
+  const eps = { streamUrl: `https://wb.example.com/api/browser/audio/${CAP}/stream`, clearUrl: `https://wb.example.com/api/browser/audio/${CAP}/clear?x=1` };
   it("replaces the absolute, resolved and path forms with the origin only", () => {
     const text = [
       `GET https://wb.example.com/api/browser/audio/${CAP}/stream failed`,
@@ -407,25 +421,24 @@ describe("redactCapabilityUrls", () => {
       `clear https://wb.example.com/api/browser/audio/${CAP}/clear?x=1`,
       `clear path /api/browser/audio/${CAP}/clear`,
     ].join("\n");
-    const out = redactCapabilityUrls(text, eps, base);
+    const out = redactCapabilityUrls(text, eps);
     expect(out).not.toContain(CAP);
     expect(out).toContain("https://wb.example.com/…");
   });
   it("leaves unrelated text alone", () => {
-    expect(redactCapabilityUrls("provider: socket closed", eps, base)).toBe("provider: socket closed");
+    expect(redactCapabilityUrls("provider: socket closed", eps)).toBe("provider: socket closed");
   });
   it("redacts even when the url cannot be resolved", () => {
-    const out = redactCapabilityUrls(`bad http://[x/${CAP}`, { streamUrl: `http://[x/${CAP}`, clearUrl: "" }, base);
+    const out = redactCapabilityUrls(`bad http://[x/${CAP}`, { streamUrl: `http://[x/${CAP}`, clearUrl: "" });
     expect(out).not.toContain(CAP);
   });
 });
 
 describe("redactCapabilityUrls: every form of the secret", () => {
-  const base = "https://wb.example.com";
   const SIG = "Zq81xYvP0aLm";
   const abs = `https://wb.example.com/api/browser/audio/${CAP}/stream`;
-  const eps = { streamUrl: `/api/browser/audio/${CAP}/stream`, clearUrl: `/api/browser/audio/${CAP}/clear?sig=${SIG}` };
-  const r = (t: string) => redactCapabilityUrls(t, eps, base);
+  const eps = { streamUrl: `https://wb.example.com/api/browser/audio/${CAP}/stream`, clearUrl: `https://wb.example.com/api/browser/audio/${CAP}/clear?sig=${SIG}` };
+  const r = (t: string) => redactCapabilityUrls(t, eps);
   const clean = (out: string) => {
     expect(out).not.toContain(CAP);
     expect(out).not.toContain(SIG);
@@ -454,7 +467,7 @@ describe("redactCapabilityUrls: every form of the secret", () => {
     clean(out);
   });
   it("several URLs in one line", () => {
-    const out = r(`a ${abs} b https://wb.example.com${eps.clearUrl} c https://docs.example/ok`);
+    const out = r(`a ${abs} b ${eps.clearUrl} c https://docs.example/ok`);
     clean(out);
     expect(out).toBe("a https://wb.example.com/… b https://wb.example.com/… c https://docs.example/ok");
   });
@@ -463,7 +476,7 @@ describe("redactCapabilityUrls: every form of the secret", () => {
     clean(r(`//wb.example.com/api/browser/audio/${CAP}/stream`));
   });
   it("a scheme-less host form is masked once, never doubled", () => {
-    for (const path of [eps.streamUrl, eps.clearUrl]) {
+    for (const path of [eps.streamUrl, eps.clearUrl].map((u) => { const p = new URL(u); return p.pathname + p.search; })) {
       const out = r(`wb.example.com${path}`);
       clean(out);
       expect(out).not.toContain("comhttps");
@@ -473,17 +486,17 @@ describe("redactCapabilityUrls: every form of the secret", () => {
   });
 
   it("the URL-encoded secret segment alone", () => {
-    const eps2 = { streamUrl: "/a/s3cr3t+v@lue==/stream", clearUrl: "/a/s3cr3t+v@lue==/clear" };
-    const out = redactCapabilityUrls(`seg ${encodeURIComponent("s3cr3t+v@lue==")}`, eps2, base);
+    const eps2 = { streamUrl: "https://wb.example.com/a/s3cr3t+v@lue==/stream", clearUrl: "https://wb.example.com/a/s3cr3t+v@lue==/clear" };
+    const out = redactCapabilityUrls(`seg ${encodeURIComponent("s3cr3t+v@lue==")}`, eps2);
     expect(out).not.toContain(encodeURIComponent("s3cr3t+v@lue=="));
   });
   it("a full URL is masked once, never doubled", () => {
     expect(r(`GET ${abs}`)).toBe("GET https://wb.example.com/…");
     expect(r(`path ${eps.streamUrl}`)).toBe("path https://wb.example.com/…");
   });
-  it("without a base, relative forms mask to [redacted]", () => {
-    const out = redactCapabilityUrls(`x ${eps.streamUrl}`, eps, "");
-    expect(out).toBe("x [redacted]");
+  it("a relative endpoint (refused upstream) masks to [redacted]", () => {
+    const rel = { streamUrl: `/api/browser/audio/${CAP}/stream`, clearUrl: "" };
+    expect(redactCapabilityUrls(`x ${rel.streamUrl}`, rel)).toBe("x [redacted]");
   });
   it("route words and short values are left alone", () => {
     expect(r("audio stream clear api browser attempt 1")).toBe("audio stream clear api browser attempt 1");
@@ -491,37 +504,36 @@ describe("redactCapabilityUrls: every form of the secret", () => {
 });
 
 describe("redactCapabilityUrls: exact match, whatever the secret's shape", () => {
-  const base = "https://wb.example.com";
   it("a short secret segment is masked in every form", () => {
-    const eps = { streamUrl: "/api/browser/audio/ab12/stream", clearUrl: "/api/browser/audio/ab12/clear" };
+    const eps = { streamUrl: "https://wb.example.com/api/browser/audio/ab12/stream", clearUrl: "https://wb.example.com/api/browser/audio/ab12/clear" };
     for (const t of ["GET https://wb.example.com/api/browser/audio/ab12/stream", "path /api/browser/audio/ab12/clear", "key ab12 rejected", `enc ${encodeURIComponent("/api/browser/audio/ab12/stream")}`]) {
-      expect(redactCapabilityUrls(t, eps, base)).not.toContain("ab12");
+      expect(redactCapabilityUrls(t, eps)).not.toContain("ab12");
     }
   });
   it("an all-letter 8-character secret is masked, alone in an unrelated log line too", () => {
-    const eps = { streamUrl: "/api/browser/audio/qwertyui/stream", clearUrl: "/api/browser/audio/qwertyui/clear" };
-    expect(redactCapabilityUrls("provider said: token qwertyui is not valid", eps, base)).toBe("provider said: token … is not valid");
-    expect(redactCapabilityUrls("wb.example.com/api/browser/audio/qwertyui/clear", eps, base)).not.toContain("qwertyui");
+    const eps = { streamUrl: "https://wb.example.com/api/browser/audio/qwertyui/stream", clearUrl: "https://wb.example.com/api/browser/audio/qwertyui/clear" };
+    expect(redactCapabilityUrls("provider said: token qwertyui is not valid", eps)).toBe("provider said: token … is not valid");
+    expect(redactCapabilityUrls("wb.example.com/api/browser/audio/qwertyui/clear", eps)).not.toContain("qwertyui");
   });
   it("a short query value is masked wherever it appears", () => {
-    const eps = { streamUrl: "/api/browser/audio/stream?sig=k9Zp", clearUrl: "/api/browser/audio/clear?sig=k9Zp" };
-    expect(redactCapabilityUrls("bad signature k9Zp", eps, base)).not.toContain("k9Zp");
-    expect(redactCapabilityUrls("q ?sig=k9Zp", eps, base)).not.toContain("k9Zp");
+    const eps = { streamUrl: "https://wb.example.com/api/browser/audio/stream?sig=k9Zp", clearUrl: "https://wb.example.com/api/browser/audio/clear?sig=k9Zp" };
+    expect(redactCapabilityUrls("bad signature k9Zp", eps)).not.toContain("k9Zp");
+    expect(redactCapabilityUrls("q ?sig=k9Zp", eps)).not.toContain("k9Zp");
   });
   it("the encodeURI form of a secret is masked", () => {
-    const eps = { streamUrl: "/api/browser/audio/s3c%20r3t/stream", clearUrl: "/api/browser/audio/s3c%20r3t/clear" };
+    const eps = { streamUrl: "https://wb.example.com/api/browser/audio/s3c%20r3t/stream", clearUrl: "https://wb.example.com/api/browser/audio/s3c%20r3t/clear" };
     for (const t of ["raw s3c r3t", "enc s3c%20r3t", `full ${encodeURI("https://wb.example.com/api/browser/audio/s3c r3t/stream")}`]) {
-      const out = redactCapabilityUrls(t, eps, base);
+      const out = redactCapabilityUrls(t, eps);
       expect(out).not.toContain("s3c r3t");
       expect(out).not.toContain("s3c%20r3t");
     }
   });
   it("route words stay readable", () => {
-    const eps = { streamUrl: "/api/browser/tabs/audio/ab12/stream", clearUrl: "/api/browser/tabs/audio/ab12/clear" };
-    expect(redactCapabilityUrls("api browser tabs audio stream clear: audio stream restarted", eps, base)).toBe("api browser tabs audio stream clear: audio stream restarted");
+    const eps = { streamUrl: "https://wb.example.com/api/browser/tabs/audio/ab12/stream", clearUrl: "https://wb.example.com/api/browser/tabs/audio/ab12/clear" };
+    expect(redactCapabilityUrls("api browser tabs audio stream clear: audio stream restarted", eps)).toBe("api browser tabs audio stream clear: audio stream restarted");
   });
   it("a one-letter test path does not eat letters inside words", () => {
-    const eps = { streamUrl: "/s", clearUrl: "/c" };
-    expect(redactCapabilityUrls("session=s1 closed cleanly", eps, base)).toBe("session=s1 closed cleanly");
+    const eps = { streamUrl: "https://wb.example.com/s", clearUrl: "https://wb.example.com/c" };
+    expect(redactCapabilityUrls("session=s1 closed cleanly", eps)).toBe("session=s1 closed cleanly");
   });
 });

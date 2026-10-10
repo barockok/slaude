@@ -5,6 +5,7 @@
  * summary. The thread's Slack writes go through the REAL quietForVoice wrapper
  * and the real monoRunner; only the model and the wire are faked.
  */
+import { buildAudioPolicy } from "../../src/voice/audio-acl";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,8 +21,8 @@ import { injectedTurns, quietForVoice, voiceTurns } from "../../src/voice/turn-f
 import { FakeAudio, FakeProvider, chan, until } from "./fakes";
 
 const SID = "s-e2e";
-const cfg = { provider: "openai" as const, model: "m", apiKey: "k", workbenchUrl: "https://wb.example.com", maxMinutes: 120, staleSeq: 6 };
-const audioArg = { stream_url: "/s", clear_url: "/c", headers: { "X-Browser-Session": "rk" }, sample_rate: 24000 };
+const cfg = { provider: "openai" as const, model: "m", apiKey: "k", audio: buildAudioPolicy({ origins: "https://wb.example.com" }), maxMinutes: 120, staleSeq: 6 };
+const audioArg = { stream_url: "https://wb.example.com/s", clear_url: "https://wb.example.com/c", headers: { "X-Browser-Session": "rk" }, sample_rate: 24000 };
 
 /** A LoopChild whose far end is runVoiceLoop in this process. */
 function inProcessChild(provider: FakeProvider, audio: FakeAudio) {

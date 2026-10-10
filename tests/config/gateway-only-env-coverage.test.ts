@@ -57,7 +57,12 @@ const ALLOW: Record<string, string> = {
   SLAUDE_PANEL_PUBLIC_URL: "public address",
   SLAUDE_SLACK_API_URL: "endpoint address (tests point it at a fake)",
   SLAUDE_REDIS_TEST_URL: "test-only",
-  SLAUDE_VOICE_WORKBENCH_URL: "workbench base address; not a secret; shipped to nodes in the voice bundle",
+  SLAUDE_VOICE_WORKBENCH_URL: "deprecated alias seeding the audio allowlist; an address, not a secret",
+  // The audio allowlist and route header names: policy, not secrets. Shipped to
+  // nodes in the voice bundle (nodes never read them from their own env).
+  SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS: "audio-origin allowlist; not a secret; shipped to nodes in the voice bundle",
+  SLAUDE_VOICE_AUDIO_ALLOWED_HEADERS: "route header names; not a secret; shipped to nodes in the voice bundle",
+  SLAUDE_VOICE_AUDIO_REQUIRED_HEADERS: "route header names; not a secret; shipped to nodes in the voice bundle",
   // Voice loop child.
   SLAUDE_VOICE_LOOP_API_KEY: "voice-loop child env only; set by spawnVoiceLoop",
   // Other.

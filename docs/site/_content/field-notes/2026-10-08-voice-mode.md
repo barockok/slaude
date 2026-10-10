@@ -224,6 +224,48 @@ card. The card shows the brief literally (never through the redactor: the
 model chooses the path segments, so masking them in the brief could hide
 ordinary words), and a brief quoting a whole stream or clear URL is refused.
 
+## Changed in rc.4: an audio-origin allowlist, not a pinned workbench
+
+The single trusted origin (`SLAUDE_VOICE_WORKBENCH_URL`) is replaced by an
+allowlist, `SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS`, deny by default. Two reasons.
+Voice should not depend on one audio provider: anything that speaks the audio
+contract (SSE `audio`/`ended`, a chunked PCM POST, `clear` returning
+`played_ms`, 404 revoked, 409 busy) can serve a call, and the code no longer
+names one. And the ACL is the real security boundary: the stream and clear URLs
+come from the model, the call's audio and route headers follow them, so what
+decides where they may go has to be explicit, strict and checked everywhere
+the URLs are used. Entries are exact origins or `scheme://*.domain` wildcards
+(one or more labels, never the apex, never a lookalike suffix); scheme and port
+match exactly, hosts compare in punycode, a trailing-dot host never matches,
+and one malformed entry disables voice loudly rather than being skipped. The
+URLs must now be absolute: resolving a relative URL against a base was what
+made "the configured origin" implicit. The check runs at the approval gate
+(gateway or `mono`, which hold the policy), in `voice_start`, and again in the
+voice child against the allowlist shipped in its init message. The
+route-header allowlist moved to config for the same reason, with
+`authorization`, `cookie` and `host` refused even if an operator lists them.
+
+Review found the first cut decoded before it checked: `https://%2A.example.com`
+passed the `*` test, became an exact rule for the literal host `*.example.com`,
+was serialised as `https://*.example.com`, and the node read that back as a
+real wildcard. Hosts are now literal (no `%` in an entry or a matched URL's
+authority, no `*` left in a parsed host, no tab, newline or backslash in a
+URL), and a test parses every serialised rule again and requires the identical
+rule. Also from review: with voice off the gate skipped the policy and still
+rendered a card (now denied `VOICE_DISABLED`); wildcards over common public
+suffixes and hosts with empty labels are refused (`https://.example.com`
+matched `*.example.com`); a malformed-entry error no longer quotes userinfo;
+and an explicitly empty allowlist is a deliberate deny the alias cannot undo.
+
+Mixed versions fail closed, both ways. An old gateway's bundle has
+`workbenchUrl` and no allowlist: a new node refuses that voice block, never
+registers the voice tools for the session, and logs only a node warning, "the
+gateway's voice bundle carries no audio allowlist (gateway older than rc.4?)";
+the thread sees no voice tools and no error. A new gateway's
+bundle has no `workbenchUrl`: an old node has nothing to compare against and
+refuses every `voice_start` with `VOICE_BAD_ENDPOINT`. No call starts either
+way; gateway and nodes upgrade together.
+
 ## Measured
 
 Not yet. To fill during the release-candidate soak: flush latency, the accuracy

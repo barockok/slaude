@@ -1,7 +1,7 @@
 /**
  * Gemini Live (BidiGenerateContent) over WebSocket. No item truncation: the
  * server handles interruption itself (`interrupted`), so caps.truncate=false,
- * cancel() is a no-op, and the Conductor only flushes workbench audio. Gemini
+ * cancel() is a no-op, and the Conductor only flushes the audio pipe. Gemini
  * has no item ids; one is synthesized per model turn. Transcription arrives in
  * chunks and is emitted whole when the side's turn ends.
  */
