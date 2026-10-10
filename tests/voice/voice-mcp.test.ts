@@ -105,6 +105,19 @@ describe("voice MCP", () => {
     expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, headers: { "X-Browser-Session": "k", "X-Other": "1" } } }).success).toBe(false);
   });
 
+  it("refuses a session_id equal to a URL path segment or a header value", () => {
+    const base = { ...audio, stream_url: "https://workbench.example.com/api/browser/audio/cap-77/stream", clear_url: "/api/browser/audio/cap-77/clear" };
+    expect(voiceStartProblem({ brief: "x", audio: { ...base, session_id: "sess-ok" } })).toBeNull();
+    expect(voiceStartProblem({ brief: "x", audio: { ...base, session_id: "cap-77" } })?.code).toBe("VOICE_BAD_INPUT");
+    expect(voiceStartProblem({ brief: "x", audio: { ...base, session_id: "clear" } })?.code).toBe("VOICE_BAD_INPUT");
+    expect(voiceStartProblem({ brief: "x", audio: { ...base, session_id: "rk" } })?.code).toBe("VOICE_BAD_INPUT");
+  });
+
+  it("a disallowed header is VOICE_BAD_INPUT whether or not X-Browser-Session is present", () => {
+    expect(voiceStartProblem({ brief: "x", audio: { ...audio, headers: { "X-Other": "1" } } })?.code).toBe("VOICE_BAD_INPUT");
+    expect(voiceStartProblem({ brief: "x", audio: { ...audio, headers: { "X-Browser-Session": "rk", Cookie: "a=b" } } })?.code).toBe("VOICE_BAD_INPUT");
+  });
+
   it("the exported schema is strict: a stream_token or any extra key is rejected, not stripped", () => {
     expect(voiceStartSchema.safeParse({ brief: "x", audio }).success).toBe(true);
     expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, stream_token: "old-tok" } }).success).toBe(false);
@@ -297,7 +310,7 @@ describe("voice MCP", () => {
         const headers = { ...h, "X-Browser-Session": "rk" };
         expect(t["voice_start"].inputSchema.safeParse({ brief: "x", audio: { ...audio, headers } }).success).toBe(false);
         const r = await t["voice_start"].handler(withAudio({ headers }));
-        expect(text(r)).toStartWith("VOICE_BAD_ENDPOINT");
+        expect(text(r)).toStartWith("VOICE_BAD_INPUT");
         expect(text(r)).not.toContain("Bearer z");
       }
       expect(t0.spawned).toEqual([]);

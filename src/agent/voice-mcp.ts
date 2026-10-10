@@ -131,16 +131,34 @@ export function voiceStartProblem(input: unknown): { code: "VOICE_BAD_INPUT" | "
   const r = voiceStartSchema.safeParse(input);
   if (!r.success) {
     const paths = r.error.issues.map((i) => i.path.join(".") || "(input)");
-    // Endpoint and header issues keep their established code; a missing
-    // headers object or session header is a plain bad input.
-    const missingHeader = r.error.issues.some((i) => i.code === "invalid_type" && i.path.join(".") === "audio.headers" || i.message === MISSING_SESSION_HEADER);
-    const endpoint = !missingHeader && paths.every((p) => /^audio\.(stream_url|clear_url|headers)/.test(p));
+    // Only a bad stream/clear URL is an endpoint problem; every header issue
+    // (missing, disallowed, or both) is a plain bad input.
+    const endpoint = paths.every((p) => /^audio\.(stream_url|clear_url)/.test(p));
     return { code: endpoint ? "VOICE_BAD_ENDPOINT" : "VOICE_BAD_INPUT", message: `voice_start input is invalid (${paths.join(", ")})` };
   }
   const { brief, audio } = r.data;
   for (const u of [audio.stream_url, audio.clear_url]) {
     if (wholeUrlForms(u).some((f) => brief.includes(f))) {
       return { code: "VOICE_BAD_INPUT", message: "the brief may not contain the stream or clear URL" };
+    }
+  }
+  // session_id is shown nowhere and used nowhere; it must not be a vehicle for
+  // a capability: refuse one that equals a URL path segment or a header value.
+  if (audio.session_id !== undefined) {
+    const secrets = new Set<string>(Object.values(audio.headers));
+    for (const u of [audio.stream_url, audio.clear_url]) {
+      try {
+        const p = new URL(u, "http://placeholder.invalid");
+        for (const seg of p.pathname.split("/")) {
+          if (!seg) continue;
+          secrets.add(seg);
+          try { secrets.add(decodeURIComponent(seg)); } catch {}
+        }
+        for (const v of p.searchParams.values()) secrets.add(v);
+      } catch {}
+    }
+    if (secrets.has(audio.session_id)) {
+      return { code: "VOICE_BAD_INPUT", message: "session_id may not equal a URL path segment or a header value" };
     }
   }
   return null;
@@ -177,7 +195,7 @@ export const voiceHandlers = {
       base = cfg.workbenchUrl;
       const { audio } = args;
       if (!routeHeadersAllowed(audio.headers ?? {})) {
-        return err("VOICE_BAD_ENDPOINT", "only the X-Browser-Session route header is accepted");
+        return err("VOICE_BAD_INPUT", "only the X-Browser-Session route header is accepted");
       }
       if (![audio.stream_url, audio.clear_url].every((u) => sameOrigin(u, cfg.workbenchUrl))) {
         return err("VOICE_BAD_ENDPOINT", "audio endpoints must be on the configured workbench origin");

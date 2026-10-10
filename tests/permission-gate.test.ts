@@ -236,7 +236,8 @@ describe("PermissionGate", () => {
 
   test("the full browser_audio_start result gets a card (not a denial) that shows session id, format and channels", async () => {
     const text = fenced(await voiceCard({ brief: "standup", audio: realAudio }));
-    expect(text).toContain("739ABAE16CD3D97F52C6D5A29164ACC9");
+    expect(text).toContain("session_id: (present)");
+    expect(text).not.toContain("739ABAE16CD3D97F52C6D5A29164ACC9");
     expect(text).toContain("pcm_s16le");
     for (const leaked of ["cap-Q1w2e3r4", "hdr-ZZZ"]) expect(text).not.toContain(leaked);
     await deniedWithoutCard({ brief: "x", audio: { ...realAudio, extra: 1 } });
@@ -244,12 +245,15 @@ describe("PermissionGate", () => {
     await deniedWithoutCard({ brief: "x", audio: { ...realAudio, channels: 2 } });
   });
 
-  test("a session_id with a newline renders escaped on the card", async () => {
-    const text = fenced(await voiceCard({ brief: "x", audio: { ...realAudio, session_id: "ab\ncd" } }));
-    expect(text).not.toContain("ab\ncd");
-    expect(text).toContain("ab");
-    expect(text).toContain("cd");
-    expect(text.split("\n").filter((l) => l.startsWith("cd"))).toEqual([]);
+  test("the card never prints the session_id value, whatever it holds", async () => {
+    const text = fenced(await voiceCard({ brief: "x", audio: { ...realAudio, session_id: "ab\ncd-secretish" } }));
+    expect(text).toContain("session_id: (present)");
+    expect(text).not.toContain("secretish");
+  });
+
+  test("a session_id equal to a URL path segment or a header value is denied with no card", async () => {
+    await deniedWithoutCard({ brief: "x", audio: { ...realAudio, session_id: "cap-Q1w2e3r4" } });
+    await deniedWithoutCard({ brief: "x", audio: { ...realAudio, session_id: "hdr-ZZZ" } });
   });
 
   test("voice_start's card is a fixed summary: origin, sample rate, header names, brief", async () => {

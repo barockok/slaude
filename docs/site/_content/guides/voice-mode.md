@@ -18,7 +18,7 @@ Ask the agent in a thread to join a meeting, for example "join https://meet.exam
 
 The agent's voice then speaks into the call. The thread's session is held open for the duration, so it does not idle out mid-call.
 
-**Approval.** Under the normal permission mode, `voice_start` asks for approval like any other gated tool: joining a meeting and capturing its audio is a high-impact action. The approval card is rendered from the exact input that runs and shows everything that changes behaviour: the origin of each URL (flagged if it is not the pinned workbench), the sample rate, the format, channels and audio session id when given, the route header names (values `[hidden]`), the voice and the configured model, any ignored fields, and the whole brief. Only the URL paths and header values are hidden. Before any card, the input is checked against the tool's strict schema: an unknown field, a wrongly typed value, a URL with credentials, a brief over 500 characters or a brief that quotes a whole stream or clear URL is denied with no card. The brief is shown whole and literally, never truncated; each of its lines is prefixed with `| `, and line breaks, zero-width and other invisible characters are shown as escapes, so a brief cannot imitate the card or close its code block. The mid-call controls (`voice_say`, `voice_context`, `voice_stop`) never ask: a card during the call would break the quiet thread, and stopping a call must not wait on a click.
+**Approval.** Under the normal permission mode, `voice_start` asks for approval like any other gated tool: joining a meeting and capturing its audio is a high-impact action. The approval card is rendered from the exact input that runs and shows everything that changes behaviour: the origin of each URL (flagged if it is not the pinned workbench), the sample rate, the format and channels when given, and whether a session id was passed (never its value), the route header names (values `[hidden]`), the voice and the configured model, any ignored fields, and the whole brief. Only the URL paths and header values are hidden. Before any card, the input is checked against the tool's strict schema: an unknown field, a wrongly typed value, a URL with credentials, a brief over 500 characters or a brief that quotes a whole stream or clear URL is denied with no card. The brief is shown whole and literally, never truncated; each of its lines is prefixed with `| `, and line breaks, zero-width and other invisible characters are shown as escapes, so a brief cannot imitate the card or close its code block. The mid-call controls (`voice_say`, `voice_context`, `voice_stop`) never ask: a card during the call would break the quiet thread, and stopping a call must not wait on a click.
 
 ## 2. Tools
 
@@ -29,7 +29,7 @@ The agent's voice then speaks into the call. The thread's session is held open f
 | `voice_context` | Gives the voice a fact or instruction without making it speak. |
 | `voice_stop` | Ends the call. Returns `{reason, durationSec}`. |
 
-Refusals are typed: `VOICE_DISABLED` (not configured), `VOICE_AGENT_ONLY`, `VOICE_UNAVAILABLE`, `VOICE_BAD_ENDPOINT`, `VOICE_NO_CALL`, `VOICE_START_FAILED`.
+Refusals are typed: `VOICE_DISABLED` (not configured), `VOICE_AGENT_ONLY`, `VOICE_UNAVAILABLE`, `VOICE_BAD_ENDPOINT`, `VOICE_BAD_INPUT`, `VOICE_NO_CALL`, `VOICE_START_FAILED`.
 
 ## 3. The agent-only rule
 
@@ -65,7 +65,7 @@ If the identity changes during the call (someone runs `/1on1` or `/remote` in th
 
 ## 5. What happens during a call
 
-**The workbench is pinned.** The stream and clear endpoints the agent passes to `voice_start` come from a model and could be steered by prompt injection. They must resolve to the same origin (scheme, host and port) as `SLAUDE_VOICE_WORKBENCH_URL`, with no embedded credentials, or the call is refused with `VOICE_BAD_ENDPOINT`. The only route header accepted is `X-Browser-Session`; any other (including `Authorization`, `Cookie` or `Host`) makes `voice_start` refuse with `VOICE_BAD_ENDPOINT`. Redirects are refused. This keeps the capability URLs, and the route headers sent with them, from going anywhere else.
+**The workbench is pinned.** The stream and clear endpoints the agent passes to `voice_start` come from a model and could be steered by prompt injection. They must resolve to the same origin (scheme, host and port) as `SLAUDE_VOICE_WORKBENCH_URL`, with no embedded credentials, or the call is refused with `VOICE_BAD_ENDPOINT`. `X-Browser-Session` is required, and it is the only route header accepted; a missing one, or any other header (including `Authorization`, `Cookie` or `Host`), makes `voice_start` refuse with `VOICE_BAD_INPUT`. Redirects are refused. This keeps the capability URLs, and the route headers sent with them, from going anywhere else.
 
 **The thread is quiet.** While the call runs, the agent's turns that serve the call do not post status lines, reactions or replies in the Slack thread. Normal posting resumes when the call ends, with the summary.
 

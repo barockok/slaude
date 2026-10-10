@@ -286,7 +286,8 @@ export function voiceStartCard(input: Record<string, unknown>, cfg: VoiceCardCon
   lines.push(`sample rate: ${a.sample_rate === undefined ? "24000 (default)" : cardLiteral(String(a.sample_rate))}`);
   if (a.format !== undefined) lines.push(`format: ${cardLiteral(String(a.format))}`);
   if (a.channels !== undefined) lines.push(`channels: ${cardLiteral(String(a.channels))}`);
-  if (a.session_id !== undefined) lines.push(`audio session id: ${cardLiteral(String(a.session_id))} (informational; not used)`);
+  // The value is never printed: it is not used, and an id could carry a secret.
+  if (a.session_id !== undefined) lines.push("session_id: (present)");
   if (a.restarted !== undefined) lines.push(`restarted: ${cardLiteral(String(a.restarted))} (informational; not used)`);
   const headers = isRecord(a.headers) ? Object.keys(a.headers) : [];
   lines.push(`route headers: ${headers.length
