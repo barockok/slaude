@@ -5,7 +5,7 @@
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
-import { redactCapabilityUrls } from "./audio-link";
+import { CapabilityRedactor } from "./audio-link";
 import { ENV_API_KEY, encodeMsg, parseChildMsg, readLines, type ChildMsg, type ParentMsg } from "./ipc";
 
 const ENTRY = fileURLToPath(new URL("./loop-entry.ts", import.meta.url));
@@ -76,7 +76,8 @@ export function spawnVoiceLoop(o: SpawnSecrets & { execPath?: string; entry?: st
     send: (m) => {
       if (m.type === "init") {
         const { audio, workbenchUrl } = m.init;
-        scrub = (s) => redactCapabilityUrls(s, audio, workbenchUrl);
+        const r = new CapabilityRedactor(audio, workbenchUrl);
+        scrub = (s) => r.redact(s);
       }
       if (!dead && cp.stdin && !cp.stdin.destroyed && cp.stdin.writable) cp.stdin.write(encodeMsg(m));
     },

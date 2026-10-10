@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { transcriptLine, type ChildMsg, type EndReason, type VoiceInit } from "./ipc";
 import type { LoopChild } from "./spawn";
 import { VoiceAuthLost } from "./runners";
-import { redactCapabilityUrls } from "./audio-link";
+import { CapabilityRedactor } from "./audio-link";
 
 export type { LoopChild } from "./spawn";
 
@@ -91,7 +91,8 @@ export class VoiceCall {
   constructor(private d: VoiceCallDeps) {}
 
   start(init: VoiceInit): Promise<void> {
-    this.#scrub = (s) => redactCapabilityUrls(s, init.audio, init.workbenchUrl);
+    const r = new CapabilityRedactor(init.audio, init.workbenchUrl);
+    this.#scrub = (s) => r.redact(s);
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#timedOut = true;

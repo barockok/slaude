@@ -4,7 +4,7 @@
  * comes only from the environment; the audio capability URLs come in `init` and
  * are scrubbed from every log line. stdin EOF (parent died) ends the call.
  */
-import { AudioLink, redactCapabilityUrls } from "./audio-link";
+import { AudioLink, CapabilityRedactor } from "./audio-link";
 import { ENV_API_KEY, encodeMsg, parseParentMsg, readLines, type ChildMsg, type ParentMsg } from "./ipc";
 import { runVoiceLoop } from "./loop";
 import { createProvider } from "./provider";
@@ -39,7 +39,8 @@ if (!initMsg || initMsg.type !== "init" || !apiKey) {
   process.exit(2);
 }
 const init = initMsg.init;
-scrub = (s) => redactCapabilityUrls(s, init.audio, init.workbenchUrl);
+const redactor = new CapabilityRedactor(init.audio, init.workbenchUrl);
+scrub = (s) => redactor.redact(s);
 
 async function* inbox(): AsyncGenerator<ParentMsg> {
   for await (const line of lines) {

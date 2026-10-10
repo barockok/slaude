@@ -3,7 +3,7 @@
  * (parent) and the voice loop (child) — voice mode spec §4. The provider key
  * never rides this pipe: it goes in the child's env. The audio capability URLs
  * (secret-bearing paths) do ride `init`, and nothing the child writes back may
- * contain them (see redactCapabilityUrls).
+ * contain them (see CapabilityRedactor).
  */
 import { z } from "zod";
 import type { VoiceProviderId } from "./config";

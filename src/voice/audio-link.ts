@@ -5,7 +5,7 @@
  * are ephemeral capability URLs: an unguessable per-audio-session secret sits
  * in their paths, and they die when the audio session stops. They are the only
  * authorization, so no Authorization header is sent and the URLs themselves are
- * never logged or echoed (see redactCapabilityUrls). Audio content is never
+ * never logged or echoed (see CapabilityRedactor). Audio content is never
  * logged.
  */
 import type { AudioEndpoints } from "./ipc";
