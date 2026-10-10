@@ -13,7 +13,7 @@ import { VOICE_MCP_NAME, voiceHandlers, type VoiceHost } from "../../src/agent/v
 import { VoiceAuthLost } from "../../src/voice/runners";
 import { VoiceCall, VoiceCalls } from "../../src/voice/call";
 import { fakeChild, until } from "./fakes";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { VoiceConfig } from "../../src/voice/config";
@@ -46,6 +46,23 @@ const cfg: VoiceConfig = {
   provider: "openai", model: "gpt-realtime", apiKey: "k", workbenchUrl: "https://wb.example.com", maxMinutes: 90, staleSeq: 4,
 };
 const soul = { identity: { name: "Ada", role: "release helper", voice: "calm" }, values: ["be brief"], mandate: "ship safely" };
+
+/** A stand-in child script: if a host ever ran it, its marker would show. */
+const markerDir = mkdtempSync(join(tmpdir(), "voice-hosts-"));
+const markerEntry = join(markerDir, "marker-entry.ts");
+writeFileSync(markerEntry, `process.stdout.write(JSON.stringify({ type: "log", level: "info", message: "MARKER-ENTRY-RAN" }) + "\\n");
+process.stdout.write(JSON.stringify({ type: "ended", reason: "stopped" }) + "\\n");
+process.exit(0);
+`);
+/** Spawn through a host with an extra `entry` key and report what ran. */
+async function spawnWithEntry(host: VoiceHost): Promise<string> {
+  const child = host.spawn({ apiKey: "k", entry: markerEntry } as any);
+  child.send({ type: "context", text: "not an init" });
+  const got: unknown[] = [];
+  for await (const m of child.messages) got.push(m);
+  child.kill();
+  return JSON.stringify(got);
+}
 
 describe("voiceRefusalFromClaims", () => {
   it("refuses locked, remote, or person-identity turns", () => {
@@ -97,6 +114,12 @@ describe("mono voice host", () => {
     });
     return { host, agent, remoteCalls, souls };
   }
+
+  it("spawn passes only the provider key: the test-only entry seam cannot be reached", async () => {
+    const out = await spawnWithEntry(mono().host);
+    expect(out).not.toContain("MARKER-ENTRY-RAN");
+    expect(out).toContain("loop_crashed");
+  });
 
   it("allows an agent-identity thread", async () => {
     const { host, agent } = mono();
@@ -203,6 +226,11 @@ describe("node voice host", () => {
   it("is unavailable while draining", async () => {
     const h = makeNodeVoiceHost({ ...base, draining: () => true });
     expect(await h.refusal("s1")).toBe("VOICE_UNAVAILABLE");
+  });
+  it("spawn passes only the provider key: the test-only entry seam cannot be reached", async () => {
+    const out = await spawnWithEntry(makeNodeVoiceHost(base));
+    expect(out).not.toContain("MARKER-ENTRY-RAN");
+    expect(out).toContain("loop_crashed");
   });
   it("is unavailable without a bound job token, or one without a job claim", async () => {
     expect(await makeNodeVoiceHost({ ...base, tokenFor: () => undefined }).refusal("s1")).toBe("VOICE_UNAVAILABLE");
@@ -318,7 +346,7 @@ describe("node voice host", () => {
       const calls = new VoiceCalls();
       const r = await voiceHandlers.start("s1", host, calls, {
         brief: "b",
-        audio: { stream_url: "/s", clear_url: "/c", headers: {}, sample_rate: 24000, stream_token: "st" },
+        audio: { stream_url: "/s", clear_url: "/c", headers: {}, sample_rate: 24000 },
       });
       expect((r as { isError?: boolean }).isError).toBe(true);
       expect(r.content[0]!.text).toStartWith(want);

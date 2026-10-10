@@ -197,13 +197,32 @@ The agent-only rule is only as good as the moment it is checked.
 
 ## Orphan children
 
-The child holds the provider key and stream token, so a child left running is a
-credential left running. Paths closed in review: a missing process `error`
+The child holds the provider key (and, after rc.2, the capability URLs; it held a
+stream token before), so a child left running is a credential left running. Paths closed in review: a missing process `error`
 handler crashed the host; the stream-error close path never killed the child; a
 throw after spawn (runner or call construction) leaked it; a detached promise
 rejection in the child killed it without an `ended` message (the entry now
 installs handlers, emits one `ended`, and exits); an exit without `ended` after
 a requested stop is reported as the requested reason, not a crash.
+
+## Changed after rc.2: capability URLs replace the stream token
+
+Workbench's `browser_audio_start` no longer returns a `stream_token`. It returns
+ephemeral capability URLs: an unguessable per-audio-session secret sits in the
+`stream_url` and `clear_url` paths, and each URL works only while that audio
+session is open (it dies on stop, call end or tab close). Why: a URL bound to one
+audio session cannot outlive it, and a separate bearer added a second secret
+with its own lifetime for no extra protection. Slaude now sends no
+`Authorization` header to the audio routes, only the route headers minus
+`Authorization`/`Cookie`/`Host`; the child gets only the provider key. Because
+the URL itself is now the secret, same-origin pinning and `redirect: "error"`
+matter more, and the URLs are masked to their origin in application logs, the
+child's `log` lines, `voice_start` failure text and the approval card. A
+`stream_token` the model still passes is refused: voice_start's schema is
+strict, and the permission gate validates it before rendering any approval
+card. The card shows the brief literally (never through the redactor: the
+model chooses the path segments, so masking them in the brief could hide
+ordinary words), and a brief quoting a whole stream or clear URL is refused.
 
 ## Measured
 

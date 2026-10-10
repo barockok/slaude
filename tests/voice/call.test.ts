@@ -67,6 +67,23 @@ async function started(t: ReturnType<typeof make>) {
 }
 
 describe("VoiceCall", () => {
+  it("a child log line never reaches the application log with a capability URL", async () => {
+    const t = make();
+    const cap = "cap-3c1d9e";
+    const i = { ...init(t.call.callId), audio: { streamUrl: `/api/browser/audio/${cap}/stream`, clearUrl: `/api/browser/audio/${cap}/clear`, headers: {}, sampleRate: 24000 } };
+    const p = t.call.start(i);
+    t.child.push({ type: "started", callId: t.call.callId, sampleRate: 24000 });
+    await p;
+    const lines: string[] = [];
+    const err = spyOn(console, "error").mockImplementation((...a: unknown[]) => void lines.push(a.join(" ")));
+    t.child.push({ type: "log", level: "error", message: `fetch https://wb.example.com/api/browser/audio/${cap}/stream failed; clear /api/browser/audio/${cap}/clear` });
+    await until(() => lines.length > 0);
+    err.mockRestore();
+    expect(lines.join("\n")).not.toContain(cap);
+    expect(lines.join("\n")).toContain("https://wb.example.com/…");
+    t.child.kill();
+  });
+
   it("start sends init, holds idle, resolves on started", async () => {
     const t = make();
     const p = t.call.start(init(t.call.callId));

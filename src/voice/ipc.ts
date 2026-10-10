@@ -1,13 +1,14 @@
 /**
  * stdio JSON-lines protocol between the process holding the Claude session
- * (parent) and the voice loop (child) — voice mode spec §4. Secrets never ride
- * this pipe: the provider key and workbench stream token go in the child's env.
+ * (parent) and the voice loop (child) — voice mode spec §4. The provider key
+ * never rides this pipe: it goes in the child's env. The audio capability URLs
+ * (secret-bearing paths) do ride `init`, and nothing the child writes back may
+ * contain them (see CapabilityRedactor).
  */
 import { z } from "zod";
 import type { VoiceProviderId } from "./config";
 
 export const ENV_API_KEY = "SLAUDE_VOICE_LOOP_API_KEY";
-export const ENV_STREAM_TOKEN = "SLAUDE_VOICE_LOOP_STREAM_TOKEN";
 
 const BASE_REASONS = [
   "stopped", "ended_by_voice", "max_duration", "provider_lost", "provider_failed", "audio_lost",

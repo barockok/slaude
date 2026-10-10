@@ -1,8 +1,12 @@
 /**
  * Workbench browser-audio client (voice mode spec §5.5; workbench
  * browser-audio-pipeline design). SSE out (call audio), one long-lived chunked
- * POST in (agent audio), `clear` for interruption. Authorized by the call's
- * stream_token (plan deviation 1). Audio content is never logged.
+ * POST in (agent audio), `clear` for interruption. The stream and clear URLs
+ * are ephemeral capability URLs: an unguessable per-audio-session secret sits
+ * in their paths, and they die when the audio session stops. They are the only
+ * authorization, so no Authorization header is sent and the URLs themselves are
+ * never logged or echoed (see CapabilityRedactor). Audio content is never
+ * logged.
  */
 import type { AudioEndpoints } from "./ipc";
 import { base64ToPcm } from "./provider/types";
@@ -19,8 +23,15 @@ export interface AudioLinkLike {
   close(): Promise<void>;
 }
 
-/** Headers a model-supplied endpoint may never set: the link adds its own bearer. */
+/** Headers a model-supplied endpoint may never set: ambient credentials and
+ *  routing that the capability URL must not be combined with. */
 export const FORBIDDEN_HEADERS: ReadonlySet<string> = new Set(["authorization", "cookie", "host"]);
+
+/** The only route headers voice_start accepts (lower-case): naming them keeps
+ *  every header that can change routing visible on the approval card. */
+export const ROUTE_HEADER_ALLOWLIST: ReadonlySet<string> = new Set(["x-browser-session"]);
+export const routeHeadersAllowed = (h: Record<string, string>): boolean =>
+  Object.keys(h).every((k) => ROUTE_HEADER_ALLOWLIST.has(k.toLowerCase()));
 
 /** True when `path` resolves against `base` to the same origin, without
  *  embedded credentials. Unparseable input is false. */
@@ -32,6 +43,136 @@ export function sameOrigin(path: string, base: string): boolean {
   } catch {
     return false;
   }
+}
+
+const PLACEHOLDER_BASE = "http://placeholder.invalid";
+/** An absolute URL token in free text (stops at whitespace, quotes, brackets, backslash). */
+const URL_TOKEN = /[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>\\]+/gi;
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const safeDecode = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
+const safeEncodeURI = (s: string) => { try { return encodeURI(s); } catch { return s; } };
+const safeEncodeURIComponent = (s: string) => { try { return encodeURIComponent(s); } catch { return s; } };
+/** Every encoding a piece may appear in: as given, decoded, encodeURI, encodeURIComponent. */
+function encodings(piece: string): string[] {
+  const dec = safeDecode(piece);
+  return [piece, dec, safeEncodeURI(dec), safeEncodeURIComponent(dec)];
+}
+
+/** Path segments of the workbench's audio routes that carry no secret. */
+export const ROUTE_WORDS: ReadonlySet<string> = new Set(["api", "browser", "tabs", "audio", "stream", "clear"]);
+/** Pieces this short are masked only as a whole token, so a one-letter test
+ *  path cannot eat letters inside words. */
+const MIN_ANYWHERE = 4;
+
+/** Secondary net, only for an endpoint that does not parse as a URL at all
+ *  (no URL context to take exact pieces from): a piece that looks like a
+ *  secret, long or mixing letters and digits. */
+function looksSecret(seg: string): boolean {
+  return seg.length >= 12 || (seg.length >= 6 && /[0-9]/.test(seg) && /[a-z]/i.test(seg));
+}
+
+/**
+ * Masks one call's capability URLs (voice mode: the audio session's secret is
+ * in the stream/clear URL paths and queries). Built once from the exact URLs
+ * the call received, it derives every secret-bearing piece from them: each
+ * full URL, its path and path plus query, every path segment that is not a
+ * route word, every query value, each in every encoding. Those exact strings
+ * are masked wherever they appear, whatever the secret's shape:
+ *  - an absolute URL in the text carrying any piece is masked whole (query and
+ *    all) to its origin and "/…";
+ *  - a path form not attached to a host likewise;
+ *  - any remaining piece (lone, encoded, after a scheme-less host) becomes "…".
+ * With no usable `baseUrl`, a relative form masks to "[redacted]".
+ */
+export class CapabilityRedactor {
+  readonly #whole: Array<[string, string]> = [];
+  readonly #paths: Array<[string, string]> = [];
+  readonly #pieces: string[];
+  readonly #empty: boolean;
+
+  constructor(endpoints: { streamUrl: string; clearUrl: string }, baseUrl: string) {
+    let base: URL | null = null;
+    try { base = baseUrl ? new URL(baseUrl) : null; } catch {}
+    const routeWords = new Set([...ROUTE_WORDS, ...(base?.pathname ?? "").split("/").filter(Boolean)]);
+    const pieces: string[] = [];
+    for (const raw of [endpoints.streamUrl, endpoints.clearUrl]) {
+      if (!raw) continue;
+      let u: URL | null = null;
+      let origin = "";
+      let absolute = false;
+      try {
+        u = new URL(raw);
+        origin = u.origin;
+        absolute = true;
+      } catch {
+        try {
+          u = new URL(raw, base ?? PLACEHOLDER_BASE);
+          origin = base ? u.origin : "";
+        } catch {}
+      }
+      if (origin === "null") origin = "";
+      const masked = origin ? `${origin}/…` : "[redacted]";
+      if (!u) {
+        // No URL structure: mask it as given, plus the secondary net.
+        pieces.push(raw, ...raw.split(/[/?&=#]+/).filter(looksSecret));
+        continue;
+      }
+      // Only absolute forms are masked anywhere: a relative form may follow a
+      // scheme-less host, and is left to the guarded path pass.
+      for (const w of [absolute ? raw : "", origin ? u.toString() : ""]) {
+        if (w) for (const e of encodings(w)) this.#whole.push([e, masked]);
+      }
+      if (u.pathname.length > 1) {
+        for (const form of [u.pathname + u.search, u.pathname]) {
+          for (const e of encodings(form)) this.#paths.push([e, masked]);
+        }
+      }
+      for (const seg of u.pathname.split("/")) {
+        const dec = safeDecode(seg);
+        if (dec && !routeWords.has(dec)) pieces.push(...encodings(seg));
+      }
+      for (const [, v] of u.searchParams) if (v) pieces.push(...encodings(v));
+    }
+    const byLen = (a: string, b: string) => b.length - a.length;
+    this.#whole.sort((a, b) => byLen(a[0], b[0]));
+    this.#paths.sort((a, b) => byLen(a[0], b[0]));
+    this.#pieces = [...new Set(pieces.filter(Boolean))].sort(byLen);
+    this.#empty = !this.#whole.length && !this.#paths.length && !this.#pieces.length;
+  }
+
+  redact(text: string): string {
+    if (this.#empty || !text) return text;
+    const paths = this.#paths.map(([p]) => p);
+    // Absolute URLs first, whole (an extra query or fragment goes with them).
+    let out = text.replace(URL_TOKEN, (tok) => {
+      if (!this.#pieces.some((s) => tok.includes(s)) && !paths.some((p) => tok.includes(p))) return tok;
+      try {
+        const o = new URL(tok).origin;
+        return o && o !== "null" ? `${o}/…` : "[redacted]";
+      } catch {
+        return "[redacted]";
+      }
+    });
+    for (const [form, masked] of this.#whole) out = out.split(form).join(masked);
+    // Path forms only where no host precedes them (a scheme-less host/path is
+    // left to the piece pass, so nothing is masked twice).
+    for (const [form, masked] of this.#paths) {
+      out = out.replace(new RegExp(`(?<![A-Za-z0-9.\\-\\]:@%/])${escapeRe(form)}`, "g"), masked);
+    }
+    for (const piece of this.#pieces) {
+      out = piece.length >= MIN_ANYWHERE
+        ? out.split(piece).join("…")
+        : out.replace(new RegExp(`(?<![A-Za-z0-9])${escapeRe(piece)}(?![A-Za-z0-9])`, "g"), "…");
+    }
+    return out;
+  }
+}
+
+/** One-shot form of CapabilityRedactor. Use on any text that leaves the voice
+ *  loop: logs, ipc `log` lines, child stderr, error messages, approval cards,
+ *  the panel timeline. */
+export function redactCapabilityUrls(text: string, endpoints: { streamUrl: string; clearUrl: string }, baseUrl: string): string {
+  return new CapabilityRedactor(endpoints, baseUrl).redact(text);
 }
 
 export class AudioLink implements AudioLinkLike {
@@ -46,9 +187,10 @@ export class AudioLink implements AudioLinkLike {
   readonly #clearUrl: string;
   readonly #routeHeaders: Record<string, string>;
 
-  constructor(private o: { baseUrl: string; endpoints: AudioEndpoints; streamToken: string; maxSseRetries?: number; retryDelayMs?: number; clearTimeoutMs?: number; closeTimeoutMs?: number }) {
+  constructor(private o: { baseUrl: string; endpoints: AudioEndpoints; maxSseRetries?: number; retryDelayMs?: number; clearTimeoutMs?: number; closeTimeoutMs?: number }) {
     // Endpoints are model-supplied: pin them to the operator's origin so the
-    // bearer token can never be sent elsewhere.
+    // capability URL (and the route headers) can never be sent elsewhere. The
+    // error names neither URL: the path is the secret.
     const pin = (path: string): string => {
       if (!sameOrigin(path, o.baseUrl)) throw new Error("workbench endpoint origin mismatch");
       return new URL(path, o.baseUrl).toString();
@@ -61,7 +203,7 @@ export class AudioLink implements AudioLinkLike {
   }
 
   #headers(extra: Record<string, string> = {}): Record<string, string> {
-    return { ...this.#routeHeaders, authorization: `Bearer ${this.o.streamToken}`, ...extra };
+    return { ...this.#routeHeaders, ...extra };
   }
   #end(reason: string): void {
     if (this.#ended || this.#closed) return;

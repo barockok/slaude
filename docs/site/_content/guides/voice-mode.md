@@ -2,7 +2,7 @@
 
 Voice mode lets the agent take part in a live call. It joins a meeting in a browser tab, listens, and talks back through a realtime voice model. The voice model only handles the conversation. Whenever it needs facts or tools, it hands the request to the thread's own Claude session, which does the thinking and sends the answer back to be spoken. The Slack thread stays quiet during the call, and when the call ends the agent posts a summary and the transcript.
 
-> **Prerequisites:** The operator has set `SLAUDE_VOICE_ENABLED=1` and the settings below. A workbench (a remote browser service the agent controls through MCP) is reachable, with browser audio enabled and the `stream_token` capability. You are responsible for recording and consent law in your jurisdiction. The agent introduces itself as an AI assistant when it first speaks.
+> **Prerequisites:** The operator has set `SLAUDE_VOICE_ENABLED=1` and the settings below. A workbench (a remote browser service the agent controls through MCP) is reachable, with browser audio enabled, whose `browser_audio_start` returns capability URLs (see below). You are responsible for recording and consent law in your jurisdiction. The agent introduces itself as an AI assistant when it first speaks.
 
 ---
 
@@ -12,11 +12,13 @@ Ask the agent in a thread to join a meeting, for example "join https://meet.exam
 
 1. Opens the meeting in a workbench browser tab with the workbench's own browser tools.
 2. Calls the workbench's `browser_audio_start` for that tab.
-3. Calls `voice_start`, passing a short brief and the `browser_audio_start` result (stream URL, clear URL, route headers, sample rate and stream token).
+3. Calls `voice_start`, passing a short brief and the `browser_audio_start` result (stream URL, clear URL, route headers and sample rate).
+
+**Capability URLs.** The stream and clear URLs are ephemeral capability URLs: each carries an unguessable secret for that audio session in its path, is valid only while the audio session is open, and stops working when audio stops, the call ends or the tab closes. They are the only authorization for the audio routes. Slaude sends no `Authorization` header to them, only the route headers (for example `X-Browser-Session`). Because the URLs are the secret, slaude never shows them in full: logs, the voice process's log lines and stderr, error messages, the approval card and the panel timeline show the origin only (`https://workbench.example.com/…`). Masking is by exact match: every piece of the URLs the call received (path, segments other than route words, query values, in every URL encoding) is masked wherever it appears, whatever its shape.
 
 The agent's voice then speaks into the call. The thread's session is held open for the duration, so it does not idle out mid-call.
 
-**Approval.** Under the normal permission mode, `voice_start` asks for approval like any other gated tool: joining a meeting and capturing its audio is a high-impact action. The approval card shows the tool input with the stream token and every route-header value redacted. The mid-call controls (`voice_say`, `voice_context`, `voice_stop`) never ask: a card during the call would break the quiet thread, and stopping a call must not wait on a click.
+**Approval.** Under the normal permission mode, `voice_start` asks for approval like any other gated tool: joining a meeting and capturing its audio is a high-impact action. The approval card is rendered from the exact input that runs and shows everything that changes behaviour: the origin of each URL (flagged if it is not the pinned workbench), the sample rate, the route header names (values `[hidden]`), the voice and the configured model, any ignored fields, and the whole brief. Only the URL paths and header values are hidden. Before any card, the input is checked against the tool's strict schema: an unknown field, a wrongly typed value, a URL with credentials, a brief over 500 characters or a brief that quotes a whole stream or clear URL is denied with no card. The brief is shown whole and literally, never truncated; each of its lines is prefixed with `| `, and line breaks, zero-width and other invisible characters are shown as escapes, so a brief cannot imitate the card or close its code block. The mid-call controls (`voice_say`, `voice_context`, `voice_stop`) never ask: a card during the call would break the quiet thread, and stopping a call must not wait on a click.
 
 ## 2. Tools
 
@@ -63,13 +65,13 @@ If the identity changes during the call (someone runs `/1on1` or `/remote` in th
 
 ## 5. What happens during a call
 
-**The workbench is pinned.** The stream and clear endpoints the agent passes to `voice_start` come from a model and could be steered by prompt injection. They must resolve to the same origin (scheme, host and port) as `SLAUDE_VOICE_WORKBENCH_URL`, with no embedded credentials, or the call is refused with `VOICE_BAD_ENDPOINT`. Route headers cannot set `Authorization`, `Cookie` or `Host`. This keeps the stream token from being sent anywhere else.
+**The workbench is pinned.** The stream and clear endpoints the agent passes to `voice_start` come from a model and could be steered by prompt injection. They must resolve to the same origin (scheme, host and port) as `SLAUDE_VOICE_WORKBENCH_URL`, with no embedded credentials, or the call is refused with `VOICE_BAD_ENDPOINT`. The only route header accepted is `X-Browser-Session`; any other (including `Authorization`, `Cookie` or `Host`) makes `voice_start` refuse with `VOICE_BAD_ENDPOINT`. Redirects are refused. This keeps the capability URLs, and the route headers sent with them, from going anywhere else.
 
 **The thread is quiet.** While the call runs, the agent's turns that serve the call do not post status lines, reactions or replies in the Slack thread. Normal posting resumes when the call ends, with the summary.
 
 **The transcript.** The voice process emits the transcript. It is fed to the session in batches (as suppressed turns, so the session knows what was said) and is written to `voice-call-<callId>.txt` in the session's working directory. When the call ends, the agent runs a summary turn and attaches the file.
 
-**The voice process.** Each call runs as a separate child process. The provider key and the stream token reach it only through its environment, never through arguments or its stdin protocol. Its environment is otherwise minimal: `PATH`, `HOME`, and, so that proxied or private-CA deployments can reach the provider, the usual `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (and lowercase forms), `NODE_EXTRA_CA_CERTS` and `SSL_CERT_FILE`. It does not read a `.env` file.
+**The voice process.** Each call runs as a separate child process. The provider key reaches it only through its environment, never through arguments or its stdin protocol. The capability URLs reach it in the start message on its stdin, and every log line it writes back has them masked. Its environment is otherwise minimal: `PATH`, `HOME`, and, so that proxied or private-CA deployments can reach the provider, the usual `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (and lowercase forms), `NODE_EXTRA_CA_CERTS` and `SSL_CERT_FILE`. It does not read a `.env` file.
 
 **How a call ends.** Normal reasons are `stopped` (the agent called `voice_stop`), `ended_by_voice`, `max_duration` and `workbench:<reason>` (the tab or meeting closed). Failures are `provider_failed`, `provider_lost` (reconnects exhausted), `audio_lost`, `auth_lost`, `session_rebooted`, `node_drain` (a node, or a `mono` process, shutting down), `parent_gone` (the process that started the voice loop went away) and `loop_crashed`.
 

@@ -2,7 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createVoiceMcp, buildInstructions, SPEAKING_RULES, type VoiceHost } from "../../src/agent/voice-mcp";
+import { createVoiceMcp, buildInstructions, SPEAKING_RULES, voiceStartSchema, voiceStartProblem, type VoiceHost } from "../../src/agent/voice-mcp";
 import { VoiceCalls } from "../../src/voice/call";
 import type { ChildMsg, ParentMsg } from "../../src/voice/ipc";
 import { chan, until } from "./fakes";
@@ -34,7 +34,7 @@ function fakeChild() {
   return child;
 }
 function host(over: Partial<VoiceHost> = {}) {
-  const spawned: Array<{ apiKey: string; streamToken: string }> = [];
+  const spawned: Array<{ apiKey: string }> = [];
   const children: Array<ReturnType<typeof fakeChild>> = [];
   const h: VoiceHost = {
     config: async () => cfg,
@@ -56,32 +56,92 @@ function host(over: Partial<VoiceHost> = {}) {
   return { h, spawned, children, get child() { return children[0]!; } };
 }
 const tools = (cfgObj: any) => cfgObj.instance._registeredTools;
-const audio: { stream_url: string; clear_url: string; headers: Record<string, string>; sample_rate: number; stream_token: string } = {
-  stream_url: "/api/browser/tabs/t1/audio/stream",
-  clear_url: "/api/browser/tabs/t1/audio/clear",
+// The capability URLs carry the audio session's secret in their paths.
+const CAP = "cap-9f2c7d1e";
+const audio: { stream_url: string; clear_url: string; headers: Record<string, string>; sample_rate: number } = {
+  stream_url: `/api/browser/audio/${CAP}/stream`,
+  clear_url: `/api/browser/audio/${CAP}/clear`,
   headers: { "X-Browser-Session": "rk" },
   sample_rate: 24000,
-  stream_token: "stok",
 };
 const startArgs = { brief: "weekly sync", audio };
 const withAudio = (o: Partial<typeof audio>) => ({ brief: "x", audio: { ...audio, ...o } });
 const text = (r: any) => r.content[0].text as string;
 
 describe("voice MCP", () => {
-  it("voice_start spawns with secrets in env only and returns a call id", async () => {
+  it("voice_start spawns with only the provider key and returns a call id", async () => {
     const t0 = host();
     const calls = new VoiceCalls();
     const t = tools(createVoiceMcp("s1", t0.h, calls));
     const r = await t["voice_start"].handler(startArgs);
     expect(r.isError).toBeFalsy();
     expect(JSON.parse(text(r)).callId).toBeString();
-    expect(t0.spawned).toEqual([{ apiKey: "sk-x", streamToken: "stok" }]);
+    expect(t0.spawned).toEqual([{ apiKey: "sk-x" }]);
     const init = (t0.child.sent[0] as any).init;
-    expect(JSON.stringify(init)).not.toContain("stok");
     expect(JSON.stringify(init)).not.toContain("sk-x");
     expect(init.audio).toEqual({ streamUrl: audio.stream_url, clearUrl: audio.clear_url, headers: { "X-Browser-Session": "rk" }, sampleRate: 24000 });
     expect(init.instructions).toContain("weekly sync");
     expect(calls.get("s1")).toBeDefined();
+  });
+
+  it("the exported schema is strict: a stream_token or any extra key is rejected, not stripped", () => {
+    expect(voiceStartSchema.safeParse({ brief: "x", audio }).success).toBe(true);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, stream_token: "old-tok" } }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio, extra: 1 }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: JSON.stringify(audio) }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, sample_rate: "24000" } }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, stream_url: "https://u:p@wb.example.com/s" } }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, clear_url: "https://u@wb.example.com/c" } }).success).toBe(false);
+  });
+
+  it("a brief quoting a whole capability URL or path is refused; a lone segment word is not", () => {
+    expect(voiceStartProblem({ brief: `stream at https://wb.example.com${audio.stream_url}`, audio })?.message).toContain("brief");
+    expect(voiceStartProblem({ brief: `path ${audio.clear_url}`, audio })?.message).toContain("brief");
+    expect(voiceStartProblem({ brief: `mention ${CAP} only`, audio })).toBeNull();
+    const notAudio = { ...audio, stream_url: "/api/browser/audio/not/stream", clear_url: "/api/browser/audio/not/clear" };
+    expect(voiceStartProblem({ brief: "do not hang up", audio: notAudio })).toBeNull();
+  });
+
+  it("the handler re-checks the brief itself, not only through the SDK's schema", async () => {
+    const t0 = host();
+    const t = tools(createVoiceMcp("s1", t0.h, new VoiceCalls()));
+    for (const brief of ["b".repeat(501), `here: ${audio.stream_url}`]) {
+      const r = await t["voice_start"].handler({ brief, audio });
+      expect(text(r)).toStartWith("VOICE_BAD_INPUT");
+      expect(text(r)).not.toContain(CAP);
+    }
+    expect(t0.spawned).toEqual([]);
+  });
+
+  it("the schema caps the brief at 500 and the voice name at 64, so a card can show them whole", () => {
+    const schema = tools(createVoiceMcp("s1", host().h, new VoiceCalls()))["voice_start"].inputSchema;
+    expect(schema.safeParse({ brief: "b".repeat(500), audio }).success).toBe(true);
+    expect(schema.safeParse({ brief: "b".repeat(501), audio }).success).toBe(false);
+    expect(schema.safeParse({ brief: "b", audio, voice: "v".repeat(65) }).success).toBe(false);
+  });
+
+  it("the voice_start description no longer asks for a stream_token", () => {
+    const t = tools(createVoiceMcp("s1", host().h, new VoiceCalls()));
+    expect(String(t["voice_start"].inputSchema.shape.audio.description ?? "")).not.toContain("stream_token");
+    expect(t["voice_start"].description).not.toContain("stream_token");
+  });
+
+  it("a start failure never echoes the capability URL", async () => {
+    const t0 = host();
+    t0.h.spawn = () => { throw new Error(`connect failed for https://wb.example.com${audio.stream_url}`); };
+    const r = await tools(createVoiceMcp("s1", t0.h, new VoiceCalls()))["voice_start"].handler(startArgs);
+    expect(text(r)).toContain("VOICE_START_FAILED");
+    expect(text(r)).not.toContain(CAP);
+    expect(text(r)).toContain("https://wb.example.com/…");
+  });
+
+  it("a failure before the workbench is known masks a relative capability URL to [redacted]", async () => {
+    const t0 = host({ config: async () => { throw new Error(`lookup failed near ${audio.stream_url}`); } });
+    const r = await tools(createVoiceMcp("s1", t0.h, new VoiceCalls()))["voice_start"].handler(startArgs);
+    expect(text(r)).toContain("VOICE_START_FAILED");
+    expect(text(r)).not.toContain(CAP);
+    expect(text(r)).not.toContain("invalid");
+    expect(text(r)).toContain("[redacted]");
   });
 
   it("VOICE_BUSY on a second start", async () => {
@@ -194,11 +254,11 @@ describe("voice MCP", () => {
       ["other scheme", { clear_url: "http://wb.example.com/c" }],
       ["unparseable", { stream_url: "http://" }],
     ] as const) {
-      it(`refuses ${name} before spawning, without echoing the token`, async () => {
+      it(`refuses ${name} before spawning, without echoing the url`, async () => {
         const { r, spawned, calls } = await refused(withAudio(o as any));
         expect(r.isError).toBe(true);
         expect(text(r)).toContain("VOICE_BAD_ENDPOINT");
-        expect(text(r)).not.toContain("stok");
+        for (const v of Object.values(o)) expect(text(r)).not.toContain(v);
         expect(spawned).toEqual([]);
         expect(calls.get("s1")).toBeUndefined();
       });
@@ -209,11 +269,20 @@ describe("voice MCP", () => {
       expect(r.isError).toBeFalsy();
     });
 
-    it("drops authorization, cookie and host headers", async () => {
+    it("refuses any route header but X-Browser-Session (schema and handler), spawning nothing", async () => {
       const t0 = host();
       const t = tools(createVoiceMcp("s1", t0.h, new VoiceCalls()));
-      await t["voice_start"].handler(withAudio({ headers: { Authorization: "Bearer z", cookie: "a=b", HOST: "evil", "X-Browser-Session": "rk" } }));
-      expect((t0.child.sent[0] as any).init.audio.headers).toEqual({ "X-Browser-Session": "rk" });
+      for (const h of [{ Authorization: "Bearer z" }, { cookie: "a=b" }, { HOST: "evil" }, { "X-Other": "1" }] as Record<string, string>[]) {
+        const headers = { ...h, "X-Browser-Session": "rk" };
+        expect(t["voice_start"].inputSchema.safeParse({ brief: "x", audio: { ...audio, headers } }).success).toBe(false);
+        const r = await t["voice_start"].handler(withAudio({ headers }));
+        expect(text(r)).toStartWith("VOICE_BAD_ENDPOINT");
+        expect(text(r)).not.toContain("Bearer z");
+      }
+      expect(t0.spawned).toEqual([]);
+      // Case-insensitive, and the known header is passed through.
+      await t["voice_start"].handler(withAudio({ headers: { "x-browser-session": "rk" } }));
+      expect((t0.child.sent[0] as any).init.audio.headers).toEqual({ "x-browser-session": "rk" });
     });
   });
 

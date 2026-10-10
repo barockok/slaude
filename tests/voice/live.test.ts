@@ -1,8 +1,9 @@
 // Runs only with VOICE_E2E=1 and real credentials; skipped otherwise.
 // Needs: SLAUDE_VOICE_API_KEY (OpenAI), VOICE_E2E_WORKBENCH_URL, VOICE_E2E_STREAM_URL,
-// VOICE_E2E_CLEAR_URL, VOICE_E2E_ROUTE, VOICE_E2E_STREAM_TOKEN — from a workbench tab on a
-// local test page where browser_audio_start was already called. The stream and clear
-// URLs must be on the same origin as VOICE_E2E_WORKBENCH_URL (the link refuses others).
+// VOICE_E2E_CLEAR_URL, VOICE_E2E_ROUTE — from a workbench tab on a local test page where
+// browser_audio_start was already called. The stream and clear URLs are capability URLs
+// (the audio session's secret is in the path; no bearer) and must be on the same origin
+// as VOICE_E2E_WORKBENCH_URL (the link refuses others).
 import { describe, it, expect } from "bun:test";
 import { runVoiceLoop } from "../../src/voice/loop";
 import { AudioLink, type AudioLinkLike } from "../../src/voice/audio-link";
@@ -23,7 +24,6 @@ describe.skipIf(!live)("voice live", () => {
         headers: { "X-Browser-Session": e.VOICE_E2E_ROUTE! },
         sampleRate: 24000,
       },
-      streamToken: e.VOICE_E2E_STREAM_TOKEN!,
     });
     let written = 0;
     const audio: AudioLinkLike = {

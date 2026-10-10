@@ -60,7 +60,6 @@ const ALLOW: Record<string, string> = {
   SLAUDE_VOICE_WORKBENCH_URL: "workbench base address; not a secret; shipped to nodes in the voice bundle",
   // Voice loop child.
   SLAUDE_VOICE_LOOP_API_KEY: "voice-loop child env only; set by spawnVoiceLoop",
-  SLAUDE_VOICE_LOOP_STREAM_TOKEN: "voice-loop child env only; set by spawnVoiceLoop",
   // Other.
   SLAUDE_ENCRYPTION_KEY: "the connect broker's key, used by the agent process itself; stripped from the agent child (child-env.ts)",
   SLAUDE_SOUL_PARSE_MAX_TOKENS: "a size limit, not a secret",
