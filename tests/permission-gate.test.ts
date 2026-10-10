@@ -181,6 +181,28 @@ describe("PermissionGate", () => {
     expect((await p).behavior).toBe("deny");
   });
 
+  test("voice_start with a JSON-string audio still shows no capability URL on the card", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app);
+    gate.bindSession("S", "C", "T");
+    const ac = new AbortController();
+    const p = gate.resolver(
+      "S",
+      "mcp__slaude_voice__voice_start",
+      {
+        brief: "standup",
+        audio: JSON.stringify({ stream_url: "https://wb.example/api/browser/audio/cap-JS1abc/stream", clear_url: "/api/browser/audio/cap-JS1abc/clear", headers: {} }),
+      },
+      ctx("UJ", ac.signal),
+    );
+    const text = JSON.stringify((await firstPost(f)).blocks);
+    expect(text).toContain("mcp__slaude_voice__voice_start");
+    expect(text).not.toContain("cap-JS1abc");
+    expect(text).toContain("https://wb.example/…");
+    ac.abort();
+    await p;
+  });
+
   test("redactForCard keeps only the origin of stream_url/clear_url and any *_url under audio", () => {
     const out = redactForCard({
       stream_url: "https://wb.example/p/cap-1/stream",

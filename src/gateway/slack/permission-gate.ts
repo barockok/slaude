@@ -6,6 +6,7 @@ import type {
 import { env } from "../../config/env";
 import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
+import { redactCapabilityUrls } from "../../voice/audio-link";
 
 type PendingKey = string; // toolUseID
 
@@ -190,8 +191,30 @@ export function redactForCard(value: unknown, depth = 0, parentKey = ""): unknow
   return out;
 }
 
+const VOICE_START = "mcp__slaude_voice__voice_start";
+
+/** voice_start's `audio` may arrive as a JSON string, which redactForCard
+ *  cannot see into: mask its capability URLs in the rendered text too. */
+function redactVoiceStartPreview(preview: string, input: Record<string, unknown>): string {
+  let audio: unknown = input.audio;
+  if (typeof audio === "string") {
+    try { audio = JSON.parse(audio); } catch { audio = null; }
+  }
+  if (!audio || typeof audio !== "object") return preview;
+  const a = audio as Record<string, unknown>;
+  const streamUrl = typeof a.stream_url === "string" ? a.stream_url : "";
+  const clearUrl = typeof a.clear_url === "string" ? a.clear_url : "";
+  let base = "";
+  for (const u of [streamUrl, clearUrl]) {
+    try { base ||= new URL(u).origin; } catch {}
+  }
+  return redactCapabilityUrls(preview, { streamUrl, clearUrl }, base);
+}
+
 function permBlocks(toolName: string, input: Record<string, unknown>, toolUseId: string, decisionReason?: string) {
-  const inputPreview = truncate(JSON.stringify(redactForCard(input), null, 2), 2500);
+  let rendered = JSON.stringify(redactForCard(input), null, 2);
+  if (toolName === VOICE_START) rendered = redactVoiceStartPreview(rendered, input);
+  const inputPreview = truncate(rendered, 2500);
   return [
     {
       type: "section",
