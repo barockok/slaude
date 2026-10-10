@@ -81,18 +81,31 @@ const endpointUrl = z.string().min(1).refine((u) => {
  *  URLs (the audio session's secret is in the path), so they are the only
  *  authorization. Strict: an unknown key (e.g. a legacy stream_token) is
  *  refused, so the approval card can show everything that runs. */
+const MISSING_SESSION_HEADER = "the X-Browser-Session route header is required";
+const hasBrowserSession = (h: Record<string, string>): boolean =>
+  Object.entries(h).some(([k, v]) => k.toLowerCase() === "x-browser-session" && v.length > 0);
+
 const audioShape = z.object({
   stream_url: endpointUrl,
   clear_url: endpointUrl,
-  headers: z.record(z.string()).default({})
-    .refine(routeHeadersAllowed, { message: "only the X-Browser-Session route header is accepted" }),
+  // Required: the workbench needs X-Browser-Session on every request to
+  // forward it across pods.
+  headers: z.record(z.string())
+    .refine(routeHeadersAllowed, { message: "only the X-Browser-Session route header is accepted" })
+    .refine(hasBrowserSession, { message: MISSING_SESSION_HEADER }),
   sample_rate: z.union([z.literal(16000), z.literal(24000), z.literal(48000)]).default(24000),
+  // The rest of browser_audio_start's real result. Typed and otherwise inert:
+  // nothing reads them, they are accepted so a faithful pass-through works.
+  format: z.literal("pcm_s16le").optional(),
+  channels: z.literal(1).optional(),
+  session_id: z.string().min(1).max(128).optional(),
+  restarted: z.boolean().optional(),
 }).strict();
 
 const voiceStartShape = {
   // Capped so the approval card can show the whole brief that will run.
   brief: z.string().max(BRIEF_MAX).describe(`What this call is about and what you should do in it (at most ${BRIEF_MAX} characters).`),
-  audio: audioShape.describe("The result of browser_audio_start, passed as is: stream_url, clear_url, headers, sample_rate."),
+  audio: audioShape.describe("The result of browser_audio_start, passed as is: stream_url, clear_url, headers, sample_rate, and the optional format (pcm_s16le), channels (1), session_id and restarted."),
   voice: z.string().max(VOICE_NAME_MAX).optional(),
 };
 /** voice_start's input, strict at both levels. The permission gate validates
@@ -118,14 +131,34 @@ export function voiceStartProblem(input: unknown): { code: "VOICE_BAD_INPUT" | "
   const r = voiceStartSchema.safeParse(input);
   if (!r.success) {
     const paths = r.error.issues.map((i) => i.path.join(".") || "(input)");
-    // Endpoint and header issues keep their established code.
-    const endpoint = paths.every((p) => /^audio\.(stream_url|clear_url|headers)/.test(p));
+    // Only a bad stream/clear URL is an endpoint problem; every header issue
+    // (missing, disallowed, or both) is a plain bad input.
+    const endpoint = paths.every((p) => /^audio\.(stream_url|clear_url)/.test(p));
     return { code: endpoint ? "VOICE_BAD_ENDPOINT" : "VOICE_BAD_INPUT", message: `voice_start input is invalid (${paths.join(", ")})` };
   }
   const { brief, audio } = r.data;
   for (const u of [audio.stream_url, audio.clear_url]) {
     if (wholeUrlForms(u).some((f) => brief.includes(f))) {
       return { code: "VOICE_BAD_INPUT", message: "the brief may not contain the stream or clear URL" };
+    }
+  }
+  // session_id is shown nowhere and used nowhere; it must not be a vehicle for
+  // a capability: refuse one that equals a URL path segment or a header value.
+  if (audio.session_id !== undefined) {
+    const secrets = new Set<string>(Object.values(audio.headers));
+    for (const u of [audio.stream_url, audio.clear_url]) {
+      try {
+        const p = new URL(u, "http://placeholder.invalid");
+        for (const seg of p.pathname.split("/")) {
+          if (!seg) continue;
+          secrets.add(seg);
+          try { secrets.add(decodeURIComponent(seg)); } catch {}
+        }
+        for (const v of p.searchParams.values()) secrets.add(v);
+      } catch {}
+    }
+    if (secrets.has(audio.session_id)) {
+      return { code: "VOICE_BAD_INPUT", message: "session_id may not equal a URL path segment or a header value" };
     }
   }
   return null;
@@ -162,7 +195,7 @@ export const voiceHandlers = {
       base = cfg.workbenchUrl;
       const { audio } = args;
       if (!routeHeadersAllowed(audio.headers ?? {})) {
-        return err("VOICE_BAD_ENDPOINT", "only the X-Browser-Session route header is accepted");
+        return err("VOICE_BAD_INPUT", "only the X-Browser-Session route header is accepted");
       }
       if (![audio.stream_url, audio.clear_url].every((u) => sameOrigin(u, cfg.workbenchUrl))) {
         return err("VOICE_BAD_ENDPOINT", "audio endpoints must be on the configured workbench origin");
@@ -245,7 +278,7 @@ export function createVoiceMcp(sessionId: string, host: VoiceHost, calls: VoiceC
     tools: [
       tool(
         "voice_start",
-        "Start talking in a call you have joined in a workbench browser tab. First call browser_audio_start for that tab, then pass its result as `audio`. Runs as the agent identity.",
+        "Start talking in a meeting. Follow this order exactly: (1) browser_start; (2) browser_audio_start on the blank tab, before any meeting page loads; (3) voice_start right away, passing that result as `audio` (an unattached capability is revoked after 60 s); (4) browser_navigate to the meeting URL, then (5) join. If the meeting page was already loaded, reload it after browser_audio_start. For Jitsi append #config.startWithVideoMuted=true to the URL. Runs as the agent identity.",
         voiceStartShape,
         (a: any) => voiceHandlers.start(sessionId, host, calls, a),
       ),
@@ -261,7 +294,7 @@ export function createVoiceMcp(sessionId: string, host: VoiceHost, calls: VoiceC
         { text: z.string() },
         async (a: any) => voiceHandlers.context(sessionId, calls, a),
       ),
-      tool("voice_stop", "End the call.", {}, () => voiceHandlers.stop(sessionId, calls)),
+      tool("voice_stop", "End the call. If the tab lands on Jitsi's post-hangup page (close3.html) the call has ended: call this, then browser_audio_stop.", {}, () => voiceHandlers.stop(sessionId, calls)),
     ],
   });
 }

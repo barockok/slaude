@@ -284,6 +284,11 @@ export function voiceStartCard(input: Record<string, unknown>, cfg: VoiceCardCon
   }
   lines.push(`pinned workbench: ${pinned ? cardLiteral(pinned) : "(not configured)"}`);
   lines.push(`sample rate: ${a.sample_rate === undefined ? "24000 (default)" : cardLiteral(String(a.sample_rate))}`);
+  if (a.format !== undefined) lines.push(`format: ${cardLiteral(String(a.format))}`);
+  if (a.channels !== undefined) lines.push(`channels: ${cardLiteral(String(a.channels))}`);
+  // The value is never printed: it is not used, and an id could carry a secret.
+  if (a.session_id !== undefined) lines.push("session_id: (present)");
+  if (a.restarted !== undefined) lines.push(`restarted: ${cardLiteral(String(a.restarted))} (informational; not used)`);
   const headers = isRecord(a.headers) ? Object.keys(a.headers) : [];
   lines.push(`route headers: ${headers.length
     ? headers.map((h) => `${cardLiteral(h)}=[hidden]${ROUTE_HEADER_ALLOWLIST.has(h.toLowerCase()) ? "" : " (not allowed; voice_start will refuse it)"}`).join(", ")

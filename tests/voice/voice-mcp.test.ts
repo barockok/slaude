@@ -84,6 +84,40 @@ describe("voice MCP", () => {
     expect(calls.get("s1")).toBeDefined();
   });
 
+  it("accepts browser_audio_start's full real-shaped result; still strict about the rest", () => {
+    const real = { stream_url: "https://workbench.example.com/api/browser/audio/cap-1/stream", clear_url: "/api/browser/audio/cap-1/clear", sample_rate: 24000, format: "pcm_s16le", channels: 1, session_id: "739ABAE16CD3D97F52C6D5A29164ACC9", restarted: false, headers: { "X-Browser-Session": "x" } };
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: real }).success).toBe(true);
+    expect(voiceStartProblem({ brief: "x", audio: real })).toBeNull();
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...real, unknown_key: 1 } }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...real, format: "opus" } }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...real, channels: 2 } }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...real, session_id: "" } }).success).toBe(false);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...real, restarted: "no" } }).success).toBe(false);
+  });
+
+  it("X-Browser-Session is required: missing, empty or other-only headers are VOICE_BAD_INPUT", () => {
+    const { headers: _h, ...none } = audio;
+    for (const a of [none, { ...audio, headers: {} }, { ...audio, headers: { "X-Browser-Session": "" } }]) {
+      expect(voiceStartSchema.safeParse({ brief: "x", audio: a }).success).toBe(false);
+      expect(voiceStartProblem({ brief: "x", audio: a })?.code).toBe("VOICE_BAD_INPUT");
+    }
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, headers: { "x-browser-session": "k" } } }).success).toBe(true);
+    expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, headers: { "X-Browser-Session": "k", "X-Other": "1" } } }).success).toBe(false);
+  });
+
+  it("refuses a session_id equal to a URL path segment or a header value", () => {
+    const base = { ...audio, stream_url: "https://workbench.example.com/api/browser/audio/cap-77/stream", clear_url: "/api/browser/audio/cap-77/clear" };
+    expect(voiceStartProblem({ brief: "x", audio: { ...base, session_id: "sess-ok" } })).toBeNull();
+    expect(voiceStartProblem({ brief: "x", audio: { ...base, session_id: "cap-77" } })?.code).toBe("VOICE_BAD_INPUT");
+    expect(voiceStartProblem({ brief: "x", audio: { ...base, session_id: "clear" } })?.code).toBe("VOICE_BAD_INPUT");
+    expect(voiceStartProblem({ brief: "x", audio: { ...base, session_id: "rk" } })?.code).toBe("VOICE_BAD_INPUT");
+  });
+
+  it("a disallowed header is VOICE_BAD_INPUT whether or not X-Browser-Session is present", () => {
+    expect(voiceStartProblem({ brief: "x", audio: { ...audio, headers: { "X-Other": "1" } } })?.code).toBe("VOICE_BAD_INPUT");
+    expect(voiceStartProblem({ brief: "x", audio: { ...audio, headers: { "X-Browser-Session": "rk", Cookie: "a=b" } } })?.code).toBe("VOICE_BAD_INPUT");
+  });
+
   it("the exported schema is strict: a stream_token or any extra key is rejected, not stripped", () => {
     expect(voiceStartSchema.safeParse({ brief: "x", audio }).success).toBe(true);
     expect(voiceStartSchema.safeParse({ brief: "x", audio: { ...audio, stream_token: "old-tok" } }).success).toBe(false);
@@ -118,6 +152,22 @@ describe("voice MCP", () => {
     expect(schema.safeParse({ brief: "b".repeat(500), audio }).success).toBe(true);
     expect(schema.safeParse({ brief: "b".repeat(501), audio }).success).toBe(false);
     expect(schema.safeParse({ brief: "b", audio, voice: "v".repeat(65) }).success).toBe(false);
+  });
+
+  it("voice_start's description gives the call order; voice_stop's names the post-hangup page", () => {
+    const t = tools(createVoiceMcp("s1", host().h, new VoiceCalls()));
+    const d = String(t["voice_start"].description);
+    const order = ["browser_start", "browser_audio_start", "blank", "voice_start", "browser_navigate", "join"];
+    let at = -1;
+    for (const k of order) {
+      const i = d.indexOf(k, at + 1);
+      expect(i).toBeGreaterThan(at);
+      at = i;
+    }
+    expect(d).toContain("reload");
+    expect(d).toContain("startWithVideoMuted=true");
+    expect(d.length).toBeLessThan(900);
+    expect(String(t["voice_stop"].description)).toContain("close3");
   });
 
   it("the voice_start description no longer asks for a stream_token", () => {
@@ -276,7 +326,7 @@ describe("voice MCP", () => {
         const headers = { ...h, "X-Browser-Session": "rk" };
         expect(t["voice_start"].inputSchema.safeParse({ brief: "x", audio: { ...audio, headers } }).success).toBe(false);
         const r = await t["voice_start"].handler(withAudio({ headers }));
-        expect(text(r)).toStartWith("VOICE_BAD_ENDPOINT");
+        expect(text(r)).toStartWith("VOICE_BAD_INPUT");
         expect(text(r)).not.toContain("Bearer z");
       }
       expect(t0.spawned).toEqual([]);

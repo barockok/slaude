@@ -51,7 +51,7 @@ async function* inbox(): AsyncGenerator<ParentMsg> {
 
 let audio: AudioLink;
 try {
-  audio = new AudioLink({ baseUrl: init.workbenchUrl, endpoints: init.audio });
+  audio = new AudioLink({ baseUrl: init.workbenchUrl, endpoints: init.audio, log: (message) => emit({ type: "log", level: "warn", message }) });
 } catch (e) {
   // e.g. endpoints not same-origin as the workbench: end cleanly, never crash.
   emit({ type: "log", level: "error", message: `audio link rejected: ${e instanceof Error ? e.message : String(e)}` });
