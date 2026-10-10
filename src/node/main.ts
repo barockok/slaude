@@ -69,11 +69,6 @@ async function main() {
     process.exit(1);
   }
 
-  // From here a rejection nobody awaits (one session's background work) is
-  // logged loudly instead of ending the process and every other session on
-  // it; boot failures above stay fatal (see ./rejection-guard).
-  installRejectionGuard();
-
   // No soul or persona registry is loaded here: the worker installs a persona
   // soul resolver that takes both from the runtime bundle per session, and the
   // AgentManager skips the registry whenever that resolver is installed.
@@ -82,6 +77,12 @@ async function main() {
   // (whoami). A legacy token is {default}; a gateway older than whoami (404,
   // identity null) only knows `turns`, which is `default` too.
   const handle = await startNodeWorker({ labels: hs.identity?.labels ?? ["default"], manifest });
+
+  // Only once the worker is up: a rejection during boot stays fatal. From
+  // here a rejection nobody awaits (one session's background work) is logged
+  // loudly instead of ending the process and every other session on it; a
+  // burst of them still exits non-zero (see ./rejection-guard).
+  installRejectionGuard();
 
   let shuttingDown = false;
   const shutdown = (signal: string) => {
