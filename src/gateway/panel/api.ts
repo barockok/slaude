@@ -30,6 +30,7 @@
  *   PUT|DELETE /panel/api/personas/:name/overrides/:field   runtime override (superadmin; wiped by the next git sync)
  *   POST /panel/api/personas                     runtime onboard of a non-git persona (superadmin)
  */
+import { PanelVoiceRedactor } from "./voice-redact";
 import { z } from "zod";
 import * as Sessions from "../../db/sessions";
 import * as OneOnOne from "../../db/one-on-one";
@@ -177,14 +178,17 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
     const pubsub = deps.pubsub;
     const url = new URL(req.url);
     let lastId = req.headers.get("last-event-id") || url.searchParams.get("lastId") || undefined;
-    if (!lastId) {
+    // Voice capability URLs (secret paths) are masked in every event sent; the
+    // backlog teaches the redactor URLs from events this tail does not replay.
+    const voice = new PanelVoiceRedactor();
+    try {
+      const backlog = await pubsub.readEvents(sessionId);
+      for (const e of backlog) voice.learn(e.event);
       // Skip backlog: seed from the newest entry so the operator sees live
       // events, not a replay of earlier turns (dispatch follower pattern).
-      try {
-        lastId = (await pubsub.readEvents(sessionId)).at(-1)?.id;
-      } catch {
-        /* stream may not exist yet — start from the beginning */
-      }
+      if (!lastId) lastId = backlog.at(-1)?.id;
+    } catch {
+      /* stream may not exist yet — start from the beginning */
     }
     const encoder = new TextEncoder();
     let closed = false;
@@ -213,7 +217,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
                 // gap the durable SDK transcript on the RWX volume is the
                 // fallback source of record; wiring that read path is a
                 // separate follow-up — the live tail itself is complete here.
-                if (!send(`id: ${entry.id}\ndata: ${JSON.stringify(entry.event)}\n\n`)) break;
+                if (!send(`id: ${entry.id}\ndata: ${JSON.stringify(voice.scrub(entry.event))}\n\n`)) break;
               }
             } catch (e) {
               console.error(`[panel] SSE read failed session=${sessionId}:`, e);
