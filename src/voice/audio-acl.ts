@@ -12,7 +12,11 @@
  * The scheme is http or https. No path (a lone trailing "/" is tolerated), no
  * query, fragment, userinfo, or bare `*`. Scheme and port must match exactly;
  * default ports are normalised away; hosts compare in lower-case punycode. A
- * host with a trailing dot never matches and is not a valid entry.
+ * host with a trailing dot or an empty label never matches and is not a valid
+ * entry. The authority is taken literally: `%` is refused in an entry and in a
+ * matched URL's authority, so no encoded form can turn into a `*` or a dot.
+ * A wildcard over a public suffix (`*.co.uk`, `*.github.io`) is refused, using
+ * a short built-in list of common suffixes, not the full Public Suffix List.
  */
 
 export const FORBIDDEN_HEADERS: ReadonlySet<string> = new Set(["authorization", "cookie", "host"]);
@@ -43,10 +47,34 @@ export interface AudioPolicy {
   requiredHeaders: string[];
 }
 
-const ENTRY = /^(https?):\/\/([^/?#@\\\s]+?)\/?$/i;
+const ENTRY = /^(https?):\/\/([^/?#@\\\s%]+?)\/?$/i;
+
+/** Common public suffixes a wildcard may not cover (every registrable domain
+ *  under one would match). Not the full Public Suffix List: a deliberately
+ *  short list of the usual second-level and hosting suffixes. */
+export const PUBLIC_SUFFIXES: ReadonlySet<string> = new Set([
+  "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "sch.uk",
+  "com.au", "net.au", "org.au", "edu.au", "gov.au", "id.au", "co.nz", "org.nz", "net.nz",
+  "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp", "co.kr", "or.kr", "com.cn", "net.cn", "org.cn",
+  "com.hk", "com.tw", "com.sg", "com.my", "co.id", "or.id", "ac.id", "go.id", "com.ph", "com.vn",
+  "co.th", "in.th", "co.in", "net.in", "org.in", "com.pk", "co.il", "com.sa", "com.tr", "com.eg",
+  "co.za", "com.ng", "co.ke", "com.br", "net.br", "org.br", "com.mx", "com.ar", "com.co", "com.pe",
+  "com.ua", "com.pl", "co.at", "or.at", "com.es", "com.pt",
+  "github.io", "gitlab.io", "herokuapp.com", "vercel.app", "netlify.app", "pages.dev", "workers.dev",
+  "web.app", "firebaseapp.com", "appspot.com", "azurewebsites.net", "cloudfront.net", "amazonaws.com",
+  "s3.amazonaws.com", "blogspot.com", "fly.dev", "onrender.com", "ngrok.io", "ngrok-free.app",
+  "ngrok.app", "trycloudflare.com", "glitch.me", "repl.co", "replit.app", "railway.app",
+]);
+
+/** An entry as it may appear in a log line: no userinfo, query or fragment. */
+function quotable(raw: string): string {
+  return JSON.stringify(raw.replace(/[?#][\s\S]*$/, "").replace(/^([a-z][a-z0-9+.-]*:\/*)?[^/]*@/i, "$1"));
+}
+
+const hasEmptyLabel = (host: string): boolean => host.split(".").some((l) => !l);
 
 function parseEntry(raw: string): AudioOriginRule {
-  const bad = (why: string) => new AudioAclError(`${ORIGINS_VAR}: entry ${JSON.stringify(raw)} is invalid (${why})`);
+  const bad = (why: string) => new AudioAclError(`${ORIGINS_VAR}: entry ${quotable(raw)} is invalid (${why})`);
   const m = ENTRY.exec(raw);
   if (!m) throw bad("expected scheme://host[:port] or scheme://*.domain[:port], with an http or https scheme and no path, query, or userinfo");
   const scheme = m[1]!.toLowerCase() as "http" | "https";
@@ -64,14 +92,19 @@ function parseEntry(raw: string): AudioOriginRule {
   }
   if (!u.hostname || u.username || u.password) throw bad("not a valid origin");
   if (u.hostname.endsWith(".")) throw bad("a trailing dot is not allowed");
+  if (hasEmptyLabel(u.hostname)) throw bad("empty labels are not allowed");
+  // Only a literal leading "*." is a wildcard; a host that still holds a "*"
+  // after parsing would serialise back as one.
+  if (u.hostname.includes("*") || u.hostname.includes("%")) throw bad("a wildcard is only allowed as the whole first label, as in *.example.com");
   const port = u.port;
   const protocol = u.protocol as "http:" | "https:";
   if (!wildcard) return { entry: u.origin, protocol, wildcard, host: u.hostname, port };
   const suffix = u.hostname.slice(2);
   const labels = suffix.split(".");
-  if (labels.length < 2 || labels.some((l) => !l) || /^[0-9]+$/.test(labels[labels.length - 1]!)) {
+  if (labels.length < 2 || /^[0-9]+$/.test(labels[labels.length - 1]!)) {
     throw bad("a wildcard needs a domain of at least two labels under it");
   }
+  if (PUBLIC_SUFFIXES.has(suffix)) throw bad("a wildcard may not cover a public suffix");
   return { entry: `${scheme}://*.${suffix}${port ? `:${port}` : ""}`, protocol, wildcard, host: suffix, port };
 }
 
@@ -86,6 +119,11 @@ export function parseAudioOrigins(raw: string | readonly string[]): AudioOriginR
 /** The URL's origin when it is an absolute http(s) URL, without userinfo,
  *  whose origin an allowlist entry matches; otherwise null. */
 export function matchAudioOrigin(url: string, rules: readonly AudioOriginRule[]): string | null {
+  // Taken literally: the URL parser would drop a tab or newline, read "\" as
+  // "/", decode "%" in the host and accept "https:host", so what is checked
+  // could differ from what was written.
+  if (/[\s\\\u0000-\u001f\u007f]/.test(url)) return null;
+  if (!/^https?:\/\/[^/?#%]+(?:[/?#]|$)/i.test(url)) return null;
   let u: URL;
   try {
     u = new URL(url);
@@ -93,7 +131,7 @@ export function matchAudioOrigin(url: string, rules: readonly AudioOriginRule[])
     return null;
   }
   if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-  if (u.username || u.password || !u.hostname || u.hostname.endsWith(".")) return null;
+  if (u.username || u.password || !u.hostname || u.hostname.endsWith(".") || hasEmptyLabel(u.hostname)) return null;
   for (const r of rules) {
     if (r.protocol !== u.protocol || r.port !== u.port) continue;
     if (r.wildcard ? u.hostname.endsWith(`.${r.host}`) : u.hostname === r.host) return u.origin;

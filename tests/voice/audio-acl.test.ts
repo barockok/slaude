@@ -158,3 +158,58 @@ describe("audioHeadersProblem", () => {
     expect(audioHeadersProblem({ "X-Browser-Session": "" }, p)).toMatch(/required/);
   });
 });
+
+describe("review hardening", () => {
+  it("refuses a percent-encoded wildcard (it decoded to a literal * host and came back as a real wildcard)", () => {
+    expect(() => rules("https://%2A.example.com")).toThrow(/SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS/);
+    expect(() => rules("https://%2a.example.com")).toThrow();
+  });
+  it("refuses % anywhere in an entry", () => {
+    for (const bad of ["https://audio%2Eexample.com", "https://audio.example.com:%38%30", "https://*.example%2Ecom"]) {
+      expect(() => rules(bad)).toThrow(/SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS/);
+    }
+  });
+  it("every rule's serialised entry parses back to the identical rule", () => {
+    const all = rules([
+      "https://audio.example.com", "http://localhost:8080", "https://AUDIO.example.com:443/", "https://*.example.com",
+      "https://*.Example.net:8443", "https://audio.bücher.example", "https://*.bücher.example", "http://127.0.0.1:9000",
+      "https://[::1]:8443", "https://*.example.co.uk",
+    ].join(","));
+    for (const r of all) expect(parseAudioOrigins(r.entry)).toEqual([r]);
+  });
+  it("a malformed-entry error never quotes userinfo, query or fragment", () => {
+    let msg = "";
+    try { rules("https://ops:s3cret@audio.example.com/p?token=q1#frag"); } catch (e) { msg = String(e); }
+    expect(msg).toMatch(/SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS/);
+    for (const leaked of ["s3cret", "ops", "token=q1", "q1", "frag"]) expect(msg).not.toContain(leaked);
+    expect(msg).toContain("audio.example.com");
+  });
+  it("refuses a wildcard over a public suffix; a registrable domain under one is fine", () => {
+    for (const bad of ["https://*.co.uk", "https://*.com.au", "https://*.github.io", "https://*.co.jp", "https://*.herokuapp.com", "https://*.CO.UK"]) {
+      expect(() => rules(bad)).toThrow(/public suffix/);
+    }
+    expect(rules("https://*.example.co.uk").map((r) => r.entry)).toEqual(["https://*.example.co.uk"]);
+  });
+  it("refuses empty labels in entries", () => {
+    for (const bad of ["https://.example.com", "https://a..example.com", "https://*..example.com", "https://*.example..com"]) {
+      expect(() => rules(bad)).toThrow(/SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS/);
+    }
+  });
+  it("never matches a host with empty labels", () => {
+    const wild = rules("https://*.example.com");
+    expect(matchAudioOrigin("https://.example.com/x", wild)).toBeNull();
+    expect(matchAudioOrigin("https://a..example.com/x", wild)).toBeNull();
+  });
+  it("refuses a tab, newline or backslash in the URL, a percent-encoded host, and https:host without slashes", () => {
+    const exact = rules("https://audio.example.com");
+    for (const u of [
+      "https://audio.exa\tmple.com/x", "https://audio.example.com/\tx", "https://audio.example.com/x\n",
+      "https:\\\\audio.example.com\\x", "https://audio.example.com\\x", "https://audio%2Eexample.com/x",
+      "https://%61udio.example.com/x", "https:audio.example.com/x", "https:/audio.example.com/x",
+    ]) {
+      expect(matchAudioOrigin(u, exact)).toBeNull();
+    }
+    // A percent-encoded path is fine: only the authority must be literal.
+    expect(matchAudioOrigin("https://audio.example.com/a%20b/stream", exact)).toBe("https://audio.example.com");
+  });
+});
