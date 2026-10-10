@@ -218,7 +218,11 @@ with its own lifetime for no extra protection. Slaude now sends no
 the URL itself is now the secret, same-origin pinning and `redirect: "error"`
 matter more, and the URLs are masked to their origin in application logs, the
 child's `log` lines, `voice_start` failure text and the approval card. A
-`stream_token` the model still passes is stripped by the schema.
+`stream_token` the model still passes is refused: voice_start's schema is
+strict, and the permission gate validates it before rendering any approval
+card. The card shows the brief literally (never through the redactor: the
+model chooses the path segments, so masking them in the brief could hide
+ordinary words), and a brief quoting a whole stream or clear URL is refused.
 
 ## Measured
 
