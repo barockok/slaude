@@ -92,7 +92,8 @@ export function makeMonoVoiceHost(o: {
     confirmStart: refusal,
     runner: () => runner,
     transcriptDir: (sid) => o.workingDir(sid),
-    spawn: (s) => spawnVoiceLoop(s),
+    // Only the provider key: no caller-supplied option (execPath, entry) reaches the spawn.
+    spawn: (s) => spawnVoiceLoop({ apiKey: s.apiKey }),
     holdIdle: (sid, h) => o.agent.holdIdle(sid, h),
     instructions: async (sid, brief) => {
       const t = await o.findThread(sid);
@@ -184,7 +185,8 @@ export function makeNodeVoiceHost(o: {
       });
     },
     transcriptDir: (sid) => o.workingDir(sid),
-    spawn: (s) => spawnVoiceLoop(s),
+    // Only the provider key: no caller-supplied option (execPath, entry) reaches the spawn.
+    spawn: (s) => spawnVoiceLoop({ apiKey: s.apiKey }),
     holdIdle: (sid, h) => {
       if (!h) {
         chains.delete(sid);
