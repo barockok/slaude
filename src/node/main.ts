@@ -31,6 +31,7 @@ import { startNodeWorker } from "./worker";
 import { enforceNodeBootCheck } from "./boot-check";
 import { NodeClient } from "./client";
 import { nodeHandshake } from "./handshake";
+import { installRejectionGuard } from "./rejection-guard";
 import { type NodeManifest, NodeManifestError, describeNodeManifest, loadNodeManifest } from "./manifest";
 
 async function main() {
@@ -76,6 +77,12 @@ async function main() {
   // (whoami). A legacy token is {default}; a gateway older than whoami (404,
   // identity null) only knows `turns`, which is `default` too.
   const handle = await startNodeWorker({ labels: hs.identity?.labels ?? ["default"], manifest });
+
+  // Only once the worker is up: a rejection during boot stays fatal. From
+  // here a rejection nobody awaits (one session's background work) is logged
+  // loudly instead of ending the process and every other session on it; a
+  // burst of them still exits non-zero (see ./rejection-guard).
+  installRejectionGuard();
 
   let shuttingDown = false;
   const shutdown = (signal: string) => {

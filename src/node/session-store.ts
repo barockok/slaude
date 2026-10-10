@@ -8,12 +8,19 @@
  * it per call so a coalesced follow-up job's fresher token replaces the one
  * about to expire.
  *
+ * A warm session outlives its job: the idle TTL starts after the last turn
+ * and is as long as the token's TTL, so the teardown status write always
+ * holds an expired token. A call refused as expired exchanges the token once
+ * through /v1/jobs/:id/token-refresh (within the gateway's refresh grace) and
+ * retries; any other refusal fails that call alone.
+ *
  * Session creation stays a gateway concern — the enqueue path runs
  * `ensureSession` against Postgres before a job exists, so a node never
  * creates rows. findByThread/createForThread throw loudly if ever reached.
  */
 import type { SessionStore, SessionRow, ThreadKey } from "../agent/session-store";
-import type { NodeClient, SessionView } from "./client";
+import { NodeApiError, type NodeClient, type SessionView } from "./client";
+import { decodeClaims } from "./remote";
 
 function toRow(v: SessionView): SessionRow {
   return {
@@ -65,8 +72,30 @@ export class RestSessionStore implements SessionStore {
     return t;
   }
 
+  /** Run `call` on the session's token; on an expired-token 401, refresh the
+   *  token once (rebinding it unless a newer job bound another meanwhile) and
+   *  retry. A failed refresh rethrows the original refusal. */
+  async #withToken<T>(id: string, call: (token: string) => Promise<T>): Promise<T> {
+    const token = this.#token(id);
+    try {
+      return await call(token);
+    } catch (e) {
+      const job = decodeClaims(token)?.job;
+      if (!(e instanceof NodeApiError && e.status === 401 && /expired/.test(e.body)) || typeof job !== "string") throw e;
+      let fresh: string;
+      try {
+        fresh = await this.#client.refreshJobToken(job, token);
+      } catch (re) {
+        console.warn(`[node] session token refresh failed session=${id} job=${job}: ${re instanceof Error ? re.message : String(re)}`);
+        throw e;
+      }
+      if (this.#tokens.get(id) === token) this.#tokens.set(id, fresh);
+      return await call(fresh);
+    }
+  }
+
   async findById(id: string): Promise<SessionRow | null> {
-    const v = await this.#client.getSession(id, this.#token(id));
+    const v = await this.#withToken(id, (t) => this.#client.getSession(id, t));
     return v ? toRow(v) : null;
   }
 
@@ -85,22 +114,22 @@ export class RestSessionStore implements SessionStore {
   }
 
   async markStarted(id: string): Promise<void> {
-    await this.#client.patchSession(id, { claude_started: 1 }, this.#token(id));
+    await this.#withToken(id, (t) => this.#client.patchSession(id, { claude_started: 1 }, t));
   }
 
   async clearStarted(id: string): Promise<void> {
-    await this.#client.patchSession(id, { claude_started: 0 }, this.#token(id));
+    await this.#withToken(id, (t) => this.#client.patchSession(id, { claude_started: 0 }, t));
   }
 
   async setStatus(id: string, status: string): Promise<void> {
-    await this.#client.patchSession(id, { status }, this.#token(id));
+    await this.#withToken(id, (t) => this.#client.patchSession(id, { status }, t));
   }
 
   async setPermissionMode(id: string, mode: string): Promise<void> {
-    await this.#client.patchSession(id, { permission_mode: mode }, this.#token(id));
+    await this.#withToken(id, (t) => this.#client.patchSession(id, { permission_mode: mode }, t));
   }
 
   async setModel(id: string, model: string): Promise<void> {
-    await this.#client.patchSession(id, { model }, this.#token(id));
+    await this.#withToken(id, (t) => this.#client.patchSession(id, { model }, t));
   }
 }

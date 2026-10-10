@@ -1427,3 +1427,121 @@ describe("AgentManager voice support", () => {
     expect(exits).toEqual([row.id, row.id]);
   });
 });
+
+// A node's session store is the gateway's /v1 with the last job token bound,
+// which a session that outlived its job holds expired. The detached query
+// loop's store writes and reboots have no awaiting caller: a rejection there
+// was unhandled and ended the process (2026-10-10 node crash).
+describe("AgentManager: store failures outside any caller", () => {
+  const expiredStore = async (fail: (op: string, status?: string) => boolean) => {
+    const { dbSessionStore } = await import("../../src/agent/session-store");
+    const refuse = () => Promise.reject(new Error('gateway /v1 request failed: 401 {"error":"invalid job token: expired"}'));
+    return {
+      ...dbSessionStore,
+      findById: (id: string) => (fail("findById") ? (refuse() as any) : dbSessionStore.findById(id)),
+      setStatus: (id: string, st: any) => (fail("setStatus", st) ? refuse() : dbSessionStore.setStatus(id, st)),
+      markStarted: (id: string) => (fail("markStarted") ? refuse() : dbSessionStore.markStarted(id)),
+    } as any;
+  };
+  const quietly = async (fn: () => Promise<void>) => {
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await fn();
+      await Bun.sleep(30);
+    } finally {
+      err.mockRestore();
+    }
+  };
+
+  it("a teardown status write that rejects still completes teardown and signals sessionExit", async () => {
+    const mgr = new AgentManager();
+    mgr.setSessionStore(await expiredStore((op, st) => op === "setStatus" && st === "idle"));
+    const exits: string[] = [];
+    mgr.on("sessionExit", (id: string) => exits.push(id));
+    const row = await mgr.ensureSession(thread());
+    plan((s) => (s.onUser = () => s.emit(res())));
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => mgr.isLive(row.id), 3000, "live");
+    await quietly(async () => {
+      mgr.reload(row.id);
+      await until(() => exits.length === 1, 3000, "sessionExit");
+    });
+    expect(mgr.isLive(row.id)).toBe(false);
+  });
+
+  it("a markStarted that rejects on an assistant message is logged, the turn goes on", async () => {
+    const mgr = new AgentManager();
+    mgr.setSessionStore(await expiredStore((op) => op === "markStarted"));
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    plan((s) => (s.onUser = () => (s.emit(asst([txt("hi")])), s.emit(res()))));
+    await quietly(async () => {
+      await mgr.sendMessage(row.id, "hello");
+      await until(() => events.some((e) => e.type === "done"), 3000, "done");
+    });
+    await shutdown(mgr, row.id);
+  });
+
+  it("a reload prompt whose reboot fails becomes the session's error event, not an unhandled rejection", async () => {
+    const mgr = new AgentManager();
+    let booted = false;
+    mgr.setSessionStore(await expiredStore((op) => op === "findById" && booted));
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    plan((s) => (s.onUser = () => s.emit(res())));
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => events.some((e) => e.type === "done"), 3000, "done");
+    booted = true;
+    await quietly(async () => {
+      mgr.reload(row.id, "carry on");
+      await until(() => events.some((e) => e.type === "error"), 3000, "reboot error");
+    });
+    expect(events.find((e) => e.type === "error")?.error).toBe("session reboot failed");
+  });
+
+  it("a teardown step that throws still drops the live entry and signals sessionExit", async () => {
+    const { m } = await import("../../src/metrics");
+    const mgr = new AgentManager();
+    const exits: string[] = [];
+    mgr.on("sessionExit", (id: string) => exits.push(id));
+    const row = await mgr.ensureSession(thread());
+    plan((s) => (s.onUser = () => s.emit(res())));
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => mgr.isLive(row.id), 3000, "live");
+    // The gauge update sits between the live-map delete and the exit signal.
+    const gauge = spyOn(m.sessionsLive, "set").mockImplementation(() => {
+      throw new Error("gauge broke");
+    });
+    try {
+      await quietly(async () => {
+        mgr.reload(row.id);
+        await until(() => exits.length === 1, 3000, "sessionExit");
+      });
+    } finally {
+      gauge.mockRestore();
+    }
+    expect(mgr.isLive(row.id)).toBe(false);
+  });
+
+  it("a resume-retry reboot that fails signals sessionExit (a voice call on it must end)", async () => {
+    const mgr = new AgentManager();
+    let boots = 0;
+    const { dbSessionStore } = await import("../../src/agent/session-store");
+    mgr.setSessionStore({
+      ...dbSessionStore,
+      findById: (id: string) => (++boots > 1 ? Promise.reject(new Error("401 expired")) : dbSessionStore.findById(id)),
+    } as any);
+    const exits: string[] = [];
+    mgr.on("sessionExit", (id: string) => exits.push(id));
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    await Sessions.markStarted(row.id);
+    plan((s) => (s.bootError = "Error: No conversation found with session ID " + row.id));
+    await quietly(async () => {
+      await mgr.sendMessage(row.id, "hello");
+      await until(() => events.some((e) => e.type === "error"), 3000, "reboot error");
+    });
+    expect(exits).toEqual([row.id]);
+    expect(mgr.isLive(row.id)).toBe(false);
+  });
+});

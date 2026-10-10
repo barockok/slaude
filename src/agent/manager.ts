@@ -937,8 +937,11 @@ export class AgentManager extends EventEmitter {
    *  synchronous step until it is live or the boot fails. A counter, since a
    *  retry path may start a boot for the same id while another is unwinding. */
   /** A fire-and-forget reboot (resume-miss retry) has no caller to reject to:
-   *  its failure is the turn's error event, with its code when it is typed. */
-  #rebootFailed(sessionId: string, e: unknown) {
+   *  its failure is the turn's error event, with its code when it is typed.
+   *  `signalExit`: the session the reboot replaced left without its exit
+   *  signal (the resume-retry paths), so a voice call holding it must learn
+   *  now, unless a session holds the id again. */
+  #rebootFailed(sessionId: string, e: unknown, o: { signalExit?: boolean } = {}) {
     console.error(`[mgr] reboot failed session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
     this.emit("event", {
       type: "error",
@@ -946,6 +949,7 @@ export class AgentManager extends EventEmitter {
       error: "session reboot failed",
       code: e instanceof BootFailure ? e.code : "TURN_FAILED",
     } satisfies AgentEvent);
+    if (o.signalExit && !this.#live.has(sessionId)) this.#signalSessionExit(sessionId);
   }
 
   async #startSession(sessionId: string, firstText: string) {
@@ -1269,6 +1273,8 @@ export class AgentManager extends EventEmitter {
       process.stderr.write(`[claude-cli] ${chunk}`);
     };
     let retried = false;
+    /** Teardown signalled sessionExit (the last-resort catch must not twice). */
+    let exitSignalled = false;
 
     (async () => {
       try {
@@ -1293,11 +1299,11 @@ export class AgentManager extends EventEmitter {
         if (RESUME_MISS_RE.test(stderrBuf)) {
           retried = true;
           console.log(`[mgr] clearing stale claude_started + retrying session=${sessionId}`);
-          await this.#store.clearStarted(sessionId);
+          await this.#bestEffortStore(sessionId, "clearStarted", () => this.#store.clearStarted(sessionId));
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           // Fire and forget — restart with the same first prompt.
-          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e));
+          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
           return;
         }
         // Mirror failure: we seeded --session-id but a transcript with that id
@@ -1306,10 +1312,10 @@ export class AgentManager extends EventEmitter {
         if (/session.*(already in use|already exists)/i.test(stderrBuf)) {
           retried = true;
           console.log(`[mgr] session id already has a transcript — retrying with resume session=${sessionId}`);
-          await this.#store.markStarted(sessionId);
+          await this.#bestEffortStore(sessionId, "markStarted", () => this.#store.markStarted(sessionId));
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
-          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e));
+          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
           return;
         }
         if (live?.reloading) {
@@ -1335,7 +1341,7 @@ export class AgentManager extends EventEmitter {
           markExited();
           return;
         }
-        await this.#store.setStatus(sessionId, "idle");
+        await this.#bestEffortStore(sessionId, "setStatus(idle)", () => this.#store.setStatus(sessionId, "idle"));
         if (!owns()) {
           markExited();
           return;
@@ -1354,13 +1360,14 @@ export class AgentManager extends EventEmitter {
         this.#stopBlocked.delete(sessionId);
         metric.sessionsLive.set(this.#live.size);
         markExited();
+        exitSignalled = true;
         this.#signalSessionExit(sessionId);
         // After a stream_closed auto-reload, inject a synthetic "continue"
         // prompt so the resumed session picks up without human input.
         if (live.reloading && this.#autoContinue.has(sessionId)) {
           this.#autoContinue.delete(sessionId);
           console.log(`[mgr] auto-continuing after stream_closed reload session=${sessionId}`);
-          void this.sendMessage(sessionId, "The MCP stream was restored. Please continue where you left off.");
+          void this.sendMessage(sessionId, "The MCP stream was restored. Please continue where you left off.").catch((e) => this.#rebootFailed(sessionId, e));
         }
         // After a manual reload_session with a prompt, inject it so the user
         // doesn't need to type anything to resume the flow.
@@ -1368,10 +1375,45 @@ export class AgentManager extends EventEmitter {
           const p = this.#reloadPrompt.get(sessionId)!;
           this.#reloadPrompt.delete(sessionId);
           console.log(`[mgr] injecting reload prompt session=${sessionId}`);
-          void this.sendMessage(sessionId, p);
+          void this.sendMessage(sessionId, p).catch((e) => this.#rebootFailed(sessionId, e));
         }
       }
-    })();
+    })().catch((e) => {
+      // Last resort: nothing awaits this loop, so a throw here would be an
+      // unhandled rejection, which ends the whole process (a node worker
+      // serves many sessions). Every known throw is handled above. A throw
+      // inside teardown may have skipped its tail: finish it here, but never
+      // touch a fresh session that holds the id now.
+      console.error(`[mgr] session loop failed session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+      if (retried) return markExited();
+      const owned = this.#live.get(sessionId) === live;
+      if (owned) {
+        if (live.idleTimer) clearTimeout(live.idleTimer);
+        this.#live.delete(sessionId);
+      }
+      markExited();
+      if (!exitSignalled && (owned || !this.#live.has(sessionId))) {
+        exitSignalled = true;
+        this.#signalSessionExit(sessionId);
+      }
+    });
+  }
+
+  /**
+   * A session-row write from the detached query loop (teardown status, the
+   * started flag). Nothing awaits that loop, so a rejection would be
+   * unhandled and end the process; and teardown must still finish (drop the
+   * live entry, signal sessionExit to a voice call). On a node the store is
+   * the gateway's /v1, authenticated by the last job token bound for the
+   * session, which a session that outlived its job may hold expired. The
+   * write is lost and logged; the row is corrected by the next turn.
+   */
+  async #bestEffortStore(sessionId: string, what: string, write: () => Promise<void>): Promise<void> {
+    try {
+      await write();
+    } catch (e) {
+      console.error(`[mgr] session store ${what} failed session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+    }
   }
 
   #fanout(sessionId: string, msg: SDKMessage, owner: LiveSession) {
@@ -1383,7 +1425,7 @@ export class AgentManager extends EventEmitter {
     const live = owner;
     switch (msg.type) {
       case "assistant": {
-        void this.#store.markStarted(sessionId);
+        void this.#bestEffortStore(sessionId, "markStarted", () => this.#store.markStarted(sessionId));
         // The SDK's BetaContentBlock union types only text + tool_use, but the
         // model also emits thinking blocks at runtime. Widen so the thinking
         // branch type-checks (both the discriminant and `.thinking`).
