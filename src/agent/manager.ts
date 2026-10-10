@@ -937,8 +937,11 @@ export class AgentManager extends EventEmitter {
    *  synchronous step until it is live or the boot fails. A counter, since a
    *  retry path may start a boot for the same id while another is unwinding. */
   /** A fire-and-forget reboot (resume-miss retry) has no caller to reject to:
-   *  its failure is the turn's error event, with its code when it is typed. */
-  #rebootFailed(sessionId: string, e: unknown) {
+   *  its failure is the turn's error event, with its code when it is typed.
+   *  `signalExit`: the session the reboot replaced left without its exit
+   *  signal (the resume-retry paths), so a voice call holding it must learn
+   *  now, unless a session holds the id again. */
+  #rebootFailed(sessionId: string, e: unknown, o: { signalExit?: boolean } = {}) {
     console.error(`[mgr] reboot failed session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
     this.emit("event", {
       type: "error",
@@ -946,6 +949,7 @@ export class AgentManager extends EventEmitter {
       error: "session reboot failed",
       code: e instanceof BootFailure ? e.code : "TURN_FAILED",
     } satisfies AgentEvent);
+    if (o.signalExit && !this.#live.has(sessionId)) this.#signalSessionExit(sessionId);
   }
 
   async #startSession(sessionId: string, firstText: string) {
@@ -1269,6 +1273,8 @@ export class AgentManager extends EventEmitter {
       process.stderr.write(`[claude-cli] ${chunk}`);
     };
     let retried = false;
+    /** Teardown signalled sessionExit (the last-resort catch must not twice). */
+    let exitSignalled = false;
 
     (async () => {
       try {
@@ -1297,7 +1303,7 @@ export class AgentManager extends EventEmitter {
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           // Fire and forget — restart with the same first prompt.
-          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e));
+          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
           return;
         }
         // Mirror failure: we seeded --session-id but a transcript with that id
@@ -1309,7 +1315,7 @@ export class AgentManager extends EventEmitter {
           await this.#bestEffortStore(sessionId, "markStarted", () => this.#store.markStarted(sessionId));
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
-          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e));
+          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
           return;
         }
         if (live?.reloading) {
@@ -1354,6 +1360,7 @@ export class AgentManager extends EventEmitter {
         this.#stopBlocked.delete(sessionId);
         metric.sessionsLive.set(this.#live.size);
         markExited();
+        exitSignalled = true;
         this.#signalSessionExit(sessionId);
         // After a stream_closed auto-reload, inject a synthetic "continue"
         // prompt so the resumed session picks up without human input.
@@ -1371,12 +1378,25 @@ export class AgentManager extends EventEmitter {
           void this.sendMessage(sessionId, p).catch((e) => this.#rebootFailed(sessionId, e));
         }
       }
-    })().catch((e) =>
+    })().catch((e) => {
       // Last resort: nothing awaits this loop, so a throw here would be an
       // unhandled rejection, which ends the whole process (a node worker
-      // serves many sessions). Every known throw is handled above.
-      console.error(`[mgr] session loop failed session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`),
-    );
+      // serves many sessions). Every known throw is handled above. A throw
+      // inside teardown may have skipped its tail: finish it here, but never
+      // touch a fresh session that holds the id now.
+      console.error(`[mgr] session loop failed session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+      if (retried) return markExited();
+      const owned = this.#live.get(sessionId) === live;
+      if (owned) {
+        if (live.idleTimer) clearTimeout(live.idleTimer);
+        this.#live.delete(sessionId);
+      }
+      markExited();
+      if (!exitSignalled && (owned || !this.#live.has(sessionId))) {
+        exitSignalled = true;
+        this.#signalSessionExit(sessionId);
+      }
+    });
   }
 
   /**

@@ -1498,4 +1498,50 @@ describe("AgentManager: store failures outside any caller", () => {
     });
     expect(events.find((e) => e.type === "error")?.error).toBe("session reboot failed");
   });
+
+  it("a teardown step that throws still drops the live entry and signals sessionExit", async () => {
+    const { m } = await import("../../src/metrics");
+    const mgr = new AgentManager();
+    const exits: string[] = [];
+    mgr.on("sessionExit", (id: string) => exits.push(id));
+    const row = await mgr.ensureSession(thread());
+    plan((s) => (s.onUser = () => s.emit(res())));
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => mgr.isLive(row.id), 3000, "live");
+    // The gauge update sits between the live-map delete and the exit signal.
+    const gauge = spyOn(m.sessionsLive, "set").mockImplementation(() => {
+      throw new Error("gauge broke");
+    });
+    try {
+      await quietly(async () => {
+        mgr.reload(row.id);
+        await until(() => exits.length === 1, 3000, "sessionExit");
+      });
+    } finally {
+      gauge.mockRestore();
+    }
+    expect(mgr.isLive(row.id)).toBe(false);
+  });
+
+  it("a resume-retry reboot that fails signals sessionExit (a voice call on it must end)", async () => {
+    const mgr = new AgentManager();
+    let boots = 0;
+    const { dbSessionStore } = await import("../../src/agent/session-store");
+    mgr.setSessionStore({
+      ...dbSessionStore,
+      findById: (id: string) => (++boots > 1 ? Promise.reject(new Error("401 expired")) : dbSessionStore.findById(id)),
+    } as any);
+    const exits: string[] = [];
+    mgr.on("sessionExit", (id: string) => exits.push(id));
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    await Sessions.markStarted(row.id);
+    plan((s) => (s.bootError = "Error: No conversation found with session ID " + row.id));
+    await quietly(async () => {
+      await mgr.sendMessage(row.id, "hello");
+      await until(() => events.some((e) => e.type === "error"), 3000, "reboot error");
+    });
+    expect(exits).toEqual([row.id]);
+    expect(mgr.isLive(row.id)).toBe(false);
+  });
 });
