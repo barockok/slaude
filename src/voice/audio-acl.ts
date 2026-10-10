@@ -66,9 +66,15 @@ export const PUBLIC_SUFFIXES: ReadonlySet<string> = new Set([
   "ngrok.app", "trycloudflare.com", "glitch.me", "repl.co", "replit.app", "railway.app",
 ]);
 
-/** An entry as it may appear in a log line: no userinfo, query or fragment. */
+/** An entry as it may appear in a log line: no userinfo, query or fragment.
+ *  A valid entry never holds "@", so everything up to the LAST "@" goes first
+ *  (a password may hold "?", "#", "/" or "@"), then the query and fragment. */
 function quotable(raw: string): string {
-  return JSON.stringify(raw.replace(/[?#][\s\S]*$/, "").replace(/^([a-z][a-z0-9+.-]*:\/*)?[^/]*@/i, "$1"));
+  const m = /^([a-z][a-z0-9+.-]*:\/*)?([\s\S]*)$/i.exec(raw)!;
+  let rest = m[2]!;
+  const at = rest.lastIndexOf("@");
+  if (at >= 0) rest = rest.slice(at + 1);
+  return JSON.stringify((m[1] ?? "") + rest.replace(/[?#][\s\S]*$/, ""));
 }
 
 const hasEmptyLabel = (host: string): boolean => host.split(".").some((l) => !l);

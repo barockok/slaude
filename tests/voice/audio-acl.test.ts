@@ -184,6 +184,17 @@ describe("review hardening", () => {
     for (const leaked of ["s3cret", "ops", "token=q1", "q1", "frag"]) expect(msg).not.toContain(leaked);
     expect(msg).toContain("audio.example.com");
   });
+  it("a malformed-entry error strips userinfo up to the last @ before the path, even with ? # / in the password", () => {
+    const msgOf = (raw: string) => { try { rules(raw); } catch (e) { return String(e); } return ""; };
+    const a = msgOf("https://ops:a?b@x.y");
+    expect(a).toMatch(/SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS/);
+    expect(a).not.toContain("ops");
+    expect(a).not.toContain("\"https://ops:a\"");
+    expect(a).toContain("\"https://x.y\"");
+    const b = msgOf("https://ops:pa#ss/wo@rd@audio.example.com/p?q=1");
+    for (const leaked of ["ops", "pa#ss", "wo@rd", "ss/wo", "q=1"]) expect(b).not.toContain(leaked);
+    expect(b).toContain("audio.example.com");
+  });
   it("refuses a wildcard over a public suffix; a registrable domain under one is fine", () => {
     for (const bad of ["https://*.co.uk", "https://*.com.au", "https://*.github.io", "https://*.co.jp", "https://*.herokuapp.com", "https://*.CO.UK"]) {
       expect(() => rules(bad)).toThrow(/public suffix/);
