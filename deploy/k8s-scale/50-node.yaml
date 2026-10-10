@@ -45,6 +45,7 @@ spec:
       # Nodes never call the Kubernetes API, and every agent child on a node
       # can read what the pod mounts: no ServiceAccount token.
       automountServiceAccountToken: false
+      enableServiceLinks: false
       # MUST exceed SLAUDE_NODE_DRAIN_SEC (ConfigMap, default 120): on
       # SIGTERM the worker stops claiming and finishes in-flight turns
       # within the drain grace; kubelet must not SIGKILL it mid-drain.
@@ -184,6 +185,7 @@ spec:
         slaude.dev/node-label: finance
     spec:
       automountServiceAccountToken: false
+      enableServiceLinks: false
       # MUST exceed SLAUDE_NODE_DRAIN_SEC, as for slaude-node.
       terminationGracePeriodSeconds: 150
       containers:
