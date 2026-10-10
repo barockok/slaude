@@ -258,8 +258,10 @@ matched `*.example.com`); a malformed-entry error no longer quotes userinfo;
 and an explicitly empty allowlist is a deliberate deny the alias cannot undo.
 
 Mixed versions fail closed, both ways. An old gateway's bundle has
-`workbenchUrl` and no allowlist: a new node refuses it with "the gateway's voice
-bundle carries no audio allowlist (gateway older than rc.4?)". A new gateway's
+`workbenchUrl` and no allowlist: a new node refuses that voice block, never
+registers the voice tools for the session, and logs only a node warning, "the
+gateway's voice bundle carries no audio allowlist (gateway older than rc.4?)";
+the thread sees no voice tools and no error. A new gateway's
 bundle has no `workbenchUrl`: an old node has nothing to compare against and
 refuses every `voice_start` with `VOICE_BAD_ENDPOINT`. No call starts either
 way; gateway and nodes upgrade together.

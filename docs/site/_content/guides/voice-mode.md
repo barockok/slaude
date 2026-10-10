@@ -111,7 +111,7 @@ For example, `SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS=https://audio.example.com,https
 
 **Mixed versions.** The bundle's audio fields changed in `v0.45.0-rc.4` (the allowlist replaced the workbench URL), so gateway and nodes must both run rc.4 or later for voice:
 
-- *Old gateway, new node.* The bundle still carries `workbenchUrl` and no allowlist. `voice_start` fails with `VOICE_START_FAILED: the gateway's voice bundle carries no audio allowlist (gateway older than rc.4?)`.
+- *Old gateway, new node.* The bundle still carries `workbenchUrl` and no allowlist. The node refuses that voice block, so it never registers the voice tools for the session: the agent has no `voice_start` to call. The reason appears only in the node's warning log: `[voice] config unavailable session=…: the gateway's voice bundle carries no audio allowlist (gateway older than rc.4?)`.
 - *New gateway, old node.* The bundle carries the allowlist and no `workbenchUrl`. The old node has no origin to compare against, so every `voice_start` is refused with `VOICE_BAD_ENDPOINT`.
 
 In both cases no call starts and nothing leaves the node. Upgrade the gateway and nodes together.
