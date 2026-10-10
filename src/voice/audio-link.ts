@@ -46,7 +46,10 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const safeDecode = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
 
 /** A path segment that can carry the capability secret: long, or mixing
- *  letters and digits. Plain route words (api, audio, stream...) are not. */
+ *  letters and digits. Plain route words (api, audio, stream...) are not.
+ *  This assumes the workbench mints long, random per-session secrets (well
+ *  over 12 characters); a short all-letter secret would only be masked inside
+ *  a whole URL or path form, not as a lone word. */
 function secretSegment(seg: string, routeWords: Set<string>): boolean {
   if (!seg || routeWords.has(seg)) return false;
   return seg.length >= 12 || (seg.length >= 6 && /[0-9]/.test(seg) && /[a-z]/i.test(seg));
@@ -72,9 +75,11 @@ function capabilityForms(endpoints: { streamUrl: string; clearUrl: string }, bas
     if (!raw) continue;
     let u: URL | null = null;
     let origin = "";
+    let absolute = false;
     try {
       u = new URL(raw);
       origin = u.origin;
+      absolute = true;
     } catch {
       try {
         u = new URL(raw, base ?? PLACEHOLDER_BASE);
@@ -83,7 +88,9 @@ function capabilityForms(endpoints: { streamUrl: string; clearUrl: string }, bas
     }
     if (origin === "null") origin = "";
     const masked = origin ? `${origin}/…` : "[redacted]";
-    for (const w of [raw, u && origin ? u.toString() : ""]) {
+    // Only absolute forms are masked anywhere: a relative form may follow a
+    // scheme-less host, and is left to the guarded path pass below.
+    for (const w of [absolute ? raw : "", u && origin ? u.toString() : ""]) {
       if (!w) continue;
       f.whole.push([w, masked], [encodeURIComponent(w), masked]);
     }
@@ -119,7 +126,7 @@ function capabilityForms(endpoints: { streamUrl: string; clearUrl: string }, bas
  *  `log` lines, child stderr, error messages, approval cards. */
 export function redactCapabilityUrls(text: string, endpoints: { streamUrl: string; clearUrl: string }, baseUrl: string): string {
   const f = capabilityForms(endpoints, baseUrl);
-  if (!f.whole.length) return text;
+  if (!f.whole.length && !f.paths.length && !f.secrets.length) return text;
   const pathNames = f.paths.map(([p]) => p);
   // Absolute URLs first, whole (an extra query or fragment goes with them).
   let out = text.replace(URL_TOKEN, (tok) => {

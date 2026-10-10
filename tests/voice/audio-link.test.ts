@@ -316,6 +316,16 @@ describe("redactCapabilityUrls: every form of the secret", () => {
     clean(r(`wb.example.com/api/browser/audio/${CAP}/stream`));
     clean(r(`//wb.example.com/api/browser/audio/${CAP}/stream`));
   });
+  it("a scheme-less host form is masked once, never doubled", () => {
+    for (const path of [eps.streamUrl, eps.clearUrl]) {
+      const out = r(`wb.example.com${path}`);
+      clean(out);
+      expect(out).not.toContain("comhttps");
+      expect(out).not.toContain("[redacted]");
+      expect(out).toStartWith("wb.example.com/api/browser/audio/");
+    }
+  });
+
   it("the URL-encoded secret segment alone", () => {
     const eps2 = { streamUrl: "/a/s3cr3t+v@lue==/stream", clearUrl: "/a/s3cr3t+v@lue==/clear" };
     const out = redactCapabilityUrls(`seg ${encodeURIComponent("s3cr3t+v@lue==")}`, eps2, base);
