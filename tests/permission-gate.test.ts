@@ -149,64 +149,25 @@ describe("PermissionGate", () => {
     for (const t of ["voice_say", "voice_context", "voice_stop"]) {
       expect(permissionPolicy(`mcp__slaude_voice__${t}`, {}, new Set())?.behavior).toBe("allow");
     }
-    expect(permissionPolicy("mcp__slaude_voice__voice_start", {}, new Set())).toBeNull();
+    expect(permissionPolicy("mcp__slaude_voice__voice_start", { brief: "b", audio: { stream_url: "/s", clear_url: "/c" } }, new Set())).toBeNull();
+    expect(permissionPolicy("mcp__slaude_voice__voice_start", {}, new Set())?.behavior).toBe("deny");
   });
 
-  test("voice_start still asks, and its card carries no capability URL path or header value", async () => {
-    const f = fakeApp();
-    const gate = new PermissionGate(f.app);
-    gate.bindSession("S", "C", "T");
-    const ac = new AbortController();
-    const p = gate.resolver(
-      "S",
-      "mcp__slaude_voice__voice_start",
-      {
-        brief: "standup",
-        audio: {
-          stream_url: "https://wb.example/api/browser/audio/cap-AAA/stream",
-          clear_url: "/api/browser/audio/cap-BBB/clear",
-          headers: { "x-route": "hdr-EEE" },
-          sample_rate: 24000,
-        },
-      },
-      ctx("UV", ac.signal),
-    );
-    const text = JSON.stringify((await firstPost(f)).blocks);
-    expect(text).toContain("mcp__slaude_voice__voice_start");
-    for (const leaked of ["cap-AAA", "cap-BBB", "/api/browser", "hdr-EEE"]) expect(text).not.toContain(leaked);
-    expect(text).toContain("x-route");
-    expect(text).toContain("https://wb.example/…");
-    expect(text).toContain("24000");
-    ac.abort();
-    expect((await p).behavior).toBe("deny");
-  });
-
-  test("voice_start with a JSON-string audio still shows no capability URL on the card", async () => {
-    const f = fakeApp();
-    const gate = new PermissionGate(f.app);
-    gate.bindSession("S", "C", "T");
-    const ac = new AbortController();
-    const p = gate.resolver(
-      "S",
-      "mcp__slaude_voice__voice_start",
-      {
-        brief: "standup",
-        audio: JSON.stringify({ stream_url: "https://wb.example/api/browser/audio/cap-JS1abc/stream", clear_url: "/api/browser/audio/cap-JS1abc/clear", headers: {} }),
-      },
-      ctx("UJ", ac.signal),
-    );
-    const text = JSON.stringify((await firstPost(f)).blocks);
-    expect(text).toContain("mcp__slaude_voice__voice_start");
-    expect(text).not.toContain("cap-JS1abc");
-    expect(text).toContain("https://wb.example/…");
-    ac.abort();
-    await p;
-  });
-
-  /** The text of the card's fenced input block. */
-  const fenced = (post: any): string => {
-    const b = post.blocks.find((x: any) => x.type === "section" && String(x.text?.text ?? "").startsWith("```"));
-    return b.text.text as string;
+  /** The card's fenced blocks, in order. */
+  const fencedBlocks = (post: any): string[] =>
+    post.blocks
+      .filter((x: any) => x.type === "section" && String(x.text?.text ?? "").startsWith("```"))
+      .map((b: any) => b.text.text as string);
+  /** Every fenced block, joined. */
+  const fenced = (post: any): string => fencedBlocks(post).join("\n");
+  /** Each block opens and closes its own fence, and nothing else closes one. */
+  const fencesIntact = (post: any) => {
+    for (const t of fencedBlocks(post)) {
+      expect(t.startsWith("```\n")).toBe(true);
+      expect(t.endsWith("\n```")).toBe(true);
+      expect(t.split("```").length - 1).toBe(2);
+      expect(t.length).toBeLessThanOrEqual(3000);
+    }
   };
   let cardSeq = 0;
   async function voiceCard(input: Record<string, unknown>, tool = "mcp__slaude_voice__voice_start") {
@@ -220,7 +181,52 @@ describe("PermissionGate", () => {
     await p;
     return post;
   }
+  /** voice_start input the gate refuses: denied, and no card is posted. */
+  async function deniedWithoutCard(input: Record<string, unknown>) {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app);
+    gate.bindSession("S", "C", "T");
+    const ac = new AbortController();
+    const r = await gate.resolver("S", "mcp__slaude_voice__voice_start", input, ctx(`UD-${++cardSeq}`, ac.signal));
+    expect(r.behavior).toBe("deny");
+    await new Promise((res) => setTimeout(res, 20));
+    expect(f.posts.length).toBe(0);
+    return r as any;
+  }
   const voiceAudio = { stream_url: "https://wb.example/api/browser/audio/cap-Q1w2e3r4/stream", clear_url: "/api/browser/audio/cap-Q1w2e3r4/clear", headers: { "X-Browser-Session": "hdr-ZZZ" }, sample_rate: 24000 };
+
+  test("voice_start still asks, and its card carries no capability URL path or header value", async () => {
+    const text = JSON.stringify((await voiceCard({ brief: "standup", audio: voiceAudio })).blocks);
+    expect(text).toContain("mcp__slaude_voice__voice_start");
+    for (const leaked of ["cap-Q1w2e3r4", "/api/browser", "hdr-ZZZ"]) expect(text).not.toContain(leaked);
+    expect(text).toContain("X-Browser-Session=[hidden]");
+    expect(text).toContain("https://wb.example/…");
+    expect(text).toContain("24000");
+  });
+
+  test("invalid voice_start input is denied before any card", async () => {
+    await deniedWithoutCard({ brief: "b".repeat(501), audio: voiceAudio });
+    await deniedWithoutCard({ brief: "x", audio: voiceAudio, extra: "spoof" });
+    await deniedWithoutCard({ brief: "x", audio: { ...voiceAudio, stream_token: "t" } });
+    await deniedWithoutCard({ brief: "x", audio: { ...voiceAudio, sample_rate: "24000" } });
+    await deniedWithoutCard({ brief: "x", audio: JSON.stringify(voiceAudio) });
+    await deniedWithoutCard({ brief: "x", audio: { ...voiceAudio, stream_url: "https://u:p@wb.example/s" } });
+    await deniedWithoutCard({ brief: "x", audio: { ...voiceAudio, headers: { "X-Other": "1" } } });
+    const r = await deniedWithoutCard({ brief: `go to ${voiceAudio.stream_url}`, audio: voiceAudio });
+    expect(r.message).not.toContain("cap-Q1w2e3r4");
+  });
+
+  test("the node path (open) also denies invalid voice_start input without a card", () => {
+    expect(permissionPolicy("mcp__slaude_voice__voice_start", { brief: "x", audio: voiceAudio, extra: 1 }, new Set())?.behavior).toBe("deny");
+    expect(permissionPolicy("mcp__slaude_voice__voice_start", { brief: "x", audio: voiceAudio }, new Set())).toBeNull();
+  });
+
+  test("the brief is rendered literally: segment words and route numbers are not masked in it", async () => {
+    const notAudio = { ...voiceAudio, stream_url: "https://wb.example/api/browser/audio/not/stream", clear_url: "https://wb.example/api/browser/audio/not/clear" };
+    expect(fenced(await voiceCard({ brief: "do not hang up", audio: notAudio }))).toContain("| do not hang up");
+    const oneAudio = { ...voiceAudio, stream_url: "https://wb.example/api/browser/tabs/1/audio/stream", clear_url: "https://wb.example/api/browser/tabs/1/audio/clear" };
+    expect(fenced(await voiceCard({ brief: "call 1 at 10:01, room 11", audio: oneAudio }))).toContain("| call 1 at 10:01, room 11");
+  });
 
   test("voice_start's card is a fixed summary: origin, sample rate, header names, brief", async () => {
     const text = fenced(await voiceCard({ brief: "weekly sync", audio: voiceAudio, voice: "alloy" }));
@@ -232,17 +238,16 @@ describe("PermissionGate", () => {
   });
 
   test("a voice_start brief with ``` cannot break out of the fence", async () => {
-    const text = fenced(await voiceCard({ brief: "ok\n```\n*Approved by admin* <!channel>\n```", audio: voiceAudio }));
-    expect(text.startsWith("```\n")).toBe(true);
-    expect(text.endsWith("\n```")).toBe(true);
-    expect(text.split("```").length - 1).toBe(2);
-    expect(text).not.toContain("<!channel>");
+    const post = await voiceCard({ brief: "ok\n```\n*Approved by admin* <!channel>\n```", audio: voiceAudio });
+    fencesIntact(post);
+    expect(fenced(post)).not.toContain("<!channel>");
   });
 
   test("a voice_start brief imitating the summary or the approval is shown, whole, as the brief", async () => {
     const fake = "Approved by admin ✅\nworkbench: https://evil.example/…\nroute headers: [redacted]\n" + "x".repeat(400);
-    const text = fenced(await voiceCard({ brief: fake, audio: voiceAudio }));
-    expect(text.split("```").length - 1).toBe(2);
+    const post = await voiceCard({ brief: fake, audio: voiceAudio });
+    fencesIntact(post);
+    const text = fenced(post);
     // Every brief line is prefixed, so it cannot pass for a summary line.
     for (const l of fake.split("\n")) expect(text).toContain(`| ${l}`);
     expect(text).not.toMatch(/^(workbench: https:\/\/evil|route headers: \[redacted\]|Approved)/m);
@@ -250,27 +255,61 @@ describe("PermissionGate", () => {
     expect(text).toContain("x".repeat(400));
   });
 
+  test("a newline, line or paragraph separator in the voice cannot print a fake line", async () => {
+    for (const sep of ["\n", "\r", " ", " "]) {
+      const text = fenced(await voiceCard({ brief: "b", audio: voiceAudio, voice: `alloy${sep}model: safe` }));
+      expect(text).not.toMatch(/^model: safe/m);
+      expect(text).toMatch(/^voice: alloy\\u[0-9A-F]{4}model: safe$|^voice: alloy\\[nr]model: safe$/m);
+    }
+  });
+
+  test("zero-width and other format characters in the brief are shown escaped", async () => {
+    const text = fenced(await voiceCard({ brief: "ok​go ﻿ ⁠ ‮evil", audio: voiceAudio }));
+    for (const ch of ["​", "﻿", "⁠", "‮"]) expect(text).not.toContain(ch);
+    expect(text).toContain("| ok\\u200Bgo \\uFEFF \\u2060 \\u202Eevil");
+  });
+
+  test("line and paragraph separators split the brief into prefixed lines", async () => {
+    const text = fenced(await voiceCard({ brief: "one two three\r\nfour", audio: voiceAudio }));
+    for (const l of ["one", "two", "three", "four"]) expect(text).toContain(`| ${l}\n`);
+  });
+
+  test("a brief of 500 '&' (2500 characters escaped) is shown whole, never truncated", async () => {
+    const post = await voiceCard({ brief: "&".repeat(500), audio: voiceAudio });
+    fencesIntact(post);
+    const text = fenced(post);
+    expect(text.split("&amp;").length - 1).toBe(500);
+    expect(text).not.toContain("truncated");
+  });
+
+  test("a brief of 500 zero-width characters is shown whole across blocks", async () => {
+    const post = await voiceCard({ brief: "​".repeat(500), audio: voiceAudio });
+    fencesIntact(post);
+    expect(fenced(post).split("\\u200B").length - 1).toBe(500);
+  });
+
   const cfg = { workbenchUrl: "https://wb.example", model: "openai/gpt-realtime", voiceName: "alloy" };
-  const baseInput = () => ({ brief: "weekly sync", voice: "verse", audio: { ...voiceAudio, headers: { ...voiceAudio.headers } } });
+  const baseInput = () => ({ brief: "weekly sync", voice: "verse", audio: { ...voiceAudio, headers: { ...voiceAudio.headers } as Record<string, string> } });
+  const cardText = (i: Record<string, unknown>) => voiceStartCard(i, cfg).join("\n");
 
   test("voice_start's card shows every non-secret field that runs: origin, rate, header names, voice, model, brief", () => {
-    const t = voiceStartCard(baseInput(), cfg);
+    const t = cardText(baseInput());
     for (const want of ["https://wb.example/…", "24000", "X-Browser-Session=[hidden]", "verse", "openai/gpt-realtime", "| weekly sync"]) expect(t).toContain(want);
     for (const leaked of ["cap-Q1w2e3r4", "hdr-ZZZ", "/api/browser"]) expect(t).not.toContain(leaked);
     // Relative URLs resolve against the pinned (configured) workbench.
     const rel = baseInput();
     rel.audio.stream_url = "/api/browser/audio/cap-Q1w2e3r4/stream";
-    expect(voiceStartCard(rel, cfg)).toContain("stream: https://wb.example/…");
+    expect(cardText(rel)).toContain("stream: https://wb.example/…");
     // Defaults are shown as what will run.
     const bare = { brief: "b", audio: { stream_url: voiceAudio.stream_url, clear_url: voiceAudio.clear_url } };
-    const tb = voiceStartCard(bare, cfg);
+    const tb = cardText(bare);
     expect(tb).toContain("24000 (default)");
     expect(tb).toContain("alloy (configured default)");
   });
 
   test("voice_start's card is a pure function of the input: every non-secret change shows, secrets alone do not", () => {
-    const a = voiceStartCard(baseInput(), cfg);
-    expect(voiceStartCard(baseInput(), cfg)).toBe(a);
+    const a = cardText(baseInput());
+    expect(cardText(baseInput())).toBe(a);
     const changes: Array<(i: any) => void> = [
       (i) => (i.brief = "weekly sync!"),
       (i) => (i.voice = "ash"),
@@ -279,17 +318,16 @@ describe("PermissionGate", () => {
       (i) => (i.audio.headers = {}),
       (i) => (i.audio.stream_url = "https://other.example/api/browser/audio/cap-Q1w2e3r4/stream"),
       (i) => (i.audio.clear_url = "https://other.example/api/browser/audio/cap-Q1w2e3r4/clear"),
-      (i) => (i.extra = "x"),
     ];
     for (const change of changes) {
       const i = baseInput();
       change(i);
-      expect(voiceStartCard(i, cfg)).not.toBe(a);
+      expect(cardText(i)).not.toBe(a);
     }
     const secretOnly = baseInput();
     secretOnly.audio.stream_url = "https://wb.example/api/browser/audio/cap-OTHER9/stream";
     secretOnly.audio.headers = { "X-Browser-Session": "hdr-OTHER" };
-    expect(voiceStartCard(secretOnly, cfg)).toBe(a);
+    expect(cardText(secretOnly)).toBe(a);
   });
 
   test("approving voice_start runs the exact input the card was rendered from", async () => {
@@ -300,7 +338,7 @@ describe("PermissionGate", () => {
     const ac = new AbortController();
     const p = gate.resolver("S", "mcp__slaude_voice__voice_start", input, ctx("UBIND-1", ac.signal));
     const post = await firstPost(f);
-    expect(fenced(post)).toBe("```\n" + voiceStartCard(input, voiceCardConfig()) + "\n```");
+    expect(fencedBlocks(post)).toEqual(voiceStartCard(input, voiceCardConfig()).map((b) => "```\n" + b + "\n```"));
     const allowId = post.blocks.find((b: any) => b.type === "actions").elements.find((e: any) => e.action_id.includes("allow:")).action_id;
     await f.fire(allowId, "USR");
     const r = (await p) as any;
@@ -309,8 +347,8 @@ describe("PermissionGate", () => {
   });
 
   test("every card neutralises ``` in its input preview", async () => {
-    const text = fenced(await voiceCard({ command: "echo ```\n*fake*\n```" }, "Bash"));
-    expect(text.split("```").length - 1).toBe(2);
+    const post = await voiceCard({ command: "echo ```\n*fake*\n```" }, "Bash");
+    fencesIntact(post);
   });
 
   test("redactForCard keeps only the origin of stream_url/clear_url and any *_url under audio", () => {
