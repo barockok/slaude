@@ -31,6 +31,7 @@ import { startNodeWorker } from "./worker";
 import { enforceNodeBootCheck } from "./boot-check";
 import { NodeClient } from "./client";
 import { nodeHandshake } from "./handshake";
+import { installRejectionGuard } from "./rejection-guard";
 import { type NodeManifest, NodeManifestError, describeNodeManifest, loadNodeManifest } from "./manifest";
 
 async function main() {
@@ -67,6 +68,11 @@ async function main() {
     console.error(hs.message);
     process.exit(1);
   }
+
+  // From here a rejection nobody awaits (one session's background work) is
+  // logged loudly instead of ending the process and every other session on
+  // it; boot failures above stay fatal (see ./rejection-guard).
+  installRejectionGuard();
 
   // No soul or persona registry is loaded here: the worker installs a persona
   // soul resolver that takes both from the runtime bundle per session, and the
