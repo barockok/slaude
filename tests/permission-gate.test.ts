@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach } from "bun:test";
 import * as PendingGates from "../src/db/pending-gates";
-import { PermissionGate, permissionPolicy } from "../src/gateway/slack/permission-gate";
+import { PermissionGate, permissionPolicy, redactForCard } from "../src/gateway/slack/permission-gate";
 
 type Handler = (a: any) => Promise<void>;
 
@@ -152,7 +152,7 @@ describe("PermissionGate", () => {
     expect(permissionPolicy("mcp__slaude_voice__voice_start", {}, new Set())).toBeNull();
   });
 
-  test("voice_start still asks, and its card carries no token or header value", async () => {
+  test("voice_start still asks, and its card carries no capability URL path or header value", async () => {
     const f = fakeApp();
     const gate = new PermissionGate(f.app);
     gate.bindSession("S", "C", "T");
@@ -163,23 +163,37 @@ describe("PermissionGate", () => {
       {
         brief: "standup",
         audio: {
-          stream_url: "https://wb.example/s",
-          clear_url: "https://wb.example/c",
+          stream_url: "https://wb.example/api/browser/audio/cap-AAA/stream",
+          clear_url: "/api/browser/audio/cap-BBB/clear",
           headers: { "x-route": "hdr-EEE" },
           sample_rate: 24000,
-          stream_token: "tok-AAA",
         },
       },
       ctx("UV", ac.signal),
     );
     const text = JSON.stringify((await firstPost(f)).blocks);
     expect(text).toContain("mcp__slaude_voice__voice_start");
-    expect(text).not.toContain("tok-AAA");
-    expect(text).not.toContain("hdr-EEE");
+    for (const leaked of ["cap-AAA", "cap-BBB", "/api/browser", "hdr-EEE"]) expect(text).not.toContain(leaked);
     expect(text).toContain("x-route");
-    expect(text).toContain("https://wb.example/s");
+    expect(text).toContain("https://wb.example/…");
+    expect(text).toContain("24000");
     ac.abort();
     expect((await p).behavior).toBe("deny");
+  });
+
+  test("redactForCard keeps only the origin of stream_url/clear_url and any *_url under audio", () => {
+    const out = redactForCard({
+      stream_url: "https://wb.example/p/cap-1/stream",
+      nested: { clear_url: "https://wb.example:8443/p/cap-2/clear?k=v" },
+      audio: { meet_url: "https://wb.example/p/cap-3", relative_url: "/p/cap-4", sample_rate: 24000 },
+      other_url: "https://docs.example/page",
+    }) as any;
+    expect(out.stream_url).toBe("https://wb.example/…");
+    expect(out.nested.clear_url).toBe("https://wb.example:8443/…");
+    expect(out.audio.meet_url).toBe("https://wb.example/…");
+    expect(out.audio.relative_url).toBe("[redacted]");
+    expect(out.audio.sample_rate).toBe(24000);
+    expect(out.other_url).toBe("https://docs.example/page");
   });
 
   test("approval card redacts token/secret/key/password values, nested too", async () => {
@@ -191,7 +205,7 @@ describe("PermissionGate", () => {
       "S",
       "mcp__other__tool",
       {
-        stream_token: "tok-AAA",
+        access_token: "tok-AAA",
         endpoints: { apiKey: "key-BBB", nested: { "x-secret": "sec-CCC" } },
         list: [{ password: "pw-DDD" }],
         url: "https://wb.example/x",
