@@ -39,31 +39,106 @@ export function sameOrigin(path: string, base: string): boolean {
   }
 }
 
-/** `text` with every form of the capability URLs (as given, resolved against
- *  `baseUrl`, and path plus query) replaced by the origin and "/…". Use on any
- *  text that leaves the voice loop: logs, ipc `log` lines, error messages. */
-export function redactCapabilityUrls(text: string, endpoints: { streamUrl: string; clearUrl: string }, baseUrl: string): string {
-  const forms = new Map<string, string>();
+const PLACEHOLDER_BASE = "http://placeholder.invalid";
+/** An absolute URL token in free text (stops at whitespace, quotes, brackets, backslash). */
+const URL_TOKEN = /[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>\\]+/gi;
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const safeDecode = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
+
+/** A path segment that can carry the capability secret: long, or mixing
+ *  letters and digits. Plain route words (api, audio, stream...) are not. */
+function secretSegment(seg: string, routeWords: Set<string>): boolean {
+  if (!seg || routeWords.has(seg)) return false;
+  return seg.length >= 12 || (seg.length >= 6 && /[0-9]/.test(seg) && /[a-z]/i.test(seg));
+}
+
+interface CapabilityForms {
+  /** Whole-URL forms (as given, resolved, encoded) → their masked text. */
+  whole: Array<[string, string]>;
+  /** Path(+query) forms, masked only when not attached to a host. */
+  paths: Array<[string, string]>;
+  /** Secret segments and long query values (raw, decoded and encoded). */
+  secrets: string[];
+  /** Every query value: masked after `=`. */
+  queryValues: string[];
+}
+
+function capabilityForms(endpoints: { streamUrl: string; clearUrl: string }, baseUrl: string): CapabilityForms {
+  const f: CapabilityForms = { whole: [], paths: [], secrets: [], queryValues: [] };
+  let base: URL | null = null;
+  try { base = baseUrl ? new URL(baseUrl) : null; } catch {}
+  const routeWords = new Set((base?.pathname ?? "").split("/").filter(Boolean));
   for (const raw of [endpoints.streamUrl, endpoints.clearUrl]) {
     if (!raw) continue;
+    let u: URL | null = null;
     let origin = "";
     try {
-      const u = new URL(raw, baseUrl);
-      origin = u.origin === "null" ? "" : u.origin;
-      const masked = `${origin}/…`;
-      forms.set(u.toString(), masked);
-      if (u.pathname.length > 1) {
-        forms.set(u.pathname + u.search, masked);
-        forms.set(u.pathname, masked);
-      }
-    } catch {}
-    if (!forms.has(raw)) forms.set(raw, `${origin}/…`);
+      u = new URL(raw);
+      origin = u.origin;
+    } catch {
+      try {
+        u = new URL(raw, base ?? PLACEHOLDER_BASE);
+        origin = base ? u.origin : "";
+      } catch {}
+    }
+    if (origin === "null") origin = "";
+    const masked = origin ? `${origin}/…` : "[redacted]";
+    for (const w of [raw, u && origin ? u.toString() : ""]) {
+      if (!w) continue;
+      f.whole.push([w, masked], [encodeURIComponent(w), masked]);
+    }
+    if (!u) {
+      f.secrets.push(raw);
+      continue;
+    }
+    if (u.pathname.length > 1) f.paths.push([u.pathname + u.search, masked], [u.pathname, masked]);
+    for (const seg of u.pathname.split("/")) {
+      const dec = safeDecode(seg);
+      if (secretSegment(dec, routeWords)) f.secrets.push(seg, dec, encodeURIComponent(dec));
+    }
+    for (const [, v] of u.searchParams) {
+      if (!v) continue;
+      f.queryValues.push(v, encodeURIComponent(v));
+      if (v.length >= 8) f.secrets.push(v, encodeURIComponent(v));
+    }
   }
-  // Longest first, so a full URL is masked whole before its path is.
-  let out = text;
-  for (const [form, masked] of [...forms].sort((a, b) => b[0].length - a[0].length)) {
-    out = out.split(form).join(masked);
+  const byLen = (a: string, b: string) => b.length - a.length;
+  f.whole.sort((a, b) => byLen(a[0], b[0]));
+  f.paths.sort((a, b) => byLen(a[0], b[0]));
+  f.secrets = [...new Set(f.secrets.filter(Boolean))].sort(byLen);
+  f.queryValues = [...new Set(f.queryValues.filter(Boolean))].sort(byLen);
+  return f;
+}
+
+/** `text` with the capability URLs masked, in every form: whole URLs (as
+ *  given, resolved, URL-encoded, or any absolute URL in the text carrying the
+ *  secret, query and all) become the origin and "/…"; path forms not attached
+ *  to a host likewise; then any remaining secret segment or query value (lone,
+ *  encoded, scheme-less) becomes "…". With no usable `baseUrl` a relative form
+ *  masks to "[redacted]". Use on any text that leaves the voice loop: logs, ipc
+ *  `log` lines, child stderr, error messages, approval cards. */
+export function redactCapabilityUrls(text: string, endpoints: { streamUrl: string; clearUrl: string }, baseUrl: string): string {
+  const f = capabilityForms(endpoints, baseUrl);
+  if (!f.whole.length) return text;
+  const pathNames = f.paths.map(([p]) => p);
+  // Absolute URLs first, whole (an extra query or fragment goes with them).
+  let out = text.replace(URL_TOKEN, (tok) => {
+    if (!f.secrets.some((s) => tok.includes(s)) && !pathNames.some((p) => tok.includes(p))) return tok;
+    try {
+      const o = new URL(tok).origin;
+      return o && o !== "null" ? `${o}/…` : "[redacted]";
+    } catch {
+      return "[redacted]";
+    }
+  });
+  for (const [form, masked] of f.whole) out = out.split(form).join(masked);
+  // Path forms only where no host precedes them (a scheme-less host/path is
+  // left to the segment pass below, so nothing is masked twice).
+  for (const [form, masked] of f.paths) {
+    out = out.replace(new RegExp(`(?<![A-Za-z0-9.\\-\\]:@%/])${escapeRe(form)}`, "g"), masked);
   }
+  for (const v of f.queryValues) out = out.split(`=${v}`).join("=…");
+  for (const sec of f.secrets) out = out.split(sec).join("…");
   return out;
 }
 

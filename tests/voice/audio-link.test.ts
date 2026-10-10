@@ -273,3 +273,63 @@ describe("redactCapabilityUrls", () => {
     expect(out).not.toContain(CAP);
   });
 });
+
+describe("redactCapabilityUrls: every form of the secret", () => {
+  const base = "https://wb.example.com";
+  const SIG = "Zq81xYvP0aLm";
+  const abs = `https://wb.example.com/api/browser/audio/${CAP}/stream`;
+  const eps = { streamUrl: `/api/browser/audio/${CAP}/stream`, clearUrl: `/api/browser/audio/${CAP}/clear?sig=${SIG}` };
+  const r = (t: string) => redactCapabilityUrls(t, eps, base);
+  const clean = (out: string) => {
+    expect(out).not.toContain(CAP);
+    expect(out).not.toContain(SIG);
+    expect(out).not.toContain(encodeURIComponent(CAP));
+    expect(out).not.toMatch(/https:\/\/wb\.example\.com(https|\/\/)/);
+  };
+  it("the URL-encoded full URL", () => {
+    const out = r(`redirect to ?next=${encodeURIComponent(abs)}`);
+    clean(out);
+  });
+  it("a bare query with the signature", () => {
+    const out = r(`retrying ?sig=${SIG}`);
+    clean(out);
+    expect(out).toContain("sig=");
+  });
+  it("the secret as a lone path segment", () => {
+    clean(r(`session ${CAP} expired`));
+  });
+  it("a URL with an extra query is masked whole, nothing trails", () => {
+    const out = r(`${abs}?extra=1&b=2 failed`);
+    clean(out);
+    expect(out).toBe("https://wb.example.com/… failed");
+  });
+  it("embedded in JSON", () => {
+    const out = r(JSON.stringify({ streamUrl: abs, clearUrl: eps.clearUrl, nested: JSON.stringify({ u: abs }) }));
+    clean(out);
+  });
+  it("several URLs in one line", () => {
+    const out = r(`a ${abs} b https://wb.example.com${eps.clearUrl} c https://docs.example/ok`);
+    clean(out);
+    expect(out).toBe("a https://wb.example.com/… b https://wb.example.com/… c https://docs.example/ok");
+  });
+  it("scheme-less and protocol-relative forms", () => {
+    clean(r(`wb.example.com/api/browser/audio/${CAP}/stream`));
+    clean(r(`//wb.example.com/api/browser/audio/${CAP}/stream`));
+  });
+  it("the URL-encoded secret segment alone", () => {
+    const eps2 = { streamUrl: "/a/s3cr3t+v@lue==/stream", clearUrl: "/a/s3cr3t+v@lue==/clear" };
+    const out = redactCapabilityUrls(`seg ${encodeURIComponent("s3cr3t+v@lue==")}`, eps2, base);
+    expect(out).not.toContain(encodeURIComponent("s3cr3t+v@lue=="));
+  });
+  it("a full URL is masked once, never doubled", () => {
+    expect(r(`GET ${abs}`)).toBe("GET https://wb.example.com/…");
+    expect(r(`path ${eps.streamUrl}`)).toBe("path https://wb.example.com/…");
+  });
+  it("without a base, relative forms mask to [redacted]", () => {
+    const out = redactCapabilityUrls(`x ${eps.streamUrl}`, eps, "");
+    expect(out).toBe("x [redacted]");
+  });
+  it("route words and short values are left alone", () => {
+    expect(r("audio stream clear api browser attempt 1")).toBe("audio stream clear api browser attempt 1");
+  });
+});
