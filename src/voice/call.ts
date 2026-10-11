@@ -9,7 +9,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { transcriptLine, type ChildMsg, type EndReason, type VoiceInit } from "./ipc";
 import type { LoopChild } from "./spawn";
-import { VoiceAuthLost } from "./runners";
+import { DEFAULT_MAX_WAIT_MS, VoiceAuthLost } from "./runners";
 import { CapabilityRedactor } from "./audio-link";
 import { liveCalls } from "./turn-flags";
 
@@ -23,13 +23,43 @@ export interface TurnRunner {
 
 export const TRANSCRIPT_FLUSH_PREFIX = "[voice call transcript]";
 
-export function delegatePrompt(id: string, task: string, transcript: string): string {
-  return [
-    transcript ? `${TRANSCRIPT_FLUSH_PREFIX}\n${transcript}\n` : "",
-    `Voice call request #${id}: ${task}`,
-    `Answer with voice_say(reply_to="${id}"). Speakable: short sentences, no markdown, no URLs or code read aloud.`,
-    "Do not post to the Slack thread during the call.",
-  ].filter(Boolean).join("\n");
+export interface DelegateRequest {
+  id: string;
+  task: string;
+}
+
+const SPEAKABLE = "Speakable: short sentences, no markdown, no URLs or code read aloud.";
+
+/** One turn's prompt for one or more delegated requests (requests that queued
+ *  up behind a running turn are merged into one turn, each answered on its own). */
+export function delegatePrompt(reqs: DelegateRequest[], transcript: string): string {
+  const head = transcript ? `${TRANSCRIPT_FLUSH_PREFIX}\n${transcript}\n` : "";
+  const body = reqs.length === 1
+    ? [
+        `Voice call request #${reqs[0]!.id}: ${reqs[0]!.task}`,
+        `Answer with voice_say(reply_to="${reqs[0]!.id}"). ${SPEAKABLE}`,
+      ]
+    : [
+        `Voice call requests ${reqs.map((r) => `#${r.id}`).join(", ")}:`,
+        ...reqs.map((r) => `#${r.id}: ${r.task}`),
+        `Answer each one separately with its own voice_say: ${reqs.map((r) => `reply_to="${r.id}"`).join(", ")}. ${SPEAKABLE}`,
+      ];
+  return [head, ...body, "Do not post to the Slack thread during the call."].filter(Boolean).join("\n");
+}
+
+/** How long a delegate may wait in the call's queue before it fails. The
+ *  runner already gives up after DEFAULT_MAX_WAIT_MS when the session stays
+ *  busy; a request queued behind a turn that is itself stuck should not wait
+ *  longer than that, plus a margin for the turn ahead of it to wrap up. */
+export const QUEUE_WAIT_MARGIN_MS = 15_000;
+export const DEFAULT_QUEUE_WAIT_MS = DEFAULT_MAX_WAIT_MS + QUEUE_WAIT_MARGIN_MS;
+
+/** Work waiting for the next turn: delegates plus a due transcript flush. It
+ *  becomes one turn when it reaches the head of the queue; until then later
+ *  delegates and flushes join it. */
+interface Batch {
+  delegates: Array<DelegateRequest & { timer: ReturnType<typeof setTimeout> }>;
+  flush: boolean;
 }
 
 export function summaryPrompt(reason: EndReason, transcriptPath: string | null): string {
@@ -53,6 +83,8 @@ export interface VoiceCallDeps {
   holdIdle(hold: boolean): boolean | void;
   onClosed(): void;
   idleFlushMs?: number;
+  /** Longest a delegate waits in the queue before it fails (DEFAULT_QUEUE_WAIT_MS). */
+  queueWaitMs?: number;
   startTimeoutMs?: number;
   /** How long to wait for the stdout stream to drain after the child exits
    *  before ending the call anyway. */
@@ -71,6 +103,8 @@ export class VoiceCall {
    *  against what Claude knew, not what the child had heard at tool time. */
   #delegateAsOf = new Map<string, number>();
   #queue: Promise<void> = Promise.resolve();
+  /** The batch queued for the next turn and not started yet (null: none). */
+  #batch: Batch | null = null;
   #flushTimer: ReturnType<typeof setTimeout> | null = null;
   /** Epoch ms when the voice loop reported started (0 before). */
   startedAt = 0;
@@ -156,20 +190,66 @@ export class VoiceCall {
       this.#armFlush();
     } else if (m.type === "delegate") {
       this.#delegateAsOf.set(m.id, m.asOf);
-      const transcript = this.#takePending();
-      this.#enqueue(async () => {
-        try {
-          await this.#run(delegatePrompt(m.id, m.task, transcript), { suppress: false, voice: true });
-        } catch (e) {
-          console.error(`[voice] request #${m.id} failed session=${this.d.sessionId}:`, e instanceof Error ? e.message : e);
-          // Claude never saw this chunk; carry it in the next flush.
-          if (transcript) this.#pending.unshift(transcript);
-          if (e instanceof VoiceAuthLost) return this.#authLost();
-          this.say(`Request #${m.id} failed. Tell the participants you could not get that.`, "next_gap", m.id);
-        }
-      });
+      const b = this.#openBatch();
+      const timer = setTimeout(() => this.#expire(b, m.id), this.d.queueWaitMs ?? DEFAULT_QUEUE_WAIT_MS);
+      timer.unref?.();
+      b.delegates.push({ id: m.id, task: m.task, timer });
     } else if (m.type === "log") {
       console[m.level === "error" ? "error" : m.level === "warn" ? "warn" : "log"](`[voice] session=${this.d.sessionId} ${this.#scrub(m.message)}`);
+    }
+  }
+
+  /** The batch for the next turn, queued once when created. */
+  #openBatch(): Batch {
+    if (this.#batch) return this.#batch;
+    const b: Batch = { delegates: [], flush: false };
+    this.#batch = b;
+    this.#enqueue(() => this.#runBatch(b));
+    return b;
+  }
+
+  #failRequest(id: string): void {
+    this.say(`Request #${id} failed. Tell the participants you could not get that.`, "next_gap", id);
+  }
+
+  /** A delegate waited too long behind the turn ahead of it: drop it from the
+   *  batch (it never runs) and answer it through the voice. */
+  #expire(b: Batch, id: string): void {
+    if (this.#batch !== b) return; // started (or the call was torn down)
+    const i = b.delegates.findIndex((d) => d.id === id);
+    if (i < 0) return;
+    b.delegates.splice(i, 1);
+    if (this.#cancelled || this.#endReason) return;
+    console.error(`[voice] request #${id} waited too long in the queue session=${this.d.sessionId}`);
+    this.#failRequest(id);
+  }
+
+  /** Run a batch at the head of the queue: from here nothing joins it. The
+   *  transcript is taken now, so a queued delegate carries what was said
+   *  while it waited. */
+  async #runBatch(b: Batch): Promise<void> {
+    if (this.#batch === b) this.#batch = null;
+    for (const d of b.delegates) clearTimeout(d.timer);
+    const reqs = b.delegates.map(({ id, task }) => ({ id, task }));
+    if (!reqs.length) {
+      // Every delegate in it expired and no flush was due: nothing to send.
+      if (!b.flush) return;
+      const t = this.#takePending();
+      if (t) await this.#run(`${TRANSCRIPT_FLUSH_PREFIX}\n${t}`, { suppress: true, voice: true });
+      return;
+    }
+    const transcript = this.#takePending();
+    try {
+      await this.#run(delegatePrompt(reqs, transcript), { suppress: false, voice: true });
+    } catch (e) {
+      const ids = reqs.map((r) => `#${r.id}`).join(", ");
+      console.error(`[voice] request ${ids} failed session=${this.d.sessionId}:`, e instanceof Error ? e.message : e);
+      // Claude never saw this chunk; carry it in the next flush.
+      if (transcript) this.#pending.unshift(transcript);
+      if (e instanceof VoiceAuthLost) return this.#authLost();
+      // Re-arm the flush so the chunk goes in even if nobody speaks again.
+      if (transcript && !this.#cancelled && !this.#endReason) this.#armFlush();
+      for (const r of reqs) this.#failRequest(r.id);
     }
   }
 
@@ -181,10 +261,14 @@ export class VoiceCall {
     if (this.#pendingSeq > this.#seenSeq) this.#seenSeq = this.#pendingSeq;
     return t;
   }
-  /** Feed the unsent transcript into the session as a suppressed turn. */
+  /** Feed the unsent transcript into the session: a suppressed turn of its
+   *  own, or part of the delegate turn already queued. Taken when that turn
+   *  starts. */
   #flushPending(): void {
-    const t = this.#takePending();
-    if (t) this.#enqueue(() => this.#run(`${TRANSCRIPT_FLUSH_PREFIX}\n${t}`, { suppress: true, voice: true }));
+    if (this.#flushTimer) clearTimeout(this.#flushTimer);
+    this.#flushTimer = null;
+    if (!this.#pending.length) return;
+    this.#openBatch().flush = true;
   }
   #armFlush(): void {
     if (this.#flushTimer) clearTimeout(this.#flushTimer);
@@ -270,6 +354,10 @@ export class VoiceCall {
     // identity may not run as the agent: queued turns are dropped and nothing
     // is fed into the session — the transcript file is all that remains.
     if (reason === "session_rebooted" || reason === "auth_lost") this.#cancelled = true;
+    if (this.#cancelled && this.#batch) {
+      for (const d of this.#batch.delegates) clearTimeout(d.timer);
+      this.#batch = null;
+    }
     if (!this.#cancelled) {
       this.#flushPending();
       if (this.#started) this.#enqueue(() => this.#run(summaryPrompt(reason, path), { suppress: false, voice: false }));

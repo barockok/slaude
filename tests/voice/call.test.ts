@@ -320,7 +320,7 @@ describe("VoiceCall", () => {
     expect(child.sent.at(-1)).toEqual({ type: "stop", reason: "auth_lost" });
     child.push({ type: "ended", reason: "auth_lost" });
     expect(await call.done).toBe("auth_lost");
-    // #2 was refused, #3 was dropped; no flush, no summary.
+    // #2 and #3 merged into one turn, which was refused; no flush, no summary.
     expect(runs).toHaveLength(1);
     expect(child.sent.some((m) => m.type === "say")).toBe(false);
     err.mockRestore();
@@ -484,5 +484,165 @@ describe("VoiceCalls", () => {
     expect(await t.call.done).toBe("session_rebooted");
     calls.remove("s1");
     expect(calls.get("s1")).toBeUndefined();
+  });
+});
+
+/** A call whose runner holds every turn until the test releases it. */
+function gated(over: { idleFlushMs?: number; queueWaitMs?: number; fail?: (text: string) => boolean } = {}) {
+  const child = fakeChild();
+  const runs: Array<{ text: string; suppress: boolean; voice: boolean }> = [];
+  const gates: Array<() => void> = [];
+  const runner: TurnRunner = {
+    run: async (_s, text, o) => {
+      runs.push({ text, suppress: o.suppress, voice: o.voice });
+      await new Promise<void>((r) => gates.push(r));
+      if (over.fail?.(text)) throw new Error("turn failed");
+    },
+  };
+  const call = new VoiceCall({
+    sessionId: "s1", runner, child, transcriptDir: tmp(), holdIdle: () => true, onClosed: () => {},
+    idleFlushMs: over.idleFlushMs ?? 60_000, queueWaitMs: over.queueWaitMs,
+  });
+  const release = () => gates.shift()?.();
+  const start = async () => {
+    const p = call.start(init(call.callId));
+    child.push({ type: "started", callId: call.callId, sampleRate: 24000 });
+    await p;
+  };
+  return { call, child, runs, release, start };
+}
+const says = (child: { sent: ParentMsg[] }) => child.sent.filter((m) => m.type === "say") as Array<{ text: string; replyTo?: string; asOf: number }>;
+
+describe("VoiceCall delegate queue", () => {
+  it("delegates arriving during a running turn merge into ONE next turn, each with its own prompt line", async () => {
+    const t = gated();
+    await t.start();
+    t.child.push({ type: "delegate", id: "1", task: "first", asOf: 0 });
+    await until(() => t.runs.length === 1);
+    t.child.push({ type: "delegate", id: "2", task: "second", asOf: 0 });
+    t.child.push({ type: "delegate", id: "3", task: "third", asOf: 0 });
+    t.child.push({ type: "delegate", id: "4", task: "fourth", asOf: 0 });
+    await Bun.sleep(10);
+    t.release();
+    await until(() => t.runs.length === 2);
+    t.release();
+    await Bun.sleep(20);
+    expect(t.runs).toHaveLength(2);
+    // Never merged into the running turn.
+    expect(t.runs[0]!.text).not.toContain("#2");
+    const merged = t.runs[1]!;
+    expect(merged).toMatchObject({ suppress: false, voice: true });
+    expect(merged.text).toContain("#2, #3, #4");
+    for (const [id, task] of [["2", "second"], ["3", "third"], ["4", "fourth"]]) {
+      expect(merged.text).toContain(`#${id}: ${task}`);
+      expect(merged.text).toContain(`reply_to="${id}"`);
+    }
+  });
+
+  it("each merged request keeps its own asOf", async () => {
+    const t = gated();
+    await t.start();
+    t.child.push({ type: "delegate", id: "1", task: "first", asOf: 0 });
+    await until(() => t.runs.length === 1);
+    t.child.push({ type: "transcript", seq: 4, role: "user", text: "a" });
+    t.child.push({ type: "delegate", id: "2", task: "second", asOf: 4 });
+    t.child.push({ type: "transcript", seq: 9, role: "user", text: "b" });
+    t.child.push({ type: "delegate", id: "3", task: "third", asOf: 9 });
+    await Bun.sleep(10);
+    t.release();
+    await until(() => t.runs.length === 2);
+    t.call.say("answer two", "next_gap", "2");
+    t.call.say("answer three", "next_gap", "3");
+    expect(says(t.child).map((s) => s.asOf)).toEqual([4, 9]);
+    t.release();
+  });
+
+  it("an idle flush due while a turn runs merges into the next delegate turn", async () => {
+    const t = gated({ idleFlushMs: 15 });
+    await t.start();
+    t.child.push({ type: "delegate", id: "1", task: "first", asOf: 0 });
+    await until(() => t.runs.length === 1);
+    t.child.push({ type: "transcript", seq: 1, role: "user", text: "later remark" });
+    await Bun.sleep(40); // the idle flush comes due
+    t.child.push({ type: "delegate", id: "2", task: "second", asOf: 1 });
+    await Bun.sleep(10);
+    t.release();
+    await until(() => t.runs.length === 2);
+    t.release();
+    await Bun.sleep(30);
+    expect(t.runs).toHaveLength(2);
+    expect(t.runs[1]).toMatchObject({ suppress: false, voice: true });
+    expect(t.runs[1]!.text).toContain(`${TRANSCRIPT_FLUSH_PREFIX}\nparticipant: later remark`);
+    expect(t.runs[1]!.text).toContain('reply_to="2"');
+  });
+
+  it("a queued delegate carries the transcript as of its turn's start, not its arrival", async () => {
+    const t = gated();
+    await t.start();
+    t.child.push({ type: "transcript", seq: 1, role: "user", text: "one" });
+    t.child.push({ type: "delegate", id: "1", task: "first", asOf: 1 });
+    await until(() => t.runs.length === 1);
+    t.child.push({ type: "transcript", seq: 2, role: "user", text: "two" });
+    t.child.push({ type: "delegate", id: "2", task: "second", asOf: 2 });
+    t.child.push({ type: "transcript", seq: 3, role: "user", text: "three" });
+    await Bun.sleep(10);
+    // Turn 1 is still running: only seq 1 has been handed to the session.
+    t.call.say("heads up", "now");
+    expect(says(t.child).at(-1)!.asOf).toBe(1);
+    t.release();
+    await until(() => t.runs.length === 2);
+    expect(t.runs[1]!.text).toContain("participant: two\nparticipant: three");
+    t.call.say("heads up again", "now");
+    expect(says(t.child).at(-1)!.asOf).toBe(3);
+    t.release();
+  });
+
+  it("a failed delegate's restored transcript is flushed on the re-armed timer, without new lines", async () => {
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    const t = gated({ idleFlushMs: 20, fail: (x) => x.includes("request #1") });
+    await t.start();
+    t.child.push({ type: "transcript", seq: 1, role: "user", text: "first" });
+    t.child.push({ type: "delegate", id: "1", task: "x", asOf: 1 });
+    await until(() => t.runs.length === 1);
+    t.release();
+    await until(() => says(t.child).length === 1);
+    expect(says(t.child)[0]!.text).toContain("Request #1 failed");
+    await until(() => t.runs.length === 2, 1000);
+    expect(t.runs[1]).toMatchObject({ suppress: true });
+    expect(t.runs[1]!.text).toBe(`${TRANSCRIPT_FLUSH_PREFIX}\nparticipant: first`);
+    t.release();
+    err.mockRestore();
+  });
+
+  it("a failed merged turn answers every request in it", async () => {
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    const t = gated({ fail: (x) => x.includes("#2, #3") });
+    await t.start();
+    t.child.push({ type: "delegate", id: "1", task: "first", asOf: 0 });
+    await until(() => t.runs.length === 1);
+    t.child.push({ type: "delegate", id: "2", task: "second", asOf: 0 });
+    t.child.push({ type: "delegate", id: "3", task: "third", asOf: 0 });
+    await Bun.sleep(10);
+    t.release();
+    await until(() => t.runs.length === 2);
+    t.release();
+    await until(() => says(t.child).length === 2);
+    expect(says(t.child).map((s) => s.replyTo)).toEqual(["2", "3"]);
+    expect(says(t.child).every((s) => s.text.includes("failed"))).toBe(true);
+    err.mockRestore();
+  });
+
+  it("a delegate stuck in the queue past its deadline fails with a say and never runs", async () => {
+    const t = gated({ queueWaitMs: 30 });
+    await t.start();
+    t.child.push({ type: "delegate", id: "1", task: "first", asOf: 0 });
+    await until(() => t.runs.length === 1);
+    t.child.push({ type: "delegate", id: "2", task: "second", asOf: 0 });
+    await until(() => says(t.child).length === 1, 1000);
+    expect(says(t.child)[0]).toMatchObject({ replyTo: "2" });
+    expect(says(t.child)[0]!.text).toContain("Request #2 failed");
+    t.release();
+    await Bun.sleep(30);
+    expect(t.runs).toHaveLength(1);
   });
 });
