@@ -23,9 +23,13 @@ export class OpenAIRealtime extends TypedEmitter<ProviderEvents> implements Voic
   // response.create after the call's response is done, but function arguments
   // arrive (and the delegate is acknowledged) while that response is still
   // active. So a create during an active response is held, coalesced, and sent
-  // at its response.done.
+  // at its response.done. Our creates carry an event_id so a rejection (an
+  // error event naming it) can re-arm the hold instead of latching it.
   #responseActive = false;
   #createPending = false;
+  #inDone = false;
+  #createSeq = 0;
+  #lastCreateId: string | null = null;
   constructor(private o: { apiKey: string; model: string; url?: string; transcribeModel?: string }) {
     super();
   }
@@ -131,17 +135,34 @@ export class OpenAIRealtime extends TypedEmitter<ProviderEvents> implements Voic
       }
       case "response.done":
         this.#responseActive = false;
-        // Before the event: a steer the Conductor drains on it then coalesces
-        // into this create instead of colliding with it.
+        // The held create goes out after the event, not before: a steer the
+        // Conductor drains on this done adds its context and calls respond()
+        // while #inDone holds creates, so the tool output and the steer share
+        // one response instead of the steer waiting for a second one.
+        this.#inDone = true;
+        try {
+          this.fire("responseDone");
+        } finally {
+          this.#inDone = false;
+        }
         if (this.#createPending) {
           this.#createPending = false;
           this.#create();
         }
-        this.fire("responseDone");
         break;
-      case "error":
+      case "error": {
+        const e = m.error ?? {};
+        if (e.event_id && e.event_id === this.#lastCreateId) {
+          // Our create was rejected, so no response.done of its own will come.
+          // "Already active" means a response we did not start is running: its
+          // done re-sends ours. Anything else: not active; retry at the next done.
+          this.#responseActive = e.code === "conversation_already_has_active_response";
+          this.#createPending = true;
+          this.#lastCreateId = null;
+        }
         this.fire("error", { fatal: isFatal(m.error), message: String(m.error?.message ?? "error") });
         break;
+      }
     }
   }
 
@@ -154,12 +175,13 @@ export class OpenAIRealtime extends TypedEmitter<ProviderEvents> implements Voic
   }
   respond(): void { this.#create(); }
   #create(): void {
-    if (this.#responseActive) {
+    if (this.#responseActive || this.#inDone) {
       this.#createPending = true;
       return;
     }
     this.#responseActive = true; // ours is in flight until its response.done
-    this.#send({ type: "response.create" });
+    this.#lastCreateId = `slaude_create_${++this.#createSeq}`;
+    this.#send({ type: "response.create", event_id: this.#lastCreateId });
   }
   cancel(): void { this.#send({ type: "response.cancel" }); }
   truncate(itemId: string, ms: number): void {
