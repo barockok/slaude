@@ -21,8 +21,9 @@ export interface TurnRunOptions {
   /** Required: the runner re-reads it after any wait, right before sending,
    *  and refuses the turn once it is true. */
   cancelled(): boolean;
-  /** How long this turn may wait for the session (overrides the runner's). */
-  maxWaitMs?: number;
+  /** How long this turn may wait for the session, overriding the runner's
+   *  (undefined: the runner's). Re-read on every poll. */
+  waitBudgetMs?(): number | undefined;
   /** Called once the runner holds the session for this turn, before the send. */
   onAcquired?(): void;
 }
@@ -328,8 +329,10 @@ export class VoiceCall {
     return this.d.runner.run(this.d.sessionId, text, {
       ...o,
       cancelled: () => this.#cancelled,
-      // Until a call turn has held the session, the start turn may be what holds it.
-      maxWaitMs: this.#sessionHeld ? undefined : (this.d.startTurnWaitMs ?? START_TURN_WAIT_MS),
+      // Until a call turn has held the session, the start turn may be what
+      // holds it. Once the call is closing, the normal budget again, so stop
+      // and a node drain stay bounded.
+      waitBudgetMs: () => (this.#sessionHeld || this.#endReason || this.#stopReason ? undefined : (this.d.startTurnWaitMs ?? START_TURN_WAIT_MS)),
       onAcquired: () => {
         this.#sessionHeld = true;
       },

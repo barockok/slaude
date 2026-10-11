@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { EventEmitter } from "node:events";
-import { monoRunner, nodeRunner, makeTokenKeeper, waitTurnDone, VoiceAuthLost } from "../../src/voice/runners";
+import { monoRunner, nodeRunner, makeTokenKeeper, waitTurnDone, VoiceAuthLost, VoiceTurnCancelled } from "../../src/voice/runners";
 import { voiceTurns, injectedTurns } from "../../src/voice/turn-flags";
 import { HELD_BY_OTHER } from "../../src/queue/locks";
 import { until } from "./fakes";
@@ -202,7 +202,7 @@ describe("nodeRunner", () => {
 });
 
 describe("per-turn wait budget and session acquisition (the start turn)", () => {
-  it("mono: a per-turn maxWaitMs overrides the runner's; onAcquired fires right before the send", async () => {
+  it("mono: a per-turn wait budget overrides the runner's; onAcquired fires right before the send", async () => {
     const a = new StubAgent();
     a.inFlight = true;
     setTimeout(() => (a.inFlight = false), 200);
@@ -210,7 +210,7 @@ describe("per-turn wait budget and session acquisition (the start turn)", () => 
     const sendSpy = a.sendMessage.bind(a);
     a.sendMessage = async (id: string, text: string) => { events.push("send"); return sendSpy(id, text); };
     await monoRunner(a as any, { check: allowAgent, pollMs: 1, maxWaitMs: 20 })
-      .run("b1", "t", { suppress: false, voice: true, cancelled: no, maxWaitMs: 2_000, onAcquired: () => events.push("acquired") });
+      .run("b1", "t", { suppress: false, voice: true, cancelled: no, waitBudgetMs: () => 2_000, onAcquired: () => events.push("acquired") });
     expect(a.sent).toEqual(["t"]);
     expect(events).toEqual(["acquired", "send"]);
   });
@@ -219,10 +219,10 @@ describe("per-turn wait budget and session acquisition (the start turn)", () => 
     a.inFlight = true;
     let acquired = 0;
     await expect(monoRunner(a as any, { check: allowAgent, pollMs: 1, maxWaitMs: 2_000 })
-      .run("b2", "t", { suppress: false, voice: true, cancelled: no, maxWaitMs: 20, onAcquired: () => acquired++ })).rejects.toThrow(/session busy/);
+      .run("b2", "t", { suppress: false, voice: true, cancelled: no, waitBudgetMs: () => 20, onAcquired: () => acquired++ })).rejects.toThrow(/session busy/);
     expect(acquired).toBe(0);
   });
-  it("node: a per-turn maxWaitMs overrides the runner's; onAcquired fires once the lock is held", async () => {
+  it("node: a per-turn wait budget overrides the runner's; onAcquired fires once the lock is held", async () => {
     const a = new StubAgent();
     const t0 = Date.now();
     const order: string[] = [];
@@ -232,9 +232,46 @@ describe("per-turn wait budget and session acquisition (the start turn)", () => 
       refreshToken: async () => { order.push("refresh"); },
       retryMs: 5, maxWaitMs: 20,
     });
-    await r.run("b3", "t", { suppress: false, voice: true, cancelled: no, maxWaitMs: 2_000, onAcquired: () => order.push("acquired") });
+    await r.run("b3", "t", { suppress: false, voice: true, cancelled: no, waitBudgetMs: () => 2_000, onAcquired: () => order.push("acquired") });
     expect(order).toEqual(["acquired", "refresh"]);
     expect(a.sent).toEqual(["t"]);
+  });
+  it("mono: a call cancelled during a long busy wait stops waiting at the next poll", async () => {
+    const a = new StubAgent();
+    a.inFlight = true;
+    let cancelled = false;
+    setTimeout(() => (cancelled = true), 30);
+    const t0 = Date.now();
+    await expect(monoRunner(a as any, { check: allowAgent, pollMs: 2 })
+      .run("c1", "t", { suppress: false, voice: true, cancelled: () => cancelled, waitBudgetMs: () => 60_000 })).rejects.toBeInstanceOf(VoiceTurnCancelled);
+    expect(Date.now() - t0).toBeLessThan(500);
+    expect(a.sent).toEqual([]);
+  });
+  it("node: a call cancelled during a long lock wait stops retrying", async () => {
+    const a = new StubAgent();
+    let cancelled = false;
+    setTimeout(() => (cancelled = true), 30);
+    const t0 = Date.now();
+    const r = nodeRunner({ agent: a as any, lock: async () => HELD_BY_OTHER, refreshToken: async () => {}, retryMs: 2 });
+    await expect(r.run("c2", "t", { suppress: false, voice: true, cancelled: () => cancelled, waitBudgetMs: () => 60_000 })).rejects.toBeInstanceOf(VoiceTurnCancelled);
+    expect(Date.now() - t0).toBeLessThan(500);
+    expect(a.sent).toEqual([]);
+  });
+  it("the wait budget is re-read on every poll: shrinking it ends a long wait", async () => {
+    const a = new StubAgent();
+    a.inFlight = true;
+    let budget = 60_000;
+    setTimeout(() => (budget = 20), 40);
+    const t0 = Date.now();
+    await expect(monoRunner(a as any, { check: allowAgent, pollMs: 2 })
+      .run("c3", "t", { suppress: false, voice: true, cancelled: no, waitBudgetMs: () => budget })).rejects.toThrow(/session busy/);
+    expect(Date.now() - t0).toBeLessThan(500);
+    const r = nodeRunner({ agent: a as any, lock: async () => HELD_BY_OTHER, refreshToken: async () => {}, retryMs: 2 });
+    budget = 60_000;
+    setTimeout(() => (budget = 20), 40);
+    const t1 = Date.now();
+    await expect(r.run("c4", "t", { suppress: false, voice: true, cancelled: no, waitBudgetMs: () => budget })).rejects.toThrow(/session busy/);
+    expect(Date.now() - t1).toBeLessThan(500);
   });
 });
 

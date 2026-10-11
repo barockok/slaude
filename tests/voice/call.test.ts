@@ -850,6 +850,65 @@ describe("VoiceCall: the start turn holding the session", () => {
     expect(says(t.child)).toEqual([]);
   });
 
+  /** A call whose delegate is waiting behind a long join turn (budget 60 s). */
+  async function waitingBehindJoin() {
+    const t = withMonoRunner({ startTurnWaitMs: 60_000 });
+    await t.start();
+    t.child.push({ type: "delegate", id: "1", task: "look it up", asOf: 0 });
+    await Bun.sleep(50); // waiting in the runner, past the normal 30 ms budget
+    expect(t.agent.sent).toEqual([]);
+    return t;
+  }
+
+  it("stop() during a long join wait resolves promptly and the delegate never runs", async () => {
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const t = await waitingBehindJoin();
+      const t0 = Date.now();
+      const stopping = t.call.stop("stopped");
+      t.child.push({ type: "ended", reason: "stopped" });
+      await stopping;
+      expect(Date.now() - t0).toBeLessThan(1_000);
+      expect(t.agent.sent).toEqual([]);
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it("session_rebooted during a long join wait resolves promptly and the delegate never runs", async () => {
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const t = await waitingBehindJoin();
+      const t0 = Date.now();
+      const stopping = t.call.stop("session_rebooted");
+      t.child.push({ type: "ended", reason: "session_rebooted" });
+      await stopping;
+      expect(Date.now() - t0).toBeLessThan(1_000);
+      expect(t.agent.sent).toEqual([]);
+      expect(says(t.child)).toEqual([]);
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it("endAll (node drain) during a long join wait is bounded", async () => {
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const t = await waitingBehindJoin();
+      const calls = new VoiceCalls();
+      calls.add("s1", t.call);
+      const t0 = Date.now();
+      const ending = calls.endAll("node_drain", "bye", 0);
+      t.child.push({ type: "ended", reason: "node_drain" });
+      await ending;
+      expect(Date.now() - t0).toBeLessThan(1_000);
+      expect(t.agent.sent).toEqual([]);
+      calls.remove("s1");
+    } finally {
+      err.mockRestore();
+    }
+  });
+
   it("once a call turn has held the session, the normal budgets apply again", async () => {
     const err = spyOn(console, "error").mockImplementation(() => {});
     try {
