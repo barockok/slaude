@@ -71,7 +71,7 @@ describe("OpenAILive", () => {
     expect(st.session.delegation).toEqual({ type: "client" });
     expect(st.session.input).toBeUndefined();
     expect(st.session.tools).toBeUndefined();
-    expect(p.caps).toMatchObject({ inputRate: 24000, outputRate: 24000, truncate: false });
+    expect(p.caps).toMatchObject({ inputRate: 24000, outputRate: 24000, truncate: false, handlesBargeIn: true });
     expect(p.caps.maxSessionSec!).toBeGreaterThan(EXPIRES_IN - 10);
     expect(p.caps.maxSessionSec!).toBeLessThanOrEqual(EXPIRES_IN);
     await p.close();
@@ -455,41 +455,72 @@ describe("OpenAILive with the real Conductor", () => {
     await p.close();
   });
 
-  it("a barge-in flushes queued audio, and the agent's next audio still plays", async () => {
+  it("participant speech does not clear the uplink (GPT-Live yields itself), and the agent's next audio still plays", async () => {
     srv = fakeServer(ack);
     const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, outputGapMs: 5000 }));
-    const { audio } = wire(p);
+    const { audio, emitted } = wire(p);
     await p.connect({ instructions: "", tools: [] });
     srv.send(audioDelta());
     await until(() => audio.written.length === 1);
     srv.send({ type: "session.input_transcript.delta", event_id: "t1", delta: "hold on", start_ms: 0, end_ms: 100 });
-    await until(() => audio.clears === 1);
+    await until(() => emitted.some((m) => m.type === "transcript" && m.role === "user"));
+    expect(audio.clears).toBe(0);
     srv.send(audioDelta());
     await until(() => audio.written.length === 2);
     await p.close();
   });
 
-  it("the agent's next turn starting during the barge-in clear round trip is not marked flushed", async () => {
+  // rc.5 live smoke: answers delivered as voice_say(next_gap) were never spoken.
+  async function delegated(c: Conductor, emitted: ChildMsg[]) {
+    srv!.send({ type: "session.input_transcript.delta", event_id: "t1", delta: "what is the queue depth", start_ms: 0, end_ms: 100 });
+    srv!.send({ type: "session.delegation.created", event_id: "d1", offset_ms: 120, delegation: { id: "del_9", type: "delegation", target: "client" } });
+    await until(() => emitted.some((m) => m.type === "delegate"));
+    return emitted.find((m) => m.type === "delegate") as Extract<ChildMsg, { type: "delegate" }>;
+  }
+
+  it("a next_gap answer after the holding line is spoken as commentary on the original delegation", async () => {
     srv = fakeServer(ack);
-    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST, outputGapMs: 5000 }));
-    const { audio } = wire(p);
-    let release: (() => void) | null = null;
-    audio.clear = async () => {
-      audio.clears++;
-      await new Promise<void>((r) => (release = r));
-      return audio.clearResult;
-    };
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST }));
+    const { c, audio, emitted } = wire(p);
     await p.connect({ instructions: "", tools: [] });
-    srv.send(audioDelta());
+    const t0 = Date.now();
+    c.tick(t0);
+    const d = await delegated(c, emitted);
+    srv.send(audioDelta()); // holding line
     await until(() => audio.written.length === 1);
-    srv.send({ type: "session.input_transcript.delta", event_id: "t1", delta: "hold on", start_ms: 0, end_ms: 100 });
-    await until(() => release !== null); // clear is in flight; the adapter already ended a1
-    srv.send(audioDelta()); // a2, during the clear
-    await until(() => audio.written.length === 2);
-    release!();
-    await Bun.sleep(10);
-    srv.send(audioDelta()); // more of a2, after the clear
-    await until(() => audio.written.length === 3);
+    await Bun.sleep(150); // output and input gaps close
+    c.tick(t0 + AUTO_RESPONSE_WAIT_MS + 1000);
+    await c.say({ type: "say", text: "the queue depth is 42", when: "next_gap", replyTo: d.id, asOf: c.seq });
+    await until(() => spoken().length === 1);
+    expect(spoken()[0]).toMatchObject({ delegation_id: "del_9" });
+    expect(spoken()[0].content).toContain("the queue depth is 42");
+    await p.close();
+  });
+
+  it("a next_gap answer while the model stayed idle (no holding line) is spoken on the original delegation", async () => {
+    srv = fakeServer(ack);
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST }));
+    const { c, emitted } = wire(p);
+    await p.connect({ instructions: "", tools: [] });
+    const t0 = Date.now();
+    c.tick(t0);
+    const d = await delegated(c, emitted);
+    await Bun.sleep(100);
+    c.tick(t0 + AUTO_RESPONSE_WAIT_MS + 1000);
+    await c.say({ type: "say", text: "the queue depth is 42", when: "next_gap", replyTo: d.id, asOf: c.seq });
+    await until(() => spoken().length === 1);
+    expect(spoken()[0]).toMatchObject({ delegation_id: "del_9" });
+    await p.close();
+  });
+
+  it("a say that answers no delegation is still session-wide commentary (delegation_id null)", async () => {
+    srv = fakeServer(ack);
+    const p = track(new OpenAILive({ apiKey: "k", model: "m", url: srv.url, ...FAST }));
+    const { c } = wire(p);
+    await p.connect({ instructions: "", tools: [] });
+    await c.say({ type: "say", text: "heads up", when: "next_gap", asOf: c.seq });
+    await until(() => spoken().length === 1);
+    expect(spoken()[0].delegation_id).toBeNull();
     await p.close();
   });
 

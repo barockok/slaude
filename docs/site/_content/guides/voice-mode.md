@@ -46,7 +46,7 @@ slaude talks to the audio provider over plain HTTP. Any service that implements 
 | Request | Meaning |
 |---|---|
 | `GET stream_url` with `Accept: text/event-stream` | Server-sent events carrying the call's audio. Event `audio`, data `{"pcm": "<base64>"}`: signed 16-bit little-endian mono PCM at the agreed sample rate. Event `ended`, data `{"reason": "<word>"}`: the provider ended the stream (the call ends `audio:<reason>`). |
-| `POST stream_url`, chunked body, `Content-Type: audio/pcm` | The agent's audio, as one long-lived streaming request for the whole call (same PCM format). The request settling while the call is open means the agent can no longer be heard. |
+| `POST stream_url`, chunked body, `Content-Type: audio/pcm` | The agent's audio, as one long-lived streaming request for the whole call (same PCM format). The request settling while the call is open means the agent can no longer be heard. While the agent is quiet, slaude writes silence (zeros) in real time once the queued audio has run out, so a proxy's body idle timeout never sees an idle body; `played_ms` counts that silence like any other audio. |
 | `POST clear_url` | Drop the agent audio queued but not yet played (barge-in). Returns JSON `{"played_ms": <n>, "cleared_ms": <n>}`; `played_ms` lets the voice model forget what the room never heard. |
 | `404` on any route | The capability is revoked or unknown: the call ends `audio_lost`. |
 | `409` on the stream or uplink | Busy: the previous reader or uplink is still attached. slaude retries with backoff for up to about 15 seconds, replaying the newest buffered agent audio, then gives up with `audio_lost`. |
@@ -128,6 +128,8 @@ In both cases no call starts and nothing leaves the node. Upgrade the gateway an
 
 **The voice process.** Each call runs as a separate child process. The provider key reaches it only through its environment, never through arguments or its stdin protocol. The capability URLs reach it in the start message on its stdin, and every log line it writes back has them masked. Its environment is otherwise minimal: `PATH`, `HOME`, and, so that proxied or private-CA deployments can reach the provider, the usual `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (and lowercase forms), `NODE_EXTRA_CA_CERTS` and `SSL_CERT_FILE`. It does not read a `.env` file.
 
+**Voice logs.** The voice process logs provider connect, drop, reconnect, near-expiry and fatal events, a counters line every minute (clears, speech starts, delegates, utterances spoken; a burst of clears is a clear storm), and, when a call ends `audio_lost`, one warning naming the leg (`sse`, `uplink` or `clear`), the HTTP status, a short scrubbed body snippet, whether an `ended` event had arrived and how long the call ran. No log line carries a URL path, audio or transcript text. On a node they appear as `[voice] session=… <message>`.
+
 **How a call ends.** Normal reasons are `stopped` (the agent called `voice_stop`), `ended_by_voice`, `max_duration` and `audio:<reason>` (the audio provider ended the stream, for example because the tab or meeting closed). Failures are `provider_failed`, `provider_lost` (reconnects exhausted), `audio_lost`, `auth_lost`, `session_rebooted`, `node_drain` (a node, or a `mono` process, shutting down), `parent_gone` (the process that started the voice loop went away) and `loop_crashed`.
 
 ## 6. Limits to know about
@@ -140,6 +142,7 @@ In both cases no call starts and nothing leaves the node. Upgrade the gateway an
 
 GPT-Live runs in client-delegation mode: when it needs facts or tools it hands the request to the thread's Claude session, so Claude stays the brain. The protocol is a looser fit than the other two providers:
 
-- **No truncate, no cancel.** GPT-Live yields to a speaker on its own. An urgent `now` utterance still flushes the audio already queued in the tab, but the model's memory is not trimmed to what was heard.
-- **Synthetic turn events.** GPT-Live sends no turn boundaries, so the adapter derives "participant started/stopped speaking" and "agent finished speaking" from short quiet gaps in the transcript and audio. Barge-in is detected from the transcript, so it is a little late, and a short "mm-hmm" while the agent talks can cut off its queued audio.
+- **No truncate, no cancel, no flush on barge-in.** GPT-Live is full duplex and yields to a speaker on its own, so slaude leaves the queued audio alone when someone starts speaking. Only an urgent `now` utterance flushes the audio already queued in the tab, and the model's memory is not trimmed to what was heard. Use headphones on the machine running the meeting tab: without them the agent hears its own voice through the microphone.
+- **Synthetic turn events.** GPT-Live sends no turn boundaries, so the adapter derives "participant started/stopped speaking" and "agent finished speaking" from short quiet gaps in the transcript and audio. A queued answer waits for such a gap.
+- **Answers belong to their request.** An answer the session gives with `reply_to` is spoken as commentary on the original GPT-Live delegation; other utterances are session-wide.
 - **The call cannot end itself by voice.** GPT-Live calls no tools of its own, so there is no `end_call`: a request to leave reaches Claude as an ordinary delegated request, and Claude ends the call with `voice_stop` (reason `stopped`, never `ended_by_voice`). The delegated task text is the participant's recent words, since the delegation event carries none.

@@ -25,7 +25,16 @@ export interface AudioLinkLike {
   /** Null when the clear failed or timed out: what played is then unknown. */
   clear(): Promise<{ playedMs: number; clearedMs: number } | null>;
   close(): Promise<void>;
+  /** The uplink clock: ms of audio written (keepalive silence included), reset to played_ms by a clear. */
+  clockMs?(): number;
 }
+
+/** Cap on a response-body snippet in an end-cause log line. */
+const SNIPPET_MAX = 160;
+/** How long an end-cause log waits for a response body. */
+const SNIPPET_WAIT_MS = 500;
+type Leg = "sse" | "uplink" | "clear";
+interface Failure { status: number; body: string }
 
 const PLACEHOLDER_BASE = "http://placeholder.invalid";
 /** An absolute URL token in free text (stops at whitespace, quotes, brackets, backslash). */
@@ -73,9 +82,12 @@ export class CapabilityRedactor {
   readonly #pieces: string[];
   readonly #empty: boolean;
 
-  constructor(endpoints: { streamUrl: string; clearUrl: string }) {
+  constructor(endpoints: { streamUrl: string; clearUrl: string; headers?: Record<string, string> }) {
     const routeWords = ROUTE_WORDS;
     const pieces: string[] = [];
+    // Route header values (e.g. X-Browser-Session) gate the same audio routes:
+    // masked like any other secret piece, in every encoding.
+    for (const v of Object.values(endpoints.headers ?? {})) if (v) pieces.push(...encodings(v));
     for (const raw of [endpoints.streamUrl, endpoints.clearUrl]) {
       if (!raw) continue;
       let u: URL | null = null;
@@ -172,8 +184,26 @@ export class AudioLink implements AudioLinkLike {
   readonly #streamUrl: string;
   readonly #clearUrl: string;
   readonly #routeHeaders: Record<string, string>;
+  readonly #redactor: CapabilityRedactor;
+  // Uplink clock (ms of PCM handed to the uplink, silence included) and the
+  // wall time (performance.now) at which that audio has finished playing.
+  #clockMs = 0;
+  #scheduledUntil = 0;
+  #keepalive: ReturnType<typeof setInterval> | null = null;
+  #startedAt = 0;
+  #sawEnded = false;
 
-  constructor(private o: { allowedOrigins: readonly AudioOriginRule[]; endpoints: AudioEndpoints; maxSseRetries?: number; retryDelayMs?: number; busyWindowMs?: number; busyBackoffMs?: number; replayMs?: number; log?: (line: string) => void; clearTimeoutMs?: number; closeTimeoutMs?: number }) {
+  constructor(private o: {
+    allowedOrigins: readonly AudioOriginRule[]; endpoints: AudioEndpoints; maxSseRetries?: number; retryDelayMs?: number;
+    busyWindowMs?: number; busyBackoffMs?: number; replayMs?: number; log?: (line: string) => void; clearTimeoutMs?: number;
+    closeTimeoutMs?: number;
+    /**
+     * Silence keepalive chunk and period (ms); 0 turns it off. While the agent
+     * is quiet the uplink body would otherwise carry no bytes, and a proxy's
+     * body idle timeout (60 s is common) ends the call as audio_lost.
+     */
+    keepaliveMs?: number;
+  }) {
     // Endpoints are model-supplied: re-check them against the operator's
     // allowlist (voice_start already did) so the capability URL and the route
     // headers can never be sent elsewhere. Absolute only. The error names
@@ -187,6 +217,67 @@ export class AudioLink implements AudioLinkLike {
     this.#routeHeaders = Object.fromEntries(
       Object.entries(o.endpoints.headers).filter(([k]) => !FORBIDDEN_HEADERS.has(k.toLowerCase())),
     );
+    this.#redactor = new CapabilityRedactor({ streamUrl: this.#streamUrl, clearUrl: this.#clearUrl, headers: o.endpoints.headers });
+  }
+
+  clockMs(): number {
+    return this.#clockMs;
+  }
+
+  /** Audio lost: one warn line with the cause (no URL, no audio), then end. */
+  #lost(leg: Leg, f: Failure): void {
+    if (this.#ended || this.#closed) return;
+    const after = ((performance.now() - this.#startedAt) / 1000).toFixed(1);
+    this.o.log?.(`audio lost: leg=${leg} status=${f.status} ended_event=${this.#sawEnded ? "yes" : "no"} after=${after}s body="${f.body}"`);
+    this.#end("audio_lost");
+  }
+  /** A capped, single-line, capability-scrubbed snippet of a response body. Bounded in time. */
+  async #snippet(r: Response | null): Promise<string> {
+    if (!r?.body) return "";
+    const reader = r.body.getReader();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise<null>((res) => (timer = setTimeout(() => res(null), SNIPPET_WAIT_MS))),
+      ]);
+      const bytes = chunk && !chunk.done ? chunk.value : new Uint8Array();
+      return this.#clean(new TextDecoder().decode(bytes.subarray(0, 4 * SNIPPET_MAX)));
+    } catch {
+      return "";
+    } finally {
+      clearTimeout(timer);
+      void reader.cancel().catch(() => {});
+    }
+  }
+  #clean(s: string): string {
+    // Redact before capping, so a cut can never leave a partial secret unmatched.
+    return this.#redactor.redact(s.replace(/[\r\n\t]+/g, " ")).replace(/"/g, "'").slice(0, SNIPPET_MAX);
+  }
+  #errText(e: unknown): string {
+    return this.#clean(e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+  }
+
+  #advance(ms: number): void {
+    const now = performance.now();
+    this.#scheduledUntil = Math.max(now, this.#scheduledUntil) + ms;
+    this.#clockMs += ms;
+  }
+  /** One chunk of silence, only when the scheduled audio has run out: real audio is never delayed or interleaved. */
+  #keepaliveTick(chunkMs: number): void {
+    if (this.#closed || this.#ended) return this.#stopKeepalive();
+    if (!this.#uplinkCtl || performance.now() < this.#scheduledUntil) return;
+    const samples = Math.round((this.o.endpoints.sampleRate * chunkMs) / 1000);
+    try {
+      this.#uplinkCtl.enqueue(new Uint8Array(samples * 2));
+    } catch {
+      return;
+    }
+    this.#advance((samples * 1000) / this.o.endpoints.sampleRate);
+  }
+  #stopKeepalive(): void {
+    if (this.#keepalive) clearInterval(this.#keepalive);
+    this.#keepalive = null;
   }
 
   #headers(extra: Record<string, string> = {}): Record<string, string> {
@@ -195,11 +286,15 @@ export class AudioLink implements AudioLinkLike {
   #end(reason: string): void {
     if (this.#ended || this.#closed) return;
     this.#ended = true;
+    this.#stopKeepalive();
     this.#h?.onEnded(reason);
   }
 
   async start(h: AudioHandlers): Promise<void> {
     this.#h = h;
+    this.#startedAt = performance.now();
+    const ka = this.o.keepaliveMs ?? 20;
+    if (ka > 0) this.#keepalive = setInterval(() => this.#keepaliveTick(ka), ka);
     void this.#sseLoop();
     this.#uplinkDone = this.#uplinkLoop();
   }
@@ -234,13 +329,16 @@ export class AudioLink implements AudioLinkLike {
         start: (c) => {
           for (const chunk of this.#ring) c.enqueue(chunk);
           if (this.#ringDropped > 0) {
-            this.o.log?.(`uplink replay buffer: dropped ${this.#ringDropped} bytes of the oldest audio while the audio provider was busy`);
+            const ms = Math.round((this.#ringDropped / 2 / this.o.endpoints.sampleRate) * 1000);
+            this.o.log?.(`uplink replay buffer: dropped ${this.#ringDropped} bytes (${ms} ms) of the oldest audio while the audio provider was busy`);
             this.#ringDropped = 0;
           }
           this.#uplinkCtl = c;
         },
       });
       let status = 0;
+      let res: Response | null = null;
+      let err: unknown = null;
       const attemptAbort = new AbortController();
       const onAbort = () => attemptAbort.abort();
       this.#uplinkAbort.signal.addEventListener("abort", onAbort, { once: true });
@@ -260,15 +358,22 @@ export class AudioLink implements AudioLinkLike {
         // Refused with its body unread: drop that connection so the retry
         // starts on a clean one.
         if (status === 409) { void r.body?.cancel().catch(() => {}); attemptAbort.abort(); }
-        else if (status === 404) void r.body?.cancel().catch(() => {});
-      } catch {}
+        else res = r; // its body goes into the end-cause log line, then is cancelled
+      } catch (e) {
+        err = e;
+      }
       this.#uplinkAbort.signal.removeEventListener("abort", onAbort);
       if (status === 409 && !this.#closed && !this.#ended) {
         this.#uplinkCtl = null; // writes go to the replay buffer only
         busySince ||= Date.now();
         if (await this.#busyWait(busySince, attempt)) continue;
       }
-      this.#end("audio_lost");
+      if (this.#closed || this.#ended) {
+        void res?.body?.cancel().catch(() => {});
+        return;
+      }
+      const why = err ? this.#errText(err) : status === 409 ? "busy window spent" : await this.#snippet(res);
+      this.#lost("uplink", { status, body: why });
       return;
     }
   }
@@ -278,47 +383,52 @@ export class AudioLink implements AudioLinkLike {
     let failures = 0;
     let busySince = 0;
     let busyN = 0;
+    let last: Failure = { status: 0, body: "" };
     while (!this.#closed && !this.#ended) {
       let gotData = false;
+      let status = 0; // 0: no response (network error)
       try {
         const r = await fetch(this.#streamUrl, {
           headers: this.#headers({ accept: "text/event-stream" }),
           redirect: "error",
           signal: this.#sseAbort.signal,
         });
-        if (r.status === 404 || r.status === 409) void r.body?.cancel().catch(() => {});
-        if (r.status === 404) { this.#end("audio_lost"); return; }
+        status = r.status;
+        if (r.status === 404) return this.#lost("sse", { status: 404, body: await this.#snippet(r) });
         if (r.status === 409) {
+          void r.body?.cancel().catch(() => {});
           // The old reader is not released yet: wait, without spending the
           // failure budget, until the busy window is spent.
           busySince ||= Date.now();
-          if (!(await this.#busyWait(busySince, busyN++))) { this.#end("audio_lost"); return; }
+          if (!(await this.#busyWait(busySince, busyN++))) return this.#lost("sse", { status: 409, body: "busy window spent" });
           continue;
         }
         busySince = 0;
         busyN = 0;
         if (r.ok && r.body) {
+          last = { status: r.status, body: "stream ended" };
           for await (const ev of parseSse(r.body)) {
             gotData = true;
             if (ev.event === "audio") {
               const d = JSON.parse(ev.data) as { pcm: string };
               this.#h?.onAudio(base64ToPcm(d.pcm));
             } else if (ev.event === "ended") {
+              this.#sawEnded = true;
               const d = JSON.parse(ev.data) as { reason?: string };
               this.#end(`audio:${sanitizeReason(d.reason)}`);
               return;
             }
           }
+        } else {
+          last = { status: r.status, body: await this.#snippet(r) };
         }
-      } catch {
+      } catch (e) {
         if (this.#closed) return;
+        last = { status: status, body: this.#errText(e) };
       }
       if (this.#closed || this.#ended) return;
       failures = gotData ? 1 : failures + 1;
-      if (failures > max) {
-        this.#end("audio_lost");
-        return;
-      }
+      if (failures > max) return this.#lost("sse", last);
       await Bun.sleep(this.o.retryDelayMs ?? 500);
     }
   }
@@ -326,13 +436,19 @@ export class AudioLink implements AudioLinkLike {
   write(pcm: Int16Array): void {
     if (this.#closed || this.#ended) return;
     const chunk = new Uint8Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength));
+    this.#advance((pcm.length * 1000) / this.o.endpoints.sampleRate);
     this.#ring.push(chunk);
     this.#ringBytes += chunk.byteLength;
     const bound = Math.floor(this.o.endpoints.sampleRate * 2 * ((this.o.replayMs ?? 5_000) / 1000));
     while (this.#ringBytes > bound && this.#ring.length > 1) {
       const old = this.#ring.shift()!;
       this.#ringBytes -= old.byteLength;
-      this.#ringDropped += old.byteLength;
+      // Live uplink: those bytes were already sent, the ring only trims. In a
+      // busy wait they will never be sent, so the uplink clock must not count them.
+      if (!this.#uplinkCtl) {
+        this.#ringDropped += old.byteLength;
+        this.#clockMs -= (old.byteLength / 2 / this.o.endpoints.sampleRate) * 1000;
+      }
     }
     if (!this.#uplinkCtl) return;
     try {
@@ -351,10 +467,19 @@ export class AudioLink implements AudioLinkLike {
         redirect: "error",
         signal: AbortSignal.timeout(this.o.clearTimeoutMs ?? 2_000),
       });
-      if (!r.ok) return null;
+      if (!r.ok) {
+        this.o.log?.(`audio clear failed: leg=clear status=${r.status} body="${await this.#snippet(r)}"`);
+        return null;
+      }
       const j = (await r.json()) as { played_ms?: number; cleared_ms?: number };
-      return { playedMs: j.played_ms ?? 0, clearedMs: j.cleared_ms ?? 0 };
-    } catch {
+      const playedMs = j.played_ms ?? 0;
+      // The audio provider dropped everything unplayed: the clock resumes from
+      // what played, and nothing is scheduled any more.
+      this.#clockMs = playedMs;
+      this.#scheduledUntil = performance.now();
+      return { playedMs, clearedMs: j.cleared_ms ?? 0 };
+    } catch (e) {
+      this.o.log?.(`audio clear failed: leg=clear status=0 body="${this.#errText(e)}"`);
       return null;
     }
   }
@@ -362,6 +487,7 @@ export class AudioLink implements AudioLinkLike {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#stopKeepalive();
     this.#closeAbort.abort();
     try { this.#uplinkCtl?.close(); } catch {}
     this.#sseAbort.abort();

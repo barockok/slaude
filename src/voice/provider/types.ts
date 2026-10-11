@@ -10,6 +10,13 @@ export interface VoiceProviderCaps {
   maxSessionSec?: number;
   /** True when cancelling a response still yields a responseDone for it. */
   cancelEmitsDone?: boolean;
+  /**
+   * True when the model yields to a speaker on its own (full duplex, e.g.
+   * GPT-Live). The Conductor then leaves the uplink alone on speechStarted:
+   * flushing on every detected speech start (echo, backchannels) chops the
+   * agent's audio. An explicit `now` steer still flushes.
+   */
+  handlesBargeIn?: boolean;
 }
 
 export interface ToolSpec {
@@ -42,7 +49,11 @@ export interface VoiceProvider {
   connect(init: ProviderConnect): Promise<void>;
   sendAudio(pcm: Int16Array): void;
   addContext(text: string): void;
-  respond(): void;
+  /**
+   * Speak now. `replyTo` is the provider's own call id of the delegate this
+   * utterance answers (the callId its toolCall carried), when it answers one.
+   */
+  respond(replyTo?: string): void;
   cancel(): void;
   truncate(itemId: string, ms: number): void;
   toolResult(callId: string, output: unknown): void;

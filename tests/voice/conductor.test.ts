@@ -4,9 +4,9 @@ import { Conductor, AUTO_RESPONSE_WAIT_MS, STILL_WORKING_MS, CAP_WARNING_MS, REC
 import { FakeProvider, FakeAudio, pcm } from "./fakes";
 import type { ChildMsg, EndReason } from "../../src/voice/ipc";
 
-function setup(over: Partial<{ cancelEmitsDone: boolean; truncate: boolean; maxSessionSec: number; maxMs: number; staleSeq: number }> = {}) {
+function setup(over: Partial<{ cancelEmitsDone: boolean; truncate: boolean; maxSessionSec: number; maxMs: number; staleSeq: number; handlesBargeIn: boolean }> = {}) {
   const provider = new FakeProvider();
-  provider.caps = { inputRate: 24000, outputRate: 24000, truncate: over.truncate ?? true, maxSessionSec: over.maxSessionSec, cancelEmitsDone: over.cancelEmitsDone };
+  provider.caps = { inputRate: 24000, outputRate: 24000, truncate: over.truncate ?? true, maxSessionSec: over.maxSessionSec, cancelEmitsDone: over.cancelEmitsDone, handlesBargeIn: over.handlesBargeIn };
   const audio = new FakeAudio();
   const emitted: ChildMsg[] = [];
   const ended: EndReason[] = [];
@@ -287,5 +287,141 @@ describe("Conductor", () => {
     expect(audio.clears).toBe(1);
     expect(provider.named("cancel")).toEqual([]);
     expect(provider.named("truncate")).toEqual([["truncate", "A", 300]]);
+  });
+
+  describe("rc.5", () => {
+    it("a provider that handles barge-in itself gets no clear, truncate or queue drop on speechStarted", async () => {
+      const { c, provider, audio } = setup({ handlesBargeIn: true, truncate: false });
+      c.onAudio(pcm(2400), "a1");
+      await c.onSpeechStarted();
+      expect(audio.clears).toBe(0);
+      expect(provider.named("truncate")).toEqual([]);
+      c.onAudio(pcm(2400), "a1"); // the same turn's audio is not dropped as flushed
+      expect(audio.written.length).toBe(2);
+    });
+
+    it("a provider that handles barge-in still holds steers while the participant speaks", async () => {
+      const { c, provider } = setup({ handlesBargeIn: true });
+      await c.onSpeechStarted();
+      await c.say({ type: "say", text: "later", when: "next_gap", asOf: 0 });
+      expect(provider.named("respond")).toEqual([]);
+    });
+
+    it("a provider that handles barge-in still flushes for an explicit now", async () => {
+      const { c, audio } = setup({ handlesBargeIn: true });
+      c.onAudio(pcm(2400), "a1");
+      await c.say({ type: "say", text: "stop", when: "now", asOf: 0 });
+      expect(audio.clears).toBe(1);
+    });
+
+    it("a provider without the capability (Realtime) still clears on speechStarted", async () => {
+      const { c, audio } = setup();
+      c.onAudio(pcm(2400), "i1");
+      await c.onSpeechStarted();
+      expect(audio.clears).toBe(1);
+    });
+
+    it("an answer is spoken tied to the provider's id of the delegation it answers", async () => {
+      const { c, provider } = setup();
+      c.onToolCall({ callId: "del_9", name: "delegate", args: { task: "x" } }, 0);
+      await c.say({ type: "say", text: "the answer", when: "next_gap", replyTo: "1", asOf: 0 });
+      expect(provider.named("respond")).toEqual([["respond", "del_9"]]);
+    });
+
+    it("a now answer is tied to its delegation too; a plain say is not", async () => {
+      const { c, provider } = setup();
+      c.onToolCall({ callId: "del_9", name: "delegate", args: { task: "x" } }, 0);
+      await c.say({ type: "say", text: "the answer", when: "now", replyTo: "1", asOf: 0 });
+      c.onResponseDone();
+      await c.say({ type: "say", text: "fyi", when: "now", asOf: 0 });
+      expect(provider.named("respond")).toEqual([["respond", "del_9"], ["respond"]]);
+    });
+
+    it("after a reconnect an answer no longer carries the old session's delegation id", async () => {
+      const { c, provider } = setup();
+      c.onToolCall({ callId: "del_9", name: "delegate", args: { task: "x" } }, 0);
+      c.onReconnected(10);
+      await c.say({ type: "say", text: "the answer", when: "next_gap", replyTo: "1", asOf: 0 });
+      expect(provider.named("respond")).toEqual([["respond"]]);
+    });
+
+    it("an answered delegate's queued still-working nudge is dropped", async () => {
+      const { c, provider } = setup();
+      c.onToolCall({ callId: "c1", name: "delegate", args: { task: "x" } }, 0);
+      c.onAudio(pcm(10), "i1"); // busy: the nudge queues
+      c.tick(STILL_WORKING_MS);
+      await c.say({ type: "say", text: "the answer", when: "next_gap", replyTo: "1", asOf: 0 });
+      c.onResponseDone(); // answer spoken
+      c.onResponseDone(); // a gap: nothing else queued
+      const said = provider.named("addContext").map((x) => String(x[1]));
+      expect(said).toHaveLength(1);
+      expect(said[0]).toContain("the answer");
+    });
+
+    it("a steer spoken but not yet done when the provider reconnects is spoken again on the new one", async () => {
+      const { c, provider } = setup();
+      await c.say({ type: "say", text: "the answer", when: "next_gap", asOf: 0 });
+      expect(provider.named("respond")).toHaveLength(1);
+      c.onReconnected(10); // the old provider may have held that create: it is lost with the socket
+      c.tick(20);
+      const said = provider.named("addContext").map((x) => String(x[1]));
+      expect(said).toHaveLength(2);
+      expect(said[1]).toContain("the answer");
+    });
+
+    it("a steer whose response finished is not repeated after a reconnect", async () => {
+      const { c, provider } = setup();
+      await c.say({ type: "say", text: "the answer", when: "next_gap", asOf: 0 });
+      c.onResponseDone();
+      c.onReconnected(10);
+      c.tick(20);
+      expect(provider.named("addContext")).toHaveLength(1);
+    });
+
+    it("the delegate map is capped", () => {
+      const { c, provider } = setup();
+      for (let i = 0; i < 200; i++) c.onToolCall({ callId: `c${i}`, name: "delegate", args: { task: "x" } }, 0);
+      expect(c.openDelegates).toBeLessThanOrEqual(32);
+      expect(provider.named("toolResult")).toHaveLength(200);
+    });
+
+    it("unanswered delegates are cleared when the call ends", () => {
+      const { c } = setup({ maxMs: 1000 });
+      c.onToolCall({ callId: "c1", name: "delegate", args: { task: "x" } }, 0);
+      c.tick(1000);
+      expect(c.openDelegates).toBe(0);
+    });
+
+    it("logs a counters line every 60 s (counts only, no text)", async () => {
+      const { c, emitted } = setup();
+      const counters = () => emitted.filter((m) => m.type === "log" && m.message.startsWith("counters"));
+      c.onAudio(pcm(10), "i1");
+      await c.onSpeechStarted();
+      c.onSpeechStopped();
+      c.onToolCall({ callId: "c1", name: "delegate", args: { task: "secret task words" } }, 0);
+      c.tick(59_999);
+      expect(counters()).toEqual([]);
+      c.tick(60_000);
+      expect(counters()).toEqual([{ type: "log", level: "info", message: "counters (60s): clears=1 speechStarted=1 delegates=1 steersSpoken=0" }]);
+      c.onResponseDone();
+      c.tick(120_000); // the queued still-working nudge is spoken in this window
+      expect(counters().at(-1)).toEqual({ type: "log", level: "info", message: "counters (60s): clears=0 speechStarted=0 delegates=0 steersSpoken=1" });
+    });
+
+    it("takes item start offsets from the audio link's clock, which counts keepalive silence", async () => {
+      const { c, provider, audio } = setup();
+      let clock = 0;
+      const write = audio.write.bind(audio);
+      (audio as any).write = (p: Int16Array) => { write(p); clock += (p.length * 1000) / 24000; };
+      (audio as any).clockMs = () => clock;
+      // Like the real AudioLink: a successful clear resets the clock to what played.
+      audio.clear = async () => { audio.clears++; clock = audio.clearResult.playedMs; return audio.clearResult; };
+      c.onAudio(pcm(24000), "i1"); // 0..1000
+      clock += 5000; // the link wrote 5 s of silence while the agent was quiet
+      c.onAudio(pcm(24000), "i2"); // starts at 6000 on the uplink clock
+      audio.clearResult = { playedMs: 6400, clearedMs: 600 };
+      await c.onSpeechStarted();
+      expect(provider.named("truncate")).toEqual([["truncate", "i2", 400]]);
+    });
   });
 });

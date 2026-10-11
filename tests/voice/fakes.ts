@@ -13,7 +13,7 @@ export class FakeProvider extends TypedEmitter<ProviderEvents> implements VoiceP
   }
   sendAudio(pcm: Int16Array) { this.calls.push(["sendAudio", pcm.length]); }
   addContext(text: string) { this.calls.push(["addContext", text]); }
-  respond() { this.calls.push(["respond"]); }
+  respond(replyTo?: string) { this.calls.push(replyTo === undefined ? ["respond"] : ["respond", replyTo]); }
   cancel() { this.calls.push(["cancel"]); }
   truncate(itemId: string, ms: number) { this.calls.push(["truncate", itemId, ms]); }
   toolResult(callId: string, output: unknown) { this.calls.push(["toolResult", callId, output]); }

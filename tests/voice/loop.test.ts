@@ -114,6 +114,28 @@ describe("runVoiceLoop", () => {
     expect(await done).toBe("stopped");
   });
 
+  it("logs provider connect, drop, reconnect, near-expiry and fatal events at info", async () => {
+    const made: FakeProvider[] = [];
+    const out: ChildMsg[] = [];
+    let t = 0;
+    const done = runVoiceLoop({
+      init, audio: new FakeAudio(), inbox: inbox(), emit: (m) => out.push(m), tickMs: 5, reconnectDelayMs: 1, now: () => t,
+      makeProvider: () => { const p = new FakeProvider(); p.caps = { ...p.caps, maxSessionSec: 600 }; made.push(p); return p; },
+    });
+    const infos = () => out.filter((m) => m.type === "log" && m.level === "info").map((m) => (m as { message: string }).message);
+    await until(() => out.some((m) => m.type === "started"));
+    expect(infos()).toContain("provider connected (openai, session limit 600s)");
+    made[0]!.emitEvent("closed");
+    await until(() => infos().some((l) => l.startsWith("provider reconnected (dropped")));
+    expect(infos()).toContain("provider dropped; reconnecting");
+    t = 600_000; // within the reconnect lead of the new session's limit
+    await until(() => infos().some((l) => l.startsWith("provider reconnected (planned")));
+    expect(infos()).toContain("provider session near its limit (600s); planned reconnect");
+    made.at(-1)!.emitEvent("error", { fatal: true, message: "bad key" });
+    expect(await done).toBe("provider_failed");
+    expect(infos()).toContain("provider fatal error: bad key");
+  });
+
   it("ends provider_failed on a fatal provider error", async () => {
     const p = new FakeProvider();
     const done = runVoiceLoop({ init, makeProvider: () => p, audio: new FakeAudio(), inbox: inbox(), emit: () => {}, tickMs: 5 });

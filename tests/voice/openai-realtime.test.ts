@@ -56,6 +56,8 @@ describe("OpenAIRealtime", () => {
     p.respond();
     p.cancel();
     p.truncate("item_1", 1234);
+    srv.send({ type: "response.done" }); // the cancelled response ends
+    await Bun.sleep(30);
     p.toolResult("call_1", { id: "1", status: "working" });
     await until(() => srv!.frames.length >= 8);
     const types = srv.frames.map((f) => f.type);
@@ -115,6 +117,109 @@ describe("OpenAIRealtime", () => {
     await p.connect({ instructions: "", tools: [], seed: "earlier: user asked X" });
     await until(() => srv!.frames.length >= 2);
     expect(srv.frames[1].item.content[0].text).toContain("earlier: user asked X");
+    await p.close();
+  });
+
+  it("a tool result inside the function call's own response defers response.create until that response is done", async () => {
+    srv = fakeServer(ack);
+    const p = new OpenAIRealtime({ apiKey: "k", model: "m", url: srv.url });
+    const calls: string[] = [];
+    p.on("toolCall", (c) => { calls.push(c.callId); p.toolResult(c.callId, { id: "1", status: "working" }); });
+    await p.connect({ instructions: "", tools: [] });
+    srv.send({ type: "response.created", response: { id: "r1" } });
+    srv.send({ type: "response.function_call_arguments.done", call_id: "c1", name: "delegate", arguments: "{}" });
+    srv.send({ type: "response.function_call_arguments.done", call_id: "c2", name: "delegate", arguments: "{}" });
+    await until(() => srv!.frames.filter((f) => f.type === "conversation.item.create").length === 2);
+    await Bun.sleep(30);
+    expect(srv.frames.filter((f) => f.type === "response.create")).toHaveLength(0); // r1 still active
+    srv.send({ type: "response.done", response: { id: "r1" } });
+    await until(() => srv!.frames.some((f) => f.type === "response.create"));
+    await Bun.sleep(30);
+    expect(srv.frames.filter((f) => f.type === "response.create")).toHaveLength(1); // one create for both results
+    await p.close();
+  });
+
+  it("a respond() while a response is active waits for its done, and coalesces with a pending tool result", async () => {
+    srv = fakeServer(ack);
+    const p = new OpenAIRealtime({ apiKey: "k", model: "m", url: srv.url });
+    await p.connect({ instructions: "", tools: [] });
+    srv.send({ type: "response.created", response: { id: "r1" } });
+    srv.send({ type: "response.function_call_arguments.done", call_id: "c1", name: "delegate", arguments: "{}" });
+    await Bun.sleep(30);
+    p.toolResult("c1", { ok: true });
+    p.respond();
+    await Bun.sleep(30);
+    expect(srv.frames.filter((f) => f.type === "response.create")).toHaveLength(0);
+    srv.send({ type: "response.done", response: { id: "r1" } });
+    await until(() => srv!.frames.some((f) => f.type === "response.create"));
+    p.respond(); // our own create is in flight: still one active response
+    await Bun.sleep(30);
+    expect(srv.frames.filter((f) => f.type === "response.create")).toHaveLength(1);
+    await p.close();
+  });
+
+  it("a steer drained on response.done shares the held create: one response, after the steer's context", async () => {
+    srv = fakeServer(ack);
+    const p = new OpenAIRealtime({ apiKey: "k", model: "m", url: srv.url });
+    p.on("toolCall", (c) => p.toolResult(c.callId, { ok: true }));
+    p.on("responseDone", () => { p.addContext("steer text"); p.respond(); }); // what the Conductor's drain does
+    await p.connect({ instructions: "", tools: [] });
+    srv.send({ type: "response.created", response: { id: "r1" } });
+    srv.send({ type: "response.function_call_arguments.done", call_id: "c1", name: "delegate", arguments: "{}" });
+    await until(() => srv!.frames.some((f) => f.item?.type === "function_call_output"));
+    srv.send({ type: "response.done", response: { id: "r1" } });
+    await until(() => srv!.frames.some((f) => f.type === "response.create"));
+    await Bun.sleep(30);
+    const types = srv.frames.map((f) => f.item?.type ?? f.type).slice(1);
+    expect(types).toEqual(["function_call_output", "message", "response.create"]);
+    await p.close();
+  });
+
+  it("a create rejected because a response is already active is re-sent at that response's done", async () => {
+    srv = fakeServer(ack);
+    const p = new OpenAIRealtime({ apiKey: "k", model: "m", url: srv.url });
+    await p.connect({ instructions: "", tools: [] });
+    p.respond();
+    await until(() => srv!.frames.some((f) => f.type === "response.create"));
+    const create = srv.frames.find((f) => f.type === "response.create");
+    expect(typeof create.event_id).toBe("string");
+    srv.send({ type: "error", error: { type: "invalid_request_error", code: "conversation_already_has_active_response", message: "busy", event_id: create.event_id } });
+    await Bun.sleep(30);
+    srv.send({ type: "response.done", response: { id: "r_server" } });
+    await until(() => srv!.frames.filter((f) => f.type === "response.create").length === 2);
+    await p.close();
+  });
+
+  it("any other rejected create clears the active flag and re-arms it for the next done", async () => {
+    srv = fakeServer(ack);
+    const p = new OpenAIRealtime({ apiKey: "k", model: "m", url: srv.url });
+    await p.connect({ instructions: "", tools: [] });
+    p.respond();
+    await until(() => srv!.frames.some((f) => f.type === "response.create"));
+    const create = srv.frames.find((f) => f.type === "response.create");
+    srv.send({ type: "error", error: { type: "server_error", code: null, message: "oops", event_id: create.event_id } });
+    await Bun.sleep(30);
+    srv.send({ type: "response.done", response: { id: "r_vad" } });
+    await until(() => srv!.frames.filter((f) => f.type === "response.create").length === 2);
+    // Not latched: after that create's own done, a new respond() goes straight out.
+    srv.send({ type: "response.done", response: { id: "r2" } });
+    await Bun.sleep(30);
+    p.respond();
+    await until(() => srv!.frames.filter((f) => f.type === "response.create").length === 3);
+    await p.close();
+  });
+
+  it("an unrelated error does not touch the create state", async () => {
+    srv = fakeServer(ack);
+    const p = new OpenAIRealtime({ apiKey: "k", model: "m", url: srv.url });
+    await p.connect({ instructions: "", tools: [] });
+    p.respond();
+    await until(() => srv!.frames.some((f) => f.type === "response.create"));
+    srv.send({ type: "error", error: { type: "invalid_request_error", code: "x", message: "bad item", event_id: "someone_else" } });
+    await Bun.sleep(30);
+    p.respond(); // ours is still active: held
+    await Bun.sleep(30);
+    expect(srv.frames.filter((f) => f.type === "response.create")).toHaveLength(1);
     await p.close();
   });
 

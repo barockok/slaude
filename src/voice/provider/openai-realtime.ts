@@ -18,6 +18,18 @@ export class OpenAIRealtime extends TypedEmitter<ProviderEvents> implements Voic
   readonly caps: VoiceProviderCaps = { inputRate: 24000, outputRate: 24000, truncate: true, maxSessionSec: 3600, cancelEmitsDone: true };
   #ws: WebSocket | null = null;
   #closing = false;
+  // One response at a time: a response.create while one is in progress is
+  // rejected. The documented function-call flow sends the output and the next
+  // response.create after the call's response is done, but function arguments
+  // arrive (and the delegate is acknowledged) while that response is still
+  // active. So a create during an active response is held, coalesced, and sent
+  // at its response.done. Our creates carry an event_id so a rejection (an
+  // error event naming it) can re-arm the hold instead of latching it.
+  #responseActive = false;
+  #createPending = false;
+  #inDone = false;
+  #createSeq = 0;
+  #lastCreateId: string | null = null;
   constructor(private o: { apiKey: string; model: string; url?: string; transcribeModel?: string }) {
     super();
   }
@@ -111,18 +123,46 @@ export class OpenAIRealtime extends TypedEmitter<ProviderEvents> implements Voic
       case "input_audio_buffer.speech_stopped":
         this.fire("speechStopped");
         break;
+      case "response.created":
+        this.#responseActive = true;
+        break;
       case "response.function_call_arguments.done": {
+        this.#responseActive = true; // arguments only arrive inside a live response
         let args: unknown = {};
         try { args = JSON.parse(m.arguments || "{}"); } catch { args = {}; }
         this.fire("toolCall", { callId: m.call_id, name: m.name, args });
         break;
       }
       case "response.done":
-        this.fire("responseDone");
+        this.#responseActive = false;
+        // The held create goes out after the event, not before: a steer the
+        // Conductor drains on this done adds its context and calls respond()
+        // while #inDone holds creates, so the tool output and the steer share
+        // one response instead of the steer waiting for a second one.
+        this.#inDone = true;
+        try {
+          this.fire("responseDone");
+        } finally {
+          this.#inDone = false;
+        }
+        if (this.#createPending) {
+          this.#createPending = false;
+          this.#create();
+        }
         break;
-      case "error":
+      case "error": {
+        const e = m.error ?? {};
+        if (e.event_id && e.event_id === this.#lastCreateId) {
+          // Our create was rejected, so no response.done of its own will come.
+          // "Already active" means a response we did not start is running: its
+          // done re-sends ours. Anything else: not active; retry at the next done.
+          this.#responseActive = e.code === "conversation_already_has_active_response";
+          this.#createPending = true;
+          this.#lastCreateId = null;
+        }
         this.fire("error", { fatal: isFatal(m.error), message: String(m.error?.message ?? "error") });
         break;
+      }
     }
   }
 
@@ -133,14 +173,23 @@ export class OpenAIRealtime extends TypedEmitter<ProviderEvents> implements Voic
   addContext(text: string): void {
     this.#send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text }] } });
   }
-  respond(): void { this.#send({ type: "response.create" }); }
+  respond(): void { this.#create(); }
+  #create(): void {
+    if (this.#responseActive || this.#inDone) {
+      this.#createPending = true;
+      return;
+    }
+    this.#responseActive = true; // ours is in flight until its response.done
+    this.#lastCreateId = `slaude_create_${++this.#createSeq}`;
+    this.#send({ type: "response.create", event_id: this.#lastCreateId });
+  }
   cancel(): void { this.#send({ type: "response.cancel" }); }
   truncate(itemId: string, ms: number): void {
     this.#send({ type: "conversation.item.truncate", item_id: itemId, content_index: 0, audio_end_ms: Math.max(0, Math.round(ms)) });
   }
   toolResult(callId: string, output: unknown): void {
     this.#send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: JSON.stringify(output) } });
-    this.#send({ type: "response.create" });
+    this.#create();
   }
   async close(): Promise<void> {
     this.#closing = true;
