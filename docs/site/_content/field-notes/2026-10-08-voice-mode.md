@@ -311,6 +311,33 @@ call's response was still active; the documented flow sends it after the
 response is done. Creates during an active response (tool results and steers)
 are now coalesced and sent at its `response.done`.
 
+Review of these changes found:
+
+- **Realtime barge-in had lost its truncate.** The real audio link resets its
+  clock to `played_ms` inside `clear()`, and the conductor compared against
+  the clock after the clear, so the comparison was always false. The
+  conductor test passed because its fake clock did not reset. The conductor
+  now reads the clock before the clear, the fake resets the way the real link
+  does, and a test with the real link and a fake workbench checks the offset.
+- **A rejected create latched the hold.** Creates now carry an `event_id`. An
+  error naming it re-arms the create for the next `response.done` instead of
+  leaving the adapter waiting forever.
+- **The coalescing comment was wrong.** The held create went out before the
+  conductor added the steer's context, so the steer was spoken in a second
+  response. The create is now sent after the done event, so the tool output
+  and the steer share one response.
+- **A reconnect could lose a steer.** If a create was held when the socket
+  dropped, the steer was lost. The conductor now keeps the last steer it handed
+  over until a response finishes, and queues it again on reconnect. It may be
+  repeated if the drop came after it was spoken but before its done.
+- **Clock and redaction details.** Audio dropped from the replay ring during a
+  busy wait is no longer counted on the uplink clock. Route header values
+  (for example `X-Browser-Session`) are masked like the capability URLs.
+- **No GPT-Live interruption event.** GPT-Live's documented server events have
+  no output-interrupted or yielded event (checked against the
+  live-conversations, live-delegation and server-controls guides), so when it
+  yields to a speaker, the audio already queued in the tab still plays out.
+
 ## Measured
 
 Not yet. To fill during the release-candidate soak: flush latency, the accuracy
