@@ -5,7 +5,7 @@ import { pcmToBase64 } from "../../src/voice/provider/types";
 import { until } from "./fakes";
 
 const sse = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-function fakeWorkbench(opts: { getStatus?: number; postStatus?: number; dropFirstSse?: boolean; clearStatus?: number; clearHang?: boolean; postHang?: boolean; postEarly?: boolean; redirectTo?: string; getSeq?: number[]; postSeq?: number[]; dropGets?: number[] } = {}) {
+function fakeWorkbench(opts: { getStatus?: number; postStatus?: number; postBody?: string; dropFirstSse?: boolean; clearStatus?: number; clearHang?: boolean; postHang?: boolean; postEarly?: boolean; redirectTo?: string; getSeq?: number[]; postSeq?: number[]; dropGets?: number[] } = {}) {
   const st: any = { gets: 0, posts: 0, auth: [] as string[], cookie: [] as string[], route: [] as string[], uplinkBytes: 0, uplinkData: [] as number[], clears: 0, sseCtl: null as any };
   const server = Bun.serve({
     port: 0,
@@ -42,7 +42,7 @@ function fakeWorkbench(opts: { getStatus?: number; postStatus?: number; dropFirs
         if (pseq) return Response.json({ error: "uplink_busy" }, { status: pseq });
         if (opts.postHang) return new Promise<Response>(() => {});
         if (opts.postEarly) return Response.json({ ok: true });
-        if (opts.postStatus) return new Response("", { status: opts.postStatus });
+        if (opts.postStatus) return new Response(opts.postBody ?? "", { status: opts.postStatus });
         for await (const chunk of req.body as any) { st.uplinkBytes += chunk.byteLength; st.uplinkData.push(...new Int16Array(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength))); }
         return Response.json({ played_ms: 0 });
       }
@@ -60,6 +60,7 @@ const endpoints = { streamUrl: `/api/browser/audio/${CAP}/audio/stream`, clearUr
 function newLink(o: { baseUrl: string; endpoints: { streamUrl: string; clearUrl: string; headers: Record<string, string>; sampleRate: number }; log?: (l: string) => void } & Record<string, any>) {
   const { baseUrl, endpoints: e, ...rest } = o;
   return new AudioLink({
+    keepaliveMs: 0, // off unless a test is about it: exact uplink byte counts elsewhere
     ...rest,
     allowedOrigins: parseAudioOrigins(baseUrl),
     endpoints: { ...e, streamUrl: new URL(e.streamUrl, baseUrl).toString(), clearUrl: new URL(e.clearUrl, baseUrl).toString() },
@@ -409,6 +410,102 @@ describe("AudioLink", () => {
     await until(() => reason === "audio_lost");
     expect(() => link.write(new Int16Array(4))).not.toThrow();
     await link.close();
+  });
+
+  describe("uplink silence keepalive", () => {
+    const BYTES_PER_MS = 48; // 24 kHz, s16le mono
+
+    it("writes silence paced in real time while the agent is quiet", async () => {
+      wb = fakeWorkbench();
+      const link = newLink({ baseUrl: wb.base, endpoints, keepaliveMs: 20 });
+      await link.start({ onAudio: () => {}, onEnded: () => {} });
+      const t0 = performance.now();
+      await until(() => wb.uplinkBytes >= 200 * BYTES_PER_MS, 2000);
+      const elapsed = performance.now() - t0;
+      await link.close();
+      expect(wb.uplinkData.every((v: number) => v === 0)).toBe(true);
+      // Never faster than real time (one chunk of slack for the first tick).
+      expect(wb.uplinkBytes).toBeLessThanOrEqual((elapsed + 40) * BYTES_PER_MS);
+    });
+
+    it("never interleaves silence with scheduled audio", async () => {
+      wb = fakeWorkbench();
+      const link = newLink({ baseUrl: wb.base, endpoints, keepaliveMs: 20 });
+      await link.start({ onAudio: () => {}, onEnded: () => {} });
+      link.write(new Int16Array(24 * 400).fill(7)); // 400 ms of audio, scheduled ahead
+      await Bun.sleep(250); // still inside the scheduled audio: no silence yet
+      link.write(new Int16Array(24 * 100).fill(9));
+      await Bun.sleep(400); // the audio has run out: silence follows
+      await link.close();
+      await until(() => wb.uplinkData.length >= 24 * 500);
+      expect(wb.uplinkData.slice(0, 24 * 400).every((v: number) => v === 7)).toBe(true);
+      expect(wb.uplinkData.slice(24 * 400, 24 * 500).every((v: number) => v === 9)).toBe(true);
+      expect(wb.uplinkData.length).toBeGreaterThan(24 * 500);
+      expect(wb.uplinkData.slice(24 * 500).every((v: number) => v === 0)).toBe(true);
+    });
+
+    it("silence advances the uplink clock exactly as audio does; clear resets it to what played", async () => {
+      wb = fakeWorkbench();
+      const link = newLink({ baseUrl: wb.base, endpoints, keepaliveMs: 20 });
+      await link.start({ onAudio: () => {}, onEnded: () => {} });
+      link.write(new Int16Array(24 * 100)); // 100 ms
+      await Bun.sleep(300);
+      const atClose = link.clockMs();
+      expect(atClose).toBeGreaterThan(100);
+      await link.close();
+      await Bun.sleep(60);
+      expect(link.clockMs()).toBe(atClose); // stopped on close
+      await until(() => wb.uplinkBytes === atClose * BYTES_PER_MS);
+    });
+
+    it("clear resets the uplink clock to the played position", async () => {
+      wb = fakeWorkbench();
+      const link = newLink({ baseUrl: wb.base, endpoints });
+      await link.start({ onAudio: () => {}, onEnded: () => {} });
+      link.write(new Int16Array(24 * 3000)); // 3000 ms
+      expect(link.clockMs()).toBe(3000);
+      await link.clear(); // the fake reports played_ms 1500
+      expect(link.clockMs()).toBe(1500);
+      await link.close();
+    });
+  });
+
+  describe("end-cause logging", () => {
+    it("an uplink loss logs one warn line: leg, status, a scrubbed body snippet, ended flag, duration", async () => {
+      wb = fakeWorkbench({ postStatus: 504, postBody: `proxy idle timeout for /api/browser/audio/${CAP}/audio/stream ` + "x".repeat(2000) });
+      const lines: string[] = [];
+      const link = newLink({ baseUrl: wb.base, endpoints, log: (l) => lines.push(l) });
+      let reason = "";
+      await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+      await until(() => reason === "audio_lost");
+      await link.close();
+      const lost = lines.filter((l) => l.startsWith("audio lost"));
+      expect(lost).toHaveLength(1);
+      expect(lost[0]).toMatch(/^audio lost: leg=uplink status=504 ended_event=no after=\d+(\.\d)?s body="proxy idle timeout for /);
+      expect(lost[0]).not.toContain(CAP);
+      expect(lost[0]!.length).toBeLessThan(400);
+    });
+
+    it("a revoked stream logs leg=sse with its status", async () => {
+      wb = fakeWorkbench({ getStatus: 404 });
+      const lines: string[] = [];
+      const link = newLink({ baseUrl: wb.base, endpoints, log: (l) => lines.push(l) });
+      let reason = "";
+      await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+      await until(() => reason === "audio_lost");
+      await link.close();
+      expect(lines.filter((l) => l.startsWith("audio lost"))).toEqual([expect.stringMatching(/^audio lost: leg=sse status=404 ended_event=no /)]);
+    });
+
+    it("a failed clear logs leg=clear with its status", async () => {
+      wb = fakeWorkbench({ clearStatus: 410 });
+      const lines: string[] = [];
+      const link = newLink({ baseUrl: wb.base, endpoints, log: (l) => lines.push(l) });
+      await link.start({ onAudio: () => {}, onEnded: () => {} });
+      expect(await link.clear()).toBeNull();
+      await link.close();
+      expect(lines).toEqual([expect.stringMatching(/^audio clear failed: leg=clear status=410/)]);
+    });
   });
 });
 
