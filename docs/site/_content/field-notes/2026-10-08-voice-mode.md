@@ -338,6 +338,36 @@ Review of these changes found:
   live-conversations, live-delegation and server-controls guides), so when it
   yields to a speaker, the audio already queued in the tab still plays out.
 
+## Changed in rc.5: delegation discipline and parent-side latency
+
+A live smoke test (GPT-Live, an in-cluster workbench, a Jitsi meeting) showed
+two problems on the parent side. The voice model answered things itself that
+it could not know, including "I'm not connected to any workbench", and answers
+lagged. The speaking rules now tell the voice it is only the voice: delegate
+anything about tools, data, files, systems, browsing, the browser, people's
+information, or anything not certain; never claim or deny access or a
+capability; never guess; never pretend to check without calling delegate. The
+rules stay after the `<call-brief>` fence, under the precedence line, and name
+no provider.
+
+The lag had three parent-side causes. The manager's `<auto-evolve>` follow-up
+ran after every voice turn that used two or more tools and occupied the
+session, so the next delegate queued behind it; it is now skipped while a call
+owns the session (a runner turn is in flight, or a call is registered, which
+covers Slack turns mid-call), and resumes when the call ends. Delegates ran one
+turn each, strictly in order, so a second request waited for the whole first
+turn, any flush and the auto-evolve. Requests that queue behind a running turn
+now merge, with any due transcript flush, into one turn ("requests #2, #3"),
+each answered by its own `voice_say(reply_to)` and keeping its own `asOf`; a
+running turn is never joined. And the transcript was taken when a delegate
+arrived, so a queued request carried a stale chunk and advanced the "seen"
+sequence before any turn had carried it; it is now taken when the turn starts.
+A failed turn's restored chunk re-arms the idle flush, which it did not before
+(it waited for someone to speak again). Finally, a request waiting longer than
+the runner's 120-second busy limit plus a 15-second margin fails with the usual
+"Request #N failed" line rather than waiting behind a stuck turn; the deadline
+is a timer, so it fires even while the turn ahead never returns.
+
 ## Measured
 
 Not yet. To fill during the release-candidate soak: flush latency, the accuracy
