@@ -5,7 +5,10 @@
  * that arrives too fast (GPT-Live drops appends above 1.2x real time, and the
  * model then hears nothing). The pacer forwards at most 1.0x on average from
  * the sample count and the provider's input rate, with a short burst
- * allowance so steady input passes straight through, and a bounded jitter
+ * allowance so steady input passes straight through. A source whose clock
+ * runs slightly fast (rc.6 smoke: 0.5 to 2 s dropped per minute) would grow
+ * the backlog forever at 1.0x, so a backlog past catchUpAfterMs drains at
+ * catchUpRate, still under the provider's limit. Then a bounded jitter
  * buffer: past maxBacklogMs the OLDEST audio is dropped so latency stays
  * bounded. Drops are counted (ms only; audio content is never logged).
  */
@@ -18,6 +21,10 @@ export interface MicPacerOptions {
   burstMs?: number;
   /** Queued audio past this is dropped, oldest first (default 1000 ms). */
   maxBacklogMs?: number;
+  /** Rate (x real time) a backlog drains at; stays under GPT-Live's 1.2x limit, burst included (default 1.1). */
+  catchUpRate?: number;
+  /** Backlog past this drains at catchUpRate (default 200 ms). */
+  catchUpAfterMs?: number;
   /** Granularity of paced sends (default 20 ms). */
   tickMs?: number;
   now?: () => number;
@@ -26,7 +33,7 @@ export interface MicPacerOptions {
 }
 
 export class MicPacer {
-  readonly #o: Required<Pick<MicPacerOptions, "rate" | "send" | "burstMs" | "maxBacklogMs" | "tickMs" | "now" | "setTimer" | "clearTimer">>;
+  readonly #o: Required<Pick<MicPacerOptions, "rate" | "send" | "burstMs" | "maxBacklogMs" | "catchUpRate" | "catchUpAfterMs" | "tickMs" | "now" | "setTimer" | "clearTimer">>;
   #queue: Int16Array[] = [];
   #queued = 0; // samples
   #credit: number; // samples that may go out now
@@ -38,7 +45,7 @@ export class MicPacer {
 
   constructor(o: MicPacerOptions) {
     this.#o = {
-      burstMs: 100, maxBacklogMs: 1_000, tickMs: 20,
+      burstMs: 100, maxBacklogMs: 1_000, catchUpRate: 1.1, catchUpAfterMs: 200, tickMs: 20,
       now: () => performance.now(),
       setTimer: (fn, ms) => setTimeout(fn, ms),
       clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
@@ -82,7 +89,8 @@ export class MicPacer {
   #refill(): void {
     const now = this.#o.now();
     const cap = this.#samples(this.#o.burstMs);
-    this.#credit = Math.min(cap, this.#credit + ((now - this.#creditAt) * this.#o.rate) / 1000);
+    const speed = this.#queued > this.#samples(this.#o.catchUpAfterMs) ? this.#o.catchUpRate : 1;
+    this.#credit = Math.min(cap, this.#credit + ((now - this.#creditAt) * this.#o.rate * speed) / 1000);
     this.#creditAt = now;
   }
 

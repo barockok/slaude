@@ -278,7 +278,7 @@ describe("runVoiceLoop", () => {
     expect(atZero).toBeLessThanOrEqual(200);
     clock.advanceTo(150);
     expect(sent()).toBeGreaterThanOrEqual(atZero + 120); // paced in 20 ms ticks
-    expect(sent()).toBeLessThanOrEqual(atZero + 150); // never ahead of real time
+    expect(sent()).toBeLessThanOrEqual(atZero + 165); // a backlog drains at 1.1x, never faster
     // The rest past 1 s of backlog was dropped, oldest first, and counted.
     offset = 60_000;
     const counters = () => out.filter((m) => m.type === "log" && m.message.startsWith("counters"));
