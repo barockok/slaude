@@ -282,9 +282,9 @@ export class AudioLink implements AudioLinkLike {
         if (done) break;
         const text = dec.decode(value, { stream: true });
         if (!text.trim()) continue; // a heartbeat
-        tail = (tail + text).slice(-DRAIN_TAIL_MAX);
+        tail = appendTail(tail, text, DRAIN_TAIL_MAX);
       }
-      tail = (tail + dec.decode()).slice(-DRAIN_TAIL_MAX);
+      tail = appendTail(tail, dec.decode(), DRAIN_TAIL_MAX);
     } catch (e) {
       err = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
     } finally {
@@ -551,6 +551,19 @@ export class AudioLink implements AudioLinkLike {
     clearTimeout(timer);
     if (!settled) this.#uplinkAbort.abort();
   }
+}
+
+/**
+ * Append to a bounded tail. Past `max` the oldest text goes, and so does the
+ * partial token the cut leaves at the front: redaction runs after (#clean),
+ * and a secret cut in half would no longer match the redactor.
+ */
+export function appendTail(tail: string, text: string, max: number): string {
+  const all = tail + text;
+  if (all.length <= max) return all;
+  const cut = all.slice(-max);
+  const at = cut.search(/\s/);
+  return at < 0 ? "" : cut.slice(at).replace(/^\s+/, "");
 }
 
 /** N from an uplink end body that is exactly a JSON object with a numeric played_ms; else null. */

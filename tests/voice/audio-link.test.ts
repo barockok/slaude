@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "bun:test";
-import { AudioLink, CapabilityRedactor, redactCapabilityUrls } from "../../src/voice/audio-link";
+import { AudioLink, CapabilityRedactor, appendTail, redactCapabilityUrls } from "../../src/voice/audio-link";
 import { parseAudioOrigins } from "../../src/voice/audio-acl";
 import { pcmToBase64 } from "../../src/voice/provider/types";
 import { FakeProvider, until } from "./fakes";
@@ -741,6 +741,21 @@ async function heartbeatWorkbench(o: { heartbeatMs?: number; ignoreBodyEnd?: boo
   };
   return st;
 }
+
+describe("appendTail (the drained uplink body's bounded tail)", () => {
+  it("keeps everything under the cap", () => {
+    expect(appendTail("abc ", "def", 100)).toBe("abc def");
+  });
+  it("past the cap, drops the leading partial token so a cut secret is never left half-matched", () => {
+    const out = appendTail("", "x https://wb.example.com/api/browser/audio/cap-5e1b0a77/stream tail words", 40);
+    expect(out.length).toBeLessThanOrEqual(40);
+    // The cut fell inside the URL: its fragment is dropped, whole tokens after it kept.
+    expect(out).toBe("tail words");
+  });
+  it("past the cap with no token boundary, keeps nothing", () => {
+    expect(appendTail("", "a".repeat(50), 20)).toBe("");
+  });
+});
 
 describe("AudioLink: heartbeat uplink response (early headers)", () => {
   it("early headers and heartbeats keep the call running; audio flows both ways; the body ending is audio_lost with its status", async () => {
