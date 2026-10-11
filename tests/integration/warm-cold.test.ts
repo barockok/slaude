@@ -113,8 +113,11 @@ d("warm-then-cold across two nodes (real Redis)", () => {
 
     // The survivor answered, via the shared queue.
     expect(viaOf(replies(gw.transport, "wc-reply")[2]!.text)).toBe(survivor.worker.nodeId);
-    const sharedAfter = (await turnsQ.queue("turns").getJobCounts("completed")).completed ?? 0;
-    expect(sharedAfter).toBeGreaterThan(sharedBefore);
+    // The reply is posted from inside the job, before the queue marks it
+    // completed: wait for the count rather than reading it once.
+    const sharedCompleted = async () => (await turnsQ.queue("turns").getJobCounts("completed")).completed ?? 0;
+    await until(async () => (await sharedCompleted()) > sharedBefore, 10_000);
+    expect(await sharedCompleted()).toBeGreaterThan(sharedBefore);
 
     // Session continuity: same row, same workspace dir — the thread's session
     // survived its node.
