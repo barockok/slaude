@@ -47,6 +47,8 @@ export interface ConductorIO {
   emit(m: ChildMsg): void;
   end(reason: EndReason): void;
   reconnect(): void;
+  /** The mic pacer's drops since the last call (then reset); added to the counters line. */
+  micStats?(): { droppedMs: number; drops: number };
 }
 export interface ConductorOpts {
   outputRate: number;
@@ -262,9 +264,11 @@ export class Conductor {
   #logCounters(now: number): void {
     const c = this.#counters;
     const secs = Math.round((now - this.#countersAt) / 1000);
+    const m = this.io.micStats?.();
+    const mic = m ? ` micDrops=${m.drops} micDroppedMs=${m.droppedMs}` : "";
     this.io.emit({
       type: "log", level: "info",
-      message: `counters (${secs}s): clears=${c.clears} speechStarted=${c.speechStarted} delegates=${c.delegates} steersSpoken=${c.steersSpoken}`,
+      message: `counters (${secs}s): clears=${c.clears} speechStarted=${c.speechStarted} delegates=${c.delegates} steersSpoken=${c.steersSpoken}${mic}`,
     });
     this.#counters = { clears: 0, speechStarted: 0, delegates: 0, steersSpoken: 0 };
     this.#countersAt = now;

@@ -15,10 +15,20 @@ import { liveCalls } from "./turn-flags";
 
 export type { LoopChild } from "./spawn";
 
+export interface TurnRunOptions {
+  suppress: boolean;
+  voice: boolean;
+  /** Required: the runner re-reads it after any wait, right before sending,
+   *  and refuses the turn once it is true. */
+  cancelled(): boolean;
+  /** How long this turn may wait for the session, overriding the runner's
+   *  (undefined: the runner's). Re-read on every poll. */
+  waitBudgetMs?(): number | undefined;
+  /** Called once the runner holds the session for this turn, before the send. */
+  onAcquired?(): void;
+}
 export interface TurnRunner {
-  /** `cancelled` is required: the runner re-reads it after any wait, right
-   *  before sending, and refuses the turn once it is true. */
-  run(sessionId: string, text: string, o: { suppress: boolean; voice: boolean; cancelled(): boolean }): Promise<void>;
+  run(sessionId: string, text: string, o: TurnRunOptions): Promise<void>;
 }
 
 export const TRANSCRIPT_FLUSH_PREFIX = "[voice call transcript]";
@@ -53,6 +63,17 @@ export function delegatePrompt(reqs: DelegateRequest[], transcript: string): str
  *  longer than that, plus a margin for the turn ahead of it to wrap up. */
 export const QUEUE_WAIT_MARGIN_MS = 15_000;
 export const DEFAULT_QUEUE_WAIT_MS = DEFAULT_MAX_WAIT_MS + QUEUE_WAIT_MARGIN_MS;
+/**
+ * The wait budget (runner and queue) while the call's START turn may still hold
+ * the session. The Slack turn that called voice_start keeps running after it
+ * (a join skill navigates the browser and joins the meeting), often for
+ * minutes, and the call's turns queue behind it. Until one of the call's own
+ * turns has held the session, the start turn cannot have ended, so waits use
+ * this budget instead of the normal two minutes; from then on the normal
+ * budgets apply. The voice keeps the participants informed meanwhile (the
+ * 60 s still-working nudge).
+ */
+export const START_TURN_WAIT_MS = 10 * 60_000;
 
 /** Work waiting for the next turn: delegates plus a due transcript flush. It
  *  becomes one turn when it reaches the head of the queue; until then later
@@ -85,6 +106,8 @@ export interface VoiceCallDeps {
   idleFlushMs?: number;
   /** Longest a delegate waits in the queue before it fails (DEFAULT_QUEUE_WAIT_MS). */
   queueWaitMs?: number;
+  /** Wait budget until a call turn has held the session (START_TURN_WAIT_MS). */
+  startTurnWaitMs?: number;
   startTimeoutMs?: number;
   /** How long to wait for the stdout stream to drain after the child exits
    *  before ending the call anyway. */
@@ -106,6 +129,8 @@ export class VoiceCall {
    *  that fails afterwards does not tell the voice they failed. */
   #answered = new Set<string>();
   #queue: Promise<void> = Promise.resolve();
+  /** One of this call's turns has held the session: the start turn is over. */
+  #sessionHeld = false;
   /** The batch queued for the next turn and not started yet (null: none). */
   #batch: Batch | null = null;
   #flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -197,7 +222,10 @@ export class VoiceCall {
     } else if (m.type === "delegate") {
       this.#delegateAsOf.set(m.id, m.asOf);
       const b = this.#openBatch();
-      const timer = setTimeout(() => this.#expire(b, m.id), this.d.queueWaitMs ?? DEFAULT_QUEUE_WAIT_MS);
+      const wait = this.#sessionHeld
+        ? (this.d.queueWaitMs ?? DEFAULT_QUEUE_WAIT_MS)
+        : (this.d.startTurnWaitMs ?? START_TURN_WAIT_MS) + QUEUE_WAIT_MARGIN_MS;
+      const timer = setTimeout(() => this.#expire(b, m.id), wait);
       timer.unref?.();
       b.delegates.push({ id: m.id, task: m.task, timer });
     } else if (m.type === "log") {
@@ -298,7 +326,17 @@ export class VoiceCall {
   /** One injected turn. The runner re-checks the thread's identity at the
    *  point of use and throws VoiceAuthLost when it is no longer the agent. */
   #run(text: string, o: { suppress: boolean; voice: boolean }): Promise<void> {
-    return this.d.runner.run(this.d.sessionId, text, { ...o, cancelled: () => this.#cancelled });
+    return this.d.runner.run(this.d.sessionId, text, {
+      ...o,
+      cancelled: () => this.#cancelled,
+      // Until a call turn has held the session, the start turn may be what
+      // holds it. Once the call is closing, the normal budget again, so stop
+      // and a node drain stay bounded.
+      waitBudgetMs: () => (this.#sessionHeld || this.#endReason || this.#stopReason ? undefined : (this.d.startTurnWaitMs ?? START_TURN_WAIT_MS)),
+      onAcquired: () => {
+        this.#sessionHeld = true;
+      },
+    });
   }
   /** End the call `auth_lost` (any turn path). Not stop(): it waits for the
    *  turn queue, which the caller is on. */

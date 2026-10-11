@@ -83,3 +83,32 @@ export function fakeChild() {
   };
   return child;
 }
+
+/** A virtual clock with timers fired in time order. */
+export function virtualClock() {
+  let t = 0;
+  let nextId = 1;
+  const timers = new Map<number, { at: number; fn: () => void }>();
+  return {
+    now: () => t,
+    setTimer: (fn: () => void, ms: number) => {
+      const id = nextId++;
+      timers.set(id, { at: t + Math.max(0, ms), fn });
+      return id as unknown;
+    },
+    clearTimer: (h: unknown) => void timers.delete(h as number),
+    pending: () => timers.size,
+    /** Advance to `to`, firing due timers in order. */
+    advanceTo(to: number) {
+      for (;;) {
+        let first: [number, { at: number; fn: () => void }] | null = null;
+        for (const e of timers) if (e[1].at <= to && (!first || e[1].at < first[1].at)) first = e;
+        if (!first) break;
+        timers.delete(first[0]);
+        t = first[1].at;
+        first[1].fn();
+      }
+      t = to;
+    },
+  };
+}
