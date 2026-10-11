@@ -133,7 +133,11 @@ export function withDelegationPolicy(instructions: string, tools: ToolSpec[]): s
 type Timer = ReturnType<typeof setTimeout>;
 
 export class OpenAILive extends TypedEmitter<ProviderEvents> implements VoiceProvider {
-  readonly caps: VoiceProviderCaps = { inputRate: 24000, outputRate: 24000, truncate: false };
+  // handlesBargeIn: full duplex, the model yields to a speaker on its own. The
+  // participant-speech signal here is synthesized from input transcript deltas,
+  // which also fire on echo and backchannels, so clearing on it chopped the
+  // agent's audio (rc.4 smoke: 13 clears in 4 minutes).
+  readonly caps: VoiceProviderCaps = { inputRate: 24000, outputRate: 24000, truncate: false, handlesBargeIn: true };
   #ws: WebSocket | null = null;
   #closing = false;
   #ended = false;
@@ -414,13 +418,20 @@ export class OpenAILive extends TypedEmitter<ProviderEvents> implements VoicePro
     this.#pendingContext = text;
     queueMicrotask(() => this.#flushContext());
   }
-  /** Speak now: the pending context goes out as commentary; with none, a short instruction. */
-  respond(): void {
+  /**
+   * Speak now: the pending context goes out as commentary; with none, a short
+   * instruction. `replyTo` is the GPT-Live delegation id the answer belongs to:
+   * the docs require "the original client delegation ID for an update about
+   * that task", and an answer sent with `delegation_id: null` is only general
+   * session context while that delegation stays open (rc.4 smoke: never spoken).
+   */
+  respond(replyTo?: string): void {
     if (this.#closing || this.#ended) return;
     const t = this.#pendingContext;
     this.#pendingContext = null;
-    if (t !== null) this.#append("session.commentary.append", null, t);
-    else this.#append("session.instructions.append", null, RESPOND_NOW);
+    const id = replyTo ?? null;
+    if (t !== null) this.#append("session.commentary.append", id, t);
+    else this.#append("session.instructions.append", id, RESPOND_NOW);
     // The answer is a new response: end the open output turn without a responseDone
     // (the Conductor marks its own response active right after this call).
     if (this.#outOpen) this.#endOutput({ done: false });
