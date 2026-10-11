@@ -8,7 +8,7 @@ import type { AudioLinkLike } from "./audio-link";
 import type { ChildMsg, EndReason, ParentMsg, VoiceInit } from "./ipc";
 import type { VoiceProvider } from "./provider/types";
 import { resample } from "./resample";
-import { MicPacer } from "./pacer";
+import { MicPacer, type MicPacerOptions } from "./pacer";
 
 export interface LoopDeps {
   init: VoiceInit;
@@ -19,6 +19,8 @@ export interface LoopDeps {
   now?: () => number;
   tickMs?: number;
   reconnectDelayMs?: number;
+  /** The mic pacer's clock and timers (tests inject virtual time). */
+  micClock?: Pick<MicPacerOptions, "now" | "setTimer" | "clearTimer">;
 }
 
 const MAX_RECONNECTS = 3;
@@ -52,6 +54,7 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
   // Call audio reaches the provider at real time (see pacer.ts), whichever
   // provider it is. A provider being replaced gets nothing (checked at send).
   const pacer = new MicPacer({
+    ...d.micClock,
     rate: provider.caps.inputRate,
     send: (pcm) => {
       if (!reconnecting && !finished) provider.sendAudio(pcm);
