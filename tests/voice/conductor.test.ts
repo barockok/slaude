@@ -358,6 +358,26 @@ describe("Conductor", () => {
       expect(said[0]).toContain("the answer");
     });
 
+    it("a steer spoken but not yet done when the provider reconnects is spoken again on the new one", async () => {
+      const { c, provider } = setup();
+      await c.say({ type: "say", text: "the answer", when: "next_gap", asOf: 0 });
+      expect(provider.named("respond")).toHaveLength(1);
+      c.onReconnected(10); // the old provider may have held that create: it is lost with the socket
+      c.tick(20);
+      const said = provider.named("addContext").map((x) => String(x[1]));
+      expect(said).toHaveLength(2);
+      expect(said[1]).toContain("the answer");
+    });
+
+    it("a steer whose response finished is not repeated after a reconnect", async () => {
+      const { c, provider } = setup();
+      await c.say({ type: "say", text: "the answer", when: "next_gap", asOf: 0 });
+      c.onResponseDone();
+      c.onReconnected(10);
+      c.tick(20);
+      expect(provider.named("addContext")).toHaveLength(1);
+    });
+
     it("the delegate map is capped", () => {
       const { c, provider } = setup();
       for (let i = 0; i < 200; i++) c.onToolCall({ callId: `c${i}`, name: "delegate", args: { task: "x" } }, 0);

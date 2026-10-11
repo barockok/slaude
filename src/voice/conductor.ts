@@ -67,6 +67,10 @@ export class Conductor {
   // still-working nudge for one (nudgeFor: the Conductor's id).
   #steers: Array<{ text: string; callId?: string; nudgeFor?: string }> = [];
   #delegates = new Map<string, { askedAt: number; nudged: boolean; callId?: string }>();
+  // The steer last handed to the provider, until a response finishes. A
+  // provider may hold a create (Realtime does during an active response); a
+  // reconnect loses it with the socket, so this one is queued again.
+  #inFlight: { text: string; callId?: string } | null = null;
   #counters = { clears: 0, speechStarted: 0, delegates: 0, steersSpoken: 0 };
   #countersAt: number;
   #nextDelegate = 1;
@@ -125,6 +129,7 @@ export class Conductor {
       return;
     }
     this.#responseActive = false;
+    this.#inFlight = null;
     this.#drain();
   }
 
@@ -224,6 +229,8 @@ export class Conductor {
     this.#itemStart.clear();
     this.#currentItem = null;
     // Delegation ids belong to the old provider session; the new one does not know them.
+    if (this.#inFlight) this.#steers.unshift(this.#inFlight);
+    this.#inFlight = null;
     for (const d of this.#delegates.values()) d.callId = undefined;
     for (const s of this.#steers) s.callId = undefined;
   }
@@ -241,6 +248,7 @@ export class Conductor {
     if (replyTo === undefined) this.io.provider.respond();
     else this.io.provider.respond(replyTo);
     this.#responseActive = true;
+    this.#inFlight = { text, callId: replyTo };
     this.#counters.steersSpoken++;
   }
   /** Close a delegate: answered, evicted, or the call ended. Its queued nudge goes too. */
