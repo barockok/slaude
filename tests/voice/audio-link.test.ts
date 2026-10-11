@@ -2,7 +2,8 @@ import { describe, it, expect, afterEach } from "bun:test";
 import { AudioLink, redactCapabilityUrls } from "../../src/voice/audio-link";
 import { parseAudioOrigins } from "../../src/voice/audio-acl";
 import { pcmToBase64 } from "../../src/voice/provider/types";
-import { until } from "./fakes";
+import { FakeProvider, until } from "./fakes";
+import { Conductor } from "../../src/voice/conductor";
 
 const sse = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 function fakeWorkbench(opts: { getStatus?: number; postStatus?: number; postBody?: string; dropFirstSse?: boolean; clearStatus?: number; clearHang?: boolean; postHang?: boolean; postEarly?: boolean; redirectTo?: string; getSeq?: number[]; postSeq?: number[]; dropGets?: number[] } = {}) {
@@ -468,6 +469,23 @@ describe("AudioLink", () => {
       expect(link.clockMs()).toBe(1500);
       await link.close();
     });
+  });
+
+  it("with the real link, a barge-in truncates the item to what played (fake workbench: played_ms 1500)", async () => {
+    wb = fakeWorkbench();
+    const link = newLink({ baseUrl: wb.base, endpoints });
+    await link.start({ onAudio: () => {}, onEnded: () => {} });
+    const provider = new FakeProvider();
+    const c = new Conductor(
+      { provider, audio: link, emit: () => {}, end: () => {}, reconnect: () => {} },
+      { outputRate: 24000, staleSeq: 6, maxMs: 3_600_000, startedAt: 0 },
+    );
+    c.onAudio(new Int16Array(24 * 1000), "i1"); // 0..1000 ms
+    c.onAudio(new Int16Array(24 * 2000), "i2"); // 1000..3000 ms
+    await c.onSpeechStarted();
+    expect(provider.named("truncate")).toEqual([["truncate", "i2", 500]]);
+    expect(link.clockMs()).toBe(1500);
+    await link.close();
   });
 
   describe("end-cause logging", () => {

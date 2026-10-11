@@ -267,6 +267,8 @@ export class Conductor {
     const item = this.#currentItem;
     this.#flushedItem = item;
     this.#counters.clears++;
+    // Read before the clear: a link that keeps the clock resets it to played_ms inside clear().
+    const sentBefore = this.#clock();
     const cleared = await this.io.audio.clear().catch(() => null);
     if (this.#currentItem === item) this.#currentItem = null;
     // A failed clear: what played is unknown, so neither truncate the model's
@@ -277,7 +279,7 @@ export class Conductor {
       return;
     }
     const { playedMs } = cleared;
-    if (item && this.io.provider.caps.truncate && playedMs < this.#clock()) {
+    if (item && this.io.provider.caps.truncate && playedMs < sentBefore) {
       const start = this.#itemStart.get(item) ?? 0;
       this.io.provider.truncate(item, Math.max(0, Math.round(playedMs - start)));
     }

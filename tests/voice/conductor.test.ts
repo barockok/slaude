@@ -394,6 +394,8 @@ describe("Conductor", () => {
       const write = audio.write.bind(audio);
       (audio as any).write = (p: Int16Array) => { write(p); clock += (p.length * 1000) / 24000; };
       (audio as any).clockMs = () => clock;
+      // Like the real AudioLink: a successful clear resets the clock to what played.
+      audio.clear = async () => { audio.clears++; clock = audio.clearResult.playedMs; return audio.clearResult; };
       c.onAudio(pcm(24000), "i1"); // 0..1000
       clock += 5000; // the link wrote 5 s of silence while the agent was quiet
       c.onAudio(pcm(24000), "i2"); // starts at 6000 on the uplink clock
