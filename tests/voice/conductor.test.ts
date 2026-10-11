@@ -408,6 +408,23 @@ describe("Conductor", () => {
       expect(counters().at(-1)).toEqual({ type: "log", level: "info", message: "counters (60s): clears=0 speechStarted=0 delegates=0 steersSpoken=1" });
     });
 
+    it("adds the mic pacer's dropped ms to the counters line when the loop supplies it", () => {
+      const provider = new FakeProvider();
+      const emitted: ChildMsg[] = [];
+      let dropped = [{ droppedMs: 1800, drops: 2 }, { droppedMs: 0, drops: 0 }];
+      const c = new Conductor(
+        { provider, audio: new FakeAudio(), emit: (m) => emitted.push(m), end: () => {}, reconnect: () => {}, micStats: () => dropped.shift()! },
+        { outputRate: 24000, staleSeq: 6, maxMs: 3_600_000, startedAt: 0 },
+      );
+      const counters = () => emitted.filter((m) => m.type === "log" && m.message.startsWith("counters"));
+      c.tick(60_000);
+      c.tick(120_000);
+      expect(counters()).toEqual([
+        { type: "log", level: "info", message: "counters (60s): clears=0 speechStarted=0 delegates=0 steersSpoken=0 micDrops=2 micDroppedMs=1800" },
+        { type: "log", level: "info", message: "counters (60s): clears=0 speechStarted=0 delegates=0 steersSpoken=0 micDrops=0 micDroppedMs=0" },
+      ]);
+    });
+
     it("takes item start offsets from the audio link's clock, which counts keepalive silence", async () => {
       const { c, provider, audio } = setup();
       let clock = 0;

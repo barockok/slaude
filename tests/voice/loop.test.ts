@@ -255,4 +255,33 @@ describe("runVoiceLoop", () => {
       process.off("unhandledRejection", h);
     }
   });
+
+  it("paces burst mic audio to the provider and counts dropped ms in the counters line", async () => {
+    const provider = new FakeProvider();
+    const audio = new FakeAudio();
+    const ib = inbox();
+    const out: ChildMsg[] = [];
+    let offset = 0;
+    const done = runVoiceLoop({ init, makeProvider: () => provider, audio, inbox: ib, emit: (m) => out.push(m), tickMs: 5, now: () => 1_000_000 + offset });
+    await until(() => audio.handlers !== null);
+    // 5 s of call audio at once (a stalled SSE flushing).
+    audio.handlers!.onAudio(pcm(24_000 * 5));
+    const sent = () => provider.named("sendAudio").reduce((n, c) => n + (c[1] as number), 0);
+    // Only the burst allowance goes out at once, not 5 s.
+    expect(sent()).toBeLessThanOrEqual(24_000 * 0.2);
+    await Bun.sleep(150);
+    expect(sent()).toBeLessThanOrEqual(24_000 * (0.2 + 0.15 + 0.05));
+    offset = 60_000;
+    const counters = () => out.filter((m) => m.type === "log" && m.message.startsWith("counters"));
+    await until(() => counters().length === 1);
+    const msg = (counters()[0] as { message: string }).message;
+    const ms = Number(msg.match(/micDroppedMs=(\d+)/)![1]);
+    expect(ms).toBeGreaterThanOrEqual(3_700);
+    expect(ms).toBeLessThanOrEqual(3_800);
+    ib.push({ type: "stop", reason: "stopped" });
+    expect(await done).toBe("stopped");
+    const atStop = sent();
+    await Bun.sleep(100);
+    expect(sent()).toBe(atStop); // nothing is sent after the call ends
+  });
 });
