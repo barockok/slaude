@@ -37,7 +37,7 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
 // specifier means coverage is attributed to src/agent/manager.ts.
 const { AgentManager } = await import("../../src/agent/manager");
 const Sessions = await import("../../src/db/sessions");
-const { injectedTurns } = await import("../../src/voice/turn-flags");
+const { injectedTurns, voiceTurns } = await import("../../src/voice/turn-flags");
 const { VoiceCalls } = await import("../../src/voice/call");
 
 // ---------------------------------------------------------------------------
@@ -611,18 +611,36 @@ describe("AgentManager lifecycle", () => {
         };
       });
 
-    it("skips it for a runner-injected turn (injectedTurns active)", async () => {
+    it("skips it for a delegated voice turn (voiceTurns active)", async () => {
       process.env.SLAUDE_AUTO_EVOLVE = "1";
       const mgr = new AgentManager();
       const events = record(mgr);
       const row = await mgr.ensureSession(thread());
       const fs = evolving();
       injectedTurns.enter(row.id);
+      voiceTurns.enter(row.id);
       try {
         await mgr.sendMessage(row.id, "voice request");
         await until(() => events.some((e) => e.type === "done"), 3000, "done");
         await Bun.sleep(40);
         expect(fs.users.length).toBe(1);
+      } finally {
+        voiceTurns.exit(row.id);
+        injectedTurns.exit(row.id);
+      }
+      await shutdown(mgr, row.id);
+    });
+
+    it("allows it for the end-of-call summary turn (injected, not voice, call no longer live)", async () => {
+      process.env.SLAUDE_AUTO_EVOLVE = "1";
+      const mgr = new AgentManager();
+      const row = await mgr.ensureSession(thread());
+      const fs = evolving();
+      injectedTurns.enter(row.id);
+      try {
+        await mgr.sendMessage(row.id, "the voice call has ended; post a summary");
+        await until(() => fs.users.length === 2, 3000, "auto-evolve after the summary");
+        expect(String(fs.users[1].message.content)).toContain("<auto-evolve>");
       } finally {
         injectedTurns.exit(row.id);
       }

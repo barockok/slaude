@@ -382,7 +382,14 @@ export class VoiceCall {
     }
     if (!this.#cancelled) {
       this.#flushPending();
-      if (this.#started) this.#enqueue(() => this.#run(summaryPrompt(reason, path), { suppress: false, voice: false }));
+      if (this.#started) {
+        this.#enqueue(() => {
+          // Every mid-call turn ran with the call registered (no auto-evolve);
+          // the summary runs without it, so the call's lessons can be learned.
+          liveCalls.delete(this.d.sessionId);
+          return this.#run(summaryPrompt(reason, path), { suppress: false, voice: false });
+        });
+      }
     }
     await this.#queue;
     if (this.#started) this.d.holdIdle(false);

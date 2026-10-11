@@ -775,7 +775,7 @@ describe("VoiceCall delegate queue", () => {
     expect(says(t.child)).toHaveLength(0);
   });
 
-  it("a queued batch runs before the summary", async () => {
+  it("a queued batch runs before the summary; only the summary runs with the call deregistered", async () => {
     const calls = new VoiceCalls();
     const t = gated();
     await t.start();
@@ -794,6 +794,8 @@ describe("VoiceCall delegate queue", () => {
       await t.call.done;
       expect(t.runs[1]!.text).toContain('reply_to="2"');
       expect(t.runs[2]!.text).toContain("The voice call has ended");
+      // Mid-call turns ran with the call live; the summary may auto-evolve.
+      expect(t.runs.map((r) => r.live)).toEqual([true, true, false]);
     } finally {
       calls.remove("s1");
     }

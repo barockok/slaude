@@ -353,8 +353,10 @@ no provider.
 The lag had three parent-side causes. The manager's `<auto-evolve>` follow-up
 ran after every voice turn that used two or more tools and occupied the
 session, so the next delegate queued behind it; it is now skipped while a call
-owns the session (a runner turn is in flight, or a call is registered, which
-covers Slack turns mid-call), and resumes when the call ends. Delegates ran one
+owns the session (a delegated voice turn is in flight, or a call is
+registered, which covers Slack turns mid-call). The closing summary runs after
+the call is deregistered, so it may auto-evolve and the call's lessons can still
+become skills. Delegates ran one
 turn each, strictly in order, so a second request waited for the whole first
 turn, any flush and the auto-evolve. Requests that queue behind a running turn
 now merge, with any due transcript flush, into one turn ("requests #2, #3"),
