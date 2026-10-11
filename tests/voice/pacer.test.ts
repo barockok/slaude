@@ -20,23 +20,24 @@ function setup(o: { maxBacklogMs?: number } = {}) {
 }
 
 describe("MicPacer", () => {
-  it("a 3 s burst delivered at once goes out over ~3 s, never faster than 1.2x real time", () => {
+  it("a 3 s burst delivered at once drains at the catch-up rate, never faster than 1.2x real time", () => {
     // Backlog cap raised: this case is about the rate alone (the default 1 s
     // cap would drop most of an instant 3 s burst, see the next case).
     const { clock, sent, p, total } = setup({ maxBacklogMs: 5_000 });
     for (let i = 0; i < 150; i++) p.push(chunk(20)); // 3 s, all at t=0
     for (let t = 0; t <= 4_000; t += 10) clock.advanceTo(t);
     expect(msOf(total())).toBeCloseTo(3_000, 0);
+    // ~3 s at 1.1x is ~2.7 s; the last 200 ms of backlog goes at 1.0x.
     const lastAt = sent.at(-1)!.at;
-    expect(lastAt).toBeGreaterThan(2_700);
-    expect(lastAt).toBeLessThan(3_100);
-    // Cumulative never ahead of the burst allowance plus real time, and over
-    // any window from 1 s on, never above 1.2x.
+    expect(lastAt).toBeGreaterThan(2_650);
+    expect(lastAt).toBeLessThan(2_900);
+    // Cumulative never ahead of the burst allowance plus 1.1x real time, and
+    // from 1 s on (burst included), never above 1.2x.
     let cum = 0;
     for (const s of sent) {
       cum += s.samples;
-      expect(msOf(cum)).toBeLessThanOrEqual(100 + s.at + 1);
-      if (s.at >= 500) expect(msOf(cum) / s.at).toBeLessThanOrEqual(1.2 + 1e-9);
+      expect(msOf(cum)).toBeLessThanOrEqual(100 + s.at * 1.1 + 1);
+      if (s.at >= 1_000) expect(msOf(cum) / s.at).toBeLessThanOrEqual(1.2 + 1e-9);
     }
     expect(p.takeStats()).toEqual({ droppedMs: 0, drops: 0 });
   });
@@ -59,6 +60,20 @@ describe("MicPacer", () => {
     expect(firstValues.has(100)).toBe(false);
     // Stats reset after being taken.
     expect(p.takeStats()).toEqual({ droppedMs: 0, drops: 0 });
+  });
+
+  it("a source running 3% fast for a minute builds no backlog and drops nothing", () => {
+    const { clock, p, total } = setup();
+    // 20 ms chunks arriving every 19.4 ms: the source clock runs 3% fast.
+    let at = 0;
+    for (let i = 0; i < 3_000; i++) {
+      at = i * 19.4;
+      clock.advanceTo(at);
+      p.push(chunk(20));
+    }
+    clock.advanceTo(at + 1_000);
+    expect(p.takeStats()).toEqual({ droppedMs: 0, drops: 0 });
+    expect(msOf(total())).toBeCloseTo(60_000, 0);
   });
 
   it("steady real-time input passes through with under 60 ms added delay", () => {
