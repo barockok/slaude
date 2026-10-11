@@ -223,7 +223,9 @@ describe("AudioLink", () => {
     await until(() => wb.uplinkData.length === 2400);
     expect(wb.uplinkData.slice(0, 1200).every((x: number) => x === 2)).toBe(true);
     expect(wb.uplinkData.slice(1200).every((x: number) => x === 3)).toBe(true);
-    expect(logs.join("\n")).toMatch(/dropped 2400 bytes/);
+    expect(logs.join("\n")).toMatch(/dropped 2400 bytes \(50 ms\)/);
+    // The dropped audio never reaches the audio provider: the uplink clock does not count it.
+    expect(link.clockMs()).toBe(100);
   });
 
   it("close during a busy wait returns promptly", async () => {

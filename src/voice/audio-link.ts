@@ -326,7 +326,8 @@ export class AudioLink implements AudioLinkLike {
         start: (c) => {
           for (const chunk of this.#ring) c.enqueue(chunk);
           if (this.#ringDropped > 0) {
-            this.o.log?.(`uplink replay buffer: dropped ${this.#ringDropped} bytes of the oldest audio while the audio provider was busy`);
+            const ms = Math.round((this.#ringDropped / 2 / this.o.endpoints.sampleRate) * 1000);
+            this.o.log?.(`uplink replay buffer: dropped ${this.#ringDropped} bytes (${ms} ms) of the oldest audio while the audio provider was busy`);
             this.#ringDropped = 0;
           }
           this.#uplinkCtl = c;
@@ -439,7 +440,12 @@ export class AudioLink implements AudioLinkLike {
     while (this.#ringBytes > bound && this.#ring.length > 1) {
       const old = this.#ring.shift()!;
       this.#ringBytes -= old.byteLength;
-      this.#ringDropped += old.byteLength;
+      // Live uplink: those bytes were already sent, the ring only trims. In a
+      // busy wait they will never be sent, so the uplink clock must not count them.
+      if (!this.#uplinkCtl) {
+        this.#ringDropped += old.byteLength;
+        this.#clockMs -= (old.byteLength / 2 / this.o.endpoints.sampleRate) * 1000;
+      }
     }
     if (!this.#uplinkCtl) return;
     try {
