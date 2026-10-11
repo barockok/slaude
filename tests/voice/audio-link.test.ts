@@ -685,3 +685,157 @@ describe("redactCapabilityUrls: exact match, whatever the secret's shape", () =>
     expect(redactCapabilityUrls("session=s1 closed cleanly", eps)).toBe("session=s1 closed cleanly");
   });
 });
+
+/**
+ * The heartbeat uplink (an audio provider behind Cloudflare): the POST response
+ * starts at once (200, JSON), carries a newline straight away and then every
+ * heartbeat, and ends with {"played_ms":N} when the body or the session ends.
+ * On session end the response ends and the socket is destroyed. node:http so a
+ * test can destroy the socket mid-response.
+ */
+async function heartbeatWorkbench(o: { heartbeatMs?: number; ignoreBodyEnd?: boolean } = {}) {
+  const { createServer } = await import("node:http");
+  const st: any = { uplinkBytes: 0, sse: null as any, res: null as any, reqEnded: false };
+  const timers: Array<ReturnType<typeof setInterval>> = [];
+  const server = createServer((req, res) => {
+    if (req.method === "GET") {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(": ping\n\n");
+      st.sse = res;
+      return;
+    }
+    if (req.method === "POST" && req.url?.endsWith("/audio/stream")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.write("\n");
+      st.res = res;
+      const iv = setInterval(() => { if (!res.writableEnded && !res.destroyed) res.write("\n"); }, o.heartbeatMs ?? 30);
+      timers.push(iv);
+      req.on("data", (c: Buffer) => (st.uplinkBytes += c.byteLength));
+      req.on("end", () => {
+        st.reqEnded = true;
+        if (o.ignoreBodyEnd) return;
+        clearInterval(iv);
+        if (!res.writableEnded) res.end(JSON.stringify({ played_ms: Math.round(st.uplinkBytes / 48) }));
+      });
+      req.on("error", () => {});
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  st.base = `http://127.0.0.1:${(server.address() as any).port}`;
+  st.sendAudio = (pcm: Int16Array) => st.sse?.write(sse("audio", { seq: 1, pcm: pcmToBase64(pcm) }));
+  /** The session ends: the response ends with played_ms, then the socket is destroyed. */
+  st.endSession = () => {
+    for (const t of timers) clearInterval(t);
+    st.res.end(JSON.stringify({ played_ms: 4321 }), () => st.res.socket?.destroy());
+  };
+  st.destroy = () => {
+    for (const t of timers) clearInterval(t);
+    st.res.socket?.destroy();
+  };
+  st.stop = () => {
+    for (const t of timers) clearInterval(t);
+    server.closeAllConnections?.();
+    server.close();
+  };
+  return st;
+}
+
+describe("AudioLink: heartbeat uplink response (early headers)", () => {
+  it("early headers and heartbeats keep the call running; audio flows both ways; the body ending is audio_lost with its status", async () => {
+    wb = await heartbeatWorkbench({ heartbeatMs: 20 });
+    const lines: string[] = [];
+    const link = newLink({ baseUrl: wb.base, endpoints, log: (l) => lines.push(l) });
+    const got: number[][] = [];
+    let reason = "";
+    await link.start({ onAudio: (p) => got.push([...p]), onEnded: (r) => (reason = r) });
+    await until(() => wb.res !== null && wb.sse !== null);
+    await Bun.sleep(250); // many heartbeats
+    expect(reason).toBe("");
+    link.write(new Int16Array(240));
+    await until(() => wb.uplinkBytes >= 480);
+    wb.sendAudio(new Int16Array([1, 2, 3]));
+    await until(() => got.length === 1);
+    expect(got[0]).toEqual([1, 2, 3]);
+    expect(reason).toBe("");
+    wb.endSession();
+    await until(() => reason !== "");
+    expect(reason).toBe("audio_lost");
+    const lost = lines.filter((l) => l.startsWith("audio lost"));
+    expect(lost).toHaveLength(1);
+    expect(lost[0]).toMatch(/^audio lost: leg=uplink status=200 ended_event=no after=\d+(\.\d)?s body="/);
+    expect(lost[0]).toContain("played_ms");
+    expect(lost[0]).not.toContain(CAP);
+    await link.close();
+  });
+
+  it("close during the drain ends the uplink cleanly and promptly, with no audio_lost", async () => {
+    wb = await heartbeatWorkbench({ heartbeatMs: 20 });
+    const lines: string[] = [];
+    const link = newLink({ baseUrl: wb.base, endpoints, log: (l) => lines.push(l) });
+    let reason = "";
+    await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+    await until(() => wb.res !== null);
+    await Bun.sleep(100);
+    const t0 = Date.now();
+    await link.close();
+    expect(Date.now() - t0).toBeLessThan(1000);
+    await until(() => wb.reqEnded);
+    expect(reason).toBe("");
+    expect(lines.filter((l) => l.startsWith("audio lost"))).toEqual([]);
+  });
+
+  it("close is bounded when the provider keeps heartbeating after the body ends", async () => {
+    wb = await heartbeatWorkbench({ heartbeatMs: 20, ignoreBodyEnd: true });
+    const link = newLink({ baseUrl: wb.base, endpoints, closeTimeoutMs: 100 });
+    let reason = "";
+    await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+    await until(() => wb.res !== null);
+    await Bun.sleep(60);
+    expect(reason).toBe("");
+    const t0 = Date.now();
+    await link.close();
+    expect(Date.now() - t0).toBeLessThan(1000);
+    await Bun.sleep(100);
+    expect(reason).toBe("");
+  });
+
+  it("a socket destroyed mid-drain is audio_lost with a sensible log line", async () => {
+    wb = await heartbeatWorkbench({ heartbeatMs: 20 });
+    const lines: string[] = [];
+    const link = newLink({ baseUrl: wb.base, endpoints, log: (l) => lines.push(l) });
+    let reason = "";
+    await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+    await until(() => wb.res !== null);
+    await Bun.sleep(100);
+    expect(reason).toBe("");
+    wb.destroy();
+    await until(() => reason !== "");
+    expect(reason).toBe("audio_lost");
+    const lost = lines.filter((l) => l.startsWith("audio lost"));
+    expect(lost).toHaveLength(1);
+    expect(lost[0]).toMatch(/^audio lost: leg=uplink status=200 ended_event=no after=\d+(\.\d)?s body="/);
+    expect(lost[0]).not.toContain(CAP);
+    expect(lost[0]!.length).toBeLessThan(400);
+    expect(lost[0]).toContain("read failed");
+    await link.close();
+  });
+
+  it("old behaviour (the response only at the end of the body) still closes cleanly", async () => {
+    wb = fakeWorkbench();
+    const lines: string[] = [];
+    const link = newLink({ baseUrl: wb.base, endpoints, log: (l) => lines.push(l) });
+    let reason = "";
+    await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+    await Bun.sleep(100);
+    expect(reason).toBe("");
+    link.write(new Int16Array(10));
+    const t0 = Date.now();
+    await link.close();
+    expect(Date.now() - t0).toBeLessThan(1000);
+    await until(() => wb.uplinkBytes === 20);
+    expect(reason).toBe("");
+    expect(lines.filter((l) => l.startsWith("audio lost"))).toEqual([]);
+  });
+});

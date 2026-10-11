@@ -33,6 +33,8 @@ export interface AudioLinkLike {
 const SNIPPET_MAX = 160;
 /** How long an end-cause log waits for a response body. */
 const SNIPPET_WAIT_MS = 500;
+/** How much of a drained uplink response body is kept (its tail) for the end-cause log. */
+const DRAIN_TAIL_MAX = 4096;
 type Leg = "sse" | "uplink" | "clear";
 interface Failure { status: number; body: string }
 
@@ -250,9 +252,47 @@ export class AudioLink implements AudioLinkLike {
       void reader.cancel().catch(() => {});
     }
   }
-  #clean(s: string): string {
+  #clean(s: string, fromEnd = false): string {
     // Redact before capping, so a cut can never leave a partial secret unmatched.
-    return this.#redactor.redact(s.replace(/[\r\n\t]+/g, " ")).replace(/"/g, "'").slice(0, SNIPPET_MAX);
+    const out = this.#redactor.redact(s.replace(/[\r\n\t]+/g, " ")).replace(/"/g, "'");
+    return fromEnd ? out.slice(-SNIPPET_MAX) : out.slice(0, SNIPPET_MAX);
+  }
+  /**
+   * Read a 2xx uplink response to its end. An audio provider behind a proxy
+   * with an origin timeout (Cloudflare's is 100 s) starts the response at once
+   * and writes whitespace heartbeats, then ends it with {"played_ms":N} when
+   * the body or its session ends; an older provider answers only at the end.
+   * Either way only the END of the body is the uplink settling. Whitespace
+   * heartbeats are skipped; at most the last DRAIN_TAIL_MAX characters are
+   * kept. Resolves with the scrubbed tail (plus the read error, if the read
+   * failed). The abort signal cancels the read at once.
+   */
+  async #drain(r: Response, signal: AbortSignal): Promise<string> {
+    if (!r.body) return "";
+    const reader = r.body.getReader();
+    const onAbort = () => void reader.cancel().catch(() => {});
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    const dec = new TextDecoder();
+    let tail = "";
+    let err = "";
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const text = dec.decode(value, { stream: true });
+        if (!text.trim()) continue; // a heartbeat
+        tail = (tail + text).slice(-DRAIN_TAIL_MAX);
+      }
+      tail = (tail + dec.decode()).slice(-DRAIN_TAIL_MAX);
+    } catch (e) {
+      err = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      void reader.cancel().catch(() => {});
+    }
+    const t = tail.trim();
+    return this.#clean(err ? (t ? `${t} (read failed: ${err})` : `read failed: ${err}`) : t, true);
   }
   #errText(e: unknown): string {
     return this.#clean(e instanceof Error ? `${e.name}: ${e.message}` : String(e));
@@ -321,7 +361,8 @@ export class AudioLink implements AudioLinkLike {
 
   /** The uplink lives for the whole call: it settling (any status other than a
    *  busy 409 inside the window, or an error) while the call is open means the
-   *  agent can no longer be heard. */
+   *  agent can no longer be heard. For a 2xx, settling is the END of the
+   *  response body (see #drain), not its headers. */
   async #uplinkLoop(): Promise<void> {
     let busySince = 0;
     for (let attempt = 0; ; attempt++) {
@@ -362,6 +403,10 @@ export class AudioLink implements AudioLinkLike {
       } catch (e) {
         err = e;
       }
+      // Headers are not the uplink settling: a 2xx response may start at once
+      // (heartbeats) and run for the whole call. Only its end is.
+      let drained: string | null = null;
+      if (res?.ok && !this.#closed && !this.#ended) drained = await this.#drain(res, attemptAbort.signal);
       this.#uplinkAbort.signal.removeEventListener("abort", onAbort);
       if (status === 409 && !this.#closed && !this.#ended) {
         this.#uplinkCtl = null; // writes go to the replay buffer only
@@ -372,7 +417,7 @@ export class AudioLink implements AudioLinkLike {
         void res?.body?.cancel().catch(() => {});
         return;
       }
-      const why = err ? this.#errText(err) : status === 409 ? "busy window spent" : await this.#snippet(res);
+      const why = err ? this.#errText(err) : status === 409 ? "busy window spent" : drained ?? (await this.#snippet(res));
       this.#lost("uplink", { status, body: why });
       return;
     }
