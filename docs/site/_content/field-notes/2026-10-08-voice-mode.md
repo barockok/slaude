@@ -370,6 +370,64 @@ the runner's 120-second busy limit plus a 15-second margin fails with the usual
 "Request #N failed" line rather than waiting behind a stuck turn; the deadline
 is a timer, so it fires even while the turn ahead never returns.
 
+## Changed in rc.6: Cloudflare, burst audio and the join turn
+
+Live smoke tests through a public audio provider behind Cloudflare found three
+problems.
+
+**The uplink and Cloudflare's 100-second origin timeout.** The uplink is one
+POST for the whole call, and Cloudflare answers `524` when the origin has sent
+no response within 100 seconds, so every call ended at about 100 s. The audio
+provider's fix is to start the response at once (`200`, JSON), write a newline
+straight away and then every 20 s, and end with `{"played_ms":N}` when the body
+or its session ends (on session end it also destroys the socket). That
+collided with an assumption in the audio link: it awaited `fetch()` for the
+uplink, which resolves when the response *headers* arrive, and treated that as
+the uplink settling. With early headers every call would have ended at once.
+The link now drains a 2xx uplink response. Whitespace heartbeats are skipped,
+at most the last 4 KB is kept in the drain's own frame, and only the end of the
+body or a read error counts as settling. The existing rule then applies:
+settling while the call is open is `audio_lost`. Non-2xx and the 409 busy wait
+are unchanged, and a provider that answers only at the end behaves as before.
+Close ends the request body and gives the provider its usual two seconds to
+finish. Abort cancels the read at once. The end-cause line logs `played_ms=N`
+when the tail is that JSON. Anything else goes through the capability redactor
+(URLs and route header values) and the 160-character cap. A destroyed socket
+logs `read failed: …`.
+
+Cloudflare also caps request bodies (about 100 MB on Free and Pro), and the
+uplink body grows at 48 KB/s at 24 kHz, so a call behind it ends after about 35
+minutes. The fix is not in slaude. It needs a plan with a larger cap, or an
+uplink that rotates its request.
+
+**Burst mic audio.** When the audio provider's host was short of CPU, its event
+stream delivered meeting audio in bursts. GPT-Live dropped the appends ("Input
+audio is arriving too quickly … no more than 1.2x real time"), and the model
+heard nothing. A pacer (`src/voice/pacer.ts`) now sits between the audio link
+and `provider.sendAudio`. It is a token bucket in samples at the provider's
+input rate, at most 1.0x on average, with a 200 ms burst allowance so steady
+input passes straight through. Past 1 s of backlog the oldest audio is dropped,
+so latency stays bounded instead of growing. Drops (count and ms, never audio)
+go into the 60 s counters line. The pacer is cleared on reconnect, because audio
+queued for the old session is stale, and closed at call end. It applies to
+every provider. At real time it is a pass-through for Realtime and Gemini.
+
+**The join turn starved the first delegate.** The Slack turn that calls
+`voice_start` does not end there: a join skill goes on to navigate and join the
+meeting, holding the session for minutes. A delegate queued behind it failed
+after the runner's 120-second busy limit, and the 135-second queue deadline
+would have failed it anyway. We chose a signal over a probe: until one of the
+call's own turns has held the session (the runner reports it, on mono when no
+turn is in flight after the identity check, and on a node when the session lock
+is taken), the start turn cannot have ended, so the runner wait and the queue
+deadline use ten minutes. From the first acquisition on, the normal budgets
+apply. This needs no "which turn is the start turn" bookkeeping and works the
+same on mono and nodes. The cost is that if the start turn ends and an unrelated
+Slack turn starts before any call turn runs, that turn also gets the long
+budget. The voice's 60-second still-working line keeps the room informed while
+it waits. The `voice_start` description now tells the agent to end its turn
+promptly once joined.
+
 ## Measured
 
 Not yet. To fill during the release-candidate soak: flush latency, the accuracy
