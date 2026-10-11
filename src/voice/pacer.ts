@@ -14,7 +14,7 @@ export interface MicPacerOptions {
   /** Provider input sample rate (samples per second). */
   rate: number;
   send(pcm: Int16Array): void;
-  /** Audio that may go out at once above real time (default 200 ms). */
+  /** Audio that may go out at once above real time (default 100 ms: the provider's rate window is unknown). */
   burstMs?: number;
   /** Queued audio past this is dropped, oldest first (default 1000 ms). */
   maxBacklogMs?: number;
@@ -38,7 +38,7 @@ export class MicPacer {
 
   constructor(o: MicPacerOptions) {
     this.#o = {
-      burstMs: 200, maxBacklogMs: 1_000, tickMs: 20,
+      burstMs: 100, maxBacklogMs: 1_000, tickMs: 20,
       now: () => performance.now(),
       setTimer: (fn, ms) => setTimeout(fn, ms),
       clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),

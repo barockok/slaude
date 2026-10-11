@@ -1,34 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { MicPacer } from "../../src/voice/pacer";
-
-/** A virtual clock with timers fired in time order. */
-function virtualClock() {
-  let t = 0;
-  let nextId = 1;
-  const timers = new Map<number, { at: number; fn: () => void }>();
-  return {
-    now: () => t,
-    setTimer: (fn: () => void, ms: number) => {
-      const id = nextId++;
-      timers.set(id, { at: t + Math.max(0, ms), fn });
-      return id as unknown;
-    },
-    clearTimer: (h: unknown) => void timers.delete(h as number),
-    pending: () => timers.size,
-    /** Advance to `to`, firing due timers in order. */
-    advanceTo(to: number) {
-      for (;;) {
-        let first: [number, { at: number; fn: () => void }] | null = null;
-        for (const e of timers) if (e[1].at <= to && (!first || e[1].at < first[1].at)) first = e;
-        if (!first) break;
-        timers.delete(first[0]);
-        t = first[1].at;
-        first[1].fn();
-      }
-      t = to;
-    },
-  };
-}
+import { virtualClock } from "./fakes";
 
 const RATE = 24_000;
 const msOf = (samples: number) => (samples * 1000) / RATE;
@@ -63,8 +35,8 @@ describe("MicPacer", () => {
     let cum = 0;
     for (const s of sent) {
       cum += s.samples;
-      expect(msOf(cum)).toBeLessThanOrEqual(200 + s.at + 1);
-      if (s.at >= 1_000) expect(msOf(cum) / s.at).toBeLessThanOrEqual(1.2 + 1e-9);
+      expect(msOf(cum)).toBeLessThanOrEqual(100 + s.at + 1);
+      if (s.at >= 500) expect(msOf(cum) / s.at).toBeLessThanOrEqual(1.2 + 1e-9);
     }
     expect(p.takeStats()).toEqual({ droppedMs: 0, drops: 0 });
   });
@@ -77,7 +49,7 @@ describe("MicPacer", () => {
     expect(stats.drops).toBeGreaterThan(0);
     // What went out plus what was dropped is all of it; at most burst + 1 s went out.
     expect(Math.round(msOf(total()) + stats.droppedMs)).toBe(5_000);
-    expect(msOf(total())).toBeLessThanOrEqual(1_200 + 1);
+    expect(msOf(total())).toBeLessThanOrEqual(1_100 + 1);
     // The newest audio is kept: the last sample sent is from the last chunk,
     // and it went out within ~1 s of arriving.
     expect(sent.at(-1)!.first).toBe(250);
