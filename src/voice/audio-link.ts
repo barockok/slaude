@@ -291,7 +291,13 @@ export class AudioLink implements AudioLinkLike {
       signal.removeEventListener("abort", onAbort);
       void reader.cancel().catch(() => {});
     }
-    const t = tail.trim();
+    // The tail lives only in this frame (dropped when the drain ends, close
+    // included). The expected end, {"played_ms":N}, is logged as a number;
+    // anything else goes through #clean (capability redaction, URL scrub, cap).
+    let t = tail.trim();
+    tail = "";
+    const played = parsePlayedMs(t);
+    if (played !== null) t = `played_ms=${played}`;
     return this.#clean(err ? (t ? `${t} (read failed: ${err})` : `read failed: ${err}`) : t, true);
   }
   #errText(e: unknown): string {
@@ -544,6 +550,17 @@ export class AudioLink implements AudioLinkLike {
     ]);
     clearTimeout(timer);
     if (!settled) this.#uplinkAbort.abort();
+  }
+}
+
+/** N from an uplink end body that is exactly a JSON object with a numeric played_ms; else null. */
+function parsePlayedMs(s: string): number | null {
+  if (!s.startsWith("{")) return null;
+  try {
+    const j = JSON.parse(s) as { played_ms?: unknown };
+    return typeof j?.played_ms === "number" && Number.isFinite(j.played_ms) ? Math.round(j.played_ms) : null;
+  } catch {
+    return null;
   }
 }
 

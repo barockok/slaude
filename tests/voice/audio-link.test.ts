@@ -726,9 +726,9 @@ async function heartbeatWorkbench(o: { heartbeatMs?: number; ignoreBodyEnd?: boo
   st.base = `http://127.0.0.1:${(server.address() as any).port}`;
   st.sendAudio = (pcm: Int16Array) => st.sse?.write(sse("audio", { seq: 1, pcm: pcmToBase64(pcm) }));
   /** The session ends: the response ends with played_ms, then the socket is destroyed. */
-  st.endSession = () => {
+  st.endSession = (body: string = JSON.stringify({ played_ms: 4321 })) => {
     for (const t of timers) clearInterval(t);
-    st.res.end(JSON.stringify({ played_ms: 4321 }), () => st.res.socket?.destroy());
+    st.res.end(body, () => st.res.socket?.destroy());
   };
   st.destroy = () => {
     for (const t of timers) clearInterval(t);
@@ -765,8 +765,32 @@ describe("AudioLink: heartbeat uplink response (early headers)", () => {
     const lost = lines.filter((l) => l.startsWith("audio lost"));
     expect(lost).toHaveLength(1);
     expect(lost[0]).toMatch(/^audio lost: leg=uplink status=200 ended_event=no after=\d+(\.\d)?s body="/);
-    expect(lost[0]).toContain("played_ms");
+    // A parseable {"played_ms":N} end is logged as played_ms=N, not the raw body.
+    expect(lost[0]).toContain('body="played_ms=4321"');
     expect(lost[0]).not.toContain(CAP);
+    await link.close();
+  });
+
+  it("an end body carrying a capability URL and a route header value is masked and capped in the log line", async () => {
+    wb = await heartbeatWorkbench({ heartbeatMs: 20 });
+    const lines: string[] = [];
+    const link = newLink({ baseUrl: wb.base, endpoints: { ...endpoints, headers: { "X-Browser-Session": "route-tok-9f3a" } }, log: (l) => lines.push(l) });
+    let reason = "";
+    await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+    await until(() => wb.res !== null);
+    await Bun.sleep(60);
+    wb.endSession(`{"error":"session gone","url":"${wb.base}/api/browser/audio/${CAP}/audio/stream?k=1","route":"route-tok-9f3a"}`);
+    await until(() => reason !== "");
+    const lost = lines.filter((l) => l.startsWith("audio lost"));
+    expect(lost).toHaveLength(1);
+    expect(lost[0]).toContain("session gone");
+    expect(lost[0]).not.toContain(CAP);
+    expect(lost[0]).not.toContain("route-tok-9f3a");
+    expect(lost[0]).not.toContain("/api/browser/audio/");
+    const body = lost[0]!.match(/body="(.*)"$/)![1]!;
+    expect(body.length).toBeLessThanOrEqual(160);
+    // Heartbeats never reach a log line.
+    expect(lines.filter((l) => !l.startsWith("audio lost"))).toEqual([]);
     await link.close();
   });
 
