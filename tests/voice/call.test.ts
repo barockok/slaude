@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { VoiceCall, VoiceCalls, TRANSCRIPT_FLUSH_PREFIX, type LoopChild, type TurnRunner } from "../../src/voice/call";
 import type { ChildMsg, ParentMsg, VoiceInit } from "../../src/voice/ipc";
 import { fakeChild, until } from "./fakes";
-import { VoiceAuthLost } from "../../src/voice/runners";
+import { VoiceAuthLost, VoiceTurnCancelled } from "../../src/voice/runners";
+import { liveCalls } from "../../src/voice/turn-flags";
 
 // The unpatched timer functions, for tests that spy on setTimeout/clearTimeout.
 (globalThis as any).__realSetTimeout = setTimeout;
@@ -488,18 +489,28 @@ describe("VoiceCalls", () => {
 });
 
 /** A call whose runner holds every turn until the test releases it. */
-function gated(over: { idleFlushMs?: number; queueWaitMs?: number; fail?: (text: string) => boolean } = {}) {
+function gated(over: {
+  idleFlushMs?: number; queueWaitMs?: number;
+  /** true: throw a plain error; an Error: throw that. */
+  fail?: (text: string) => boolean | Error;
+  /** Runs inside the turn, after its gate opens (e.g. Claude's voice_say). */
+  during?: (text: string, call: VoiceCall) => void;
+} = {}) {
   const child = fakeChild();
-  const runs: Array<{ text: string; suppress: boolean; voice: boolean }> = [];
+  const runs: Array<{ text: string; suppress: boolean; voice: boolean; live: boolean }> = [];
   const gates: Array<() => void> = [];
+  let call!: VoiceCall;
   const runner: TurnRunner = {
     run: async (_s, text, o) => {
-      runs.push({ text, suppress: o.suppress, voice: o.voice });
+      runs.push({ text, suppress: o.suppress, voice: o.voice, live: liveCalls.has("s1") });
       await new Promise<void>((r) => gates.push(r));
-      if (over.fail?.(text)) throw new Error("turn failed");
+      over.during?.(text, call);
+      const f = over.fail?.(text);
+      if (f instanceof Error) throw f;
+      if (f) throw new Error("turn failed");
     },
   };
-  const call = new VoiceCall({
+  call = new VoiceCall({
     sessionId: "s1", runner, child, transcriptDir: tmp(), holdIdle: () => true, onClosed: () => {},
     idleFlushMs: over.idleFlushMs ?? 60_000, queueWaitMs: over.queueWaitMs,
   });
@@ -644,5 +655,147 @@ describe("VoiceCall delegate queue", () => {
     t.release();
     await Bun.sleep(30);
     expect(t.runs).toHaveLength(1);
+  });
+
+  it("a failed merged turn fails only the requests it had not answered", async () => {
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    const t = gated({
+      fail: (x) => x.includes("#2, #3"),
+      during: (x, call) => { if (x.includes("#2, #3")) call.say("two is done", "next_gap", "2"); },
+    });
+    await t.start();
+    t.child.push({ type: "delegate", id: "1", task: "first", asOf: 0 });
+    await until(() => t.runs.length === 1);
+    t.child.push({ type: "delegate", id: "2", task: "second", asOf: 0 });
+    t.child.push({ type: "delegate", id: "3", task: "third", asOf: 0 });
+    await Bun.sleep(10);
+    t.release();
+    await until(() => t.runs.length === 2);
+    t.release();
+    await until(() => says(t.child).length === 2);
+    await Bun.sleep(10);
+    expect(says(t.child).map((s) => [s.replyTo, s.text.includes("failed")])).toEqual([["2", false], ["3", true]]);
+    err.mockRestore();
+  });
+
+  it("a cancelled turn fails no request", async () => {
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    const t = gated({ fail: () => new VoiceTurnCancelled() });
+    await t.start();
+    t.child.push({ type: "delegate", id: "1", task: "first", asOf: 0 });
+    await until(() => t.runs.length === 1);
+    t.release();
+    await Bun.sleep(20);
+    expect(says(t.child)).toHaveLength(0);
+    err.mockRestore();
+  });
+
+  it("a turn that fails after the call was cancelled fails no request", async () => {
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    const t = gated({ fail: () => true });
+    await t.start();
+    t.child.push({ type: "delegate", id: "1", task: "first", asOf: 0 });
+    await until(() => t.runs.length === 1);
+    const stopping = t.call.stop("session_rebooted");
+    t.release();
+    await Bun.sleep(20);
+    expect(says(t.child)).toHaveLength(0);
+    t.child.push({ type: "ended", reason: "session_rebooted" });
+    await stopping;
+    err.mockRestore();
+  });
+
+  it("after the call closed, a late delegate or transcript line opens no batch", async () => {
+    // The process exits while its stdout stays open: the call closes on the
+    // exit, and the stream can still deliver lines afterwards.
+    const q: ChildMsg[] = [{ type: "started", callId: "x", sampleRate: 24000 }];
+    let wake: (() => void) | null = null;
+    const feed = (m: ChildMsg) => { q.push(m); wake?.(); };
+    let exit!: (n: number) => void;
+    const sent: ParentMsg[] = [];
+    const child: LoopChild = {
+      send: (m) => void sent.push(m),
+      exited: new Promise<number>((r) => (exit = r)),
+      kill: () => {},
+      messages: { async *[Symbol.asyncIterator]() { while (true) { if (q.length) { yield q.shift()!; continue; } await new Promise<void>((r) => (wake = r)); } } },
+    };
+    const runs: string[] = [];
+    const runner: TurnRunner = { run: async (_s, text) => { runs.push(text); } };
+    const call = new VoiceCall({ sessionId: "s1", runner, child, transcriptDir: tmp(), holdIdle: () => true, onClosed: () => {}, idleFlushMs: 10, exitGraceMs: 5 });
+    await call.start(init(call.callId));
+    call.stop("stopped").catch(() => {});
+    exit(0);
+    expect(await call.done).toBe("stopped");
+    expect(runs).toHaveLength(1); // the summary
+    feed({ type: "delegate", id: "9", task: "late", asOf: 0 });
+    feed({ type: "transcript", seq: 5, role: "user", text: "late line" });
+    await Bun.sleep(40);
+    expect(runs).toHaveLength(1);
+    expect(sent.some((m) => m.type === "say")).toBe(false);
+  });
+
+  it("a failed flush-only turn puts its transcript back and re-arms the flush", async () => {
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    let first = true;
+    const t = gated({ idleFlushMs: 15, fail: () => { const f = first; first = false; return f; } });
+    await t.start();
+    t.child.push({ type: "transcript", seq: 1, role: "user", text: "keep me" });
+    await until(() => t.runs.length === 1);
+    t.release();
+    await until(() => t.runs.length === 2, 1000);
+    expect(t.runs[1]).toMatchObject({ suppress: true });
+    expect(t.runs[1]!.text).toBe(`${TRANSCRIPT_FLUSH_PREFIX}\nparticipant: keep me`);
+    t.release();
+    err.mockRestore();
+  });
+
+  it("a deadline due after the batch started fails nothing", async () => {
+    const t = gated({ queueWaitMs: 30 });
+    await t.start();
+    t.child.push({ type: "delegate", id: "1", task: "first", asOf: 0 });
+    await until(() => t.runs.length === 1);
+    await Bun.sleep(60); // well past the deadline, while the turn runs
+    t.release();
+    await Bun.sleep(10);
+    expect(says(t.child)).toHaveLength(0);
+  });
+
+  it("a cancel with a batch queued drops it: it never runs and its deadline says nothing", async () => {
+    const t = gated({ queueWaitMs: 30 });
+    await t.start();
+    t.child.push({ type: "delegate", id: "1", task: "first", asOf: 0 });
+    await until(() => t.runs.length === 1);
+    t.child.push({ type: "delegate", id: "2", task: "second", asOf: 0 });
+    const stopping = t.call.stop("session_rebooted");
+    await Bun.sleep(60);
+    t.release();
+    t.child.push({ type: "ended", reason: "session_rebooted" });
+    await stopping;
+    expect(t.runs).toHaveLength(1);
+    expect(says(t.child)).toHaveLength(0);
+  });
+
+  it("a queued batch runs before the summary", async () => {
+    const calls = new VoiceCalls();
+    const t = gated();
+    await t.start();
+    calls.add("s1", t.call);
+    try {
+      t.child.push({ type: "delegate", id: "1", task: "first", asOf: 0 });
+      await until(() => t.runs.length === 1);
+      t.child.push({ type: "delegate", id: "2", task: "second", asOf: 0 });
+      await Bun.sleep(10);
+      t.child.push({ type: "ended", reason: "stopped" });
+      t.release();
+      await until(() => t.runs.length === 2);
+      t.release();
+      await until(() => t.runs.length === 3);
+      t.release();
+      await t.call.done;
+      expect(t.runs[1]!.text).toContain('reply_to="2"');
+      expect(t.runs[2]!.text).toContain("The voice call has ended");
+    } finally {
+      calls.remove("s1");
+    }
   });
 });

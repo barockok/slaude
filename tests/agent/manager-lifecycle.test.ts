@@ -637,13 +637,15 @@ describe("AgentManager lifecycle", () => {
       const fs = evolving();
       const calls = new VoiceCalls();
       calls.add(row.id, {} as any);
-      // A Slack turn mid-call: no runner flag, only the live call.
-      await mgr.sendMessage(row.id, "slack message mid-call");
-      await until(() => events.some((e) => e.type === "done"), 3000, "done");
-      await Bun.sleep(40);
-      expect(fs.users.length).toBe(1);
-
-      calls.remove(row.id);
+      try {
+        // A Slack turn mid-call: no runner flag, only the live call.
+        await mgr.sendMessage(row.id, "slack message mid-call");
+        await until(() => events.some((e) => e.type === "done"), 3000, "done");
+        await Bun.sleep(40);
+        expect(fs.users.length).toBe(1);
+      } finally {
+        calls.remove(row.id);
+      }
       await mgr.sendMessage(row.id, "after the call");
       await until(() => fs.users.length === 3, 3000, "auto-evolve after the call");
       expect(String(fs.users[2].message.content)).toContain("<auto-evolve>");

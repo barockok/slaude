@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { liveCalls } from "../../src/voice/turn-flags";
 import { createVoiceMcp, buildInstructions, SPEAKING_RULES, voiceStartSchema, voiceStartProblem, type VoiceHost } from "../../src/agent/voice-mcp";
 import { VoiceCalls } from "../../src/voice/call";
 import { buildAudioPolicy } from "../../src/voice/audio-acl";
@@ -307,6 +308,7 @@ describe("voice MCP", () => {
     expect(text(r)).toContain("VOICE_START_FAILED");
     expect(killed).toBeGreaterThan(0);
     expect(calls.get("s1")).toBeUndefined();
+    expect(liveCalls.has("s1")).toBe(false);
     t0.h.spawn = spawn;
     expect((await t["voice_start"].handler(startArgs)).isError).toBeFalsy();
   });

@@ -9,7 +9,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { transcriptLine, type ChildMsg, type EndReason, type VoiceInit } from "./ipc";
 import type { LoopChild } from "./spawn";
-import { DEFAULT_MAX_WAIT_MS, VoiceAuthLost } from "./runners";
+import { DEFAULT_MAX_WAIT_MS, VoiceAuthLost, VoiceTurnCancelled } from "./runners";
 import { CapabilityRedactor } from "./audio-link";
 import { liveCalls } from "./turn-flags";
 
@@ -102,6 +102,9 @@ export class VoiceCall {
   /** Delegate id → the seq it was asked at, so its reply is judged stale
    *  against what Claude knew, not what the child had heard at tool time. */
   #delegateAsOf = new Map<string, number>();
+  /** Requests Claude already answered (a voice_say with reply_to): a turn
+   *  that fails afterwards does not tell the voice they failed. */
+  #answered = new Set<string>();
   #queue: Promise<void> = Promise.resolve();
   /** The batch queued for the next turn and not started yet (null: none). */
   #batch: Batch | null = null;
@@ -182,6 +185,9 @@ export class VoiceCall {
   }
 
   #onChild(m: ChildMsg): void {
+    // After close (the process exited, its stdout still open) nothing more is
+    // queued: a batch would run after the summary with no live call.
+    if (this.#endReason && (m.type === "transcript" || m.type === "delegate")) return;
     if (m.type === "transcript") {
       this.#pendingSeq = m.seq;
       const line = transcriptLine(m.role, m.text);
@@ -235,7 +241,13 @@ export class VoiceCall {
       // Every delegate in it expired and no flush was due: nothing to send.
       if (!b.flush) return;
       const t = this.#takePending();
-      if (t) await this.#run(`${TRANSCRIPT_FLUSH_PREFIX}\n${t}`, { suppress: true, voice: true });
+      if (!t) return;
+      try {
+        await this.#run(`${TRANSCRIPT_FLUSH_PREFIX}\n${t}`, { suppress: true, voice: true });
+      } catch (e) {
+        this.#restore(t, e);
+        throw e;
+      }
       return;
     }
     const transcript = this.#takePending();
@@ -244,13 +256,22 @@ export class VoiceCall {
     } catch (e) {
       const ids = reqs.map((r) => `#${r.id}`).join(", ");
       console.error(`[voice] request ${ids} failed session=${this.d.sessionId}:`, e instanceof Error ? e.message : e);
-      // Claude never saw this chunk; carry it in the next flush.
-      if (transcript) this.#pending.unshift(transcript);
+      this.#restore(transcript, e);
       if (e instanceof VoiceAuthLost) return this.#authLost();
-      // Re-arm the flush so the chunk goes in even if nobody speaks again.
-      if (transcript && !this.#cancelled && !this.#endReason) this.#armFlush();
-      for (const r of reqs) this.#failRequest(r.id);
+      // A cancelled turn is the call going away, not a failed request.
+      if (e instanceof VoiceTurnCancelled || this.#cancelled) return;
+      for (const r of reqs) if (!this.#answered.has(r.id)) this.#failRequest(r.id);
     }
+  }
+
+  /** A turn failed: Claude may never have seen its transcript chunk, so carry
+   *  it in the next flush, and re-arm the flush so it goes in even if nobody
+   *  speaks again (not when the call is going away). */
+  #restore(transcript: string, e: unknown): void {
+    if (!transcript) return;
+    this.#pending.unshift(transcript);
+    if (e instanceof VoiceAuthLost || e instanceof VoiceTurnCancelled) return;
+    if (!this.#cancelled && !this.#endReason) this.#armFlush();
   }
 
   #takePending(): string {
@@ -302,6 +323,7 @@ export class VoiceCall {
   }
 
   say(text: string, when: "next_gap" | "now", replyTo?: string): void {
+    if (replyTo !== undefined) this.#answered.add(replyTo);
     const asOf = (replyTo !== undefined ? this.#delegateAsOf.get(replyTo) : undefined) ?? this.#seenSeq;
     this.d.child.send({ type: "say", text, when, replyTo, asOf });
   }
