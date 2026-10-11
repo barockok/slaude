@@ -32,6 +32,16 @@ export const voiceTurns = turnFlags();
  *  worker keeps its done/error out of the shared event stream. */
 export const injectedTurns = turnFlags();
 
+/** Sessions with a live voice call in this process (VoiceCalls keeps it). */
+export const liveCalls = new Set<string>();
+
+/** A voice call owns this session right now: a runner turn is running on it,
+ *  or a call is live (a Slack turn mid-call too). The manager skips its
+ *  auto-evolve follow-up then, so the next delegate is not queued behind it. */
+export function voiceCallActive(sessionId: string): boolean {
+  return liveCalls.has(sessionId) || injectedTurns.active(sessionId) || voiceTurns.active(sessionId);
+}
+
 export const VOICE_QUIET_TOOLS: ReadonlySet<string> = new Set(["reply", "edit", "react", "unreact", "upload", "typing"]);
 
 /** Tools on the deprecated `slaude_slack` server that post into Slack. */

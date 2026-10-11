@@ -37,6 +37,8 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
 // specifier means coverage is attributed to src/agent/manager.ts.
 const { AgentManager } = await import("../../src/agent/manager");
 const Sessions = await import("../../src/db/sessions");
+const { injectedTurns } = await import("../../src/voice/turn-flags");
+const { VoiceCalls } = await import("../../src/voice/call");
 
 // ---------------------------------------------------------------------------
 // Fake SDK session
@@ -596,6 +598,57 @@ describe("AgentManager lifecycle", () => {
     expect(fs.users.length).toBe(2);
 
     await shutdown(mgr, row.id);
+  });
+
+  describe("auto-evolve during a voice call", () => {
+    /** A turn that would normally trigger auto-evolve (>=2 substantive tools). */
+    const evolving = () =>
+      plan((s) => {
+        s.onUser = (um) => {
+          if (String(um.message.content).includes("<auto-evolve>")) return void s.emit(res());
+          s.emit(asst([tool("Bash"), tool("Write"), txt("done")]));
+          s.emit(res());
+        };
+      });
+
+    it("skips it for a runner-injected turn (injectedTurns active)", async () => {
+      process.env.SLAUDE_AUTO_EVOLVE = "1";
+      const mgr = new AgentManager();
+      const events = record(mgr);
+      const row = await mgr.ensureSession(thread());
+      const fs = evolving();
+      injectedTurns.enter(row.id);
+      try {
+        await mgr.sendMessage(row.id, "voice request");
+        await until(() => events.some((e) => e.type === "done"), 3000, "done");
+        await Bun.sleep(40);
+        expect(fs.users.length).toBe(1);
+      } finally {
+        injectedTurns.exit(row.id);
+      }
+      await shutdown(mgr, row.id);
+    });
+
+    it("skips it for any turn while a call is live, and resumes after the call ends", async () => {
+      process.env.SLAUDE_AUTO_EVOLVE = "1";
+      const mgr = new AgentManager();
+      const events = record(mgr);
+      const row = await mgr.ensureSession(thread());
+      const fs = evolving();
+      const calls = new VoiceCalls();
+      calls.add(row.id, {} as any);
+      // A Slack turn mid-call: no runner flag, only the live call.
+      await mgr.sendMessage(row.id, "slack message mid-call");
+      await until(() => events.some((e) => e.type === "done"), 3000, "done");
+      await Bun.sleep(40);
+      expect(fs.users.length).toBe(1);
+
+      calls.remove(row.id);
+      await mgr.sendMessage(row.id, "after the call");
+      await until(() => fs.users.length === 3, 3000, "auto-evolve after the call");
+      expect(String(fs.users[2].message.content)).toContain("<auto-evolve>");
+      await shutdown(mgr, row.id);
+    });
   });
 
   it("skips auto-evolve when the turn already wrote a skill", async () => {

@@ -11,6 +11,7 @@ import { transcriptLine, type ChildMsg, type EndReason, type VoiceInit } from ".
 import type { LoopChild } from "./spawn";
 import { VoiceAuthLost } from "./runners";
 import { CapabilityRedactor } from "./audio-link";
+import { liveCalls } from "./turn-flags";
 
 export type { LoopChild } from "./spawn";
 
@@ -299,9 +300,11 @@ export class VoiceCalls {
   }
   add(sessionId: string, call: VoiceCall): void {
     this.#calls.set(sessionId, call);
+    liveCalls.add(sessionId);
   }
   remove(sessionId: string): void {
     this.#calls.delete(sessionId);
+    liveCalls.delete(sessionId);
   }
   async end(sessionId: string, reason: EndReason): Promise<void> {
     await this.#calls.get(sessionId)?.stop(reason);

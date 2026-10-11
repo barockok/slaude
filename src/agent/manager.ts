@@ -47,6 +47,7 @@ import { formatSessionNotes } from "./session-notes";
 import { BootFailure, type FailureCode } from "../gateway/core/failure-codes";
 import { redactSecrets } from "../gateway/core/status-text";
 import { REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, makeRemoteCanUseTool } from "../remote/mcp";
+import { voiceCallActive } from "../voice/turn-flags";
 import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/types";
 
 /** Upper bound on waiting for a previous remote handle's job cleanup at boot. */
@@ -1587,7 +1588,9 @@ export class AgentManager extends EventEmitter {
             sessionId,
             ...(wasAutoEvolve ? { autoEvolve: true } : {}),
           } satisfies AgentEvent);
-          if (live && !wasAutoEvolve && !deferredReload && this.#shouldAutoEvolve(live)) {
+          // Never during a voice call: the follow-up turn would occupy the
+          // session and the next delegated request would queue behind it.
+          if (live && !wasAutoEvolve && !deferredReload && !voiceCallActive(sessionId) && this.#shouldAutoEvolve(live)) {
             live.inAutoEvolve = true;
             live.turnTools = [];
             live.pushUser(AUTO_EVOLVE_PROMPT);
