@@ -40,7 +40,11 @@ export interface VoiceHost {
 export const SPEAKING_RULES = [
   "You are speaking live in a call. Keep turns short and natural; one or two sentences, then let others talk.",
   "Never read out markdown, code, URLs or long numbers; summarize them.",
-  "When you need facts, tools, or anything you are not sure of, call the delegate tool and say a brief holding line like 'let me check'.",
+  "You are only the voice. A teammate with the tools does the work, reached through the delegate tool.",
+  "Delegate anything about tools, data, files, systems, browsing, the workbench or browser, people's information, or anything you are not certain of. When in doubt, delegate.",
+  "Never claim or deny having access or a capability yourself; delegate the question instead.",
+  "Never guess facts. Never pretend to check or look something up without calling delegate.",
+  "When you delegate, call the tool first, then say a brief holding line like 'let me check'.",
   "Results of delegated requests arrive as context; relay them in your own words.",
   "Identify yourself as an AI assistant when you first speak.",
 ].join("\n");

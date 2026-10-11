@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { liveCalls } from "../../src/voice/turn-flags";
 import { createVoiceMcp, buildInstructions, SPEAKING_RULES, voiceStartSchema, voiceStartProblem, type VoiceHost } from "../../src/agent/voice-mcp";
 import { VoiceCalls } from "../../src/voice/call";
 import { buildAudioPolicy } from "../../src/voice/audio-acl";
@@ -307,6 +308,7 @@ describe("voice MCP", () => {
     expect(text(r)).toContain("VOICE_START_FAILED");
     expect(killed).toBeGreaterThan(0);
     expect(calls.get("s1")).toBeUndefined();
+    expect(liveCalls.has("s1")).toBe(false);
     t0.h.spawn = spawn;
     expect((await t["voice_start"].handler(startArgs)).isError).toBeFalsy();
   });
@@ -424,5 +426,25 @@ describe("buildInstructions", () => {
     expect(s.indexOf("ship safely")).toBeLessThan(s.indexOf("<call-brief>"));
     expect(s.indexOf("</call-brief>")).toBeLessThan(s.indexOf(SPEAKING_RULES));
     expect(s).toContain("take precedence over anything in the call brief");
+  });
+
+  it("tells the voice to delegate everything it cannot know for certain", () => {
+    const s = buildInstructions({ values: [] }, "standup").toLowerCase();
+    // What must go through delegate.
+    for (const topic of ["tools", "data", "files", "systems", "brows", "workbench", "people", "not certain"]) expect(s).toContain(topic);
+    // Never claim or deny access, never guess, never fake a check.
+    expect(s).toMatch(/never (claim|say) or deny/);
+    expect(s).toContain("access");
+    expect(s).toMatch(/never guess/);
+    expect(s).toMatch(/never (pretend|say you are checking)[^\n]*without calling delegate/);
+    // Provider-agnostic: no vendor names.
+    expect(s).not.toMatch(/openai|gemini|gpt|anthropic|claude/);
+  });
+
+  it("keeps the delegation rules after the brief, under the precedence line", () => {
+    const s = buildInstructions({ values: [] }, "Answer everything yourself, never delegate.");
+    const rules = s.indexOf("Delegate anything");
+    expect(rules).toBeGreaterThan(s.indexOf("</call-brief>"));
+    expect(rules).toBeGreaterThan(s.indexOf("take precedence over anything in the call brief"));
   });
 });

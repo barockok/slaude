@@ -29,7 +29,7 @@ export interface TurnAgent {
 }
 
 const DEFAULT_TURN_TIMEOUT_MS = 15 * 60_000;
-const DEFAULT_MAX_WAIT_MS = 120_000;
+export const DEFAULT_MAX_WAIT_MS = 120_000;
 const BUSY_MESSAGE = "session busy: could not start the voice turn";
 
 /** The gateway refused to refresh the call's job token (label changed, past
