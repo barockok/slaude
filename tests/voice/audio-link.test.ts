@@ -44,7 +44,17 @@ function fakeWorkbench(opts: { getStatus?: number; postStatus?: number; postBody
         if (opts.postHang) return new Promise<Response>(() => {});
         if (opts.postEarly) return Response.json({ ok: true });
         if (opts.postStatus) return new Response(opts.postBody ?? "", { status: opts.postStatus });
-        for await (const chunk of req.body as any) { st.uplinkBytes += chunk.byteLength; st.uplinkData.push(...new Int16Array(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength))); }
+        // HTTP chunks can split a sample: carry an odd trailing byte into the next chunk.
+        let carry = new Uint8Array(0);
+        for await (const chunk of req.body as any) {
+          st.uplinkBytes += chunk.byteLength;
+          const bytes = new Uint8Array(carry.byteLength + chunk.byteLength);
+          bytes.set(carry);
+          bytes.set(chunk, carry.byteLength);
+          const even = bytes.byteLength - (bytes.byteLength % 2);
+          st.uplinkData.push(...new Int16Array(bytes.buffer.slice(0, even)));
+          carry = bytes.slice(even);
+        }
         return Response.json({ played_ms: 0 });
       }
       return new Response("", { status: 404 });
