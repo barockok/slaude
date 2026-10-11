@@ -82,9 +82,12 @@ export class CapabilityRedactor {
   readonly #pieces: string[];
   readonly #empty: boolean;
 
-  constructor(endpoints: { streamUrl: string; clearUrl: string }) {
+  constructor(endpoints: { streamUrl: string; clearUrl: string; headers?: Record<string, string> }) {
     const routeWords = ROUTE_WORDS;
     const pieces: string[] = [];
+    // Route header values (e.g. X-Browser-Session) gate the same audio routes:
+    // masked like any other secret piece, in every encoding.
+    for (const v of Object.values(endpoints.headers ?? {})) if (v) pieces.push(...encodings(v));
     for (const raw of [endpoints.streamUrl, endpoints.clearUrl]) {
       if (!raw) continue;
       let u: URL | null = null;
@@ -214,7 +217,7 @@ export class AudioLink implements AudioLinkLike {
     this.#routeHeaders = Object.fromEntries(
       Object.entries(o.endpoints.headers).filter(([k]) => !FORBIDDEN_HEADERS.has(k.toLowerCase())),
     );
-    this.#redactor = new CapabilityRedactor({ streamUrl: this.#streamUrl, clearUrl: this.#clearUrl });
+    this.#redactor = new CapabilityRedactor({ streamUrl: this.#streamUrl, clearUrl: this.#clearUrl, headers: o.endpoints.headers });
   }
 
   clockMs(): number {

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "bun:test";
-import { AudioLink, redactCapabilityUrls } from "../../src/voice/audio-link";
+import { AudioLink, CapabilityRedactor, redactCapabilityUrls } from "../../src/voice/audio-link";
 import { parseAudioOrigins } from "../../src/voice/audio-acl";
 import { pcmToBase64 } from "../../src/voice/provider/types";
 import { FakeProvider, until } from "./fakes";
@@ -536,6 +536,27 @@ describe("AudioLink", () => {
       await link.close();
       expect(lines).toEqual([expect.stringMatching(/^audio clear failed: leg=clear status=410/)]);
     });
+  });
+});
+
+describe("CapabilityRedactor: route header values", () => {
+  it("masks route header values when the endpoints carry headers", () => {
+    const r = new CapabilityRedactor({
+      streamUrl: `https://wb.example.com/api/browser/audio/${CAP}/stream`, clearUrl: `https://wb.example.com/api/browser/audio/${CAP}/clear`,
+      headers: { "X-Browser-Session": "rk-session-7f3a9c", "X-Other": "ab" },
+    });
+    expect(r.redact("session rk-session-7f3a9c is gone; other=ab; abc stays")).toBe("session … is gone; other=…; abc stays");
+  });
+
+  it("an end-cause body snippet echoing the route header value is masked", async () => {
+    wb = fakeWorkbench({ postStatus: 502, postBody: "bad session rk-session-7f3a9c" });
+    const lines: string[] = [];
+    const link = newLink({ baseUrl: wb.base, endpoints: { ...endpoints, headers: { "X-Browser-Session": "rk-session-7f3a9c" } }, log: (l) => lines.push(l) });
+    let reason = "";
+    await link.start({ onAudio: () => {}, onEnded: (r) => (reason = r) });
+    await until(() => reason === "audio_lost");
+    await link.close();
+    expect(lines.join("\n")).toContain('body="bad session …"');
   });
 });
 
