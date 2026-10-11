@@ -96,9 +96,8 @@ rejected. The mapping onto the provider interface is lossy:
   - transcript lag behind speech (how late barge-in is detected, and whether a
     backchannel cuts the agent off);
   - `expires_at` at start;
-  - whether a commentary with no delegation id is spoken while a delegation is
-    open: answers carry `delegation_id: null`, so confirm the model accepts
-    and speaks them;
+  - whether an answer on its delegation id is spoken (the rc.4 smoke showed
+    answers with `delegation_id: null` were not; rc.5 sends the id, below);
   - whether a `now` utterance replays the tail of the old one: with no cancel,
     the model may finish its previous sentence after the flush.
 
@@ -265,6 +264,52 @@ the thread sees no voice tools and no error. A new gateway's
 bundle has no `workbenchUrl`: an old node has nothing to compare against and
 refuses every `voice_start` with `VOICE_BAD_ENDPOINT`. No call starts either
 way; gateway and nodes upgrade together.
+
+## Changed in rc.5: what a live GPT-Live smoke showed
+
+A live call (GPT-Live, an in-cluster workbench, a meeting tab) found five
+problems in the voice child:
+
+- **Clear storm.** The workbench logged 13 `clear` calls in about four minutes,
+  three within four seconds, and the agent's audio sounded choppy. GPT-Live's
+  "participant started speaking" is synthesized from input transcript deltas,
+  which also fire on echo and backchannels, and the conductor flushed the tab's
+  queue on every one. GPT-Live is full duplex and yields to a speaker itself, so
+  a new provider capability, `handlesBargeIn`, tells the conductor to leave the
+  uplink alone on speech start (it still tracks who is speaking for its gap
+  logic, and an explicit `now` still flushes). OpenAI Realtime and Gemini are
+  unchanged. Headphones on the meeting machine avoid the echo in the first
+  place.
+- **Answers never spoken.** Answers delivered as `voice_say(next_gap)` went
+  out as `session.commentary.append` with `delegation_id: null`. A test with
+  the real conductor, the adapter and a fake server showed the gap logic
+  working (the commentary was sent, after the holding line or with the model
+  idle) and the id missing. The live-delegation guide says to use "the
+  original client delegation ID for an update about that task"; null is
+  session-wide context. The conductor now hands the provider's own delegation
+  id to `respond()` when a say carries `reply_to`, and drops it after a
+  reconnect, since a new session does not know the old ids. Not yet confirmed
+  on a live call.
+- **Nudge after the answer.** A queued "still working on #N" could play after
+  #N's answer. Answering #N now removes its queued nudge; open delegates are
+  capped at 32 and cleared when the call ends.
+- **Silent uplink timed out.** A proxy's 60-second body idle timeout ended a
+  call `audio_lost` while the agent was quiet. The audio link now writes
+  20 ms of silence every 20 ms once its scheduled audio has run out, so the
+  silence never delays or interleaves with real audio. The workbench counts
+  that silence in `played_ms`, so it advances the link's uplink clock exactly
+  as audio does, and the conductor takes item offsets from that clock.
+- **Silent `audio_lost`.** The end now logs one warning with the leg, the HTTP
+  status, a capped and scrubbed body snippet, whether an `ended` event had
+  arrived, and the call's duration. Provider lifecycle events are logged at
+  info, plus a counters line every minute (clears, speech starts, delegates,
+  utterances spoken) so a clear storm shows up in the logs.
+
+Also from review against the Realtime function-call guide: the adapter sent
+`response.create` as soon as a function call's arguments arrived, while that
+call's response was still active; the documented flow sends it after the
+response is done. Creates during an active response (tool results and steers)
+are now coalesced and sent at its `response.done`.
 
 ## Measured
 
