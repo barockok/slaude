@@ -425,4 +425,24 @@ describe("buildInstructions", () => {
     expect(s.indexOf("</call-brief>")).toBeLessThan(s.indexOf(SPEAKING_RULES));
     expect(s).toContain("take precedence over anything in the call brief");
   });
+
+  it("tells the voice to delegate everything it cannot know for certain", () => {
+    const s = buildInstructions({ values: [] }, "standup").toLowerCase();
+    // What must go through delegate.
+    for (const topic of ["tools", "data", "files", "systems", "brows", "workbench", "people", "not certain"]) expect(s).toContain(topic);
+    // Never claim or deny access, never guess, never fake a check.
+    expect(s).toMatch(/never (claim|say) or deny/);
+    expect(s).toContain("access");
+    expect(s).toMatch(/never guess/);
+    expect(s).toMatch(/never (pretend|say you are checking)[^\n]*without calling delegate/);
+    // Provider-agnostic: no vendor names.
+    expect(s).not.toMatch(/openai|gemini|gpt|anthropic|claude/);
+  });
+
+  it("keeps the delegation rules after the brief, under the precedence line", () => {
+    const s = buildInstructions({ values: [] }, "Answer everything yourself, never delegate.");
+    const rules = s.indexOf("Delegate anything");
+    expect(rules).toBeGreaterThan(s.indexOf("</call-brief>"));
+    expect(rules).toBeGreaterThan(s.indexOf("take precedence over anything in the call brief"));
+  });
 });
