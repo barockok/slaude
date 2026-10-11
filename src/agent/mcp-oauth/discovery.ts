@@ -1,4 +1,5 @@
 import type { FetchLike } from "./types";
+import { outboundFetch } from "../../net/outbound-policy";
 
 export interface AuthServerMeta {
   authorizationEndpoint: string;
@@ -21,14 +22,16 @@ function wellKnownPrmUrls(serverUrl: string): string[] {
 }
 
 /** Resolve the OAuth authorization-server metadata for an HTTP MCP server.
- *  fetchImpl is injectable for tests; defaults to global fetch. */
-export async function discover(serverUrl: string, fetchImpl: FetchLike = fetch as any): Promise<AuthServerMeta> {
+ *  fetchImpl is injectable for tests; defaults to the outbound policy
+ *  (src/net/outbound-policy.ts): the server URL is configuration and every
+ *  later URL comes from the server's own metadata. */
+export async function discover(serverUrl: string, fetchImpl: FetchLike = outboundFetch): Promise<AuthServerMeta> {
   const probe = await fetchImpl(serverUrl);
   const wwwAuth = probe.headers.get("www-authenticate") || "";
   const m = wwwAuth.match(/resource_metadata="([^"]+)"/);
 
   // Resolve the protected-resource metadata URL. Preferred: the `resource_metadata`
-  // hint from a 401 challenge. Fallback (RFC 9728 §3): some servers (e.g. workbench)
+  // hint from a 401 challenge. Fallback (RFC 9728 §3): some servers
   // don't emit the challenge on a bare GET — they 404 — but still serve the metadata
   // at the well-known URL derived from the server URL. Try the path-aware variant
   // first, then the root, before giving up.

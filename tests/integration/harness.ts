@@ -21,7 +21,6 @@ export async function setupScenarioEnv(): Promise<void> {
   process.env.SLAUDE_BRAIN_DISABLED = "1";
   process.env.SLAUDE_NODE_TOKEN = NODE_TOKEN;
   process.env.SLAUDE_JOB_SECRET = JOB_SECRET;
-  process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
   const { ensureHome } = await import("../../src/config/home");
   const { writeSoulFixture, WORLD } = await import("../../src/gateway/sim/soul-fixture");
   ensureHome();
@@ -54,7 +53,7 @@ export interface Replica {
  * Redis through the shared key prefix — exactly the multi-replica topology,
  * minus the network between them and the store.
  */
-export async function bootReplica(keys: any): Promise<Replica> {
+export async function bootReplica(keys: any, opts: { panel?: boolean } = {}): Promise<Replica> {
   const { AgentManager } = await import("../../src/agent/manager");
   const { SimTransport } = await import("../../src/gateway/sim/transport");
   const { createGateway } = await import("../../src/gateway/core/gateway");
@@ -62,6 +61,7 @@ export async function bootReplica(keys: any): Promise<Replica> {
   const { TurnQueues } = await import("../../src/queue/turns");
   const { makeRegistry } = await import("../../src/queue/registry");
   const { makePubSub } = await import("../../src/queue/pubsub");
+  const { makePanelLock } = await import("../../src/queue/panel-lock");
   const { Redis } = await import("ioredis");
 
   const redis = new Redis(REAL_URL, { maxRetriesPerRequest: null });
@@ -84,11 +84,22 @@ export async function bootReplica(keys: any): Promise<Replica> {
       await inner.dispatch(session, text, meta);
     },
   };
-  const handle = createGateway(agent, transport, { queueDispatch: qd });
+  // Panel injected over the SAME redis + key prefix as the dispatcher so the
+  // lock, event stream and warm registry all agree. Short lock TTL so TTL-expiry
+  // scenarios are fast.
+  const panel = opts.panel
+    ? {
+        registry: infra.registry,
+        pubsub: infra.pubsub,
+        panelLock: makePanelLock({ redis, keys, ttlMs: 1500 }),
+      }
+    : undefined;
+  const handle = createGateway(agent, transport, { queueDispatch: qd, panel });
   const server = Bun.serve({
     port: 0,
     idleTimeout: 0,
-    fetch: async (req: Request) => (await handle.fetchV1(req)) ?? new Response("nf", { status: 404 }),
+    fetch: async (req: Request) =>
+      (await handle.fetchV1(req)) ?? (await handle.fetchPanel(req)) ?? new Response("nf", { status: 404 }),
   });
   return {
     agent,
@@ -133,7 +144,9 @@ export async function bootNode(
     nodeTtlSec: 3,
     drainSec: 5,
     port: null,
-    lock: { ttlMs: 2000, extendEveryMs: 300 },
+    // See src/gateway/sim/cluster.ts's bootNode for why this isn't 2000/300
+    // anymore (issue #111) — same tight-margin session lock, same fix.
+    lock: { ttlMs: 10_000, extendEveryMs: 1_500 },
     turnTimeoutMs: 30_000,
     ...(opts.worker as object),
   });

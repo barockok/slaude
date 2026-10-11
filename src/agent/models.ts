@@ -12,6 +12,34 @@ export function __resetModelCache(): void {
 }
 
 /**
+ * `/model` validation for a session whose persona may run on its OWN provider
+ * (WS-A §5.5). listModels asks the gateway's provider; a persona with provider
+ * references runs elsewhere, so its choice is passed through unverified rather
+ * than rejected or "verified" against the wrong catalogue. The persona's
+ * credentials are deliberately not resolved here: that would put them in the
+ * gateway's own process for a convenience check.
+ */
+export async function verifyModelChoice(
+  id: string,
+  personaProvider: unknown,
+  list: () => Promise<ModelInfo[]> = listModels,
+): Promise<boolean> {
+  if (personaProvider) return false;
+  try {
+    return (await list()).some((m) => m.id === id);
+  } catch {
+    // provider has no /v1/models (non-Anthropic gateway) — pass through.
+    return false;
+  }
+}
+
+/** The model list `/model` shows; refused for a persona on its own provider. */
+export async function listModelsFor(personaProvider: unknown, list: () => Promise<ModelInfo[]> = listModels): Promise<ModelInfo[]> {
+  if (personaProvider) throw new Error("this persona runs on its own provider; its model list is not available here");
+  return list();
+}
+
+/**
  * Fetch the provider's available models from `GET /v1/models`. Returns the
  * exact `id` strings to pass to the SDK `options.model` / `Query.setModel()`.
  *

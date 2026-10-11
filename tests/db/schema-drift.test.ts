@@ -16,13 +16,41 @@ const PG_ONLY_TABLES = new Set([
   "slack_apps",
   "personas",
   "provider_creds",
+  "persona_overrides", // persona_overrides + persona_sync_state: personas-as-code, Postgres-only like personas
+  "persona_sync_state",
   "schema_migrations",
+  "node_revocations", // gateway-side node credential revocation; sqlite skips revocation
 ]);
 
 // Shared tables that intentionally carry no tenant_id on Postgres: dedup and
 // gate rows are keyed by globally-unique ids (Slack event ids, toolUseIDs)
 // and are purged/resolved too fast to need tenant scoping (spec §4).
-const NO_TENANT_TABLES = new Set(["pending_gates", "seen_events"]);
+// accounts + slack_identities join this list on purpose. An account is a
+// person's identity at the deployment's own identity provider, so it is
+// deployment-global rather than tenant-scoped: the design has one account
+// holding several Slack identities, one per workspace the person is in. The
+// binding row already carries team_id, which IS the workspace dimension, so a
+// tenant_id beside it would be a second copy of the same fact and a fresh
+// source of drift.
+// mcp_credentials joins for the same reason in both of its owner kinds: a
+// person's row reaches tenancy through accounts, which is deployment-global,
+// and an agent's row already carries its tenant explicitly in agent_tenant.
+// portal_oauth_flows joins for the same reason as accounts: it hangs off an
+// account, which is deployment-global, and it holds one authorization for a few
+// minutes before deleting itself.
+// remote_keys joins too: a person's SSH key is keyed by (team_id, user_id), the
+// same workspace-scoped identity slack_identities uses, so tenant_id would only
+// duplicate team_id.
+const NO_TENANT_TABLES = new Set([
+  "pending_gates",
+  "seen_events",
+  "accounts",
+  "slack_identities",
+  "mcp_credentials",
+  "portal_oauth_flows",
+  "slack_oauth_flows",
+  "remote_keys",
+]);
 
 // Tables that exist only on sqlite (legacy; dropped from the pg schema).
 const SQLITE_ONLY_TABLES = new Set(["skill_usage"]);

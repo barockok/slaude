@@ -167,6 +167,23 @@ describe("config/env getters", () => {
     delete process.env.SLAUDE_HTTP_MAX_BODY_BYTES;
   });
 
+  test("slack.apiUrl is unset by default and normalises a trailing slash", () => {
+    const prev = process.env.SLAUDE_SLACK_API_URL;
+    try {
+      delete process.env.SLAUDE_SLACK_API_URL;
+      expect(env.slack.apiUrl()).toBeUndefined();
+      process.env.SLAUDE_SLACK_API_URL = "   ";
+      expect(env.slack.apiUrl()).toBeUndefined();
+      process.env.SLAUDE_SLACK_API_URL = "http://fake-slack:8080/api";
+      expect(env.slack.apiUrl()).toBe("http://fake-slack:8080/api/");
+      process.env.SLAUDE_SLACK_API_URL = "http://fake-slack:8080/api/";
+      expect(env.slack.apiUrl()).toBe("http://fake-slack:8080/api/");
+    } finally {
+      if (prev === undefined) delete process.env.SLAUDE_SLACK_API_URL;
+      else process.env.SLAUDE_SLACK_API_URL = prev;
+    }
+  });
+
   test("slack.httpPort defaults to 8080, validates range", () => {
     delete process.env.SLAUDE_HTTP_PORT;
     expect(env.slack.httpPort()).toBe(8080);

@@ -8,11 +8,14 @@ import type { Surface, SessionBinding } from "../../../src/gateway/core/surface"
 import { db } from "../../../src/db/schema";
 import * as CronJobs from "../../../src/db/cron-jobs";
 import * as OneOnOne from "../../../src/db/one-on-one";
+import * as Remote from "../../../src/db/remote";
+import { __resetMasterKeyCache } from "../../../src/db/crypto";
 import * as MentionOnly from "../../../src/db/mention-only";
 import * as SO from "../../../src/db/soul-overrides";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 import { __resetModelCache } from "../../../src/agent/models";
 import { paths } from "../../../src/config/home";
+import { voiceTurns } from "../../../src/voice/turn-flags";
 import { KB_MCP_NAME } from "../../../src/knowledge/mcp-tools";
 
 // ————————————————————————————————————————————————————————————————————————————
@@ -25,6 +28,7 @@ type Rich = ReturnType<typeof richTransport>;
 function richTransport(o: { botUserId?: string; authThrows?: boolean } = {}) {
   const posts: any[] = [];
   const edits: any[] = [];
+  const reacts: any[] = [];
   const handlers = new Map<string, (args: any) => Promise<void>>();
   const actions: { pattern: RegExp | string; fn: any }[] = [];
   const middlewares: any[] = [];
@@ -39,7 +43,7 @@ function richTransport(o: { botUserId?: string; authThrows?: boolean } = {}) {
       postMessage: async (a: any) => { const ts = `${Date.now()}.${posts.length}`; posts.push({ ...a, ts }); return { ok: true, ts }; },
       update: async (a: any) => { edits.push(a); return { ok: true }; },
     },
-    reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
+    reactions: { add: async (a: any) => { reacts.push(a); return { ok: true }; }, remove: async () => ({ ok: true }) },
     conversations: { info: async () => ({}), members: async () => ({}), replies: async () => ({}) },
     users: { info: async () => ({ user: { real_name: "Test" } }), profile: { set: async () => ({}) } },
     search: { messages: async () => ({}) },
@@ -59,11 +63,10 @@ function richTransport(o: { botUserId?: string; authThrows?: boolean } = {}) {
       if (hit) await fn({ ack: async () => {}, action: { action_id: actionId }, body: { user: { id: userId } }, respond: async () => {} });
     }
   };
-  return { t, client, posts, edits, emit, emitAction, middlewares };
+  return { t, client, posts, edits, reacts, emit, emitAction, middlewares };
 }
 
 function makeGw(o: { transport?: Rich; gwOpts?: GatewayOptions; agent?: AgentManager } = {}) {
-  process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
   const cap = o.transport ?? richTransport();
   const agent = o.agent ?? new AgentManager();
   const sends: string[] = [];
@@ -272,6 +275,86 @@ describe("gateway uncovered branches", () => {
     await new Promise((r) => setTimeout(r, 10));
   });
 
+  it("voice turn: stop guard passes, done/error post nothing, slack reply/post_message and surface reply are quiet", async () => {
+    writeSoulFixture(WORLD);
+    const agent = new AgentManager();
+    let guard: ((id: string) => string | null) | undefined;
+    const orig = agent.setStopGuard.bind(agent);
+    agent.setStopGuard = ((fn: any) => { guard = fn; orig(fn); }) as any;
+    const g = makeGw({ agent });
+    const ts = nextTs();
+    await g.emit("message", dmArgs(g, "hello voice", { ts }));
+    const session = await g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+    const servers = (await g.h.__resolveMcp(session.id))! as any;
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const clients = new Map<string, InstanceType<typeof Client>>();
+    const call = async (server: string, name: string, args: any) => {
+      let client = clients.get(server);
+      if (!client) {
+        const [ct, st] = InMemoryTransport.createLinkedPair();
+        await servers[server].instance.connect(st);
+        client = new Client({ name: "t", version: "0.0.0" });
+        await client.connect(ct);
+        clients.set(server, client);
+      }
+      return client.callTool({ name, arguments: args });
+    };
+    voiceTurns.enter(session.id);
+    try {
+      expect(guard!(session.id)).toBeNull();
+      const before = g.posts.length;
+      g.agent.emit("event", { type: "error", sessionId: session.id, error: "boom", code: "UNKNOWN" } as any);
+      g.agent.emit("event", { type: "done", sessionId: session.id } as any);
+      const r1: any = await call("slaude_slack", "reply", { text: "voice-secret" });
+      const r2: any = await call("slaude_slack", "post_message", { channel: "D_MGR", text: "voice-secret" });
+      const r3: any = await call("slaude_surface", "reply", { text: "voice-secret" });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(g.posts.slice(before).map((p: any) => p.text)).toEqual([]);
+      expect(r1.content[0].text).toContain("voice-suppressed");
+      expect(r2.content[0].text).toContain("voice-suppressed");
+      expect(r3.content[0].text).toContain("suppressed");
+    } finally {
+      voiceTurns.exit(session.id);
+    }
+    // a normal turn still gets the stop-guard nudge and the failure text
+    expect(typeof guard!(session.id)).toBe("string");
+    const before2 = g.posts.length;
+    g.agent.emit("event", { type: "error", sessionId: session.id, error: "boom", code: "UNKNOWN" } as any);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(g.posts.length).toBe(before2 + 1);
+  });
+
+  it("voice turn: toolCall sets no reaction/spoke, done cleans per-turn state without posting", async () => {
+    writeSoulFixture(WORLD);
+    const agent = new AgentManager();
+    let guard: ((id: string) => string | null) | undefined;
+    const orig = agent.setStopGuard.bind(agent);
+    agent.setStopGuard = ((fn: any) => { guard = fn; orig(fn); }) as any;
+    const g = makeGw({ agent });
+    const ts = nextTs();
+    await g.emit("message", dmArgs(g, "hello voice2", { ts }));
+    const session = await g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+    await new Promise((r) => setTimeout(r, 30));
+    const reactsBefore = g.reacts.length;
+    const postsBefore = g.posts.length;
+    voiceTurns.enter(session.id);
+    try {
+      g.agent.emit("event", { type: "toolCall", sessionId: session.id, tool: "Read", input: { file_path: "/x" } } as any);
+      g.agent.emit("event", { type: "toolCall", sessionId: session.id, tool: "mcp__slaude_surface__reply", input: {} } as any);
+      g.agent.emit("event", { type: "toolCall", sessionId: session.id, tool: "TodoWrite", input: { todos: [{ content: "a", status: "pending", activeForm: "a" }] } } as any);
+      g.agent.emit("event", { type: "done", sessionId: session.id } as any);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(g.reacts.length).toBe(reactsBefore);
+      expect(g.posts.length).toBe(postsBefore);
+      expect(g.edits.length).toBe(0);
+    } finally {
+      voiceTurns.exit(session.id);
+    }
+    // the suppressed reply did not count as the agent speaking
+    expect(typeof guard!(session.id)).toBe("string");
+  });
+
   it("KB MCP deps evaluate gate/scope/managers from the live route (brain enabled)", async () => {
     writeSoulFixture(WORLD);
     const sink: { binding?: SessionBinding; approvals: any[] } = { approvals: [] };
@@ -409,6 +492,9 @@ describe("gateway uncovered branches", () => {
 
   it("file attachments are downloaded and wrapped in <attachment> blocks", async () => {
     writeSoulFixture(WORLD);
+    // Socket Mode reads the bot token from the environment, only when files exist.
+    const prevToken = process.env.SLACK_BOT_TOKEN;
+    process.env.SLACK_BOT_TOKEN = "xoxb-test";
     const fileServer = Bun.serve({ port: 0, fetch: async () => new Response("hello attachment") });
     try {
       const g = makeGw();
@@ -420,6 +506,8 @@ describe("gateway uncovered branches", () => {
       expect(g.sends[0]!).toContain("User attached 1 file(s)");
     } finally {
       fileServer.stop(true);
+      if (prevToken === undefined) delete process.env.SLACK_BOT_TOKEN;
+      else process.env.SLACK_BOT_TOKEN = prevToken;
     }
   });
 
@@ -590,6 +678,84 @@ describe("gateway uncovered branches", () => {
       expect(await g.h.__agentOneOnOne("no-such-session", "lock")).toContain("no active thread");
     });
 
+    describe("remote mode invariants", () => {
+      const savedMasterKey = process.env.SLAUDE_MASTER_KEY;
+      const seed = async (ts: string, owner: string) => {
+        process.env.SLAUDE_REMOTE = "1";
+        // Harmless stub: prints nothing, so ping reports "unreachable" without tailcat or a network.
+        process.env.SLAUDE_TAILCAT_BIN = "/usr/bin/true";
+        process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 5).toString("base64");
+        __resetMasterKeyCache();
+        await Remote._wipeForTests();
+        await OneOnOne.lock({ channelId: "D_MGR", threadTs: ts, lockedUser: owner, createdBy: owner });
+        await Remote.putKeyIfAbsent("T", owner, { privateKey: "PRIV", publicKey: "PUB" });
+        await Remote.setTarget({ channelId: "D_MGR", threadTs: ts, teamId: "T", userId: owner, addr: "tcAddr1", dir: "/r", lockByRemote: false });
+      };
+      afterEach(() => {
+        delete process.env.SLAUDE_REMOTE;
+        delete process.env.SLAUDE_TAILCAT_BIN;
+        if (savedMasterKey === undefined) delete process.env.SLAUDE_MASTER_KEY;
+        else process.env.SLAUDE_MASTER_KEY = savedMasterKey;
+        __resetMasterKeyCache();
+      });
+
+      it("manager is heard in a remote thread only to inspect or end it", async () => {
+        writeSoulFixture(WORLD);
+        const g = makeGw();
+        const ts = nextTs();
+        await g.emit("message", dmArgs(g, "hi", { ts }));
+        await seed(ts, "U0OWNER");
+        const before = g.sends.length;
+        await g.emit("message", dmArgs(g, "run rm -rf", { thread_ts: ts }));
+        expect(g.sends.length).toBe(before);
+        await g.emit("message", dmArgs(g, "/remote status", { thread_ts: ts }));
+        expect(g.posts.some((p) => String(p.text).includes("Remote mode"))).toBe(true);
+        await g.emit("message", dmArgs(g, "/1on1 off", { thread_ts: ts }));
+        expect(await OneOnOne.find("D_MGR", ts)).toBeNull();
+        expect(await Remote.findTarget("D_MGR", ts)).toBeNull();
+      });
+
+      it("/remote off from the manager is admitted", async () => {
+        writeSoulFixture(WORLD);
+        const g = makeGw();
+        const ts = nextTs();
+        await g.emit("message", dmArgs(g, "hi", { ts }));
+        await seed(ts, "U0OWNER");
+        await g.emit("message", dmArgs(g, "/remote off", { thread_ts: ts }));
+        expect(await Remote.findTarget("D_MGR", ts)).toBeNull();
+      });
+
+      it("the locked user and a thread without an active remote are unaffected", async () => {
+        writeSoulFixture(WORLD);
+        const g = makeGw();
+        const ts = nextTs();
+        await g.emit("message", dmArgs(g, "hi", { ts }));
+        await seed(ts, WORLD.manager);
+        let before = g.sends.length;
+        await g.emit("message", dmArgs(g, "owner speaks", { thread_ts: ts }));
+        expect(g.sends.length).toBe(before + 1);
+        await OneOnOne.unlock("D_MGR", ts);
+        await OneOnOne.lock({ channelId: "D_MGR", threadTs: ts, lockedUser: "U0OWNER", createdBy: "U0OWNER" });
+        await Remote.clearTarget("D_MGR", ts);
+        before = g.sends.length;
+        await g.emit("message", dmArgs(g, "manager speaks", { thread_ts: ts }));
+        expect(g.sends.length).toBe(before + 1);
+      });
+
+      for (const action of ["lock", "open", "off"] as const) {
+        it(`agentOneOnOne ${action} ends the target`, async () => {
+          writeSoulFixture(WORLD);
+          const g = makeGw();
+          const ts = nextTs();
+          await g.emit("message", dmArgs(g, "hi", { ts }));
+          const session = await g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+          await seed(ts, "U0OWNER");
+          await g.h.__agentOneOnOne(session.id, action);
+          expect(await Remote.findTarget("D_MGR", ts)).toBeNull();
+        });
+      }
+    });
+
     it("agent mention-only toggle (agentMentionOnly seam)", async () => {
       writeSoulFixture(WORLD);
       await MentionOnly._wipeForTests();
@@ -691,6 +857,9 @@ describe("gateway uncovered branches", () => {
     it("default loopback flow end-to-end against a fake IdP (discover → register → code → exchange)", async () => {
       writeSoulFixture(WORLD);
       const idp = startIdp();
+      // The fake IdP is plain http on loopback, which the outbound policy
+      // refuses unless the development flag admits it.
+      process.env.SLAUDE_OUTBOUND_DEV_LOOPBACK = "1";
       try {
         writeMcpJson({ svc: { type: "http", url: idp.url("/mcp") } });
         const g = makeGw(); // no oauthConnect override → real discover/beginConnect path
@@ -720,12 +889,16 @@ describe("gateway uncovered branches", () => {
         expect(JSON.stringify(creds.mcpOAuth)).toContain("atk");
       } finally {
         idp.server.stop(true);
+        delete process.env.SLAUDE_OUTBOUND_DEV_LOOPBACK;
       }
     });
 
     it("paste-back mode: prepare, plain-message passthrough, state mismatch, success, exchange failure, expiry, prepare failure", async () => {
       writeSoulFixture(WORLD);
       const idp = startIdp();
+      // The fake IdP is plain http on loopback, which the outbound policy
+      // refuses unless the development flag admits it.
+      process.env.SLAUDE_OUTBOUND_DEV_LOOPBACK = "1";
       try {
         writeMcpJson({
           svc: { type: "http", url: idp.url("/mcp") },
@@ -779,6 +952,7 @@ describe("gateway uncovered branches", () => {
         expect(g.sends.length).toBe(sendsBefore + 1); // expired → treated as a normal message
       } finally {
         idp.server.stop(true);
+        delete process.env.SLAUDE_OUTBOUND_DEV_LOOPBACK;
       }
     });
   });
@@ -840,6 +1014,51 @@ describe("gateway uncovered branches", () => {
       } finally {
         if (prevKey) process.env.ANTHROPIC_API_KEY = prevKey;
         if (prevOauth) process.env.CLAUDE_CODE_OAUTH_TOKEN = prevOauth;
+      }
+    });
+  });
+
+  // R1-F5 / WS-A §5.5: a persona on its own provider is never checked against
+  // the gateway's provider, even when the gateway's would "verify" the id.
+  describe("/model for a managed persona that sets provider", () => {
+    it("passes the choice through unverified and does not list the gateway's models", async () => {
+      writeSoulFixture(WORLD);
+      const { setPersonaRegistry, __resetPersonaRegistry } = await import("../../../src/persona/registry");
+      const prevKey = process.env.ANTHROPIC_API_KEY;
+      const prevFetch = globalThis.fetch;
+      process.env.ANTHROPIC_API_KEY = "gateway-key";
+      let modelCalls = 0;
+      globalThis.fetch = (async (url: any, init?: any) => {
+        if (String(url).includes("/v1/models")) {
+          modelCalls++;
+          return new Response(JSON.stringify({ data: [{ id: "gw-model" }] }), { status: 200 });
+        }
+        return prevFetch(url, init);
+      }) as any;
+      __resetModelCache();
+      setPersonaRegistry({
+        lookupByUserId: () => null,
+        lookupByName: () => null,
+        list: () => [],
+        isMultiPersonaMode: () => false,
+        isManaged: () => true,
+        tombstonedPersonaFor: () => null,
+        defaultPersona: () => ({ model: null, mcp: null, provider: { apiKey: "env://PERSONA_DEFAULT_KEY" } }),
+      });
+      try {
+        const g = makeGw();
+        await g.emit("message", dmArgs(g, "/model gw-model", { ts: nextTs() }));
+        await waitFor(() => g.posts.some((p) => String(p.text).includes("model →")));
+        expect(g.posts.some((p) => String(p.text).includes("couldn't verify"))).toBe(true);
+        await g.emit("message", dmArgs(g, "/model", { ts: nextTs() }));
+        await waitFor(() => g.posts.some((p) => String(p.text).includes("can't fetch model list")));
+        expect(modelCalls).toBe(0);
+      } finally {
+        __resetPersonaRegistry();
+        globalThis.fetch = prevFetch;
+        if (prevKey) process.env.ANTHROPIC_API_KEY = prevKey;
+        else delete process.env.ANTHROPIC_API_KEY;
+        __resetModelCache();
       }
     });
   });

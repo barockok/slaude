@@ -201,7 +201,7 @@ describe("perm gate: cross-replica in-process waiter", () => {
     await p;
     // Row was already cancelled by the abort listener; a click is stale.
     const responds = await a.fire("slaude_perm:allow:puse_6", "U_OK");
-    expect(responds.some((r) => String(r.text).includes("already decided"))).toBe(true);
+    expect(responds.some((r) => String(r.text).includes("cancelled") && r.replace_original === false)).toBe(true);
     expect((await PendingGates.get("puse_6"))?.status).toBe("cancelled");
   });
 });

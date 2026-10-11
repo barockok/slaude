@@ -2,19 +2,30 @@
  * Node-side long-poll loop on /v1/pending/:id (spec §3 "Blocking tools").
  * One place owns the retry semantics: 204 → poll again immediately (the
  * gateway held the request for its window), network/5xx → short nap then
- * retry, abort → stop. The gateway's row expiry guarantees termination —
- * an expired gate long-polls back as status 'expired' at once.
+ * retry, abort → stop. A 4xx (a bad or missing job token, the label gate) is
+ * a refusal a retry cannot fix: it ends the poll as `{ refused }` instead of
+ * retrying every second until the turn is aborted. Otherwise the gateway's row
+ * expiry guarantees termination — an expired gate long-polls back as status
+ * 'expired' at once.
+ *
+ * The job token binds the poll to this turn's session (node labels spec §4.4);
+ * it is read on every leg so a token refreshed mid-wait is used next.
  */
-import type { NodeClient, PendingView } from "./client";
+import { NodeApiError, type NodeClient, type PendingView } from "./client";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export type PendingOutcome = PendingView | "notfound" | "aborted";
+export type PendingOutcome = PendingView | "notfound" | "aborted" | { refused: NodeApiError };
 
 export async function pollPending(
   client: NodeClient,
   pendingId: string,
-  opts: { signal?: AbortSignal; retryDelayMs?: number } = {},
+  opts: {
+    signal?: AbortSignal;
+    retryDelayMs?: number;
+    /** The turn's live job token, read per leg so a refreshed token is used. */
+    jobToken?: () => string | undefined;
+  } = {},
 ): Promise<PendingOutcome> {
   const retryDelayMs = opts.retryDelayMs ?? 1000;
   // Abort must win instantly even while a 30s long-poll leg is in flight —
@@ -28,8 +39,10 @@ export async function pollPending(
     if (opts.signal?.aborted) return "aborted";
     let leg: PendingView | "timeout" | "notfound" | "aborted" | "netfail";
     try {
-      leg = await Promise.race([client.getPending(pendingId), abortedPromise]);
-    } catch {
+      leg = await Promise.race([client.getPending(pendingId, opts.jobToken?.()), abortedPromise]);
+    } catch (e) {
+      // GateDenied is a NodeApiError too.
+      if (e instanceof NodeApiError && e.status >= 400 && e.status < 500) return { refused: e };
       leg = "netfail";
     }
     if (leg === "aborted") return "aborted";

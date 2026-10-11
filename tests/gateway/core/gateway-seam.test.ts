@@ -7,6 +7,7 @@ import * as Sessions from "../../../src/db/sessions";
 import * as CronJobs from "../../../src/db/cron-jobs";
 import * as MentionOnly from "../../../src/db/mention-only";
 import * as SO from "../../../src/db/soul-overrides";
+import { failureText } from "../../../src/gateway/core/failure-codes";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 
 function fakeTransport(): Transport {
@@ -152,7 +153,6 @@ describe("createGateway", () => {
     it("manager adds an allowed channel — gate opens on the next message (immediacy)", async () => {
       await db.run("DELETE FROM sessions");
       await SO.clear();
-      process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
       writeSoulFixture(WORLD);
       const g = newGw();
 
@@ -252,8 +252,6 @@ describe("createGateway", () => {
       // Dedup is durable now (seen_events) — each test replays its own ts
       // values in the same channel, so clear claims from earlier tests.
       await db.run("DELETE FROM seen_events");
-      // handleMessage's attachment download resolves the bot token lazily.
-      process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
     };
 
     it("mention-only thread: plain follow-up recorded-but-suppressed, @mention still replies", async () => {
@@ -384,6 +382,56 @@ describe("createGateway", () => {
       g.agent.emit("event", { type: "done", sessionId: row!.id } as any);
       await tick();
       expect(doneCount()).toBe(1); // suppressed done short-circuited — no new ✅
+    });
+
+    // D1.6: failures reach Slack as fixed text for a typed code, never as the
+    // raw error; and a job that fails twice posts once.
+    it("a failed turn posts the fixed text, not the provider error, once per job", async () => {
+      await wipe();
+      writeSoulFixture(WORLD);
+      const g = newGateway();
+      const tick = () => new Promise((r) => setTimeout(r, 20));
+      await g.mention("800.1", "<@U_SLAUDE> hello");
+      const row = await Sessions.findByThread({ team_id: "T", channel_id: CH, thread_ts: "800.1" });
+      const raw = "Invalid API key · Please run /login";
+      const before = g.posts.length;
+      g.agent.emit("event", { type: "error", sessionId: row!.id, error: raw, code: "TURN_FAILED", jobId: "job-1" } as any);
+      g.agent.emit("event", { type: "error", sessionId: row!.id, error: raw, code: "TURN_FAILED", jobId: "job-1" } as any);
+      await tick();
+      const posted = g.posts.slice(before).map((p) => p.text);
+      expect(posted.length).toBe(1);
+      expect(posted[0]).toBe(failureText("TURN_FAILED"));
+      expect(posted.join("\n")).not.toContain("Invalid API key");
+
+      // An unknown or absent code posts the generic text, still not the raw error.
+      g.agent.emit("event", { type: "error", sessionId: row!.id, error: raw, code: "NOPE", jobId: "job-2" } as any);
+      g.agent.emit("event", { type: "error", sessionId: row!.id, error: raw } as any);
+      await tick();
+      const more = g.posts.slice(before + 1).map((p) => p.text);
+      expect(more).toEqual([failureText("UNKNOWN"), failureText("UNKNOWN")]);
+
+      // The server-side log line is redacted too.
+      const logged: string[] = [];
+      const origErr = console.error;
+      console.error = (...a: unknown[]) => void logged.push(a.join(" "));
+      try {
+        g.agent.emit("event", { type: "error", sessionId: row!.id, error: "bad token xoxb-123456789012-abcdefghij", code: "TURN_FAILED", jobId: "job-3" } as any);
+        await tick();
+      } finally {
+        console.error = origErr;
+      }
+      expect(logged.some((l) => l.includes("[turn-error]"))).toBe(true);
+      expect(logged.join("\n")).not.toContain("xoxb-123456789012");
+
+      // Local/mono mode has no job id: two errors for ONE turn (e.g. the MCP
+      // circuit error then the result error) still post once, keyed on the turn.
+      await g.mention("800.2", "<@U_SLAUDE> again");
+      const row2 = await Sessions.findByThread({ team_id: "T", channel_id: CH, thread_ts: "800.2" });
+      const mark = g.posts.length;
+      g.agent.emit("event", { type: "error", sessionId: row2!.id, error: "first", code: "TURN_FAILED" } as any);
+      g.agent.emit("event", { type: "error", sessionId: row2!.id, error: "second" } as any);
+      await tick();
+      expect(g.posts.slice(mark).map((p) => p.text)).toEqual([failureText("TURN_FAILED")]);
     });
   });
 });

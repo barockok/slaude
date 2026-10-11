@@ -324,3 +324,13 @@ describe("/soul", () => {
     expect(parseSlashCommand("/mcp DISCONNECT workbench")).toEqual({ kind: "mcp", action: "disconnect", server: "workbench" });
   });
 });
+
+describe("/link", () => {
+  test("parses /link", () => {
+    expect(parseSlashCommand("/link")).toEqual({ kind: "link" });
+  });
+
+  test("/link is listed in the help surface", () => {
+    expect(AGENT_COMMANDS.some((c) => c.usage.startsWith("/link"))).toBe(true);
+  });
+});

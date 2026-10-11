@@ -12,8 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve, relative } from "node:path";
-import { paths } from "../config/home";
-import { discoverSkills, personaSkillsRoot, type Skill } from "./loader";
+import { discoverSkills, globalSkillsRoot, personaSkillsRoot, type Skill } from "./loader";
 import { syncManifest } from "./sync-manifest";
 import { skillsContract } from "../tools/contracts/skills";
 
@@ -38,7 +37,7 @@ export function resolveSkillDir(slug: string, personaName?: string): string {
     );
   }
   const persona = namedPersona(personaName);
-  const root = resolve(persona ? personaSkillsRoot(persona) : paths.skills);
+  const root = resolve(persona ? personaSkillsRoot(persona) : globalSkillsRoot());
   const dir = resolve(join(root, slug));
   const rel = relative(root, dir);
   if (rel !== slug) {

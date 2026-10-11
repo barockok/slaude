@@ -7,6 +7,7 @@ function fakeClient(impl: any = {}) {
     chat: {
       postMessage: async () => impl.postMessage?.() ?? { ts: "100.0" },
       update: async (a: any) => impl.chatUpdate?.(a) ?? {},
+      postEphemeral: async (a: any) => impl.postEphemeral?.(a) ?? { message_ts: "200.0" },
     },
     reactions: {
       add: async () => impl.reactionsAdd?.() ?? {},
@@ -32,7 +33,43 @@ describe("SlackSurface", () => {
   test("id is slack and declares edit/react/upload capabilities (not typing)", () => {
     const s = new SlackSurface(fakeClient(), binding());
     expect(s.id).toBe("slack");
-    expect([...s.capabilities].sort()).toEqual(["edit", "react", "upload"]);
+    expect([...s.capabilities].sort()).toEqual(["edit", "ephemeral", "react", "upload"]);
+  });
+
+  // An onboarding link is delivered to exactly one person, and that delivery is
+  // what proves they control the Slack account. These four tests pin that the
+  // message cannot reach anyone else.
+  test("sayEphemeral posts to the binding's user by default", async () => {
+    const calls: any[] = [];
+    const s = new SlackSurface(
+      fakeClient({ postEphemeral: (a: any) => { calls.push(a); return {}; } }),
+      binding({ userId: "UTESTUSER1" }),
+    );
+    await s.sayEphemeral!({ text: "only you" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].user).toBe("UTESTUSER1");
+    expect(calls[0].channel).toBe("C1");
+    expect(calls[0].thread_ts).toBe("123.456");
+  });
+
+  test("sayEphemeral targets an explicit user when given one", async () => {
+    const calls: any[] = [];
+    const s = new SlackSurface(
+      fakeClient({ postEphemeral: (a: any) => { calls.push(a); return {}; } }),
+      binding({ userId: "UTESTUSER1" }),
+    );
+    await s.sayEphemeral!({ text: "only you", userId: "UTESTUSER2" });
+    expect(calls[0].user).toBe("UTESTUSER2");
+  });
+
+  test("sayEphemeral never falls back to a public post", async () => {
+    const calls: any[] = [];
+    const s = new SlackSurface(
+      fakeClient({ postMessage: () => { calls.push("public"); return { ts: "1" }; } }),
+      binding({ userId: undefined }),
+    );
+    await expect(s.sayEphemeral!({ text: "secret" })).rejects.toThrow(/refusing to post publicly/);
+    expect(calls).toHaveLength(0);
   });
 
   test("edit updates the message at ref in the bound conversation", async () => {

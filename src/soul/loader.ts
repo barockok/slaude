@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { paths } from "../config/home";
+import { brainEnabled } from "../knowledge/brain";
 
 /**
  * Runtime baseline — non-negotiable rules every slaude process inherits.
@@ -82,9 +83,7 @@ behave — non-negotiable rules that apply regardless of persona.
   cited answer). Do NOT answer from your own memory or assumptions when brain
   tools are mounted: your training is not this team's source of truth, the KB
   is. The team's decisions, people, projects, and prior precedent live there,
-  not in your weights. Fall back to \`search_kbs\` (keyword tag match) or
-  \`list_kbs\` + targeted \`Grep\`/\`Read\` only when the brain tools are
-  absent. If \`kb_search\` returns nothing relevant, say so explicitly and ask
+  not in your weights. {{KB_FALLBACK}} If nothing relevant turns up, say so explicitly and ask
   or proceed with stated assumptions — never paper over the gap with a guess
   dressed as fact. Skipping this step is a breach of the runtime contract, not
   a judgment call.
@@ -115,15 +114,8 @@ behave — non-negotiable rules that apply regardless of persona.
   "saved!" after a failed write is the worst outcome.
 - **Tag-driven discovery.** KBs carry tags (e.g. \`service-a\`, \`grafana\`,
   \`alerts\`). When a user query names a service, tool, or domain, call
-  \`search_kbs\` with the keywords first. If tags match, open the KB and
-  read relevant pages BEFORE calling external tools. Example: user asks
-  "what do you know about service-a?" → \`kb_think({question: "..."})\` or
-  \`kb_search({query: "service-a"})\` → read matching pages via
-  \`kb_get_page\` → only then decide whether Grafana or other tools are needed.
-- Query the brain anytime via \`mcp__slaude_kb__{kb_think, kb_search,
-  kb_get_page, kb_list_pages, kb_graph, list_kbs, search_kbs}\` — all served
-  live from the brain DB. Reach for them whenever the answer plausibly
-  lives in operator-curated reference material or your own memory.
+  \`search_kbs\` with the keywords first. {{KB_READ}}
+{{KB_TOOLS}}
 
 ## Skill evolution (grow over time)
 - You can author your own skills. Each skill is a markdown file at
@@ -318,7 +310,49 @@ export function loadSoul(soulPath?: string): string {
  */
 export function soulSystemBlock(overlay?: string): string {
   const persona = (overlay ?? loadSoul()).trim();
-  return `${RUNTIME_BASELINE}\n\n<persona>\n${persona}\n</persona>`;
+  return `${runtimeBaseline(brainEnabled())}\n\n<persona>\n${persona}\n</persona>`;
+}
+
+/**
+ * The knowledge-base passages that differ by brain mode. \`list_kbs\` and
+ * \`search_kbs\` return no disk path (WS-C §4.1.4), so with the brain disabled
+ * the prompt itself names where a knowledge base's files are; with it enabled
+ * the brain tools read them and no path is given.
+ */
+function knowledgeText(brain: boolean): Record<"KB_FALLBACK" | "KB_READ" | "KB_TOOLS", string> {
+  if (brain) {
+    return {
+      KB_FALLBACK:
+        "\`list_kbs\` / \`search_kbs\` only name the knowledge bases you may read; the brain tools read them.",
+      KB_READ:
+        "If tags match, read the relevant pages BEFORE calling external tools. Example: user asks\n" +
+        "  \"what do you know about service-a?\" → \`kb_think({question: \"...\"})\` or\n" +
+        "  \`kb_search({query: \"service-a\"})\` → read matching pages via\n" +
+        "  \`kb_get_page\` → only then decide whether Grafana or other tools are needed.",
+      KB_TOOLS:
+        "- Query the brain anytime via \`mcp__slaude_kb__{kb_think, kb_search,\n" +
+        "  kb_get_page, kb_list_pages, kb_graph, list_kbs, search_kbs}\` — all served\n" +
+        "  live from the brain DB. Reach for them whenever the answer plausibly\n" +
+        "  lives in operator-curated reference material or your own memory.",
+    };
+  }
+  const dir = `${paths.knowledge}/<label>/`;
+  return {
+    KB_FALLBACK:
+      "The brain is disabled in this deployment, so the \`kb_*\` brain tools are absent: find the knowledge base with " +
+      `\`search_kbs\` (keyword/tag match) or \`list_kbs\`, then read its files with \`Grep\`/\`Read\` under \`${dir}\`, ` +
+      "where <label> is the \`label\` those tools return.",
+    KB_READ:
+      `If tags match, read its relevant files under \`${dir}\` with \`Grep\`/\`Read\` BEFORE calling external tools.`,
+    KB_TOOLS:
+      "- The knowledge tools in this deployment are \`mcp__slaude_kb__{list_kbs, search_kbs}\`; they list only the\n" +
+      `  knowledge bases you may read, and their files are under \`${dir}\`.`,
+  };
+}
+
+export function runtimeBaseline(brain: boolean): string {
+  const t = knowledgeText(brain);
+  return RUNTIME_BASELINE.replace(/\{\{(KB_FALLBACK|KB_READ|KB_TOOLS)\}\}/g, (_, k: keyof typeof t) => t[k]);
 }
 
 /**

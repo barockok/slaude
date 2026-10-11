@@ -1,0 +1,122 @@
+name: e2e-ha
+
+# The HA end-to-end suite: the scale topology on a local minikube, the mock LLM and the fake Slack
+# in place of the model and Slack. Runs nightly and on demand; it uses no secrets and no
+# credentials. It is deliberately not a pull-request check yet: see the note on triggers below.
+#
+# NOT YET RUN ON A RUNNER. The runtime of image builds, the sanity scripts and the cases against
+# the 60-minute limit is unmeasured; the summary step reports elapsed time so the first real run
+# shows it. The follow-up HA scenarios will add to that time. Dispatch it once by hand from the
+# default branch and read the elapsed time before trusting the nightly. A failing nightly is not
+# reported anywhere beyond the red run (no tracking issue yet).
+#
+# Triggers: a schedule only fires from the default branch, and a workflow_dispatch only appears
+# in the Actions UI once this file is there too. The schedule does not run on forks.
+on:
+  schedule:
+    - cron: "0 3 * * *" # 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      files:
+        description: "Space-separated test files under e2e/ha (default: all *.e2e.ts)"
+        required: false
+        default: ""
+        type: string
+      sanity:
+        description: "Run the cluster sanity scripts (verify-ha.sh, verify-turns.sh) after the cases pass"
+        required: false
+        default: true
+        type: boolean
+
+# One cluster at a time; a queued run waits rather than killing the one in flight.
+concurrency:
+  group: e2e-ha
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  KUBECTL_VERSION: v1.35.1
+  MINIKUBE_VERSION: v1.38.0
+
+jobs:
+  e2e:
+    name: HA e2e on minikube
+    # Scheduled runs only on the upstream repository, not on forks; manual runs anywhere.
+    if: github.event_name != 'schedule' || github.repository == 'barockok/slaude'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Start clock
+        run: echo "E2E_T0=$(date +%s)" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Official release URLs, pinned versions. Each binary is checked against the digest the
+      # same release publishes next to it. LIMIT: that detects corruption, not a compromised
+      # release host; pin digests here if the threat model needs it.
+      - name: Install kubectl
+        run: |
+          set -euo pipefail
+          base="https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64"
+          curl -fsSLo kubectl "$base/kubectl"
+          curl -fsSLo kubectl.sha256 "$base/kubectl.sha256"
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+          kubectl version --client
+
+      - name: Install minikube
+        run: |
+          set -euo pipefail
+          base="https://github.com/kubernetes/minikube/releases/download/${MINIKUBE_VERSION}"
+          curl -fsSLo minikube "$base/minikube-linux-amd64"
+          curl -fsSLo minikube.sha256 "$base/minikube-linux-amd64.sha256"
+          echo "$(cut -d' ' -f1 minikube.sha256)  minikube" | sha256sum --check
+          sudo install -m 0755 minikube /usr/local/bin/minikube
+          minikube version
+
+      - name: Run the HA suite
+        id: suite
+        env:
+          E2E_ARTIFACTS: ${{ github.workspace }}/dist/e2e-artifacts
+          # A scheduled run has no inputs: it always runs the sanity scripts. A manual run
+          # follows the input.
+          E2E_SANITY: ${{ (github.event_name != 'workflow_dispatch' || inputs.sanity) && '1' || '0' }}
+          E2E_FILES: ${{ inputs.files }}
+        run: |
+          set -uo pipefail
+          # E2E_FILES is word-split on purpose: it is a space-separated list of test files.
+          # shellcheck disable=SC2086
+          scripts/e2e-ha.sh $E2E_FILES
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-ha-artifacts
+          path: dist/e2e-artifacts
+          if-no-files-found: ignore
+
+      - name: Summary
+        if: always()
+        env:
+          SUITE_STATUS: ${{ steps.suite.outputs.status }}
+        run: |
+          elapsed=$(( $(date +%s) - E2E_T0 ))
+          if [ "$SUITE_STATUS" = "0" ]; then
+            echo "HA e2e: PASS in ${elapsed}s (limit 3600s)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "HA e2e: FAIL after ${elapsed}s (limit 3600s; see the e2e-ha-artifacts artifact)" >> "$GITHUB_STEP_SUMMARY"
+          fi

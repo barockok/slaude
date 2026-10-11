@@ -1,8 +1,14 @@
-import { describe, expect, test, beforeEach } from "bun:test";
+import { afterAll, describe, expect, test, beforeEach } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../src/config/home";
 import { seedBundledSkills } from "../src/skills/seed";
+
+// Every test file shares one $SLAUDE_HOME (tests/setup.ts): leave no bundled
+// skill behind, or a later file sees it as an installed global skill.
+afterAll(() => {
+  rmSync(join(paths.skills, "how-slaude-works"), { recursive: true, force: true });
+});
 
 beforeEach(() => {
   if (existsSync(paths.skills)) rmSync(paths.skills, { recursive: true, force: true });

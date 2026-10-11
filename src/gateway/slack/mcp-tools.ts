@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { voiceTurns, VOICE_SUPPRESSED_RESULT } from "../../voice/turn-flags";
 import {
   createSdkMcpServer,
   tool,
@@ -40,6 +41,15 @@ const err = (text: string): ToolResult => ({
  */
 export type SlackContext = {
   client: WebClient;
+  /** Bot token of the app this event belongs to. HTTP mode's lazy client has no
+   *  `.token`, so token-authenticated downloads (read_canvas) take it from here. */
+  botToken?: string;
+  /** Paths with no inbound event (cron, /v1) resolve the bot token from the
+   *  session's app through the registry instead; read per call. */
+  resolveBotToken?: () => string | undefined;
+  /** Slack app (api_app_id) this session belongs to. With `teamId` it names
+   *  the registered app outbound calls go out as (D1.2). */
+  apiAppId?: string;
   channel: string;
   threadTs: string;
   /** ts of the latest inbound user message in this thread. */
@@ -62,6 +72,9 @@ export type SlackContext = {
   reloadSession?: (prompt?: string) => boolean;
   /** Which persona owns this session. 'default' = single-bot mode. */
   personaId?: string;
+  /** Session id, when known — used by the control panel to key outbound Slack
+   *  suppression while an operator drives the session. */
+  sessionId?: string;
 };
 
 export const SLACK_MCP_NAME = slackContract.server;
@@ -429,7 +442,10 @@ export const slackHandlers = {
       const info = await ctx.client.files.info({ file: canvasId });
       const url = (info.file as any)?.url_private_download;
       if (!url) return err("canvas has no downloadable content yet (empty canvas?)");
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${ctx.client.token}` } });
+      const token =
+        ctx.botToken ?? ctx.resolveBotToken?.() ?? (typeof ctx.client.token === "string" ? ctx.client.token : undefined);
+      if (!token) return err("canvas download needs a bot token and none is available for this app");
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) return err(`canvas download failed: HTTP ${res.status}`);
       return ok(await res.text());
     } catch (e: any) {
@@ -711,7 +727,8 @@ export const adminHandlers = {
 
 /** Build an SDK MCP server bound to a session's SlackContext. Tool names,
  *  descriptions and schemas come from the shared contract (src/tools/contracts). */
-export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstance {
+export function createSlackMcp(ctx: SlackContext, sessionId?: string): McpSdkServerConfigWithInstance {
+  const voiceQuiet = () => !!sessionId && voiceTurns.active(sessionId);
   const c = slackContract.tools;
   return createSdkMcpServer({
     name: SLACK_MCP_NAME,
@@ -721,12 +738,14 @@ export function createSlackMcp(ctx: SlackContext): McpSdkServerConfigWithInstanc
       // get_thread_history) moved to the platform-neutral `mcp__slaude_surface__*` server.
       // This `reply` alias remains for one release so in-flight sessions / personas that
       // reference the old name keep working. Remove next release.
-      tool(c.reply.name, c.reply.description, c.reply.schema, (args) => slackHandlers.reply(ctx, args)),
+      tool(c.reply.name, c.reply.description, c.reply.schema, async (args) =>
+        voiceQuiet() ? VOICE_SUPPRESSED_RESULT : slackHandlers.reply(ctx, args)),
       tool(c.get_user_profile.name, c.get_user_profile.description, c.get_user_profile.schema, (args) => slackHandlers.get_user_profile(ctx, args)),
       tool(c.get_channel_info.name, c.get_channel_info.description, c.get_channel_info.schema, () => slackHandlers.get_channel_info(ctx)),
       tool(c.list_users_in_channel.name, c.list_users_in_channel.description, c.list_users_in_channel.schema, (args) => slackHandlers.list_users_in_channel(ctx, args)),
       tool(c.search_messages.name, c.search_messages.description, c.search_messages.schema, (args) => slackHandlers.search_messages(ctx, args)),
-      tool(c.post_message.name, c.post_message.description, c.post_message.schema, (args) => slackHandlers.post_message(ctx, args)),
+      tool(c.post_message.name, c.post_message.description, c.post_message.schema, async (args) =>
+        voiceQuiet() ? VOICE_SUPPRESSED_RESULT : slackHandlers.post_message(ctx, args)),
       tool(c.delete.name, c.delete.description, c.delete.schema, (args) => slackHandlers.delete(ctx, args)),
       tool(c.post_ephemeral.name, c.post_ephemeral.description, c.post_ephemeral.schema, (args) => slackHandlers.post_ephemeral(ctx, args)),
       tool(c.pin.name, c.pin.description, c.pin.schema, (args) => slackHandlers.pin(ctx, args)),

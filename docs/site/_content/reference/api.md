@@ -197,8 +197,8 @@ Per-source `gather()` fan-out prevents bulk corpora from drowning curated pages.
 
 | Tool | Params | Description |
 |------|--------|-------------|
-| `list_kbs` | — | List installed KBs — `{ label, description, path, index_file }[]`. |
-| `search_kbs` | `query: string`, `limit?: number` *(default 5)* | Ranked KB search by tag/label/description token score. Call before acting on service/domain queries to discover curated documentation. |
+| `list_kbs` | — | List the KBs this persona may read (its `kbSources`, see [Knowledge scope](../deploy/knowledge-scope.md)) — `{ label, description, tags, source }[]`, no disk path. |
+| `search_kbs` | `query: string`, `limit?: number` *(default 5)* | Ranked search over the same persona-filtered KBs by tag/label/description token score. Call before acting on service/domain queries to discover curated documentation. |
 | `kb_think` | `question: string` | Synthesized answer with `[Source: slug]` citations and explicit gaps. Prefer over `kb_search` when you need an answer. Includes per-source cross-check + rescue synthesis when initial gather returns 0. |
 | `kb_search` | `query: string`, `limit?: number` *(default 20)* | Raw ranked chunks `{ slug, score, snippet }` via per-source gather (not pooled gbrain search). |
 | `kb_get_page` | `slug: string` | Read a single brain page by slug (`people/alice`). |

@@ -43,6 +43,10 @@ switch (sub) {
     entry = "src/server.ts";
     rest = argv.slice(1);
     break;
+  case "voice-loop":
+    entry = "src/voice/loop-entry.ts";
+    rest = argv.slice(1);
+    break;
   case "brain-server":
     entry = "src/knowledge/server/brain-server-entry.ts";
     rest = argv.slice(1);
@@ -66,6 +70,7 @@ switch (sub) {
         "  slaude [start]        boot the Slack runtime (uses $SLAUDE_HOME or ./SOUL.md dir)",
         "  slaude sim [args...]  run the simulation gateway / REPL",
         "  slaude brain-server   run the brain engine as a standalone OAuth'd MCP process",
+        "  slaude voice-loop     (internal) realtime voice loop child for a call",
         "  slaude brain connect  OAuth-bootstrap the remote brain link (SLAUDE_BRAIN_URL)",
         "",
         "SLAUDE_HOME resolves to $SLAUDE_HOME, else the cwd if it has SOUL.md, else ~/.slaude.",

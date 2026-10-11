@@ -42,7 +42,9 @@ slaude is Socket Mode-only. The manifest at `src/cli/manifest.ts` declares these
     "scopes": {
       "bot": [
         "app_mentions:read",
+        "canvases:write",
         "channels:history",
+        "channels:manage",
         "channels:read",
         "chat:write",
         "chat:write.public",
@@ -50,18 +52,20 @@ slaude is Socket Mode-only. The manifest at `src/cli/manifest.ts` declares these
         "files:write",
         "groups:history",
         "groups:read",
+        "groups:write",
         "im:history",
         "im:read",
         "im:write",
         "mpim:history",
         "mpim:read",
         "mpim:write",
+        "pins:write",
         "reactions:read",
         "reactions:write",
         "users:read",
-        "users.profile:write",
         "assistant:write"
-      ]
+      ],
+      "user": ["users.profile:write"]
     }
   },
   "settings": {
@@ -109,7 +113,7 @@ When `assistant:write` is granted, slaude calls `assistant.threads.setStatus` to
 | `SLACK_USER_TOKEN` | No | `""` | `xoxp-…` user token for `users.profile.set` and optional post-as-user. |
 | `SLACK_POST_AS_USER` | No | `false` | When `true` **and** `SLACK_USER_TOKEN` is set, the agent posts/edits/reacts/uploads as the real Slack user account instead of the bot. App-bound interactivity (Approve/Deny gate buttons) always stays on the bot token. Accepts `true` case-insensitively; anything else is `false`. |
 
-> **Security note for `SLACK_POST_AS_USER`** — reads also route through the user token in this mode, so the `xoxp` must carry both write scopes (`chat:write`, `reactions:write`, `files:write`) and read scopes (`channels:history`, `groups:history`, `im:history`, `users:read`). The agent's read reach equals the human account's (private channels and DMs included). Only enable for accounts whose full scope you are comfortable exposing to tool use.
+> **Security note for `SLACK_POST_AS_USER`** — reads also route through the user token in this mode, so the `xoxp` must carry both write scopes (`chat:write`, `reactions:write`, `files:write`, plus `canvases:write`, `pins:write`, `channels:manage` and `groups:write` for the Canvas, pin and topic tools) and read scopes (`channels:history`, `groups:history`, `im:history`, `users:read`, and `search:read` for `search_messages`). The agent's read reach equals the human account's (private channels and DMs included). Only enable for accounts whose full scope you are comfortable exposing to tool use.
 
 ```bash
 # .env — bot-only (default, recommended)
@@ -256,6 +260,29 @@ All vars are read via `src/config/env.ts` (`req()` throws on missing, `opt()` re
 | `ANTHROPIC_MODEL` | No | `""` | CLI-native fallback when `SLAUDE_MODEL` is unset. Forwarded to SDK child. |
 | `ANTHROPIC_SMALL_FAST_MODEL` | No | CLI default | Haiku-class model for compaction and sub-tasks. |
 
+### Persona provider credentials <a id="provider-credentials"></a>
+
+A managed persona's `provider` references are resolved by the gateway at runtime-bundle build. See [Provider credentials](../deploy/provider-credentials.md). Every `SLAUDE_VAULT_*` variable is gateway-only: it is stripped from the agent child's environment, and a node with any `SLAUDE_VAULT_*` or `VAULT_*` variable set refuses to boot, whatever `SLAUDE_NODE_BOOT_CHECK` says. `SLAUDE_VAULT_ADDR` is refused with `SLAUDE_ROLE=mono`.
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `SLAUDE_VAULT_ADDR` | No | `""` | Vault base URL (a bare origin). Setting it enables `vault://` references. Must be `https` unless `SLAUDE_VAULT_ALLOW_INSECURE=1`. |
+| `SLAUDE_VAULT_AUTH` | No | `kubernetes` | `kubernetes` (login with the pod's service-account token) or `token` (development only). |
+| `SLAUDE_VAULT_ROLE` | With `kubernetes` auth | `""` | The Kubernetes-auth role, bound to the gateway's own ServiceAccount. |
+| `SLAUDE_VAULT_TOKEN` | With `token` auth | `""` | Static Vault token. Development only; needs `SLAUDE_VAULT_ALLOW_INSECURE=1`. |
+| `SLAUDE_VAULT_ALLOWED_PREFIXES` | With `SLAUDE_VAULT_ADDR` | `""` | Comma list of `<mount>/<path-prefix>`. A reference resolves only when its final request path is inside one. `{persona}` (a whole segment) expands to the persona's name. Empty with `SLAUDE_VAULT_ADDR` set: the gateway refuses to start. |
+| `SLAUDE_VAULT_MOUNTS` | No | first segment of each allowed prefix | Comma list of KV v2 mounts (one or more segments each). The longest whole-segment match is the mount; nested mounts are refused. |
+| `SLAUDE_VAULT_NAMESPACE` | No | `""` | Sent as `X-Vault-Namespace`. |
+| `SLAUDE_VAULT_CACERT` | No | `""` | CA bundle path for a private Vault. |
+| `SLAUDE_VAULT_K8S_TOKEN_PATH` | No | `/var/run/secrets/kubernetes.io/serviceaccount/token` | Service-account JWT path for `kubernetes` auth. Point it at a projected token (audience `vault`, short expiry) mounted on the gateway pod only; see [Vault setup](../deploy/provider-credentials.md#vault-setup). |
+| `SLAUDE_VAULT_CACHE_TTL` | No | `60` | Seconds a resolved value is cached per gateway process. `0` = fetch at every session start. |
+| `SLAUDE_VAULT_STALE_MAX` | No | `600` | Seconds a cached value may still be served when a refresh fails because Vault cannot answer. |
+| `SLAUDE_VAULT_ALLOW_INSECURE` | No | `""` | `1` allows an `http://` address and `token` auth. Development only. |
+| `VAULT_*` | No | — | Not read by slaude (it uses only the `SLAUDE_VAULT_*` names above). Listed because a stray `VAULT_TOKEN` or `VAULT_ADDR` on a **node** makes it refuse to boot, and every `VAULT_*` name is gateway-only and stripped from the agent child. |
+| `SLAUDE_PROVIDER_ENV_FALLBACK` | No (node) | `1` | For a managed persona that does not set `provider`. `1`: a provider variable its bundle lacks comes from the node's own environment, with one warning per persona. `0`: every provider-selecting variable (the `ANTHROPIC_*`, `CLAUDE_CODE_USE_*`, `CLAUDE_CODE_OAUTH_*`, `CLAUDE_CODE_API_KEY_*`, `CLAUDE_CODE_CLIENT_*` and `AWS_*` families and `GOOGLE_APPLICATION_CREDENTIALS`; the keep list is in [Provider credentials](../deploy/provider-credentials.md#the-nodes-own-provider-variables)) is deleted from the agent child's environment unless the bundle supplied it, and a persona with no credential fails its turn with `PROVIDER_CREDENTIALS_UNAVAILABLE`. A persona that sets `provider` always gets the `0` behaviour. Any other value stops the node. |
+| `PERSONA_*` | No | — | Values for `env://PERSONA_*` references and `${PERSONA_*}` placeholders, read from the gateway's environment. Not scoped per persona: any persona may name any of them. |
+| `SLAUDE_OUTBOUND_INTERNAL_HOSTS` | No | `""` | Also governs a persona's literal `provider.baseUrl`: `http` and private IP addresses only for a host listed here (exact name). Loopback, link-local and metadata addresses are never allowed. |
+
 ### Slack — optional
 
 | Name | Required | Default | Description |
@@ -263,10 +290,11 @@ All vars are read via `src/config/env.ts` (`req()` throws on missing, `opt()` re
 | `SLACK_USER_TOKEN` | No | `""` | `xoxp-…` user token. Used for `users.profile.set` presence; also the post-as-user token when `SLACK_POST_AS_USER=true`. |
 | `SLACK_POST_AS_USER` | No | `false` | `true` (case-insensitive) enables posting as the real Slack user. Requires `SLACK_USER_TOKEN`. |
 | `SLAUDE_APPROVERS` | No | `""` | Comma-separated Slack user ids allowed to click **Approve / Deny** on `request_approval` plans. **Fallback only** — used when `SOUL.md` has no `## Approvers` section. Empty means any clicker is accepted (only safe for solo / DM workspaces). Trimmed, comma-split, empty entries dropped. |
-| `SLAUDE_SLACK_MODE` | No | `socket` | Slack ingress: `socket` (Bolt Socket Mode, single app from `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN`) or `http` (Events API receiver — Slack POSTs signed requests to `/slack/events` and `/slack/interactions`). `http` requires `SLAUDE_DB=pg` and `SLAUDE_MASTER_KEY`: apps are resolved per-request from the `slack_apps` registry (`bun run slack-app add`), and `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN` are not read. Emit the matching app manifest with `bun run manifest --mode http --url https://<host>`. |
+| `SLAUDE_SLACK_MODE` | No | `socket` | Slack ingress: `socket` (Bolt Socket Mode, single app from `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN`) or `http` (Events API receiver — Slack POSTs signed requests to `/slack/events` and `/slack/interactions`). `http` requires `SLAUDE_DB=pg` and `SLAUDE_MASTER_KEY`: apps are resolved per-request from the `slack_apps` registry (`bun run slack-app add`), and `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN` are not read. Emit the matching app manifest with `bun run manifest --mode http --url https://<host>`. Setup walkthrough: [Webhook (Events API) mode](../deploy/webhook-mode.md). |
 | `SLAUDE_HTTP_PORT` | No | `8080` | Listen port for `SLAUDE_SLACK_MODE=http`. This single port serves `/slack/*` **and** `/healthz` `/readyz` `/metrics`; the standalone `SLAUDE_HEALTH_PORT` server is not started in http mode. |
 | `SLAUDE_HTTP_MAX_BODY_BYTES` | No | `1000000` | Max accepted request-body size on `/slack/*` (bytes). Oversize requests get `413` before any buffering completes or signature work runs. Positive integer. |
 | `SLACK_SIGNING_SECRET` | No | `""` | Fallback for `bun run slack-app add` when `--signing-secret` is omitted (**Basic Information → App Credentials**). The runtime never reads it directly — request verification always uses the encrypted copy stored in Postgres. |
+| `SLAUDE_SLACK_API_URL` | No | unset (Slack's own `https://slack.com/api/`) | Base URL of the Slack Web API. Used by the end-to-end suite to point gateways at a fake Slack; production never sets it. A trailing `/` is added when missing. Set it explicitly in the gateway's ConfigMap if anything could otherwise set it: every process also loads `$SLAUDE_HOME/.env`, which is on the shared volume (see [the Secret split](../deploy/multi-node.md#the-secret-split)). |
 
 ### Home & paths
 
@@ -278,10 +306,23 @@ All vars are read via `src/config/env.ts` (`req()` throws on missing, `opt()` re
 | `SLAUDE_DB` | No | `sqlite` | State store dialect: `sqlite` (file at `SLAUDE_DB_PATH`) or `pg` (Postgres). With `pg` and no `SLAUDE_PG_URL`, an in-process PGLite is used (sim and tests; `SLAUDE_PGLITE_DIR` persists it to disk). Schema for `pg` is applied from `src/db/migrations/*.sql` at boot. |
 | `SLAUDE_PG_URL` | With `SLAUDE_DB=pg` | none | Postgres connection URL (`postgres://user:pass@host:5432/db`). Driver is `Bun.sql`. |
 | `SLAUDE_PG_POOL` | No | `10` | Bun.sql connection pool size for `SLAUDE_DB=pg`. Positive integer. |
-| `SLAUDE_MASTER_KEY` | For encrypted columns | none | 32 random bytes, base64 (`openssl rand -base64 32`). Keys AES-256-GCM for the `(enc)` Postgres columns (`slack_apps.bot_token`, `signing_secret`, `provider_creds.value`). Not needed while the monolith runs a single Socket Mode app. |
+| `SLAUDE_MIGRATE_ON_BOOT` | No | `1` | `0`/`false`/`no` skips applying `src/db/migrations/*.sql` on boot for `SLAUDE_DB=pg`. On by default — this is what makes a fresh Postgres usable with no separate migrate step. Turn it off only where migrations run out-of-band (a dedicated migrate job ahead of the rollout); every gateway replica then boots without the advisory-lock wait below, at the cost of nothing enforcing the schema is actually current. |
+| `SLAUDE_MIGRATE_LOCK_TIMEOUT_SEC` | No | `0` | Seconds a booting replica waits for the Postgres advisory lock that serializes concurrent migration runs (multiple gateway replicas starting at once). `0` waits forever; a positive value fails the boot loudly on expiry rather than hanging, naming the timeout in the error. No effect when `SLAUDE_MIGRATE_ON_BOOT=0`. |
+| `SLAUDE_MASTER_KEY` | For encrypted columns | none | 32 random bytes, base64 (`openssl rand -base64 32`). Keys AES-256-GCM for the `(enc)` Postgres columns (`slack_apps.bot_token`, `signing_secret`, `provider_creds.value`). Not needed while the monolith runs a single Socket Mode app. Gateway only: a node must not hold it ([the Secret split](../deploy/multi-node.md#the-secret-split)). |
 | `SLAUDE_ROLE` | No | `mono` | Process role for the gateway/node split: `mono` (single process, today's behavior), `gateway` (Slack ingress + control plane), or `node` (queue worker). `mono` and `gateway` mount the node-facing REST `/v1` on the health server; `node` never does. Unknown values fall back to `mono`. |
-| `SLAUDE_NODE_TOKEN` | For `/v1` | none | Static shared secret nodes present as `Authorization: Bearer <token>` on every `/v1` request (timing-safe compare). Unset = `/v1` refuses all requests. Rotate via env. |
-| `SLAUDE_JOB_SECRET` | For `/v1` tool plane | none | HS256 secret for the short-lived per-job JWT (`X-Slaude-Job`) the gateway mints per turn job and verifies on `/v1/sessions/*` and `/v1/tools/*`. Claims: `{tenant, persona, session, team, channel, thread, initiator, scope, exp}`. Unset = tool-plane and session endpoints refuse. |
+| `SLAUDE_NODE_TOKEN` | On a node | none | **Node side.** The node's own `/v1` credential, sent as `Authorization: Bearer <token>` on every request: a signed node credential (`bun run node-token mint`, see [Node credentials](../deploy/multi-node.md#node-credentials)) or, for a legacy node, the gateway's `SLAUDE_NODE_LEGACY_TOKEN`. Checked at boot with `GET /v1/node/whoami`; the node exits only on a 401. A gateway reads this variable as its legacy token only while no `SLAUDE_NODE_KEY` is set, with a deprecation warning; never give a gateway a signed credential here. |
+| `SLAUDE_NODE_KEY` | For signed node credentials | none | **Gateway only.** HS256 key that signs and verifies node credentials (`{v, typ, id, labels, iat, exp}`). At least 32 characters and different from `SLAUDE_JOB_SECRET`, or the process refuses to start. Unset = signed credentials are not accepted and the legacy token is the only door. Whoever holds it can mint a credential for any label. |
+| `SLAUDE_NODE_KEY_PREVIOUS` | No | none | **Gateway only.** The previous node key, still accepted when verifying, so the key rotates without a flag day: set both, re-mint and roll nodes, then drop this. Same length and job-secret rules as `SLAUDE_NODE_KEY`. |
+| `SLAUDE_NODE_LEGACY_TOKEN` | For legacy nodes | none | **Gateway only.** The shared static token a legacy node presents as its `SLAUDE_NODE_TOKEN`; it authenticates as `{id: legacy, labels: [default]}` (timing-safe compare). A value that is a node credential (it verifies under the configured keys, or its middle dot-separated part decodes to JSON carrying `typ`, `exp` or `labels`) is refused with an error; any other value, dots included, works. Trimmed; whitespace-only counts as unset. Each use while `SLAUDE_NODE_KEY` is set logs a warning (once) and increments `slaude_node_legacy_auth_total`. With neither this, `SLAUDE_NODE_TOKEN` (the deprecated fallback) nor `SLAUDE_NODE_KEY` set, `/v1` answers 503. |
+| `SLAUDE_NODE_LEGACY` | No | on | **Gateway only.** `off` (or `0`/`false`/`no`) rejects the legacy token outright, so only signed credentials authenticate. Close it once every node has a signed credential: while open, every persona labelled `default` is reachable with the one shared token. Any value other than an on/off spelling refuses the gateway's boot (it used to leave the door open). |
+| `SLAUDE_NODE_ALLOW_TOKENLESS_PENDING` | No | `1` | **Gateway only.** Accept `GET /v1/pending/:id` without a job token, from the legacy identity only (older nodes send none), with a one-time deprecation warning. `0`/`false`/`no`/`off` refuses it; any other value refuses the gateway's boot. A poll with a job token answers only the token's own session; another session's gate is 404, like an unknown id. This switch goes away in a later release. |
+| `SLAUDE_JOB_TOKEN_MAX_AGE` | No | `6h` | **Gateway only.** Total life of a job token across refreshes, measured from its first issue (`iat0`, carried by every refreshed token; a token without it counts from its own `iat`). Refresh is refused past it, and no refreshed token expires after it. Seconds, or a number with `s`, `m`, `h` or `d`. |
+| `SLAUDE_JOB_MAX_AGE` | No | `24h` | **Gateway only.** Oldest a queued job may be, from its original enqueue, for `POST /v1/jobs/:id/token-reissue` to re-mint its token. Reissue answers 409 while the token can still be refreshed, and a reissued token (and every refresh of it) expires no later than enqueue + this cap. So a job's token can live up to this long in total, not just `SLAUDE_JOB_TOKEN_MAX_AGE`. Same format. |
+| `SLAUDE_JOB_SECRET` | For `/v1` tool plane | none | HS256 secret for the short-lived per-job JWT (`X-Slaude-Job`) the gateway mints per turn job and verifies on `/v1/sessions/*` and `/v1/tools/*`. Claims: `{tenant, persona, session, team, channel, thread, initiator, scope, exp}`. Unset = tool-plane and session endpoints refuse. Gateway only: no node code reads it, and a holder can mint a token for any persona. |
+| `SLAUDE_DEPLOY_TOKEN` | For persona sync | none | Bearer for the pipeline endpoint `POST /deploy/v1/tenants/<tenant>/personas` ([Personas as code](../deploy/personas-as-code.md)); applies a sync or previews one (`?dryRun=1`). Gateway role only: not mounted on `mono` or nodes (a `mono` process is managed through the panel). Trimmed; under 32 characters, or equal to `SLAUDE_NODE_TOKEN` or `SLAUDE_NODE_LEGACY_TOKEN` (credentials nodes hold), counts as unset. While neither deploy token is set, every `/deploy` path is 404. Requires `SLAUDE_DB=pg`; on sqlite an authorized request is 409. Never passed to the agent child. |
+| `SLAUDE_DEPLOY_PREVIEW_TOKEN` | No | none | Bearer accepted by `/deploy` only with `?dryRun=1` (a dry run writes nothing and makes no model call); on an apply it is the same 401 as a wrong token. For pull-request jobs, which run unreviewed code. Gateway role only. Same trim and 32-character floor; must differ from `SLAUDE_DEPLOY_TOKEN`, `SLAUDE_NODE_TOKEN` and `SLAUDE_NODE_LEGACY_TOKEN` or it counts as unset. Never passed to the agent child. |
+| `SLAUDE_DEPLOY_STRICT` | No | on | A `/deploy` payload carrying a field the gateway does not know is a 422 naming the field (never its value). On by default since v0.45.0, so upgrade the gateways before the pipeline sends new fields. `0` (or `false`/`no`/`off`) turns it off: unknown fields are then ignored, logged by name and returned in the response as `ignoredFields`. Any other value refuses the gateway's boot. A payload `version` newer than the gateway supports is always a 422. Gateway role only. |
+| `PERSONA_*` | Per persona repository | none | Values for the `${PERSONA_...}` placeholders a persona repository uses in `userToken` and `mcp` (for example `PERSONA_SUPPORT_BOT_XOXP`), resolved by the gateway at sync time. Only `PERSONA_` names resolve. Set them on the gateway or `mono` process only, never in an environment file nodes load; they are never passed to the agent child. |
 
 See [Filesystem layout](#filesystem) for every file under `SLAUDE_HOME`.
 
@@ -297,10 +338,61 @@ registry, session/leader locks, and abort/reload/gate pub-sub. A single-process
 | `SLAUDE_REDIS_PREFIX` | No | `slaude` | Namespace prefixed to every Redis key, channel, stream, and BullMQ queue this deploy touches. Lets several deploys (or a test run) share one Redis without collisions. |
 | `SLAUDE_HEARTBEAT_SEC` | No | `10` | Cadence at which nodes heartbeat each live session's `sess:<id>` registry entry. Entry TTL is 2× this — an entry older than that means "cold, route to the shared queue". Non-positive or non-numeric falls back to 10. |
 | `SLAUDE_NODE_DRAIN_SEC` | No | `120` | On SIGTERM a node stops claiming jobs and finishes in-flight turns for up to this many seconds before deregistering and exiting. Negative or non-numeric falls back to 120. |
+| `SLAUDE_NODE_BOOT_CHECK` | No | `refuse` | What a node does at boot when its environment holds a gateway-only variable (`SLAUDE_MASTER_KEY`, `SLAUDE_JOB_SECRET`, `SLAUDE_NODE_KEY`, `SLAUDE_NODE_KEY_PREVIOUS`, `SLAUDE_NODE_LEGACY_TOKEN`, `SLAUDE_PG_URL`, `SLAUDE_BRAIN_DATABASE_URL`, `SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_USER_TOKEN`, `SLAUDE_OAUTH_STATE_SECRET`, `SLAUDE_DEPLOY_TOKEN`, `SLAUDE_DEPLOY_PREVIEW_TOKEN`, `SLAUDE_PANEL_SECRET`, `SLAUDE_PANEL_OIDC_CLIENT_SECRET`, `SLAUDE_BRAIN_TOKEN`, `EMBEDDING_API_KEY`, `LITELLM_API_KEY`, and any `SLAUDE_VAULT_*`, `VAULT_*` or `PERSONA_*`). `warn` logs one line naming the variables (never their values), sets `slaude_node_gateway_secrets_present` to their count, and boots. `refuse` (the default since v0.45.0) exits non-zero with the same names. Empty values are ignored; any value other than `refuse` or `warn` refuses the boot, naming this variable. See [the Secret split](../deploy/multi-node.md#the-secret-split). The same list, plus `SLAUDE_NODE_TOKEN`, `SLAUDE_REDIS_URL`, `SLAUDE_ENCRYPTION_KEY` and the brain's embedding keys (`OPENAI_API_KEY`, `VOYAGE_API_KEY`, `ZEROENTROPY_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `OPENROUTER_API_KEY`, `MINIMAX_API_KEY`, `TOGETHER_API_KEY`), is stripped from the agent child's environment, refused as a node manifest `env` key or placeholder, and left unexpanded in a `.mcp.json` `${NAME}` placeholder. |
+| `SLAUDE_NODE_ALLOW_GATEWAY_SECRETS` | No | unset | `1` (or `true`/`yes`/`on`) turns a `refuse` into a `warn`; any value other than an on/off spelling refuses the boot. A temporary escape while a cluster finishes the Secret split, not a setting to keep. |
+| `SLAUDE_GATEWAY_URL` | On a node | `http://localhost:8080` | **Node side.** Base URL of the gateway's `/v1` API (in the manifests, the gateway Service: `http://slaude-gateway:8080`). Not secret; a plain variable on the node Deployment. |
+| `SLAUDE_NODE_PORT` | No | `8081` | **Node side.** Port of the node's `/healthz`, `/readyz` and `/metrics`. A value that is not a port number stops the node. |
+| `SLAUDE_NODE_CONCURRENCY` | No | `8` | **Node side.** BullMQ concurrency **per worker**. A node runs one worker per label in its credential plus one on its own queue, so its ceiling is `(labels + 1) × this`. Not a positive integer: the node stops. |
+| `SLAUDE_NODE_CONFIG_ROOT` | No | `/config-home` | **Node side.** Root of the pod-local per-session `CLAUDE_CONFIG_DIR` homes. Keep it off the shared volume (the manifests mount an `emptyDir`): the agent writes its credentials file with a temp-file rename, which silently un-shares a shared file. Ignored outside the `node` role. |
+| `SLAUDE_SESSION_LOCK_TTL_MS` | No | `600000` | TTL of the per-session Redis lock a node holds while it runs a turn. A node that dies never releases it, so this bounds how long a re-delivered turn waits before another node takes the session over. Positive integer milliseconds, at least three times `SLAUDE_SESSION_LOCK_EXTEND_MS`, or the process refuses to start. The local overlay sets `45000`. |
+| `SLAUDE_SESSION_LOCK_EXTEND_MS` | No | `60000` | How often a live node renews its session lock. Positive integer milliseconds. |
+| `SLAUDE_LABEL_UNSERVED_SECS` | No | `60` | **Gateway only (reaper leader).** How long a node label in use may have waiting jobs and no live node before it is reported unserved (`slaude_label_unserved{label}=1`, `GET /panel/api/labels`). Seconds, or a number with `s`, `m`, `h` or `d`. See [Unserved labels](../deploy/multi-node.md#unserved-labels). |
+| `SLAUDE_NODE_MANIFEST` | No | `/etc/slaude/node.json` | Node only. The file that declares the stdio MCP servers a node runs and which personas get each one. Read once at node start; an invalid file stops the node, naming the field. A missing file means **no** stdio or plugin MCP server for any persona: a node mounts an installed plugin's MCP server only when the manifest declares it. Ignored in `mono` and on gateways. See [Node MCP manifest](../deploy/node-manifest.md). |
 
 Tests for this layer run only against a real Redis (BullMQ's Lua scripts don't run
 on `ioredis-mock`) and are gated on `SLAUDE_REDIS_TEST_URL`, mirroring the
 `SLAUDE_PG_TEST_URL` gate for Postgres.
+
+### Control panel — operator web console <a id="panel"></a>
+
+What it does and how to enable it: [Control panel](../deploy/panel.md).
+
+The panel mounts at `/panel` on the gateway's HTTP server for the `mono` and
+`gateway` roles (never `node`). It is its own OIDC relying party: it
+authenticates the operator against a single issuer and mints its own session
+cookies. It stores no operator records — identity comes from an ID-token claim
+and roles come from a file or the env lists below.
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `SLAUDE_PANEL` | No | `0` | `1` mounts the panel. Off by default. Every variable below marked *Required* is required **only when this is `1`** — a missing one stops the process at boot rather than serving a half-configured auth surface. |
+| `SLAUDE_PANEL_OIDC_ISSUER` | Yes¹ | `""` | Issuer URL, resolved through OIDC discovery (e.g. `https://accounts.google.com`, or a Keycloak realm URL). Trailing slashes are trimmed. |
+| `SLAUDE_PANEL_OIDC_CLIENT_ID` | Yes¹ | `""` | Client id registered with the issuer. The client must be **confidential** — it holds a secret. |
+| `SLAUDE_PANEL_OIDC_CLIENT_SECRET` | Yes¹ | `""` | Client secret for the token exchange. |
+| `SLAUDE_PANEL_PUBLIC_URL` | Yes¹ | `""` | Public origin of the panel. The redirect URI is derived as `${SLAUDE_PANEL_PUBLIC_URL}/panel/auth/callback` — register that exact string with the provider. Required scopes: `openid email profile`. |
+| `SLAUDE_PANEL_SECRET` | Yes¹ | `""` | HMAC key for the session cookies. **Minimum 32 characters** — shorter fails at boot. Rotating it invalidates every outstanding session. |
+| `SLAUDE_PANEL_USER_CLAIM` | No | `email` | ID-token claim used as the operator identity, and the key the role lists are matched against. On the default `email`, the panel refuses a token whose `email_verified` is `false`. **A non-default claim gets no such check** — pick one the issuer vouches for, never a user-editable profile attribute. |
+| `SLAUDE_PANEL_ROLES_FILE` | No | `""` | Path to a YAML role list (`superadmin:` / `operator:`), matched case-insensitively, superadmin winning when an identity is in both. Read at boot and re-read per request, so edits apply without a redeploy. |
+| `SLAUDE_PANEL_SUPERADMIN` | No | `""` | Comma-separated superadmin identities — the fallback when no role file is mounted. Superadmin gates the destructive controls (reset, mode, force-release). |
+| `SLAUDE_PANEL_OPERATORS` | No | `""` | Comma-separated operator identities. An identity in neither list authenticates but is not authorized (`403`). |
+| `SLAUDE_PORTAL` | No | `0` | `1`/`true`/`yes` mounts the end-user portal at `/portal` (onboarding, identity binding, MCP connections) on `mono` and `gateway`. It reuses the panel's OIDC client, public URL and `SLAUDE_PANEL_SECRET`, so those are required when it is on. See [The user portal](../deploy/panel.md#the-user-portal). |
+
+¹ Required when `SLAUDE_PANEL=1`; ignored otherwise.
+
+Boot also fails if both role lists resolve empty (a panel nobody can reach is a
+misconfiguration, not a safe default), or if the removed `SLAUDE_PANEL_ALLOW` is
+still set — a leftover allowlist would silently stop granting the access its
+operator believes it grants.
+
+Sessions are a 15-minute access token and an 8-hour refresh token, both
+`HttpOnly; Secure; SameSite=Lax`. The refresh window is absolute — after 8 hours
+the operator re-authenticates at the provider. There is no revocation: removing
+someone from the role list blocks them at their next request, but a stolen
+cookie stays valid until it expires. Serve the panel over TLS; the cookies are
+`Secure` and browsers will not send them over plain HTTP.
+
+Deployment walkthrough, role-file example and cross-replica behaviour:
+[Multi-node scale-out](../deploy/multi-node.md).
 
 ### Sessions & UX
 
@@ -312,6 +404,8 @@ on `ioredis-mock`) and are gated on `SLAUDE_REDIS_TEST_URL`, mirroring the
 | `SLAUDE_HEALTH_PORT` | No | `8080` | Health server port (socket mode only — `SLAUDE_SLACK_MODE=http` serves these on `SLAUDE_HTTP_PORT` instead). `GET /healthz` → liveness `{status:"ok", uptime_ms, sessions_live}`, `GET /readyz` → DB ping (503 if unreachable), `GET /metrics` → Prometheus exposition. Set to `0` or non-finite to disable. See `src/health.ts`. |
 | `SLAUDE_TOKEN_WARN_PCT` | No | `0.8` | Fraction of the model's context window at which slaude posts a one-shot warning in the active thread. Edge-triggered — fires once per session. Source window comes from live `modelUsage.contextWindow`. |
 | `SLAUDE_TOKEN_CRITICAL_PCT` | No | `0.92` | Critical threshold sibling of `SLAUDE_TOKEN_WARN_PCT`. Set to `0` to disable the critical tier. |
+| `SLAUDE_REMOTE` | No | `0` | `1`/`true`/`yes` enables `/remote` (a thread's shell and file tools run on the user's own machine over tailcat SSH). Off by default. See the [Remote mode guide](../guides/remote.md). |
+| `SLAUDE_TAILCAT_BIN` | No | `tailcat` | Operator override of the tailcat binary path used by `/remote`. Read at call time; the stock image installs `/usr/local/bin/tailcat`. |
 
 ### Metrics & context budget
 
@@ -353,6 +447,98 @@ SLAUDE_OAUTH_LOOPBACK_HOST=0.0.0.0
 SLAUDE_OAUTH_LOOPBACK_PORTS=40100-40110
 ```
 
+### Outbound fetch policy <a id="outbound-policy"></a>
+
+The MCP OAuth flows (discovery, dynamic client registration, code exchange and token refresh) send every request through one outbound policy (`src/net/outbound-policy.ts`). The URLs come from persona configuration and from the servers' own metadata, and the gateway attaches credentials to them, so by default:
+
+- only `https` is allowed;
+- the host is resolved once, every address is checked, and the connection goes to the checked address. Loopback, private (RFC 1918, unique-local), shared (`100.64.0.0/10`), link-local, cloud metadata, multicast and reserved addresses are refused, IPv4 and IPv6, including IPv4 carried inside IPv6;
+- redirects are not followed (a 3xx is treated as a failure);
+- each request has a 10 s timeout and a 1 MiB response cap.
+
+Failures read `outbound request refused: <host> …` or `request to <host> failed (<code>)`. They name the host, never the resolved address.
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `SLAUDE_OUTBOUND_ALLOWED_HOSTS` | No | `""` | Comma-separated hosts (`auth.example.com`, or `*.example.com` for subdomains). When set, only these hosts are reachable. It **narrows** the policy: a listed host is still refused if it resolves to a private or loopback address. |
+| `SLAUDE_OUTBOUND_INTERNAL_HOSTS` | No | `""` | Comma-separated hosts you vouch for that may resolve to **private** ranges (RFC 1918, unique-local, `100.64.0.0/10`) and may use `http`. Use it for an in-cluster IdP or MCP server. Matching is by **exact hostname**: list every host the flow reaches, so the MCP server, its authorization server, and the token and registration endpoints' hosts if they differ. Loopback, link-local and cloud metadata addresses (`169.254.169.254`, `100.100.100.200`, `fd00:ec2::254`) are refused even for these hosts. |
+| `SLAUDE_OUTBOUND_DEV_LOOPBACK` | No | unset | `1` admits loopback addresses, and `http` to them. For tests and local development only; never set it in a deployment. Private and metadata addresses stay refused. |
+
+**Proxies.** Under Bun, these requests honour `HTTP_PROXY` / `HTTPS_PROXY` (and `NO_PROXY`), and there is no per-request opt-out. With a proxy set, the request is still addressed to the checked IP, but the proxy makes the connection. The proxy is then the trust boundary: it must not reach private ranges on the gateway's behalf.
+
+**Not covered yet.** Panel and portal OIDC login (`src/gateway/panel/auth/oidc.ts`) and the remote-brain MCP transport (`src/knowledge/remote/brain-client.ts`) still use the plain `fetch`.
+
+#### Breaking change
+
+Before this policy, OAuth fetches used the plain `fetch`. Now, by default:
+
+- discovery, registration, code exchange and refresh against `http` or private-range hosts **fail**. This includes in-cluster IdPs and MCP servers, the remote brain's IdP (its token refresh goes through the same code), and servers on a tailnet (`100.64.0.0/10`);
+- discovery no longer follows redirects. A server that answered the first probe with a 3xx now falls through to the well-known metadata URLs, and fails if those are not served either.
+
+**Recovery:** list the affected hosts in `SLAUDE_OUTBOUND_INTERNAL_HOSTS` and restart the gateway. Stored credentials are not deleted. A refused refresh is reported as a transient failure, not as a revoked grant, so connections recover once the host is listed and nobody has to reconnect.
+
+The [MCP bridge](../deploy/mcp-bridge.md) sends every request to a persona's remote MCP servers through the same policy, pinned to each server's configured origin. Its per-request timeout and response cap come from the `SLAUDE_MCP_BRIDGE_*` variables below instead of the 10 s / 1 MiB defaults.
+
+### MCP bridge <a id="mcp-bridge"></a>
+
+Gateway-side limits of the [MCP bridge](../deploy/mcp-bridge.md) (gateway role only; read per call). A value that is not a positive integer is refused.
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG` | No | `0` | `1` also bridges servers defined in FILES under `$SLAUDE_HOME` (the global `.mcp.json`, `personas/<name>/mcp.json`). Off by default: that directory is writable by agent turns, so only the managed persona's configuration (stored encrypted in the database) is bridged. Anything but `0`/`1` is refused. |
+| `SLAUDE_MCP_BRIDGE_ENV_ALLOW` | No | `""` | With the file opt-in, the comma-separated variable names a file's `${VAR}` placeholders may expand. Every other placeholder stays as written (its name is logged once). Gateway-only variables are never expanded. |
+| `SLAUDE_MCP_BRIDGE_TIMEOUT_MS` | No | `50000` | One deadline per bridged call, in milliseconds, covering the wait for a slot, opening the session, a refresh and its retry. Keep it shorter than any ingress or proxy timeout in front of the gateway. A server's own `timeout` in its configuration can only lower it. |
+| `SLAUDE_MCP_BRIDGE_SESSION_CONCURRENCY` | No | `4` | Upstream calls in flight at once for one thread's session on one server. |
+| `SLAUDE_MCP_BRIDGE_OWNER_CONCURRENCY` | No | `8` | Upstream calls in flight at once for one identity (one persona's agent, or one person) on one server. Further calls wait for a slot within the deadline. |
+| `SLAUDE_MCP_BRIDGE_IDLE_MS` | No | `300000` | A pooled upstream session unused this long is closed and reopened on the next call. |
+| `SLAUDE_MCP_BRIDGE_MAX_REQUEST_BYTES` | No | `1048576` | Largest body a node may send for one bridged call; larger is refused with `413`. |
+| `SLAUDE_MCP_BRIDGE_MAX_RESULT_BYTES` | No | `1048576` | Largest tool result returned to the agent. Above it the text is kept up to the limit and a `[result truncated by the MCP bridge: …]` line is appended; images and structured content are dropped. |
+| `SLAUDE_MCP_BRIDGE_MAX_TOOLS` | No | `500` | Most tools listed for one bridged server. |
+| `SLAUDE_MCP_BRIDGE_MAX_LIST_BYTES` | No | `1048576` | Most bytes of tool definitions listed for one bridged server. Over either list cap paging stops and a `[tool list truncated by the MCP bridge: …]` notice is added to the server's instructions. |
+
+### Brain (knowledge base and memory) <a id="brain"></a>
+
+The brain is the gbrain engine behind the `kb_*` tools and episodic memory (`src/knowledge/`). In the gateway topology it runs on gateways only; nodes reach it through `/v1/tools/kb/*` and `/v1/tools/memory/*`.
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `SLAUDE_BRAIN_DISABLED` | No | unset | `1` turns the brain off: no `kb_*` tools and the flat sqlite memory store. |
+| `SLAUDE_BRAIN_ENGINE` | Gateway topology | `pglite` | `pglite` (embedded, single writer, in `SLAUDE_BRAIN_HOME`) or `postgres`. A gateway refuses to boot on `pglite`: it is single-writer and clears locks it finds at boot, so replicas on the shared volume would corrupt it. |
+| `SLAUDE_BRAIN_DATABASE_URL` | With `postgres` | none | **Gateway only.** The brain's own database (the `vector`, `pg_trgm` and `pgcrypto` extensions; see `deploy/postgres-init/10-brain-database.sql`). Kept separate from slaude's schema. |
+| `SLAUDE_BRAIN_HOME` | No | `$SLAUDE_HOME/brain` | The brain's home: gbrain's `config.json` and, on `pglite`, its database. |
+| `SLAUDE_BRAIN_CYCLE` | No | `03:00` | Local time (`HH:MM`) of the nightly maintenance cycle, or `off`. |
+| `SLAUDE_BRAIN_TAKEOVER` | No | on | `0` stops a booting process from clearing a brain lock it finds (a stale lock is cleared by default, since one process owns one brain). |
+| `SLAUDE_BRAIN_MODE` | No | `local` | `remote` sends brain calls to a separate `slaude brain-server` over OAuth-protected MCP instead of the in-process engine. |
+| `SLAUDE_BRAIN_URL` | With `remote` | none | URL of the remote brain MCP server. |
+| `SLAUDE_BRAIN_TOKEN` | No | none | **Gateway only.** Non-interactive bearer for the remote brain (bootstrap and testing); otherwise run `slaude brain connect`. |
+| `SLAUDE_BRAIN_IMPORT_TOKEN` | For brain migration | none | **Gateway only.** Bearer for `/brain-import`, the endpoint that writes an exported brain bundle into a persona's memory. At least 32 characters and different from the node token, or it counts as unset. Unset = the route does not exist (404 for every path and method). Mounted on the `gateway` and `mono` roles, never `node`; a node refuses to boot holding it and the agent child never inherits it. On `mono` the agent child can read it, so set it only for the duration of the import. See [Brain migration](../deploy/brain-migration.md). |
+| `SLAUDE_BRAIN_SERVER_PORT` / `SLAUDE_BRAIN_SERVER_HOST` | No | `4319` / `0.0.0.0` | Listen address of `slaude brain-server`. |
+| `SLAUDE_BRAIN_PUBLIC_URL` | No | none | The brain server's external base URL (protected-resource metadata and redirects). |
+| `SLAUDE_BRAIN_OIDC_ISSUER` / `SLAUDE_BRAIN_OIDC_AUDIENCE` | No | none | Issuer (JWKS and `iss` check) and expected audience for the brain server's bearer tokens. |
+| `SLAUDE_BRAIN_AUTH_DISABLED` | No | unset | `1` skips token verification on the brain server. Trusted networks and local development only. |
+| `SLAUDE_AGENT_ID` | No | the Slack bot user id | The agent's identity, anchoring its private `agent-<id>` brain slice. Read from the environment first, then `auth.test` at boot, then `default`. In the gateway topology each persona's slice comes from the persona itself; slaude also sets this on each agent child. |
+| `SLAUDE_MEMORY` | No | brain | `sqlite` uses the flat sqlite turns store for episodic memory instead of the brain. |
+| `SLAUDE_KB_GRANT_TTL_MS` | No | `28800000` (8 h) | How long a manager's approval of a KB write stands for further writes by the same trusted writer, so the approval card is not repeated. `0` cards every write. Destructive and manager-tier operations always card. |
+| `SLAUDE_MCP_CARD_TTL` | No | `24h` | Lifetime of a `Connect <server>` card's pending row: `30m`, `12h`, or `permanent`, at most 24 h. Invalid values log a warning and use 24 h. |
+
+### Voice mode <a id="voice"></a>
+
+Voice mode lets the agent talk in a live call through a browser tab and a browser audio pipe (an audio provider; see the [voice mode guide](../guides/voice-mode.md) for the audio contract). Off unless enabled **and** both the key and the audio-origin allowlist are set: the allowlist is deny by default. In `mono` the process reads these itself; in the gateway topology only the **gateway** sets them and ships a voice block to nodes in the runtime bundle (nodes never read voice variables).
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `SLAUDE_VOICE_ENABLED` | No | `0` | `1`, `true` or `yes` turns voice mode on. |
+| `SLAUDE_VOICE_MODEL` | No | `openai/gpt-realtime` | Provider-qualified voice model: `openai/…`, `openai-live/…` (GPT-Live) or `gemini/…`. A bad value fails loudly. |
+| `SLAUDE_VOICE_NAME` | No | provider default | Voice name passed to the provider; `voice_start` may override it per call. |
+| `SLAUDE_VOICE_API_KEY` | With voice | none | The voice provider key. **Gateway only** in the gateway topology: it reaches nodes only inside the voice bundle, a node refuses to boot holding it, and no agent child inherits it (the voice-loop child gets it in its own environment). |
+| `SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS` | With voice | empty (deny) | Comma-separated audio-origin allowlist. Each entry is an exact origin (`https://audio.example.com`, optional port) or a scheme plus host wildcard (`https://*.example.com`: one or more labels under the domain, never the bare domain or a lookalike suffix). No path, query, userinfo or bare `*`; scheme and port match exactly, default ports normalised. `voice_start`'s stream and clear URLs must be absolute and match an entry. No `%`, empty labels, or wildcard over a common public suffix (`*.co.uk`, `*.github.io`; a short built-in list, not the full Public Suffix List). Unset or empty turns voice off with one log line; set but empty is a deliberate deny that the deprecated alias cannot override; a malformed entry is a loud error and voice off. Not a secret: shipped to nodes in the voice bundle (gateway and nodes must both run v0.45.0-rc.4 or later). |
+| `SLAUDE_VOICE_AUDIO_ALLOWED_HEADERS` | No | `X-Browser-Session` | Route header names `voice_start` may pass (case-insensitive). `Authorization`, `Cookie` and `Host` can never be listed; a list naming one is invalid and voice stays off. |
+| `SLAUDE_VOICE_AUDIO_REQUIRED_HEADERS` | No | `X-Browser-Session` | Route headers that must be present and non-empty; a subset of the allowed headers. Empty requires none. |
+| `SLAUDE_VOICE_WORKBENCH_URL` | No | none | **Deprecated.** Seeds the allowlist with its origin when `SLAUDE_VOICE_AUDIO_ALLOWED_ORIGINS` is unset (with a warning); ignored, with a warning, when the allowlist is set, even to empty. |
+| `SLAUDE_VOICE_MAX_MINUTES` | No | `120` | Hard cap on one call; it ends with `max_duration`. |
+| `SLAUDE_VOICE_STALE_SEQ` | No | `6` | A `now` utterance more than this many transcript lines behind the conversation is downgraded to the next pause. |
+| `SLAUDE_VOICE_TENANTS` | No | empty | Gateway only. Comma-separated tenant ids, or `*`, that receive the voice block. Empty means no tenant gets voice. Not used in `mono`. |
+
 ### Skills repo & evolution
 
 | Name | Required | Default | Description |
@@ -361,10 +547,11 @@ SLAUDE_OAUTH_LOOPBACK_PORTS=40100-40110
 | `SLAUDE_AUTO_EVOLVE` | No | `1` | Auto-evolve after each substantial user turn. When `1`, the manager injects an internal `<auto-evolve>` prompt so the agent decides whether to save or refine a skill. Set to `0` to disable. |
 | `SLAUDE_SOUL_PARSE_MAX_TOKENS` | No | `8192` | `max_tokens` budget for the soul extractor LLM call. Raise when a slower model needs more headroom (thinking-mode providers emit thinking + text blocks that both count). Non-positive or non-finite values fall back to `8192`. |
 | `SLAUDE_SOUL_PARSE_MODEL` | No | `SLAUDE_MODEL` or `claude-haiku-4-5-20251001` | Model used for the SOUL.md → JSON extraction pass. Defaults to `SLAUDE_MODEL` when set, otherwise `claude-haiku-4-5-20251001`. |
+| `SLAUDE_SOUL_CACHE_DIR` | No | `$SLAUDE_HOME/cache` | Directory for the extracted-`SoulData` cache. In the gateway topology `$SLAUDE_HOME` is a volume nodes and agent turns can write, so a planted cache file could install forged approvers; point this at pod-local storage on gateways (`deploy/k8s-scale` mounts an `emptyDir`, `docker-compose.scale.yaml` a `tmpfs`). Every cache hit is also re-checked: each Slack id in it must appear verbatim in the soul text, and when `SLAUDE_MASTER_KEY` is set the entry must carry a MAC from a key derived from it (only a key holder can write a trusted entry). A hit failing either check is discarded and the soul re-extracted. |
 
 ### External MCP env references
 
-Any env var referenced via `${VAR}` inside `~/.slaude/.mcp.json` is expanded at load time (see [External MCP](#external-mcp)). Common examples:
+Any env var referenced via `${VAR}` inside `~/.slaude/.mcp.json` is expanded at load time (see [External MCP](#external-mcp)), except gateway-only variables (the list under `SLAUDE_NODE_BOOT_CHECK`, for example `${SLACK_BOT_TOKEN}` or `${SLAUDE_MASTER_KEY}`). Those are left as written and their name is logged: the file is on a volume agent turns can write. Give an MCP server its own credential variable instead. Common examples:
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
@@ -527,7 +714,7 @@ The runtime enforces two layers:
 - **Runtime baseline** (in code, `RUNTIME_BASELINE` in `loader.ts`) — non-negotiable rules about Slack output discipline, formatting, approval, engagement, channel trust, KB-first, skill evolution, and harness overrides. You never author this; a new release can tighten it without touching your persona.
 - **Persona** (your `SOUL.md`) — who the agent is: name, role, voice, manager, mandate, values, channels, approvers, redaction. This is what the agent's system prompt renders inside `<persona>…</persona>`.
 
-Structured extraction (`src/soul/extract.ts`) calls the configured provider with `EXTRACTION_PROMPT` (`src/soul/data.ts`), validates the JSON with `SoulDataSchema` (zod), checks that every extracted Slack id appears verbatim in the raw persona (hallucinated ids are rejected), and caches the result at `~/.slaude/cache/soul.<sha>.json` keyed by `sha256(SOUL.md)`. On any extraction failure it falls back to a regex parser that only fills `approvers`.
+Structured extraction (`src/soul/extract.ts`) calls the configured provider with `EXTRACTION_PROMPT` (`src/soul/data.ts`), validates the JSON with `SoulDataSchema` (zod), checks that every extracted Slack id appears verbatim in the raw persona (hallucinated ids are rejected), and caches the result at `~/.slaude/cache/soul.<sha>.json` (or `$SLAUDE_SOUL_CACHE_DIR`) keyed by `sha256(SOUL.md)`. A cache hit gets the same grounding check before use, so a forged cache file is treated as a miss. On any extraction failure it falls back to a regex parser that only fills `approvers`.
 
 ### Validated schema — what extraction looks for
 

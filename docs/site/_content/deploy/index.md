@@ -331,10 +331,15 @@ behavior documented on this page, unchanged.
   Service/Ingress, RWX PVC, Secrets template (kubeseal example), KEDA
   queue-depth autoscaling with a CPU-HPA fallback. See its README for
   prerequisites (managed Postgres/Redis, RWX StorageClass, KEDA).
-- Slack ingress runs in **http mode** (`SLAUDE_SLACK_MODE=http`, Events API)
-  with per-workspace apps in the encrypted `slack_apps` registry; installs
-  arrive via `bun run slack-app add` or the OAuth flow (`/slack/oauth/start`,
-  enabled by `SLACK_CLIENT_ID`).
+- Slack ingress runs in **[http mode](webhook-mode.md)** (`SLAUDE_SLACK_MODE=http`,
+  Events API) with per-workspace apps in the encrypted `slack_apps` registry;
+  installs arrive via `bun run slack-app add` or the OAuth flow
+  (`/slack/oauth/start`, enabled by `SLACK_CLIENT_ID`). Webhook mode also runs
+  standalone in `mono` role — it doesn't require this topology.
+- **[Personas as code](personas-as-code.md)** — sync personas from a git
+  repository with a CI job (`/deploy`, its own token, dry-run diff).
+- **[Control panel](panel.md)** — an operator web console (`SLAUDE_PANEL=1`):
+  fleet view, session control, take-control-from-Slack, and chat.
 - Architecture and invariants: `docs/internal/superpowers/specs/2026-08-24-horizontal-scale-design.md`.
 
 > The single-Deployment warning above does not apply to this topology:

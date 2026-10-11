@@ -1,0 +1,56 @@
+# OPTIONAL — restricts what node pods can connect to. Not in kustomization.yaml
+# and not in the local overlay: it only has an effect on a cluster whose CNI
+# enforces NetworkPolicy (Calico, Cilium, a cloud provider's policy add-on);
+# minikube's default CNI ignores it. Review the rules, then:
+#
+#   kubectl apply -f deploy/k8s-scale/optional/node-egress-networkpolicy.yaml
+#
+# A node has no legitimate use for Postgres or Vault: everything it needs from
+# them comes through the gateway's /v1. So node egress is an allow-list of
+# ports, and the Postgres (5432) and Vault (8200) ports are not on it, wherever
+# those services live. What is allowed:
+#   - DNS;
+#   - the gateway's /v1 (port 8080 on the gateway pods);
+#   - Redis (6379) — narrow `to:` to your Redis address if you can;
+#   - HTTPS (443) anywhere: the LLM provider, remote MCP servers, git, package
+#     registries.
+# The rules are by port: a Postgres or Vault served on 443 or 6379 would still be
+# reachable. If an agent's stdio MCP servers or tools need another port, add a
+# rule for it here; /remote (SSH to the initiator's machine over the tailnet)
+# needs its own egress rules. If your Redis or LLM provider listens on a different port, change the
+# rule to match. Ingress to node pods (health and metrics on 8081) is left open.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: slaude-node-egress
+  namespace: slaude-scale
+spec:
+  # Every node deployment, whatever its label (50-node.yaml marks all of them).
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: slaude
+      slaude.dev/tier: node
+  policyTypes:
+    - Egress
+  egress:
+    # DNS, in any namespace (the cluster resolver usually lives in kube-system).
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # The gateway's /v1.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: slaude
+              app.kubernetes.io/component: gateway
+      ports:
+        - { protocol: TCP, port: 8080 }
+    # Redis: queues, the node registry, session locks. Recommended: add a `to:`
+    # naming your Redis (a podSelector or an ipBlock) instead of any address.
+    - ports:
+        - { protocol: TCP, port: 6379 }
+    # HTTPS: the LLM provider and other remote services.
+    - ports:
+        - { protocol: TCP, port: 443 }

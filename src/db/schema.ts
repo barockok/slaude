@@ -24,4 +24,8 @@ export type SessionRow = {
   permission_mode: string;
   engaged: number;
   persona_id: string;
+  /** Slack app (api_app_id) the thread arrives through; null until the first
+   *  inbound event recorded it (D1.2). Optional so row literals predating it
+   *  still type-check. */
+  slack_app_id?: string | null;
 };

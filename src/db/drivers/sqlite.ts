@@ -109,6 +109,85 @@ CREATE TABLE IF NOT EXISTS one_on_one_locks (
   PRIMARY KEY (channel_id, thread_ts)
 );
 
+CREATE TABLE IF NOT EXISTS remote_targets (
+  channel_id     TEXT    NOT NULL,
+  thread_ts      TEXT    NOT NULL,
+  team_id        TEXT    NOT NULL,
+  user_id        TEXT    NOT NULL,
+  addr           TEXT    NOT NULL,
+  dir            TEXT    NOT NULL,
+  lock_by_remote INTEGER NOT NULL DEFAULT 0,
+  created_at     INTEGER NOT NULL,
+  PRIMARY KEY (channel_id, thread_ts)
+);
+CREATE TABLE IF NOT EXISTS remote_keys (
+  team_id     TEXT    NOT NULL,
+  user_id     TEXT    NOT NULL,
+  public_key  TEXT    NOT NULL,
+  private_key TEXT    NOT NULL,
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (team_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS accounts (
+  id         TEXT PRIMARY KEY,
+  issuer     TEXT    NOT NULL,
+  subject    TEXT    NOT NULL,
+  email      TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (issuer, subject)
+);
+
+CREATE TABLE IF NOT EXISTS slack_identities (
+  team_id       TEXT    NOT NULL,
+  slack_user_id TEXT    NOT NULL,
+  account_id    TEXT    NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
+  linked_at     INTEGER NOT NULL,
+  linked_via    TEXT    NOT NULL,
+  PRIMARY KEY (team_id, slack_user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_slack_identities_account
+  ON slack_identities (account_id);
+
+-- Gateway-owned MCP credentials, one owner per row (see 0008_mcp_credentials.sql).
+CREATE TABLE IF NOT EXISTS mcp_credentials (
+  id            TEXT    PRIMARY KEY,
+  account_id    TEXT    REFERENCES accounts (id) ON DELETE CASCADE,
+  agent_tenant  TEXT,
+  agent_persona TEXT,
+  server_key    TEXT    NOT NULL,
+  payload       TEXT    NOT NULL,
+  expires_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  CHECK ((account_id IS NOT NULL) <> (agent_tenant IS NOT NULL)),
+  CHECK ((agent_tenant IS NULL) = (agent_persona IS NULL)),
+  UNIQUE (account_id, server_key),
+  UNIQUE (agent_tenant, agent_persona, server_key)
+);
+
+-- A parked paste-back /mcp connect (see 0010_slack_oauth_flows.sql).
+CREATE TABLE IF NOT EXISTS slack_oauth_flows (
+  flow_key   TEXT    PRIMARY KEY,
+  payload    TEXT    NOT NULL,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_slack_oauth_flows_expires ON slack_oauth_flows (expires_at);
+
+-- One in-flight portal OAuth authorization (see 0009_portal_oauth_flows.sql).
+CREATE TABLE IF NOT EXISTS portal_oauth_flows (
+  id         TEXT    PRIMARY KEY,
+  account_id TEXT    NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
+  payload    TEXT    NOT NULL,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_portal_oauth_flows_expires ON portal_oauth_flows (expires_at);
+
 CREATE TABLE IF NOT EXISTS mention_only_threads (
   channel_id TEXT    NOT NULL,
   thread_ts  TEXT    NOT NULL,
@@ -281,6 +360,18 @@ export function bootstrapSqliteSchema(db: Database): void {
   // slice + config dir). Existing jobs get 'default' (single-bot persona).
   if (!cronCols.some((c) => c.name === "persona_id")) {
     db.run(`ALTER TABLE cron_jobs ADD COLUMN persona_id TEXT NOT NULL DEFAULT 'default'`);
+  }
+
+  // Migration: the Slack app the job was created under (mirrors pg migration
+  // 0013), so a run posts as that app when several are registered.
+  if (!cronCols.some((c) => c.name === "slack_app_id")) {
+    db.run(`ALTER TABLE cron_jobs ADD COLUMN slack_app_id TEXT`);
+  }
+  // Same for sessions (also pg 0013), so panel-sourced turns carry the app.
+  // Read fresh: the persona_id migration above may have rebuilt the table.
+  const sessionAppCols = db.query(`PRAGMA table_info(sessions)`).all() as Array<{ name: string }>;
+  if (!sessionAppCols.some((c) => c.name === "slack_app_id")) {
+    db.run(`ALTER TABLE sessions ADD COLUMN slack_app_id TEXT`);
   }
 
   // Migration: add pause lifecycle state. `active` remains the soft-delete bit;

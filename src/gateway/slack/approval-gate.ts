@@ -1,4 +1,4 @@
-import type { Transport, WebClientLike } from "../core/transport";
+import { clientForApp, type AppRef, type Transport, type WebClientLike } from "../core/transport";
 import { loadApprovers, selectApprovers, selectApproversFrom } from "../../soul/loader";
 import { effectiveSoulForChannel } from "../../soul/extract";
 import * as PendingGates from "../../db/pending-gates";
@@ -20,6 +20,10 @@ export type ApprovalRequest = {
    *  ids" SOUL format. Modern persona uses scope-described approvers, where
    *  the runtime keyword-matches the summary against each approver's scope. */
   category?: string;
+  /** Slack app the session belongs to (D1.2). The card is posted, and its
+   *  timeout edit made, as this app. A click needs no client: it answers
+   *  through the click's own response_url, which belongs to the posting app. */
+  app?: AppRef;
 };
 
 export type ApprovalDecision = {
@@ -66,12 +70,14 @@ type Pending = {
   timer?: ReturnType<typeof setTimeout>;
   channel: string;
   ts?: string;
+  /** Client of the app the card was posted as; the timeout edit reuses it. */
+  client: WebClientLike;
   /** gate-bus unsubscribe, when a bus is configured. */
   unsub?: () => Promise<void>;
 };
 
 export class ApprovalGate {
-  #client: WebClientLike;
+  #transport: Pick<Transport, "client" | "clientFor">;
   #pending = new Map<string, Pending>();
   #counter = 0;
   /** Env-derived fallback allowlist. Used when persona has no approvers block
@@ -87,7 +93,7 @@ export class ApprovalGate {
     envApprovers: string[],
     opts: { timeoutSeconds?: () => number; gateBus?: GateBus | null } = {},
   ) {
-    this.#client = transport.client;
+    this.#transport = transport;
     this.#envApprovers = new Set(envApprovers);
     this.#timeoutSeconds = opts.timeoutSeconds ?? (() => 0);
     this.#busOverride = opts.gateBus;
@@ -103,12 +109,17 @@ export class ApprovalGate {
         const id = m[2]!;
         const pending = this.#pending.get(id);
         const userId = (body as any).user?.id ?? "unknown";
-        const stale = async () => {
+        const stale = async (status?: string) => {
           try {
+            // Ephemeral note only: a decided card is the visible record. An
+            // expired/cancelled row was never decided, so don't say it was.
             await respond({
-              replace_original: true,
-              text: `:lock: approval already decided`,
-              blocks: [],
+              response_type: "ephemeral",
+              replace_original: false,
+              text:
+                status === "expired" || status === "cancelled"
+                  ? `:hourglass: this approval ${status}`
+                  : `:lock: approval already decided`,
             });
           } catch {}
         };
@@ -137,7 +148,7 @@ export class ApprovalGate {
             void pending.unsub?.().catch(() => {});
             pending.resolve({ approved: false, by: "system", note: row?.status ?? "missing" });
           }
-          return void (await stale());
+          return void (await stale(row?.status));
         }
         if (!pending) {
           const isPollRow = (row.payload as any)?.waiter === "poll";
@@ -203,7 +214,7 @@ export class ApprovalGate {
             void pending.unsub?.().catch(() => {});
             pending.resolve({ approved: false, by: "system", note: cur.status });
           }
-          return void (await stale());
+          return void (await stale(cur?.status));
         }
 
         if (pending.timer) clearTimeout(pending.timer);
@@ -221,6 +232,11 @@ export class ApprovalGate {
         pending.resolve({ approved, by: userId });
       },
     );
+  }
+
+  /** Per-request client: the request's app on a multi-app transport (D1.2). */
+  #clientFor(req: ApprovalRequest): WebClientLike {
+    return clientForApp(this.#transport, req.app);
   }
 
   #bus(): GateBus | null {
@@ -357,6 +373,7 @@ export class ApprovalGate {
       expiresAt: timeoutSec > 0 ? Date.now() + timeoutSec * 1000 : undefined,
     });
 
+    const client = this.#clientFor(req);
     let cardTs: string | undefined;
     if (timeoutSec > 0) {
       const timer = setTimeout(() => {
@@ -365,7 +382,7 @@ export class ApprovalGate {
           if (!row) return; // a click won
           await this.#publish(id);
           if (cardTs) {
-            void this.#client.chat
+            void client.chat
               .update({
                 channel: req.channel,
                 ts: cardTs,
@@ -380,7 +397,7 @@ export class ApprovalGate {
     }
 
     try {
-      const posted = await this.#client.chat.postMessage({
+      const posted = await client.chat.postMessage({
         channel: req.channel,
         thread_ts: req.threadTs,
         text: `:bell: Approval needed: ${truncate(req.summary, 80)}`,
@@ -425,6 +442,7 @@ export class ApprovalGate {
       resolve: resolveFn,
       approvers,
       channel: req.channel,
+      client: this.#clientFor(req),
     };
     if (timeoutSec > 0) {
       pending.timer = setTimeout(() => {
@@ -447,7 +465,7 @@ export class ApprovalGate {
           void p.unsub?.().catch(() => {});
           // Best-effort UI update so the block doesn't look pending forever.
           if (p.ts) {
-            void this.#client.chat
+            void p.client.chat
               .update({
                 channel: p.channel,
                 ts: p.ts,
@@ -497,7 +515,7 @@ export class ApprovalGate {
     );
 
     try {
-      const posted = await this.#client.chat.postMessage({
+      const posted = await pending.client.chat.postMessage({
         channel: req.channel,
         thread_ts: req.threadTs,
         text: `:bell: Approval needed: ${truncate(req.summary, 80)}`,

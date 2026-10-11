@@ -250,7 +250,14 @@ export async function startSimCluster(opts: SimClusterOpts): Promise<SimCluster>
       nodeTtlSec: 3,
       drainSec: 5,
       port: null,
-      lock: { ttlMs: 2000, extendEveryMs: 300 },
+      // A tight TTL made lock loss detection (dead-node handoff) fast for
+      // local runs, but left almost no margin on a loaded shared CI runner:
+      // any single stall past ~2s (GC pause, event-loop block, one slow
+      // Redis round-trip) lost the lock outright and aborted the turn
+      // mid-scenario (issue #111). approval-authz.yaml — the only scenario
+      // with two sequential human clicks, so the longest wall-clock gap in
+      // the suite — was the one that reliably tripped it.
+      lock: { ttlMs: 10_000, extendEveryMs: 1_500 },
       turnTimeoutMs: 60_000,
       ...opts.worker,
       ...o.worker,

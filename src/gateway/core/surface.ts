@@ -3,7 +3,7 @@
 // *real* implementation over a fake transport, so the agent cannot tell sim from prod.
 // See docs/superpowers/specs/2026-06-03-surface-abstraction-design.md.
 
-export type SurfaceCapability = "edit" | "react" | "upload" | "typing";
+export type SurfaceCapability = "edit" | "react" | "upload" | "typing" | "ephemeral";
 
 /** One message in conversation history. Core fields are universal; the optional fields
  *  preserve Slack's get_thread_history output verbatim and are omitted by thinner surfaces. */
@@ -45,6 +45,10 @@ export interface Surface {
   unreact?(i: { name: string; ref?: string }): Promise<void>;    // cap: "react" (rides with react)
   upload?(i: { path: string; title?: string; comment?: string; altText?: string }): Promise<void>; // cap: "upload"
   typing?(i: { on: boolean }): Promise<void>;                    // cap: "typing"
+  /** Post a message only `userId` can see (default: the binding's user).
+   *  cap: "ephemeral". MUST throw rather than fall back to a public post —
+   *  callers reach for it precisely because the content is not for the channel. */
+  sayEphemeral?(i: { text: string; userId?: string }): Promise<void>; // cap: "ephemeral"
 }
 
 /** Neutral per-session binding the gateway builds from the inbound turn. A SurfaceFactory

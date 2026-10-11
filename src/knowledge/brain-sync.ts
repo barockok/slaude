@@ -2,8 +2,10 @@ import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { brainAdminCall, embeddingActive } from "./brain";
+import { brainClosing } from "./brain-work";
 import { loadKbs } from "./loader";
 import { kbSourceId } from "./scope";
+import { GIT_LOCAL_ARGS, localGitEnv } from "../config/safe-git";
 
 export interface KbSyncResult {
   label: string;
@@ -17,9 +19,15 @@ export interface KbSyncResult {
  * Self-init a local checkpoint repo — never pushed anywhere, purely so sync
  * can diff between runs. Re-runs commit any drift since the last sync.
  */
-function ensureGitRepo(repo: string): void {
+export function ensureGitRepo(repo: string): void {
+  // The KB sits on the shared, node-writable volume and this runs in the
+  // gateway: no hook, fsmonitor or sshCommand from the repository runs, and
+  // git gets a minimal environment (src/config/safe-git.ts).
   const git = (...args: string[]) =>
-    execFileSync("git", ["-C", repo, "-c", "user.email=slaude@local", "-c", "user.name=slaude", ...args], { stdio: "pipe" });
+    execFileSync("git", ["-C", repo, ...GIT_LOCAL_ARGS, "-c", "user.email=slaude@local", "-c", "user.name=slaude", ...args], {
+      stdio: "pipe",
+      env: localGitEnv(),
+    });
   if (!existsSync(join(repo, ".git"))) git("init", "-q");
   try {
     git("add", "-A");
@@ -39,6 +47,8 @@ function ensureGitRepo(repo: string): void {
 export async function syncKbWikis(): Promise<KbSyncResult[]> {
   const out: KbSyncResult[] = [];
   for (const kb of loadKbs()) {
+    // A close is waiting on this run: stop between KBs, not mid-import.
+    if (brainClosing()) break;
     const wikiDir = join(kb.path, "wiki");
     const repo = existsSync(wikiDir) ? wikiDir : kb.path;
     const sourceId = kbSourceId(kb.label);

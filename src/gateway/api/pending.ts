@@ -23,10 +23,16 @@ export interface PendingOptions {
   wake?: (id: string, cb: () => void) => Promise<() => Promise<void>>;
 }
 
+/**
+ * `bindSession`: when set (the caller presented a job token), the gate answers
+ * only if its row belongs to that session; any other row is reported exactly
+ * like an unknown id, so its existence is not revealed (node labels spec §4.4).
+ */
 export async function handlePending(
   id: string,
   source: PendingSource,
   opts: PendingOptions = {},
+  bindSession?: string,
 ): Promise<Response> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const pollMs = opts.pollMs ?? 500;
@@ -54,6 +60,7 @@ export async function handlePending(
     for (;;) {
       const row = await source.get(id);
       if (!row) return notFound("unknown pending id");
+      if (bindSession !== undefined && row.sessionId !== bindSession) return notFound("unknown pending id");
       if (row.status !== "pending") {
         return json(200, { status: row.status, payload: row.payload, resolvedBy: row.resolvedBy });
       }

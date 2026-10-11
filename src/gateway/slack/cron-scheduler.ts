@@ -1,11 +1,30 @@
 import type { AgentManager } from "../../agent/manager";
-import type { WebClient } from "@slack/web-api";
+import type { SessionRow } from "../../db/schema";
 import * as CronJobs from "../../db/cron-jobs";
 import { getNextRun } from "./cron-parser";
+import { getPersonaRegistry } from "../../persona/registry";
+import { registerLoop } from "../core/running-loops";
 
 export type CronSchedulerDeps = {
   agent: AgentManager;
-  client: WebClient;
+  /**
+   * How a cron turn is delivered. The gateway role injects the queue dispatch
+   * so the turn runs on a node like every other turn; without it the scheduler
+   * runs the turn in this process, which is what mono wants.
+   */
+  send?: (i: {
+    session: SessionRow;
+    envelope: string;
+    job: CronJobs.CronJob;
+    /** Thread the run's session is keyed on — synthetic for channel targets. */
+    threadTs: string;
+  }) => Promise<void>;
+  /**
+   * Whether a turn for this session is already in flight. Defaults to this
+   * process's own agent, which is only the whole truth in mono: under the split
+   * the turn runs on a node, so the gateway injects a cluster-wide check.
+   */
+  isLive?: (sessionId: string) => Promise<boolean>;
   /** Called before sendMessage so the adapter can register a route + SlackContext
    *  for this cron session. Without a route, agent events are silently dropped. */
   onExecute?: (job: CronJobs.CronJob, sessionId: string) => void;
@@ -13,22 +32,28 @@ export type CronSchedulerDeps = {
 
 export class CronScheduler {
   #agent: AgentManager;
-  #client: WebClient;
   #onExecute?: (job: CronJobs.CronJob, sessionId: string) => void;
+  #send?: CronSchedulerDeps["send"];
+  #isLive?: CronSchedulerDeps["isLive"];
   #timer: ReturnType<typeof setInterval> | null = null;
+  #unregister: (() => void) | null = null;
   #running = new Set<string>(); // job ids currently executing
 
   constructor(deps: CronSchedulerDeps) {
     this.#agent = deps.agent;
-    this.#client = deps.client;
     this.#onExecute = deps.onExecute;
+    this.#send = deps.send;
+    this.#isLive = deps.isLive;
   }
 
   start(): void {
     if (this.#timer) return;
-    this.#timer = setInterval(() => this.#tick(), 60_000);
+    this.#timer = setInterval(() => this.#poll(), 60_000);
+    // Registered so an owner that never stops (a test's gateway) can still be
+    // ended by stopRunningLoops(); stop() unregisters.
+    this.#unregister = registerLoop(() => this.stop());
     // Run once immediately
-    void this.#tick();
+    this.#poll();
   }
 
   stop(): void {
@@ -36,25 +61,66 @@ export class CronScheduler {
       clearInterval(this.#timer);
       this.#timer = null;
     }
+    this.#unregister?.();
+    this.#unregister = null;
+  }
+
+  /** One poll from the timer. Nothing awaits it, so a failure (a DB blip, a
+   *  missing table) must end here: an unhandled rejection exits the process. */
+  #poll(): void {
+    this.#tick().catch((e) => console.error("[cron] poll failed:", e instanceof Error ? e.message : e));
   }
 
   async #tick(): Promise<void> {
     const now = Date.now();
     const due = await CronJobs.findDue(now);
     for (const job of due) {
+      // Cheap local short-circuit; the claim below is what holds across replicas.
       if (this.#running.has(job.id)) continue;
+      // Claim the occurrence BEFORE dispatching it. Advancing the schedule only
+      // at completion left the row due for the whole turn, so a leader dying
+      // mid-turn handed the same occurrence to its successor. Exactly one
+      // claimer wins the compare-and-set.
+      const claimed = getNextRun(job.cronExpr);
+      if (!(await CronJobs.claimDue(job.id, job.nextRunAt, claimed))) continue;
       this.#running.add(job.id);
-      void this.#execute(job);
+      // #execute is not awaited, so anything it throws (a persona retired
+      // between the live check and onExecute, a DB error) must be caught here:
+      // an unhandled rejection exits the process, and the job id would stay in
+      // #running forever. The claim is kept — the occurrence is spent.
+      void this.#execute(job, claimed).catch((e) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`[cron] job ${job.id} failed:`, msg);
+        this.#running.delete(job.id);
+        void CronJobs.recordRun(job.id, `error: ${msg}`).catch(() => {});
+      });
     }
   }
 
-  async #execute(job: CronJobs.CronJob): Promise<void> {
+  /** `claimedNextRun` is the schedule this run already advanced the row to. */
+  async #execute(job: CronJobs.CronJob, claimedNextRun: number): Promise<void> {
     // Legacy jobs without real Slack keys can't post — skip and mark error.
     if (!job.slackTeamId || !job.slackChannelId) {
       console.error(`[cron] job ${job.id} missing Slack keys (legacy job) — skipping`);
-      await CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), "error: missing Slack keys");
+      await CronJobs.recordRun(job.id, "error: missing Slack keys");
       this.#running.delete(job.id);
       return;
+    }
+
+    // A job owned by a persona a MANAGED registry no longer lists (retired or
+    // removed) skips this occurrence before any session work. Running it would
+    // fall back to the default persona; releasing the claim would retry it
+    // every tick. The claim already advanced next_run_at, so keeping it skips
+    // exactly this occurrence. The job is neither paused nor deleted: once the
+    // persona is re-added in git its next occurrence runs by itself.
+    if (job.personaId && job.personaId !== "default") {
+      const reg = getPersonaRegistry();
+      if (reg.isManaged() && !reg.lookupByName(job.personaId)) {
+        console.log(`[cron] job ${job.id} skipped — persona=${job.personaId} is not live`);
+        await CronJobs.recordRun(job.id, "skipped: persona not live");
+        this.#running.delete(job.id);
+        return;
+      }
     }
 
     // Channel-target jobs broadcast to channel root — never bind a real thread, so
@@ -82,9 +148,10 @@ export class CronScheduler {
     // opt into passive mode (when_active='skip') to defer the run while a human is
     // active — they get priority for that tick. (Same-job re-entry is still guarded
     // by #running in #tick.)
-    if (job.whenActive === "skip" && this.#agent.isLive(session.id)) {
+    const live = this.#isLive ? await this.#isLive(session.id) : this.#agent.isLive(session.id);
+    if (job.whenActive === "skip" && live) {
       console.log(`[cron] job ${job.id} skipped — session ${session.id} is live (when_active=skip)`);
-      await CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), "skipped: session live");
+      await CronJobs.recordRun(job.id, "skipped: session live");
       this.#running.delete(job.id);
       return;
     }
@@ -99,29 +166,35 @@ export class CronScheduler {
     const onDone = async (e: any) => {
       if (e.sessionId !== session.id) return;
       this.#agent.off("event", onEvent);
-      const nextRun = getNextRun(job.cronExpr);
-      await CronJobs.updateNextRun(job.id, nextRun, "completed");
+      await CronJobs.recordRun(job.id, "completed");
       this.#running.delete(job.id);
     };
     const onError = async (e: any) => {
       if (e.sessionId !== session.id) return;
       this.#agent.off("event", onEvent);
-      const nextRun = getNextRun(job.cronExpr);
-      await CronJobs.updateNextRun(job.id, nextRun, `error: ${e.error ?? "unknown"}`);
+      await CronJobs.recordRun(job.id, `error: ${e.error ?? "unknown"}`);
       this.#running.delete(job.id);
     };
     const onEvent = (e: any) => {
-      if (e.type === "done") void onDone(e);
-      else if (e.type === "error") void onError(e);
+      const fail = (err: unknown) => {
+        console.error(`[cron] job ${job.id} could not record its result:`, err instanceof Error ? err.message : err);
+        this.#running.delete(job.id);
+      };
+      if (e.type === "done") void onDone(e).catch(fail);
+      else if (e.type === "error") void onError(e).catch(fail);
     };
     this.#agent.on("event", onEvent);
 
     try {
-      await this.#agent.sendMessage(session.id, envelope);
+      if (this.#send) await this.#send({ session, envelope, job, threadTs });
+      else await this.#agent.sendMessage(session.id, envelope);
     } catch (e: any) {
       console.error(`[cron] job ${job.id} failed to send:`, e?.message ?? e);
       this.#agent.off("event", onEvent);
-      await CronJobs.updateNextRun(job.id, getNextRun(job.cronExpr), `error: ${e?.message ?? "unknown"}`);
+      await CronJobs.recordRun(job.id, `error: ${e?.message ?? "unknown"}`);
+      // Nothing was dispatched, so give the occurrence back rather than drop
+      // it. Once a turn IS enqueued the queue owns its redelivery.
+      await CronJobs.releaseClaim(job.id, claimedNextRun, job.nextRunAt);
       this.#running.delete(job.id);
     }
   }

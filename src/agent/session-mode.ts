@@ -9,7 +9,16 @@ import type { OneOnOneLockRow } from "../db/one-on-one";
  * Returns "" when the thread is unlocked (ordinary group/channel mode) so the
  * caller can drop it from the appended blocks.
  */
-export function sessionModeBlock(lock: OneOnOneLockRow | null): string {
+export function sessionModeBlock(
+  lock: OneOnOneLockRow | null,
+  remote?: { userId: string; dir: string } | null,
+): string {
+  const base = lockBlock(lock);
+  if (!remote) return base;
+  return [base, remoteBlock(remote)].filter(Boolean).join("\n\n");
+}
+
+function lockBlock(lock: OneOnOneLockRow | null): string {
   if (!lock) return "";
   if (lock.open_scope !== null) {
     const scopeLine = lock.open_scope.trim()
@@ -30,5 +39,16 @@ export function sessionModeBlock(lock: OneOnOneLockRow | null): string {
     "direct one-on-one: you may speak more freely and personally than in a shared",
     "channel, and anything said is between you and them.",
     "</session-mode>",
+  ].join("\n");
+}
+
+function remoteBlock(r: { userId: string; dir: string }): string {
+  return [
+    "<remote-mode>",
+    `Your file and shell tools (Bash, Read, Write, Edit, Glob, Grep) run on <@${r.userId}>'s own machine, in \`${r.dir}\` — not on this server.`,
+    "Relative paths resolve against that directory. The knowledge base, MCP servers and web tools are unchanged and still run here.",
+    "Background jobs: Bash with run_in_background returns an ID; read output with mcp__remote__bash_output and stop it with mcp__remote__bash_kill.",
+    "If a tool fails with REMOTE_UNREACHABLE or REMOTE_AUTH_FAILED, stop and tell the user (they can check with `/remote`). Do not retry in a loop and do not work around it.",
+    "</remote-mode>",
   ].join("\n");
 }

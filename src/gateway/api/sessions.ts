@@ -25,6 +25,7 @@ const view = (row: SessionRow) => ({
   slack_team_id: row.slack_team_id,
   slack_channel_id: row.slack_channel_id,
   slack_thread_ts: row.slack_thread_ts,
+  slack_app_id: row.slack_app_id ?? null,
   created_at: row.created_at,
   updated_at: row.updated_at,
   // Postgres rows carry tenant_id (P1 migration); sqlite rows don't. Pass it

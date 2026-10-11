@@ -49,9 +49,11 @@ export async function executeToolCall(
   claims: JobClaims,
   deps: ToolPlaneDeps,
 ): Promise<Response> {
-  const entry = SERVERS[server];
+  // Own keys only: a segment like `constructor` would otherwise find an
+  // Object.prototype member and fail as a 500 instead of a 404.
+  const entry = Object.hasOwn(SERVERS, server) ? SERVERS[server] : undefined;
   if (!entry) return notFound(`unknown tool server '${server}'`);
-  if (!entry.contract.tools[tool]) return notFound(`unknown tool '${server}/${tool}'`);
+  if (!Object.hasOwn(entry.contract.tools, tool)) return notFound(`unknown tool '${server}/${tool}'`);
   metric.v1ToolCallsTotal.inc({ server, tool });
   let result: ToolResult | null;
   try {

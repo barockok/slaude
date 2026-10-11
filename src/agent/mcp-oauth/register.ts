@@ -1,4 +1,5 @@
 import type { FetchLike } from "./types";
+import { outboundFetch } from "../../net/outbound-policy";
 
 export interface ClientInfo { clientId: string; clientSecret?: string; }
 
@@ -6,7 +7,7 @@ export interface ClientInfo { clientId: string; clientSecret?: string; }
 export async function registerClient(
   registrationEndpoint: string,
   redirectUri: string,
-  fetchImpl: FetchLike = fetch as any,
+  fetchImpl: FetchLike = outboundFetch,
 ): Promise<ClientInfo> {
   const res = await fetchImpl(registrationEndpoint, {
     method: "POST",
@@ -19,9 +20,10 @@ export async function registerClient(
       token_endpoint_auth_method: "none",
     }),
   });
+  // The status only. This message is posted into the Slack thread on a failed
+  // connect (gateway.ts), and a provider's error body can name a credential.
   if (res.status < 200 || res.status >= 300) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(`client registration failed (status ${res.status}): ${JSON.stringify(body)}`);
+    throw new Error(`client registration failed (status ${res.status})`);
   }
   const j = await res.json();
   if (!j?.client_id) throw new Error("registration response missing client_id");

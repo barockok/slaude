@@ -49,7 +49,7 @@ only one leaves the symptom alive.
 
 ---
 
-# Case 1 — Mode A: ingest silently fails, recall stays thin
+## Case 1 — Mode A: ingest silently fails, recall stays thin
 
 ## Trigger
 
@@ -142,7 +142,7 @@ brain writes.
 
 ---
 
-# Case 2 — Mode B: write lands, retrieval misses
+## Case 2 — Mode B: write lands, retrieval misses
 
 ## Trigger
 
@@ -199,7 +199,7 @@ unopened KB. The defect is **retrieval**:
 
 ---
 
-# Cross-cutting
+## Cross-cutting
 
 ## Brain/memory tool surface (observed)
 

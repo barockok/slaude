@@ -1,0 +1,51 @@
+# Local-only Keycloak for the panel/portal OIDC login. Applied by panel.sh, not
+# part of the kustomization. The realm ConfigMap is created by panel.sh from
+# dev/keycloak/slaude-dev-realm.json.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: slaude-scale
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: keycloak }
+  template:
+    metadata:
+      labels: { app: keycloak }
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.0
+          args: ["start-dev", "--import-realm", "--http-port=8180"]
+          env:
+            - { name: KC_BOOTSTRAP_ADMIN_USERNAME, value: admin }
+            - { name: KC_BOOTSTRAP_ADMIN_PASSWORD, value: admin }
+            # Tokens carry iss=<this>, so the browser and the gateway pod must
+            # both see the issuer under this exact host name.
+            - { name: KC_HOSTNAME, value: "http://keycloak.localtest.me:8180" }
+            - { name: JAVA_OPTS_KC_HEAP, value: "-Xms256m -Xmx640m" }
+          ports:
+            - containerPort: 8180
+          readinessProbe:
+            httpGet: { path: /realms/slaude-dev/.well-known/openid-configuration, port: 8180 }
+            periodSeconds: 5
+            failureThreshold: 60
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - { name: realm, mountPath: /opt/keycloak/data/import, readOnly: true }
+      volumes:
+        - name: realm
+          configMap: { name: keycloak-realm }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: slaude-scale
+spec:
+  selector: { app: keycloak }
+  ports:
+    - { port: 8180, targetPort: 8180 }

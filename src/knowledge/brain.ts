@@ -1,10 +1,14 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { EMBEDDING_PROVIDER_KEY_ENV } from "./embedding-keys";
 import { join } from "node:path";
 import { paths } from "../config/home";
 import { loadKbs } from "./loader";
 import { PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, type BrainScope } from "./scope";
 import { isScopeWriteOp } from "./gated-dispatch";
 import { getBackend } from "./backend";
+import { NodeDbAccessError } from "../db/client";
+import { settleBrainWork, whileClosing } from "./brain-work";
+import { keepingExitCode } from "../db/wasm-exit-code";
 
 // Engine surface kept minimal on purpose: gbrain ships TS sources and its own
 // types stay internal to it; slaude only needs lifecycle + handler dispatch.
@@ -526,6 +530,11 @@ export function brainEngineConfig(): EngineCfg {
     return { engine: "postgres", database_url: url };
   }
   if (engine !== "pglite") throw new Error(`unknown SLAUDE_BRAIN_ENGINE "${engine}" (want pglite|postgres)`);
+  // A node holds no database: PGLite here would be a second writer on the
+  // gateway's single-writer brain on the shared volume.
+  if ((process.env.SLAUDE_ROLE ?? "").trim().toLowerCase() === "node") {
+    throw new NodeDbAccessError("a node must not open the brain's embedded PGLite; brain access goes through the gateway");
+  }
   return { engine: "pglite", database_path: join(brainHome(), "db") };
 }
 
@@ -545,26 +554,47 @@ async function boot(): Promise<Engine> {
   // the PGLite file-lock rm nor the blanket cycle-lock sweep is safe there.
   if (cfg.engine === "pglite") takeoverStaleLock(cfg.database_path);
   const { createEngine } = (await gbrainImport("engine-factory")) as { createEngine: (c: object) => Promise<Engine> };
-  const engine = (await createEngine(cfg)) as Engine;
-  await engine.connect(cfg);
-  await engine.initSchema();
+  // keepingExitCode: a fresh PGLite data dir's initdb leaves 99 in process.exitCode.
+  const engine = await keepingExitCode(async () => {
+    const e = (await createEngine(cfg)) as Engine;
+    await e.connect(cfg);
+    await e.initSchema();
+    return e;
+  });
   if (cfg.engine === "pglite") await clearStaleDbLocks(engine);
   return engine;
 }
 
 export function getBrain(): Promise<Engine> {
-  return (enginePromise ??= boot());
+  if (!enginePromise) {
+    const p: Promise<Engine> = boot();
+    // A failed boot is not cached: the next call retries (a refused role or a
+    // transient connect error must not poison the process for good).
+    p.catch(() => {
+      if (enginePromise === p) enginePromise = null;
+    });
+    enginePromise = p;
+  }
+  return enginePromise;
 }
 
 export async function closeBrain(): Promise<void> {
+  // Background work (the gateway's boot-time import) holds the engine across
+  // awaits: let it finish first (it stops between KBs while brainClosing()),
+  // or it fails mid-import against a disconnected engine.
+  await whileClosing(settleBrainWork);
   if (!enginePromise) return;
-  const e = await enginePromise;
+  const pending = enginePromise;
   enginePromise = null;
+  const e = await pending.catch(() => null);
+  if (!e) return;
   ensureInFlight = null; // next boot may target a different brain home
+  ensuredSources.clear();
+  ensureGeneration++;
   embeddingActiveFlag = false;
   delete process.env.GBRAIN_EMBEDDING_MODEL;
   delete process.env.GBRAIN_EMBEDDING_DIMENSIONS;
-  await e.disconnect();
+  await keepingExitCode(() => e.disconnect());
 }
 
 const quietLogger = {
@@ -604,8 +634,11 @@ async function findOp(name: string): Promise<Op> {
  * See docs/findings/2026-06-14-brain-memoize-failure.md.
  */
 const ensuredSources = new Set<string>();
+// Bumped by closeBrain: an ensure whose sources_add straddles a close must not cache for the next brain.
+let ensureGeneration = 0;
 export async function ensureSource(id: string): Promise<void> {
   if (ensuredSources.has(id)) return;
+  const generation = ensureGeneration;
   try {
     await brainAdminCall("sources_add", { id, federated: true });
   } catch (e) {
@@ -615,7 +648,7 @@ export async function ensureSource(id: string): Promise<void> {
     const code = (e as { code?: string })?.code;
     if (code !== "source_id_taken" && !/duplicate key|already exists|already registered/i.test(msg)) throw e;
   }
-  ensuredSources.add(id);
+  if (generation === ensureGeneration) ensuredSources.add(id);
 }
 
 /**

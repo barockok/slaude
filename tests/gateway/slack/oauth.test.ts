@@ -11,7 +11,7 @@ import {
   OAUTH_COOKIE,
   OAUTH_STATE_TTL_SEC,
 } from "../../../src/gateway/slack/oauth";
-import { buildManifest, BOT_SCOPES } from "../../../src/cli/manifest";
+import { buildManifest, BOT_SCOPES, USER_SCOPES } from "../../../src/cli/manifest";
 import { createHttpSlackTransport } from "../../../src/gateway/slack/http-transport";
 
 const SECRET = "client-secret-for-tests";
@@ -109,6 +109,10 @@ describe("handleOAuth", () => {
     expect(loc.origin + loc.pathname).toBe("https://slack.com/oauth/v2/authorize");
     expect(loc.searchParams.get("client_id")).toBe("1234.5678");
     expect(loc.searchParams.get("scope")).toBe(BOT_SCOPES.join(","));
+    // users.profile:write is a USER scope: it must ride user_scope, not scope.
+    expect(loc.searchParams.get("scope")!.split(",")).not.toContain("users.profile:write");
+    expect(loc.searchParams.get("user_scope")).toBe(USER_SCOPES.join(","));
+    expect(loc.searchParams.get("user_scope")!.split(",")).toContain("users.profile:write");
     const state = loc.searchParams.get("state")!;
     expect(verifyOAuthState(state, { secret: SECRET })).toEqual({ ok: true, nonce: expect.any(String) });
   });
@@ -357,10 +361,13 @@ describe("transport mounting", () => {
       log: () => {},
     });
     booted.push(t);
-    // No oauth flow AND empty registry → boot must still refuse.
-    await expect(t.start()).rejects.toThrow(/registry is empty/);
-    // Restart with a row-less registry is not possible here; assert the 404
-    // path through handleOAuth directly instead (covered above).
+    // No oauth flow AND empty registry: boots anyway (bun run slack-app add
+    // can register an app against the running process — see
+    // http-transport.test.ts's "picks up an app registered after boot").
+    // The oauth endpoints stay 404 since the flow itself is disabled.
+    await t.start();
+    const res = await fetch(`http://127.0.0.1:${t.port}/slack/oauth/start`);
+    expect(res.status).toBe(404);
   });
 
   it("installs via callback and serves the new workspace without restart", async () => {
@@ -425,6 +432,7 @@ describe("manifest oauth redirect", () => {
     });
     expect(m.oauth_config.redirect_urls).toEqual(["https://gw.example.com/slack/oauth/callback"]);
     expect(m.oauth_config.scopes.bot).toEqual([...BOT_SCOPES]);
+    expect(m.oauth_config.scopes.user).toEqual([...USER_SCOPES]);
   });
 
   it("socket mode never emits redirect_urls", () => {

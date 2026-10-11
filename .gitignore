@@ -19,9 +19,30 @@ coverage/
 data/
 verify-data/
 .env.verify
+.env.node
 jsonl/
 .playwright-cli/
 .playwright-mcp/
 .handoff
 .mcp.json
 .playwright/
+test-results/
+bar/
+shots/
+src/gateway/panel/web/dist/
+src/gateway/portal/web/dist/
+**/playwright-report/
+
+# Generated docs site (built by docs/site/build.mjs; published by .github/workflows/pages.yml)
+docs/site/_site/
+
+# Local minikube overlay: generated secrets, never committed.
+deploy/k8s-local/secrets.env
+deploy/k8s-local/provider.env
+deploy/k8s-local/deploy.env
+deploy/k8s-local/node.env
+deploy/k8s-local/model.env
+deploy/k8s-local/gateway.env
+deploy/k8s-local/vault-root.env
+deploy/k8s-local/node-credentials.env
+deploy/k8s-local/node-cred-*.env

@@ -163,6 +163,39 @@ scripts/promote-rc.sh vX.Y.Z-rc.2
 
 The script refuses to run unless: the tag is `vX.Y.Z-rc.N`, the RC tag exists, the stable tag does *not*, you are on a clean `main`, the RC is an ancestor of HEAD, and `docs/site/_content/releases/vX.Y.Z.md` exists. It prints any commits that landed after the RC — those ship **unsoaked**, so re-cut an RC if that list is non-trivial. Then it bumps `package.json`, commits, tags, and pushes on confirmation.
 
+### Ancestor check failure
+
+If `promote-rc.sh` fails with `RC is not an ancestor of HEAD`, the RC tag was cut from a different commit than what's on `main` (e.g. docs/rebranding commits landed on main after the RC was cut but before the tag was pushed). Diagnose first:
+
+```bash
+git diff <rc-tag-sha>..<main-equivalent-sha> --stat
+```
+
+If the divergence is **docs/chore only** (no logic, no package.json, no schema changes), it is safe to promote manually:
+
+1. Edit `package.json`: strip `-rc.N` suffix.
+2. Enable hooks: `git config core.hooksPath .githooks`
+3. Stage + leak scan:
+   ```bash
+   git add package.json
+   git diff --cached -U0 | grep -nIiE 'acme|xox[baprs]-|ghp_|sk-[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY'
+   # no output = clean
+   ```
+4. Commit (**no** `Co-Authored-By` trailer — hook enforces this):
+   ```bash
+   git commit -m "chore(release): promote vX.Y.Z-rc.N to vX.Y.Z"
+   ```
+5. Tag and push (re-mint GitHub token right before push):
+   ```bash
+   git tag vX.Y.Z
+   printf '%s' '<freshCloneUrl>' > /tmp/.gu
+   git push "$(cat /tmp/.gu)" main 2>&1 | sed -E 's#https://[^@]*@#https://***@#g'
+   git push "$(cat /tmp/.gu)" vX.Y.Z 2>&1 | sed -E 's#https://[^@]*@#https://***@#g'
+   rm -f /tmp/.gu
+   ```
+
+If the divergence includes **any logic or schema change**, re-cut an RC from HEAD instead.
+
 ## Release Note Anti-Patterns
 
 | Bad | Good |

@@ -10,6 +10,9 @@ describe("manifest CLI", () => {
     expect(m.settings.interactivity.is_enabled).toBe(true);
     expect(m.display_information.name).toBe("slaude");
     expect(m.oauth_config.scopes.bot).toContain("app_mentions:read");
+    // users.profile:write is a user scope, never a bot scope (Slack rejects the install).
+    expect(m.oauth_config.scopes.user).toContain("users.profile:write");
+    expect(m.oauth_config.scopes.bot).not.toContain("users.profile:write");
     // No slash_commands in either mode — commands are plain message text.
     expect(m.features.slash_commands).toBeUndefined();
   });

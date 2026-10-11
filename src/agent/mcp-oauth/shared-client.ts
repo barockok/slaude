@@ -2,10 +2,11 @@ import { generatePkce } from "./pkce";
 import { registerClient } from "./register";
 import { signState } from "./state";
 import { sharedLoopback, type SharedLoopback } from "./shared-loopback";
-import { exchangeAuthCode } from "./token-exchange";
+import { exchangeAuthCode, type ExchangeParts } from "./client";
 import type { AuthServerMeta } from "./discovery";
 import type { OAuthServerConfig, OAuthTokens } from "./store";
 import type { FetchLike } from "./types";
+import { outboundFetch } from "../../net/outbound-policy";
 
 export interface BeginConnectSharedOpts {
   /** Session this flow belongs to; carried (signed) through `state` and read back
@@ -38,7 +39,7 @@ export interface SharedConnectHandle {
  * at once; each callback is routed back to its flow by `state`.
  */
 export async function beginConnectShared(opts: BeginConnectSharedOpts): Promise<SharedConnectHandle> {
-  const fetchImpl = opts.fetchImpl ?? (fetch as any);
+  const fetchImpl = opts.fetchImpl ?? outboundFetch;
   if (!opts.meta.authorizationEndpoint || !opts.meta.tokenEndpoint) {
     throw new Error("authorization-server metadata missing authorization_endpoint/token_endpoint");
   }
@@ -65,20 +66,19 @@ export async function beginConnectShared(opts: BeginConnectSharedOpts): Promise<
   u.searchParams.set("resource", opts.serverConfig.url);
   const authorizeUrl = u.toString();
 
+  const parts: ExchangeParts = {
+    tokenEndpoint: opts.meta.tokenEndpoint,
+    redirectUri,
+    clientId: client.clientId,
+    clientSecret: client.clientSecret,
+    verifier: pkce.verifier,
+    resource: opts.serverConfig.url,
+  };
+
   return {
     authorizeUrl,
     state,
     waitForCode: flow.waitForCode,
-    exchange: (code: string) =>
-      exchangeAuthCode({
-        tokenEndpoint: opts.meta.tokenEndpoint,
-        code,
-        redirectUri,
-        clientId: client.clientId,
-        clientSecret: client.clientSecret,
-        codeVerifier: pkce.verifier,
-        serverConfig: opts.serverConfig,
-        fetchImpl,
-      }),
+    exchange: (code: string) => exchangeAuthCode(parts, code, fetchImpl),
   };
 }

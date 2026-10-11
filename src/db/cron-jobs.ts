@@ -4,6 +4,9 @@ import { randomUUID } from "node:crypto";
 export type CronJob = {
   id: string;
   slackTeamId: string | null;
+  /** Slack app (api_app_id) the job was created under; null on older jobs.
+   *  A run posts as this app when several are registered (D1.2). */
+  slackAppId: string | null;
   slackChannelId: string | null;
   slackThreadTs: string | null;
   channelId: string;
@@ -32,6 +35,7 @@ export type CronJob = {
 
 export async function create(args: {
   slackTeamId?: string;
+  slackAppId?: string;
   slackChannelId?: string;
   slackThreadTs?: string;
   channelId: string;
@@ -47,11 +51,12 @@ export async function create(args: {
 }): Promise<CronJob> {
   const id = randomUUID();
   await db.run(
-    `INSERT INTO cron_jobs (id, slack_team_id, slack_channel_id, slack_thread_ts, channel_id, thread_ts, created_by, cron_expr, prompt, next_run_at, target, when_active, oauth_user, persona_id, active)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    `INSERT INTO cron_jobs (id, slack_team_id, slack_app_id, slack_channel_id, slack_thread_ts, channel_id, thread_ts, created_by, cron_expr, prompt, next_run_at, target, when_active, oauth_user, persona_id, active)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
     [
       id,
       args.slackTeamId ?? null,
+      args.slackAppId ?? null,
       args.slackChannelId ?? null,
       args.slackThreadTs ?? null,
       args.channelId,
@@ -96,6 +101,48 @@ export async function findDue(now: number): Promise<CronJob[]> {
     [now],
   );
   return rows.map(mapRow);
+}
+
+/**
+ * Claim one due occurrence by advancing next_run_at from the value the caller
+ * observed. Exactly one claimer wins, whatever else is running.
+ *
+ * The schedule moves BEFORE the turn is dispatched, not after it completes.
+ * Advancing at completion left the row due for the whole turn, so a cron
+ * leader dying mid-turn handed the same occurrence to the next leader, and the
+ * in-process re-entry guard could not see across replicas.
+ *
+ * Returns false when someone else already claimed it, or the job was paused or
+ * deactivated in the meantime.
+ */
+export async function claimDue(id: string, observedNextRunAt: number, nextRunAt: number): Promise<boolean> {
+  const r = await db.run(
+    `UPDATE cron_jobs SET next_run_at = ?
+     WHERE id = ? AND next_run_at = ? AND active = 1 AND paused = 0`,
+    [nextRunAt, id, observedNextRunAt],
+  );
+  return (r.changes ?? 0) > 0;
+}
+
+/**
+ * Give a claimed occurrence back, when the dispatch it was claimed for never
+ * happened. Once a turn IS enqueued the queue owns its redelivery, so this is
+ * only for a failure before that point. No-op if the row moved on since.
+ */
+export async function releaseClaim(id: string, claimedNextRunAt: number, restoreTo: number): Promise<boolean> {
+  const r = await db.run(
+    "UPDATE cron_jobs SET next_run_at = ? WHERE id = ? AND next_run_at = ?",
+    [restoreTo, id, claimedNextRunAt],
+  );
+  return (r.changes ?? 0) > 0;
+}
+
+/** Record how a run ended. The schedule already moved at claim time. */
+export async function recordRun(id: string, lastResult: string): Promise<void> {
+  await db.run(
+    "UPDATE cron_jobs SET last_run_at = ?, last_result = ? WHERE id = ?",
+    [Date.now(), lastResult, id],
+  );
 }
 
 export async function updateNextRun(id: string, nextRunAt: number, lastResult: string): Promise<void> {
@@ -159,10 +206,26 @@ export async function listActive(): Promise<CronJob[]> {
   return rows.map(mapRow);
 }
 
+/** Active jobs (paused included: they can be resumed) that fire into this exact
+ *  Slack thread and were created by anyone other than `userId`. */
+export async function countForeignThreadJobs(slackChannelId: string, slackThreadTs: string, userId: string): Promise<number> {
+  const row = await db.one<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM cron_jobs
+     WHERE active = 1
+       AND COALESCE(target, 'thread') = 'thread'
+       AND slack_channel_id = ?
+       AND slack_thread_ts = ?
+       AND created_by <> ?`,
+    [slackChannelId, slackThreadTs, userId],
+  );
+  return Number(row?.n ?? 0);
+}
+
 function mapRow(row: any): CronJob {
   return {
     id: row.id,
     slackTeamId: row.slack_team_id,
+    slackAppId: row.slack_app_id ?? null,
     slackChannelId: row.slack_channel_id,
     slackThreadTs: row.slack_thread_ts,
     channelId: row.channel_id,

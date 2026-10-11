@@ -6,6 +6,24 @@ WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 
+# Web stage: build the panel and portal React apps.
+#
+# They need devDependencies (vite, @vitejs/plugin-react, react-dom), so this
+# stage installs the full tree rather than reusing the production one. Only the
+# built dist/ trees are copied into the runtime image.
+#
+# Before this stage existed the image contained no built app at all — dist/ is
+# gitignored and nothing built it — so the gateway served Vite's source shell,
+# HTML referencing /src/main.tsx that a browser cannot run. The panel UI had
+# therefore never worked in a container.
+FROM oven/bun:1.3-debian AS web
+WORKDIR /app
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
+COPY tsconfig.json ./
+COPY src ./src
+RUN bun run web:build
+
 # Builder stage: install agent dependencies declared in slaude.json,
 # then copy the artifacts into the runtime image.
 FROM oven/bun:1.3-debian AS builder
@@ -34,6 +52,27 @@ RUN apt-get update \
  && uvx --version \
  && uvx --from mcp-grafana mcp-grafana --help > /dev/null
 
+# tailcat: SSH transport for /remote (runs a thread's tools on the user's machine).
+# The release archive holds the binary at its root next to LICENSE and README.md.
+# The pins are the SHA-256 of the release archives (from the release's
+# checksums.txt); bumping TAILCAT_VERSION requires updating both hashes.
+ARG TAILCAT_VERSION=0.7.0
+ARG TAILCAT_SHA256_AMD64=23c0b1887a5ec422f0d18a9c52b4f5357815febdaae738a1eb54036d10bd9ee6
+ARG TAILCAT_SHA256_ARM64=bbb1ab50f24f00effe1e1fd86d0501803fb80793a90785a2a16ff3428f03d8ef
+ARG TARGETARCH
+RUN set -eux; \
+    arch="${TARGETARCH:-amd64}"; \
+    case "$arch" in \
+      amd64) sha="$TAILCAT_SHA256_AMD64" ;; \
+      arm64) sha="$TAILCAT_SHA256_ARM64" ;; \
+      *) echo "unsupported architecture for tailcat: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/tailcat.tgz "https://github.com/tailscale/tailcat/releases/download/v${TAILCAT_VERSION}/tailcat_${TAILCAT_VERSION}_linux_${arch}.tar.gz"; \
+    echo "${sha}  /tmp/tailcat.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/tailcat.tgz -C /usr/local/bin tailcat; \
+    rm -f /tmp/tailcat.tgz; \
+    test -x /usr/local/bin/tailcat
+
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json bun.lock tsconfig.json ./
 COPY src ./src
@@ -49,6 +88,11 @@ COPY scripts ./scripts
 COPY --from=builder /app/.slaude/skills    /data/.slaude/skills
 COPY --from=builder /app/.slaude/knowledge /data/.slaude/knowledge
 COPY --from=builder /app/.slaude/.claude   /data/.slaude/.claude
+
+# The built web apps. Without these the panel and portal serve an unrunnable
+# source shell (see the web stage above).
+COPY --from=web /app/src/gateway/panel/web/dist  ./src/gateway/panel/web/dist
+COPY --from=web /app/src/gateway/portal/web/dist ./src/gateway/portal/web/dist
 
 ENV SLAUDE_HOME=/data
 VOLUME ["/data"]

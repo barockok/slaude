@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import {
   type SDKMessage,
   type Options,
@@ -26,19 +27,31 @@ export type PermissionMode =
 import { paths } from "../config/home";
 import { env } from "../config/env";
 import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plugins";
-import { soulSystemBlock, loadSoul } from "../soul/loader";
+import { soulSystemBlock } from "../soul/loader";
+import { personaSoulText } from "../persona/soul-source";
 import { soulData, effectiveSoulForChannel } from "../soul/extract";
-import { getPersonaRegistry } from "../persona/registry";
+import { SoulDataSchema } from "../soul/data";
+import { getPersonaRegistry, livePersona, managedPersonaModel, onPersonaRegistryInstalled, type PersonaRegistry } from "../persona/registry";
 import * as Sessions from "../db/sessions";
 import type { ThreadKey } from "../db/sessions";
 import { dbSessionStore, type SessionStore } from "./session-store";
 import * as OneOnOne from "../db/one-on-one";
+import type { OneOnOneLockRow } from "../db/one-on-one";
 import { memory } from "../memory";
-import { scrubChildEnv } from "./child-env";
+import type { MemoryProvider } from "../memory/provider";
+import { ChildEnvPatch, scrubChildEnv, withoutKeys } from "./child-env";
 import { resolveSessionConfigDir } from "./oauth-home";
 import { sessionIdOpts } from "./session-id-opts";
 import { sessionModeBlock } from "./session-mode";
 import { formatSessionNotes } from "./session-notes";
+import { BootFailure, type FailureCode } from "../gateway/core/failure-codes";
+import { redactSecrets } from "../gateway/core/status-text";
+import { REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, makeRemoteCanUseTool } from "../remote/mcp";
+import { voiceCallActive } from "../voice/turn-flags";
+import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/types";
+
+/** Upper bound on waiting for a previous remote handle's job cleanup at boot. */
+const REMOTE_DISPOSE_TIMEOUT_MS = 8_000;
 
 type LiveSession = {
   id: string;
@@ -58,8 +71,21 @@ type LiveSession = {
   idleTimer?: ReturnType<typeof setTimeout>;
   /** Set when reload_session is called so expected exit errors are suppressed. */
   reloading?: boolean;
+  /** Inputs pushed whose `result` has not arrived yet. Inputs overlap (an
+   *  auto-evolve prompt and the next user message can both be outstanding), so
+   *  this is a count: a turn is in flight while it is above zero. */
+  pendingInputs: number;
+  /** Resolves once the session's query loop has fully exited and the session
+   *  has left #live. sendMessage awaits it for a session that is reloading. */
+  exited: Promise<void>;
   /** Slack channel of the session row, cached at start for metric labels. */
   channelId?: string | null;
+  /** Current permission mode (kept in sync by setPermissionMode) — remote tool gating reads it. */
+  mode?: PermissionMode;
+  /** The named persona this session booted as (undefined = default). */
+  personaName?: string;
+  /** Session-config fingerprint this session booted under (undefined = none known). */
+  bootFp?: string;
 };
 
 export type AgentEvent =
@@ -69,11 +95,18 @@ export type AgentEvent =
   | { type: "thinking"; sessionId: string; text: string }
   | { type: "turnStart"; sessionId: string }
   | { type: "done"; sessionId: string; autoEvolve?: boolean }
-  | { type: "error"; sessionId: string; error: string }
+  // `error` is the RAW detail for logs only; Slack gets the fixed text for `code`
+  // (gateway/core/failure-codes.ts). `jobId` lets the gateway post once per job.
+  | { type: "error"; sessionId: string; error: string; code?: FailureCode; jobId?: string }
   | { type: "tokenUsage"; sessionId: string; snapshot: UsageSnapshot }
   | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" };
 
 /** Permission resolver — called per tool use; given a sessionId so transports can present UI in the right thread. */
+/** Per-session child-env overlay: a plain record adds variables; a
+ *  ChildEnvPatch also removes them (WS-A §5.4). */
+export type ChildEnvOverlay = Record<string, string | undefined> | ChildEnvPatch | undefined;
+export type ChildEnvResolver = (sessionId: string) => Promise<ChildEnvOverlay> | ChildEnvOverlay;
+
 export type PermissionResolver = (
   sessionId: string,
   toolName: string,
@@ -86,11 +119,35 @@ export type McpResolver = (
   sessionId: string,
 ) => Record<string, McpServerConfig> | undefined | Promise<Record<string, McpServerConfig> | undefined>;
 
+/** A node's manifest servers with the transport resolver's laid over them: a
+ *  gateway-resolved server wins a name collision, with a warning naming it. */
+function mergeLocalMcp(
+  sessionId: string,
+  local: Record<string, McpServerConfig>,
+  resolved: Record<string, McpServerConfig> | undefined,
+): Record<string, McpServerConfig> {
+  for (const name of Object.keys(resolved ?? {})) {
+    if (Object.hasOwn(local, name)) {
+      console.warn(`[node] session=${sessionId} MCP server '${name}' is in the node manifest and also resolved by the gateway; the gateway's wins`);
+    }
+  }
+  return { ...local, ...(resolved ?? {}) };
+}
+
 /** Stop-hook guard. Return an instruction string to block the agent from
  *  stopping (SDK feeds reason back, agent continues). Return null to allow stop.
  *  Guard fires at most once per turn — if it returns non-null twice, second
  *  call is ignored (agent stops) and manager logs to stderr. */
 export type StopGuard = (sessionId: string) => string | null;
+
+/** A persona's soul as the node receives it in the runtime bundle: the text for
+ *  the <persona> block and its structured projection (SoulData-shaped, or null
+ *  when the gateway has none). */
+export type PersonaSoul = { soulMd: string; soulJson: unknown };
+export type PersonaSoulResolver = (sessionId: string, persona: string | undefined) => Promise<PersonaSoul>;
+/** A persona's default model as the node receives it in the runtime bundle, or
+ *  undefined when the bundle is unmanaged (the row's model stands as is). */
+export type PersonaModelResolver = (sessionId: string, persona: string | undefined) => Promise<string | undefined>;
 
 /** Decide whether a UserPromptSubmit should be suppressed because its thread is
  *  disengaged. `continue:false` lets the user message persist to the transcript
@@ -179,16 +236,49 @@ const RESUME_MISS_RE = /No conversation found with session ID/i;
 
 export class AgentManager extends EventEmitter {
   #live = new Map<string, LiveSession>();
+  /** Close warm sessions of personas a managed registry install retired. Held
+   *  through a WeakRef so a discarded manager is not kept alive by the
+   *  registry's listener set; the listener removes itself once it is gone. */
+  readonly #offRegistryInstalls: () => void = (() => {
+    const ref = new WeakRef(this);
+    const off = onPersonaRegistryInstalled((r) => {
+      const self = ref.deref();
+      if (!self) return off();
+      self.#closeRetiredPersonaSessions(r);
+    });
+    return off;
+  })();
   /** Session persistence. Defaults to the db repo; node workers inject the
    *  REST implementation (spec §6) via setSessionStore. */
   #store: SessionStore = dbSessionStore;
   /** Optional per-session child-env overlay (node runtime bundle creds). */
   #childEnvResolver:
-    | ((sessionId: string) => Promise<Record<string, string | undefined> | undefined> | Record<string, string | undefined> | undefined)
+    | ChildEnvResolver
     | undefined;
   #resolver: PermissionResolver | undefined;
+  /** Optional per-session CLAUDE_CONFIG_DIR override. Node workers install one
+   *  to give every session a pod-local home seeded from the gateway; unset =
+   *  today's resolution (persona home / per-initiator home / inherited). */
+  #configDirResolver: ((sessionId: string, persona: string | undefined) => Promise<string>) | undefined;
+  #personaSoulResolver: PersonaSoulResolver | undefined;
+  #personaModelResolver: PersonaModelResolver | undefined;
   #mcpResolver: McpResolver | undefined;
+  #localMcpResolver: McpResolver | undefined;
+  /** Episodic memory. The process provider in mono and on the gateway; the
+   *  node worker installs a REST client of the gateway's memory routes. */
+  #memory: MemoryProvider = memory;
   #stopGuard: StopGuard | undefined;
+  #remoteResolver: ((sessionId: string) => Promise<RemoteTarget | null>) | undefined;
+  #remoteFactory: ((sessionId: string, t: RemoteTarget) => Promise<RemoteHandle> | RemoteHandle) | undefined;
+  /** Per session: the open remote handle and the target it was opened for.
+   *  Survives reboots (jobs keep running); disposed only when the target ends/changes. */
+  #remoteHandles = new Map<string, { handle: RemoteHandle; key: string }>();
+  /** Latest session-config fingerprint asked for per session (node: from job
+   *  claims). A boot records it as its LiveSession.bootFp. */
+  #desiredFp = new Map<string, string>();
+  /** Sessions with a boot in progress (not yet live), counted per id. */
+  #booting = new Map<string, number>();
+  #remoteDisposeTimeoutMs = REMOTE_DISPOSE_TIMEOUT_MS;
   /** Sessions whose Stop hook already blocked once this turn — cleared on user msg. */
   #stopBlocked = new Set<string>();
   /** Out-of-band gate events (mcp connect/disconnect, model change) pending delivery
@@ -207,11 +297,23 @@ export class AgentManager extends EventEmitter {
   #streamClosedCount = new Map<string, number>();
   /** Sessions that should inject a synthetic "continue" message after their reload. */
   #autoContinue = new Set<string>();
+  /** Sessions whose reload is deferred until the turn in flight returns its
+   *  result (see reloadAfterTurn). The single owner of that decision. */
+  #reloadAfterTurn = new Set<string>();
+  /** How long sendMessage waits for a reloading session to exit. */
+  #reloadExitTimeoutMs = RELOAD_EXIT_TIMEOUT_MS;
+
+  /** TEST SEAM: shrink the bounded wait for a reloading session's exit. */
+  __setReloadExitTimeoutForTests(ms: number) {
+    this.#reloadExitTimeoutMs = ms;
+  }
   /** Prompt to inject after a manual reload_session call (keyed by sessionId). */
   #reloadPrompt = new Map<string, string>();
   /** Sessions whose next turn must be suppressed (mention-only plain message).
    *  Consumed once by the UserPromptSubmit hook; set by suppressNextTurn(). */
   #suppressNextTurn = new Set<string>();
+  /** Sessions whose idle TTL is suspended (an active voice call, spec §6). */
+  #idleHeld = new Set<string>();
   #budget = new TokenBudget({
     fallbackContextWindow: env.tokenFallbackContextWindow(),
   });
@@ -230,13 +332,76 @@ export class AgentManager extends EventEmitter {
   /** Install a per-session child-env overlay (spec §6: node workers source
    *  provider credentials from the tenant runtime bundle, not process env).
    *  Resolved at session boot, merged OVER the process-env-derived provider
-   *  vars; scrubChildEnv still applies afterwards. Unset = no change. */
-  setChildEnvResolver(
-    resolver:
-      | ((sessionId: string) => Promise<Record<string, string | undefined> | undefined> | Record<string, string | undefined> | undefined)
-      | undefined,
-  ) {
+   *  vars; a ChildEnvPatch also deletes names; scrubChildEnv still applies
+   *  afterwards. A throw fails the boot with a BootFailure (its own code, else
+   *  PROVIDER_CREDENTIALS_UNAVAILABLE). Unset = no change. */
+  setChildEnvResolver(resolver: ChildEnvResolver | undefined) {
     this.#childEnvResolver = resolver;
+  }
+
+  /** Install a per-session CLAUDE_CONFIG_DIR resolver, called at session boot
+   *  with the session's persona name. It REPLACES the default resolution, and a
+   *  failure fails the boot: falling back would run the session out of a
+   *  config home that is not the one its credentials were seeded into. */
+  setSessionConfigDirResolver(
+    resolver: ((sessionId: string, persona: string | undefined) => Promise<string>) | undefined,
+  ) {
+    this.#configDirResolver = resolver;
+  }
+
+  /** Install a per-session persona soul resolver, called at session boot with
+   *  the session's persona name (undefined = the default persona). It REPLACES
+   *  the local soul source (personaSoulText) and the persona registry lookup,
+   *  and a failure fails the boot: a node falling back to the shared volume when
+   *  the gateway is unreachable would boot a deleted or tombstoned persona half
+   *  configured, or as the default soul, instead of failing loudly. */
+  setPersonaSoulResolver(resolver: PersonaSoulResolver | undefined) {
+    this.#personaSoulResolver = resolver;
+  }
+
+  /** Install a per-session persona model resolver (a node: the runtime
+   *  bundle's default model). Consulted at boot only when the session row has
+   *  no per-thread model. Unset = the persona registry (mono, gateway). */
+  setPersonaModelResolver(resolver: PersonaModelResolver | undefined) {
+    this.#personaModelResolver = resolver;
+  }
+
+  /**
+   * The model a session runs with, in precedence order:
+   *   1. a per-thread choice (`/model`, the panel) — the row's model;
+   *   2. the persona's effective model on a managed tenant (git or override);
+   *   3. SLAUDE_MODEL.
+   * A managed tenant creates rows with an empty model ("follow the persona"),
+   * so a later sync or override reaches the thread at its next boot. Rows
+   * created before that, and every row on a filesystem tenant, carry
+   * SLAUDE_MODEL from creation: unchanged.
+   */
+  async #sessionModel(sessionId: string, rowModel: string, personaName: string | undefined): Promise<string> {
+    if (rowModel) return rowModel;
+    const persona = this.#personaModelResolver
+      ? await this.#personaModelResolver(sessionId, personaName)
+      : this.#registryPersonaModel(personaName);
+    return persona ?? "";
+  }
+
+  /** Mono/gateway: the managed persona's model, falling back to SLAUDE_MODEL;
+   *  undefined on a filesystem registry. */
+  #registryPersonaModel(personaName: string | undefined): string | undefined {
+    const m = managedPersonaModel(personaName);
+    return m === undefined ? undefined : (m ?? env.model());
+  }
+
+  /** The model a session row resolves to (for display), without a boot. Uses
+   *  the persona registry, which on the gateway is the same effective state a
+   *  node's bundle carries. */
+  effectiveModelOf(row: { model: string; persona_id?: string | null }): string {
+    if (row.model) return row.model;
+    const named = row.persona_id && row.persona_id !== "default" ? row.persona_id : undefined;
+    try {
+      return this.#registryPersonaModel(named) ?? "";
+    } catch {
+      return "";
+    }
   }
 
   /** Install a transport-level permission resolver (e.g. Slack approval gate). */
@@ -249,9 +414,120 @@ export class AgentManager extends EventEmitter {
     this.#mcpResolver = resolver;
   }
 
+  /** Node only (node labels spec §4.10): the session's stdio servers from the
+   *  node manifest. Installed, it REPLACES installed-plugin MCP servers, the
+   *  transport resolver's output is merged after it (and wins a name
+   *  collision), and the CLI reads no other MCP source (strictMcpConfig). */
+  setLocalMcpResolver(resolver: McpResolver | undefined) {
+    this.#localMcpResolver = resolver;
+  }
+
+  /** Replace the memory provider (the node role: memory served by the gateway). */
+  setMemoryProvider(provider: MemoryProvider) {
+    this.#memory = provider;
+  }
+
   /** Install a transport-level Stop hook guard (e.g. Slack "must reply" enforcement). */
   setStopGuard(guard: StopGuard | undefined) {
     this.#stopGuard = guard;
+  }
+
+  /** Remote mode (spec §4.1): resolver says whether a session's tools run remotely;
+   *  factory opens the connection handle for a session that does. */
+  setRemote(
+    resolver: ((sessionId: string) => Promise<RemoteTarget | null>) | undefined,
+    factory: ((sessionId: string, t: RemoteTarget) => Promise<RemoteHandle> | RemoteHandle) | undefined,
+  ) {
+    this.#remoteResolver = resolver;
+    this.#remoteFactory = factory;
+  }
+
+  /** Make sure the session will run under the lock/remote config `fp` names
+   *  (spec §4.4). Undefined (older gateway) is ignored. True means the caller may
+   *  send: the session is not live (its next boot records `fp`) or the live one
+   *  booted under `fp`. Otherwise the live session is stale — or booted before any
+   *  fingerprint existed, so its tools are unknown — and is rebooted through
+   *  reloadAfterTurn: closing the input of a turn in flight would break it, so the
+   *  reload is armed for that turn's result and this returns false at once (the
+   *  caller requeues; it must not hold a worker slot for a long turn). An idle
+   *  session reloads now and this waits for that live object to go, bounded.
+   *  State is derived from the live session, never recorded ahead of the reboot,
+   *  so no concurrent caller can see a stale session as current. */
+  async ensureConfigFp(sessionId: string, fp: string | undefined, timeoutMs = 10_000): Promise<boolean> {
+    if (fp === undefined) return true;
+    this.#desiredFp.set(sessionId, fp);
+    const live = this.#live.get(sessionId);
+    if (!live) {
+      // A boot in progress (e.g. an auto-continue after a reload) read its
+      // fingerprint already; a message sent now would race it.
+      if (this.#booting.has(sessionId)) {
+        console.warn(`[mgr] config change: boot in progress session=${sessionId}`);
+        return false;
+      }
+      return true;
+    }
+    if (live.bootFp === fp) return true;
+    this.reloadAfterTurn(sessionId);
+    if (live.pendingInputs > 0) {
+      console.warn(`[mgr] config change: turn in flight, reboot deferred session=${sessionId}`);
+      return false;
+    }
+    const deadline = Date.now() + timeoutMs;
+    while (this.#live.get(sessionId) === live && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    const next = this.#live.get(sessionId);
+    if (next === live) {
+      console.warn(`[mgr] config change: session still live after ${timeoutMs}ms, reboot pending session=${sessionId}`);
+      return false;
+    }
+    // A session that replaced it already: current only if it booted under fp.
+    return !next || next.bootFp === fp;
+  }
+
+  /** Test hook: shrink the bound on disposing a previous remote handle. */
+  setRemoteDisposeTimeoutMs(ms: number) {
+    this.#remoteDisposeTimeoutMs = ms;
+  }
+
+  /** Await the old handle's disposal (ordering matters for same-host re-points)
+   *  but never stall a boot on an unreachable old machine: on timeout, release the
+   *  connection (rejects the in-flight cleanup) and carry on. Logs codes only. */
+  async #disposeBounded(sessionId: string, handle: RemoteHandle): Promise<void> {
+    const logFail = (what: string, e: unknown) =>
+      console.error(`[mgr] remote ${what} failed session=${sessionId}: ${e instanceof RemoteError ? e.code : "error"}`);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const disposal = Promise.resolve().then(() => handle.dispose());
+    const timedOut = new Promise<"timeout">((r) => { timer = setTimeout(() => r("timeout"), this.#remoteDisposeTimeoutMs); });
+    try {
+      const outcome = await Promise.race([disposal.then(() => "done" as const), timedOut]);
+      if (outcome === "timeout") {
+        // Swallow the late settlement of the abandoned dispose.
+        disposal.catch(() => {});
+        console.error(`[mgr] remote dispose timed out session=${sessionId}; releasing`);
+        await handle.release().catch((e) => logFail("release", e));
+      }
+    } catch (e) {
+      logFail("dispose", e);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Reuse the session's handle when the target is unchanged; otherwise dispose
+   *  the old one (kills its background jobs — remote ended or moved) and open anew. */
+  async #remoteHandleFor(sessionId: string, target: RemoteTarget | null): Promise<RemoteHandle | undefined> {
+    const key = target ? `${target.userId}|${target.addr}|${target.dir}` : "";
+    const prev = this.#remoteHandles.get(sessionId);
+    if (prev && prev.key === key) return prev.handle;
+    if (prev) {
+      this.#remoteHandles.delete(sessionId);
+      await this.#disposeBounded(sessionId, prev.handle);
+    }
+    if (!target) return undefined;
+    // Fail closed: never boot local tools while the prompt says remote.
+    if (!this.#remoteFactory) throw new Error("remote target set but no remote factory installed");
+    const handle = await this.#remoteFactory(sessionId, target);
+    this.#remoteHandles.set(sessionId, { handle, key });
+    return handle;
   }
 
   /** Bind a cron run's OAuth identity to a session. Set by the scheduler before
@@ -272,7 +548,24 @@ export class AgentManager extends EventEmitter {
     threadTs?: string | null,
   ): Promise<string | undefined> {
     return this.#cronOAuthUser.get(sessionId)
-      ?? (channel && threadTs ? (await OneOnOne.find(channel, threadTs))?.locked_user : undefined);
+      ?? (channel && threadTs ? (await this.#lockFor(sessionId, channel, threadTs))?.locked_user : undefined);
+  }
+
+  #lockResolver: ((sessionId: string) => Promise<OneOnOneLockRow | null | undefined>) | null = null;
+
+  /** Install where a session's /1on1 lock comes from. A node has no database:
+   *  its resolver reads the lock the gateway signed into the job token. The
+   *  resolver returns undefined when it does not know (a token from an older
+   *  gateway), which falls back to the database lookup. Unset = the database
+   *  (mono, gateway). */
+  setSessionLockResolver(fn: ((sessionId: string) => Promise<OneOnOneLockRow | null | undefined>) | null) {
+    this.#lockResolver = fn;
+  }
+
+  async #lockFor(sessionId: string, channel: string, threadTs: string): Promise<OneOnOneLockRow | null> {
+    const supplied = this.#lockResolver ? await this.#lockResolver(sessionId) : undefined;
+    if (supplied !== undefined) return supplied;
+    return OneOnOne.find(channel, threadTs);
   }
 
   /** Number of SDK Query sessions currently live in this process. */
@@ -301,7 +594,10 @@ export class AgentManager extends EventEmitter {
       try {
         row = await this.#store.createForThread({
           thread,
-          model: env.model(),
+          // A managed tenant leaves the model empty so the session follows its
+          // persona's effective model at every boot (see #sessionModel). A
+          // filesystem tenant stores SLAUDE_MODEL, as it always has.
+          model: getPersonaRegistry().isManaged() ? "" : env.model(),
           working_dir: workingDir,
           title: opts.title,
           permission_mode: env.defaultPermissionMode(),
@@ -325,13 +621,77 @@ export class AgentManager extends EventEmitter {
     this.#suppressNextTurn.add(sessionId);
   }
 
+  /** Suspend (true) or restore (false) the idle TTL for a live session. A voice
+   *  call holds it so the warm session — and its warm-node registration — stays
+   *  up for the whole call; release re-arms the normal timer. Holding a session
+   *  that is not live does nothing and returns false (a stale hold would block
+   *  the idle TTL of a later session under the same id). */
+  holdIdle(sessionId: string, hold: boolean): boolean {
+    const live = this.#live.get(sessionId);
+    if (!hold) {
+      this.#idleHeld.delete(sessionId);
+      if (live) this.#armIdle(live);
+      return true;
+    }
+    if (!live) return false;
+    this.#idleHeld.add(sessionId);
+    if (live.idleTimer) clearTimeout(live.idleTimer);
+    live.idleTimer = undefined;
+    return true;
+  }
+
+  /** Clear the hold and tell listeners (voice calls) the live session is gone.
+   *  A throwing listener must not stall teardown. */
+  #signalSessionExit(sessionId: string) {
+    this.#idleHeld.delete(sessionId);
+    try {
+      this.emit("sessionExit", sessionId);
+    } catch (e) {
+      console.error(`[mgr] sessionExit listener failed session=${sessionId}:`, e);
+    }
+  }
+
+  /** True while a live session has inputs pushed whose result has not arrived.
+   *  False for unknown or not-live sessions. */
+  isTurnInFlight(sessionId: string): boolean {
+    return (this.#live.get(sessionId)?.pendingInputs ?? 0) > 0;
+  }
+
   /** Send user input. Starts session loop if not already live. */
   async sendMessage(sessionId: string, text: string) {
     // Signal that a real user turn is starting for this session. Slash commands
     // and dropped messages never reach here, so a listener can distinguish
     // "agent will run" from "handled inline" without waiting for done/error.
     this.emit("event", { type: "turnStart", sessionId } satisfies AgentEvent);
-    const live = this.#live.get(sessionId);
+    let live = this.#live.get(sessionId);
+    // A reloading session has closed its input: anything pushed now would never
+    // reach the CLI. Wait for it to exit and boot a fresh one for this message.
+    // Bounded: a CLI that never exits after its stdin closes must not hang this
+    // forever. Past the bound the old session is aborted and detached (its
+    // eventual exit cannot touch the fresh one), and the message boots fresh.
+    while (live?.reloading) {
+      const old = live;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const exited = await Promise.race([
+        old.exited.then(() => true),
+        new Promise<boolean>((r) => (timer = setTimeout(() => r(false), this.#reloadExitTimeoutMs))),
+      ]);
+      clearTimeout(timer);
+      if (!exited) {
+        console.warn(`[mgr] reloading session=${sessionId} did not exit within ${this.#reloadExitTimeoutMs}ms; aborting it and booting fresh`);
+        this.abort(sessionId);
+        if (old.idleTimer) clearTimeout(old.idleTimer);
+        if (this.#live.get(sessionId) === old) {
+          this.#live.delete(sessionId);
+          // The detached instance's own teardown no longer owns the id and
+          // stays silent, so this is its one exit signal (a voice call must learn).
+          this.#signalSessionExit(sessionId);
+        }
+        live = undefined;
+        break;
+      }
+      live = this.#live.get(sessionId);
+    }
     if (live) {
       // flush prior turn if any pending assistant content was buffered
       this.#flushTurn(live);
@@ -351,6 +711,7 @@ export class AgentManager extends EventEmitter {
   #armIdle(live: LiveSession) {
     const ms = env.idleMs();
     if (live.idleTimer) clearTimeout(live.idleTimer);
+    if (this.#idleHeld.has(live.id)) return;
     if (ms <= 0) return;
     live.idleTimer = setTimeout(() => {
       // Flush any buffered assistant content; close the prompt iterable so
@@ -365,6 +726,7 @@ export class AgentManager extends EventEmitter {
   /** Cancel any in-flight turn for the session. */
   abort(sessionId: string) {
     this.#pendingReload.delete(sessionId);
+    this.#reloadAfterTurn.delete(sessionId);
     this.#autoContinue.delete(sessionId);
     this.#reloadPrompt.delete(sessionId);
     this.#live.get(sessionId)?.abort.abort();
@@ -393,6 +755,22 @@ export class AgentManager extends EventEmitter {
     return true;
   }
 
+  /** Reload a session without breaking a turn in flight. Closing the input
+   *  mid-turn ends the CLI's stdin, which a turn still needs (permission
+   *  prompts, hooks, in-process MCP), so a session with a turn in flight is
+   *  marked and reloaded when that turn's result arrives; an idle session
+   *  reloads now. Either way the next turn boots fresh. False if not live. */
+  reloadAfterTurn(sessionId: string): boolean {
+    const live = this.#live.get(sessionId);
+    if (!live) return false;
+    if (live.reloading) return true;
+    if (live.pendingInputs > 0) {
+      this.#reloadAfterTurn.add(sessionId);
+      return true;
+    }
+    return this.reload(sessionId);
+  }
+
   /** Queue an out-of-band gate event (e.g. "Connected MCP server `x`.") for delivery
    *  to the session's transcript on its next engaged user turn. Persists across the
    *  reboot that connect/disconnect trigger. */
@@ -406,6 +784,7 @@ export class AgentManager extends EventEmitter {
   async setPermissionMode(sessionId: string, mode: PermissionMode) {
     await this.#store.setPermissionMode(sessionId, mode);
     const live = this.#live.get(sessionId);
+    if (live) live.mode = mode;
     if (live?.query) {
       try {
         await live.query.setPermissionMode(mode);
@@ -441,11 +820,170 @@ export class AgentManager extends EventEmitter {
     }
   }
 
+  /** Re-run the MCP handshake for one server of a live session, so it picks up
+   *  a credential rewritten under it. False if the session is not live or the
+   *  SDK refused. Measured (Task 1 field note): after a rewrite the next call
+   *  already uses the new token, but only a reconnect returns the reported
+   *  status from needs-auth to connected. */
+  async reconnectMcpServer(sessionId: string, serverName: string): Promise<boolean> {
+    const live = this.#live.get(sessionId);
+    if (!live?.query) return false;
+    try {
+      await live.query.reconnectMcpServer(serverName);
+      return true;
+    } catch (e) {
+      console.warn(`[agent] reconnectMcpServer failed session=${sessionId} server=${serverName}: ${e instanceof Error ? e.name : typeof e}`);
+      return false;
+    }
+  }
+
+  /**
+   * On a managed registry install, close every warm session whose persona is no
+   * longer live. A live child never re-resolves its persona (sendMessage pushes
+   * straight into it and re-arms the idle timer), so without this a retired
+   * persona's thread or cron job keeps running as it booted, with the default
+   * identity's fallbacks around it. The in-flight turn is aborted; the next
+   * message boots fresh and #resolvePersona refuses it. Nodes (a soul resolver
+   * installed) and filesystem registries are unaffected.
+   */
+  #closeRetiredPersonaSessions(r: PersonaRegistry) {
+    if (this.#personaSoulResolver || !r.isManaged()) return;
+    for (const [id, live] of this.#live) {
+      if (!live.personaName || r.lookupByName(live.personaName)) continue;
+      console.log(`[agent] closing session=${id} persona=${live.personaName} — persona no longer live`);
+      this.abort(id);
+      try {
+        live.closeIterable();
+      } catch {}
+    }
+  }
+
+  /** The session's persona: its registry entry (gateway/mono) and its name.
+   *  With a soul resolver installed (a node) the registry is never consulted —
+   *  it loads lazily from the shared volume, where a node's persona directory
+   *  need not exist — and the name is the session row's persona id. */
+  #resolvePersona(personaId: string | null | undefined): {
+    persona: ReturnType<ReturnType<typeof getPersonaRegistry>["lookupByName"]>;
+    name: string | undefined;
+  } {
+    const named = personaId && personaId !== "default" ? personaId : undefined;
+    if (this.#personaSoulResolver) return { persona: null, name: named };
+    // A managed registry is complete, so a named persona it lacks was retired or
+    // removed. Booting it as the default persona would hand that thread the
+    // default's soul, credentials and brain slice: livePersona throws instead.
+    // A filesystem registry keeps the old fallback (null).
+    const persona = named ? livePersona(named) : null;
+    return { persona, name: persona?.name };
+  }
+
+  /** The `systemPrompt.append` text for a booting session. One function for
+   *  session start and {@link __systemPromptForTests}, so the test exercises the
+   *  production path. A soul resolver failure propagates and fails the boot. */
+  async #buildSystemAppend(
+    sessionId: string,
+    personaName: string | undefined,
+    ctx: {
+      channelId?: string | null;
+      lock?: OneOnOneLockRow | null;
+      remote?: { userId: string; dir: string } | null;
+      mcpServers?: Record<string, unknown>;
+      /** The CLI reads no MCP source but mcpServers (a node): the block is
+       *  the whole list. */
+      strictMcp?: boolean;
+      memBlock?: string | null;
+    },
+  ): Promise<string> {
+    // Named personas use their own soul for the persona block (the database
+    // soul when the tenant is managed, else their SOUL.md); the runtime baseline
+    // stays the same. Default persona = the managed `default` row when one
+    // exists, else the global SOUL.md. On a node the resolver supplies both
+    // from the runtime bundle.
+    const soul: PersonaSoul = this.#personaSoulResolver
+      ? await this.#personaSoulResolver(sessionId, personaName)
+      : { soulMd: personaSoulText(personaName), soulJson: undefined };
+    // Observable soul source: a hash, never the text.
+    const soulHash = createHash("sha256").update(soul.soulMd).digest("hex").slice(0, 12);
+    console.log(`[agent] session=${sessionId} persona=${personaName ?? "default"} soul=${soulHash}`);
+    const { mcpServers, memBlock } = ctx;
+    return [
+      soulSystemBlock(soul.soulMd),
+      channelMandateBlock(ctx.channelId, soul.soulJson, sessionId, personaName),
+      sessionModeBlock(ctx.lock ?? null, ctx.remote),
+      mcpServers
+        ? `<mcp-servers>\nMCP server namespaces mounted this session. Call tools as \`mcp__<server>__<tool>\`.\n${Object.keys(mcpServers)
+            .map((n) => `- ${n}`)
+            .join("\n")}\n${
+            ctx.strictMcp
+              ? ""
+              : "Additional servers may be available if configured in ~/.claude/mcp.json or .mcp.json in the working directory.\n"
+          }</mcp-servers>`
+        : "<mcp-servers>none</mcp-servers>",
+      memBlock ? `<memory-context>\n${memBlock}\n</memory-context>` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  /** TEST SEAM: the system-prompt append a session with this persona would boot
+   *  with, built by the same function session start uses. */
+  async __systemPromptForTests(
+    sessionId: string,
+    personaId: string | undefined,
+    ctx: { channelId?: string | null } = {},
+  ): Promise<string> {
+    return this.#buildSystemAppend(sessionId, this.#resolvePersona(personaId).name, ctx);
+  }
+
+  /** Boot a session, marked as booting (see ensureConfigFp) from the first
+   *  synchronous step until it is live or the boot fails. A counter, since a
+   *  retry path may start a boot for the same id while another is unwinding. */
+  /** A fire-and-forget reboot (resume-miss retry) has no caller to reject to:
+   *  its failure is the turn's error event, with its code when it is typed.
+   *  `signalExit`: the session the reboot replaced left without its exit
+   *  signal (the resume-retry paths), so a voice call holding it must learn
+   *  now, unless a session holds the id again. */
+  #rebootFailed(sessionId: string, e: unknown, o: { signalExit?: boolean } = {}) {
+    console.error(`[mgr] reboot failed session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+    this.emit("event", {
+      type: "error",
+      sessionId,
+      error: "session reboot failed",
+      code: e instanceof BootFailure ? e.code : "TURN_FAILED",
+    } satisfies AgentEvent);
+    if (o.signalExit && !this.#live.has(sessionId)) this.#signalSessionExit(sessionId);
+  }
+
   async #startSession(sessionId: string, firstText: string) {
+    this.#booting.set(sessionId, (this.#booting.get(sessionId) ?? 0) + 1);
+    let marked = true;
+    const unmark = () => {
+      if (!marked) return;
+      marked = false;
+      const n = (this.#booting.get(sessionId) ?? 1) - 1;
+      if (n > 0) this.#booting.set(sessionId, n);
+      else this.#booting.delete(sessionId);
+    };
+    try {
+      await this.#bootSession(sessionId, firstText, unmark);
+    } finally {
+      unmark();
+    }
+  }
+
+  async #bootSession(sessionId: string, firstText: string, onLive: () => void) {
+    // Read before any config is resolved: a fingerprint that arrives while this
+    // boot resolves its lock/remote state must not be credited to it.
+    const bootFp = this.#desiredFp.get(sessionId);
     const row = await this.#store.findById(sessionId);
     if (!row) throw new Error(`session not found: ${sessionId}`);
 
-    const memBlock = await memory.prefetch(sessionId);
+    // Memory must never break a turn (the brain provider's own policy). The
+    // sqlite provider throws where no database is open; a node uses the
+    // gateway's memory routes instead (setMemoryProvider).
+    const memBlock = await this.#memory.prefetch(sessionId).catch((e) => {
+      console.error(`[mgr] memory prefetch failed session=${sessionId}:`, e instanceof Error ? e.message : e);
+      return null;
+    });
     const abort = new AbortController();
     const queue: string[] = [firstText];
     let resolveNext: (() => void) | null = null;
@@ -502,11 +1040,24 @@ export class AgentManager extends EventEmitter {
     // Node runtime (spec §6): overlay wins over process-env-derived provider
     // vars — a node's own env carries no tenant credentials, the runtime
     // bundle does. No resolver installed → no change (mono/gateway).
+    // A resolver failure is FATAL and typed (WS-A §5.4): spawning on the node's
+    // own environment would run the persona on someone else's credentials.
+    let unsetChildEnv: readonly string[] = [];
     if (this.#childEnvResolver) {
+      let overlay: ChildEnvOverlay;
       try {
-        Object.assign(providerEnv, (await this.#childEnvResolver(sessionId)) ?? {});
+        overlay = await this.#childEnvResolver(sessionId);
       } catch (e) {
-        console.error(`[mgr] child-env resolver failed session=${sessionId}:`, e);
+        console.error(`[mgr] child-env resolver failed session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+        throw e instanceof BootFailure
+          ? e
+          : new BootFailure("PROVIDER_CREDENTIALS_UNAVAILABLE", "child-env resolver failed", { cause: e });
+      }
+      if (overlay instanceof ChildEnvPatch) {
+        Object.assign(providerEnv, overlay.set);
+        unsetChildEnv = overlay.unset.filter((k) => !Object.hasOwn(overlay.set, k));
+      } else {
+        Object.assign(providerEnv, overlay ?? {});
       }
     }
     // /1on1 privacy: when this session's thread is locked, point the claude-code
@@ -517,7 +1068,7 @@ export class AgentManager extends EventEmitter {
     // re-resolution (CLAUDE_CONFIG_DIR is read once at child boot).
     const lock =
       row.slack_channel_id && row.slack_thread_ts
-        ? await OneOnOne.find(row.slack_channel_id, row.slack_thread_ts)
+        ? await this.#lockFor(sessionId, row.slack_channel_id, row.slack_thread_ts)
         : null;
     const oauthUser = await this.resolveEffectiveIdentity(
       sessionId,
@@ -526,10 +1077,7 @@ export class AgentManager extends EventEmitter {
     );
     // Multi-persona: resolve the persona first — it anchors both the brain slice
     // (SLAUDE_AGENT_ID) and the config dir (creds + transcripts) below.
-    const personaId = row.persona_id;
-    const persona = personaId && personaId !== "default"
-      ? getPersonaRegistry().lookupByName(personaId)
-      : null;
+    const { persona, name: personaName } = this.#resolvePersona(row.persona_id);
     if (persona) {
       // Inject the persona's Slack user ID as the brain-slice anchor so named
       // personas each get their own private KB slice.
@@ -540,28 +1088,31 @@ export class AgentManager extends EventEmitter {
     // (isolated .credentials.json + projects/ transcripts); a /1on1 lock nests
     // its per-initiator home INSIDE that persona boundary. Default persona +
     // unlocked → undefined → inherit the agent's config dir (unchanged).
-    const sessionConfigDir = resolveSessionConfigDir(oauthUser, persona?.name);
+    const sessionConfigDir = this.#configDirResolver
+      ? await this.#configDirResolver(sessionId, personaName)
+      : resolveSessionConfigDir(oauthUser, personaName);
     if (sessionConfigDir) providerEnv.CLAUDE_CONFIG_DIR = sessionConfigDir;
-
-    const resolver = this.#resolver;
-    const canUseTool: CanUseTool | undefined = resolver
-      ? (toolName, input, ctx) => resolver(sessionId, toolName, input, ctx)
-      : undefined;
 
     const mode = (row.permission_mode || "default") as PermissionMode;
     const mcpServers = await this.#mcpResolver?.(sessionId);
-    // Per-channel mandate override: when SOUL.md defines a `## Channel` block
-    // with its own `### Mandate` for this channel, inject an authoritative
-    // directive that supersedes the global Mandate (which lives, unedited,
-    // inside the <persona> text block). See effectiveSoulForChannel.
-    const channelMandateBlock = ((): string => {
-      const channelId = row.slack_channel_id;
-      if (!channelId) return "";
-      const eff = effectiveSoulForChannel(channelId).mandate?.trim();
-      const base = soulData().mandate?.trim();
-      if (!eff || eff === base) return "";
-      return `<channel-mandate>\nFor this channel your mandate is: ${eff}\nThis supersedes the Mandate section in your persona for this channel.\n</channel-mandate>`;
-    })();
+    // Node: the manifest's stdio servers for this persona, and nothing else
+    // local (no plugin MCP from disk, no CLI discovery). The transport's
+    // servers go after them, so a gateway-resolved name wins a collision.
+    const localMcp = this.#localMcpResolver ? ((await this.#localMcpResolver(sessionId)) ?? {}) : null;
+    const baseMcpServers = localMcp ? mergeLocalMcp(sessionId, localMcp, mcpServers) : mcpServers;
+    // Remote mode: tools for this session run on the lock owner's machine.
+    const remoteTarget = this.#remoteResolver ? await this.#remoteResolver(sessionId) : null;
+    const model = await this.#sessionModel(sessionId, row.model, personaName);
+    // Strict (node): the prompt lists exactly what the CLI will mount.
+    const strictNames = localMcp ? { ...baseMcpServers, ...(remoteTarget ? { [REMOTE_MCP_NAME]: true } : {}) } : null;
+    const systemAppend = await this.#buildSystemAppend(sessionId, personaName, {
+      channelId: row.slack_channel_id,
+      lock,
+      remote: remoteTarget ? { userId: remoteTarget.userId, dir: remoteTarget.dir } : null,
+      mcpServers: strictNames ? (Object.keys(strictNames).length > 0 ? strictNames : undefined) : mcpServers,
+      strictMcp: !!localMcp,
+      memBlock,
+    });
     const preCompact: HookCallback = async (input) => {
       if (input.hook_event_name !== "PreCompact") return { continue: true };
       this.emit("event", {
@@ -610,75 +1161,109 @@ export class AgentManager extends EventEmitter {
     // each plugin's skills/commands for this session. The SDK's `--plugin-dir`
     // path does NOT auto-mount the plugin's .mcp.json servers (CLI landmine),
     // so we also read each plugin's .mcp.json and merge into mcpServers.
-    const pluginPaths = loadInstalledPluginPaths();
-    const pluginMcps = loadInstalledPluginMcps();
-    const mergedMcpServers = {
-      ...(mcpServers ?? {}),
-      ...pluginMcps,
-    };
-    const hasMcpServers = Object.keys(mergedMcpServers).length > 0;
+    // On a node (a local MCP resolver installed) plugin MCP servers run only
+    // when the node manifest declares them: none are read from disk, and every
+    // plugin skips the CLI's own .mcp.json discovery.
+    const pluginPaths = localMcp
+      ? loadInstalledPluginPaths().map((p) => ({ ...p, skipMcpDiscovery: true }))
+      : loadInstalledPluginPaths();
+    const pluginMcps = localMcp ? {} : loadInstalledPluginMcps();
     // Always mount ~/.slaude/ as a local plugin so the SDK discovers
     // ~/.slaude/skills/<slug>/SKILL.md and injects them into <system-reminder>.
     // skipMcpDiscovery prevents the SDK from reading slaude's own mcp.json
     // (those servers are managed separately via Options.mcpServers above).
     const slaudeHomePlugin = { type: "local" as const, path: paths.home, skipMcpDiscovery: true };
     const allPlugins = [slaudeHomePlugin, ...pluginPaths];
-    const options: Options = {
-      cwd: row.working_dir,
-      // Pass `model` only when explicitly set. Empty = let the SDK / CLI use
-      // its own default (e.g. Claude Code subscription default under
-      // CLAUDE_CODE_OAUTH_TOKEN). When pointing at a non-Anthropic gateway,
-      // SLAUDE_MODEL MUST be set to a provider-qualified id.
-      ...(row.model ? { model: row.model } : {}),
-      abortController: abort,
-      env: scrubChildEnv({ ...process.env, ...providerEnv }),
-      ...(canUseTool ? { canUseTool } : {}),
-      ...(hasMcpServers ? { mcpServers: mergedMcpServers } : {}),
-      plugins: allPlugins,
-      permissionMode: mode,
-      ...(mode === "bypassPermissions"
-        ? { allowDangerouslySkipPermissions: true }
-        : {}),
-      hooks: {
-        PreCompact: [{ hooks: [preCompact] }],
-        Stop: [{ hooks: [stopHook] }],
-        UserPromptSubmit: [{ hooks: [userPromptHook] }],
-      },
-      systemPrompt: {
-        type: "preset",
-        preset: "claude_code",
-        append: [
-          // Named personas use their own SOUL.md for the persona block; the
-          // runtime baseline stays the same. Default persona = global SOUL.md.
-          soulSystemBlock(persona ? loadSoul(persona.soulPath) : undefined),
-          channelMandateBlock,
-          sessionModeBlock(lock),
-          mcpServers
-            ? `<mcp-servers>\nMCP server namespaces mounted this session. Call tools as \`mcp__<server>__<tool>\`.\n${Object.keys(mcpServers)
-                .map((n) => `- ${n}`)
-                .join(
-                  "\n",
-                )}\nAdditional servers may be available if configured in ~/.claude/mcp.json or .mcp.json in the working directory.\n</mcp-servers>`
-            : "<mcp-servers>none</mcp-servers>",
-          memBlock ? `<memory-context>\n${memBlock}\n</memory-context>` : "",
-        ]
-          .filter(Boolean)
-          .join("\n\n"),
-      },
-      ...sessionIdOpts(row),
-    };
 
+    // Opened after the soul resolves, so a boot that fails there holds no connection.
+    const remoteHandle = await this.#remoteHandleFor(sessionId, remoteTarget);
+    const resolver = this.#resolver;
+    const baseCanUse: CanUseTool | undefined = resolver
+      ? (toolName, input, ctx) => resolver(sessionId, toolName, input, ctx)
+      : undefined;
+    const canUseTool: CanUseTool | undefined = remoteHandle
+      ? makeRemoteCanUseTool(baseCanUse, () => this.#live.get(sessionId)?.mode ?? mode)
+      : baseCanUse;
+    if (remoteHandle && localMcp && Object.hasOwn(localMcp, REMOTE_MCP_NAME)) {
+      console.warn(
+        `[node] session=${sessionId} MCP server '${REMOTE_MCP_NAME}' is in the node manifest; this session runs remotely, so the remote tools replace it`,
+      );
+    }
+    let options: Options;
+    try {
+      const mergedMcpServers = {
+        ...(baseMcpServers ?? {}),
+        ...pluginMcps,
+        ...(remoteHandle && remoteTarget
+          ? { [REMOTE_MCP_NAME]: createRemoteMcp({ exec: remoteHandle.exec, root: remoteTarget.dir, sessionKey: sessionId }) }
+          : {}),
+      };
+      const hasMcpServers = Object.keys(mergedMcpServers).length > 0;
+      options = {
+        cwd: row.working_dir,
+        // Pass `model` only when explicitly set. Empty = let the SDK / CLI use
+        // its own default (e.g. Claude Code subscription default under
+        // CLAUDE_CODE_OAUTH_TOKEN). When pointing at a non-Anthropic gateway,
+        // SLAUDE_MODEL MUST be set to a provider-qualified id.
+        ...(model ? { model } : {}),
+        abortController: abort,
+        env: scrubChildEnv(withoutKeys({ ...process.env, ...providerEnv }, unsetChildEnv)),
+        ...(canUseTool ? { canUseTool } : {}),
+        ...(hasMcpServers ? { mcpServers: mergedMcpServers } : {}),
+        ...(localMcp ? { strictMcpConfig: true } : {}),
+        plugins: allPlugins,
+        // The aliased built-ins stay enabled (an alias needs its source tool, spike §8);
+        // local-only tools with no remote counterpart are removed outright.
+        ...(remoteHandle ? { toolAliases: REMOTE_TOOL_ALIASES, disallowedTools: [...REMOTE_DENIED_LOCAL_TOOLS] } : {}),
+        permissionMode: mode,
+        ...(mode === "bypassPermissions"
+          ? { allowDangerouslySkipPermissions: true }
+          : {}),
+        hooks: {
+          PreCompact: [{ hooks: [preCompact] }],
+          Stop: [{ hooks: [stopHook] }],
+          UserPromptSubmit: [{ hooks: [userPromptHook] }],
+          ...(remoteHandle ? { PreToolUse: [{ hooks: [denyLocalBuiltins] }] } : {}),
+        },
+        systemPrompt: {
+          type: "preset",
+          preset: "claude_code",
+          append: systemAppend,
+        },
+        ...sessionIdOpts(row),
+      };
+    } catch (e) {
+      // No live session will own the handle: release the connection (never
+      // dispose — the user's background jobs survive a failed boot).
+      if (remoteHandle) {
+        await remoteHandle.release().catch((err) =>
+          console.error(`[mgr] remote release failed session=${sessionId}: ${err instanceof RemoteError ? err.code : "error"}`));
+      }
+      throw e;
+    }
+
+    let markExited!: () => void;
     const live: LiveSession = {
       id: sessionId,
-      pushUser,
+      // Every input starts a turn; its `result` ends it (#fanout).
+      pushUser: (text: string) => {
+        live.pendingInputs++;
+        pushUser(text);
+      },
       closeIterable,
       abort,
       turn: { user: firstText, assistant: [] },
       turnTools: [],
       inAutoEvolve: false,
       channelId: row.slack_channel_id,
+      mode,
+      personaName,
+      bootFp,
+      pendingInputs: 1, // firstText is already queued
+      exited: new Promise<void>((r) => (markExited = r)),
     };
     this.#live.set(sessionId, live);
+    onLive();
     metric.sessionsLive.set(this.#live.size);
     this.#armIdle(live);
     await this.#store.setStatus(sessionId, "running");
@@ -689,15 +1274,17 @@ export class AgentManager extends EventEmitter {
       process.stderr.write(`[claude-cli] ${chunk}`);
     };
     let retried = false;
+    /** Teardown signalled sessionExit (the last-resort catch must not twice). */
+    let exitSignalled = false;
 
     (async () => {
       try {
-        console.log(`[mgr] query() boot session=${sessionId} model=${row.model} cwd=${row.working_dir} resume=${!!row.claude_started}`);
+        console.log(`[mgr] query() boot session=${sessionId} model=${model} cwd=${row.working_dir} resume=${!!row.claude_started}`);
         const q = agentSdk.query({ prompt: promptIterable, options });
         live.query = q;
         for await (const msg of q as AsyncIterable<SDKMessage>) {
           console.log(`[mgr] sdk msg type=${(msg as any).type} subtype=${(msg as any).subtype ?? "-"}`);
-          this.#fanout(sessionId, msg);
+          this.#fanout(sessionId, msg, live);
         }
         console.log(`[mgr] query() exited session=${sessionId}`);
         // for-await ends only when the prompt iterable is closed; that is
@@ -713,11 +1300,11 @@ export class AgentManager extends EventEmitter {
         if (RESUME_MISS_RE.test(stderrBuf)) {
           retried = true;
           console.log(`[mgr] clearing stale claude_started + retrying session=${sessionId}`);
-          await this.#store.clearStarted(sessionId);
+          await this.#bestEffortStore(sessionId, "clearStarted", () => this.#store.clearStarted(sessionId));
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           // Fire and forget — restart with the same first prompt.
-          void this.#startSession(sessionId, firstText);
+          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
           return;
         }
         // Mirror failure: we seeded --session-id but a transcript with that id
@@ -726,10 +1313,10 @@ export class AgentManager extends EventEmitter {
         if (/session.*(already in use|already exists)/i.test(stderrBuf)) {
           retried = true;
           console.log(`[mgr] session id already has a transcript — retrying with resume session=${sessionId}`);
-          await this.#store.markStarted(sessionId);
+          await this.#bestEffortStore(sessionId, "markStarted", () => this.#store.markStarted(sessionId));
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
-          void this.#startSession(sessionId, firstText);
+          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
           return;
         }
         if (live?.reloading) {
@@ -739,22 +1326,49 @@ export class AgentManager extends EventEmitter {
           this.emit("event", { type: "done", sessionId } satisfies AgentEvent);
         } else {
           metric.errorsTotal.inc({ kind: "sdk" });
-          this.emit("event", { type: "error", sessionId, error: message } satisfies AgentEvent);
+          this.emit("event", { type: "error", sessionId, error: message, code: "TURN_FAILED" } satisfies AgentEvent);
         }
       } finally {
-        if (retried) return;
+        // A session detached by sendMessage's bounded reload wait no longer owns
+        // the id: a fresh session may hold it, and nothing here may touch that.
+        const owns = () => this.#live.get(sessionId) === live;
+        if (owns()) this.#reloadAfterTurn.delete(sessionId);
+        if (retried) {
+          markExited();
+          return;
+        }
         if (live.idleTimer) clearTimeout(live.idleTimer);
-        await this.#store.setStatus(sessionId, "idle");
+        if (!owns()) {
+          markExited();
+          return;
+        }
+        await this.#bestEffortStore(sessionId, "setStatus(idle)", () => this.#store.setStatus(sessionId, "idle"));
+        if (!owns()) {
+          markExited();
+          return;
+        }
         this.#live.delete(sessionId);
+        // Again after the delete: a reloadAfterTurn during the await above saw
+        // this session still live and may have re-added the id, which would
+        // otherwise reload the next fresh session spuriously.
+        this.#reloadAfterTurn.delete(sessionId);
+        // Release the connection only: a reboot (reload, stream_closed, idle TTL,
+        // /mcp connect) must not kill the user's background jobs. They are killed
+        // when remote ends or moves (#remoteHandleFor disposes).
+        void this.#remoteHandles.get(sessionId)?.handle.release().catch((e) =>
+          console.error(`[mgr] remote release failed session=${sessionId}: ${e instanceof RemoteError ? e.code : "error"}`));
         this.#budget.forget(sessionId);
         this.#stopBlocked.delete(sessionId);
         metric.sessionsLive.set(this.#live.size);
+        markExited();
+        exitSignalled = true;
+        this.#signalSessionExit(sessionId);
         // After a stream_closed auto-reload, inject a synthetic "continue"
         // prompt so the resumed session picks up without human input.
         if (live.reloading && this.#autoContinue.has(sessionId)) {
           this.#autoContinue.delete(sessionId);
           console.log(`[mgr] auto-continuing after stream_closed reload session=${sessionId}`);
-          void this.sendMessage(sessionId, "The MCP stream was restored. Please continue where you left off.");
+          void this.sendMessage(sessionId, "The MCP stream was restored. Please continue where you left off.").catch((e) => this.#rebootFailed(sessionId, e));
         }
         // After a manual reload_session with a prompt, inject it so the user
         // doesn't need to type anything to resume the flow.
@@ -762,17 +1376,57 @@ export class AgentManager extends EventEmitter {
           const p = this.#reloadPrompt.get(sessionId)!;
           this.#reloadPrompt.delete(sessionId);
           console.log(`[mgr] injecting reload prompt session=${sessionId}`);
-          void this.sendMessage(sessionId, p);
+          void this.sendMessage(sessionId, p).catch((e) => this.#rebootFailed(sessionId, e));
         }
       }
-    })();
+    })().catch((e) => {
+      // Last resort: nothing awaits this loop, so a throw here would be an
+      // unhandled rejection, which ends the whole process (a node worker
+      // serves many sessions). Every known throw is handled above. A throw
+      // inside teardown may have skipped its tail: finish it here, but never
+      // touch a fresh session that holds the id now.
+      console.error(`[mgr] session loop failed session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+      if (retried) return markExited();
+      const owned = this.#live.get(sessionId) === live;
+      if (owned) {
+        if (live.idleTimer) clearTimeout(live.idleTimer);
+        this.#live.delete(sessionId);
+      }
+      markExited();
+      if (!exitSignalled && (owned || !this.#live.has(sessionId))) {
+        exitSignalled = true;
+        this.#signalSessionExit(sessionId);
+      }
+    });
   }
 
-  #fanout(sessionId: string, msg: SDKMessage) {
-    const live = this.#live.get(sessionId);
+  /**
+   * A session-row write from the detached query loop (teardown status, the
+   * started flag). Nothing awaits that loop, so a rejection would be
+   * unhandled and end the process; and teardown must still finish (drop the
+   * live entry, signal sessionExit to a voice call). On a node the store is
+   * the gateway's /v1, authenticated by the last job token bound for the
+   * session, which a session that outlived its job may hold expired. The
+   * write is lost and logged; the row is corrected by the next turn.
+   */
+  async #bestEffortStore(sessionId: string, what: string, write: () => Promise<void>): Promise<void> {
+    try {
+      await write();
+    } catch (e) {
+      console.error(`[mgr] session store ${what} failed session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+    }
+  }
+
+  #fanout(sessionId: string, msg: SDKMessage, owner: LiveSession) {
+    // A session detached by sendMessage's bounded reload wait keeps running its
+    // own query loop, but no longer owns the id: a fresh session may hold it.
+    // Its late messages must not join the fresh session's turn, nor decrement
+    // its outstanding inputs (which could apply a deferred reload under it).
+    if (this.#live.get(sessionId) !== owner) return;
+    const live = owner;
     switch (msg.type) {
       case "assistant": {
-        void this.#store.markStarted(sessionId);
+        void this.#bestEffortStore(sessionId, "markStarted", () => this.#store.markStarted(sessionId));
         // The SDK's BetaContentBlock union types only text + tool_use, but the
         // model also emits thinking blocks at runtime. Widen so the thinking
         // branch type-checks (both the discriminant and `.thinking`).
@@ -838,6 +1492,11 @@ export class AgentManager extends EventEmitter {
         break;
       }
       case "result": {
+        if (live) live.pendingInputs = Math.max(0, live.pendingInputs - 1);
+        // A reload deferred by reloadAfterTurn applies once NO input is
+        // outstanding: another queued input (e.g. a user message behind an
+        // auto-evolve turn) still needs the CLI's stdin.
+        const deferredReload = (live?.pendingInputs ?? 0) === 0 && this.#reloadAfterTurn.delete(sessionId);
         // Stream-closed circuit breaker: if a stream_closed error was detected
         // during this turn, handle at turn-end (clean exit point).
         if (this.#pendingReload.has(sessionId)) {
@@ -856,7 +1515,10 @@ export class AgentManager extends EventEmitter {
               type: "error",
               sessionId,
               error: `MCP stream closed ${count}× in a row — circuit open, not auto-reloading. Send any message to restart.`,
+              code: "TURN_FAILED",
             } satisfies AgentEvent);
+            // A config reload still applies: it is not an MCP recovery attempt.
+            if (deferredReload) this.reload(sessionId);
           }
           break;
         }
@@ -913,6 +1575,7 @@ export class AgentManager extends EventEmitter {
               type: "error",
               sessionId,
               error: errStr,
+              code: "TURN_FAILED",
             } satisfies AgentEvent);
             if (live) live.turnTools = [];
           }
@@ -925,7 +1588,9 @@ export class AgentManager extends EventEmitter {
             sessionId,
             ...(wasAutoEvolve ? { autoEvolve: true } : {}),
           } satisfies AgentEvent);
-          if (live && !wasAutoEvolve && this.#shouldAutoEvolve(live)) {
+          // Never during a voice call: the follow-up turn would occupy the
+          // session and the next delegated request would queue behind it.
+          if (live && !wasAutoEvolve && !deferredReload && !voiceCallActive(sessionId) && this.#shouldAutoEvolve(live)) {
             live.inAutoEvolve = true;
             live.turnTools = [];
             live.pushUser(AUTO_EVOLVE_PROMPT);
@@ -933,6 +1598,7 @@ export class AgentManager extends EventEmitter {
             live.turnTools = [];
           }
         }
+        if (deferredReload && live) this.reload(sessionId);
         break;
       }
       default:
@@ -945,7 +1611,9 @@ export class AgentManager extends EventEmitter {
     const user = live.turn.user;
     const assistant = live.turn.assistant.join("\n");
     live.turn = { user: "", assistant: [] };
-    void memory.syncTurn({ sessionId: live.id, user, assistant });
+    void this.#memory.syncTurn({ sessionId: live.id, user, assistant }).catch((e) => {
+      console.error(`[mgr] memory sync failed session=${live.id}:`, e instanceof Error ? e.message : e);
+    });
   }
 
   /**
@@ -974,6 +1642,9 @@ export class AgentManager extends EventEmitter {
     return substantive >= 2;
   }
 }
+
+/** Bound on sendMessage's wait for a reloading session's CLI to exit. */
+const RELOAD_EXIT_TIMEOUT_MS = 30_000;
 
 /** Tools that don't count toward the auto-evolve trigger threshold. */
 const AUTO_EVOLVE_IGNORE = new Set([
@@ -1006,3 +1677,42 @@ const AUTO_EVOLVE_PROMPT = [
   "Do NOT redo the original task. Do NOT save one-off facts (those belong in memory). Skills are for repeatable multi-step procedures.",
   "</auto-evolve>",
 ].join("\n");
+
+/**
+ * Per-channel mandate override: when the soul defines a `## Channel` block with
+ * its own `### Mandate` for this channel, an authoritative directive that
+ * supersedes the global Mandate (which lives, unedited, inside the <persona>
+ * text block).
+ *
+ * With a structured soul from the persona soul resolver (a node's runtime
+ * bundle), the mandate comes from that persona's own soul. Without one (mono,
+ * the gateway, or a bundle carrying no structured soul), the process-global
+ * soul via effectiveSoulForChannel, exactly as before. A structured soul that
+ * is present but does not parse yields NO channel mandate: falling back to the
+ * global soul would hand this persona another persona's mandate.
+ */
+function channelMandateBlock(
+  channelId: string | null | undefined,
+  soulJson: unknown,
+  sessionId: string,
+  persona: string | undefined,
+): string {
+  if (!channelId) return "";
+  let eff: string | undefined;
+  let base: string | undefined;
+  const parsed = soulJson == null ? null : SoulDataSchema.safeParse(soulJson);
+  if (parsed && !parsed.success) {
+    console.warn(`[agent] session=${sessionId} persona=${persona ?? "default"} structured soul did not parse; no channel mandate`);
+    return "";
+  }
+  if (parsed?.success) {
+    base = parsed.data.mandate?.trim();
+    const ov = parsed.data.channelOverrides.find((c) => c.channel === channelId);
+    eff = ov?.mandate?.trim() || base;
+  } else {
+    eff = effectiveSoulForChannel(channelId).mandate?.trim();
+    base = soulData().mandate?.trim();
+  }
+  if (!eff || eff === base) return "";
+  return `<channel-mandate>\nFor this channel your mandate is: ${eff}\nThis supersedes the Mandate section in your persona for this channel.\n</channel-mandate>`;
+}

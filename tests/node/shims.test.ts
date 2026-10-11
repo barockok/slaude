@@ -249,3 +249,38 @@ describe("node permission resolver", () => {
     expect(d.message).toBe("aborted");
   }, 15_000);
 });
+
+describe("voice turn suppression", () => {
+  const fake = (posted: string[]) =>
+    ({ postTool: async (seg: string, name: string) => { posted.push(`${seg}/${name}`); return { content: [{ type: "text", text: "{}" }] }; } }) as any;
+  const handlers = (servers: any, name: string) => servers[name].instance._registeredTools;
+
+  test("suppresses surface writes locally and still forwards other tools", async () => {
+    const posted: string[] = [];
+    const servers = buildShimServers("sv1", { client: fake(posted), tokenFor: () => "tok", voiceActive: (id) => id === "sv1" });
+    const surface = handlers(servers, "slaude_surface");
+    const r = await surface["reply"].handler({ text: "x" });
+    expect(JSON.parse(r.content[0].text)).toEqual({ ref: "voice-suppressed" });
+    await surface["get_history"].handler({});
+    expect(posted).toEqual(["surface/get_history"]);
+  });
+
+  test("suppresses the deprecated slaude_slack reply and post_message, forwards reads", async () => {
+    const posted: string[] = [];
+    const servers = buildShimServers("sv1", { client: fake(posted), tokenFor: () => "tok", voiceActive: () => true });
+    const slack = handlers(servers, "slaude_slack");
+    for (const [name, args] of [["reply", { text: "x" }], ["post_message", { channel: "C1", text: "x" }]] as const) {
+      const r = await slack[name].handler(args);
+      expect(JSON.parse(r.content[0].text)).toEqual({ ref: "voice-suppressed" });
+    }
+    await slack["get_channel_info"].handler({});
+    expect(posted).toEqual(["slack/get_channel_info"]);
+  });
+
+  test("other sessions are not suppressed", async () => {
+    const posted: string[] = [];
+    const servers = buildShimServers("sv2", { client: fake(posted), tokenFor: () => "tok", voiceActive: (id) => id === "sv1" });
+    await handlers(servers, "slaude_surface")["reply"].handler({ text: "x" });
+    expect(posted).toEqual(["surface/reply"]);
+  });
+});

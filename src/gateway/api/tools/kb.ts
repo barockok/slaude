@@ -6,6 +6,7 @@
  * contract against each handler's parameter type.
  */
 import { kbHandlers, brainHandlers } from "../../../knowledge/mcp-tools";
+import { personaKbs } from "../../../knowledge/persona-kb";
 import { kbContract } from "../../../tools/contracts/kb";
 import { parseToolArgs } from "../../../tools/contracts/types";
 import type { JobClaims } from "../auth";
@@ -19,12 +20,13 @@ export async function executeKbTool(
   claims: JobClaims,
   deps: ToolPlaneDeps,
 ): Promise<ToolResult | null> {
+  // Only the KBs the token's persona may read (its kbSources ∩ installed).
   switch (tool) {
     case c.list_kbs.name:
       parseToolArgs(c.list_kbs, body);
-      return kbHandlers.list_kbs();
+      return kbHandlers.list_kbs(personaKbs(claims.persona));
     case c.search_kbs.name:
-      return kbHandlers.search_kbs(parseToolArgs(c.search_kbs, body));
+      return kbHandlers.search_kbs(parseToolArgs(c.search_kbs, body), personaKbs(claims.persona));
   }
   const ctx = deps.slackCtx(claims);
   const surface = deps.surfaceFor(ctx);

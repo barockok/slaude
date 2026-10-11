@@ -7,9 +7,31 @@
  * are reverse-engineered from cli.js (`a2A` + the file store `V_1`) and pinned by a
  * golden test — if the CLI changes its format, that canary fails loudly.
  */
-import { readFileSync, writeFileSync, existsSync, renameSync, chmodSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, writeFileSync, existsSync, renameSync, chmodSync, lstatSync, realpathSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
+
+/**
+ * Resolve the credential file to its real location.
+ *
+ * A shared per-user credential store puts a symlink in the per-persona config
+ * dir. Renaming a temp file over a symlink REPLACES the link with a regular
+ * file, which would silently unshare the credentials on the first write. Follow
+ * the link and place the temp file beside the real target, so the rename stays
+ * atomic (rename is only atomic within one filesystem) and the link survives.
+ */
+function resolveCredentialTarget(configDir: string): { path: string; dir: string } {
+  const path = join(configDir, ".credentials.json");
+  try {
+    if (lstatSync(path).isSymbolicLink()) {
+      const real = realpathSync(path);
+      return { path: real, dir: dirname(real) };
+    }
+  } catch {
+    /* absent file or dangling link — write in place */
+  }
+  return { path, dir: configDir };
+}
 
 /** Subset of an MCP HTTP server config that participates in the store key. */
 export interface OAuthServerConfig {
@@ -25,6 +47,10 @@ export interface OAuthTokens {
   refreshToken?: string;
   /** Seconds; defaults to 3600 when undefined (matches the CLI). */
   expiresIn?: number;
+  /** The token endpoint these tokens were exchanged at. Pinned in the gateway's
+   *  store so a refresh never re-asks the MCP server where to send the refresh
+   *  token; never written to the CLI's own file. */
+  tokenEndpoint?: string;
 }
 
 /** Replica of the CLI's `a2A`: `${name}|sha256(JSON.stringify({type,url,headers||{}})).hex[0:16]`.
@@ -38,8 +64,29 @@ export function oauthKey(serverName: string, cfg: OAuthServerConfig): string {
 /** Boot-time canary: our oauthKey replica must still reproduce the pinned golden.
  *  Returns false (caller disables /mcp + logs loud) if the formula drifts. */
 export function assertOAuthKeyCanary(): boolean {
-  return oauthKey("workbench", { type: "http", url: "https://mcp.example.com/sse", headers: {} })
-    === "workbench|c17ea65c6b709142";
+  return oauthKey("example", { type: "http", url: "https://mcp.example.com/sse", headers: {} })
+    === "example|c17ea65c6b709142";
+}
+
+/** The CLI's credential-entry shape for freshly exchanged tokens. The single
+ *  definition, shared by the on-disk store and the gateway's database store, so
+ *  the two formats cannot drift. `expiresIn` defaults to 3600s, matching the CLI. */
+export function toStoredEntry(
+  serverName: string,
+  cfg: OAuthServerConfig,
+  tokens: OAuthTokens,
+  now: () => number = Date.now,
+): StoredEntry {
+  return {
+    serverName,
+    serverUrl: cfg.url,
+    clientId: tokens.clientId,
+    clientSecret: tokens.clientSecret,
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
+    expiresAt: now() + (tokens.expiresIn ?? 3600) * 1000,
+    ...(tokens.tokenEndpoint ? { tokenEndpoint: tokens.tokenEndpoint } : {}),
+  };
 }
 
 /** Read-modify-write the credential file: set mcpOAuth[key], preserve every other
@@ -51,30 +98,23 @@ export function writeEntry(
   tokens: OAuthTokens,
   now: () => number = Date.now,
 ): void {
-  const path = join(configDir, ".credentials.json");
+  const { path, dir } = resolveCredentialTarget(configDir);
   let current: Record<string, any> = {};
   if (existsSync(path)) {
     try { current = JSON.parse(readFileSync(path, "utf8")) || {}; } catch { current = {}; }
   }
   const key = oauthKey(serverName, cfg);
-  const expiresAt = now() + (tokens.expiresIn ?? 3600) * 1000;
   const next = {
     ...current,
     mcpOAuth: {
       ...(current.mcpOAuth || {}),
-      [key]: {
-        serverName,
-        serverUrl: cfg.url,
-        clientId: tokens.clientId,
-        clientSecret: tokens.clientSecret,
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken,
-        expiresAt,
-      },
+      // The CLI owns this file's format: a pinned endpoint belongs to the
+      // gateway's store, not here.
+      [key]: (({ tokenEndpoint: _pinned, ...fileEntry }) => fileEntry)(toStoredEntry(serverName, cfg, tokens, now)),
     },
   };
   // Atomic write so a concurrent CLI refresh-write can't observe a torn file.
-  const tmp = join(configDir, `.credentials.json.tmp-${randomBytes(6).toString("hex")}`);
+  const tmp = join(dir, `.credentials.json.tmp-${randomBytes(6).toString("hex")}`);
   writeFileSync(tmp, JSON.stringify(next), { encoding: "utf8", mode: 0o600 });
   chmodSync(tmp, 0o600);
   renameSync(tmp, path);
@@ -90,6 +130,8 @@ export interface StoredEntry {
   refreshToken?: string;
   /** Epoch ms. */
   expiresAt: number;
+  /** Pinned token endpoint (gateway store only; see OAuthTokens.tokenEndpoint). */
+  tokenEndpoint?: string;
 }
 
 /** Read the stored entry for a server (or undefined if absent / unreadable). */
@@ -116,7 +158,7 @@ export function removeEntry(
   serverName: string,
   cfg: OAuthServerConfig,
 ): boolean {
-  const path = join(configDir, ".credentials.json");
+  const { path, dir } = resolveCredentialTarget(configDir);
   if (!existsSync(path)) return false;
   let current: Record<string, any> = {};
   try { current = JSON.parse(readFileSync(path, "utf8")) || {}; } catch { return false; }
@@ -125,7 +167,7 @@ export function removeEntry(
   const nextOAuth = { ...current.mcpOAuth };
   delete nextOAuth[key];
   const next = { ...current, mcpOAuth: nextOAuth };
-  const tmp = join(configDir, `.credentials.json.tmp-${randomBytes(6).toString("hex")}`);
+  const tmp = join(dir, `.credentials.json.tmp-${randomBytes(6).toString("hex")}`);
   writeFileSync(tmp, JSON.stringify(next), { encoding: "utf8", mode: 0o600 });
   chmodSync(tmp, 0o600);
   renameSync(tmp, path);

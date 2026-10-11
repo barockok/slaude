@@ -1,5 +1,9 @@
 [test]
 preload = ["./tests/setup.ts"]
+# The control-panel browser e2e (tests/panel-web/*.spec.ts) runs under
+# Playwright via `bun run test:web`, not the Bun test runner — keep `bun test`
+# from auto-discovering those specs (they call Playwright's test()).
+pathIgnorePatterns = ["**/panel-web/**"]
 coverage = true
 coverageReporter = ["text", "lcov"]
 coverageDir = "coverage"

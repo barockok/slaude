@@ -306,7 +306,7 @@ All commands below work inside a thread (they resolve `channel` + `thread_ts` fr
 | `/soul list` | Show runtime overrides vs SOUL.md base | Anyone | Read-only |
 | `/soul clear <field|all>` | Drop runtime overrides, revert to SOUL.md | Manager / backup only | Deletes from `soul_overrides` |
 | `/model` `/model <id>` | Show or switch this thread's model | Anyone may list; manager/approver may set | Persists to `sessions.model` |
-| `/bash <command>` | Run a shell command on the server (gated) | Manager / approver only | Same as agent Bash — requires approval |
+| `/bash <command>` | Run a shell command on the server, output posted to the thread | Manager / backup manager only | `mono` only: runs with the agent child's environment scrub (no gateway-only variable). Refused on a gateway (`SLAUDE_ROLE=gateway`); run the command on a node instead |
 | `/compact` | Summarize and compact conversation context | Anyone in the thread | Triggers pre-compact hook |
 | `/ignore @user [dur]` | Ignore a user (optional duration `30m`, `1h`, `permanent`) | Manager / approver only | Writes `ignores` |
 | `/ignore-thread [dur]` | Ignore this thread | Manager / approver only | Writes `ignores` |
@@ -385,7 +385,7 @@ Persistence: `Sessions.setPermissionMode(sessionId, mode)` on every `/mode`, and
 
 1. `gateway.ts` strips the bot mention (including persona mentions like `@Noah`) before parsing.
 2. `parseSlashCommand(text)` tries `/mode`, then `/abort`, `/ingest`, `/ignore…`, `/cron…`, `/1on1`, `/mention-only`, `/soul`, `/mcp`, `/model`, `/bash`, `/compact`, `/help`. Returns `null` if no match — the message goes to engagement / model instead.
-3. Each `kind` branches in the message handler, enforces auth (`isManagerOrApprover` where needed), touches the DB, and calls `reply()` without waking the model (except `/bash` which runs through the agent tool loop).
+3. Each `kind` branches in the message handler, enforces auth (`isManagerOrApprover` where needed), touches the DB, and calls `reply()` without waking the model. `/bash` runs a scrubbed `bash -c` in the process (refused in the gateway role).
 4. Unknown `/` commands are currently dropped (no help hint) — they do not reach the model.
 
 ---

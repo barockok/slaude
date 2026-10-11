@@ -188,3 +188,41 @@ describe("loadApproverEntries + selectApprovers", () => {
     expect(entries?.map((e) => e.userId)).toEqual(["U002"]);
   });
 });
+
+// list_kbs returns no disk path (WS-C §4.1.4), so with the brain disabled the
+// prompt itself must say where a knowledge base's files are.
+describe("the knowledge section follows the brain mode", () => {
+  const saved = process.env.SLAUDE_BRAIN_DISABLED;
+  const withBrain = (disabled: boolean, fn: () => void) => {
+    if (disabled) process.env.SLAUDE_BRAIN_DISABLED = "1";
+    else delete process.env.SLAUDE_BRAIN_DISABLED;
+    try { fn(); } finally {
+      if (saved === undefined) delete process.env.SLAUDE_BRAIN_DISABLED;
+      else process.env.SLAUDE_BRAIN_DISABLED = saved;
+    }
+  };
+
+  test("brain disabled: names the knowledge directory per label, and no brain-only or non-existent tool", () => {
+    withBrain(true, () => {
+      const block = soulSystemBlock("# P");
+      expect(block).toContain(`${paths.knowledge}/<label>/`);
+      expect(block).toMatch(/brain is disabled/i);
+      expect(block).not.toContain("open_kb");
+      expect(block).not.toMatch(/open the KB/);
+      expect(block).not.toContain("kb_get_page");
+      expect(block).not.toContain("mcp__slaude_kb__{kb_think");
+    });
+  });
+
+  test("brain enabled: the brain tools, and no file-path fallback", () => {
+    withBrain(false, () => {
+      const block = soulSystemBlock("# P");
+      expect(block).toContain("kb_search");
+      expect(block).toContain("kb_get_page");
+      expect(block).not.toContain(`${paths.knowledge}/<label>/`);
+      expect(block).not.toContain("open_kb");
+      expect(block).not.toMatch(/open the KB/);
+      expect(block).not.toMatch(/list_kbs\\?`? \+ targeted/);
+    });
+  });
+});

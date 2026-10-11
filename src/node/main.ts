@@ -4,23 +4,42 @@
  * it). Boots the worker off env:
  *
  *   SLAUDE_GATEWAY_URL       gateway base URL for /v1 (default localhost:8080)
- *   SLAUDE_NODE_TOKEN        static bearer for /v1
+ *   SLAUDE_NODE_TOKEN        this node's /v1 credential: a signed node credential
+ *                            (bun run node-token mint) or the legacy shared token.
+ *                            Checked at boot with GET /v1/node/whoami.
  *   SLAUDE_REDIS_URL         queues / registry / locks / pub/sub
- *   SLAUDE_NODE_CONCURRENCY  BullMQ concurrency (default 8)
+ *   SLAUDE_NODE_CONCURRENCY  BullMQ concurrency PER WORKER (default 8). A node
+ *                            runs one worker per credential label plus one for
+ *                            its own queue: its ceiling is workers × this
  *   SLAUDE_NODE_PORT         /healthz + /metrics (default 8081)
  *   SLAUDE_NODE_DRAIN_SEC    SIGTERM grace (default 120)
+ *   SLAUDE_NODE_BOOT_CHECK   warn (default) | refuse: what to do when a
+ *                            gateway-only variable is in this environment
+ *   SLAUDE_NODE_ALLOW_GATEWAY_SECRETS  1 = refuse only warns (temporary escape)
+ *   SLAUDE_NODE_MANIFEST     stdio MCP manifest (default /etc/slaude/node.json);
+ *                            absent = no stdio or plugin MCP server is mounted
  *
  * The node has no Slack client, no Postgres, no brain (spec §1) — sessions,
- * tools and credentials all come from the gateway over /v1. SOUL.md, skills
- * and personas are read from the shared $SLAUDE_HOME volume.
+ * tools and credentials all come from the gateway over /v1. The persona soul
+ * (text and structured) comes from the runtime bundle at session boot, so a
+ * persona's directory need not exist on the shared $SLAUDE_HOME volume; skills
+ * and transcripts still live there.
  */
 import { ensureHome } from "../config/home";
 import { env } from "../config/env";
-import { loadSoulData, setSoulData } from "../soul/extract";
-import { loadPersonaRegistry, setPersonaRegistry } from "../persona/registry";
 import { startNodeWorker } from "./worker";
+import { enforceNodeBootCheck } from "./boot-check";
+import { NodeClient } from "./client";
+import { nodeHandshake } from "./handshake";
+import { installRejectionGuard } from "./rejection-guard";
+import { type NodeManifest, NodeManifestError, describeNodeManifest, loadNodeManifest } from "./manifest";
 
 async function main() {
+  // Before anything else: a node must not hold the gateway's secrets (the
+  // master key, the job secret, database URLs, Slack secrets). Warns by
+  // default; SLAUDE_NODE_BOOT_CHECK=refuse stops the boot. Any SLAUDE_VAULT_* or
+  // VAULT_* variable always stops it. Names only.
+  if (!enforceNodeBootCheck(process.env)) process.exit(1);
   ensureHome();
   if (env.role() !== "node") {
     console.warn(`[node] SLAUDE_ROLE=${env.role()} — starting a node worker anyway (src/node/main.ts is the node entry)`);
@@ -29,16 +48,41 @@ async function main() {
     throw new Error("SLAUDE_NODE_TOKEN is not set — the node cannot authenticate to the gateway /v1");
   }
 
-  // Soul + personas come from the shared RWX volume, same loaders as the
-  // gateway. Best-effort: the extractor falls back to regex parsing.
+  // The stdio MCP manifest, read once (a change needs a pod roll). Invalid =
+  // stop now, naming the field; absent = no stdio or plugin MCP server for any
+  // persona.
+  let manifest: NodeManifest;
   try {
-    setSoulData(await loadSoulData());
+    manifest = loadNodeManifest();
   } catch (e) {
-    console.warn("[node] soul prewarm failed (continuing with regex fallback):", e);
+    if (!(e instanceof NodeManifestError)) throw e;
+    console.error(`[node] refusing to boot: ${e.message}`);
+    process.exit(1);
   }
-  setPersonaRegistry(loadPersonaRegistry());
+  console.log(`[node] ${describeNodeManifest(manifest)}`);
 
-  const handle = await startNodeWorker({});
+  // The handshake: prove the credential before claiming work. Exits only on a
+  // refusal (401); a gateway that is not up yet is retried with backoff.
+  const hs = await nodeHandshake(new NodeClient());
+  if (!hs.ok) {
+    console.error(hs.message);
+    process.exit(1);
+  }
+
+  // No soul or persona registry is loaded here: the worker installs a persona
+  // soul resolver that takes both from the runtime bundle per session, and the
+  // AgentManager skips the registry whenever that resolver is installed.
+
+  // The labels this node consumes are the ones its VERIFIED credential carries
+  // (whoami). A legacy token is {default}; a gateway older than whoami (404,
+  // identity null) only knows `turns`, which is `default` too.
+  const handle = await startNodeWorker({ labels: hs.identity?.labels ?? ["default"], manifest });
+
+  // Only once the worker is up: a rejection during boot stays fatal. From
+  // here a rejection nobody awaits (one session's background work) is logged
+  // loudly instead of ending the process and every other session on it; a
+  // burst of them still exits non-zero (see ./rejection-guard).
+  installRejectionGuard();
 
   let shuttingDown = false;
   const shutdown = (signal: string) => {

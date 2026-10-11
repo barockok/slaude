@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach } from "bun:test";
+import { afterAll, describe, expect, test, beforeEach } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { paths, ensureHome } from "../src/config/home";
@@ -16,6 +16,11 @@ beforeEach(() => {
   ensureHome();
   if (existsSync(paths.knowledge)) rmSync(paths.knowledge, { recursive: true, force: true });
   mkdirSync(paths.knowledge, { recursive: true });
+  clearKbCache();
+});
+// Shared test home: KBs left behind would be imported by every later gateway.
+afterAll(() => {
+  rmSync(paths.knowledge, { recursive: true, force: true });
   clearKbCache();
 });
 

@@ -13,6 +13,7 @@ import type { SurfaceMcpOpts } from "../../core/surface-mcp";
 import type { BrainToolDeps } from "../../../knowledge/mcp-tools";
 import type { PermissionDecision } from "../../slack/permission-gate";
 import type { JobClaims } from "../auth";
+import type { McpBridge } from "../../core/mcp-bridge";
 
 /** MCP-shaped tool result, exactly what the SDK handlers return. */
 export type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -50,4 +51,7 @@ export interface ToolPlaneDeps {
     claims: JobClaims,
     args: { summary: string; tools?: string[]; files?: string[]; risks?: string; category?: string },
   ): Promise<{ pendingId: string }>;
+  /** The MCP bridge (POST /v1/tools/mcpx/...): the gateway-side MCP client to
+   *  the persona's remote servers. Absent = the routes answer 404. */
+  mcpBridge?: McpBridge;
 }

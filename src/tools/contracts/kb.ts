@@ -81,7 +81,7 @@ export const kbContract = {
     list_kbs: {
       name: "list_kbs",
       description:
-        "List installed knowledge bases. Returns JSON array with label, description, path, and index_file for each KB.",
+        "List the knowledge bases this agent may read. Returns JSON array with label, description, tags, and source (the brain source id kb_search reads it under) for each KB.",
       schema: {},
     },
     search_kbs: {

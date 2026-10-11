@@ -111,6 +111,23 @@ describe.skipIf(!realEnabled)("queue/pubsub against real Redis", () => {
     expect(await ps.readEvents("sessE", id3)).toEqual([]);
   });
 
+  // The dispatch follower captures this BEFORE enqueueing a turn, so a node that
+  // appends the whole turn before the follower starts cannot have it skipped.
+  test("events stream: lastEventId is the newest id, null when empty, and chains with readEvents", async () => {
+    await ready;
+    expect(await ps.lastEventId("sessL")).toBeNull();
+
+    const id1 = await ps.appendEvent("sessL", { kind: "chunk", n: 1 });
+    const id2 = await ps.appendEvent("sessL", { kind: "chunk", n: 2 });
+    expect(await ps.lastEventId("sessL")).toBe(id2);
+
+    // Everything appended after the captured cursor is read; nothing before it.
+    const cursor = await ps.lastEventId("sessL");
+    const id3 = await ps.appendEvent("sessL", { kind: "done" });
+    expect((await ps.readEvents("sessL", cursor!)).map((e) => e.id)).toEqual([id3]);
+    expect(id1 < id2).toBe(true);
+  });
+
   test("events stream tolerates non-JSON and missing fields", async () => {
     await ready;
     await redis.xadd(keys.eventsStream("sessRaw"), "*", "event", "not json");

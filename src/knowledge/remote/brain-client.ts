@@ -10,9 +10,11 @@ import { registerRemoteBackend } from "../backend";
 import type { BrainScope } from "../scope";
 import { brainBearerEnv } from "../brain-config";
 import { agentConfigDir } from "../../agent/oauth-home";
-import { readEntry } from "../../agent/mcp-oauth/store";
+import { oauthKey, readEntry } from "../../agent/mcp-oauth/store";
+import { env } from "../../config/env";
+import { defaultCredentialRefresher } from "../../gateway/core/credential-refresh";
 
-const BRAIN_SERVER_NAME = "slaude_brain";
+import { BRAIN_SERVER_NAME } from "./brain-grant";
 
 function decodeToolResult(res: any): unknown {
   if (res?.isError) {
@@ -41,18 +43,30 @@ export class RemoteBackend implements BrainBackend {
     this.#url = url;
   }
 
-  /** Resolve the bearer token: env first (bootstrap/testing), then the store. */
-  #bearer(): string | undefined {
-    const env = brainBearerEnv();
-    if (env) return env;
-    const entry = readEntry(agentConfigDir(), BRAIN_SERVER_NAME, { type: "http", url: this.#url });
-    return entry?.accessToken;
+  /** Resolve the bearer token: env first (bootstrap/testing), then the agent's
+   *  credential. On a gateway that is the credential store, read through the
+   *  shared refresher so an expiring token is refreshed rather than served
+   *  stale; a file on the shared volume is never consulted there. mono reads
+   *  the agent's config directory as before. */
+  async #bearer(): Promise<string | undefined> {
+    const fromEnv = brainBearerEnv();
+    if (fromEnv) return fromEnv;
+    const cfg = { type: "http", url: this.#url };
+    if (env.role() === "gateway") {
+      const out = await defaultCredentialRefresher().refresh(
+        { kind: "agent", tenant: "default", persona: "default" },
+        oauthKey(BRAIN_SERVER_NAME, cfg),
+        undefined,
+      );
+      return out.ok ? out.entry.accessToken : undefined;
+    }
+    return readEntry(agentConfigDir(), BRAIN_SERVER_NAME, cfg)?.accessToken;
   }
 
   async #client(): Promise<Client> {
     if (this.#clientPromise) return this.#clientPromise;
     this.#clientPromise = (async () => {
-      const bearer = this.#bearer();
+      const bearer = await this.#bearer();
       const headers: Record<string, string> = {};
       if (bearer) headers.authorization = `Bearer ${bearer}`;
       const transport = new StreamableHTTPClientTransport(new URL(this.#url), {

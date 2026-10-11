@@ -102,3 +102,11 @@ describe("Registry", () => {
     expect(out).toContain(`d_count{q="b"} 1`);
   });
 });
+
+describe("slaude_queue_depth help text", () => {
+  test("names every state the reaper counts (waiting, delayed, prioritized)", async () => {
+    const { metrics } = await import("../src/metrics");
+    const help = metrics.render().match(/^# HELP slaude_queue_depth (.*)$/m)?.[1] ?? "";
+    for (const state of ["waiting", "delayed", "prioritized"]) expect(help).toContain(state);
+  });
+});

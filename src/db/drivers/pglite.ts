@@ -5,6 +5,7 @@
  */
 import { PGlite, type Transaction } from "@electric-sql/pglite";
 import { normalizeRow, toPositional, type DbClient, type Row, type RunResult } from "../client";
+import { keepingExitCode } from "../wasm-exit-code";
 
 type Executor = Pick<PGlite, "query" | "exec"> | Transaction;
 
@@ -67,7 +68,7 @@ class PgliteClient implements DbClient {
   }
 
   async close(): Promise<void> {
-    if (this.ex === this.root) await this.root.close();
+    if (this.ex === this.root) await keepingExitCode(() => this.root.close());
   }
 }
 
@@ -82,11 +83,12 @@ let openChain: Promise<unknown> = Promise.resolve();
 const gc = () => (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
 
 export async function openPglite(dataDir?: string): Promise<DbClient> {
-  const mk = async () => {
-    const pg = dataDir ? new PGlite(dataDir) : new PGlite();
-    await pg.waitReady;
-    return pg;
-  };
+  const mk = () =>
+    keepingExitCode(async () => {
+      const pg = dataDir ? new PGlite(dataDir) : new PGlite();
+      await pg.waitReady;
+      return pg;
+    });
   const run = openChain.then(
     async () => {
       gc();

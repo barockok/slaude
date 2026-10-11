@@ -14,7 +14,12 @@ export type Skill = {
   body: string;
   /** Absolute dir path */
   dir: string;
+  /** Which root it came from: the shared base, or the persona's own overlay
+   *  (which shadows a base skill of the same slug). */
+  source: SkillSource;
 };
+
+export type SkillSource = "global" | "persona";
 
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/;
 
@@ -38,13 +43,31 @@ function parseSkillFile(absPath: string): Pick<Skill, "name" | "description" | "
   };
 }
 
+/**
+ * The skills layout is a contract between the gateway and the nodes (WS-C
+ * §4.3.1): both mount one $SLAUDE_HOME, the gateway lists and writes skills
+ * through these two roots, the runtime bundle names them, and a node's SDK
+ * discovers the global root through the plugin mounted at $SLAUDE_HOME (the
+ * SDK reads <plugin>/skills/). tests/skills-layout.test.ts fails if either moves.
+ */
+/** The shared base: $SLAUDE_HOME/skills/ */
+export function globalSkillsRoot(): string {
+  return paths.skills;
+}
+
 /** A named persona's private skills overlay: personas/<name>/skills/ */
 export function personaSkillsRoot(personaName: string): string {
   return join(paths.personas, personaName, "skills");
 }
 
+/** The skill roots a persona resolves, base first, its overlay last (none for the default persona). */
+export function skillRootsFor(personaName?: string): string[] {
+  const persona = personaName && personaName !== "default" ? personaName : null;
+  return persona ? [globalSkillsRoot(), personaSkillsRoot(persona)] : [globalSkillsRoot()];
+}
+
 /** Scan one skills root into Skill[]. Missing root → []. */
-function scanSkillsRoot(root: string): Skill[] {
+function scanSkillsRoot(root: string, source: SkillSource): Skill[] {
   if (!existsSync(root)) return [];
   const out: Skill[] = [];
   for (const entry of readdirSync(root)) {
@@ -59,6 +82,7 @@ function scanSkillsRoot(root: string): Skill[] {
       description: parsed.description,
       body: parsed.body,
       dir,
+      source,
     });
   }
   return out;
@@ -69,11 +93,11 @@ function scanSkillsRoot(root: string): Skill[] {
  *  top — a persona skill shadows a base skill of the same slug. Default persona
  *  (or no persona) → base only, unchanged. */
 export function discoverSkills(personaName?: string): Skill[] {
-  const base = scanSkillsRoot(paths.skills);
+  const base = scanSkillsRoot(globalSkillsRoot(), "global");
   const persona = personaName && personaName !== "default" ? personaName : null;
   if (!persona) return base;
   const bySlug = new Map<string, Skill>(base.map((s) => [s.slug, s]));
-  for (const s of scanSkillsRoot(personaSkillsRoot(persona))) bySlug.set(s.slug, s);
+  for (const s of scanSkillsRoot(personaSkillsRoot(persona), "persona")) bySlug.set(s.slug, s);
   return [...bySlug.values()];
 }
 

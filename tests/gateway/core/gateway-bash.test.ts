@@ -4,6 +4,7 @@ import { AgentManager } from "../../../src/agent/manager";
 import type { Transport } from "../../../src/gateway/core/transport";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 import { db } from "../../../src/db/schema";
+import { GATEWAY_ONLY_ENV_NAMES } from "../../../src/config/gateway-only-env";
 
 function makeTransport() {
   const posts: any[] = [];
@@ -45,7 +46,6 @@ function msgArgs(client: any, text: string, userId: string, channel = "D_TEST", 
 beforeEach(() => {
   db.run("DELETE FROM sessions");
   writeSoulFixture(WORLD);
-  process.env.SLACK_BOT_TOKEN ||= "xoxb-test";
 });
 
 describe("gateway /bash command", () => {
@@ -111,5 +111,51 @@ describe("gateway /bash command", () => {
     await emit(msgArgs(client, "/bash echo backup-ok", WORLD.backup!));
 
     expect(posts.some((p) => /backup-ok/.test(p.text ?? ""))).toBe(true);
+  });
+
+  it("never shows a gateway-only variable: the command runs with the child-env scrub", async () => {
+    const { t, client, posts, emit } = makeTransport();
+    const agent = new AgentManager();
+    agent.sendMessage = async () => {};
+    createGateway(agent, t);
+    // Fake values, set only for this command (after the gateway is built).
+    const planted = [...GATEWAY_ONLY_ENV_NAMES, "SLAUDE_VAULT_ADDR", "VAULT_TOKEN", "PERSONA_FINANCE_KEY", "SLAUDE_NODE_TOKEN", "SLAUDE_REDIS_URL", "SLAUDE_ENCRYPTION_KEY",
+      // Provider credentials (the output is posted to Slack) and a brain embedding key.
+      "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"];
+    const saved = Object.fromEntries([...planted, "SLAUDE_U17_CANARY"].map((k) => [k, process.env[k]]));
+    for (const k of planted) process.env[k] = "fake-value-for-test";
+    process.env.SLAUDE_U17_CANARY = "1";
+    try {
+      await emit(msgArgs(client, "/bash env | cut -d= -f1 | grep -E '^(SLAUDE|SLACK|PERSONA|VAULT|EMBEDDING|LITELLM|ANTHROPIC|CLAUDE_CODE|OPENAI)'", WORLD.manager));
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+    const reply = posts.find((p) => /exit 0/.test(p.text ?? ""));
+    expect(reply).toBeDefined();
+    expect(reply.text).toContain("SLAUDE_U17_CANARY"); // the command did run with an environment
+    const shown = new Set((reply.text as string).split("\n").map((l) => l.trim()));
+    for (const k of planted) expect(shown.has(k)).toBe(false);
+  });
+
+  it("is refused in the gateway role: it would run on the gateway, next to its secrets", async () => {
+    const { t, client, posts, emit } = makeTransport();
+    const agent = new AgentManager();
+    agent.sendMessage = async () => {};
+    createGateway(agent, t);
+    const saved = process.env.SLAUDE_ROLE;
+    process.env.SLAUDE_ROLE = "gateway";
+    try {
+      await emit(msgArgs(client, "/bash echo should-not-run", WORLD.manager));
+    } finally {
+      if (saved === undefined) delete process.env.SLAUDE_ROLE;
+      else process.env.SLAUDE_ROLE = saved;
+    }
+    expect(posts.some((p) => /should-not-run/.test(p.text ?? "") && /exit/.test(p.text ?? ""))).toBe(false);
+    const refusal = posts.find((p) => /not available on a gateway/i.test(p.text ?? ""));
+    expect(refusal).toBeDefined();
+    expect(refusal.text).toMatch(/node/);
   });
 });

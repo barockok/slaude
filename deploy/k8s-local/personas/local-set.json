@@ -1,0 +1,35 @@
+{
+  "_comment": "The local cluster's persona set, synced by personas.sh (up.sh runs it). Each persona's provider block is added at sync: Vault references to secret/slaude/personas/<name>, seeded by vault.sh. The Slack user ids are placeholders; for a real-Slack run set SLAUDE_LOCAL_ALPHA_SLACK_USER and SLAUDE_LOCAL_BETA_SLACK_USER (and SLAUDE_LOCAL_MANAGER) before personas.sh. Generic names only.",
+  "personas": [
+    {
+      "name": "default",
+      "soul": "# Persona\n\n## Identity\nName: Local default agent.\nRole: the default persona of the local test cluster.\n\n## Mandate\nAnswer questions from the team. Runs on node label default.\n"
+    },
+    {
+      "name": "alpha",
+      "slackUserId": "UTESTALPHA",
+      "runsOn": "default",
+      "soul": "# Persona\n\n## Identity\nName: Alpha.\nRole: a local test persona on node label default, with its own provider key in Vault.\n\n## Mandate\nAnswer engineering questions.\n"
+    },
+    {
+      "name": "beta",
+      "slackUserId": "UTESTBETA",
+      "runsOn": "finance",
+      "kbSources": ["kb-local-finance"],
+      "mcp": {
+        "mcpServers": {
+          "mockmcp": {
+            "type": "http",
+            "url": "http://mock-mcp:9000/mcp",
+            "headers": { "Authorization": "Bearer ${PERSONA_BETA_MOCKMCP_TOKEN}" }
+          }
+        }
+      },
+      "soul": "# Persona\n\n## Identity\nName: Beta.\nRole: a local test persona on node label finance. It reads only the local-finance knowledge base and calls the mock MCP server through the bridge.\n\n## Mandate\nAnswer finance questions.\n"
+    }
+  ],
+  "knowledgeBases": {
+    "local-handbook": "# Local handbook\n\nA test knowledge base every persona but beta may read. The word to find is: lighthouse.\n",
+    "local-finance": "# Local finance notes\n\nA test knowledge base only beta reads (its kbSources). The word to find is: ledger.\n"
+  }
+}

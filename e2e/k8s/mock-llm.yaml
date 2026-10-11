@@ -1,0 +1,52 @@
+# One replica: fault attempt counting is per process.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-llm
+  namespace: slaude-scale
+  labels:
+    app.kubernetes.io/name: mock-llm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mock-llm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mock-llm
+    spec:
+      containers:
+        - name: mock-llm
+          image: slaude-mock-llm:dev
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-llm
+  namespace: slaude-scale
+spec:
+  selector:
+    app.kubernetes.io/name: mock-llm
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

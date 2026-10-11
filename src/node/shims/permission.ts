@@ -55,9 +55,15 @@ export function makeNodePermissionResolver(deps: NodePermissionDeps): Permission
     if (opened.decision) return opened.decision;
     if (!opened.pendingId) return { behavior: "deny", message: "permission gate returned no pendingId" };
 
-    const outcome = await pollPending(deps.client, opened.pendingId, { signal: ctx.signal });
+    const outcome = await pollPending(deps.client, opened.pendingId, {
+      signal: ctx.signal,
+      jobToken: () => deps.tokenFor(sessionId) ?? token,
+    });
     if (outcome === "aborted") return { behavior: "deny", message: "aborted" };
     if (outcome === "notfound") return { behavior: "deny", message: "permission gate disappeared before a decision" };
+    if ("refused" in outcome) {
+      return { behavior: "deny", message: `the gateway refused the permission poll (${outcome.refused.status})` };
+    }
     return decisionFromPermRow(
       {
         status: outcome.status,

@@ -29,7 +29,7 @@ cp .env.example .env && docker compose up -d --build
 | [**Deployment**](https://barockok.github.io/slaude/deploy/index.html) | Docker, Kubernetes, scale-out (gateway + node workers), health probes, upgrades, troubleshooting | — |
 | [**Examples**](https://barockok.github.io/slaude/guides/examples.html) | Runnable: first skill, first ingest, custom MCP, sim without Slack | — |
 
-Full site: **<https://barockok.github.io/slaude/>** — source in [`docs/site/_content/`](docs/site/_content/), built by [`docs/site/build.mjs`](docs/site/build.mjs).
+Full site: **<https://barockok.github.io/slaude/>** — source in [`docs/site/_content/`](docs/site/_content/), built by [`docs/site/build.mjs`](docs/site/build.mjs) and published from `main` by CI. The generated HTML is not committed; run `bun run docs` to build it into `docs/site/_site/`.
 
 ## At a glance
 
@@ -66,6 +66,10 @@ docker compose up -d --build
 curl localhost:8080/healthz   # {"status":"ok"}
 ```
 
+The `scale` compose profile adds a worker that reads its own `.env.node`
+(copy `.env.node.example`): a node refuses to boot with the gateway's `.env`,
+which holds Slack tokens and the job secret.
+
 Next: [Getting Started](https://barockok.github.io/slaude/start/getting-started.html) → [Configuration](https://barockok.github.io/slaude/reference/configuration.html) → [Deployment](https://barockok.github.io/slaude/deploy/index.html)
 
 ## Project
@@ -76,4 +80,4 @@ Next: [Getting Started](https://barockok.github.io/slaude/start/getting-started.
 
 ---
 
-<sub>slaude v0.41.0 · [GitHub](https://github.com/barockok/slaude) · Built with Bun + TypeScript + claude-agent-sdk</sub>
+<sub>slaude v0.44.0 · [GitHub](https://github.com/barockok/slaude) · Built with Bun + TypeScript + claude-agent-sdk</sub>

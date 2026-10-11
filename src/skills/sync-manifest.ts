@@ -26,6 +26,7 @@ import {
 import { discoverSkills } from "./loader";
 import { loadKbs, clearKbCache } from "../knowledge/loader";
 import { env } from "../config/env";
+import { SAFE_GIT, gitEnv } from "../config/safe-git";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
@@ -40,13 +41,13 @@ export function pushToRepo(
   const tempDir = mkdtempSync(join(tmpdir(), "slaude-sync-"));
   try {
     try {
-      execSync(`git clone --depth 1 "${resolvedUrl}" "${tempDir}"`, { stdio: "pipe" });
+      execSync(`${SAFE_GIT} clone --depth 1 "${resolvedUrl}" "${tempDir}"`, { stdio: "pipe", env: gitEnv() });
     } catch {
       mkdirSync(tempDir, { recursive: true });
-      execSync("git -c init.defaultBranch=main init", { cwd: tempDir, stdio: "pipe" });
-      execSync(`git remote add origin "${resolvedUrl}"`, { cwd: tempDir, stdio: "pipe" });
+      execSync(`${SAFE_GIT} -c init.defaultBranch=main init`, { cwd: tempDir, stdio: "pipe", env: gitEnv() });
+      execSync(`${SAFE_GIT} remote add origin "${resolvedUrl}"`, { cwd: tempDir, stdio: "pipe", env: gitEnv() });
     }
-    execSync("git checkout --orphan main 2>/dev/null; git branch -M main 2>/dev/null || true", { cwd: tempDir, stdio: "pipe" });
+    execSync(`${SAFE_GIT} checkout --orphan main 2>/dev/null; ${SAFE_GIT} branch -M main 2>/dev/null || true`, { cwd: tempDir, stdio: "pipe", env: gitEnv() });
     for (const { slug, dir } of skills) {
       const destDir = join(tempDir, slug);
       mkdirSync(destDir, { recursive: true });
@@ -75,13 +76,13 @@ export function pushToRepo(
       }
     }
 
-    execSync("git add -A", { cwd: tempDir, stdio: "pipe" });
+    execSync(`${SAFE_GIT} add -A`, { cwd: tempDir, stdio: "pipe", env: gitEnv() });
     const parts: string[] = [];
     if (skills.length > 0) parts.push(`skills ${skills.map((s) => s.slug).join(", ")}`);
     if (kbs.length > 0) parts.push(`kbs ${kbs.map((k) => k.label).join(", ")}`);
-    execSync(`git -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: sync ${parts.join("; ")}"`, { cwd: tempDir, stdio: "pipe" });
-    execSync("git push origin HEAD", { cwd: tempDir, stdio: "pipe" });
-    return { sha: execSync("git rev-parse HEAD", { cwd: tempDir, encoding: "utf8" }).trim() };
+    execSync(`${SAFE_GIT} -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: sync ${parts.join("; ")}"`, { cwd: tempDir, stdio: "pipe", env: gitEnv() });
+    execSync(`${SAFE_GIT} push origin HEAD`, { cwd: tempDir, stdio: "pipe", env: gitEnv() });
+    return { sha: execSync(`${SAFE_GIT} rev-parse HEAD`, { cwd: tempDir, encoding: "utf8", env: gitEnv() }).trim() };
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -108,9 +109,9 @@ function pullKb(label: string, git: string, ref: string, subpath?: string): { sh
     // expects README.md at the top) sees the wiki as the KB.
     const stage = mkdtempSync(join(tmpdir(), "slaude-kbsparse-"));
     try {
-      execSync(`git clone --depth 1 --branch "${ref}" --filter=blob:none --no-checkout "${resolved}" "${stage}"`, { stdio: "pipe" });
-      execSync(`git sparse-checkout set --no-cone "${subpath}"`, { cwd: stage, stdio: "pipe" });
-      execSync(`git checkout "${ref}"`, { cwd: stage, stdio: "pipe" });
+      execSync(`${SAFE_GIT} clone --depth 1 --branch "${ref}" --filter=blob:none --no-checkout "${resolved}" "${stage}"`, { stdio: "pipe", env: gitEnv() });
+      execSync(`${SAFE_GIT} sparse-checkout set --no-cone "${subpath}"`, { cwd: stage, stdio: "pipe", env: gitEnv() });
+      execSync(`${SAFE_GIT} checkout "${ref}"`, { cwd: stage, stdio: "pipe", env: gitEnv() });
       const src = join(stage, subpath);
       if (!existsSync(src)) {
         throw new Error(`path "${subpath}" not found in ${resolved}@${ref}`);
@@ -118,14 +119,14 @@ function pullKb(label: string, git: string, ref: string, subpath?: string): { sh
       for (const entry of readdirSync(src)) {
         execSync(`cp -r "${join(src, entry)}" "${join(dir, entry)}"`, { stdio: "pipe" });
       }
-      const sha = execSync("git rev-parse HEAD", { cwd: stage, encoding: "utf8" }).trim();
+      const sha = execSync(`${SAFE_GIT} rev-parse HEAD`, { cwd: stage, encoding: "utf8", env: gitEnv() }).trim();
       return { sha };
     } finally {
       rmSync(stage, { recursive: true, force: true });
     }
   }
-  execSync(`git clone --depth 1 --branch "${ref}" "${resolved}" "${dir}"`, { stdio: "pipe" });
-  const sha = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8" }).trim();
+  execSync(`${SAFE_GIT} clone --depth 1 --branch "${ref}" "${resolved}" "${dir}"`, { stdio: "pipe", env: gitEnv() });
+  const sha = execSync(`${SAFE_GIT} rev-parse HEAD`, { cwd: dir, encoding: "utf8", env: gitEnv() }).trim();
   return { sha };
 }
 
@@ -134,42 +135,42 @@ function rawDirSha(kbDir: string): string {
   if (!existsSync(rawDir)) return "0".repeat(40);
   const tmp = mkdtempSync(join(tmpdir(), "slaude-rawhash-"));
   try {
-    execSync("git init", { cwd: tmp, stdio: "pipe" });
+    execSync(`${SAFE_GIT} init`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
     execSync(`cp -r "${rawDir}" "${join(tmp, "raw")}"`, { stdio: "pipe" });
-    execSync("git add -A", { cwd: tmp, stdio: "pipe" });
-    return execSync("git write-tree", { cwd: tmp, encoding: "utf8" }).trim()
+    execSync(`${SAFE_GIT} add -A`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
+    return execSync(`${SAFE_GIT} write-tree`, { cwd: tmp, encoding: "utf8", env: gitEnv() }).trim()
       .padEnd(40, "0").slice(0, 40);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 }
 
-function pushKbRaw(
+export function pushKbRaw(
   repoUrl: string, ref: string, kbDir: string,
 ): { sha: string } {
   const resolved = resolveGitUrl(repoUrl);
   const tmp = mkdtempSync(join(tmpdir(), "slaude-kbpush-"));
   try {
     try {
-      execSync(`git clone --branch "${ref}" --depth 1 "${resolved}" "${tmp}"`, { stdio: "pipe" });
+      execSync(`${SAFE_GIT} clone --branch "${ref}" --depth 1 "${resolved}" "${tmp}"`, { stdio: "pipe", env: gitEnv() });
     } catch {
       mkdirSync(tmp, { recursive: true });
-      execSync(`git -c init.defaultBranch="${ref}" init`, { cwd: tmp, stdio: "pipe" });
-      execSync(`git remote add origin "${resolved}"`, { cwd: tmp, stdio: "pipe" });
+      execSync(`${SAFE_GIT} -c init.defaultBranch="${ref}" init`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
+      execSync(`${SAFE_GIT} remote add origin "${resolved}"`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
     }
-    execSync(`git checkout --orphan "${ref}" 2>/dev/null; git branch -M "${ref}" 2>/dev/null || true`, { cwd: tmp, stdio: "pipe" });
+    execSync(`${SAFE_GIT} checkout --orphan "${ref}" 2>/dev/null; ${SAFE_GIT} branch -M "${ref}" 2>/dev/null || true`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
     const destRaw = join(tmp, "raw");
     if (existsSync(destRaw)) rmSync(destRaw, { recursive: true, force: true });
     const srcRaw = join(kbDir, "raw");
     if (existsSync(srcRaw)) execSync(`cp -r "${srcRaw}" "${destRaw}"`, { stdio: "pipe" });
-    execSync("git add -A raw", { cwd: tmp, stdio: "pipe" });
+    execSync(`${SAFE_GIT} add -A raw`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
     try {
-      execSync(`git -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: sync raw"`, { cwd: tmp, stdio: "pipe" });
-      execSync("git push origin HEAD", { cwd: tmp, stdio: "pipe" });
+      execSync(`${SAFE_GIT} -c user.name=slaude -c user.email="slaude@local" commit -m "slaude: sync raw"`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
+      execSync(`${SAFE_GIT} push origin HEAD`, { cwd: tmp, stdio: "pipe", env: gitEnv() });
     } catch {
       // nothing to commit — that's fine
     }
-    return { sha: execSync("git rev-parse HEAD", { cwd: tmp, encoding: "utf8" }).trim() };
+    return { sha: execSync(`${SAFE_GIT} rev-parse HEAD`, { cwd: tmp, encoding: "utf8", env: gitEnv() }).trim() };
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

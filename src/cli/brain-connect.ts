@@ -3,17 +3,16 @@
 //
 // Drives the existing shared-loopback authorization_code flow against the brain
 // server's advertised authorization server (Keycloak first), then persists the
-// grant under the `slaude_brain` key in the agent's credential store. The refresh
-// token sustains the link after this; re-run only if the grant is revoked.
+// grant under the `slaude_brain` key: in the gateway's credential store on a
+// gateway, in the agent's config directory in mono (see brain-grant.ts). The
+// refresh token sustains the link after this; re-run only if it is revoked.
 
 import { randomBytes } from "node:crypto";
 import { discover } from "../agent/mcp-oauth/discovery";
 import { beginConnectShared } from "../agent/mcp-oauth/shared-client";
-import { writeEntry, type OAuthServerConfig } from "../agent/mcp-oauth/store";
-import { agentConfigDir } from "../agent/oauth-home";
+import { type OAuthServerConfig } from "../agent/mcp-oauth/store";
+import { persistBrainGrant, BRAIN_SERVER_NAME } from "../knowledge/remote/brain-grant";
 import { brainRemoteUrl } from "../knowledge/brain-config";
-
-const BRAIN_SERVER_NAME = "slaude_brain";
 
 async function main(): Promise<void> {
   let url: string;
@@ -44,9 +43,9 @@ async function main(): Promise<void> {
 
   const code = await handle.waitForCode();
   const tokens = await handle.exchange(code);
-  writeEntry(agentConfigDir(), BRAIN_SERVER_NAME, serverConfig, tokens);
+  const where = await persistBrainGrant(url, tokens);
 
-  console.log(`\n[brain connect] connected — credentials stored for ${BRAIN_SERVER_NAME}.`);
+  console.log(`\n[brain connect] connected — credentials stored for ${BRAIN_SERVER_NAME} (${where === "store" ? "gateway credential store" : "agent config directory"}).`);
   process.exit(0);
 }
 

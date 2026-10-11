@@ -2,7 +2,8 @@
  * Gateway-role turn dispatch (spec §2): instead of running the agent
  * in-process, mint a job token, consult the warm-session registry, and
  * enqueue onto BullMQ — per-node queue when the session is warm somewhere,
- * shared `turns` otherwise. Coalescing lives inside TurnQueues.
+ * the persona's label queue otherwise (`turns` for `default`). Coalescing
+ * lives inside TurnQueues.
  *
  * Slack UX parity: nodes append every AgentEvent to the events:<session>
  * stream (spec §4). After each enqueue this module follows that stream and
@@ -16,12 +17,19 @@
 import { randomUUID } from "node:crypto";
 import type { AgentManager, AgentEvent } from "../../agent/manager";
 import type { SessionRow } from "../../db/schema";
-import { mintJobToken } from "../api/auth";
+import { encodeRunAs } from "../../agent/credential-owner";
+import { mintJobToken, verifyJobToken } from "../api/auth";
+import { runsOnFor } from "../../persona/registry";
+import { env } from "../../config/env";
+import { threadIdentity } from "./thread-identity";
+import { sessionConfigFp } from "../../remote/fingerprint";
+import { defaultEpochs, localEpochs, turnMcpEpoch, type McpCredEpochs } from "./mcp-cred-epoch";
 import { makeKeys, type Keys } from "../../queue/keys";
 import { getRedis, getSubRedis } from "../../queue/redis";
 import { makeRegistry, type Registry } from "../../queue/registry";
 import { makePubSub, type PubSub } from "../../queue/pubsub";
-import { TurnQueues, type TurnTarget } from "../../queue/turns";
+import { TurnQueues, type TurnJob, type TurnTarget } from "../../queue/turns";
+import { isFailureCode } from "./failure-codes";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -32,6 +40,20 @@ export interface DispatchMeta {
   eventTs: string;
   userId: string;
   personaId?: string;
+  /**
+   * Identity the turn runs as, when it is not the thread's own /1on1 lock: a
+   * cron job created inside a /1on1 carries its lock owner, and the cron run
+   * keys on a synthetic thread that has no lock of its own. The node cannot
+   * derive this, so it travels with the job.
+   */
+  oauthUser?: string;
+  /** Tenant that owns this conversation. Resolved by the transport from the
+   *  slack_apps row; when absent the session row's own column is used, and
+   *  'default' is the last resort (sqlite carries no tenant_id column). */
+  tenantId?: string;
+  /** Slack app (api_app_id) the turn belongs to. Signed into the job token so
+   *  the /v1 tool plane posts as that app (D1.2). */
+  apiAppId?: string;
   suppress?: boolean;
 }
 
@@ -57,6 +79,9 @@ export interface QueueDispatchOpts {
   followLingerMs?: number;
   /** Test seam: injected infra instead of the process-wide Redis. */
   infra?: { turns: TurnQueues; registry: Registry; pubsub: PubSub };
+  /** MCP credential epochs (one MGET per dispatch). Default: Redis with the
+   *  process-wide infra, in-process with injected infra (tests). */
+  epochs?: McpCredEpochs;
 }
 
 export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts = {}): QueueDispatch {
@@ -72,6 +97,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       };
     })();
   const { turns, registry, pubsub } = infra;
+  const epochs = opts.epochs ?? (opts.infra ? localEpochs() : defaultEpochs());
   const followPollMs = opts.followPollMs ?? 300;
   const followMaxMs = opts.followMaxMs ?? 20 * 60_000;
   const followLingerMs = opts.followLingerMs ?? 3_000;
@@ -93,7 +119,45 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
   const followers = new Map<string, Follower>();
   let closed = false;
 
-  function followEvents(sessionId: string, job: { jobId: string; queue: string }): void {
+  /**
+   * Re-dispatch a job that failed with LABEL_MISMATCH to the persona's
+   * CURRENT label queue (node labels spec §4.6): same messages and claims, a
+   * fresh token signed for that label under a new job id, relabelAttempts + 1
+   * so a second mismatch is shown instead of looping. Returns where it went,
+   * null when another replica's follower did it (follow its marker), or
+   * "failed" when the job's own token cannot be read back (shown as the
+   * failure).
+   */
+  async function relabelRedispatch(failed: { id?: string; data: unknown }): Promise<{ queue: string; jobId: string } | null | "failed"> {
+    const data = failed.data as TurnJob;
+    const v = verifyJobToken(data.jobToken, { graceSec: Number.MAX_SAFE_INTEGER });
+    if (!v.ok) return "failed";
+    const label = runsOnFor(data.personaId);
+    const newId = randomUUID();
+    const { exp: _exp, iat: _iat, iat0: _iat0, ...claims } = v.claims;
+    const jobToken = mintJobToken({ ...claims, label, job: newId });
+    const res = await turns.redispatch(
+      String(failed.id),
+      { ...data, label, jobToken, relabelAttempts: (data.relabelAttempts ?? 0) + 1, enqueuedAt: Date.now() },
+      label,
+      newId,
+    );
+    if (!res) return null;
+    console.log(`[dispatch] LABEL_MISMATCH job=${failed.id} re-dispatched to queue=${res.queue} job=${res.jobId}`);
+    return { queue: res.queue, jobId: res.jobId };
+  }
+
+  /**
+   * @param startAfter Stream id to read after when this call starts a new
+   *   follower. It MUST be captured before the job was enqueued: see dispatch().
+   *   Ignored when a follower for the session is already running, since that
+   *   follower's own cursor is already earlier.
+   */
+  function followEvents(
+    sessionId: string,
+    job: { jobId: string; queue: string },
+    startAfter: string | undefined,
+  ): void {
     const existing = followers.get(sessionId);
     const deadline = Date.now() + followMaxMs;
     if (existing) {
@@ -111,12 +175,12 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
     };
     followers.set(sessionId, state);
     void (async () => {
-      let lastId: string | undefined;
-      try {
-        // Skip the backlog: events already on the stream belong to earlier
-        // turns whose UX was already rendered (possibly by another replica).
-        lastId = (await pubsub.readEvents(sessionId)).at(-1)?.id;
-      } catch {}
+      // Events before startAfter belong to earlier turns whose UX was already
+      // rendered (possibly by another replica), so they are skipped. The cursor
+      // is NOT read here: by the time this runs the job is already enqueued, and
+      // a fast node can have appended this turn's events, which would then be
+      // skipped as backlog too.
+      let lastId = startAfter;
       try {
         while (!closed && Date.now() < state.deadline) {
           try {
@@ -124,6 +188,9 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
               lastId = entry.id;
               const e = entry.event as AgentEvent;
               if (!e || typeof e !== "object" || !("type" in e)) continue;
+              // LABEL_MISMATCH is held back: the job's failure decides whether
+              // the turn is re-dispatched (silently) or shown (see below).
+              if (e.type === "error" && e.code === "LABEL_MISMATCH") continue;
               if (e.type === "done" || e.type === "error") {
                 // Authoritative turn outcome. Attribute it to a job still
                 // awaiting one (outcomes are FIFO per session — turns are
@@ -135,7 +202,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
                 const target = [...state.jobs.keys()].find((id) => !state.outcomeEmitted.has(id));
                 if (target === undefined) continue;
                 state.outcomeEmitted.add(target);
-                agent.emit("event", e);
+                agent.emit("event", e.type === "error" ? { ...e, jobId: target } : e);
                 // Turn finished — linger briefly for stragglers, then stop
                 // (unless a new enqueue pushed the deadline out again).
                 state.deadline = Math.min(state.deadline, Date.now() + followLingerMs);
@@ -157,6 +224,37 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
               const j = await turns.queue(ref.queue).getJob(jobId);
               const jstate = j ? await j.getState() : "missing";
               if (jstate === "completed" || jstate === "failed" || jstate === "missing") {
+                // A move (relabel, label mismatch at claim, reaper) removes or
+                // completes the job here: follow it to where it went rather
+                // than closing the turn before it ran.
+                const moved = await turns.movedTo(jobId).catch(() => null);
+                if (moved && (moved.queue !== ref.queue || moved.jobId !== jobId)) {
+                  state.jobs.delete(jobId);
+                  if (!state.jobs.has(moved.jobId) && !state.outcomeEmitted.has(moved.jobId)) {
+                    state.jobs.set(moved.jobId, { queue: moved.queue });
+                  }
+                  continue;
+                }
+                const reason = (j as { failedReason?: unknown } | undefined)?.failedReason;
+                // LABEL_MISMATCH (node labels spec §4.6): the node may not
+                // serve the agent (any more). Re-dispatch the turn ONCE to the
+                // persona's current label and post nothing; a second mismatch
+                // falls through to the one fixed message below.
+                if (jstate === "failed" && reason === "LABEL_MISMATCH" && j && ((j.data as TurnJob).relabelAttempts ?? 0) < 1) {
+                  const next = await relabelRedispatch(j).catch((e) => {
+                    console.error(`[dispatch] re-dispatch after LABEL_MISMATCH failed session=${sessionId} job=${jobId}:`, e);
+                    return "failed" as const;
+                  });
+                  // Another replica's follower won the once-guard: its
+                  // job-moved marker leads there on the next poll.
+                  if (next === null) continue;
+                  if (next !== "failed") {
+                    state.jobs.delete(jobId);
+                    if (!state.outcomeEmitted.has(next.jobId)) state.jobs.set(next.jobId, { queue: next.queue });
+                    state.deadline = Math.max(state.deadline, Date.now() + followMaxMs);
+                    continue;
+                  }
+                }
                 state.jobs.delete(jobId);
                 state.deadline = Math.min(state.deadline, Date.now() + followLingerMs);
                 // Synthesize the outcome only if the stream didn't already
@@ -169,8 +267,11 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
                   console.warn(
                     `[dispatch] events-stream gap session=${sessionId} job=${jobId} state=${jstate} — synthesizing turn outcome`,
                   );
+                  // A typed failure travels as the job's failure reason
+                  // (the node throws UnrecoverableError(code)); anything
+                  // else is a plain TURN_FAILED.
                   agent.emit("event", (jstate === "failed"
-                    ? { type: "error", sessionId, error: "turn failed on the node (job failed; events stream gap)" }
+                    ? { type: "error", sessionId, error: "turn failed on the node (job failed; events stream gap)", code: isFailureCode(reason) ? reason : "TURN_FAILED", jobId }
                     : { type: "done", sessionId }) as AgentEvent);
                 }
               }
@@ -197,31 +298,80 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       // not silently kill THIS turn at claim time.
       await pubsub.consumeAbortFlag(session.id).catch(() => {});
       const personaId = meta.personaId ?? "default";
+      // The tenant reaches the node through the job payload AND the token claim,
+      // which /v1 checks against the requested tenant. Explicit meta wins (the
+      // transport resolved it from slack_apps); otherwise fall back to the
+      // session's own column, absent on sqlite, and finally to 'default'.
+      const tenantId = meta.tenantId ?? (session as { tenant_id?: string }).tenant_id ?? "default";
       // Pre-mint the BullMQ job id so the token's `job` claim matches the job
       // it rides on — /v1/jobs/:id/token-refresh binds on it. On coalesce the
       // messages join an EXISTING job which keeps its own (matching) token.
       const jobId = randomUUID();
+      // Whose credentials this turn gets, decided here and nowhere else, by the
+      // same rule the node uses for its config directory. A cron job's carried
+      // identity wins: it keys on a synthetic thread with no lock of its own.
+      // A failed lookup throws rather than defaulting to the agent, because
+      // defaulting would run a 1:1 turn with the agent's shared credentials.
+      // The lock rides the token for the node's session-mode block (a node has
+      // no database): always present (null = unlocked) so a node can tell it
+      // from a token minted by an older gateway.
+      const { runAsUser, lock: lockClaim, remote: remoteClaim } = await threadIdentity(
+        meta.channelId,
+        meta.threadTs,
+        async () => meta.oauthUser ?? (await agent.resolveEffectiveIdentity(session.id, meta.channelId, meta.threadTs)),
+      );
+      // The node label the persona runs on, signed into the token (the /v1
+      // gate checks it against the node's credential) and carried in the payload.
+      const label = runsOnFor(personaId);
       const jobToken = mintJobToken({
-        tenant: "default",
+        label,
+        tenant: tenantId,
         persona: personaId,
         session: session.id,
         team: meta.teamId,
+        ...(meta.apiAppId ? { app: meta.apiAppId } : {}),
         channel: meta.channelId,
         thread: meta.threadTs,
         initiator: meta.userId,
         scope: "turn",
         job: jobId,
+        runAs: encodeRunAs(runAsUser),
+        lock: lockClaim,
+        // Minted on every dispatch, remote mode or not: a warm node session
+        // reboots when it changes, which is how a lock that flips locked↔open
+        // reaches the session-mode instructions on a node. A follow-up that
+        // coalesces into a waiting job keeps that job's token (and refresh
+        // copies its claims), so runAs, lock and fingerprint are as of the
+        // job's first message: at most that one job runs on the old lock.
+        sessionConfigFp: sessionConfigFp({
+          runAs: runAsUser ?? null,
+          lock: lockClaim,
+          remote: remoteClaim ?? null,
+          mcpEpoch: await turnMcpEpoch({ tenant: tenantId, persona: personaId, team: meta.teamId, runAsUser }, epochs),
+        }),
+        ...(remoteClaim ? { remote: remoteClaim } : {}),
       });
-      // Routing (spec §2): warm + fresh → the holding node's queue; anything
-      // else → shared. A node receiving a per-node job it no longer holds
-      // cold-resumes locally — it never bounces.
+      // Routing (spec §2, node labels spec §4.6): warm + fresh on a node that
+      // still carries the persona's label → that node's queue; anything else →
+      // the label's queue. A node receiving a per-node job it no longer holds
+      // cold-resumes locally — it never bounces. After a relabel the warm node
+      // may lack the new label: its session is left to idle out.
       const loc = await registry.lookup(session.id);
-      const target: TurnTarget = loc && loc.fresh ? { node: loc.node } : "shared";
+      const warmOk = !!loc && loc.fresh && (await registry.nodeCarries(loc.node, label));
+      const target: TurnTarget = warmOk ? { node: loc!.node } : { label };
+      // Capture the follower's cursor BEFORE the job becomes claimable. Once it
+      // is enqueued a node can claim it and append the whole turn before the
+      // follower starts; a cursor read after that point would treat this
+      // turn's events as backlog and skip them. A failed read falls back to
+      // following from the start of the stream, as a failed read did before.
+      const startAfter = (await pubsub.lastEventId(session.id).catch(() => null)) ?? undefined;
       const res = await turns.enqueueTurn(
         {
           sessionId: session.id,
-          tenantId: "default",
+          tenantId,
           personaId,
+          label,
+          ...(meta.oauthUser ? { oauthUser: meta.oauthUser } : {}),
           messages: [
             { ts: meta.eventTs, user: meta.userId, text, ...(meta.suppress ? { suppress: true } : {}) },
           ],
@@ -234,7 +384,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       console.log(
         `[dispatch] session=${session.id} queue=${res.queue} job=${res.jobId} coalesced=${res.coalesced}`,
       );
-      followEvents(session.id, { jobId: res.jobId, queue: res.queue });
+      followEvents(session.id, { jobId: res.jobId, queue: res.queue }, startAfter);
     },
 
     async abort(sessionId: string): Promise<void> {

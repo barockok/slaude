@@ -179,3 +179,27 @@ describe("ingest", () => {
     expect(result.pages_changed).toBe(0);
   });
 });
+
+describe("defaultRunSubQuery env", () => {
+  test("passes a scrubbed environment to the SDK child", async () => {
+    process.env.SLAUDE_DEPLOY_TOKEN = "d".repeat(40);
+    process.env.PERSONA_X = "secret";
+    process.env.KEEP_ME = "1";
+    let captured: any = null;
+    const fake = ((args: any) => {
+      captured = args;
+      return (async function* () { yield { type: "result" }; })();
+    }) as never;
+    try {
+      await ingest.defaultRunSubQuery({ kbDir: "/tmp/kb", readme: "r", rawFiles: [] }, fake);
+    } finally {
+      delete process.env.SLAUDE_DEPLOY_TOKEN;
+      delete process.env.PERSONA_X;
+      delete process.env.KEEP_ME;
+    }
+    const env = captured.options.env as Record<string, string | undefined>;
+    expect(env.SLAUDE_DEPLOY_TOKEN).toBeUndefined();
+    expect(env.PERSONA_X).toBeUndefined();
+    expect(env.KEEP_ME).toBe("1");
+  });
+});

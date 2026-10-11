@@ -12,17 +12,54 @@ export function redisPrefix(): string {
   return process.env.SLAUDE_REDIS_PREFIX || "slaude";
 }
 
-/** Shared turn queue name (BullMQ queue, prefix applied via Queue opts). */
+/**
+ * A node label (node labels and routing spec §4.1): lower-case letters, digits
+ * and `-`, at most 32 characters. The node credential, `personas.runs_on` and
+ * the label queue names all use this one pattern.
+ */
+export const LABEL_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/** The label every persona without `runs_on`, and every legacy node, has. */
+export const DEFAULT_LABEL = "default";
+
+/**
+ * The queue of label `default` (BullMQ queue, prefix applied via Queue opts).
+ * The name predates labels and is kept, so a node of any version keeps
+ * consuming it during a rolling upgrade.
+ */
 export const TURNS_QUEUE = "turns";
+
+/** Prefix of every non-default label queue: `turns.label.<label>`. */
+export const LABEL_QUEUE_PREFIX = `${TURNS_QUEUE}.label.`;
+
+/**
+ * The turn queue of a node label (spec §4.6): `turns` for `default`,
+ * `turns.label.<label>` for any other. Throws on a malformed label: the name
+ * is routing, and a label that could not have been signed must not invent one.
+ */
+export function labelTurnsQueue(label: string): string {
+  if (label === DEFAULT_LABEL) return TURNS_QUEUE;
+  if (!LABEL_RE.test(label)) throw new Error(`malformed node label '${label}'`);
+  return `${LABEL_QUEUE_PREFIX}${label}`;
+}
 
 /**
  * Per-node turn queue name. The spec names these `turns:<nodeId>` but BullMQ
  * rejects `:` inside a queue name (it is the internal key separator), so the
  * real queue name uses `.` — the conceptual name in the spec maps one-way onto
- * this. Any `:` inside a nodeId is sanitized for the same reason.
+ * this. Any `:` inside a nodeId is sanitized for the same reason. A node id
+ * starting with `label.` would collide with a label queue; a node refuses
+ * one at startup (assertNodeIdUsable).
  */
 export function nodeTurnsQueue(nodeId: string): string {
   return `${TURNS_QUEUE}.${nodeId.replaceAll(":", "-")}`;
+}
+
+/** Throws when a node id's own queue would be a label queue's name. */
+export function assertNodeIdUsable(nodeId: string): void {
+  if (nodeTurnsQueue(nodeId).startsWith(LABEL_QUEUE_PREFIX)) {
+    throw new Error(`node id '${nodeId}' starts with 'label.', which is reserved for label queues; choose another id`);
+  }
 }
 
 export interface Keys {
@@ -38,6 +75,10 @@ export interface Keys {
   node(nodeId: string): string;
   /** SCAN pattern matching every live node heartbeat key. */
   nodePattern(): string;
+  /** `nodelabels:<nodeId>` — the labels a live node consumes, comma-joined,
+   *  written with every heartbeat; TTL max(node TTL, 3× heartbeat). Absent for a node that
+   *  predates labels: it counts as `{default}`. */
+  nodeLabels(nodeId: string): string;
   /** Set of every nodeId that ever registered — reaper work list. */
   nodeSet(): string;
   /** `lock:session:<sessionId>` — one turn at a time per session. */
@@ -59,11 +100,40 @@ export interface Keys {
   gateChannel(pendingId: string): string;
   /** `events:<sessionId>` capped stream of serialized AgentEvents. */
   eventsStream(sessionId: string): string;
+  /** `panel:<sessionId>` — active-surface exclusivity lock owned by the
+   *  control-panel operator currently driving the session (SET NX PX, short
+   *  TTL + heartbeat). While held, Slack inbound is deferred and outbound
+   *  suppressed. */
+  panelLock(sessionId: string): string;
+  /** `panel-notice:<sessionId>` — cross-replica once-guard for the "handled in
+   *  ops panel" thread notice (SET NX PX per lock window). Only the replica
+   *  that wins the NX posts the notice; cleared on resume. */
+  panelNotice(sessionId: string): string;
+  /** Pub/sub channel (one, global): a session's active-surface lock released —
+   *  every replica drains its own deferred-inbound queue for the published
+   *  sessionId. Payload = sessionId. */
+  panelResumeChannel(): string;
+  /** Pub/sub channel (one, global): a session's active-surface lock was
+   *  acquired / transferred — every replica invalidates its cached owner
+   *  lookup so the next held-check reads the fresh lock from Redis (avoids a
+   *  stale "unlocked" cache masking a lock taken on another replica). Payload =
+   *  sessionId. */
+  panelHoldChannel(): string;
   /** `turn-done:<jobId>` — completion marker written the moment a job's agent
    *  turn finishes, BEFORE any ack. A BullMQ retry of the same job (stall
    *  recovery or failure retry) that finds it must not re-run the turn —
    *  the model already ran and its Slack posts are out. */
   turnDone(jobId: string): string;
+  /** `job-moved:<jobId>` — where a job went when it was moved to another queue
+   *  (`{queue, jobId}` JSON), so a dispatch follower watching the old queue
+   *  follows it instead of reading the move as the turn's end. */
+  jobMoved(jobId: string): string;
+  /** `redispatch:<jobId>` — once-guard: the gateway replica that re-dispatched
+   *  a LABEL_MISMATCH job (node labels spec §4.6). */
+  redispatch(jobId: string): string;
+  /** `label-unserved-since` hash: label → ms since which it has had waiting
+   *  jobs and no live node (spec §4.7), written by the reaper leader. */
+  labelUnservedSince(): string;
 }
 
 export function makeKeys(prefix: string = redisPrefix()): Keys {
@@ -74,6 +144,7 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     sessPattern: () => `${prefix}:sess:*`,
     node: (nodeId) => `${prefix}:nodes:${nodeId}`,
     nodePattern: () => `${prefix}:nodes:*`,
+    nodeLabels: (nodeId) => `${prefix}:nodelabels:${nodeId}`,
     nodeSet: () => `${prefix}:nodeset`,
     sessionLock: (sessionId) => `${prefix}:lock:session:${sessionId}`,
     leaderLock: (role) => `${prefix}:lock:leader:${role}`,
@@ -84,6 +155,13 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     reloadChannel: (tenantId) => `${prefix}:reload:${tenantId}`,
     gateChannel: (pendingId) => `${prefix}:gate:${pendingId}`,
     eventsStream: (sessionId) => `${prefix}:events:${sessionId}`,
+    panelLock: (sessionId) => `${prefix}:panel:${sessionId}`,
+    panelNotice: (sessionId) => `${prefix}:panel-notice:${sessionId}`,
+    panelResumeChannel: () => `${prefix}:panel-resume`,
+    panelHoldChannel: () => `${prefix}:panel-hold`,
     turnDone: (jobId) => `${prefix}:turn-done:${jobId}`,
+    jobMoved: (jobId) => `${prefix}:job-moved:${jobId}`,
+    redispatch: (jobId) => `${prefix}:redispatch:${jobId}`,
+    labelUnservedSince: () => `${prefix}:label-unserved-since`,
   };
 }

@@ -22,11 +22,17 @@ export class BrainMemoryProvider implements MemoryProvider {
   recentTurnLimit = 5;
 
   #call: BrainOpCall;
+  #readyFn: () => Promise<void>;
   #ready: Promise<void> | null = null;
   #pagesEnsured = new Set<string>();
 
-  constructor(deps: { call?: BrainOpCall } = {}) {
+  /** `ready` is injectable for tests that fake the brain (default: resolve the
+   *  agent identity, then ensure the baseline sources). */
+  constructor(deps: { call?: BrainOpCall; ready?: () => Promise<void> } = {}) {
     this.#call = deps.call ?? brainCall;
+    // Resolve the agent identity before the first write so memory never lands
+    // in `agent-default` and then splits off to `agent-<id>` once auth.test settles.
+    this.#readyFn = deps.ready ?? (() => agentIdReady().then(() => ensureSources()));
   }
 
   #slug(sessionId: string): string {
@@ -34,17 +40,18 @@ export class BrainMemoryProvider implements MemoryProvider {
   }
 
   #ensureReady(): Promise<void> {
-    // Resolve the agent identity before the first write so memory never lands
-    // in `agent-default` and then splits off to `agent-<id>` once auth.test settles.
-    return (this.#ready ??= agentIdReady().then(() => ensureSources()));
+    return (this.#ready ??= this.#readyFn());
   }
 
-  async #ensurePage(sessionId: string): Promise<string> {
+  async #ensurePage(sessionId: string, scope: BrainScope): Promise<string> {
     const slug = this.#slug(sessionId);
-    if (this.#pagesEnsured.has(slug)) return slug;
+    // Keyed per source: one session can write into two slices (the agent's
+    // mind, then the user's once a /1on1 lock is taken).
+    const key = `${scope.sourceId}\u0000${slug}`;
+    if (this.#pagesEnsured.has(key)) return slug;
     let existing: unknown = null;
     try {
-      existing = await this.#call("get_page", { slug }, agentScope());
+      existing = await this.#call("get_page", { slug }, scope);
     } catch (e) {
       // get_page throws OperationError(code=page_not_found) for missing pages.
       if ((e as { code?: string }).code !== "page_not_found") throw e;
@@ -56,17 +63,30 @@ export class BrainMemoryProvider implements MemoryProvider {
           slug,
           content: `---\ntype: conversation\n---\n# Conversation ${sessionId}\n\nSlack session transcript timeline. Turns live in the Timeline section.\n`,
         },
-        agentScope(),
+        scope,
       );
     }
-    this.#pagesEnsured.add(slug);
+    this.#pagesEnsured.add(key);
     return slug;
   }
 
-  async prefetch(sessionId: string): Promise<string | null> {
+  /** UNSCOPED: the process-wide agent identity's slice. No turn path uses it:
+   *  mono installs makeScopedMemory (src/memory/scoped.ts) and nodes call the
+   *  gateway's routes, both of which use prefetchIn/syncTurnIn. */
+  prefetch(sessionId: string): Promise<string | null> {
+    return this.prefetchIn(sessionId, agentScope());
+  }
+
+  syncTurn(t: SyncTurn): Promise<void> {
+    return this.syncTurnIn(t, agentScope());
+  }
+
+  /** Read the session's recent turns in an explicit scope: the gateway's memory
+   *  route derives it from the verified job token (src/memory/scope.ts). */
+  async prefetchIn(sessionId: string, scope: BrainScope): Promise<string | null> {
     try {
       await this.#ensureReady();
-      const rows = (await this.#call("get_timeline", { slug: this.#slug(sessionId) }, agentScope())) as TimelineRow[] | null;
+      const rows = (await this.#call("get_timeline", { slug: this.#slug(sessionId) }, scope)) as TimelineRow[] | null;
       if (!rows || rows.length === 0) return null;
       const ordered = [...rows].sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
       const recent = ordered.slice(-this.recentTurnLimit);
@@ -80,10 +100,11 @@ export class BrainMemoryProvider implements MemoryProvider {
     }
   }
 
-  async syncTurn(t: SyncTurn): Promise<void> {
+  /** Append the turn to the session's conversation page in an explicit scope. */
+  async syncTurnIn(t: SyncTurn, scope: BrainScope): Promise<void> {
     try {
       await this.#ensureReady();
-      const slug = await this.#ensurePage(t.sessionId);
+      const slug = await this.#ensurePage(t.sessionId, scope);
       await this.#call(
         "add_timeline_entry",
         {
@@ -93,7 +114,7 @@ export class BrainMemoryProvider implements MemoryProvider {
           summary: truncate(t.user, 200),
           detail: `<user>${truncate(t.user, 800)}</user>\n<assistant>${truncate(t.assistant, 800)}</assistant>`,
         },
-        agentScope(),
+        scope,
       );
     } catch (e) {
       console.error("[brain-memory] syncTurn failed:", e instanceof Error ? e.message : e);
