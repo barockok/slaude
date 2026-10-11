@@ -45,6 +45,8 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
   // handshaking are ignored: the connect() rejection is the failed attempt.
   const connected = new WeakSet<VoiceProvider>();
   const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  // Lifecycle lines: no URLs, audio or transcript text (the child entry scrubs capability URLs too).
+  const info = (message: string) => d.emit({ type: "log", level: "info", message });
 
   const conductor = new Conductor(
     {
@@ -52,7 +54,10 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
       audio: d.audio,
       emit: d.emit,
       end,
-      reconnect: () => void reconnect("planned"),
+      reconnect: () => {
+        info(`provider session near its limit (${provider.caps.maxSessionSec ?? "?"}s); planned reconnect`);
+        void reconnect("planned");
+      },
     },
     { outputRate: d.init.audio.sampleRate, staleSeq: d.init.staleSeq, maxMs: d.init.maxMinutes * 60_000, startedAt: now() },
   );
@@ -68,17 +73,23 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
     p.on("toolCall", (c) => conductor.onToolCall(c, now()));
     p.on("error", (e) => {
       if (!connected.has(p)) return;
-      if (e.fatal) end("provider_failed");
-      else d.emit({ type: "log", level: "warn", message: `provider: ${e.message}` });
+      if (e.fatal) {
+        info(`provider fatal error: ${e.message}`);
+        end("provider_failed");
+      } else d.emit({ type: "log", level: "warn", message: `provider: ${e.message}` });
     });
     p.on("closed", () => {
-      if (p === provider && !finished) void reconnect("dropped");
+      if (p === provider && !finished && !reconnecting) {
+        info("provider dropped; reconnecting");
+        void reconnect("dropped");
+      }
     });
   };
 
   const connect = async (p: VoiceProvider, seed?: string) => {
     await p.connect({ instructions: d.init.instructions, tools: VOICE_TOOLS, voice: d.init.voice, seed });
     connected.add(p);
+    info(`provider connected (${d.init.provider}, session limit ${p.caps.maxSessionSec ? `${p.caps.maxSessionSec}s` : "none"})`);
   };
 
   async function reconnect(why: "planned" | "dropped"): Promise<void> {
@@ -106,6 +117,7 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
     }
     reconnecting = false;
     markReady();
+    if (!finished) info(`provider reconnect failed after ${MAX_RECONNECTS} attempts`);
     end("provider_lost");
   }
 
