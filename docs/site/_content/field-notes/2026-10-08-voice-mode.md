@@ -405,7 +405,7 @@ stream delivered meeting audio in bursts. GPT-Live dropped the appends ("Input
 audio is arriving too quickly … no more than 1.2x real time"), and the model
 heard nothing. A pacer (`src/voice/pacer.ts`) now sits between the audio link
 and `provider.sendAudio`. It is a token bucket in samples at the provider's
-input rate, at most 1.0x on average, with a 200 ms burst allowance so steady
+input rate, at most 1.0x on average, with a 100 ms burst allowance so steady
 input passes straight through. Past 1 s of backlog the oldest audio is dropped,
 so latency stays bounded instead of growing. Drops (count and ms, never audio)
 go into the 60 s counters line. The pacer is cleared on reconnect, because audio
@@ -427,6 +427,15 @@ Slack turn starts before any call turn runs, that turn also gets the long
 budget. The voice's 60-second still-working line keeps the room informed while
 it waits. The `voice_start` description now tells the agent to end its turn
 promptly once joined.
+
+Review found what the long budget cost. Neither runner loop checked whether
+the call was cancelled while it waited, and the call's close awaits its turn
+queue. So `stop()`, `session_rebooted`, `auth_lost` and a node drain could all
+take up to ten minutes to free the call. Both loops now check `cancelled()` on
+every poll. The per-turn budget is re-read on every poll, so once the call
+starts closing it drops back to the normal budget. The pacer's burst allowance
+also went from 200 ms to 100 ms, because GPT-Live's measurement window is
+unknown, and the loop's pacing test now runs on virtual time.
 
 ## Measured
 
