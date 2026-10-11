@@ -13,7 +13,7 @@
  * "voice" turns (their Slack writes are dropped).
  */
 import { HELD_BY_OTHER } from "../queue/locks";
-import type { TurnRunner } from "./call";
+import type { TurnRunner, TurnRunOptions } from "./call";
 import { injectedTurns, voiceTurns } from "./turn-flags";
 
 export interface TurnAgent {
@@ -83,7 +83,7 @@ async function runOnce(
   agent: TurnAgent,
   sessionId: string,
   text: string,
-  o: { suppress: boolean; voice: boolean; cancelled(): boolean },
+  o: TurnRunOptions,
   timeoutMs: number,
   signal?: AbortSignal,
 ) {
@@ -138,7 +138,7 @@ export function monoRunner(
 ): TurnRunner {
   return {
     async run(sid, text, ro) {
-      const deadline = Date.now() + (o.maxWaitMs ?? DEFAULT_MAX_WAIT_MS);
+      const deadline = Date.now() + (ro.maxWaitMs ?? o.maxWaitMs ?? DEFAULT_MAX_WAIT_MS);
       while (true) {
         while (agent.isTurnInFlight(sid)) {
           if (Date.now() >= deadline) throw new Error(BUSY_MESSAGE);
@@ -148,6 +148,7 @@ export function monoRunner(
         // A turn may have started during the check: check again after it.
         if (!agent.isTurnInFlight(sid)) break;
       }
+      ro.onAcquired?.();
       await runOnce(agent, sid, text, ro, o.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS);
     },
   };
@@ -165,11 +166,12 @@ export function nodeRunner(o: {
 }): TurnRunner {
   return {
     async run(sid, text, ro) {
-      const deadline = Date.now() + (o.maxWaitMs ?? DEFAULT_MAX_WAIT_MS);
+      const deadline = Date.now() + (ro.maxWaitMs ?? o.maxWaitMs ?? DEFAULT_MAX_WAIT_MS);
       while (true) {
         const r = await o.lock(sid, async (signal) => {
           // Cancelled while waiting for the lock: no refresh, no bind, no send.
           if (ro.cancelled()) throw new VoiceTurnCancelled();
+          ro.onAcquired?.();
           await o.refreshToken(sid);
           await runOnce(o.agent, sid, text, ro, o.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS, signal);
           return true as const;

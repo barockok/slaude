@@ -201,6 +201,43 @@ describe("nodeRunner", () => {
   });
 });
 
+describe("per-turn wait budget and session acquisition (the start turn)", () => {
+  it("mono: a per-turn maxWaitMs overrides the runner's; onAcquired fires right before the send", async () => {
+    const a = new StubAgent();
+    a.inFlight = true;
+    setTimeout(() => (a.inFlight = false), 200);
+    const events: string[] = [];
+    const sendSpy = a.sendMessage.bind(a);
+    a.sendMessage = async (id: string, text: string) => { events.push("send"); return sendSpy(id, text); };
+    await monoRunner(a as any, { check: allowAgent, pollMs: 1, maxWaitMs: 20 })
+      .run("b1", "t", { suppress: false, voice: true, cancelled: no, maxWaitMs: 2_000, onAcquired: () => events.push("acquired") });
+    expect(a.sent).toEqual(["t"]);
+    expect(events).toEqual(["acquired", "send"]);
+  });
+  it("mono: no onAcquired when the wait gives up", async () => {
+    const a = new StubAgent();
+    a.inFlight = true;
+    let acquired = 0;
+    await expect(monoRunner(a as any, { check: allowAgent, pollMs: 1, maxWaitMs: 2_000 })
+      .run("b2", "t", { suppress: false, voice: true, cancelled: no, maxWaitMs: 20, onAcquired: () => acquired++ })).rejects.toThrow(/session busy/);
+    expect(acquired).toBe(0);
+  });
+  it("node: a per-turn maxWaitMs overrides the runner's; onAcquired fires once the lock is held", async () => {
+    const a = new StubAgent();
+    const t0 = Date.now();
+    const order: string[] = [];
+    const r = nodeRunner({
+      agent: a as any,
+      lock: async (_id, fn) => (Date.now() - t0 < 200 ? HELD_BY_OTHER : fn(new AbortController().signal)),
+      refreshToken: async () => { order.push("refresh"); },
+      retryMs: 5, maxWaitMs: 20,
+    });
+    await r.run("b3", "t", { suppress: false, voice: true, cancelled: no, maxWaitMs: 2_000, onAcquired: () => order.push("acquired") });
+    expect(order).toEqual(["acquired", "refresh"]);
+    expect(a.sent).toEqual(["t"]);
+  });
+});
+
 describe("mono identity check", () => {
   it("runs after the in-flight wait, right before the send; a refusal sends nothing", async () => {
     const a = new StubAgent();

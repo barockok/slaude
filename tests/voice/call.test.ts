@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { VoiceCall, VoiceCalls, TRANSCRIPT_FLUSH_PREFIX, type LoopChild, type TurnRunner } from "../../src/voice/call";
 import type { ChildMsg, ParentMsg, VoiceInit } from "../../src/voice/ipc";
 import { fakeChild, until } from "./fakes";
-import { VoiceAuthLost, VoiceTurnCancelled } from "../../src/voice/runners";
+import { EventEmitter } from "node:events";
+import { VoiceAuthLost, VoiceTurnCancelled, monoRunner } from "../../src/voice/runners";
 import { liveCalls } from "../../src/voice/turn-flags";
 
 // The unpatched timer functions, for tests that spy on setTimeout/clearTimeout.
@@ -503,6 +504,7 @@ function gated(over: {
   const runner: TurnRunner = {
     run: async (_s, text, o) => {
       runs.push({ text, suppress: o.suppress, voice: o.voice, live: liveCalls.has("s1") });
+      o.onAcquired?.(); // this runner holds the session for the whole gated turn
       await new Promise<void>((r) => gates.push(r));
       over.during?.(text, call);
       const f = over.fail?.(text);
@@ -798,6 +800,71 @@ describe("VoiceCall delegate queue", () => {
       expect(t.runs.map((r) => r.live)).toEqual([true, true, false]);
     } finally {
       calls.remove("s1");
+    }
+  });
+});
+
+describe("VoiceCall: the start turn holding the session", () => {
+  /** A mono agent whose session is busy (the Slack turn that called voice_start) until the test frees it. */
+  function monoAgent() {
+    const a: any = new EventEmitter();
+    a.inFlight = true;
+    a.sent = [] as string[];
+    a.isTurnInFlight = () => a.inFlight;
+    a.isLive = () => true;
+    a.suppressNextTurn = () => {};
+    a.sendMessage = async (id: string, text: string) => {
+      a.sent.push(text);
+      queueMicrotask(() => a.emit("event", { type: "done", sessionId: id }));
+    };
+    return a;
+  }
+  function withMonoRunner(o: { startTurnWaitMs?: number }) {
+    const agent = monoAgent();
+    const child = fakeChild();
+    const call = new VoiceCall({
+      sessionId: "s1", child, transcriptDir: tmp(), holdIdle: () => true, onClosed: () => {}, idleFlushMs: 60_000,
+      // Tiny normal budgets: the runner gives up after 30 ms, the queue after 50 ms.
+      runner: monoRunner(agent, { check: async () => {}, pollMs: 2, maxWaitMs: 30 }),
+      queueWaitMs: 50,
+      startTurnWaitMs: o.startTurnWaitMs,
+    });
+    const start = async () => {
+      const p = call.start(init(call.callId));
+      child.push({ type: "started", callId: call.callId, sampleRate: 24000 });
+      await p;
+    };
+    return { agent, child, call, start };
+  }
+
+  it("a delegate queued while the start turn still holds the session is not failed; it runs once the session frees", async () => {
+    const t = withMonoRunner({ startTurnWaitMs: 2_000 });
+    await t.start();
+    t.child.push({ type: "delegate", id: "1", task: "look it up", asOf: 0 });
+    await Bun.sleep(200); // the join turn is still in the browser: far past both normal budgets
+    expect(says(t.child)).toEqual([]);
+    expect(t.agent.sent).toEqual([]);
+    t.agent.inFlight = false; // the join turn ends
+    await until(() => t.agent.sent.length === 1);
+    expect(t.agent.sent[0]).toContain("Voice call request #1: look it up");
+    expect(says(t.child)).toEqual([]);
+  });
+
+  it("once a call turn has held the session, the normal budgets apply again", async () => {
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const t = withMonoRunner({ startTurnWaitMs: 2_000 });
+      t.agent.inFlight = false; // the start turn already ended
+      await t.start();
+      t.child.push({ type: "delegate", id: "1", task: "first", asOf: 0 });
+      await until(() => t.agent.sent.length === 1);
+      t.agent.inFlight = true; // a later Slack turn holds the session
+      t.child.push({ type: "delegate", id: "2", task: "second", asOf: 0 });
+      await until(() => says(t.child).length === 1, 1_000);
+      expect(says(t.child)[0]).toMatchObject({ replyTo: "2" });
+      expect(t.agent.sent).toHaveLength(1);
+    } finally {
+      err.mockRestore();
     }
   });
 });
