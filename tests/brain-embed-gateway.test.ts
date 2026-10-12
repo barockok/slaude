@@ -64,6 +64,7 @@ describe("resolveEmbeddingApiKey", () => {
 
 describe("defaultDimensionsForModel", () => {
   test("resolves known provider dimensions", () => {
+    expect(defaultDimensionsForModel("google:gemini-embedding-001")).toBe(768);
     expect(defaultDimensionsForModel("google:text-embedding-004")).toBe(768);
     expect(defaultDimensionsForModel("zeroentropyai:zembed-1")).toBe(1280);
     expect(defaultDimensionsForModel("voyage:voyage-3")).toBe(1024);
@@ -101,7 +102,7 @@ describe("embedding gateway activation", () => {
 
 describe("canonicalizeEmbeddingModel with provider enum", () => {
   test("resolves default model when EMBEDDING_PROVIDER is specified without model", () => {
-    expect(canonicalizeEmbeddingModel(undefined, undefined, "google")).toBe("google:text-embedding-004");
+    expect(canonicalizeEmbeddingModel(undefined, undefined, "google")).toBe("google:gemini-embedding-001");
     expect(canonicalizeEmbeddingModel(undefined, undefined, "openai")).toBe("openai:text-embedding-3-small");
     expect(canonicalizeEmbeddingModel(undefined, undefined, "voyage")).toBe("voyage:voyage-3");
     expect(canonicalizeEmbeddingModel(undefined, undefined, "zeroentropyai")).toBe("zeroentropyai:zembed-1");
@@ -109,7 +110,7 @@ describe("canonicalizeEmbeddingModel with provider enum", () => {
   });
 
   test("normalizes provider aliases (gemini -> google, zeroentropy -> zeroentropyai, azure -> azure-openai)", () => {
-    expect(canonicalizeEmbeddingModel(undefined, undefined, "gemini")).toBe("google:text-embedding-004");
+    expect(canonicalizeEmbeddingModel(undefined, undefined, "gemini")).toBe("google:gemini-embedding-001");
     expect(canonicalizeEmbeddingModel(undefined, undefined, "zeroentropy")).toBe("zeroentropyai:zembed-1");
     expect(canonicalizeEmbeddingModel(undefined, undefined, "azure")).toBe("azure-openai:text-embedding-3-small");
   });
@@ -121,7 +122,7 @@ describe("canonicalizeEmbeddingModel with provider enum", () => {
 
   test("honors explicit fully-qualified provider prefix in model", () => {
     expect(canonicalizeEmbeddingModel("voyage:voyage-code-3", undefined, "openai")).toBe("voyage:voyage-code-3");
-    expect(canonicalizeEmbeddingModel("gemini:text-embedding-004")).toBe("google:text-embedding-004");
+    expect(canonicalizeEmbeddingModel("gemini:gemini-embedding-001")).toBe("google:gemini-embedding-001");
   });
 
   test("infers provider from present environment API key when model is bare", () => {
@@ -152,7 +153,7 @@ describe("applyEmbeddingEnv", () => {
 
     const cfg = JSON.parse(readFileSync(join(home!, "config.json"), "utf8"));
     expect(cfg.embedding_provider).toBe("google");
-    expect(cfg.embedding_model).toBe("google:text-embedding-004");
+    expect(cfg.embedding_model).toBe("google:gemini-embedding-001");
     expect(cfg.embedding_dimensions).toBe(768);
   });
 

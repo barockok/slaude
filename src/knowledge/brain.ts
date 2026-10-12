@@ -89,7 +89,7 @@ export const PROVIDER_CONFIGS: Record<EmbeddingProvider, ProviderConfig> = {
   google: {
     canonicalKey: "GOOGLE_GENERATIVE_AI_API_KEY",
     aliases: ["GEMINI_API_KEY", "EMBEDDING_API_KEY"],
-    defaultModel: "text-embedding-004",
+    defaultModel: "gemini-embedding-001",
     defaultDims: 768,
   },
   openai: {
