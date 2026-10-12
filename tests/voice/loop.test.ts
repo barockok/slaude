@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { runVoiceLoop } from "../../src/voice/loop";
-import { FakeProvider, FakeAudio, pcm, until } from "./fakes";
+import { FakeProvider, FakeAudio, pcm, until, virtualClock } from "./fakes";
 import type { ChildMsg, ParentMsg, VoiceInit } from "../../src/voice/ipc";
 
 const init: VoiceInit = {
@@ -254,5 +254,43 @@ describe("runVoiceLoop", () => {
     } finally {
       process.off("unhandledRejection", h);
     }
+  });
+
+  it("paces burst mic audio to the provider and counts dropped ms in the counters line", async () => {
+    const provider = new FakeProvider();
+    const audio = new FakeAudio();
+    const ib = inbox();
+    const out: ChildMsg[] = [];
+    let offset = 0;
+    const clock = virtualClock(); // the pacer's time: no wall-clock dependence
+    const done = runVoiceLoop({
+      init, makeProvider: () => provider, audio, inbox: ib, emit: (m) => out.push(m), tickMs: 5, now: () => 1_000_000 + offset,
+      micClock: { now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer },
+    });
+    await until(() => audio.handlers !== null);
+    const ms = (samples: number) => (samples * 1000) / 24_000;
+    const sent = () => ms(provider.named("sendAudio").reduce((n, c) => n + (c[1] as number), 0));
+    // 5 s of call audio at once (a stalled SSE flushing).
+    audio.handlers!.onAudio(pcm(24_000 * 5));
+    // Only the burst allowance goes out at once, not 5 s.
+    const atZero = sent();
+    expect(atZero).toBeGreaterThan(0);
+    expect(atZero).toBeLessThanOrEqual(200);
+    clock.advanceTo(150);
+    expect(sent()).toBeGreaterThanOrEqual(atZero + 120); // paced in 20 ms ticks
+    expect(sent()).toBeLessThanOrEqual(atZero + 165); // a backlog drains at 1.1x, never faster
+    // The rest past 1 s of backlog was dropped, oldest first, and counted.
+    offset = 60_000;
+    const counters = () => out.filter((m) => m.type === "log" && m.message.startsWith("counters"));
+    await until(() => counters().length === 1);
+    const msg = (counters()[0] as { message: string }).message;
+    expect(Number(msg.match(/micDroppedMs=(\d+)/)![1])).toBe(Math.round(5_000 - 1_000 - atZero));
+    expect(msg).toContain("micDrops=1");
+    ib.push({ type: "stop", reason: "stopped" });
+    expect(await done).toBe("stopped");
+    const atStop = sent();
+    clock.advanceTo(5_000);
+    expect(sent()).toBe(atStop); // nothing is sent after the call ends
+    expect(clock.pending()).toBe(0);
   });
 });

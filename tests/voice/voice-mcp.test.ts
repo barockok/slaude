@@ -186,7 +186,8 @@ describe("voice MCP", () => {
   it("voice_start's description gives the call order; voice_stop's names the post-hangup page", () => {
     const t = tools(createVoiceMcp("s1", host().h, new VoiceCalls()));
     const d = String(t["voice_start"].description);
-    const order = ["blank", "browser audio pipe", "voice_start", "navigate", "join"];
+    // After joining, the turn ends promptly: delegated requests wait for the session.
+    const order = ["blank", "browser audio pipe", "voice_start", "navigate", "join", "end this turn"];
     let at = -1;
     for (const k of order) {
       const i = d.indexOf(k, at + 1);

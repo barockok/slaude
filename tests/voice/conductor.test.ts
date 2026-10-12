@@ -1,6 +1,6 @@
 // tests/voice/conductor.test.ts
 import { describe, it, expect } from "bun:test";
-import { Conductor, AUTO_RESPONSE_WAIT_MS, STILL_WORKING_MS, CAP_WARNING_MS, RECONNECT_LEAD_MS } from "../../src/voice/conductor";
+import { Conductor, AUTO_RESPONSE_WAIT_MS, STILL_WORKING_MS, CAP_WARNING_MS, RECONNECT_LEAD_MS, STEER_WAIT_WARN_MS } from "../../src/voice/conductor";
 import { FakeProvider, FakeAudio, pcm } from "./fakes";
 import type { ChildMsg, EndReason } from "../../src/voice/ipc";
 
@@ -289,6 +289,58 @@ describe("Conductor", () => {
     expect(provider.named("truncate")).toEqual([["truncate", "A", 300]]);
   });
 
+  describe("rc.7", () => {
+    it("a provider that handles barge-in gets steers at once, even mid-speech and mid-response", async () => {
+      const { c, provider } = setup({ handlesBargeIn: true, truncate: false });
+      c.onToolCall({ callId: "del_1", name: "delegate", args: { task: "x" } }, 0);
+      c.onAudio(pcm(2400), "a1"); // the model is talking
+      await c.onSpeechStarted(); // and the participant too
+      await c.say({ type: "say", text: "one moment", when: "next_gap", asOf: 0 });
+      await c.say({ type: "say", text: "the answer", when: "next_gap", replyTo: "1", asOf: 0 });
+      expect(provider.named("respond")).toEqual([["respond"], ["respond", "del_1"]]);
+    });
+
+    it("a stale now answer is not held behind a gap on a provider that handles barge-in", async () => {
+      const { c, provider } = setup({ handlesBargeIn: true, truncate: false, staleSeq: 1 });
+      for (let i = 0; i < 5; i++) c.onTranscript({ role: "user", text: `l${i}` });
+      c.onAudio(pcm(2400), "a1");
+      await c.say({ type: "say", text: "late answer", when: "now", asOf: 0 });
+      expect(provider.named("respond")).toEqual([["respond"]]);
+    });
+
+    it("a provider without the capability still holds steers while the participant speaks", async () => {
+      const { c, provider } = setup();
+      await c.onSpeechStarted();
+      await c.say({ type: "say", text: "later", when: "next_gap", asOf: 0 });
+      expect(provider.named("respond")).toEqual([]);
+    });
+
+    it("a steer that waited long for a gap is logged", async () => {
+      const { c, emitted } = setup();
+      c.tick(0);
+      await c.onSpeechStarted();
+      await c.say({ type: "say", text: "later", when: "next_gap", asOf: 0 });
+      c.tick(STEER_WAIT_WARN_MS + 500);
+      c.onSpeechStopped();
+      c.tick(STEER_WAIT_WARN_MS + 500 + AUTO_RESPONSE_WAIT_MS);
+      expect(emitted.some((m) => m.type === "log" && /steer waited 1\ds/.test(m.message))).toBe(true);
+    });
+
+    it("the counters line reports how far ahead of playback the provider sent", () => {
+      const { c, emitted } = setup({ handlesBargeIn: true, truncate: false });
+      c.tick(0);
+      c.onAudio(pcm(24000 * 3), "a1"); // 3 s sent at once
+      c.tick(1_000);
+      c.onAudio(pcm(2400), "a1"); // 100 ms more at t=1 s: 2.1 s ahead
+      c.tick(60_000);
+      const line = emitted.find((m) => m.type === "log" && m.message.startsWith("counters")) as { message: string };
+      expect(line.message).toContain("maxAheadMs=3000");
+      c.tick(120_000);
+      const next = emitted.filter((m) => m.type === "log" && m.message.startsWith("counters")).at(-1) as { message: string };
+      expect(next.message).toContain("maxAheadMs=0"); // reset per line
+    });
+  });
+
   describe("rc.5", () => {
     it("a provider that handles barge-in itself gets no clear, truncate or queue drop on speechStarted", async () => {
       const { c, provider, audio } = setup({ handlesBargeIn: true, truncate: false });
@@ -300,12 +352,6 @@ describe("Conductor", () => {
       expect(audio.written.length).toBe(2);
     });
 
-    it("a provider that handles barge-in still holds steers while the participant speaks", async () => {
-      const { c, provider } = setup({ handlesBargeIn: true });
-      await c.onSpeechStarted();
-      await c.say({ type: "say", text: "later", when: "next_gap", asOf: 0 });
-      expect(provider.named("respond")).toEqual([]);
-    });
 
     it("a provider that handles barge-in still flushes for an explicit now", async () => {
       const { c, audio } = setup({ handlesBargeIn: true });
@@ -402,10 +448,27 @@ describe("Conductor", () => {
       c.tick(59_999);
       expect(counters()).toEqual([]);
       c.tick(60_000);
-      expect(counters()).toEqual([{ type: "log", level: "info", message: "counters (60s): clears=1 speechStarted=1 delegates=1 steersSpoken=0" }]);
+      expect(counters()).toEqual([{ type: "log", level: "info", message: "counters (60s): clears=1 speechStarted=1 delegates=1 steersSpoken=0 maxAheadMs=0" }]);
       c.onResponseDone();
       c.tick(120_000); // the queued still-working nudge is spoken in this window
-      expect(counters().at(-1)).toEqual({ type: "log", level: "info", message: "counters (60s): clears=0 speechStarted=0 delegates=0 steersSpoken=1" });
+      expect(counters().at(-1)).toEqual({ type: "log", level: "info", message: "counters (60s): clears=0 speechStarted=0 delegates=0 steersSpoken=1 maxAheadMs=0" });
+    });
+
+    it("adds the mic pacer's dropped ms to the counters line when the loop supplies it", () => {
+      const provider = new FakeProvider();
+      const emitted: ChildMsg[] = [];
+      let dropped = [{ droppedMs: 1800, drops: 2 }, { droppedMs: 0, drops: 0 }];
+      const c = new Conductor(
+        { provider, audio: new FakeAudio(), emit: (m) => emitted.push(m), end: () => {}, reconnect: () => {}, micStats: () => dropped.shift()! },
+        { outputRate: 24000, staleSeq: 6, maxMs: 3_600_000, startedAt: 0 },
+      );
+      const counters = () => emitted.filter((m) => m.type === "log" && m.message.startsWith("counters"));
+      c.tick(60_000);
+      c.tick(120_000);
+      expect(counters()).toEqual([
+        { type: "log", level: "info", message: "counters (60s): clears=0 speechStarted=0 delegates=0 steersSpoken=0 maxAheadMs=0 micDrops=2 micDroppedMs=1800" },
+        { type: "log", level: "info", message: "counters (60s): clears=0 speechStarted=0 delegates=0 steersSpoken=0 maxAheadMs=0 micDrops=0 micDroppedMs=0" },
+      ]);
     });
 
     it("takes item start offsets from the audio link's clock, which counts keepalive silence", async () => {

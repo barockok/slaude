@@ -16,6 +16,8 @@ export const CAP_WARNING_MS = 120_000;
 export const RECONNECT_LEAD_MS = 60_000;
 /** How long after speechStopped we wait for the provider's own reply before treating it as a gap. */
 export const AUTO_RESPONSE_WAIT_MS = 1_500;
+/** A steer that waited longer than this for a gap is logged. */
+export const STEER_WAIT_WARN_MS = 10_000;
 /** How often the counters line is logged. */
 export const COUNTERS_EVERY_MS = 60_000;
 /** Open (unanswered) delegates kept; the oldest is forgotten past this. */
@@ -47,6 +49,8 @@ export interface ConductorIO {
   emit(m: ChildMsg): void;
   end(reason: EndReason): void;
   reconnect(): void;
+  /** The mic pacer's drops since the last call (then reset); added to the counters line. */
+  micStats?(): { droppedMs: number; drops: number };
 }
 export interface ConductorOpts {
   outputRate: number;
@@ -65,7 +69,7 @@ export class Conductor {
   #currentItem: string | null = null;
   // A steer may answer a delegate (callId: the provider's id for it) or be the
   // still-working nudge for one (nudgeFor: the Conductor's id).
-  #steers: Array<{ text: string; callId?: string; nudgeFor?: string }> = [];
+  #steers: Array<{ text: string; callId?: string; nudgeFor?: string; queuedAt?: number }> = [];
   #delegates = new Map<string, { askedAt: number; nudged: boolean; callId?: string }>();
   // The steer last handed to the provider, until a response finishes. A
   // provider may hold a create (Realtime does during an active response); a
@@ -82,6 +86,11 @@ export class Conductor {
   #lastTick: number;
   #staleDones = 0;
   #flushedItem: string | null = null;
+  // Estimated wall time at which the audio pipe finishes playing what was sent,
+  // and the most audio queued ahead of playback since the last counters line:
+  // how far ahead of real time the provider sends (what a clear would cut).
+  #playEnd = 0;
+  #maxAheadMs = 0;
 
   constructor(private io: ConductorIO, private o: ConductorOpts) {
     this.#sessionStartedAt = o.startedAt;
@@ -107,7 +116,10 @@ export class Conductor {
     this.#currentItem = itemId;
     this.#responseActive = true;
     this.io.audio.write(pcm);
-    this.#sentMs += (pcm.length * 1000) / this.o.outputRate;
+    const ms = (pcm.length * 1000) / this.o.outputRate;
+    this.#sentMs += ms;
+    this.#playEnd = Math.max(this.#playEnd, this.#lastTick) + ms;
+    this.#maxAheadMs = Math.max(this.#maxAheadMs, this.#playEnd - this.#lastTick);
   }
 
   async onSpeechStarted(): Promise<void> {
@@ -181,7 +193,7 @@ export class Conductor {
       this.#speak(m.text, callId);
       return;
     }
-    this.#steers.push({ text: m.text, callId });
+    this.#steers.push({ text: m.text, callId, queuedAt: this.#lastTick });
     this.#drain();
   }
 
@@ -226,6 +238,7 @@ export class Conductor {
     this.#awaitingAuto = null;
     this.#staleDones = 0;
     this.#flushedItem = null;
+    this.#playEnd = 0;
     this.#itemStart.clear();
     this.#currentItem = null;
     // Delegation ids belong to the old provider session; the new one does not know them.
@@ -239,10 +252,20 @@ export class Conductor {
     return !this.#userSpeaking && !this.#responseActive && this.#awaitingAuto === null;
   }
   #drain(): void {
-    if (!this.#gap()) return;
-    const next = this.#steers.shift();
-    if (next !== undefined) this.#speak(next.text, next.callId);
+    // A full-duplex provider takes context at any time and chooses when to say
+    // it; waiting for a gap here never fired on GPT-Live (rc.6 smoke: a finished
+    // answer sat unspoken for two minutes), so steers go out at once.
+    const immediate = !!this.io.provider.caps.handlesBargeIn;
+    while (this.#steers.length > 0 && (immediate || this.#gap())) {
+      const next = this.#steers.shift()!;
+      const waited = next.queuedAt === undefined ? 0 : this.#lastTick - next.queuedAt;
+      if (waited >= STEER_WAIT_WARN_MS) {
+        this.io.emit({ type: "log", level: "warn", message: `steer waited ${Math.round(waited / 1000)}s for a gap` });
+      }
+      this.#speak(next.text, next.callId);
+    }
   }
+
   #speak(text: string, replyTo?: string): void {
     this.io.provider.addContext(`Say this to the participants now, in your own words and voice: ${text}`);
     if (replyTo === undefined) this.io.provider.respond();
@@ -262,10 +285,13 @@ export class Conductor {
   #logCounters(now: number): void {
     const c = this.#counters;
     const secs = Math.round((now - this.#countersAt) / 1000);
+    const m = this.io.micStats?.();
+    const mic = m ? ` micDrops=${m.drops} micDroppedMs=${m.droppedMs}` : "";
     this.io.emit({
       type: "log", level: "info",
-      message: `counters (${secs}s): clears=${c.clears} speechStarted=${c.speechStarted} delegates=${c.delegates} steersSpoken=${c.steersSpoken}`,
+      message: `counters (${secs}s): clears=${c.clears} speechStarted=${c.speechStarted} delegates=${c.delegates} steersSpoken=${c.steersSpoken} maxAheadMs=${Math.round(this.#maxAheadMs)}${mic}`,
     });
+    this.#maxAheadMs = 0;
     this.#counters = { clears: 0, speechStarted: 0, delegates: 0, steersSpoken: 0 };
     this.#countersAt = now;
   }
@@ -294,6 +320,7 @@ export class Conductor {
     // Everything not yet played was discarded by the audio pipe: the uplink clock
     // resumes from what actually played.
     this.#sentMs = playedMs;
+    this.#playEnd = this.#lastTick;
   }
   #finish(reason: EndReason): void {
     if (this.#ended) return;

@@ -14,7 +14,8 @@ export interface VoiceProviderCaps {
    * True when the model yields to a speaker on its own (full duplex, e.g.
    * GPT-Live). The Conductor then leaves the uplink alone on speechStarted:
    * flushing on every detected speech start (echo, backchannels) chops the
-   * agent's audio. An explicit `now` steer still flushes.
+   * agent's audio. An explicit `now` steer still flushes. Steers go to the
+   * provider at once instead of waiting for a gap: it chooses when to say them.
    */
   handlesBargeIn?: boolean;
 }

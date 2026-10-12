@@ -8,6 +8,7 @@ import type { AudioLinkLike } from "./audio-link";
 import type { ChildMsg, EndReason, ParentMsg, VoiceInit } from "./ipc";
 import type { VoiceProvider } from "./provider/types";
 import { resample } from "./resample";
+import { MicPacer, type MicPacerOptions } from "./pacer";
 
 export interface LoopDeps {
   init: VoiceInit;
@@ -18,6 +19,8 @@ export interface LoopDeps {
   now?: () => number;
   tickMs?: number;
   reconnectDelayMs?: number;
+  /** The mic pacer's clock and timers (tests inject virtual time). */
+  micClock?: Pick<MicPacerOptions, "now" | "setTimer" | "clearTimer">;
 }
 
 const MAX_RECONNECTS = 3;
@@ -48,9 +51,20 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
   // Lifecycle lines: no URLs, audio or transcript text (the child entry scrubs capability URLs too).
   const info = (message: string) => d.emit({ type: "log", level: "info", message });
 
+  // Call audio reaches the provider at real time (see pacer.ts), whichever
+  // provider it is. A provider being replaced gets nothing (checked at send).
+  const pacer = new MicPacer({
+    ...d.micClock,
+    rate: provider.caps.inputRate,
+    send: (pcm) => {
+      if (!reconnecting && !finished) provider.sendAudio(pcm);
+    },
+  });
+
   const conductor = new Conductor(
     {
       provider,
+      micStats: () => pacer.takeStats(),
       audio: d.audio,
       emit: d.emit,
       end,
@@ -97,6 +111,7 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
     reconnecting = true;
     providerReady = new Promise<void>((r) => (markReady = r));
     const old = provider;
+    pacer.clear(); // audio queued for the old session is stale for the new one
     await old.close().catch(() => {});
     for (let attempt = 1; attempt <= MAX_RECONNECTS && !finished; attempt++) {
       const p = d.makeProvider();
@@ -135,8 +150,8 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
   try {
     await d.audio.start({
       onAudio: (pcm) => {
-        if (reconnecting) return;
-        provider.sendAudio(resample(pcm, d.init.audio.sampleRate, provider.caps.inputRate));
+        if (reconnecting || finished) return;
+        pacer.push(resample(pcm, d.init.audio.sampleRate, provider.caps.inputRate));
       },
       onEnded: (reason) => end(reason as EndReason),
     });
@@ -175,6 +190,7 @@ export async function runVoiceLoop(d: LoopDeps): Promise<EndReason> {
 
   const reason = await ended;
   clearInterval(ticker);
+  pacer.close();
   // Close both at once and bound the wait: a hung audio close must not leave
   // the provider socket open or the parent without its `ended`.
   await Promise.race([

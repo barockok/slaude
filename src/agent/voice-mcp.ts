@@ -286,7 +286,7 @@ export function createVoiceMcp(sessionId: string, host: VoiceHost, calls: VoiceC
     tools: [
       tool(
         "voice_start",
-        "Start talking in a meeting. Follow this order exactly: (1) open a blank browser tab; (2) start the browser audio pipe on that tab (e.g. browser_audio_start), before any meeting page loads; (3) call voice_start right away, passing that result as `audio` (an audio provider may revoke an unattached capability within a minute); (4) navigate the tab to the meeting URL, then (5) join. If the meeting page was already loaded, reload it after starting the audio pipe. For Jitsi append #config.startWithVideoMuted=true to the URL. Runs as the agent identity.",
+        "Start talking in a meeting. Follow this order exactly: (1) open a blank browser tab; (2) start the browser audio pipe on that tab (e.g. browser_audio_start), before any meeting page loads; (3) call voice_start right away, passing that result as `audio` (an audio provider may revoke an unattached capability within a minute); (4) navigate the tab to the meeting URL, then (5) join; (6) once joined, end this turn promptly: the call's delegated requests run only when it ends. If the meeting page was already loaded, reload it after starting the audio pipe. For Jitsi append #config.startWithVideoMuted=true to the URL. Runs as the agent identity.",
         voiceStartShape,
         (a: any) => voiceHandlers.start(sessionId, host, calls, a),
       ),
