@@ -583,6 +583,13 @@ export async function closeBrain(): Promise<void> {
   // awaits: let it finish first (it stops between KBs while brainClosing()),
   // or it fails mid-import against a disconnected engine.
   await whileClosing(settleBrainWork);
+  embeddingActiveFlag = false;
+  delete process.env.GBRAIN_EMBEDDING_MODEL;
+  delete process.env.GBRAIN_EMBEDDING_DIMENSIONS;
+  try {
+    const { resetGateway } = (await gbrainImport("ai/gateway")) as { resetGateway?: () => void };
+    resetGateway?.();
+  } catch {}
   if (!enginePromise) return;
   const pending = enginePromise;
   enginePromise = null;
@@ -591,9 +598,6 @@ export async function closeBrain(): Promise<void> {
   ensureInFlight = null; // next boot may target a different brain home
   ensuredSources.clear();
   ensureGeneration++;
-  embeddingActiveFlag = false;
-  delete process.env.GBRAIN_EMBEDDING_MODEL;
-  delete process.env.GBRAIN_EMBEDDING_DIMENSIONS;
   await keepingExitCode(() => e.disconnect());
 }
 
