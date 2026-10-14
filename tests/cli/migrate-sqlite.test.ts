@@ -149,5 +149,7 @@ describe("cli/migrate-sqlite", () => {
       if (prevUrl === undefined) delete process.env.SLAUDE_PG_URL; else process.env.SLAUDE_PG_URL = prevUrl;
       if (prevDir === undefined) delete process.env.SLAUDE_PGLITE_DIR; else process.env.SLAUDE_PGLITE_DIR = prevDir;
     }
-  });
+    // Two CLI subprocesses each boot a fresh PGLite (initdb in wasm), then one
+    // more open: about 5 to 6 s on a CI runner, past bun's 5 s default.
+  }, 30_000);
 });

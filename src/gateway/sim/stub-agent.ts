@@ -76,6 +76,8 @@ export class StubAgent extends AgentManager {
   setBehavior(name: string) { this.#behavior = name; }
   attachGateway(h: GatewayHandle) { this.#handle = h; }
   lastError(): string | undefined { return this.#errors.at(-1); }
+  /** The latest turn's behavior, settled when it finishes (undefined before any turn). */
+  get running(): Promise<void> | undefined { return this.#running; }
 
   override async sendMessage(sessionId: string, envelope: string): Promise<void> {
     await this.#resolverLocal?.(sessionId);
