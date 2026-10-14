@@ -98,8 +98,11 @@ d("warm-then-cold across two nodes (real Redis)", () => {
     await gw.transport.feedMessage({ ...dm(CH, "8100.2", "warm follow-up"), thread_ts: T1 });
     await until(() => replies(gw.transport, "wc-reply").length >= 2, 20_000);
     expect(viaOf(replies(gw.transport, "wc-reply")[1]!.text)).toBe(warmNodeId);
-    const counts = await turnsQ.queue(nodeTurnsQueueFn(warmNodeId)).getJobCounts("completed");
-    expect(counts.completed ?? 0).toBeGreaterThanOrEqual(1);
+    // The reply is posted from inside the job, before the queue marks it
+    // completed: wait for the count rather than reading it once.
+    const nodeCompleted = async () => (await turnsQ.queue(nodeTurnsQueueFn(warmNodeId)).getJobCounts("completed")).completed ?? 0;
+    await until(async () => (await nodeCompleted()) >= 1, 10_000);
+    expect(await nodeCompleted()).toBeGreaterThanOrEqual(1);
   }, 30_000);
 
   test("kill the warm node: registration gone, next message cold-resumes on the survivor", async () => {
