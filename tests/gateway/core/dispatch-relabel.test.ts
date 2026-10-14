@@ -14,13 +14,14 @@ import type { SessionRow } from "../../../src/db/schema";
 
 type Outcome = "failed-mismatch" | "completed";
 
-function infra(outcomes: Outcome[], o: { loseGuard?: boolean } = {}) {
+function infra(outcomes: Outcome[], o: { loseGuard?: boolean; settleBetweenReads?: boolean } = {}) {
   const stream: Array<{ id: string; event: any }> = [];
   let next = 1;
   const jobs = new Map<string, { data: any; state: string; failedReason?: string; queue: string }>();
   const moved = new Map<string, { queue: string; jobId: string }>();
   const redispatches: Array<{ failedJobId: string; data: any; label: string; newJobId: string }> = [];
   let n = 0;
+  const pendingSettle = new Map<string, () => void>();
   /** Settle a job as the node would, with the next scripted outcome. */
   const settle = (jobId: string, data: any) => {
     const out = outcomes[n++] ?? "completed";
@@ -44,7 +45,11 @@ function infra(outcomes: Outcome[], o: { loseGuard?: boolean } = {}) {
   const turns = {
     enqueueTurn: async (data: any, _t: unknown, jobId: string) => {
       jobs.set(jobId, { data, state: "active", queue: "turns.label.engineering" });
-      setTimeout(() => settle(jobId, data), 10);
+      // settleBetweenReads: the job settles inside the follower's first
+      // getState, i.e. after its getJob snapshot was taken (BullMQ's getJob
+      // and getState are two separate reads).
+      if (!o.settleBetweenReads) setTimeout(() => settle(jobId, data), 10);
+      else pendingSettle.set(jobId, () => settle(jobId, data));
       return { queue: "turns.label.engineering", jobId, coalesced: false };
     },
     redispatch: async (failedJobId: string, data: any, label: string, newJobId: string) => {
@@ -67,7 +72,15 @@ function infra(outcomes: Outcome[], o: { loseGuard?: boolean } = {}) {
       getJob: async (id: string) => {
         const j = jobs.get(id);
         if (!j) return undefined;
-        return { id, data: j.data, failedReason: j.failedReason, getState: async () => j.state };
+        // A snapshot like BullMQ's Job: failedReason as of this read, state live.
+        return {
+          id, data: j.data, failedReason: j.failedReason,
+          getState: async () => {
+            const s = pendingSettle.get(id);
+            if (s) (pendingSettle.delete(id), s());
+            return j.state;
+          },
+        };
       },
     }),
     movedTo: async (id: string) => moved.get(id) ?? null,
@@ -102,7 +115,7 @@ describe("dispatch: LABEL_MISMATCH re-dispatch", () => {
     __resetPersonaRegistry();
   });
 
-  const run = async (outcomes: Outcome[], o: { loseGuard?: boolean } = {}) => {
+  const run = async (outcomes: Outcome[], o: { loseGuard?: boolean; settleBetweenReads?: boolean } = {}) => {
     // The turn was dispatched on engineering; the persona has since moved.
     setPersonaRegistry(managedDefault("engineering") as any);
     const inf = infra(outcomes, o);
@@ -153,6 +166,13 @@ describe("dispatch: LABEL_MISMATCH re-dispatch", () => {
     expect(errs[0].code).toBe("LABEL_MISMATCH");
     expect(errs[0].jobId).toBe(rd[0]!.newJobId);
     expect(events.filter((e) => e.type === "done")).toEqual([]);
+  });
+
+  test("a mismatch that lands between the follower's job read and state read is still re-dispatched", async () => {
+    const rd = await run(["failed-mismatch", "completed"], { settleBetweenReads: true });
+    expect(rd).toHaveLength(1);
+    expect(events.filter((e) => e.type === "error")).toEqual([]);
+    expect(events.filter((e) => e.type === "done")).toHaveLength(1);
   });
 
   test("a follower that loses the once-guard follows the winner's job", async () => {

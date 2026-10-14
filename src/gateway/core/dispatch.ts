@@ -235,13 +235,18 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
                   }
                   continue;
                 }
-                const reason = (j as { failedReason?: unknown } | undefined)?.failedReason;
+                // getJob and getState are two reads: a job that settled between
+                // them is a pre-failure snapshot with no failedReason. BullMQ
+                // writes the state and the reason together, so a read taken
+                // after the settled state was seen carries the reason.
+                const settled = jstate === "missing" ? j : ((await turns.queue(ref.queue).getJob(jobId)) ?? j);
+                const reason = (settled as { failedReason?: unknown } | undefined)?.failedReason;
                 // LABEL_MISMATCH (node labels spec §4.6): the node may not
                 // serve the agent (any more). Re-dispatch the turn ONCE to the
                 // persona's current label and post nothing; a second mismatch
                 // falls through to the one fixed message below.
-                if (jstate === "failed" && reason === "LABEL_MISMATCH" && j && ((j.data as TurnJob).relabelAttempts ?? 0) < 1) {
-                  const next = await relabelRedispatch(j).catch((e) => {
+                if (jstate === "failed" && reason === "LABEL_MISMATCH" && settled && ((settled.data as TurnJob).relabelAttempts ?? 0) < 1) {
+                  const next = await relabelRedispatch(settled).catch((e) => {
                     console.error(`[dispatch] re-dispatch after LABEL_MISMATCH failed session=${sessionId} job=${jobId}:`, e);
                     return "failed" as const;
                   });
