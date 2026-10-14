@@ -47,9 +47,9 @@
   /* 6 chips · 8 inputs and default interactive · 12 cards and modals ·
      full for buttons and badges. */
   --radius-sm: 6px;
-  --radius: 8px;
-  --radius-lg: 12px;
-  --radius-full: 9999px;
+  --radius: 6px;
+  --radius-lg: 6px;
+  --radius-full: 6px;
 
   --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
@@ -73,12 +73,12 @@
 
   --topbar-h: 48px;
   --topnav-h: 44px;
-  --sidebar-w: 268px;
+  --sidebar-w: 220px;
   --toc-w: 232px;
-  --content-max: 748px;
+  --content-max: 1080px;
 
-  --shadow-sm: 0 1px 2px rgba(17, 25, 40, .05);
-  --shadow-md: 0 4px 16px -4px rgba(17, 25, 40, .12), 0 1px 3px rgba(17, 25, 40, .06);
+  --shadow-sm: none;
+  --shadow-md: none;
   --shadow-lg: 0 24px 60px -12px rgba(17, 25, 40, .28), 0 2px 8px rgba(17, 25, 40, .08);
 }
 
@@ -123,8 +123,8 @@
     --code-text: #e5e7eb;
     --code-bar: #111928;
 
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
-    --shadow-md: 0 4px 16px -4px rgba(0, 0, 0, .5), 0 1px 3px rgba(0, 0, 0, .4);
+    --shadow-sm: none;
+    --shadow-md: none;
     --shadow-lg: 0 24px 60px -12px rgba(0, 0, 0, .7), 0 2px 8px rgba(0, 0, 0, .5);
   }
 }
@@ -164,8 +164,8 @@
   --code-text: #e5e7eb;
   --code-bar: #111928;
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
-  --shadow-md: 0 4px 16px -4px rgba(0, 0, 0, .5), 0 1px 3px rgba(0, 0, 0, .4);
+  --shadow-sm: none;
+  --shadow-md: none;
   --shadow-lg: 0 24px 60px -12px rgba(0, 0, 0, .7), 0 2px 8px rgba(0, 0, 0, .5);
 }
 
@@ -173,8 +173,16 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
-html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; scroll-padding-top: calc(var(--topbar-h) + var(--topnav-h) + 20px); }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; scroll-padding-top: calc(var(--topbar-h) + var(--topnav-h) + 20px); scrollbar-color: var(--border-strong) transparent; scrollbar-width: thin; }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } * { animation-duration: .001ms !important; transition-duration: .001ms !important; } }
+/* macOS/iOS draw this as a native transient overlay — it already appears on
+   scroll and fades out on its own with a smooth OS-driven animation. Fighting
+   that with a CSS opacity/background toggle only makes it look like it snaps,
+   so this just sets the resting color and lets the platform handle show/hide. */
+html::-webkit-scrollbar { width: 12px; height: 12px; }
+html::-webkit-scrollbar-track { background: transparent; }
+html::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: var(--radius-full); border: 3px solid var(--bg); }
+html::-webkit-scrollbar-thumb:hover { background: var(--text-4); }
 
 body {
   margin: 0;
@@ -313,9 +321,10 @@ button { font: inherit; color: inherit; }
   height: calc(100vh - var(--topbar-h) - var(--topnav-h));
   overflow-y: auto; overscroll-behavior: contain;
   padding: var(--s-24) var(--s-12) var(--s-48) 0;
-  scrollbar-width: thin;
+  scrollbar-width: thin; scrollbar-color: var(--border) transparent;
 }
 .sidebar::-webkit-scrollbar { width: 8px; }
+.sidebar::-webkit-scrollbar-track { background: transparent; }
 .sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-full); border: 2px solid var(--bg); }
 
 .nav-group + .nav-group { margin-top: var(--s-24); }
