@@ -149,8 +149,14 @@ export class SimSession {
     const onStart = (e: AgentEvent) => { if (e.type === "turnStart") turnStarted = true; };
     if (isReal) (this.agent as AgentManager).on("event", onStart);
     const turn = this.#armTurn();
+    const stubBefore = this.agent instanceof StubAgent ? this.agent.running : undefined;
+    const gatesBefore = this.#liveGates();
     await this.transport.feedMessage({ channel, user: as, text, channel_type: dm ? "im" : "channel", team: TEAM, thread_ts: step.thread ?? this.thread });
     await this.#drain();
+    // A new stub turn (not a slash command or a dropped message) runs detached.
+    if (this.agent instanceof StubAgent && this.agent.running && this.agent.running !== stubBefore) {
+      await this.#awaitStubTurn(this.agent.running, gatesBefore);
+    }
     if (isReal) (this.agent as AgentManager).off("event", onStart);
     if (this.agent instanceof StubAgent || turnStarted) await turn.done;
     else turn.cancel();
@@ -164,6 +170,10 @@ export class SimSession {
     const turn = this.#cluster ? this.#armTurn(30_000) : this.#armTurn();
     await this.transport.feedAction(actionId, as);
     await this.#drain();
+    // A decided gate resumes the parked stub turn: wait for it to reply or park again.
+    if (!this.#cluster && card.resolved && this.agent instanceof StubAgent && this.agent.running) {
+      await this.#awaitStubTurn(this.agent.running, this.#liveGates());
+    }
     await turn.done;
     if (this.#cluster) await this.#settleOutbound();
   }
@@ -229,6 +239,25 @@ export class SimSession {
   async #drain(): Promise<void> {
     if (this.agent instanceof StubAgent) await this.agent.drain();
     else await new Promise((r) => setTimeout(r, 0));
+  }
+
+  /** Live gate cards (approval/permission with buttons) on the bus. */
+  #liveGates(): number {
+    return this.transport.outbound.filter((c) => (c.kind === "permission" || c.kind === "approval") && !c.resolved && c.actionIds.length > 0).length;
+  }
+
+  /** Stub agent: wait until `turn` finishes or parks on a new gate card (more
+   *  live gates than `gatesBefore`), bounded. One tick was not enough: an
+   *  approval card is posted only after the pending_gates insert, and the turn
+   *  resumes only after the decision is written; on real Postgres those round
+   *  trips outlast a tick (approval-authz flaked there). */
+  async #awaitStubTurn(turn: Promise<void>, gatesBefore: number, maxMs = 10_000): Promise<void> {
+    let settled = false;
+    void turn.then(() => (settled = true));
+    const deadline = Date.now() + maxMs;
+    while (!settled && this.#liveGates() <= gatesBefore && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
   }
 
   // Real AgentManager runs the LLM turn async — feedMessage returns before the
