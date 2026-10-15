@@ -32,6 +32,7 @@ import type {
   EventHandler,
   Middleware,
   Transport,
+  ViewHandler,
   WebClientLike,
 } from "../core/transport";
 import * as SlackApps from "../../db/slack-apps";
@@ -95,6 +96,7 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
 
   const events = new Map<string, EventHandler[]>();
   const actions: Array<{ id: string | RegExp; h: ActionHandler }> = [];
+  const views = new Map<string, ViewHandler>();
   const middlewares: Middleware[] = [];
 
   /** (api_app_id:team_id) → entry; byApp groups installs of one app. */
@@ -163,6 +165,17 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
 
   async function dispatchInteraction(payload: any, entry: AppEntry): Promise<void> {
     await runMiddlewares(payload);
+    if (payload.type === "view_submission") {
+      const view = payload.view ?? {};
+      const h = views.get(view.callback_id);
+      if (!h) {
+        log(`[slack-http] no view handler matches ${view.callback_id}`);
+        return;
+      }
+      // The empty HTTP 200 already closed the modal; ack() is a no-op here.
+      await h({ ack: async () => {}, view, body: payload });
+      return;
+    }
     const respond = async (msg: any) => {
       if (!payload.response_url) {
         log("[slack-http] respond() with no response_url — dropped");
@@ -450,6 +463,9 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
     },
     action(idOrRegex, h) {
       actions.push({ id: idOrRegex, h });
+    },
+    view(callbackId, h) {
+      views.set(callbackId, h);
     },
     event(name, h) {
       const list = events.get(name) ?? [];
