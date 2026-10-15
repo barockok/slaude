@@ -48,7 +48,7 @@ export interface Surface {
   /** Post a message only `userId` can see (default: the binding's user).
    *  cap: "ephemeral". MUST throw rather than fall back to a public post —
    *  callers reach for it precisely because the content is not for the channel. */
-  sayEphemeral?(i: { text: string; userId?: string }): Promise<void>; // cap: "ephemeral"
+  sayEphemeral?(i: { text: string; userId?: string; blocks?: unknown[] }): Promise<void>; // cap: "ephemeral"
 }
 
 /** Neutral per-session binding the gateway builds from the inbound turn. A SurfaceFactory
