@@ -11,6 +11,8 @@ export interface WebClientLike {
   };
   users: { info(args: any): Promise<any>; profile: { set(args: any): Promise<any> } };
   search: { messages(args: any): Promise<any> };
+  /** Modals. Optional: fakes without it make modal features degrade to text. */
+  views?: { open(args: any): Promise<any> };
 }
 
 export type ActionHandler = (args: {
@@ -20,7 +22,15 @@ export type ActionHandler = (args: {
   respond: (msg: any) => Promise<void>;
 }) => Promise<void>;
 
-export type EventHandler = (args: { event: any; client: WebClientLike; context: any }) => Promise<void>;
+/** A modal submission (`view_submission`). `ack()` with no argument closes the
+ *  modal; in HTTP mode the 200 has already closed it and ack() is a no-op. */
+export type ViewHandler = (args: {
+  ack: () => Promise<void>;
+  view: { callback_id: string; private_metadata?: string; state?: { values?: any } };
+  body: any;
+}) => Promise<void>;
+
+export type EventHandler =(args: { event: any; client: WebClientLike; context: any }) => Promise<void>;
 export type Middleware = (args: { payload: any; next: () => Promise<void> }) => Promise<void>;
 
 /** Which registered Slack app an outbound call belongs to: the app an event,
@@ -45,6 +55,8 @@ export interface Transport {
   /** HTTP mode: every registered app, once the registry has loaded. */
   apps?(): Promise<RegisteredApp[]>;
   action(idOrRegex: string | RegExp, h: ActionHandler): void;
+  /** Modal submissions by callback_id. Optional: transports without modals omit it. */
+  view?(callbackId: string, h: ViewHandler): void;
   event(name: string, h: EventHandler): void;
   use(mw: Middleware): void;
   start(): Promise<any>;

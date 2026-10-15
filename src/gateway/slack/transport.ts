@@ -15,6 +15,7 @@ export function createSlackTransport(): Transport {
   return {
     client: app.client as any,
     action: (idOrRegex, h) => app.action(idOrRegex as any, h as any),
+    view: (callbackId, h) => app.view(callbackId, h as any),
     event: (name, h) => app.event(name as any, h as any),
     use: (mw) => app.use(mw as any),
     start: () => app.start().then(() => undefined),

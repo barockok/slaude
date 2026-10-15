@@ -29,7 +29,18 @@ import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
 import { humanizeToolStatus, redactSecrets } from "./status-text";
 import * as Remote from "../../db/remote";
-import { handleRemoteCommand, endRemoteForThread, remoteStatusOn } from "./remote-command";
+import {
+  handleRemoteCommand,
+  endRemoteForThread,
+  remoteStatusOn,
+  decodeRemoteOffer,
+  readRemoteConnectValues,
+  remoteConnectModal,
+  remoteOfferBlocks,
+  REMOTE_CONNECT_VIEW,
+  REMOTE_OPEN_ACTION,
+  type RemoteCommandCtx,
+} from "./remote-command";
 import { activeRemoteTarget } from "../../remote/active";
 import { HelperClient } from "../../remote/helper-client";
 import { cleanupCommand } from "../../remote/tools/bash";
@@ -1275,6 +1286,101 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return "Mention-only off — I'll follow this thread normally again.";
   }
 
+  /** The /remote handler's context for one thread and user: replies post as the
+   *  thread's persona through `app`; private replies and the Connect button go
+   *  ephemerally to `userId`. Shared by the typed command and the Connect modal. */
+  function remoteCommandCtx(i: {
+    teamId: string;
+    channelId: string;
+    threadTs: string;
+    userId: string;
+    sessionId: string;
+    personaId?: string;
+    app?: AppRef;
+  }): RemoteCommandCtx {
+    const { teamId, channelId, threadTs, userId, sessionId } = i;
+    const surface = surfaceFactoryFor(i.personaId, i.app)({
+      conversationId: channelId,
+      threadRef: threadTs,
+      inboundRef: threadTs,
+      userId,
+      teamId,
+      requestApproval: async () => { throw new Error("approval is not part of /remote"); },
+      reloadSession: () => false,
+    });
+    const canEphemeral = surface.capabilities.has("ephemeral") && !!surface.sayEphemeral;
+    const reply = async (text: string) => {
+      await outClientForPersona(i.personaId, i.app).chat.postMessage({ channel: channelId, thread_ts: threadTs, text, mrkdwn: true });
+    };
+    const soul = soulData();
+    return {
+      teamId, channelId, threadTs, userId, sessionId,
+      isManager: userId === soul.manager.userId || userId === soul.backupManager.userId,
+      reply,
+      sayPrivately: async (text) => {
+        if (canEphemeral) {
+          await surface.sayEphemeral!({ text, userId });
+          return;
+        }
+        await reply(":warning: `/remote` setup needs a surface that supports private replies.");
+      },
+      // The form needs ephemeral blocks to carry the button and modals to open.
+      ...(canEphemeral && t.view
+        ? {
+            offerConnect: async () => {
+              const offer = { sessionId, teamId, channelId, threadTs, userId, apiAppId: i.app?.apiAppId, issuedAt: Date.now() };
+              await surface.sayEphemeral!({ text: "Connect your machine for /remote", userId, blocks: remoteOfferBlocks(offer) });
+            },
+          }
+        : {}),
+      reload: () => { agent.reload(sessionId); },
+    };
+  }
+
+  // /remote Connect button → the address/directory modal. Only the user the
+  // button was posted to can open it (the value is bound to them), and only
+  // within REMOTE_OFFER_TTL_MS.
+  t.action(new RegExp(`^${REMOTE_OPEN_ACTION}$`), async ({ ack, action, body, respond }) => {
+    await ack();
+    if (!env.remote.enabled()) return;
+    const decoded = decodeRemoteOffer((action as { value?: string }).value, (body as any).user?.id);
+    if (!decoded.ok) {
+      if (decoded.reason === "expired") {
+        await respond({ response_type: "ephemeral", replace_original: true, text: "That Connect button expired. Send `/remote` again for a new one." }).catch(() => {});
+      }
+      return;
+    }
+    // The trigger belongs to the app the click arrived through: open the modal as it.
+    const clickApp: AppRef = { apiAppId: (body as any).api_app_id, teamId: (body as any).team?.id ?? (body as any).user?.team_id };
+    const client = botClientFor(clickApp);
+    const triggerId = (body as any).trigger_id;
+    if (!client.views || !triggerId) return;
+    const existing = await Remote.findTarget(decoded.offer.channelId, decoded.offer.threadTs);
+    const initialDir = existing?.user_id === decoded.offer.userId ? existing.dir : undefined;
+    // Restamp: the modal's own clock starts when it opens.
+    await client.views.open({ trigger_id: triggerId, view: remoteConnectModal({ ...decoded.offer, issuedAt: Date.now() }, initialDir) });
+  });
+
+  // Connect modal submitted: the same path as `/remote <addr> <dir>`, minus the
+  // address in the thread. Every check (enabled, lock owner, foreign crons, key,
+  // preflight) runs in handleRemoteCommand; results go to the thread.
+  t.view?.(REMOTE_CONNECT_VIEW, async ({ ack, view, body }) => {
+    await ack();
+    const decoded = decodeRemoteOffer(view.private_metadata, (body as any).user?.id);
+    if (!("offer" in decoded)) return; // invalid: not ours to answer
+    const { offer } = decoded;
+    const session = await Sessions.findById(offer.sessionId);
+    if (!session || session.slack_channel_id !== offer.channelId || session.slack_thread_ts !== offer.threadTs) return;
+    const app: AppRef = { apiAppId: (body as any).api_app_id ?? offer.apiAppId, teamId: offer.teamId };
+    const ctx = remoteCommandCtx({ ...offer, personaId: session.persona_id ?? undefined, app });
+    if (!decoded.ok) {
+      await ctx.sayPrivately("That Connect form expired. Send `/remote` again for a new one.").catch(() => {});
+      return;
+    }
+    const { addr, dir } = readRemoteConnectValues(view);
+    await handleRemoteCommand({ kind: "remote", action: "on", addr, dir }, ctx);
+  });
+
   t.action(/^slaude_mcp:connect:.+$/, async ({ ack, action, body }) => {
     await ack();
     const token = (action as { action_id: string }).action_id.replace(/^slaude_mcp:connect:/, "");
@@ -1773,29 +1879,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         return;
       }
       if (slash.kind === "remote") {
-        const remoteSurface = surfaceFactoryFor(dispatch?.personaId, app)({
-          conversationId: channelId,
-          threadRef: threadTs,
-          inboundRef: threadTs,
-          userId,
-          teamId,
-          requestApproval: async () => { throw new Error("approval is not part of /remote"); },
-          reloadSession: () => false,
-        });
-        const soul = soulData();
-        await handleRemoteCommand(slash, {
-          teamId, channelId, threadTs, userId, sessionId: session.id,
-          isManager: userId === soul.manager.userId || userId === soul.backupManager.userId,
-          reply,
-          sayPrivately: async (text) => {
-            if (remoteSurface.capabilities.has("ephemeral") && remoteSurface.sayEphemeral) {
-              await remoteSurface.sayEphemeral({ text, userId });
-              return;
-            }
-            await reply(":warning: `/remote` setup needs a surface that supports private replies.");
-          },
-          reload: () => { agent.reload(session.id); },
-        });
+        await handleRemoteCommand(slash, remoteCommandCtx({ teamId, channelId, threadTs, userId, sessionId: session.id, personaId: dispatch?.personaId, app }));
         return;
       }
       if (slash.kind === "one-on-one") {
