@@ -77,6 +77,7 @@ const ALLOW: Record<string, string> = {
   SLAUDE_GIT_PUSH_REMOTES: "remote URLs, not a secret",
   SLAUDE_GIT_PUSH_TOKEN: "push credential for git_push's own git child; stripped from the agent child (child-env.ts)",
   SLAUDE_GIT_PUSH_TOKEN_USER: "a Basic-auth user name, not a secret",
+  SLAUDE_LOCAL_EXEC: "a policy switch, not a secret; read where the session boots (the node)",
 };
 
 function files(dir: string): string[] {

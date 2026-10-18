@@ -13,12 +13,21 @@ export function sessionModeBlock(
   lock: OneOnOneLockRow | null,
   remote?: { userId: string; dir: string } | null,
   sandbox = false,
+  localExecOff = false,
 ): string {
   const base = lockBlock(lock);
   if (remote) return [base, remoteBlock(remote)].filter(Boolean).join("\n\n");
   if (sandbox) return [base, SANDBOX_BLOCK].filter(Boolean).join("\n\n");
+  if (localExecOff) return [base, LOCAL_EXEC_OFF_BLOCK].filter(Boolean).join("\n\n");
   return base;
 }
+
+const LOCAL_EXEC_OFF_BLOCK = [
+  "<local-exec-off>",
+  "This thread has no remote target, and this deployment never runs shell commands or writes files on its own server: Bash, Write and Edit are unavailable here. Read, Glob, Grep, the knowledge base, MCP servers and web tools still work.",
+  "For any work that needs a shell or file edits, ask the user to attach a sandbox with `/remote <address> <dir>` first. Do not look for another way to run commands.",
+  "</local-exec-off>",
+].join("\n");
 
 const SANDBOX_BLOCK = [
   "<sandbox-mode>",

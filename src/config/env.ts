@@ -581,6 +581,15 @@ export const env = {
       const raw = opt("SLAUDE_REMOTE", "0").toLowerCase();
       return raw === "1" || raw === "true" || raw === "yes";
     },
+    /** `SLAUDE_LOCAL_EXEC=off`: a session with no `/remote` target and no sandbox
+     *  gets no local Bash, Write or Edit (nor the other local-only tools) instead
+     *  of running them on this host. Read, Glob and Grep stay, for the knowledge
+     *  base. Fail-safe for deployments whose agent must never execute in its own
+     *  pod. Default on (upstream behaviour). */
+    localExec: () => {
+      const raw = opt("SLAUDE_LOCAL_EXEC", "on").toLowerCase();
+      return !(raw === "off" || raw === "0" || raw === "false" || raw === "no");
+    },
   },
   sandbox: {
     /** Sandbox mode: when set, every session's shell and file tools run on this

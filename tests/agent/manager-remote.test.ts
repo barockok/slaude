@@ -591,3 +591,48 @@ describe("sandbox mode (SLAUDE_SANDBOX_MCP_URL)", () => {
     await shutdown(mgr, row.id);
   }));
 });
+
+describe("local execution off (SLAUDE_LOCAL_EXEC=off)", () => {
+  const withOff = async (fn: () => Promise<void>) => {
+    process.env.SLAUDE_LOCAL_EXEC = "off";
+    try { await fn(); } finally { delete process.env.SLAUDE_LOCAL_EXEC; }
+  };
+
+  it("no /remote target and no sandbox: shell and write tools are removed, hook denies, prompt says so", () => withOff(async () => {
+    const mgr = new AgentManager();
+    mgr.setRemote(async () => null, () => { throw new Error("factory must not run"); });
+    const row = await mgr.ensureSession(thread());
+    const fs = plan();
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => fs.options !== null, 3000, "boot");
+    expect(fs.options.toolAliases).toBeUndefined();
+    expect(fs.options.mcpServers?.remote).toBeUndefined();
+    for (const t of ["Bash", "Write", "Edit", "NotebookEdit", "Monitor"]) expect(fs.options.disallowedTools).toContain(t);
+    for (const t of ["Read", "Glob", "Grep"]) expect(fs.options.disallowedTools).not.toContain(t);
+    expect(fs.options.hooks.PreToolUse).toHaveLength(1);
+    const sig = { signal: new AbortController().signal };
+    const ev = (tool: string) => ({ hook_event_name: "PreToolUse", tool_name: tool }) as any;
+    const [hook] = fs.options.hooks.PreToolUse[0].hooks;
+    expect((await hook(ev("Bash"), undefined, sig)).hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(await hook(ev("Read"), undefined, sig)).toEqual({});
+    expect(fs.options.systemPrompt.append).toContain("<local-exec-off>");
+    await shutdown(mgr, row.id);
+  }));
+
+  it("a /remote target lifts it: the remote tools run, nothing local is disallowed beyond remote mode", () => withOff(async () => {
+    const mgr = new AgentManager();
+    mgr.setRemote(
+      async () => ({ teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r" }),
+      () => ({ exec: noopExec, release: async () => {}, dispose: async () => {} }),
+    );
+    const row = await mgr.ensureSession(thread());
+    const fs = plan();
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => fs.options !== null, 3000, "boot");
+    expect(fs.options.toolAliases.Bash).toBe("mcp__remote__bash");
+    expect(fs.options.disallowedTools).not.toContain("Bash");
+    expect(fs.options.systemPrompt.append).toContain("<remote-mode>");
+    expect(fs.options.systemPrompt.append).not.toContain("<local-exec-off>");
+    await shutdown(mgr, row.id);
+  }));
+});

@@ -102,6 +102,24 @@ export function makeRemoteCanUseTool(base: CanUseTool | undefined, getMode: () =
 
 const DENIED_LOCAL = new Set<string>([...REMOTE_BUILTINS, ...REMOTE_DENIED_LOCAL_TOOLS]);
 
+/** With SLAUDE_LOCAL_EXEC=off and no remote or sandbox: every tool that runs code
+ *  or writes files on this host. Read, Glob and Grep stay (knowledge base). */
+export const LOCAL_EXEC_TOOLS = ["Bash", "Write", "Edit", ...REMOTE_DENIED_LOCAL_TOOLS] as const;
+const LOCAL_EXEC_SET = new Set<string>(LOCAL_EXEC_TOOLS);
+
+/** Belt and braces for the disallowedTools list in local-exec-off sessions. */
+export const denyLocalExec: HookCallback = async (input) => {
+  if (input.hook_event_name !== "PreToolUse") return {};
+  if (!LOCAL_EXEC_SET.has((input as any).tool_name)) return {};
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: "Local execution is off on this deployment: shell and file-writing tools only run in a thread with /remote on.",
+    },
+  };
+};
+
 /** Belt and braces for toolAliases and disallowedTools: hooks see the post-alias
  *  name, so this fires only if something reaches a LOCAL built-in directly (spec §4.1). */
 export const denyLocalBuiltins: HookCallback = async (input) => {

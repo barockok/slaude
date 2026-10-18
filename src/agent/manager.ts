@@ -46,7 +46,7 @@ import { sessionModeBlock } from "./session-mode";
 import { formatSessionNotes } from "./session-notes";
 import { BootFailure, type FailureCode } from "../gateway/core/failure-codes";
 import { redactSecrets } from "../gateway/core/status-text";
-import { REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, gitPushGuard, makeRemoteCanUseTool, sandboxMcpServer } from "../remote/mcp";
+import { LOCAL_EXEC_TOOLS, REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, denyLocalExec, gitPushGuard, makeRemoteCanUseTool, sandboxMcpServer } from "../remote/mcp";
 import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/types";
 
 /** Upper bound on waiting for a previous remote handle's job cleanup at boot. */
@@ -886,6 +886,8 @@ export class AgentManager extends EventEmitter {
       lock?: OneOnOneLockRow | null;
       remote?: { userId: string; dir: string } | null;
       sandbox?: boolean;
+      /** SLAUDE_LOCAL_EXEC=off and neither a remote nor a sandbox: no shell here. */
+      localExecOff?: boolean;
       mcpServers?: Record<string, unknown>;
       /** The CLI reads no MCP source but mcpServers (a node): the block is
        *  the whole list. */
@@ -908,7 +910,7 @@ export class AgentManager extends EventEmitter {
     return [
       soulSystemBlock(soul.soulMd),
       channelMandateBlock(ctx.channelId, soul.soulJson, sessionId, personaName),
-      sessionModeBlock(ctx.lock ?? null, ctx.remote, ctx.sandbox),
+      sessionModeBlock(ctx.lock ?? null, ctx.remote, ctx.sandbox, ctx.localExecOff),
       mcpServers
         ? `<mcp-servers>\nMCP server namespaces mounted this session. Call tools as \`mcp__<server>__<tool>\`.\n${Object.keys(mcpServers)
             .map((n) => `- ${n}`)
@@ -1106,6 +1108,9 @@ export class AgentManager extends EventEmitter {
     // session. A /remote target wins: the user picked their own machine.
     const sandboxUrl = remoteTarget ? "" : env.sandbox.mcpUrl();
     const model = await this.#sessionModel(sessionId, row.model, personaName);
+    // Fail-safe: with local execution off, a thread that has neither a /remote
+    // target nor a sandbox gets no shell or file-writing tools at all.
+    const localExecOff = !remoteTarget && !sandboxUrl && !env.remote.localExec();
     // Strict (node): the prompt lists exactly what the CLI will mount.
     const strictNames = localMcp ? { ...baseMcpServers, ...(remoteTarget || sandboxUrl ? { [REMOTE_MCP_NAME]: true } : {}) } : null;
     const systemAppend = await this.#buildSystemAppend(sessionId, personaName, {
@@ -1113,6 +1118,7 @@ export class AgentManager extends EventEmitter {
       lock,
       remote: remoteTarget ? { userId: remoteTarget.userId, dir: remoteTarget.dir } : null,
       sandbox: !!sandboxUrl,
+      localExecOff,
       mcpServers: strictNames ? (Object.keys(strictNames).length > 0 ? strictNames : undefined) : mcpServers,
       strictMcp: !!localMcp,
       memBlock,
@@ -1222,6 +1228,7 @@ export class AgentManager extends EventEmitter {
         // The aliased built-ins stay enabled (an alias needs its source tool, spike §8);
         // local-only tools with no remote counterpart are removed outright.
         ...(aliased ? { toolAliases: REMOTE_TOOL_ALIASES, disallowedTools: [...REMOTE_DENIED_LOCAL_TOOLS] } : {}),
+        ...(localExecOff ? { disallowedTools: [...LOCAL_EXEC_TOOLS] } : {}),
         permissionMode: mode,
         ...(mode === "bypassPermissions"
           ? { allowDangerouslySkipPermissions: true }
@@ -1231,6 +1238,7 @@ export class AgentManager extends EventEmitter {
           Stop: [{ hooks: [stopHook] }],
           UserPromptSubmit: [{ hooks: [userPromptHook] }],
           ...(aliased ? { PreToolUse: [{ hooks: [denyLocalBuiltins, gitPushGuard(() => this.#live.get(sessionId)?.mode ?? mode)] }] } : {}),
+          ...(localExecOff ? { PreToolUse: [{ hooks: [denyLocalExec] }] } : {}),
         },
         systemPrompt: {
           type: "preset",
