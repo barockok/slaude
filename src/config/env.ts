@@ -582,6 +582,24 @@ export const env = {
       return raw === "1" || raw === "true" || raw === "yes";
     },
   },
+  sandbox: {
+    /** Sandbox mode: when set, every session's shell and file tools run on this
+     *  streamable-HTTP MCP server (same six tools as `/remote`) instead of
+     *  locally. A `/remote` target, when present, takes precedence. Empty = off. */
+    mcpUrl: () => opt("SLAUDE_SANDBOX_MCP_URL").trim(),
+    /** Bearer token sent to the sandbox MCP server. Empty = no Authorization header. */
+    mcpToken: () => opt("SLAUDE_SANDBOX_MCP_TOKEN").trim(),
+  },
+  gitPush: {
+    /** Remotes `git_push` may push a factory/* branch to, exactly as given
+     *  (comma-separated URLs). Empty = the tool refuses every call. */
+    remotes: () => csv(opt("SLAUDE_GIT_PUSH_REMOTES")),
+    /** Optional HTTPS token for those remotes, sent as Basic auth by the git
+     *  child slaude runs. SSH remotes use slaude's own SSH setup instead. */
+    token: () => opt("SLAUDE_GIT_PUSH_TOKEN").trim(),
+    /** Basic-auth user paired with the token (GitHub: x-access-token, Bitbucket: x-token-auth). */
+    tokenUser: () => opt("SLAUDE_GIT_PUSH_TOKEN_USER", "x-access-token").trim(),
+  },
   /** Static Prometheus labels applied to every metric, e.g.
    *  `SLAUDE_METRICS_LABELS="agent=hermes,env=prod"`. Malformed entries are
    *  silently dropped by the metrics registry. */

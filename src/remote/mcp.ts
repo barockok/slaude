@@ -1,9 +1,11 @@
-import { createSdkMcpServer, tool, type CanUseTool, type HookCallback, type McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, tool, type CanUseTool, type HookCallback, type McpHttpServerConfig, type McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
+import { env } from "../config/env";
 import { z } from "zod";
 import { RemoteError, type Exec } from "./types";
 import { ReadState, readTool, writeTool, editTool, fail, type ToolText } from "./tools/files";
 import { globTool, grepTool } from "./tools/search";
 import { bashTool, bashOutputTool, bashKillTool } from "./tools/bash";
+import { gitPushTool } from "./tools/git-push";
 
 export const REMOTE_MCP_NAME = "remote";
 export const REMOTE_BUILTINS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep"] as const;
@@ -29,6 +31,8 @@ const PREFIX = `mcp__${REMOTE_MCP_NAME}__`;
 const READ_ONLY = new Set(["read", "glob", "grep", "bash_output"]);
 const EDITS = new Set(["write", "edit"]);
 const SHELL = new Set(["bash", "bash_kill"]);
+/** Publishes code: asks in every mode that can ask, never auto-allowed (see gitPushGuard). */
+const PUBLISH = new Set(["git_push"]);
 
 export function builtinFor(toolName: string): string | null {
   if (!toolName.startsWith(PREFIX)) return null;
@@ -61,6 +65,7 @@ export function remotePermission(toolName: string, mode: string): "allow" | "ask
   if (!toolName.startsWith(PREFIX)) return null;
   const t = toolName.slice(PREFIX.length);
   if (READ_ONLY.has(t)) return "allow";
+  if (PUBLISH.has(t)) return mode === "plan" || mode === "dontAsk" || mode === "bypassPermissions" ? "deny" : "ask";
   // An unknown tool under our prefix is never approved (and never reaches an approver).
   if (!EDITS.has(t) && !SHELL.has(t)) return "deny";
   if (mode === "plan" || mode === "dontAsk") return "deny";
@@ -79,7 +84,19 @@ export function makeRemoteCanUseTool(base: CanUseTool | undefined, getMode: () =
     }
     // Fail closed: with no approver, anything not decided above is denied.
     if (!base) return { behavior: "deny", message: "No approver is configured." };
-    return base(d === "ask" ? builtinFor(toolName) ?? toolName : toolName, input, ctx);
+    const asked = d === "ask" ? builtinFor(toolName) ?? toolName : toolName;
+    const r = await base(asked, input, ctx);
+    if (r.behavior !== "allow" || !r.updatedPermissions) return r;
+    // A publish is never remembered: an allow rule would skip this gate on the next push.
+    if (PUBLISH.has(toolName.slice(PREFIX.length))) return { ...r, updatedPermissions: undefined };
+    // "Always allow" was asked under the built-in name; the SDK matches rules against the
+    // name that runs (mcp__remote__bash), so a rule for "Bash" would never fire.
+    return {
+      ...r,
+      updatedPermissions: r.updatedPermissions.map((u) =>
+        u.type === "addRules" ? { ...u, rules: u.rules.map((x) => (x.toolName === asked ? { ...x, toolName } : x)) } : u,
+      ),
+    };
   };
 }
 
@@ -98,6 +115,22 @@ export const denyLocalBuiltins: HookCallback = async (input) => {
     },
   };
 };
+
+/** git_push must reach a human. In bypassPermissions the SDK may never call
+ *  canUseTool, so this hook (hooks run in every mode) denies it there. */
+export function gitPushGuard(getMode: () => string): HookCallback {
+  return async (input) => {
+    if (input.hook_event_name !== "PreToolUse") return {};
+    if ((input as any).tool_name !== `${PREFIX}git_push` || getMode() !== "bypassPermissions") return {};
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: "git_push needs an approval and this thread is in bypass mode. Ask the user to switch modes first.",
+      },
+    };
+  };
+}
 
 const GUIDANCE =
   "Stop and tell the user their machine is not reachable. They can check with `/remote`; if they restarted `tailcat serve` and got a new address, `/remote <new-address>` re-points this thread. Do not retry in a loop or work around it.";
@@ -196,6 +229,24 @@ export function createRemoteMcp(o: { exec: Exec; root: string; sessionKey: strin
         head_limit: z.number().optional(),
         multiline: z.boolean().optional(),
       }, guarded("grep", (i) => grepTool(files, i))),
+      tool("git_push", "Publish commits from the remote machine: push branch factory/<name> of the repo in `dir` to an allowed remote. The remote holds no credential, so `git push` from Bash fails; use this. Always asks for approval. No force push.", {
+        branch: z.string(),
+        remote: z.string(),
+        dir: z.string().optional(),
+      }, guarded("git_push", (i) => gitPushTool(files, i))),
     ],
   });
+}
+
+/** Sandbox mode: the remote tools served over HTTP by an external sandbox MCP server.
+ *  Mounted under REMOTE_MCP_NAME so aliases, permissions and status text are shared
+ *  with `/remote`. The server binds X-Sandbox-Session to one sandbox (create on first
+ *  call, reuse after); the model never sees a sandbox id. */
+export function sandboxMcpServer(url: string, sessionId: string): McpHttpServerConfig {
+  const token = env.sandbox.mcpToken();
+  return {
+    type: "http",
+    url,
+    headers: { "X-Sandbox-Session": sessionId, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+  };
 }

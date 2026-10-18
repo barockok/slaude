@@ -14,6 +14,9 @@
  *   - SLAUDE_REDIS_URL, every session's queue, locks and event stream (the
  *     node process uses it; the child never does);
  *   - SLAUDE_ENCRYPTION_KEY, the connect broker's key;
+ *   - SLAUDE_SANDBOX_MCP_TOKEN, read by slaude to build the sandbox MCP
+ *     server's headers; the child gets it only inside that config;
+ *   - SLAUDE_GIT_PUSH_TOKEN, used only by the git child git_push runs;
  *   - the brain's embedding provider keys (src/knowledge/embedding-keys.ts:
  *     OPENAI_API_KEY, VOYAGE_API_KEY, ...). The brain runs in the gateway
  *     process; in mono the child shared its environment and could read them.
@@ -30,6 +33,8 @@ const ALSO_STRIPPED = new Set([
   "SLAUDE_ENCRYPTION_KEY",
   "SLAUDE_NODE_TOKEN",
   "SLAUDE_REDIS_URL",
+  "SLAUDE_SANDBOX_MCP_TOKEN",
+  "SLAUDE_GIT_PUSH_TOKEN",
   ...Object.values(EMBEDDING_PROVIDER_KEY_ENV).filter((k): k is string => !!k),
 ]);
 

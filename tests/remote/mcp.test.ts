@@ -69,6 +69,16 @@ describe("makeRemoteCanUseTool", () => {
     await can("mcp__slaude_kb__search", {}, sig);
     expect(asked).toEqual(["Bash", "mcp__slaude_kb__search"]);
   });
+  it("'always allow' becomes a rule for the remote tool name; never for git_push", async () => {
+    const always = async (name: string, input: any) =>
+      ({ behavior: "allow", updatedInput: input, updatedPermissions: [{ type: "addRules", rules: [{ toolName: name }], behavior: "allow", destination: "session" }] }) as any;
+    const can = makeRemoteCanUseTool(always as any, () => "default");
+    const r: any = await can("mcp__remote__bash", { command: "ls" }, sig);
+    expect(r.updatedPermissions[0].rules).toEqual([{ toolName: "mcp__remote__bash" }]);
+    const p: any = await can("mcp__remote__git_push", { branch: "factory/x", remote: "o" }, sig);
+    expect(p.behavior).toBe("allow");
+    expect(p.updatedPermissions).toBeUndefined();
+  });
   it("denies an ask when there is no resolver", async () => {
     const can = makeRemoteCanUseTool(undefined, () => "default");
     expect((await can("mcp__remote__bash", { command: "ls" }, sig)).behavior).toBe("deny");
@@ -142,11 +152,11 @@ describe("denyLocalBuiltins", () => {
 });
 
 describe("createRemoteMcp", () => {
-  it("registers eight tools under the remote server name", () => {
+  it("registers nine tools under the remote server name", () => {
     const s = createRemoteMcp({ exec: localExec, root: "/tmp", sessionKey: "k" });
     expect(s.name).toBe(REMOTE_MCP_NAME);
     const names = Object.keys((s.instance as any)._registeredTools ?? {});
-    expect(names.sort()).toEqual(["bash", "bash_kill", "bash_output", "edit", "glob", "grep", "read", "write"]);
+    expect(names.sort()).toEqual(["bash", "bash_kill", "bash_output", "edit", "git_push", "glob", "grep", "read", "write"]);
   });
   it("turns a transport failure into a tool error with guidance, never a throw", async () => {
     const dead = async () => { throw new RemoteError("REMOTE_UNREACHABLE", "connection closed"); };

@@ -70,6 +70,13 @@ const ALLOW: Record<string, string> = {
   SLAUDE_SOUL_PARSE_MAX_TOKENS: "a size limit, not a secret",
   SLAUDE_JOB_TOKEN_MAX_AGE: "a duration cap, not a secret",
   SLAUDE_NODE_ALLOW_TOKENLESS_PENDING: "a compatibility switch, not a secret",
+  // Sandbox mode: the node mounts the sandbox MCP server for its sessions.
+  SLAUDE_SANDBOX_MCP_URL: "an address, not a secret; read where the session boots (the node)",
+  SLAUDE_SANDBOX_MCP_TOKEN: "the sandbox server's caller token; the node needs it to mount the server; stripped from the agent child (child-env.ts)",
+  // git_push runs where the session's remote tools run (the node).
+  SLAUDE_GIT_PUSH_REMOTES: "remote URLs, not a secret",
+  SLAUDE_GIT_PUSH_TOKEN: "push credential for git_push's own git child; stripped from the agent child (child-env.ts)",
+  SLAUDE_GIT_PUSH_TOKEN_USER: "a Basic-auth user name, not a secret",
 };
 
 function files(dir: string): string[] {

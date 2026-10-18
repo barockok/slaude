@@ -46,7 +46,7 @@ import { sessionModeBlock } from "./session-mode";
 import { formatSessionNotes } from "./session-notes";
 import { BootFailure, type FailureCode } from "../gateway/core/failure-codes";
 import { redactSecrets } from "../gateway/core/status-text";
-import { REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, makeRemoteCanUseTool } from "../remote/mcp";
+import { REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, gitPushGuard, makeRemoteCanUseTool, sandboxMcpServer } from "../remote/mcp";
 import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/types";
 
 /** Upper bound on waiting for a previous remote handle's job cleanup at boot. */
@@ -885,6 +885,7 @@ export class AgentManager extends EventEmitter {
       channelId?: string | null;
       lock?: OneOnOneLockRow | null;
       remote?: { userId: string; dir: string } | null;
+      sandbox?: boolean;
       mcpServers?: Record<string, unknown>;
       /** The CLI reads no MCP source but mcpServers (a node): the block is
        *  the whole list. */
@@ -907,7 +908,7 @@ export class AgentManager extends EventEmitter {
     return [
       soulSystemBlock(soul.soulMd),
       channelMandateBlock(ctx.channelId, soul.soulJson, sessionId, personaName),
-      sessionModeBlock(ctx.lock ?? null, ctx.remote),
+      sessionModeBlock(ctx.lock ?? null, ctx.remote, ctx.sandbox),
       mcpServers
         ? `<mcp-servers>\nMCP server namespaces mounted this session. Call tools as \`mcp__<server>__<tool>\`.\n${Object.keys(mcpServers)
             .map((n) => `- ${n}`)
@@ -1101,13 +1102,17 @@ export class AgentManager extends EventEmitter {
     const baseMcpServers = localMcp ? mergeLocalMcp(sessionId, localMcp, mcpServers) : mcpServers;
     // Remote mode: tools for this session run on the lock owner's machine.
     const remoteTarget = this.#remoteResolver ? await this.#remoteResolver(sessionId) : null;
+    // Sandbox mode: the same six tools, served by an HTTP MCP server keyed by
+    // session. A /remote target wins: the user picked their own machine.
+    const sandboxUrl = remoteTarget ? "" : env.sandbox.mcpUrl();
     const model = await this.#sessionModel(sessionId, row.model, personaName);
     // Strict (node): the prompt lists exactly what the CLI will mount.
-    const strictNames = localMcp ? { ...baseMcpServers, ...(remoteTarget ? { [REMOTE_MCP_NAME]: true } : {}) } : null;
+    const strictNames = localMcp ? { ...baseMcpServers, ...(remoteTarget || sandboxUrl ? { [REMOTE_MCP_NAME]: true } : {}) } : null;
     const systemAppend = await this.#buildSystemAppend(sessionId, personaName, {
       channelId: row.slack_channel_id,
       lock,
       remote: remoteTarget ? { userId: remoteTarget.userId, dir: remoteTarget.dir } : null,
+      sandbox: !!sandboxUrl,
       mcpServers: strictNames ? (Object.keys(strictNames).length > 0 ? strictNames : undefined) : mcpServers,
       strictMcp: !!localMcp,
       memBlock,
@@ -1180,10 +1185,12 @@ export class AgentManager extends EventEmitter {
     const baseCanUse: CanUseTool | undefined = resolver
       ? (toolName, input, ctx) => resolver(sessionId, toolName, input, ctx)
       : undefined;
-    const canUseTool: CanUseTool | undefined = remoteHandle
+    // Built-ins rerouted to mcp__remote__*: by a /remote handle or the sandbox server.
+    const aliased = !!remoteHandle || !!sandboxUrl;
+    const canUseTool: CanUseTool | undefined = aliased
       ? makeRemoteCanUseTool(baseCanUse, () => this.#live.get(sessionId)?.mode ?? mode)
       : baseCanUse;
-    if (remoteHandle && localMcp && Object.hasOwn(localMcp, REMOTE_MCP_NAME)) {
+    if (aliased && localMcp && Object.hasOwn(localMcp, REMOTE_MCP_NAME)) {
       console.warn(
         `[node] session=${sessionId} MCP server '${REMOTE_MCP_NAME}' is in the node manifest; this session runs remotely, so the remote tools replace it`,
       );
@@ -1196,6 +1203,7 @@ export class AgentManager extends EventEmitter {
         ...(remoteHandle && remoteTarget
           ? { [REMOTE_MCP_NAME]: createRemoteMcp({ exec: remoteHandle.exec, root: remoteTarget.dir, sessionKey: sessionId }) }
           : {}),
+        ...(sandboxUrl ? { [REMOTE_MCP_NAME]: sandboxMcpServer(sandboxUrl, sessionId) } : {}),
       };
       const hasMcpServers = Object.keys(mergedMcpServers).length > 0;
       options = {
@@ -1213,7 +1221,7 @@ export class AgentManager extends EventEmitter {
         plugins: allPlugins,
         // The aliased built-ins stay enabled (an alias needs its source tool, spike §8);
         // local-only tools with no remote counterpart are removed outright.
-        ...(remoteHandle ? { toolAliases: REMOTE_TOOL_ALIASES, disallowedTools: [...REMOTE_DENIED_LOCAL_TOOLS] } : {}),
+        ...(aliased ? { toolAliases: REMOTE_TOOL_ALIASES, disallowedTools: [...REMOTE_DENIED_LOCAL_TOOLS] } : {}),
         permissionMode: mode,
         ...(mode === "bypassPermissions"
           ? { allowDangerouslySkipPermissions: true }
@@ -1222,7 +1230,7 @@ export class AgentManager extends EventEmitter {
           PreCompact: [{ hooks: [preCompact] }],
           Stop: [{ hooks: [stopHook] }],
           UserPromptSubmit: [{ hooks: [userPromptHook] }],
-          ...(remoteHandle ? { PreToolUse: [{ hooks: [denyLocalBuiltins] }] } : {}),
+          ...(aliased ? { PreToolUse: [{ hooks: [denyLocalBuiltins, gitPushGuard(() => this.#live.get(sessionId)?.mode ?? mode)] }] } : {}),
         },
         systemPrompt: {
           type: "preset",
