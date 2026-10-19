@@ -1438,6 +1438,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // Voice-origin turn: no status, no reaction, no task tracker, and a
         // (suppressed) reply must not count as the agent having spoken.
         if (voiceTurns.active(e.sessionId)) break;
+        // The internal skill-evolution turn runs after the user's turn was
+        // finalized (✅, status cleared): its tools must not bring back a
+        // "thinking" status or a working reaction (#131).
+        if (e.autoEvolve) break;
         // Any user-visible tool counts as "spoke" — reply, edit, upload all
         // surface content. (react alone doesn't satisfy: an emoji isn't a real
         // answer.) Matches the canonical surface namespace + the deprecated

@@ -343,17 +343,32 @@ describe("slackHandlers", () => {
     expect(data.matches[0].text).toBe("deploy complete");
   });
 
-  test("search_messages surfaces slack errors", async () => {
-    const ctx = fakeCtx({
+  const searchFails = (code: string) =>
+    fakeCtx({
       searchMessages: () => {
         const e: any = new Error("search failed");
-        e.data = { error: "missing_scope" };
+        e.data = { error: code };
         throw e;
       },
     });
-    const res = await slackHandlers.search_messages(ctx, { query: "x" });
+
+  test("search_messages surfaces other slack errors raw", async () => {
+    const res = await slackHandlers.search_messages(searchFails("ratelimited"), { query: "x" });
     expect(res.isError).toBe(true);
-    expect(res.content[0]!.text).toContain("missing_scope");
+    expect(res.content[0]!.text).toBe("slack search.messages failed: ratelimited");
+  });
+
+  test("search_messages on a bot token says search needs a user token (#104)", async () => {
+    const res = await slackHandlers.search_messages(searchFails("not_allowed_token_type"), { query: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("needs a user token with search:read");
+    expect(res.content[0]!.text).toContain("runs on a bot token");
+  });
+
+  test("search_messages without search:read says so (#104)", async () => {
+    const res = await slackHandlers.search_messages(searchFails("missing_scope"), { query: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("has a token without search:read");
   });
 
   test("reply omits thread_ts when postTarget is channel", async () => {

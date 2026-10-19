@@ -88,11 +88,13 @@ type LiveSession = {
   bootFp?: string;
 };
 
+// `autoEvolve` marks events of the internal skill-evolution turn that follows a
+// user-visible turn: the gateway shows no status or reaction for them (#131).
 export type AgentEvent =
-  | { type: "assistantText"; sessionId: string; text: string }
-  | { type: "toolCall"; sessionId: string; tool: string; input: unknown }
-  | { type: "toolResult"; sessionId: string; tool: string; result: unknown }
-  | { type: "thinking"; sessionId: string; text: string }
+  | { type: "assistantText"; sessionId: string; text: string; autoEvolve?: boolean }
+  | { type: "toolCall"; sessionId: string; tool: string; input: unknown; autoEvolve?: boolean }
+  | { type: "toolResult"; sessionId: string; tool: string; result: unknown; autoEvolve?: boolean }
+  | { type: "thinking"; sessionId: string; text: string; autoEvolve?: boolean }
   | { type: "turnStart"; sessionId: string }
   | { type: "done"; sessionId: string; autoEvolve?: boolean }
   // `error` is the RAW detail for logs only; Slack gets the fixed text for `code`
@@ -1431,6 +1433,7 @@ export class AgentManager extends EventEmitter {
         // model also emits thinking blocks at runtime. Widen so the thinking
         // branch type-checks (both the discriminant and `.thinking`).
         type ThinkingBlock = { type: "thinking"; thinking: string };
+        const evolve = live?.inAutoEvolve ? { autoEvolve: true } : {};
         const blocks = msg.message.content as Array<
           (typeof msg.message.content)[number] | ThinkingBlock
         >;
@@ -1441,12 +1444,14 @@ export class AgentManager extends EventEmitter {
               type: "assistantText",
               sessionId,
               text: block.text,
+              ...evolve,
             } satisfies AgentEvent);
           } else if (block.type === "thinking") {
             this.emit("event", {
               type: "thinking",
               sessionId,
               text: block.thinking,
+              ...evolve,
             } satisfies AgentEvent);
           } else if (block.type === "tool_use") {
             if (live) live.turnTools.push(block.name);
@@ -1456,6 +1461,7 @@ export class AgentManager extends EventEmitter {
               sessionId,
               tool: block.name,
               input: block.input,
+              ...evolve,
             } satisfies AgentEvent);
           }
         }
@@ -1487,6 +1493,7 @@ export class AgentManager extends EventEmitter {
             sessionId,
             tool: "",
             result: msg.tool_use_result,
+            ...(live?.inAutoEvolve ? { autoEvolve: true } : {}),
           } satisfies AgentEvent);
         }
         break;
