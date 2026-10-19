@@ -120,6 +120,32 @@ CREATE TABLE IF NOT EXISTS remote_targets (
   created_at     INTEGER NOT NULL,
   PRIMARY KEY (channel_id, thread_ts)
 );
+CREATE TABLE IF NOT EXISTS environments (
+  id          TEXT    PRIMARY KEY,
+  team_id     TEXT    NOT NULL,
+  user_id     TEXT    NOT NULL,
+  name        TEXT    NOT NULL,
+  kind        TEXT    NOT NULL,
+  config      TEXT    NOT NULL,
+  secrets     TEXT,
+  default_dir TEXT,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  UNIQUE (team_id, user_id, name)
+);
+CREATE TABLE IF NOT EXISTS env_bindings (
+  channel_id   TEXT    NOT NULL,
+  thread_ts    TEXT    NOT NULL,
+  env_id       TEXT    NOT NULL,
+  dir          TEXT    NOT NULL,
+  lock_by_env  INTEGER NOT NULL DEFAULT 0,
+  endpoint     TEXT,
+  generation   INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER NOT NULL,
+  created_at   INTEGER NOT NULL,
+  PRIMARY KEY (channel_id, thread_ts)
+);
+CREATE INDEX IF NOT EXISTS idx_env_bindings_env ON env_bindings (env_id);
 CREATE TABLE IF NOT EXISTS remote_keys (
   team_id     TEXT    NOT NULL,
   user_id     TEXT    NOT NULL,
