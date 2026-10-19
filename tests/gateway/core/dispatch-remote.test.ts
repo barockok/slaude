@@ -63,7 +63,7 @@ describe("dispatch remote claims", () => {
     const h = harness("UTESTA");
     await h.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTA" });
     expect(h.claims().runAs).toBe("user:UTESTA");
-    expect(h.claims().remote).toEqual({ addr: "tcA", dir: "/r" });
+    expect(h.claims().remote).toMatchObject({ addr: "tcA", dir: "/r", env: { kind: "tailcat", trust: "user-machine" } });
     expect(h.claims().sessionConfigFp).toBe(sessionConfigFp({ runAs: "UTESTA", lock: { user: "UTESTA", openScope: null }, remote: { addr: "tcA", dir: "/r" } }));
     await h.dispatch.close();
   });
@@ -95,12 +95,12 @@ describe("dispatch remote claims", () => {
     await OneOnOne.lock({ channelId: "C1", threadTs: "1.1", lockedUser: "UTESTA", createdBy: "UTESTA" });
     await Remote.setTarget({ channelId: "C1", threadTs: "1.1", teamId: "TTESTTEAM1", userId: "UTESTA", addr: "tcA", dir: "/r", lockByRemote: true });
     const h = harness("UTESTA");
-    // DB failure seam: the target table is unreachable for the lookup.
-    await db.run("ALTER TABLE remote_targets RENAME TO remote_targets_hidden");
+    // DB failure seam: the binding table is unreachable for the lookup.
+    await db.run("ALTER TABLE env_bindings RENAME TO env_bindings_hidden");
     try {
       await expect(h.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTA" })).rejects.toThrow();
     } finally {
-      await db.run("ALTER TABLE remote_targets_hidden RENAME TO remote_targets");
+      await db.run("ALTER TABLE env_bindings_hidden RENAME TO env_bindings");
     }
     expect(h.enqueued).toHaveLength(0);
     await h.dispatch.close();
@@ -154,5 +154,25 @@ describe("dispatch remote claims", () => {
     const v = verifyJobToken(jobToken);
     expect(v.ok && v.claims.remote).toEqual({ addr: "tcA", dir: "/r" });
     expect(v.ok && v.claims.sessionConfigFp).toBe("fp1");
+  });
+
+  it("a provisioned sandbox is signed into an agent turn and started first", async () => {
+    const { registerKind, unregisterKind } = await import("../../../src/remote/kinds");
+    const { fakeSandboxKind } = await import("../../remote/fake-sandbox");
+    const Envs = await import("../../../src/db/environments");
+    const log: string[] = [];
+    registerKind(fakeSandboxKind(log));
+    try {
+      const e = await Envs.createEnv({ teamId: "TTESTTEAM1", userId: "UTESTA", name: "sb", kind: "sandbox", config: { image: "img" } });
+      await Envs.bind({ channelId: "C1", threadTs: "1.1", envId: e.id, dir: "/w", lockByEnv: false });
+      const h = harness(undefined);
+      await h.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UGUEST" });
+      expect(h.claims().runAs).toBe("agent");
+      expect(h.claims().remote).toMatchObject({ addr: "", dir: "/w", env: { kind: "sandbox", trust: "provisioned" } });
+      expect(log).toEqual(["provision:C1-1_1:1"]);
+      await h.dispatch.close();
+    } finally {
+      unregisterKind("sandbox");
+    }
   });
 });

@@ -26,10 +26,14 @@ const ctx = (over: Partial<{ userId: string; isManager: boolean }> = {}) => ({
   sayPrivately: async (t: string) => { privately.push(t); },
   reload: () => { reloads++; },
 });
+/** The pre-environment shapes, so the expectations below read as before. */
+const flatPf = (i: any) => ({ addr: i.info.transport.addr, dir: i.dir, privateKey: i.info.privateKey });
+const flatCleanup = (i: any) => ({ addr: i.info.transport.addr, privateKey: i.info.privateKey, sessionKey: i.sessionKey });
 const deps = (ok = true): RemoteCommandDeps => ({
-  preflight: async (i) => { preflights.push(i); return ok ? { ok: true, dir: "/abs/repo" } : { ok: false, error: "REMOTE_UNREACHABLE: no route" }; },
-  ping: async () => "direct",
-  cleanup: async (i) => { cleanups.push(i); },
+  preflight: async (i) => { preflights.push(flatPf(i)); return ok ? { ok: true, dir: "/abs/repo" } : { ok: false, error: "REMOTE_UNREACHABLE: no route" }; },
+  status: async () => "direct",
+  provision: async () => {},
+  cleanup: async (i) => { cleanups.push(flatCleanup(i)); },
   generateKeyPair: (c) => ({ privateKey: `PRIV-${c}`, publicKey: `ssh-ed25519 AAAA ${c}` }),
   validKey: (p) => !p.privateKey.startsWith("BROKEN"),
   listForeignThreadCrons: CronJobs.countForeignThreadJobs,
@@ -130,7 +134,7 @@ describe("/remote", () => {
     await handleRemoteCommand({ kind: "remote", action: "on", addr: "tcAddr1", dir: "/r" }, ctx(), deps());
     await handleRemoteCommand({ kind: "remote", action: "off" }, ctx(), deps());
     expect(await OneOnOne.find("C1", "1.0")).toBeNull();
-    await Bun.sleep(0);
+    await Bun.sleep(20);
     expect(cleanups).toEqual([{ addr: "tcAddr1", privateKey: "PRIV", sessionKey: "S1" }]);
   });
 
@@ -249,6 +253,7 @@ describe("/remote", () => {
     const seen: any[] = [];
     expect(await endRemoteForThread("C1", "1.0", { sessionId: "S9", cleanup: async (i) => { seen.push(i); } })).toEqual({ ended: true, lockByRemote: true });
     expect(await Remote.findTarget("C1", "1.0")).toBeNull();
+    await Bun.sleep(20);
     expect(seen).toEqual([]);
   });
 
@@ -261,7 +266,8 @@ describe("/remote", () => {
     await Remote.setTarget({ channelId: "C1", threadTs: "1.0", teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r", lockByRemote: true });
     await Remote.putKeyIfAbsent("T1", "U_A", { privateKey: "PRIV", publicKey: "PUB" });
     const seen: any[] = [];
-    expect(await endRemoteForThread("C1", "1.0", { sessionId: "S9", cleanup: async (i) => { seen.push(i); } })).toEqual({ ended: true, lockByRemote: true });
+    expect(await endRemoteForThread("C1", "1.0", { sessionId: "S9", cleanup: async (i) => { seen.push(flatCleanup(i)); } })).toEqual({ ended: true, lockByRemote: true });
+    await Bun.sleep(20);
     expect(seen).toEqual([{ addr: "tcA", privateKey: "PRIV", sessionKey: "S9" }]);
     expect(await endRemoteForThread("C1", "1.0")).toEqual({ ended: false, lockByRemote: false });
   });

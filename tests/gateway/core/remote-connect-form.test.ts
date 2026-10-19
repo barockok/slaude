@@ -141,7 +141,7 @@ describe("/remote connect form (gateway)", () => {
     await Remote.putKeyIfAbsent("T", WORLD.manager, generateSshKeyPair(`slaude:${WORLD.manager}`));
     await h.submit(meta, WORLD.manager, "tcSecretFormAddr", "~/repo");
     // The stub tailcat cannot reach anything: preflight's refusal reaches the thread.
-    expect(h.posts.some((p) => String(p.text).includes("Couldn't use your machine"))).toBe(true);
+    expect(h.posts.some((p) => String(p.text).includes("Couldn't use"))).toBe(true);
     expect(await Remote.findTarget("D_MGR", ts)).toBeNull();
     const all = JSON.stringify([...h.posts, ...h.ephemerals]);
     expect(all).not.toContain("tcSecretFormAddr");
