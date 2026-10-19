@@ -1,7 +1,7 @@
 # Environments — `/remote` as a choice of saved execution environments
 
 **Date:** 2026-10-19
-**Status:** Brainstorm / draft design. Not implemented.
+**Status:** Phases 1–2 implemented (environments, `/env`, tailcat and ssh kinds). The provisioned-kind interface, lifecycle and trust rules (§4, §7) are implemented and tested against a fake kind; no real sandbox kind ships until the provisioner decision (§7). See `docs/site/_content/field-notes/2026-10-19-remote-environments.md`.
 **Supersedes (when built):** the single tailcat target of `2026-09-29-remote-exec-design.md` §2–§3. Its tool aliasing, guard, approval rules and key custody stay as they are.
 **Ships as:** a release candidate (migration + agent-loop change), behind `SLAUDE_REMOTE=1` as today.
 
