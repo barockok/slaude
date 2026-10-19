@@ -325,7 +325,17 @@ export const slackHandlers = {
       }));
       return ok(JSON.stringify({ total: r.messages?.total, matches }, null, 2));
     } catch (e: any) {
-      return err(`slack search.messages failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
+      const code = e?.data?.error ?? e?.message ?? String(e);
+      // search.messages refuses bot tokens; it works only when this agent posts
+      // as a real user (SLACK_POST_AS_USER with a user token carrying search:read).
+      if (code === "not_allowed_token_type" || code === "missing_scope") {
+        return err(
+          `slack search is not available to this agent: search.messages needs a user token with search:read, ` +
+            `and this agent ${code === "not_allowed_token_type" ? "runs on a bot token" : "has a token without search:read"}. ` +
+            `Tell the user search is unavailable rather than retrying.`,
+        );
+      }
+      return err(`slack search.messages failed: ${code}`);
     }
   },
 
