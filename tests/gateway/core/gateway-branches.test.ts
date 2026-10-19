@@ -29,6 +29,7 @@ function richTransport(o: { botUserId?: string; authThrows?: boolean } = {}) {
   const posts: any[] = [];
   const edits: any[] = [];
   const reacts: any[] = [];
+  const statuses: any[] = [];
   const handlers = new Map<string, (args: any) => Promise<void>>();
   const actions: { pattern: RegExp | string; fn: any }[] = [];
   const middlewares: any[] = [];
@@ -47,6 +48,7 @@ function richTransport(o: { botUserId?: string; authThrows?: boolean } = {}) {
     conversations: { info: async () => ({}), members: async () => ({}), replies: async () => ({}) },
     users: { info: async () => ({ user: { real_name: "Test" } }), profile: { set: async () => ({}) } },
     search: { messages: async () => ({}) },
+    assistant: { threads: { setStatus: async (a: any) => { statuses.push(a); return { ok: true }; } } },
   } as any;
   const t: Transport = {
     client,
@@ -63,7 +65,7 @@ function richTransport(o: { botUserId?: string; authThrows?: boolean } = {}) {
       if (hit) await fn({ ack: async () => {}, action: { action_id: actionId }, body: { user: { id: userId } }, respond: async () => {} });
     }
   };
-  return { t, client, posts, edits, reacts, emit, emitAction, middlewares };
+  return { t, client, posts, edits, reacts, statuses, emit, emitAction, middlewares };
 }
 
 function makeGw(o: { transport?: Rich; gwOpts?: GatewayOptions; agent?: AgentManager } = {}) {
@@ -353,6 +355,30 @@ describe("gateway uncovered branches", () => {
     }
     // the suppressed reply did not count as the agent speaking
     expect(typeof guard!(session.id)).toBe("string");
+  });
+
+  it("auto-evolve turn: its tool calls set no status and no reaction after the turn is finalized (#131)", async () => {
+    writeSoulFixture(WORLD);
+    const g = makeGw();
+    const ts = nextTs();
+    await g.emit("message", dmArgs(g, "store an abbreviation", { ts }));
+    const session = await g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+    await new Promise((r) => setTimeout(r, 30));
+    // The user-visible turn: a tool sets a status, the reply, then done (status cleared).
+    g.agent.emit("event", { type: "toolCall", sessionId: session.id, tool: "Read", input: { file_path: "/x" } } as any);
+    await waitFor(() => g.statuses.some((s) => s.status && s.status !== "thinking…"));
+    g.agent.emit("event", { type: "toolCall", sessionId: session.id, tool: "mcp__slaude_surface__reply", input: {} } as any);
+    g.agent.emit("event", { type: "done", sessionId: session.id } as any);
+    await waitFor(() => g.statuses.at(-1)?.status === "");
+    const statusesBefore = g.statuses.length;
+    const reactsBefore = g.reacts.length;
+    // The evolution turn that follows.
+    g.agent.emit("event", { type: "toolCall", sessionId: session.id, tool: "Read", input: { file_path: "/skills" }, autoEvolve: true } as any);
+    g.agent.emit("event", { type: "toolCall", sessionId: session.id, tool: "mcp__slaude_surface__reply", input: {}, autoEvolve: true } as any);
+    g.agent.emit("event", { type: "done", sessionId: session.id, autoEvolve: true } as any);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(g.statuses.length).toBe(statusesBefore);
+    expect(g.reacts.length).toBe(reactsBefore);
   });
 
   it("KB MCP deps evaluate gate/scope/managers from the live route (brain enabled)", async () => {

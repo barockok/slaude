@@ -600,6 +600,38 @@ describe("AgentManager lifecycle", () => {
     await shutdown(mgr, row.id);
   });
 
+  it("marks the evolution turn's tool, text and thinking events autoEvolve, and only those (#131)", async () => {
+    process.env.SLAUDE_AUTO_EVOLVE = "1";
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+
+    plan((s) => {
+      s.onUser = (um) => {
+        const text = String(um.message.content);
+        if (text.includes("<auto-evolve>")) {
+          s.emit(asst([{ type: "thinking", thinking: "worth a skill?" } as any, tool("Read"), txt("no skill needed")]));
+          s.emit(res());
+          return;
+        }
+        s.emit(asst([tool("Bash"), tool("Write"), txt("did the work")]));
+        s.emit(res());
+      };
+    });
+
+    await mgr.sendMessage(row.id, "do a thing");
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "evolve done");
+    const firstDone = events.findIndex((e) => e.type === "done");
+    const userTurn = events.slice(0, firstDone).filter((e) => ["toolCall", "assistantText", "thinking"].includes(e.type));
+    const evolveTurn = events.slice(firstDone + 1).filter((e) => ["toolCall", "assistantText", "thinking"].includes(e.type));
+    expect(userTurn.map((e) => e.type)).toEqual(["toolCall", "toolCall", "assistantText"]);
+    expect(userTurn.every((e) => e.autoEvolve === undefined)).toBe(true);
+    expect(evolveTurn.map((e) => e.type)).toEqual(["thinking", "toolCall", "assistantText"]);
+    expect(evolveTurn.every((e) => e.autoEvolve === true)).toBe(true);
+
+    await shutdown(mgr, row.id);
+  });
+
   describe("auto-evolve during a voice call", () => {
     /** A turn that would normally trigger auto-evolve (>=2 substantive tools). */
     const evolving = () =>
