@@ -10,6 +10,7 @@ const pair = testKeyPair();
 const stranger = testKeyPair();
 let srv: Awaited<ReturnType<typeof startTestSshServer>>;
 const socket = () => connect(srv.port, "127.0.0.1");
+const tc = (privateKey: string) => ({ transport: { kind: "tailcat" as const, addr: "x" }, privateKey });
 
 beforeAll(async () => { srv = await startTestSshServer({ authorizedPublicKey: pair.public }); });
 afterAll(async () => { await srv.stop(); });
@@ -18,7 +19,7 @@ describe("preflight", () => {
   it("resolves an absolute directory via pwd -P", async () => {
     const d = mkdtempSync(join(homedir(), ".slaude-pf-"));
     try {
-      const r = await preflight({ addr: "x", dir: d, privateKey: pair.private, socket });
+      const r = await preflight({ info: tc(pair.private), dir: d, socket });
       expect(r).toEqual({ ok: true, dir: realpathSync(d) });
     } finally { rmSync(d, { recursive: true, force: true }); }
   });
@@ -27,19 +28,19 @@ describe("preflight", () => {
     const d = mkdtempSync(join(homedir(), ".slaude-pf-"));
     try {
       const rel = d.slice(homedir().length + 1);
-      const r = await preflight({ addr: "x", dir: `~/${rel}`, privateKey: pair.private, socket });
+      const r = await preflight({ info: tc(pair.private), dir: `~/${rel}`, socket });
       expect(r).toEqual({ ok: true, dir: realpathSync(d) });
     } finally { rmSync(d, { recursive: true, force: true }); }
   });
 
   it("reports a missing directory", async () => {
-    const r = await preflight({ addr: "x", dir: "/nonexistent/slaude-dir", privateKey: pair.private, socket });
+    const r = await preflight({ info: tc(pair.private), dir: "/nonexistent/slaude-dir", socket });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("directory not found");
   });
 
   it("reports a rejected key", async () => {
-    const r = await preflight({ addr: "x", dir: "/", privateKey: stranger.private, socket });
+    const r = await preflight({ info: tc(stranger.private), dir: "/", socket });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("REMOTE_AUTH_FAILED");
   });
@@ -69,17 +70,17 @@ describe("remoteCleanup", () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "deadbeef.log"), "x");
     try {
-      await remoteCleanup({ addr: "x", privateKey: pair.private, sessionKey: key, socket });
+      await remoteCleanup({ info: tc(pair.private), sessionKey: key, socket });
       expect(existsSync(dir)).toBe(false);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 15_000);
 
   it("never throws when the server is unreachable", async () => {
     const dead = () => connect(1, "127.0.0.1");
-    await expect(remoteCleanup({ addr: "x", privateKey: pair.private, sessionKey: "abc", socket: dead })).resolves.toBeUndefined();
+    await expect(remoteCleanup({ info: tc(pair.private), sessionKey: "abc", socket: dead })).resolves.toBeUndefined();
   });
 
   it("never throws on an unusable session key", async () => {
-    await expect(remoteCleanup({ addr: "x", privateKey: pair.private, sessionKey: "///", socket })).resolves.toBeUndefined();
+    await expect(remoteCleanup({ info: tc(pair.private), sessionKey: "///", socket })).resolves.toBeUndefined();
   });
 });

@@ -1,9 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { RemoteError, type Exec, type ExecOpts, type ExecResult, type RemoteHandle } from "./types";
+import type { HelperTransport } from "./transport";
+import { RemoteError, type Exec, type ExecOpts, type ExecResult, type RemoteErrorCode, type RemoteHandle } from "./types";
 
-type Transport = { kind: "tailcat"; addr: string } | { kind: "tcp"; host: string; port: number };
+type Transport = HelperTransport;
+const REMOTE_CODES = new Set<RemoteErrorCode>(["REMOTE_UNREACHABLE", "REMOTE_AUTH_FAILED", "REMOTE_HOST_CHANGED", "REMOTE_PROVISION_FAILED"]);
 type Pending = { resolve: (r: ExecResult) => void; reject: (e: Error) => void };
 /** Everything belonging to one helper process; a late event of an old child can only touch its own. */
 type Helper = { child: ChildProcess; ready: Promise<void>; pending: Map<number, Pending> };
@@ -72,7 +74,7 @@ export class HelperClient implements RemoteHandle {
         if (!p) return;
         pending.delete(m.id);
         if (m.ok) p.resolve(m.res);
-        else if (m.code === "REMOTE_UNREACHABLE" || m.code === "REMOTE_AUTH_FAILED") p.reject(new RemoteError(m.code, m.message, !!m.started));
+        else if (REMOTE_CODES.has(m.code)) p.reject(new RemoteError(m.code, m.message, !!m.started));
         else p.reject(new Error(m.message));
       });
       child.once("exit", () => {

@@ -1,17 +1,16 @@
 /**
- * Remote helper subprocess: owns the tailcat child, the SSH connection and the
+ * Remote helper subprocess: owns the transport (tailcat child or TCP socket), the SSH connection and the
  * private key, so none of them live in the agent process (spec §4.2).
  * Protocol: JSON lines on stdin/stdout. Exits when stdin closes.
  */
 import { createInterface } from "node:readline";
-import { connect } from "node:net";
 import { RemoteConn } from "./conn";
-import { tailcatSocket } from "./tailcat";
+import { hostVerifierFor, socketFor, usernameFor, type HelperTransport } from "./transport";
 import { RemoteError } from "./types";
 
 type Init = {
   t: "init";
-  transport: { kind: "tailcat"; addr: string } | { kind: "tcp"; host: string; port: number };
+  transport: HelperTransport;
   privateKey: string;
 };
 
@@ -24,10 +23,12 @@ rl.on("line", (line) => {
   try { msg = JSON.parse(line); } catch { return; }
   if (msg.t === "init") {
     const i = msg as Init;
-    const socket = i.transport.kind === "tailcat"
-      ? tailcatSocket(i.transport.addr)
-      : ((h: string, p: number) => () => connect(p, h))(i.transport.host, i.transport.port);
-    conn = new RemoteConn({ socket, privateKey: i.privateKey });
+    conn = new RemoteConn({
+      socket: socketFor(i.transport),
+      privateKey: i.privateKey,
+      username: usernameFor(i.transport),
+      hostVerifier: hostVerifierFor(i.transport),
+    });
     send({ t: "ready" });
     return;
   }
