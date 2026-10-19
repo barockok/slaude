@@ -29,6 +29,24 @@ import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
 import { humanizeToolStatus, redactSecrets } from "./status-text";
 import * as Remote from "../../db/remote";
+import * as Envs from "../../db/environments";
+import { handleEnvCommand, addEnvironment, useEnvironment, defaultEnvDeps } from "./env-command";
+import type { RemoteTarget } from "../../remote/types";
+
+/** A thread's remote target that runs on a person's own machine (the manager
+ *  filter applies); a sandbox does not. */
+const personalRemote = (t: RemoteTarget | null): boolean => !!t && t.env?.trust !== "provisioned";
+import {
+  ENV_ADD_ACTION,
+  ENV_ADD_VIEW,
+  ENV_KIND_ACTION,
+  ENV_USE_ACTION,
+  decodeEnvOffer,
+  envAddModal,
+  envPickerBlocks,
+  readEnvAddValues,
+} from "./env-form";
+import { getKind } from "../../remote/kinds";
 import {
   handleRemoteCommand,
   endRemoteForThread,
@@ -41,7 +59,8 @@ import {
   REMOTE_OPEN_ACTION,
   type RemoteCommandCtx,
 } from "./remote-command";
-import { activeRemoteTarget } from "../../remote/active";
+import { activeRemoteTarget, boundEnv } from "../../remote/active";
+import { connectInfoForBinding, sweepIdleSandboxes } from "../../remote/env-runtime";
 import { HelperClient } from "../../remote/helper-client";
 import { cleanupCommand } from "../../remote/tools/bash";
 import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
@@ -597,6 +616,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     void PendingGates.purgeSettledOlderThan().catch(() => {});
     void SeenEvents.purgeOlderThan().catch(() => {});
     void SlackOauthFlows.sweepExpiredFlows().catch(() => {});
+    // Idle sandboxes (provisioned environments) are torn down and restart on
+    // the thread's next message. Safe on every replica: each teardown is claimed.
+    // Mono reboots the warm session now; a split deploy reboots through the
+    // fingerprint once the next dispatch provisions a new sandbox.
+    if (env.remote.enabled()) {
+      void sweepIdleSandboxes(undefined, (ch, ts) => {
+        if (queueDispatch) return;
+        for (const [sid, r] of routes) if (r.ctx.channel === ch && (r.ctx.threadTs ?? r.ctx.inboundTs) === ts) agent.reload(sid);
+      }).catch((e) => console.error("[env] idle sweep failed:", e));
+    }
   }, 5 * 60 * 1000);
 
   const cronScheduler = new CronScheduler({
@@ -667,11 +696,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         return row?.slack_channel_id && row.slack_thread_ts ? activeRemoteTarget(row.slack_channel_id, row.slack_thread_ts) : null;
       },
       async (sessionId, t) => {
-        const key = await Remote.getKey(t.teamId, t.userId);
-        if (!key) throw new Error("remote key missing for target owner");
+        // The environment the session booted for: refuse if the thread has
+        // moved on meanwhile, so a stale target never connects.
+        const row = await Sessions.findById(sessionId);
+        const b = row?.slack_channel_id && row.slack_thread_ts ? await boundEnv(row.slack_channel_id, row.slack_thread_ts) : null;
+        if (!b || (t.env && b.env.id !== t.env.id)) throw new Error("the thread's environment changed");
+        const info = await connectInfoForBinding(b.binding, b.env, { provision: true });
         return new HelperClient({
-          transport: { kind: "tailcat", addr: t.addr },
-          privateKey: key.privateKey,
+          transport: info.transport,
+          privateKey: info.privateKey,
           onDispose: async (exec) => { await exec(cleanupCommand(sessionId), { timeoutMs: 30_000 }); },
         });
       },
@@ -1250,7 +1283,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const threadTs = ctx.threadTs ?? ctx.inboundTs ?? "";
     if (action === "lock") {
       const prevTarget = await Remote.findTarget(ctx.channel, threadTs);
-      if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(ctx.channel, threadTs, { sessionId });
+      if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(ctx.channel, threadTs, { sessionId, userMachineOnly: true });
       await OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
       agent.reload(sessionId);
       return `Locked this thread to a 1on1 with <@${userId}> — only they and the manager are heard here now.`;
@@ -1260,14 +1293,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (!existing) {
         await OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
       }
-      await endRemoteForThread(ctx.channel, threadTs, { sessionId }); // open mode forbids remote
+      await endRemoteForThread(ctx.channel, threadTs, { sessionId, userMachineOnly: true }); // open mode forbids remote
       await OneOnOne.setOpen(ctx.channel, threadTs, scope ?? "");
       agent.reload(sessionId);
       const scopeNote = scope ? ` Scope: ${scope}` : "";
       return `Opened this 1on1 to all participants.${scopeNote} Use set_one_on_one(action="lock") to restrict again.`;
     }
     if (!await OneOnOne.find(ctx.channel, threadTs)) return "No active 1on1 in this thread — nothing to release.";
-    await endRemoteForThread(ctx.channel, threadTs, { sessionId });
+    await endRemoteForThread(ctx.channel, threadTs, { sessionId, userMachineOnly: true });
     await OneOnOne.unlock(ctx.channel, threadTs);
     agent.reload(sessionId);
     return "Released 1on1 — the thread is open again.";
@@ -1331,11 +1364,101 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               const offer = { sessionId, teamId, channelId, threadTs, userId, apiAppId: i.app?.apiAppId, issuedAt: Date.now() };
               await surface.sayEphemeral!({ text: "Connect your machine for /remote", userId, blocks: remoteOfferBlocks(offer) });
             },
+            offerPicker: async (envs) => {
+              const offer = { sessionId, teamId, channelId, threadTs, userId, apiAppId: i.app?.apiAppId, issuedAt: Date.now() };
+              const current = (await Envs.findBinding(channelId, threadTs))?.env_id;
+              await surface.sayEphemeral!({ text: "Your environments", userId, blocks: envPickerBlocks(offer, envs, current) });
+            },
+            offerAdd: async () => {
+              const offer = { sessionId, teamId, channelId, threadTs, userId, apiAppId: i.app?.apiAppId, issuedAt: Date.now() };
+              await surface.sayEphemeral!({ text: "Add an environment", userId, blocks: envPickerBlocks(offer, []).slice(-1) });
+            },
           }
         : {}),
       reload: () => { agent.reload(sessionId); },
+      reloadThread: async (ch, ts) => {
+        const other = await Sessions.findAnyByThread({ team_id: teamId, channel_id: ch, thread_ts: ts }).catch(() => null);
+        if (other) agent.reload(other.id);
+      },
     };
   }
+
+  // /env picker: Use buttons and the Add environment modal. The value (and the
+  // modal's private_metadata) is bound to the user it was posted to and to a
+  // max age; every check (enabled, lock owner, crons, key, preflight) runs in
+  // the shared /env core, and results go to the thread.
+  async function envCtxForOffer(offer: { sessionId: string; teamId: string; channelId: string; threadTs: string; userId: string; apiAppId?: string }, apiAppId?: string): Promise<RemoteCommandCtx | null> {
+    const session = await Sessions.findById(offer.sessionId);
+    if (!session || session.slack_channel_id !== offer.channelId || session.slack_thread_ts !== offer.threadTs) return null;
+    const app: AppRef = { apiAppId: apiAppId ?? offer.apiAppId, teamId: offer.teamId };
+    return remoteCommandCtx({ ...offer, personaId: session.persona_id ?? undefined, app });
+  }
+
+  t.action(new RegExp(`^${ENV_USE_ACTION}$`), async ({ ack, action, body, respond }) => {
+    await ack();
+    if (!env.remote.enabled()) return;
+    const decoded = decodeEnvOffer((action as { value?: string }).value, (body as any).user?.id);
+    if (!decoded.ok) {
+      if (decoded.reason === "expired") {
+        await respond({ response_type: "ephemeral", replace_original: true, text: "That button expired. Send `/env` again." }).catch(() => {});
+      }
+      return;
+    }
+    const { offer } = decoded;
+    const ctx = await envCtxForOffer(offer, (body as any).api_app_id);
+    const e = offer.envId ? await Envs.getEnv(offer.envId) : null;
+    if (!ctx || !e) return;
+    await useEnvironment(e, undefined, ctx, defaultEnvDeps);
+  });
+
+  t.action(new RegExp(`^${ENV_ADD_ACTION}$`), async ({ ack, action, body, respond }) => {
+    await ack();
+    if (!env.remote.enabled()) return;
+    const decoded = decodeEnvOffer((action as { value?: string }).value, (body as any).user?.id);
+    if (!decoded.ok) {
+      if (decoded.reason === "expired") {
+        await respond({ response_type: "ephemeral", replace_original: true, text: "That button expired. Send `/env` again." }).catch(() => {});
+      }
+      return;
+    }
+    const clickApp: AppRef = { apiAppId: (body as any).api_app_id, teamId: (body as any).team?.id ?? (body as any).user?.team_id };
+    const client = botClientFor(clickApp);
+    const triggerId = (body as any).trigger_id;
+    if (!client.views || !triggerId) return;
+    await client.views.open({ trigger_id: triggerId, view: envAddModal({ ...decoded.offer, issuedAt: Date.now() }) });
+  });
+
+  // Kind picked in the Add modal: redraw the modal with that kind's fields.
+  t.action(new RegExp(`^${ENV_KIND_ACTION}$`), async ({ ack, action, body }) => {
+    await ack();
+    if (!env.remote.enabled()) return;
+    const view = (body as any).view;
+    const decoded = decodeEnvOffer(view?.private_metadata, (body as any).user?.id);
+    if (!decoded.ok) return;
+    const kindName = (action as { selected_option?: { value?: string } }).selected_option?.value;
+    if (!kindName || !getKind(kindName)) return;
+    const clickApp: AppRef = { apiAppId: (body as any).api_app_id, teamId: (body as any).team?.id ?? (body as any).user?.team_id };
+    const client = botClientFor(clickApp);
+    if (!client.views?.update) return;
+    await client.views.update({ view_id: view.id, hash: view.hash, view: envAddModal({ ...decoded.offer, kindName }) }).catch(() => {});
+  });
+
+  t.view?.(ENV_ADD_VIEW, async ({ ack, view, body }) => {
+    await ack();
+    const decoded = decodeEnvOffer(view.private_metadata, (body as any).user?.id);
+    if (!("offer" in decoded)) return;
+    const ctx = await envCtxForOffer(decoded.offer, (body as any).api_app_id);
+    if (!ctx) return;
+    if (!decoded.ok) {
+      await ctx.sayPrivately("That form expired. Send `/env add` again.").catch(() => {});
+      return;
+    }
+    if (!env.remote.enabled()) return;
+    const kind = getKind(decoded.offer.kindName ?? "");
+    if (!kind) return;
+    const v = readEnvAddValues(view, kind);
+    await addEnvironment({ kindName: kind.kind, name: v.name, fields: v.fields, dir: v.dir, use: true }, ctx, defaultEnvDeps);
+  });
 
   // /remote Connect button → the address/directory modal. Only the user the
   // button was posted to can open it (the value is bound to them), and only
@@ -1767,9 +1890,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           metric.slackDropsTotal.inc({ reason: "one_on_one" });
           return;
         }
-        // Remote mode runs tools on the owner's machine: only the owner drives it. The
-        // manager is heard only to inspect or end it (/remote off|status, /1on1 off).
-        if (lock.open_scope === null && userId !== lock.locked_user && isMgr && env.remote.enabled() && (await activeRemoteTarget(channelId, threadTs))) {
+        // A personal environment runs tools on the owner's machine: only the owner
+        // drives it. The manager is heard only to inspect or end it (/remote or
+        // /env off|status, /1on1 off). A sandbox needs no such filter (spec §4).
+        if (lock.open_scope === null && userId !== lock.locked_user && isMgr && env.remote.enabled() && personalRemote(await activeRemoteTarget(channelId, threadTs))) {
           // Strip exactly what the slash dispatcher strips (bot + persona mention).
           const mgrBot = (await client.auth.test()).user_id as string;
           const mgrPersona = dispatch?.personaId ? getPersonaRegistry().lookupByName(dispatch.personaId)?.slackUserId : undefined;
@@ -1780,6 +1904,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           const hit = parseSlashCommand(mgrText);
           const allowed =
             (hit?.kind === "remote" && (hit.action === "off" || hit.action === "status")) ||
+            (hit?.kind === "env" && (hit.action === "off" || hit.action === "status")) ||
             (hit?.kind === "one-on-one" && hit.action === "off");
           if (!allowed) {
             console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — remote mode, 1on1 locked to ${lock.locked_user}`);
@@ -1886,10 +2011,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         await handleRemoteCommand(slash, remoteCommandCtx({ teamId, channelId, threadTs, userId, sessionId: session.id, personaId: dispatch?.personaId, app }));
         return;
       }
+      if (slash.kind === "env") {
+        await handleEnvCommand(slash, remoteCommandCtx({ teamId, channelId, threadTs, userId, sessionId: session.id, personaId: dispatch?.personaId, app }));
+        return;
+      }
       if (slash.kind === "one-on-one") {
         if (slash.action === "on") {
           const prevTarget = await Remote.findTarget(channelId, threadTs);
-          if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(channelId, threadTs, { sessionId: session.id });
+          if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(channelId, threadTs, { sessionId: session.id, userMachineOnly: true });
           await OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId });
           agent.reload(session.id);
           await reply(`:lock: *1on1 mode* — only <@${userId}> and the manager will be heard in this thread. \`/1on1 off\` to release. Ask me to open it to guests when needed.`);
@@ -1944,7 +2073,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           await reply("No active 1on1 in this thread.");
           return;
         }
-        const r = await endRemoteForThread(channelId, threadTs, { sessionId: session.id });
+        const r = await endRemoteForThread(channelId, threadTs, { sessionId: session.id, userMachineOnly: true });
         await OneOnOne.unlock(channelId, threadTs);
         agent.reload(session.id);
         await reply(":unlock: 1on1 released — the thread is open again." + (r.ended ? " Remote mode ended." : ""));
