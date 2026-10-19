@@ -1,7 +1,7 @@
 # Environments — `/remote` as a choice of saved execution environments
 
 **Date:** 2026-10-19
-**Status:** Phases 1–2 implemented (environments, `/env`, tailcat and ssh kinds). The provisioned-kind interface, lifecycle and trust rules (§4, §7) are implemented and tested against a fake kind; no real sandbox kind ships until the provisioner decision (§7). See `docs/site/_content/field-notes/2026-10-19-remote-environments.md`.
+**Status:** Scope of this round is phases 1–2, by owner decision (2026-10-19): phases 3–4 (`dind`, `firecracker`) are **deferred, not built**, until the provisioner is chosen (§7). Phases 1–2 are built but not yet verified on real infrastructure (real sshd, a real Slack workspace, a real cluster). The provisioned-kind interface, lifecycle and trust rules (§4, §7) exist and are tested only against a fake kind. See `docs/site/_content/field-notes/2026-10-19-remote-environments.md`.
 **Supersedes (when built):** the single tailcat target of `2026-09-29-remote-exec-design.md` §2–§3. Its tool aliasing, guard, approval rules and key custody stay as they are.
 **Ships as:** a release candidate (migration + agent-loop change), behind `SLAUDE_REMOTE=1` as today.
 
@@ -238,9 +238,11 @@ CREATE TABLE env_bindings (
    `/env` list/use/off/add with tailcat as the only kind. `/remote` aliases it.
    Ships as an RC.
 2. **`ssh` kind.** Host-key pinning, outbound policy, setup guide.
-3. **First `provisioned` kind (`dind`).** Decide the provisioner first (§7),
-   then add provision/teardown/idle TTL and the unlocked-thread rules.
-4. **`firecracker`.**
+3. **First `provisioned` kind (`dind`).** *Deferred (owner decision,
+   2026-10-19).* Decide the provisioner first (§7), then add the kind. The
+   provision/teardown/idle-TTL lifecycle and the unlocked-thread rules it
+   needs are already in place.
+4. **`firecracker`.** *Deferred (owner decision, 2026-10-19).*
 
 ## 11. Tests
 
