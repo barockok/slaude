@@ -23,6 +23,7 @@
  *   GET   /v1/tenants/:id/mcp-credentials       the runAs owner's MCP access tokens (node+job, label)
  *   POST  /v1/tenants/:id/mcp-credentials/refresh   refresh one server for that owner (same)
  *   GET   /v1/tenants/:id/remote-key  runAs user's SSH key for a remote-mode turn (node+job, label)
+ *   GET   /v1/tenants/:id/remote-env  transport + key for the turn's environment (node+job, label)
  *   GET   /v1/pending/:id             30s long-poll, 204 timeout          (node+job, label; session-bound;
  *                                     tokenless only for the legacy identity, see below)
  *   POST  /v1/jobs/:id/ack|fail       telemetry only                      (node)
@@ -45,6 +46,7 @@ import { handleSession } from "./sessions";
 import { handleTenantRuntime } from "./tenants";
 import { handleMcpCredentials, handleMcpCredentialRefresh, type CredentialRefresher } from "./mcp-credentials";
 import { handleRemoteKey } from "./remote-key";
+import { handleRemoteEnv } from "./remote-env";
 import { defaultCredentialRefresher } from "../core/credential-refresh";
 import { handlePending, type PendingOptions } from "./pending";
 import { handleJobEvent, handleTokenRefresh, handleTokenReissue, REFRESH_GRACE_SEC, type JobLookup, type JobMovedTo } from "./jobs";
@@ -178,6 +180,16 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
       auth: "node+job",
       gate: "label",
       handle: async ({ req, seg, claims }) => tenantScoped(claims!, seg[1]!) ?? handleRemoteKey(req, claims!),
+    },
+    {
+      // How to reach the turn's environment, only for a token whose signed
+      // claims name the thread's current environment (environments spec §6).
+      name: "tenants.remote-env",
+      methods: ["GET"],
+      pattern: ["tenants", ":tenant", "remote-env"],
+      auth: "node+job",
+      gate: "label",
+      handle: async ({ req, seg, claims }) => tenantScoped(claims!, seg[1]!) ?? handleRemoteEnv(req, claims!),
     },
     {
       // Refresh one server for the token's own runAs owner. The gateway is the

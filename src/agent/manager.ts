@@ -42,7 +42,7 @@ import type { MemoryProvider } from "../memory/provider";
 import { ChildEnvPatch, scrubChildEnv, withoutKeys } from "./child-env";
 import { resolveSessionConfigDir } from "./oauth-home";
 import { sessionIdOpts } from "./session-id-opts";
-import { sessionModeBlock } from "./session-mode";
+import { sessionModeBlock, type RemoteModeInfo } from "./session-mode";
 import { formatSessionNotes } from "./session-notes";
 import { BootFailure, type FailureCode } from "../gateway/core/failure-codes";
 import { redactSecrets } from "../gateway/core/status-text";
@@ -517,7 +517,7 @@ export class AgentManager extends EventEmitter {
   /** Reuse the session's handle when the target is unchanged; otherwise dispose
    *  the old one (kills its background jobs — remote ended or moved) and open anew. */
   async #remoteHandleFor(sessionId: string, target: RemoteTarget | null): Promise<RemoteHandle | undefined> {
-    const key = target ? `${target.userId}|${target.addr}|${target.dir}` : "";
+    const key = target ? `${target.userId}|${target.env ? `${target.env.id}|${target.env.hash}` : target.addr}|${target.dir}` : "";
     const prev = this.#remoteHandles.get(sessionId);
     if (prev && prev.key === key) return prev.handle;
     if (prev) {
@@ -887,7 +887,7 @@ export class AgentManager extends EventEmitter {
     ctx: {
       channelId?: string | null;
       lock?: OneOnOneLockRow | null;
-      remote?: { userId: string; dir: string } | null;
+      remote?: RemoteModeInfo | null;
       mcpServers?: Record<string, unknown>;
       /** The CLI reads no MCP source but mcpServers (a node): the block is
        *  the whole list. */
@@ -1110,7 +1110,9 @@ export class AgentManager extends EventEmitter {
     const systemAppend = await this.#buildSystemAppend(sessionId, personaName, {
       channelId: row.slack_channel_id,
       lock,
-      remote: remoteTarget ? { userId: remoteTarget.userId, dir: remoteTarget.dir } : null,
+      remote: remoteTarget
+        ? { userId: remoteTarget.userId, dir: remoteTarget.dir, ...(remoteTarget.env ? { env: { name: remoteTarget.env.name, kind: remoteTarget.env.kind, trust: remoteTarget.env.trust } } : {}) }
+        : null,
       mcpServers: strictNames ? (Object.keys(strictNames).length > 0 ? strictNames : undefined) : mcpServers,
       strictMcp: !!localMcp,
       memBlock,

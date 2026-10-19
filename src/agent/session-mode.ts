@@ -9,9 +9,17 @@ import type { OneOnOneLockRow } from "../db/one-on-one";
  * Returns "" when the thread is unlocked (ordinary group/channel mode) so the
  * caller can drop it from the appended blocks.
  */
+/** Where a remote session's tools run, as the prompt describes it. */
+export interface RemoteModeInfo {
+  userId: string;
+  dir: string;
+  /** Absent for a pre-environment tailcat claim. */
+  env?: { name: string; kind: string; trust: "user-machine" | "provisioned" };
+}
+
 export function sessionModeBlock(
   lock: OneOnOneLockRow | null,
-  remote?: { userId: string; dir: string } | null,
+  remote?: RemoteModeInfo | null,
 ): string {
   const base = lockBlock(lock);
   if (!remote) return base;
@@ -42,13 +50,16 @@ function lockBlock(lock: OneOnOneLockRow | null): string {
   ].join("\n");
 }
 
-function remoteBlock(r: { userId: string; dir: string }): string {
+function remoteBlock(r: RemoteModeInfo): string {
+  const where = r.env?.trust === "provisioned"
+    ? `in a disposable sandbox environment \`${r.env.name}\` (${r.env.kind}), in \`${r.dir}\``
+    : `on <@${r.userId}>'s own machine${r.env ? ` (environment \`${r.env.name}\`, ${r.env.kind})` : ""}, in \`${r.dir}\``;
   return [
     "<remote-mode>",
-    `Your file and shell tools (Bash, Read, Write, Edit, Glob, Grep) run on <@${r.userId}>'s own machine, in \`${r.dir}\` — not on this server.`,
+    `Your file and shell tools (Bash, Read, Write, Edit, Glob, Grep) run ${where} — not on this server.`,
     "Relative paths resolve against that directory. The knowledge base, MCP servers and web tools are unchanged and still run here.",
     "Background jobs: Bash with run_in_background returns an ID; read output with mcp__remote__bash_output and stop it with mcp__remote__bash_kill.",
-    "If a tool fails with REMOTE_UNREACHABLE or REMOTE_AUTH_FAILED, stop and tell the user (they can check with `/remote`). Do not retry in a loop and do not work around it.",
+    "If a tool fails with REMOTE_UNREACHABLE, REMOTE_AUTH_FAILED, REMOTE_HOST_CHANGED or REMOTE_PROVISION_FAILED, stop and tell the user (they can check with `/env`). Do not retry in a loop and do not work around it.",
     "</remote-mode>",
   ].join("\n");
 }
