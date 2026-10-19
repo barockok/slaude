@@ -4,7 +4,20 @@ import * as Remote from "../../../src/db/remote";
 import * as CronJobs from "../../../src/db/cron-jobs";
 import { db } from "../../../src/db/schema";
 import { __resetMasterKeyCache } from "../../../src/db/crypto";
-import { handleRemoteCommand, endRemoteForThread, remoteStatusOn, type RemoteCommandDeps } from "../../../src/gateway/core/remote-command";
+import {
+  handleRemoteCommand,
+  endRemoteForThread,
+  remoteStatusOn,
+  decodeRemoteOffer,
+  encodeRemoteOffer,
+  readRemoteConnectValues,
+  remoteConnectModal,
+  remoteOfferBlocks,
+  REMOTE_CONNECT_VIEW,
+  REMOTE_OFFER_TTL_MS,
+  REMOTE_OPEN_ACTION,
+  type RemoteCommandDeps,
+} from "../../../src/gateway/core/remote-command";
 
 let replies: string[], privately: string[], reloads: number, preflights: any[], cleanups: any[];
 const ctx = (over: Partial<{ userId: string; isManager: boolean }> = {}) => ({
@@ -251,5 +264,68 @@ describe("/remote", () => {
     expect(await endRemoteForThread("C1", "1.0", { sessionId: "S9", cleanup: async (i) => { seen.push(i); } })).toEqual({ ended: true, lockByRemote: true });
     expect(seen).toEqual([{ addr: "tcA", privateKey: "PRIV", sessionKey: "S9" }]);
     expect(await endRemoteForThread("C1", "1.0")).toEqual({ ended: false, lockByRemote: false });
+  });
+});
+
+describe("/remote connect form", () => {
+  const offer = { sessionId: "S1", teamId: "T1", channelId: "C1", threadTs: "1.0", userId: "U_A", apiAppId: "A1", issuedAt: 1_000_000 };
+  let offers: number;
+  const withOffer = (over: Partial<{ userId: string }> = {}) => ({ ...ctx(over), offerConnect: async () => { offers++; } });
+  beforeEach(() => { offers = 0; });
+
+  it("status when off offers the Connect button privately", async () => {
+    await handleRemoteCommand({ kind: "remote", action: "status" }, withOffer(), deps());
+    expect(replies[0]).toContain("*off*");
+    expect(offers).toBe(1);
+  });
+
+  it("no offer when the thread is locked to someone else, or when remote is on", async () => {
+    await OneOnOne.lock({ channelId: "C1", threadTs: "1.0", lockedUser: "U_B", createdBy: "U_B" });
+    await handleRemoteCommand({ kind: "remote", action: "status" }, withOffer(), deps());
+    expect(offers).toBe(0);
+    await OneOnOne._wipeForTests();
+    await Remote.putKeyIfAbsent("T1", "U_A", { privateKey: "PRIV", publicKey: "PUB" });
+    await handleRemoteCommand({ kind: "remote", action: "on", addr: "tcAddr1", dir: "/r" }, ctx(), deps());
+    await handleRemoteCommand({ kind: "remote", action: "status" }, withOffer(), deps());
+    expect(offers).toBe(0);
+  });
+
+  it("offer round-trips for its user, and is invalid for anyone else or when malformed", () => {
+    const raw = encodeRemoteOffer(offer);
+    expect(decodeRemoteOffer(raw, "U_A", offer.issuedAt + 1000)).toEqual({ ok: true, offer });
+    expect(decodeRemoteOffer(raw, "U_B", offer.issuedAt)).toEqual({ ok: false, reason: "invalid" });
+    expect(decodeRemoteOffer("not json", "U_A")).toEqual({ ok: false, reason: "invalid" });
+    expect(decodeRemoteOffer(JSON.stringify({ s: "S1" }), "U_A")).toEqual({ ok: false, reason: "invalid" });
+    expect(decodeRemoteOffer(undefined, "U_A")).toEqual({ ok: false, reason: "invalid" });
+  });
+
+  it("offer expires after the TTL and rejects a far-future issue time", () => {
+    const raw = encodeRemoteOffer(offer);
+    expect(decodeRemoteOffer(raw, "U_A", offer.issuedAt + REMOTE_OFFER_TTL_MS + 1)).toEqual({ ok: false, reason: "expired", offer });
+    expect(decodeRemoteOffer(raw, "U_A", offer.issuedAt - 5 * 60_000).ok).toBe(false);
+  });
+
+  it("button carries the offer; modal carries it as metadata and prefills the directory", () => {
+    const btn = (remoteOfferBlocks(offer) as any[])[1].elements[0];
+    expect(btn.action_id).toBe(REMOTE_OPEN_ACTION);
+    expect(decodeRemoteOffer(btn.value, "U_A", offer.issuedAt).ok).toBe(true);
+    const modal = remoteConnectModal(offer, "~/repo") as any;
+    expect(modal.callback_id).toBe(REMOTE_CONNECT_VIEW);
+    expect(decodeRemoteOffer(modal.private_metadata, "U_A", offer.issuedAt).ok).toBe(true);
+    expect(modal.blocks[1].element.initial_value).toBe("~/repo");
+    expect((remoteConnectModal(offer) as any).blocks[1].element.initial_value).toBeUndefined();
+  });
+
+  it("reads the submitted address and directory, trimmed; missing fields are empty", () => {
+    const values = { remote_addr: { value: { value: "  tcAddr1 " } }, remote_dir: { value: { value: "~/repo\n" } } };
+    expect(readRemoteConnectValues({ state: { values } })).toEqual({ addr: "tcAddr1", dir: "~/repo" });
+    expect(readRemoteConnectValues({})).toEqual({ addr: "", dir: "" });
+  });
+
+  it("a submission goes through the same checks: empty dir is refused before connecting", async () => {
+    await Remote.putKeyIfAbsent("T1", "U_A", { privateKey: "PRIV", publicKey: "PUB" });
+    await handleRemoteCommand({ kind: "remote", action: "on", addr: "tcAddr1", dir: "" }, ctx(), deps());
+    expect(preflights).toHaveLength(0);
+    expect(await Remote.findTarget("C1", "1.0")).toBeNull();
   });
 });

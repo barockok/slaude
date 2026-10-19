@@ -77,13 +77,14 @@ export class SlackSurface implements Surface {
 
   /** Refuses rather than degrading: a silent fallback to chat.postMessage would
    *  broadcast an onboarding link to the whole channel. */
-  async sayEphemeral(i: { text: string; userId?: string }): Promise<void> {
+  async sayEphemeral(i: { text: string; userId?: string; blocks?: unknown[] }): Promise<void> {
     const user = i.userId ?? this.#b.userId;
     if (!user) throw new Error("sayEphemeral needs a user: refusing to post publicly");
     await this.#client.chat.postEphemeral({
       channel: this.#b.conversationId,
       user,
       text: format(i.text),
+      ...(i.blocks ? { blocks: i.blocks } : {}),
       ...(this.#b.threadRef ? { thread_ts: this.#b.threadRef } : {}),
     });
   }

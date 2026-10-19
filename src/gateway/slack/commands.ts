@@ -61,7 +61,7 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/mode <name>", summary: "set the tool-permission mode (per session/thread)" },
   { usage: "/abort", summary: "cancel the current turn" },
   { usage: "/1on1 [lock | off]", summary: "start a private 1on1 (locked to you); `lock` re-restricts after open; `off` releases — to open to guests, ask the agent directly" },
-  { usage: "/remote [<addr> [dir] | off | key]", summary: "run this thread's shell + file tools on your own machine over tailcat (locks the thread to you); no arg shows status" },
+  { usage: "/remote [off | key | <addr> [dir]]", summary: "run this thread's shell + file tools on your own machine over tailcat (locks the thread to you); no arg shows status and, when off, a private Connect button for the address and directory" },
   { usage: "/mention-only [off]", summary: "reply only when @-mentioned in this thread; `off` restores normal" },
   { usage: "/mcp [connect|disconnect <server>]", summary: "list/connect/disconnect OAuth HTTP MCP servers — in 1on1: as you; outside 1on1: manager manages the agent's shared identity" },
   { usage: "/ignore @user [dur]", summary: "ignore a user (optional duration, e.g. 1h, 30m)" },

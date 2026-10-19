@@ -16,27 +16,33 @@
    ```
 3. Copy the address `tailcat serve` prints.
 
-## 2. Commands
+## 2. Connect
+
+Send `/remote` in the thread. While remote mode is off, slaude replies with the status and privately shows you a **Connect your machine** button. Click it, paste the tailcat address and a directory (an absolute path or one starting with `~/`) into the form, and submit. The address never appears in the thread; only you see the form. If you connected this thread before, the directory is filled in.
+
+The button and the form expire after 15 minutes, and only the person they were shown to can use them. Send `/remote` again for a new one. A submission goes through the same checks as the typed command below (thread lock, cron jobs, your key, a connection test), and the result is posted in the thread.
+
+## 3. Commands
 
 | Command | Effect |
 |---|---|
-| `/remote <address> <directory>` | Switch this thread to your machine. Implies a locked `/1on1` owned by you. |
+| `/remote` | Status. While off, also shows you the private Connect button. Never prints the address. |
+| `/remote <address> <directory>` | Switch this thread to your machine without the form. The address is then visible in the thread. Implies a locked `/1on1` owned by you. |
 | `/remote <address>` | New address (for example after restarting tailcat without a stable key), same directory. |
-| `/remote` | Status: on or off, directory, direct or relayed path. Never prints the address. |
 | `/remote off` | Back to the server. Releases the lock if `/remote` created it. |
 | `/remote key` | Show the setup message again. |
 
 **Cron jobs in the thread.** A cron job that fires into a thread runs as the thread's lock owner, so after `/remote` it would run tools on your machine. `/remote <address> <directory>` therefore refuses while the thread has an active cron job (paused jobs included) that someone else created. Check `/cron-list` and remove those jobs, or ask their owners to, then run `/remote` again. Your own jobs do not block.
 
-**Replaced keys.** If your stored key turns out to be unusable, `/remote` and `/remote key` replace it and privately send the new public key with a note. Restart `tailcat serve` with the new `--ssh-authorized-keys` value, then run `/remote <address> <directory>` again.
+**Replaced keys.** If your stored key turns out to be unusable, `/remote` and `/remote key` replace it and privately send the new public key with a note. Restart `tailcat serve` with the new `--ssh-authorized-keys` value, then connect again.
 
-## 3. Who can do what while remote is active
+## 4. Who can do what while remote is active
 
 Remote implies a locked `/1on1` owned by whoever started it. Only that person drives the thread. A manager or backup is admitted for exactly three things: `/remote off`, `/remote` (status) and `/1on1 off`.
 
 Remote mode also ends when anything changes the lock: `/1on1 off`, opening the 1on1 to guests, a lock change, or an operator unlocking the thread from the panel. The session reloads on the server and background jobs left on your machine are cleaned up best-effort.
 
-## 4. How the tools behave
+## 5. How the tools behave
 
 - **Same approvals as the built-ins.** The approver sees Bash, Write and Edit exactly as on the server. Plan mode denies remote changes; `dontAsk` denies everything but read-only calls; `acceptEdits` allows write and edit but not Bash; `bypassPermissions` allows everything, as with the built-ins; with no approver, everything that is not read-only is denied.
 - **No fallback to the server.** If your machine is unreachable (laptop asleep, tailcat stopped, new address) tools return `REMOTE_UNREACHABLE` or `REMOTE_AUTH_FAILED` and the agent is told to stop and tell you. Wake the machine or restart `tailcat serve`, then continue.
@@ -47,18 +53,18 @@ Remote mode also ends when anything changes the lock: `/1on1 off`, opening the 1
 - `bash` runs under a login shell; the file tools do not.
 - `grep` and `find` are the default search path. Common file types work with the `type` filter through a built-in extension table. Installing `ripgrep` is an optional accelerator, and is needed for multiline search and for `type` values the fallback does not know.
 
-## 5. Security
+## 6. Security
 
 Commands run as the account that runs `tailcat serve`, with everything that account can reach. **That account is the real security boundary.** Path jailing in the file tools only prevents accidents. For untrusted repositories, run `tailcat serve` under a separate account or inside a container.
 
 Key custody: the private key is encrypted at rest (AES-256-GCM envelope under `SLAUDE_MASTER_KEY`) and is handed only to a turn running as you, authorized by the signed job token (`GET /v1/tenants/:t/remote-key`). It is held in memory by the helper subprocess and its parent process (until the helper exits), and by the gateway while it runs pre-flight or cleanup. It is never placed in argv, environment, disk or logs. The tailcat address travels in the signed job token, so on a split deployment it sits in the queue's job data for the job's lifetime; it is never echoed in replies, status lines or logs. Audit lines record the tool, program name or file basename, exit code and duration only.
 
-## 6. Operator notes
+## 7. Operator notes
 
-- `SLAUDE_REMOTE=1` enables the feature. `SLAUDE_TAILCAT_BIN` overrides the tailcat binary path (the image installs it at `/usr/local/bin/tailcat`).
+- `SLAUDE_REMOTE=1` enables the feature. The Connect form needs the Slack app's interactivity enabled (already required for approval buttons); where a surface cannot post private messages or open modals, `/remote` falls back to the typed command. `SLAUDE_TAILCAT_BIN` overrides the tailcat binary path (the image installs it at `/usr/local/bin/tailcat`).
 - Split deployments: the gateway signs the remote target and a session-config fingerprint into each job token; a node reboots a warm session when the fingerprint changes, or when a live session booted without one (before the gateway sent one). While a turn is still running, the reboot waits for that turn to end and the job is requeued rather than sent into the old session. The gateway runs preflight, ping and cleanup through tailcat, and nodes run the tools, so both gateway and node processes need the tailcat binary. The stock image ships it everywhere; a custom image must include it. The image build verifies the tailcat archive against a pinned SHA-256 per architecture; bumping `TAILCAT_VERSION` means updating both hashes.
 
-## 7. Known limitations
+## 8. Known limitations
 
 - No PDF or notebook (`.ipynb`) reads.
 - A background command whose last step is an explicit `exec` loses its job marker, so `/remote off` cannot kill that job.
