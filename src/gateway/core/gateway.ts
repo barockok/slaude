@@ -59,10 +59,9 @@ import {
   REMOTE_OPEN_ACTION,
   type RemoteCommandCtx,
 } from "./remote-command";
-import { activeRemoteTarget, boundEnv } from "../../remote/active";
-import { connectInfoForBinding, sweepIdleSandboxes } from "../../remote/env-runtime";
-import { HelperClient } from "../../remote/helper-client";
-import { cleanupCommand } from "../../remote/tools/bash";
+import { activeRemoteTarget } from "../../remote/active";
+import { sweepIdleSandboxes } from "../../remote/env-runtime";
+import { makeMonoRemoteFactory, monoRemoteResolver } from "../../remote/mono";
 import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
@@ -690,25 +689,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   if (env.remote.enabled() && env.role() !== "gateway") {
     // Mono: the query runs in this process, so resolve the target from the DB
     // and open the helper here. In split deploys the node does this from claims.
-    agent.setRemote(
-      async (sessionId) => {
-        const row = await Sessions.findById(sessionId);
-        return row?.slack_channel_id && row.slack_thread_ts ? activeRemoteTarget(row.slack_channel_id, row.slack_thread_ts) : null;
-      },
-      async (sessionId, t) => {
-        // The environment the session booted for: refuse if the thread has
-        // moved on meanwhile, so a stale target never connects.
-        const row = await Sessions.findById(sessionId);
-        const b = row?.slack_channel_id && row.slack_thread_ts ? await boundEnv(row.slack_channel_id, row.slack_thread_ts) : null;
-        if (!b || (t.env && b.env.id !== t.env.id)) throw new Error("the thread's environment changed");
-        const info = await connectInfoForBinding(b.binding, b.env, { provision: true });
-        return new HelperClient({
-          transport: info.transport,
-          privateKey: info.privateKey,
-          onDispose: async (exec) => { await exec(cleanupCommand(sessionId), { timeoutMs: 30_000 }); },
-        });
-      },
-    );
+    agent.setRemote(monoRemoteResolver, makeMonoRemoteFactory());
   }
 
 
