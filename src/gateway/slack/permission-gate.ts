@@ -26,7 +26,57 @@ type Pending = {
   resolve: (r: Awaited<ReturnType<CanUseTool>>) => void;
   /** gate-bus unsubscribe, when a bus is configured. */
   unsub?: () => Promise<void>;
+  /** Who may click; empty or absent = anyone (the payload carries the same list). */
+  approvers?: string[];
+  /** A /1on1 owner-only card: Allow once / Deny only, decided by the owner. */
+  ownerOnly?: boolean;
+  /** Owner-only cards: the auto-deny timer. */
+  timer?: ReturnType<typeof setTimeout>;
 };
+
+/** Who may click a permission card in a thread: a list of Slack user ids, or
+ *  null for anyone. Resolved when the card is posted and stored on its row. */
+export type PermissionClickers = (channel: string, threadTs: string) => Promise<string[] | null> | string[] | null;
+
+/** An owner-only call in a /1on1 guest's turn (agent/guests.ts). */
+export interface OwnerGateArgs {
+  sessionId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  /** The SDK tool_use id; the gate id is derived from it (`owner:<id>`), so a
+   *  normal permission card for the same call later cannot collide. */
+  toolUseId: string;
+  /** The lock owner: the only user whose click decides the card. */
+  owner: string;
+  /** The guest whose turn asked, for the card text; unknown = omitted. */
+  guest?: string;
+  /** The owner-only entry the call matched. */
+  rule?: string;
+  timeoutMs: number;
+}
+
+/** The gate id of an owner-only card for a tool_use id. */
+export const ownerGateId = (toolUseId: string) => `owner:${toolUseId}`;
+
+/** An owner card's outcome as the owner guard's decision, with a reason the
+ *  model can relay. Shared by mono and the node. */
+export function ownerDecision(
+  d: PermissionDecision,
+  toolName: string,
+  owner?: string,
+): import("../../agent/manager").OwnerGuardDecision {
+  if (d.behavior === "allow") return { allow: true };
+  const who = owner ? `<@${owner}>` : "the owner";
+  const why = d.message === "expired before a decision" ? `${who} did not decide in time` : d.message;
+  return {
+    allow: false,
+    reason:
+      `OWNER_ONLY: \`${toolName}\` needs ${who}'s approval in a guest's turn and was not run (${why}). ` +
+      "Tell the guest it needs the owner; do not retry it or reach the same effect another way.",
+  };
+}
+
+const stringList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((u): u is string => typeof u === "string" && !!u) : []);
 
 export type PermissionDecision = Awaited<ReturnType<CanUseTool>>;
 
@@ -344,11 +394,62 @@ export function voiceStartCard(input: Record<string, unknown>, cfg: VoiceCardCon
   return blocks;
 }
 
-function permBlocks(toolName: string, input: Record<string, unknown>, toolUseId: string, decisionReason?: string) {
-  // voice_start's card is never truncated: it spans as many blocks as needed.
-  const bodies = toolName === VOICE_START
+/** The fenced bodies of a card: the tool input, redacted. voice_start's card
+ *  is never truncated: it spans as many blocks as needed. */
+function cardBodies(toolName: string, input: Record<string, unknown>): string[] {
+  return toolName === VOICE_START
     ? voiceStartCard(input, voiceCardConfig())
     : [truncate(unfence(JSON.stringify(redactForCard(input), null, 2)), 2500)];
+}
+
+/** An owner-only card: only the owner's click counts, so there is no
+ *  "Always allow" (a session rule would outlive the guest's turn). */
+export function ownerBlocks(args: Pick<OwnerGateArgs, "toolName" | "input" | "owner" | "guest" | "rule" | "timeoutMs">, gateId: string) {
+  const mins = Math.max(1, Math.round(args.timeoutMs / 60_000));
+  const who = args.guest ? `<@${args.guest}> (a guest)` : "A guest";
+  return [
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: `:lock: *Owner approval needed* — \`${args.toolName}\`` },
+    },
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text:
+            `_${who} asked for this in <@${args.owner}>'s 1on1. Only <@${args.owner}> can allow it; ` +
+            `with no decision in ${mins} min it is denied._` +
+            (args.rule ? ` Owner-only rule: \`${cardLiteral(args.rule)}\`` : ""),
+        },
+      ],
+    },
+    ...cardBodies(args.toolName, args.input).map((body) => ({
+      type: "section",
+      text: { type: "mrkdwn", text: "```\n" + body + "\n```" },
+    })),
+    {
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          style: "primary",
+          text: { type: "plain_text", text: "Allow once" },
+          action_id: `slaude_perm:allow:${gateId}`,
+        },
+        {
+          type: "button",
+          style: "danger",
+          text: { type: "plain_text", text: "Deny" },
+          action_id: `slaude_perm:deny:${gateId}`,
+        },
+      ],
+    },
+  ];
+}
+
+function permBlocks(toolName: string, input: Record<string, unknown>, toolUseId: string, decisionReason?: string) {
+  const bodies = cardBodies(toolName, input);
   return [
     {
       type: "section",
@@ -415,16 +516,19 @@ function permBlocks(toolName: string, input: Record<string, unknown>, toolUseId:
 export class PermissionGate {
   #transport: Pick<Transport, "client" | "clientFor">;
   #autoAllow: Set<string>;
+  /** Who may click a normal card in a thread (unset = anyone). */
+  #clickers: PermissionClickers | undefined;
   /** sessionId → channel/thread for routing the prompt. */
   #routes = new Map<string, { channel: string; threadTs: string; app?: AppRef }>();
   #pending = new Map<PendingKey, Pending>();
   /** Explicit bus override (tests/sim); undefined = env-driven default. */
   #busOverride: GateBus | null | undefined;
 
-  constructor(transport: Transport, opts: { gateBus?: GateBus | null } = {}) {
+  constructor(transport: Transport, opts: { gateBus?: GateBus | null; clickers?: PermissionClickers } = {}) {
     this.#transport = transport;
     this.#busOverride = opts.gateBus;
     this.#autoAllow = autoAllowFromEnv();
+    this.#clickers = opts.clickers;
 
     transport.action(
       /^slaude_perm:(allow|always|deny):.+$/,
@@ -433,10 +537,22 @@ export class PermissionGate {
         const a = action as { action_id: string };
         const m = a.action_id.match(/^slaude_perm:(allow|always|deny):(.+)$/);
         if (!m) return;
-        const decision = m[1] as "allow" | "always" | "deny";
+        let decision = m[1] as "allow" | "always" | "deny";
         const toolUseId = m[2]!;
         const userId = (body as any).user?.id ?? "unknown";
         const status = decision === "deny" ? ("denied" as const) : ("approved" as const);
+        // Authorize the clicker against the card's allowlist BEFORE any
+        // settle, so a refused click never consumes, cancels or decides the
+        // row. The card stays as it is for whoever may decide it.
+        const notAllowed = async (allowed: string[]) => {
+          try {
+            await respond({
+              response_type: "ephemeral",
+              replace_original: false,
+              text: `:no_entry: <@${userId}>, only ${allowed.map((u) => `<@${u}>`).join(" or ")} can decide this. It stays pending.`,
+            });
+          } catch {}
+        };
         const stale = async (status?: string) => {
           // Duplicate click, expiry, abort, or another replica won. Answer
           // ephemerally and leave the card alone: a decided card's rewrite is
@@ -462,9 +578,15 @@ export class PermissionGate {
           return `${toolName} → ${decided} by <@${userId}>`;
         };
         const pend = this.#pending.get(toolUseId);
+        let ownerOnly = pend?.ownerOnly === true;
         if (!pend) {
           const cur = await PendingGates.get(toolUseId);
           if (!cur || cur.status !== "pending") return void (await stale(cur?.status));
+          const allowed = stringList((cur.payload as any)?.approvers);
+          if (allowed.length > 0 && !allowed.includes(userId)) return void (await notAllowed(allowed));
+          ownerOnly = (cur.payload as any)?.ownerOnly === true;
+          // An owner-only card offers no "Always allow"; a forged one is once.
+          if (ownerOnly && decision === "always") decision = "allow";
           const isPollRow = (cur.payload as any)?.waiter === "poll";
           if (!isPollRow && cur.instanceId === PendingGates.INSTANCE_ID) {
             // Our own in-process row with no waiter: the abort raced the
@@ -502,6 +624,8 @@ export class PermissionGate {
           } catch {}
           return;
         }
+        if (pend.approvers?.length && !pend.approvers.includes(userId)) return void (await notAllowed(pend.approvers));
+        if (ownerOnly && decision === "always") decision = "allow";
         // DB row is the source of truth: exactly one click wins the guarded
         // UPDATE; every later click sees null and is stale. The decision
         // granularity (allow vs always) rides along in the payload so
@@ -512,12 +636,14 @@ export class PermissionGate {
           // waiter is still alive — deliver the deny locally, never hang.
           const cur = await PendingGates.get(toolUseId);
           if (cur && (cur.status === "expired" || cur.status === "cancelled") && this.#pending.delete(toolUseId)) {
+            if (pend.timer) clearTimeout(pend.timer);
             void pend.unsub?.().catch(() => {});
             pend.resolve({ behavior: "deny", message: cur.status === "expired" ? "expired before a decision" : "cancelled" });
           }
           return void (await stale(cur?.status));
         }
         this.#pending.delete(toolUseId);
+        if (pend.timer) clearTimeout(pend.timer);
         void pend.unsub?.().catch(() => {});
         await this.#publish(toolUseId);
 
@@ -593,6 +719,7 @@ export class PermissionGate {
   }): Promise<{ decision: PermissionDecision } | { pendingId: string }> {
     const policy = permissionPolicy(args.toolName, args.input, this.#autoAllow, gateVoiceAudio(args.toolName));
     if (policy) return { decision: policy };
+    const approvers = await this.#clickersFor(args.channel, args.threadTs);
 
     await PendingGates.create({
       id: args.toolUseId,
@@ -603,6 +730,7 @@ export class PermissionGate {
         channel: args.channel,
         threadTs: args.threadTs,
         waiter: "poll",
+        ...(approvers.length ? { approvers } : {}),
         ...(args.suggestions?.length ? { suggestions: args.suggestions } : {}),
       },
       expiresAt: Date.now() + PERM_GATE_TTL_MS,
@@ -638,6 +766,7 @@ export class PermissionGate {
     }
 
     const toolUseId = ctx.toolUseID;
+    const approvers = await this.#clickersFor(route.channel, route.threadTs);
 
     // Durable pending state FIRST, then the in-process waiter, then the
     // buttons: by the time a click can exist, both stores are in place — no
@@ -646,7 +775,7 @@ export class PermissionGate {
       id: toolUseId,
       kind: "perm",
       sessionId,
-      payload: { toolName, channel: route.channel, threadTs: route.threadTs },
+      payload: { toolName, channel: route.channel, threadTs: route.threadTs, ...(approvers.length ? { approvers } : {}) },
       expiresAt: Date.now() + PERM_GATE_TTL_MS,
     });
 
@@ -662,39 +791,11 @@ export class PermissionGate {
       input,
       suggestions: ctx.suggestions,
       resolve: resolveFn,
+      ...(approvers.length ? { approvers } : {}),
     };
     this.#pending.set(toolUseId, pend);
-    // Cross-replica wakeup: a click landing on a sibling replica resolves the
-    // row and publishes; this subscription delivers the SDK promise here.
-    const bus = this.#bus();
-    if (bus) {
-      try {
-        pend.unsub = await bus.subscribe(toolUseId, () => {
-          void (async () => {
-            const cur = await PendingGates.get(toolUseId);
-            if (!cur || cur.status === "pending") return;
-            if (!this.#pending.delete(toolUseId)) return; // local click already delivered
-            void pend.unsub?.().catch(() => {});
-            pend.resolve(decisionFromPermRow(cur, toolName, input, ctx.suggestions));
-          })();
-        });
-      } catch (e) {
-        console.error("[permission-gate] gate subscribe failed (falling back to click-only)", e);
-      }
-    }
-    // Honor abort signal — tear down the prompt and deny.
-    ctx.signal.addEventListener(
-      "abort",
-      () => {
-        if (!this.#pending.has(toolUseId)) return;
-        this.#pending.delete(toolUseId);
-        void pend.unsub?.().catch(() => {});
-        // Settle the durable row too; a click that raced the abort loses.
-        void PendingGates.resolve(toolUseId, "cancelled", "system").catch(() => {});
-        resolveFn({ behavior: "deny", message: "aborted" });
-      },
-      { once: true },
-    );
+    await this.#wakeOnBus(toolUseId, pend);
+    this.#denyOnAbort(toolUseId, pend, ctx.signal);
 
     try {
       const posted = await clientForApp(this.#transport, route.app).chat.postMessage({
@@ -714,6 +815,178 @@ export class PermissionGate {
 
     return promise;
   };
+
+  /**
+   * Owner-only call in a /1on1 guest's turn, in-process waiter (mono): the
+   * card names the owner, only the owner's click decides it, and no decision
+   * within `timeoutMs` is a deny (the row expires and the card says so).
+   */
+  async requestOwner(args: OwnerGateArgs, signal: AbortSignal): Promise<PermissionDecision> {
+    const route = this.#routes.get(args.sessionId);
+    if (!route) return { behavior: "deny", message: "no active slaude thread to ask the owner in" };
+    if (signal.aborted) return { behavior: "deny", message: "aborted" };
+    const id = ownerGateId(args.toolUseId);
+    await PendingGates.create({
+      id,
+      kind: "perm",
+      sessionId: args.sessionId,
+      payload: { toolName: args.toolName, channel: route.channel, threadTs: route.threadTs, approvers: [args.owner], ownerOnly: true },
+      expiresAt: Date.now() + args.timeoutMs,
+    });
+    let resolveFn!: (r: PermissionDecision) => void;
+    const promise = new Promise<PermissionDecision>((resolve) => {
+      resolveFn = resolve;
+    });
+    const pend: Pending = {
+      channel: route.channel,
+      threadTs: route.threadTs,
+      messageTs: "",
+      toolName: args.toolName,
+      input: args.input,
+      resolve: resolveFn,
+      approvers: [args.owner],
+      ownerOnly: true,
+    };
+    this.#pending.set(id, pend);
+    await this.#wakeOnBus(id, pend);
+    this.#denyOnAbort(id, pend, signal);
+    const client = clientForApp(this.#transport, route.app);
+    pend.timer = setTimeout(() => {
+      void (async () => {
+        const row = await PendingGates.resolve(id, "expired", "system");
+        if (row) await this.#publish(id);
+        else {
+          // A click (here or on a sibling) won: its path delivers the decision.
+          const cur = await PendingGates.get(id);
+          if (cur && (cur.status === "approved" || cur.status === "denied")) return;
+        }
+        if (!this.#pending.delete(id)) return;
+        void pend.unsub?.().catch(() => {});
+        if (pend.messageTs) void client.chat.update({ channel: pend.channel, ts: pend.messageTs, text: expiredText(args), blocks: [] }).catch(() => {});
+        resolveFn({ behavior: "deny", message: "expired before a decision" });
+      })();
+    }, args.timeoutMs);
+    pend.timer.unref?.();
+    try {
+      const posted = await client.chat.postMessage({
+        channel: route.channel,
+        thread_ts: route.threadTs,
+        text: `:lock: Owner approval needed: \`${args.toolName}\``,
+        blocks: ownerBlocks(args, id),
+      });
+      pend.messageTs = (posted.ts as string) ?? "";
+    } catch (e) {
+      this.#pending.delete(id);
+      clearTimeout(pend.timer);
+      void pend.unsub?.().catch(() => {});
+      void PendingGates.resolve(id, "cancelled", "system").catch(() => {});
+      throw e;
+    }
+    return promise;
+  }
+
+  /**
+   * Owner-only call for the REST tool plane (a node): durable poll row, the
+   * owner's card and an auto-deny timer; the node long-polls /v1/pending/:id.
+   * Any replica's click settles the row, but only the owner's click counts.
+   */
+  async openOwner(args: OwnerGateArgs & { channel: string; threadTs: string; app?: AppRef }): Promise<{ pendingId: string }> {
+    const id = ownerGateId(args.toolUseId);
+    await PendingGates.create({
+      id,
+      kind: "perm",
+      sessionId: args.sessionId,
+      payload: {
+        toolName: args.toolName,
+        channel: args.channel,
+        threadTs: args.threadTs,
+        waiter: "poll",
+        approvers: [args.owner],
+        ownerOnly: true,
+      },
+      expiresAt: Date.now() + args.timeoutMs,
+    });
+    const client = clientForApp(this.#transport, args.app);
+    let cardTs: string | undefined;
+    const timer = setTimeout(() => {
+      void (async () => {
+        const row = await PendingGates.resolve(id, "expired", "system");
+        if (!row) return; // a click won
+        await this.#publish(id);
+        if (cardTs) void client.chat.update({ channel: args.channel, ts: cardTs, text: expiredText(args), blocks: [] }).catch(() => {});
+      })();
+    }, args.timeoutMs);
+    timer.unref?.();
+    try {
+      const posted = await client.chat.postMessage({
+        channel: args.channel,
+        thread_ts: args.threadTs,
+        text: `:lock: Owner approval needed: \`${args.toolName}\``,
+        blocks: ownerBlocks(args, id),
+      });
+      cardTs = posted.ts as string | undefined;
+    } catch (e) {
+      clearTimeout(timer);
+      await PendingGates.resolve(id, "cancelled", "system").catch(() => {});
+      await this.#publish(id);
+      throw e;
+    }
+    return { pendingId: id };
+  }
+
+  async #clickersFor(channel: string, threadTs: string): Promise<string[]> {
+    if (!this.#clickers) return [];
+    try {
+      return stringList(await this.#clickers(channel, threadTs));
+    } catch (e) {
+      // Unknown who may click: refuse to post rather than post a card that
+      // anyone could decide.
+      throw new Error(`could not resolve who may approve in this thread: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /** Cross-replica wakeup: a click landing on a sibling replica resolves the
+   *  row and publishes; this subscription delivers the promise here. */
+  async #wakeOnBus(id: string, pend: Pending): Promise<void> {
+    const bus = this.#bus();
+    if (!bus) return;
+    try {
+      pend.unsub = await bus.subscribe(id, () => {
+        void (async () => {
+          const cur = await PendingGates.get(id);
+          if (!cur || cur.status === "pending") return;
+          if (!this.#pending.delete(id)) return; // local click already delivered
+          if (pend.timer) clearTimeout(pend.timer);
+          void pend.unsub?.().catch(() => {});
+          pend.resolve(decisionFromPermRow(cur, pend.toolName, pend.input, pend.suggestions));
+        })();
+      });
+    } catch (e) {
+      console.error("[permission-gate] gate subscribe failed (falling back to click-only)", e);
+    }
+  }
+
+  /** Honor the abort signal: tear down the prompt and deny. */
+  #denyOnAbort(id: string, pend: Pending, signal: AbortSignal): void {
+    signal.addEventListener(
+      "abort",
+      () => {
+        if (!this.#pending.has(id)) return;
+        this.#pending.delete(id);
+        if (pend.timer) clearTimeout(pend.timer);
+        void pend.unsub?.().catch(() => {});
+        // Settle the durable row too; a click that raced the abort loses.
+        void PendingGates.resolve(id, "cancelled", "system").catch(() => {});
+        pend.resolve({ behavior: "deny", message: "aborted" });
+      },
+      { once: true },
+    );
+  }
+}
+
+function expiredText(args: Pick<OwnerGateArgs, "toolName" | "owner" | "timeoutMs">): string {
+  const mins = Math.max(1, Math.round(args.timeoutMs / 60_000));
+  return `:hourglass: \`${args.toolName}\` → *Denied*: no decision from <@${args.owner}> within ${mins} min.`;
 }
 
 function truncate(s: string, max: number) {
