@@ -40,7 +40,8 @@ export type SlashHit =
   | { kind: "cron-resume"; id: string }
   | { kind: "cron-edit"; id: string; cronExpr: string; prompt: string; target: "thread" | "channel"; whenActive: "fire" | "skip" }
   | { kind: "one-on-one"; action: "on" | "off"; scope: string }
-  | { kind: "one-on-one"; action: "lock" }
+  | { kind: "one-on-one"; action: "lock" | "status" }
+  | { kind: "one-on-one"; action: "invite" | "kick"; users: string[] }
   | { kind: "remote"; action: "on"; addr: string; dir?: string }
   | { kind: "remote"; action: "off" | "status" | "key" }
   | { kind: "mention-only"; action: "on" | "off" }
@@ -60,7 +61,8 @@ export interface SlashSpec { usage: string; summary: string }
 export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/mode <name>", summary: "set the tool-permission mode (per session/thread)" },
   { usage: "/abort", summary: "cancel the current turn" },
-  { usage: "/1on1 [lock | off]", summary: "start a private 1on1 (locked to you); `lock` re-restricts after open; `off` releases — to open to guests, ask the agent directly" },
+  { usage: "/1on1 [lock | off | status]", summary: "start a private 1on1 (locked to you); `status` shows the owner and guests; `lock` re-restricts after open; `off` releases — to open to everyone, ask the agent directly" },
+  { usage: "/1on1 invite|kick @user…", summary: "owner/manager: name guests who may talk in this 1on1 (you stay the owner; owner-only tools in a guest's turn wait for your click), or remove them" },
   { usage: "/remote [off | key | <addr> [dir]]", summary: "run this thread's shell + file tools on your own machine over tailcat (locks the thread to you); no arg shows status and, when off, a private Connect button for the address and directory" },
   { usage: "/mention-only [off]", summary: "reply only when @-mentioned in this thread; `off` restores normal" },
   { usage: "/mcp [connect|disconnect <server>]", summary: "list/connect/disconnect OAuth HTTP MCP servers — in 1on1: as you; outside 1on1: manager manages the agent's shared identity" },
@@ -205,6 +207,13 @@ export function parseSlashCommand(text: string): SlashHit | null {
     const sub = (rest[0] ?? "").toLowerCase();
     if (sub === "off") return { kind: "one-on-one", action: "off", scope: "" };
     if (sub === "lock") return { kind: "one-on-one", action: "lock" };
+    if (sub === "status" || sub === "guests") return { kind: "one-on-one", action: "status" };
+    if (sub === "invite" || sub === "kick") {
+      // Every mention after the sub-command, in order, once each (Slack sends
+      // `<@U…>` or `<@U…|name>`). No mentions → empty; the handler shows usage.
+      const users = [...new Set([...rest.slice(1).join(" ").matchAll(/<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g)].map((m) => m[1]!))];
+      return { kind: "one-on-one", action: sub, users };
+    }
     return { kind: "one-on-one", action: "on", scope: "" };
   }
   if (cmd === "remote") {
@@ -267,6 +276,19 @@ export function parseSlashCommand(text: string): SlashHit | null {
     return { kind: "help" };
   }
   return null;
+}
+
+/** Slash commands a named /1on1 guest may run in the owner's thread: help,
+ *  /abort, their own /link and `/1on1 status`. Everything else changes the
+ *  thread's settings, which stay the owner's. */
+export function guestMayRun(hit: SlashHit): boolean {
+  return (
+    hit.kind === "help" ||
+    hit.kind === "mode-help" ||
+    hit.kind === "abort" ||
+    hit.kind === "link" ||
+    (hit.kind === "one-on-one" && hit.action === "status")
+  );
 }
 
 export function helpText(): string {
