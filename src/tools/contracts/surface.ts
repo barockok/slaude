@@ -81,6 +81,7 @@ export const surfaceContract = {
         'Adjust an ALREADY-ACTIVE 1on1 session for THIS thread. Cannot initiate 1on1 — use the /1on1 slash command for that.\n' +
         '• action="open" → admit all participants; use `scope` to describe behavioural constraints for guests (e.g. "read-only, no credentials"). The scope is injected into the session context — interpret and respect it for non-initiator users.\n' +
         '• action="off" → fully release 1on1; thread is public again.\n' +
+        'To let specific people talk while the owner stays the owner, the owner uses `/1on1 invite @user` instead. In a named guest\'s turn this tool waits for the owner\'s approval.\n' +
         'Returns a short status to relay.',
       schema: {
         action: z.enum(["open", "off"]).describe('"open" = admit guests (add scope if needed); "off" = release entirely.'),

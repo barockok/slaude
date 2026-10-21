@@ -9,10 +9,10 @@ import {
 import { ReactionTracker } from "../slack/reactions";
 import { Presence } from "../slack/presence";
 import { Status } from "../slack/status";
-import { PermissionGate } from "../slack/permission-gate";
+import { PermissionGate, ownerDecision } from "../slack/permission-gate";
 import { ApprovalGate } from "../slack/approval-gate";
 import { IgnoreGate } from "../slack/ignore-gate";
-import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slack/commands";
+import { parseSlashCommand, guestMayRun, helpText, humanModeName, MODE_LABELS } from "../slack/commands";
 import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extract";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
@@ -113,6 +113,7 @@ import * as kbIngest from "../../knowledge/ingest";
 import * as Ignores from "../../db/ignores";
 import * as CronJobs from "../../db/cron-jobs";
 import * as OneOnOne from "../../db/one-on-one";
+import { speakerRole, isNamedGuestTurn } from "../../agent/guests";
 import * as MentionOnly from "../../db/mention-only";
 import { CronScheduler } from "../slack/cron-scheduler";
 import { startCronLeader } from "./cron-leader";
@@ -121,6 +122,10 @@ import { getNextRun } from "../slack/cron-parser";
 import { clientForApp, type AppRef, type Transport } from "./transport";
 
 export interface SessionMcpCtx { slack: SlackContext; surface: Surface }
+
+/** Most named guests one 1on1 holds. */
+const MAX_GUESTS = 20;
+const mentionList = (ids: readonly string[]) => ids.map((u) => `<@${u}>`).join(", ");
 export interface GatewayHandle {
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -571,7 +576,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const route = routes.get(sessionId);
     return botClientFor(route ? appOf(route.ctx) : undefined);
   });
-  const permissions = new PermissionGate(t);
+  // Who may click a tool-permission card: in a /1on1 thread the session runs
+  // as the owner, so only the owner and the manager/backup decide (a guest or
+  // a bystander never approves a call made with the owner's identity).
+  // Unlocked threads keep the earlier rule: anyone in the thread.
+  const permissions = new PermissionGate(t, {
+    clickers: async (channel, threadTs) => {
+      const lock = await OneOnOne.find(channel, threadTs);
+      if (!lock) return null;
+      const soul = soulData();
+      return [lock.locked_user, soul.manager.userId, soul.backupManager.userId].filter((u): u is string => !!u);
+    },
+  });
   const approvals = new ApprovalGate(t, env.slack.approvers(), {
     timeoutSeconds: () => soulData().approvalTimeoutSeconds || 300,
   });
@@ -658,6 +674,25 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     },
   });
   agent.setPermissionResolver(permissions.resolver);
+  // /1on1 named guests (mono: the query runs here). An owner-only call in a
+  // guest's turn posts a card only the lock owner can decide; AgentManager
+  // knows the turn is a guest's from the inbound message (sendMessage's flag).
+  agent.setOwnerGuard(async (req) => {
+    const route = routes.get(req.sessionId);
+    const lock = route ? await OneOnOne.find(route.ctx.channel, route.ctx.threadTs) : null;
+    if (!route || !lock) {
+      return { allow: false, reason: `OWNER_ONLY: \`${req.toolName}\` is owner-only in a guest's turn and this thread has no 1on1 owner to ask.` };
+    }
+    const timeoutMs = env.oneOnOne.ownerGateTimeoutSec() * 1000;
+    // Display only: the live route names the latest speaker.
+    const guest = route.ctx.userId && (lock.guests ?? []).includes(route.ctx.userId) ? route.ctx.userId : undefined;
+    console.log(`[1on1] owner gate session=${req.sessionId} tool=${req.toolName} owner=${lock.locked_user}`);
+    const d = await permissions.requestOwner(
+      { sessionId: req.sessionId, toolName: req.toolName, input: req.input, toolUseId: req.toolUseId, owner: lock.locked_user, guest, rule: req.rule, timeoutMs },
+      req.signal,
+    );
+    return ownerDecision(d, req.toolName, lock.locked_user);
+  });
   if (env.remote.enabled() && env.role() !== "gateway") {
     // Mono: the query runs in this process, so resolve the target from the DB
     // and open the helper here. In split deploys the node does this from claims.
@@ -1273,6 +1308,77 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return "Released 1on1 — the thread is open again.";
   }
 
+  /** `/1on1 status`: owner, mode and guests. Anyone heard in the thread may ask. */
+  async function oneOnOneStatus(channelId: string, threadTs: string): Promise<string> {
+    const lock = await OneOnOne.find(channelId, threadTs);
+    if (!lock) return "No 1on1 in this thread. `/1on1` starts one locked to you.";
+    const guests = lock.guests ?? [];
+    const lines = [
+      lock.open_scope !== null
+        ? `:unlock: *1on1* — owner <@${lock.locked_user}>, *open* to everyone${lock.open_scope.trim() ? ` (scope: ${lock.open_scope.trim()})` : ""}.`
+        : `:lock: *1on1* — owner <@${lock.locked_user}>, *locked*.`,
+    ];
+    if (lock.open_scope === null) {
+      lines.push(
+        guests.length
+          ? `Guests: ${mentionList(guests)}. I keep running as <@${lock.locked_user}>; owner-only actions in a guest's turn wait for their click.`
+          : "Guests: none. `/1on1 invite @user` lets someone else talk here.",
+      );
+      if (guests.length && env.remote.enabled() && (await activeRemoteTarget(channelId, threadTs))) {
+        lines.push("Remote mode is on: guests are not heard until `/remote off`.");
+      }
+    }
+    return lines.join("\n");
+  }
+
+  /** `/1on1 invite|kick @user…` — owner or manager/backup only, LOCKED 1on1
+   *  only. Guests never change whose identity the session runs as. */
+  async function changeGuests(
+    action: "invite" | "kick",
+    users: string[],
+    c: { channelId: string; threadTs: string; userId: string; botUserId?: string; personaUserId?: string },
+  ): Promise<{ changed: boolean; text: string }> {
+    const lock = await OneOnOne.find(c.channelId, c.threadTs);
+    if (!lock) return { changed: false, text: "No active 1on1 in this thread. Start one with `/1on1`, then invite guests." };
+    const soul = soulData();
+    const isMgr = c.userId === soul.manager.userId || c.userId === soul.backupManager.userId;
+    if (lock.locked_user !== c.userId && !isMgr) {
+      return { changed: false, text: `:lock: only the session owner (<@${lock.locked_user}>) or the manager can ${action} guests.` };
+    }
+    if (lock.open_scope !== null) {
+      return { changed: false, text: ":unlock: This 1on1 is open to everyone right now. `/1on1 lock` first, then invite named guests." };
+    }
+    if (users.length === 0) return { changed: false, text: `usage: \`/1on1 ${action} @user [@user…]\`` };
+    const current = lock.guests ?? [];
+    if (action === "kick") {
+      const removed = users.filter((u) => current.includes(u));
+      if (!removed.length) return { changed: false, text: `${mentionList(users)} ${users.length === 1 ? "is not a guest" : "are not guests"} here.` };
+      await OneOnOne.setGuests(c.channelId, c.threadTs, current.filter((u) => !removed.includes(u)));
+      console.log(`[1on1] kick ch=${c.channelId} thread=${c.threadTs} by=${c.userId} users=${removed.join(",")}`);
+      return { changed: true, text: `:wave: Removed ${mentionList(removed)} from <@${lock.locked_user}>'s 1on1; they are no longer heard here.` };
+    }
+    const heard = new Set([lock.locked_user, soul.manager.userId, soul.backupManager.userId, c.botUserId, c.personaUserId].filter((u): u is string => !!u));
+    const skipped = users.filter((u) => heard.has(u) || current.includes(u));
+    const added = users.filter((u) => !heard.has(u) && !current.includes(u));
+    if (!added.length) return { changed: false, text: `Nothing to change: ${mentionList(skipped)} ${skipped.length === 1 ? "is" : "are"} already heard here.` };
+    if (current.length + added.length > MAX_GUESTS) return { changed: false, text: `:x: A 1on1 holds at most ${MAX_GUESTS} guests.` };
+    await OneOnOne.setGuests(c.channelId, c.threadTs, [...current, ...added]);
+    console.log(`[1on1] invite ch=${c.channelId} thread=${c.threadTs} by=${c.userId} users=${added.join(",")}`);
+    const owner = `<@${lock.locked_user}>`;
+    const remote = env.remote.enabled() && (await activeRemoteTarget(c.channelId, c.threadTs))
+      ? " Remote mode is on, so guests are not heard until `/remote off`."
+      : "";
+    return {
+      changed: true,
+      text:
+        `:busts_in_silhouette: Invited ${mentionList(added)} to ${owner}'s 1on1. They can talk here; I keep running as ${owner}, ` +
+        `and owner-only actions in a guest's turn (file writes, commits, pushes, sandbox lease…) wait for ${owner}'s click. ` +
+        "`/1on1 kick @user` removes a guest." +
+        (skipped.length ? ` Skipped (already heard here): ${mentionList(skipped)}.` : "") +
+        remote,
+    };
+  }
+
   // Agent-facing mention-only toggle — same engine as /mention-only. No reboot: it's
   // a receive-time routing flag, not session-baked. No gating.
   async function agentMentionOnly(ctx: SlackContext, active: boolean): Promise<string> {
@@ -1751,19 +1857,28 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
     }
 
-    // 1on1 lock: while active, only the locked user + manager/backup are heard in
-    // this thread. After channel-mode (overrides "anyone can chat" in trusted/allowed
-    // channels) and before slash parsing (a non-allowed user can't /1on1 off to hijack
-    // someone else's lock). Approval buttons are unaffected — they go through
-    // ApprovalGate's action handler, not this path.
+    // 1on1 lock: while active, only the locked user, its named guests and the
+    // manager/backup are heard in this thread. After channel-mode (overrides
+    // "anyone can chat" in trusted/allowed channels) and before slash parsing (a
+    // non-allowed user can't /1on1 off to hijack someone else's lock). Approval
+    // buttons are unaffected — they go through the gates' action handlers.
+    let namedGuest = false;
     {
       const lock = await OneOnOne.find(channelId, threadTs);
       if (lock) {
         const soul = soulData();
         const isMgr = userId === soul.manager.userId || userId === soul.backupManager.userId;
+        namedGuest = isNamedGuestTurn(lock, userId, [soul.manager.userId, soul.backupManager.userId]);
         // In open mode (open_scope !== null) anyone may speak; only locked mode enforces the initiator gate.
-        if (lock.open_scope === null && userId !== lock.locked_user && !isMgr) {
+        if (lock.open_scope === null && userId !== lock.locked_user && !isMgr && !namedGuest) {
           console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — 1on1 locked to ${lock.locked_user}`);
+          metric.slackDropsTotal.inc({ reason: "one_on_one" });
+          return;
+        }
+        // Remote mode runs tools on the owner's machine: guests are not heard
+        // until it is off (the manager keeps its narrow /remote and /1on1 off).
+        if (namedGuest && env.remote.enabled() && (await activeRemoteTarget(channelId, threadTs))) {
+          console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — remote mode, guests not heard`);
           metric.slackDropsTotal.inc({ reason: "one_on_one" });
           return;
         }
@@ -1844,6 +1959,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           mrkdwn: true,
         });
       };
+      // A named guest talks in someone else's 1on1: the thread's settings stay
+      // the owner's. Help, /abort, their own /link and /1on1 status only.
+      if (namedGuest && !guestMayRun(slash)) {
+        const owner = (await OneOnOne.find(channelId, threadTs))?.locked_user;
+        await reply(`:lock: <@${userId}>, guests can't run that here. Ask the 1on1 owner${owner ? ` (<@${owner}>)` : ""}.`);
+        return;
+      }
       if (slash.kind === "help") {
         await reply(helpText());
         return;
@@ -1887,12 +2009,27 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         return;
       }
       if (slash.kind === "one-on-one") {
+        if (slash.action === "status") {
+          await reply(await oneOnOneStatus(channelId, threadTs));
+          return;
+        }
+        if (slash.action === "invite" || slash.action === "kick") {
+          const r = await changeGuests(slash.action, slash.users, { channelId, threadTs, userId, botUserId, personaUserId });
+          if (r.changed) agent.reloadAfterTurn(session.id); // the session-mode block lists the guests
+          await reply(r.text);
+          return;
+        }
         if (slash.action === "on") {
           const prevTarget = await Remote.findTarget(channelId, threadTs);
           if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(channelId, threadTs, { sessionId: session.id });
+          const hadGuests = ((await OneOnOne.find(channelId, threadTs))?.guests ?? []).length > 0;
           await OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId });
           agent.reload(session.id);
-          await reply(`:lock: *1on1 mode* — only <@${userId}> and the manager will be heard in this thread. \`/1on1 off\` to release. Ask me to open it to guests when needed.`);
+          await reply(
+            `:lock: *1on1 mode* — only <@${userId}> and the manager will be heard in this thread. \`/1on1 off\` to release. ` +
+              (hadGuests ? "Guests were cleared; " : "") +
+              "`/1on1 invite @user` to let someone else talk here, or ask me to open it to everyone.",
+          );
           // Onboarding unlocks this person's own integrations; it never gates
           // the 1:1, which is already open above. So a failure here is logged
           // and dropped rather than turned into an error they cannot act on.
@@ -2595,9 +2732,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
     // Wrap inbound in a channel envelope so the agent has slack context
     // and a clear directive to reply via the MCP tool — not as plain text.
+    // role: the speaker in this thread's 1on1 (owner | guest | manager), from
+    // the lock and the signed inbound user id — never from message text.
     const oneOnOneLock = await OneOnOne.find(channelId, threadTs);
+    const soulNow = soulData();
+    const managerIds = [soulNow.manager.userId, soulNow.backupManager.userId];
+    const turnRole = speakerRole(oneOnOneLock, userId, managerIds);
+    const guestTurn = isNamedGuestTurn(oneOnOneLock, userId, managerIds);
     const oneOnOneAttr = oneOnOneLock
-      ? ` one_on_one="true" locked_user="<@${oneOnOneLock.locked_user}>"`
+      ? ` one_on_one="true" locked_user="<@${oneOnOneLock.locked_user}>" role="${turnRole ?? ""}"`
       : ` one_on_one="false" locked_user=""`;
     const envelope =
       `<channel source="slack" channel_id="${channelId}" thread_ts="${threadTs}" ` +
@@ -2690,6 +2833,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             personaId: dispatch?.personaId,
             apiAppId: app.apiAppId,
             suppress,
+            ...(guestTurn ? { guest: true } : {}),
           });
         } catch (e: any) {
           console.error("[slaude] dispatch threw:", e?.message ?? e, e?.stack);
@@ -2700,7 +2844,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       console.log(`[slaude] sendMessage session=${session.id} cwd=${session.working_dir} model=${session.model}`);
       if (suppress) agent.suppressNextTurn(session.id);
       try {
-        await agent.sendMessage(session.id, envelope);
+        await agent.sendMessage(session.id, envelope, guestTurn ? { guest: true } : {});
       } catch (e: any) {
         console.error("[slaude] sendMessage threw:", e?.message ?? e, e?.stack);
       }
