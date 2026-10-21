@@ -345,6 +345,11 @@ export function bootstrapSqliteSchema(db: Database): void {
   if (!oooLockCols.some((c) => c.name === "open_scope")) {
     db.run(`ALTER TABLE one_on_one_locks ADD COLUMN open_scope TEXT`);
   }
+  // Migration: /1on1 named guests (mirrors pg migration 0018) — a JSON array of
+  // invited Slack user ids heard in a locked 1on1. NULL = none.
+  if (!oooLockCols.some((c) => c.name === "guests")) {
+    db.run(`ALTER TABLE one_on_one_locks ADD COLUMN guests TEXT`);
+  }
 
   // Migration: record the /1on1 lock owner active when the job was created. Cron
   // runs for DM/channel-target jobs key on a synthetic `cron:<id>` thread that
