@@ -75,6 +75,18 @@ export async function executeRuntimeTool(
       });
       return { content: [{ type: "text", text: JSON.stringify(res) }] };
     }
+    case c.owner_gate.name: {
+      // REST-only: the node's /1on1 owner guard. Who decides comes from the
+      // gateway's lock row, never from the request.
+      const a = parseToolArgs(c.owner_gate, body);
+      const res = await deps.openOwnerPermission(claims, {
+        toolName: a.tool_name,
+        input: (a.input ?? {}) as Record<string, unknown>,
+        toolUseId: a.tool_use_id,
+        rule: a.rule,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(res) }] };
+    }
     default:
       return null;
   }

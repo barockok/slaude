@@ -39,6 +39,9 @@ export interface TurnMessage {
    *  the transcript via the suppress hook without running the model. A turn
    *  runs suppressed only when EVERY coalesced message is suppressed. */
   suppress?: boolean;
+  /** From a named /1on1 guest (decided by the gateway from the live lock at
+   *  dispatch): the node runs the turn with owner-only tools guarded. */
+  guest?: boolean;
 }
 
 /** Payload of one turn job (spec §2). Imported by the node worker (P6). */

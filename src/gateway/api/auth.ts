@@ -53,7 +53,7 @@ export interface JobClaims {
    *  locked, a string = open mode with that scope. A node has no database, so
    *  this is how its session-mode block learns the lock. Absent = a gateway
    *  that predates the claim. */
-  lock?: { user: string; openScope: string | null } | null;
+  lock?: { user: string; openScope: string | null; guests?: string[] } | null;
   /** The node label this turn runs on, signed at dispatch (node labels spec
    *  §4.3). The gate requires it among the calling node's labels. Absent (a
    *  token from before the change) means "default". */

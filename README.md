@@ -43,7 +43,7 @@ Full site: **<https://barockok.github.io/slaude/>** — source in [`docs/site/_c
 | **Two-layer persona** | Hardcoded baseline (output, engagement, approval discipline) + your `SOUL.md` (name, role, mandate, approvers). |
 | **MCP-only Slack I/O** | Every reply via `mcp__slaude_slack__reply` / `edit` / `upload` / `request_approval`. Markdown auto-converts to mrkdwn. |
 | **Approvals** | Agent runs YOLO, calls `request_approval()` for mutating work. Allowlist parsed from `SOUL.md` — agent never picks IDs. |
-| **Engagement** | `@mention` engages thread, mentioning someone else disengages. DMs always engaged. `/1on1` locks thread. |
+| **Engagement** | `@mention` engages thread, mentioning someone else disengages. DMs always engaged. `/1on1` locks thread; `/1on1 invite @qa` lets named guests talk while owner-only tools wait for the owner's click. |
 | **Skills & KB** | `~/.slaude/skills/<slug>/SKILL.md` hot-reloads; `knowledge/` wikis compound via `raw/` → `wiki/` `/ingest`. |
 | **Simulation** | `bun run sim` verifies gates with no Slack — same `createGateway`, in-memory transport. |
 

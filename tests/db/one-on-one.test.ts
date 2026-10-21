@@ -30,3 +30,51 @@ describe("one_on_one store", async () => {
     expect(await OneOnOne.find("C1", "2.0")).toBeNull();
   });
 });
+
+describe("one_on_one named guests", () => {
+  const lockIt = () => OneOnOne.lock({ channelId: "C1", threadTs: "1.0", lockedUser: "U0OWNER", createdBy: "U0OWNER" });
+
+  it("a fresh lock has no guests", async () => {
+    await lockIt();
+    expect((await OneOnOne.find("C1", "1.0"))?.guests).toEqual([]);
+  });
+  it("setGuests stores ids, deduplicated, in order; an empty list stores none", async () => {
+    await lockIt();
+    await OneOnOne.setGuests("C1", "1.0", ["U0QA", "U0REV", "U0QA"]);
+    expect((await OneOnOne.find("C1", "1.0"))?.guests).toEqual(["U0QA", "U0REV"]);
+    await OneOnOne.setGuests("C1", "1.0", []);
+    expect((await OneOnOne.find("C1", "1.0"))?.guests).toEqual([]);
+  });
+  it("re-locking, opening and re-locking from open all clear guests", async () => {
+    await lockIt();
+    await OneOnOne.setGuests("C1", "1.0", ["U0QA"]);
+    await lockIt();
+    expect((await OneOnOne.find("C1", "1.0"))?.guests).toEqual([]);
+
+    await OneOnOne.setGuests("C1", "1.0", ["U0QA"]);
+    await OneOnOne.setOpen("C1", "1.0", "read-only");
+    expect((await OneOnOne.find("C1", "1.0"))?.guests).toEqual([]);
+
+    await OneOnOne.setGuests("C1", "1.0", ["U0QA"]);
+    await OneOnOne.setLocked("C1", "1.0");
+    expect((await OneOnOne.find("C1", "1.0"))?.guests).toEqual([]);
+  });
+  it("unlock (/1on1 off) drops the guests with the lock", async () => {
+    await lockIt();
+    await OneOnOne.setGuests("C1", "1.0", ["U0QA"]);
+    await OneOnOne.unlock("C1", "1.0");
+    await lockIt();
+    expect((await OneOnOne.find("C1", "1.0"))?.guests).toEqual([]);
+  });
+  it("setGuests on an unlocked thread does nothing", async () => {
+    await OneOnOne.setGuests("C1", "nope", ["U0QA"]);
+    expect(await OneOnOne.find("C1", "nope")).toBeNull();
+  });
+  it("parseGuests admits only Slack user ids from a JSON array; anything else is none", () => {
+    expect(OneOnOne.parseGuests('["U0QA","W0B"]')).toEqual(["U0QA", "W0B"]);
+    expect(OneOnOne.parseGuests('["U0QA","<@U0X>",7,"c1"]')).toEqual(["U0QA"]);
+    expect(OneOnOne.parseGuests("not json")).toEqual([]);
+    expect(OneOnOne.parseGuests('{"a":1}')).toEqual([]);
+    expect(OneOnOne.parseGuests(null)).toEqual([]);
+  });
+});

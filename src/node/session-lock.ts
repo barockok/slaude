@@ -24,5 +24,8 @@ export function lockFromClaims(store: TokenSource, sessionId: string): OneOnOneL
     created_by: "",
     created_at: 0,
     open_scope: c.lock.openScope ?? null,
+    ...(Array.isArray(c.lock.guests) && c.lock.guests.length
+      ? { guests: c.lock.guests.filter((g): g is string => typeof g === "string") }
+      : {}),
   };
 }

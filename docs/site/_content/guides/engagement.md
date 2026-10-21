@@ -14,7 +14,7 @@ One Slack thread is one Claude session. But not every message in the thread is f
 
 1. **@mention the agent to engage.** A message that contains `<@BOT_ID>` (or a persona user ID in multi-persona mode) engages the thread. From that point, plain follow-ups in the same thread are delivered to the model without another mention.
 
-2. **@mention someone else to disengage.** A message that mentions a different user (and not the bot or any persona) disengages the thread. The user is now talking to a colleague, not the agent.
+2. **@mention someone else to disengage.** A message that mentions a different user (and not the bot or any persona) disengages the thread. The user is now talking to a colleague, not the agent. A slash command's mentions are its arguments, not people being addressed: `/1on1 invite @jane` or `/ignore @bot-spam` never disengages.
 
 3. **DMs are always engaged.** `channel_type === "im"` skips the gate entirely. No mention needed.
 
@@ -147,9 +147,12 @@ These two per-thread switches sit on top of the global engagement gate.
 ### 3.1 `/1on1` — private lock
 
 ```
-/1on1          → lock this thread to you (only you + manager are heard)
-/1on1 lock     → re-restrict an opened thread back to initiator-only
-/1on1 off      → release the lock (normal engagement resumes)
+/1on1                  → lock this thread to you (only you + manager are heard)
+/1on1 invite @a @b     → named guests: they may talk here too; you stay the owner
+/1on1 kick @a          → remove a guest
+/1on1 status           → owner, mode (locked / open) and guests
+/1on1 lock             → re-restrict an opened thread back to initiator-only
+/1on1 off              → release the lock (normal engagement resumes)
 ```
 
 **How it works:**
@@ -159,7 +162,7 @@ These two per-thread switches sit on top of the global engagement gate.
 3. The initiator can later say *in natural language* "let someone else weigh in on this" — the model calls `open_1on1` (sets `open_scope` with a behavioural constraint) to invite guests under a scope. Guests can then speak, but the scope constrains what the agent does with their input. `/1on1 lock` clears `open_scope` and returns to initiator-only.
 4. `/1on1 off` deletes the row.
 
-**Asking to open to guests via `/1on1` is intentionally not a slash.** `/1on1` can only `on | lock | off`. Opening requires telling the agent directly so the scope is explicit.
+**Asking to open to everyone via `/1on1` is intentionally not a slash.** Opening requires telling the agent directly so the scope is explicit. To let *specific* people in, use named guests (3.1.1) instead: the gate admits them by id, and the owner-only rule is enforced in code rather than by the model.
 
 **Transcript:**
 
@@ -180,7 +183,40 @@ you:  /1on1 off
 slaude:             1on1 mode off — normal engagement resumes.
 ```
 
-Related: `src/db/one-on-one.ts` (`one_on_one_locks` table, `open_scope` column).
+Related: `src/db/one-on-one.ts` (`one_on_one_locks` table, `open_scope` and `guests` columns).
+
+#### 3.1.1 Named guests: QA and reviewers in your 1on1
+
+A 1on1 runs as its owner: the owner's OAuth config dir, private MCP credentials and (with a sandbox MCP server) the owner's sandbox. Named guests let a QA engineer or a reviewer talk in that thread and drive tests there, while changes stay the owner's call.
+
+```
+you:  /1on1
+you:  /1on1 invite @qa-lead @reviewer
+slaude:  Invited @qa-lead, @reviewer to your 1on1. They can talk here; I keep running as you,
+         and owner-only actions in a guest's turn wait for your click.
+qa-lead: run the integration suite against my branch     → handled, role="guest"
+slaude:  (runs the tests in your sandbox, posts results)
+qa-lead: the fix looks right, push it                      → git_push is owner-only
+slaude:  🔒 Owner approval needed — mcp__sandbox__git_push   [Allow once] [Deny]
+qa-lead: (clicks Allow once)  → refused, ephemeral: only @you can decide this
+you:     (clicks Allow once)  → the push runs
+```
+
+**Rules, enforced in the gateway and the agent runtime (not by the prompt):**
+
+- **Who may invite or kick:** the owner, or the manager/backup. Guests and bystanders cannot. Invites need a *locked* 1on1: in open mode everyone is already heard, so `/1on1 lock` first. The owner, the manager/backup and the bot are never added as guests. At most 20 guests.
+- **Who is heard:** in a locked 1on1, the owner, the named guests and the manager/backup. Everyone else is dropped before parsing, as before. While `/remote` is on, guests are not heard (only the owner drives the remote machine).
+- **Whose identity:** unchanged. Guests never change `runAs`, the config dir or the credentials the session uses.
+- **Turn role:** the inbound envelope carries `role="owner" | "guest" | "manager"` for the speaker, derived from the lock and the signed Slack user id, never from message text. The session-mode block lists the guests and the owner-only actions.
+- **Owner-only tools:** while a guest's message is in the turn, a call matching the owner-only list (`SLAUDE_1ON1_OWNER_ONLY_TOOLS`, see [configuration](../reference/configuration.md)) posts a card that **only the owner** can decide: the guest's or anyone else's click gets an ephemeral refusal and the card stays. No decision within `SLAUDE_1ON1_OWNER_GATE_TIMEOUT` (default 10 minutes) is a deny. The check is a `PreToolUse` hook, so it holds in every permission mode, **bypass included** (the CLI never calls `canUseTool` under bypass). Approving only lifts the owner-only block: the session's own permission mode still applies afterwards (in `ask` mode, the usual permission card follows). Scheduling cron jobs is always owner-only in a guest's turn, because a job created in a 1on1 later runs as its owner.
+- **Changing the 1on1 is the owner's:** the agent's `set_one_on_one` tool locks, opens or releases an existing 1on1 only when the speaker is its owner or the manager/backup, the same rule as `/1on1 lock`. Anyone else (a named guest, or anyone heard in open mode) gets a refusal the agent relays, so a guest cannot get the agent to re-lock the thread to themselves (which would switch the identity it runs as) or drop the owner's 1on1. In a named guest's turn the call is denied before it runs, with no card.
+- **A guest's slash commands:** only `/help`, `/abort`, their own `/link` and `/1on1 status`. Everything else that changes the thread (`/mode`, `/1on1 …`, `/mention-only`, `/mcp`, `/cron-*`, …) is refused with a pointer to the owner.
+- **Clearing:** re-locking (`/1on1`), opening (`set_one_on_one open`), `/1on1 lock` and `/1on1 off` all clear the guest list.
+- **Fail closed:** an owner's turn that overlaps a guest's queued message is guarded too (the owner can approve their own call on the card); a turn cut by a reboot stays a guest's turn on the next boot.
+
+**Operator checklist.** Everything the session reaches runs as the owner, including `privateServices` MCP servers. The default list covers file writes and sandbox / workbench style MCP tools; add the write tools of any other service the owner's identity reaches (for example `SLAUDE_1ON1_OWNER_ONLY_TOOLS=+mcp__github__create_*,mcp__github__merge_*`), or `+Bash` if the server shell can act as the owner.
+
+Open mode is unchanged: everyone is heard, and the scope stays a model-enforced constraint. Use named guests when the owner-only rule has to hold.
 
 ### 3.2 `/mention-only` — opposite of sticky engagement
 
@@ -207,7 +243,8 @@ Some actions should not happen without a human clicking yes. Slaude has two appr
 
 | Gate | When | Who clicks | Tool |
 |---|---|---|---|
-| **Permission gate** | Per SDK tool call (Bash, Write, Edit, WebFetch, etc.) | The user in the thread (Allow / Always / Deny buttons) | SDK `canUseTool` → Block Kit approval |
+| **Permission gate** | Per SDK tool call (Bash, Write, Edit, WebFetch, etc.) | The user in the thread (Allow / Always / Deny buttons). In a `/1on1` thread: only the owner or the manager/backup; anyone else's click is refused ephemerally | SDK `canUseTool` → Block Kit approval |
+| **Owner gate** | An owner-only tool call in a named guest's turn (3.1.1) | The `/1on1` owner only (Allow once / Deny); no decision before the timeout is a deny | `PreToolUse` hook → Block Kit approval (works in bypass mode) |
 | **Approval gate** | Per *task* — agent-initiated before a destructive batch | Approvers from SOUL.md (Allowlist-resolved) | `mcp__slaude_slack__request_approval` → Block Kit Approve / Deny |
 
 This section is about the second one.
@@ -297,7 +334,9 @@ All commands below work inside a thread (they resolve `channel` + `thread_ts` fr
 | `/mode <name>` | Set tool-permission mode for this thread's session | Anyone in the thread | Persists to `sessions.permission_mode`; next boot uses it |
 | `/mode` (no arg) | Show current mode + available modes | Anyone | Read-only |
 | `/abort` `/stop` `/cancel` | Cancel the current model turn | Anyone in the thread | Calls `AbortController.abort()` — stream ends with `aborted` |
-| `/1on1` `/1on1 lock` `/1on1 off` | 1on1 private lock (see section 3.1) | Anyone (initial lock) / manager enforces | Writes `one_on_one_locks` |
+| `/1on1` `/1on1 lock` `/1on1 off` | 1on1 private lock (see section 3.1) | Anyone (initial lock) / manager enforces; never a named guest | Writes `one_on_one_locks` |
+| `/1on1 invite @user…` `/1on1 kick @user…` | Named guests of a locked 1on1 (see 3.1.1) | The owner or manager/backup | Writes `one_on_one_locks.guests`; reboots the session after the turn |
+| `/1on1 status` | Owner, mode and guests | Anyone heard in the thread | Read-only |
 | `/mention-only` `/mention-only off` | Mention-only toggle (see section 3.2) | Anyone in the thread | Writes `mention_only_threads` |
 | `/help` `/h` `/?` | Show help table + mode list | Anyone | None |
 | `/ingest` | Manually trigger KB ingest (`raw/` → wiki → brain sync) | Manager / approver only | Background job; reacts with `hourglass` |

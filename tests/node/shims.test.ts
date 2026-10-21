@@ -35,7 +35,8 @@ import { writeSoulFixture, WORLD } from "../../src/gateway/sim/soul-fixture";
 import { mintJobToken } from "../../src/gateway/api/auth";
 import { NodeClient } from "../../src/node/client";
 import { buildShimServers, REST_SERVER_SEGMENT } from "../../src/node/shims";
-import { makeNodePermissionResolver } from "../../src/node/shims/permission";
+import { makeNodeOwnerGuard, makeNodePermissionResolver } from "../../src/node/shims/permission";
+import * as OneOnOne from "../../src/db/one-on-one";
 import { ensureHome } from "../../src/config/home";
 
 const NODE_TOKEN = "shim-node-token";
@@ -247,6 +248,88 @@ describe("node permission resolver", () => {
     const d: any = await pending;
     expect(d.behavior).toBe("deny");
     expect(d.message).toBe("aborted");
+  }, 15_000);
+});
+
+describe("node /1on1 owner guard", () => {
+  // The job token's thread (C0TEAM / 600.0) is a 1on1 owned by U0OWNER with a guest.
+  const guard = () => makeNodeOwnerGuard({ client: nodeClient, tokenFor: () => jobToken() });
+  const req = (toolUseId: string, signal = new AbortController().signal) => ({
+    sessionId: SESSION, toolName: "mcp__sandbox__git_push", input: { remote: "origin" }, toolUseId, rule: "mcp__*__git_push", signal,
+  });
+
+  test("no 1on1 in the thread → denied at once, no card", async () => {
+    await OneOnOne.unlock("C0TEAM", "600.0");
+    const before = posts.length;
+    const d = await guard()(req("shim_owner_0"));
+    expect(d.allow).toBe(false);
+    expect(posts.length).toBe(before);
+  });
+
+  test("full loop: owner card → the guest's click is refused → the owner's click allows", async () => {
+    await OneOnOne.lock({ channelId: "C0TEAM", threadTs: "600.0", lockedUser: "U0OWNER", createdBy: "U0OWNER" });
+    await OneOnOne.setGuests("C0TEAM", "600.0", ["U0QA"]);
+    try {
+      const before = posts.length;
+      let done = false;
+      const pending = guard()(req("shim_owner_1")).then((d) => ((done = true), d));
+      for (let i = 0; i < 200 && posts.length === before; i++) await new Promise((r) => setTimeout(r, 10));
+      expect(JSON.stringify(posts[posts.length - 1].blocks)).toContain("Only <@U0OWNER> can allow it");
+      await fire("slaude_perm:allow:owner:shim_owner_1", "U0QA");
+      await fire("slaude_perm:allow:owner:shim_owner_1", WORLD.manager);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(done).toBe(false);
+      await fire("slaude_perm:allow:owner:shim_owner_1", "U0OWNER");
+      expect(await pending).toEqual({ allow: true });
+    } finally {
+      await OneOnOne.unlock("C0TEAM", "600.0");
+    }
+  }, 15_000);
+
+  test("set_one_on_one over REST checks the speaker: a guest initiator is refused", async () => {
+    await OneOnOne.lock({ channelId: "C0TEAM", threadTs: "600.0", lockedUser: "U0OWNER", createdBy: "U0OWNER" });
+    await OneOnOne.setOpen("C0TEAM", "600.0", "");
+    try {
+      const guestToken = () =>
+        mintJobToken({
+          tenant: "default", persona: "default", session: SESSION,
+          team: "T1", channel: "C0TEAM", thread: "600.0", initiator: "U0GUEST", scope: "turn",
+        });
+      const guestShims = buildShimServers(SESSION, { client: nodeClient, tokenFor: () => guestToken() });
+      for (const action of ["off", "open"]) {
+        const r: any = await callShim(guestShims[surfaceContract.server] as any, "set_one_on_one", { action });
+        expect(r.content[0].text).toContain("Refused: only the 1on1 owner <@U0OWNER>");
+      }
+      expect((await OneOnOne.find("C0TEAM", "600.0"))?.locked_user).toBe("U0OWNER");
+      // The manager (the default token's initiator) may release it.
+      const ok: any = await callShim(shims[surfaceContract.server] as any, "set_one_on_one", { action: "off" });
+      expect(ok.content[0].text).toContain("Released 1on1");
+      expect(await OneOnOne.find("C0TEAM", "600.0")).toBeNull();
+    } finally {
+      await OneOnOne.unlock("C0TEAM", "600.0");
+    }
+  });
+
+  test("the owner's Deny is a deny; abort mid-poll fails closed", async () => {
+    await OneOnOne.lock({ channelId: "C0TEAM", threadTs: "600.0", lockedUser: "U0OWNER", createdBy: "U0OWNER" });
+    try {
+      const before = posts.length;
+      const pending = guard()(req("shim_owner_2"));
+      for (let i = 0; i < 200 && posts.length === before; i++) await new Promise((r) => setTimeout(r, 10));
+      await fire("slaude_perm:deny:owner:shim_owner_2", "U0OWNER");
+      const d = await pending;
+      expect(d.allow).toBe(false);
+      if (!d.allow) expect(d.reason).toContain("Denied by <@U0OWNER>");
+
+      const ac = new AbortController();
+      const p2 = guard()(req("shim_owner_3", ac.signal));
+      setTimeout(() => ac.abort(), 150);
+      const d2 = await p2;
+      expect(d2.allow).toBe(false);
+      if (!d2.allow) expect(d2.reason).toContain("aborted");
+    } finally {
+      await OneOnOne.unlock("C0TEAM", "600.0");
+    }
   }, 15_000);
 });
 
