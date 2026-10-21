@@ -76,6 +76,10 @@ describe("syncKbWikis while the brain is closing", () => {
     const run = trackBrainWork(syncKbWikis());
     await closeBrain(); // waits for `run`, which must not start the second KB
     const results = await run;
-    expect(results.map((r) => r.label)).toEqual(["bw-one"]);
+    // Exactly one KB, whichever comes first: loadKbs() follows readdir order,
+    // which is sorted on macOS but hash-ordered on Linux (ext4), so CI may
+    // import bw-two first.
+    expect(results).toHaveLength(1);
+    expect(labels).toContain(results[0]!.label);
   }, 60_000);
 });
