@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   ALWAYS_OWNER_ONLY,
   DEFAULT_OWNER_ONLY_TOOLS,
+  GUEST_TURN_DENIED,
   innerToolNames,
   isNamedGuestTurn,
   ownerOnlyMatch,
@@ -85,10 +86,15 @@ describe("ownerOnlyMatch", () => {
     expect(m("mcp__sandbox__git_push_status")).toBeNull();
     expect(m("WriteNotes")).toBeNull();
   });
-  test("always owner-only: changing the 1on1 and scheduling jobs", () => {
-    expect(m("mcp__slaude_surface__set_one_on_one")).toBe("mcp__slaude_surface__set_one_on_one");
+  test("always owner-only: scheduling jobs; changing the 1on1 is denied outright instead", () => {
     expect(m("mcp__slaude_runtime__add_cron_job")).toBe("mcp__slaude_runtime__add_cron_job");
     expect(ownerOnlyMatch("mcp__slaude_runtime__edit_cron_job", {}, parseOwnerOnlyRules("none"))).not.toBeNull();
+    expect(GUEST_TURN_DENIED).toEqual(["mcp__slaude_surface__set_one_on_one"]);
+    expect(m("mcp__slaude_surface__set_one_on_one")).toBeNull(); // no card: the hook denies it first
+  });
+  test("workbench: raw authenticated HTTP is owner-only whatever it calls", () => {
+    expect(m("mcp__workbench__curl_session", { method: "GET" })).toBe("mcp__workbench__curl_session");
+    expect(m("mcp__workbench__search_tools")).toBeNull();
   });
   test("workbench execute_tools: gated when an inner call is a write", () => {
     const ex = (...tools: string[]) => ({ executions: tools.map((tool) => ({ tool, args: {} })) });

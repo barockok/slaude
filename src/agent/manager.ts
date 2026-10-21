@@ -44,7 +44,7 @@ import { ChildEnvPatch, scrubChildEnv, withoutKeys } from "./child-env";
 import { resolveSessionConfigDir } from "./oauth-home";
 import { sessionIdOpts } from "./session-id-opts";
 import { sessionModeBlock } from "./session-mode";
-import { ownerOnlyMatch, parseOwnerOnlyRules } from "./guests";
+import { GUEST_TURN_DENIED, ownerOnlyMatch, parseOwnerOnlyRules } from "./guests";
 import { formatSessionNotes } from "./session-notes";
 import { BootFailure, type FailureCode } from "../gateway/core/failure-codes";
 import { redactSecrets } from "../gateway/core/status-text";
@@ -1470,11 +1470,14 @@ export class AgentManager extends EventEmitter {
     return async (input, _toolUseID, { signal }): Promise<HookJSONOutput> => {
       if (input.hook_event_name !== "PreToolUse" || !guestTurn()) return {};
       const toolName = input.tool_name;
-      const rule = ownerOnlyMatch(toolName, input.tool_input, parseOwnerOnlyRules(env.oneOnOne.ownerOnlyTools()));
-      if (!rule) return {};
       const deny = (reason: string): HookJSONOutput => ({
         hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason },
       });
+      if (GUEST_TURN_DENIED.includes(toolName)) {
+        return deny("OWNER_ONLY: a guest cannot change this 1on1. Tell them only the owner or the manager can, with the `/1on1` commands.");
+      }
+      const rule = ownerOnlyMatch(toolName, input.tool_input, parseOwnerOnlyRules(env.oneOnOne.ownerOnlyTools()));
+      if (!rule) return {};
       const guard = this.#ownerGuard;
       if (!guard) return deny(`OWNER_ONLY: \`${toolName}\` is owner-only in a guest's turn and there is no way to ask the owner here.`);
       const limitMs = (env.oneOnOne.ownerGateTimeoutSec() + 5) * 1000;

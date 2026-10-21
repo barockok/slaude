@@ -66,16 +66,23 @@ export const DEFAULT_OWNER_ONLY_TOOLS: readonly string[] = [
   "mcp__*__sandbox_lease",
   "mcp__*__sandbox_release",
   "mcp__workbench__execute_tools>:write",
+  // Raw authenticated HTTP through the owner's connections: any method, so
+  // it cannot be told apart from a write by its name.
+  "mcp__workbench__curl_session",
 ];
 
-/** Owner-only in every guest turn whatever the list says: changing the 1on1
- *  itself (a guest must not open or release it), and scheduling a prompt,
- *  since a job created in a 1on1 later runs as its owner with no guest in it. */
+/** Owner-only in every guest turn whatever the list says: scheduling a
+ *  prompt, since a job created in a 1on1 later runs as its owner with no
+ *  guest in it. */
 export const ALWAYS_OWNER_ONLY: readonly string[] = [
-  "mcp__slaude_surface__set_one_on_one",
   "mcp__slaude_runtime__add_cron_job",
   "mcp__slaude_runtime__edit_cron_job",
 ];
+
+/** Denied outright in a guest's turn, with no card: changing the 1on1 itself.
+ *  The engine refuses anyone but the owner or the manager, so an owner's
+ *  click could not make a guest's call work; the owner uses `/1on1`. */
+export const GUEST_TURN_DENIED: readonly string[] = ["mcp__slaude_surface__set_one_on_one"];
 
 export interface OwnerOnlyRule {
   /** The entry as configured, shown on the owner's card. */

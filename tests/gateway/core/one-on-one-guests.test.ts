@@ -389,17 +389,21 @@ describe("owner-only tools in a guest's turn, under bypass mode", () => {
     await h.agent.reload(sessionId);
   });
 
-  it("set_one_on_one in a guest's turn needs the owner too (a guest cannot open or release the 1on1)", async () => {
+  it("set_one_on_one in a guest's turn is denied outright, with no card", async () => {
     const h = harness();
     await h.say(OWNER, "/1on1", { root: true });
     await h.say(OWNER, `/1on1 invite <@${GUEST}>`);
     await h.say(GUEST, "open this thread to everyone");
     await until(() => spawned[0]?.options != null, 3000, "session boot");
     const hook = spawned[0]!.options.hooks.PreToolUse[0].hooks[0];
-    void hook(preToolUse("mcp__slaude_surface__set_one_on_one", { action: "open" }, "tu_open"), "tu_open", {
+    const cards = h.posts.length;
+    const r: any = await hook(preToolUse("mcp__slaude_surface__set_one_on_one", { action: "open" }, "tu_open"), "tu_open", {
       signal: new AbortController().signal,
     });
-    await until(async () => (await PendingGates.get("owner:tu_open"))?.status === "pending", 3000, "set_one_on_one card");
+    expect(r.hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(r.hookSpecificOutput.permissionDecisionReason).toContain("a guest cannot change this 1on1");
+    expect(h.posts.length).toBe(cards);
+    expect(await PendingGates.get("owner:tu_open")).toBeNull();
     await h.agent.reload(h.sends[0]!.id);
   });
 });
