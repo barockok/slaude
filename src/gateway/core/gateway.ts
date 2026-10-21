@@ -2957,7 +2957,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       ? (mentions.map((id) => registry.lookupByUserId(id!)).find(Boolean) ?? null)
       : null;
     // A mention is "other" only when it targets neither the bot nor a known persona.
-    const mentionsOther = mentions.some(
+    // A slash command's mentions are its arguments (`/1on1 invite @qa`,
+    // `/ignore @user`), not someone being addressed: they never disengage.
+    const slashArgs = parseSlashCommand(text.replace(/<@[^>]+>/g, "").trim()) !== null;
+    const mentionsOther = !slashArgs && mentions.some(
       (u) => u && u !== botId && (!selfBotUsers.has(u) || absentAppBots.has(u)) && !registry.lookupByUserId(u),
     );
 
