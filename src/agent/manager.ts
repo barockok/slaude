@@ -9,6 +9,7 @@ import {
   type Query,
   type McpServerConfig,
   type HookCallback,
+  type HookJSONOutput,
 } from "@anthropic-ai/claude-agent-sdk";
 // Namespace import (not a named `query`) so tests can swap the SDK via
 // mock.module: the call site dereferences `agentSdk.query` fresh each boot,
@@ -43,6 +44,7 @@ import { ChildEnvPatch, scrubChildEnv, withoutKeys } from "./child-env";
 import { resolveSessionConfigDir } from "./oauth-home";
 import { sessionIdOpts } from "./session-id-opts";
 import { sessionModeBlock } from "./session-mode";
+import { ownerOnlyMatch, parseOwnerOnlyRules } from "./guests";
 import { formatSessionNotes } from "./session-notes";
 import { BootFailure, type FailureCode } from "../gateway/core/failure-codes";
 import { redactSecrets } from "../gateway/core/status-text";
@@ -86,6 +88,11 @@ type LiveSession = {
   personaName?: string;
   /** Session-config fingerprint this session booted under (undefined = none known). */
   bootFp?: string;
+  /** A /1on1 guest's message is among the outstanding inputs: owner-only
+   *  tools wait for the owner (agent/guests.ts). Set when such an input is
+   *  pushed, cleared once no input is outstanding. Fail closed: an owner's
+   *  turn that overlaps a queued guest message is guarded too. */
+  guestTurn: boolean;
 };
 
 // `autoEvolve` marks events of the internal skill-evolution turn that follows a
@@ -108,6 +115,21 @@ export type AgentEvent =
  *  ChildEnvPatch also removes them (WS-A §5.4). */
 export type ChildEnvOverlay = Record<string, string | undefined> | ChildEnvPatch | undefined;
 export type ChildEnvResolver = (sessionId: string) => Promise<ChildEnvOverlay> | ChildEnvOverlay;
+
+/** Asks a /1on1 owner to approve one owner-only tool call in a turn that
+ *  carries a guest's message (agent/guests.ts). Resolves allow only on the
+ *  owner's own click; anything else is a deny with a reason for the model. */
+export type OwnerGuard = (req: OwnerGuardRequest) => Promise<OwnerGuardDecision>;
+export interface OwnerGuardRequest {
+  sessionId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  toolUseId: string;
+  /** The owner-only entry the call matched, shown on the card. */
+  rule: string;
+  signal: AbortSignal;
+}
+export type OwnerGuardDecision = { allow: true } | { allow: false; reason: string };
 
 export type PermissionResolver = (
   sessionId: string,
@@ -270,6 +292,10 @@ export class AgentManager extends EventEmitter {
    *  node worker installs a REST client of the gateway's memory routes. */
   #memory: MemoryProvider = memory;
   #stopGuard: StopGuard | undefined;
+  #ownerGuard: OwnerGuard | undefined;
+  /** Sessions that exited with a guest's input outstanding: their next boot
+   *  (an auto-continue, a retry, a reboot) is still that guest's turn. */
+  #guestCarry = new Set<string>();
   #remoteResolver: ((sessionId: string) => Promise<RemoteTarget | null>) | undefined;
   #remoteFactory: ((sessionId: string, t: RemoteTarget) => Promise<RemoteHandle> | RemoteHandle) | undefined;
   /** Per session: the open remote handle and the target it was opened for.
@@ -432,6 +458,19 @@ export class AgentManager extends EventEmitter {
   /** Install a transport-level Stop hook guard (e.g. Slack "must reply" enforcement). */
   setStopGuard(guard: StopGuard | undefined) {
     this.#stopGuard = guard;
+  }
+
+  /** Install the /1on1 owner guard. While set, every session boots with a
+   *  PreToolUse hook that sends an owner-only call in a guest's turn to it;
+   *  the hook runs in every permission mode, bypass included. Unset = no hook
+   *  (and a guest turn's owner-only calls are denied: nobody can approve). */
+  setOwnerGuard(guard: OwnerGuard | undefined) {
+    this.#ownerGuard = guard;
+  }
+
+  /** True while a /1on1 guest's input is outstanding in the live session. */
+  isGuestTurn(sessionId: string): boolean {
+    return this.#live.get(sessionId)?.guestTurn === true;
   }
 
   /** Remote mode (spec §4.1): resolver says whether a session's tools run remotely;
@@ -659,8 +698,10 @@ export class AgentManager extends EventEmitter {
     return (this.#live.get(sessionId)?.pendingInputs ?? 0) > 0;
   }
 
-  /** Send user input. Starts session loop if not already live. */
-  async sendMessage(sessionId: string, text: string) {
+  /** Send user input. Starts session loop if not already live. `guest`: the
+   *  input carries a /1on1 guest's message (owner-only tools then wait for
+   *  the owner until no input is outstanding). */
+  async sendMessage(sessionId: string, text: string, opts: { guest?: boolean } = {}) {
     // Signal that a real user turn is starting for this session. Slash commands
     // and dropped messages never reach here, so a listener can distinguish
     // "agent will run" from "handled inline" without waiting for done/error.
@@ -700,12 +741,14 @@ export class AgentManager extends EventEmitter {
       live.turn.user = text;
       live.turn.assistant = [];
       this.#stopBlocked.delete(sessionId);
+      // Marked before the push, in the same tick: no hook can run in between.
+      if (opts.guest) live.guestTurn = true;
       live.pushUser(text);
       this.#armIdle(live);
       return;
     }
     this.#stopBlocked.delete(sessionId);
-    await this.#startSession(sessionId, text);
+    await this.#startSession(sessionId, text, opts.guest === true);
   }
 
   /** (Re)arm the idle timer for a session. On expiry, close the SDK loop
@@ -955,7 +998,7 @@ export class AgentManager extends EventEmitter {
     if (o.signalExit && !this.#live.has(sessionId)) this.#signalSessionExit(sessionId);
   }
 
-  async #startSession(sessionId: string, firstText: string) {
+  async #startSession(sessionId: string, firstText: string, guest = false) {
     this.#booting.set(sessionId, (this.#booting.get(sessionId) ?? 0) + 1);
     let marked = true;
     const unmark = () => {
@@ -966,13 +1009,13 @@ export class AgentManager extends EventEmitter {
       else this.#booting.delete(sessionId);
     };
     try {
-      await this.#bootSession(sessionId, firstText, unmark);
+      await this.#bootSession(sessionId, firstText, unmark, guest);
     } finally {
       unmark();
     }
   }
 
-  async #bootSession(sessionId: string, firstText: string, onLive: () => void) {
+  async #bootSession(sessionId: string, firstText: string, onLive: () => void, guest = false) {
     // Read before any config is resolved: a fingerprint that arrives while this
     // boot resolves its lock/remote state must not be credited to it.
     const bootFp = this.#desiredFp.get(sessionId);
@@ -1157,6 +1200,10 @@ export class AgentManager extends EventEmitter {
       () => this.#suppressNextTurn.delete(sessionId),
       (id) => this.#store.findById(id),
     );
+    // /1on1 owner guard: owner-only calls in a guest's turn wait for the owner.
+    // A hook, not canUseTool: the CLI never calls canUseTool under bypass.
+    let liveRef: LiveSession | undefined;
+    const ownerHook = this.#ownerGuard ? this.#ownerOnlyHook(sessionId, () => liveRef?.guestTurn ?? guest) : null;
     // CC plugins installed via `bun run install-deps`. Without this, the SDK
     // ignores the enabledPlugins entry in settings.json (it only reads
     // settings when settingSources is set). Explicit Options.plugins surfaces
@@ -1225,7 +1272,16 @@ export class AgentManager extends EventEmitter {
           PreCompact: [{ hooks: [preCompact] }],
           Stop: [{ hooks: [stopHook] }],
           UserPromptSubmit: [{ hooks: [userPromptHook] }],
-          ...(remoteHandle ? { PreToolUse: [{ hooks: [denyLocalBuiltins] }] } : {}),
+          ...(ownerHook || remoteHandle
+            ? {
+                PreToolUse: [
+                  // The hook's own timeout must outlast the owner gate's: a
+                  // timed-out hook is a non-blocking error, and the call runs.
+                  ...(ownerHook ? [{ hooks: [ownerHook], timeout: env.oneOnOne.ownerGateTimeoutSec() + 60 }] : []),
+                  ...(remoteHandle ? [{ hooks: [denyLocalBuiltins] }] : []),
+                ],
+              }
+            : {}),
         },
         systemPrompt: {
           type: "preset",
@@ -1263,7 +1319,9 @@ export class AgentManager extends EventEmitter {
       bootFp,
       pendingInputs: 1, // firstText is already queued
       exited: new Promise<void>((r) => (markExited = r)),
+      guestTurn: guest || this.#guestCarry.delete(sessionId),
     };
+    liveRef = live;
     this.#live.set(sessionId, live);
     onLive();
     metric.sessionsLive.set(this.#live.size);
@@ -1306,7 +1364,7 @@ export class AgentManager extends EventEmitter {
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           // Fire and forget — restart with the same first prompt.
-          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
+          void this.#startSession(sessionId, firstText, live.guestTurn).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
           return;
         }
         // Mirror failure: we seeded --session-id but a transcript with that id
@@ -1318,7 +1376,7 @@ export class AgentManager extends EventEmitter {
           await this.#bestEffortStore(sessionId, "markStarted", () => this.#store.markStarted(sessionId));
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
-          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
+          void this.#startSession(sessionId, firstText, live.guestTurn).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
           return;
         }
         if (live?.reloading) {
@@ -1350,6 +1408,7 @@ export class AgentManager extends EventEmitter {
           return;
         }
         this.#live.delete(sessionId);
+        if (live.guestTurn) this.#guestCarry.add(sessionId);
         // Again after the delete: a reloadAfterTurn during the await above saw
         // this session still live and may have re-added the id, which would
         // otherwise reload the next fresh session spuriously.
@@ -1393,6 +1452,7 @@ export class AgentManager extends EventEmitter {
       if (owned) {
         if (live.idleTimer) clearTimeout(live.idleTimer);
         this.#live.delete(sessionId);
+        if (live.guestTurn) this.#guestCarry.add(sessionId);
       }
       markExited();
       if (!exitSignalled && (owned || !this.#live.has(sessionId))) {
@@ -1400,6 +1460,47 @@ export class AgentManager extends EventEmitter {
         this.#signalSessionExit(sessionId);
       }
     });
+  }
+
+  /** The PreToolUse hook of the /1on1 owner guard. Returns no decision for
+   *  every call outside a guest's turn or off the owner-only list, and after
+   *  the owner's approval, so the session's own permission mode still applies:
+   *  the guard only ever takes permission away. Every failure is a deny. */
+  #ownerOnlyHook(sessionId: string, guestTurn: () => boolean): HookCallback {
+    return async (input, _toolUseID, { signal }): Promise<HookJSONOutput> => {
+      if (input.hook_event_name !== "PreToolUse" || !guestTurn()) return {};
+      const toolName = input.tool_name;
+      const rule = ownerOnlyMatch(toolName, input.tool_input, parseOwnerOnlyRules(env.oneOnOne.ownerOnlyTools()));
+      if (!rule) return {};
+      const deny = (reason: string): HookJSONOutput => ({
+        hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason },
+      });
+      const guard = this.#ownerGuard;
+      if (!guard) return deny(`OWNER_ONLY: \`${toolName}\` is owner-only in a guest's turn and there is no way to ask the owner here.`);
+      const limitMs = (env.oneOnOne.ownerGateTimeoutSec() + 5) * 1000;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const d = await Promise.race([
+          guard({
+            sessionId,
+            toolName,
+            input: (input.tool_input ?? {}) as Record<string, unknown>,
+            toolUseId: input.tool_use_id,
+            rule: rule.source,
+            signal,
+          }),
+          new Promise<OwnerGuardDecision>((r) => {
+            timer = setTimeout(() => r({ allow: false, reason: "OWNER_ONLY: timed out waiting for the owner's approval." }), limitMs);
+          }),
+        ]);
+        return d.allow ? {} : deny(d.reason);
+      } catch (e) {
+        console.error(`[mgr] owner guard failed session=${sessionId} tool=${toolName}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+        return deny("OWNER_ONLY: the owner's approval could not be requested; the call was not run.");
+      } finally {
+        clearTimeout(timer);
+      }
+    };
   }
 
   /**
@@ -1605,6 +1706,9 @@ export class AgentManager extends EventEmitter {
             live.turnTools = [];
           }
         }
+        // No input outstanding (an auto-evolve push above keeps one): the
+        // guest's turn is over.
+        if (live && live.pendingInputs === 0) live.guestTurn = false;
         if (deferredReload && live) this.reload(sessionId);
         break;
       }
