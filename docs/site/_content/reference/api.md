@@ -39,7 +39,7 @@ Source: `src/gateway/core/surface-mcp.ts` · SDK name `slaude_surface`
 | `unreact` | `name: string`, `ref?: string` | Remove a reaction previously added by the agent. |
 | `upload` | `path: string` *(absolute, inside session cwd)*, `title?: string`, `initial_comment?: string`, `alt_text?: string` | Upload a local file into the current thread. `initial_comment` is rendered as mrkdwn above the file. Returns `uploaded file_id=…`. Requires `upload` capability. |
 | `typing` | `on: boolean` | Show or clear the typing indicator. Requires `typing` capability. |
-| `set_one_on_one` | `action: "open" \| "off"`, `scope?: string` | Adjust an already-active `/1on1` session for this thread. `open` admits guests with an optional behavioral scope; `off` releases. Cannot initiate 1on1 — use the slash command. Named guests are managed with `/1on1 invite` / `kick`; in a named guest's turn this tool waits for the owner's approval. |
+| `set_one_on_one` | `action: "open" \| "off"`, `scope?: string` | Adjust an already-active `/1on1` session for this thread. `open` admits guests with an optional behavioral scope; `off` releases. Cannot initiate 1on1 — use the slash command. Named guests are managed with `/1on1 invite` / `kick`. An existing 1on1 is changed only when the speaker is its owner or the manager/backup; anyone else gets a refusal to relay. |
 | `set_mention_only` | `active: boolean` | Toggle mention-only mode for this thread. `true` = only respond when @-mentioned. |
 | `soul_override` | `field: "trust" \| "allow" \| "dm" \| "block"`, `action: "add" \| "remove" \| "list" \| "clear"`, `value?: string` | Manager-only runtime ACL override. Takes effect next message and shadows `SOUL.md`. Gated on the live initiator id matching `manager.userId`. |
 

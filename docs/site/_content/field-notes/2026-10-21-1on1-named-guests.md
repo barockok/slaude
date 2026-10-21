@@ -77,9 +77,19 @@ node session with the new block while every existing fingerprint is unchanged.
 - **A guest's slash commands.** Once guests are heard, `/1on1` would have let a
   guest re-lock the thread to themselves, and `/mode` or `/cron-add` would have
   changed the owner's thread. A guest may run `/help`, `/abort`, their own
-  `/link` and `/1on1 status`; `set_one_on_one` and the cron tools are always
-  owner-only in a guest's turn (a job created in a 1on1 later runs as its owner
-  with no guest in it).
+  `/link` and `/1on1 status`; the cron tools are always owner-only in a guest's
+  turn (a job created in a 1on1 later runs as its owner with no guest in it).
+- **The agent's set_one_on_one never checked the speaker.** `lock` re-locked the
+  thread to whoever spoke, and `off` released it, so a guest heard in open mode
+  could get the agent to take the 1on1 over (runAs switches to the guest) or
+  drop it. An existing 1on1 is now changed only when the speaker is its owner
+  or the manager/backup, the same rule as `/1on1 lock`; anyone else gets a
+  refusal to relay. In a named guest's turn the hook denies the call outright:
+  an owner's click could not make a guest's call pass that check, so a card
+  would only mislead. The speaker is the turn's inbound user (on a node, the
+  job's first speaker); a guest message that coalesces into an owner's queued
+  job, or lands in mono while an owner's turn runs, is not seen there. The hook
+  covers that for named guests, but not in open mode.
 
 ## Not covered
 
