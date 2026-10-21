@@ -574,6 +574,16 @@ export const env = {
       return raw === "1" || raw === "true" || raw === "yes";
     },
   },
+  oneOnOne: {
+    /** Owner-only tools for a named guest's turn in a locked /1on1, raw
+     *  (agent/guests.ts parseOwnerOnlyRules): unset = the defaults, `none` =
+     *  no list, a leading `+` adds to the defaults. */
+    ownerOnlyTools: (): string | undefined => process.env.SLAUDE_1ON1_OWNER_ONLY_TOOLS,
+    /** How long an owner-only call in a guest turn waits for the owner's click
+     *  before it is denied. Seconds or a duration (10m); default 10 minutes,
+     *  floor 10 seconds. Keep it under the node turn timeout (15 minutes). */
+    ownerGateTimeoutSec: (): number => Math.max(10, durationEnvSec("SLAUDE_1ON1_OWNER_GATE_TIMEOUT", 600)),
+  },
   remote: {
     /** `/remote` — run a thread's shell and file tools on the initiator's own
      *  machine over tailcat SSH. Default off; ships behind this flag. */

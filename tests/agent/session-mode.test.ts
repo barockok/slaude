@@ -39,3 +39,34 @@ describe("sessionModeBlock with remote", () => {
     expect(sessionModeBlock(lock("U123"), null)).toBe(sessionModeBlock(lock("U123")));
   });
 });
+
+describe("sessionModeBlock with named guests", () => {
+  const withGuests = (guests: string[]): OneOnOneLockRow => ({ ...lock("U0OWNER"), guests });
+  test("lists the guests, the role attribute and the owner-only actions", () => {
+    const b = sessionModeBlock(withGuests(["U0QA", "U0REV"]));
+    expect(b).toContain("owned by <@U0OWNER>, with invited guests: <@U0QA>, <@U0REV>");
+    expect(b).toContain('role="owner", "guest" or "manager"');
+    expect(b).toContain("You keep running as the owner");
+    expect(b).toContain("not a private conversation");
+    expect(b).toContain("`mcp__*__git_push`");
+    expect(b).toContain("waits for <@U0OWNER> to click Allow");
+    expect(b).not.toContain("confidential");
+  });
+  test("the configured list is what the block names", () => {
+    const prev = process.env.SLAUDE_1ON1_OWNER_ONLY_TOOLS;
+    process.env.SLAUDE_1ON1_OWNER_ONLY_TOOLS = "Bash";
+    try {
+      const b = sessionModeBlock(withGuests(["U0QA"]));
+      expect(b).toContain("(owner-only tools: `Bash`)");
+      expect(b).not.toContain("git_push");
+    } finally {
+      if (prev === undefined) delete process.env.SLAUDE_1ON1_OWNER_ONLY_TOOLS;
+      else process.env.SLAUDE_1ON1_OWNER_ONLY_TOOLS = prev;
+    }
+  });
+  test("no guests → the private block, unchanged", () => {
+    expect(sessionModeBlock(withGuests([]))).toBe(sessionModeBlock(lock("U0OWNER")));
+    expect(sessionModeBlock(lock("U0OWNER"))).toContain("confidential");
+  });
+});
+
