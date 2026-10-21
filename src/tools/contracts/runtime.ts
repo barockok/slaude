@@ -119,6 +119,18 @@ export const runtimeContract = {
           .describe("SDK PermissionUpdate suggestions, persisted so an 'always allow' click can be honored node-side."),
       },
     },
+    owner_gate: {
+      name: "owner_gate",
+      description:
+        "REST-only (never mounted for the model): a node asks a /1on1 owner to approve an owner-only tool call in a named guest's turn. The gateway reads the owner from its own lock row, posts a card only that owner can decide, and returns {pendingId, owner} for the node to long-poll on /v1/pending/:id; with no 1on1 in the thread it returns {decision} (deny) at once.",
+      restOnly: true,
+      schema: {
+        tool_name: z.string().describe("Tool the guest's turn wants to run."),
+        input: z.record(z.unknown()).optional().describe("Tool input, echoed (redacted) on the owner's card."),
+        tool_use_id: z.string().describe("SDK tool_use id; the gate id is owner:<id>."),
+        rule: z.string().optional().describe("The owner-only entry the call matched, shown on the card."),
+      },
+    },
     reload_session: {
       name: "reload_session",
       description:

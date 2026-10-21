@@ -43,7 +43,7 @@ import { buildShimServers } from "./shims";
 import { buildBridgeServers } from "./bridge";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { makeNodeMemoryProvider } from "./memory";
-import { makeNodePermissionResolver } from "./shims/permission";
+import { makeNodeOwnerGuard, makeNodePermissionResolver } from "./shims/permission";
 import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
 import { decodeClaims, makeRemoteFactory, makeRemoteResolver } from "./remote";
@@ -507,6 +507,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // no database or brain); a failure only costs the turn its memory.
   agent.setMemoryProvider(makeNodeMemoryProvider({ client, tokenFor: (id) => store.tokenFor(id) }));
   agent.setPermissionResolver(makeNodePermissionResolver({ client, tokenFor: (id) => store.tokenFor(id) }));
+  agent.setOwnerGuard(makeNodeOwnerGuard({ client, tokenFor: (id) => store.tokenFor(id) }));
   /**
    * Sessions whose current turn got a label-gate 403 on any gateway call
    * (node labels spec §4.6). The call itself fails (a tool shim returns an
@@ -749,6 +750,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       const text = data.messages.map((m) => m.text).join("\n\n");
       const suppress = data.messages.length > 0 && data.messages.every((m) => (m as any).suppress === true);
       if (suppress) agent.suppressNextTurn(sessionId);
+      // One guest message makes the whole coalesced turn a guest's turn.
+      const guest = data.messages.some((m) => m.guest === true);
 
       // A warm session picks up tokens the gateway refreshed since it booted:
       // the agent reads the file on every call. A session that is not booted
@@ -768,7 +771,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           turnWaiters.delete(sessionId);
           resolve(o);
         });
-        agent.sendMessage(sessionId, text).catch((e) => {
+        agent.sendMessage(sessionId, text, guest ? { guest: true } : {}).catch((e) => {
           clearTimeout(timer);
           turnWaiters.delete(sessionId);
           reject(e);

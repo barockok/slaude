@@ -6,11 +6,12 @@
  * /v1/pending/:id, honoring the click's allow-vs-always decision recorded in
  * the row payload. Fail closed: any wire failure is a deny, never a hang.
  */
-import type { PermissionResolver } from "../../agent/manager";
+import type { OwnerGuard, OwnerGuardDecision, PermissionResolver } from "../../agent/manager";
 import {
   autoAllowFromEnv,
   permissionPolicy,
   decisionFromPermRow,
+  ownerDecision,
 } from "../../gateway/slack/permission-gate";
 import type { NodeClient } from "../client";
 import { pollPending } from "../pending";
@@ -74,5 +75,55 @@ export function makeNodePermissionResolver(deps: NodePermissionDeps): Permission
       input,
       ctx.suggestions,
     );
+  };
+}
+
+/**
+ * Node-side /1on1 owner guard (agent/guests.ts): an owner-only call in a
+ * guest's turn opens an owner card on the gateway through
+ * POST /v1/tools/runtime/owner_gate and long-polls /v1/pending/:id. The
+ * gateway reads the owner from its own lock row and counts only the owner's
+ * click, so nothing the node sends can choose who approves. Fail closed: any
+ * wire failure is a deny.
+ */
+export function makeNodeOwnerGuard(deps: NodePermissionDeps): OwnerGuard {
+  return async (req): Promise<OwnerGuardDecision> => {
+    const deny = (why: string): OwnerGuardDecision => ({
+      allow: false,
+      reason: `OWNER_ONLY: \`${req.toolName}\` needs the 1on1 owner's approval in a guest's turn and was not run (${why}).`,
+    });
+    const token = deps.tokenFor(req.sessionId);
+    if (!token) return deny("no job token for this session");
+
+    let opened: { decision?: any; pendingId?: string; owner?: string };
+    try {
+      const res = await deps.client.postTool(
+        "runtime",
+        "owner_gate",
+        { tool_name: req.toolName, input: req.input, tool_use_id: req.toolUseId, rule: req.rule },
+        token,
+      );
+      if (res.isError) return deny(`owner gate unavailable: ${res.content[0]?.text ?? "unknown error"}`);
+      opened = JSON.parse(res.content[0]?.text ?? "{}");
+    } catch (e) {
+      return deny(`owner gate unavailable: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (opened.decision) return ownerDecision(opened.decision, req.toolName, opened.owner);
+    if (!opened.pendingId) return deny("the owner gate returned no pendingId");
+
+    const outcome = await pollPending(deps.client, opened.pendingId, {
+      signal: req.signal,
+      jobToken: () => deps.tokenFor(req.sessionId) ?? token,
+    });
+    if (outcome === "aborted") return deny("aborted");
+    if (outcome === "notfound") return deny("the owner gate disappeared before a decision");
+    if ("refused" in outcome) return deny(`the gateway refused the owner-gate poll (${outcome.refused.status})`);
+    const d = decisionFromPermRow(
+      { status: outcome.status, resolvedBy: outcome.resolvedBy, payload: (outcome.payload ?? {}) as Record<string, unknown> },
+      req.toolName,
+      req.input,
+      undefined,
+    );
+    return ownerDecision(d, req.toolName, opened.owner);
   };
 }

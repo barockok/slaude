@@ -119,6 +119,7 @@ const FIXTURES: Record<string, Record<string, Fixture>> = {
     trigger_ingest: { input: {}, isErrorOk: true }, // no slaude.json in the test home
     reload_session: { input: {}, isErrorOk: true }, // session not live in this process
     can_use_tool: { input: { tool_name: "Bash", input: { command: "ls" }, tool_use_id: "rt_perm_fixture" } }, // REST-only: returns {pendingId}
+    owner_gate: { input: { tool_name: "Write", input: { file_path: "x" }, tool_use_id: "rt_owner_fixture" } }, // REST-only: no 1on1 here → {decision: deny}
   },
   connect: {
     connect_mcp: { input: { server: "nonexistent" } }, // manager scope → "unknown MCP server" text

@@ -45,6 +45,13 @@ export interface ToolPlaneDeps {
       suggestions?: unknown[];
     },
   ): Promise<{ decision: PermissionDecision } | { pendingId: string }>;
+  /** Non-blocking /1on1 owner gate (runtime/owner_gate): an owner-only call
+   *  in a named guest's turn. {decision} (deny) when the thread has no 1on1,
+   *  else the owner's card is posted and {pendingId, owner} returned. */
+  openOwnerPermission(
+    claims: JobClaims,
+    args: { toolName: string; input: Record<string, unknown>; toolUseId: string; rule?: string },
+  ): Promise<{ decision: PermissionDecision } | { pendingId: string; owner: string }>;
   /** Non-blocking plan-approval open (surface/request_approval over REST):
    *  card posted, durable row minted, {pendingId} returned for long-polling. */
   openApproval(

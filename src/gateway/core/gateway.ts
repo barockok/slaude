@@ -3327,6 +3327,29 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           suggestions: args.suggestions,
           app: { apiAppId: claims.app, teamId: claims.team },
         }),
+      openOwnerPermission: async (claims, args) => {
+        const lock = await OneOnOne.find(claims.channel, claims.thread);
+        if (!lock) {
+          return { decision: { behavior: "deny" as const, message: "this thread has no 1on1 owner to ask" } };
+        }
+        // Display only: the turn's first speaker, when it is a guest.
+        const guest = (lock.guests ?? []).includes(claims.initiator) ? claims.initiator : undefined;
+        console.log(`[1on1] owner gate session=${claims.session} tool=${args.toolName} owner=${lock.locked_user}`);
+        const { pendingId } = await permissions.openOwner({
+          sessionId: claims.session,
+          toolName: args.toolName,
+          input: args.input,
+          toolUseId: args.toolUseId,
+          owner: lock.locked_user,
+          guest,
+          rule: args.rule,
+          timeoutMs: env.oneOnOne.ownerGateTimeoutSec() * 1000,
+          channel: claims.channel,
+          threadTs: claims.thread,
+          app: { apiAppId: claims.app, teamId: claims.team },
+        });
+        return { pendingId, owner: lock.locked_user };
+      },
       openApproval: (claims, args) =>
         approvals.open({
           channel: claims.channel,
