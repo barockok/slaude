@@ -148,7 +148,7 @@ function harness() {
     sends.push({ id, text, opts });
     return realSend(id, text, opts);
   };
-  createGateway(agent, tr.t, {});
+  const handle = createGateway(agent, tr.t, {});
   const root = nextTs();
   const say = async (user: string, text: string, opts: { root?: boolean; bare?: boolean } = {}) => {
     const ts = opts.root ? root : nextTs();
@@ -163,7 +163,7 @@ function harness() {
     });
   };
   const lastText = () => String(tr.posts.at(-1)?.text ?? "");
-  return { ...tr, agent, sends, root, say, lastText };
+  return { ...tr, agent, handle, sends, root, say, lastText };
 }
 
 const preToolUse = (tool_name: string, tool_input: unknown, tool_use_id: string) => ({
@@ -404,6 +404,53 @@ describe("owner-only tools in a guest's turn, under bypass mode", () => {
     expect(r.hookSpecificOutput.permissionDecisionReason).toContain("a guest cannot change this 1on1");
     expect(h.posts.length).toBe(cards);
     expect(await PendingGates.get("owner:tu_open")).toBeNull();
+    await h.agent.reload(h.sends[0]!.id);
+  });
+});
+
+describe("set_one_on_one checks the speaker (agentOneOnOne)", () => {
+  // The engine reads the speaker from the turn's route: the last inbound user.
+  const act = (h: ReturnType<typeof harness>, action: "lock" | "open" | "off") =>
+    (h.handle as any).__agentOneOnOne(h.sends.at(-1)!.id, action, "scope") as Promise<string>;
+
+  it("open mode: a guest cannot lock, open or release the owner's 1on1", async () => {
+    const h = harness();
+    await h.say(OWNER, "/1on1", { root: true });
+    await OneOnOne.setOpen(CHANNEL, h.root, "read-only");
+    await h.say(OTHER, "hello, I am a guest in open mode");
+    expect(h.sends.at(-1)!.text).toContain('role="guest"');
+
+    for (const action of ["lock", "open", "off"] as const) {
+      const r = await act(h, action);
+      expect(r).toContain("Refused");
+      expect(r).toContain(`only the 1on1 owner <@${OWNER}> or the manager`);
+      expect(r).toContain(`<@${OTHER}>`);
+    }
+    const lock = await OneOnOne.find(CHANNEL, h.root);
+    expect(lock?.locked_user).toBe(OWNER); // not re-locked to the guest
+    expect(lock?.open_scope).toBe("read-only"); // not re-opened with the guest's scope
+    await h.agent.reload(h.sends[0]!.id);
+  });
+
+  it("locked mode: a named guest's call is refused too; the owner and the manager may", async () => {
+    const h = harness();
+    await h.say(OWNER, "/1on1", { root: true });
+    await h.say(OWNER, `/1on1 invite <@${GUEST}>`);
+    await h.say(GUEST, "please release it");
+    expect(await act(h, "off")).toContain("Refused");
+    expect(await act(h, "open")).toContain("Refused");
+    expect((await OneOnOne.find(CHANNEL, h.root))?.open_scope).toBeNull();
+
+    await h.say(OWNER, "open it");
+    expect(await act(h, "open")).toContain("Opened this 1on1");
+    await h.say(WORLD.manager, "release it");
+    expect(await act(h, "off")).toContain("Released 1on1");
+    expect(await OneOnOne.find(CHANNEL, h.root)).toBeNull();
+    // No lock left: nothing to protect, so the earlier behaviour applies
+    // (open with no lock locks to the caller, then opens).
+    await h.say(OWNER, "open it again");
+    expect(await act(h, "open")).toContain("Opened this 1on1");
+    expect((await OneOnOne.find(CHANNEL, h.root))?.locked_user).toBe(OWNER);
     await h.agent.reload(h.sends[0]!.id);
   });
 });

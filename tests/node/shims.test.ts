@@ -286,6 +286,30 @@ describe("node /1on1 owner guard", () => {
     }
   }, 15_000);
 
+  test("set_one_on_one over REST checks the speaker: a guest initiator is refused", async () => {
+    await OneOnOne.lock({ channelId: "C0TEAM", threadTs: "600.0", lockedUser: "U0OWNER", createdBy: "U0OWNER" });
+    await OneOnOne.setOpen("C0TEAM", "600.0", "");
+    try {
+      const guestToken = () =>
+        mintJobToken({
+          tenant: "default", persona: "default", session: SESSION,
+          team: "T1", channel: "C0TEAM", thread: "600.0", initiator: "U0GUEST", scope: "turn",
+        });
+      const guestShims = buildShimServers(SESSION, { client: nodeClient, tokenFor: () => guestToken() });
+      for (const action of ["off", "open"]) {
+        const r: any = await callShim(guestShims[surfaceContract.server] as any, "set_one_on_one", { action });
+        expect(r.content[0].text).toContain("Refused: only the 1on1 owner <@U0OWNER>");
+      }
+      expect((await OneOnOne.find("C0TEAM", "600.0"))?.locked_user).toBe("U0OWNER");
+      // The manager (the default token's initiator) may release it.
+      const ok: any = await callShim(shims[surfaceContract.server] as any, "set_one_on_one", { action: "off" });
+      expect(ok.content[0].text).toContain("Released 1on1");
+      expect(await OneOnOne.find("C0TEAM", "600.0")).toBeNull();
+    } finally {
+      await OneOnOne.unlock("C0TEAM", "600.0");
+    }
+  });
+
   test("the owner's Deny is a deny; abort mid-poll fails closed", async () => {
     await OneOnOne.lock({ channelId: "C0TEAM", threadTs: "600.0", lockedUser: "U0OWNER", createdBy: "U0OWNER" });
     try {

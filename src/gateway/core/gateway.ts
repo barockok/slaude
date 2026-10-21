@@ -1283,6 +1283,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   async function agentOneOnOne(sessionId: string, ctx: SlackContext, action: "lock" | "open" | "off", scope?: string): Promise<string> {
     const userId = ctx.userId ?? "";
     const threadTs = ctx.threadTs ?? ctx.inboundTs ?? "";
+    // An existing 1on1 is changed only by its owner or the manager/backup, the
+    // same rule as `/1on1 lock`. Without this a guest heard in open mode could
+    // get the agent to lock the thread to the guest (runAs switches to them)
+    // or drop the owner's 1on1. The speaker is the turn's signed inbound user.
+    const existing = await OneOnOne.find(ctx.channel, threadTs);
+    if (existing && existing.locked_user !== userId) {
+      const soul = soulData();
+      if (userId !== soul.manager.userId && userId !== soul.backupManager.userId) {
+        const verb = action === "off" ? "release" : action === "open" ? "open" : "re-lock";
+        return (
+          `Refused: only the 1on1 owner <@${existing.locked_user}> or the manager can ${verb} this 1on1, ` +
+          `and this request came from <@${userId || "unknown"}>. Ask <@${existing.locked_user}> to do it (\`/1on1\` commands).`
+        );
+      }
+    }
     if (action === "lock") {
       const prevTarget = await Remote.findTarget(ctx.channel, threadTs);
       if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(ctx.channel, threadTs, { sessionId });
@@ -1291,7 +1306,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       return `Locked this thread to a 1on1 with <@${userId}> — only they and the manager are heard here now.`;
     }
     if (action === "open") {
-      const existing = await OneOnOne.find(ctx.channel, threadTs);
       if (!existing) {
         await OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
       }
@@ -1301,7 +1315,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const scopeNote = scope ? ` Scope: ${scope}` : "";
       return `Opened this 1on1 to all participants.${scopeNote} Use set_one_on_one(action="lock") to restrict again.`;
     }
-    if (!await OneOnOne.find(ctx.channel, threadTs)) return "No active 1on1 in this thread — nothing to release.";
+    if (!existing) return "No active 1on1 in this thread — nothing to release.";
     await endRemoteForThread(ctx.channel, threadTs, { sessionId });
     await OneOnOne.unlock(ctx.channel, threadTs);
     agent.reload(sessionId);
