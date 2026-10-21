@@ -13,8 +13,9 @@ import { env } from "../../config/env";
 export interface ThreadIdentity {
   /** The person the turn runs as; undefined = the agent. */
   runAsUser: string | undefined;
-  /** The /1on1 lock: null = unlocked; openScope null = locked, a string = open mode. */
-  lock: { user: string; openScope: string | null } | null;
+  /** The /1on1 lock: null = unlocked; openScope null = locked, a string = open
+   *  mode. guests: named guests of a locked lock, present only when there are any. */
+  lock: { user: string; openScope: string | null; guests?: string[] } | null;
   /** The remote target, only when it belongs to the runAs user. */
   remote: { addr: string; dir: string } | undefined;
 }
@@ -30,7 +31,13 @@ export async function threadIdentity(
   const target = env.remote.enabled() ? await activeRemoteTarget(channel, thread) : null;
   return {
     runAsUser,
-    lock: lockRow ? { user: lockRow.locked_user, openScope: lockRow.open_scope } : null,
+    lock: lockRow
+      ? {
+          user: lockRow.locked_user,
+          openScope: lockRow.open_scope,
+          ...(lockRow.guests?.length ? { guests: lockRow.guests } : {}),
+        }
+      : null,
     remote: target && target.userId === runAsUser ? { addr: target.addr, dir: target.dir } : undefined,
   };
 }

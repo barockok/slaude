@@ -55,6 +55,10 @@ export interface DispatchMeta {
    *  the /v1 tool plane posts as that app (D1.2). */
   apiAppId?: string;
   suppress?: boolean;
+  /** The message is from a named /1on1 guest: owner-only tools in its turn
+   *  wait for the owner. Rides on the message, not the token: a message that
+   *  coalesces into a waiting job keeps that job's token. */
+  guest?: boolean;
 }
 
 export interface QueueDispatch {
@@ -378,7 +382,13 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           label,
           ...(meta.oauthUser ? { oauthUser: meta.oauthUser } : {}),
           messages: [
-            { ts: meta.eventTs, user: meta.userId, text, ...(meta.suppress ? { suppress: true } : {}) },
+            {
+              ts: meta.eventTs,
+              user: meta.userId,
+              text,
+              ...(meta.suppress ? { suppress: true } : {}),
+              ...(meta.guest ? { guest: true } : {}),
+            },
           ],
           jobToken,
           enqueuedAt: Date.now(),

@@ -5,7 +5,7 @@ export interface SessionConfig {
   runAs: string | null;
   /** The thread's /1on1 lock, as signed in the job token's `lock` claim: null =
    *  unlocked; openScope null = locked, a string = open with that scope. */
-  lock: { user: string; openScope: string | null } | null;
+  lock: { user: string; openScope: string | null; guests?: string[] } | null;
   /** Where tools run, when the thread is remote. */
   remote: { addr: string; dir: string } | null;
   /** MCP credential epochs of the turn's identities (mcp-cred-epoch.ts): a
@@ -23,7 +23,10 @@ export function sessionConfigFp(c: SessionConfig): string {
     .update(
       JSON.stringify([
         c.runAs,
-        c.lock ? [c.lock.user, c.lock.openScope] : null,
+        // Named guests appended only when there are any, so a lock without
+        // guests keeps its fingerprint; an invite or kick reboots a warm node
+        // session so its session-mode block lists the guests.
+        c.lock ? [c.lock.user, c.lock.openScope, ...(c.lock.guests?.length ? [c.lock.guests] : [])] : null,
         c.remote ? [c.remote.addr, c.remote.dir] : null,
         // Appended only when set, so every existing fingerprint is unchanged.
         ...(c.mcpEpoch ? [c.mcpEpoch] : []),
