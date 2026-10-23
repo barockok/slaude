@@ -104,6 +104,25 @@ describe("messageToText", () => {
     expect(messageToText(m)).toBe("look <https://x.io>");
   });
 
+  test("keeps the card body when text is a short fallback", () => {
+    const m = {
+      text: "[FIRING:1] High error rate",
+      attachments: [{ title: "Checkout API", text: "error rate 12% over 5m", footer: "Grafana", fallback: "[FIRING:1] High error rate" }],
+    };
+    expect(messageToText(m)).toBe("[FIRING:1] High error rate\nCheckout API\nerror rate 12% over 5m\nGrafana");
+  });
+
+  test("keeps section blocks when text is a short fallback", () => {
+    const m = {
+      text: "Deploy finished for api-gateway",
+      blocks: [
+        { type: "header", text: { type: "plain_text", text: "Deploy finished" } },
+        { type: "section", text: { type: "mrkdwn", text: "*Env*: prod, *Version*: 1.4.2" } },
+      ],
+    };
+    expect(messageToText(m)).toBe("Deploy finished for api-gateway\nDeploy finished\n*Env*: prod, *Version*: 1.4.2");
+  });
+
   test("empty or missing message gives empty string", () => {
     expect(messageToText(undefined)).toBe("");
     expect(messageToText({})).toBe("");
