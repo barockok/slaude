@@ -3,6 +3,7 @@ import { createReadStream, statSync } from "node:fs";
 import { basename } from "node:path";
 import { mdToMrkdwn } from "./format";
 import { redactSlack } from "./redact";
+import { messageAuthor, messageToText } from "./message-text";
 import { soulData } from "../../soul/extract";
 import type {
   ApprovalRequest,
@@ -59,8 +60,8 @@ export class SlackSurface implements Surface {
       limit: limit ?? 20,
     });
     const messages: HistoryItem[] = ((r.messages ?? []) as any[]).map((m) => ({
-      author: m.user,
-      text: m.text,
+      author: messageAuthor(m),
+      text: messageToText(m),
       ref: m.ts,
       threadRef: m.thread_ts,
       replyCount: m.reply_count,
