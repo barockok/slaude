@@ -1654,8 +1654,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const channelId: string = event.channel;
     const userId: string | undefined = event.user;
     const eventTs: string = event.ts;
-    // Fall back to blocks/attachments when a message has no plain text.
-    const text: string = (event.text || messageToText(event)).trim();
+    // Read text plus blocks/attachments; bots often put the body in a card.
+    const text: string = messageToText(event);
     const channelType: string = event.channel_type ?? "";
 
     console.log(

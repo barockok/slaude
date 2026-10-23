@@ -1,9 +1,9 @@
 // Flatten an inbound Slack message to the plain text the agent reads.
 //
-// Bots and integrations (Grafana, CI, PagerDuty, ...) often post with an empty
-// `text` and put the whole body in legacy `attachments` or Block Kit `blocks`.
-// Reading only `m.text` hands the agent an empty message, so collect text from
-// all three, in render order.
+// Bots and integrations (Grafana, CI, PagerDuty, ...) put the body in legacy
+// `attachments` or Block Kit `blocks`, with `text` either empty or a short
+// notification fallback. Reading only `m.text` hands the agent an empty or
+// one-line message, so collect text from all three, in render order.
 
 export function messageToText(m: any): string {
   if (!m) return "";
