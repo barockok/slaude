@@ -10,6 +10,7 @@ import { createReadStream, statSync } from "node:fs";
 import { basename } from "node:path";
 import { mdToMrkdwn } from "./format";
 import { redactSlack } from "./redact";
+import { messageAuthor, messageToText } from "./message-text";
 import { soulData, effectiveSoulForChannel } from "../../soul/extract";
 import * as Ignores from "../../db/ignores";
 import * as CronJobs from "../../db/cron-jobs";
@@ -271,8 +272,8 @@ export const slackHandlers = {
       });
       const msgs = ((r.messages ?? []) as any[]).map((m) => ({
         ts: m.ts,
-        user: m.user,
-        text: m.text,
+        user: messageAuthor(m),
+        text: messageToText(m),
         thread_ts: m.thread_ts,
         reply_count: m.reply_count,
         ...(include_replies !== false && m.replies
@@ -319,7 +320,7 @@ export const slackHandlers = {
         channel: { id: m.channel?.id, name: m.channel?.name },
         user: m.user,
         username: m.username,
-        text: m.text,
+        text: messageToText(m),
         permalink: m.permalink,
         score: m.score,
       }));
