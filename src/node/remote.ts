@@ -23,21 +23,28 @@ export function decodeClaims(token: string): Partial<JobClaims> | null {
 
 type TokenSource = { tokenFor(sessionId: string): string | undefined };
 
-/** A session runs remotely only when its token runs as a user AND carries a target. */
+/** A session runs remotely when its token carries a target that applies: a
+ *  user-machine environment (or a pre-environment tailcat claim) only for a
+ *  turn that runs as a user; a provisioned sandbox for any turn. */
 export function makeRemoteResolver(store: TokenSource): (sessionId: string) => Promise<RemoteTarget | null> {
   return async (sessionId) => {
     const token = store.tokenFor(sessionId);
     const c = token ? decodeClaims(token) : null;
+    const r = c?.remote;
+    if (!r) return null;
     const runAs = parseRunAs(c?.runAs);
-    if (!c?.remote || runAs?.kind !== "user") return null;
-    return { teamId: c.team ?? "", userId: runAs.slackUserId, addr: c.remote.addr, dir: c.remote.dir };
+    if (r.env?.trust === "provisioned") {
+      return { teamId: c?.team ?? "", userId: runAs?.kind === "user" ? runAs.slackUserId : "", addr: "", dir: r.dir, env: r.env };
+    }
+    if (runAs?.kind !== "user") return null;
+    return { teamId: c?.team ?? "", userId: runAs.slackUserId, addr: r.addr ?? "", dir: r.dir, ...(r.env ? { env: r.env } : {}) };
   };
 }
 
 type HelperOpts = ConstructorParameters<typeof HelperClient>[0];
 
 export function makeRemoteFactory(o: {
-  client: Pick<NodeClient, "getRemoteKey">;
+  client: Pick<NodeClient, "getRemoteKey" | "getRemoteEnv">;
   store: TokenSource;
   tenants: { get(sessionId: string): string | undefined };
   newHelper?: (opts: HelperOpts) => RemoteHandle;
@@ -47,10 +54,14 @@ export function makeRemoteFactory(o: {
     const tenant = o.tenants.get(sessionId);
     const token = o.store.tokenFor(sessionId);
     if (!tenant || !token) throw new Error("no job token for remote session");
-    const privateKey = await o.client.getRemoteKey(tenant, token);
+    // An environment claim: the gateway says how to reach it. A claim from a
+    // gateway that predates environments: tailcat with the owner's key.
+    const info = target.env
+      ? await o.client.getRemoteEnv(tenant, token)
+      : { transport: { kind: "tailcat" as const, addr: target.addr }, privateKey: await o.client.getRemoteKey(tenant, token) };
     return newHelper({
-      transport: { kind: "tailcat", addr: target.addr },
-      privateKey,
+      transport: info.transport,
+      privateKey: info.privateKey,
       onDispose: async (exec) => { await exec(cleanupCommand(sessionId), { timeoutMs: 30_000 }); },
     });
   };

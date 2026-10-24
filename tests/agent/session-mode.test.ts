@@ -39,3 +39,15 @@ describe("sessionModeBlock with remote", () => {
     expect(sessionModeBlock(lock("U123"), null)).toBe(sessionModeBlock(lock("U123")));
   });
 });
+
+describe("sessionModeBlock with an environment", () => {
+  test("names a personal environment and its kind", () => {
+    const b = sessionModeBlock(null, { userId: "U1", dir: "/r", env: { name: "box", kind: "ssh", trust: "user-machine" } });
+    expect(b).toContain("<@U1>'s own machine (environment `box`, ssh)");
+  });
+  test("describes a sandbox without naming a person's machine", () => {
+    const b = sessionModeBlock(null, { userId: "", dir: "/w", env: { name: "sb", kind: "dind", trust: "provisioned" } });
+    expect(b).toContain("disposable sandbox environment `sb` (dind)");
+    expect(b).not.toContain("own machine");
+  });
+});

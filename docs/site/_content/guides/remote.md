@@ -2,6 +2,8 @@
 
 `/remote` points a Slack thread at **your own machine**. From the next message on, the agent's shell and file tools (Bash, Read, Write, Edit, Glob, Grep) run there, in a directory you choose. The conversation, the model API key, MCP credentials, the knowledge base and the transcript all stay on slaude. `/remote off` switches back.
 
+> **Environments:** `/remote` is now a shortcut for a `tailcat` [environment](environments.md). `/remote <address> [directory]` uses (or saves) a tailcat environment for that address; `/env` lists, edits and switches between all your environments, including plain ssh hosts.
+
 > **Prerequisites:** The operator has set `SLAUDE_REMOTE=1` on the deployment (off by default). Your machine runs [tailcat](https://github.com/tailscale/tailcat) and has `perl` (ships with macOS and most Linux).
 
 ---

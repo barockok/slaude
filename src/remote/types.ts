@@ -1,4 +1,4 @@
-export type RemoteErrorCode = "REMOTE_UNREACHABLE" | "REMOTE_AUTH_FAILED";
+export type RemoteErrorCode = "REMOTE_UNREACHABLE" | "REMOTE_AUTH_FAILED" | "REMOTE_HOST_CHANGED" | "REMOTE_PROVISION_FAILED";
 
 /** Transport-level failure. Tool-level failures (non-zero exit, missing file)
  *  are ordinary ExecResults, not RemoteErrors. `started` = the command may
@@ -29,11 +29,28 @@ export interface ExecResult {
 
 export type Exec = (cmd: string, opts: ExecOpts) => Promise<ExecResult>;
 
+export type EnvTrust = "user-machine" | "provisioned";
+
+/** Which saved environment a remote thread runs in. Not sensitive: no address. */
+export interface EnvRef {
+  id: string;
+  kind: string;
+  trust: EnvTrust;
+  /** Environment name, shown to the model and in status lines. */
+  name: string;
+  /** Changes when the environment's config (or a sandbox's generation) changes. */
+  hash: string;
+}
+
 export interface RemoteTarget {
   teamId: string;
+  /** The environment's owner. */
   userId: string;
+  /** tailcat address for tailcat environments (older nodes read it); "" otherwise. */
   addr: string;
   dir: string;
+  /** Absent only in tokens from a gateway that predates environments (tailcat). */
+  env?: EnvRef;
 }
 
 export interface RemoteHandle {

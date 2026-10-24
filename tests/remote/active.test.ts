@@ -31,6 +31,9 @@ describe("activeRemoteTarget", () => {
   it("returns the target when locked to its owner", async () => {
     await target();
     await OneOnOne.lock({ channelId: "C1", threadTs: "1.0", lockedUser: "U_A", createdBy: "U_A" });
-    expect(await activeRemoteTarget("C1", "1.0")).toEqual({ teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r" });
+    const t = await activeRemoteTarget("C1", "1.0");
+    expect(t).toMatchObject({ teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r" });
+    expect(t?.env).toMatchObject({ kind: "tailcat", trust: "user-machine", name: "tailcat" });
+    expect(t?.env?.hash).toMatch(/^[0-9a-f]{16}$/);
   });
 });

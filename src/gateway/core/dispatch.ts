@@ -23,6 +23,7 @@ import { runsOnFor } from "../../persona/registry";
 import { env } from "../../config/env";
 import { threadIdentity } from "./thread-identity";
 import { sessionConfigFp } from "../../remote/fingerprint";
+import { ensureProvisioned } from "../../remote/env-runtime";
 import { defaultEpochs, localEpochs, turnMcpEpoch, type McpCredEpochs } from "./mcp-cred-epoch";
 import { makeKeys, type Keys } from "../../queue/keys";
 import { getRedis, getSubRedis } from "../../queue/redis";
@@ -320,6 +321,15 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       // The lock rides the token for the node's session-mode block (a node has
       // no database): always present (null = unlocked) so a node can tell it
       // from a token minted by an older gateway.
+      // A thread bound to a provisioned sandbox gets it started (or restarted
+      // after an idle teardown) before its fingerprint is computed, so a new
+      // sandbox reboots a warm session onto it. A failure is logged and the turn
+      // still goes out: the node's boot then fails closed on the missing sandbox.
+      if (env.remote.enabled()) {
+        await ensureProvisioned(meta.channelId, meta.threadTs).catch((e) =>
+          console.error(`[dispatch] session=${session.id} sandbox: ${e instanceof Error ? e.message : String(e)}`),
+        );
+      }
       const { runAsUser, lock: lockClaim, remote: remoteClaim } = await threadIdentity(
         meta.channelId,
         meta.threadTs,

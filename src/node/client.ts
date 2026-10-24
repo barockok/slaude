@@ -12,6 +12,7 @@
 import type { NodeCredential } from "../gateway/api/mcp-credentials";
 import { GATE_DENIED_CODE, JOB_HEADER, LABEL_MISMATCH_CODE, NODE_UNAUTHORIZED_CODE } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
+import type { ConnectInfo } from "../remote/transport";
 import { BootFailure } from "../gateway/core/failure-codes";
 
 export interface NodeClientOpts {
@@ -327,6 +328,14 @@ export class NodeClient {
     const body = await this.#json<{ privateKey?: string }>(res);
     if (!body.privateKey) throw new NodeApiError(502, "", "gateway returned no remote key");
     return body.privateKey;
+  }
+
+  /** How to reach the turn's environment: transport + key (never cached on disk). */
+  async getRemoteEnv(tenantId: string, jobToken: string): Promise<ConnectInfo> {
+    const res = await this.request(`/v1/tenants/${encodeURIComponent(tenantId)}/remote-env`, { jobToken });
+    const body = await this.#json<Partial<ConnectInfo>>(res);
+    if (!body.transport || !body.privateKey) throw new NodeApiError(502, "", "gateway returned no environment");
+    return { transport: body.transport, privateKey: body.privateKey };
   }
 
   /**

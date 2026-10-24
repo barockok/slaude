@@ -43,6 +43,12 @@ export type SlashHit =
   | { kind: "one-on-one"; action: "lock" }
   | { kind: "remote"; action: "on"; addr: string; dir?: string }
   | { kind: "remote"; action: "off" | "status" | "key" }
+  | { kind: "env"; action: "status" | "list" | "off" }
+  | { kind: "env"; action: "key"; kindName?: string }
+  | { kind: "env"; action: "use"; name: string; dir?: string }
+  | { kind: "env"; action: "add"; kindName?: string; name?: string; fields?: Record<string, string>; dir?: string }
+  | { kind: "env"; action: "edit"; name: string; fields?: Record<string, string>; newName?: string; dir?: string }
+  | { kind: "env"; action: "rm"; name: string }
   | { kind: "mention-only"; action: "on" | "off" }
   | { kind: "mcp"; action: "status" | "connect" | "disconnect"; server?: string }
   | { kind: "soul"; field: "trust" | "allow" | "dm" | "block"; action: "add" | "remove"; value: string }
@@ -61,7 +67,8 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/mode <name>", summary: "set the tool-permission mode (per session/thread)" },
   { usage: "/abort", summary: "cancel the current turn" },
   { usage: "/1on1 [lock | off]", summary: "start a private 1on1 (locked to you); `lock` re-restricts after open; `off` releases — to open to guests, ask the agent directly" },
-  { usage: "/remote [off | key | <addr> [dir]]", summary: "run this thread's shell + file tools on your own machine over tailcat (locks the thread to you); no arg shows status and, when off, a private Connect button for the address and directory" },
+  { usage: "/env [list | use <name> [dir] | add | edit <name> | rm <name> | off | key [kind]]", summary: "choose where this thread's shell + file tools run: one of your saved environments (tailcat, ssh, …) or the server; no arg shows status and your environments" },
+  { usage: "/remote [off | key | <addr> [dir]]", summary: "alias for a tailcat environment: run this thread's shell + file tools on your own machine (locks the thread to you); no arg shows status and, when off, a private Connect button" },
   { usage: "/mention-only [off]", summary: "reply only when @-mentioned in this thread; `off` restores normal" },
   { usage: "/mcp [connect|disconnect <server>]", summary: "list/connect/disconnect OAuth HTTP MCP servers — in 1on1: as you; outside 1on1: manager manages the agent's shared identity" },
   { usage: "/ignore @user [dur]", summary: "ignore a user (optional duration, e.g. 1h, 30m)" },
@@ -215,6 +222,9 @@ export function parseSlashCommand(text: string): SlashHit | null {
     const dir = rest.slice(1).join(" ").trim();
     return dir ? { kind: "remote", action: "on", addr: rest[0], dir } : { kind: "remote", action: "on", addr: rest[0] };
   }
+  if (cmd === "env") {
+    return parseEnvCommand(rest);
+  }
   if (cmd === "mention-only") {
     return { kind: "mention-only", action: arg === "off" ? "off" : "on" };
   }
@@ -297,4 +307,62 @@ export function humanModeName(m: PermissionMode): string {
     case "dontAsk":
       return "dont-ask";
   }
+}
+
+/** `key=value` arguments; anything else is positional. */
+function splitKv(args: string[]): { pos: string[]; kv: Record<string, string> } {
+  const pos: string[] = [];
+  const kv: Record<string, string> = {};
+  for (const a of args) {
+    const m = a.match(/^([A-Za-z][A-Za-z0-9_]*)=(.*)$/);
+    if (m) kv[m[1]!] = m[2]!;
+    else pos.push(a);
+  }
+  return { pos, kv };
+}
+
+function parseEnvCommand(rest: string[]): SlashHit | null {
+  const sub = (rest[0] ?? "").toLowerCase();
+  if (!rest[0] || sub === "status") return { kind: "env", action: "status" };
+  if (sub === "list" || sub === "ls") return { kind: "env", action: "list" };
+  if (sub === "off") return { kind: "env", action: "off" };
+  if (sub === "key") return rest[1] ? { kind: "env", action: "key", kindName: rest[1].toLowerCase() } : { kind: "env", action: "key" };
+  if (sub === "use") {
+    const name = rest[1]?.toLowerCase();
+    if (!name) return null;
+    const dir = rest.slice(2).join(" ").trim();
+    return dir ? { kind: "env", action: "use", name, dir } : { kind: "env", action: "use", name };
+  }
+  if (sub === "rm" || sub === "remove" || sub === "delete") {
+    const name = rest[1]?.toLowerCase();
+    return name ? { kind: "env", action: "rm", name } : null;
+  }
+  if (sub === "add") {
+    if (!rest[1]) return { kind: "env", action: "add" };
+    const { pos, kv } = splitKv(rest.slice(2));
+    const { dir, ...fields } = kv;
+    return {
+      kind: "env",
+      action: "add",
+      kindName: rest[1].toLowerCase(),
+      name: pos[0] ?? "",
+      fields,
+      ...(dir !== undefined ? { dir } : {}),
+    };
+  }
+  if (sub === "edit") {
+    const name = rest[1]?.toLowerCase();
+    if (!name) return null;
+    const { kv } = splitKv(rest.slice(2));
+    const { dir, name: newName, ...fields } = kv;
+    return {
+      kind: "env",
+      action: "edit",
+      name,
+      fields,
+      ...(newName !== undefined ? { newName } : {}),
+      ...(dir !== undefined ? { dir } : {}),
+    };
+  }
+  return null;
 }

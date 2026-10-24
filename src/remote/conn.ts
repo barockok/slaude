@@ -11,6 +11,10 @@ export interface ConnOpts {
   privateKey: string;
   /** tailcat's server authenticates by key and runs as its own user; the name is informational. */
   username?: string;
+  /** Host key check. Default accepts any key, which is right only for tailcat:
+   *  its address embeds the server's WireGuard key, so the tunnel already
+   *  authenticated the peer (spec §2 "Host identity"). Plain ssh pins a key. */
+  hostVerifier?: (key: Buffer) => boolean;
   idleMs?: number;
   readyTimeoutMs?: number;
   reconnectDelayMs?: number;
@@ -121,6 +125,8 @@ export class RemoteConn {
       // emitted its close/error before we could listen.
       if (sock.destroyed) throw new RemoteError("REMOTE_UNREACHABLE", "transport closed before the handshake");
       const c = new Client();
+      const verify = this.o.hostVerifier ?? (() => true);
+      let hostRejected = false;
       // ssh2 may emit several errors during a handshake; a listener must always exist.
       c.on("error", () => { if (this.#client === c) this.#client = null; });
       // The peer stopped sending: the session is over. Destroy so 'close' follows:
@@ -137,8 +143,10 @@ export class RemoteConn {
           c.once("error", (err: Error & { level?: string }) => {
             reject(
               err.level === "client-authentication"
-                ? new RemoteError("REMOTE_AUTH_FAILED", "the remote rejected slaude's key (run /remote key)")
-                : new RemoteError("REMOTE_UNREACHABLE", err.message),
+                ? new RemoteError("REMOTE_AUTH_FAILED", "the remote rejected slaude's key (run /env key)")
+                : hostRejected
+                  ? new RemoteError("REMOTE_HOST_CHANGED", "the remote's host key does not match the pinned one; if the machine was reinstalled, re-add the environment")
+                  : new RemoteError("REMOTE_UNREACHABLE", err.message),
             );
           });
           c.connect({
@@ -148,9 +156,11 @@ export class RemoteConn {
             readyTimeout: this.o.readyTimeoutMs ?? 30_000,
             keepaliveInterval: 15_000,
             keepaliveCountMax: 3,
-            // The tailcat address embeds the server's WireGuard key: the tunnel
-            // already authenticates the peer (spec §2 "Host identity").
-            hostVerifier: () => true,
+            hostVerifier: (key: Buffer) => {
+              const ok = verify(key);
+              if (!ok) hostRejected = true;
+              return ok;
+            },
           });
         });
       } catch (e) {

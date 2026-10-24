@@ -32,6 +32,24 @@ describe("makeRemoteResolver", () => {
     expect(await makeRemoteResolver(storeOf({ S1: "not-a-jwt" }))("S1")).toBeNull();
   });
 
+  it("an environment claim on a user turn carries the env ref", async () => {
+    const envRef = { id: "E1", kind: "ssh", trust: "user-machine" as const, name: "box", hash: "h1" };
+    const r = makeRemoteResolver(storeOf({ S1: tok({ team: "T1", runAs: "user:UTESTA", remote: { addr: "", dir: "/r", env: envRef } }) }));
+    expect(await r("S1")).toEqual({ teamId: "T1", userId: "UTESTA", addr: "", dir: "/r", env: envRef });
+  });
+
+  it("a user-machine environment on an agent turn → null", async () => {
+    const envRef = { id: "E1", kind: "ssh", trust: "user-machine" as const, name: "box", hash: "h1" };
+    const r = makeRemoteResolver(storeOf({ S1: tok({ team: "T1", runAs: "agent", remote: { addr: "", dir: "/r", env: envRef } }) }));
+    expect(await r("S1")).toBeNull();
+  });
+
+  it("a provisioned sandbox applies to an agent turn too", async () => {
+    const envRef = { id: "E2", kind: "sandbox", trust: "provisioned" as const, name: "sb", hash: "h2" };
+    const r = makeRemoteResolver(storeOf({ S1: tok({ team: "T1", runAs: "agent", remote: { addr: "", dir: "/w", env: envRef } }) }));
+    expect(await r("S1")).toEqual({ teamId: "T1", userId: "", addr: "", dir: "/w", env: envRef });
+  });
+
   it("decodeClaims is still exported from the worker", () => {
     expect(workerDecodeClaims).toBe(decodeClaims);
   });
@@ -42,15 +60,22 @@ describe("makeRemoteFactory", () => {
 
   function setup(over: { tenant?: string; token?: string } = {}) {
     const keyCalls: Array<[string, string]> = [];
+    const envCalls: Array<[string, string]> = [];
     const built: any[] = [];
     const handle = { exec: async () => ({ stdout: "", stderr: "", code: 0, truncated: false, timedOut: false }), release: async () => {}, dispose: async () => {} };
     const factory = makeRemoteFactory({
-      client: { getRemoteKey: async (tenant: string, token: string) => { keyCalls.push([tenant, token]); return "PRIVATE-KEY-MATERIAL"; } },
+      client: {
+        getRemoteKey: async (tenant: string, token: string) => { keyCalls.push([tenant, token]); return "PRIVATE-KEY-MATERIAL"; },
+        getRemoteEnv: async (tenant: string, token: string) => {
+          envCalls.push([tenant, token]);
+          return { transport: { kind: "ssh" as const, host: "203.0.113.5", port: 22, username: "dev", hostKey: "SHA256:x" }, privateKey: "ENV-KEY" };
+        },
+      },
       store: storeOf(over.token === undefined ? {} : { S1: over.token }),
       tenants: new Map(over.tenant === undefined ? [] : [["S1", over.tenant]]),
       newHelper: (opts) => { built.push(opts); return handle; },
     });
-    return { factory, keyCalls, built, handle };
+    return { factory, keyCalls, envCalls, built, handle };
   }
 
   it("refuses without a tenant or a token, before fetching any key", async () => {
@@ -73,5 +98,15 @@ describe("makeRemoteFactory", () => {
     expect(ran).toHaveLength(1);
     expect(ran[0]![0]).toContain("S1");
     expect(ran[0]![1]).toEqual({ timeoutMs: 30_000 });
+  });
+
+  it("an environment target fetches its connect info from the gateway, not the bare key", async () => {
+    const s = setup({ tenant: "t1", token: "tok-1" });
+    const envTarget = { ...target, addr: "", env: { id: "E1", kind: "ssh", trust: "user-machine" as const, name: "box", hash: "h" } };
+    expect(await s.factory("S1", envTarget)).toBe(s.handle);
+    expect(s.keyCalls).toEqual([]);
+    expect(s.envCalls).toEqual([["t1", "tok-1"]]);
+    expect(s.built[0].transport).toEqual({ kind: "ssh", host: "203.0.113.5", port: 22, username: "dev", hostKey: "SHA256:x" });
+    expect(s.built[0].privateKey).toBe("ENV-KEY");
   });
 });

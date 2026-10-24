@@ -100,7 +100,7 @@ export const denyLocalBuiltins: HookCallback = async (input) => {
 };
 
 const GUIDANCE =
-  "Stop and tell the user their machine is not reachable. They can check with `/remote`; if they restarted `tailcat serve` and got a new address, `/remote <new-address>` re-points this thread. Do not retry in a loop or work around it.";
+  "Stop and tell the user the thread's environment is not reachable. They can check with `/env`; if they restarted `tailcat serve` and got a new address, `/remote <new-address>` (or `/env edit`) re-points it. Do not retry in a loop or work around it.";
 
 function guarded<I>(name: string, fn: (i: I) => Promise<ToolText>) {
   return async (i: I): Promise<ToolText> => {

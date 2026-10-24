@@ -296,7 +296,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         }
         // Unlocking must also end remote mode: a surviving target would come back to
         // life on the next lock by the same user.
-        await endRemoteForThread(row.slack_channel_id, row.slack_thread_ts, { sessionId: row.id });
+        await endRemoteForThread(row.slack_channel_id, row.slack_thread_ts, { sessionId: row.id, userMachineOnly: true });
         await OneOnOne.unlock(row.slack_channel_id, row.slack_thread_ts);
         // The unlock has applied; a failed reload must not turn it into a 500.
         try {
