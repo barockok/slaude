@@ -198,6 +198,23 @@ const REACT_DOUBT = "thinking_face";
 /** The brain's channel trust in the envelope's terms (trusted / allowed / restricted). */
 const GATE_TRUST: Record<ChannelTrust, Trust> = { trusted: "trusted", public: "allowed", unknown: "restricted" };
 
+/**
+ * The channel-mode rule, driven by SOUL.md: in a trusted or allowed channel
+ * anyone may address the agent; in a DM or an unlisted channel only the
+ * manager or backup (plus, in a DM, the DM allowlist). Whitelisted DM users
+ * get chat only: admin commands still gate on manager/backup/approver.
+ * Shared by handleMessage and the decision gate's skip check.
+ */
+function channelModeAdmits(soul: ReturnType<typeof soulData>, channelId: string, channelType: string, userId: string): boolean {
+  const isDM = channelType === "im";
+  const publicZone = !isDM && (soul.trustedChannels.includes(channelId) || soul.allowedChannels.includes(channelId));
+  if (publicZone) return true;
+  const managerId = soul.manager.userId;
+  const backupId = soul.backupManager.userId;
+  const dmAllowed = isDM && soul.dmAllowedUsers.includes(userId);
+  return Boolean((managerId && userId === managerId) || (backupId && userId === backupId) || dmAllowed);
+}
+
 /** Pages of thread history the decision gate reads at most. */
 const GATE_REPLY_PAGES = 5;
 /** conversations.replies page size for the gate (Slack's recommended maximum),
@@ -1911,26 +1928,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     //     Deny on request_approval blocks but cannot chat)
     {
       const soul = soulData();
-      const isDM_ = channelType === "im";
-      const isTrusted = !isDM_ && soul.trustedChannels.includes(channelId);
-      const isAllowed = !isDM_ && soul.allowedChannels.includes(channelId);
-      const publicZone = isTrusted || isAllowed;
-      if (!publicZone) {
-        const managerId = soul.manager.userId;
-        const backupId = soul.backupManager.userId;
-        // Whitelisted DM users may engage in 1:1 DMs (not in non-whitelisted
-        // channels) on top of manager/backup. Grants chat only — admin commands
-        // still gate on manager/backup/approver below.
-        const dmAllowed = isDM_ && soul.dmAllowedUsers.includes(userId);
-        const allowed = (managerId && userId === managerId) || (backupId && userId === backupId) || dmAllowed;
-        if (!allowed) {
-          console.log(
-            `[slack-rx] drop ch=${channelId} user=${userId} — non-whitelist/DM accepts manager/backup${isDM_ ? "/dm-allowlist" : ""} only` +
-              (managerId ? "" : " (no manager set in SOUL.md)"),
-          );
-          metric.slackDropsTotal.inc({ reason: "whitelist" });
-          return;
-        }
+      if (!channelModeAdmits(soul, channelId, channelType, userId)) {
+        const isDM_ = channelType === "im";
+        console.log(
+          `[slack-rx] drop ch=${channelId} user=${userId} — non-whitelist/DM accepts manager/backup${isDM_ ? "/dm-allowlist" : ""} only` +
+            (soul.manager.userId ? "" : " (no manager set in SOUL.md)"),
+        );
+        metric.slackDropsTotal.inc({ reason: "whitelist" });
+        return;
       }
     }
 
@@ -3130,6 +3135,32 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return { botUserId: persona?.slackUserId ?? (await getBotId(args)), botIds: bots.botIds, userIds };
   };
 
+  /**
+   * Whether handleMessage would drop this event before any turn: the same
+   * early filters, in the same order (missing team or user, self echo, ignore
+   * gate, hard blocklist, channel mode; the /1on1 lock is checked by the
+   * caller), plus a mention with no text. The gate never sees such a message,
+   * so nothing the agent is configured never to read leaves the deployment,
+   * and nobody it ignores gets a 🤔. Read-only: no claim, no log, no metric.
+   */
+  const ingressDrops = async (args: any): Promise<boolean> => {
+    const e: any = args.event;
+    const teamId: string | undefined = args.context?.teamId ?? e.team;
+    const userId: string | undefined = e.user;
+    if (!teamId || !userId) return true;
+    if (await isSelfBotEcho(args, e)) return true;
+    if ((await getSelfUserIds()).has(userId)) return true;
+    const text: string = (e.text || "").toString().trim();
+    const threadTs: string = e.thread_ts || e.ts;
+    const peek = parseSlashCommand(text.replace(/<@[^>]+>/g, "").trim());
+    if (peek?.kind !== "unignore" && (await ignoreGate.shouldDrop(userId, e.channel, threadTs))) return true;
+    const soul = soulData();
+    if (soul.blockedUsers.includes(userId)) return true;
+    if (!channelModeAdmits(soul, e.channel, e.channel_type ?? "", userId)) return true;
+    const hasFiles = Array.isArray(e.files) && e.files.length > 0;
+    return !text.replace(/<@[^>]+>/g, "").trim() && !hasFiles;
+  };
+
   /** Synchronous: with no runner or an off runner the call sites never await the gate. */
   const gateActive = (): boolean => gateRunner !== null && gateRunner.mode !== "off";
 
@@ -3149,6 +3180,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     try {
       const threadTs: string = e.thread_ts || e.ts;
       if (await OneOnOne.find(e.channel, threadTs)) return undefined;
+      if (await ingressDrops(args)) return undefined;
       const teamId: string | undefined = args.context?.teamId ?? e.team;
       const client = args.client ?? t.client;
       const input = async () => {

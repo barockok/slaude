@@ -13,6 +13,8 @@ import { makeGateRunner, type GateMode, type GateRunner } from "../../../src/gat
 import type { DecisionAdapter, DecisionRequest, DecisionResult } from "../../../src/decision/types";
 import type { GateInput } from "../../../src/gateway/gate/types";
 import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../../src/persona/registry";
+import { setSoulData, soulData } from "../../../src/soul/extract";
+import * as Ignores from "../../../src/db/ignores";
 
 /**
  * Phase B, task 5: the decision gate at the gateway's Slack ingress. Mentions
@@ -127,6 +129,7 @@ beforeEach(async () => {
   await db.run("DELETE FROM sessions");
   await db.run("DELETE FROM seen_events");
   await db.run("DELETE FROM pending_gates");
+  await db.run("DELETE FROM ignores");
   OneOnOne._wipeForTests();
 });
 
@@ -348,6 +351,20 @@ function anaRegistry(outClient: any = null): PersonaRegistry {
   };
 }
 
+/** An adapter that answers "no" to everything and records what it saw. */
+function alwaysNo() {
+  const seen: string[] = [];
+  const no = { choice: "no", confidence: 0.95 };
+  const a: DecisionAdapter = {
+    name: "no",
+    decide: async (req) => {
+      seen.push((req.state as GateInput).message);
+      return { addressedToAgent: no, isQuestionOrRequest: no, agentCanHelp: no, alreadyAnswered: no };
+    },
+  };
+  return { a, seen };
+}
+
 const doubts = (g: ReturnType<typeof makeGw>) => g.reacts.filter((r) => r.name === "thinking_face");
 
 describe("decision gate: the agent's own identities", () => {
@@ -407,5 +424,74 @@ describe("decision gate: the agent's own identities", () => {
     } finally {
       __resetPersonaRegistry();
     }
+  });
+});
+
+describe("decision gate: messages the ingress drops never reach the adapter", () => {
+  it("a blocked user", async () => {
+    setSoulData({ ...soulData(), blockedUsers: ["U0BLOCKED"] });
+    const n = alwaysNo();
+    const g = makeGw(runner("on", n.a));
+    const args = msg(g.t.client, "<@USLAUDEBOT> hello", nextTs(), { user: "U0BLOCKED" });
+    await g.emit("app_mention", { ...args, event: { ...args.event, type: "app_mention" } });
+    await g.emit("message", args);
+    expect(n.seen).toEqual([]);
+    expect(doubts(g)).toEqual([]);
+    expect(g.sends).toEqual([]);
+  });
+
+  it("a non-manager in an unlisted channel", async () => {
+    const n = alwaysNo();
+    const g = makeGw(runner("on", n.a));
+    const args = msg(g.t.client, "<@USLAUDEBOT> private stuff here", nextTs(), { channel: "C0SECRET", user: "U0RANDOM" });
+    await g.emit("app_mention", { ...args, event: { ...args.event, type: "app_mention" } });
+    await g.emit("message", args);
+    expect(n.seen).toEqual([]);
+    expect(doubts(g)).toEqual([]);
+    expect(g.sends).toEqual([]);
+  });
+
+  it("an ignored thread, mention and engaged reply", async () => {
+    const n = alwaysNo();
+    const g = makeGw(runner("off", null));
+    const thread = nextTs();
+    await mention(g, thread, "<@USLAUDEBOT> hi");
+    expect(g.sends.length).toBe(1);
+    await Ignores.create({ targetType: "thread", channelId: CH, threadTs: thread, createdBy: WORLD.manager });
+    const g2 = makeGw(runner("on", n.a));
+    await mention(g2, nextTs(), "<@USLAUDEBOT> again", thread);
+    await g2.emit("message", msg(g2.t.client, "plain reply", nextTs(), { thread }));
+    expect(n.seen).toEqual([]);
+    expect(doubts(g2)).toEqual([]);
+    expect(g2.sends).toEqual([]);
+  });
+
+  it("an ignored user", async () => {
+    await Ignores.create({ targetType: "user", userId: "U0APP", createdBy: WORLD.manager });
+    const n = alwaysNo();
+    const g = makeGw(runner("on", n.a));
+    await mention(g, nextTs(), "<@USLAUDEBOT> hello");
+    const args = msg(g.t.client, "<@USLAUDEBOT> hello", nextTs(), { user: "U0APP" });
+    await g.emit("app_mention", { ...args, event: { ...args.event, type: "app_mention" } });
+    await g.emit("message", args);
+    // Only the manager's mention reached the adapter.
+    expect(n.seen).toEqual(["<agent> hello"]);
+  });
+
+  it("a self echo delivered as app_mention", async () => {
+    const n = alwaysNo();
+    const g = makeGw(runner("on", n.a));
+    const args = msg(g.t.client, "<@USLAUDEBOT> note to self", nextTs(), { user: "USLAUDEBOT" });
+    await g.emit("app_mention", { ...args, event: { ...args.event, type: "app_mention", bot_id: "B_SLAUDE" } });
+    expect(n.seen).toEqual([]);
+    expect(doubts(g)).toEqual([]);
+  });
+
+  it("a bare mention with no text", async () => {
+    const n = alwaysNo();
+    const g = makeGw(runner("on", n.a));
+    await mention(g, nextTs(), "<@USLAUDEBOT>");
+    expect(n.seen).toEqual([]);
+    expect(doubts(g)).toEqual([]);
   });
 });
