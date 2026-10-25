@@ -53,11 +53,24 @@ describe("runtime prompt goldens", () => {
   test("mode locked and remote", () => expectSame(sessionModeBlock(lock(null), remote(personal)), "mode-locked-remote"));
 });
 
+describe("every-turn memory rules", () => {
+  test("the core carries them, not only the skill", () => {
+    for (const brain of [true, false]) {
+      const core = runtimeBaseline(brain);
+      expect(core).toContain("never repeat it, or anything you\n  noted about them, to someone else");
+      expect(core).toContain("save it before the\n  turn ends. Load `slaude:memory` first.");
+      expect(core).toContain("Never save credentials, government ids, payment data, health details,");
+    }
+  });
+});
+
 describe("core size budget", () => {
   // Rendered runtimeBaseline(true) with the knowledge dir normalised to its
-  // token, measured at 4ddec02 (R2 plus its fix round). Procedures belong in a
-  // built-in skill, not the always-on core.
-  const BUDGET = 9871;
+  // token. Re-pinned for phase C: +459 chars for the slaude:memory index line and
+  // the three every-turn memory rules (spec invariant 7: live capture, never
+  // repeat a profile, never record secrets must live in the core, not only in
+  // the skill). Procedures belong in a built-in skill, not the always-on core.
+  const BUDGET = 10330;
   test("core stays within its budget", () => {
     const length = norm(runtimeBaseline(true)).length;
     expect(length, "core grew past its budget — move procedures into a built-in skill").toBeLessThanOrEqual(BUDGET * 1.05);
