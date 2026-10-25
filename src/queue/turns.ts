@@ -41,6 +41,14 @@ export interface TurnMessage {
   suppress?: boolean;
 }
 
+/** Who sent one of a turn's messages, as the gateway saw it at dispatch. */
+export interface TurnSender {
+  userId: string;
+  teamId: string | null;
+  /** "slack" | "panel" | "cron"; null = unknown. */
+  origin: string | null;
+}
+
 /** Payload of one turn job (spec §2). Imported by the node worker (P6). */
 export interface TurnJob {
   sessionId: string;
@@ -50,6 +58,12 @@ export interface TurnJob {
    *  is signed into jobToken. Absent on jobs from an older gateway = "default". */
   label?: string;
   messages: TurnMessage[];
+  /** Everyone whose messages this job holds, with each message's origin:
+   *  the dispatching message's sender, plus the sender of every message
+   *  merged in. Gateway-side bookkeeping, not a signed claim: a merged job
+   *  runs under its first token, whose initiator need not be every sender.
+   *  Absent (an older gateway) = unknown. */
+  senders?: TurnSender[];
   /** Identity the turn runs as when it is not the thread's /1on1 lock owner —
    *  currently a cron job's captured initiator. The node applies it before the
    *  turn so credential scoping matches an interactive 1on1. */
@@ -171,6 +185,39 @@ export interface MoveOpts {
 /** The larger relabelAttempts of two jobs being merged (absent = 0). */
 function maxAttempts(a: TurnJob, b: TurnJob): number {
   return Math.max(a.relabelAttempts ?? 0, b.relabelAttempts ?? 0);
+}
+
+/** How long a turn-senders record is kept: longer than any turn's token. */
+const SENDERS_TTL_MS = 24 * 60 * 60 * 1000;
+
+const senderKey = (s: TurnSender): string => `${s.userId}\u0000${s.teamId ?? ""}\u0000${s.origin ?? ""}`;
+
+/** The union of two jobs' senders, in first-seen order; undefined when
+ *  either side's is unknown (a job from an older gateway). */
+export function mergeSenders(a: readonly TurnSender[] | undefined, b: readonly TurnSender[] | undefined): TurnSender[] | undefined {
+  if (!a || !b) return undefined;
+  const seen = new Set<string>();
+  const out: TurnSender[] = [];
+  for (const s of [...a, ...b]) {
+    const k = senderKey(s);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+  }
+  return out;
+}
+
+/** The `job` claim of a job token, read without verifying (the gateway
+ *  minted it; this only names the turn-senders record). */
+function tokenJobId(token: string): string | null {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const job = (JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8")) as { job?: unknown }).job;
+    return typeof job === "string" && job ? job : null;
+  } catch {
+    return null;
+  }
 }
 
 /** One message's identity for de-duplication: a re-delivered message is the
@@ -415,8 +462,13 @@ export class TurnQueues {
       await this.#connection.pexpire(ckey, COALESCE_TTL_MS);
       return { jobId: pending.id!, queue: ref.queue, coalesced: true };
     }
+    // The merged job's senders, recorded before the data so a worker that
+    // claims in between reads a superset (a refusal, never a false "one sender").
+    const senders = fresh.length > 0 ? mergeSenders(prev.senders, job.senders) : prev.senders;
+    await this.#recordSenders(prev.jobToken, String(pending.id), senders);
     await pending.updateData({
       ...prev,
+      senders,
       messages: mergesFirst(prev, job, opts.first) ? [...fresh, ...prev.messages] : [...prev.messages, ...fresh],
       enqueuedAt: Math.min(prev.enqueuedAt ?? job.enqueuedAt, job.enqueuedAt),
       ...(attempts > 0 ? { relabelAttempts: attempts } : {}),
@@ -461,9 +513,11 @@ export class TurnQueues {
       messages: mergesFirst(prev, job, opts.first)
         ? [...job.messages, ...newMessages(job.messages, prev.messages)]
         : [...prev.messages, ...newMessages(prev.messages, job.messages)],
+      senders: mergeSenders(prev.senders, job.senders),
       enqueuedAt: Math.min(prev.enqueuedAt ?? job.enqueuedAt, job.enqueuedAt),
       ...(attempts > 0 ? { relabelAttempts: attempts } : {}),
     };
+    await this.#recordSenders(merged.jobToken, id, merged.senders);
     // "done": the pending job's turn already ran; add only this call's messages.
     if ((await this.#swap(pending, want.queue, merged, id)) !== "moved") return null;
     await this.#connection.set(ckey, JSON.stringify({ queue: want.queue, jobId: id }), "PX", COALESCE_TTL_MS);
@@ -515,6 +569,32 @@ export class TurnQueues {
     return (await this.#connection.exists(this.keys.turnDone(String(job.id)))) === 1;
   }
 
+  /**
+   * Record the senders of the job that runs under `token`, keyed by the
+   * token's `job` claim (what a tool call's verified token names; a held copy
+   * carries its original's token), else by `fallbackId`. Unknown senders
+   * delete the record, so a reader sees "unknown", not a stale set.
+   */
+  async #recordSenders(token: string, fallbackId: string, senders: readonly TurnSender[] | undefined): Promise<void> {
+    const key = this.keys.turnSenders(tokenJobId(token) ?? fallbackId);
+    if (!senders) await this.#connection.del(key);
+    else await this.#connection.set(key, JSON.stringify(senders), "PX", SENDERS_TTL_MS);
+  }
+
+  /** The senders of the job whose token names `jobId`, or null when unknown. */
+  async turnSenders(jobId: string): Promise<TurnSender[] | null> {
+    const raw = await this.#connection.get(this.keys.turnSenders(jobId));
+    if (!raw) return null;
+    try {
+      const v = JSON.parse(raw) as unknown;
+      if (!Array.isArray(v)) return null;
+      const ok = v.every((s) => s && typeof s.userId === "string" && (s.teamId === null || typeof s.teamId === "string") && (s.origin === null || typeof s.origin === "string"));
+      return ok ? (v as TurnSender[]) : null;
+    } catch {
+      return null;
+    }
+  }
+
   async #markMoved(fromJobId: string, to: MovedRef): Promise<void> {
     await this.#connection.set(this.keys.jobMoved(fromJobId), JSON.stringify(to), "PX", MOVED_TTL_MS);
   }
@@ -560,6 +640,7 @@ export class TurnQueues {
     // Index first: if the add below fails, the index points at a missing job,
     // which the next enqueue detects (getJob → null) and overwrites.
     await this.#connection.set(ckey, JSON.stringify({ queue: qname, jobId }), "PX", COALESCE_TTL_MS);
+    await this.#recordSenders(job.jobToken, jobId, job.senders);
     await this.queue(qname).add("turn", job, { ...this.defaultJobOpts(), jobId });
     return { jobId, queue: qname, coalesced: false };
   }

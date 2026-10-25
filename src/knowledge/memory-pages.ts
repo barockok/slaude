@@ -4,9 +4,15 @@
  *
  * A typed page is `---`, then `type`, `as_of` and `confidence`, then
  * `source`, `supersedes` and the type's own fields, then `---` and the body.
- * Values are one line each, written plain when that is unambiguous YAML and
- * as a JSON (= YAML double-quoted) string otherwise, so gbrain's YAML parser
- * and parseFrontmatter read the same value.
+ * Values are one line each. Free text (source, supersedes, every field) is
+ * always a JSON string, which is a valid YAML double-quoted scalar, so any
+ * YAML parser (gbrain's included) reads back exactly the string written; a
+ * plain `@alice`, `>later`, `- x` or `2026-11-01` would not. Only values
+ * composePage itself validated (type, as_of, confidence, a commitment's
+ * status and on_no_change) are written plain.
+ *
+ * A superseded page is not rewritten: the new page names it in `supersedes`
+ * and the old one gets the gbrain tag SUPERSEDED_TAG (memory-trail.ts).
  */
 import { redactSecrets } from "../gateway/core/status-text";
 
@@ -37,16 +43,13 @@ const COMMITMENT_KEYS = ["promiser", "beneficiary", "thread", "due", "check", "o
 const COMMITMENT_STATUS = new Set(["open", "done", "dropped"]);
 const ON_NO_CHANGE = new Set(["close-in-one-line", "silent"]);
 
-export const CREDENTIAL_REFUSAL = "refused: page contains a credential-like value";
+export const CREDENTIAL_REFUSAL = "refused: page contains a credential-like value; remove that value and try again";
 
 const FIELD_KEY = /^[a-z][a-z0-9_]*$/;
-/** A value YAML reads back as the same string when written plain. */
-const PLAIN_VALUE = /^[A-Za-z0-9_./@<>()+-][A-Za-z0-9 _./@<>()+,-]*$/;
-/** Plain-looking values YAML would read as something other than a string. */
-const YAML_SPECIAL = /^(?:true|false|null|yes|no|on|off|~|[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?|0x[0-9a-f]+|0o[0-7]+|\.inf|\.nan)$/i;
 
-function yamlValue(v: string): string {
-  if (v !== "" && v.trim() === v && PLAIN_VALUE.test(v) && !YAML_SPECIAL.test(v)) return v;
+/** A field value as one YAML line: plain only for a validated enum value. */
+function fieldValue(k: string, v: string): string {
+  if ((k === "status" && COMMITMENT_STATUS.has(v)) || (k === "on_no_change" && ON_NO_CHANGE.has(v))) return v;
   return JSON.stringify(v);
 }
 
@@ -107,9 +110,9 @@ export function composePage(p: TypedPageInput, now: Date): { content: string } |
 
   const lines = ["---", `type: ${type}`, `as_of: ${isoDate(now)}`];
   if (confidence !== undefined) lines.push(`confidence: ${confidence}`);
-  if (p.source !== undefined) lines.push(`source: ${yamlValue(p.source)}`);
-  if (p.supersedes !== undefined) lines.push(`supersedes: ${yamlValue(p.supersedes)}`);
-  for (const k of fieldOrder) lines.push(`${k}: ${yamlValue(fields[k]!)}`);
+  if (p.source !== undefined) lines.push(`source: ${JSON.stringify(p.source)}`);
+  if (p.supersedes !== undefined) lines.push(`supersedes: ${JSON.stringify(p.supersedes)}`);
+  for (const k of fieldOrder) lines.push(`${k}: ${fieldValue(k, fields[k]!)}`);
   lines.push("---");
   const content = `${lines.join("\n")}\n${p.content}`;
   return redactSecrets(content) === content ? { content } : { error: CREDENTIAL_REFUSAL };
@@ -146,48 +149,4 @@ export function parseFrontmatter(content: string): { meta: Record<string, string
     meta[kv[1]!] = unquote((kv[2] ?? "").trim());
   }
   return { meta, body: content.slice(m[0].length) };
-}
-
-/**
- * The old page with `superseded_by: <bySlug>` in its frontmatter (replacing
- * an earlier one). Every other byte, the body included, is kept as it was.
- */
-export function markSuperseded(oldContent: string, bySlug: string): string {
-  const line = `superseded_by: ${yamlValue(bySlug)}`;
-  const m = FRONTMATTER.exec(oldContent);
-  if (!m) return `---\n${line}\n---\n${oldContent}`;
-  const inner = m[1]!.split(/\r?\n/).filter((l) => !/^superseded_by:/.test(l));
-  if (inner.length === 1 && inner[0] === "") inner.length = 0;
-  return `---\n${[...inner, line].join("\n")}\n---\n${oldContent.slice(m[0].length)}`;
-}
-
-/** A frontmatter value from gbrain's parsed JSON, back as one YAML line. */
-function jsonFrontmatterValue(v: unknown): string {
-  if (typeof v === "string") {
-    // YAML reads a bare date as a timestamp; gbrain stores it as midnight UTC.
-    const day = /^(\d{4}-\d{2}-\d{2})T00:00:00(?:\.000)?Z$/.exec(v);
-    return yamlValue(day ? day[1]! : v);
-  }
-  return JSON.stringify(v);
-}
-
-/**
- * A `get_page` result as markdown: a string or `{ content }` as is, or a
- * gbrain page record rebuilt from its frontmatter and compiled truth (and its
- * timeline section below a `---` rule, gbrain's page layout). Null when the
- * result is not a page.
- */
-export function pageMarkdown(page: unknown): string | null {
-  if (typeof page === "string") return page;
-  if (!page || typeof page !== "object") return null;
-  const r = page as { content?: unknown; compiled_truth?: unknown; timeline?: unknown; frontmatter?: unknown; type?: unknown; title?: unknown };
-  if (typeof r.content === "string") return r.content;
-  if (typeof r.compiled_truth !== "string") return null;
-  const fm: Record<string, unknown> = r.frontmatter && typeof r.frontmatter === "object" ? { ...(r.frontmatter as Record<string, unknown>) } : {};
-  if (fm.type === undefined && typeof r.type === "string" && r.type) fm.type = r.type;
-  if (fm.title === undefined && typeof r.title === "string" && r.title) fm.title = r.title;
-  const keys = Object.keys(fm).filter((k) => fm[k] !== undefined && fm[k] !== null);
-  const head = keys.length > 0 ? `---\n${keys.map((k) => `${k}: ${jsonFrontmatterValue(fm[k])}`).join("\n")}\n---\n` : "";
-  const timeline = typeof r.timeline === "string" && r.timeline.trim() ? `\n\n---\n\n${r.timeline}` : "";
-  return head + r.compiled_truth + timeline;
 }

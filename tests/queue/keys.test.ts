@@ -40,6 +40,7 @@ describe("queue/keys", () => {
     expect(k.gateChannel("g1")).toBe("p:gate:g1");
     expect(k.eventsStream("s1")).toBe("p:events:s1");
     expect(k.turnDone("j1")).toBe("p:turn-done:j1");
+    expect(k.turnSenders("j1")).toBe("p:turn-senders:j1");
     expect(k.nodeLabels("n1")).toBe("p:nodelabels:n1");
     expect(k.jobMoved("j1")).toBe("p:job-moved:j1");
     // The labels key must never match the heartbeat SCAN pattern.

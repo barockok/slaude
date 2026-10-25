@@ -124,6 +124,11 @@ export interface Keys {
    *  recovery or failure retry) that finds it must not re-run the turn —
    *  the model already ran and its Slack posts are out. */
   turnDone(jobId: string): string;
+  /** `turn-senders:<jobId>` — who sent the messages of the job whose token
+   *  names `jobId` (JSON TurnSender[]), written by the turn queues on every
+   *  add and merge, so the gateway can tell a single-sender turn from a
+   *  merged one (profile writes need one sender, the speaker). */
+  turnSenders(jobId: string): string;
   /** `job-moved:<jobId>` — where a job went when it was moved to another queue
    *  (`{queue, jobId}` JSON), so a dispatch follower watching the old queue
    *  follows it instead of reading the move as the turn's end. */
@@ -160,6 +165,7 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     panelResumeChannel: () => `${prefix}:panel-resume`,
     panelHoldChannel: () => `${prefix}:panel-hold`,
     turnDone: (jobId) => `${prefix}:turn-done:${jobId}`,
+    turnSenders: (jobId) => `${prefix}:turn-senders:${jobId}`,
     jobMoved: (jobId) => `${prefix}:job-moved:${jobId}`,
     redispatch: (jobId) => `${prefix}:redispatch:${jobId}`,
     labelUnservedSince: () => `${prefix}:label-unserved-since`,

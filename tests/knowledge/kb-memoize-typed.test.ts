@@ -10,6 +10,7 @@ import type { GateInput } from "../../src/knowledge/gated-dispatch";
 import { resetStandingGrants } from "../../src/knowledge/gated-dispatch";
 import { agentSourceId, profileSourceId, resolveBrainScope, SHARED_SOURCE, userSourceId, type BrainScope } from "../../src/knowledge/scope";
 import { parseFrontmatter } from "../../src/knowledge/memory-pages";
+import { SUPERSEDED_TAG, supersededSlugs } from "../../src/knowledge/memory-trail";
 import { fakeBrain } from "../memory/fake-brain";
 
 const TEAM = "T0TEAM";
@@ -31,7 +32,8 @@ function setup(over: Partial<GateInput> = {}) {
   let cards = 0;
   const g: GateInput = {
     userId: "U0ALICE", teamId: TEAM, interactive: true, origin: "slack", lockedUser: null,
-    channelTrust: "trusted", isManager: false, agentId: AGENT, threadKey: "C0CHAN:1.1", ...over,
+    channelTrust: "trusted", isManager: false, agentId: AGENT, threadKey: "C0CHAN:1.1",
+    turnSenders: [{ userId: "U0ALICE", teamId: TEAM, origin: "slack" }], ...over,
   };
   const deps: BrainToolDeps = {
     scope: () => resolveBrainScope({ ...g, kbSources: [] }),
@@ -94,6 +96,29 @@ describe("kb_memoize target:\"profile\"", () => {
     expect(s.writes).toEqual([]);
   });
 
+  test("refused unless the turn holds exactly the speaker's own Slack messages", async () => {
+    const alice = { userId: "U0ALICE", teamId: TEAM, origin: "slack" };
+    for (const turnSenders of [
+      undefined, // unknown
+      [], // nothing recorded
+      [alice, { userId: "U0BOB", teamId: TEAM, origin: "slack" }], // a merged job: two initiators
+      [{ userId: "U0ALICE", teamId: TEAM, origin: "cron" }, alice], // cron then Slack
+      [{ userId: "U0BOB", teamId: TEAM, origin: "slack" }], // the ctx flipped without a record
+      [{ ...alice, teamId: "T0OTHER" }],
+    ]) {
+      const s = setup({ turnSenders });
+      const r = await brainHandlers.kb_memoize({ pages: [profilePage], target: "profile" }, s.deps);
+      expect(text(r)).toBe(PROFILE_REFUSAL);
+      expect(s.writes).toEqual([]);
+    }
+  });
+
+  test("a merged job of one sender's messages may write the profile", async () => {
+    const s = setup({ turnSenders: [{ userId: "U0ALICE", teamId: TEAM, origin: "slack" }] });
+    const r = await brainHandlers.kb_memoize({ pages: [profilePage], target: "profile" }, s.deps);
+    expect(r.isError).toBeUndefined();
+  });
+
   test("a subject equal to the speaker is fine", async () => {
     const s = setup();
     const r = await brainHandlers.kb_memoize({ pages: [profilePage], target: "profile", subject: "U0ALICE" }, s.deps);
@@ -138,17 +163,28 @@ describe("kb_memoize target:\"profile\"", () => {
 describe("kb_memoize supersedes", () => {
   const mine = agentSourceId(AGENT);
 
-  test("an existing page in the write source: the new page is written, then the old one is marked", async () => {
+  test("an existing page in the write source: the new page is written, then the old one is tagged, its content untouched", async () => {
     const s = setup();
     await brainHandlers.kb_memoize({ pages: [{ slug: "notes/old", content: "Old belief.\n", summary: "s", type: "outcome" }] }, s.deps);
+    const before = s.brain.contentOf(mine, "notes/old");
     s.writes.length = 0;
     const r = await brainHandlers.kb_memoize({ pages: [{ slug: "notes/new", content: "New belief.\n", summary: "s", type: "outcome", supersedes: "notes/old" }] }, s.deps);
     expect(r.isError).toBeUndefined();
-    expect(s.writes.map((w) => [w.slug, w.scope.sourceId])).toEqual([["notes/new", mine], ["notes/old", mine]]);
-    const old = parseFrontmatter(s.brain.contentOf(mine, "notes/old")!);
-    expect(old.meta.superseded_by).toBe("notes/new");
-    expect(old.body).toBe("Old belief.\n");
+    expect(JSON.parse(text(r)).superseded).toEqual(["notes/old"]);
+    expect(s.writes.map((w) => [w.name, w.slug, w.scope.sourceId])).toEqual([["put_page", "notes/new", mine], ["add_tag", "notes/old", mine]]);
+    expect(s.brain.contentOf(mine, "notes/old")).toBe(before);
+    expect(s.brain.tagsOf(mine, "notes/old")).toEqual([SUPERSEDED_TAG]);
+    expect(s.brain.tagsOf(mine, "notes/new")).toEqual([]);
     expect(parseFrontmatter(s.brain.contentOf(mine, "notes/new")!).meta.supersedes).toBe("notes/old");
+  });
+
+  test("supersededSlugs reads the tag one source at a time", async () => {
+    const s = setup();
+    await brainHandlers.kb_memoize({ pages: [{ slug: "notes/old", content: "Old", summary: "s", type: "outcome" }] }, s.deps);
+    await brainHandlers.kb_memoize({ pages: [{ slug: "notes/new", content: "New", summary: "s", type: "outcome", supersedes: "notes/old" }] }, s.deps);
+    const scope = resolveBrainScope({ ...s.gate, kbSources: [] });
+    expect([...(await supersededSlugs(s.brain.call, scope, [mine]))]).toEqual(["notes/old"]);
+    expect([...(await supersededSlugs(s.brain.call, scope, [SHARED_SOURCE]))]).toEqual([]);
   });
 
   test("a missing page is refused, and nothing is written", async () => {
@@ -169,16 +205,33 @@ describe("kb_memoize supersedes", () => {
     const r = await brainHandlers.kb_memoize({ pages: [{ slug: "notes/new", content: "New", summary: "s", type: "outcome", supersedes: "team/fact" }] }, s.deps);
     expect(text(r)).toBe(SUPERSEDE_REFUSAL);
     expect(s.writes).toEqual([]);
-    expect(parseFrontmatter(s.brain.contentOf(SHARED_SOURCE, "team/fact")!).meta.superseded_by).toBeUndefined();
+    expect(s.brain.tagsOf(SHARED_SOURCE, "team/fact")).toEqual([]);
   });
 
-  test("a denied card writes neither page", async () => {
+  test("a shared write that supersedes says so on the card; a denied card writes and tags nothing", async () => {
     const s = setup();
     await s.brain.call("put_page", { slug: "team/old", content: "old" }, { clientId: "x", sourceId: SHARED_SOURCE, allowedSources: [SHARED_SOURCE] });
-    s.deps.requestApproval = async () => ({ approved: false, by: "U0MGR" });
-    const r = await brainHandlers.kb_memoize({ pages: [{ slug: "team/new", content: "new", summary: "s", type: "team-fact", supersedes: "team/old" }], target: "shared" }, s.deps);
+    const asked: string[] = [];
+    s.deps.requestApproval = async (r) => { asked.push(r.summary); return { approved: false, by: "U0MGR" }; };
+    const r = await brainHandlers.kb_memoize({ pages: [{ slug: "team/new", content: "new", summary: "newer fact", type: "team-fact", supersedes: "team/old" }], target: "shared" }, s.deps);
     expect(r.isError).toBe(true);
+    expect(asked).toEqual([`KB write → shared: team/new — newer fact (and tags team/old as ${SUPERSEDED_TAG})`]);
     expect(s.writes).toEqual([]);
+    expect(s.brain.tagsOf(SHARED_SOURCE, "team/old")).toEqual([]);
+  });
+
+  test("a tag step that fails after the new page landed names both slugs", async () => {
+    const s = setup();
+    await brainHandlers.kb_memoize({ pages: [{ slug: "notes/old", content: "Old", summary: "s", type: "outcome" }] }, s.deps);
+    const inner = s.deps.call!;
+    s.deps.call = async (name, params, scope) => {
+      if (name === "add_tag") throw new Error("engine went away");
+      return inner(name, params, scope);
+    };
+    const r = await brainHandlers.kb_memoize({ pages: [{ slug: "notes/new", content: "New", summary: "s", type: "outcome", supersedes: "notes/old" }] }, s.deps);
+    expect(r.isError).toBe(true);
+    expect(text(r)).toContain("kb_memoize wrote notes/new, but tagging notes/old as superseded failed (engine went away)");
+    expect(s.brain.contentOf(mine, "notes/new")).toBeDefined();
   });
 });
 
@@ -196,6 +249,13 @@ describe("kb_memoize in a /1on1", () => {
     const r = await brainHandlers.kb_memoize({ pages: [{ slug: "notes/x", content: "x", summary: "s", type: "person-note" }], target: "mine" }, s.deps);
     expect(r.isError).toBeUndefined();
     expect(s.writes.map((w) => w.scope.sourceId)).toEqual([userSourceId("U0ALICE")]);
+  });
+
+  test("a background turn in a locked thread is refused too", async () => {
+    const s = setup({ lockedUser: "U0ALICE", userId: null });
+    const r = await brainHandlers.kb_memoize({ pages: [{ slug: "notes/x", content: "x", summary: "s" }] }, s.deps);
+    expect(text(r)).toBe(LOCK_REFUSAL);
+    expect(s.writes).toEqual([]);
   });
 
   test("a manager in someone else's /1on1: the default write (the agent's slice) and shared are refused", async () => {
@@ -222,7 +282,7 @@ describe("kb_memoize page checks", () => {
   test("a credential-like value is refused", async () => {
     const s = setup();
     const r = await brainHandlers.kb_memoize({ pages: [{ slug: "notes/a", content: "api_key=abcd1234", summary: "s" }] }, s.deps);
-    expect(text(r)).toBe("refused: page contains a credential-like value");
+    expect(text(r)).toBe("refused: page contains a credential-like value; remove that value and try again");
     expect(s.writes).toEqual([]);
   });
 });

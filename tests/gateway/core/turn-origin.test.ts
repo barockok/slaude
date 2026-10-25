@@ -103,7 +103,7 @@ describe("dispatch signs the turn's origin into the job token", () => {
       if (!v.ok) throw new Error(v.reason);
       return v.claims;
     };
-    return { dispatch, claims };
+    return { dispatch, claims, job: () => enqueued.at(-1) };
   }
   const META = { teamId: "T0TEAM", channelId: "C1", threadTs: "1.1", eventTs: "1.1", userId: "U0ALICE" };
   const SESSION = { id: "S1" } as unknown as SessionRow;
@@ -113,6 +113,7 @@ describe("dispatch signs the turn's origin into the job token", () => {
       const h = harness();
       await h.dispatch.dispatch(SESSION, "hi", { ...META, origin });
       expect(h.claims().origin).toBe(origin);
+      expect(h.job().senders).toEqual([{ userId: "U0ALICE", teamId: "T0TEAM", origin }]);
       await h.dispatch.close();
     });
   }
@@ -178,5 +179,19 @@ describe("node turns: the brain gate reads team and origin from the signed claim
     expect((await gate({ origin: "panel" })).interactive).toBe(true);
     expect((await gate({ origin: "cron" })).interactive).toBe(false);
     expect((await gate({})).interactive).toBe(false);
+  });
+
+  test("the gate carries the job's recorded senders, looked up by the token's job claim", async () => {
+    const { qd } = recordingDispatch();
+    const asked: string[] = [];
+    const senders = [{ userId: "U0ALICE", teamId: "T0TEAM", origin: "slack" }, { userId: "U0BOB", teamId: "T0TEAM", origin: "slack" }];
+    (qd as any).turns.turnSenders = async (id: string) => (asked.push(id), id === "J-MERGED" ? senders : null);
+    const { t } = transport();
+    h = createGateway(new AgentManager(), t, { queueDispatch: qd });
+    expect((await h.__brainGateForClaims!(claimsWith({ origin: "slack", job: "J-MERGED" }))).turnSenders).toEqual(senders);
+    // An unknown record, or a token with no job claim: no senders (a profile write is refused).
+    expect("turnSenders" in (await h.__brainGateForClaims!(claimsWith({ origin: "slack", job: "J-OTHER" })))).toBe(false);
+    expect("turnSenders" in (await h.__brainGateForClaims!(claimsWith({ origin: "slack" })))).toBe(false);
+    expect(asked).toEqual(["J-MERGED", "J-OTHER"]);
   });
 });

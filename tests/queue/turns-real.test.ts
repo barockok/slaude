@@ -7,16 +7,22 @@ import type { Keys } from "../../src/queue/keys";
 
 const prefix = testPrefix("turns");
 
-function turn(sessionId: string, texts: string[], token = "tok"): TurnJob {
+function turn(sessionId: string, texts: string[], token = "tok", user = "U1", origin: string | null = "slack"): TurnJob {
   return {
     sessionId,
     tenantId: "t_1",
     personaId: "p_1",
-    messages: texts.map((text, i) => ({ ts: `${Date.now()}.${i}`, user: "U1", text })),
+    messages: texts.map((text, i) => ({ ts: `${Date.now()}.${i}`, user, text })),
+    senders: [{ userId: user, teamId: "T1", origin }],
     jobToken: token,
     enqueuedAt: Date.now(),
   };
 }
+
+/** A JWT-shaped token naming job `job` (unsigned: the queue only reads the
+ *  `job` claim, to key the turn-senders record). */
+const jwt = (claims: Record<string, unknown>): string =>
+  `${Buffer.from('{"alg":"HS256"}').toString("base64url")}.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
 
 describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
   let redis: Redis;
@@ -114,6 +120,61 @@ describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
     expect(await queues.queue("turns").getWaitingCount()).toBe(1);
     await job!.remove();
     await redis.del(keys.coalesce("s-coal"));
+  });
+
+  test("turn senders: a fresh job records its sender; a merge from another person or origin adds theirs", async () => {
+    await ready;
+    const { classifyBrainOp } = await import("../../src/knowledge/gated-dispatch");
+    const { profileSourceId, resolveBrainScope } = await import("../../src/knowledge/scope");
+    /** Whether the brain gate lets U1's Slack turn write U1's profile with these senders. */
+    const profileWrite = (senders: unknown) => {
+      const g = { userId: "U1", teamId: "T1", interactive: true, origin: "slack" as const, lockedUser: null, channelTrust: "trusted" as const, isManager: false, agentId: "A1", turnSenders: senders as any };
+      return classifyBrainOp("put_page", { ...resolveBrainScope({ ...g, kbSources: [] }), sourceId: profileSourceId("T1", "U1") }, g);
+    };
+
+    // Same initiator: merges, still one sender, the profile write passes.
+    const a = await queues.enqueueTurn(turn("s-snd-same", ["one"], jwt({ job: "snd-a" })), { label: "default" }, "snd-a");
+    expect(await queues.turnSenders("snd-a")).toEqual([{ userId: "U1", teamId: "T1", origin: "slack" }]);
+    const a2 = await queues.enqueueTurn(turn("s-snd-same", ["two"], jwt({ job: "snd-a2" })), { label: "default" }, "snd-a2");
+    expect(a2).toEqual({ jobId: "snd-a", queue: "turns", coalesced: true });
+    expect(await queues.turnSenders("snd-a")).toEqual([{ userId: "U1", teamId: "T1", origin: "slack" }]);
+    expect(profileWrite(await queues.turnSenders("snd-a"))).toBe("auto");
+
+    // Two initiators merged into one job: both recorded (data and record), the profile write is denied.
+    const b = await queues.enqueueTurn(turn("s-snd-two", ["alice"], jwt({ job: "snd-b" })), { label: "default" }, "snd-b");
+    await queues.enqueueTurn(turn("s-snd-two", ["bob"], jwt({ job: "snd-b2" }), "U2"), { label: "default" }, "snd-b2");
+    const merged = [{ userId: "U1", teamId: "T1", origin: "slack" }, { userId: "U2", teamId: "T1", origin: "slack" }];
+    expect(await queues.turnSenders("snd-b")).toEqual(merged);
+    expect(((await queues.queue("turns").getJob(b.jobId))!.data as TurnJob).senders).toEqual(merged);
+    expect(profileWrite(await queues.turnSenders("snd-b"))).toBe("deny");
+
+    // Cron then Slack, same person: two senders, denied.
+    await queues.enqueueTurn(turn("s-snd-cron", ["tick"], jwt({ job: "snd-c" }), "U1", "cron"), { label: "default" }, "snd-c");
+    await queues.enqueueTurn(turn("s-snd-cron", ["hi"], jwt({ job: "snd-c2" })), { label: "default" }, "snd-c2");
+    expect(profileWrite(await queues.turnSenders("snd-c"))).toBe("deny");
+
+    // A token with no job claim is keyed by the BullMQ id; a job without senders reads as unknown.
+    const d = await queues.enqueueTurn(turn("s-snd-plain", ["x"]), { label: "default" });
+    expect(await queues.turnSenders(d.jobId)).toEqual([{ userId: "U1", teamId: "T1", origin: "slack" }]);
+    const { senders: _s, ...old } = turn("s-snd-old", ["x"], jwt({ job: "snd-e" }));
+    await queues.enqueueTurn(old, { label: "default" }, "snd-e");
+    expect(await queues.turnSenders("snd-e")).toBeNull();
+    await queues.enqueueTurn(turn("s-snd-old", ["y"], jwt({ job: "snd-e2" })), { label: "default" }, "snd-e2");
+    expect(await queues.turnSenders("snd-e")).toBeNull();
+    expect(profileWrite(await queues.turnSenders("snd-e"))).toBe("deny");
+
+    for (const id of [a.jobId, b.jobId, "snd-c", d.jobId, "snd-e"]) await (await queues.queue("turns").getJob(id))?.remove();
+    for (const sid of ["s-snd-same", "s-snd-two", "s-snd-cron", "s-snd-plain", "s-snd-old"]) await redis.del(keys.coalesce(sid));
+  });
+
+  test("turn senders survive a relabel: the moved job's record is the union", async () => {
+    await ready;
+    await queues.enqueueTurn({ ...turn("s-snd-rel", ["one"], jwt({ job: "snd-r1" })), label: "default" }, { label: "default" }, "snd-r1");
+    const moved = await queues.enqueueTurn({ ...turn("s-snd-rel", ["two"], jwt({ job: "snd-r2" }), "U2"), label: "finance" }, { label: "finance" }, "snd-r2");
+    expect(moved).toEqual({ jobId: "snd-r2", queue: "turns.label.finance", coalesced: true });
+    expect(await queues.turnSenders("snd-r2")).toEqual([{ userId: "U1", teamId: "T1", origin: "slack" }, { userId: "U2", teamId: "T1", origin: "slack" }]);
+    await (await queues.queue("turns.label.finance").getJob("snd-r2"))?.remove();
+    await redis.del(keys.coalesce("s-snd-rel"));
   });
 
   test("different sessions never coalesce", async () => {

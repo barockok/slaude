@@ -395,6 +395,8 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           messages: [
             { ts: meta.eventTs, user: meta.userId, text, ...(meta.suppress ? { suppress: true } : {}) },
           ],
+          // Who sent it, from where: merged messages add theirs (TurnQueues).
+          senders: [{ userId: meta.userId, teamId: meta.teamId || null, origin: meta.origin ?? null }],
           jobToken,
           enqueuedAt: Date.now(),
         },

@@ -14,6 +14,13 @@ export const TURN_ORIGINS: readonly TurnOrigin[] = ["cron", "slack", "panel"];
  *  see GateInput.interactive and AgentManager.isSyntheticTurn. */
 export const isInteractiveOrigin = (origin: unknown): boolean => origin === "slack" || origin === "panel";
 
+/** Who sent one of the running turn's messages (shape of the queue's TurnSender). */
+export interface TurnSender {
+  userId: string;
+  teamId: string | null;
+  origin: string | null;
+}
+
 export interface GateInput {
   userId: string | null;
   /** Slack team of the turn (keys the speaker's profile source); null = unknown. */
@@ -29,6 +36,12 @@ export interface GateInput {
    *  user id is an operator id, not a Slack id. Absent = unknown (no profile
    *  writes). */
   origin?: TurnOrigin;
+  /** Who sent the messages the running turn holds, as the gateway recorded
+   *  them (mono: since the turn began; a node: the job's merged senders). A
+   *  profile write needs exactly one, the speaker from Slack: a turn that
+   *  also holds another person's or a cron message is not that person's own
+   *  turn. Absent = unknown = no profile write. */
+  turnSenders?: readonly TurnSender[];
   lockedUser: string | null;
   channelTrust: ChannelTrust;
   isManager: boolean;
@@ -78,13 +91,14 @@ export function classifyBrainOp(op: string, scope: BrainScope, g: GateInput): Ga
     // §8.1, invariant 2). Never a background, cron or panel turn, never on
     // someone else's behalf — manager included.
     if (isProfileSourceId(scope.sourceId)) return isOwnProfileWrite(scope, g) ? "auto" : "deny";
-    if (g.userId === null) return "auto"; // background turn — agent's own mind
     // /1on1 containment (invariant 1): in a locked thread, only the lock
-    // owner's own slice is writable. Shared, the agent's slice and public
-    // would carry the thread's content out without that person's approval.
+    // owner's own slice is writable, by the owner. Shared, the agent's slice
+    // and public would carry the thread out without that person's approval.
+    // Checked before the background branch, so no turn in a lock is exempt.
     if (g.lockedUser !== null) {
-      return g.lockedUser === g.userId && scope.sourceId === userSourceId(g.userId) ? "auto" : "deny";
+      return g.userId !== null && g.lockedUser === g.userId && scope.sourceId === userSourceId(g.userId) ? "auto" : "deny";
     }
+    if (g.userId === null) return "auto"; // background turn — agent's own mind
     if (scope.sourceId === agentSourceId(g.agentId)) return "auto"; // agent's own private slice
     // Everything else is a write to the shared/common KB (explicit target:"shared").
     // Legit to ask approval — including the manager (the standing grant collapses
@@ -95,9 +109,17 @@ export function classifyBrainOp(op: string, scope: BrainScope, g: GateInput): Ga
   return "manager"; // unknown op: fail closed
 }
 
-/** The write goes to the speaker's own profile, on a Slack turn a person started. */
+/** The turn holds exactly one sender: the speaker, from Slack, in this team. */
+export function isSoleSlackSpeaker(g: GateInput): boolean {
+  const s = g.turnSenders;
+  if (!s || s.length !== 1 || g.userId === null) return false;
+  return s[0]!.userId === g.userId && s[0]!.teamId === g.teamId && s[0]!.origin === "slack";
+}
+
+/** The write goes to the speaker's own profile, on a Slack turn that holds
+ *  only that person's messages. */
 function isOwnProfileWrite(scope: BrainScope, g: GateInput): boolean {
-  if (!g.interactive || g.origin !== "slack" || g.userId === null) return false;
+  if (!g.interactive || g.origin !== "slack" || g.userId === null || !isSoleSlackSpeaker(g)) return false;
   const own = speakerProfileSource(g.teamId, g.userId);
   return own !== null && scope.sourceId === own;
 }

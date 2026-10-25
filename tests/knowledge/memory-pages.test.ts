@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { composePage, markSuperseded, pageMarkdown, parseFrontmatter, PAGE_TYPES } from "../../src/knowledge/memory-pages";
+import matter from "gray-matter";
+// js-yaml 3 (gray-matter's parser) ships no types.
+// @ts-ignore
+import yaml from "js-yaml";
+import { composePage, CREDENTIAL_REFUSAL, parseFrontmatter, PAGE_TYPES } from "../../src/knowledge/memory-pages";
 
 const NOW = new Date("2026-10-25T13:00:00Z");
 const page = (over: Record<string, unknown> = {}) => ({ slug: "notes/x", content: "Body text.\n", summary: "s", ...over });
@@ -30,9 +34,9 @@ describe("composePage", () => {
       "as_of: 2026-10-25",
       "confidence: inferred",
       'source: "C0CHAN:1700000000.000100"',
-      "supersedes: notes/old",
-      "symptom: slow builds",
-      "last_touched: 2026-10-24",
+      'supersedes: "notes/old"',
+      'symptom: "slow builds"',
+      'last_touched: "2026-10-24"',
       "---",
       "Body text.",
       "",
@@ -90,7 +94,8 @@ describe("composePage", () => {
   });
 
   test("a credential-like value is refused, typed or not", () => {
-    const want = "refused: page contains a credential-like value";
+    const want = "refused: page contains a credential-like value; remove that value and try again";
+    expect(CREDENTIAL_REFUSAL).toBe(want);
     expect(error(composePage(page({ type: "outcome", content: "the key is sk-abcdefghijklmnop" }), NOW))).toBe(want);
     expect(error(composePage(page({ type: "outcome", fields: { note: "password: hunter2" } }), NOW))).toBe(want);
     expect(error(composePage(page({ content: "token: abc123" }), NOW))).toBe(want);
@@ -129,44 +134,36 @@ describe("parseFrontmatter", () => {
   });
 });
 
-describe("markSuperseded", () => {
-  test("adds superseded_by and keeps the body and the other keys", () => {
-    const old = content(composePage(page({ type: "outcome", fields: { signal: "thumbs up" } }), NOW));
-    const marked = markSuperseded(old, "notes/new");
-    const before = parseFrontmatter(old);
-    const after = parseFrontmatter(marked);
-    expect(after.body).toBe(before.body);
-    expect(after.meta).toEqual({ ...before.meta, superseded_by: "notes/new" });
+describe("composed frontmatter is valid YAML", () => {
+  const tricky = ["@alice", ">later", "- x", "2026-11-01", "yes", "1e3", "a: b", "#tag", "[x]", "{y}", "|z", "'q'", '"dq"', "*ref", "&anchor", "!tag", "%dir", "`tick", "", " padded ", "ünïcode ✓", "back\\slash"];
+
+  test("every free-text value reads back as the same string with js-yaml and gray-matter", () => {
+    const fields: Record<string, string> = {};
+    tricky.forEach((v, i) => { fields[`f${i}`] = v; });
+    const c = content(composePage(page({ type: "investigation", source: "@U0ALICE", supersedes: "- old", fields }), NOW));
+    const block = /^---\n([\s\S]*?)\n---\n/.exec(c)![1]!;
+    const parsed = yaml.safeLoad(block) as Record<string, unknown>;
+    const gm = matter(c).data as Record<string, unknown>;
+    for (const data of [parsed, gm]) {
+      expect(data.source).toBe("@U0ALICE");
+      expect(data.supersedes).toBe("- old");
+      tricky.forEach((v, i) => expect(data[`f${i}`]).toBe(v));
+      expect(data.type).toBe("investigation");
+    }
+    const ours = parseFrontmatter(c).meta;
+    tricky.forEach((v, i) => expect(ours[`f${i}`]).toBe(v));
+    expect(matter(c).content).toBe("Body text.\n");
   });
 
-  test("replaces an earlier superseded_by", () => {
-    const once = markSuperseded("---\ntype: outcome\n---\nbody", "a/1");
-    const twice = markSuperseded(once, "a/2");
-    expect(parseFrontmatter(twice).meta).toEqual({ type: "outcome", superseded_by: "a/2" });
-    expect(twice.match(/superseded_by/g)?.length).toBe(1);
-  });
-
-  test("a page without frontmatter gets one, body unchanged", () => {
-    const m = markSuperseded("# Note\n\ntext\n", "a/2");
-    expect(m).toBe("---\nsuperseded_by: a/2\n---\n# Note\n\ntext\n");
-  });
-});
-
-describe("pageMarkdown", () => {
-  test("a string or a { content } page is its own markdown", () => {
-    expect(pageMarkdown("x")).toBe("x");
-    expect(pageMarkdown({ slug: "a", content: "y" })).toBe("y");
-  });
-
-  test("a gbrain page record is rebuilt from frontmatter + compiled truth (+ timeline)", () => {
-    const md = pageMarkdown({ slug: "a", type: "outcome", title: "A", compiled_truth: "Body.", timeline: "", frontmatter: { type: "outcome", as_of: "2026-10-24", tags: ["x"] } })!;
-    expect(parseFrontmatter(md).meta).toEqual({ type: "outcome", as_of: "2026-10-24", tags: '["x"]', title: "A" });
-    expect(parseFrontmatter(md).body).toBe("Body.");
-    expect(pageMarkdown({ slug: "a", compiled_truth: "Body.", timeline: "- 2026-10-24 x", frontmatter: {} })).toBe("Body.\n\n---\n\n- 2026-10-24 x");
-  });
-
-  test("anything else is null", () => {
-    expect(pageMarkdown(null)).toBeNull();
-    expect(pageMarkdown({ slug: "a" })).toBeNull();
+  test("only validated enum values and as_of are plain", () => {
+    const c = content(composePage(page({ type: "commitment", confidence: "told", fields: { status: "open", beneficiary: "U0ALICE", on_no_change: "silent", due: "2026-11-01" } }), NOW));
+    expect(c).toContain("\ntype: commitment\n");
+    expect(c).toContain("\nas_of: 2026-10-25\n");
+    expect(c).toContain("\nconfidence: told\n");
+    expect(c).toContain("\nstatus: open\n");
+    expect(c).toContain("\non_no_change: silent\n");
+    expect(c).toContain('\nbeneficiary: "U0ALICE"\n');
+    expect(c).toContain('\ndue: "2026-11-01"\n');
+    expect((matter(c).data as Record<string, unknown>).due).toBe("2026-11-01");
   });
 });

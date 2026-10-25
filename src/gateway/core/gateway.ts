@@ -111,6 +111,7 @@ import { memoryScopeFor } from "../../memory/scope";
 import { getPersonaRegistry, labelsInUse, livePersona, managedPersonaProvider, onPersonaRegistryInstalled } from "../../persona/registry";
 import { makeLabelMonitor } from "../../queue/label-status";
 import { isInteractiveOrigin, type GateInput } from "../../knowledge/gated-dispatch";
+import { TurnSenderLog } from "./turn-senders";
 import { personaKbs, personaKbSourceIds } from "../../knowledge/persona-kb";
 import { resolveUserName } from "../slack/users";
 import { downloadAttachments, type SlackFile } from "../slack/attachments";
@@ -729,6 +730,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
   }, 5 * 60 * 1000);
 
+  // Mono turn senders (phase C, invariant 2): see TurnSenderLog. Declared before
+  // the cron scheduler, whose runs note theirs. Every
+  // place that delivers a message into a route notes its sender.
+  const turnSenders = new TurnSenderLog();
+  const noteTurnSender = (sessionId: string, ctx: SlackContext): void => {
+    ctx.turnSenders ??= () => turnSenders.get(sessionId);
+    turnSenders.note(sessionId, ctx);
+  };
+
   const cronScheduler = new CronScheduler({
     agent,
     // Queue mode: a cron turn is a turn like any other — it runs on a node, not
@@ -775,6 +785,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           ...req,
         });
       ctx.reloadSession = (prompt?) => agent.reload(sessionId, prompt);
+      noteTurnSender(sessionId, ctx);
       routes.set(sessionId, { ctx, surface: wrapSurface(surfaceForCtx(ctx), sessionId), spoke: false, silent: true });
     },
   });
@@ -919,6 +930,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return "You ended the turn without a reply or a pass. If the message needs an answer, call `mcp__slaude_surface__reply`; if it is not for you, call `mcp__slaude_surface__pass` with a reason. Then stop.";
   });
 
+  agent.on("event", (e: AgentEvent) => {
+    // The auto-evolve check's done follows the user turn's own; the record
+    // was already cleared there and may now hold the next turn's sender.
+    if ((e.type === "done" && !e.autoEvolve) || e.type === "error") turnSenders.end(e.sessionId);
+  });
+
   // Brain gate input from the live SlackContext — read per tool call so the
   // current turn's author (not the session creator) drives KB scoping.
   const brainGateFor = async (ctx: SlackContext): Promise<GateInput> => {
@@ -939,6 +956,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // nodes: the signed `origin` claim. Unknown reads as not interactive.
       interactive: isInteractiveOrigin(ctx.origin),
       ...(ctx.origin ? { origin: ctx.origin } : {}),
+      ...(await (async () => {
+        const senders = await ctx.turnSenders?.();
+        return senders ? { turnSenders: senders } : {};
+      })()),
       lockedUser: lock?.locked_user ?? null,
       channelTrust: channelTrustFor(ctx.channel, soul),
       isManager: !!ctx.userId && (ctx.userId === soul.manager.userId || ctx.userId === soul.backupManager.userId),
@@ -2642,6 +2663,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             existing.passReact = undefined;
             existing.engagedBefore = dispatch?.engagedBefore;
             existing.wasCompacting = true;
+            noteTurnSender(session.id, existing.ctx);
           } else {
             const compactPersonaId = session.persona_id !== "default" ? session.persona_id : undefined;
             const ctx: SlackContext = {
@@ -2658,6 +2680,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             ctx.requestApproval = (req) =>
               approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app: appOf(ctx), ...req });
             ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
+            noteTurnSender(session.id, ctx);
             routes.set(session.id, {
               ctx,
               surface: wrapSurface(surfaceForCtx(ctx), session.id),
@@ -2827,6 +2850,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // tasksRef/tasksMap are cleared in the done handler so mid-turn inbound
       // messages don't wipe in-flight task state from the previous turn.
       existing.suppress = suppress;
+      noteTurnSender(session.id, existing.ctx);
     } else {
       const ctx: SlackContext = {
         client: outClientForPersona(dispatch?.personaId, app),
@@ -2849,6 +2873,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           ...req,
         });
       ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
+      noteTurnSender(session.id, ctx);
       routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, suppress, engagedBefore: dispatch?.engagedBefore });
     }
 
@@ -3616,6 +3641,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       sessionId: claims.session,
       // Signed at dispatch; absent (an older gateway) reads as not interactive.
       ...(claims.origin ? { origin: claims.origin } : {}),
+      // The job's recorded senders (merged messages included); mono and a
+      // token with no job claim have none, which refuses a profile write.
+      turnSenders: async () => (queueDispatch && claims.job ? queueDispatch.turns.turnSenders(claims.job) : null),
     };
     ctx.requestApproval = (req) =>
       approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, app, ...req });
@@ -3714,6 +3742,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (route) {
         route.ctx.userId = operatorId;
         route.ctx.origin = "panel";
+        noteTurnSender(session.id, route.ctx);
       }
       await agent.sendMessage(session.id, envelope);
     }

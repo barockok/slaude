@@ -55,7 +55,7 @@ export const kbContract = {
     },
     kb_memoize: {
       name: "kb_memoize",
-      description: `Write/update one or more brain pages in a single call (markdown, optional YAML frontmatter; [[wikilinks]] become graph edges). Pass an array of pages — up to ${KB_MEMOIZE_MAX_PAGES} per call. By default (target:"mine") pages go to YOUR OWN slice — your private agent mind, or the person's own slice inside their /1on1 — and are saved without asking. Set target:"shared" ONLY for durable team-common knowledge (decisions, people/project facts everyone needs); shared writes ask the manager for approval, and are refused inside a /1on1. Default to "mine" for your own notes, learnings, and working context; reserve "shared" for the team KB. Give a page a \`type\` (${PAGE_TYPE_LIST}) and its content becomes the body under generated frontmatter (type, as_of, confidence, source, supersedes, fields); set supersedes to the older page's slug in the same memory and that page is marked superseded_by this one. Use target:"profile" to record what the person you are talking to said about themselves (name to use, register, ping preferences) as a type:"profile" page with slug "profile" in their own profile, only on their own turn and never on someone else's behalf.`,
+      description: `Write/update one or more brain pages in a single call (markdown, optional YAML frontmatter; [[wikilinks]] become graph edges). Pass an array of pages — up to ${KB_MEMOIZE_MAX_PAGES} per call. By default (target:"mine") pages go to YOUR OWN slice — your private agent mind, or the person's own slice inside their /1on1 — and are saved without asking. Set target:"shared" ONLY for durable team-common knowledge (decisions, people/project facts everyone needs); shared writes ask the manager for approval, and are refused inside a /1on1. Default to "mine" for your own notes, learnings, and working context; reserve "shared" for the team KB. Give a page a \`type\` (${PAGE_TYPE_LIST}) and its content becomes the body under generated frontmatter (type, as_of, confidence, source, supersedes, fields); set supersedes to the older page's slug in the same memory and that page is tagged "superseded". Use target:"profile" to record what the person you are talking to said about themselves (name to use, register, ping preferences) as a type:"profile" page with slug "profile" in their own profile, only on their own turn and never on someone else's behalf.`,
       schema: {
         pages: z
           .array(
@@ -66,7 +66,7 @@ export const kbContract = {
               type: z.enum(PAGE_TYPE_ENUM).optional().describe("Page type; generates the common frontmatter."),
               confidence: z.enum(["told", "inferred"]).optional().describe('"told" = the person said it; "inferred" = your observation. Never mix them in one page. profile is always told, person-note always inferred.'),
               source: z.string().optional().describe('Where this came from: a thread permalink or "told by <user>".'),
-              supersedes: z.string().optional().describe("Slug of the older page this one replaces, in the same memory; it gets marked superseded_by."),
+              supersedes: z.string().optional().describe("Slug of the older page this one replaces, in the same memory; it gets the tag superseded."),
               fields: z
                 .record(z.string(), z.string())
                 .optional()

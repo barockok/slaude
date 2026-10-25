@@ -5,9 +5,10 @@ import { loadKbs, type KbEntry } from "./loader";
 import { brainCall, brainEnabled } from "./brain";
 import { brainThink, sdkThinkClient } from "./brain-think";
 import { gather } from "./gather";
-import { gatedBrainCall, type ApprovalReq, type ApprovalRes, type GateInput } from "./gated-dispatch";
+import { gatedBrainCall, isSoleSlackSpeaker, type ApprovalReq, type ApprovalRes, type GateInput } from "./gated-dispatch";
 import { SHARED_SOURCE, kbSourceId, speakerProfileSource, userSourceId, type BrainScope } from "./scope";
-import { composePage, markSuperseded, pageMarkdown, type TypedPageInput } from "./memory-pages";
+import { composePage, type TypedPageInput } from "./memory-pages";
+import { SUPERSEDED_TAG } from "./memory-trail";
 import { agentIdReady } from "./agent-identity";
 import { kbContract, KB_MEMOIZE_MAX_PAGES } from "../tools/contracts/kb";
 
@@ -194,13 +195,15 @@ export interface KbMemoizeArgs {
 function resolveMemoizeScope(target: MemoizeTarget, subject: string | undefined, base: BrainScope, g: GateInput): { scope: BrainScope } | { error: string } {
   if (target === "profile") {
     const own = speakerProfileSource(g.teamId, g.userId);
-    if (own === null || !g.interactive || g.origin !== "slack" || (subject !== undefined && subject !== g.userId)) {
+    // The turn must hold only the speaker's own Slack messages: on mono the
+    // ctx is whoever spoke last, and a queued job can hold merged messages.
+    if (own === null || !g.interactive || g.origin !== "slack" || !isSoleSlackSpeaker(g) || (subject !== undefined && subject !== g.userId)) {
       return { error: PROFILE_REFUSAL };
     }
     return { scope: { ...base, sourceId: own } };
   }
   const scope = target === "shared" ? { ...base, sourceId: SHARED_SOURCE } : base;
-  if (g.lockedUser !== null && g.userId !== null) {
+  if (g.lockedUser !== null) {
     if (g.userId !== g.lockedUser || scope.sourceId !== userSourceId(g.lockedUser)) return { error: LOCK_REFUSAL };
   }
   return { scope };
@@ -217,6 +220,9 @@ function pageShapeError(pg: TypedPageInput, target: MemoizeTarget): string | nul
   if (pg.type === "profile") return `refused: a type "profile" page goes to target "profile"`;
   return null;
 }
+
+/** The superseded page could not be tagged after the new page landed. */
+class TrailError extends Error {}
 
 /** get_page, with gbrain's page_not_found error read as "no page". */
 async function getPageOrNull(
@@ -359,26 +365,27 @@ export const brainHandlers = {
       composed.push({ slug: pg.slug, content: c.content, ...(pg.supersedes !== undefined ? { supersedes: pg.supersedes } : {}) });
     }
     const label = `→ ${target}`;
+    const retired = composed.filter((pg) => pg.supersedes !== undefined).map((pg) => pg.supersedes!);
+    const trail = retired.length > 0 ? ` (and tags ${retired.join(", ")} as ${SUPERSEDED_TAG})` : "";
     const describe = pages.length === 1
-      ? `KB write ${label}: ${pages[0]!.slug} — ${pages[0]!.summary}`
-      : `KB write ${label}: ${pages.length} pages — ${pages.map((pg) => pg.slug).join(", ")}`;
+      ? `KB write ${label}: ${pages[0]!.slug} — ${pages[0]!.summary}${trail}`
+      : `KB write ${label}: ${pages.length} pages — ${pages.map((pg) => pg.slug).join(", ")}${trail}`;
     try {
       const call = d.call ?? brainCall;
       // Supersede check, before any write: the older page must exist in the
       // WRITE source itself (a read limited to it), so a page can only retire
       // one in the same memory, never one it merely reads.
-      const superseded = new Map<string, string>();
       const inWriteSource: BrainScope = { ...scope, allowedSources: [scope.sourceId] };
-      for (const pg of composed) {
-        if (pg.supersedes === undefined || superseded.has(pg.supersedes)) continue;
-        const old = pageMarkdown(await getPageOrNull(call, pg.supersedes, inWriteSource));
-        if (old === null) return err(SUPERSEDE_REFUSAL);
-        superseded.set(pg.supersedes, old);
+      const checked = new Set<string>();
+      for (const slug of retired) {
+        if (checked.has(slug)) continue;
+        if (!(await getPageOrNull(call, slug, inWriteSource))) return err(SUPERSEDE_REFUSAL);
+        checked.add(slug);
       }
       // One approval gates the whole batch; the gated thunk writes every page,
-      // then marks each superseded page. Each put_page goes through brainCall,
-      // which ensures scope.sourceId exists first (see
-      // docs/findings/2026-06-14-brain-memoize-failure.md).
+      // then tags each superseded page (left as written otherwise). Each
+      // write goes through brainCall, which ensures scope.sourceId exists
+      // first (see docs/findings/2026-06-14-brain-memoize-failure.md).
       const r = await gatedBrainCall("put_page", {
         scope,
         gate,
@@ -391,17 +398,21 @@ export const brainHandlers = {
           }
           for (const pg of composed) {
             if (pg.supersedes === undefined) continue;
-            const old = superseded.get(pg.supersedes)!;
-            const marked = markSuperseded(old, pg.slug);
-            superseded.set(pg.supersedes, marked);
-            results.push(await call("put_page", { slug: pg.supersedes, content: marked }, scope));
+            try {
+              results.push(await call("add_tag", { slug: pg.supersedes, tag: SUPERSEDED_TAG }, scope));
+            } catch (e) {
+              throw new TrailError(
+                `kb_memoize wrote ${pg.slug}, but tagging ${pg.supersedes} as ${SUPERSEDED_TAG} failed (${e instanceof Error ? e.message : String(e)}). ${pg.slug} already says it supersedes ${pg.supersedes}; retry kb_memoize for ${pg.slug} with the same supersedes to finish the trail.`,
+              );
+            }
           }
           return results;
         },
         describe,
       });
-      return r.ok ? asJson({ written: composed.map((pg) => pg.slug), target, results: r.result }) : err(r.reason);
+      return r.ok ? asJson({ written: composed.map((pg) => pg.slug), target, ...(retired.length > 0 ? { superseded: retired } : {}), results: r.result }) : err(r.reason);
     } catch (e) {
+      if (e instanceof TrailError) return err(e.message);
       return err(humanizeBrainError("put_page", e));
     }
   },

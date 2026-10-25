@@ -66,7 +66,8 @@ describe("classifyBrainOp — profile and /1on1 writes (phase C)", () => {
   const TEAM = "T0TEAM";
   const own = profileSourceId(TEAM, "U1");
   const profileScope = (g: GateInput, source = own): BrainScope => ({ ...scopeFor(g), sourceId: source });
-  const slackTurn = (over: Partial<GateInput> = {}) => gate({ teamId: TEAM, interactive: true, origin: "slack", ...over });
+  const slackTurn = (over: Partial<GateInput> = {}) =>
+    gate({ teamId: TEAM, interactive: true, origin: "slack", turnSenders: [{ userId: "U1", teamId: TEAM, origin: "slack" }], ...over });
 
   test("put_page into the speaker's own profile on their Slack turn is auto", () => {
     const g = slackTurn();
@@ -85,6 +86,17 @@ describe("classifyBrainOp — profile and /1on1 writes (phase C)", () => {
     for (const g of [slackTurn({ origin: "panel" }), slackTurn({ origin: undefined })]) {
       expect(classifyBrainOp("put_page", profileScope(g), g)).toBe("deny");
     }
+  });
+  test("denied unless the turn holds exactly the speaker's own Slack messages", () => {
+    const u1 = { userId: "U1", teamId: TEAM, origin: "slack" };
+    for (const turnSenders of [undefined, [], [u1, { userId: "U2", teamId: TEAM, origin: "slack" }], [{ ...u1, origin: "cron" }, u1], [{ ...u1, userId: "U2" }]]) {
+      const g = slackTurn({ turnSenders });
+      expect(classifyBrainOp("put_page", profileScope(g), g)).toBe("deny");
+    }
+  });
+  test("a background turn in a locked thread is denied, even to the agent's own slice", () => {
+    const g = gate({ userId: null, lockedUser: "U1" });
+    expect(classifyBrainOp("put_page", { ...scopeFor(g), sourceId: agentSourceId("AGENT1") }, g)).toBe("deny");
   });
   test("denied on a background turn (no speaker)", () => {
     const g = slackTurn({ userId: null });
