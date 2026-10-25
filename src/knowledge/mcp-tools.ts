@@ -10,6 +10,7 @@ import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, speakerProfileS
 import { composePage, readPageRecord, type TypedPageInput } from "./memory-pages";
 import { SUPERSEDED_TAG, getPageOrNull, supersededSlugs } from "./memory-trail";
 import { agentIdReady } from "./agent-identity";
+import { conversationSlug, orderTimeline, type TimelineRow } from "../memory/brain-provider";
 import { kbContract, KB_MEMOIZE_MAX_PAGES } from "../tools/contracts/kb";
 
 export const KB_MCP_NAME = kbContract.server;
@@ -82,6 +83,9 @@ export interface BrainToolDeps {
   /** Manager + backup user ids — hard backstop for kb-admin approvals. */
   managers: () => string[];
   requestApproval: (r: ApprovalReq) => Promise<ApprovalRes>;
+  /** This thread's session and the scope its turns may be read in (the memory
+   *  read scope), per call. Absent: kb_thread_history is not offered. */
+  thread?: () => Promise<{ sessionId: string | undefined; read: BrainScope | null }>;
   /** Injectable op caller (tests). Default: brainCall with current scope. */
   call?: (name: string, params: Record<string, unknown>, scope: BrainScope) => Promise<unknown>;
   /** Injectable think (tests). Default: brainThink (SDK-routed synthesis). */
@@ -232,6 +236,23 @@ function pageShapeError(pg: TypedPageInput, target: MemoizeTarget): string | nul
   }
   if (pg.type === "profile") return `refused: a type "profile" page goes to target "profile"`;
   return null;
+}
+
+export const THREAD_HISTORY_REFUSAL = "refused: no thread history is readable here";
+export const THREAD_HISTORY_NO_SESSION = "refused: this thread's session is unknown, so its history cannot be read";
+const THREAD_HISTORY_DEFAULT = 20;
+
+/** One timeline row as `[date] who: text` lines (user, then assistant). */
+function threadHistoryLines(r: TimelineRow): string[] {
+  const date = r.date ?? "undated";
+  const detail = r.detail ?? "";
+  const user = /<user>([\s\S]*?)<\/user>/.exec(detail)?.[1];
+  const assistant = /<assistant>([\s\S]*?)<\/assistant>/.exec(detail)?.[1];
+  if (user === undefined && assistant === undefined) return [`[${date}] note: ${(detail || r.summary).trim()}`];
+  const out: string[] = [];
+  if (user !== undefined) out.push(`[${date}] user: ${user.trim()}`);
+  if (assistant !== undefined) out.push(`[${date}] assistant: ${assistant.trim()}`);
+  return out;
 }
 
 /** The superseded page could not be tagged after the new page landed. */
@@ -551,6 +572,30 @@ export const brainHandlers = {
       return err(humanizeBrainError("memory_about", e));
     }
   },
+  kb_thread_history: async (p: { limit?: number; before?: string }, d: BrainToolDeps): Promise<ToolResult> => {
+    const t = await d.thread?.();
+    if (!t?.sessionId) return err(THREAD_HISTORY_NO_SESSION);
+    if (!t.read) return err(THREAD_HISTORY_REFUSAL);
+    try {
+      const raw = (await (d.call ?? brainCall)("get_timeline", { slug: conversationSlug(t.sessionId) }, t.read)) as TimelineRow[] | null;
+      let rows = orderTimeline(raw ?? []);
+      const before = p.before === undefined ? NaN : Number(p.before);
+      if (p.before !== undefined) {
+        if (!Number.isFinite(before)) return err("kb_thread_history: before must be an entry id from a previous call");
+        rows = rows.filter((r) => (r.id ?? 0) < before);
+      }
+      if (rows.length === 0) return ok("No earlier turns are recorded for this thread.");
+      const limit = Math.min(Math.max(Math.trunc(p.limit ?? THREAD_HISTORY_DEFAULT), 1), 50);
+      const shown = rows.slice(-limit);
+      const out = shown.flatMap(threadHistoryLines);
+      if (shown.length < rows.length && shown[0]!.id !== undefined) {
+        out.push(`(${rows.length - shown.length} older turns remain; pass before: "${shown[0]!.id}")`);
+      }
+      return ok(out.join("\n"));
+    } catch (e) {
+      return err(humanizeBrainError("kb_thread_history", e));
+    }
+  },
   kb_delete_page: (p: { slug: string; reason: string }, d: BrainToolDeps) =>
     runGated("delete_page", { slug: p.slug }, `KB delete: ${p.slug} — ${p.reason}`, d),
 };
@@ -576,6 +621,8 @@ export function createKbMcp(deps?: BrainToolDeps, opts: { kbs?: () => KbEntry[] 
           (a: KbMemoizeArgs) => brainHandlers.kb_memoize(a, deps)),
         tool(c.memory_about.name, c.memory_about.description, c.memory_about.schema,
           (a: { userId: string }) => brainHandlers.memory_about(a, deps)),
+        tool(c.kb_thread_history.name, c.kb_thread_history.description, c.kb_thread_history.schema,
+          (a: { limit?: number; before?: string }) => brainHandlers.kb_thread_history(a, deps)),
         tool(c.kb_delete_page.name, c.kb_delete_page.description, c.kb_delete_page.schema,
           (a: { slug: string; reason: string }) => brainHandlers.kb_delete_page(a, deps)),
       ]

@@ -985,7 +985,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // Brain tool deps for a context + surface — shared by the per-session MCP
   // resolver and the REST tool plane so both run identical scoping and gating.
-  const brainDepsFor = (ctx: SlackContext, surface: Surface): BrainToolDeps | undefined =>
+  const brainDepsFor = (ctx: SlackContext, surface: Surface, sessionId: string | undefined = ctx.sessionId): BrainToolDeps | undefined =>
     brainEnabled()
       ? {
           // kb-* sources: the live persona's kbSources ∩ installed, per call
@@ -993,6 +993,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // The speaker's profile only on that one sender's own turn (turnBrainScope).
           scope: async () => turnBrainScope(await brainGateFor(ctx), personaKbSourceIds(ctx.personaId)),
           gate: () => brainGateFor(ctx),
+          // kb_thread_history: the memory read scope, as the turn's own memory
+          // sync derives it (same runAs rule as the mono route above).
+          thread: async () => {
+            if (!sessionId) return { sessionId: undefined, read: null };
+            const runAsUser = await agent.resolveEffectiveIdentity(sessionId, ctx.channel, ctx.threadTs);
+            return { sessionId, read: memoryScopeFor(await brainGateFor(ctx), { channel: ctx.channel, runAsUser: runAsUser ?? null }).read };
+          },
           managers: () => {
             const soul = soulData();
             return [soul.manager.userId, soul.backupManager.userId].filter((u): u is string => !!u);
@@ -1095,7 +1102,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       [SESSION_MCP_NAME]: createSessionMcp({
         getSnapshot: () => agent.getTokenSnapshot(sessionId),
       }),
-      [KB_MCP_NAME]: createKbMcp(brainDepsFor(route.ctx, route.surface), { kbs: () => personaKbs(route.ctx.personaId) }),
+      [KB_MCP_NAME]: createKbMcp(brainDepsFor(route.ctx, route.surface, sessionId), { kbs: () => personaKbs(route.ctx.personaId) }),
       // Per-persona MCP isolation. A filesystem tenant: named personas load
       // ~/.slaude/personas/<name>/mcp.json, the default the boot-time global.
       // A managed tenant: each persona's effective mcp, never the persona

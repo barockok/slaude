@@ -177,7 +177,7 @@ function knowledgeText(brain: boolean): Record<"KB_FALLBACK" | "KB_READ" | "KB_T
         "  \`kb_get_page\` → only then decide whether Grafana or other tools are needed.",
       KB_TOOLS:
         "- Query the brain anytime via \`mcp__slaude_kb__{kb_think, kb_search,\n" +
-        "  kb_get_page, kb_list_pages, kb_graph, memory_about, list_kbs, search_kbs}\` — all served\n" +
+        "  kb_get_page, kb_list_pages, kb_graph, memory_about, kb_thread_history, list_kbs, search_kbs}\` — all served\n" +
         "  live from the brain DB. Reach for them whenever the answer plausibly\n" +
         "  lives in operator-curated reference material or your own memory.",
     };

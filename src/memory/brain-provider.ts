@@ -14,8 +14,14 @@ import type { BrainScope } from "../knowledge/scope";
  * syncTurn to a logged no-op.
  */
 
-type TimelineRow = { id?: number; date: string; summary: string; detail?: string | null };
+export type TimelineRow = { id?: number; date: string; summary: string; detail?: string | null };
 type BrainOpCall = (name: string, params: Record<string, unknown>, scope: BrainScope) => Promise<unknown>;
+
+/** The page a session's turns are appended to. */
+export const conversationSlug = (sessionId: string): string => `conversations/${sessionId.toLowerCase()}`;
+
+/** Timeline rows in write order (by id). */
+export const orderTimeline = (rows: TimelineRow[]): TimelineRow[] => [...rows].sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
 
 export class BrainMemoryProvider implements MemoryProvider {
   /** How many recent turns to surface in <memory-context>. */
@@ -36,7 +42,7 @@ export class BrainMemoryProvider implements MemoryProvider {
   }
 
   #slug(sessionId: string): string {
-    return `conversations/${sessionId.toLowerCase()}`;
+    return conversationSlug(sessionId);
   }
 
   #ensureReady(): Promise<void> {
@@ -88,7 +94,7 @@ export class BrainMemoryProvider implements MemoryProvider {
       await this.#ensureReady();
       const rows = (await this.#call("get_timeline", { slug: this.#slug(sessionId) }, scope)) as TimelineRow[] | null;
       if (!rows || rows.length === 0) return null;
-      const ordered = [...rows].sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+      const ordered = orderTimeline(rows);
       const recent = ordered.slice(-this.recentTurnLimit);
       const lines = ["<recent-turns>"];
       for (const r of recent) lines.push(r.detail || r.summary);

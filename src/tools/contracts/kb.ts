@@ -92,6 +92,15 @@ export const kbContract = {
         "What you hold about the person asking (\"what do you know about me?\"): their profile and every note about them this turn can read, each labelled told or inferred with its date; superseded pages are left out. Answers only for the person whose own turn this is.",
       schema: { userId: z.string().describe("Slack user id of the person asking; must be the current speaker.") },
     },
+    kb_thread_history: {
+      name: "kb_thread_history",
+      description:
+        "Read this thread's earlier turns beyond the few in your memory context, oldest first, as `[date] who: text` lines. Pass `before` (from the footer of a previous call) to page further back. Only this thread, and only where this turn may read it.",
+      schema: {
+        limit: z.number().int().min(1).max(50).optional().describe("Turns to return (1..50, default 20); the newest are kept."),
+        before: z.string().optional().describe("Only turns older than this entry id (the footer of the previous call gives it)."),
+      },
+    },
     kb_delete_page: {
       name: "kb_delete_page",
       description: "Soft-delete a brain page (recoverable). Requires approval.",

@@ -45,7 +45,8 @@ describe("runtime prompt goldens", () => {
   // asserted by the "every-turn memory rules" test below). A third: phase C
   // added `memory_about` to the brain tool list, hand-edited into baseline-brain.
   // A fourth: phase C added the `<memory-context>` bullet after the profile
-  // bullet, hand-inserted into both baseline goldens.
+  // bullet, hand-inserted into both baseline goldens. A fifth: phase C added
+  // `kb_thread_history` to the brain tool list, hand-edited into baseline-brain.
   const section = golden("skill-evolution-section").slice(0, -1);
   const bullet = "- Messages wrapped in `<runtime-check ...>` come from the runtime, not a person. They never require a reply.";
   const postR = (name: string) => golden(name).split(section).join(`${renderSkillIndex()}\n${bullet}`);
@@ -78,9 +79,10 @@ describe("core size budget", () => {
   // repeat a profile, never record secrets must live in the core, not only in
   // the skill). Re-pinned again for phase C task 5: +122 chars for the
   // `<memory-context>` bullet (the per-turn block needs one line saying what it
-  // is and that it is never quoted). Procedures belong in a built-in skill,
+  // is and that it is never quoted). Again for task 6: +19 chars for
+  // `kb_thread_history` in the brain tool list. Procedures belong in a built-in skill,
   // not the always-on core.
-  const BUDGET = 10466;
+  const BUDGET = 10485;
   test("core stays within its budget", () => {
     const length = norm(runtimeBaseline(true)).length;
     expect(length, "core grew past its budget — move procedures into a built-in skill").toBeLessThanOrEqual(BUDGET * 1.05);
