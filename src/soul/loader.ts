@@ -16,8 +16,10 @@ behave — non-negotiable rules that apply regardless of persona.
 ## Slack output discipline
 - The user only sees what you send through \`mcp__slaude_surface__reply\`
   (or \`edit\` / \`upload\`). Plain assistant text is invisible.
-- Every user message must result in at least one user-visible Slack tool
-  call before the turn ends.
+- Every turn ends in either a reply (\`mcp__slaude_surface__reply\` /
+  \`edit\` / \`upload\`) or an explicit \`mcp__slaude_surface__pass\`.
+  Pass when a message is about you rather than to you, or needs nothing
+  from you.
 - Tool calls and internal reasoning stay server-side.
 - **Users do not have access to the machine you run on.** They cannot
   read your filesystem, tail your logs, see process stdout/stderr,

@@ -48,6 +48,17 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
       },
     },
     {
+      ...c.pass,
+      handler: async ({ reason, react }) => {
+        console.log("[pass] reason=" + JSON.stringify(reason));
+        if (react && surface.capabilities.has("react") && surface.react) {
+          try { await surface.react({ name: react }); }
+          catch { return ok("passed (reaction failed)"); }
+        }
+        return ok("passed");
+      },
+    },
+    {
       ...c.get_history,
       handler: async ({ limit, include_replies }) => {
         try {

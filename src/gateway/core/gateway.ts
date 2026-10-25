@@ -195,6 +195,9 @@ type SessionRoute = {
   surface: Surface;
   /** Whether the agent has emitted user-visible output this turn (surface reply/edit/upload). */
   spoke: boolean;
+  /** The agent ended this turn deliberately without replying (`mcp__slaude_surface__pass`).
+   *  Satisfies the stop guard like `spoke`, but posts nothing. Reset per turn. */
+  passed?: boolean;
   /** Slack message ref for the live todo tracker posted by the TodoWrite interceptor.
    *  Cleared at the start of each new user turn so each request gets a fresh block. */
   todoRef?: string;
@@ -813,13 +816,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     cancelNightlyMaintenance = scheduleNightlyMaintenance();
   }
   // Stop-hook enforcement: if a turn ends without any user-visible Slack tool
-  // (reply / edit / upload), block the stop once with an instruction that
+  // (reply / edit / upload) or an explicit pass, block the stop once with an instruction that
   // forces the agent to call `mcp__slaude_slack__reply` before exiting.
   agent.setStopGuard((sessionId) => {
     if (voiceTurns.active(sessionId)) return null;
     const route = routes.get(sessionId);
     if (!route) return null;
     if (route.spoke) return null;
+    if (route.passed) return null;
     if (route.silent) return null;
     return "You have not delivered a reply to the user. Call `mcp__slaude_surface__reply` now with your answer to the inbound message, then stop. Do not stop without replying.";
   });
@@ -1557,7 +1561,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           e.tool === `mcp__${SLACK_MCP_NAME}__reply` ||
           e.tool === `mcp__${SLACK_MCP_NAME}__edit` ||
           e.tool === `mcp__${SLACK_MCP_NAME}__upload`;
-        if (userVisible) {
+        if (e.tool === `mcp__${SURFACE_MCP_NAME}__pass`) {
+          // Deliberate silence: satisfies the stop guard without counting as
+          // having spoken, and without the working reaction.
+          route.passed = true;
+        } else if (userVisible) {
           route.spoke = true;
           void reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_WORKING);
         } else {
@@ -2571,6 +2579,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             existing.ctx.inboundTs = eventTs;
             if (app.apiAppId) existing.ctx.apiAppId = app.apiAppId;
             existing.spoke = false;
+            existing.passed = false;
             existing.wasCompacting = true;
           } else {
             const compactPersonaId = session.persona_id !== "default" ? session.persona_id : undefined;
@@ -2740,6 +2749,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.ctx.client = outClientForPersona(dispatch?.personaId, appOf(existing.ctx));
       existing.ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
       existing.spoke = false;
+      existing.passed = false;
       existing.todoRef = undefined;       // fresh tracker per user turn
       existing.todosSnapshot = undefined;
       existing.pendingTaskCreate = undefined;
