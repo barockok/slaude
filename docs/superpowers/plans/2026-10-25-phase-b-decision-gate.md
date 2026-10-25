@@ -27,7 +27,7 @@
       "type": "jev",
       "url": "https://api.typesafe.ai/v1/systemone",
       "model": "jev-latest",
-      "apiKey": "env://TYPESAFE_API_KEY"
+      "apiKey": "env://PERSONA_TYPESAFE_API_KEY"
     }
   }
   ```

@@ -253,7 +253,7 @@ One JSON variable, **`SLAUDE_DECISION_CONFIG`** (owner decision, 2026-10-25):
 {
   "timeoutMs": 800,
   "gate": { "mode": "off", "tAct": 0.8, "contextMessages": 8 },
-  "adapter": { "type": "jev", "url": "https://api.typesafe.ai/v1/systemone", "model": "jev-latest", "apiKey": "env://TYPESAFE_API_KEY" }
+  "adapter": { "type": "jev", "url": "https://api.typesafe.ai/v1/systemone", "model": "jev-latest", "apiKey": "env://PERSONA_TYPESAFE_API_KEY" }
 }
 ```
 | Field | Values | Default |
@@ -267,7 +267,7 @@ One JSON variable, **`SLAUDE_DECISION_CONFIG`** (owner decision, 2026-10-25):
 
 - **Unset or `{}`:** gate `off`, no adapter. Unknown top-level keys are rejected.
 - **Invalid JSON or a failed validation:** one boot log line naming the field (never its value); the gate is `off`. The process never crashes over this config.
-- **Secrets are references, never values:** `apiKey` must be an `env://` or `vault://` reference, resolved at boot by the existing secret resolver (`src/secrets/`). A literal is rejected, so the key never sits in a variable that deploy tooling prints.
+- **Secrets are references, never values:** `apiKey` must be an `env://PERSONA_<NAME>` or `vault://…` reference (the existing reference grammar in `src/secrets/ref.ts`, which limits env references to `PERSONA_*` variables), resolved at boot by the existing secret resolver (`src/secrets/`). A literal is rejected, so the key never sits in a variable that deploy tooling prints.
 - **Gateway-only:** `SLAUDE_DECISION_CONFIG` and the referenced key variable (e.g. `TYPESAFE_API_KEY`) are both on the gateway-only list.
 - `off` means today's behaviour, byte for byte. `shadow` runs the decision, logs what it *would* do next to what happened, and acts as `off`.
 - With no adapter (or an adapter whose config is missing), the gate uses the rules decision, which equals today's behaviour.
