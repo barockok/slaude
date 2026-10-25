@@ -934,9 +934,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // Brain gate input from the live SlackContext — read per tool call so the
   // current turn's author (not the session creator) drives KB scoping.
   type BrainGateCtx = Pick<SlackContext, "channel" | "threadTs" | "userId" | "teamId" | "personaId" | "origin" | "turnSenders">;
-  const brainGateFor = async (ctx: BrainGateCtx): Promise<GateInput> => {
+  // `lockedUser`: the thread's lock owner when the caller already read it.
+  const brainGateFor = async (ctx: BrainGateCtx, known?: { lockedUser: string | null }): Promise<GateInput> => {
     const soul = soulData();
-    const lock = await OneOnOne.find(ctx.channel, ctx.threadTs);
+    const lockedUser = known ? known.lockedUser : ((await OneOnOne.find(ctx.channel, ctx.threadTs))?.locked_user ?? null);
     // Use the persona's Slack user ID as the agent brain-slice key when in
     // multi-persona mode; fall back to the process-level bot ID otherwise.
     const personaId = ctx.personaId && ctx.personaId !== "default" ? ctx.personaId : null;
@@ -956,7 +957,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         const senders = await ctx.turnSenders?.();
         return senders ? { turnSenders: senders } : {};
       })()),
-      lockedUser: lock?.locked_user ?? null,
+      lockedUser,
       channelTrust: channelTrustFor(ctx.channel, soul),
       isManager: !!ctx.userId && (ctx.userId === soul.manager.userId || ctx.userId === soul.backupManager.userId),
       agentId: personaAgentId,
@@ -1006,7 +1007,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // sender's own turn. So it never holds another person's profile, and in
   // someone else's /1on1 it holds only the sender's own profile. Bounded in
   // time and size by buildTurnMemoryContext; any failure means no block.
-  const turnMemoryBlock = async (m: { channel: string; threadTs: string; userId: string; teamId: string; personaId?: string }): Promise<string> => {
+  const turnMemoryBlock = async (m: {
+    channel: string; threadTs: string; userId: string; teamId: string; personaId?: string; lockedUser: string | null;
+  }): Promise<string> => {
     if (!brainEnabled()) return "";
     try {
       const sender = { userId: m.userId, teamId: m.teamId || null, origin: "slack" };
@@ -1014,7 +1017,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         channel: m.channel, threadTs: m.threadTs, userId: m.userId, teamId: m.teamId, personaId: m.personaId,
         origin: "slack", turnSenders: () => [sender],
       };
-      const g = await brainGateFor(ctx);
+      const g = await brainGateFor(ctx, { lockedUser: m.lockedUser });
       const inner = await buildTurnMemoryContext({
         call: brainCall,
         scope: turnBrainScope(g, personaKbSourceIds(m.personaId)),
@@ -1917,7 +1920,40 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
   });
 
+  // Arrival order per session for the dispatch tail (route ctx update,
+  // reactions, dispatch). The per-message reads before it (user name,
+  // attachments, the memory context) take varying time, so without this two
+  // quick messages in one thread could reach the session in the other order.
+  // Each message takes a slot when it reaches those reads and waits for the
+  // previous message's slot before its tail; a slot is always released when
+  // its handleMessage ends, so one failure never blocks the next message.
+  const dispatchOrder = new Map<string, Promise<void>>();
+  const takeDispatchSlot = (sessionId: string): { ready: Promise<void>; release: () => void } => {
+    const prev = dispatchOrder.get(sessionId) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((r) => (release = r));
+    const tail = prev.then(() => mine);
+    dispatchOrder.set(sessionId, tail);
+    void tail.then(() => {
+      if (dispatchOrder.get(sessionId) === tail) dispatchOrder.delete(sessionId);
+    });
+    return { ready: prev, release };
+  };
+
   async function handleMessage(args: any, dispatch?: { suppress?: boolean; personaId?: string; engagedBefore?: boolean }) {
+    const slot = { release: () => {} };
+    try {
+      return await handleMessageInOrder(args, dispatch, slot);
+    } finally {
+      slot.release();
+    }
+  }
+
+  async function handleMessageInOrder(
+    args: any,
+    dispatch: { suppress?: boolean; personaId?: string; engagedBefore?: boolean } | undefined,
+    slot: { release: () => void },
+  ) {
     const suppress = dispatch?.suppress === true;
     const { event, client, context } = args;
     const teamId: string | undefined = context.teamId ?? event.team;
@@ -2787,7 +2823,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       attachToken = context?.botToken ?? (env.slack.mode() === "socket" ? env.slack.botToken() : undefined);
       if (!attachToken) console.error(`[slack-attach] no bot token for the event's app — skipping ${inboundFiles.length} file(s)`);
     }
-    const [userName, files] = await Promise.all([
+    // Take this message's place in the session's dispatch order before the
+    // reads whose time varies (see takeDispatchSlot).
+    const order = takeDispatchSlot(session.id);
+    slot.release = order.release;
+    const oneOnOneLock = await OneOnOne.find(channelId, threadTs);
+    const [userName, files, memoryContext] = await Promise.all([
       resolveUserName(client, userId),
       attachToken
         ? downloadAttachments({
@@ -2797,6 +2838,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             inboundTs: eventTs,
           })
         : Promise.resolve([]),
+      // A suppressed message is recorded only; no turn runs, so no context.
+      suppress
+        ? ""
+        : turnMemoryBlock({ channel: channelId, threadTs, userId, teamId, personaId: dispatch?.personaId, lockedUser: oneOnOneLock?.locked_user ?? null }),
     ]);
     if (env.metricsPerUser()) {
       metric.userTurnsTotal.inc({ user_id: userId, user_name: userName });
@@ -2826,14 +2871,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
     // Wrap inbound in a channel envelope so the agent has slack context
     // and a clear directive to reply (or pass) via the MCP tools — not as plain text.
-    const oneOnOneLock = await OneOnOne.find(channelId, threadTs);
     const oneOnOneAttr = oneOnOneLock
       ? ` one_on_one="true" locked_user="<@${oneOnOneLock.locked_user}>"`
       : ` one_on_one="false" locked_user=""`;
-    // A suppressed message is recorded only; no turn runs, so no context.
-    const memoryContext = suppress
-      ? ""
-      : await turnMemoryBlock({ channel: channelId, threadTs, userId, teamId, personaId: dispatch?.personaId });
     const envelope =
       `<channel source="slack" channel_id="${channelId}" thread_ts="${threadTs}" ` +
       `inbound_ts="${eventTs}" user_id="${userId}" user_name="${escapeAttr(userName)}" ` +
@@ -2849,6 +2889,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         : `Reply by calling \`mcp__${SURFACE_MCP_NAME}__reply\`, or call ` +
           `\`mcp__${SURFACE_MCP_NAME}__pass\` if the message is not for you or needs nothing from you. ` +
           `Plain assistant text is not delivered to Slack — only tool calls reach the user.`);
+
+    // The previous message's tail first (arrival order).
+    await order.ready;
 
     permissions.bindSession(session.id, channelId, threadTs, app);
 

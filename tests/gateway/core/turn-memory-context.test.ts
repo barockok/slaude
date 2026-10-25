@@ -25,6 +25,8 @@ const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
 const AGENT = agentSourceId("U_SLAUDE");
 
 let fb: ReturnType<typeof fakeBrain>;
+/** Extra delay before a get_page in this source answers (a slow read). */
+let slowSource: { source: string; ms: number } | null = null;
 const put = async (source: string, slug: string, content: string, typed?: { type: string; fields?: Record<string, string> }) => {
   let text = content;
   if (typed) {
@@ -89,7 +91,14 @@ afterAll(() => {
 });
 beforeEach(async () => {
   fb = fakeBrain();
-  setBackendForTest({ call: (n: string, p: Record<string, unknown>, s: BrainScope) => fb.call(n, p, s), adminCall: async () => null } as any);
+  slowSource = null;
+  setBackendForTest({
+    call: async (n: string, p: Record<string, unknown>, s: BrainScope) => {
+      if (slowSource && n === "get_page" && s.allowedSources[0] === slowSource.source) await Bun.sleep(slowSource.ms);
+      return fb.call(n, p, s);
+    },
+    adminCall: async () => null,
+  } as any);
   texts = [];
   resetStandingGrants();
   writeSoulFixture(WORLD);
@@ -184,4 +193,44 @@ describe("the Slack envelope carries this message's <memory-context>", () => {
     expect(queued[0]!.text).toContain("</channel>\n\n<memory-context>\n<profile>\nCall me Al.");
     expect(queued[0]!.text).not.toContain("Bob likes bullet points.");
   });
+});
+
+describe("dispatch keeps arrival order when one message's memory read is slower", () => {
+  const recording = () => {
+    const queued: string[] = [];
+    const qd = {
+      dispatch: async (_s: SessionRow, text: string) => void queued.push(text),
+      abort: async () => {},
+      pubsub: { close: async () => {} },
+      turns: { close: async () => {}, turnSenders: async () => null },
+      registry: { close: async () => {}, liveLabels: async () => [] },
+      close: async () => {},
+    } as unknown as QueueDispatch;
+    return { qd, queued };
+  };
+
+  for (const [role, th] of [["mono", "840"], ["gateway", "850"]] as const) {
+    test(`${role}: Alice's slow message is dispatched before Bob's fast one that arrived after it`, async () => {
+      await seedAlice();
+      await fb.call("put_page", { slug: "profile", content: "" }, { clientId: "x", sourceId: profileSourceId("T", "U0BOB"), allowedSources: [profileSourceId("T", "U0BOB")] });
+      const { qd, queued } = recording();
+      const out = role === "mono" ? texts : queued;
+      const { t, mention } = transport();
+      h = role === "mono" ? createGateway(agent, t) : createGateway(new AgentManager(), t, { queueDispatch: qd });
+      await mention("U0ALICE", `${th}.0`, `${th}.1`, "warm up"); // the session exists before the race
+      const end = Date.now() + 3000;
+      while (out.length < 1 && Date.now() < end) await Bun.sleep(10);
+      expect(out).toHaveLength(1);
+
+      slowSource = { source: profileSourceId("T", "U0ALICE"), ms: 300 };
+      const first = mention("U0ALICE", `${th}.0`, `${th}.2`, "first, slow");
+      await Bun.sleep(30);
+      const second = mention("U0BOB", `${th}.0`, `${th}.3`, "second, fast");
+      await Promise.all([first, second]);
+      while (out.length < 3 && Date.now() < end + 3000) await Bun.sleep(10);
+      expect(out).toHaveLength(3);
+      expect(out[1]).toContain("first, slow");
+      expect(out[2]).toContain("second, fast");
+    });
+  }
 });
