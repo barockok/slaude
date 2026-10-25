@@ -74,6 +74,24 @@ describe("normalizeSlackText", () => {
     expect(n("<https://example.com/a/b?q=1>")).toBe("example.com");
     expect(n("<mailto:a@b.co> <mailto:a@b.co|a@b.co>")).toBe("<email> <email>");
   });
+  it("a URL-shaped label reduces to the host, like a bare URL", () => {
+    expect(n("<https://example.com/cb?code=abc&state=xyz|https://example.com/cb?code=abc&state=xyz>")).toBe("example.com");
+    expect(n("<http://internal.example.com/a?t=1|internal.example.com/a?t=1>")).toBe("internal.example.com");
+    expect(n("<https://example.com/x|www.example.com/x>")).toBe("example.com");
+    expect(n("<https://example.com:8443/x|ftp://other.example/y>")).toBe("example.com:8443");
+    expect(n("<https://example.com/x|example.com>")).toBe("example.com");
+    // A prose label stays.
+    expect(n("<https://example.com/a?b=1|the design doc>")).toBe("the design doc");
+  });
+  it("tel: becomes <phone>, any other scheme <link>; no raw URI leaves", () => {
+    expect(n("call <tel:+15550100> or <tel:+15550100|+1 555 0100>")).toBe("call <phone> or <phone>");
+    expect(n("<slack://channel?team=T1&id=C1> <slack://open|open app>")).toBe("<link> <link>");
+    expect(n("<ftp://files.example/secret.txt> <sftp://u@h/p|files>")).toBe("<link> <link>");
+    expect(n("<https://exa mple.com/x|https://exa mple.com/x>")).toBe("<link>");
+  });
+  it("leaves its own role tokens alone", () => {
+    expect(n("<@UBOT> and <@U1>")).toBe("<agent> and <user>");
+  });
 });
 
 describe("buildGateInput normalization and ordering", () => {

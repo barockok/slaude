@@ -30,9 +30,25 @@ export function resolveMentions(text: string, botUserId: string): string {
   return text.replace(MENTION_RE, (_m, id: string) => (id === botUserId ? "<agent>" : "<user>"));
 }
 
+/** A URI scheme prefix (`https:`, `tel:`, `slack:` ...). */
+const SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
+
+/**
+ * A link label that is itself a URL (Slack writes auto-linked text as
+ * `<url|url>` or `<url|host/path?query>`): any scheme, `www.`, or a dotted
+ * host with no spaces followed by a path, port, query, fragment or nothing.
+ */
+function urlShaped(label: string): boolean {
+  const l = label.trim();
+  return SCHEME_RE.test(l) || /^www\./i.test(l) || /^[^\s/?#]+\.[a-z]{2,}(?:[:/?#]\S*)?$/i.test(l);
+}
+
 /**
  * Reduces Slack markup before the text leaves the gateway: mentions to roles,
- * channels, groups, broadcasts, links and emails to generic tokens or labels.
+ * channels, groups, broadcasts and emails to generic tokens. A web link
+ * becomes its prose label, or its host when it has no label or the label is
+ * itself URL-shaped; `tel:` becomes `<phone>` and any other scheme `<link>`,
+ * so no raw URI (internal paths, query tokens, a pasted callback) leaves.
  */
 export function normalizeSlackText(text: string, botUserId: string): string {
   return resolveMentions(text, botUserId).replace(/<([^<>]+)>/g, (m, inner: string) => {
@@ -41,15 +57,19 @@ export function normalizeSlackText(text: string, botUserId: string): string {
     if (/^!(here|channel|everyone)(\||$)/.test(inner)) return "<here>";
     if (inner.startsWith("!")) return inner.split("|")[1] ?? "";
     if (/^mailto:/i.test(inner)) return "<email>";
+    if (/^tel:/i.test(inner)) return "<phone>";
     if (/^https?:\/\//i.test(inner)) {
       const bar = inner.indexOf("|");
-      if (bar >= 0) return inner.slice(bar + 1);
+      const href = bar >= 0 ? inner.slice(0, bar) : inner;
+      const label = bar >= 0 ? inner.slice(bar + 1) : "";
+      if (label && !urlShaped(label)) return label;
       try {
-        return new URL(inner).host;
+        return new URL(href).host;
       } catch {
         return "<link>";
       }
     }
+    if (SCHEME_RE.test(inner)) return "<link>";
     return m;
   });
 }
