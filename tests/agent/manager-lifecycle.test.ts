@@ -1895,3 +1895,47 @@ describe("isSyntheticTurn: a prompt the runtime itself sent", () => {
     expect(new AgentManager().isSyntheticTurn("S-none")).toBe(false);
   });
 });
+
+describe("profile writes on a synthetic turn (phase C, invariant 2)", () => {
+  it("the PreToolUse hook denies kb_memoize target:\"profile\" during the auto-evolve turn only", async () => {
+    // The fake SDK does not run hooks itself: the test calls the hooks wired in
+    // options exactly as the CLI would, around a tool call in each turn.
+    process.env.SLAUDE_AUTO_EVOLVE = "1";
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const runPre = async (input: any) => {
+      const outs: any[] = [];
+      for (const m of fs.options.hooks.PreToolUse ?? []) {
+        for (const h of m.hooks) outs.push(await h({ hook_event_name: "PreToolUse", session_id: "cli", transcript_path: "/t", cwd: "/w", ...input }, "tu", { signal: new AbortController().signal }));
+      }
+      return outs.find((o) => o?.hookSpecificOutput?.permissionDecision === "deny") ?? {};
+    };
+    const profile = { tool_name: "mcp__slaude_kb__kb_memoize", tool_input: { target: "profile", pages: [] }, tool_use_id: "p1" };
+    const mine = { tool_name: "mcp__slaude_kb__kb_memoize", tool_input: { target: "mine", pages: [] }, tool_use_id: "m1" };
+    const human: any[] = [];
+    const evolve: any[] = [];
+    const fs = plan((s) => {
+      s.onUser = (um) => {
+        const text = String(um.message.content);
+        void (async () => {
+          const into = text.includes("<auto-evolve>") ? evolve : human;
+          into.push(await runPre(profile), await runPre(mine));
+          if (into === human) s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch"), txt("did the work")]));
+          s.emit(res());
+        })();
+      };
+    });
+
+    await mgr.sendMessage(row.id, "call me Al from now on");
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "evolve done");
+    expect(human).toEqual([{}, {}]);
+    expect(evolve[0].hookSpecificOutput).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: "A profile is written only on that person's own turn.",
+    });
+    expect(evolve[1]).toEqual({});
+    await shutdown(mgr, row.id);
+  });
+});

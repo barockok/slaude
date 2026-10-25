@@ -17,6 +17,7 @@ import {
 import * as agentSdk from "@anthropic-ai/claude-agent-sdk";
 import { TokenBudget, type UsageSnapshot } from "./token-budget";
 import { SkillGate } from "./skill-gate";
+import { denySyntheticProfileWrite } from "./profile-write-guard";
 import { m as metric } from "../metrics";
 
 export type PermissionMode =
@@ -1283,7 +1284,7 @@ export class AgentManager extends EventEmitter {
           PreCompact: [{ hooks: [preCompact] }],
           Stop: [{ hooks: [stopHook] }],
           UserPromptSubmit: [{ hooks: [userPromptHook] }],
-          PreToolUse: [{ hooks: [...(remoteHandle ? [denyLocalBuiltins] : []), this.#skillGate.pre(sessionId)] }],
+          PreToolUse: [{ hooks: [...(remoteHandle ? [denyLocalBuiltins] : []), this.#skillGate.pre(sessionId), denySyntheticProfileWrite(() => this.isSyntheticTurn(sessionId))] }],
           PostToolUse: [{ hooks: [this.#skillGate.post(sessionId)] }],
         },
         systemPrompt: {
