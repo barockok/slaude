@@ -13,8 +13,8 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 |---|---|---|---|
 | A. Natural voice | `docs/superpowers/plans/2026-10-25-phase-a-natural-voice.md` | done, merged (#152; unreleased — ships as RC) | — |
 | B. Decision gate | `docs/superpowers/plans/2026-10-25-phase-b-decision-gate.md` | done, merged (#153; unreleased) | — |
-| R. Runtime prompt as built-in skills | `docs/superpowers/plans/2026-10-25-phase-r-builtin-skills.md` | done (unreleased — ships as RC) | — |
-| C. Memory structure | — | not started | — |
+| R. Runtime prompt as built-in skills | `docs/superpowers/plans/2026-10-25-phase-r-builtin-skills.md` | done, merged (#154; unreleased — ships as RC) | — |
+| C. Memory structure | `docs/superpowers/plans/2026-10-25-phase-c-memory-structure.md` | in progress | — |
 | D. Background learning and budget | — | not started | — |
 | E. Proactiveness | — | not started | — |
 
@@ -40,6 +40,15 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 - [x] R3 Enforcement hook for governed tools (§7a.4)
 - [x] R4 Built-ins immutable at runtime (§7a.5)
 - [x] R5 Size budget; field note; phase closed (§7a.6)
+
+**Phase C tasks**
+- [ ] C1 Profile source in every speaker's read scope; `origin` claim (§8.1, §8.3b)
+- [ ] C2 Typed `kb_memoize`, profile target, supersede, /1on1 containment (§8.2, §8.3, §8.6)
+- [ ] C3 `slaude:memory` built-in skill; every-turn rules in the core (§8.3a, §8.3b)
+- [ ] C4 `memory_about` (§8.3, §8.6)
+- [ ] C5 Per-turn `<memory-context>` (§8.4)
+- [ ] C6 Readable thread history (§8.5)
+- [ ] C7 Containment scenario; field note; phase closed (§8.7)
 
 ## 1. Goal
 
