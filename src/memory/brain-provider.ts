@@ -1,4 +1,4 @@
-import type { MemoryProvider, SyncTurn } from "./provider";
+import { stripTurnMemoryContext, type MemoryProvider, type SyncTurn } from "./provider";
 import { truncate } from "./sqlite-provider";
 import { brainCall, ensureSources } from "../knowledge/brain";
 import { agentIdReady, agentScope } from "../knowledge/agent-identity";
@@ -108,6 +108,8 @@ export class BrainMemoryProvider implements MemoryProvider {
 
   /** Append the turn to the session's conversation page in an explicit scope. */
   async syncTurnIn(t: SyncTurn, scope: BrainScope): Promise<void> {
+    // Again here for an older node whose manager sent the block.
+    t = { ...t, user: stripTurnMemoryContext(t.user) };
     try {
       await this.#ensureReady();
       const slug = await this.#ensurePage(t.sessionId, scope);

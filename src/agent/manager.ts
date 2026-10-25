@@ -41,7 +41,7 @@ import { dbSessionStore, type SessionStore } from "./session-store";
 import * as OneOnOne from "../db/one-on-one";
 import type { OneOnOneLockRow } from "../db/one-on-one";
 import { memory } from "../memory";
-import type { MemoryProvider } from "../memory/provider";
+import { stripTurnMemoryContext, type MemoryProvider } from "../memory/provider";
 import { ChildEnvPatch, scrubChildEnv, withoutKeys } from "./child-env";
 import { resolveSessionConfigDir } from "./oauth-home";
 import { sessionIdOpts } from "./session-id-opts";
@@ -1721,7 +1721,8 @@ export class AgentManager extends EventEmitter {
 
   #flushTurn(live: LiveSession) {
     if (!live.turn.user || live.turn.assistant.length === 0) return;
-    const user = live.turn.user;
+    // The per-turn <memory-context> block is for this turn only, never the transcript.
+    const user = stripTurnMemoryContext(live.turn.user);
     const assistant = live.turn.assistant.join("\n");
     live.turn = { user: "", assistant: [] };
     void this.#memory.syncTurn({ sessionId: live.id, user, assistant }).catch((e) => {
