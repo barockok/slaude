@@ -173,30 +173,6 @@ function maxAttempts(a: TurnJob, b: TurnJob): number {
   return Math.max(a.relabelAttempts ?? 0, b.relabelAttempts ?? 0);
 }
 
-/** A job token's `initiator` and `origin` claims, read without verifying
- *  (the gateway minted it; this only decides whether two jobs may merge).
- *  Null for a token that is not a JWT. */
-function tokenIdentity(token: string): { initiator: unknown; origin: unknown } | null {
-  const payload = token.split(".")[1];
-  if (!payload || token.split(".").length !== 3) return null;
-  try {
-    const c = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { initiator?: unknown; origin?: unknown };
-    return { initiator: c.initiator, origin: c.origin };
-  } catch {
-    return null;
-  }
-}
-
-/** Whether `incoming` may merge into `pending`: both tokens name the same
- *  initiator and origin. Two tokens that are not JWTs (tests, tools) compare
- *  equal; a JWT and a non-JWT do not. */
-export function sameTurnIdentity(pending: Pick<TurnJob, "jobToken">, incoming: Pick<TurnJob, "jobToken">): boolean {
-  const a = tokenIdentity(pending.jobToken);
-  const b = tokenIdentity(incoming.jobToken);
-  if (a === null || b === null) return a === b;
-  return a.initiator === b.initiator && a.origin === b.origin;
-}
-
 /** One message's identity for de-duplication: a re-delivered message is the
  *  same Slack message, so its ts, author and text all match. */
 const msgKey = (m: TurnMessage): string => `${m.ts}\u0000${m.user}\u0000${m.text}`;
@@ -423,10 +399,6 @@ export class TurnQueues {
     if (!PENDING_STATES.has(await pending.getState())) return null; // already claimed
     if (await this.#turnRan(pending)) return null; // finished, then stalled back
     const prev = pending.data as TurnJob;
-    // A merged job runs under its first token, whose initiator and origin say
-    // who the turn is for (a profile write, a cron turn's limits). A message
-    // from another person, or of another origin, stays its own job.
-    if (!sameTurnIdentity(prev, job)) return null;
     // Only a LABEL change relocates (node labels spec §4.6). A warmth change
     // under the same label (the warm node came or went between messages)
     // appends in place exactly as before labels: same job id, same token.

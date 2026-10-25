@@ -18,11 +18,6 @@ function turn(sessionId: string, texts: string[], token = "tok"): TurnJob {
   };
 }
 
-/** A JWT-shaped token carrying these claims (unsigned: the queue only reads
- *  initiator and origin to decide whether two jobs may merge). */
-const jwt = (claims: Record<string, unknown>): string =>
-  `${Buffer.from('{"alg":"HS256"}').toString("base64url")}.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
-
 describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
   let redis: Redis;
   let keys: Keys;
@@ -119,52 +114,6 @@ describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
     expect(await queues.queue("turns").getWaitingCount()).toBe(1);
     await job!.remove();
     await redis.del(keys.coalesce("s-coal"));
-  });
-
-  test("same initiator and origin still coalesce", async () => {
-    await ready;
-    const first = await queues.enqueueTurn(turn("s-same", ["one"], jwt({ initiator: "U1", origin: "slack", job: "a" })), { label: "default" });
-    const second = await queues.enqueueTurn(turn("s-same", ["two"], jwt({ initiator: "U1", origin: "slack", job: "b" })), { label: "default" });
-    expect(second).toEqual({ jobId: first.jobId, queue: "turns", coalesced: true });
-    const job = await queues.queue("turns").getJob(first.jobId);
-    expect((job!.data as TurnJob).messages.map((m) => m.text)).toEqual(["one", "two"]);
-    await job!.remove();
-    await redis.del(keys.coalesce("s-same"));
-  });
-
-  test("a different initiator, or cron vs slack, never merges: each stays its own job under its own token", async () => {
-    await ready;
-    for (const [sid, a, b] of [
-      ["s-who", { initiator: "U1", origin: "slack" }, { initiator: "U2", origin: "slack" }],
-      ["s-cron", { initiator: "U1", origin: "cron" }, { initiator: "U1", origin: "slack" }],
-      ["s-cron2", { initiator: "U1", origin: "slack" }, { initiator: "U1", origin: "cron" }],
-      ["s-old", { initiator: "U1" }, { initiator: "U1", origin: "slack" }],
-    ] as const) {
-      const ta = jwt(a);
-      const tb = jwt(b);
-      const first = await queues.enqueueTurn(turn(sid, ["one"], ta), { label: "default" });
-      const second = await queues.enqueueTurn(turn(sid, ["two"], tb), { label: "default" });
-      expect(second.coalesced).toBe(false);
-      expect(second.jobId).not.toBe(first.jobId);
-      const j1 = await queues.queue("turns").getJob(first.jobId);
-      const j2 = await queues.queue("turns").getJob(second.jobId);
-      expect([(j1!.data as TurnJob).messages.map((m) => m.text), (j1!.data as TurnJob).jobToken]).toEqual([["one"], ta]);
-      expect([(j2!.data as TurnJob).messages.map((m) => m.text), (j2!.data as TurnJob).jobToken]).toEqual([["two"], tb]);
-      // A third message from the second sender joins the second job.
-      const third = await queues.enqueueTurn(turn(sid, ["three"], jwt(b)), { label: "default" });
-      expect(third).toEqual({ jobId: second.jobId, queue: "turns", coalesced: true });
-      await j1!.remove();
-      await (await queues.queue("turns").getJob(second.jobId))!.remove();
-      await redis.del(keys.coalesce(sid));
-    }
-  });
-
-  test("sameTurnIdentity: non-JWT tokens compare equal; a JWT and a non-JWT do not", async () => {
-    await ready;
-    const { sameTurnIdentity } = await import("../../src/queue/turns");
-    expect(sameTurnIdentity({ jobToken: "tok1" }, { jobToken: "tok2" })).toBe(true);
-    expect(sameTurnIdentity({ jobToken: "tok1" }, { jobToken: jwt({ initiator: "U1", origin: "slack" }) })).toBe(false);
-    expect(sameTurnIdentity({ jobToken: jwt({ initiator: "U1", origin: "slack", job: "a" }) }, { jobToken: jwt({ initiator: "U1", origin: "slack", job: "b" }) })).toBe(true);
   });
 
   test("different sessions never coalesce", async () => {
