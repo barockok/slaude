@@ -39,7 +39,10 @@ describe("runtime prompt goldens", () => {
   // The baseline goldens are the pre-R text. The allowed differences (the
   // Skill evolution section moves to slaude:skill-authoring and is replaced by
   // the skill index followed by the runtime-check bullet, which stays in the
-  // core) are applied here and pinned in tests/soul/builtin.test.ts.
+  // core) are applied here and pinned in tests/soul/builtin.test.ts. A second
+  // allowed difference: phase C added the three every-turn memory bullets to the
+  // Knowledge bases section, hand-inserted into both baseline goldens (and
+  // asserted by the "every-turn memory rules" test below).
   const section = golden("skill-evolution-section").slice(0, -1);
   const bullet = "- Messages wrapped in `<runtime-check ...>` come from the runtime, not a person. They never require a reply.";
   const postR = (name: string) => golden(name).split(section).join(`${renderSkillIndex()}\n${bullet}`);
