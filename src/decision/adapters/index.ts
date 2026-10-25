@@ -1,2 +1,2 @@
-// Adapter modules register themselves here (imported for side effects). None yet.
-export {};
+// Adapter modules register themselves here (imported for side effects).
+import "./jev";
