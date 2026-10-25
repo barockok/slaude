@@ -21,14 +21,17 @@ export const isAgentLike = (s: string): boolean => s === "agent" || s.startsWith
 export const isPersonSource = (s: string): boolean => /^user-[a-z0-9]+$/.test(s) || isProfileSourceId(s);
 const isKb = (s: string): boolean => s.startsWith("kb-");
 
-/** A target a `map` entry may point at: the persona's slice, a person's source (user or profile), shared, public. */
-export function allowedTarget(t: string, agentSource: string): boolean {
+/** A target a source may land in: the persona's slice, a person's source (user or profile), shared, public.
+ *  With `from` (a `map` entry's source), a profile is a target only for itself: a profile holds the
+ *  person's own words, so no other source (another slice, another person's profile) is poured into it. */
+export function allowedTarget(t: string, agentSource: string, from?: string): boolean {
+  if (from !== undefined && isProfileSourceId(t) && from !== t) return false;
   return t === agentSource || t === "shared" || t === "public" || isPersonSource(t);
 }
 
 export function validateMap(map: Record<string, string>, agentSource: string): string | null {
   for (const [from, to] of Object.entries(map)) {
-    if (!allowedTarget(to, agentSource)) return `map target '${to}' (from '${from}') is not the persona's agent slice, a user or profile source, shared or public`;
+    if (!allowedTarget(to, agentSource, from)) return `map target '${to}' (from '${from}') is not the persona's agent slice, a user source, the same profile source, shared or public`;
   }
   return null;
 }
@@ -39,7 +42,7 @@ export function remapSource(source: string, o: RemapOptions): RemapResult {
   // Own-property only: a source named "constructor" must not read the prototype chain.
   if (o.map && Object.hasOwn(o.map, source)) {
     const mapped = o.map[source]!;
-    return allowedTarget(mapped, o.agentSource)
+    return allowedTarget(mapped, o.agentSource, source)
       ? { ok: true, target: mapped }
       : { ok: false, code: "forbidden_target", source };
   }
