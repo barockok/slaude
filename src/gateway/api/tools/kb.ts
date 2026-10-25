@@ -45,6 +45,8 @@ export async function executeKbTool(
       return brainHandlers.kb_graph(parseToolArgs(c.kb_graph, body), brainDeps);
     case c.kb_memoize.name:
       return brainHandlers.kb_memoize(parseToolArgs(c.kb_memoize, body), brainDeps);
+    case c.memory_about.name:
+      return brainHandlers.memory_about(parseToolArgs(c.memory_about, body), brainDeps);
     case c.kb_delete_page.name:
       return brainHandlers.kb_delete_page(parseToolArgs(c.kb_delete_page, body), brainDeps);
     default:

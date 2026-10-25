@@ -86,6 +86,12 @@ export const kbContract = {
           .describe(`Slack user id the pages are about. With target "profile" it must be the current speaker.`),
       },
     },
+    memory_about: {
+      name: "memory_about",
+      description:
+        "What you hold about the person asking (\"what do you know about me?\"): their profile and every note about them this turn can read, each labelled told or inferred with its date; superseded pages are left out. Answers only for the person whose own turn this is.",
+      schema: { userId: z.string().describe("Slack user id of the person asking; must be the current speaker.") },
+    },
     kb_delete_page: {
       name: "kb_delete_page",
       description: "Soft-delete a brain page (recoverable). Requires approval.",

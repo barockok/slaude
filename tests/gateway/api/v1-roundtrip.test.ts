@@ -140,6 +140,7 @@ const FIXTURES: Record<string, Record<string, Fixture>> = {
     kb_list_pages: { input: {}, expect: "not_mounted" },
     kb_graph: { input: { slug: "s" }, expect: "not_mounted" },
     kb_memoize: { input: { pages: [{ slug: "s", content: "c", summary: "m" }] }, expect: "not_mounted" },
+    memory_about: { input: { userId: "U0ALICE" }, expect: "not_mounted" },
     kb_delete_page: { input: { slug: "s", reason: "r" }, expect: "not_mounted" },
   },
 };

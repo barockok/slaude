@@ -5,9 +5,9 @@ import { loadKbs, type KbEntry } from "./loader";
 import { brainCall, brainEnabled } from "./brain";
 import { brainThink, sdkThinkClient } from "./brain-think";
 import { gather } from "./gather";
-import { gatedBrainCall, soleSlackSender, type ApprovalReq, type ApprovalRes, type GateInput } from "./gated-dispatch";
-import { SHARED_SOURCE, kbSourceId, speakerProfileSource, userSourceId, type BrainScope } from "./scope";
-import { composePage, type TypedPageInput } from "./memory-pages";
+import { gatedBrainCall, soleSlackSender, type ApprovalReq, type ApprovalRes, type GateInput, type TurnSender } from "./gated-dispatch";
+import { AGENT_SOURCE, SHARED_SOURCE, kbSourceId, speakerProfileSource, userSourceId, type BrainScope } from "./scope";
+import { composePage, parseFrontmatter, type TypedPageInput } from "./memory-pages";
 import { SUPERSEDED_TAG, supersededSlugs } from "./memory-trail";
 import { agentIdReady } from "./agent-identity";
 import { kbContract, KB_MEMOIZE_MAX_PAGES } from "../tools/contracts/kb";
@@ -182,6 +182,18 @@ export interface KbMemoizeArgs {
 }
 
 /**
+ * The one person whose own turn this is: the turn's sole Slack sender, on an
+ * interactive Slack-origin turn; else null. Never the live ctx's speaker: on
+ * mono the ctx is whoever spoke last, and a queued job can hold merged
+ * messages. Any other sender in the turn means nobody's own turn. Profile
+ * writes and memory_about both key on it.
+ */
+function ownTurnSender(g: GateInput): TurnSender | null {
+  if (g.userId === null || !g.interactive || g.origin !== "slack") return null;
+  return soleSlackSender(g);
+}
+
+/**
  * The write scope for a kb_memoize target, or the refusal. Only `sourceId`
  * ever changes: the read union and client stay the turn's own.
  *
@@ -196,12 +208,9 @@ export interface KbMemoizeArgs {
  */
 function resolveMemoizeScope(target: MemoizeTarget, subject: string | undefined, base: BrainScope, g: GateInput): { scope: BrainScope; speaker?: string } | { error: string } {
   if (target === "profile") {
-    // The person is the turn's sole Slack sender, never the live ctx's
-    // speaker: on mono the ctx is whoever spoke last, and a queued job can
-    // hold merged messages. Any other sender in the turn refuses.
-    const sender = soleSlackSender(g);
+    const sender = ownTurnSender(g);
     const own = sender ? speakerProfileSource(sender.teamId, sender.userId) : null;
-    if (!sender || own === null || g.userId === null || !g.interactive || g.origin !== "slack" || (subject !== undefined && subject !== sender.userId)) {
+    if (!sender || own === null || (subject !== undefined && subject !== sender.userId)) {
       return { error: PROFILE_REFUSAL };
     }
     return { scope: { ...base, sourceId: own }, speaker: sender.userId };
@@ -240,6 +249,119 @@ async function getPageOrNull(
     if ((e as { code?: string }).code === "page_not_found") return null;
     throw e;
   }
+}
+
+export const MEMORY_ABOUT_REFUSAL = "refused: memory_about only answers for the person asking";
+
+/** One page memory_about shows (spec §8.3 "what do you know about me?"). */
+export interface MemoryEntry {
+  where: "profile" | "agent" | "user" | "shared";
+  slug: string;
+  type: string;
+  confidence: string;
+  as_of: string;
+  body: string;
+}
+
+const WHERE_ORDER: MemoryEntry["where"][] = ["profile", "user", "agent", "shared"];
+const WHERE_LABEL: Record<MemoryEntry["where"], string> = {
+  profile: "their profile",
+  user: "their /1on1 notes",
+  agent: "the agent's notes",
+  shared: "the team knowledge base",
+};
+
+/** One block per entry, profile first, then /1on1 notes, agent notes, team KB. Empty list → "". */
+export function formatMemoryAbout(entries: MemoryEntry[]): string {
+  const sorted = [...entries].sort((a, b) => WHERE_ORDER.indexOf(a.where) - WHERE_ORDER.indexOf(b.where));
+  return sorted
+    .map((e) => `[${e.confidence}] ${e.type}, from ${WHERE_LABEL[e.where]}, as of ${e.as_of} (slug ${e.slug})\n${e.body.trim()}`)
+    .join("\n\n");
+}
+
+/** A frontmatter value as text; a YAML date (gbrain parses an unquoted as_of) as YYYY-MM-DD. */
+function metaText(v: unknown): string | undefined {
+  if (typeof v === "string") return v;
+  if (v instanceof Date && !Number.isNaN(v.getTime())) return v.toISOString().slice(0, 10);
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  return undefined;
+}
+
+/**
+ * A get_page result as frontmatter + body, or null for no page. Takes either
+ * the whole page as `content` (the shape kb_memoize writes) or gbrain's page
+ * record (`compiled_truth` body, parsed `frontmatter` object); the record's
+ * own `tags` mark it superseded too.
+ */
+function readPage(raw: unknown): { meta: Record<string, string>; body: string; superseded: boolean } | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const r = raw as { content?: unknown; compiled_truth?: unknown; frontmatter?: unknown; tags?: unknown };
+  const superseded = Array.isArray(r.tags) && r.tags.includes(SUPERSEDED_TAG);
+  if (typeof r.content === "string") return { ...parseFrontmatter(r.content), superseded };
+  if (typeof r.compiled_truth !== "string") return null;
+  const meta: Record<string, string> = {};
+  if (r.frontmatter && typeof r.frontmatter === "object") {
+    for (const [k, v] of Object.entries(r.frontmatter as Record<string, unknown>)) {
+      const t = metaText(v);
+      if (t !== undefined) meta[k] = t;
+    }
+  }
+  return { meta, body: r.compiled_truth, superseded };
+}
+
+/**
+ * The candidate pages about `userId` in what the turn reads: the person's own
+ * profile (only when it is the one in this scope), and `people/<userId>` in
+ * the agent's slices, their own `user-` slice (in the scope only in their own
+ * /1on1) and `shared`, plus the `shared/people/<userId>` team fact. Public and
+ * KB sources are not memory about a person and are not read.
+ */
+function memoryCandidates(scope: BrainScope, sender: TurnSender): Array<{ where: MemoryEntry["where"]; source: string; slug: string }> {
+  const out: Array<{ where: MemoryEntry["where"]; source: string; slug: string }> = [];
+  const readable = [...new Set(scope.allowedSources)];
+  const profile = speakerProfileSource(sender.teamId, sender.userId);
+  if (profile !== null && readable.includes(profile)) out.push({ where: "profile", source: profile, slug: "profile" });
+  const note = `people/${sender.userId}`;
+  for (const source of readable) {
+    if (source === userSourceId(sender.userId)) out.push({ where: "user", source, slug: note });
+    else if (source === AGENT_SOURCE || source.startsWith("agent-")) out.push({ where: "agent", source, slug: note });
+    else if (source === SHARED_SOURCE) {
+      out.push({ where: "shared", source, slug: note }, { where: "shared", source, slug: `shared/${note}` });
+    }
+  }
+  return out;
+}
+
+/**
+ * Read each candidate with get_page limited to its own source (one source of
+ * the turn's read union, so no new read path widens the scope), dropping
+ * pages tagged superseded in that same source.
+ */
+async function collectMemoryAbout(call: NonNullable<BrainToolDeps["call"]>, scope: BrainScope, sender: TurnSender): Promise<MemoryEntry[]> {
+  const entries: MemoryEntry[] = [];
+  const supersededIn = new Map<string, Set<string>>();
+  for (const c of memoryCandidates(scope, sender)) {
+    const only: BrainScope = { ...scope, sourceId: c.source, allowedSources: [c.source] };
+    const pg = readPage(await getPageOrNull(call, c.slug, only));
+    if (!pg || pg.superseded) continue;
+    let tagged = supersededIn.get(c.source);
+    if (!tagged) {
+      tagged = await supersededSlugs(call, scope, [c.source]);
+      supersededIn.set(c.source, tagged);
+    }
+    if (tagged.has(c.slug)) continue;
+    entries.push({
+      where: c.where,
+      slug: c.slug,
+      type: pg.meta.type ?? "untyped",
+      // A page with no confidence is the agent's own record unless the person
+      // wrote it into their profile: inferred, except in the profile.
+      confidence: pg.meta.confidence ?? (c.where === "profile" ? "told" : "inferred"),
+      as_of: pg.meta.as_of ?? "unknown",
+      body: pg.body,
+    });
+  }
+  return entries;
 }
 
 export const brainHandlers = {
@@ -441,6 +563,19 @@ export const brainHandlers = {
       return err(humanizeBrainError("put_page", e));
     }
   },
+  memory_about: async (p: { userId: string }, d: BrainToolDeps): Promise<ToolResult> => {
+    // Only for the one person whose own turn this is (the turn's senders, not
+    // the live ctx, which on mono flips to whoever posted mid-turn): one
+    // person's memory never shows inside another person's turn.
+    const sender = ownTurnSender(await d.gate());
+    if (!sender || sender.userId !== p.userId) return err(MEMORY_ABOUT_REFUSAL);
+    try {
+      const entries = await collectMemoryAbout(d.call ?? brainCall, await d.scope(), sender);
+      return ok(entries.length > 0 ? formatMemoryAbout(entries) : `Nothing is recorded about ${p.userId} in what this turn can read.`);
+    } catch (e) {
+      return err(humanizeBrainError("memory_about", e));
+    }
+  },
   kb_delete_page: (p: { slug: string; reason: string }, d: BrainToolDeps) =>
     runGated("delete_page", { slug: p.slug }, `KB delete: ${p.slug} — ${p.reason}`, d),
 };
@@ -464,6 +599,8 @@ export function createKbMcp(deps?: BrainToolDeps, opts: { kbs?: () => KbEntry[] 
           (a: { slug: string }) => brainHandlers.kb_graph(a, deps)),
         tool(c.kb_memoize.name, c.kb_memoize.description, c.kb_memoize.schema,
           (a: KbMemoizeArgs) => brainHandlers.kb_memoize(a, deps)),
+        tool(c.memory_about.name, c.memory_about.description, c.memory_about.schema,
+          (a: { userId: string }) => brainHandlers.memory_about(a, deps)),
         tool(c.kb_delete_page.name, c.kb_delete_page.description, c.kb_delete_page.schema,
           (a: { slug: string; reason: string }) => brainHandlers.kb_delete_page(a, deps)),
       ]
