@@ -32,6 +32,13 @@ agent kept answering a conversation it had only been named in.
   governs what the agent does, not how it words the answer.
 - **`pass` surface tool.** An explicit, silent end of turn with an optional
   reaction. The baseline rule became reply-or-pass: a turn ends in one of the two.
+  A passed turn gets no done reaction, and the received reaction is removed
+  unless the pass reacted with that same emoji, so a pass with a reaction
+  leaves only that reaction.
+- **The other prompt surfaces offer pass too.** The per-turn envelope on every
+  inbound message and the stop guard's block text both used to order a reply;
+  they now offer `reply` or `pass`. An imperative in the user turn outweighs the
+  baseline, so leaving them as "reply" would have undone the rule.
 - **`<runtime-check kind="auto-evolve">` wrapper** around the check, so the
   model can tell a runtime check from a person. The announcement step was
   removed, and the check fires only at four or more substantive tools including
@@ -61,11 +68,24 @@ now drops the reaction when the turn is a voice turn.
 
 A mention arrives twice: once as the mention event and once as a plain
 `message` event for the same post. Reverting engagement after a pass handles the
-first copy, but the second copy, seen as an ordinary message in a now
-non-engaged thread, was able to re-engage it. The fix checks the seen-events
+first copy, but the second copy also contains the mention, so it took the
+mention branch of the router, which wrote `engaged=true` again and undid the
+revert. The fix checks the seen-events
 store (`SeenEvents.has()`) before treating the second copy as new. The revert
 write itself is guarded, so a failing store write cannot escape the turn-done
 handler and wedge the turn.
+
+## Known narrow races
+
+- **The revert and a follow-up already dispatched.** A follow-up can be routed
+  as engaged just before the revert write lands. The agent answers it, and the
+  thread is then disengaged under that conversation. The window is the time
+  between the follow-up's routing and the end of the passing turn.
+- **The revert and the next auto-evolve check.** If a passing turn met the
+  auto-evolve bar, the revert can land before the injected check runs. The
+  disengaged thread's prompt hook then records the check without running it.
+  The effect is a skipped check, which is seen again on re-engage; the same
+  race already existed for any disengage.
 
 ## Not verified
 
