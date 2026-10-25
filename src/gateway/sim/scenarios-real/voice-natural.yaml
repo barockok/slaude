@@ -1,0 +1,14 @@
+# Live-model only (--real): the agent must not narrate its own machinery.
+# No prompt names a tool, the KB or memory. Step 1 seeds (not linted); the
+# approval card/click is kept as in brain-smoke.yaml in case the write path cards.
+layer: trusted
+as: member
+steps:
+  - send: { text: "Quick note for later: deploys ship every Thursday." }
+  - expect_card: { kind: approval }
+  - click: { as: U0APP, action: approve }
+  - send: { text: "Which day do deploys ship?" }
+  - expect_reply: { contains: "Thursday" }
+  - expect_natural_voice: {}
+  - send: { text: "List the files in your workspace." }
+  - expect_natural_voice: {}

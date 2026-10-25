@@ -74,6 +74,16 @@ function shimServer(contract: ServerContract, sessionId: string, deps: ShimDeps)
           (contract.server === surfaceContract.server && VOICE_QUIET_TOOLS.has(t.name)) ||
           (contract.server === slackContract.server && VOICE_QUIET_SLACK_TOOLS.has(t.name));
         if (quiet && deps.voiceActive?.(sessionId)) return VOICE_SUPPRESSED_RESULT;
+        // pass is not a write, but its optional reaction is. The gateway's
+        // voice flag is process-local and knows nothing of this node's call,
+        // so drop the reaction here and still forward (the gateway logs it).
+        if (
+          contract.server === surfaceContract.server && t.name === surfaceContract.tools.pass.name &&
+          "react" in args && deps.voiceActive?.(sessionId)
+        ) {
+          const { react: _dropped, ...rest } = args;
+          args = rest;
+        }
         try {
           if (contract.server === surfaceContract.server && t.name === surfaceContract.tools.request_approval.name) {
             return await requestApprovalOverRest(sessionId, args, token, deps);

@@ -58,6 +58,20 @@ export class ReactionTracker {
     }
   }
 
+  /** End tracking without a final emoji: remove the tracked reaction, unless it
+   *  is `keep` (someone else, e.g. the agent's own pass, chose that same emoji —
+   *  removing ours would remove theirs, since Slack holds one per name). */
+  async clear(sessionId: string, keep?: string) {
+    const prev = this.#current.get(sessionId);
+    this.#current.delete(sessionId);
+    if (!prev || this.#disabled || prev.emoji === keep) return;
+    try {
+      await this.#clientFor(sessionId).reactions.remove({ channel: prev.channel, timestamp: prev.ts, name: prev.emoji });
+    } catch {
+      // tolerate already-removed / not-reacted
+    }
+  }
+
   forget(sessionId: string) {
     this.#current.delete(sessionId);
   }

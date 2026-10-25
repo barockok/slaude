@@ -19,15 +19,15 @@ function fakeSurface(caps: SurfaceCapability[], calls: string[] = []): Surface {
 }
 
 describe("surfaceTools — capability gating", () => {
-  test("core-only surface mounts exactly the three core tools", () => {
+  test("core-only surface mounts exactly the four core tools", () => {
     const names = surfaceTools(fakeSurface([])).map((t) => t.name).sort();
-    expect(names).toEqual(["get_history", "reply", "request_approval"]);
+    expect(names).toEqual(["get_history", "pass", "reply", "request_approval"]);
   });
 
   test("full-capability surface mounts core + optional tools", () => {
     const names = surfaceTools(fakeSurface(["edit", "react", "upload", "typing"])).map((t) => t.name).sort();
     expect(names).toEqual(
-      ["edit", "get_history", "react", "reply", "request_approval", "typing", "unreact", "upload"].sort(),
+      ["edit", "get_history", "pass", "react", "reply", "request_approval", "typing", "unreact", "upload"].sort(),
     );
   });
 

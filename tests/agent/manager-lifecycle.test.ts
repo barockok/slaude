@@ -199,6 +199,7 @@ beforeEach(() => {
   spawned = [];
   currentQuery = dispatcher;
   process.env.SLAUDE_AUTO_EVOLVE = "0";
+  delete process.env.SLAUDE_AUTO_EVOLVE_MIN_TOOLS;
   process.env.SLAUDE_IDLE_MINUTES = "0";
 });
 
@@ -579,7 +580,7 @@ describe("AgentManager lifecycle", () => {
           s.emit(res()); // silent NO from the agent
           return;
         }
-        s.emit(asst([tool("Bash"), tool("Write"), tool("Read"), txt("did the work")]));
+        s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch"), txt("did the work")]));
         s.emit(res());
       };
     });
@@ -614,7 +615,7 @@ describe("AgentManager lifecycle", () => {
           s.emit(res());
           return;
         }
-        s.emit(asst([tool("Bash"), tool("Write"), txt("did the work")]));
+        s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch"), txt("did the work")]));
         s.emit(res());
       };
     });
@@ -624,7 +625,7 @@ describe("AgentManager lifecycle", () => {
     const firstDone = events.findIndex((e) => e.type === "done");
     const userTurn = events.slice(0, firstDone).filter((e) => ["toolCall", "assistantText", "thinking"].includes(e.type));
     const evolveTurn = events.slice(firstDone + 1).filter((e) => ["toolCall", "assistantText", "thinking"].includes(e.type));
-    expect(userTurn.map((e) => e.type)).toEqual(["toolCall", "toolCall", "assistantText"]);
+    expect(userTurn.map((e) => e.type)).toEqual(["toolCall", "toolCall", "toolCall", "toolCall", "assistantText"]);
     expect(userTurn.every((e) => e.autoEvolve === undefined)).toBe(true);
     expect(evolveTurn.map((e) => e.type)).toEqual(["thinking", "toolCall", "assistantText"]);
     expect(evolveTurn.every((e) => e.autoEvolve === true)).toBe(true);
@@ -638,7 +639,7 @@ describe("AgentManager lifecycle", () => {
       plan((s) => {
         s.onUser = (um) => {
           if (String(um.message.content).includes("<auto-evolve>")) return void s.emit(res());
-          s.emit(asst([tool("Bash"), tool("Write"), txt("done")]));
+          s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch"), txt("done")]));
           s.emit(res());
         };
       });
@@ -701,6 +702,73 @@ describe("AgentManager lifecycle", () => {
       expect(String(fs.users[2].message.content)).toContain("<auto-evolve>");
       await shutdown(mgr, row.id);
     });
+  });
+
+  /** Run one user turn emitting `names`, wait for done, return the plan's user messages. */
+  async function runEvolveTurn(names: string[]) {
+    process.env.SLAUDE_AUTO_EVOLVE = "1";
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const fs = plan((s) => {
+      s.onUser = (um) => {
+        if (String(um.message.content).includes("<auto-evolve>")) return void s.emit(res());
+        s.emit(asst([...names.map((n) => tool(n)), txt("did the work")]));
+        s.emit(res());
+      };
+    });
+    await mgr.sendMessage(row.id, "do a thing");
+    await until(() => events.some((e) => e.type === "done"), 3000, "done");
+    await Bun.sleep(60);
+    return { fs, mgr, row };
+  }
+
+  it("does not inject auto-evolve after 3 substantive tools", async () => {
+    const { fs, mgr, row } = await runEvolveTurn(["Bash", "Write", "Grep", "WebFetch"]);
+    expect(fs.users.length).toBe(1);
+    await shutdown(mgr, row.id);
+  });
+
+  it("does not inject auto-evolve after 4 read-only external tools (no mutating tool)", async () => {
+    const { fs, mgr, row } = await runEvolveTurn(["WebFetch", "WebFetch", "WebFetch", "WebFetch"]);
+    expect(fs.users.length).toBe(1);
+    await shutdown(mgr, row.id);
+  });
+
+  it("injects a system-tagged, announcement-free check after 4 substantive incl. a mutating tool", async () => {
+    const { fs, mgr, row } = await runEvolveTurn(["Bash", "Write", "WebFetch", "WebSearch"]);
+    expect(fs.users.length).toBe(2);
+    const text = String(fs.users[1].message.content);
+    expect(text.startsWith('<runtime-check kind="auto-evolve">')).toBe(true);
+    expect(text).toContain("<auto-evolve>");
+    expect(text).not.toContain("mcp__slaude_surface__reply");
+    expect(text).not.toContain("saved /");
+    await shutdown(mgr, row.id);
+  });
+
+  it("an external mcp__ tool counts as mutating", async () => {
+    const { fs, mgr, row } = await runEvolveTurn(["WebFetch", "WebFetch", "WebSearch", "mcp__ext__do_thing"]);
+    expect(fs.users.length).toBe(2);
+    await shutdown(mgr, row.id);
+  });
+
+  it("/remote read aliases are read-only and ignored, like their built-ins", async () => {
+    const { fs, mgr, row } = await runEvolveTurn(["mcp__remote__read", "mcp__remote__grep", "mcp__remote__glob", "mcp__remote__read"]);
+    expect(fs.users.length).toBe(1);
+    await shutdown(mgr, row.id);
+  });
+
+  it("/remote write aliases count as mutating, like their built-ins", async () => {
+    const { fs, mgr, row } = await runEvolveTurn(["mcp__remote__bash", "mcp__remote__edit", "WebFetch", "WebSearch"]);
+    expect(fs.users.length).toBe(2);
+    await shutdown(mgr, row.id);
+  });
+
+  it("SLAUDE_AUTO_EVOLVE_MIN_TOOLS overrides the bar", async () => {
+    process.env.SLAUDE_AUTO_EVOLVE_MIN_TOOLS = "2";
+    const { fs, mgr, row } = await runEvolveTurn(["Bash", "Write"]);
+    expect(fs.users.length).toBe(2);
+    await shutdown(mgr, row.id);
   });
 
   it("skips auto-evolve when the turn already wrote a skill", async () => {
@@ -1137,7 +1205,7 @@ describe("AgentManager reload: overlapping inputs and a CLI that never exits", (
         if (text.includes("<auto-evolve>")) finishEvolve = () => s.emit(res());
         else if (text === "B") finishB = () => s.emit(res());
         else {
-          s.emit(asst([tool("Bash"), tool("Write"), txt("did the work")]));
+          s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch"), txt("did the work")]));
           s.emit(res());
         }
       };

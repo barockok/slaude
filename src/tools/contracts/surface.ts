@@ -18,6 +18,15 @@ export const surfaceContract = {
         "Send a message to the user in the current conversation. This is the primary way to communicate — plain assistant text is NOT shown to them. Returns a `ref` you can pass to edit later.",
       schema: { text: z.string().describe("Message body. Markdown supported.") },
     },
+    pass: {
+      name: "pass",
+      description:
+        "End this turn deliberately WITHOUT replying, when the message isn't for you or needs nothing from you. Optionally react (e.g. `eyes`). Logged. Never use it to dodge a question addressed to you.",
+      schema: {
+        reason: z.string().describe("Why you are not replying (logged, never shown)."),
+        react: z.string().optional().describe("Optional emoji name (without colons) to react with on the inbound message."),
+      },
+    },
     get_history: {
       name: "get_history",
       description: "Read recent messages from the current conversation for context.",

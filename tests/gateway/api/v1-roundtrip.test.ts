@@ -77,6 +77,7 @@ const FIXTURES: Record<string, Record<string, Fixture>> = {
   surface: {
     reply: { input: { text: "roundtrip" } },
     get_history: { input: {} },
+    pass: { input: { reason: "roundtrip pass", react: "eyes" } },
     request_approval: { input: { summary: "roundtrip approval" } }, // non-blocking: returns {pendingId} (spec §3)
     edit: { input: { ref: "1.1", text: "edited" } },
     react: { input: { name: "eyes" } },

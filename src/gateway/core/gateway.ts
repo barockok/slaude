@@ -195,6 +195,17 @@ type SessionRoute = {
   surface: Surface;
   /** Whether the agent has emitted user-visible output this turn (surface reply/edit/upload). */
   spoke: boolean;
+  /** The agent ended this turn deliberately without replying (`mcp__slaude_surface__pass`).
+   *  Satisfies the stop guard like `spoke`, but posts nothing. Reset per turn. */
+  passed?: boolean;
+  /** The reaction the pass added (`react`), if any. A passed turn ends without ✅,
+   *  and the received 👀 is kept only when it is this same emoji. Reset per turn. */
+  passReact?: string;
+  /** Whether the thread was engaged before this turn's mention engaged it.
+   *  `false` means the mention engaged it; a turn that then only passes puts it
+   *  back (a passing mention is not an invitation). Undefined when the turn did
+   *  not come from a mention. Set per turn. */
+  engagedBefore?: boolean;
   /** Slack message ref for the live todo tracker posted by the TodoWrite interceptor.
    *  Cleared at the start of each new user turn so each request gets a fresh block. */
   todoRef?: string;
@@ -813,15 +824,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     cancelNightlyMaintenance = scheduleNightlyMaintenance();
   }
   // Stop-hook enforcement: if a turn ends without any user-visible Slack tool
-  // (reply / edit / upload), block the stop once with an instruction that
-  // forces the agent to call `mcp__slaude_slack__reply` before exiting.
+  // (reply / edit / upload) or an explicit pass, block the stop once with an
+  // instruction to either reply (`mcp__slaude_surface__reply`) or pass
+  // (`mcp__slaude_surface__pass`) before exiting.
   agent.setStopGuard((sessionId) => {
     if (voiceTurns.active(sessionId)) return null;
     const route = routes.get(sessionId);
     if (!route) return null;
     if (route.spoke) return null;
+    if (route.passed) return null;
     if (route.silent) return null;
-    return "You have not delivered a reply to the user. Call `mcp__slaude_surface__reply` now with your answer to the inbound message, then stop. Do not stop without replying.";
+    return "You ended the turn without a reply or a pass. If the message needs an answer, call `mcp__slaude_surface__reply`; if it is not for you, call `mcp__slaude_surface__pass` with a reason. Then stop.";
   });
 
   // Brain gate input from the live SlackContext — read per tool call so the
@@ -1557,7 +1570,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           e.tool === `mcp__${SLACK_MCP_NAME}__reply` ||
           e.tool === `mcp__${SLACK_MCP_NAME}__edit` ||
           e.tool === `mcp__${SLACK_MCP_NAME}__upload`;
-        if (userVisible) {
+        if (e.tool === `mcp__${SURFACE_MCP_NAME}__pass`) {
+          // Deliberate silence: satisfies the stop guard without counting as
+          // having spoken, and without the working reaction.
+          route.passed = true;
+          const react = (e.input as any)?.react;
+          if (typeof react === "string" && react) route.passReact = react.replace(/^:|:$/g, "");
+        } else if (userVisible) {
           route.spoke = true;
           void reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_WORKING);
         } else {
@@ -1659,6 +1678,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         break;
       }
       case "done": {
+        // engagedBefore belongs to the turn that is ending (the auto-evolve
+        // check that follows a user turn is not one).
+        const engagedBefore = route.engagedBefore;
+        if (!e.autoEvolve) route.engagedBefore = undefined;
         void (async () => {
           // Voice-origin turn: the thread stays quiet (no ✅, no task-block
           // edits), but the per-turn state is still cleaned up.
@@ -1695,10 +1718,23 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           }
           route.tasksRef = undefined;
           route.tasksMap = undefined;
+          // A mention that engaged the thread and ended in a pass (nothing
+          // user-visible) gives the engagement back: the thread stays as it was.
+          if (route.passed && !route.spoke && engagedBefore === false) {
+            console.log(`[pass] disengage ch=${route.ctx.channel} ts=${route.ctx.threadTs}`);
+            await persistEngaged(route.ctx.teamId, route.ctx.channel, route.ctx.threadTs, false, route.ctx.personaId ?? "default")
+              .catch((err) => console.error(`[pass] disengage failed ch=${route.ctx.channel} ts=${route.ctx.threadTs}:`, err?.message ?? err));
+          }
           // No fallback notice: setStopGuard above forces a reply via the SDK
           // Stop hook. If the agent still stops without spoke, manager logs
           // to stderr — surfacing a Slack message here would be redundant.
-          await reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_DONE);
+          if (route.passed && !route.spoke) {
+            // A pass posts nothing: no ✅. The received 👀 goes too, unless the
+            // pass reacted with that same emoji (Slack holds one per name).
+            await reactions.clear(e.sessionId, route.passReact);
+          } else {
+            await reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_DONE);
+          }
           reactions.forget(e.sessionId);
           presence.exit(e.sessionId);
           await status.clear(e.sessionId);
@@ -1747,7 +1783,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
   });
 
-  async function handleMessage(args: any, dispatch?: { suppress?: boolean; personaId?: string }) {
+  async function handleMessage(args: any, dispatch?: { suppress?: boolean; personaId?: string; engagedBefore?: boolean }) {
     const suppress = dispatch?.suppress === true;
     const { event, client, context } = args;
     const teamId: string | undefined = context.teamId ?? event.team;
@@ -2571,6 +2607,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             existing.ctx.inboundTs = eventTs;
             if (app.apiAppId) existing.ctx.apiAppId = app.apiAppId;
             existing.spoke = false;
+            existing.passed = false;
+            existing.passReact = undefined;
+            existing.engagedBefore = dispatch?.engagedBefore;
             existing.wasCompacting = true;
           } else {
             const compactPersonaId = session.persona_id !== "default" ? session.persona_id : undefined;
@@ -2591,6 +2630,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               ctx,
               surface: wrapSurface(surfaceForCtx(ctx), session.id),
               spoke: false,
+              engagedBefore: dispatch?.engagedBefore,
               wasCompacting: true,
             });
           }
@@ -2704,7 +2744,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     })();
 
     // Wrap inbound in a channel envelope so the agent has slack context
-    // and a clear directive to reply via the MCP tool — not as plain text.
+    // and a clear directive to reply (or pass) via the MCP tools — not as plain text.
     const oneOnOneLock = await OneOnOne.find(channelId, threadTs);
     const oneOnOneAttr = oneOnOneLock
       ? ` one_on_one="true" locked_user="<@${oneOnOneLock.locked_user}>"`
@@ -2720,7 +2760,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       (suppress
         ? `You are currently disengaged from this thread, so this message is recorded ` +
           `for context only — do NOT reply to it. You will catch up on it when re-engaged.`
-        : `Reply to the user by calling the \`mcp__${SLACK_MCP_NAME}__reply\` tool. ` +
+        : `Reply by calling \`mcp__${SURFACE_MCP_NAME}__reply\`, or call ` +
+          `\`mcp__${SURFACE_MCP_NAME}__pass\` if the message is not for you or needs nothing from you. ` +
           `Plain assistant text is not delivered to Slack — only tool calls reach the user.`);
 
     permissions.bindSession(session.id, channelId, threadTs, app);
@@ -2740,6 +2781,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.ctx.client = outClientForPersona(dispatch?.personaId, appOf(existing.ctx));
       existing.ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
       existing.spoke = false;
+      existing.passed = false;
+      existing.passReact = undefined;
+      // A message merged into a running turn carries no mention result
+      // (undefined) and must not erase the running mention's; the done
+      // handler clears it at the end of every turn.
+      if (dispatch?.engagedBefore !== undefined) existing.engagedBefore = dispatch.engagedBefore;
       existing.todoRef = undefined;       // fresh tracker per user turn
       existing.todosSnapshot = undefined;
       existing.pendingTaskCreate = undefined;
@@ -2767,7 +2814,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           ...req,
         });
       ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
-      routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, suppress });
+      routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, suppress, engagedBefore: dispatch?.engagedBefore });
     }
 
     // After the route is in place, so the reaction and status resolvers read
@@ -2888,6 +2935,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const row = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: personaId });
     if (row) await Sessions.setEngaged(row.id, value);
   };
+  /** A mention engages the thread and returns whether it was engaged before
+   *  (no row, a first mention, is `false`). A second delivery of an event that
+   *  was already handled (app_mention and message carry the same ts) writes
+   *  nothing: it would re-engage a thread that the first delivery's turn gave
+   *  back by passing. handleMessage drops that delivery as a duplicate. */
+  const engageOnMention = async (teamId: string | undefined, channelId: string, threadTs: string, eventTs: string, personaId = "default") => {
+    if (!teamId) return undefined;
+    if (await SeenEvents.has(`${channelId}:${eventTs}`)) return undefined;
+    const prior = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: personaId });
+    await persistEngaged(teamId, channelId, threadTs, true, personaId);
+    return !!prior && !!prior.engaged;
+  };
 
   // Bot identities (D1.4). With several registered apps in one channel, every
   // message reaches every app, so "self" must be the union of ALL registered
@@ -3006,8 +3065,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   t.event("app_mention", async (args: any) => {
     const e: any = args.event;
     const ts: string = e.thread_ts || e.ts;
-    await persistEngaged(args.context?.teamId ?? e.team, e.channel, ts, true);
-    await handleMessage(args);
+    const engagedBefore = await engageOnMention(args.context?.teamId ?? e.team, e.channel, ts, e.ts);
+    await handleMessage(args, { engagedBefore });
   });
 
   // Single message router: every non-bot message goes here so we can manage
@@ -3072,8 +3131,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     );
 
     if (mentionsBot) {
-      await persistEngaged(teamId, channelId, ts, true);
-      return await handleMessage(args);
+      const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts);
+      return await handleMessage(args, { engagedBefore });
     }
     if (!mentionedPersona) {
       // A retired persona's identity stops routing: drop what is addressed to it
@@ -3089,8 +3148,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (mentionedPersona) {
       // Re-engage the persona's row if it was disengaged; a first mention has
       // no row yet and the session is born engaged.
-      await persistEngaged(teamId, channelId, ts, true, mentionedPersona.name);
-      return await handleMessage(args, { personaId: mentionedPersona.name });
+      const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts, mentionedPersona.name);
+      return await handleMessage(args, { personaId: mentionedPersona.name, engagedBefore });
     }
     if (mentionsOther) {
       // Disengage the bot AND every persona in this thread (the user is
@@ -3342,7 +3401,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       `<channel source="panel" channel_id="${channelId}" thread_ts="${threadTs}" ` +
       `inbound_ts="${eventTs}" user_id="${operatorId}" user_name="${escapeAttr(operatorId)}" ` +
       `trust="restricted" one_on_one="false" locked_user="">\n${text}\n</channel>\n\n` +
-      `Reply to the user by calling the \`mcp__${SLACK_MCP_NAME}__reply\` tool. ` +
+      `Reply by calling \`mcp__${SURFACE_MCP_NAME}__reply\`, or call ` +
+      `\`mcp__${SURFACE_MCP_NAME}__pass\` if the message is not for you or needs nothing from you. ` +
       `Plain assistant text is not delivered — only tool calls reach the operator.`;
     if (queueDispatch) {
       await queueDispatch.dispatch(session, envelope, meta);

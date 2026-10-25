@@ -5,6 +5,7 @@ import type { Surface } from "./surface";
 import { mutateOverride, FIELD_ALIASES, type FieldAlias } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
 import { soulData } from "../../soul/extract";
+import { redactSecrets } from "./status-text";
 
 export const SURFACE_MCP_NAME = surfaceContract.server;
 
@@ -45,6 +46,17 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
       handler: async ({ text }) => {
         try { const { ref } = await surface.reply({ text }); return ok(`posted ref=${ref}`); }
         catch (e: any) { return fail(`reply failed: ${e?.message ?? String(e)}`); }
+      },
+    },
+    {
+      ...c.pass,
+      handler: async ({ reason, react }) => {
+        console.log("[pass] reason=" + redactSecrets(JSON.stringify(reason)));
+        if (react && surface.capabilities.has("react") && surface.react) {
+          try { await surface.react({ name: react }); }
+          catch { return ok("passed (reaction failed)"); }
+        }
+        return ok("passed");
       },
     },
     {

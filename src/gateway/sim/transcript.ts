@@ -1,6 +1,7 @@
 import { parse as parseYaml } from "yaml";
 import { SimSession, type SoulFixture } from "./engine";
 import type { OutboundCard } from "./transport";
+import { firstVoiceViolation } from "./voice-lint";
 
 export interface Transcript {
   layer?: string;
@@ -33,8 +34,11 @@ export async function runTranscript(t: Transcript, agent: "stub" | "real" = "stu
     nodes,
   });
   try {
+    // OutboundCard has no author field (every outbound card is the gateway/agent), so
+    // expect_natural_voice lints every message card produced since the last `send`.
+    let sentAt = 0;
     for (const step of t.steps) {
-      if (step.send) { await s.send(step.send); continue; }
+      if (step.send) { sentAt = s.cards().length; await s.send(step.send); continue; }
       if (step.click) { await s.click(step.click); continue; }
       if (step.expect_card) {
         const { kind, to, contains } = step.expect_card;
@@ -49,6 +53,11 @@ export async function runTranscript(t: Transcript, agent: "stub" | "real" = "stu
         if (!hit) throw new Error(`expect_reply contains ${JSON.stringify(step.expect_reply.contains)} - no match. bus=${dump(s.cards())}`);
         const banned = step.expect_reply.not_contains;
         if (banned && s.cards().some((c) => (c.text ?? "").includes(banned))) throw new Error(`expect_reply not_contains ${JSON.stringify(banned)} - found. bus=${dump(s.cards())}`);
+        continue;
+      }
+      if (step.expect_natural_voice) {
+        const v = firstVoiceViolation(s.cards().slice(sentAt));
+        if (v) throw new Error(`expect_natural_voice failed: ${v.rule} in ${v.text}`);
         continue;
       }
       if (step.expect_drop) {
