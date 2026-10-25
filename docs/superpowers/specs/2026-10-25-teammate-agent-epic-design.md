@@ -12,7 +12,7 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 | Phase | Plan | Status | Release |
 |---|---|---|---|
 | A. Natural voice | `docs/superpowers/plans/2026-10-25-phase-a-natural-voice.md` | done, merged (#152; unreleased — ships as RC) | — |
-| B. Decision gate | `docs/superpowers/plans/2026-10-25-phase-b-decision-gate.md` | planned | — |
+| B. Decision gate | `docs/superpowers/plans/2026-10-25-phase-b-decision-gate.md` | done (unreleased) | — |
 | R. Runtime prompt as built-in skills | — | not started | — |
 | C. Memory structure | — | not started | — |
 | D. Background learning and budget | — | not started | — |
@@ -32,7 +32,7 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 - [x] B3 Gate input builder: thread excerpt, roles, KB score (§7.3)
 - [x] B4 Runner: modes, timeout fallback, memo, metrics; config and gateway-only key (§7.5, §7.6)
 - [x] B5 Gateway wiring: mention and engaged paths, doubt reaction, bypasses; `off` equivalence (§7.2, §7.7)
-- [ ] B6 Field note; full suite; phase closed
+- [x] B6 Field note; full suite; phase closed
 
 ## 1. Goal
 
