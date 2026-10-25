@@ -95,7 +95,13 @@ import { brainMode } from "../../knowledge/brain-config";
 import { syncKbWikis } from "../../knowledge/brain-sync";
 import { scheduleNightlyMaintenance } from "../../knowledge/brain-cycle";
 import { trackBrainWork, whileClosing } from "../../knowledge/brain-work";
-import { channelTrustFor, resolveBrainScope } from "../../knowledge/scope";
+import { channelTrustFor, resolveBrainScope, type ChannelTrust } from "../../knowledge/scope";
+import { gather } from "../../knowledge/gather";
+import { gateRunnerFromEnv, type GateRunner } from "../gate/runner";
+import { buildGateInput, type GateContextDeps } from "../gate/context";
+import type { GateAction, Trust } from "../gate/types";
+import { providerSecretResolver } from "../api/tenants";
+import { parseRef } from "../../secrets";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
 import { memory as processMemory } from "../../memory";
 import { makeScopedMemory } from "../../memory/scoped";
@@ -186,6 +192,35 @@ const REACT_RECEIVED = "eyes";
 const REACT_WORKING = "gear";
 const REACT_DONE = "white_check_mark";
 const REACT_ERROR = "x";
+/** A mention the decision gate doubts is addressed to the agent: recorded, not run. */
+const REACT_DOUBT = "thinking_face";
+
+/** The brain's channel trust in the envelope's terms (trusted / allowed / restricted). */
+const GATE_TRUST: Record<ChannelTrust, Trust> = { trusted: "trusted", public: "allowed", unknown: "restricted" };
+
+/** Pages of thread history the decision gate reads at most. */
+const GATE_REPLY_PAGES = 5;
+
+/**
+ * The decision gate's thread context: the last `limit` messages of the thread
+ * up to and including `latest` (conversations.replies pages oldest-first from
+ * the thread start, so the tail is kept across pages). Throws on a failed call;
+ * buildGateInput reads that as no context.
+ */
+async function threadTail(client: any, channel: string, threadTs: string, latest: string, limit: number) {
+  let tail: Array<{ user?: string; bot_id?: string; text?: string; ts: string }> = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < GATE_REPLY_PAGES; page++) {
+    const r = await client.conversations.replies({
+      channel, ts: threadTs, latest, inclusive: true, limit, ...(cursor ? { cursor } : {}),
+    });
+    if (!r?.ok) throw new Error("conversations.replies failed");
+    tail = [...tail, ...(r.messages ?? [])].slice(-limit);
+    cursor = r.response_metadata?.next_cursor || undefined;
+    if (!cursor) break;
+  }
+  return tail;
+}
 
 const STATUS_THINKING = { text: "thinking", emoji: ":thought_balloon:" };
 
@@ -282,6 +317,9 @@ export interface GatewayOptions {
    *  node. Tests inject one over their key prefix; explicit null forces the
    *  panel off regardless of env. */
   panel?: PanelInfra | null;
+  /** Decision gate (phase B). Default: the runner gateRunnerFromEnv resolves
+   *  to at boot (SLAUDE_DECISION_CONFIG), treated as off until it does. */
+  gateRunner?: GateRunner;
 }
 
 /** Redis-backed primitives the control panel needs — injected together so a
@@ -3058,6 +3096,99 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return ids;
   };
 
+  // Decision gate (phase B): consulted before a mention or an engaged plain
+  // reply starts a turn. Off until the boot-time runner resolves; a boot
+  // failure leaves it off.
+  let gateRunner: GateRunner | null = opts.gateRunner ?? null;
+  if (!opts.gateRunner) {
+    const resolver = providerSecretResolver();
+    void gateRunnerFromEnv({ resolveSecret: (ref) => resolver.resolve(parseRef(ref), { persona: "default" }) })
+      .then((r) => {
+        gateRunner = r;
+        if (r.mode !== "off") console.log(`[gate] mode=${r.mode}`);
+      })
+      .catch((e: any) => console.error(`[gate] boot failed (${e?.name ?? "error"}); decision gate off`));
+  }
+
+  /**
+   * The gate's action for this event, or undefined for today's path: the gate
+   * off, the thread under a /1on1 lock, or any error. `actual` is "run": what
+   * today's code does on every gated path.
+   */
+  const consultGate = async (
+    args: any,
+    o: { mentionsAgent: boolean; personaId?: string },
+  ): Promise<GateAction | undefined> => {
+    const runner = gateRunner;
+    if (!runner || runner.mode === "off") return undefined;
+    const e: any = args.event;
+    const key = `${e.channel}:${e.ts}`;
+    try {
+      const threadTs: string = e.thread_ts || e.ts;
+      if (await OneOnOne.find(e.channel, threadTs)) return undefined;
+      const teamId: string | undefined = args.context?.teamId ?? e.team;
+      const client = args.client ?? t.client;
+      const input = async () => {
+        const engaged = o.mentionsAgent
+          ? !!teamId &&
+            !!(await Sessions.findByThread({ team_id: teamId, channel_id: e.channel, thread_ts: threadTs, persona_id: o.personaId ?? "default" }))?.engaged
+          : true;
+        const ctx = { channel: e.channel, threadTs, userId: e.user, personaId: o.personaId } as SlackContext;
+        const deps: GateContextDeps = {
+          replies: (channel, thread, limit) => threadTail(client, channel, thread, e.ts, limit),
+          kbSearch: brainEnabled()
+            ? async (q) => gather(q, resolveBrainScope({ ...(await brainGateFor(ctx)), kbSources: personaKbSourceIds(o.personaId) }))
+            : null,
+          selfIds: { botUserId: await getBotId(args), botIds: (await getSelfBots(args)).botIds },
+        };
+        return buildGateInput(
+          { channel: e.channel, ts: e.ts, thread_ts: e.thread_ts, text: (e.text ?? "").toString() },
+          { mentionsAgent: o.mentionsAgent, engaged, channelTrust: GATE_TRUST[channelTrustFor(e.channel, soulData())], contextMessages: runner.contextMessages },
+          deps,
+        );
+      };
+      return await runner.gate(key, input, "run");
+    } catch {
+      console.error(`[gate] error key=${key}`);
+      return undefined;
+    }
+  };
+
+  /**
+   * record_doubt on a mention: react, record into the persona's existing
+   * session (suppressed), never engage. No session: nothing to record into.
+   */
+  const recordDoubt = async (args: any, personaId?: string): Promise<void> => {
+    const e: any = args.event;
+    const teamId: string | undefined = args.context?.teamId ?? e.team;
+    const threadTs: string = e.thread_ts || e.ts;
+    try {
+      await outClientForPersona(personaId, { apiAppId: args.context?.apiAppId, teamId }).reactions.add({
+        channel: e.channel, timestamp: e.ts, name: REACT_DOUBT,
+      });
+    } catch (err: any) {
+      // The other copy of the same mention already reacted.
+      if (err?.data?.error !== "already_reacted") {
+        console.error(`[gate] doubt reaction failed ch=${e.channel} ts=${e.ts}:`, err?.data?.error ?? err?.message);
+      }
+    }
+    const row = teamId
+      ? await Sessions.findByThread({ team_id: teamId, channel_id: e.channel, thread_ts: threadTs, persona_id: personaId ?? "default" })
+      : null;
+    if (row) {
+      console.log(`[slack-rx] record ch=${e.channel} ts=${e.ts} user=${e.user} — gate doubt, suppressed`);
+      return await handleMessage(args, { suppress: true, personaId });
+    }
+    console.log(`[slack-rx] drop ch=${e.channel} ts=${e.ts} user=${e.user} — gate doubt, no session to record into`);
+  };
+
+  /** An engaged plain reply the gate records rather than runs. */
+  const recordEngaged = async (args: any, personaId?: string): Promise<void> => {
+    const e: any = args.event;
+    console.log(`[slack-rx] record ch=${e.channel} ts=${e.ts} user=${e.user} — gate record, suppressed`);
+    return await handleMessage(args, { suppress: true, personaId });
+  };
+
   // app_mention is a guaranteed delivery path even if message.channels event
   // subscription isn't enabled. Engage the thread, then defer to handleMessage.
   // (handleMessage's seen_events dedup prevents double-handling when the same
@@ -3065,6 +3196,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   t.event("app_mention", async (args: any) => {
     const e: any = args.event;
     const ts: string = e.thread_ts || e.ts;
+    if ((await consultGate(args, { mentionsAgent: true })) === "record_doubt") return await recordDoubt(args);
     const engagedBefore = await engageOnMention(args.context?.teamId ?? e.team, e.channel, ts, e.ts);
     await handleMessage(args, { engagedBefore });
   });
@@ -3131,6 +3263,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     );
 
     if (mentionsBot) {
+      if ((await consultGate(args, { mentionsAgent: true })) === "record_doubt") return await recordDoubt(args);
       const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts);
       return await handleMessage(args, { engagedBefore });
     }
@@ -3148,6 +3281,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (mentionedPersona) {
       // Re-engage the persona's row if it was disengaged; a first mention has
       // no row yet and the session is born engaged.
+      const personaId = mentionedPersona.name;
+      if ((await consultGate(args, { mentionsAgent: true, personaId })) === "record_doubt") return await recordDoubt(args, personaId);
       const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts, mentionedPersona.name);
       return await handleMessage(args, { personaId: mentionedPersona.name, engagedBefore });
     }
@@ -3215,6 +3350,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const def = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: "default" });
       if (def?.engaged) {
         if (otherApp(def)) return;
+        if ((await consultGate(args, { mentionsAgent: false })) === "record") return await recordEngaged(args);
         return await handleMessage(args);
       }
       // Multi-persona: a plain reply continues whichever persona is engaged in this thread.
@@ -3223,6 +3359,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           const row = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: p.name });
           if (row?.engaged) {
             if (otherApp(row)) return;
+            if ((await consultGate(args, { mentionsAgent: false, personaId: p.name })) === "record") {
+              return await recordEngaged(args, p.name);
+            }
             return await handleMessage(args, { personaId: p.name });
           }
         }
@@ -3241,6 +3380,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // Engaged session outside the registry (e.g. persona removed from
         // config) — keep handling plain replies as that persona.
         const restoredPersonaId = any.persona_id !== "default" ? any.persona_id : undefined;
+        if ((await consultGate(args, { mentionsAgent: false, personaId: restoredPersonaId })) === "record") {
+          return await recordEngaged(args, restoredPersonaId);
+        }
         return await handleMessage(args, { personaId: restoredPersonaId });
       }
       // Explicitly disengaged (row.engaged=0): record plain messages into the

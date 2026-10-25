@@ -131,12 +131,13 @@ async function applyProviderCreds(out: RuntimeBundle["providerCreds"], tenantId:
  * its environment at boot (src/gateway/core/provider-secrets.ts, which adds
  * Vault); until then, and in tests, env:// references resolve against this
  * process's environment and a vault:// reference fails as "disabled".
+ * The decision gate's apiKey reference resolves through the same resolver.
  */
 let secretResolver: SecretResolver | null = null;
 export function setProviderSecretResolver(r: SecretResolver | null): void {
   secretResolver = r;
 }
-function providerSecretResolver(): SecretResolver {
+export function providerSecretResolver(): SecretResolver {
   return (secretResolver ??= createSecretResolver({ env: process.env, onEvent: logResolveEvent }));
 }
 

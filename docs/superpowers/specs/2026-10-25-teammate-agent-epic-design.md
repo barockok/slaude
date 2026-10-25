@@ -31,7 +31,7 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 - [x] B2 Jev adapter (§7.3)
 - [x] B3 Gate input builder: thread excerpt, roles, KB score (§7.3)
 - [x] B4 Runner: modes, timeout fallback, memo, metrics; config and gateway-only key (§7.5, §7.6)
-- [ ] B5 Gateway wiring: mention and engaged paths, doubt reaction, bypasses; `off` equivalence (§7.2, §7.7)
+- [x] B5 Gateway wiring: mention and engaged paths, doubt reaction, bypasses; `off` equivalence (§7.2, §7.7)
 - [ ] B6 Field note; full suite; phase closed
 
 ## 1. Goal
