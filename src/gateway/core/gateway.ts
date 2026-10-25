@@ -824,8 +824,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     cancelNightlyMaintenance = scheduleNightlyMaintenance();
   }
   // Stop-hook enforcement: if a turn ends without any user-visible Slack tool
-  // (reply / edit / upload) or an explicit pass, block the stop once with an instruction that
-  // forces the agent to call `mcp__slaude_slack__reply` before exiting.
+  // (reply / edit / upload) or an explicit pass, block the stop once with an
+  // instruction to either reply (`mcp__slaude_surface__reply`) or pass
+  // (`mcp__slaude_surface__pass`) before exiting.
   agent.setStopGuard((sessionId) => {
     if (voiceTurns.active(sessionId)) return null;
     const route = routes.get(sessionId);
@@ -833,7 +834,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (route.spoke) return null;
     if (route.passed) return null;
     if (route.silent) return null;
-    return "You have not delivered a reply to the user. Call `mcp__slaude_surface__reply` now with your answer to the inbound message, then stop. Do not stop without replying.";
+    return "You ended the turn without a reply or a pass. If the message needs an answer, call `mcp__slaude_surface__reply`; if it is not for you, call `mcp__slaude_surface__pass` with a reason. Then stop.";
   });
 
   // Brain gate input from the live SlackContext — read per tool call so the
@@ -2743,7 +2744,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     })();
 
     // Wrap inbound in a channel envelope so the agent has slack context
-    // and a clear directive to reply via the MCP tool — not as plain text.
+    // and a clear directive to reply (or pass) via the MCP tools — not as plain text.
     const oneOnOneLock = await OneOnOne.find(channelId, threadTs);
     const oneOnOneAttr = oneOnOneLock
       ? ` one_on_one="true" locked_user="<@${oneOnOneLock.locked_user}>"`
@@ -2759,7 +2760,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       (suppress
         ? `You are currently disengaged from this thread, so this message is recorded ` +
           `for context only — do NOT reply to it. You will catch up on it when re-engaged.`
-        : `Reply to the user by calling the \`mcp__${SLACK_MCP_NAME}__reply\` tool. ` +
+        : `Reply by calling \`mcp__${SURFACE_MCP_NAME}__reply\`, or call ` +
+          `\`mcp__${SURFACE_MCP_NAME}__pass\` if the message is not for you or needs nothing from you. ` +
           `Plain assistant text is not delivered to Slack — only tool calls reach the user.`);
 
     permissions.bindSession(session.id, channelId, threadTs, app);
@@ -3399,7 +3401,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       `<channel source="panel" channel_id="${channelId}" thread_ts="${threadTs}" ` +
       `inbound_ts="${eventTs}" user_id="${operatorId}" user_name="${escapeAttr(operatorId)}" ` +
       `trust="restricted" one_on_one="false" locked_user="">\n${text}\n</channel>\n\n` +
-      `Reply to the user by calling the \`mcp__${SLACK_MCP_NAME}__reply\` tool. ` +
+      `Reply by calling \`mcp__${SURFACE_MCP_NAME}__reply\`, or call ` +
+      `\`mcp__${SURFACE_MCP_NAME}__pass\` if the message is not for you or needs nothing from you. ` +
       `Plain assistant text is not delivered — only tool calls reach the operator.`;
     if (queueDispatch) {
       await queueDispatch.dispatch(session, envelope, meta);

@@ -112,6 +112,30 @@ describe("pass surface tool", () => {
     expect(g.guard(session.id)).toBeNull();
   });
 
+  it("the per-turn envelope offers reply or pass on the surface namespace", async () => {
+    writeSoulFixture(WORLD);
+    const g = makeGw();
+    const sent: string[] = [];
+    g.agent.sendMessage = async (_id: string, txt: string) => { sent.push(txt); };
+    await g.emit("message", dmArgs(g, "hello", nextTs()));
+    const env = sent.at(-1)!;
+    expect(env).toContain("`mcp__slaude_surface__reply`");
+    expect(env).toContain("`mcp__slaude_surface__pass`");
+    expect(env).not.toContain("mcp__slaude_slack__reply");
+  });
+
+  it("stop guard text offers reply or pass", async () => {
+    writeSoulFixture(WORLD);
+    const g = makeGw();
+    const ts = nextTs();
+    await g.emit("message", dmArgs(g, "hello", ts));
+    const session = await g.agent.ensureSession({ team_id: "T", channel_id: "D_MGR", thread_ts: ts });
+    const text = g.guard(session.id)!;
+    expect(text).toContain("`mcp__slaude_surface__reply`");
+    expect(text).toContain("`mcp__slaude_surface__pass`");
+    expect(text).not.toContain("Do not stop without replying");
+  });
+
   it("stop guard still blocks a silent stop without pass", async () => {
     writeSoulFixture(WORLD);
     const g = makeGw();
