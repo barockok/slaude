@@ -200,11 +200,15 @@ const GATE_TRUST: Record<ChannelTrust, Trust> = { trusted: "trusted", public: "a
 
 /** Pages of thread history the decision gate reads at most. */
 const GATE_REPLY_PAGES = 5;
+/** conversations.replies page size for the gate (Slack's recommended maximum),
+ *  independent of how many messages the gate keeps. */
+const GATE_REPLY_PAGE_SIZE = 200;
 
 /**
  * The decision gate's thread context: the last `limit` messages of the thread
  * up to and including `latest` (conversations.replies pages oldest-first from
- * the thread start, so the tail is kept across pages). Throws on a failed call;
+ * the thread start, so the tail is kept across pages; pages are large so the
+ * page bound reaches the event in all but very long threads). Throws on a failed call;
  * buildGateInput reads that as no context.
  */
 async function threadTail(client: any, channel: string, threadTs: string, latest: string, limit: number) {
@@ -212,10 +216,11 @@ async function threadTail(client: any, channel: string, threadTs: string, latest
   let cursor: string | undefined;
   for (let page = 0; page < GATE_REPLY_PAGES; page++) {
     const r = await client.conversations.replies({
-      channel, ts: threadTs, latest, inclusive: true, limit, ...(cursor ? { cursor } : {}),
+      channel, ts: threadTs, latest, inclusive: true, limit: GATE_REPLY_PAGE_SIZE, ...(cursor ? { cursor } : {}),
     });
     if (!r?.ok) throw new Error("conversations.replies failed");
-    tail = [...tail, ...(r.messages ?? [])].slice(-limit);
+    const upToEvent = (r.messages ?? []).filter((m: { ts: string }) => Number(m.ts) <= Number(latest));
+    tail = [...tail, ...upToEvent].slice(-limit);
     cursor = r.response_metadata?.next_cursor || undefined;
     if (!cursor) break;
   }
@@ -3110,6 +3115,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       .catch((e: any) => console.error(`[gate] boot failed (${e?.name ?? "error"}); decision gate off`));
   }
 
+  /** Synchronous: with no runner or an off runner the call sites never await the gate. */
+  const gateActive = (): boolean => gateRunner !== null && gateRunner.mode !== "off";
+
   /**
    * The gate's action for this event, or undefined for today's path: the gate
    * off, the thread under a /1on1 lock, or any error. `actual` is "run": what
@@ -3162,6 +3170,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const e: any = args.event;
     const teamId: string | undefined = args.context?.teamId ?? e.team;
     const threadTs: string = e.thread_ts || e.ts;
+    // Already claimed by handleMessage (the other copy of this mention ran or
+    // was recorded): no 🤔 on a message the agent may be answering, and the
+    // record below would be deduped anyway.
+    if (await SeenEvents.has(`${e.channel}:${e.ts}`)) return;
     try {
       await outClientForPersona(personaId, { apiAppId: args.context?.apiAppId, teamId }).reactions.add({
         channel: e.channel, timestamp: e.ts, name: REACT_DOUBT,
@@ -3196,7 +3208,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   t.event("app_mention", async (args: any) => {
     const e: any = args.event;
     const ts: string = e.thread_ts || e.ts;
-    if ((await consultGate(args, { mentionsAgent: true })) === "record_doubt") return await recordDoubt(args);
+    const act = gateActive() ? await consultGate(args, { mentionsAgent: true }) : undefined;
+    if (act === "record_doubt") return await recordDoubt(args);
     const engagedBefore = await engageOnMention(args.context?.teamId ?? e.team, e.channel, ts, e.ts);
     await handleMessage(args, { engagedBefore });
   });
@@ -3263,7 +3276,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     );
 
     if (mentionsBot) {
-      if ((await consultGate(args, { mentionsAgent: true })) === "record_doubt") return await recordDoubt(args);
+      const act = gateActive() ? await consultGate(args, { mentionsAgent: true }) : undefined;
+      if (act === "record_doubt") return await recordDoubt(args);
       const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts);
       return await handleMessage(args, { engagedBefore });
     }
@@ -3282,7 +3296,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // Re-engage the persona's row if it was disengaged; a first mention has
       // no row yet and the session is born engaged.
       const personaId = mentionedPersona.name;
-      if ((await consultGate(args, { mentionsAgent: true, personaId })) === "record_doubt") return await recordDoubt(args, personaId);
+      const act = gateActive() ? await consultGate(args, { mentionsAgent: true, personaId }) : undefined;
+      if (act === "record_doubt") return await recordDoubt(args, personaId);
       const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts, mentionedPersona.name);
       return await handleMessage(args, { personaId: mentionedPersona.name, engagedBefore });
     }
@@ -3350,7 +3365,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const def = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: "default" });
       if (def?.engaged) {
         if (otherApp(def)) return;
-        if ((await consultGate(args, { mentionsAgent: false })) === "record") return await recordEngaged(args);
+        const act = gateActive() ? await consultGate(args, { mentionsAgent: false }) : undefined;
+        if (act === "record") return await recordEngaged(args);
         return await handleMessage(args);
       }
       // Multi-persona: a plain reply continues whichever persona is engaged in this thread.
@@ -3359,7 +3375,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           const row = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: p.name });
           if (row?.engaged) {
             if (otherApp(row)) return;
-            if ((await consultGate(args, { mentionsAgent: false, personaId: p.name })) === "record") {
+            const act = gateActive() ? await consultGate(args, { mentionsAgent: false, personaId: p.name }) : undefined;
+            if (act === "record") {
               return await recordEngaged(args, p.name);
             }
             return await handleMessage(args, { personaId: p.name });
@@ -3380,7 +3397,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // Engaged session outside the registry (e.g. persona removed from
         // config) — keep handling plain replies as that persona.
         const restoredPersonaId = any.persona_id !== "default" ? any.persona_id : undefined;
-        if ((await consultGate(args, { mentionsAgent: false, personaId: restoredPersonaId })) === "record") {
+        const act = gateActive() ? await consultGate(args, { mentionsAgent: false, personaId: restoredPersonaId }) : undefined;
+        if (act === "record") {
           return await recordEngaged(args, restoredPersonaId);
         }
         return await handleMessage(args, { personaId: restoredPersonaId });

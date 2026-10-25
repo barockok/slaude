@@ -216,7 +216,7 @@ describe("decision gate at the Slack ingress", () => {
     const g = makeGw(runner("on", f.a), replies);
     const ts = String(Number(thread) + 20);
     await mention(g, ts, "<@USLAUDEBOT> what now?", thread);
-    expect(calls[0]).toMatchObject({ channel: CH, ts: thread, latest: ts, inclusive: true });
+    expect(calls[0]).toMatchObject({ channel: CH, ts: thread, latest: ts, inclusive: true, limit: 200 });
     const s = f.states[0]!;
     expect(s.recent.length).toBe(8);
     expect(s.recent.at(-1)).toEqual({ role: "agent", text: "ask <agent>" });
@@ -253,6 +253,47 @@ describe("decision gate at the Slack ingress", () => {
     } finally {
       __resetPersonaRegistry();
     }
+  });
+
+  it("a long thread: the context is its tail before the event, read in at most 5 pages", async () => {
+    const thread = nextTs();
+    const base = Number(thread);
+    // 600 replies; the event is the 596th. A fake honouring latest, limit and cursor like Slack.
+    const all = Array.from({ length: 600 }, (_, i) => ({ ts: String(base + i), user: "U0X", text: `m${i}` }));
+    const ts = all[595]!.ts;
+    const calls: any[] = [];
+    const replies = async (a: any) => {
+      calls.push(a);
+      const upTo = all.filter((m) => Number(m.ts) <= Number(a.latest));
+      const from = a.cursor ? Number(a.cursor) : 0;
+      const page = upTo.slice(from, from + a.limit);
+      const next = from + a.limit < upTo.length ? String(from + a.limit) : "";
+      return { ok: true, messages: page, response_metadata: { next_cursor: next } };
+    };
+    const f = fakeAdapter();
+    const g = makeGw(runner("on", f.a), replies);
+    await g.emit("message", msg(g.t.client, "<@USLAUDEBOT> and now?", ts, { thread }));
+    expect(calls.length).toBeLessThanOrEqual(5);
+    expect(f.states[0]!.recent.map((r) => r.text)).toEqual(Array.from({ length: 8 }, (_, i) => `m${587 + i}`));
+  });
+
+  it("an off runner is never consulted", async () => {
+    let calls = 0;
+    const off: GateRunner = { mode: "off", contextMessages: 8, gate: async () => { calls++; return undefined; } };
+    expect(await scenario(makeGw(off))).toEqual(TODAY);
+    expect(calls).toBe(0);
+  });
+
+  it("no thinking_face on a mention the other copy already handled", async () => {
+    // A recomputed decision: the first copy runs, the second is doubted.
+    let n = 0;
+    const flip: GateRunner = { mode: "on", contextMessages: 8, gate: async () => (n++ === 0 ? "run" : "record_doubt") };
+    const g = makeGw(flip);
+    const ts = nextTs();
+    await mention(g, ts, "<@USLAUDEBOT> help me");
+    expect(n).toBe(2);
+    expect(g.sends.map((s) => (recorded(s) ? "recorded" : "run"))).toEqual(["run"]);
+    expect(g.reacts.filter((r) => r.name === "thinking_face")).toEqual([]);
   });
 
   it("a /1on1-locked thread never calls the gate", async () => {
