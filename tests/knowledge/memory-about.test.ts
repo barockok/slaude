@@ -290,3 +290,48 @@ describe("formatMemoryAbout", () => {
     expect(formatMemoryAbout([])).toBe("");
   });
 });
+
+describe("kb_memoize per-page subject (one batch, notes about two people)", () => {
+  test("each page is stamped with its own subject, and memory_about for Bob leaves out the note about Alice", async () => {
+    const { parseFrontmatter } = await import("../../src/knowledge/memory-pages");
+    const b = fakeBrain();
+    const w = setup(b, { userId: "U0CAROL", turnSenders: [{ userId: "U0CAROL", teamId: TEAM, origin: "slack" }] });
+    const r = await brainHandlers.kb_memoize({
+      subject: "U0BOB",
+      pages: [
+        { slug: "people/U0BOB", content: "Bob likes diffs.", summary: "s", type: "person-note" },
+        { slug: "people/U0ALICE", content: "Alice seems stretched thin.", summary: "s", type: "person-note", subject: "U0ALICE" },
+      ],
+    }, w.deps);
+    expect(r.isError).toBeUndefined();
+    const own = agentSourceId(AGENT);
+    const subjectOf = (slug: string) => parseFrontmatter(b.contentOf(own, slug)!).meta.subject;
+    expect(subjectOf("people/U0BOB")).toBe("U0BOB");
+    expect(subjectOf("people/U0ALICE")).toBe("U0ALICE");
+    const bob = setup(b, { userId: "U0BOB", turnSenders: [BOB] });
+    const out = text(await brainHandlers.memory_about({ userId: "U0BOB" }, bob.deps));
+    expect(out).toContain("Bob likes diffs.");
+    expect(out).not.toContain("stretched thin");
+  });
+
+  test("with target profile, a page whose own subject is someone else is refused", async () => {
+    const b = fakeBrain();
+    const s = setup(b);
+    const r = await brainHandlers.kb_memoize({
+      target: "profile",
+      pages: [{ slug: "profile", content: "Call me Al.", summary: "s", type: "profile", subject: "U0BOB" }],
+    }, s.deps);
+    expect(r.isError).toBe(true);
+    expect(text(r)).toBe("refused: a profile is written only on that person's own turn");
+  });
+
+  test("the tool schema keeps a page's subject", async () => {
+    const { z } = await import("zod");
+    const { kbContract } = await import("../../src/tools/contracts/kb");
+    const parsed = z.object(kbContract.tools.kb_memoize.schema).parse({
+      pages: [{ slug: "people/U0ALICE", content: "x", summary: "s", type: "person-note", subject: "U0ALICE" }],
+    }) as { pages: Array<{ subject?: string }> };
+    expect(parsed.pages[0]!.subject).toBe("U0ALICE");
+    expect(kbContract.tools.kb_memoize.description).toContain("subject");
+  });
+});

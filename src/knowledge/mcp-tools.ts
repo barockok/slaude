@@ -484,10 +484,13 @@ export const brainHandlers = {
       const shape = pageShapeError(pg, target);
       if (shape) return err(shape);
       const source = pg.source ?? (speaker !== undefined ? `told by ${speaker}` : undefined);
-      // The call's subject goes into every typed page (a profile's is its
-      // speaker), so memory_about finds a person's pages under any slug.
-      const subject = pg.type !== undefined ? (p.subject ?? speaker) : undefined;
-      const { subject: _ignored, ...page } = pg;
+      // A page's own subject wins; the call's subject fills pages without one
+      // (a profile's is its speaker), so memory_about finds a person's pages
+      // under any slug and a batch about two people stamps each one right.
+      // An untyped page keeps its own subject, which composePage refuses.
+      const subject = pg.subject ?? (pg.type !== undefined ? (p.subject ?? speaker) : undefined);
+      if (target === "profile" && subject !== speaker) return err(PROFILE_REFUSAL);
+      const { subject: _own, ...page } = pg;
       const c = composePage({ ...page, ...(source !== undefined ? { source } : {}), ...(subject !== undefined ? { subject } : {}) }, now);
       if ("error" in c) return err(c.error);
       composed.push({ slug: pg.slug, content: c.content, ...(pg.supersedes !== undefined ? { supersedes: pg.supersedes } : {}) });
