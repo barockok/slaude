@@ -621,6 +621,65 @@ describe("AgentManager lifecycle", () => {
     await shutdown(mgr, row.id);
   });
 
+  it("evolve turn: blocked, load, then write succeeds", async () => {
+    // The fake SDK does not run hooks itself: the test calls the hooks wired in
+    // options exactly as the CLI would, around each tool call of the evolve turn.
+    process.env.SLAUDE_AUTO_EVOLVE = "1";
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const runHooks = async (event: string, input: any) => {
+      const outs: any[] = [];
+      for (const m of fs.options.hooks[event] ?? []) {
+        for (const h of m.hooks) outs.push(await h({ hook_event_name: event, session_id: "cli", transcript_path: "/t", cwd: "/w", ...input }, "tu", { signal: new AbortController().signal }));
+      }
+      return outs.find((o) => o?.hookSpecificOutput?.permissionDecision === "deny") ?? {};
+    };
+    const decisions: any[] = [];
+    const fs = plan((s) => {
+      s.onUser = (um) => {
+        const text = String(um.message.content);
+        if (!text.includes("<auto-evolve>")) {
+          s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch"), txt("did the work")]));
+          s.emit(res());
+          return;
+        }
+        void (async () => {
+          const write = { tool_name: "mcp__slaude_skills__write_skill", tool_input: { slug: "x" }, tool_use_id: "w1" };
+          decisions.push(await runHooks("PreToolUse", write));
+          const load = { tool_name: "Skill", tool_input: { skill: "slaude:skill-authoring" }, tool_use_id: "k1" };
+          decisions.push(await runHooks("PreToolUse", load));
+          await runHooks("PostToolUse", { ...load, tool_response: { success: true, commandName: "slaude:skill-authoring" } });
+          decisions.push(await runHooks("PreToolUse", write));
+          s.emit(res());
+        })();
+      };
+    });
+
+    await mgr.sendMessage(row.id, "do a thing");
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "evolve done");
+    const evolve = String(fs.users[1].message.content);
+    expect(evolve).toContain("<auto-evolve>");
+    expect(evolve).toContain("Load `slaude:skill-authoring` with the Skill tool (skip if already loaded this session), then call `mcp__slaude_skills__list_skills`");
+    expect(decisions[0].hookSpecificOutput).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: 'Load `slaude:skill-authoring` first (call the Skill tool with skill "slaude:skill-authoring"), then retry.',
+    });
+    expect(decisions[1]).toEqual({});
+    expect(decisions[2]).toEqual({});
+
+    // A reboot needs the skill loaded again.
+    await shutdown(mgr, row.id);
+    const fs2 = plan();
+    await mgr.sendMessage(row.id, "again");
+    await until(() => fs2.options !== null, 3000, "reboot");
+    const pre = fs2.options.hooks.PreToolUse.flatMap((m: any) => m.hooks);
+    const outs = await Promise.all(pre.map((h: any) => h({ hook_event_name: "PreToolUse", tool_name: "mcp__slaude_skills__write_skill", tool_input: {} }, "tu", { signal: new AbortController().signal })));
+    expect(outs.some((o: any) => o?.hookSpecificOutput?.permissionDecision === "deny")).toBe(true);
+    await shutdown(mgr, row.id);
+  });
+
   it("marks the evolution turn's tool, text and thinking events autoEvolve, and only those (#131)", async () => {
     process.env.SLAUDE_AUTO_EVOLVE = "1";
     const mgr = new AgentManager();

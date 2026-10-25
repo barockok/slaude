@@ -37,7 +37,7 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 **Phase R tasks**
 - [x] R1 Prompt text into files, byte-identical (§7a.2)
 - [x] R2 Built-in `slaude` plugin; `slaude:skill-authoring`; skill index in the core (§7a.3, §7a.5)
-- [ ] R3 Enforcement hook for governed tools (§7a.4)
+- [x] R3 Enforcement hook for governed tools (§7a.4)
 - [ ] R4 Built-ins immutable at runtime (§7a.5)
 - [ ] R5 Size budget; field note; phase closed (§7a.6)
 
