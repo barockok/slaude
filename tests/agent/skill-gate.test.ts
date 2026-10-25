@@ -72,6 +72,22 @@ describe("SkillGate", () => {
     expect(g.isLoaded("s1", "slaude:skill-authoring")).toBe(true);
   });
 
+  it("normalises the skill name the way the CLI does (trim, one leading /)", async () => {
+    for (const form of ["/slaude:skill-authoring", " slaude:skill-authoring ", "  /slaude:skill-authoring\n"]) {
+      const g = booted();
+      await g.post("s1")(loadSkill(form), "tu2", opts);
+      expect(g.isLoaded("s1", "slaude:skill-authoring")).toBe(true);
+      expect(await g.pre("s1")(preInput(WRITE), "tu1", opts)).toEqual({});
+    }
+    // only one slash is stripped, and the rest must still be an exact built-in name
+    const g = booted();
+    for (const s of ["/slaude:other", "//slaude:skill-authoring", "/skill-authoring", "/ slaude:skill-authoring"]) {
+      await g.post("s1")(loadSkill(s), "tu2", opts);
+    }
+    expect(g.isLoaded("s1", "slaude:skill-authoring")).toBe(false);
+    expect(await g.pre("s1")(preInput(WRITE), "tu1", opts)).toEqual(DENY);
+  });
+
   it("reset (reboot) requires loading again", async () => {
     const g = booted();
     await g.post("s1")(loadSkill("slaude:skill-authoring"), "tu2", opts);

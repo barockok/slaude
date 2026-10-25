@@ -15,6 +15,15 @@ function isErrorResponse(r: unknown): boolean {
   return typeof r === "object" && r !== null && (r as { is_error?: unknown }).is_error === true;
 }
 
+/** The skill name as the bundled CLI resolves it: trimmed, then one leading
+ *  "/" removed (its Skill tool accepts "/slaude:x" and " slaude:x " as
+ *  "slaude:x"). Matching the raw input would miss a load the CLI accepted and
+ *  deny the governed tool forever. */
+export function normaliseSkillName(raw: string): string {
+  const n = raw.trim();
+  return n.startsWith("/") ? n.slice(1) : n;
+}
+
 /**
  * Blocks a tool a built-in skill governs until the session has loaded that
  * skill (a successful `Skill` call with skill "slaude:<name>"). State is per
@@ -72,8 +81,10 @@ export class SkillGate {
       if (input.hook_event_name !== "PostToolUse") return {};
       const i = input as { tool_name?: string; tool_input?: unknown; tool_response?: unknown };
       if (i.tool_name !== "Skill") return {};
-      const name = (i.tool_input as { skill?: unknown } | null)?.skill;
-      if (typeof name !== "string" || !listBuiltinSkills().some((b) => b.qualified === name)) return {};
+      const raw = (i.tool_input as { skill?: unknown } | null)?.skill;
+      if (typeof raw !== "string") return {};
+      const name = normaliseSkillName(raw);
+      if (!listBuiltinSkills().some((b) => b.qualified === name)) return {};
       if (isErrorResponse(i.tool_response)) return {};
       this.#state.get(sessionId)?.loaded.add(name);
       return {};
