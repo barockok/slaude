@@ -110,7 +110,7 @@ import { providerSelectingNames } from "../../agent/provider-env";
 import { memoryScopeFor } from "../../memory/scope";
 import { getPersonaRegistry, labelsInUse, livePersona, managedPersonaProvider, onPersonaRegistryInstalled } from "../../persona/registry";
 import { makeLabelMonitor } from "../../queue/label-status";
-import { isInteractiveOrigin, type GateInput } from "../../knowledge/gated-dispatch";
+import { isInteractiveOrigin, turnBrainScope, type GateInput } from "../../knowledge/gated-dispatch";
 import { personaKbs, personaKbSourceIds } from "../../knowledge/persona-kb";
 import { resolveUserName } from "../slack/users";
 import { downloadAttachments, type SlackFile } from "../slack/attachments";
@@ -932,7 +932,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // Brain gate input from the live SlackContext — read per tool call so the
   // current turn's author (not the session creator) drives KB scoping.
-  const brainGateFor = async (ctx: SlackContext): Promise<GateInput> => {
+  type BrainGateCtx = Pick<SlackContext, "channel" | "threadTs" | "userId" | "teamId" | "personaId" | "origin" | "turnSenders">;
+  const brainGateFor = async (ctx: BrainGateCtx): Promise<GateInput> => {
     const soul = soulData();
     const lock = await OneOnOne.find(ctx.channel, ctx.threadTs);
     // Use the persona's Slack user ID as the agent brain-slice key when in
@@ -987,8 +988,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       ? {
           // kb-* sources: the live persona's kbSources ∩ installed, per call
           // (WS-C §4.1.3), so a sync applies on the next turn.
-          scope: async () =>
-            resolveBrainScope({ ...(await brainGateFor(ctx)), kbSources: personaKbSourceIds(ctx.personaId) }),
+          // The speaker's profile only on that one sender's own turn (turnBrainScope).
+          scope: async () => turnBrainScope(await brainGateFor(ctx), personaKbSourceIds(ctx.personaId)),
           gate: () => brainGateFor(ctx),
           managers: () => {
             const soul = soulData();

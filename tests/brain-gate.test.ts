@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach } from "bun:test";
-import { classifyBrainOp, gatedBrainCall, resetStandingGrants, type GateInput } from "../src/knowledge/gated-dispatch";
+import { classifyBrainOp, gatedBrainCall, resetStandingGrants, turnBrainScope, type GateInput } from "../src/knowledge/gated-dispatch";
 import { agentSourceId, profileSourceId, resolveBrainScope, SHARED_SOURCE, userSourceId, type BrainScope } from "../src/knowledge/scope";
 
 const gate = (over: Partial<GateInput> = {}): GateInput => ({
@@ -128,6 +128,35 @@ describe("classifyBrainOp — profile and /1on1 writes (phase C)", () => {
     expect(scopeFor(g).sourceId).toBe(agentSourceId("AGENT1"));
     expect(classifyBrainOp("put_page", scopeFor(g), g)).toBe("deny");
     expect(classifyBrainOp("put_page", sharedScope(g), g)).toBe("deny");
+  });
+});
+
+describe("turnBrainScope: the speaker's profile only on their own one-sender Slack turn", () => {
+  const T = "T0TEAM";
+  const alice = { userId: "U1", teamId: T, origin: "slack" };
+  const profile = profileSourceId(T, "U1");
+  const g = (over: Partial<GateInput>) => gate({ teamId: T, origin: "slack", ...over });
+  test("exactly the speaker, from Slack: the profile is read", () => {
+    const s = turnBrainScope(g({ turnSenders: [alice] }), ["kb-docs"]);
+    expect(s.allowedSources).toContain(profile);
+    expect(s.profileSource).toBe(profile);
+    expect(s.allowedSources).toContain("kb-docs");
+  });
+  test("anyone else, two senders, a cron sender, another team or unknown senders: no profile; the rest of the scope is unchanged", () => {
+    for (const turnSenders of [
+      [{ ...alice, userId: "U2" }],
+      [alice, { ...alice, userId: "U2" }],
+      [{ ...alice, origin: "cron" }],
+      [{ ...alice, teamId: "T0OTHER" }],
+      undefined,
+    ]) {
+      const gi = g(turnSenders ? { turnSenders } : {});
+      const s = turnBrainScope(gi, []);
+      expect(s.allowedSources.some((x) => x.startsWith("profile-"))).toBe(false);
+      expect(s.profileSource).toBeUndefined();
+      const { profileSource: _p, ...rest } = resolveBrainScope({ ...gi, kbSources: [] });
+      expect(s).toEqual({ ...rest, allowedSources: rest.allowedSources.filter((x) => x !== profile) });
+    }
   });
 });
 

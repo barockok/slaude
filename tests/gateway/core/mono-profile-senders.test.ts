@@ -27,9 +27,12 @@ const PROFILE_REFUSAL = "refused: a profile is written only on that person's own
 
 /** Every put_page the brain received, with its write source. */
 let puts: Array<{ slug: string; source: string }> = [];
+/** The scope of every get_page the brain received. */
+let reads: BrainScope[] = [];
 const backend = {
   call: async (name: string, p: Record<string, unknown>, scope: BrainScope) => {
     if (name === "put_page") puts.push({ slug: String(p.slug), source: scope.sourceId });
+    if (name === "get_page") reads.push(scope);
     return { ok: true };
   },
   adminCall: async () => null,
@@ -110,6 +113,7 @@ afterAll(() => {
 });
 beforeEach(async () => {
   puts = [];
+  reads = [];
   sent = [];
   resetStandingGrants();
   writeSoulFixture(WORLD);
@@ -177,5 +181,49 @@ describe("mono: kb_memoize target:\"profile\" decides on the manager's senders, 
     expect(classifyBrainOp("put_page", { ...resolveBrainScope({ ...g, kbSources: [] }), sourceId: profileSourceId("T", "U0ALICE") }, g)).toBe("deny");
     expect(await memoize(sid)).not.toContain("refused");
     expect(puts).toEqual([{ slug: "profile", source: profileSourceId("T", "U0BOB") }]);
+  });
+});
+
+describe("mono: the KB read scope holds the speaker's profile only on that one sender's own turn", () => {
+  /** The read union a kb_get_page call runs under now. */
+  const readScope = async (sid: string): Promise<string[]> => {
+    reads = [];
+    const servers = (await h!.__resolveMcp(sid))!;
+    await callTool(servers.slaude_kb, "kb_get_page", { slug: "anything" });
+    expect(reads).toHaveLength(1);
+    return reads[0]!.allowedSources;
+  };
+  const ALICE_PROFILE = profileSourceId("T", "U0ALICE");
+  const BOB_PROFILE = profileSourceId("T", "U0BOB");
+
+  test("Alice's turn, Bob posts mid-turn: Bob's profile is not readable, nor Alice's while the senders are ambiguous", async () => {
+    const { t, mention } = transport();
+    h = createGateway(agent, t);
+    await mention("U0ALICE", "720.0", "720.1");
+    await waitSent(1);
+    const sid = sent[0]!;
+    current = [ALICE];
+    expect(await readScope(sid)).toContain(ALICE_PROFILE);
+
+    await mention("U0BOB", "720.0", "720.2", "what about me");
+    await waitSent(2);
+    expect((await h.__brainGate!(sid))!.userId).toBe("U0BOB"); // the ctx flipped to Bob
+
+    current = [ALICE]; // Alice's input still running alone: not Bob's turn
+    let s = await readScope(sid);
+    expect(s).not.toContain(BOB_PROFILE);
+    expect(s).not.toContain(ALICE_PROFILE);
+    current = [ALICE, BOB]; // both outstanding: nobody's own turn
+    s = await readScope(sid);
+    expect(s).not.toContain(BOB_PROFILE);
+    expect(s).not.toContain(ALICE_PROFILE);
+    current = null; // unknown
+    s = await readScope(sid);
+    expect(s.some((x) => x.startsWith("profile-"))).toBe(false);
+
+    current = [BOB]; // Bob's own input now runs alone
+    s = await readScope(sid);
+    expect(s).toContain(BOB_PROFILE);
+    expect(s).not.toContain(ALICE_PROFILE);
   });
 });

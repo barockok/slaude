@@ -1,5 +1,5 @@
 import type { BrainScope, ChannelTrust } from "./scope";
-import { agentSourceId, isProfileSourceId, speakerProfileSource, userSourceId } from "./scope";
+import { agentSourceId, isProfileSourceId, resolveBrainScope, speakerProfileSource, userSourceId } from "./scope";
 
 export type GateTier = "auto" | "approval" | "manager" | "deny";
 
@@ -120,6 +120,20 @@ export function soleSlackSender(g: GateInput): TurnSender | null {
   const s = g.turnSenders;
   if (!s || s.length !== 1) return null;
   return s[0]!.origin === "slack" ? s[0]! : null;
+}
+
+/**
+ * The KB scope a running turn's tools read under: resolveBrainScope, with the
+ * speaker's profile only when the turn's senders are exactly that speaker,
+ * from Slack. On mono the gate's speaker is the live ctx, which the next
+ * delivered message rewrites, so a person posting mid-turn must not make
+ * their profile readable in someone else's turn; and while the senders are
+ * mixed or unknown it is nobody's own turn, so no profile is read at all.
+ */
+export function turnBrainScope(g: GateInput, kbSources: string[]): BrainScope {
+  const sender = soleSlackSender(g);
+  const own = sender !== null && g.userId !== null && sender.userId === g.userId && (sender.teamId ?? null) === g.teamId;
+  return resolveBrainScope({ ...g, teamId: own ? g.teamId : null, kbSources });
 }
 
 /** The write goes to the profile of the turn's sole Slack sender, on a

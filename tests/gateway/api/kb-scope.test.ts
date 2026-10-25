@@ -158,10 +158,48 @@ describe("kb_search gathers only the persona's kb-* sources", () => {
 });
 
 describe("the speaker's profile on a node turn", () => {
-  test("kb_search reads the profile keyed by the token's team and initiator", async () => {
-    await tool("finance", "kb_search", { query: "budget" });
-    expect(searched).toContain(profileSourceId("T1", WORLD.manager));
-    expect(searched.filter((s) => s.startsWith("profile-"))).toEqual([profileSourceId("T1", WORLD.manager)]);
+  // The job's recorded senders (the queue's turn-senders record, by token job id).
+  const sendersByJob: Record<string, Array<{ userId: string; teamId: string | null; origin: string | null }>> = {
+    "J-one": [{ userId: WORLD.manager, teamId: "T1", origin: "slack" }],
+    "J-two": [{ userId: WORLD.manager, teamId: "T1", origin: "slack" }, { userId: "U0OTHER", teamId: "T1", origin: "slack" }],
+  };
+  const qd = {
+    dispatch: async () => {},
+    abort: async () => {},
+    pubsub: { close: async () => {} },
+    turns: { close: async () => {}, turnSenders: async (job: string) => sendersByJob[job] ?? null },
+    registry: { close: async () => {}, liveLabels: async () => [] },
+    close: async () => {},
+  } as any;
+  const searchAs = async (job: string | undefined) => {
+    // Its own handlers: the shared map stays bound to the mono gateway.
+    const gw = createGateway(new AgentManager(), { ...fakeTransport(), event: () => {} }, { queueDispatch: qd });
+    try {
+      const token = mintJobToken({
+        tenant: "default", persona: "finance", session: "S-kb-node", team: "T1", channel: "C0TEAM", thread: "300.0",
+        initiator: WORLD.manager, scope: "turn", origin: "slack", ...(job ? { job } : {}),
+      });
+      const res = (await gw.fetchV1(new Request("http://gw/v1/tools/kb/kb_search", {
+        method: "POST",
+        headers: { authorization: `Bearer ${NODE_TOKEN}`, [JOB_HEADER]: token, "content-type": "application/json" },
+        body: JSON.stringify({ query: "budget" }),
+      })))!;
+      expect(res.status).toBe(200);
+      return searched.filter((s) => s.startsWith("profile-"));
+    } finally {
+      await gw.stop();
+      searched = [];
+    }
+  };
+
+  test("kb_search reads the profile keyed by the token's team and initiator when the job's one sender is that person", async () => {
+    expect(await searchAs("J-one")).toEqual([profileSourceId("T1", WORLD.manager)]);
+  });
+
+  test("a job that merged another person's message, or unknown senders: no profile", async () => {
+    expect(await searchAs("J-two")).toEqual([]);
+    expect(await searchAs("J-unrecorded")).toEqual([]);
+    expect(await searchAs(undefined)).toEqual([]);
   });
 });
 
