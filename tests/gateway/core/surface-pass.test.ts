@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "bun:test";
+import { describe, it, expect, afterEach, spyOn } from "bun:test";
 import { createGateway, type GatewayHandle } from "../../../src/gateway/core/gateway";
 import { AgentManager } from "../../../src/agent/manager";
 import type { Transport } from "../../../src/gateway/core/transport";
@@ -91,6 +91,20 @@ describe("pass surface tool", () => {
     expect(pass).toBeDefined();
     const r = await pass!.handler({ reason: "not for me", react: "eyes" });
     expect(r.content[0]!.text).toBe("passed");
+  });
+
+  it("the pass log line redacts secret-shaped text in the reason", async () => {
+    const logs: string[] = [];
+    const spy = spyOn(console, "log").mockImplementation((...a: unknown[]) => { logs.push(a.map(String).join(" ")); });
+    try {
+      await surfaceTools(fakeSurface()).find((d) => d.name === "pass")!.handler({ reason: "they pasted password=hunter2xyz, not for me" });
+    } finally {
+      spy.mockRestore();
+    }
+    const line = logs.find((l) => l.startsWith("[pass] reason="))!;
+    expect(line).toBeDefined();
+    expect(line).not.toContain("hunter2xyz");
+    expect(line).toContain("not for me");
   });
 
   it("pass survives a failed reaction", async () => {
