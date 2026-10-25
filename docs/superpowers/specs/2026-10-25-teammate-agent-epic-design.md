@@ -11,8 +11,9 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 
 | Phase | Plan | Status | Release |
 |---|---|---|---|
-| A. Natural voice | `docs/superpowers/plans/2026-10-25-phase-a-natural-voice.md` | done, in review (#152; unreleased — ships as RC) | — |
-| B. Decision gate | — | not started | — |
+| A. Natural voice | `docs/superpowers/plans/2026-10-25-phase-a-natural-voice.md` | done, merged (#152; unreleased — ships as RC) | — |
+| B. Decision gate | `docs/superpowers/plans/2026-10-25-phase-b-decision-gate.md` | done, in review (#153; unreleased) | — |
+| R. Runtime prompt as built-in skills | — | not started | — |
 | C. Memory structure | — | not started | — |
 | D. Background learning and budget | — | not started | — |
 | E. Proactiveness | — | not started | — |
@@ -24,6 +25,14 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 - [x] A4 A mention that ends in pass does not re-engage (§6.4)
 - [x] A5 Voice lint and live natural-voice scenario (§6.5)
 - [x] A6 Field note; full suite green; phase closed
+
+**Phase B tasks**
+- [x] B1 Provider-neutral decision core; gate questions, policy, rules fallback (§7.3, §7.4)
+- [x] B2 Jev adapter (§7.3)
+- [x] B3 Gate input builder: thread excerpt, roles, KB score (§7.3)
+- [x] B4 Runner: modes, timeout fallback, memo, metrics; config and gateway-only key (§7.5, §7.6)
+- [x] B5 Gateway wiring: mention and engaged paths, doubt reaction, bypasses; `off` equivalence (§7.2, §7.7)
+- [x] B6 Field note; full suite; phase closed
 
 ## 1. Goal
 
@@ -53,6 +62,12 @@ Memory is the foundation: per-person style, open loops and "who knows what" are 
 | Is a decision-model backend available? | **Yes.** The owner has Jev access, so phase B stays second and its shadow mode can collect real decisions. |
 | Gate unsure about a direct @mention | **Stay quiet**, with a doubt reaction (🤔) and a logged decision. |
 | Delivery shape | One epic document, delivered phase by phase in sequence until complete. |
+| Decision-gate question type and key name | Every gate question is a two-option **Choice** (`yes`/`no`), so each answer carries a confidence; the yes/no Noul type may not. The key variable is `TYPESAFE_API_KEY` (the SDK's own convention). |
+| Decision function is abstract | **Yes.** A provider-neutral decision core with named adapters; **Jev is one adapter**, and the gate is the first consumer (§7.3). |
+| Growing system prompt | Move the runtime baseline into **read-only files shipped with the release**: a small always-on core, runtime-injected state modules, and **built-in skills** in a `slaude:` namespace (phase R, §7a). |
+| How the model finds a built-in skill | **The core names it**, with a trigger ("before X, load `slaude:<name>`"); the model never guesses from descriptions. |
+| Enforcement for tool-bound built-in skills | **A PreToolUse hook blocks the governed tool until its skill has been loaded once in the session.** |
+| Can built-ins change at runtime? | **No.** `write_skill`/`delete_skill` refuse the `slaude:` namespace, no agent skill may shadow one, phase D's skill review and personas sync can't touch them. They change only with a release. |
 
 ## 3. Goals, non-goals, anti-goals
 
@@ -118,17 +133,18 @@ In `src/gateway/core/gateway.ts` (around line 3074):
 
 ## 5. Epic structure and order
 
-Five phases. Each is independently shippable and leaves the system working.
+Six phases. Each is independently shippable and leaves the system working.
 
 | Phase | Name | Depends on | Ships as |
 |---|---|---|---|
 | A | Natural voice | none | RC (agent-loop change) |
-| B | Decision gate | none | stable, behind `SLAUDE_DECISION_GATE=off` default |
-| C | Memory structure | none | RC (brain sources and schema) |
+| B | Decision gate | none | stable, behind the `gate.mode: "off"` default |
+| R | Runtime prompt as built-in skills | A | RC (agent loop, system prompt) |
+| C | Memory structure | R (its memory discipline is R's first built-in skill) | RC (brain sources and schema) |
 | D | Background learning and budget | C | RC (agent loop, DB table) |
 | E | Proactiveness | C, D | RC |
 
-**Order (my call; the owner asked for one sequence, not this specific order): A → B → C → D → E.**
+**Order: A → B → R → C → D → E.** A → B → C → D → E was my call (the owner asked for one sequence, not this specific order). R was added on 2026-10-25 and sits before C because C, D and E each add prompt text; it is cheapest to restructure before they do. B barely touches the prompt, so it goes first.
 
 ### Approaches considered for ordering
 
@@ -205,8 +221,20 @@ type GateDecision = {
 };
 ```
 - `kbHitScore` exists because the gate cannot see what the agent knows. It reuses `kb_search` scoring, scoped exactly as the turn would be, with no LLM call.
-- The first backend is **Jev** (TypeSafe AI) via its API, schema declared once at boot.
-- A `rules` backend reproduces today's behaviour and is the fallback whenever the configured backend errors or times out (default 800 ms).
+
+**The decision function is abstract; Jev is one adapter** (owner decision, 2026-10-25). The `DecisionBackend` sketch above is superseded by two layers:
+
+1. **A provider-neutral decision core** (`src/decision/`). It knows nothing about Slack, the gate or any provider.
+   ```ts
+   interface DecisionQuestion { instructions: string; options: Record<string, string> } // option id → description
+   interface DecisionRequest  { state: unknown; questions: Record<string, DecisionQuestion> }
+   interface DecisionAnswer   { choice: string; confidence: number }                  // choice ∈ the question's options
+   interface DecisionAdapter  { name: string; decide(req: DecisionRequest, signal: AbortSignal): Promise<Record<string, DecisionAnswer>> }
+   ```
+   Adapters register by name, and the `adapter.type` field of `SLAUDE_DECISION_CONFIG` selects one. The core applies the timeout and validates every answer against the declared options; anything else is rejected and never read as "no". Other consumers (e.g. phase E's "is this worth interrupting someone?") reuse the core with their own questions.
+2. **The gate as the first consumer.** It owns its four questions in neutral form (each a `yes`/`no` choice), maps the answers to `GateDecision`, applies the policy, and falls back to a **rules decision equal to today's behaviour** when no adapter is configured or the adapter errors or times out (default 800 ms).
+
+**Jev adapter** (TypeSafe AI). It sends `POST https://api.typesafe.ai/v1/systemone` with `Authorization: Bearer`, mapping each neutral question to a Jev **Choice** question (criteria = the options). The answer's `choice` and `confidence` map straight back. Each question is evaluated independently, so its `instructions` carry its full meaning. A 401/422 is not retried; a 429/529 gets one retry within the timeout.
 
 ### 7.4 Policy (decision → action)
 | Situation | Action |
@@ -220,29 +248,97 @@ type GateDecision = {
 - "Record only" uses the existing suppressed-turn path, so transcripts stay complete.
 
 ### 7.5 Configuration (process env, not SOUL)
-| Variable | Values | Default |
+One JSON variable, **`SLAUDE_DECISION_CONFIG`** (owner decision, 2026-10-25):
+```json
+{
+  "timeoutMs": 800,
+  "gate": { "mode": "off", "tAct": 0.8, "contextMessages": 8 },
+  "adapter": { "type": "jev", "url": "https://api.typesafe.ai/v1/systemone", "model": "jev-latest", "apiKey": "env://PERSONA_TYPESAFE_API_KEY" }
+}
+```
+| Field | Values | Default |
 |---|---|---|
-| `SLAUDE_DECISION_GATE` | `off` \| `shadow` \| `on` | `off` |
-| `SLAUDE_DECISION_BACKEND` | `jev` \| `rules` | `rules` |
-| `SLAUDE_DECISION_T_ACT` | 0–1 | `0.8` |
-| `SLAUDE_DECISION_TIMEOUT_MS` | int | `800` |
-| `SLAUDE_DECISION_CONTEXT_MESSAGES` | int | `8` |
-| `JEV_API_KEY` (name to confirm with vendor) | secret | none |
+| `timeoutMs` | int > 0 | `800` |
+| `gate.mode` | `off` \| `shadow` \| `on` | `off` |
+| `gate.tAct` | 0–1 | `0.8` |
+| `gate.contextMessages` | int > 0 | `8` |
+| `adapter` | an object with `type` naming a registered adapter; each adapter validates the rest of its block | absent: no adapter |
+| `adapter` when `type` is `jev` | `url` (default above), `model` (default `jev-latest`; pin a version, e.g. `jev-1.13.0`, once validated), `apiKey` (required) | — |
 
-- `off` means today's behaviour, byte for byte. `shadow` runs the backend, logs what it *would* do next to what happened, and acts as `off`.
+- **Unset or `{}`:** gate `off`, no adapter. Unknown top-level keys are rejected.
+- **Invalid JSON or a failed validation:** one boot log line naming the field (never its value); the gate is `off`. The process never crashes over this config.
+- **Secrets are references, never values:** `apiKey` must be an `env://PERSONA_<NAME>` or `vault://…` reference (the existing reference grammar in `src/secrets/ref.ts`, which limits env references to `PERSONA_*` variables), resolved at boot by the existing secret resolver (`src/secrets/`). A literal is rejected, so the key never sits in a variable that deploy tooling prints.
+- **Gateway-only:** `SLAUDE_DECISION_CONFIG` and the referenced key variable (e.g. `TYPESAFE_API_KEY`) are both on the gateway-only list.
+- `off` means today's behaviour, byte for byte. `shadow` runs the decision, logs what it *would* do next to what happened, and acts as `off`.
+- With no adapter (or an adapter whose config is missing), the gate uses the rules decision, which equals today's behaviour.
 - The API key is a gateway-side secret: same handling as provider keys, never in a node bundle, never in the agent child's env.
-- Outbound calls go through the existing outbound-fetch policy. Thread text leaving the deployment is a data-egress decision, so the operator opts in by setting the backend.
+- Outbound calls go through the existing outbound-fetch policy. Thread text leaving the deployment is a data-egress decision, so the operator opts in by selecting an adapter.
 
 ### 7.6 Observability
-- Every decision emits a structured log line: thread, message ts, per-question value and confidence, action, backend, latency, fallback flag.
-- Counter `slaude_gate_decisions_total{action,backend,mode}`.
+- Every decision emits a structured log line: thread, message ts, per-question value and confidence, action, source (`adapter` or `rules`), adapter name, latency.
+- Counters `slaude_decision_requests_total{adapter,outcome}` (core) and `slaude_gate_decisions_total{action,source,mode}` (gate).
 - In shadow mode, a disagreement counter versus actual behaviour gives the evaluation set for turning it on.
 
 ### 7.7 Verification
 - Unit tests of the policy table against fixed decisions.
 - A sim scenario per row of §7.4.
-- A backend timeout falls back to `rules`.
+- An adapter timeout or error falls back to the rules decision.
 - `off` matches the current engagement sim suite unchanged.
+
+## 7a. Phase R: runtime prompt as built-in skills
+
+### 7a.1 Problem
+`RUNTIME_BASELINE` is one template string in `src/soul/loader.ts`, assembled with ad-hoc placeholders (`{{KB_FALLBACK}}`, the brain flag, the /1on1 mode block). Phases C–E each add prompt text. A long prompt where every rule is always present makes each rule weaker, and string-building in code is hard to review or test per section.
+
+### 7a.2 Three tiers, all read-only files shipped with the release
+| Tier | Loaded | Contents |
+|---|---|---|
+| **1. Core** | Every turn | Output discipline, reply-or-pass, approval discipline, channel trust, harness overrides (memory to KB only, cron via slaude only), the short voice rules, and the **skill index** (§7a.3). A test enforces a size budget. |
+| **2. State modules** | Injected by the runtime from session state | KB/brain basics when the brain is mounted; the /1on1 block when the thread is locked; /remote rules when an environment is bound; voice-call rules during a call; proactive rules when the SOUL enables them (phase E). Deterministic: never chosen by the model. |
+| **3. Built-in skills** | Loaded by the model, **named by the core** | Procedures and long reference: `slaude:memory` (phase C's memory discipline), `slaude:skill-authoring`, `slaude:cron`, `slaude:heartbeat` (phase E), `slaude:provenance` ("how do you know that?"), lesson upkeep (phase D). |
+
+- Rules that must hold on every turn are never put in a lazily loaded skill.
+- The tier-1 and tier-2 text moves out of the TypeScript string into markdown files beside the code (e.g. `src/soul/runtime/core.md`, `src/soul/runtime/modules/<name>.md`), assembled by a small loader. The rendered prompt for a given state is the same as today's text plus whatever earlier phases changed. Phase R adds no new rules of its own.
+
+### 7a.3 The skill index (in the core)
+The core lists each built-in skill with an explicit trigger, so the model never guesses from descriptions:
+
+```
+- Before any kb_memoize write, or when asked what you remember → load `slaude:memory`
+- Before write_skill / delete_skill → load `slaude:skill-authoring`
+- Before add_cron_job / remove_cron_job → load `slaude:cron`
+- When a heartbeat or promise check runs → load `slaude:heartbeat`
+- When asked how you know something → load `slaude:provenance`
+```
+Entries appear only for skills that exist in the running release; a later phase adds its own entry when it adds its skill.
+
+### 7a.4 Enforcement hook for tool-bound skills
+- Each built-in skill may declare the tools it governs, in its frontmatter (e.g. `governs: [mcp__slaude_brain__kb_memoize]`).
+- A **PreToolUse hook** blocks a governed tool until that skill has been loaded **once in the session**. The block reason names the skill: "Load `slaude:memory` first, then retry."
+- "Loaded" is recorded when the session calls the `Skill` tool with that skill's name. It is kept per session id and cleared when the session reboots (a reboot is a fresh context, so the skill must be loaded again).
+- Situation skills (provenance, "what do you know about me") have no governed tool. They rely on the index pointer only.
+- The hook sits alongside the existing PreToolUse guards (the /remote built-in deny). It runs in mono and on nodes; on a node the loaded-set lives in the node process for that session.
+- Runtime-check turns (`<runtime-check …>`) are not exempt: an auto-evolve turn that calls `write_skill` must still have `slaude:skill-authoring` loaded.
+
+### 7a.5 Built-in skills are immutable at runtime
+- **Location:** a directory inside the release (e.g. `<dist>/builtin/`), mounted as a read-only local plugin named `slaude`. The CLI already mounts `~/.slaude/` as a local plugin for agent skills (`src/agent/manager.ts`), and plugin skills are namespaced by plugin name, which yields `slaude:<name>`.
+- **Write protection:** `write_skill` and `delete_skill` refuse the `slaude` namespace and any slug equal to a built-in's name, so no agent or persona skill can shadow a built-in.
+- **Out of reach:** phase D's weekly skill review never lists or retires built-ins; a personas-as-code sync cannot add, change or remove them; `/soul` overrides do not apply.
+- **Changed only by a release.** Each built-in carries the release version in its frontmatter, so a transcript shows which text the agent had.
+
+### 7a.6 Verification
+- A golden test per state: the assembled prompt (core plus modules) for a fixed set of states (channel trusted, /1on1 locked, brain off, /remote bound, voice call) matches a snapshot, and equals the pre-R prompt text for the same state.
+- A size-budget test on the core.
+- Hook tests:
+  - a governed tool before its skill loads → blocked with the skill name;
+  - after the `Skill` call → allowed;
+  - after a session reboot → blocked again;
+  - a non-governed tool → never blocked.
+- Immutability tests:
+  - `write_skill` / `delete_skill` on a `slaude:` name or a built-in's bare name → refused;
+  - phase D's review excludes built-ins (added when D lands);
+  - a personas sync leaves the built-in directory untouched.
+- The skill index lists exactly the built-ins present in the release.
 
 ## 8. Phase C: memory structure
 
@@ -425,7 +521,8 @@ Every proactive post also passes the restraint rules: silent on no news, per-per
 |---|---|---|
 | Writing style, pass, auto-evolve wording | code (baseline) | A |
 | `SLAUDE_AUTO_EVOLVE_MIN_TOOLS` | process env | A |
-| `SLAUDE_DECISION_*`, decision backend key | process env, gateway secret | B |
+| `SLAUDE_DECISION_CONFIG` (JSON; secrets by `env://`/`vault://` reference) | process env, gateway-only | B |
+| Core prompt, state modules, built-in skills | read-only files shipped with the release | R |
 | `SLAUDE_BACKGROUND_BUDGET_USD`, `SLAUDE_PRICE_TABLE` | process env, per-persona override in bundle | D |
 | Agent timezone | persona config | D |
 | `## Proactive` (global and per channel) | SOUL only | E |
@@ -435,16 +532,20 @@ Every phase must keep these. Each gets a test.
 1. Nothing from a /1on1 reaches another person's turn, a channel, `agent-<id>` or `shared` without that person's approval.
 2. A profile is written only from that person's own words: live on their turn, or by a pass quoting their turn (§8.3a).
 3. Proactiveness can be raised only by the SOUL.
-4. `SLAUDE_DECISION_GATE=off` equals today's engagement behaviour.
+4. `gate.mode` `off` (including an unset `SLAUDE_DECISION_CONFIG`) equals today's engagement behaviour.
 5. Background spend never exceeds the day's budget by more than one turn per pass.
 6. No reply narrates machinery (phase A lint).
+7. Rules that must hold every turn live in the core or a state module, never only in a lazily loaded skill (phase R).
+8. A governed tool never runs in a session that has not loaded its built-in skill (phase R hook).
+9. Built-in skills cannot be created, changed, shadowed or deleted at runtime (phase R).
 
 ### 11.3 Public-repo hygiene
 Specs, tests and fixtures use placeholder people, channels and services only (CLAUDE.md working rules).
 
 ## 12. Left to the builder
 - The transcript recall fix (§8.5): chunk timeline entries vs a rolling summary, after verifying the cause.
-- Exact Jev request shape and auth header (follow the vendor's docs). Pin the API version.
+- Exact Jev request shape (follow the vendor's API reference; the endpoint, auth and answer types in §7.3 come from a third-party reference dated 2026-10-09, so check them against the official docs once the host is reachable). Pin the model version.
+- Phase R: the exact file layout under `src/soul/runtime/`, the frontmatter key name for governed tools, and the core's size budget.
 - The `kbHitScore` normalization across engines.
 - Quiet-moment thresholds N, M, K, and the heartbeat interval defaults.
 - Pass estimate floors and max-turn caps.

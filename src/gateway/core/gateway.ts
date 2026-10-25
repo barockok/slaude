@@ -95,7 +95,13 @@ import { brainMode } from "../../knowledge/brain-config";
 import { syncKbWikis } from "../../knowledge/brain-sync";
 import { scheduleNightlyMaintenance } from "../../knowledge/brain-cycle";
 import { trackBrainWork, whileClosing } from "../../knowledge/brain-work";
-import { channelTrustFor, resolveBrainScope } from "../../knowledge/scope";
+import { channelTrustFor, resolveBrainScope, type ChannelTrust } from "../../knowledge/scope";
+import { gather } from "../../knowledge/gather";
+import { gateRunnerFromEnv, type GateRunner } from "../gate/runner";
+import { buildGateInput, type GateContextDeps } from "../gate/context";
+import type { GateAction, Trust } from "../gate/types";
+import { providerSecretResolver } from "../api/tenants";
+import { parseRef } from "../../secrets";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
 import { memory as processMemory } from "../../memory";
 import { makeScopedMemory } from "../../memory/scoped";
@@ -186,6 +192,61 @@ const REACT_RECEIVED = "eyes";
 const REACT_WORKING = "gear";
 const REACT_DONE = "white_check_mark";
 const REACT_ERROR = "x";
+/** A mention the decision gate doubts is addressed to the agent: recorded, not run. */
+const REACT_DOUBT = "thinking_face";
+
+/** The brain's channel trust in the envelope's terms (trusted / allowed / restricted). */
+const GATE_TRUST: Record<ChannelTrust, Trust> = { trusted: "trusted", public: "allowed", unknown: "restricted" };
+
+/**
+ * The channel-mode rule, driven by SOUL.md: in a trusted or allowed channel
+ * anyone may address the agent; in a DM or an unlisted channel only the
+ * manager or backup (plus, in a DM, the DM allowlist). Whitelisted DM users
+ * get chat only: admin commands still gate on manager/backup/approver.
+ * Shared by handleMessage and the decision gate's skip check.
+ */
+function channelModeAdmits(soul: ReturnType<typeof soulData>, channelId: string, channelType: string, userId: string): boolean {
+  const isDM = channelType === "im";
+  const publicZone = !isDM && (soul.trustedChannels.includes(channelId) || soul.allowedChannels.includes(channelId));
+  if (publicZone) return true;
+  const managerId = soul.manager.userId;
+  const backupId = soul.backupManager.userId;
+  const dmAllowed = isDM && soul.dmAllowedUsers.includes(userId);
+  return Boolean((managerId && userId === managerId) || (backupId && userId === backupId) || dmAllowed);
+}
+
+/** An early drop: the slackDropsTotal reason label and the line handleMessage
+ *  logs (null for a silent drop: no line, no metric). */
+type PreTurnDrop = { reason: string; log: string | null };
+
+/** Pages of thread history the decision gate reads at most. */
+const GATE_REPLY_PAGES = 5;
+/** conversations.replies page size for the gate (Slack's recommended maximum),
+ *  independent of how many messages the gate keeps. */
+const GATE_REPLY_PAGE_SIZE = 200;
+
+/**
+ * The decision gate's thread context: the last `limit` messages of the thread
+ * up to and including `latest` (conversations.replies pages oldest-first from
+ * the thread start, so the tail is kept across pages; pages are large so the
+ * page bound reaches the event in all but very long threads). Throws on a failed call;
+ * buildGateInput reads that as no context.
+ */
+async function threadTail(client: any, channel: string, threadTs: string, latest: string, limit: number) {
+  let tail: Array<{ user?: string; bot_id?: string; text?: string; ts: string }> = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < GATE_REPLY_PAGES; page++) {
+    const r = await client.conversations.replies({
+      channel, ts: threadTs, latest, inclusive: true, limit: GATE_REPLY_PAGE_SIZE, ...(cursor ? { cursor } : {}),
+    });
+    if (!r?.ok) throw new Error("conversations.replies failed");
+    const upToEvent = (r.messages ?? []).filter((m: { ts: string }) => Number(m.ts) <= Number(latest));
+    tail = [...tail, ...upToEvent].slice(-limit);
+    cursor = r.response_metadata?.next_cursor || undefined;
+    if (!cursor) break;
+  }
+  return tail;
+}
 
 const STATUS_THINKING = { text: "thinking", emoji: ":thought_balloon:" };
 
@@ -282,6 +343,9 @@ export interface GatewayOptions {
    *  node. Tests inject one over their key prefix; explicit null forces the
    *  panel off regardless of env. */
   panel?: PanelInfra | null;
+  /** Decision gate (phase B). Default: the runner gateRunnerFromEnv resolves
+   *  to at boot (SLAUDE_DECISION_CONFIG), treated as off until it does. */
+  gateRunner?: GateRunner;
 }
 
 /** Redis-backed primitives the control panel needs — injected together so a
@@ -1800,96 +1864,37 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       `[slack-rx] type=${event.type} subtype=${event.subtype ?? "-"} ch=${channelId} ts=${eventTs} thread=${event.thread_ts ?? "-"} user=${userId} txt=${JSON.stringify(text.slice(0, 80))}`,
     );
 
+    // Early drops (missing ids, self echo, ignore gate, blocklist, channel
+    // mode) come from preTurnDropReason, shared with the decision gate. The
+    // dedup claim is handleMessage's own step, run between the self-echo and
+    // the ignore checks exactly where it has always been. The id check is
+    // repeated here only to narrow teamId/userId for the code below.
     if (!teamId || !userId) return;
-    // Drop only self-echoes; other bots' messages flow through so slaude can
-    // see CI alerts, summarizer bots, etc. in shared threads.
-    if (await isSelfBotEcho(args, event)) {
-      console.log(`[slack-rx] drop ch=${channelId} ts=${eventTs} — self bot echo`);
-      metric.slackDropsTotal.inc({ reason: "self_bot" });
-      return;
+    {
+      const drop = await preTurnDropReason(args, {
+        // Dedup — durable atomic claim in seen_events by (channel, ts), so a Slack
+        // redelivery is dropped even across a restart or by a sibling replica.
+        afterSelfEcho: async () => {
+          const dedupKey = `${channelId}:${eventTs}`;
+          if (!(await SeenEvents.tryInsert(dedupKey))) {
+            return { reason: "dedup", log: `[slack-rx] drop ch=${channelId} ts=${eventTs} — dedup (already seen)` };
+          }
+          // Rows only matter for Slack's retry window; prune stale ones as we go.
+          void SeenEvents.maybePurge();
+          return null;
+        },
+      });
+      if (drop) {
+        if (drop.log !== null) {
+          console.log(drop.log);
+          metric.slackDropsTotal.inc({ reason: drop.reason });
+        }
+        return;
+      }
     }
-    // Self-echo when posting as a real user (xoxp) — default identity or a named
-    // persona: own posts carry our user id and no bot_id. Drop them to avoid
-    // re-ingesting our own output.
-    const selfUserIds = await getSelfUserIds();
-    if (selfUserIds.has(userId)) {
-      console.log(`[slack-rx] drop ch=${channelId} ts=${eventTs} — self user echo`);
-      metric.slackDropsTotal.inc({ reason: "self_user" });
-      return;
-    }
-
-    // Dedup — durable atomic claim in seen_events by (channel, ts), so a Slack
-    // redelivery is dropped even across a restart or by a sibling replica.
-    const dedupKey = `${channelId}:${eventTs}`;
-    if (!(await SeenEvents.tryInsert(dedupKey))) {
-      console.log(`[slack-rx] drop ch=${channelId} ts=${eventTs} — dedup (already seen)`);
-      metric.slackDropsTotal.inc({ reason: "dedup" });
-      return;
-    }
-    // Rows only matter for Slack's retry window; prune stale ones as we go.
-    void SeenEvents.maybePurge();
 
     const isDM = channelType === "im";
     const threadTs: string = event.thread_ts || (isDM ? eventTs : eventTs);
-
-    // Ignore gate: temp/permanent ignores for users or threads. /unignore* must
-    // bypass it — otherwise a thread-ignore drops the very message meant to lift it
-    // (the /unignore-thread is in the ignored thread), and the thread is stuck
-    // ignored forever. The blocklist + channel-mode gates below still apply, so this
-    // doesn't grant a non-allowed user any new reach.
-    {
-      // botUserId isn't resolved yet here; strip any leading user-mention so a
-      // "<@bot> /unignore-thread" still parses.
-      const peek = parseSlashCommand(text.replace(/<@[^>]+>/g, "").trim());
-      const isUnignore = peek?.kind === "unignore";
-      if (!isUnignore && (await ignoreGate.shouldDrop(userId, channelId, threadTs))) {
-        console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — ignored`);
-        metric.slackDropsTotal.inc({ reason: "ignored" });
-        return;
-      }
-    }
-
-    // Hard blocklist: blocked user → drop before any further processing.
-    // Never reaches Claude (no token spend, no logs). Channel blocking is
-    // unnecessary — default posture already denies anywhere not allowed/trusted.
-    {
-      const soul = soulData();
-      if (soul.blockedUsers.includes(userId)) {
-        console.log(`[slack-rx] drop ch=${channelId} user=${userId} — blocked user`);
-        metric.slackDropsTotal.inc({ reason: "blocked_user" });
-        return;
-      }
-    }
-
-    // Channel-mode gate, driven entirely by SOUL.md:
-    //   - trusted channel → team zone, anyone can address slaude (most open)
-    //   - allowed channel  → public zone, anyone can address slaude (mind exposure)
-    //   - DM or unlisted   → manager-only (approvers can still click Approve /
-    //     Deny on request_approval blocks but cannot chat)
-    {
-      const soul = soulData();
-      const isDM_ = channelType === "im";
-      const isTrusted = !isDM_ && soul.trustedChannels.includes(channelId);
-      const isAllowed = !isDM_ && soul.allowedChannels.includes(channelId);
-      const publicZone = isTrusted || isAllowed;
-      if (!publicZone) {
-        const managerId = soul.manager.userId;
-        const backupId = soul.backupManager.userId;
-        // Whitelisted DM users may engage in 1:1 DMs (not in non-whitelisted
-        // channels) on top of manager/backup. Grants chat only — admin commands
-        // still gate on manager/backup/approver below.
-        const dmAllowed = isDM_ && soul.dmAllowedUsers.includes(userId);
-        const allowed = (managerId && userId === managerId) || (backupId && userId === backupId) || dmAllowed;
-        if (!allowed) {
-          console.log(
-            `[slack-rx] drop ch=${channelId} user=${userId} — non-whitelist/DM accepts manager/backup${isDM_ ? "/dm-allowlist" : ""} only` +
-              (managerId ? "" : " (no manager set in SOUL.md)"),
-          );
-          metric.slackDropsTotal.inc({ reason: "whitelist" });
-          return;
-        }
-      }
-    }
 
     // 1on1 lock: while active, only the locked user + manager/backup are heard in
     // this thread. After channel-mode (overrides "anyone can chat" in trusted/allowed
@@ -3058,6 +3063,244 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return ids;
   };
 
+  // Decision gate (phase B): consulted before a mention or an engaged plain
+  // reply starts a turn. Off until the boot-time runner resolves; a boot
+  // failure leaves it off.
+  let gateRunner: GateRunner | null = opts.gateRunner ?? null;
+  if (!opts.gateRunner) {
+    const resolver = providerSecretResolver();
+    void gateRunnerFromEnv({ resolveSecret: (ref) => resolver.resolve(parseRef(ref), { persona: "default" }) })
+      .then((r) => {
+        gateRunner = r;
+        if (r.mode !== "off") console.log(`[gate] mode=${r.mode}`);
+      })
+      .catch((e: any) => console.error(`[gate] boot failed (${e?.name ?? "error"}); decision gate off`));
+  }
+
+  /**
+   * The gate's view of who the agent is. The identity addressed is the named
+   * persona when the event is routed to one (its mentions become `<agent>`),
+   * else the delivering bot. Every identity of this deployment (each app's bot,
+   * each persona user, the post-as-user identity) authors role "agent" posts.
+   */
+  const gateSelfIds = async (args: any, personaId?: string) => {
+    const registry = getPersonaRegistry();
+    const persona = personaId && personaId !== "default" ? registry.lookupByName(personaId) : null;
+    const bots = await getSelfBots(args);
+    const userIds = new Set<string>([...bots.userIds, ...(await getSelfUserIds())]);
+    for (const p of registry.list()) if (p.slackUserId) userIds.add(p.slackUserId);
+    return { botUserId: persona?.slackUserId ?? (await getBotId(args)), botIds: bots.botIds, userIds };
+  };
+
+  /**
+   * Why an event is dropped before any turn, or null if it is not. The early
+   * filters, in handleMessage's order: missing team or user, self bot echo,
+   * self user echo, ignore gate, hard blocklist, channel mode (the /1on1 lock
+   * is checked after, by each caller). `reason` is the slackDropsTotal label
+   * and `log` the line handleMessage prints; `log: null` is a silent drop
+   * (no line, no metric). Read-only itself (no log, no metric); any claim
+   * belongs to the caller's `afterSelfEcho` step.
+   * `afterSelfEcho` is a caller step run after the self-echo checks and
+   * before the ignore gate (handleMessage's dedup claim); the gate passes none.
+   */
+  // Both handleMessage and the decision gate (ingressDrops) depend on this: a filter added here reaches both.
+  const preTurnDropReason = async (
+    args: any,
+    o: { afterSelfEcho?: () => Promise<PreTurnDrop | null> } = {},
+  ): Promise<PreTurnDrop | null> => {
+    const e: any = args.event;
+    const teamId: string | undefined = args.context?.teamId ?? e.team;
+    const channelId: string = e.channel;
+    const userId: string | undefined = e.user;
+    const eventTs: string = e.ts;
+    const channelType: string = e.channel_type ?? "";
+    if (!teamId || !userId) return { reason: "missing_identity", log: null };
+    // Drop only self-echoes; other bots' messages flow through so slaude can
+    // see CI alerts, summarizer bots, etc. in shared threads.
+    if (await isSelfBotEcho(args, e)) {
+      return { reason: "self_bot", log: `[slack-rx] drop ch=${channelId} ts=${eventTs} — self bot echo` };
+    }
+    // Self-echo when posting as a real user (xoxp) — default identity or a named
+    // persona: own posts carry our user id and no bot_id. Drop them to avoid
+    // re-ingesting our own output.
+    if ((await getSelfUserIds()).has(userId)) {
+      return { reason: "self_user", log: `[slack-rx] drop ch=${channelId} ts=${eventTs} — self user echo` };
+    }
+    if (o.afterSelfEcho) {
+      const drop = await o.afterSelfEcho();
+      if (drop) return drop;
+    }
+    // Ignore gate: temp/permanent ignores for users or threads. /unignore* must
+    // bypass it — otherwise a thread-ignore drops the very message meant to lift it
+    // (the /unignore-thread is in the ignored thread), and the thread is stuck
+    // ignored forever. The blocklist + channel-mode gates below still apply, so this
+    // doesn't grant a non-allowed user any new reach.
+    {
+      const text: string = (e.text || "").toString().trim();
+      const threadTs: string = e.thread_ts || eventTs;
+      // botUserId isn't resolved yet here; strip any leading user-mention so a
+      // "<@bot> /unignore-thread" still parses.
+      const peek = parseSlashCommand(text.replace(/<@[^>]+>/g, "").trim());
+      const isUnignore = peek?.kind === "unignore";
+      if (!isUnignore && (await ignoreGate.shouldDrop(userId, channelId, threadTs))) {
+        return { reason: "ignored", log: `[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — ignored` };
+      }
+    }
+    // Hard blocklist: blocked user → drop before any further processing.
+    // Never reaches Claude (no token spend, no logs). Channel blocking is
+    // unnecessary — default posture already denies anywhere not allowed/trusted.
+    {
+      const soul = soulData();
+      if (soul.blockedUsers.includes(userId)) {
+        return { reason: "blocked_user", log: `[slack-rx] drop ch=${channelId} user=${userId} — blocked user` };
+      }
+    }
+    // Channel-mode gate, driven entirely by SOUL.md:
+    //   - trusted channel → team zone, anyone can address slaude (most open)
+    //   - allowed channel  → public zone, anyone can address slaude (mind exposure)
+    //   - DM or unlisted   → manager-only (approvers can still click Approve /
+    //     Deny on request_approval blocks but cannot chat)
+    {
+      const soul = soulData();
+      if (!channelModeAdmits(soul, channelId, channelType, userId)) {
+        const isDM_ = channelType === "im";
+        return {
+          reason: "whitelist",
+          log:
+            `[slack-rx] drop ch=${channelId} user=${userId} — non-whitelist/DM accepts manager/backup${isDM_ ? "/dm-allowlist" : ""} only` +
+            (soul.manager.userId ? "" : " (no manager set in SOUL.md)"),
+        };
+      }
+    }
+    return null;
+  };
+
+  /**
+   * Whether the decision gate must skip this event: handleMessage would drop
+   * it before any turn (preTurnDropReason, without the dedup claim), or it is
+   * a mention with no text. The gate never sees such a message, so nothing
+   * the agent is configured never to read leaves the deployment, and nobody
+   * it ignores gets a 🤔. Read-only: no claim, no log, no metric.
+   */
+  const ingressDrops = async (args: any): Promise<boolean> => {
+    if (await preTurnDropReason(args)) return true;
+    const e: any = args.event;
+    const text: string = (e.text || "").toString().trim();
+    const hasFiles = Array.isArray(e.files) && e.files.length > 0;
+    return !text.replace(/<@[^>]+>/g, "").trim() && !hasFiles;
+  };
+
+  /**
+   * Whether handleMessage would handle this event itself, with no turn: a
+   * slaude text command (parsed after stripping the bot and persona mention,
+   * exactly as handleMessage strips them) or, while a paste-back connect flow
+   * is parked for this person in this thread, a possible pasted callback.
+   * Commands bypass the gate (spec §7.2): a doubted /help must still answer,
+   * and /abort must not wait for a decision.
+   */
+  const ingressHandlesLocally = async (args: any, personaId?: string): Promise<boolean> => {
+    const e: any = args.event;
+    const text: string = (e.text || "").toString().trim();
+    const botUserId = await getBotId(args);
+    const personaUserId = personaId ? getPersonaRegistry().lookupByName(personaId)?.slackUserId : undefined;
+    const stripped = text
+      .replace(new RegExp(`<@${botUserId}>`, "g"), "")
+      .replace(personaUserId ? new RegExp(`<@${personaUserId}>`, "g") : /(?!x)/g, "")
+      .trim();
+    if (parseSlashCommand(stripped)) return true;
+    const threadTs: string = e.thread_ts || e.ts;
+    return Boolean(await SlackOauthFlows.peekFlow(pasteKey(e.channel, threadTs, e.user)));
+  };
+
+  /** Synchronous: with no runner or an off runner the call sites never await the gate. */
+  const gateActive = (): boolean => gateRunner !== null && gateRunner.mode !== "off";
+
+  /**
+   * The gate's action for this event, or undefined for today's path: the gate
+   * off, the thread under a /1on1 lock, a message the ingress would drop or
+   * handle itself (a text command, a pasted connect callback), or any error.
+   * `actual` is "run": what today's code does on every gated path.
+   */
+  const consultGate = async (
+    args: any,
+    o: { mentionsAgent: boolean; personaId?: string },
+  ): Promise<GateAction | undefined> => {
+    const runner = gateRunner;
+    if (!runner || runner.mode === "off") return undefined;
+    const e: any = args.event;
+    const key = `${e.channel}:${e.ts}`;
+    try {
+      const threadTs: string = e.thread_ts || e.ts;
+      if (await OneOnOne.find(e.channel, threadTs)) return undefined;
+      if (await ingressDrops(args)) return undefined;
+      if (await ingressHandlesLocally(args, o.personaId)) return undefined;
+      const teamId: string | undefined = args.context?.teamId ?? e.team;
+      const client = args.client ?? t.client;
+      const input = async () => {
+        const engaged = o.mentionsAgent
+          ? !!teamId &&
+            !!(await Sessions.findByThread({ team_id: teamId, channel_id: e.channel, thread_ts: threadTs, persona_id: o.personaId ?? "default" }))?.engaged
+          : true;
+        const ctx = { channel: e.channel, threadTs, userId: e.user, personaId: o.personaId } as SlackContext;
+        const deps: GateContextDeps = {
+          replies: (channel, thread, limit) => threadTail(client, channel, thread, e.ts, limit),
+          kbSearch: brainEnabled()
+            ? async (q) => gather(q, resolveBrainScope({ ...(await brainGateFor(ctx)), kbSources: personaKbSourceIds(o.personaId) }))
+            : null,
+          selfIds: await gateSelfIds(args, o.personaId),
+        };
+        return buildGateInput(
+          { channel: e.channel, ts: e.ts, thread_ts: e.thread_ts, text: (e.text ?? "").toString() },
+          { mentionsAgent: o.mentionsAgent, engaged, channelTrust: GATE_TRUST[channelTrustFor(e.channel, soulData())], contextMessages: runner.contextMessages },
+          deps,
+        );
+      };
+      return await runner.gate(key, input, "run");
+    } catch {
+      console.error(`[gate] error key=${key}`);
+      return undefined;
+    }
+  };
+
+  /**
+   * record_doubt on a mention: react, record into the persona's existing
+   * session (suppressed), never engage. No session: nothing to record into.
+   */
+  const recordDoubt = async (args: any, personaId?: string): Promise<void> => {
+    const e: any = args.event;
+    const teamId: string | undefined = args.context?.teamId ?? e.team;
+    const threadTs: string = e.thread_ts || e.ts;
+    // Already claimed by handleMessage (the other copy of this mention ran or
+    // was recorded): no 🤔 on a message the agent may be answering, and the
+    // record below would be deduped anyway.
+    if (await SeenEvents.has(`${e.channel}:${e.ts}`)) return;
+    try {
+      await outClientForPersona(personaId, { apiAppId: args.context?.apiAppId, teamId }).reactions.add({
+        channel: e.channel, timestamp: e.ts, name: REACT_DOUBT,
+      });
+    } catch (err: any) {
+      // The other copy of the same mention already reacted.
+      if (err?.data?.error !== "already_reacted") {
+        console.error(`[gate] doubt reaction failed ch=${e.channel} ts=${e.ts}:`, err?.data?.error ?? err?.message);
+      }
+    }
+    const row = teamId
+      ? await Sessions.findByThread({ team_id: teamId, channel_id: e.channel, thread_ts: threadTs, persona_id: personaId ?? "default" })
+      : null;
+    if (row) {
+      console.log(`[slack-rx] record ch=${e.channel} ts=${e.ts} user=${e.user} — gate doubt, suppressed`);
+      return await handleMessage(args, { suppress: true, personaId });
+    }
+    console.log(`[slack-rx] drop ch=${e.channel} ts=${e.ts} user=${e.user} — gate doubt, no session to record into`);
+  };
+
+  /** An engaged plain reply the gate records rather than runs. */
+  const recordEngaged = async (args: any, personaId?: string): Promise<void> => {
+    const e: any = args.event;
+    console.log(`[slack-rx] record ch=${e.channel} ts=${e.ts} user=${e.user} — gate record, suppressed`);
+    return await handleMessage(args, { suppress: true, personaId });
+  };
+
   // app_mention is a guaranteed delivery path even if message.channels event
   // subscription isn't enabled. Engage the thread, then defer to handleMessage.
   // (handleMessage's seen_events dedup prevents double-handling when the same
@@ -3065,6 +3308,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   t.event("app_mention", async (args: any) => {
     const e: any = args.event;
     const ts: string = e.thread_ts || e.ts;
+    const act = gateActive() ? await consultGate(args, { mentionsAgent: true }) : undefined;
+    if (act === "record_doubt") return await recordDoubt(args);
     const engagedBefore = await engageOnMention(args.context?.teamId ?? e.team, e.channel, ts, e.ts);
     await handleMessage(args, { engagedBefore });
   });
@@ -3131,6 +3376,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     );
 
     if (mentionsBot) {
+      const act = gateActive() ? await consultGate(args, { mentionsAgent: true }) : undefined;
+      if (act === "record_doubt") return await recordDoubt(args);
       const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts);
       return await handleMessage(args, { engagedBefore });
     }
@@ -3148,6 +3395,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (mentionedPersona) {
       // Re-engage the persona's row if it was disengaged; a first mention has
       // no row yet and the session is born engaged.
+      const personaId = mentionedPersona.name;
+      const act = gateActive() ? await consultGate(args, { mentionsAgent: true, personaId }) : undefined;
+      if (act === "record_doubt") return await recordDoubt(args, personaId);
       const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts, mentionedPersona.name);
       return await handleMessage(args, { personaId: mentionedPersona.name, engagedBefore });
     }
@@ -3215,6 +3465,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const def = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: "default" });
       if (def?.engaged) {
         if (otherApp(def)) return;
+        const act = gateActive() ? await consultGate(args, { mentionsAgent: false }) : undefined;
+        if (act === "record") return await recordEngaged(args);
         return await handleMessage(args);
       }
       // Multi-persona: a plain reply continues whichever persona is engaged in this thread.
@@ -3223,6 +3475,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           const row = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: p.name });
           if (row?.engaged) {
             if (otherApp(row)) return;
+            const act = gateActive() ? await consultGate(args, { mentionsAgent: false, personaId: p.name }) : undefined;
+            if (act === "record") {
+              return await recordEngaged(args, p.name);
+            }
             return await handleMessage(args, { personaId: p.name });
           }
         }
@@ -3241,6 +3497,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // Engaged session outside the registry (e.g. persona removed from
         // config) — keep handling plain replies as that persona.
         const restoredPersonaId = any.persona_id !== "default" ? any.persona_id : undefined;
+        const act = gateActive() ? await consultGate(args, { mentionsAgent: false, personaId: restoredPersonaId }) : undefined;
+        if (act === "record") {
+          return await recordEngaged(args, restoredPersonaId);
+        }
         return await handleMessage(args, { personaId: restoredPersonaId });
       }
       // Explicitly disengaged (row.engaged=0): record plain messages into the
