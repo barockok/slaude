@@ -50,7 +50,7 @@ import { formatSessionNotes } from "./session-notes";
 import { BootFailure, type FailureCode } from "../gateway/core/failure-codes";
 import { redactSecrets } from "../gateway/core/status-text";
 import { REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, makeRemoteCanUseTool } from "../remote/mcp";
-import { voiceCallActive } from "../voice/turn-flags";
+import { injectedTurns, voiceCallActive } from "../voice/turn-flags";
 import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/types";
 
 /** Upper bound on waiting for a previous remote handle's job cleanup at boot. */
@@ -716,9 +716,13 @@ export class AgentManager extends EventEmitter {
    * reload_session prompt), not delivered through sendMessage. The same on
    * mono and nodes (the manager runs on both). A turn's `origin` (and
    * GateInput.interactive) describes what started the session's job, so a
-   * write that needs a person's own words must also check this.
+   * write that needs a person's own words must also check this. A turn a
+   * voice runner injected (a delegated request, the transcript flush, the
+   * summary) is synthetic too: it arrives through sendMessage with no sender,
+   * but on a node its job token still names the call's starter.
    */
   isSyntheticTurn(sessionId: string): boolean {
+    if (injectedTurns.active(sessionId)) return true;
     return this.#live.get(sessionId)?.inputSynthetic[0] === true;
   }
 

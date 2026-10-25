@@ -1894,6 +1894,50 @@ describe("isSyntheticTurn: a prompt the runtime itself sent", () => {
   it("no live session: false", () => {
     expect(new AgentManager().isSyntheticTurn("S-none")).toBe(false);
   });
+
+  it("a voice-injected turn (mono and node runners) counts as synthetic: its profile write is denied", async () => {
+    const { monoRunner, nodeRunner } = await import("../../src/voice/runners");
+    const { SYNTHETIC_PROFILE_DENIAL, KB_MEMOIZE_TOOL } = await import("../../src/agent/profile-write-guard");
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const decisions: Array<[string, string | undefined]> = [];
+    const fs = plan((s) => {
+      s.onUser = async (um) => {
+        const text = String(um.message.content);
+        let reason: string | undefined;
+        for (const h of s.options.hooks.PreToolUse[0].hooks) {
+          const out = await h(
+            { hook_event_name: "PreToolUse", tool_name: KB_MEMOIZE_TOOL, tool_input: { target: "profile", pages: [] } },
+            "tu",
+            { signal: new AbortController().signal },
+          );
+          // Only the profile guard's answer (the skill gate also asks for slaude:memory).
+          const r = out?.hookSpecificOutput?.permissionDecisionReason;
+          if (r === SYNTHETIC_PROFILE_DENIAL) reason = r;
+        }
+        decisions.push([text, reason]);
+        s.emit(res());
+      };
+    });
+    await mgr.sendMessage(row.id, "hello", { sender: { userId: "U0ALICE", teamId: "T", origin: "slack" } });
+    await until(() => events.filter((e) => e.type === "done").length === 1, 3000, "first done");
+    const ro = { suppress: false, voice: true, cancelled: () => false };
+    await monoRunner(mgr, { check: async () => {}, pollMs: 5 }).run(row.id, "voice delegate (mono)", ro);
+    await nodeRunner({ agent: mgr, lock: (_sid, fn) => fn(new AbortController().signal), refreshToken: async () => {} }).run(
+      row.id,
+      "voice delegate (node)",
+      ro,
+    );
+    expect(decisions).toEqual([
+      ["hello", undefined],
+      ["voice delegate (mono)", SYNTHETIC_PROFILE_DENIAL],
+      ["voice delegate (node)", SYNTHETIC_PROFILE_DENIAL],
+    ]);
+    expect(mgr.isSyntheticTurn(row.id)).toBe(false);
+    void fs;
+    await shutdown(mgr, row.id);
+  });
 });
 
 describe("turnSenders: who sent the inputs the CLI is processing (phase C, invariant 2)", () => {
