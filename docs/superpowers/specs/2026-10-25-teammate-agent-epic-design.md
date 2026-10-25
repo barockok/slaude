@@ -138,7 +138,7 @@ Six phases. Each is independently shippable and leaves the system working.
 | Phase | Name | Depends on | Ships as |
 |---|---|---|---|
 | A | Natural voice | none | RC (agent-loop change) |
-| B | Decision gate | none | stable, behind `SLAUDE_DECISION_GATE=off` default |
+| B | Decision gate | none | stable, behind the `gate.mode: "off"` default |
 | R | Runtime prompt as built-in skills | A | RC (agent loop, system prompt) |
 | C | Memory structure | R (its memory discipline is R's first built-in skill) | RC (brain sources and schema) |
 | D | Background learning and budget | C | RC (agent loop, DB table) |
@@ -532,7 +532,7 @@ Every phase must keep these. Each gets a test.
 1. Nothing from a /1on1 reaches another person's turn, a channel, `agent-<id>` or `shared` without that person's approval.
 2. A profile is written only from that person's own words: live on their turn, or by a pass quoting their turn (§8.3a).
 3. Proactiveness can be raised only by the SOUL.
-4. `SLAUDE_DECISION_GATE=off` equals today's engagement behaviour.
+4. `gate.mode` `off` (including an unset `SLAUDE_DECISION_CONFIG`) equals today's engagement behaviour.
 5. Background spend never exceeds the day's budget by more than one turn per pass.
 6. No reply narrates machinery (phase A lint).
 7. Rules that must hold every turn live in the core or a state module, never only in a lazily loaded skill (phase R).
