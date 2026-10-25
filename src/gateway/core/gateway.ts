@@ -3161,13 +3161,36 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return !text.replace(/<@[^>]+>/g, "").trim() && !hasFiles;
   };
 
+  /**
+   * Whether handleMessage would handle this event itself, with no turn: a
+   * slaude text command (parsed after stripping the bot and persona mention,
+   * exactly as handleMessage strips them) or, while a paste-back connect flow
+   * is parked for this person in this thread, a possible pasted callback.
+   * Commands bypass the gate (spec §7.2): a doubted /help must still answer,
+   * and /abort must not wait for a decision.
+   */
+  const ingressHandlesLocally = async (args: any, personaId?: string): Promise<boolean> => {
+    const e: any = args.event;
+    const text: string = (e.text || "").toString().trim();
+    const botUserId = await getBotId(args);
+    const personaUserId = personaId ? getPersonaRegistry().lookupByName(personaId)?.slackUserId : undefined;
+    const stripped = text
+      .replace(new RegExp(`<@${botUserId}>`, "g"), "")
+      .replace(personaUserId ? new RegExp(`<@${personaUserId}>`, "g") : /(?!x)/g, "")
+      .trim();
+    if (parseSlashCommand(stripped)) return true;
+    const threadTs: string = e.thread_ts || e.ts;
+    return Boolean(await SlackOauthFlows.peekFlow(pasteKey(e.channel, threadTs, e.user)));
+  };
+
   /** Synchronous: with no runner or an off runner the call sites never await the gate. */
   const gateActive = (): boolean => gateRunner !== null && gateRunner.mode !== "off";
 
   /**
    * The gate's action for this event, or undefined for today's path: the gate
-   * off, the thread under a /1on1 lock, or any error. `actual` is "run": what
-   * today's code does on every gated path.
+   * off, the thread under a /1on1 lock, a message the ingress would drop or
+   * handle itself (a text command, a pasted connect callback), or any error.
+   * `actual` is "run": what today's code does on every gated path.
    */
   const consultGate = async (
     args: any,
@@ -3181,6 +3204,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const threadTs: string = e.thread_ts || e.ts;
       if (await OneOnOne.find(e.channel, threadTs)) return undefined;
       if (await ingressDrops(args)) return undefined;
+      if (await ingressHandlesLocally(args, o.personaId)) return undefined;
       const teamId: string | undefined = args.context?.teamId ?? e.team;
       const client = args.client ?? t.client;
       const input = async () => {

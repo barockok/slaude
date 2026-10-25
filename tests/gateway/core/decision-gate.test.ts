@@ -15,6 +15,8 @@ import type { GateInput } from "../../../src/gateway/gate/types";
 import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../../src/persona/registry";
 import { setSoulData, soulData } from "../../../src/soul/extract";
 import * as Ignores from "../../../src/db/ignores";
+import * as SlackOauthFlows from "../../../src/db/slack-oauth-flows";
+import { __resetMasterKeyCache } from "../../../src/db/crypto";
 
 /**
  * Phase B, task 5: the decision gate at the gateway's Slack ingress. Mentions
@@ -130,6 +132,7 @@ beforeEach(async () => {
   await db.run("DELETE FROM seen_events");
   await db.run("DELETE FROM pending_gates");
   await db.run("DELETE FROM ignores");
+  await db.run("DELETE FROM slack_oauth_flows");
   OneOnOne._wipeForTests();
 });
 
@@ -493,5 +496,70 @@ describe("decision gate: messages the ingress drops never reach the adapter", ()
     await mention(g, nextTs(), "<@USLAUDEBOT>");
     expect(n.seen).toEqual([]);
     expect(doubts(g)).toEqual([]);
+  });
+});
+
+describe("decision gate: text slash commands bypass it", () => {
+  it("a /help mention in a fresh thread is answered, never gated", async () => {
+    const n = alwaysNo();
+    const g = makeGw(runner("on", n.a));
+    await mention(g, nextTs(), "<@USLAUDEBOT> /help");
+    expect(n.seen).toEqual([]);
+    expect(doubts(g)).toEqual([]);
+    expect(g.posts.length).toBe(1);
+  });
+
+  it("/1on1 and /abort in an engaged thread never wait for the gate", async () => {
+    const n = alwaysNo();
+    const g = makeGw(runner("on", n.a));
+    const thread = nextTs();
+    await mention(g, thread, "<@USLAUDEBOT> /help");
+    await g.emit("message", msg(g.t.client, "/abort", nextTs(), { thread }));
+    await g.emit("message", msg(g.t.client, "<@USLAUDEBOT> /1on1", nextTs(), { thread }));
+    expect(n.seen).toEqual([]);
+    expect(doubts(g)).toEqual([]);
+    expect(await OneOnOne.find(CH, thread)).not.toBeNull();
+  });
+
+  it("a persona's slash command bypasses it", async () => {
+    setPersonaRegistry(anaRegistry());
+    try {
+      const n = alwaysNo();
+      const g = makeGw(runner("on", n.a));
+      await g.emit("message", msg(g.t.client, "<@U0ANA> /help", nextTs()));
+      expect(n.seen).toEqual([]);
+      expect(doubts(g)).toEqual([]);
+      expect(g.posts.length).toBe(1);
+    } finally {
+      __resetPersonaRegistry();
+    }
+  });
+
+  it("a pasted OAuth callback with a parked connect flow bypasses it", async () => {
+    const priorKey = process.env.SLAUDE_MASTER_KEY;
+    process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
+    __resetMasterKeyCache();
+    try {
+      const n = alwaysNo();
+      const g = makeGw(runner("on", n.a));
+      const thread = nextTs();
+      await mention(g, thread, "<@USLAUDEBOT> /help");
+      await SlackOauthFlows.putFlow(`${CH}:${thread}:${WORLD.manager}`, {
+        state: "st-1",
+        parts: {
+          tokenEndpoint: "https://auth.example.com/token", redirectUri: "https://slaude.example.com/oauth/cb",
+          clientId: "client-1", clientSecret: "cs-1", verifier: "v-1", resource: "https://mcp.example.com/mcp",
+        },
+        serverName: "workbench", cfg: { type: "http", url: "https://mcp.example.com/mcp" },
+        sessionId: "s-1", channelId: CH, threadTs: thread, userId: WORLD.manager, scope: "global", authMsgRef: "1.5",
+      } as any);
+      await g.emit("message", msg(g.t.client, "<https://slaude.example.com/oauth/cb?code=abc&state=st-1>", nextTs(), { thread }));
+      expect(n.seen).toEqual([]);
+      expect(doubts(g)).toEqual([]);
+    } finally {
+      if (priorKey === undefined) delete process.env.SLAUDE_MASTER_KEY;
+      else process.env.SLAUDE_MASTER_KEY = priorKey;
+      __resetMasterKeyCache();
+    }
   });
 });
