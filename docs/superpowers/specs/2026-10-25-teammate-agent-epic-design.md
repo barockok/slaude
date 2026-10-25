@@ -12,7 +12,7 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 | Phase | Plan | Status | Release |
 |---|---|---|---|
 | A. Natural voice | `docs/superpowers/plans/2026-10-25-phase-a-natural-voice.md` | done, merged (#152; unreleased — ships as RC) | — |
-| B. Decision gate | `docs/superpowers/plans/2026-10-25-phase-b-decision-gate.md` | done (unreleased) | — |
+| B. Decision gate | `docs/superpowers/plans/2026-10-25-phase-b-decision-gate.md` | done, in review (#153; unreleased) | — |
 | R. Runtime prompt as built-in skills | — | not started | — |
 | C. Memory structure | — | not started | — |
 | D. Background learning and budget | — | not started | — |
