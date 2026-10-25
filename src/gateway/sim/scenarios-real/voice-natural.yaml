@@ -1,12 +1,13 @@
 # Live-model only (--real): the agent must not narrate its own machinery.
-# No KB seeding mechanism exists in scenarios-real, so the first send has the
-# model write a page, then answer a question about it.
+# No prompt names a tool, the KB or memory. Step 1 seeds (not linted); the
+# approval card/click is kept as in brain-smoke.yaml in case the write path cards.
 layer: trusted
 as: member
 steps:
-  - send: { text: "Call the kb_memoize tool with pages set to a single-element array containing { slug: \"notes/voice-natural\", content: \"Deploys ship every Thursday.\", summary: \"voice scenario seed\" }. Then, in your own words, tell me which day deploys ship." }
+  - send: { text: "Quick note for later: deploys ship every Thursday." }
   - expect_card: { kind: approval }
   - click: { as: U0APP, action: approve }
+  - send: { text: "Which day do deploys ship?" }
   - expect_reply: { contains: "Thursday" }
   - expect_natural_voice: {}
   - send: { text: "List the files in your workspace." }

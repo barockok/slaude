@@ -30,3 +30,34 @@ steps:
     await runTranscript(t, "stub");
   });
 });
+
+describe("expect_natural_voice scoping", () => {
+  test("ignores violating cards before the latest send; fails on ones after", async () => {
+    const { SimSession } = await import("../../../src/gateway/sim/engine");
+    const fake: any[] = [];
+    const bad = { kind: "message", text: "From my KB, yes", resolved: false, actionIds: [], channel: "C1", raw: {} };
+    const origCreate = SimSession.create;
+    (SimSession as any).create = async () => ({
+      cards: () => fake,
+      send: async (x: any) => { if (x.text === "bad") fake.push(bad); },
+      dispose: async () => {},
+    });
+    try {
+      fake.push({ ...bad }); // posted before any send
+      const ok = parseTranscript(`
+steps:
+  - send: { text: "ok" }
+  - expect_natural_voice: {}
+`);
+      await runTranscript(ok, "stub");
+      const fail = parseTranscript(`
+steps:
+  - send: { text: "bad" }
+  - expect_natural_voice: {}
+`);
+      await expect(runTranscript(fail, "stub")).rejects.toThrow(/expect_natural_voice failed: machinery-kb/);
+    } finally {
+      (SimSession as any).create = origCreate;
+    }
+  });
+});
