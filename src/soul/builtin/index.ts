@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import pkg from "../../../package.json";
 
@@ -89,6 +89,31 @@ export function builtinGoverning(tool: string): BuiltinSkill | null {
 /** True when `slug` is a built-in skill's bare name. */
 export function isBuiltinSkillName(slug: string): boolean {
   return listBuiltinSkills().some((s) => s.name === slug);
+}
+
+/** The name the CLI gives a local plugin directory: its
+ *  .claude-plugin/plugin.json `name`, else the directory's basename. An
+ *  unreadable manifest counts as absent (the conservative answer here). */
+export function cliPluginName(dir: string): string {
+  const manifest = join(dir, ".claude-plugin", "plugin.json");
+  if (existsSync(manifest)) {
+    try {
+      const name = (JSON.parse(readFileSync(manifest, "utf8")) as { name?: unknown }).name;
+      if (typeof name === "string" && name.trim()) return name;
+    } catch {
+      // fall through to the basename
+    }
+  }
+  return basename(resolve(dir));
+}
+
+/** Plugin directories, other than the built-in one, that the CLI would also
+ *  name "slaude". The CLI does not de-duplicate plugins by name and resolves a
+ *  skill to the first match, so such a plugin's skills share the `slaude:`
+ *  namespace and one named like a built-in would answer for it. */
+export function pluginsNamedLikeBuiltin(dirs: string[]): string[] {
+  const builtin = resolve(BUILTIN_PLUGIN_DIR);
+  return dirs.filter((d) => resolve(d) !== builtin && cliPluginName(d) === PLUGIN_NAME);
 }
 
 /** A skill's name as the CLI derives it from frontmatter `name`: every

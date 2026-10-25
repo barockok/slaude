@@ -1,13 +1,16 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "../../src/config/home";
 import { runtimeBaseline } from "../../src/soul/loader";
 import {
   BUILTIN_PLUGIN_DIR,
   builtinGoverning,
+  cliPluginName,
   isBuiltinSkillName,
   listBuiltinSkills,
+  pluginsNamedLikeBuiltin,
   renderSkillIndex,
 } from "../../src/soul/builtin";
 import pkg from "../../package.json";
@@ -143,5 +146,38 @@ describe("built-in skills", () => {
     expect(manifest.name).toBe("slaude");
     for (const s of listBuiltinSkills()) expect(s.qualified).toBe(`${manifest.name}:${s.name}`);
     expect(BUILTIN_PLUGIN_DIR).toBe(join(import.meta.dir, "..", "..", "src", "soul", "builtin"));
+  });
+});
+
+describe("CLI plugin naming", () => {
+  it("names a plugin by its manifest, else by its directory basename", () => {
+    const root = mkdtempSync(join(tmpdir(), "plugin-name-"));
+    try {
+      const bare = join(root, "slaude");
+      mkdirSync(bare);
+      const named = join(root, "slaude-named");
+      mkdirSync(join(named, ".claude-plugin"), { recursive: true });
+      writeFileSync(join(named, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "slaude" }));
+      const renamed = join(root, "other", "slaude");
+      mkdirSync(join(renamed, ".claude-plugin"), { recursive: true });
+      writeFileSync(join(renamed, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "home" }));
+      const broken = join(root, "broken", "slaude");
+      mkdirSync(join(broken, ".claude-plugin"), { recursive: true });
+      writeFileSync(join(broken, ".claude-plugin", "plugin.json"), "{not json");
+      const safe = join(root, "data");
+      mkdirSync(safe);
+
+      expect(cliPluginName(BUILTIN_PLUGIN_DIR)).toBe("slaude");
+      expect(cliPluginName(bare)).toBe("slaude");
+      expect(cliPluginName(bare + "/")).toBe("slaude");
+      expect(cliPluginName(renamed)).toBe("home");
+      expect(cliPluginName(safe)).toBe("data");
+
+      // the built-in itself never counts, however it is spelled
+      expect(pluginsNamedLikeBuiltin([BUILTIN_PLUGIN_DIR, BUILTIN_PLUGIN_DIR + "/", safe, renamed])).toEqual([]);
+      expect(pluginsNamedLikeBuiltin([safe, bare, named, renamed, broken, BUILTIN_PLUGIN_DIR])).toEqual([bare, named, broken]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

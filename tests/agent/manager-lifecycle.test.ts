@@ -458,6 +458,44 @@ describe("AgentManager lifecycle", () => {
     }
   });
 
+  it("warns loudly at boot when another plugin would also be named \"slaude\"", async () => {
+    const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { paths } = await import("../../src/config/home");
+    const { BUILTIN_PLUGIN_DIR } = await import("../../src/soul/builtin");
+    // An installed plugin whose directory is named "slaude" and has no manifest:
+    // the CLI names it after the basename, the built-in plugin's name.
+    const root = mkdtempSync(join(tmpdir(), "plugin-collide-"));
+    const collide = join(root, "slaude");
+    mkdirSync(collide);
+    const file = join(paths.claudeConfig, "plugins", "installed_plugins.json");
+    const before = existsSync(file) ? readFileSync(file, "utf8") : null;
+    mkdirSync(join(paths.claudeConfig, "plugins"), { recursive: true });
+    writeFileSync(file, JSON.stringify({ version: 2, plugins: { "x@mp": [{ scope: "user", installPath: collide }] } }));
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const mgr = new AgentManager();
+      const row = await mgr.ensureSession(thread());
+      const fs = plan();
+      await mgr.sendMessage(row.id, "hello");
+      await until(() => fs.options !== null, 3000, "boot");
+      expect(fs.options.plugins.map((p: any) => p.path)).toContain(collide);
+      const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("plugin name \"slaude\""));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain(collide);
+      expect(lines[0]).toContain("built-in");
+      // the built-in plugin itself is never reported
+      expect(lines[0]).not.toContain(BUILTIN_PLUGIN_DIR);
+      await shutdown(mgr, row.id);
+    } finally {
+      warn.mockRestore();
+      if (before === null) rmSync(file, { force: true });
+      else writeFileSync(file, before);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // WS-C §4.2: a node's async resolver returns the bridged servers next to the
   // shims; they reach Options.mcpServers and the <mcp-servers> block.
   it("an async MCP resolver's bridged servers are mounted and listed in <mcp-servers>", async () => {

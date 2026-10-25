@@ -29,7 +29,7 @@ import { paths } from "../config/home";
 import { env } from "../config/env";
 import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plugins";
 import { soulSystemBlock } from "../soul/loader";
-import { BUILTIN_PLUGIN_DIR } from "../soul/builtin";
+import { BUILTIN_PLUGIN_DIR, pluginsNamedLikeBuiltin } from "../soul/builtin";
 import { personaSoulText } from "../persona/soul-source";
 import { soulData, effectiveSoulForChannel } from "../soul/extract";
 import { SoulDataSchema } from "../soul/data";
@@ -122,6 +122,30 @@ export type PermissionResolver = (
 export type McpResolver = (
   sessionId: string,
 ) => Record<string, McpServerConfig> | undefined | Promise<Record<string, McpServerConfig> | undefined>;
+
+/** Plugin paths already reported by warnPluginsNamedLikeBuiltin (once per process). */
+const warnedSlaudeNamedPlugins = new Set<string>();
+
+/** Warn when a mounted plugin other than the built-in one would also get the
+ *  CLI plugin name "slaude" (e.g. SLAUDE_HOME=/opt/slaude: the home plugin has
+ *  no manifest, so the CLI names it after its basename). The CLI does not
+ *  de-duplicate plugins by name and resolves a skill to the first match, so
+ *  that plugin's skills share the `slaude:` namespace, and a pre-existing one
+ *  named like a built-in would answer the Skill call for it and satisfy the
+ *  skill gate. Not renamed here: a manifest name on the home plugin would
+ *  change every agent skill's invoked name. */
+function warnPluginsNamedLikeBuiltin(dirs: string[]): void {
+  for (const dir of pluginsNamedLikeBuiltin(dirs)) {
+    if (warnedSlaudeNamedPlugins.has(dir)) continue;
+    warnedSlaudeNamedPlugins.add(dir);
+    console.warn(
+      `[mgr] WARNING: plugin at ${dir} resolves to the CLI plugin name "slaude", the built-in plugin's name. ` +
+        `Its skills appear as slaude:<name>, and one named like a built-in skill would load in place of the built-in ` +
+        `and satisfy the skill gate. Rename the directory (for SLAUDE_HOME, choose a path whose last component is not "slaude") ` +
+        `or give that plugin a .claude-plugin/plugin.json with another name.`,
+    );
+  }
+}
 
 /** A node's manifest servers with the transport resolver's laid over them: a
  *  gateway-resolved server wins a name collision, with a warning naming it. */
@@ -1187,6 +1211,7 @@ export class AgentManager extends EventEmitter {
     // `slaude:<name>`, named by the skill index in the core prompt.
     const builtinPlugin = { type: "local" as const, path: BUILTIN_PLUGIN_DIR, skipMcpDiscovery: true };
     const allPlugins = [slaudeHomePlugin, builtinPlugin, ...pluginPaths];
+    warnPluginsNamedLikeBuiltin(allPlugins.map((p) => p.path));
 
     // Opened after the soul resolves, so a boot that fails there holds no connection.
     const remoteHandle = await this.#remoteHandleFor(sessionId, remoteTarget);
