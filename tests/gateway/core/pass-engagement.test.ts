@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { rmSync } from "node:fs";
 import { createGateway } from "../../../src/gateway/core/gateway";
 import { AgentManager } from "../../../src/agent/manager";
@@ -8,6 +8,7 @@ import { __resetSoulDataMemo } from "../../../src/soul/extract";
 import { paths } from "../../../src/config/home";
 import { db } from "../../../src/db/schema";
 import * as OneOnOne from "../../../src/db/one-on-one";
+import * as Sessions from "../../../src/db/sessions";
 
 /**
  * A mention that the agent answers with `pass` (and nothing user-visible)
@@ -23,11 +24,12 @@ const REPLY = "mcp__slaude_surface__reply";
 
 function makeTransport() {
   const events = new Map<string, (args: any) => Promise<void>>();
+  const reacts: string[] = [];
   const t: Transport = {
     client: {
       auth: { test: async () => ({ user_id: "USLAUDEBOT", bot_id: "B_SLAUDE", team: TEAM, url: "x" }) },
       chat: { postMessage: async () => ({ ok: true, ts: `${Date.now()}.0` }), update: async () => ({ ok: true }) },
-      reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
+      reactions: { add: async (a: any) => { reacts.push(a.name); return { ok: true }; }, remove: async () => ({ ok: true }) },
       conversations: { info: async () => ({}), members: async () => ({}), replies: async () => ({}) },
       users: { info: async () => ({ user: { real_name: "Test" } }), profile: { set: async () => ({}) } },
       search: { messages: async () => ({}) },
@@ -37,7 +39,7 @@ function makeTransport() {
     event: (name: string, fn: any) => { events.set(name, fn); },
   };
   const emit = async (name: string, args: any) => { await events.get(name)?.(args); };
-  return { t, emit };
+  return { t, emit, reacts };
 }
 
 /** Gateway + a stubbed agent: each non-suppressed turn emits the planned tool
@@ -139,5 +141,28 @@ describe("a mention that ends in pass", () => {
     await settle();
     expect(g.sends.length).toBe(3);
     expect(g.sends.at(-1)).not.toContain("do NOT reply");
+  });
+
+  it("a failing disengage write is logged; the done clean-up still runs and no rejection escapes", async () => {
+    const rejections: unknown[] = [];
+    const onRej = (r: unknown) => { rejections.push(r); };
+    process.on("unhandledRejection", onRej);
+    const real = Sessions.setEngaged;
+    const spy = spyOn(Sessions, "setEngaged").mockImplementation(async (id: string, value: boolean) => {
+      if (value === false) throw new Error("db down");
+      return real(id, value);
+    });
+    try {
+      const g = makeGw();
+      g.setPlan([PASS]);
+      await mention(g, nextTs(), "<@USLAUDEBOT> was great at that yesterday");
+      await settle();
+      expect(spy.mock.calls.some((c) => c[1] === false)).toBe(true); // the revert was attempted
+      expect(g.reacts).toContain("white_check_mark"); // REACT_DONE still stamped
+      expect(rejections).toEqual([]);
+    } finally {
+      spy.mockRestore();
+      process.off("unhandledRejection", onRej);
+    }
   });
 });

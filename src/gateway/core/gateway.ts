@@ -1713,7 +1713,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           if (route.passed && !route.spoke && route.engagedBefore === false) {
             route.engagedBefore = undefined;
             console.log(`[pass] disengage ch=${route.ctx.channel} ts=${route.ctx.threadTs}`);
-            await persistEngaged(route.ctx.teamId, route.ctx.channel, route.ctx.threadTs, false, route.ctx.personaId ?? "default");
+            await persistEngaged(route.ctx.teamId, route.ctx.channel, route.ctx.threadTs, false, route.ctx.personaId ?? "default")
+              .catch((err) => console.error(`[pass] disengage failed ch=${route.ctx.channel} ts=${route.ctx.threadTs}:`, err?.message ?? err));
           }
           // No fallback notice: setStopGuard above forces a reply via the SDK
           // Stop hook. If the agent still stops without spoke, manager logs
