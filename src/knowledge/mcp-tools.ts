@@ -393,10 +393,6 @@ export const brainHandlers = {
         if (!(await getPageOrNull(call, slug, inWriteSource))) return err(SUPERSEDE_REFUSAL);
         checked.add(slug);
       }
-      // A page written again is current: drop a superseded tag it carries
-      // (in this source), so readers that filter on the tag see it again.
-      const tagged = await supersededSlugs(call, scope, [scope.sourceId]);
-      const revived = composed.map((pg) => pg.slug).filter((slug) => tagged.has(slug));
       // One approval gates the whole batch; the gated thunk writes every page,
       // then tags each superseded page (left as written otherwise). Each
       // write goes through brainCall, which ensures scope.sourceId exists
@@ -407,6 +403,11 @@ export const brainHandlers = {
         managers: d.managers(),
         requestApproval: d.requestApproval,
         call: async () => {
+          // A page written again is current: drop a superseded tag it carries
+          // (in this source), so readers that filter on the tag see it again.
+          // Read after the approval, before the first write.
+          const tagged = await supersededSlugs(call, scope, [scope.sourceId]);
+          const revived = composed.map((pg) => pg.slug).filter((slug) => tagged.has(slug));
           const results: unknown[] = [];
           for (const pg of composed) {
             results.push(await call("put_page", { slug: pg.slug, content: pg.content }, scope));
