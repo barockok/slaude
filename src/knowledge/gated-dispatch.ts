@@ -1,5 +1,5 @@
 import type { BrainScope, ChannelTrust } from "./scope";
-import { agentSourceId, userSourceId } from "./scope";
+import { agentSourceId, isProfileSourceId, speakerProfileSource, userSourceId } from "./scope";
 
 export type GateTier = "auto" | "approval" | "manager" | "deny";
 
@@ -25,6 +25,10 @@ export interface GateInput {
    *  A write that needs the person's own words must ALSO check
    *  AgentManager.isSyntheticTurn (on mono and nodes alike). */
   interactive: boolean;
+  /** The turn's origin itself. A profile write needs "slack": a panel turn's
+   *  user id is an operator id, not a Slack id. Absent = unknown (no profile
+   *  writes). */
+  origin?: TurnOrigin;
   lockedUser: string | null;
   channelTrust: ChannelTrust;
   isManager: boolean;
@@ -70,9 +74,18 @@ export function classifyBrainOp(op: string, scope: BrainScope, g: GateInput): Ga
     return g.channelTrust === "public" && !g.isManager ? "deny" : "approval";
   }
   if (WRITE_OPS.has(op)) {
+    // A person's profile: only that person, on their own Slack turn (spec
+    // §8.1, invariant 2). Never a background, cron or panel turn, never on
+    // someone else's behalf — manager included.
+    if (isProfileSourceId(scope.sourceId)) return isOwnProfileWrite(scope, g) ? "auto" : "deny";
     if (g.userId === null) return "auto"; // background turn — agent's own mind
+    // /1on1 containment (invariant 1): in a locked thread, only the lock
+    // owner's own slice is writable. Shared, the agent's slice and public
+    // would carry the thread's content out without that person's approval.
+    if (g.lockedUser !== null) {
+      return g.lockedUser === g.userId && scope.sourceId === userSourceId(g.userId) ? "auto" : "deny";
+    }
     if (scope.sourceId === agentSourceId(g.agentId)) return "auto"; // agent's own private slice
-    if (g.lockedUser === g.userId && scope.sourceId === userSourceId(g.userId)) return "auto"; // user's own 1on1 slice
     // Everything else is a write to the shared/common KB (explicit target:"shared").
     // Legit to ask approval — including the manager (the standing grant collapses
     // repeat cards per thread). Non-manager in a public channel: denied.
@@ -80,6 +93,13 @@ export function classifyBrainOp(op: string, scope: BrainScope, g: GateInput): Ga
     return "deny";
   }
   return "manager"; // unknown op: fail closed
+}
+
+/** The write goes to the speaker's own profile, on a Slack turn a person started. */
+function isOwnProfileWrite(scope: BrainScope, g: GateInput): boolean {
+  if (!g.interactive || g.origin !== "slack" || g.userId === null) return false;
+  const own = speakerProfileSource(g.teamId, g.userId);
+  return own !== null && scope.sourceId === own;
 }
 
 // Field-compatible subset of the Surface ApprovalRequest contract.

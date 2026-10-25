@@ -6,7 +6,8 @@ import { brainCall, brainEnabled } from "./brain";
 import { brainThink, sdkThinkClient } from "./brain-think";
 import { gather } from "./gather";
 import { gatedBrainCall, type ApprovalReq, type ApprovalRes, type GateInput } from "./gated-dispatch";
-import { SHARED_SOURCE, kbSourceId, type BrainScope } from "./scope";
+import { SHARED_SOURCE, kbSourceId, speakerProfileSource, userSourceId, type BrainScope } from "./scope";
+import { composePage, markSuperseded, pageMarkdown, type TypedPageInput } from "./memory-pages";
 import { agentIdReady } from "./agent-identity";
 import { kbContract, KB_MEMOIZE_MAX_PAGES } from "../tools/contracts/kb";
 
@@ -165,6 +166,72 @@ const citationSlugs = (result: unknown): Set<string> => {
 const hitSlug = (h: unknown): string | undefined =>
   (h as { slug?: string; page_slug?: string })?.slug ?? (h as { page_slug?: string })?.page_slug;
 
+export const PROFILE_REFUSAL = "refused: a profile is written only on that person's own turn";
+export const SUPERSEDE_REFUSAL = "refused: supersedes must name a page in the same memory";
+export const LOCK_REFUSAL = "refused: in a /1on1, memory stays with this person; ask them before sharing it";
+
+export type MemoizeTarget = "mine" | "shared" | "profile";
+export interface KbMemoizeArgs {
+  pages: Array<TypedPageInput & { summary: string }>;
+  target?: MemoizeTarget;
+  /** Slack user id the pages are about; with target "profile", the speaker. */
+  subject?: string;
+}
+
+/**
+ * The write scope for a kb_memoize target, or the refusal. Only `sourceId`
+ * ever changes: the read union and client stay the turn's own.
+ *
+ * - profile: the SPEAKER's profile, only on their own Slack turn (a panel
+ *   operator id is not a Slack id; cron never). A profile follows its person,
+ *   so in someone else's /1on1 it is still the speaker's, never the owner's.
+ * - in a /1on1 (invariant 1), only the lock owner's own slice: shared, the
+ *   agent's slice and public would carry the thread out without that person.
+ * - shared: the common KB, carded by the gate.
+ * - mine: the turn's own slice as resolved.
+ * The gate (classifyBrainOp) enforces the same rules again.
+ */
+function resolveMemoizeScope(target: MemoizeTarget, subject: string | undefined, base: BrainScope, g: GateInput): { scope: BrainScope } | { error: string } {
+  if (target === "profile") {
+    const own = speakerProfileSource(g.teamId, g.userId);
+    if (own === null || !g.interactive || g.origin !== "slack" || (subject !== undefined && subject !== g.userId)) {
+      return { error: PROFILE_REFUSAL };
+    }
+    return { scope: { ...base, sourceId: own } };
+  }
+  const scope = target === "shared" ? { ...base, sourceId: SHARED_SOURCE } : base;
+  if (g.lockedUser !== null && g.userId !== null) {
+    if (g.userId !== g.lockedUser || scope.sourceId !== userSourceId(g.lockedUser)) return { error: LOCK_REFUSAL };
+  }
+  return { scope };
+}
+
+/** Which page types go where: a profile page only to the profile (slug
+ *  "profile", one page), and the profile holds only profile and correction pages. */
+function pageShapeError(pg: TypedPageInput, target: MemoizeTarget): string | null {
+  if (target === "profile") {
+    if (pg.type !== "profile" && pg.type !== "correction") return `refused: target "profile" takes pages of type profile or correction`;
+    if (pg.type === "profile" && pg.slug !== "profile") return `refused: a profile page uses slug "profile"`;
+    return null;
+  }
+  if (pg.type === "profile") return `refused: a type "profile" page goes to target "profile"`;
+  return null;
+}
+
+/** get_page, with gbrain's page_not_found error read as "no page". */
+async function getPageOrNull(
+  call: (name: string, params: Record<string, unknown>, scope: BrainScope) => Promise<unknown>,
+  slug: string,
+  scope: BrainScope,
+): Promise<unknown> {
+  try {
+    return await call("get_page", { slug }, scope);
+  } catch (e) {
+    if ((e as { code?: string }).code === "page_not_found") return null;
+    throw e;
+  }
+}
+
 export const brainHandlers = {
   kb_think: async (p: { question: string }, d: BrainToolDeps): Promise<ToolResult> => {
     try {
@@ -263,7 +330,7 @@ export const brainHandlers = {
       backlinks: JSON.parse(back.content[0]!.text),
     }, null, 2));
   },
-  kb_memoize: async (p: { pages: Array<{ slug: string; content: string; summary: string }>; target?: "mine" | "shared" }, d: BrainToolDeps): Promise<ToolResult> => {
+  kb_memoize: async (p: KbMemoizeArgs, d: BrainToolDeps): Promise<ToolResult> => {
     const pages = p.pages;
     if (!Array.isArray(pages) || pages.length === 0) {
       return err("kb_memoize requires at least one page");
@@ -275,34 +342,65 @@ export const brainHandlers = {
     // in the boot window (before auth.test lands) targets the real `agent-<id>`
     // slice, not `agent-default`. No-op once resolved; never hangs (falls back).
     await agentIdReady();
-    // "mine" (default) writes to the resolved own slice — the agent's private
-    // mind outside a 1on1, the user's slice inside one — and auto-passes.
-    // "shared" escalates to the common team KB, which requires human approval.
-    const scope = p.target === "shared" ? { ...await d.scope(), sourceId: SHARED_SOURCE } : await d.scope();
-    const label = p.target === "shared" ? "→ shared" : "→ mine";
+    const target = p.target ?? "mine";
+    const gate = await d.gate();
+    const resolved = resolveMemoizeScope(target, p.subject, await d.scope(), gate);
+    if ("error" in resolved) return err(resolved.error);
+    const { scope } = resolved;
+    // Compose every page before anything is written: one refusal stops the batch.
+    const now = new Date();
+    const composed: Array<{ slug: string; content: string; supersedes?: string }> = [];
+    for (const pg of pages) {
+      const shape = pageShapeError(pg, target);
+      if (shape) return err(shape);
+      const source = pg.source ?? (target === "profile" ? `told by ${gate.userId}` : undefined);
+      const c = composePage({ ...pg, ...(source !== undefined ? { source } : {}) }, now);
+      if ("error" in c) return err(c.error);
+      composed.push({ slug: pg.slug, content: c.content, ...(pg.supersedes !== undefined ? { supersedes: pg.supersedes } : {}) });
+    }
+    const label = `→ ${target}`;
     const describe = pages.length === 1
       ? `KB write ${label}: ${pages[0]!.slug} — ${pages[0]!.summary}`
       : `KB write ${label}: ${pages.length} pages — ${pages.map((pg) => pg.slug).join(", ")}`;
     try {
       const call = d.call ?? brainCall;
-      // One approval gates the whole batch; the gated thunk writes every page.
-      // Each put_page goes through brainCall, which ensures scope.sourceId
-      // exists first (see docs/findings/2026-06-14-brain-memoize-failure.md).
+      // Supersede check, before any write: the older page must exist in the
+      // WRITE source itself (a read limited to it), so a page can only retire
+      // one in the same memory, never one it merely reads.
+      const superseded = new Map<string, string>();
+      const inWriteSource: BrainScope = { ...scope, allowedSources: [scope.sourceId] };
+      for (const pg of composed) {
+        if (pg.supersedes === undefined || superseded.has(pg.supersedes)) continue;
+        const old = pageMarkdown(await getPageOrNull(call, pg.supersedes, inWriteSource));
+        if (old === null) return err(SUPERSEDE_REFUSAL);
+        superseded.set(pg.supersedes, old);
+      }
+      // One approval gates the whole batch; the gated thunk writes every page,
+      // then marks each superseded page. Each put_page goes through brainCall,
+      // which ensures scope.sourceId exists first (see
+      // docs/findings/2026-06-14-brain-memoize-failure.md).
       const r = await gatedBrainCall("put_page", {
         scope,
-        gate: await d.gate(),
+        gate,
         managers: d.managers(),
         requestApproval: d.requestApproval,
         call: async () => {
           const results: unknown[] = [];
-          for (const pg of pages) {
+          for (const pg of composed) {
             results.push(await call("put_page", { slug: pg.slug, content: pg.content }, scope));
+          }
+          for (const pg of composed) {
+            if (pg.supersedes === undefined) continue;
+            const old = superseded.get(pg.supersedes)!;
+            const marked = markSuperseded(old, pg.slug);
+            superseded.set(pg.supersedes, marked);
+            results.push(await call("put_page", { slug: pg.supersedes, content: marked }, scope));
           }
           return results;
         },
         describe,
       });
-      return r.ok ? asJson({ written: pages.map((pg) => pg.slug), target: p.target ?? "mine", results: r.result }) : err(r.reason);
+      return r.ok ? asJson({ written: composed.map((pg) => pg.slug), target, results: r.result }) : err(r.reason);
     } catch (e) {
       return err(humanizeBrainError("put_page", e));
     }
@@ -329,7 +427,7 @@ export function createKbMcp(deps?: BrainToolDeps, opts: { kbs?: () => KbEntry[] 
         tool(c.kb_graph.name, c.kb_graph.description, c.kb_graph.schema,
           (a: { slug: string }) => brainHandlers.kb_graph(a, deps)),
         tool(c.kb_memoize.name, c.kb_memoize.description, c.kb_memoize.schema,
-          (a: { pages: Array<{ slug: string; content: string; summary: string }>; target?: "mine" | "shared" }) => brainHandlers.kb_memoize(a, deps)),
+          (a: KbMemoizeArgs) => brainHandlers.kb_memoize(a, deps)),
         tool(c.kb_delete_page.name, c.kb_delete_page.description, c.kb_delete_page.schema,
           (a: { slug: string; reason: string }) => brainHandlers.kb_delete_page(a, deps)),
       ]

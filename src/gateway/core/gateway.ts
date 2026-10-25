@@ -938,6 +938,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // Mono: the route's origin (set by the Slack, panel and cron paths);
       // nodes: the signed `origin` claim. Unknown reads as not interactive.
       interactive: isInteractiveOrigin(ctx.origin),
+      ...(ctx.origin ? { origin: ctx.origin } : {}),
       lockedUser: lock?.locked_user ?? null,
       channelTrust: channelTrustFor(ctx.channel, soul),
       isManager: !!ctx.userId && (ctx.userId === soul.manager.userId || ctx.userId === soul.backupManager.userId),

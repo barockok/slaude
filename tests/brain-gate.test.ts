@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach } from "bun:test";
 import { classifyBrainOp, gatedBrainCall, resetStandingGrants, type GateInput } from "../src/knowledge/gated-dispatch";
-import { resolveBrainScope, SHARED_SOURCE, type BrainScope } from "../src/knowledge/scope";
+import { agentSourceId, profileSourceId, resolveBrainScope, SHARED_SOURCE, userSourceId, type BrainScope } from "../src/knowledge/scope";
 
 const gate = (over: Partial<GateInput> = {}): GateInput => ({
   userId: "U1", teamId: null, interactive: true, lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "AGENT1", ...over,
@@ -59,6 +59,58 @@ describe("classifyBrainOp", () => {
   });
   test("unknown ops fail closed to manager", () => {
     expect(classifyBrainOp("run_skillopt", scopeFor(gate()), gate())).toBe("manager");
+  });
+});
+
+describe("classifyBrainOp — profile and /1on1 writes (phase C)", () => {
+  const TEAM = "T0TEAM";
+  const own = profileSourceId(TEAM, "U1");
+  const profileScope = (g: GateInput, source = own): BrainScope => ({ ...scopeFor(g), sourceId: source });
+  const slackTurn = (over: Partial<GateInput> = {}) => gate({ teamId: TEAM, interactive: true, origin: "slack", ...over });
+
+  test("put_page into the speaker's own profile on their Slack turn is auto", () => {
+    const g = slackTurn();
+    expect(classifyBrainOp("put_page", profileScope(g), g)).toBe("auto");
+  });
+  test("... even in a public channel and in someone else's /1on1", () => {
+    for (const g of [slackTurn({ channelTrust: "public" }), slackTurn({ lockedUser: "U2" })]) {
+      expect(classifyBrainOp("put_page", profileScope(g), g)).toBe("auto");
+    }
+  });
+  test("the same write is denied when the turn is not interactive", () => {
+    const g = slackTurn({ interactive: false, origin: "cron" });
+    expect(classifyBrainOp("put_page", profileScope(g), g)).toBe("deny");
+  });
+  test("denied for a panel turn (an operator id is not a Slack id) and for an unknown origin", () => {
+    for (const g of [slackTurn({ origin: "panel" }), slackTurn({ origin: undefined })]) {
+      expect(classifyBrainOp("put_page", profileScope(g), g)).toBe("deny");
+    }
+  });
+  test("denied on a background turn (no speaker)", () => {
+    const g = slackTurn({ userId: null });
+    expect(classifyBrainOp("put_page", profileScope(g), g)).toBe("deny");
+  });
+  test("writing into another person's profile is denied, manager or not", () => {
+    for (const g of [slackTurn(), slackTurn({ isManager: true })]) {
+      expect(classifyBrainOp("put_page", profileScope(g, profileSourceId(TEAM, "U2")), g)).toBe("deny");
+      expect(classifyBrainOp("put_page", profileScope(g, profileSourceId("T0OTHER", "U1")), g)).toBe("deny");
+    }
+  });
+  test("every write op is covered, not just put_page", () => {
+    const g = slackTurn({ interactive: false, origin: "cron" });
+    for (const op of ["add_tag", "add_link", "add_timeline_entry"]) expect(classifyBrainOp(op, profileScope(g), g)).toBe("deny");
+  });
+  test("in an own /1on1, a write to shared or the agent's slice is denied", () => {
+    const g = slackTurn({ lockedUser: "U1" });
+    expect(classifyBrainOp("put_page", sharedScope(g), g)).toBe("deny");
+    expect(classifyBrainOp("put_page", { ...scopeFor(g), sourceId: agentSourceId("AGENT1") }, g)).toBe("deny");
+    expect(classifyBrainOp("put_page", { ...scopeFor(g), sourceId: userSourceId("U1") }, g)).toBe("auto");
+  });
+  test("in someone else's /1on1, a manager's default write (the agent's slice) is denied", () => {
+    const g = slackTurn({ lockedUser: "U2", isManager: true });
+    expect(scopeFor(g).sourceId).toBe(agentSourceId("AGENT1"));
+    expect(classifyBrainOp("put_page", scopeFor(g), g)).toBe("deny");
+    expect(classifyBrainOp("put_page", sharedScope(g), g)).toBe("deny");
   });
 });
 
