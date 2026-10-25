@@ -25,7 +25,7 @@ import { agentIdReady } from "../../knowledge/agent-identity";
 import { parseRunAs } from "../../agent/credential-owner";
 import type { MemoryProvider } from "../../memory/provider";
 import { BrainMemoryProvider } from "../../memory/brain-provider";
-import { memoryScopeFor, withClaimLock } from "../../memory/scope";
+import { memoryScopeFor, withClaimLock, type MemoryScope } from "../../memory/scope";
 import { livePersona } from "../../persona/registry";
 import { zodIssueLine } from "../../tools/contracts/types";
 import type { JobClaims } from "./auth";
@@ -101,9 +101,7 @@ export function makeMemoryPlane(deps: {
     if (!gate) return null;
     // runAs is signed at dispatch: a cron created inside a /1on1 runs as its
     // owner although its synthetic thread holds no lock.
-    const runAs = parseRunAs(claims.runAs);
-    const runAsUser = runAs?.kind === "user" ? runAs.slackUserId : null;
-    return memoryScopeFor(withClaimLock(gate, claims.lock?.user), { channel: claims.channel, runAsUser });
+    return memoryScopeForClaims(gate, claims);
   }
 
   return {
@@ -123,6 +121,19 @@ export function makeMemoryPlane(deps: {
       if (s?.write) await bounded("sync", provider.syncTurnIn(t, s.write), undefined);
     },
   };
+}
+
+/**
+ * The memory scope a turn's job token names: the more private of the live and
+ * signed /1on1 lock, and the signed `runAs`. The one derivation the memory
+ * routes and kb_thread_history share, so both read what the turn writes.
+ */
+export function memoryScopeForClaims(gate: GateInput, claims: JobClaims): MemoryScope {
+  // runAs is signed at dispatch: a cron created inside a /1on1 runs as its
+  // owner although its synthetic thread holds no lock.
+  const runAs = parseRunAs(claims.runAs);
+  const runAsUser = runAs?.kind === "user" ? runAs.slackUserId : null;
+  return memoryScopeFor(withClaimLock(gate, claims.lock?.user), { channel: claims.channel, runAsUser });
 }
 
 /** The default plane: the process's provider, gated like the KB tools (the

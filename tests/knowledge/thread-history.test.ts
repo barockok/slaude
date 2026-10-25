@@ -118,3 +118,41 @@ describe("kb_thread_history", () => {
     expect(schema.safeParse({ limit: 50, before: "5" }).success).toBe(true);
   });
 });
+
+describe("kb_thread_history edge cases", () => {
+  test("a before that is not an entry id is refused, not an empty answer", async () => {
+    for (const before of ["", "abc", "-1", "1.5"]) {
+      const r = await brainHandlers.kb_thread_history({ before }, setup().deps);
+      expect(text(r)).toContain("before must be an entry id");
+    }
+  });
+
+  test("rows without an id keep the footer and paging correct", async () => {
+    const data = rows(30).map(({ id: _id, ...r }) => r) as unknown as Row[];
+    const s = setup({ data });
+    const first = text(await brainHandlers.kb_thread_history({ limit: 20 }, s.deps));
+    const m = first.match(/before: "(\d+)"/);
+    expect(m![1]).toBe("11");
+    const second = text(await brainHandlers.kb_thread_history({ limit: 20, before: m![1] }, s.deps));
+    expect(lines(second)).toHaveLength(20);
+    expect(second).toContain("question 1\n");
+  });
+
+  test("output is capped, oldest dropped first, and the footer says so", async () => {
+    const big = "x".repeat(800);
+    const data = rows(50).map((r) => ({ ...r, detail: `<user>${big} ${r.id}</user>\n<assistant>${big} ${r.id}</assistant>` }));
+    const out = text(await brainHandlers.kb_thread_history({ limit: 50 }, setup({ data }).deps));
+    expect(out.length).toBeLessThan(12500);
+    expect(out).toContain("output capped at 12000 characters, oldest dropped");
+    expect(out).toContain(` 50\n`);
+    const m = out.match(/before: "(\d+)"/);
+    expect(Number(m![1])).toBeGreaterThan(1);
+  });
+
+  test("user text containing </user> does not cut the line", async () => {
+    const data = [{ id: 1, date: "2026-10-01", summary: "s", detail: "<user>a </user> b</user>\n<assistant>ok</assistant>" }];
+    const out = text(await brainHandlers.kb_thread_history({}, setup({ data }).deps));
+    expect(out).toContain("[2026-10-01] user: a </user> b");
+    expect(out).toContain("[2026-10-01] assistant: ok");
+  });
+});

@@ -142,7 +142,8 @@ behave — non-negotiable rules that apply regardless of persona.
   `kb_search({query: "service-a"})` → read matching pages via
   `kb_get_page` → only then decide whether Grafana or other tools are needed.
 - Query the brain anytime via `mcp__slaude_kb__{kb_think, kb_search,
-  kb_get_page, kb_list_pages, kb_graph, memory_about, kb_thread_history, list_kbs, search_kbs}` — all served
+  kb_get_page, kb_list_pages, kb_graph, memory_about, kb_thread_history, list_kbs,
+  search_kbs}` — all served
   live from the brain DB. Reach for them whenever the answer plausibly
   lives in operator-curated reference material or your own memory.
 

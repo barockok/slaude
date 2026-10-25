@@ -69,6 +69,7 @@ import { createKbMcp, KB_MCP_NAME, type BrainToolDeps } from "../../knowledge/mc
 import { createV1Api } from "../api";
 import type { PendingSource } from "../api/pending-source";
 import type { JobClaims } from "../api/auth";
+import { memoryScopeForClaims } from "../api/memory";
 import { defaultGateBus } from "../../queue/gate-bus";
 import { makeQueueDispatch, type QueueDispatch } from "./dispatch";
 import { createOnceGuard, failureText } from "./failure-codes";
@@ -985,7 +986,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // Brain tool deps for a context + surface — shared by the per-session MCP
   // resolver and the REST tool plane so both run identical scoping and gating.
-  const brainDepsFor = (ctx: SlackContext, surface: Surface, sessionId: string | undefined = ctx.sessionId): BrainToolDeps | undefined =>
+  const brainDepsFor = (ctx: SlackContext, surface: Surface, sessionId: string | undefined = ctx.sessionId, claims?: JobClaims): BrainToolDeps | undefined =>
     brainEnabled()
       ? {
           // kb-* sources: the live persona's kbSources ∩ installed, per call
@@ -993,10 +994,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // The speaker's profile only on that one sender's own turn (turnBrainScope).
           scope: async () => turnBrainScope(await brainGateFor(ctx), personaKbSourceIds(ctx.personaId)),
           gate: () => brainGateFor(ctx),
-          // kb_thread_history: the memory read scope, as the turn's own memory
-          // sync derives it (same runAs rule as the mono route above).
+          // kb_thread_history: the memory read scope. On /v1 the job token is
+          // authoritative, derived as the memory routes do; mono uses the live
+          // identity, as its route above does.
           thread: async () => {
             if (!sessionId) return { sessionId: undefined, read: null };
+            if (claims) return { sessionId, read: memoryScopeForClaims(await brainGateFor(ctx), claims).read };
             const runAsUser = await agent.resolveEffectiveIdentity(sessionId, ctx.channel, ctx.threadTs);
             return { sessionId, read: memoryScopeFor(await brainGateFor(ctx), { channel: ctx.channel, runAsUser: runAsUser ?? null }).read };
           },
@@ -3742,7 +3745,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         setMentionOnly: (active) => agentMentionOnly(ctx, active),
       }),
       connect: (claims, ctx, server) => agentConnect(claims.session, ctx, server),
-      brainDeps: brainDepsFor,
+      brainDeps: (ctx, surface, claims) => brainDepsFor(ctx, surface, undefined, claims),
       // Non-blocking gate opens (spec §3 "Blocking tools"): the node long-polls
       // /v1/pending/:id; ANY replica's Block Kit click settles the durable row
       // and publishes gate:<id> for the instant wakeup.

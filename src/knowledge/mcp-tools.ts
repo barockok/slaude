@@ -242,17 +242,23 @@ export const THREAD_HISTORY_REFUSAL = "refused: no thread history is readable he
 export const THREAD_HISTORY_NO_SESSION = "refused: this thread's session is unknown, so its history cannot be read";
 const THREAD_HISTORY_DEFAULT = 20;
 
-/** One timeline row as `[date] who: text` lines (user, then assistant). */
+/** Most characters one kb_thread_history call returns; the oldest turns drop first. */
+export const THREAD_HISTORY_MAX_CHARS = 12000;
+
+/** One timeline row as `[date] who: text` lines (user, then assistant). The
+ *  detail is `<user>U</user>\n<assistant>A</assistant>`; split at the first
+ *  separator so a `</user>` inside U cannot cut the line. */
 function threadHistoryLines(r: TimelineRow): string[] {
   const date = r.date ?? "undated";
   const detail = r.detail ?? "";
-  const user = /<user>([\s\S]*?)<\/user>/.exec(detail)?.[1];
-  const assistant = /<assistant>([\s\S]*?)<\/assistant>/.exec(detail)?.[1];
-  if (user === undefined && assistant === undefined) return [`[${date}] note: ${(detail || r.summary).trim()}`];
-  const out: string[] = [];
-  if (user !== undefined) out.push(`[${date}] user: ${user.trim()}`);
-  if (assistant !== undefined) out.push(`[${date}] assistant: ${assistant.trim()}`);
-  return out;
+  const sep = "</user>\n<assistant>";
+  const i = detail.indexOf(sep);
+  if (detail.startsWith("<user>") && i >= 0 && detail.endsWith("</assistant>")) {
+    const user = detail.slice("<user>".length, i);
+    const assistant = detail.slice(i + sep.length, -"</assistant>".length);
+    return [`[${date}] user: ${user.trim()}`, `[${date}] assistant: ${assistant.trim()}`];
+  }
+  return [`[${date}] note: ${(detail || r.summary).trim()}`];
 }
 
 /** The superseded page could not be tagged after the new page landed. */
@@ -578,18 +584,35 @@ export const brainHandlers = {
     if (!t.read) return err(THREAD_HISTORY_REFUSAL);
     try {
       const raw = (await (d.call ?? brainCall)("get_timeline", { slug: conversationSlug(t.sessionId) }, t.read)) as TimelineRow[] | null;
-      let rows = orderTimeline(raw ?? []);
-      const before = p.before === undefined ? NaN : Number(p.before);
+      // A row without an id is keyed by its position, so paging stays consistent.
+      let rows = orderTimeline(raw ?? []).map((r, i) => ({ r, id: r.id ?? i + 1 }));
       if (p.before !== undefined) {
-        if (!Number.isFinite(before)) return err("kb_thread_history: before must be an entry id from a previous call");
-        rows = rows.filter((r) => (r.id ?? 0) < before);
+        if (!/^\d+$/.test(p.before)) return err("kb_thread_history: before must be an entry id from the footer of a previous call");
+        const before = Number(p.before);
+        rows = rows.filter((x) => x.id < before);
       }
       if (rows.length === 0) return ok("No earlier turns are recorded for this thread.");
       const limit = Math.min(Math.max(Math.trunc(p.limit ?? THREAD_HISTORY_DEFAULT), 1), 50);
-      const shown = rows.slice(-limit);
-      const out = shown.flatMap(threadHistoryLines);
-      if (shown.length < rows.length && shown[0]!.id !== undefined) {
-        out.push(`(${rows.length - shown.length} older turns remain; pass before: "${shown[0]!.id}")`);
+      // Newest first until the cap, then printed oldest-first.
+      const picked: string[][] = [];
+      let used = 0;
+      let capped = false;
+      let oldestId = rows[rows.length - 1]!.id;
+      for (const x of rows.slice(-limit).reverse()) {
+        const ls = threadHistoryLines(x.r);
+        const size = ls.reduce((n, l) => n + l.length + 1, 0);
+        if (picked.length > 0 && used + size > THREAD_HISTORY_MAX_CHARS) {
+          capped = true;
+          break;
+        }
+        picked.push(ls);
+        used += size;
+        oldestId = x.id;
+      }
+      const out = picked.reverse().flat();
+      const remaining = rows.length - picked.length;
+      if (remaining > 0) {
+        out.push(`(${remaining} older turns remain${capped ? `; output capped at ${THREAD_HISTORY_MAX_CHARS} characters, oldest dropped` : ""}; pass before: "${oldestId}")`);
       }
       return ok(out.join("\n"));
     } catch (e) {

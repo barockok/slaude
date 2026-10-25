@@ -30,7 +30,7 @@ export async function executeKbTool(
   }
   const ctx = deps.slackCtx(claims);
   const surface = deps.surfaceFor(ctx);
-  const brainDeps = deps.brainDeps(ctx, surface);
+  const brainDeps = deps.brainDeps(ctx, surface, claims);
   if (!brainDeps) return null; // brain disabled → tools not mounted, like createKbMcp
   switch (tool) {
     case c.kb_think.name:
