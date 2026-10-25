@@ -131,6 +131,7 @@ beforeEach(async () => {
   writes = [];
   reads = [];
   setBackendForTest({
+    ready: () => true, // an open brain: the per-turn block reads it
     call: async (n: string, p: Record<string, unknown>, s: BrainScope) => {
       if (n === "put_page" || n === "add_tag" || n === "remove_tag") writes.push({ name: n, slug: String(p.slug), source: s.sourceId });
       if (n === "get_page" || n === "search") reads.push(s.allowedSources);

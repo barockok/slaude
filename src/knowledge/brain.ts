@@ -7,7 +7,7 @@ import { PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, type BrainScope } from "./sco
 import { isScopeWriteOp } from "./gated-dispatch";
 import { getBackend } from "./backend";
 import { NodeDbAccessError } from "../db/client";
-import { settleBrainWork, whileClosing } from "./brain-work";
+import { BrainNotOpenError, brainClosing, settleBrainWork, whileClosing } from "./brain-work";
 import { keepingExitCode } from "../db/wasm-exit-code";
 
 // Engine surface kept minimal on purpose: gbrain ships TS sources and its own
@@ -24,6 +24,8 @@ type Engine = {
 };
 
 let enginePromise: Promise<Engine> | null = null;
+/** The engine once its boot has finished, until closeBrain starts. */
+let openEngine: Engine | null = null;
 
 export function brainHome(): string {
   return process.env.SLAUDE_BRAIN_HOME || join(paths.home, "brain");
@@ -570,15 +572,31 @@ export function getBrain(): Promise<Engine> {
     const p: Promise<Engine> = boot();
     // A failed boot is not cached: the next call retries (a refused role or a
     // transient connect error must not poison the process for good).
-    p.catch(() => {
-      if (enginePromise === p) enginePromise = null;
-    });
+    p.then(
+      (e) => {
+        if (enginePromise === p) openEngine = e;
+      },
+      () => {
+        if (enginePromise === p) enginePromise = null;
+      },
+    );
     enginePromise = p;
   }
   return enginePromise;
 }
 
+/**
+ * True when the local engine is open: its boot has finished and no close has
+ * started. Never boots it (see brainReady for the configured backend).
+ */
+export function brainOpen(): boolean {
+  return openEngine !== null && !brainClosing();
+}
+
 export async function closeBrain(): Promise<void> {
+  // Not open from here on: the message hot path (brainCallIfOpen) stops now,
+  // never reaching getBrain() while this close runs.
+  openEngine = null;
   // Background work (the gateway's boot-time import) holds the engine across
   // awaits: let it finish first (it stops between KBs while brainClosing()),
   // or it fails mid-import against a disconnected engine.
@@ -607,8 +625,10 @@ const quietLogger = {
   error: (...a: unknown[]) => console.error("[brain]", ...a),
 };
 
-async function buildCtx(over: Record<string, unknown>) {
-  const engine = await getBrain();
+async function buildCtx(over: Record<string, unknown>, ifOpen = false) {
+  // ifOpen: use only an engine that is already open, never boot one.
+  const engine = ifOpen ? openEngine : await getBrain();
+  if (!engine) throw new BrainNotOpenError();
   const { loadConfig } = (await gbrainImport("config")) as { loadConfig: () => object | null };
   return {
     engine,
@@ -676,7 +696,13 @@ export function buildScopedCtxAuth(scope: BrainScope): Record<string, unknown> {
  * primitive; the remote brain server reuses it verbatim behind OAuth.
  * remote=true + synthetic AuthInfo → gbrain enforces scope in SQL.
  */
-export async function runScopedOp(name: string, params: Record<string, unknown>, scope: BrainScope): Promise<unknown> {
+export async function runScopedOp(
+  name: string,
+  params: Record<string, unknown>,
+  scope: BrainScope,
+  opts: { ifOpen?: boolean } = {},
+): Promise<unknown> {
+  if (opts.ifOpen && !brainOpen()) throw new BrainNotOpenError();
   const op = await findOp(name);
   // A write needs its scope source to exist first (FK pages_source_id_fkey).
   if (isScopeWriteOp(name)) await ensureSource(scope.sourceId);
@@ -685,7 +711,7 @@ export async function runScopedOp(name: string, params: Record<string, unknown>,
     sourceId: scope.sourceId,
     auth: buildScopedCtxAuth(scope),
     takesHoldersAllowList: [scope.clientId, "world"],
-  });
+  }, opts.ifOpen);
   return op.handler(ctx, params);
 }
 
@@ -699,6 +725,30 @@ export async function runAdminOp(name: string, params: Record<string, unknown>, 
 /** User-scoped call: dispatched through the configured backend (local/remote). */
 export async function brainCall(name: string, params: Record<string, unknown>, scope: BrainScope): Promise<unknown> {
   return getBackend().call(name, params, scope);
+}
+
+/**
+ * True when the configured backend can serve a call without booting or
+ * connecting anything: the local engine is open, or the remote backend is
+ * connected. A backend without a readiness probe is never ready.
+ */
+export function brainReady(): boolean {
+  try {
+    return getBackend().ready?.() ?? false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A user-scoped read for the message hot path: served only by a brain that
+ * is already open (brainReady), never booting the local engine or connecting
+ * the remote one. Otherwise it rejects with BrainNotOpenError.
+ */
+export async function brainCallIfOpen(name: string, params: Record<string, unknown>, scope: BrainScope): Promise<unknown> {
+  if (isScopeWriteOp(name)) throw new Error(`brainCallIfOpen is for reads: ${name}`);
+  if (!brainReady()) throw new BrainNotOpenError();
+  return getBackend().call(name, params, scope, { ifOpen: true });
 }
 
 /** Trusted call (boot, admin, sync): dispatched through the configured backend. */

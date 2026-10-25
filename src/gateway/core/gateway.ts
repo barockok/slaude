@@ -91,7 +91,7 @@ import { accountForSlackUser } from "../../db/accounts";
 import { makeDeferQueue } from "../panel/defer-queue";
 import { suppressibleSurface } from "../panel/suppress";
 import type { DispatchMeta } from "./dispatch";
-import { brainCall, brainEnabled, ensureSources } from "../../knowledge/brain";
+import { brainCallIfOpen, brainEnabled, brainReady, ensureSources } from "../../knowledge/brain";
 import { buildTurnMemoryContext } from "../../memory/turn-context";
 import { brainMode } from "../../knowledge/brain-config";
 import { syncKbWikis } from "../../knowledge/brain-sync";
@@ -1025,10 +1025,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // sender's own turn. So it never holds another person's profile, and in
   // someone else's /1on1 it holds only the sender's own profile. Bounded in
   // time and size by buildTurnMemoryContext; any failure means no block.
+  // Reads only a brain that is already open (brainReady, brainCallIfOpen):
+  // the message hot path never boots the local engine or connects the remote
+  // one. A brain not open yet (or closing) means no block, silently.
   const turnMemoryBlock = async (m: {
     channel: string; threadTs: string; userId: string; teamId: string; personaId?: string; lockedUser: string | null;
   }): Promise<string> => {
-    if (!brainEnabled()) return "";
+    if (!brainEnabled() || !brainReady()) return "";
     try {
       const sender = { userId: m.userId, teamId: m.teamId || null, origin: "slack" };
       const ctx: BrainGateCtx = {
@@ -1037,7 +1040,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       };
       const g = await brainGateFor(ctx, { lockedUser: m.lockedUser });
       const inner = await buildTurnMemoryContext({
-        call: brainCall,
+        call: brainCallIfOpen,
         scope: turnBrainScope(g, personaKbSourceIds(m.personaId)),
         agentSource: agentSourceId(g.agentId),
         speaker: m.userId,

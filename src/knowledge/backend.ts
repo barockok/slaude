@@ -7,17 +7,26 @@
 
 import type { BrainScope } from "./scope";
 import { brainMode, brainRemoteUrl } from "./brain-config";
-import { runAdminOp, runScopedOp } from "./brain";
+import { brainOpen, runAdminOp, runScopedOp } from "./brain";
 
 export interface BrainBackend {
-  call(name: string, params: Record<string, unknown>, scope: BrainScope): Promise<unknown>;
+  /** `ifOpen`: serve the call only when ready(), never booting or connecting
+   *  (rejects with BrainNotOpenError otherwise). */
+  call(name: string, params: Record<string, unknown>, scope: BrainScope, opts?: { ifOpen?: boolean }): Promise<unknown>;
   adminCall(name: string, params: Record<string, unknown>, sourceId: string): Promise<unknown>;
+  /** True when a call needs no boot or connect first (brainReady). Optional
+   *  for test doubles; a backend without it is never ready. */
+  ready?(): boolean;
 }
 
 /** In-process engine — the historical path. */
 export class LocalBackend implements BrainBackend {
-  call(name: string, params: Record<string, unknown>, scope: BrainScope): Promise<unknown> {
-    return runScopedOp(name, params, scope);
+  call(name: string, params: Record<string, unknown>, scope: BrainScope, opts?: { ifOpen?: boolean }): Promise<unknown> {
+    return runScopedOp(name, params, scope, opts);
+  }
+  /** The engine has finished booting and no close has started. */
+  ready(): boolean {
+    return brainOpen();
   }
   adminCall(name: string, params: Record<string, unknown>, sourceId: string): Promise<unknown> {
     return runAdminOp(name, params, sourceId);

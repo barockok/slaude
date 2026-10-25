@@ -253,7 +253,8 @@ describe("mono <memory-context>: built for the message's sender under that sende
     saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
     process.env.SLAUDE_BRAIN_MODE = "remote";
     delete process.env.SLAUDE_BRAIN_DISABLED;
-    setBackendForTest({ call: (n: string, p: Record<string, unknown>, sc: BrainScope) => fb.call(n, p, sc), adminCall: async () => null } as any);
+    // ready: an open brain, which the per-turn block reads.
+    setBackendForTest({ ready: () => true, call: (n: string, p: Record<string, unknown>, sc: BrainScope) => fb.call(n, p, sc), adminCall: async () => null } as any);
   });
   afterEach(() => {
     resetBackend();

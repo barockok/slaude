@@ -28,6 +28,7 @@ import type { BrainScope } from "../knowledge/scope";
 import { SHARED_SOURCE } from "../knowledge/scope";
 import { readPageRecord } from "../knowledge/memory-pages";
 import { getPageOrNull, supersededSlugs, type BrainOpCall } from "../knowledge/memory-trail";
+import { isBrainNotOpen } from "../knowledge/brain-work";
 
 export const TURN_CONTEXT_LIMITS = { total: 8000, profile: 2000, lessons: 2500, channel: 1500 };
 export const TURN_CONTEXT_TIMEOUT_MS = 1500;
@@ -210,7 +211,8 @@ async function build(r: Reads, d: TurnMemoryDeps): Promise<string | null> {
  * The inner text of this message's `<memory-context>` block (without the
  * tags), or null when there is nothing to show, the reads take longer than
  * `timeoutMs`, or any read fails. A failure logs one warning naming only the
- * error's kind, never page text.
+ * error's kind, never page text; a brain that is not open (BrainNotOpenError)
+ * is no block without a warning.
  */
 export async function buildTurnMemoryContext(deps: TurnMemoryDeps): Promise<string | null> {
   const ms = deps.timeoutMs ?? TURN_CONTEXT_TIMEOUT_MS;
@@ -230,6 +232,9 @@ export async function buildTurnMemoryContext(deps: TurnMemoryDeps): Promise<stri
     }
     return r;
   } catch (e) {
+    // The brain closed under the block (an if-open read): no brain right
+    // now, not a failure worth a warning.
+    if (isBrainNotOpen(e)) return null;
     const code = (e as { code?: unknown } | null)?.code;
     const kind = typeof code === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? code : e instanceof Error ? e.name : typeof e;
     console.warn(`[memory-context] skipped: a brain read failed (${kind})`);

@@ -25,6 +25,10 @@ const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
 const AGENT = agentSourceId("U_SLAUDE");
 
 let fb: ReturnType<typeof fakeBrain>;
+/** Whether the fake brain reads as already open (see brainReady). */
+let open = true;
+/** Every call the gateway made to the fake brain. */
+let calls = 0;
 /** Extra delay before a get_page in this source answers (a slow read). */
 let slowSource: { source: string; ms: number } | null = null;
 const put = async (source: string, slug: string, content: string, typed?: { type: string; fields?: Record<string, string> }) => {
@@ -92,12 +96,19 @@ afterAll(() => {
 beforeEach(async () => {
   fb = fakeBrain();
   slowSource = null;
+  open = true;
+  calls = 0;
   setBackendForTest({
+    ready: () => open,
     call: async (n: string, p: Record<string, unknown>, s: BrainScope) => {
+      calls++;
       if (slowSource && n === "get_page" && s.allowedSources[0] === slowSource.source) await Bun.sleep(slowSource.ms);
       return fb.call(n, p, s);
     },
-    adminCall: async () => null,
+    adminCall: async () => {
+      calls++;
+      return null;
+    },
   } as any);
   texts = [];
   resetStandingGrants();
@@ -231,6 +242,53 @@ describe("dispatch keeps arrival order when one message's memory read is slower"
       expect(out).toHaveLength(3);
       expect(out[1]).toContain("first, slow");
       expect(out[2]).toContain("second, fast");
+    });
+  }
+});
+
+describe("the block reads only a brain that is already open", () => {
+  for (const role of ["mono", "gateway"] as const) {
+    test(`${role}: a brain not open yet gives no block, no brain call and no warning`, async () => {
+      await seedAlice();
+      open = false;
+      calls = 0;
+      const queued: string[] = [];
+      const qd = {
+        dispatch: async (_s: SessionRow, text: string) => void queued.push(text),
+        abort: async () => {},
+        pubsub: { close: async () => {} },
+        turns: { close: async () => {}, turnSenders: async () => null },
+        registry: { close: async () => {}, liveLabels: async () => [] },
+        close: async () => {},
+      } as unknown as QueueDispatch;
+      const out = role === "mono" ? texts : queued;
+      const warned: string[] = [];
+      const warn = console.warn;
+      console.warn = (...a: unknown[]) => void warned.push(a.map(String).join(" "));
+      try {
+        const { t, mention } = transport();
+        h = role === "mono" ? createGateway(agent, t) : createGateway(new AgentManager(), t, { queueDispatch: qd });
+        await mention("U0ALICE", `86${role.length}.0`, `86${role.length}.1`);
+        const end = Date.now() + 3000;
+        while (out.length < 1 && Date.now() < end) await Bun.sleep(10);
+      } finally {
+        console.warn = warn;
+      }
+      expect(out).toHaveLength(1);
+      expect(out[0]).not.toContain("<memory-context>");
+      expect(out[0]).toContain("</channel>\n\nReply by calling");
+      expect(calls).toBe(0);
+      expect(warned.filter((w) => w.includes("[memory-context]"))).toEqual([]);
+
+      // Once it is open the same message gets its block again.
+      open = true;
+      const { t: t2, mention: m2 } = transport();
+      await h!.stop();
+      h = role === "mono" ? createGateway(agent, t2) : createGateway(new AgentManager(), t2, { queueDispatch: qd });
+      await m2("U0ALICE", `87${role.length}.0`, `87${role.length}.1`);
+      const end = Date.now() + 3000;
+      while (out.length < 2 && Date.now() < end) await Bun.sleep(10);
+      expect(out[1]).toContain("<memory-context>\n<profile>\nCall me Al.");
     });
   }
 });

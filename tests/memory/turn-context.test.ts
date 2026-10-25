@@ -10,6 +10,7 @@ import { composePage } from "../../src/knowledge/memory-pages";
 import { SUPERSEDED_TAG } from "../../src/knowledge/memory-trail";
 import { PUBLIC_SOURCE, SHARED_SOURCE, agentSourceId, profileSourceId, type BrainScope } from "../../src/knowledge/scope";
 import { fakeBrain } from "./fake-brain";
+import { BrainNotOpenError } from "../../src/knowledge/brain-work";
 
 const AGENT = agentSourceId("U_SLAUDE");
 const PROFILE = profileSourceId("T", "U0ALICE");
@@ -274,5 +275,16 @@ describe("buildTurnMemoryContext", () => {
     expect(await build(fb, { call })).toBeNull();
     expect(warn).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(warn.mock.calls)).not.toContain("SECRET-PROFILE-TEXT");
+  });
+
+  test("the brain closes under the block (an if-open read refuses): null, no warning", async () => {
+    warn = spyOn(console, "warn").mockImplementation(() => {});
+    const fb = fakeBrain();
+    await put(fb, PROFILE, "profile", "Call me Al.", { type: "profile" });
+    const call = async () => {
+      throw new BrainNotOpenError();
+    };
+    expect(await build(fb, { call })).toBeNull();
+    expect(warn).not.toHaveBeenCalled();
   });
 });

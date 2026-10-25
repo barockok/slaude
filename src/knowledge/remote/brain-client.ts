@@ -15,6 +15,7 @@ import { env } from "../../config/env";
 import { defaultCredentialRefresher } from "../../gateway/core/credential-refresh";
 
 import { BRAIN_SERVER_NAME } from "./brain-grant";
+import { BrainNotOpenError } from "../brain-work";
 
 function decodeToolResult(res: any): unknown {
   if (res?.isError) {
@@ -38,6 +39,8 @@ function decodeToolResult(res: any): unknown {
 export class RemoteBackend implements BrainBackend {
   #url: string;
   #clientPromise: Promise<Client> | undefined;
+  /** The client once its connect has succeeded. */
+  #connected: Client | undefined;
 
   constructor(url: string) {
     this.#url = url;
@@ -87,13 +90,20 @@ export class RemoteBackend implements BrainBackend {
         }
         throw new Error(`brain remote unreachable: ${msg}`);
       }
+      this.#connected = client;
       return client;
     })();
     return this.#clientPromise;
   }
 
-  async call(name: string, params: Record<string, unknown>, scope: BrainScope): Promise<unknown> {
-    const client = await this.#client();
+  /** Connected: a call needs no fresh connect (never started here). */
+  ready(): boolean {
+    return this.#connected !== undefined;
+  }
+
+  async call(name: string, params: Record<string, unknown>, scope: BrainScope, opts?: { ifOpen?: boolean }): Promise<unknown> {
+    if (opts?.ifOpen && !this.#connected) throw new BrainNotOpenError();
+    const client = this.#connected ?? (await this.#client());
     const res = await client.callTool({
       name: "brain_op",
       arguments: {
