@@ -107,12 +107,17 @@ before turning `on`.
   gate now returns today's path, before reading anything, when the ingress would
   drop the event: missing team or user, self echo (the `app_mention` path had no
   check of its own), ignore gate, blocklist, channel mode, or a mention with no
-  text. The channel-mode rule is one function shared with handleMessage.
+  text. The drop filters are one shared predicate (`preTurnDropReason`):
+  handleMessage logs and counts its result, the gate only skips on it, so a
+  filter added there reaches both. handleMessage's dedup claim stays its own
+  step, run between the self-echo and ignore checks as before.
 - **Bypasses.** DMs, slaude's text commands (`/help`, `/abort`, `/1on1`,
   `/mcp`, any command handleMessage parses after stripping the bot or persona
   mention), a possible pasted connect callback while a paste-back flow is parked
   for that person in that thread, and locked one-on-one threads never call the
-  gate. Commands are message text parsed inside handleMessage, so the first
+  gate. Skill invocations (`/skill-name`) are model turns and still go through
+  the gate; only the built-in commands `parseSlashCommand` recognises bypass it.
+  Commands are message text parsed inside handleMessage, so the first
   version gated them: a doubted `/help` in a new thread got a 🤔 and no answer,
   and `/abort` waited for the decision. Approval clicks and other interactive
   actions arrive through the action handler, not the message path, so they never
