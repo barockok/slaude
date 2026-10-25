@@ -48,6 +48,35 @@ describe("built-in skills are immutable at runtime", () => {
     expect(() => skillOps.delete("skill-authoring")).toThrow(REFUSAL);
   });
 
+  // The CLI names a plugin skill after its frontmatter `name` (sanitised to
+  // [a-zA-Z0-9_-]), not its directory, so a free slug with a built-in's name
+  // would be a second `<plugin>:skill-authoring`.
+  test("write_skill refuses a frontmatter name equal to a built-in's name (base root)", async () => {
+    for (const name of ["skill-authoring", "skill authoring", "skill.authoring"]) {
+      const r = await makeSkillHandlers().write_skill({ slug: "free-slug", name, description: "y", body: "z" });
+      expect(r.isError).toBe(true);
+      expect(text(r)).toBe(REFUSAL);
+    }
+    expect(existsSync(join(paths.skills, "free-slug"))).toBe(false);
+    expect(() => skillOps.write("free-slug", "skill-authoring", "y", "z")).toThrow(REFUSAL);
+  });
+
+  test("write_skill refuses a frontmatter name equal to a built-in's name (persona overlay)", async () => {
+    const r = await makeSkillHandlers("some-persona").write_skill({
+      slug: "free-slug", name: "skill-authoring", description: "y", body: "z",
+    });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toBe(REFUSAL);
+    expect(existsSync(join(personaSkillsRoot("some-persona"), "free-slug"))).toBe(false);
+  });
+
+  test("a frontmatter name that only resembles a built-in is allowed", async () => {
+    for (const name of ["skill-authoring-2", "my skill authoring"]) {
+      const r = await makeSkillHandlers().write_skill({ slug: "free-slug", name, description: "y", body: "z" });
+      expect(r.isError).toBeUndefined();
+    }
+  });
+
   test("other slugs still work", async () => {
     const h = makeSkillHandlers();
     const w = await h.write_skill({ slug: "my-skill", name: "n", description: "d", body: "b" });

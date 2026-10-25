@@ -91,6 +91,12 @@ export function isBuiltinSkillName(slug: string): boolean {
   return listBuiltinSkills().some((s) => s.name === slug);
 }
 
+/** A skill's name as the CLI derives it from frontmatter `name`: every
+ *  character outside [a-zA-Z0-9_-] becomes "-". */
+export function cliSkillName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, "-");
+}
+
 /** The one refusal text for any attempt to change a built-in skill at runtime. */
 export function builtinSkillRefusal(slug: string): string {
   return `\`${slug}\` is a built-in skill and cannot be changed at runtime`;

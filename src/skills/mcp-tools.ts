@@ -14,7 +14,7 @@ import {
 import { join, resolve, relative } from "node:path";
 import { discoverSkills, globalSkillsRoot, personaSkillsRoot, type Skill } from "./loader";
 import { syncManifest } from "./sync-manifest";
-import { builtinSkillRefusal, isBuiltinSkillName } from "../soul/builtin";
+import { builtinSkillRefusal, cliSkillName, isBuiltinSkillName } from "../soul/builtin";
 import { skillsContract } from "../tools/contracts/skills";
 
 export const SKILLS_MCP_NAME = skillsContract.server;
@@ -93,6 +93,10 @@ export const skillOps = {
     personaName?: string,
   ): { path: string; created: boolean } {
     assertNotBuiltin(slug);
+    // The CLI names the skill after its frontmatter `name`, not the slug: a
+    // free slug carrying a built-in's name would answer for it whenever another
+    // plugin also resolves to the name "slaude".
+    assertNotBuiltin(cliSkillName(name));
     // Named personas author into their own overlay; base stays shared/read-only.
     const dir = resolveSkillDir(slug, personaName);
     mkdirSync(dir, { recursive: true });
