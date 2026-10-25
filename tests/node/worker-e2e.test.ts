@@ -314,6 +314,15 @@ d("gateway↔node E2E (real Redis)", () => {
     await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9000.1"), 10_000);
   }, 30_000);
 
+  test("an acked job's turn-senders record is deleted, not left to its TTL", async () => {
+    posts.length = 0;
+    reacts.length = 0;
+    await emitSlack("message", msg("9010.0", "9010.1", "<@USLAUDE> senders"));
+    await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9010.1"), 15_000);
+    // Every job this suite ran so far has been acked: no record outlives its ack.
+    await until(async () => (await redis.keys(keys.turnSenders("*"))).length === 0, 5_000);
+  }, 30_000);
+
   // WS-A §5.4, §7: a typed boot failure reaches Slack as its fixed text, once,
   // and is the job's failure reason with no retry; the session's cached bundle
   // is evicted since no child holds it.

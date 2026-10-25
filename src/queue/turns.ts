@@ -581,6 +581,14 @@ export class TurnQueues {
     else await this.#connection.set(key, JSON.stringify(senders), "PX", SENDERS_TTL_MS);
   }
 
+  /** Delete the senders record of the job that ran under `token` (keyed as
+   *  #recordSenders keys it). Called when the job is acked: its turn is over,
+   *  so nothing may read its senders any more; the TTL stays as the backstop
+   *  for a node that dies before the ack. */
+  async forgetSenders(token: string, fallbackId: string): Promise<void> {
+    await this.#connection.del(this.keys.turnSenders(tokenJobId(token) ?? fallbackId));
+  }
+
   /** The senders of the job whose token names `jobId`, or null when unknown. */
   async turnSenders(jobId: string): Promise<TurnSender[] | null> {
     const raw = await this.#connection.get(this.keys.turnSenders(jobId));

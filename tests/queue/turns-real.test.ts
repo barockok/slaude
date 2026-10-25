@@ -177,6 +177,23 @@ describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
     await redis.del(keys.coalesce("s-snd-rel"));
   });
 
+  test("turn senders: forgetSenders deletes the record a job's token names (the worker calls it at ack)", async () => {
+    await ready;
+    await queues.enqueueTurn(turn("s-snd-ack", ["one"], jwt({ job: "snd-ack" })), { label: "default" }, "snd-ack");
+    expect(await queues.turnSenders("snd-ack")).not.toBeNull();
+    const ttl = await redis.pttl(keys.turnSenders("snd-ack"));
+    expect(ttl).toBeGreaterThan(0); // the TTL stays as the backstop
+    await queues.forgetSenders(jwt({ job: "snd-ack" }), "bull-id-unused");
+    expect(await redis.exists(keys.turnSenders("snd-ack"))).toBe(0);
+    // A token with no job claim names the BullMQ id.
+    const plain = await queues.enqueueTurn(turn("s-snd-ack2", ["x"]), { label: "default" });
+    expect(await queues.turnSenders(plain.jobId)).not.toBeNull();
+    await queues.forgetSenders("tok", plain.jobId);
+    expect(await redis.exists(keys.turnSenders(plain.jobId))).toBe(0);
+    for (const id of ["snd-ack", plain.jobId]) await (await queues.queue("turns").getJob(id))?.remove();
+    for (const sid of ["s-snd-ack", "s-snd-ack2"]) await redis.del(keys.coalesce(sid));
+  });
+
   test("different sessions never coalesce", async () => {
     await ready;
     const a = await queues.enqueueTurn(turn("s-a", ["a"]), { label: "default" });

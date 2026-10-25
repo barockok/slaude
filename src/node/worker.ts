@@ -807,6 +807,14 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     }
   }
 
+  // An acked job's senders record is deleted (best effort; its TTL is the
+  // backstop). A failed job keeps it: a retry runs the same token again.
+  const forgetSenders = (job: Job, data: TurnJob): void => {
+    void turnQueues.forgetSenders(data.jobToken, String(job.id)).catch((e) => {
+      console.warn(`[node] turn-senders delete failed job=${job.id}: ${e instanceof Error ? e.message : String(e)}`);
+    });
+  };
+
   const processor = async (job: Job, token?: string): Promise<unknown> => {
     const data = job.data as TurnJob;
     const claimLatencySec = Math.max(0, (Date.now() - (data.enqueuedAt || job.timestamp)) / 1000);
@@ -819,6 +827,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     try {
       if (await cmd.exists(keys.turnDone(String(job.id)))) {
         metric.nodeTurnsTotal.inc({ result: "deduped" });
+        forgetSenders(job, data);
         void client.ackJob(String(job.id), { sessionId: data.sessionId, result: "done" });
         return { skipped: "turn-done" };
       }
@@ -948,7 +957,10 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     if (gateDenied.delete(data.sessionId)) failTyped("LABEL_MISMATCH", "a gateway call of this turn hit the label gate", false);
     metric.nodeTurnsTotal.inc({ result: res });
     if (res === "error") void client.failJob(String(job.id), { sessionId: data.sessionId });
-    else void client.ackJob(String(job.id), { sessionId: data.sessionId, result: res });
+    else {
+      forgetSenders(job, data);
+      void client.ackJob(String(job.id), { sessionId: data.sessionId, result: res });
+    }
     return { result: res };
   };
 
