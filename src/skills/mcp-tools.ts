@@ -14,7 +14,7 @@ import {
 import { join, resolve, relative } from "node:path";
 import { discoverSkills, globalSkillsRoot, personaSkillsRoot, type Skill } from "./loader";
 import { syncManifest } from "./sync-manifest";
-import { isBuiltinSkillName } from "../soul/builtin";
+import { builtinSkillRefusal, isBuiltinSkillName } from "../soul/builtin";
 import { skillsContract } from "../tools/contracts/skills";
 
 export const SKILLS_MCP_NAME = skillsContract.server;
@@ -67,7 +67,7 @@ export function buildSkillMd(
  *  or persona-overlay shadow of their bare name. Reads stay allowed. */
 function assertNotBuiltin(slug: string): void {
   if (isBuiltinSkillName(slug)) {
-    throw new Error(`\`${slug}\` is a built-in skill and cannot be changed at runtime`);
+    throw new Error(builtinSkillRefusal(slug));
   }
 }
 

@@ -91,6 +91,11 @@ export function isBuiltinSkillName(slug: string): boolean {
   return listBuiltinSkills().some((s) => s.name === slug);
 }
 
+/** The one refusal text for any attempt to change a built-in skill at runtime. */
+export function builtinSkillRefusal(slug: string): string {
+  return `\`${slug}\` is a built-in skill and cannot be changed at runtime`;
+}
+
 /** The core prompt's skill index; "" when there are no built-ins. */
 export function renderSkillIndex(): string {
   const skills = listBuiltinSkills();

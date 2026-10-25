@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test, beforeEach } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { paths } from "../src/config/home";
 import { seedBundledSkills } from "../src/skills/seed";
 
@@ -33,5 +34,17 @@ describe("seedBundledSkills", () => {
     const { seeded } = seedBundledSkills();
     expect(seeded).not.toContain("how-slaude-works");
     expect(readFileSync(md, "utf8")).toBe("EDITED");
+  });
+
+  test("skips a bundled skill named like a built-in, seeds the rest", () => {
+    const fake = mkdtempSync(join(tmpdir(), "seed-fake-"));
+    for (const slug of ["skill-authoring", "ordinary-one"]) {
+      mkdirSync(join(fake, slug), { recursive: true });
+      writeFileSync(join(fake, slug, "SKILL.md"), "x", "utf8");
+    }
+    const { seeded } = seedBundledSkills(fake);
+    rmSync(fake, { recursive: true, force: true });
+    expect(seeded).toEqual(["ordinary-one"]);
+    expect(existsSync(join(paths.skills, "skill-authoring"))).toBe(false);
   });
 });
