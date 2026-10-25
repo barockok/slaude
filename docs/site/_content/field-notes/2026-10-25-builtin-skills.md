@@ -38,8 +38,12 @@ A skill may govern tools. A PreToolUse hook denies a governed tool until the
 session has loaded the skill; a PostToolUse hook on the `Skill` tool records the
 load. Details that matter:
 
-- **Loaded** means a PostToolUse of `Skill` without an error, with the exact
-  qualified name (`slaude:<name>`) and nothing looser.
+- **Loaded** means a PostToolUse of `Skill` without an error, with the
+  qualified name (`slaude:<name>`). The name is normalised the way the bundled
+  CLI does before it resolves a skill: trimmed, then one leading `/` removed.
+  Review read the CLI and found it accepts `/slaude:skill-authoring` and padded
+  forms as the same skill; an exact match would have missed that load and
+  denied the governed tool on every retry. Nothing looser than that counts.
 - The deny reuses the shape of the remote deny hook (`permissionDecision`
   `deny` with a reason), and the reason says exactly what to call and to retry.
 - The loaded set is per session id and is reset at the single boot choke point,
@@ -52,10 +56,25 @@ load. Details that matter:
 
 A built-in cannot be changed at runtime. `write_skill` and `delete_skill` refuse
 a slug equal to a built-in's bare name, for the base root and the persona
-overlay alike. The refusal lives in the shared skill-ops layer, so no caller
-bypasses it. Review found two writers that did not go through that layer: the
-manifest installer and the bundled-skill seeder. Both now refuse or skip a
-built-in-named skill.
+overlay alike. `write_skill` also refuses a frontmatter `name` that, sanitised
+the way the CLI sanitises it (`[^a-zA-Z0-9_-]` becomes `-`), equals a built-in's
+name: the CLI names a plugin skill `<plugin>:<frontmatter name>`, not after its
+directory, so a free slug could otherwise carry a built-in's name. The refusal
+lives in the shared skill-ops layer, so no caller bypasses it. Review found two
+writers that did not go through that layer: the manifest installer and the
+bundled-skill seeder. Both now refuse or skip a built-in-named skill.
+
+The CLI namespace can still collide. It names a local plugin after its
+`.claude-plugin/plugin.json` name, else the directory basename; it does not
+de-duplicate plugins by name, and it resolves a skill to the first match. The
+`$SLAUDE_HOME` plugin has no manifest and is mounted before the built-in one, so
+a home such as `/opt/slaude` becomes a second `slaude` plugin, and a skill in it
+named like a built-in would load in the built-in's place and satisfy the gate.
+The shipped deploys use `/data` or `~/.slaude` and are not affected. Each boot
+checks every mounted plugin other than the built-in with the same name
+derivation and logs a loud warning, once per path per process, naming the path.
+The home plugin is not given a manifest name, because that would change every
+agent skill's invoked name.
 
 ### Shipping
 
@@ -93,16 +112,15 @@ constant in the test, with the commit it was measured at.
 
 ## Not verified
 
-- A live CLI run showing the skill listed as `slaude:skill-authoring`, and the
-  hook blocking a real `write_skill` call. The qualified name is derived from
-  the plugin manifest and tested against it, not observed.
+- A live CLI run: the init message listing `slaude:skill-authoring`, and the
+  hook blocking a real `write_skill` call. The qualified name and the
+  leading-slash normalisation are now confirmed statically from the bundled
+  CLI's code (plugin and skill naming, the Skill tool's input handling), not
+  observed in a run.
 - The CLI's real `tool_response` shape for `Skill` success and failure. The
   hook treats an absent error as success.
-- Whether the CLI ever sends the skill name with a leading slash
-  (`/slaude:...`). The hook matches the exact name only, so that form would
-  deny-loop.
-- A session booted before the upgrade keeps its old prompt and no enforcement
-  until its next reboot.
+- A session booted before the upgrade should keep its old prompt and no
+  enforcement until its next reboot.
 - Minor, left alone: a late PostToolUse from an aborted detached process can
   mark a skill loaded; a pre-existing directory with a built-in's name cannot be
   deleted through `delete_skill`; the installer's check modes count a
