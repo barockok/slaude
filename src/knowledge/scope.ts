@@ -71,8 +71,22 @@ export function profileSourceId(teamId: string, userId: string): string {
   return PROFILE_PREFIX + createHash("sha256").update(teamId + ":" + userId).digest("hex").slice(0, 24);
 }
 
-/** True for an id `profileSourceId` can produce (either form). */
-export const isProfileSourceId = (s: string): boolean => /^profile-[a-z0-9]+(?:-[a-z0-9]+)?$/.test(s) && s.length <= 32;
+/** True for exactly the two shapes `profileSourceId` produces for usable ids:
+ *  `profile-<team>-<user>` (non-empty [a-z0-9] parts) or `profile-<24 hex>`. */
+export const isProfileSourceId = (s: string): boolean =>
+  s.length <= 32 && /^profile-(?:[0-9a-f]{24}|[a-z0-9]+-[a-z0-9]+)$/.test(s);
+
+/**
+ * The speaker's profile source, or null when there is none to read: a team
+ * or user id that is absent, empty, or sanitises to nothing (which would make
+ * `profile--u1`). Callers deciding WHETHER a profile applies use this, never
+ * profileSourceId directly.
+ */
+export function speakerProfileSource(teamId: string | null | undefined, userId: string | null | undefined): string | null {
+  if (!teamId || !userId) return null;
+  if (!sourceSafe(teamId).replace(/-/g, "") || !sourceSafe(userId).replace(/-/g, "")) return null;
+  return profileSourceId(teamId, userId);
+}
 
 export function kbSourceId(label: string): string {
   return ("kb-" + label.toLowerCase().replace(/[^a-z0-9-]/g, "-")).slice(0, 32);
@@ -93,8 +107,8 @@ export function channelTrustFor(channel: string, soul: SoulData): ChannelTrust {
  */
 export function resolveBrainScope(i: ScopeInput): BrainScope {
   const base = baseScope(i);
-  if (!i.userId || !i.teamId) return base; // null, or an empty id from a token
-  const profile = profileSourceId(i.teamId, i.userId);
+  const profile = speakerProfileSource(i.teamId, i.userId);
+  if (profile === null) return base;
   return { ...base, allowedSources: [...base.allowedSources, profile], profileSource: profile };
 }
 

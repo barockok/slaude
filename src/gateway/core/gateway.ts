@@ -192,6 +192,9 @@ export interface GatewayHandle {
   /** TEST SEAM ONLY. The brain gate input a node turn's /v1 tools see for
    *  these (verified) job-token claims. */
   __brainGateForClaims?(claims: JobClaims): Promise<GateInput>;
+  /** TEST SEAM ONLY. The panel's chat enqueue (what POST /panel chat calls
+   *  after its own auth), without the panel's OIDC. */
+  __panelChat?(session: SessionRow, text: string, operatorId: string): Promise<void>;
 }
 
 const REACT_RECEIVED = "eyes";
@@ -3268,6 +3271,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           ? !!teamId &&
             !!(await Sessions.findByThread({ team_id: teamId, channel_id: e.channel, thread_ts: threadTs, persona_id: o.personaId ?? "default" }))?.engaged
           : true;
+        // Deliberately NO teamId: without a team resolveBrainScope adds no
+        // profile source, so a person's profile never feeds the hit score sent
+        // to the external decision classifier. Do not "fix" by adding teamId
+        // (tests/gateway/core/decision-gate.test.ts pins this).
         const ctx = { channel: e.channel, threadTs, userId: e.user, personaId: o.personaId } as SlackContext;
         const deps: GateContextDeps = {
           replies: (channel, thread, limit) => threadTail(client, channel, thread, e.ts, limit),
@@ -3790,6 +3797,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       return route ? brainGateFor(route.ctx) : undefined;
     },
     __brainGateForClaims: (claims: JobClaims) => brainGateFor(v1SlackCtx(claims)),
+    __panelChat: (session: SessionRow, text: string, operatorId: string) => panelEnqueue(session, text, operatorId),
     __agentConnect: (sessionId: string, server: string) => {
       const route = routes.get(sessionId);
       if (!route) return Promise.resolve("no active thread for this session");

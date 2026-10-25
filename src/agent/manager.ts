@@ -57,7 +57,13 @@ const REMOTE_DISPOSE_TIMEOUT_MS = 8_000;
 
 type LiveSession = {
   id: string;
-  pushUser: (text: string) => void;
+  /** Queue one input. `synthetic` marks a prompt the runtime itself sends
+   *  (auto-evolve check, continuation and reload prompts), not a delivered one. */
+  pushUser: (text: string, synthetic?: boolean) => void;
+  /** One flag per outstanding input, oldest first: whether it is synthetic.
+   *  Inputs run in order and each ends with one `result`, so the head is the
+   *  turn running now (see isSyntheticTurn). */
+  inputSynthetic: boolean[];
   closeIterable: () => void;
   abort: AbortController;
   /** Buffer of last user message + accumulated assistant text for memory.syncTurn. */
@@ -689,6 +695,22 @@ export class AgentManager extends EventEmitter {
 
   /** Send user input. Starts session loop if not already live. */
   async sendMessage(sessionId: string, text: string) {
+    return this.#send(sessionId, text, false);
+  }
+
+  /**
+   * True while the turn running now was injected by the runtime itself (the
+   * auto-evolve `<runtime-check>`, the stream-restored continuation, a
+   * reload_session prompt), not delivered through sendMessage. The same on
+   * mono and nodes (the manager runs on both). A turn's `origin` (and
+   * GateInput.interactive) describes what started the session's job, so a
+   * write that needs a person's own words must also check this.
+   */
+  isSyntheticTurn(sessionId: string): boolean {
+    return this.#live.get(sessionId)?.inputSynthetic[0] === true;
+  }
+
+  async #send(sessionId: string, text: string, synthetic: boolean) {
     // Signal that a real user turn is starting for this session. Slash commands
     // and dropped messages never reach here, so a listener can distinguish
     // "agent will run" from "handled inline" without waiting for done/error.
@@ -729,12 +751,12 @@ export class AgentManager extends EventEmitter {
       live.turn.user = text;
       live.turn.assistant = [];
       this.#stopBlocked.delete(sessionId);
-      live.pushUser(text);
+      live.pushUser(text, synthetic);
       this.#armIdle(live);
       return;
     }
     this.#stopBlocked.delete(sessionId);
-    await this.#startSession(sessionId, text);
+    await this.#startSession(sessionId, text, synthetic);
   }
 
   /** (Re)arm the idle timer for a session. On expiry, close the SDK loop
@@ -985,7 +1007,7 @@ export class AgentManager extends EventEmitter {
     if (o.signalExit && !this.#live.has(sessionId)) this.#signalSessionExit(sessionId);
   }
 
-  async #startSession(sessionId: string, firstText: string) {
+  async #startSession(sessionId: string, firstText: string, firstSynthetic = false) {
     this.#booting.set(sessionId, (this.#booting.get(sessionId) ?? 0) + 1);
     let marked = true;
     const unmark = () => {
@@ -996,13 +1018,13 @@ export class AgentManager extends EventEmitter {
       else this.#booting.delete(sessionId);
     };
     try {
-      await this.#bootSession(sessionId, firstText, unmark);
+      await this.#bootSession(sessionId, firstText, unmark, firstSynthetic);
     } finally {
       unmark();
     }
   }
 
-  async #bootSession(sessionId: string, firstText: string, onLive: () => void) {
+  async #bootSession(sessionId: string, firstText: string, onLive: () => void, firstSynthetic = false) {
     // Read before any config is resolved: a fingerprint that arrives while this
     // boot resolves its lock/remote state must not be credited to it.
     const bootFp = this.#desiredFp.get(sessionId);
@@ -1285,10 +1307,12 @@ export class AgentManager extends EventEmitter {
     const live: LiveSession = {
       id: sessionId,
       // Every input starts a turn; its `result` ends it (#fanout).
-      pushUser: (text: string) => {
+      pushUser: (text: string, synthetic = false) => {
         live.pendingInputs++;
+        live.inputSynthetic.push(synthetic);
         pushUser(text);
       },
+      inputSynthetic: [firstSynthetic], // firstText is already queued
       closeIterable,
       abort,
       turn: { user: firstText, assistant: [] },
@@ -1348,7 +1372,7 @@ export class AgentManager extends EventEmitter {
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           // Fire and forget — restart with the same first prompt.
-          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
+          void this.#startSession(sessionId, firstText, firstSynthetic).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
           return;
         }
         // Mirror failure: we seeded --session-id but a transcript with that id
@@ -1360,7 +1384,7 @@ export class AgentManager extends EventEmitter {
           await this.#bestEffortStore(sessionId, "markStarted", () => this.#store.markStarted(sessionId));
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
-          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
+          void this.#startSession(sessionId, firstText, firstSynthetic).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
           return;
         }
         if (live?.reloading) {
@@ -1413,7 +1437,7 @@ export class AgentManager extends EventEmitter {
         if (live.reloading && this.#autoContinue.has(sessionId)) {
           this.#autoContinue.delete(sessionId);
           console.log(`[mgr] auto-continuing after stream_closed reload session=${sessionId}`);
-          void this.sendMessage(sessionId, "The MCP stream was restored. Please continue where you left off.").catch((e) => this.#rebootFailed(sessionId, e));
+          void this.#send(sessionId, "The MCP stream was restored. Please continue where you left off.", true).catch((e) => this.#rebootFailed(sessionId, e));
         }
         // After a manual reload_session with a prompt, inject it so the user
         // doesn't need to type anything to resume the flow.
@@ -1421,7 +1445,7 @@ export class AgentManager extends EventEmitter {
           const p = this.#reloadPrompt.get(sessionId)!;
           this.#reloadPrompt.delete(sessionId);
           console.log(`[mgr] injecting reload prompt session=${sessionId}`);
-          void this.sendMessage(sessionId, p).catch((e) => this.#rebootFailed(sessionId, e));
+          void this.#send(sessionId, p, true).catch((e) => this.#rebootFailed(sessionId, e));
         }
       }
     })().catch((e) => {
@@ -1543,7 +1567,10 @@ export class AgentManager extends EventEmitter {
         break;
       }
       case "result": {
-        if (live) live.pendingInputs = Math.max(0, live.pendingInputs - 1);
+        if (live) {
+          live.pendingInputs = Math.max(0, live.pendingInputs - 1);
+          live.inputSynthetic.shift();
+        }
         // A reload deferred by reloadAfterTurn applies once NO input is
         // outstanding: another queued input (e.g. a user message behind an
         // auto-evolve turn) still needs the CLI's stdin.
@@ -1644,7 +1671,7 @@ export class AgentManager extends EventEmitter {
           if (live && !wasAutoEvolve && !deferredReload && !voiceCallActive(sessionId) && this.#shouldAutoEvolve(live)) {
             live.inAutoEvolve = true;
             live.turnTools = [];
-            live.pushUser(AUTO_EVOLVE_PROMPT);
+            live.pushUser(AUTO_EVOLVE_PROMPT, true);
           } else if (live) {
             live.turnTools = [];
           }

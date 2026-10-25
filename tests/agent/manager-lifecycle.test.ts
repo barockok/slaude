@@ -1835,3 +1835,63 @@ describe("AgentManager: store failures outside any caller", () => {
     expect(mgr.isLive(row.id)).toBe(false);
   });
 });
+
+describe("isSyntheticTurn: a prompt the runtime itself sent", () => {
+  /** Answer every input with a result; record isSyntheticTurn as each input arrives. */
+  const recorder = (mgr: InstanceType<typeof AgentManager>, id: () => string, seen: Array<[string, boolean]>, substantive = false) =>
+    (s: FakeSession) => {
+      s.onUser = (um) => {
+        const text = String(um.message.content);
+        seen.push([text, mgr.isSyntheticTurn(id())]);
+        if (substantive && !text.includes("<auto-evolve>") && seen.length === 1) {
+          s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch"), txt("did the work")]));
+        }
+        s.emit(res());
+      };
+    };
+
+  it("false for a delivered turn, true during the auto-evolve turn, false again for the next human turn", async () => {
+    process.env.SLAUDE_AUTO_EVOLVE = "1";
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const seen: Array<[string, boolean]> = [];
+    plan(recorder(mgr, () => row.id, seen, true));
+
+    await mgr.sendMessage(row.id, "do a thing");
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "evolve done");
+    expect(seen.map(([t, s]) => [t.includes("<auto-evolve>") ? "evolve" : t, s])).toEqual([["do a thing", false], ["evolve", true]]);
+    expect(mgr.isSyntheticTurn(row.id)).toBe(false);
+
+    await mgr.sendMessage(row.id, "next question");
+    await until(() => events.filter((e) => e.type === "done").length === 3, 3000, "next done");
+    expect(seen[2]).toEqual(["next question", false]);
+    expect(mgr.isSyntheticTurn(row.id)).toBe(false);
+    await shutdown(mgr, row.id);
+  });
+
+  it("true for a reload_session continuation prompt; false for the human turn after it", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const seen: Array<[string, boolean]> = [];
+    plan(recorder(mgr, () => row.id, seen));
+    plan(recorder(mgr, () => row.id, seen));
+
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => events.filter((e) => e.type === "done").length === 1, 3000, "first done");
+    expect(mgr.reload(row.id, "carry on")).toBe(true);
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "continuation done");
+    expect(seen).toEqual([["hello", false], ["carry on", true]]);
+
+    await mgr.sendMessage(row.id, "thanks");
+    await until(() => events.filter((e) => e.type === "done").length === 3, 3000, "human done");
+    expect(seen[2]).toEqual(["thanks", false]);
+    expect(mgr.isSyntheticTurn(row.id)).toBe(false);
+    await shutdown(mgr, row.id);
+  });
+
+  it("no live session: false", () => {
+    expect(new AgentManager().isSyntheticTurn("S-none")).toBe(false);
+  });
+});

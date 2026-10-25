@@ -218,4 +218,27 @@ describe("mono brain gate: the turn's team and whether a person started it", () 
       await s.dispose();
     }
   });
+
+  test("a mono panel turn runs as the operator with origin panel; the next Slack message takes the route back", async () => {
+    const s = await SimSession.create({ agent: "stub", layer: "trusted", as: "member" });
+    try {
+      s.thread = "T-GATE-PANEL";
+      await s.send({ text: "hello" });
+      const sid = await sessionOf("T-GATE-PANEL");
+      const member = (await s.handle.__brainGate!(sid))!.userId!;
+      const row = (await Sessions.findById(sid))!;
+
+      await s.handle.__panelChat!(row, "operator note", "U0OPERATOR");
+      const g = (await s.handle.__brainGate!(sid))!;
+      expect(g).toMatchObject({ userId: "U0OPERATOR", interactive: true, teamId: "T0SIM" });
+      expect(resolveBrainScope({ ...g, kbSources: [] }).profileSource).toBe(profileSourceId("T0SIM", "U0OPERATOR"));
+      expect(resolveBrainScope({ ...g, kbSources: [] }).allowedSources).not.toContain(profileSourceId("T0SIM", member));
+
+      // The reused-route branch: the next Slack message resets speaker, team and origin.
+      await s.send({ text: "back to me" });
+      expect(await s.handle.__brainGate!(sid)).toMatchObject({ userId: member, interactive: true, teamId: "T0SIM" });
+    } finally {
+      await s.dispose();
+    }
+  });
 });

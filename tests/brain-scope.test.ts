@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   AGENT_SOURCE, SHARED_SOURCE, PUBLIC_SOURCE,
   userSourceId, agentSourceId, kbSourceId, channelTrustFor, resolveBrainScope,
-  profileSourceId, PROFILE_PREFIX, isProfileSourceId, type ScopeInput,
+  profileSourceId, PROFILE_PREFIX, isProfileSourceId, speakerProfileSource, type ScopeInput,
 } from "../src/knowledge/scope";
 import type { SoulData } from "../src/soul/data";
 
@@ -97,6 +97,20 @@ describe("profileSourceId", () => {
       expect(isProfileSourceId(id)).toBe(true);
     }
   });
+  test("isProfileSourceId accepts exactly the two produced shapes", () => {
+    for (const bad of ["profile-", "profile-xyz", "profile-a", "profile-a-b-c", "profile--u1", "profile-t-", "profile-UPPER-x",
+      "profile-" + "g".repeat(24), "profile-" + "a".repeat(23), "profile-" + "a".repeat(12) + "-" + "b".repeat(12)]) {
+      expect(isProfileSourceId(bad)).toBe(false);
+    }
+    expect(isProfileSourceId("profile-t0team-u0alice")).toBe(true);
+    expect(isProfileSourceId("profile-" + "0123456789abcdef01234567")).toBe(true);
+  });
+  test("speakerProfileSource: null for an absent, empty or sanitised-to-empty id", () => {
+    expect(speakerProfileSource("T0TEAM", "U0ALICE")).toBe(profileSourceId("T0TEAM", "U0ALICE"));
+    for (const [t, u] of [[null, "U1"], ["T1", null], ["", "U1"], ["T1", ""], ["__", "U1"], ["T1", "--"], ["@!", "U1"]] as const) {
+      expect(speakerProfileSource(t, u)).toBeNull();
+    }
+  });
   test("the same person in another workspace has another profile", () => {
     expect(profileSourceId("T0ONE", "U0ALICE")).not.toBe(profileSourceId("T0TWO", "U0ALICE"));
   });
@@ -160,5 +174,11 @@ describe("resolveBrainScope profile rows", () => {
   test("an empty team or user id reads as unknown: no profile", () => {
     expect(resolveBrainScope(base({ teamId: "" })).profileSource).toBeUndefined();
     expect(resolveBrainScope(base({ userId: "" })).profileSource).toBeUndefined();
+    // Non-empty but sanitising to nothing: no `profile--u0alice`, no profile at all.
+    for (const o of [{ teamId: "__" }, { userId: "--" }]) {
+      const s = resolveBrainScope(base(o));
+      expect(s.profileSource).toBeUndefined();
+      expect(s.allowedSources.some((x) => x.startsWith(PROFILE_PREFIX))).toBe(false);
+    }
   });
 });

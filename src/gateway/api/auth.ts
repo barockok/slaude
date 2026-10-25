@@ -66,7 +66,9 @@ export interface JobClaims {
   /** What started the turn, signed at dispatch: "slack" (a person's Slack
    *  message), "panel" (an operator), or "cron". Only slack and panel are
    *  interactive; an absent claim (an older gateway) reads as NOT interactive
-   *  (fail closed). See isInteractiveOrigin. */
+   *  (fail closed). It describes the job's origin only: a synthetic turn the
+   *  node's manager injects under the same token (auto-evolve, a continuation
+   *  prompt) carries it too. See isInteractiveOrigin, AgentManager.isSyntheticTurn. */
   origin?: TurnOrigin;
   /** First issue time (unix seconds), carried across token-refresh so the
    *  token's total life is capped. Absent = this token's own `iat`. */

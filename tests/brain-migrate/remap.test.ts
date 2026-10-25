@@ -25,7 +25,7 @@ describe("remapSource", () => {
       expect(remapSource("scratch", { agentSource: AGENT, map: { scratch: s } })).toEqual({ ok: true, target: s });
     }
     // Only ids profileSourceId can produce: a bare or malformed profile id has no mapping.
-    for (const s of ["profile-", "profile-a-b-c", "profile-UPPER"]) {
+    for (const s of ["profile-", "profile-a-b-c", "profile-UPPER", "profile-xyz", "profile--u1"]) {
       expect(remapSource(s, { agentSource: AGENT })).toMatchObject({ ok: false, code: "no_mapping" });
       expect(allowedTarget(s, AGENT)).toBe(false);
     }

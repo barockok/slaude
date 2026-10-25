@@ -140,7 +140,7 @@ describe("gateway role: every dispatch path names its origin", () => {
     expect(metas.map((m) => m.origin)).toEqual(["slack"]);
   });
 
-  test("a cron run dispatches as cron, as the job's creator", async () => {
+  test("cronDispatchMeta (what the cron queue send dispatches) is cron, as the job's creator", async () => {
     const job = await CronJobs.create({
       slackTeamId: "T", slackChannelId: "C0TEAM", slackThreadTs: "T-CRON-Q", channelId: "C0TEAM",
       createdBy: "U0MEMBER", cronExpr: "* * * * *", prompt: "tick", nextRunAt: Date.now() + 60_000, target: "thread",

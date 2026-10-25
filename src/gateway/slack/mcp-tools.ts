@@ -61,8 +61,10 @@ export type SlackContext = {
   userId?: string;
   /** Slack team id of the current workspace. */
   teamId?: string;
-  /** What started the current turn (a person's Slack message, the panel, or
-   *  cron). Drives GateInput.interactive; absent = not interactive. */
+  /** What started the route's current job (a person's Slack message, the
+   *  panel, or cron). Drives GateInput.interactive; absent = not interactive.
+   *  A synthetic turn the runtime injects afterwards (auto-evolve, a
+   *  continuation prompt) keeps this value: see AgentManager.isSyntheticTurn. */
   origin?: TurnOrigin;
   /** Optional approval gate — set by the adapter so request_approval works. */
   requestApproval?: (req: {

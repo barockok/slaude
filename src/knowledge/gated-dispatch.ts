@@ -8,16 +8,22 @@ export type GateTier = "auto" | "approval" | "manager" | "deny";
 export type TurnOrigin = "cron" | "slack" | "panel";
 export const TURN_ORIGINS: readonly TurnOrigin[] = ["cron", "slack", "panel"];
 
-/** Interactive = a person started this turn (Slack or panel). Cron, and an
- *  absent or unknown origin (an older token), read as not interactive. */
+/** Interactive origin = a person started the turn's job (Slack or panel).
+ *  Cron, and an absent or unknown origin (an older token), read as not
+ *  interactive. Says nothing about synthetic follow-up turns inside the job:
+ *  see GateInput.interactive and AgentManager.isSyntheticTurn. */
 export const isInteractiveOrigin = (origin: unknown): boolean => origin === "slack" || origin === "panel";
 
 export interface GateInput {
   userId: string | null;
   /** Slack team of the turn (keys the speaker's profile source); null = unknown. */
   teamId: string | null;
-  /** True only for a turn started by a person (a Slack message, or the panel);
-   *  false for cron and background turns, and when the origin is unknown. */
+  /** The turn's ORIGIN only: true when a person started the session's job or
+   *  route (a Slack message, or the panel); false for cron and when the origin
+   *  is unknown. Synthetic follow-up turns the runtime injects inside it (the
+   *  auto-evolve check, continuation and reload prompts) still read true here.
+   *  A write that needs the person's own words must ALSO check
+   *  AgentManager.isSyntheticTurn (on mono and nodes alike). */
   interactive: boolean;
   lockedUser: string | null;
   channelTrust: ChannelTrust;
