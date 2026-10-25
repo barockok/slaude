@@ -1,4 +1,5 @@
 import type { OneOnOneLockRow } from "../db/one-on-one";
+import { renderRuntimeFile } from "../soul/runtime/render";
 
 /**
  * System-prompt block telling the model whether this thread is a private `/1on1`
@@ -32,34 +33,14 @@ function lockBlock(lock: OneOnOneLockRow | null): string {
     const scopeLine = lock.open_scope.trim()
       ? `Active scope constraint (applies to all guests — not the session owner <@${lock.locked_user}>): ${lock.open_scope.trim()}`
       : `No additional scope constraint is active — guests may participate freely.`;
-    return [
-      "<session-mode>",
-      `This thread is a 1on1 session owned by <@${lock.locked_user}>, currently open to all participants.`,
-      scopeLine,
-      "The session owner can restrict access again at any time with `/1on1 lock`.",
-      "</session-mode>",
-    ].join("\n");
+    return renderRuntimeFile("modules/one-on-one-open.md", { LOCKED_USER: lock.locked_user, SCOPE_LINE: scopeLine });
   }
-  return [
-    "<session-mode>",
-    `This thread is a private 1on1 session locked to <@${lock.locked_user}>.`,
-    "Only that user and the manager are heard here — treat it as a confidential,",
-    "direct one-on-one: you may speak more freely and personally than in a shared",
-    "channel, and anything said is between you and them.",
-    "</session-mode>",
-  ].join("\n");
+  return renderRuntimeFile("modules/one-on-one-locked.md", { LOCKED_USER: lock.locked_user });
 }
 
 function remoteBlock(r: RemoteModeInfo): string {
   const where = r.env?.trust === "provisioned"
     ? `in a disposable sandbox environment \`${r.env.name}\` (${r.env.kind}), in \`${r.dir}\``
     : `on <@${r.userId}>'s own machine${r.env ? ` (environment \`${r.env.name}\`, ${r.env.kind})` : ""}, in \`${r.dir}\``;
-  return [
-    "<remote-mode>",
-    `Your file and shell tools (Bash, Read, Write, Edit, Glob, Grep) run ${where} — not on this server.`,
-    "Relative paths resolve against that directory. The knowledge base, MCP servers and web tools are unchanged and still run here.",
-    "Background jobs: Bash with run_in_background returns an ID; read output with mcp__remote__bash_output and stop it with mcp__remote__bash_kill.",
-    "If a tool fails with REMOTE_UNREACHABLE, REMOTE_AUTH_FAILED, REMOTE_HOST_CHANGED or REMOTE_PROVISION_FAILED, stop and tell the user (they can check with `/env`). Do not retry in a loop and do not work around it.",
-    "</remote-mode>",
-  ].join("\n");
+  return renderRuntimeFile("modules/remote.md", { WHERE: where });
 }
