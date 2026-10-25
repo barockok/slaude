@@ -111,7 +111,6 @@ import { memoryScopeFor } from "../../memory/scope";
 import { getPersonaRegistry, labelsInUse, livePersona, managedPersonaProvider, onPersonaRegistryInstalled } from "../../persona/registry";
 import { makeLabelMonitor } from "../../queue/label-status";
 import { isInteractiveOrigin, type GateInput } from "../../knowledge/gated-dispatch";
-import { TurnSenderLog } from "./turn-senders";
 import { personaKbs, personaKbSourceIds } from "../../knowledge/persona-kb";
 import { resolveUserName } from "../slack/users";
 import { downloadAttachments, type SlackFile } from "../slack/attachments";
@@ -730,13 +729,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
   }, 5 * 60 * 1000);
 
-  // Mono turn senders (phase C, invariant 2): see TurnSenderLog. Declared before
-  // the cron scheduler, whose runs note theirs. Every
-  // place that delivers a message into a route notes its sender.
-  const turnSenders = new TurnSenderLog();
+  // Mono turn senders (phase C, invariant 2): the route's ctx is rewritten
+  // by every delivered message, so a profile write reads who sent the inputs
+  // the session's CLI is processing from the manager's own per-input queue
+  // (AgentManager.turnSenders; the Slack and panel paths hand each message's
+  // sender to sendMessage). Bound on every route ctx; declared before the
+  // cron scheduler, whose routes bind it too (cron inputs carry no sender).
   const noteTurnSender = (sessionId: string, ctx: SlackContext): void => {
-    ctx.turnSenders ??= () => turnSenders.get(sessionId);
-    turnSenders.note(sessionId, ctx);
+    ctx.turnSenders ??= () => (typeof agent.turnSenders === "function" ? agent.turnSenders(sessionId) : null);
   };
 
   const cronScheduler = new CronScheduler({
@@ -928,12 +928,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (route.passed) return null;
     if (route.silent) return null;
     return "You ended the turn without a reply or a pass. If the message needs an answer, call `mcp__slaude_surface__reply`; if it is not for you, call `mcp__slaude_surface__pass` with a reason. Then stop.";
-  });
-
-  agent.on("event", (e: AgentEvent) => {
-    // The auto-evolve check's done follows the user turn's own; the record
-    // was already cleared there and may now hold the next turn's sender.
-    if ((e.type === "done" && !e.autoEvolve) || e.type === "error") turnSenders.end(e.sessionId);
   });
 
   // Brain gate input from the live SlackContext — read per tool call so the
@@ -2918,7 +2912,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       console.log(`[slaude] sendMessage session=${session.id} cwd=${session.working_dir} model=${session.model}`);
       if (suppress) agent.suppressNextTurn(session.id);
       try {
-        await agent.sendMessage(session.id, envelope);
+        await agent.sendMessage(session.id, envelope, { sender: { userId, teamId: teamId || null, origin: "slack" } });
       } catch (e: any) {
         console.error("[slaude] sendMessage threw:", e?.message ?? e, e?.stack);
       }
@@ -3744,7 +3738,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         route.ctx.origin = "panel";
         noteTurnSender(session.id, route.ctx);
       }
-      await agent.sendMessage(session.id, envelope);
+      await agent.sendMessage(session.id, envelope, { sender: { userId: operatorId, teamId: meta.teamId || null, origin: "panel" } });
     }
   }
 

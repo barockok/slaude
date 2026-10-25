@@ -5,10 +5,10 @@ import { loadKbs, type KbEntry } from "./loader";
 import { brainCall, brainEnabled } from "./brain";
 import { brainThink, sdkThinkClient } from "./brain-think";
 import { gather } from "./gather";
-import { gatedBrainCall, isSoleSlackSpeaker, type ApprovalReq, type ApprovalRes, type GateInput } from "./gated-dispatch";
+import { gatedBrainCall, soleSlackSender, type ApprovalReq, type ApprovalRes, type GateInput } from "./gated-dispatch";
 import { SHARED_SOURCE, kbSourceId, speakerProfileSource, userSourceId, type BrainScope } from "./scope";
 import { composePage, type TypedPageInput } from "./memory-pages";
-import { SUPERSEDED_TAG } from "./memory-trail";
+import { SUPERSEDED_TAG, supersededSlugs } from "./memory-trail";
 import { agentIdReady } from "./agent-identity";
 import { kbContract, KB_MEMOIZE_MAX_PAGES } from "../tools/contracts/kb";
 
@@ -169,6 +169,8 @@ const hitSlug = (h: unknown): string | undefined =>
 
 export const PROFILE_REFUSAL = "refused: a profile is written only on that person's own turn";
 export const SUPERSEDE_REFUSAL = "refused: supersedes must name a page in the same memory";
+export const SELF_SUPERSEDE_REFUSAL = "refused: a page cannot supersede itself";
+export const SAME_CALL_SUPERSEDE_REFUSAL = "refused: a page cannot supersede a page written in the same call";
 export const LOCK_REFUSAL = "refused: in a /1on1, memory stays with this person; ask them before sharing it";
 
 export type MemoizeTarget = "mine" | "shared" | "profile";
@@ -192,15 +194,17 @@ export interface KbMemoizeArgs {
  * - mine: the turn's own slice as resolved.
  * The gate (classifyBrainOp) enforces the same rules again.
  */
-function resolveMemoizeScope(target: MemoizeTarget, subject: string | undefined, base: BrainScope, g: GateInput): { scope: BrainScope } | { error: string } {
+function resolveMemoizeScope(target: MemoizeTarget, subject: string | undefined, base: BrainScope, g: GateInput): { scope: BrainScope; speaker?: string } | { error: string } {
   if (target === "profile") {
-    const own = speakerProfileSource(g.teamId, g.userId);
-    // The turn must hold only the speaker's own Slack messages: on mono the
-    // ctx is whoever spoke last, and a queued job can hold merged messages.
-    if (own === null || !g.interactive || g.origin !== "slack" || !isSoleSlackSpeaker(g) || (subject !== undefined && subject !== g.userId)) {
+    // The person is the turn's sole Slack sender, never the live ctx's
+    // speaker: on mono the ctx is whoever spoke last, and a queued job can
+    // hold merged messages. Any other sender in the turn refuses.
+    const sender = soleSlackSender(g);
+    const own = sender ? speakerProfileSource(sender.teamId, sender.userId) : null;
+    if (!sender || own === null || g.userId === null || !g.interactive || g.origin !== "slack" || (subject !== undefined && subject !== sender.userId)) {
       return { error: PROFILE_REFUSAL };
     }
-    return { scope: { ...base, sourceId: own } };
+    return { scope: { ...base, sourceId: own }, speaker: sender.userId };
   }
   const scope = target === "shared" ? { ...base, sourceId: SHARED_SOURCE } : base;
   if (g.lockedUser !== null) {
@@ -352,20 +356,27 @@ export const brainHandlers = {
     const gate = await d.gate();
     const resolved = resolveMemoizeScope(target, p.subject, await d.scope(), gate);
     if ("error" in resolved) return err(resolved.error);
-    const { scope } = resolved;
+    const { scope, speaker } = resolved;
     // Compose every page before anything is written: one refusal stops the batch.
     const now = new Date();
     const composed: Array<{ slug: string; content: string; supersedes?: string }> = [];
     for (const pg of pages) {
       const shape = pageShapeError(pg, target);
       if (shape) return err(shape);
-      const source = pg.source ?? (target === "profile" ? `told by ${gate.userId}` : undefined);
+      const source = pg.source ?? (speaker !== undefined ? `told by ${speaker}` : undefined);
       const c = composePage({ ...pg, ...(source !== undefined ? { source } : {}) }, now);
       if ("error" in c) return err(c.error);
       composed.push({ slug: pg.slug, content: c.content, ...(pg.supersedes !== undefined ? { supersedes: pg.supersedes } : {}) });
     }
     const label = `→ ${target}`;
     const retired = composed.filter((pg) => pg.supersedes !== undefined).map((pg) => pg.supersedes!);
+    // A page never retires itself or a page this same call writes: the
+    // written page would end up tagged superseded.
+    const writing = new Set(composed.map((pg) => pg.slug));
+    for (const pg of composed) {
+      if (pg.supersedes === pg.slug) return err(SELF_SUPERSEDE_REFUSAL);
+      if (pg.supersedes !== undefined && writing.has(pg.supersedes)) return err(SAME_CALL_SUPERSEDE_REFUSAL);
+    }
     const trail = retired.length > 0 ? ` (and tags ${retired.join(", ")} as ${SUPERSEDED_TAG})` : "";
     const describe = pages.length === 1
       ? `KB write ${label}: ${pages[0]!.slug} — ${pages[0]!.summary}${trail}`
@@ -382,6 +393,10 @@ export const brainHandlers = {
         if (!(await getPageOrNull(call, slug, inWriteSource))) return err(SUPERSEDE_REFUSAL);
         checked.add(slug);
       }
+      // A page written again is current: drop a superseded tag it carries
+      // (in this source), so readers that filter on the tag see it again.
+      const tagged = await supersededSlugs(call, scope, [scope.sourceId]);
+      const revived = composed.map((pg) => pg.slug).filter((slug) => tagged.has(slug));
       // One approval gates the whole batch; the gated thunk writes every page,
       // then tags each superseded page (left as written otherwise). Each
       // write goes through brainCall, which ensures scope.sourceId exists
@@ -395,6 +410,15 @@ export const brainHandlers = {
           const results: unknown[] = [];
           for (const pg of composed) {
             results.push(await call("put_page", { slug: pg.slug, content: pg.content }, scope));
+          }
+          for (const slug of revived) {
+            try {
+              results.push(await call("remove_tag", { slug, tag: SUPERSEDED_TAG }, scope));
+            } catch (e) {
+              throw new TrailError(
+                `kb_memoize wrote ${slug}, but removing its ${SUPERSEDED_TAG} tag failed (${e instanceof Error ? e.message : String(e)}); readers still treat it as superseded. Retry the same kb_memoize call.`,
+              );
+            }
           }
           for (const pg of composed) {
             if (pg.supersedes === undefined) continue;

@@ -41,7 +41,7 @@ function setup(over: Partial<GateInput> = {}) {
     managers: () => ["U0MGR"],
     requestApproval: async () => { cards++; return { approved: true, by: "U0MGR" }; },
     call: async (name, params, scope) => {
-      if (name !== "get_page") writes.push({ name, slug: String(params.slug), scope });
+      if (name !== "get_page" && name !== "list_pages") writes.push({ name, slug: String(params.slug), scope });
       return brain.call(name, params, scope);
     },
   };
@@ -103,14 +103,26 @@ describe("kb_memoize target:\"profile\"", () => {
       [], // nothing recorded
       [alice, { userId: "U0BOB", teamId: TEAM, origin: "slack" }], // a merged job: two initiators
       [{ userId: "U0ALICE", teamId: TEAM, origin: "cron" }, alice], // cron then Slack
-      [{ userId: "U0BOB", teamId: TEAM, origin: "slack" }], // the ctx flipped without a record
-      [{ ...alice, teamId: "T0OTHER" }],
+      [{ ...alice, origin: "panel" }],
     ]) {
       const s = setup({ turnSenders });
       const r = await brainHandlers.kb_memoize({ pages: [profilePage], target: "profile" }, s.deps);
       expect(text(r)).toBe(PROFILE_REFUSAL);
       expect(s.writes).toEqual([]);
     }
+  });
+
+  test("the profile written is the sole sender's, not the live ctx speaker's", async () => {
+    // Mono: Bob's input is running while the ctx already shows Alice's later message.
+    const s = setup({ turnSenders: [{ userId: "U0BOB", teamId: TEAM, origin: "slack" }] });
+    const r = await brainHandlers.kb_memoize({ pages: [profilePage], target: "profile" }, s.deps);
+    expect(r.isError).toBeUndefined();
+    const bob = profileSourceId(TEAM, "U0BOB");
+    expect(s.writes.map((w) => w.scope.sourceId)).toEqual([bob]);
+    expect(parseFrontmatter(s.brain.contentOf(bob, "profile")!).meta.source).toBe("told by U0BOB");
+    expect(s.brain.contentOf(profileSourceId(TEAM, "U0ALICE"), "profile")).toBeUndefined();
+    // subject is checked against the sender too
+    expect(text(await brainHandlers.kb_memoize({ pages: [profilePage], target: "profile", subject: "U0ALICE" }, s.deps))).toBe(PROFILE_REFUSAL);
   });
 
   test("a merged job of one sender's messages may write the profile", async () => {
@@ -126,7 +138,7 @@ describe("kb_memoize target:\"profile\"", () => {
   });
 
   test("refused when the team is unknown, or there is no speaker", async () => {
-    for (const over of [{ teamId: null }, { userId: null }]) {
+    for (const over of [{ teamId: null, turnSenders: [{ userId: "U0ALICE", teamId: null, origin: "slack" }] }, { userId: null }]) {
       const s = setup(over);
       const r = await brainHandlers.kb_memoize({ pages: [profilePage], target: "profile" }, s.deps);
       expect(text(r)).toBe(PROFILE_REFUSAL);
@@ -185,6 +197,38 @@ describe("kb_memoize supersedes", () => {
     const scope = resolveBrainScope({ ...s.gate, kbSources: [] });
     expect([...(await supersededSlugs(s.brain.call, scope, [mine]))]).toEqual(["notes/old"]);
     expect([...(await supersededSlugs(s.brain.call, scope, [SHARED_SOURCE]))]).toEqual([]);
+  });
+
+  test("a page cannot supersede itself, or a page the same call writes", async () => {
+    const s = setup();
+    await brainHandlers.kb_memoize({ pages: [{ slug: "notes/x", content: "x", summary: "s", type: "outcome" }] }, s.deps);
+    s.writes.length = 0;
+    expect(text(await brainHandlers.kb_memoize({ pages: [{ slug: "notes/x", content: "y", summary: "s", type: "outcome", supersedes: "notes/x" }] }, s.deps)))
+      .toBe("refused: a page cannot supersede itself");
+    expect(text(await brainHandlers.kb_memoize({ pages: [
+      { slug: "notes/x", content: "y", summary: "s", type: "outcome" },
+      { slug: "notes/z", content: "z", summary: "s", type: "outcome", supersedes: "notes/x" },
+    ] }, s.deps))).toBe("refused: a page cannot supersede a page written in the same call");
+    expect(s.writes).toEqual([]);
+    expect(s.brain.tagsOf(mine, "notes/x")).toEqual([]);
+  });
+
+  test("writing a superseded slug again makes it current: its superseded tag is removed", async () => {
+    const s = setup();
+    await brainHandlers.kb_memoize({ pages: [{ slug: "notes/old", content: "Old", summary: "s", type: "outcome" }] }, s.deps);
+    await brainHandlers.kb_memoize({ pages: [{ slug: "notes/new", content: "New", summary: "s", type: "outcome", supersedes: "notes/old" }] }, s.deps);
+    expect(s.brain.tagsOf(mine, "notes/old")).toEqual([SUPERSEDED_TAG]);
+    s.writes.length = 0;
+    const r = await brainHandlers.kb_memoize({ pages: [{ slug: "notes/old", content: "Rewritten", summary: "s", type: "outcome" }] }, s.deps);
+    expect(r.isError).toBeUndefined();
+    expect(s.writes.map((w) => [w.name, w.slug])).toEqual([["put_page", "notes/old"], ["remove_tag", "notes/old"]]);
+    expect(s.brain.tagsOf(mine, "notes/old")).toEqual([]);
+    const scope = resolveBrainScope({ ...s.gate, kbSources: [] });
+    expect([...(await supersededSlugs(s.brain.call, scope, [mine]))]).toEqual([]);
+    // A page that was never tagged gets no remove_tag call.
+    s.writes.length = 0;
+    await brainHandlers.kb_memoize({ pages: [{ slug: "notes/new", content: "Newer", summary: "s", type: "outcome" }] }, s.deps);
+    expect(s.writes.map((w) => w.name)).toEqual(["put_page"]);
   });
 
   test("a missing page is refused, and nothing is written", async () => {

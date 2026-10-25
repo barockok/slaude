@@ -94,6 +94,11 @@ describe("classifyBrainOp — profile and /1on1 writes (phase C)", () => {
       expect(classifyBrainOp("put_page", profileScope(g), g)).toBe("deny");
     }
   });
+  test("the profile is the sole sender's, not the live ctx speaker's (mono: the ctx is whoever spoke last)", () => {
+    const g = slackTurn({ userId: "U1", turnSenders: [{ userId: "U2", teamId: TEAM, origin: "slack" }] });
+    expect(classifyBrainOp("put_page", profileScope(g, profileSourceId(TEAM, "U2")), g)).toBe("auto");
+    expect(classifyBrainOp("put_page", profileScope(g), g)).toBe("deny");
+  });
   test("a background turn in a locked thread is denied, even to the agent's own slice", () => {
     const g = gate({ userId: null, lockedUser: "U1" });
     expect(classifyBrainOp("put_page", { ...scopeFor(g), sourceId: agentSourceId("AGENT1") }, g)).toBe("deny");

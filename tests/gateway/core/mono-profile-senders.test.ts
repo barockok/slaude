@@ -1,9 +1,11 @@
 /**
  * Mono profile writes (phase C, invariant 2): the route's ctx is rewritten by
- * every delivered message, so the gateway records who sent the messages the
- * running turn holds, and kb_memoize target:"profile" needs that record to be
- * exactly the speaker, from Slack. The stubbed agent never ends a turn on its
- * own; the test emits `done` where a turn ends.
+ * every delivered message, so a profile write reads who sent the inputs the
+ * CLI is processing from the manager (AgentManager.turnSenders, covered with
+ * the reviewer's T1/T2 scenario in tests/agent/manager-lifecycle.test.ts).
+ * Here: the gateway hands each message's sender to sendMessage, and the
+ * in-process slaude_kb server decides on the manager's senders, not the ctx.
+ * The agent's sendMessage and turnSenders are stubbed.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { createGateway, type GatewayHandle } from "../../../src/gateway/core/gateway";
@@ -11,6 +13,8 @@ import { AgentManager } from "../../../src/agent/manager";
 import { db } from "../../../src/db/schema";
 import * as CronJobs from "../../../src/db/cron-jobs";
 import * as OneOnOne from "../../../src/db/one-on-one";
+import * as Sessions from "../../../src/db/sessions";
+import type { InputSender } from "../../../src/agent/manager";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 import { setBackendForTest, resetBackend } from "../../../src/knowledge/backend";
 import { resetAgentId, setAgentId } from "../../../src/knowledge/agent-identity";
@@ -76,6 +80,10 @@ const profileWrite = { pages: [{ slug: "profile", content: "Call me Al.", summar
 let h: GatewayHandle | null = null;
 let agent: AgentManager;
 let sent: string[];
+/** What each sendMessage call carried as its sender. */
+let senders: Array<InputSender | undefined>;
+/** What the stubbed manager reports as the running inputs' senders. */
+let current: InputSender[] | null;
 const waitSent = async (n: number) => {
   const end = Date.now() + 3000;
   while (sent.length < n && Date.now() < end) await Bun.sleep(10);
@@ -108,7 +116,13 @@ beforeEach(async () => {
   await OneOnOne._wipeForTests();
   await db.run("DELETE FROM cron_jobs");
   agent = new AgentManager();
-  agent.sendMessage = async (id: string) => void sent.push(id);
+  senders = [];
+  current = null;
+  agent.sendMessage = async (id: string, _text: string, opts?: { sender?: InputSender }) => {
+    sent.push(id);
+    senders.push(opts?.sender);
+  };
+  agent.turnSenders = () => current;
 });
 afterEach(async () => {
   await h?.stop();
@@ -116,56 +130,52 @@ afterEach(async () => {
   await db.run("DELETE FROM cron_jobs");
 });
 
-describe("mono: a profile write needs a turn of the speaker's own Slack messages", () => {
-  test("a single sender writes their own profile", async () => {
+const ALICE = { userId: "U0ALICE", teamId: "T", origin: "slack" };
+const BOB = { userId: "U0BOB", teamId: "T", origin: "slack" };
+
+describe("mono: each delivered message carries its sender to the manager", () => {
+  test("Slack and panel messages carry theirs; a cron run carries none", async () => {
+    await CronJobs.create({
+      slackTeamId: "T", slackChannelId: "C0TEAM", slackThreadTs: "690.0", channelId: "C0TEAM",
+      createdBy: "U0ALICE", cronExpr: "* * * * *", prompt: "tick", nextRunAt: Date.now() - 1000, target: "thread",
+    });
     const { t, mention } = transport();
     h = createGateway(agent, t);
+    await waitSent(1); // the due cron job ran
+    expect(senders[0]).toBeUndefined();
     await mention("U0ALICE", "700.0", "700.1");
-    await waitSent(1);
-    const g = (await h.__brainGate!(sent[0]!))!;
-    expect(g.turnSenders).toEqual([{ userId: "U0ALICE", teamId: "T", origin: "slack" }]);
-    const text = await memoize(sent[0]!);
-    expect(text).not.toContain("refused");
-    expect(puts).toEqual([{ slug: "profile", source: profileSourceId("T", "U0ALICE") }]);
+    await waitSent(2);
+    expect(senders[1]).toEqual(ALICE);
+    await h.__panelChat!((await Sessions.findById(sent[1]!))!, "operator note", "U0OPERATOR");
+    await waitSent(3);
+    expect(senders[2]).toEqual({ userId: "U0OPERATOR", teamId: "T", origin: "panel" });
   });
+});
 
-  test("Bob posting during Alice's turn: refused, Bob's profile untouched; after the turn ends, Bob's own turn may", async () => {
+describe("mono: kb_memoize target:\"profile\" decides on the manager's senders, not the live ctx", () => {
+  test("the sole sender's own profile; never the ctx speaker's; refused with two senders or none", async () => {
     const { t, mention } = transport();
     h = createGateway(agent, t);
     await mention("U0ALICE", "710.0", "710.1");
     await waitSent(1);
     const sid = sent[0]!;
     await mention("U0BOB", "710.0", "710.2", "nice");
-    await waitSent(2);
-    const g = (await h.__brainGate!(sid))!;
-    expect(g.userId).toBe("U0BOB"); // the live ctx flipped to the last speaker
-    expect(classifyBrainOp("put_page", { ...resolveBrainScope({ ...g, kbSources: [] }), sourceId: profileSourceId("T", "U0BOB") }, g)).toBe("deny");
+    await mention("U0ALICE", "710.0", "710.3", "and me");
+    await waitSent(3);
+    expect((await h.__brainGate!(sid))!.userId).toBe("U0ALICE"); // the ctx is the last speaker
+
+    current = [ALICE, BOB]; // both outstanding
+    expect(await memoize(sid)).toBe(PROFILE_REFUSAL);
+    current = null; // unknown
+    expect(await memoize(sid)).toBe(PROFILE_REFUSAL);
+    current = [{ ...ALICE, origin: "cron" }];
     expect(await memoize(sid)).toBe(PROFILE_REFUSAL);
     expect(puts).toEqual([]);
 
-    agent.emit("event", { type: "done", sessionId: sid });
-    await mention("U0BOB", "710.0", "710.3", "call me B");
-    await waitSent(3);
+    current = [BOB]; // Bob's input is running although the ctx shows Alice
+    const g = (await h.__brainGate!(sid))!;
+    expect(classifyBrainOp("put_page", { ...resolveBrainScope({ ...g, kbSources: [] }), sourceId: profileSourceId("T", "U0ALICE") }, g)).toBe("deny");
     expect(await memoize(sid)).not.toContain("refused");
     expect(puts).toEqual([{ slug: "profile", source: profileSourceId("T", "U0BOB") }]);
-  });
-
-  test("a Slack message arriving during a cron turn: refused", async () => {
-    await CronJobs.create({
-      slackTeamId: "T", slackChannelId: "C0TEAM", slackThreadTs: "720.0", channelId: "C0TEAM",
-      createdBy: "U0ALICE", cronExpr: "* * * * *", prompt: "tick", nextRunAt: Date.now() - 1000, target: "thread",
-    });
-    const { t, mention } = transport();
-    h = createGateway(agent, t);
-    await waitSent(1); // the due cron job ran
-    const sid = sent[0]!;
-    expect((await h.__brainGate!(sid))!.turnSenders).toEqual([{ userId: "U0ALICE", teamId: "T", origin: "cron" }]);
-    await mention("U0ALICE", "720.0", "720.1");
-    await waitSent(2);
-    expect(sent[1]).toBe(sid);
-    const g = (await h.__brainGate!(sid))!;
-    expect(g).toMatchObject({ userId: "U0ALICE", origin: "slack", interactive: true });
-    expect(await memoize(sid)).toBe(PROFILE_REFUSAL);
-    expect(puts).toEqual([]);
   });
 });

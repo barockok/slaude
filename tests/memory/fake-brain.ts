@@ -1,6 +1,6 @@
 /**
  * An in-memory stand-in for the brain ops the memory provider and kb_memoize
- * use (get_page, put_page, add_tag, list_pages by tag, add_timeline_entry,
+ * use (get_page, put_page, add_tag, remove_tag, list_pages by tag, add_timeline_entry,
  * get_timeline), enforcing
  * sources the way the real engine scopes them: writes land in
  * `scope.sourceId`, reads see only `scope.allowedSources`. A page's content
@@ -33,6 +33,10 @@ export function fakeBrain() {
         const t = tags.get(key(scope.sourceId, slug)) ?? new Set<string>();
         t.add(String(params.tag));
         tags.set(key(scope.sourceId, slug), t);
+        return { ok: true };
+      }
+      case "remove_tag": {
+        tags.get(key(scope.sourceId, slug))?.delete(String(params.tag));
         return { ok: true };
       }
       case "list_pages": {

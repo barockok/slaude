@@ -36,11 +36,12 @@ export interface GateInput {
    *  user id is an operator id, not a Slack id. Absent = unknown (no profile
    *  writes). */
   origin?: TurnOrigin;
-  /** Who sent the messages the running turn holds, as the gateway recorded
-   *  them (mono: since the turn began; a node: the job's merged senders). A
-   *  profile write needs exactly one, the speaker from Slack: a turn that
-   *  also holds another person's or a cron message is not that person's own
-   *  turn. Absent = unknown = no profile write. */
+  /** Who sent the inputs the running turn holds (mono: every input the CLI
+   *  has outstanding, from the manager's per-input queue; a node: the job's
+   *  merged senders). A profile write needs exactly one, from Slack, and
+   *  writes THAT person's profile: a turn that also holds another person's
+   *  or a cron message is not one person's own turn. Absent = unknown = no
+   *  profile write. */
   turnSenders?: readonly TurnSender[];
   lockedUser: string | null;
   channelTrust: ChannelTrust;
@@ -109,18 +110,25 @@ export function classifyBrainOp(op: string, scope: BrainScope, g: GateInput): Ga
   return "manager"; // unknown op: fail closed
 }
 
-/** The turn holds exactly one sender: the speaker, from Slack, in this team. */
-export function isSoleSlackSpeaker(g: GateInput): boolean {
+/**
+ * The one person whose words the running turn holds, from Slack, or null.
+ * This sender, not the live ctx's speaker, is whose profile may be written:
+ * on mono the ctx is whoever spoke last, which need not be the person whose
+ * input the CLI is processing.
+ */
+export function soleSlackSender(g: GateInput): TurnSender | null {
   const s = g.turnSenders;
-  if (!s || s.length !== 1 || g.userId === null) return false;
-  return s[0]!.userId === g.userId && s[0]!.teamId === g.teamId && s[0]!.origin === "slack";
+  if (!s || s.length !== 1) return null;
+  return s[0]!.origin === "slack" ? s[0]! : null;
 }
 
-/** The write goes to the speaker's own profile, on a Slack turn that holds
- *  only that person's messages. */
+/** The write goes to the profile of the turn's sole Slack sender, on a
+ *  Slack-origin interactive turn. */
 function isOwnProfileWrite(scope: BrainScope, g: GateInput): boolean {
-  if (!g.interactive || g.origin !== "slack" || g.userId === null || !isSoleSlackSpeaker(g)) return false;
-  const own = speakerProfileSource(g.teamId, g.userId);
+  if (!g.interactive || g.origin !== "slack" || g.userId === null) return false;
+  const sender = soleSlackSender(g);
+  if (!sender) return false;
+  const own = speakerProfileSource(sender.teamId, sender.userId);
   return own !== null && scope.sourceId === own;
 }
 

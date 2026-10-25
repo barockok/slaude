@@ -1896,6 +1896,113 @@ describe("isSyntheticTurn: a prompt the runtime itself sent", () => {
   });
 });
 
+describe("turnSenders: who sent the inputs the CLI is processing (phase C, invariant 2)", () => {
+  const A = { userId: "U0ALICE", teamId: "T", origin: "slack" };
+  const B = { userId: "U0BOB", teamId: "T", origin: "slack" };
+  const profileWrite = { pages: [{ slug: "profile", content: "Call me X.", summary: "name", type: "profile" }], target: "profile" as const };
+
+  /** kb_memoize target:"profile" as mono runs it: the live ctx speaker is
+   *  `ctxUser` (whoever spoke last), the senders come from the manager. */
+  async function memoizeAs(mgr: InstanceType<typeof AgentManager>, id: string, ctxUser: string) {
+    const { brainHandlers } = await import("../../src/knowledge/mcp-tools");
+    const { resolveBrainScope } = await import("../../src/knowledge/scope");
+    const { fakeBrain } = await import("../memory/fake-brain");
+    const brain = fakeBrain();
+    const senders = mgr.turnSenders(id);
+    const gate = {
+      userId: ctxUser, teamId: "T", interactive: true, origin: "slack" as const, lockedUser: null,
+      channelTrust: "trusted" as const, isManager: false, agentId: "AGENT1",
+      ...(senders ? { turnSenders: senders } : {}),
+    };
+    const written: string[] = [];
+    const r = await brainHandlers.kb_memoize(profileWrite, {
+      scope: () => resolveBrainScope({ ...gate, kbSources: [] }),
+      gate: () => gate,
+      managers: () => [],
+      requestApproval: async () => ({ approved: false, by: "x" }),
+      call: async (name, params, scope) => {
+        if (name === "put_page") written.push(scope.sourceId);
+        return brain.call(name, params, scope);
+      },
+    });
+    return { text: r.content[0]!.text, written };
+  }
+
+  it("T1 Alice running, Bob queued as T2, T1 ends, Alice posts during T2: a profile write in T2 is refused", async () => {
+    const { profileSourceId } = await import("../../src/knowledge/scope");
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const fs = plan(); // never answers on its own: the test ends each turn
+    await mgr.sendMessage(row.id, "T1: call me Al", { sender: A });
+    await until(() => fs.users.length === 1, 3000, "T1 delivered");
+    expect(mgr.turnSenders(row.id)).toEqual([A]);
+
+    await mgr.sendMessage(row.id, "T2: call me B", { sender: B }); // queued behind T1
+    expect(mgr.turnSenders(row.id)).toEqual([A, B]); // the CLI may fold it into T1
+    expect((await memoizeAs(mgr, row.id, "U0BOB")).text).toBe("refused: a profile is written only on that person's own turn");
+
+    fs.emit(res()); // T1 ends; T2 (Bob's words) runs
+    await until(() => events.filter((e) => e.type === "done").length === 1, 3000, "T1 done");
+    expect(mgr.turnSenders(row.id)).toEqual([B]);
+
+    await mgr.sendMessage(row.id, "T3: hi", { sender: A }); // Alice posts during T2; the ctx is now Alice
+    expect(mgr.turnSenders(row.id)).toEqual([B, A]);
+    const during = await memoizeAs(mgr, row.id, "U0ALICE");
+    expect(during.text).toBe("refused: a profile is written only on that person's own turn");
+    expect(during.written).toEqual([]);
+
+    fs.emit(res()); // T2 ends
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "T2 done");
+    expect(mgr.turnSenders(row.id)).toEqual([A]);
+    fs.emit(res()); // T3 ends: nothing outstanding
+    await until(() => events.filter((e) => e.type === "done").length === 3, 3000, "T3 done");
+    expect(mgr.turnSenders(row.id)).toBeNull();
+    expect(profileSourceId("T", "U0ALICE")).not.toBe(profileSourceId("T", "U0BOB"));
+    await shutdown(mgr, row.id);
+  });
+
+  it("T2 with Bob as its sole sender writes Bob's profile, even while the ctx shows Alice", async () => {
+    const { profileSourceId } = await import("../../src/knowledge/scope");
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const fs = plan();
+    await mgr.sendMessage(row.id, "T1", { sender: A });
+    await until(() => fs.users.length === 1, 3000, "T1 delivered");
+    await mgr.sendMessage(row.id, "T2: call me B", { sender: B });
+    fs.emit(res());
+    await until(() => events.filter((e) => e.type === "done").length === 1, 3000, "T1 done");
+    expect(mgr.turnSenders(row.id)).toEqual([B]);
+    const r = await memoizeAs(mgr, row.id, "U0ALICE");
+    expect(r.text).not.toContain("refused");
+    expect(r.written).toEqual([profileSourceId("T", "U0BOB")]);
+    await shutdown(mgr, row.id);
+  });
+
+  it("fails closed: no live session, an input without a sender, a synthetic input", async () => {
+    process.env.SLAUDE_AUTO_EVOLVE = "1";
+    const mgr = new AgentManager();
+    expect(mgr.turnSenders("S-none")).toBeNull();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const seen: Array<unknown> = [];
+    const fs = plan((s) => {
+      s.onUser = (um) => {
+        const text = String(um.message.content);
+        seen.push([text.includes("<auto-evolve>") ? "evolve" : text, mgr.turnSenders(row.id)]);
+        if (!text.includes("<auto-evolve>")) s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch"), txt("did the work")]));
+        s.emit(res());
+      };
+    });
+    await mgr.sendMessage(row.id, "no sender");
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "evolve done");
+    expect(seen).toEqual([["no sender", null], ["evolve", null]]);
+    expect(fs.users.length).toBe(2);
+    await shutdown(mgr, row.id);
+  });
+});
+
 describe("profile writes on a synthetic turn (phase C, invariant 2)", () => {
   it("the PreToolUse hook denies kb_memoize target:\"profile\" during the auto-evolve turn only", async () => {
     // The fake SDK does not run hooks itself: the test calls the hooks wired in

@@ -56,15 +56,26 @@ import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/typ
 /** Upper bound on waiting for a previous remote handle's job cleanup at boot. */
 const REMOTE_DISPOSE_TIMEOUT_MS = 8_000;
 
+/** Who sent one delivered input (the gateway's view of the message). */
+export interface InputSender {
+  userId: string;
+  teamId: string | null;
+  origin: string | null;
+}
+
 type LiveSession = {
   id: string;
   /** Queue one input. `synthetic` marks a prompt the runtime itself sends
    *  (auto-evolve check, continuation and reload prompts), not a delivered one. */
-  pushUser: (text: string, synthetic?: boolean) => void;
+  pushUser: (text: string, synthetic?: boolean, sender?: InputSender | null) => void;
   /** One flag per outstanding input, oldest first: whether it is synthetic.
    *  Inputs run in order and each ends with one `result`, so the head is the
    *  turn running now (see isSyntheticTurn). */
   inputSynthetic: boolean[];
+  /** One entry per outstanding input, aligned with inputSynthetic: who sent
+   *  it (sendMessage's `sender`), null for a synthetic input or one sent
+   *  without a sender. See turnSenders. */
+  inputSenders: (InputSender | null)[];
   closeIterable: () => void;
   abort: AbortController;
   /** Buffer of last user message + accumulated assistant text for memory.syncTurn. */
@@ -695,8 +706,8 @@ export class AgentManager extends EventEmitter {
   }
 
   /** Send user input. Starts session loop if not already live. */
-  async sendMessage(sessionId: string, text: string) {
-    return this.#send(sessionId, text, false);
+  async sendMessage(sessionId: string, text: string, opts: { sender?: InputSender } = {}) {
+    return this.#send(sessionId, text, false, opts.sender ?? null);
   }
 
   /**
@@ -711,7 +722,27 @@ export class AgentManager extends EventEmitter {
     return this.#live.get(sessionId)?.inputSynthetic[0] === true;
   }
 
-  async #send(sessionId: string, text: string, synthetic: boolean) {
+  /**
+   * The senders of every input outstanding now: the running turn's and any
+   * queued behind it, because the CLI may fold a queued input into the
+   * running turn. Null whenever that cannot be told for sure, so a write
+   * that needs one person's own words fails closed: no live session, no
+   * outstanding input, the per-input bookkeeping out of step with the input
+   * count, or any input that is synthetic or was sent without a sender.
+   */
+  turnSenders(sessionId: string): InputSender[] | null {
+    const live = this.#live.get(sessionId);
+    if (!live || live.pendingInputs === 0) return null;
+    if (live.inputSenders.length !== live.pendingInputs || live.inputSynthetic.length !== live.pendingInputs) return null;
+    const out: InputSender[] = [];
+    for (const s of live.inputSenders) {
+      if (!s) return null;
+      if (!out.some((o) => o.userId === s.userId && o.teamId === s.teamId && o.origin === s.origin)) out.push(s);
+    }
+    return out;
+  }
+
+  async #send(sessionId: string, text: string, synthetic: boolean, sender: InputSender | null = null) {
     // Signal that a real user turn is starting for this session. Slash commands
     // and dropped messages never reach here, so a listener can distinguish
     // "agent will run" from "handled inline" without waiting for done/error.
@@ -752,12 +783,12 @@ export class AgentManager extends EventEmitter {
       live.turn.user = text;
       live.turn.assistant = [];
       this.#stopBlocked.delete(sessionId);
-      live.pushUser(text, synthetic);
+      live.pushUser(text, synthetic, synthetic ? null : sender);
       this.#armIdle(live);
       return;
     }
     this.#stopBlocked.delete(sessionId);
-    await this.#startSession(sessionId, text, synthetic);
+    await this.#startSession(sessionId, text, synthetic, synthetic ? null : sender);
   }
 
   /** (Re)arm the idle timer for a session. On expiry, close the SDK loop
@@ -1008,7 +1039,7 @@ export class AgentManager extends EventEmitter {
     if (o.signalExit && !this.#live.has(sessionId)) this.#signalSessionExit(sessionId);
   }
 
-  async #startSession(sessionId: string, firstText: string, firstSynthetic = false) {
+  async #startSession(sessionId: string, firstText: string, firstSynthetic = false, firstSender: InputSender | null = null) {
     this.#booting.set(sessionId, (this.#booting.get(sessionId) ?? 0) + 1);
     let marked = true;
     const unmark = () => {
@@ -1019,13 +1050,13 @@ export class AgentManager extends EventEmitter {
       else this.#booting.delete(sessionId);
     };
     try {
-      await this.#bootSession(sessionId, firstText, unmark, firstSynthetic);
+      await this.#bootSession(sessionId, firstText, unmark, firstSynthetic, firstSender);
     } finally {
       unmark();
     }
   }
 
-  async #bootSession(sessionId: string, firstText: string, onLive: () => void, firstSynthetic = false) {
+  async #bootSession(sessionId: string, firstText: string, onLive: () => void, firstSynthetic = false, firstSender: InputSender | null = null) {
     // Read before any config is resolved: a fingerprint that arrives while this
     // boot resolves its lock/remote state must not be credited to it.
     const bootFp = this.#desiredFp.get(sessionId);
@@ -1308,12 +1339,14 @@ export class AgentManager extends EventEmitter {
     const live: LiveSession = {
       id: sessionId,
       // Every input starts a turn; its `result` ends it (#fanout).
-      pushUser: (text: string, synthetic = false) => {
+      pushUser: (text: string, synthetic = false, sender: InputSender | null = null) => {
         live.pendingInputs++;
         live.inputSynthetic.push(synthetic);
+        live.inputSenders.push(sender);
         pushUser(text);
       },
       inputSynthetic: [firstSynthetic], // firstText is already queued
+      inputSenders: [firstSender],
       closeIterable,
       abort,
       turn: { user: firstText, assistant: [] },
@@ -1373,7 +1406,7 @@ export class AgentManager extends EventEmitter {
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           // Fire and forget — restart with the same first prompt.
-          void this.#startSession(sessionId, firstText, firstSynthetic).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
+          void this.#startSession(sessionId, firstText, firstSynthetic, firstSender).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
           return;
         }
         // Mirror failure: we seeded --session-id but a transcript with that id
@@ -1385,7 +1418,7 @@ export class AgentManager extends EventEmitter {
           await this.#bestEffortStore(sessionId, "markStarted", () => this.#store.markStarted(sessionId));
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
-          void this.#startSession(sessionId, firstText, firstSynthetic).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
+          void this.#startSession(sessionId, firstText, firstSynthetic, firstSender).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
           return;
         }
         if (live?.reloading) {
@@ -1571,6 +1604,7 @@ export class AgentManager extends EventEmitter {
         if (live) {
           live.pendingInputs = Math.max(0, live.pendingInputs - 1);
           live.inputSynthetic.shift();
+          live.inputSenders.shift();
         }
         // A reload deferred by reloadAfterTurn applies once NO input is
         // outstanding: another queued input (e.g. a user message behind an
