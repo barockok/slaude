@@ -6,7 +6,7 @@ import { agentIdSync, resolveAgentId, resetAgentId } from "../src/knowledge/agen
 const scope: BrainScope = { clientId: "U1", sourceId: "shared", allowedSources: ["shared"] };
 const deps = (over: Partial<BrainToolDeps> = {}): BrainToolDeps => ({
   scope: () => scope,
-  gate: () => ({ userId: "U1", lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "AGENT1" }),
+  gate: () => ({ userId: "U1", teamId: null, interactive: true, lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "AGENT1" }),
   managers: () => ["UMGR"],
   requestApproval: async () => ({ approved: true, by: "UMGR" }),
   call: async (name) => ({ echoed: name }),

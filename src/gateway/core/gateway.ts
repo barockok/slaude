@@ -110,7 +110,7 @@ import { providerSelectingNames } from "../../agent/provider-env";
 import { memoryScopeFor } from "../../memory/scope";
 import { getPersonaRegistry, labelsInUse, livePersona, managedPersonaProvider, onPersonaRegistryInstalled } from "../../persona/registry";
 import { makeLabelMonitor } from "../../queue/label-status";
-import type { GateInput } from "../../knowledge/gated-dispatch";
+import { isInteractiveOrigin, type GateInput } from "../../knowledge/gated-dispatch";
 import { personaKbs, personaKbSourceIds } from "../../knowledge/persona-kb";
 import { resolveUserName } from "../slack/users";
 import { downloadAttachments, type SlackFile } from "../slack/attachments";
@@ -186,6 +186,12 @@ export interface GatewayHandle {
   /** TEST/SIM SEAM ONLY. Drive the agent-facing mention-only toggle
    *  (mcp__slaude_surface__set_mention_only) for a live session. */
   __agentMentionOnly(sessionId: string, active: boolean): Promise<string>;
+  /** TEST SEAM ONLY. The brain gate input a mono session's tools see now
+   *  (its route's context); undefined with no route. */
+  __brainGate?(sessionId: string): Promise<GateInput | undefined>;
+  /** TEST SEAM ONLY. The brain gate input a node turn's /v1 tools see for
+   *  these (verified) job-token claims. */
+  __brainGateForClaims?(claims: JobClaims): Promise<GateInput>;
 }
 
 const REACT_RECEIVED = "eyes";
@@ -407,6 +413,24 @@ export function panelDispatchMeta(session: SessionRow, operatorId: string, event
     userId: operatorId,
     personaId,
     ...(session.slack_app_id ? { apiAppId: session.slack_app_id } : {}),
+    origin: "panel",
+  };
+}
+
+/** A cron run's dispatch: it runs as the job's creator, under its app, and is
+ *  never interactive (origin "cron"), so it can never write a profile. */
+export function cronDispatchMeta(job: CronJobs.CronJob, threadTs: string, eventTs: string): DispatchMeta {
+  return {
+    teamId: job.slackTeamId!,
+    channelId: job.slackChannelId!,
+    threadTs,
+    eventTs,
+    userId: job.createdBy,
+    personaId: job.personaId !== "default" ? job.personaId : undefined,
+    ...(job.slackAppId ? { apiAppId: job.slackAppId } : {}),
+    origin: "cron",
+    // A job created inside a /1on1 runs as its lock owner wherever it lands.
+    ...(job.oauthUser ? { oauthUser: job.oauthUser } : {}),
   };
 }
 
@@ -710,17 +734,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     ...(queueDispatch
       ? {
           send: async ({ session, envelope, job, threadTs }) => {
-            await queueDispatch.dispatch(session, envelope, {
-              teamId: job.slackTeamId!,
-              channelId: job.slackChannelId!,
-              threadTs,
-              eventTs: String(Date.now() / 1000),
-              userId: job.createdBy,
-              personaId: job.personaId !== "default" ? job.personaId : undefined,
-              ...(job.slackAppId ? { apiAppId: job.slackAppId } : {}),
-              // A job created inside a /1on1 runs as its lock owner wherever it lands.
-              ...(job.oauthUser ? { oauthUser: job.oauthUser } : {}),
-            });
+            await queueDispatch.dispatch(session, envelope, cronDispatchMeta(job, threadTs, String(Date.now() / 1000)));
           },
           // when_active=skip asks whether a turn is already running. Under the
           // split that happens on a node, so the gateway's own agent knows
@@ -747,6 +761,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         teamId: job.slackTeamId ?? undefined,
         postTarget: job.target,
         personaId: jobPersonaId,
+        origin: "cron",
       };
       ctx.requestApproval = (req) =>
         approvals.request({
@@ -916,6 +931,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       : agentIdSync();
     return {
       userId: ctx.userId ?? null,
+      teamId: ctx.teamId || null,
+      // Mono: the route's origin (set by the Slack, panel and cron paths);
+      // nodes: the signed `origin` claim. Unknown reads as not interactive.
+      interactive: isInteractiveOrigin(ctx.origin),
       lockedUser: lock?.locked_user ?? null,
       channelTrust: channelTrustFor(ctx.channel, soul),
       isManager: !!ctx.userId && (ctx.userId === soul.manager.userId || ctx.userId === soul.backupManager.userId),
@@ -2610,6 +2629,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             existing.ctx.channel = channelId;
             existing.ctx.threadTs = threadTs;
             existing.ctx.inboundTs = eventTs;
+            existing.ctx.userId = userId;
+            existing.ctx.teamId = teamId;
+            existing.ctx.origin = "slack";
             if (app.apiAppId) existing.ctx.apiAppId = app.apiAppId;
             existing.spoke = false;
             existing.passed = false;
@@ -2627,6 +2649,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               userId,
               teamId,
               personaId: compactPersonaId,
+              origin: "slack",
             };
             ctx.requestApproval = (req) =>
               approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app: appOf(ctx), ...req });
@@ -2641,7 +2664,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           }
           void reactions.set(session.id, channelId, eventTs, REACT_WORKING);
           void (queueDispatch
-            ? queueDispatch.dispatch(session, "/compact", { teamId, channelId, threadTs, eventTs, userId, apiAppId: app.apiAppId })
+            ? queueDispatch.dispatch(session, "/compact", { teamId, channelId, threadTs, eventTs, userId, apiAppId: app.apiAppId, origin: "slack" })
             : agent.sendMessage(session.id, "/compact")
           ).catch((e: any) => console.error("[slaude] compact auto-boot error:", e?.message ?? e));
           return;
@@ -2780,6 +2803,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.ctx.threadTs = threadTs;
       existing.ctx.inboundTs = eventTs;
       existing.ctx.userId = userId;
+      existing.ctx.teamId = teamId;
+      existing.ctx.origin = "slack";
       existing.ctx.botToken = context?.botToken;
       existing.ctx.apiAppId = app.apiAppId;
       existing.ctx.personaId = dispatch?.personaId;
@@ -2809,6 +2834,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         teamId,
         botToken: context?.botToken,
         personaId: dispatch?.personaId,
+        origin: "slack",
       };
       ctx.requestApproval = (req) =>
         approvals.request({
@@ -2851,6 +2877,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             userId,
             personaId: dispatch?.personaId,
             apiAppId: app.apiAppId,
+            origin: "slack",
             suppress,
           });
         } catch (e: any) {
@@ -3559,33 +3586,38 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       mrkdwn: true,
     });
   }
+  /** The /v1 tool plane's SlackContext for a verified job token: everything
+   *  (speaker, team, origin, persona, app) comes from the signed claims. */
+  const v1SlackCtx = (claims: JobClaims): SlackContext => {
+    const personaId = claims.persona && claims.persona !== "default" ? claims.persona : undefined;
+    // The turn's app rides in the signed token; an older token carries
+    // only the team, which resolves when it is unambiguous (D1.2).
+    const app: AppRef = { apiAppId: claims.app, teamId: claims.team };
+    const ctx: SlackContext = {
+      client: outClientForPersona(personaId, app),
+      apiAppId: claims.app,
+      resolveBotToken: () => t.botTokenFor?.(app),
+      channel: claims.channel,
+      threadTs: claims.thread,
+      // No live inbound message on the REST path — reactions and default
+      // react targets anchor on the thread root.
+      inboundTs: claims.thread,
+      userId: claims.initiator,
+      teamId: claims.team,
+      personaId,
+      sessionId: claims.session,
+      // Signed at dispatch; absent (an older gateway) reads as not interactive.
+      ...(claims.origin ? { origin: claims.origin } : {}),
+    };
+    ctx.requestApproval = (req) =>
+      approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, app, ...req });
+    ctx.reloadSession = (prompt?) => agent.reload(claims.session, prompt);
+    return ctx;
+  };
   const v1 = createV1Api({
     tools: {
       mcpBridge,
-      slackCtx: (claims) => {
-        const personaId = claims.persona && claims.persona !== "default" ? claims.persona : undefined;
-        // The turn's app rides in the signed token; an older token carries
-        // only the team, which resolves when it is unambiguous (D1.2).
-        const app: AppRef = { apiAppId: claims.app, teamId: claims.team };
-        const ctx: SlackContext = {
-          client: outClientForPersona(personaId, app),
-          apiAppId: claims.app,
-          resolveBotToken: () => t.botTokenFor?.(app),
-          channel: claims.channel,
-          threadTs: claims.thread,
-          // No live inbound message on the REST path — reactions and default
-          // react targets anchor on the thread root.
-          inboundTs: claims.thread,
-          userId: claims.initiator,
-          teamId: claims.team,
-          personaId,
-          sessionId: claims.session,
-        };
-        ctx.requestApproval = (req) =>
-          approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, app, ...req });
-        ctx.reloadSession = (prompt?) => agent.reload(claims.session, prompt);
-        return ctx;
-      },
+      slackCtx: v1SlackCtx,
       surfaceFor: (ctx) => wrapSurface(surfaceForCtx(ctx), ctx.sessionId ?? ""),
       surfaceOpts: (claims, ctx) => ({
         initiator: () => ctx.userId,
@@ -3667,6 +3699,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (queueDispatch) {
       await queueDispatch.dispatch(session, envelope, meta);
     } else {
+      // Mono: the route's context is the speaker the tools see. Without this
+      // the panel turn would run as the last Slack speaker, and as interactive
+      // for them; the operator is the speaker, as the node token's initiator is.
+      const route = routes.get(session.id);
+      if (route) {
+        route.ctx.userId = operatorId;
+        route.ctx.origin = "panel";
+      }
       await agent.sendMessage(session.id, envelope);
     }
   }
@@ -3745,6 +3785,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),
     __voiceCalls: voiceCalls,
+    __brainGate: async (sessionId: string) => {
+      const route = routes.get(sessionId);
+      return route ? brainGateFor(route.ctx) : undefined;
+    },
+    __brainGateForClaims: (claims: JobClaims) => brainGateFor(v1SlackCtx(claims)),
     __agentConnect: (sessionId: string, server: string) => {
       const route = routes.get(sessionId);
       if (!route) return Promise.resolve("no active thread for this session");

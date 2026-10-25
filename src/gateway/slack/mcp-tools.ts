@@ -6,6 +6,7 @@ import {
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { WebClient } from "@slack/web-api";
+import type { TurnOrigin } from "../../knowledge/gated-dispatch";
 import { createReadStream, statSync } from "node:fs";
 import { basename } from "node:path";
 import { mdToMrkdwn } from "./format";
@@ -60,6 +61,9 @@ export type SlackContext = {
   userId?: string;
   /** Slack team id of the current workspace. */
   teamId?: string;
+  /** What started the current turn (a person's Slack message, the panel, or
+   *  cron). Drives GateInput.interactive; absent = not interactive. */
+  origin?: TurnOrigin;
   /** Optional approval gate — set by the adapter so request_approval works. */
   requestApproval?: (req: {
     summary: string;

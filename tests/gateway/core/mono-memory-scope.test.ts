@@ -23,7 +23,7 @@ import { __setMemoryForTests, memory as originalMemory } from "../../../src/memo
 import type { MemoryProvider } from "../../../src/memory/provider";
 import { BrainMemoryProvider } from "../../../src/memory/brain-provider";
 import { resetAgentId, setAgentId } from "../../../src/knowledge/agent-identity";
-import { agentSourceId, userSourceId } from "../../../src/knowledge/scope";
+import { agentSourceId, profileSourceId, resolveBrainScope, userSourceId } from "../../../src/knowledge/scope";
 import { fakeBrain } from "../../memory/fake-brain";
 import { closeBrain } from "../../../src/knowledge/brain";
 
@@ -180,6 +180,40 @@ describe("mono privacy matrix (interactive turns)", () => {
       expect(JSON.stringify([...fb.pages.entries()])).toBe(before);
       expect(fb.sourcesOf(locked)).not.toContain(agentSourceId(PROCESS_ID));
       expect(await mem().prefetch(locked)).toBeNull();
+    } finally {
+      await s.dispose();
+    }
+  });
+});
+
+describe("mono brain gate: the turn's team and whether a person started it", () => {
+  const sessionOf = async (thread: string) =>
+    (await Sessions.findByThread({ team_id: "T0SIM", channel_id: "C0TEAM", thread_ts: thread }))!.id;
+
+  test("a cron route is not interactive; its team still keys the creator's profile", async () => {
+    const { h, session } = await cronSession({ threadTs: "T-CRON-GATE" });
+    try {
+      const g = (await h.__brainGate!(session.id))!;
+      expect(g).toMatchObject({ interactive: false, teamId: "T", userId: "U0MEMBER" });
+      expect(resolveBrainScope({ ...g, kbSources: [] }).profileSource).toBe(profileSourceId("T", "U0MEMBER"));
+    } finally {
+      await h.stop();
+    }
+  });
+
+  test("a Slack message is interactive; the speaker's profile is in the KB scope, never in episodic memory", async () => {
+    const s = await SimSession.create({ agent: "stub", layer: "trusted", as: "member" });
+    try {
+      s.thread = "T-GATE-SLACK";
+      await s.send({ text: "hello" });
+      const sid = await sessionOf("T-GATE-SLACK");
+      const g = (await s.handle.__brainGate!(sid))!;
+      expect(g.interactive).toBe(true);
+      expect(g.teamId).toBe("T0SIM");
+      const profile = profileSourceId("T0SIM", g.userId!);
+      expect(resolveBrainScope({ ...g, kbSources: [] }).allowedSources).toContain(profile);
+      await mem().syncTurn({ sessionId: sid, user: "hello", assistant: "a" });
+      expect(fb.sourcesOf(sid)).toEqual([agentSourceId(PROCESS_ID)]);
     } finally {
       await s.dispose();
     }

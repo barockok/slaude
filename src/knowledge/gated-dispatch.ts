@@ -3,8 +3,22 @@ import { agentSourceId, userSourceId } from "./scope";
 
 export type GateTier = "auto" | "approval" | "manager" | "deny";
 
+/** What started a turn: a human Slack message, an operator in the panel, or
+ *  a cron job. Signed into a node's job token as `origin`. */
+export type TurnOrigin = "cron" | "slack" | "panel";
+export const TURN_ORIGINS: readonly TurnOrigin[] = ["cron", "slack", "panel"];
+
+/** Interactive = a person started this turn (Slack or panel). Cron, and an
+ *  absent or unknown origin (an older token), read as not interactive. */
+export const isInteractiveOrigin = (origin: unknown): boolean => origin === "slack" || origin === "panel";
+
 export interface GateInput {
   userId: string | null;
+  /** Slack team of the turn (keys the speaker's profile source); null = unknown. */
+  teamId: string | null;
+  /** True only for a turn started by a person (a Slack message, or the panel);
+   *  false for cron and background turns, and when the origin is unknown. */
+  interactive: boolean;
   lockedUser: string | null;
   channelTrust: ChannelTrust;
   isManager: boolean;

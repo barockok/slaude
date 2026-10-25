@@ -1,4 +1,4 @@
-import { agentSourceId } from "../knowledge/scope";
+import { agentSourceId, isProfileSourceId } from "../knowledge/scope";
 
 export type RemapResult =
   | { ok: true; target: string }
@@ -16,17 +16,19 @@ export function agentSourceForPersona(agentId: string): string {
 }
 
 export const isAgentLike = (s: string): boolean => s === "agent" || s.startsWith("agent-");
-const isUser = (s: string): boolean => /^user-[a-z0-9]+$/.test(s);
+/** A person's own source: their `user-` slice or their `profile-` source.
+ *  Either passes through unchanged (it belongs to the person, not the persona). */
+export const isPersonSource = (s: string): boolean => /^user-[a-z0-9]+$/.test(s) || isProfileSourceId(s);
 const isKb = (s: string): boolean => s.startsWith("kb-");
 
-/** A target a `map` entry may point at: the persona's slice, a user slice, shared, public. */
+/** A target a `map` entry may point at: the persona's slice, a person's source (user or profile), shared, public. */
 export function allowedTarget(t: string, agentSource: string): boolean {
-  return t === agentSource || t === "shared" || t === "public" || isUser(t);
+  return t === agentSource || t === "shared" || t === "public" || isPersonSource(t);
 }
 
 export function validateMap(map: Record<string, string>, agentSource: string): string | null {
   for (const [from, to] of Object.entries(map)) {
-    if (!allowedTarget(to, agentSource)) return `map target '${to}' (from '${from}') is not the persona's agent slice, a user slice, shared or public`;
+    if (!allowedTarget(to, agentSource)) return `map target '${to}' (from '${from}') is not the persona's agent slice, a user or profile source, shared or public`;
   }
   return null;
 }
@@ -42,6 +44,6 @@ export function remapSource(source: string, o: RemapOptions): RemapResult {
       : { ok: false, code: "forbidden_target", source };
   }
   if (isAgentLike(source)) return { ok: true, target: o.agentSource };
-  if (source === "shared" || source === "public" || isUser(source)) return { ok: true, target: source };
+  if (source === "shared" || source === "public" || isPersonSource(source)) return { ok: true, target: source };
   return { ok: false, code: "no_mapping", source };
 }

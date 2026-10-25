@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { batchPages, readPages, verifyBundle, type BundlePage } from "./bundle";
-import { isAgentLike } from "./remap";
+import { isAgentLike, isPersonSource } from "./remap";
 
 export class ImportError extends Error {}
 export interface SourceCounts { written: number; skipped: number; overwritten: number; failed: number; linksWritten: number; linksDropped: number; linksFailed: number; linksOutOfScope: number; noEmbedding: number }
@@ -26,7 +26,7 @@ const emptyCounts = (): SourceCounts => ({ written: 0, skipped: 0, overwritten: 
 
 // kb-* is checked first: a map key cannot opt a kb source in.
 const COVERED = (s: string, map: Record<string, string>): boolean =>
-  !isKb(s) && (Object.hasOwn(map, s) || isAgentLike(s) || s === "shared" || s === "public" || /^user-[a-z0-9]+$/.test(s));
+  !isKb(s) && (Object.hasOwn(map, s) || isAgentLike(s) || s === "shared" || s === "public" || isPersonSource(s));
 
 const AGENT = "__agent__";
 

@@ -19,7 +19,7 @@ import { ensureHome, paths } from "../../../src/config/home";
 import { clearKbCache } from "../../../src/knowledge/loader";
 import { setBackendForTest, resetBackend } from "../../../src/knowledge/backend";
 import { __resetPersonaRegistry, setPersonaRegistry } from "../../../src/persona/registry";
-import type { BrainScope } from "../../../src/knowledge/scope";
+import { profileSourceId, type BrainScope } from "../../../src/knowledge/scope";
 
 const NODE_TOKEN = "kb-scope-node-token";
 const ENV = ["SLAUDE_NODE_TOKEN", "SLAUDE_JOB_SECRET", "SLAUDE_BRAIN_MODE", "SLAUDE_BRAIN_DISABLED"] as const;
@@ -154,6 +154,14 @@ describe("kb_search gathers only the persona's kb-* sources", () => {
     searched = [];
     await tool("finance", "kb_search", { query: "budget" });
     expect(kbSearched()).toEqual(["kb-runbook"]);
+  });
+});
+
+describe("the speaker's profile on a node turn", () => {
+  test("kb_search reads the profile keyed by the token's team and initiator", async () => {
+    await tool("finance", "kb_search", { query: "budget" });
+    expect(searched).toContain(profileSourceId("T1", WORLD.manager));
+    expect(searched.filter((s) => s.startsWith("profile-"))).toEqual([profileSourceId("T1", WORLD.manager)]);
   });
 });
 

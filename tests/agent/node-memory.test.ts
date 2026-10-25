@@ -126,6 +126,8 @@ function gateway(opts: { serveMemory?: boolean } = {}) {
             provider,
             gateFor: async (c) => ({
               userId: c.initiator || null,
+              teamId: null,
+              interactive: false,
               lockedUser: c.lock?.user ?? null,
               channelTrust: "trusted",
               isManager: false,

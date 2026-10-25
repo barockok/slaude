@@ -3,7 +3,7 @@ import { classifyBrainOp, gatedBrainCall, resetStandingGrants, type GateInput } 
 import { resolveBrainScope, SHARED_SOURCE, type BrainScope } from "../src/knowledge/scope";
 
 const gate = (over: Partial<GateInput> = {}): GateInput => ({
-  userId: "U1", lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "AGENT1", ...over,
+  userId: "U1", teamId: null, interactive: true, lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "AGENT1", ...over,
 });
 const scopeFor = (g: GateInput, kb: string[] = []) => resolveBrainScope({ ...g, kbSources: kb });
 // Explicit "shared" escalation — kb_memoize target:"shared" overrides sourceId.

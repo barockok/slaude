@@ -7,7 +7,8 @@
  *   - `X-Slaude-Job: <jwt>` — short-lived per-job token (HS256, secret
  *     SLAUDE_JOB_SECRET) minted by the gateway enqueue path; required on the
  *     tool plane and session endpoints. Claims: {tenant, persona, session,
- *     team, channel, thread, initiator, scope, exp}. The gateway derives the
+ *     team, channel, thread, initiator, scope, exp} plus optional ones (origin,
+ *     runAs, lock, label, ...). The gateway derives the
  *     Slack client, persona, and KB scope from the token — never from the
  *     request body.
  *
@@ -20,6 +21,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { env } from "../../config/env";
 import { m as metric } from "../../metrics";
 import type { RemoteClaim } from "../../remote/fingerprint";
+import { TURN_ORIGINS, type TurnOrigin } from "../../knowledge/gated-dispatch";
 import { LEGACY_NODE_ID, NodeCredentialVerifier, verifyNodeCredentialSync } from "../auth/node-credential";
 
 export interface JobClaims {
@@ -61,6 +63,11 @@ export interface JobClaims {
    *  §4.3). The gate requires it among the calling node's labels. Absent (a
    *  token from before the change) means "default". */
   label?: string;
+  /** What started the turn, signed at dispatch: "slack" (a person's Slack
+   *  message), "panel" (an operator), or "cron". Only slack and panel are
+   *  interactive; an absent claim (an older gateway) reads as NOT interactive
+   *  (fail closed). See isInteractiveOrigin. */
+  origin?: TurnOrigin;
   /** First issue time (unix seconds), carried across token-refresh so the
    *  token's total life is capped. Absent = this token's own `iat`. */
   iat0?: number;
@@ -151,6 +158,10 @@ export function verifyJobToken(
   if ((claims as { typ?: unknown }).typ !== undefined) return { ok: false, reason: "bad_claims" };
   // An empty label would read as "default" through jobLabel; refuse it instead.
   if (claims.label !== undefined && (typeof claims.label !== "string" || claims.label === "")) {
+    return { ok: false, reason: "bad_claims" };
+  }
+  // An unknown origin is refused rather than read as some default.
+  if (claims.origin !== undefined && !TURN_ORIGINS.includes(claims.origin)) {
     return { ok: false, reason: "bad_claims" };
   }
   return { ok: true, claims };

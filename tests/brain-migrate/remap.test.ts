@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { agentSourceForPersona, isAgentLike, remapSource, validateMap } from "../../src/brain-migrate/remap";
+import { agentSourceForPersona, allowedTarget, isAgentLike, remapSource, validateMap } from "../../src/brain-migrate/remap";
+import { profileSourceId } from "../../src/knowledge/scope";
 
 const AGENT = agentSourceForPersona("UTESTUSER1"); // agent-utestuser1
 
@@ -15,6 +16,18 @@ describe("remapSource", () => {
   test("user, shared and public are unchanged", () => {
     for (const s of ["user-ualice", "shared", "public"]) {
       expect(remapSource(s, { agentSource: AGENT })).toEqual({ ok: true, target: s });
+    }
+  });
+  test("a profile source (either form) is a person's source: unchanged, and an allowed map target", () => {
+    for (const s of [profileSourceId("T0TEAM", "U0ALICE"), profileSourceId("T".repeat(20), "U".repeat(20))]) {
+      expect(remapSource(s, { agentSource: AGENT })).toEqual({ ok: true, target: s });
+      expect(allowedTarget(s, AGENT)).toBe(true);
+      expect(remapSource("scratch", { agentSource: AGENT, map: { scratch: s } })).toEqual({ ok: true, target: s });
+    }
+    // Only ids profileSourceId can produce: a bare or malformed profile id has no mapping.
+    for (const s of ["profile-", "profile-a-b-c", "profile-UPPER"]) {
+      expect(remapSource(s, { agentSource: AGENT })).toMatchObject({ ok: false, code: "no_mapping" });
+      expect(allowedTarget(s, AGENT)).toBe(false);
     }
   });
   test("kb-* is out of scope, anything else has no mapping", () => {

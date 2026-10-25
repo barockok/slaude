@@ -46,6 +46,8 @@ const TRUSTED = "C0TRUSTED";
 let liveLock: string | null = null;
 const gateFromClaims = async (c: JobClaims): Promise<GateInput> => ({
   userId: c.initiator || null,
+  teamId: null,
+  interactive: false,
   lockedUser: liveLock,
   channelTrust: c.channel === TRUSTED ? "trusted" : "public",
   isManager: false,

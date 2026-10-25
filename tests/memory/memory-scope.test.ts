@@ -11,7 +11,7 @@ import type { GateInput } from "../../src/knowledge/gated-dispatch";
 const PERSONA = "U0PERSONA"; // a named persona's own Slack user id
 const A = agentSourceId(PERSONA);
 const g = (o: Partial<GateInput>): GateInput => ({
-  userId: "U1", lockedUser: null, channelTrust: "trusted", isManager: false, agentId: PERSONA, ...o,
+  userId: "U1", teamId: null, interactive: true, lockedUser: null, channelTrust: "trusted", isManager: false, agentId: PERSONA, ...o,
 });
 
 describe("memoryScopeFor", () => {
@@ -95,5 +95,21 @@ describe("withClaimLock: the more private of the live lock and the token's claim
   test("two different owners: the one that is not the speaker", () => {
     expect(withClaimLock(g({ userId: "U1", lockedUser: "U1" }), "U9").lockedUser).toBe("U9");
     expect(withClaimLock(g({ userId: "U1", lockedUser: "U9" }), "U1").lockedUser).toBe("U9");
+  });
+});
+
+describe("the profile source never reaches episodic memory", () => {
+  test("a known team changes no row: memory reads and writes are the same as with no team", () => {
+    const rows: Partial<GateInput>[] = [
+      {}, { lockedUser: "U1" }, { userId: "U2", lockedUser: "U1" }, { userId: "UMGR", isManager: true },
+      { channelTrust: "public" }, { userId: null }, { interactive: false },
+    ];
+    for (const o of rows) {
+      for (const channel of [undefined, "D0DM", "C0TEAM"]) {
+        const withTeam = memoryScopeFor(g({ ...o, teamId: "T0TEAM" }), { channel });
+        expect(withTeam).toEqual(memoryScopeFor(g({ ...o, teamId: null }), { channel }));
+        expect(JSON.stringify(withTeam)).not.toContain("profile-");
+      }
+    }
   });
 });

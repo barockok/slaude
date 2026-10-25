@@ -157,9 +157,9 @@ describe("import", () => {
   });
   test("failures report counts by reason, with slugs only outside user slices", async () => {
     const a = api({ ensureSource: async () => { throw new Error("SECRET-DETAIL"); } });
-    const r = await call(a, post(body([pg("shared", "s1"), pg("user-ualice", "u-slug")])));
+    const r = await call(a, post(body([pg("shared", "s1"), pg("user-ualice", "u-slug"), pg("profile-t0team-u0alice", "p-slug")])));
     expect(r.status).toBe(200);
-    expect(r.json.failedReasons).toEqual({ tx: 2 });
+    expect(r.json.failedReasons).toEqual({ tx: 3 });
     expect(r.json.failedSlugs).toEqual(["s1"]);
     expect(r.json.sources["shared"].failed).toBe(1);
     expect(JSON.stringify(r.json)).not.toContain("SECRET-DETAIL");
