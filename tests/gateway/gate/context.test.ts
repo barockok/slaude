@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { buildGateInput, resolveMentions, type GateContextDeps } from "../../../src/gateway/gate/context";
+import { buildGateInput, normalizeSlackText, resolveMentions, type GateContextDeps } from "../../../src/gateway/gate/context";
 
 const selfIds = { botUserId: "UBOT", botIds: new Set(["BBOT"]) };
 const ev = { channel: "C1", ts: "100.5", thread_ts: "100.0", text: "<@UBOT> hi <@U123>" };
@@ -58,5 +58,43 @@ describe("buildGateInput", () => {
     expect((await buildGateInput(ev, opts, deps())).kbHitScore).toBeNull();
     const err = await buildGateInput(ev, opts, deps({ kbSearch: async () => { throw new Error("x"); } }));
     expect(err.kbHitScore).toBeNull();
+  });
+});
+
+describe("normalizeSlackText", () => {
+  const n = (t: string) => normalizeSlackText(t, "UBOT");
+  it("handles mention forms", () => {
+    expect(n("<@UBOT|bot> <@U1|jane> <@W2>")).toBe("<agent> <user> <user>");
+  });
+  it("reduces other markup", () => {
+    expect(n("<#C123> <#C123|general>")).toBe("<channel> <channel>");
+    expect(n("<!subteam^S1> <!subteam^S1|@grp>")).toBe("<group> <group>");
+    expect(n("<!here> <!channel> <!everyone> <!here|here>")).toBe("<here> <here> <here> <here>");
+    expect(n("<https://example.com/a?b=1|the doc>")).toBe("the doc");
+    expect(n("<https://example.com/a/b?q=1>")).toBe("example.com");
+    expect(n("<mailto:a@b.co> <mailto:a@b.co|a@b.co>")).toBe("<email> <email>");
+  });
+});
+
+describe("buildGateInput normalization and ordering", () => {
+  it("normalizes recent, message and the kb query", async () => {
+    let q = "";
+    const g = await buildGateInput(
+      { channel: "C1", ts: "9", thread_ts: "1", text: "see <#C9|x> <https://e.com/p>" },
+      opts,
+      deps({
+        replies: async () => [{ user: "U2", text: "<!here> <@U3|bob>", ts: "2" }],
+        kbSearch: async (s) => ((q = s), []),
+      }),
+    );
+    expect(g.recent[0]!.text).toBe("<here> <user>");
+    expect(g.message).toBe("see <channel> e.com");
+    expect(q).toBe("see <channel> e.com");
+  });
+
+  it("uses only messages up to the event, from an oldest-first list", async () => {
+    const msgs = ["1", "2", "3", "4", "100.5", "101", "102"].map((ts) => ({ user: "U9", text: `t${ts}`, ts }));
+    const g = await buildGateInput(ev, { ...opts, contextMessages: 3 }, deps({ replies: async () => msgs }));
+    expect(g.recent.map((r) => r.text)).toEqual(["t2", "t3", "t4"]);
   });
 });
