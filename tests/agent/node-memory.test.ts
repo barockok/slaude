@@ -177,7 +177,8 @@ describe("node memory served by the gateway", () => {
     const s = await nodeSession(v1, ["finance"]);
     fb.seed(agentSourceId("U0FINANCE"), s.row.id, "<user>earlier question</user>");
     await s.turn("hello from the node");
-    expect(captured[0].systemPrompt.append).toContain("<memory-context>");
+    // The block itself (the core prompt only names the tag in backticks).
+    expect(captured[0].systemPrompt.append).toContain("<memory-context>\n");
     expect(captured[0].systemPrompt.append).toContain("earlier question");
     await until(() => (fb.pages.get(`${agentSourceId("U0FINANCE")}\u0000conversations/${s.row.id}`)?.length ?? 0) > 1, "sync");
     expect(fb.sourcesOf(s.row.id)).toEqual([agentSourceId("U0FINANCE")]);
@@ -195,7 +196,8 @@ describe("node memory served by the gateway", () => {
     await s.turn("one");
     await s.turn("two");
     await Bun.sleep(20);
-    expect(captured[0].systemPrompt.append).not.toContain("<memory-context>");
+    // No block (the core prompt still names the tag, in backticks).
+    expect(captured[0].systemPrompt.append).not.toContain("<memory-context>\n");
     expect(s.warnings).toHaveLength(1);
     expect(s.warnings[0]).toContain("older gateway");
     expect(s.events.some((e) => e.type === "error")).toBe(false);

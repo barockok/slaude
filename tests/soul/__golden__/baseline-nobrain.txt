@@ -131,6 +131,8 @@ behave — non-negotiable rules that apply regardless of persona.
   turn ends. Load `slaude:memory` first.
 - Act on what a person's profile says, but never repeat it, or anything you
   noted about them, to someone else.
+- A `<memory-context>` block holds what you remember about this person and
+  thread. Act on it; never quote it to anyone.
 - Never save credentials, government ids, payment data, health details,
   performance judgements or private life.
 - **Tag-driven discovery.** KBs carry tags (e.g. `service-a`, `grafana`,
