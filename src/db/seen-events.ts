@@ -20,6 +20,11 @@ export async function tryInsert(eventId: string, now: number = Date.now()): Prom
   return r.changes > 0;
 }
 
+/** Whether an event id was already claimed. A read only: it claims nothing. */
+export async function has(eventId: string): Promise<boolean> {
+  return (await db.one(`SELECT 1 AS x FROM seen_events WHERE event_id = ?`, [eventId])) != null;
+}
+
 /** Drop rows older than `maxAgeMs`. Returns how many were purged. */
 export async function purgeOlderThan(
   maxAgeMs: number = MAX_AGE_MS,

@@ -198,6 +198,11 @@ type SessionRoute = {
   /** The agent ended this turn deliberately without replying (`mcp__slaude_surface__pass`).
    *  Satisfies the stop guard like `spoke`, but posts nothing. Reset per turn. */
   passed?: boolean;
+  /** Whether the thread was engaged before this turn's mention engaged it.
+   *  `false` means the mention engaged it; a turn that then only passes puts it
+   *  back (a passing mention is not an invitation). Undefined when the turn did
+   *  not come from a mention. Set per turn. */
+  engagedBefore?: boolean;
   /** Slack message ref for the live todo tracker posted by the TodoWrite interceptor.
    *  Cleared at the start of each new user turn so each request gets a fresh block. */
   todoRef?: string;
@@ -1703,6 +1708,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           }
           route.tasksRef = undefined;
           route.tasksMap = undefined;
+          // A mention that engaged the thread and ended in a pass (nothing
+          // user-visible) gives the engagement back: the thread stays as it was.
+          if (route.passed && !route.spoke && route.engagedBefore === false) {
+            route.engagedBefore = undefined;
+            console.log(`[pass] disengage ch=${route.ctx.channel} ts=${route.ctx.threadTs}`);
+            await persistEngaged(route.ctx.teamId, route.ctx.channel, route.ctx.threadTs, false, route.ctx.personaId ?? "default");
+          }
           // No fallback notice: setStopGuard above forces a reply via the SDK
           // Stop hook. If the agent still stops without spoke, manager logs
           // to stderr — surfacing a Slack message here would be redundant.
@@ -1755,7 +1767,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
   });
 
-  async function handleMessage(args: any, dispatch?: { suppress?: boolean; personaId?: string }) {
+  async function handleMessage(args: any, dispatch?: { suppress?: boolean; personaId?: string; engagedBefore?: boolean }) {
     const suppress = dispatch?.suppress === true;
     const { event, client, context } = args;
     const teamId: string | undefined = context.teamId ?? event.team;
@@ -2580,6 +2592,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             if (app.apiAppId) existing.ctx.apiAppId = app.apiAppId;
             existing.spoke = false;
             existing.passed = false;
+            existing.engagedBefore = dispatch?.engagedBefore;
             existing.wasCompacting = true;
           } else {
             const compactPersonaId = session.persona_id !== "default" ? session.persona_id : undefined;
@@ -2600,6 +2613,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               ctx,
               surface: wrapSurface(surfaceForCtx(ctx), session.id),
               spoke: false,
+              engagedBefore: dispatch?.engagedBefore,
               wasCompacting: true,
             });
           }
@@ -2750,6 +2764,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
       existing.spoke = false;
       existing.passed = false;
+      existing.engagedBefore = dispatch?.engagedBefore;
       existing.todoRef = undefined;       // fresh tracker per user turn
       existing.todosSnapshot = undefined;
       existing.pendingTaskCreate = undefined;
@@ -2777,7 +2792,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           ...req,
         });
       ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
-      routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, suppress });
+      routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, suppress, engagedBefore: dispatch?.engagedBefore });
     }
 
     // After the route is in place, so the reaction and status resolvers read
@@ -2898,6 +2913,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const row = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: personaId });
     if (row) await Sessions.setEngaged(row.id, value);
   };
+  /** A mention engages the thread and returns whether it was engaged before
+   *  (no row, a first mention, is `false`). A second delivery of an event that
+   *  was already handled (app_mention and message carry the same ts) writes
+   *  nothing: it would re-engage a thread that the first delivery's turn gave
+   *  back by passing. handleMessage drops that delivery as a duplicate. */
+  const engageOnMention = async (teamId: string | undefined, channelId: string, threadTs: string, eventTs: string, personaId = "default") => {
+    if (!teamId) return undefined;
+    if (await SeenEvents.has(`${channelId}:${eventTs}`)) return undefined;
+    const prior = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: personaId });
+    await persistEngaged(teamId, channelId, threadTs, true, personaId);
+    return !!prior && !!prior.engaged;
+  };
 
   // Bot identities (D1.4). With several registered apps in one channel, every
   // message reaches every app, so "self" must be the union of ALL registered
@@ -3016,8 +3043,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   t.event("app_mention", async (args: any) => {
     const e: any = args.event;
     const ts: string = e.thread_ts || e.ts;
-    await persistEngaged(args.context?.teamId ?? e.team, e.channel, ts, true);
-    await handleMessage(args);
+    const engagedBefore = await engageOnMention(args.context?.teamId ?? e.team, e.channel, ts, e.ts);
+    await handleMessage(args, { engagedBefore });
   });
 
   // Single message router: every non-bot message goes here so we can manage
@@ -3082,8 +3109,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     );
 
     if (mentionsBot) {
-      await persistEngaged(teamId, channelId, ts, true);
-      return await handleMessage(args);
+      const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts);
+      return await handleMessage(args, { engagedBefore });
     }
     if (!mentionedPersona) {
       // A retired persona's identity stops routing: drop what is addressed to it
@@ -3099,8 +3126,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (mentionedPersona) {
       // Re-engage the persona's row if it was disengaged; a first mention has
       // no row yet and the session is born engaged.
-      await persistEngaged(teamId, channelId, ts, true, mentionedPersona.name);
-      return await handleMessage(args, { personaId: mentionedPersona.name });
+      const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts, mentionedPersona.name);
+      return await handleMessage(args, { personaId: mentionedPersona.name, engagedBefore });
     }
     if (mentionsOther) {
       // Disengage the bot AND every persona in this thread (the user is
