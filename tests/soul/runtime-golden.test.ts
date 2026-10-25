@@ -53,6 +53,17 @@ describe("runtime prompt goldens", () => {
   test("mode locked and remote", () => expectSame(sessionModeBlock(lock(null), remote(personal)), "mode-locked-remote"));
 });
 
+describe("core size budget", () => {
+  // Rendered runtimeBaseline(true) with the knowledge dir normalised to its
+  // token, measured at 4ddec02 (R2 plus its fix round). Procedures belong in a
+  // built-in skill, not the always-on core.
+  const BUDGET = 9871;
+  test("core stays within its budget", () => {
+    const length = norm(runtimeBaseline(true)).length;
+    expect(length, "core grew past its budget — move procedures into a built-in skill").toBeLessThanOrEqual(BUDGET * 1.05);
+  });
+});
+
 describe("renderRuntimeFile", () => {
   test("unknown variable throws naming file and variable", () => {
     expect(() => renderRuntimeFile("modules/remote.md", {})).toThrow(RuntimeTemplateError);
