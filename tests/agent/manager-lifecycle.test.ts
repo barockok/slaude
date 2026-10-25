@@ -2011,13 +2011,17 @@ describe("profile writes on a synthetic turn (phase C, invariant 2)", () => {
     const mgr = new AgentManager();
     const events = record(mgr);
     const row = await mgr.ensureSession(thread());
-    const runPre = async (input: any) => {
+    const runHooks = async (event: string, input: any) => {
       const outs: any[] = [];
-      for (const m of fs.options.hooks.PreToolUse ?? []) {
-        for (const h of m.hooks) outs.push(await h({ hook_event_name: "PreToolUse", session_id: "cli", transcript_path: "/t", cwd: "/w", ...input }, "tu", { signal: new AbortController().signal }));
+      for (const m of fs.options.hooks[event] ?? []) {
+        for (const h of m.hooks) outs.push(await h({ hook_event_name: event, session_id: "cli", transcript_path: "/t", cwd: "/w", ...input }, "tu", { signal: new AbortController().signal }));
       }
       return outs.find((o) => o?.hookSpecificOutput?.permissionDecision === "deny") ?? {};
     };
+    const runPre = (input: any) => runHooks("PreToolUse", input);
+    // kb_memoize is governed by slaude:memory (skill-gate): load it once in the
+    // human turn, as the model would, so only the profile guard can deny below.
+    const load = { tool_name: "Skill", tool_input: { skill: "slaude:memory" }, tool_use_id: "k1" };
     const profile = { tool_name: "mcp__slaude_kb__kb_memoize", tool_input: { target: "profile", pages: [] }, tool_use_id: "p1" };
     const mine = { tool_name: "mcp__slaude_kb__kb_memoize", tool_input: { target: "mine", pages: [] }, tool_use_id: "m1" };
     const human: any[] = [];
@@ -2027,6 +2031,10 @@ describe("profile writes on a synthetic turn (phase C, invariant 2)", () => {
         const text = String(um.message.content);
         void (async () => {
           const into = text.includes("<auto-evolve>") ? evolve : human;
+          if (into === human) {
+            await runPre(load);
+            await runHooks("PostToolUse", { ...load, tool_response: { success: true, commandName: "slaude:memory" } });
+          }
           into.push(await runPre(profile), await runPre(mine));
           if (into === human) s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch"), txt("did the work")]));
           s.emit(res());
