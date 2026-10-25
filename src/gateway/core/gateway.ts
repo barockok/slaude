@@ -1677,6 +1677,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         break;
       }
       case "done": {
+        // engagedBefore belongs to the turn that is ending (the auto-evolve
+        // check that follows a user turn is not one).
+        const engagedBefore = route.engagedBefore;
+        if (!e.autoEvolve) route.engagedBefore = undefined;
         void (async () => {
           // Voice-origin turn: the thread stays quiet (no ✅, no task-block
           // edits), but the per-turn state is still cleaned up.
@@ -1715,8 +1719,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           route.tasksMap = undefined;
           // A mention that engaged the thread and ended in a pass (nothing
           // user-visible) gives the engagement back: the thread stays as it was.
-          if (route.passed && !route.spoke && route.engagedBefore === false) {
-            route.engagedBefore = undefined;
+          if (route.passed && !route.spoke && engagedBefore === false) {
             console.log(`[pass] disengage ch=${route.ctx.channel} ts=${route.ctx.threadTs}`);
             await persistEngaged(route.ctx.teamId, route.ctx.channel, route.ctx.threadTs, false, route.ctx.personaId ?? "default")
               .catch((err) => console.error(`[pass] disengage failed ch=${route.ctx.channel} ts=${route.ctx.threadTs}:`, err?.message ?? err));
@@ -2778,7 +2781,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.spoke = false;
       existing.passed = false;
       existing.passReact = undefined;
-      existing.engagedBefore = dispatch?.engagedBefore;
+      // A message merged into a running turn carries no mention result
+      // (undefined) and must not erase the running mention's; the done
+      // handler clears it at the end of every turn.
+      if (dispatch?.engagedBefore !== undefined) existing.engagedBefore = dispatch.engagedBefore;
       existing.todoRef = undefined;       // fresh tracker per user turn
       existing.todosSnapshot = undefined;
       existing.pendingTaskCreate = undefined;

@@ -260,3 +260,43 @@ describe("a passed turn is silent on Slack", () => {
     expect(g.reactionsOn(ts)).toContain("white_check_mark");
   });
 });
+
+describe("engagedBefore across a warm merge", () => {
+  it("a follow-up merged mid-turn does not cancel the revert of a passing mention", async () => {
+    const g = makeGw();
+    const thread = nextTs();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let first = true;
+    g.agent.sendMessage = async (id: string, txt: string) => {
+      g.sends.push(txt);
+      if (txt.includes("do NOT reply")) return;
+      if (!first) return; // merged into the running turn
+      first = false;
+      void gate.then(() => {
+        g.agent.emit("event", { type: "toolCall", sessionId: id, tool: PASS, input: {} });
+        g.agent.emit("event", { type: "done", sessionId: id });
+      });
+    };
+    await mention(g, thread, "<@USLAUDEBOT> was great at that yesterday");
+    await g.emit("message", msg(g.t.client, "and the demo too", nextTs(), { thread }));
+    release();
+    await settle();
+    await g.emit("message", msg(g.t.client, "plain follow-up", nextTs(), { thread }));
+    await settle();
+    expect(g.sends.at(-1)).toContain("do NOT reply");
+  });
+
+  it("a later plain turn that passes does not reuse a finished turn's engagedBefore", async () => {
+    const g = makeGw();
+    const thread = nextTs();
+    g.setPlan([REPLY]);
+    await mention(g, thread, "<@USLAUDEBOT> can you check this?");
+    g.setPlan([PASS]);
+    await g.emit("message", msg(g.t.client, "thanks, that was all", nextTs(), { thread }));
+    await settle();
+    await g.emit("message", msg(g.t.client, "plain follow-up", nextTs(), { thread }));
+    await settle();
+    expect(g.sends.at(-1)).not.toContain("do NOT reply");
+  });
+});
