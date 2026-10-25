@@ -5,6 +5,26 @@
 **Ships as:** a series of releases. Phases A, C, D and E touch the agent loop or the DB schema, so each goes out as `vX.Y.Z-rc.N` first (CLAUDE.md "Release candidates").
 **Inputs:** a brainstorm with the owner; an interview with a deployed persona about its own memory gaps (§4.5).
 
+## Progress
+
+Updated in the same commit as each piece of work lands. A phase is **done** when its plan's last task has merged.
+
+| Phase | Plan | Status | Release |
+|---|---|---|---|
+| A. Natural voice | `docs/superpowers/plans/2026-10-25-phase-a-natural-voice.md` | planned | — |
+| B. Decision gate | — | not started | — |
+| C. Memory structure | — | not started | — |
+| D. Background learning and budget | — | not started | — |
+| E. Proactiveness | — | not started | — |
+
+**Phase A tasks**
+- [ ] A1 Writing-style section; KB-first governs action, not wording (§6.1)
+- [ ] A2 `pass` surface tool; reply-or-pass rule; stop guard accepts pass (§6.2)
+- [ ] A3 Auto-evolve: no announcement, `<runtime-check>` wrapper, higher bar (§6.3)
+- [ ] A4 A mention that ends in pass does not re-engage (§6.4)
+- [ ] A5 Voice lint and live natural-voice scenario (§6.5)
+- [ ] A6 Field note; full suite green; phase closed
+
 ## 1. Goal
 
 Make a slaude persona behave like a teammate rather than a tool:
