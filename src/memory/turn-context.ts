@@ -12,10 +12,16 @@
  *
  * Every read is limited to ONE source of the given scope (as memory_about
  * does), so the block never reads wider than the turn's own KB scope, and a
- * page tagged superseded in its source is left out. Each section is cut to
- * its limit and the whole block to TURN_CONTEXT_LIMITS.total, dropping the
- * oldest commitments first. Bounded in time too: past `timeoutMs`, or on any
- * error, there is no block (null) and the turn goes ahead without it.
+ * page tagged superseded in its source is left out (the superseded set is
+ * read once per source). `kb-*` sources are operator wikis, never memory, so
+ * they are not scanned for commitments. Each section is cut to its limit and
+ * the whole block to TURN_CONTEXT_LIMITS.total, dropping the oldest
+ * commitments first.
+ *
+ * Bounded in time and load: past `timeoutMs`, or on any error, there is no
+ * block (null) and the turn goes ahead without it; once the deadline passes
+ * no further brain call starts (calls already in flight finish on their own),
+ * and at most GET_PAGE_CONCURRENCY `get_page` calls run at once.
  * No LLM calls (phase C non-goal).
  */
 import type { BrainScope } from "../knowledge/scope";
@@ -32,6 +38,8 @@ const MAX_COMMITMENTS = 10;
 const COMMITMENT_LIST_LIMIT = 500;
 /** One commitment's line, at most. */
 const COMMITMENT_LINE_LIMIT = 500;
+/** At most this many get_page calls in flight per block. */
+export const GET_PAGE_CONCURRENCY = 4;
 
 export interface TurnMemoryDeps {
   call(op: string, params: object, scope: BrainScope): Promise<unknown>;
@@ -51,19 +59,69 @@ export interface TurnMemoryDeps {
 
 const only = (scope: BrainScope, source: string): BrainScope => ({ ...scope, sourceId: source, allowedSources: [source] });
 
-/** Section and block tags written inside page text would let a page close
- *  the block or fake a section; they are shown escaped instead. */
-const TAGS = /<(\/?)(memory-context|profile|lessons|open-commitments|channel-notes|channel)(?=[\s>/]|$)/gi;
+/** Every envelope tag the runtime gives meaning to, and this block's own
+ *  sections: written inside page text, one would let a page close the block,
+ *  fake a section or pose as a runtime message, so they are shown escaped. */
+const TAGS =
+  /<(\/?)(memory-context|runtime-check|channel-mandate|recent-turns|open-commitments|channel-notes|channel|profile|lessons)(?=[\s>/]|$)/gi;
 const neutralize = (s: string): string => s.replace(TAGS, "&lt;$1$2");
 
 const cut = (s: string, limit: number): string => (s.length <= limit ? s : s.slice(0, limit - 1) + "…");
 
+/** The block was given up on: no further brain call may start. */
+class DeadlinePassed extends Error {}
+
+/**
+ * One block's reads: every brain call goes through `call`, which refuses to
+ * start once the deadline has passed; `get_page` calls also wait for one of
+ * GET_PAGE_CONCURRENCY slots; each source's superseded set is read once.
+ */
+class Reads {
+  #expired = false;
+  #active = 0;
+  #waiting: Array<() => void> = [];
+  #superseded = new Map<string, Promise<Set<string>>>();
+  constructor(private readonly raw: BrainOpCall, private readonly scope: BrainScope) {}
+
+  expire(): void {
+    this.#expired = true;
+    for (const w of this.#waiting.splice(0)) w();
+  }
+
+  call: BrainOpCall = async (name, params, scope) => {
+    if (this.#expired) throw new DeadlinePassed();
+    if (name !== "get_page") return this.raw(name, params, scope);
+    while (this.#active >= GET_PAGE_CONCURRENCY) {
+      await new Promise<void>((r) => this.#waiting.push(r));
+      if (this.#expired) throw new DeadlinePassed();
+    }
+    this.#active++;
+    try {
+      return await this.raw(name, params, scope);
+    } finally {
+      this.#active--;
+      this.#waiting.shift()?.();
+    }
+  };
+
+  superseded(source: string): Promise<Set<string>> {
+    let s = this.#superseded.get(source);
+    if (!s) {
+      s = supersededSlugs(this.call, this.scope, [source]);
+      this.#superseded.set(source, s);
+    }
+    return s;
+  }
+
+  page(slug: string, source: string) {
+    return getPageOrNull(this.call, slug, only(this.scope, source)).then(readPageRecord);
+  }
+}
+
 /** A page's body when it is current (not tagged superseded in `source`), else null. */
-async function currentBody(call: BrainOpCall, scope: BrainScope, source: string, slug: string): Promise<string | null> {
-  const [tagged, raw] = await Promise.all([supersededSlugs(call, scope, [source]), getPageOrNull(call, slug, only(scope, source))]);
-  if (tagged.has(slug)) return null;
-  const pg = readPageRecord(raw);
-  if (!pg || pg.superseded) return null;
+async function currentBody(r: Reads, source: string, slug: string): Promise<string | null> {
+  const [tagged, pg] = await Promise.all([r.superseded(source), r.page(slug, source)]);
+  if (tagged.has(slug) || !pg || pg.superseded) return null;
   const body = pg.body.trim();
   return body ? body : null;
 }
@@ -81,17 +139,16 @@ function names(value: string | undefined, speaker: string): boolean {
   return v === speaker || v === `@${speaker}` || v.includes(`<@${speaker}>`);
 }
 
-async function commitmentsIn(call: BrainOpCall, scope: BrainScope, source: string, d: TurnMemoryDeps, today: string): Promise<Commitment[]> {
-  const one = only(scope, source);
+async function commitmentsIn(r: Reads, scope: BrainScope, source: string, d: TurnMemoryDeps, today: string): Promise<Commitment[]> {
   const [rows, tagged] = await Promise.all([
-    call("list_pages", { type: "commitment", limit: COMMITMENT_LIST_LIMIT }, one),
-    supersededSlugs(call, scope, [source]),
+    r.call("list_pages", { type: "commitment", limit: COMMITMENT_LIST_LIMIT }, only(scope, source)),
+    r.superseded(source),
   ]);
   if (!Array.isArray(rows)) return [];
   const slugs = rows
-    .map((r) => (r as { slug?: unknown } | null)?.slug)
+    .map((row) => (row as { slug?: unknown } | null)?.slug)
     .filter((s): s is string => typeof s === "string" && !tagged.has(s));
-  const pages = await Promise.all(slugs.map(async (slug) => ({ slug, pg: readPageRecord(await getPageOrNull(call, slug, one)) })));
+  const pages = await Promise.all(slugs.map(async (slug) => ({ slug, pg: await r.page(slug, source) })));
   const out: Commitment[] = [];
   for (const { slug, pg } of pages) {
     if (!pg || pg.superseded) continue;
@@ -114,19 +171,18 @@ async function commitmentsIn(call: BrainOpCall, scope: BrainScope, source: strin
 
 const section = (name: string, inner: string): string => `<${name}>\n${inner}\n</${name}>`;
 
-async function build(d: TurnMemoryDeps): Promise<string | null> {
-  const call = d.call as BrainOpCall;
+async function build(r: Reads, d: TurnMemoryDeps): Promise<string | null> {
   const { scope } = d;
   const readable = new Set(scope.allowedSources);
   const today = (d.now ?? (() => new Date()))().toISOString().slice(0, 10);
 
   const [profile, lessons, commitments, channel] = await Promise.all([
-    scope.profileSource && readable.has(scope.profileSource) ? currentBody(call, scope, scope.profileSource, "profile") : null,
-    readable.has(d.agentSource) ? currentBody(call, scope, d.agentSource, "self/lessons") : null,
-    Promise.all([...readable].map((s) => commitmentsIn(call, scope, s, d, today))).then((all) =>
+    scope.profileSource && readable.has(scope.profileSource) ? currentBody(r, scope.profileSource, "profile") : null,
+    readable.has(d.agentSource) ? currentBody(r, d.agentSource, "self/lessons") : null,
+    Promise.all([...readable].filter((s) => !s.startsWith("kb-")).map((s) => commitmentsIn(r, scope, s, d, today))).then((all) =>
       all.flat().sort((a, b) => (a.asOf === b.asOf ? a.slug.localeCompare(b.slug) : a.asOf < b.asOf ? 1 : -1)).slice(0, MAX_COMMITMENTS),
     ),
-    readable.has(SHARED_SOURCE) ? currentBody(call, scope, SHARED_SOURCE, `shared/channels/${d.channelId.toLowerCase()}`) : null,
+    readable.has(SHARED_SOURCE) ? currentBody(r, SHARED_SOURCE, `shared/channels/${d.channelId.toLowerCase()}`) : null,
   ]);
 
   const head = [
@@ -139,14 +195,15 @@ async function build(d: TurnMemoryDeps): Promise<string | null> {
       .filter((x): x is string => x !== null)
       .join("\n");
 
-  // Newest first: dropping from the end drops the oldest.
+  // Newest first: dropping from the end drops the oldest. The other
+  // sections' limits sum well under the total, so this always fits.
   const kept = [...commitments];
   let text = render(kept);
   while (text.length > TURN_CONTEXT_LIMITS.total && kept.length > 0) {
     kept.pop();
     text = render(kept);
   }
-  return text ? text.slice(0, TURN_CONTEXT_LIMITS.total) : null;
+  return text || null;
 }
 
 /**
@@ -157,12 +214,16 @@ async function build(d: TurnMemoryDeps): Promise<string | null> {
  */
 export async function buildTurnMemoryContext(deps: TurnMemoryDeps): Promise<string | null> {
   const ms = deps.timeoutMs ?? TURN_CONTEXT_TIMEOUT_MS;
+  const reads = new Reads(deps.call as BrainOpCall, deps.scope);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<"timeout">((resolve) => {
-    timer = setTimeout(() => resolve("timeout"), ms);
+    timer = setTimeout(() => {
+      reads.expire();
+      resolve("timeout");
+    }, ms);
   });
   try {
-    const r = await Promise.race([build(deps), timeout]);
+    const r = await Promise.race([build(reads, deps), timeout]);
     if (r === "timeout") {
       console.warn(`[memory-context] skipped: brain reads took longer than ${ms}ms`);
       return null;
@@ -175,5 +236,7 @@ export async function buildTurnMemoryContext(deps: TurnMemoryDeps): Promise<stri
     return null;
   } finally {
     clearTimeout(timer);
+    // Nothing more starts once the answer is in, whichever way it came.
+    reads.expire();
   }
 }
