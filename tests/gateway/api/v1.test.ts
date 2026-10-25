@@ -367,6 +367,19 @@ describe("/v1/tools — REST tool plane", () => {
     expect((direct as any).content[0].text).toContain("rest-check");
   });
 
+  test("skills/write_skill and delete_skill refuse a built-in name over REST", async () => {
+    for (const tool of ["write_skill", "delete_skill"]) {
+      const body = tool === "write_skill"
+        ? { slug: "skill-authoring", name: "x", description: "y", body: "z" }
+        : { slug: "skill-authoring" };
+      const r = await call(`/v1/tools/skills/${tool}`, { method: "POST", body: JSON.stringify(body) });
+      expect(r.status).toBe(200);
+      const j = (await r.json()) as any;
+      expect(j.isError).toBe(true);
+      expect(j.content[0].text).toBe("`skill-authoring` is a built-in skill and cannot be changed at runtime");
+    }
+  });
+
   test("kb/search_kbs matches the direct MCP handler result", async () => {
     const direct = await kbHandlers.search_kbs({ query: "anything at all" });
     const r = await call(`/v1/tools/kb/search_kbs`, { method: "POST", body: JSON.stringify({ query: "anything at all" }) });
