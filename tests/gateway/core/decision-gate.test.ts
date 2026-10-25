@@ -47,8 +47,10 @@ function makeTransport(replies: (a: any) => Promise<any> = async () => ({ ok: tr
 }
 
 /**
- * A fake adapter that answers from the message text: "doubt" is a mention
- * about the agent, "?" is an open, helpful request, anything else chit-chat.
+ * A fake adapter that answers from the message text the way a real model
+ * would read it: a mention is addressed to the agent only when the text names
+ * `<agent>` ("doubt" makes it a mention about the agent instead), "?" is an
+ * open, helpful request, anything else chit-chat.
  */
 function fakeAdapter() {
   const states: GateInput[] = [];
@@ -61,7 +63,7 @@ function fakeAdapter() {
       states.push(s);
       const q = s.message.includes("?");
       return {
-        addressedToAgent: s.message.includes("doubt") ? no() : yes(),
+        addressedToAgent: s.message.includes("<agent>") && !s.message.includes("doubt") ? yes() : no(),
         isQuestionOrRequest: q ? yes() : no(),
         agentCanHelp: q ? yes() : no(),
         alreadyAnswered: no(),
@@ -75,12 +77,12 @@ const runner = (mode: GateMode, adapter: DecisionAdapter | null): GateRunner =>
   makeGateRunner({ mode, adapter, tAct: 0.8, timeoutMs: 500, contextMessages: 8, log: () => {} });
 
 /** Gateway + a stubbed agent recording every dispatched envelope. No runner: the gateway's own default. */
-function makeGw(gateRunner?: GateRunner, replies?: (a: any) => Promise<any>) {
+function makeGw(gateRunner?: GateRunner, replies?: (a: any) => Promise<any>, extra: Record<string, unknown> = {}) {
   const cap = makeTransport(replies);
   const agent = new AgentManager();
   const sends: string[] = [];
   agent.sendMessage = async (_id: string, txt: string) => { sends.push(txt); };
-  const h = createGateway(agent, cap.t, gateRunner ? { gateRunner } : {});
+  const h = createGateway(agent, cap.t, { ...(gateRunner ? { gateRunner } : {}), ...extra });
   return { ...cap, agent, sends, h };
 }
 
@@ -330,5 +332,80 @@ describe("decision gate at the Slack ingress", () => {
   it("a gate that throws keeps today's path", async () => {
     const boom: GateRunner = { mode: "on", contextMessages: 8, gate: async () => { throw new Error("boom"); } };
     expect(await scenario(makeGw(boom))).toEqual(TODAY);
+  });
+});
+
+/** A registry with one named persona, `ana`. `outClient` set: ana posts with her own user token. */
+function anaRegistry(outClient: any = null): PersonaRegistry {
+  const ana = { name: "ana", slackUserId: "U0ANA", outClient } as any;
+  return {
+    lookupByUserId: (id) => (id === "U0ANA" ? ana : null),
+    lookupByName: (n) => (n === "ana" ? ana : null),
+    list: () => [ana],
+    isMultiPersonaMode: () => true,
+    isManaged: () => false,
+    tombstonedPersonaFor: () => null,
+  };
+}
+
+const doubts = (g: ReturnType<typeof makeGw>) => g.reacts.filter((r) => r.name === "thinking_face");
+
+describe("decision gate: the agent's own identities", () => {
+  it("a persona mention is framed as addressed to <agent>, and runs", async () => {
+    setPersonaRegistry(anaRegistry());
+    try {
+      const f = fakeAdapter();
+      const g = makeGw(runner("on", f.a));
+      const thread = nextTs();
+      await g.emit("message", msg(g.t.client, "<@U0ANA> can you look? cc <@U0X>", thread));
+      expect(f.states[0]!.message).toBe("<agent> can you look? cc <user>");
+      expect(g.sends.length).toBe(1);
+      expect(recorded(g.sends[0]!)).toBe(false);
+      expect(doubts(g)).toEqual([]);
+    } finally {
+      __resetPersonaRegistry();
+    }
+  });
+
+  it("an engaged persona thread frames the persona as <agent>", async () => {
+    setPersonaRegistry(anaRegistry());
+    try {
+      const f = fakeAdapter();
+      const g = makeGw(runner("on", f.a));
+      const thread = nextTs();
+      await g.emit("message", msg(g.t.client, "<@U0ANA> hi?", thread));
+      await g.emit("message", msg(g.t.client, "and <@U0ANA> what about tests?", nextTs(), { thread }));
+      expect(f.states.at(-1)!.message).toBe("and <agent> what about tests?");
+    } finally {
+      __resetPersonaRegistry();
+    }
+  });
+
+  it("posts by any own identity are role agent: bot user, bot id, persona user token, post-as-user", async () => {
+    const outClient = {
+      auth: { test: async () => ({ user_id: "U0SELFUSER" }) },
+      chat: { postMessage: async () => ({ ok: true, ts: `${Date.now()}.0` }), update: async () => ({ ok: true }) },
+      reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
+      assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+    };
+    setPersonaRegistry(anaRegistry(outClient));
+    try {
+      const thread = nextTs();
+      const base = Number(thread);
+      const history = [
+        { ts: String(base), user: "U0X", text: "question" },
+        { ts: String(base + 1), user: "U0ANA", text: "persona answer" },
+        { ts: String(base + 2), user: "U0SELFUSER", text: "post-as-user answer" },
+        { ts: String(base + 3), user: "USLAUDEBOT", text: "bot answer" },
+        { ts: String(base + 4), bot_id: "B_SLAUDE", text: "bot id answer" },
+        { ts: String(base + 5), user: "U0Y", text: "colleague" },
+      ];
+      const f = fakeAdapter();
+      const g = makeGw(runner("on", f.a), async () => ({ ok: true, messages: history }), { outClient });
+      await g.emit("message", msg(g.t.client, "<@USLAUDEBOT> so?", String(base + 10), { thread }));
+      expect(f.states[0]!.recent.map((r) => r.role)).toEqual(["user", "agent", "agent", "agent", "agent", "user"]);
+    } finally {
+      __resetPersonaRegistry();
+    }
   });
 });

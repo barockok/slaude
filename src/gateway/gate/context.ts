@@ -14,7 +14,13 @@ export interface GateContextDeps {
   ) => Promise<Array<{ user?: string; bot_id?: string; text?: string; ts: string }>>;
   /** null when the brain is off. */
   kbSearch: ((query: string) => Promise<Array<{ score?: number; rerank_score?: number }>>) | null;
-  selfIds: { botUserId: string; botIds: Set<string> };
+  /**
+   * `botUserId` is the identity this message is addressed to (the delivering
+   * bot, or the persona being spoken to): its mentions become `<agent>`.
+   * `userIds` and `botIds` are every identity of this deployment (bot users,
+   * persona users, the post-as-user identity): their posts are role "agent".
+   */
+  selfIds: { botUserId: string; botIds: Set<string>; userIds?: Set<string> };
 }
 
 const MENTION_RE = /<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g;
@@ -53,9 +59,11 @@ export async function buildGateInput(
   o: { mentionsAgent: boolean; engaged: boolean; channelTrust: Trust; contextMessages: number },
   d: GateContextDeps,
 ): Promise<GateInput> {
-  const { botUserId, botIds } = d.selfIds;
+  const { botUserId, botIds, userIds } = d.selfIds;
   const isAgent = (m: { user?: string; bot_id?: string }) =>
-    m.user === botUserId || (m.bot_id !== undefined && botIds.has(m.bot_id));
+    m.user === botUserId ||
+    (m.user !== undefined && userIds !== undefined && userIds.has(m.user)) ||
+    (m.bot_id !== undefined && botIds.has(m.bot_id));
 
   let recent: GateInput["recent"] = [];
   if (e.thread_ts && e.thread_ts !== e.ts) {

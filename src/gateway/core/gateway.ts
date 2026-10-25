@@ -3115,6 +3115,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       .catch((e: any) => console.error(`[gate] boot failed (${e?.name ?? "error"}); decision gate off`));
   }
 
+  /**
+   * The gate's view of who the agent is. The identity addressed is the named
+   * persona when the event is routed to one (its mentions become `<agent>`),
+   * else the delivering bot. Every identity of this deployment (each app's bot,
+   * each persona user, the post-as-user identity) authors role "agent" posts.
+   */
+  const gateSelfIds = async (args: any, personaId?: string) => {
+    const registry = getPersonaRegistry();
+    const persona = personaId && personaId !== "default" ? registry.lookupByName(personaId) : null;
+    const bots = await getSelfBots(args);
+    const userIds = new Set<string>([...bots.userIds, ...(await getSelfUserIds())]);
+    for (const p of registry.list()) if (p.slackUserId) userIds.add(p.slackUserId);
+    return { botUserId: persona?.slackUserId ?? (await getBotId(args)), botIds: bots.botIds, userIds };
+  };
+
   /** Synchronous: with no runner or an off runner the call sites never await the gate. */
   const gateActive = (): boolean => gateRunner !== null && gateRunner.mode !== "off";
 
@@ -3147,7 +3162,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           kbSearch: brainEnabled()
             ? async (q) => gather(q, resolveBrainScope({ ...(await brainGateFor(ctx)), kbSources: personaKbSourceIds(o.personaId) }))
             : null,
-          selfIds: { botUserId: await getBotId(args), botIds: (await getSelfBots(args)).botIds },
+          selfIds: await gateSelfIds(args, o.personaId),
         };
         return buildGateInput(
           { channel: e.channel, ts: e.ts, thread_ts: e.thread_ts, text: (e.text ?? "").toString() },
