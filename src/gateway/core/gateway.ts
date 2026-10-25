@@ -3098,7 +3098,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
    * self user echo, ignore gate, hard blocklist, channel mode (the /1on1 lock
    * is checked after, by each caller). `reason` is the slackDropsTotal label
    * and `log` the line handleMessage prints; `log: null` is a silent drop
-   * (no line, no metric). Read-only: no claim, no insert, no log, no metric.
+   * (no line, no metric). Read-only itself (no log, no metric); any claim
+   * belongs to the caller's `afterSelfEcho` step.
    * `afterSelfEcho` is a caller step run after the self-echo checks and
    * before the ignore gate (handleMessage's dedup claim); the gate passes none.
    */
