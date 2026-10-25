@@ -198,6 +198,9 @@ type SessionRoute = {
   /** The agent ended this turn deliberately without replying (`mcp__slaude_surface__pass`).
    *  Satisfies the stop guard like `spoke`, but posts nothing. Reset per turn. */
   passed?: boolean;
+  /** The reaction the pass added (`react`), if any. A passed turn ends without ✅,
+   *  and the received 👀 is kept only when it is this same emoji. Reset per turn. */
+  passReact?: string;
   /** Whether the thread was engaged before this turn's mention engaged it.
    *  `false` means the mention engaged it; a turn that then only passes puts it
    *  back (a passing mention is not an invitation). Undefined when the turn did
@@ -1570,6 +1573,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // Deliberate silence: satisfies the stop guard without counting as
           // having spoken, and without the working reaction.
           route.passed = true;
+          const react = (e.input as any)?.react;
+          if (typeof react === "string" && react) route.passReact = react.replace(/^:|:$/g, "");
         } else if (userVisible) {
           route.spoke = true;
           void reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_WORKING);
@@ -1719,7 +1724,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // No fallback notice: setStopGuard above forces a reply via the SDK
           // Stop hook. If the agent still stops without spoke, manager logs
           // to stderr — surfacing a Slack message here would be redundant.
-          await reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_DONE);
+          if (route.passed && !route.spoke) {
+            // A pass posts nothing: no ✅. The received 👀 goes too, unless the
+            // pass reacted with that same emoji (Slack holds one per name).
+            await reactions.clear(e.sessionId, route.passReact);
+          } else {
+            await reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_DONE);
+          }
           reactions.forget(e.sessionId);
           presence.exit(e.sessionId);
           await status.clear(e.sessionId);
@@ -2593,6 +2604,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             if (app.apiAppId) existing.ctx.apiAppId = app.apiAppId;
             existing.spoke = false;
             existing.passed = false;
+            existing.passReact = undefined;
             existing.engagedBefore = dispatch?.engagedBefore;
             existing.wasCompacting = true;
           } else {
@@ -2765,6 +2777,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
       existing.spoke = false;
       existing.passed = false;
+      existing.passReact = undefined;
       existing.engagedBefore = dispatch?.engagedBefore;
       existing.todoRef = undefined;       // fresh tracker per user turn
       existing.todosSnapshot = undefined;
