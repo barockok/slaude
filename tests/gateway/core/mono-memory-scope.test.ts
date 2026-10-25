@@ -26,6 +26,9 @@ import { resetAgentId, setAgentId } from "../../../src/knowledge/agent-identity"
 import { agentSourceId, profileSourceId, resolveBrainScope, userSourceId } from "../../../src/knowledge/scope";
 import { fakeBrain } from "../../memory/fake-brain";
 import { closeBrain } from "../../../src/knowledge/brain";
+import { setBackendForTest, resetBackend } from "../../../src/knowledge/backend";
+import { composePage } from "../../../src/knowledge/memory-pages";
+import type { BrainScope } from "../../../src/knowledge/scope";
 
 const PROCESS_ID = "U_SLAUDE";
 const PERSONA_SLACK_ID = "U0FIN";
@@ -239,6 +242,65 @@ describe("mono brain gate: the turn's team and whether a person started it", () 
       expect(await s.handle.__brainGate!(sid)).toMatchObject({ userId: member, interactive: true, teamId: "T0SIM" });
     } finally {
       await s.dispose();
+    }
+  });
+});
+
+describe("mono <memory-context>: built for the message's sender under that sender's scope", () => {
+  const ENV = ["SLAUDE_BRAIN_MODE", "SLAUDE_BRAIN_DISABLED"] as const;
+  let saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
+    process.env.SLAUDE_BRAIN_MODE = "remote";
+    delete process.env.SLAUDE_BRAIN_DISABLED;
+    setBackendForTest({ call: (n: string, p: Record<string, unknown>, sc: BrainScope) => fb.call(n, p, sc), adminCall: async () => null } as any);
+  });
+  afterEach(() => {
+    resetBackend();
+    for (const k of ENV) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+  const put = async (source: string, slug: string, content: string, typed: { type: string; fields?: Record<string, string> }) => {
+    const r = composePage({ slug, content, ...typed }, new Date("2026-10-20T12:00:00Z"));
+    if ("error" in r) throw new Error(r.error);
+    await fb.call("put_page", { slug, content: r.content }, { clientId: "x", sourceId: source, allowedSources: [source] });
+  };
+
+  test("someone else's /1on1 (open to guests): only the speaker's own profile section; no lessons, no commitments", async () => {
+    const thread = "900.0";
+    await put(profileSourceId("T", "U0BOB"), "profile", "Bob likes bullet points.", { type: "profile" });
+    await put(profileSourceId("T", "U0ALICE"), "profile", "Call me Al.", { type: "profile" });
+    await put(agentSourceId(PROCESS_ID), "self/lessons", "a private lesson", { type: "lessons" });
+    await put(agentSourceId(PROCESS_ID), "commitments/thread", "a promise in this thread", {
+      type: "commitment", fields: { promiser: "U_SLAUDE", beneficiary: "U0BOB", thread: `C0TEAM:${thread}`, status: "open" },
+    });
+    await OneOnOne.lock({ channelId: "C0TEAM", threadTs: thread, lockedUser: "U0ALICE", createdBy: "U0ALICE" });
+    await OneOnOne.setOpen("C0TEAM", thread, "guests may ask about the release");
+
+    const handlers = new Map<string, (args: any) => Promise<void>>();
+    const t = fakeTransport();
+    t.event = (name: string, fn: any) => void handlers.set(name, fn);
+    const texts: string[] = [];
+    const agent = new AgentManager();
+    agent.sendMessage = async (_id: string, text: string) => void texts.push(text);
+    const h = createGateway(agent, t);
+    try {
+      const event = { type: "message", channel: "C0TEAM", channel_type: "channel", user: "U0BOB", team: "T", ts: "900.1", thread_ts: thread, text: `<@${PROCESS_ID}> hi` };
+      const args = { event, client: t.client, context: { teamId: "T" } };
+      await handlers.get("app_mention")?.({ ...args, event: { ...event, type: "app_mention" } });
+      await handlers.get("message")!(args);
+      const end = Date.now() + 3000;
+      while (texts.length === 0 && Date.now() < end) await Bun.sleep(10);
+      expect(texts).toHaveLength(1);
+      const block = texts[0]!.slice(texts[0]!.indexOf("<memory-context>"), texts[0]!.indexOf("</memory-context>"));
+      expect(block).toContain("<profile>\nBob likes bullet points.");
+      for (const absent of ["<lessons>", "<open-commitments>", "<channel-notes>", "Call me Al.", "a private lesson", "a promise in this thread"]) {
+        expect(block).not.toContain(absent);
+      }
+    } finally {
+      await h.stop();
     }
   });
 });

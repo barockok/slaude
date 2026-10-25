@@ -90,12 +90,13 @@ import { accountForSlackUser } from "../../db/accounts";
 import { makeDeferQueue } from "../panel/defer-queue";
 import { suppressibleSurface } from "../panel/suppress";
 import type { DispatchMeta } from "./dispatch";
-import { brainEnabled, ensureSources } from "../../knowledge/brain";
+import { brainCall, brainEnabled, ensureSources } from "../../knowledge/brain";
+import { buildTurnMemoryContext } from "../../memory/turn-context";
 import { brainMode } from "../../knowledge/brain-config";
 import { syncKbWikis } from "../../knowledge/brain-sync";
 import { scheduleNightlyMaintenance } from "../../knowledge/brain-cycle";
 import { trackBrainWork, whileClosing } from "../../knowledge/brain-work";
-import { channelTrustFor, resolveBrainScope, type ChannelTrust } from "../../knowledge/scope";
+import { agentSourceId, channelTrustFor, resolveBrainScope, type ChannelTrust } from "../../knowledge/scope";
 import { gather } from "../../knowledge/gather";
 import { gateRunnerFromEnv, type GateRunner } from "../gate/runner";
 import { buildGateInput, type GateContextDeps } from "../gate/context";
@@ -998,6 +999,36 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           requestApproval: (r) => surface.requestApproval(r),
         }
       : undefined;
+
+  // Per-turn memory context (phase C §8.4) for one inbound Slack message:
+  // built for THAT message's sender, never from the live route ctx (which the
+  // next delivered message rewrites), under the scope the KB tools get on that
+  // sender's own turn. So it never holds another person's profile, and in
+  // someone else's /1on1 it holds only the sender's own profile. Bounded in
+  // time and size by buildTurnMemoryContext; any failure means no block.
+  const turnMemoryBlock = async (m: { channel: string; threadTs: string; userId: string; teamId: string; personaId?: string }): Promise<string> => {
+    if (!brainEnabled()) return "";
+    try {
+      const sender = { userId: m.userId, teamId: m.teamId || null, origin: "slack" };
+      const ctx: BrainGateCtx = {
+        channel: m.channel, threadTs: m.threadTs, userId: m.userId, teamId: m.teamId, personaId: m.personaId,
+        origin: "slack", turnSenders: () => [sender],
+      };
+      const g = await brainGateFor(ctx);
+      const inner = await buildTurnMemoryContext({
+        call: brainCall,
+        scope: turnBrainScope(g, personaKbSourceIds(m.personaId)),
+        agentSource: agentSourceId(g.agentId),
+        speaker: m.userId,
+        threadKey: `${m.channel}:${m.threadTs}`,
+        channelId: m.channel,
+      });
+      return inner ? `<memory-context>\n${inner}\n</memory-context>\n\n` : "";
+    } catch (e) {
+      console.warn(`[memory-context] skipped: ${e instanceof Error ? e.name : typeof e}`);
+      return "";
+    }
+  };
 
   // Voice calls (voice mode spec §3): mono only — a gateway never runs a
   // session; a node gets its config through the runtime bundle. Registered
@@ -2799,11 +2830,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const oneOnOneAttr = oneOnOneLock
       ? ` one_on_one="true" locked_user="<@${oneOnOneLock.locked_user}>"`
       : ` one_on_one="false" locked_user=""`;
+    // A suppressed message is recorded only; no turn runs, so no context.
+    const memoryContext = suppress
+      ? ""
+      : await turnMemoryBlock({ channel: channelId, threadTs, userId, teamId, personaId: dispatch?.personaId });
     const envelope =
       `<channel source="slack" channel_id="${channelId}" thread_ts="${threadTs}" ` +
       `inbound_ts="${eventTs}" user_id="${userId}" user_name="${escapeAttr(userName)}" ` +
       `trust="${trust}"${oneOnOneAttr}>\n` +
       `${userText}${attachmentBlock}\n</channel>\n\n` +
+      memoryContext +
       (files.length
         ? `User attached ${files.length} file(s); paths above are local — Read them directly.\n`
         : "") +
