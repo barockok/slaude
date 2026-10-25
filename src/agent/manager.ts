@@ -1627,9 +1627,10 @@ export class AgentManager extends EventEmitter {
 
   /**
    * Decide whether the just-finished turn should be followed by an
-   * auto-evolve check. Triggers when the turn used ≥2 "substantive" tools
-   * (anything that mutated state or did real work — excludes pure Slack
-   * surface ops, skill introspection, and trivial reads). Skips when the
+   * auto-evolve check. Triggers when the turn used at least
+   * `env.autoEvolveMinTools()` (default 4) "substantive" tools, at least one
+   * of them mutating (excludes pure Slack surface ops, skill introspection,
+   * and trivial reads). Skips when the
    * turn already wrote/deleted a skill (no need to re-prompt).
    */
   #shouldAutoEvolve(live: LiveSession): boolean {
@@ -1640,6 +1641,7 @@ export class AgentManager extends EventEmitter {
       t === "mcp__slaude_skills__delete_skill"
     )) return false;
     let substantive = 0;
+    let mutating = false;
     for (const t of tools) {
       if (AUTO_EVOLVE_IGNORE.has(t)) continue;
       if (t.startsWith("mcp__slaude_surface__")) continue;   // interaction output ≠ substantive work
@@ -1647,8 +1649,9 @@ export class AgentManager extends EventEmitter {
       if (t.startsWith("mcp__slaude_slack__")) continue;     // deprecated namespace (transition)
       if (t.startsWith("mcp__slaude_skills__")) continue;
       substantive++;
+      if (MUTATING_TOOLS.has(t) || (t.startsWith("mcp__") && !t.startsWith("mcp__slaude_"))) mutating = true;
     }
-    return substantive >= 2;
+    return substantive >= env.autoEvolveMinTools() && mutating;
   }
 }
 
@@ -1664,6 +1667,9 @@ const AUTO_EVOLVE_IGNORE = new Set([
   "TodoWrite",
 ]);
 
+/** Built-in tools that mutate state; any external `mcp__` tool also counts. */
+const MUTATING_TOOLS = new Set(["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
 /**
  * Injected as a synthetic user message after substantial turns. The agent
  * must either save/refine a skill OR end the turn without any tool call.
@@ -1671,6 +1677,7 @@ const AUTO_EVOLVE_IGNORE = new Set([
  * event and suppresses the "no reply emitted" warning so silent NO is fine.
  */
 const AUTO_EVOLVE_PROMPT = [
+  '<runtime-check kind="auto-evolve">',
   "<auto-evolve>",
   "The previous turn used multiple tools. Evaluate: did it perform a procedure worth saving as a reusable skill, or refine an existing one?",
   "",
@@ -1678,13 +1685,15 @@ const AUTO_EVOLVE_PROMPT = [
   "  1. Call `mcp__slaude_skills__list_skills` (skip if you've already listed this session).",
   "  2. Decide: create-new vs refine-existing. If refining, call `mcp__slaude_skills__read_skill` first.",
   "  3. Call `mcp__slaude_skills__write_skill` with slug/name/description/body. Parameterize body via `${SLAUDE_SKILL_ARGS}` so it generalizes.",
-  "  4. Call `mcp__slaude_surface__reply` with a brief confirmation (e.g. `saved /<slug>`).",
+  "  4. Do not tell the user. Skill changes are reported to the manager separately.",
   "",
   "If NO:",
-  "  End the turn immediately. Do not call any tool. Do not reply. Do not narrate. The runtime knows to stay quiet on no-op evolution turns.",
+  "  End the turn immediately: no tool call, no reply, no pass.",
   "",
   "Do NOT redo the original task. Do NOT save one-off facts (those belong in memory). Skills are for repeatable multi-step procedures.",
+  "Only save a procedure that took several steps and that you would plausibly repeat.",
   "</auto-evolve>",
+  "</runtime-check>",
 ].join("\n");
 
 /**

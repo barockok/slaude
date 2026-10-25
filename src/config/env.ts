@@ -511,11 +511,21 @@ export const env = {
   },
   /**
    * Auto-evolve after each substantial user turn. When enabled, the manager
-   * injects an internal `<auto-evolve>` prompt to make the agent decide
+   * injects an internal `<runtime-check kind="auto-evolve">` wrapper
+   * (containing an `<auto-evolve>` prompt) to make the agent decide
    * whether to save/refine a skill — independent of whether the persona
    * obeys the baseline directive. Set to "0" to disable.
    */
   autoEvolve: () => opt("SLAUDE_AUTO_EVOLVE", "1") !== "0",
+  /**
+   * Minimum substantive tool calls in a turn before auto-evolve fires (a
+   * mutating tool is also required). `SLAUDE_AUTO_EVOLVE_MIN_TOOLS`, default
+   * 4; a non-integer or a value below 1 falls back to 4.
+   */
+  autoEvolveMinTools: () => {
+    const n = Number(opt("SLAUDE_AUTO_EVOLVE_MIN_TOOLS", "4"));
+    return Number.isInteger(n) && n >= 1 ? n : 4;
+  },
   /**
    * Git repo URL where runtime-created skills are pushed by the
    * mcp__slaude_skills__sync_manifest tool. Accepts "github:owner/repo"
