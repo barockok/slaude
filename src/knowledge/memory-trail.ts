@@ -14,6 +14,16 @@ const LIST_LIMIT = 500;
 
 export type BrainOpCall = (name: string, params: Record<string, unknown>, scope: BrainScope) => Promise<unknown>;
 
+/** get_page, with gbrain's page_not_found error read as "no page". */
+export async function getPageOrNull(call: BrainOpCall, slug: string, scope: BrainScope): Promise<unknown> {
+  try {
+    return await call("get_page", { slug }, scope);
+  } catch (e) {
+    if ((e as { code?: string }).code === "page_not_found") return null;
+    throw e;
+  }
+}
+
 /**
  * The slugs tagged SUPERSEDED_TAG in each of `sourceIds`, read one source at
  * a time (`list_pages` with a tag filter, scoped to that source alone) so a

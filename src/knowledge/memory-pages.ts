@@ -1,6 +1,6 @@
 /**
  * Typed memory pages (spec §8.2, §8.3): compose and read the common
- * frontmatter `kb_memoize` writes. Pure, no I/O.
+ * frontmatter `kb_memoize` writes, and read page records back. Pure, no I/O.
  *
  * A typed page is `---`, then `type`, `as_of` and `confidence`, then
  * `source`, `subject`, `supersedes` and the type's own fields, then `---` and
@@ -18,6 +18,7 @@
  */
 import { redactSecrets } from "../gateway/core/status-text";
 
+import { SUPERSEDED_TAG } from "./memory-trail";
 import { PAGE_TYPES, type PageType } from "./page-types";
 
 export { PAGE_TYPES, type PageType };
@@ -154,4 +155,35 @@ export function parseFrontmatter(content: string): { meta: Record<string, string
     meta[kv[1]!] = unquote((kv[2] ?? "").trim());
   }
   return { meta, body: content.slice(m[0].length) };
+}
+
+/** A frontmatter value as text; a YAML date (gbrain parses an unquoted as_of) as YYYY-MM-DD. */
+function metaText(v: unknown): string | undefined {
+  if (typeof v === "string") return v;
+  if (v instanceof Date && !Number.isNaN(v.getTime())) return v.toISOString().slice(0, 10);
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  return undefined;
+}
+
+/**
+ * A get_page result as frontmatter + body, or null for no page. Takes either
+ * the whole page as `content` (the shape kb_memoize writes) or gbrain's page
+ * record (`compiled_truth` body, parsed `frontmatter` object); the record's
+ * own `tags` mark it superseded too. The one reader of page records: every
+ * memory reader (memory_about, the per-turn memory context) goes through it.
+ */
+export function readPageRecord(raw: unknown): { meta: Record<string, string>; body: string; superseded: boolean } | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const r = raw as { content?: unknown; compiled_truth?: unknown; frontmatter?: unknown; tags?: unknown };
+  const superseded = Array.isArray(r.tags) && r.tags.includes(SUPERSEDED_TAG);
+  if (typeof r.content === "string") return { ...parseFrontmatter(r.content), superseded };
+  if (typeof r.compiled_truth !== "string") return null;
+  const meta: Record<string, string> = {};
+  if (r.frontmatter && typeof r.frontmatter === "object") {
+    for (const [k, v] of Object.entries(r.frontmatter as Record<string, unknown>)) {
+      const t = metaText(v);
+      if (t !== undefined) meta[k] = t;
+    }
+  }
+  return { meta, body: r.compiled_truth, superseded };
 }

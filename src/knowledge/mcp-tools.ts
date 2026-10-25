@@ -7,8 +7,8 @@ import { brainThink, sdkThinkClient } from "./brain-think";
 import { gather } from "./gather";
 import { gatedBrainCall, soleSlackSender, type ApprovalReq, type ApprovalRes, type GateInput, type TurnSender } from "./gated-dispatch";
 import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, speakerProfileSource, userSourceId, type BrainScope } from "./scope";
-import { composePage, parseFrontmatter, type TypedPageInput } from "./memory-pages";
-import { SUPERSEDED_TAG, supersededSlugs } from "./memory-trail";
+import { composePage, readPageRecord, type TypedPageInput } from "./memory-pages";
+import { SUPERSEDED_TAG, getPageOrNull, supersededSlugs } from "./memory-trail";
 import { agentIdReady } from "./agent-identity";
 import { kbContract, KB_MEMOIZE_MAX_PAGES } from "../tools/contracts/kb";
 
@@ -237,20 +237,6 @@ function pageShapeError(pg: TypedPageInput, target: MemoizeTarget): string | nul
 /** The superseded page could not be tagged after the new page landed. */
 class TrailError extends Error {}
 
-/** get_page, with gbrain's page_not_found error read as "no page". */
-async function getPageOrNull(
-  call: (name: string, params: Record<string, unknown>, scope: BrainScope) => Promise<unknown>,
-  slug: string,
-  scope: BrainScope,
-): Promise<unknown> {
-  try {
-    return await call("get_page", { slug }, scope);
-  } catch (e) {
-    if ((e as { code?: string }).code === "page_not_found") return null;
-    throw e;
-  }
-}
-
 export const MEMORY_ABOUT_REFUSAL = "refused: memory_about only answers for the person asking";
 
 /** One page memory_about shows (spec §8.3 "what do you know about me?"). */
@@ -278,36 +264,6 @@ export function formatMemoryAbout(entries: MemoryEntry[]): string {
   return sorted
     .map((e) => `[${e.confidence}] ${e.type}, from ${WHERE_LABEL[e.where]}, as of ${e.as_of} (slug ${e.slug})\n${e.body.trim()}`)
     .join("\n\n");
-}
-
-/** A frontmatter value as text; a YAML date (gbrain parses an unquoted as_of) as YYYY-MM-DD. */
-function metaText(v: unknown): string | undefined {
-  if (typeof v === "string") return v;
-  if (v instanceof Date && !Number.isNaN(v.getTime())) return v.toISOString().slice(0, 10);
-  if (typeof v === "number" || typeof v === "boolean") return String(v);
-  return undefined;
-}
-
-/**
- * A get_page result as frontmatter + body, or null for no page. Takes either
- * the whole page as `content` (the shape kb_memoize writes) or gbrain's page
- * record (`compiled_truth` body, parsed `frontmatter` object); the record's
- * own `tags` mark it superseded too.
- */
-function readPage(raw: unknown): { meta: Record<string, string>; body: string; superseded: boolean } | null {
-  if (raw === null || typeof raw !== "object") return null;
-  const r = raw as { content?: unknown; compiled_truth?: unknown; frontmatter?: unknown; tags?: unknown };
-  const superseded = Array.isArray(r.tags) && r.tags.includes(SUPERSEDED_TAG);
-  if (typeof r.content === "string") return { ...parseFrontmatter(r.content), superseded };
-  if (typeof r.compiled_truth !== "string") return null;
-  const meta: Record<string, string> = {};
-  if (r.frontmatter && typeof r.frontmatter === "object") {
-    for (const [k, v] of Object.entries(r.frontmatter as Record<string, unknown>)) {
-      const t = metaText(v);
-      if (t !== undefined) meta[k] = t;
-    }
-  }
-  return { meta, body: r.compiled_truth, superseded };
 }
 
 /** Page types that hold memory about a person (memory_about lists these). */
@@ -360,7 +316,7 @@ async function collectMemoryAbout(call: NonNullable<BrainToolDeps["call"]>, scop
     const tagged = await supersededSlugs(call, scope, [m.source]);
     for (const slug of slugs) {
       if (tagged.has(slug)) continue;
-      const pg = readPage(await getPageOrNull(call, slug, only));
+      const pg = readPageRecord(await getPageOrNull(call, slug, only));
       if (!pg || pg.superseded) continue;
       const subject = pg.meta.subject;
       if (subject !== undefined ? subject !== sender.userId : !(m.fixed.includes(slug) || m.where === "profile")) continue;
