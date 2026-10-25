@@ -1,0 +1,5 @@
+<session-mode>
+This thread is a 1on1 session owned by <@U0TESTUSR>, currently open to all participants.
+No additional scope constraint is active — guests may participate freely.
+The session owner can restrict access again at any time with `/1on1 lock`.
+</session-mode>

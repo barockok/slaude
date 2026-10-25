@@ -438,6 +438,64 @@ describe("AgentManager lifecycle", () => {
     await shutdown(mgr, row.id);
   });
 
+  it("mounts the built-in slaude plugin next to the $SLAUDE_HOME plugin", async () => {
+    const { BUILTIN_PLUGIN_DIR } = await import("../../src/soul/builtin");
+    const { paths } = await import("../../src/config/home");
+    const want = { type: "local", path: BUILTIN_PLUGIN_DIR, skipMcpDiscovery: true };
+    // gateway/mono, then a node (an MCP resolver installed)
+    for (const node of [false, true]) {
+      const mgr = new AgentManager();
+      if (node) mgr.setMcpResolver(async () => ({}));
+      const row = await mgr.ensureSession(thread());
+      const fs = plan();
+      await mgr.sendMessage(row.id, "hello");
+      await until(() => fs.options !== null, 3000, "boot");
+      expect(fs.options.plugins.slice(0, 2)).toEqual([
+        { type: "local", path: paths.home, skipMcpDiscovery: true },
+        want,
+      ]);
+      await shutdown(mgr, row.id);
+    }
+  });
+
+  it("warns loudly at boot when another plugin would also be named \"slaude\"", async () => {
+    const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { paths } = await import("../../src/config/home");
+    const { BUILTIN_PLUGIN_DIR } = await import("../../src/soul/builtin");
+    // An installed plugin whose directory is named "slaude" and has no manifest:
+    // the CLI names it after the basename, the built-in plugin's name.
+    const root = mkdtempSync(join(tmpdir(), "plugin-collide-"));
+    const collide = join(root, "slaude");
+    mkdirSync(collide);
+    const file = join(paths.claudeConfig, "plugins", "installed_plugins.json");
+    const before = existsSync(file) ? readFileSync(file, "utf8") : null;
+    mkdirSync(join(paths.claudeConfig, "plugins"), { recursive: true });
+    writeFileSync(file, JSON.stringify({ version: 2, plugins: { "x@mp": [{ scope: "user", installPath: collide }] } }));
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const mgr = new AgentManager();
+      const row = await mgr.ensureSession(thread());
+      const fs = plan();
+      await mgr.sendMessage(row.id, "hello");
+      await until(() => fs.options !== null, 3000, "boot");
+      expect(fs.options.plugins.map((p: any) => p.path)).toContain(collide);
+      const lines = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("plugin name \"slaude\""));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain(collide);
+      expect(lines[0]).toContain("built-in");
+      // the built-in plugin itself is never reported
+      expect(lines[0]).not.toContain(BUILTIN_PLUGIN_DIR);
+      await shutdown(mgr, row.id);
+    } finally {
+      warn.mockRestore();
+      if (before === null) rmSync(file, { force: true });
+      else writeFileSync(file, before);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // WS-C §4.2: a node's async resolver returns the bridged servers next to the
   // shims; they reach Options.mcpServers and the <mcp-servers> block.
   it("an async MCP resolver's bridged servers are mounted and listed in <mcp-servers>", async () => {
@@ -598,6 +656,65 @@ describe("AgentManager lifecycle", () => {
     await Bun.sleep(40);
     expect(fs.users.length).toBe(2);
 
+    await shutdown(mgr, row.id);
+  });
+
+  it("evolve turn: blocked, load, then write succeeds", async () => {
+    // The fake SDK does not run hooks itself: the test calls the hooks wired in
+    // options exactly as the CLI would, around each tool call of the evolve turn.
+    process.env.SLAUDE_AUTO_EVOLVE = "1";
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const runHooks = async (event: string, input: any) => {
+      const outs: any[] = [];
+      for (const m of fs.options.hooks[event] ?? []) {
+        for (const h of m.hooks) outs.push(await h({ hook_event_name: event, session_id: "cli", transcript_path: "/t", cwd: "/w", ...input }, "tu", { signal: new AbortController().signal }));
+      }
+      return outs.find((o) => o?.hookSpecificOutput?.permissionDecision === "deny") ?? {};
+    };
+    const decisions: any[] = [];
+    const fs = plan((s) => {
+      s.onUser = (um) => {
+        const text = String(um.message.content);
+        if (!text.includes("<auto-evolve>")) {
+          s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch"), txt("did the work")]));
+          s.emit(res());
+          return;
+        }
+        void (async () => {
+          const write = { tool_name: "mcp__slaude_skills__write_skill", tool_input: { slug: "x" }, tool_use_id: "w1" };
+          decisions.push(await runHooks("PreToolUse", write));
+          const load = { tool_name: "Skill", tool_input: { skill: "slaude:skill-authoring" }, tool_use_id: "k1" };
+          decisions.push(await runHooks("PreToolUse", load));
+          await runHooks("PostToolUse", { ...load, tool_response: { success: true, commandName: "slaude:skill-authoring" } });
+          decisions.push(await runHooks("PreToolUse", write));
+          s.emit(res());
+        })();
+      };
+    });
+
+    await mgr.sendMessage(row.id, "do a thing");
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "evolve done");
+    const evolve = String(fs.users[1].message.content);
+    expect(evolve).toContain("<auto-evolve>");
+    expect(evolve).toContain("Load `slaude:skill-authoring` with the Skill tool (skip if already loaded this session), then call `mcp__slaude_skills__list_skills`");
+    expect(decisions[0].hookSpecificOutput).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: 'Load `slaude:skill-authoring` first (call the Skill tool with skill "slaude:skill-authoring"), then retry.',
+    });
+    expect(decisions[1]).toEqual({});
+    expect(decisions[2]).toEqual({});
+
+    // A reboot needs the skill loaded again.
+    await shutdown(mgr, row.id);
+    const fs2 = plan();
+    await mgr.sendMessage(row.id, "again");
+    await until(() => fs2.options !== null, 3000, "reboot");
+    const pre = fs2.options.hooks.PreToolUse.flatMap((m: any) => m.hooks);
+    const outs = await Promise.all(pre.map((h: any) => h({ hook_event_name: "PreToolUse", tool_name: "mcp__slaude_skills__write_skill", tool_input: {} }, "tu", { signal: new AbortController().signal })));
+    expect(outs.some((o: any) => o?.hookSpecificOutput?.permissionDecision === "deny")).toBe(true);
     await shutdown(mgr, row.id);
   });
 

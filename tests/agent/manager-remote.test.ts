@@ -204,7 +204,7 @@ describe("remote wiring", () => {
     await until(() => fs.options !== null, 3000, "boot");
     expect(fs.options.mcpServers.remote).toBeDefined();
     expect(fs.options.toolAliases.Bash).toBe("mcp__remote__bash");
-    expect(fs.options.hooks.PreToolUse).toHaveLength(1);
+    expect(fs.options.hooks.PreToolUse.flatMap((m: any) => m.hooks)).toHaveLength(2);
     expect(fs.options.systemPrompt.append).toContain("<remote-mode>");
     for (const b of ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]) {
       expect(fs.options.disallowedTools ?? []).not.toContain(b); // enabled + alias (spike §8)
@@ -212,6 +212,33 @@ describe("remote wiring", () => {
     for (const t of ["NotebookEdit", "Monitor", "REPL", "Workflow", "EnterWorktree", "ExitWorktree", "Artifact"]) {
       expect(fs.options.disallowedTools).toContain(t);
     }
+    await shutdown(mgr, row.id);
+  });
+
+  it("remote deny and skill gate both apply", async () => {
+    const mgr = new AgentManager();
+    mgr.setRemote(
+      async () => ({ teamId: "T1", userId: "U_A", addr: "tcA", dir: "/home/a/repo" }),
+      () => ({ exec: noopExec, release: async () => {}, dispose: async () => {} }),
+    );
+    const row = await mgr.ensureSession(thread());
+    const fs = plan();
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => fs.options !== null, 3000, "boot");
+    const pre = fs.options.hooks.PreToolUse.flatMap((m: any) => m.hooks);
+    const run = async (tool_name: string) => {
+      const outs = await Promise.all(pre.map((h: any) =>
+        h({ hook_event_name: "PreToolUse", tool_name, tool_input: {} }, "tu", { signal: new AbortController().signal })));
+      return outs.map((o: any) => o?.hookSpecificOutput?.permissionDecisionReason).filter(Boolean);
+    };
+    // the remote guard denies a local built-in
+    expect(await run("NotebookEdit")).toEqual(["Remote mode is on: local file and shell tools are disabled for this thread."]);
+    // the skill gate denies a governed tool before its skill is loaded
+    expect(await run("mcp__slaude_skills__write_skill")).toEqual([
+      'Load `slaude:skill-authoring` first (call the Skill tool with skill "slaude:skill-authoring"), then retry.',
+    ]);
+    expect(await run("mcp__remote__bash")).toEqual([]);
+    expect(fs.options.hooks.PostToolUse.flatMap((m: any) => m.hooks)).toHaveLength(1);
     await shutdown(mgr, row.id);
   });
 
@@ -253,7 +280,10 @@ describe("remote wiring", () => {
     await until(() => fs.options !== null, 3000, "boot");
     expect(fs.options.mcpServers?.remote).toBeUndefined();
     expect(fs.options.toolAliases).toBeUndefined();
-    expect(fs.options.hooks.PreToolUse).toBeUndefined();
+    // only the skill gate: no remote deny guard
+    const pre = fs.options.hooks.PreToolUse.flatMap((m: any) => m.hooks);
+    expect(pre).toHaveLength(1);
+    expect(await pre[0]({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {} }, "tu", { signal: new AbortController().signal })).toEqual({});
     expect(fs.options.disallowedTools).toBeUndefined();
     await shutdown(mgr, row.id);
   });

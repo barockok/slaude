@@ -14,6 +14,7 @@ import {
 import { join, resolve, relative } from "node:path";
 import { discoverSkills, globalSkillsRoot, personaSkillsRoot, type Skill } from "./loader";
 import { syncManifest } from "./sync-manifest";
+import { builtinSkillRefusal, cliSkillName, isBuiltinSkillName } from "../soul/builtin";
 import { skillsContract } from "../tools/contracts/skills";
 
 export const SKILLS_MCP_NAME = skillsContract.server;
@@ -62,6 +63,14 @@ export function buildSkillMd(
   return `${fm}\n${body.endsWith("\n") ? body : body + "\n"}`;
 }
 
+/** Built-in skills ship read-only with the release: no runtime write, delete
+ *  or persona-overlay shadow of their bare name. Reads stay allowed. */
+function assertNotBuiltin(slug: string): void {
+  if (isBuiltinSkillName(slug)) {
+    throw new Error(builtinSkillRefusal(slug));
+  }
+}
+
 export const skillOps = {
   list(personaName?: string): Skill[] {
     return discoverSkills(personaName);
@@ -83,6 +92,11 @@ export const skillOps = {
     body: string,
     personaName?: string,
   ): { path: string; created: boolean } {
+    assertNotBuiltin(slug);
+    // The CLI names the skill after its frontmatter `name`, not the slug: a
+    // free slug carrying a built-in's name would answer for it whenever another
+    // plugin also resolves to the name "slaude".
+    assertNotBuiltin(cliSkillName(name));
     // Named personas author into their own overlay; base stays shared/read-only.
     const dir = resolveSkillDir(slug, personaName);
     mkdirSync(dir, { recursive: true });
@@ -92,6 +106,7 @@ export const skillOps = {
     return { path, created };
   },
   delete(slug: string, personaName?: string): void {
+    assertNotBuiltin(slug);
     // A persona can only retire its own overlay skills, never a shared base skill.
     const dir = resolveSkillDir(slug, personaName);
     if (!existsSync(dir)) throw new Error(`skill "${slug}" not found`);

@@ -1,0 +1,6 @@
+<session-mode>
+This thread is a private 1on1 session locked to <@U0TESTUSR>.
+Only that user and the manager are heard here — treat it as a confidential,
+direct one-on-one: you may speak more freely and personally than in a shared
+channel, and anything said is between you and them.
+</session-mode>

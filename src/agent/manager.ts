@@ -16,6 +16,7 @@ import {
 // no query-string re-import (which would split coverage off the canonical file).
 import * as agentSdk from "@anthropic-ai/claude-agent-sdk";
 import { TokenBudget, type UsageSnapshot } from "./token-budget";
+import { SkillGate } from "./skill-gate";
 import { m as metric } from "../metrics";
 
 export type PermissionMode =
@@ -28,6 +29,7 @@ import { paths } from "../config/home";
 import { env } from "../config/env";
 import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plugins";
 import { soulSystemBlock } from "../soul/loader";
+import { BUILTIN_PLUGIN_DIR, pluginsNamedLikeBuiltin } from "../soul/builtin";
 import { personaSoulText } from "../persona/soul-source";
 import { soulData, effectiveSoulForChannel } from "../soul/extract";
 import { SoulDataSchema } from "../soul/data";
@@ -120,6 +122,30 @@ export type PermissionResolver = (
 export type McpResolver = (
   sessionId: string,
 ) => Record<string, McpServerConfig> | undefined | Promise<Record<string, McpServerConfig> | undefined>;
+
+/** Plugin paths already reported by warnPluginsNamedLikeBuiltin (once per process). */
+const warnedSlaudeNamedPlugins = new Set<string>();
+
+/** Warn when a mounted plugin other than the built-in one would also get the
+ *  CLI plugin name "slaude" (e.g. SLAUDE_HOME=/opt/slaude: the home plugin has
+ *  no manifest, so the CLI names it after its basename). The CLI does not
+ *  de-duplicate plugins by name and resolves a skill to the first match, so
+ *  that plugin's skills share the `slaude:` namespace, and a pre-existing one
+ *  named like a built-in would answer the Skill call for it and satisfy the
+ *  skill gate. Not renamed here: a manifest name on the home plugin would
+ *  change every agent skill's invoked name. */
+function warnPluginsNamedLikeBuiltin(dirs: string[]): void {
+  for (const dir of pluginsNamedLikeBuiltin(dirs)) {
+    if (warnedSlaudeNamedPlugins.has(dir)) continue;
+    warnedSlaudeNamedPlugins.add(dir);
+    console.warn(
+      `[mgr] WARNING: plugin at ${dir} resolves to the CLI plugin name "slaude", the built-in plugin's name. ` +
+        `Its skills appear as slaude:<name>, and one named like a built-in skill would load in place of the built-in ` +
+        `and satisfy the skill gate. Rename the directory (for SLAUDE_HOME, choose a path whose last component is not "slaude") ` +
+        `or give that plugin a .claude-plugin/plugin.json with another name.`,
+    );
+  }
+}
 
 /** A node's manifest servers with the transport resolver's laid over them: a
  *  gateway-resolved server wins a name collision, with a warning naming it. */
@@ -319,6 +345,8 @@ export class AgentManager extends EventEmitter {
   #budget = new TokenBudget({
     fallbackContextWindow: env.tokenFallbackContextWindow(),
   });
+  /** Built-in skills loaded per session; reset at every boot, dropped at teardown. */
+  #skillGate = new SkillGate();
 
   /** Current context-usage snapshot for a session, or null if no turn has completed. */
   getTokenSnapshot(sessionId: string): UsageSnapshot | null {
@@ -685,6 +713,7 @@ export class AgentManager extends EventEmitter {
         if (old.idleTimer) clearTimeout(old.idleTimer);
         if (this.#live.get(sessionId) === old) {
           this.#live.delete(sessionId);
+          this.#skillGate.forget(sessionId);
           // The detached instance's own teardown no longer owns the id and
           // stays silent, so this is its one exit signal (a voice call must learn).
           this.#signalSessionExit(sessionId);
@@ -952,6 +981,7 @@ export class AgentManager extends EventEmitter {
       error: "session reboot failed",
       code: e instanceof BootFailure ? e.code : "TURN_FAILED",
     } satisfies AgentEvent);
+    if (!this.#live.has(sessionId)) this.#skillGate.forget(sessionId);
     if (o.signalExit && !this.#live.has(sessionId)) this.#signalSessionExit(sessionId);
   }
 
@@ -1177,7 +1207,11 @@ export class AgentManager extends EventEmitter {
     // skipMcpDiscovery prevents the SDK from reading slaude's own mcp.json
     // (those servers are managed separately via Options.mcpServers above).
     const slaudeHomePlugin = { type: "local" as const, path: paths.home, skipMcpDiscovery: true };
-    const allPlugins = [slaudeHomePlugin, ...pluginPaths];
+    // The built-in `slaude` plugin (read-only, shipped in src/): its skills are
+    // `slaude:<name>`, named by the skill index in the core prompt.
+    const builtinPlugin = { type: "local" as const, path: BUILTIN_PLUGIN_DIR, skipMcpDiscovery: true };
+    const allPlugins = [slaudeHomePlugin, builtinPlugin, ...pluginPaths];
+    warnPluginsNamedLikeBuiltin(allPlugins.map((p) => p.path));
 
     // Opened after the soul resolves, so a boot that fails there holds no connection.
     const remoteHandle = await this.#remoteHandleFor(sessionId, remoteTarget);
@@ -1227,7 +1261,8 @@ export class AgentManager extends EventEmitter {
           PreCompact: [{ hooks: [preCompact] }],
           Stop: [{ hooks: [stopHook] }],
           UserPromptSubmit: [{ hooks: [userPromptHook] }],
-          ...(remoteHandle ? { PreToolUse: [{ hooks: [denyLocalBuiltins] }] } : {}),
+          PreToolUse: [{ hooks: [...(remoteHandle ? [denyLocalBuiltins] : []), this.#skillGate.pre(sessionId)] }],
+          PostToolUse: [{ hooks: [this.#skillGate.post(sessionId)] }],
         },
         systemPrompt: {
           type: "preset",
@@ -1266,6 +1301,11 @@ export class AgentManager extends EventEmitter {
       pendingInputs: 1, // firstText is already queued
       exited: new Promise<void>((r) => (markExited = r)),
     };
+    // Every (re)boot is a fresh CLI that has not seen any built-in skill's
+    // text: the loaded set starts empty. Set here, not earlier, so a boot that
+    // fails before going live leaves no state behind.
+    this.#skillGate.reset(sessionId);
+    this.#skillGate.markMounted(sessionId, allPlugins.some((p) => p.path === BUILTIN_PLUGIN_DIR));
     this.#live.set(sessionId, live);
     onLive();
     metric.sessionsLive.set(this.#live.size);
@@ -1362,6 +1402,7 @@ export class AgentManager extends EventEmitter {
         void this.#remoteHandles.get(sessionId)?.handle.release().catch((e) =>
           console.error(`[mgr] remote release failed session=${sessionId}: ${e instanceof RemoteError ? e.code : "error"}`));
         this.#budget.forget(sessionId);
+        this.#skillGate.forget(sessionId);
         this.#stopBlocked.delete(sessionId);
         metric.sessionsLive.set(this.#live.size);
         markExited();
@@ -1395,6 +1436,7 @@ export class AgentManager extends EventEmitter {
       if (owned) {
         if (live.idleTimer) clearTimeout(live.idleTimer);
         this.#live.delete(sessionId);
+        this.#skillGate.forget(sessionId);
       }
       markExited();
       if (!exitSignalled && (owned || !this.#live.has(sessionId))) {
@@ -1687,7 +1729,7 @@ const AUTO_EVOLVE_PROMPT = [
   "The previous turn used multiple tools. Evaluate: did it perform a procedure worth saving as a reusable skill, or refine an existing one?",
   "",
   "If YES:",
-  "  1. Call `mcp__slaude_skills__list_skills` (skip if you've already listed this session).",
+  "  1. Load `slaude:skill-authoring` with the Skill tool (skip if already loaded this session), then call `mcp__slaude_skills__list_skills` (skip if you've already listed this session).",
   "  2. Decide: create-new vs refine-existing. If refining, call `mcp__slaude_skills__read_skill` first.",
   "  3. Call `mcp__slaude_skills__write_skill` with slug/name/description/body. Parameterize body via `${SLAUDE_SKILL_ARGS}` so it generalizes.",
   "  4. Do not tell the user. Skill changes are reported to the manager separately.",

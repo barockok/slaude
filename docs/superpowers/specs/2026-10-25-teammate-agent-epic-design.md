@@ -12,8 +12,8 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 | Phase | Plan | Status | Release |
 |---|---|---|---|
 | A. Natural voice | `docs/superpowers/plans/2026-10-25-phase-a-natural-voice.md` | done, merged (#152; unreleased — ships as RC) | — |
-| B. Decision gate | `docs/superpowers/plans/2026-10-25-phase-b-decision-gate.md` | done, in review (#153; unreleased) | — |
-| R. Runtime prompt as built-in skills | — | not started | — |
+| B. Decision gate | `docs/superpowers/plans/2026-10-25-phase-b-decision-gate.md` | done, merged (#153; unreleased) | — |
+| R. Runtime prompt as built-in skills | `docs/superpowers/plans/2026-10-25-phase-r-builtin-skills.md` | done (unreleased — ships as RC) | — |
 | C. Memory structure | — | not started | — |
 | D. Background learning and budget | — | not started | — |
 | E. Proactiveness | — | not started | — |
@@ -33,6 +33,13 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 - [x] B4 Runner: modes, timeout fallback, memo, metrics; config and gateway-only key (§7.5, §7.6)
 - [x] B5 Gateway wiring: mention and engaged paths, doubt reaction, bypasses; `off` equivalence (§7.2, §7.7)
 - [x] B6 Field note; full suite; phase closed
+
+**Phase R tasks**
+- [x] R1 Prompt text into files, byte-identical (§7a.2)
+- [x] R2 Built-in `slaude` plugin; `slaude:skill-authoring`; skill index in the core (§7a.3, §7a.5)
+- [x] R3 Enforcement hook for governed tools (§7a.4)
+- [x] R4 Built-ins immutable at runtime (§7a.5)
+- [x] R5 Size budget; field note; phase closed (§7a.6)
 
 ## 1. Goal
 

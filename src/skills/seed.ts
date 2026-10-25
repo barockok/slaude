@@ -1,6 +1,7 @@
 import { cpSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
+import { isBuiltinSkillName } from "../soul/builtin";
 
 /**
  * Bundled skills ship in the repo under `<repoRoot>/skills/<slug>/SKILL.md` and
@@ -17,11 +18,15 @@ const BUNDLED_SKILLS_DIR = join(import.meta.dir, "..", "..", "skills");
  * (and `write_skill`) own the installed copy. Best-effort — a failure here must
  * not block boot, so errors are logged and swallowed.
  */
-export function seedBundledSkills(): { seeded: string[] } {
+export function seedBundledSkills(bundledDir: string = BUNDLED_SKILLS_DIR): { seeded: string[] } {
   const seeded: string[] = [];
-  if (!existsSync(BUNDLED_SKILLS_DIR)) return { seeded };
-  for (const slug of readdirSync(BUNDLED_SKILLS_DIR)) {
-    const src = join(BUNDLED_SKILLS_DIR, slug);
+  if (!existsSync(bundledDir)) return { seeded };
+  for (const slug of readdirSync(bundledDir)) {
+    const src = join(bundledDir, slug);
+    if (isBuiltinSkillName(slug)) {
+      console.warn(`[skills] bundled skill "${slug}" is named like a built-in skill — not seeding`);
+      continue;
+    }
     try {
       if (!statSync(src).isDirectory()) continue;
       if (!existsSync(join(src, "SKILL.md"))) continue;

@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { SLAUDE_HOME, paths } from "../config/home";
+import { builtinSkillRefusal, isBuiltinSkillName } from "../soul/builtin";
 
 // Stage clones inside a sibling of the eventual destination so `renameSync`
 // stays on the same filesystem. Container deploys often subPath-mount
@@ -332,6 +333,11 @@ async function main() {
   for (const e of manifest.skills) {
     if (!e.git) { skipped++; continue; }
     const slug = resolveSkillSlug(e);
+    if (isBuiltinSkillName(slug)) {
+      console.warn(`[install] skill "${slug}": ${builtinSkillRefusal(slug)} — skipping`);
+      skipped++;
+      continue;
+    }
     const key = `${e.git}@${e.ref}`;
     if (!skillGitEntries.has(key)) {
       skillGitEntries.set(key, { resolvedUrl: resolveGitUrl(e.git), ref: e.ref!, skills: [] });
