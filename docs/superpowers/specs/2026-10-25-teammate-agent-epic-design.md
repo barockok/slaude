@@ -30,6 +30,7 @@ Memory is the foundation: per-person style, open loops and "who knows what" are 
 | Are promises kept when proactiveness is off? | **Yes.** Promises are not "proactive"; someone is waiting on them. |
 | May the agent chime in on an engaged thread without being addressed? | Yes, when it has something useful, **decided by a System One decision model** (Jev from TypeSafe AI), not by the LLM. |
 | Where the decision gate is configured | **Process config** (gateway/node env), **not the SOUL**, and separate from proactiveness. `off` keeps today's engage/disengage behaviour exactly. |
+| Is a decision-model backend available? | **Yes.** The owner has Jev access, so phase B stays second and its shadow mode can collect real decisions. |
 | Gate unsure about a direct @mention | **Stay quiet**, with a doubt reaction (🤔) and a logged decision. |
 | Delivery shape | One epic document, delivered phase by phase in sequence until complete. |
 
