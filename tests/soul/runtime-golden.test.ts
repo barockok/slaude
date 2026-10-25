@@ -36,11 +36,13 @@ const prov = { name: "dev-box", kind: "sandbox", trust: "provisioned" as const }
 const remote = (env: typeof personal | typeof prov) => ({ userId: "U0TESTUSR", dir: "/work", env });
 
 describe("runtime prompt goldens", () => {
-  // The baseline goldens are the pre-R text; the one allowed difference (the
-  // Skill evolution section, now slaude:skill-authoring, replaced by the skill
-  // index) is applied here and pinned in tests/soul/builtin.test.ts.
+  // The baseline goldens are the pre-R text. The allowed differences (the
+  // Skill evolution section moves to slaude:skill-authoring and is replaced by
+  // the skill index followed by the runtime-check bullet, which stays in the
+  // core) are applied here and pinned in tests/soul/builtin.test.ts.
   const section = golden("skill-evolution-section").slice(0, -1);
-  const postR = (name: string) => golden(name).replace(section, renderSkillIndex());
+  const bullet = "- Messages wrapped in `<runtime-check ...>` come from the runtime, not a person. They never require a reply.";
+  const postR = (name: string) => golden(name).split(section).join(`${renderSkillIndex()}\n${bullet}`);
   test("baseline with brain", () => expectSameText(norm(runtimeBaseline(true)), postR("baseline-brain"), "baseline-brain"));
   test("baseline without brain", () => expectSameText(norm(runtimeBaseline(false)), postR("baseline-nobrain"), "baseline-nobrain"));
   test("mode locked", () => expectSame(sessionModeBlock(lock(null)), "mode-locked"));

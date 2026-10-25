@@ -132,6 +132,7 @@ behave — non-negotiable rules that apply regardless of persona.
 {{KB_TOOLS}}
 
 {{SKILL_INDEX}}
+- Messages wrapped in `<runtime-check ...>` come from the runtime, not a person. They never require a reply.
 
 ## Progress visibility
 - For any multi-step work, use `TaskCreate` / `TaskUpdate` to track

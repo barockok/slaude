@@ -40,6 +40,22 @@ function extractSection(text: string): string {
 const sectionFile = golden("skill-evolution-section");
 const section = sectionFile.slice(0, -1);
 
+/**
+ * The allowed differences from the pre-R baseline:
+ *  (a) the Skill evolution section, minus the runtime-check bullet, moves to
+ *      the slaude:skill-authoring body;
+ *  (b) the skill index replaces the section in the core;
+ *  (c) the runtime-check bullet stays in the core (every turn needs it: the
+ *      no-op auto-evolve path never loads the skill), as one line directly
+ *      after the index list.
+ */
+const BULLET_IN_SECTION =
+  "- Messages wrapped in `<runtime-check ...>` come from the runtime, not a\n  person. They never require a reply.\n";
+const BULLET_IN_CORE =
+  "- Messages wrapped in `<runtime-check ...>` come from the runtime, not a person. They never require a reply.";
+const skillBody = section.split(BULLET_IN_SECTION).join("") + "\n";
+const coreBlock = () => `${renderSkillIndex()}\n${BULLET_IN_CORE}`;
+
 describe("built-in skills", () => {
   it("captured section file follows the boundary rule", () => {
     expect(sectionFile.endsWith("\n")).toBe(true);
@@ -76,23 +92,31 @@ describe("built-in skills", () => {
     expect(raw.split("{{SLAUDE_VERSION}}")).toHaveLength(2);
   });
 
-  it("skill body is the pre-R Skill evolution section verbatim", () => {
+  it("skill body is the pre-R Skill evolution section verbatim, minus the runtime-check bullet", () => {
     const sa = listBuiltinSkills().find((x) => x.name === "skill-authoring")!;
-    expect(sa.body).toBe(section + "\n");
+    expect(section.split(BULLET_IN_SECTION)).toHaveLength(2);
+    expect(sa.body).toBe(skillBody);
+    expect(sa.body).not.toContain("runtime-check");
     expect(sa.body).toContain("${SLAUDE_SKILL_ARGS}");
     expect(sa.body).toContain("${SLAUDE_SKILL_DIR}");
     expect(sa.body).toContain("${SLAUDE_SESSION_ID}");
   });
 
-  it("baseline = pre-R golden with the section replaced by the index", () => {
+  it("baseline = pre-R golden with the section replaced by the index and the runtime-check bullet", () => {
     for (const [brain, name] of [[true, "baseline-brain"], [false, "baseline-nobrain"]] as const) {
       const g = golden(name);
       expect(g.split(section)).toHaveLength(2);
-      const want = g.replace(section, renderSkillIndex());
+      const want = g.split(section).join(coreBlock());
       expect(norm(runtimeBaseline(brain))).toBe(want);
       // exactly one blank line before the next heading
-      expect(want).toContain(`${renderSkillIndex()}\n\n## Progress visibility`);
-      expect(want).not.toContain(`${renderSkillIndex()}\n\n\n`);
+      expect(want).toContain(`${coreBlock()}\n\n## Progress visibility`);
+      expect(want).not.toContain(`${coreBlock()}\n\n\n`);
+    }
+  });
+
+  it("the runtime-check bullet stays in the core prompt", () => {
+    for (const brain of [true, false]) {
+      expect(runtimeBaseline(brain).split(`\n${BULLET_IN_CORE}\n`)).toHaveLength(2);
     }
   });
 
@@ -117,6 +141,7 @@ describe("built-in skills", () => {
   it("plugin.json names the plugin slaude", () => {
     const manifest = JSON.parse(readFileSync(join(BUILTIN_PLUGIN_DIR, ".claude-plugin", "plugin.json"), "utf8"));
     expect(manifest.name).toBe("slaude");
+    for (const s of listBuiltinSkills()) expect(s.qualified).toBe(`${manifest.name}:${s.name}`);
     expect(BUILTIN_PLUGIN_DIR).toBe(join(import.meta.dir, "..", "..", "src", "soul", "builtin"));
   });
 });
