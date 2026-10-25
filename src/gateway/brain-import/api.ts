@@ -15,7 +15,7 @@ import { applyLinks, applyPage, type OnConflict } from "../../brain-migrate/appl
 import type { BundlePage } from "../../brain-migrate/bundle";
 import { embeddingMismatch, readEmbeddingInfo, type BrainConfigFile, type EmbeddingInfo } from "../../brain-migrate/embedding-info";
 import type { MigrateEngine } from "../../brain-migrate/engine-types";
-import { agentSourceForPersona, allowedTarget, remapSource, validateMap } from "../../brain-migrate/remap";
+import { agentSourceForPersona, allowedTarget, isPersonSource, remapSource, validateMap } from "../../brain-migrate/remap";
 import { agentIdReady } from "../../knowledge/agent-identity";
 import { brainEnabled, brainHome, ensureSource as ensureBrainSource, getBrain } from "../../knowledge/brain";
 import { brainMode } from "../../knowledge/brain-config";
@@ -174,8 +174,9 @@ export function createBrainImportApi(deps: BrainImportDeps = {}) {
         if (!dryRun) pending.push({ slug: p.slug, target: t, linkTargets, unmappable });
       }
       if (r.outcome === "failed") {
-        // Slugs of a person's slice are that person's content; only non-user slices list them.
-        if (!t.startsWith("user-")) failedSlugs.push(p.slug);
+        // Slugs of a person's source (user or profile) are that person's content;
+        // only other slices list them.
+        if (!isPersonSource(t)) failedSlugs.push(p.slug);
         const why = r.reason === "error" ? `error:${r.errorName ?? "unknown"}` : (r.reason ?? "unknown");
         failedReasons[why] = (failedReasons[why] ?? 0) + 1;
       }

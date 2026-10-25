@@ -18,6 +18,8 @@ import * as Ignores from "../../../src/db/ignores";
 import * as SlackOauthFlows from "../../../src/db/slack-oauth-flows";
 import { __resetMasterKeyCache } from "../../../src/db/crypto";
 import { metrics } from "../../../src/metrics";
+import { resetBackend, setBackendForTest } from "../../../src/knowledge/backend";
+import type { BrainScope } from "../../../src/knowledge/scope";
 
 /**
  * Phase B, task 5: the decision gate at the gateway's Slack ingress. Mentions
@@ -624,5 +626,32 @@ describe("handleMessage early drops through the shared predicate", () => {
     expect(await dropLines(() => appMention(g, dup))).toEqual([`[slack-rx] drop ch=${CH} ts=${tDup} — dedup (already seen)`]);
     expect(drops("dedup") - before).toBe(1);
     expect(g.sends.length).toBe(1);
+  });
+});
+
+describe("decision gate KB lookup and profiles", () => {
+  it("the gate's kb search never reads a profile source (nothing personal reaches the classifier)", async () => {
+    const saved = { mode: process.env.SLAUDE_BRAIN_MODE, disabled: process.env.SLAUDE_BRAIN_DISABLED };
+    const searched: BrainScope[] = [];
+    process.env.SLAUDE_BRAIN_MODE = "remote";
+    delete process.env.SLAUDE_BRAIN_DISABLED;
+    setBackendForTest({
+      call: async (name: string, _p: Record<string, unknown>, scope: BrainScope) => {
+        if (name === "search") searched.push(scope);
+        return [];
+      },
+      adminCall: async () => null,
+    } as any);
+    const g = makeGw(runner("on", fakeAdapter().a));
+    try {
+      await mention(g, nextTs(), "<@USLAUDEBOT> <agent> can you help?");
+      expect(searched.length).toBeGreaterThan(0);
+      expect(searched.every((s) => !s.sourceId.startsWith("profile-") && s.allowedSources.every((x) => !x.startsWith("profile-")))).toBe(true);
+    } finally {
+      await g.h.stop();
+      resetBackend();
+      if (saved.mode === undefined) delete process.env.SLAUDE_BRAIN_MODE; else process.env.SLAUDE_BRAIN_MODE = saved.mode;
+      if (saved.disabled === undefined) delete process.env.SLAUDE_BRAIN_DISABLED; else process.env.SLAUDE_BRAIN_DISABLED = saved.disabled;
+    }
   });
 });

@@ -48,3 +48,20 @@ export async function whileClosing<T>(fn: () => Promise<T>): Promise<T> {
     closing--;
   }
 }
+
+/**
+ * Thrown by an if-open brain call (brainCallIfOpen, `call(..., { ifOpen })`)
+ * when the brain is not open: the local engine has not finished booting or is
+ * closing, or the remote backend has not connected yet. Nothing was booted
+ * or connected to throw it. Callers on the message hot path treat it as "no
+ * brain right now", not as a failure.
+ */
+export class BrainNotOpenError extends Error {
+  readonly code = "brain_not_open";
+  constructor() {
+    super("brain not open");
+    this.name = "BrainNotOpenError";
+  }
+}
+
+export const isBrainNotOpen = (e: unknown): boolean => (e as { code?: unknown } | null)?.code === "brain_not_open";

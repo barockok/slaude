@@ -69,8 +69,8 @@ describe("built-in skills", () => {
 
   it("lists skill-authoring with its governed tools", () => {
     const s = listBuiltinSkills();
-    expect(s.map((x) => x.qualified)).toEqual(["slaude:skill-authoring"]);
-    const sa = s[0]!;
+    expect(s.map((x) => x.qualified)).toEqual(["slaude:memory", "slaude:skill-authoring"]);
+    const sa = s.find((x) => x.name === "skill-authoring")!;
     expect(sa.name).toBe("skill-authoring");
     expect(sa.description).toBe("How to create, refine and retire your own skills.");
     expect(sa.trigger).toBe("Before write_skill or delete_skill");
@@ -127,6 +127,7 @@ describe("built-in skills", () => {
     expect(renderSkillIndex()).toBe(
       "## Built-in skills (read-only, shipped with slaude)\n" +
         "Load the named skill with the Skill tool before the matching action; the runtime blocks the action until you do.\n" +
+        "- Before kb_memoize → load `slaude:memory`\n" +
         "- Before write_skill or delete_skill → load `slaude:skill-authoring`",
     );
   });

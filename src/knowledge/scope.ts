@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { SoulData } from "../soul/data";
 
 export type ChannelTrust = "trusted" | "public" | "unknown";
@@ -12,11 +13,18 @@ export interface BrainScope {
   sourceId: string;
   /** Federated read union. */
   allowedSources: string[];
+  /** The speaker's profile source (`profileSourceId(team, speaker)`), set
+   *  exactly when it is in `allowedSources`. Never the write target here:
+   *  profile writes are an explicit, speaker-only target (phase C §8.6). */
+  profileSource?: string;
 }
 
 export interface ScopeInput {
   /** null = agent-initiated turn (cron, internal maintenance). */
   userId: string | null;
+  /** Slack team (workspace) of the turn. Keys the speaker's profile source,
+   *  which is per workspace; null = unknown, so no profile is read. */
+  teamId: string | null;
   /** /1on1 lock owner for this thread, if locked. */
   lockedUser: string | null;
   channelTrust: ChannelTrust;
@@ -46,6 +54,40 @@ export function agentSourceId(agentId: string): string {
   return ("agent-" + sourceSafe(agentId).replace(/-/g, "")).slice(0, 32);
 }
 
+/** Prefix of every person-owned profile source (spec §8.1, §8.3b). */
+export const PROFILE_PREFIX = "profile-";
+
+/**
+ * One profile per person per Slack workspace: shared by every persona in the
+ * tenant, never across workspaces (user ids are global on Enterprise Grid).
+ * `profile-<team>-<user>`; when that exceeds gbrain's 32-char id limit, the
+ * first 24 hex chars of sha256(team:user) instead, so long ids never collide
+ * by truncation. The prefix keeps it apart from every `user-`, `agent-`,
+ * `kb-`, `shared` and `public` id.
+ */
+export function profileSourceId(teamId: string, userId: string): string {
+  const plain = PROFILE_PREFIX + sourceSafe(teamId).replace(/-/g, "") + "-" + sourceSafe(userId).replace(/-/g, "");
+  if (plain.length <= 32) return plain;
+  return PROFILE_PREFIX + createHash("sha256").update(teamId + ":" + userId).digest("hex").slice(0, 24);
+}
+
+/** True for exactly the two shapes `profileSourceId` produces for usable ids:
+ *  `profile-<team>-<user>` (non-empty [a-z0-9] parts) or `profile-<24 hex>`. */
+export const isProfileSourceId = (s: string): boolean =>
+  s.length <= 32 && /^profile-(?:[0-9a-f]{24}|[a-z0-9]+-[a-z0-9]+)$/.test(s);
+
+/**
+ * The speaker's profile source, or null when there is none to read: a team
+ * or user id that is absent, empty, or sanitises to nothing (which would make
+ * `profile--u1`). Callers deciding WHETHER a profile applies use this, never
+ * profileSourceId directly.
+ */
+export function speakerProfileSource(teamId: string | null | undefined, userId: string | null | undefined): string | null {
+  if (!teamId || !userId) return null;
+  if (!sourceSafe(teamId).replace(/-/g, "") || !sourceSafe(userId).replace(/-/g, "")) return null;
+  return profileSourceId(teamId, userId);
+}
+
 export function kbSourceId(label: string): string {
   return ("kb-" + label.toLowerCase().replace(/[^a-z0-9-]/g, "-")).slice(0, 32);
 }
@@ -56,7 +98,21 @@ export function channelTrustFor(channel: string, soul: SoulData): ChannelTrust {
   return "unknown";
 }
 
+/**
+ * The turn's KB scope. Every row with a known speaker (and team) also reads
+ * the speaker's own profile, right after the row's own sources — including a
+ * public channel and someone else's /1on1, where it is the ONLY private
+ * source: a person's profile follows that person, never the lock owner, and
+ * never the rest of their `user-` slice. The write target is unchanged.
+ */
 export function resolveBrainScope(i: ScopeInput): BrainScope {
+  const base = baseScope(i);
+  const profile = speakerProfileSource(i.teamId, i.userId);
+  if (profile === null) return base;
+  return { ...base, allowedSources: [...base.allowedSources, profile], profileSource: profile };
+}
+
+function baseScope(i: ScopeInput): BrainScope {
   const agentSrc = agentSourceId(i.agentId);
   // The agent's own mind is readable on EVERY turn it runs, regardless of who is
   // talking (it holds its identity across turns). Legacy `agent` rides along for

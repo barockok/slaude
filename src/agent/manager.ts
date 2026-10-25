@@ -17,6 +17,7 @@ import {
 import * as agentSdk from "@anthropic-ai/claude-agent-sdk";
 import { TokenBudget, type UsageSnapshot } from "./token-budget";
 import { SkillGate } from "./skill-gate";
+import { denySyntheticProfileWrite } from "./profile-write-guard";
 import { m as metric } from "../metrics";
 
 export type PermissionMode =
@@ -40,7 +41,7 @@ import { dbSessionStore, type SessionStore } from "./session-store";
 import * as OneOnOne from "../db/one-on-one";
 import type { OneOnOneLockRow } from "../db/one-on-one";
 import { memory } from "../memory";
-import type { MemoryProvider } from "../memory/provider";
+import { stripTurnMemoryContext, type MemoryProvider } from "../memory/provider";
 import { ChildEnvPatch, scrubChildEnv, withoutKeys } from "./child-env";
 import { resolveSessionConfigDir } from "./oauth-home";
 import { sessionIdOpts } from "./session-id-opts";
@@ -49,15 +50,32 @@ import { formatSessionNotes } from "./session-notes";
 import { BootFailure, type FailureCode } from "../gateway/core/failure-codes";
 import { redactSecrets } from "../gateway/core/status-text";
 import { REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, makeRemoteCanUseTool } from "../remote/mcp";
-import { voiceCallActive } from "../voice/turn-flags";
+import { injectedTurns, voiceCallActive } from "../voice/turn-flags";
 import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/types";
 
 /** Upper bound on waiting for a previous remote handle's job cleanup at boot. */
 const REMOTE_DISPOSE_TIMEOUT_MS = 8_000;
 
+/** Who sent one delivered input (the gateway's view of the message). */
+export interface InputSender {
+  userId: string;
+  teamId: string | null;
+  origin: string | null;
+}
+
 type LiveSession = {
   id: string;
-  pushUser: (text: string) => void;
+  /** Queue one input. `synthetic` marks a prompt the runtime itself sends
+   *  (auto-evolve check, continuation and reload prompts), not a delivered one. */
+  pushUser: (text: string, synthetic?: boolean, sender?: InputSender | null) => void;
+  /** One flag per outstanding input, oldest first: whether it is synthetic.
+   *  Inputs run in order and each ends with one `result`, so the head is the
+   *  turn running now (see isSyntheticTurn). */
+  inputSynthetic: boolean[];
+  /** One entry per outstanding input, aligned with inputSynthetic: who sent
+   *  it (sendMessage's `sender`), null for a synthetic input or one sent
+   *  without a sender. See turnSenders. */
+  inputSenders: (InputSender | null)[];
   closeIterable: () => void;
   abort: AbortController;
   /** Buffer of last user message + accumulated assistant text for memory.syncTurn. */
@@ -688,7 +706,47 @@ export class AgentManager extends EventEmitter {
   }
 
   /** Send user input. Starts session loop if not already live. */
-  async sendMessage(sessionId: string, text: string) {
+  async sendMessage(sessionId: string, text: string, opts: { sender?: InputSender } = {}) {
+    return this.#send(sessionId, text, false, opts.sender ?? null);
+  }
+
+  /**
+   * True while the turn running now was injected by the runtime itself (the
+   * auto-evolve `<runtime-check>`, the stream-restored continuation, a
+   * reload_session prompt), not delivered through sendMessage. The same on
+   * mono and nodes (the manager runs on both). A turn's `origin` (and
+   * GateInput.interactive) describes what started the session's job, so a
+   * write that needs a person's own words must also check this. A turn a
+   * voice runner injected (a delegated request, the transcript flush, the
+   * summary) is synthetic too: it arrives through sendMessage with no sender,
+   * but on a node its job token still names the call's starter.
+   */
+  isSyntheticTurn(sessionId: string): boolean {
+    if (injectedTurns.active(sessionId)) return true;
+    return this.#live.get(sessionId)?.inputSynthetic[0] === true;
+  }
+
+  /**
+   * The senders of every input outstanding now: the running turn's and any
+   * queued behind it, because the CLI may fold a queued input into the
+   * running turn. Null whenever that cannot be told for sure, so a write
+   * that needs one person's own words fails closed: no live session, no
+   * outstanding input, the per-input bookkeeping out of step with the input
+   * count, or any input that is synthetic or was sent without a sender.
+   */
+  turnSenders(sessionId: string): InputSender[] | null {
+    const live = this.#live.get(sessionId);
+    if (!live || live.pendingInputs === 0) return null;
+    if (live.inputSenders.length !== live.pendingInputs || live.inputSynthetic.length !== live.pendingInputs) return null;
+    const out: InputSender[] = [];
+    for (const s of live.inputSenders) {
+      if (!s) return null;
+      if (!out.some((o) => o.userId === s.userId && o.teamId === s.teamId && o.origin === s.origin)) out.push(s);
+    }
+    return out;
+  }
+
+  async #send(sessionId: string, text: string, synthetic: boolean, sender: InputSender | null = null) {
     // Signal that a real user turn is starting for this session. Slash commands
     // and dropped messages never reach here, so a listener can distinguish
     // "agent will run" from "handled inline" without waiting for done/error.
@@ -729,12 +787,12 @@ export class AgentManager extends EventEmitter {
       live.turn.user = text;
       live.turn.assistant = [];
       this.#stopBlocked.delete(sessionId);
-      live.pushUser(text);
+      live.pushUser(text, synthetic, synthetic ? null : sender);
       this.#armIdle(live);
       return;
     }
     this.#stopBlocked.delete(sessionId);
-    await this.#startSession(sessionId, text);
+    await this.#startSession(sessionId, text, synthetic, synthetic ? null : sender);
   }
 
   /** (Re)arm the idle timer for a session. On expiry, close the SDK loop
@@ -985,7 +1043,7 @@ export class AgentManager extends EventEmitter {
     if (o.signalExit && !this.#live.has(sessionId)) this.#signalSessionExit(sessionId);
   }
 
-  async #startSession(sessionId: string, firstText: string) {
+  async #startSession(sessionId: string, firstText: string, firstSynthetic = false, firstSender: InputSender | null = null) {
     this.#booting.set(sessionId, (this.#booting.get(sessionId) ?? 0) + 1);
     let marked = true;
     const unmark = () => {
@@ -996,13 +1054,13 @@ export class AgentManager extends EventEmitter {
       else this.#booting.delete(sessionId);
     };
     try {
-      await this.#bootSession(sessionId, firstText, unmark);
+      await this.#bootSession(sessionId, firstText, unmark, firstSynthetic, firstSender);
     } finally {
       unmark();
     }
   }
 
-  async #bootSession(sessionId: string, firstText: string, onLive: () => void) {
+  async #bootSession(sessionId: string, firstText: string, onLive: () => void, firstSynthetic = false, firstSender: InputSender | null = null) {
     // Read before any config is resolved: a fingerprint that arrives while this
     // boot resolves its lock/remote state must not be credited to it.
     const bootFp = this.#desiredFp.get(sessionId);
@@ -1261,7 +1319,7 @@ export class AgentManager extends EventEmitter {
           PreCompact: [{ hooks: [preCompact] }],
           Stop: [{ hooks: [stopHook] }],
           UserPromptSubmit: [{ hooks: [userPromptHook] }],
-          PreToolUse: [{ hooks: [...(remoteHandle ? [denyLocalBuiltins] : []), this.#skillGate.pre(sessionId)] }],
+          PreToolUse: [{ hooks: [...(remoteHandle ? [denyLocalBuiltins] : []), this.#skillGate.pre(sessionId), denySyntheticProfileWrite(() => this.isSyntheticTurn(sessionId))] }],
           PostToolUse: [{ hooks: [this.#skillGate.post(sessionId)] }],
         },
         systemPrompt: {
@@ -1285,10 +1343,14 @@ export class AgentManager extends EventEmitter {
     const live: LiveSession = {
       id: sessionId,
       // Every input starts a turn; its `result` ends it (#fanout).
-      pushUser: (text: string) => {
+      pushUser: (text: string, synthetic = false, sender: InputSender | null = null) => {
         live.pendingInputs++;
+        live.inputSynthetic.push(synthetic);
+        live.inputSenders.push(sender);
         pushUser(text);
       },
+      inputSynthetic: [firstSynthetic], // firstText is already queued
+      inputSenders: [firstSender],
       closeIterable,
       abort,
       turn: { user: firstText, assistant: [] },
@@ -1348,7 +1410,7 @@ export class AgentManager extends EventEmitter {
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           // Fire and forget — restart with the same first prompt.
-          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
+          void this.#startSession(sessionId, firstText, firstSynthetic, firstSender).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
           return;
         }
         // Mirror failure: we seeded --session-id but a transcript with that id
@@ -1360,7 +1422,7 @@ export class AgentManager extends EventEmitter {
           await this.#bestEffortStore(sessionId, "markStarted", () => this.#store.markStarted(sessionId));
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
-          void this.#startSession(sessionId, firstText).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
+          void this.#startSession(sessionId, firstText, firstSynthetic, firstSender).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
           return;
         }
         if (live?.reloading) {
@@ -1413,7 +1475,7 @@ export class AgentManager extends EventEmitter {
         if (live.reloading && this.#autoContinue.has(sessionId)) {
           this.#autoContinue.delete(sessionId);
           console.log(`[mgr] auto-continuing after stream_closed reload session=${sessionId}`);
-          void this.sendMessage(sessionId, "The MCP stream was restored. Please continue where you left off.").catch((e) => this.#rebootFailed(sessionId, e));
+          void this.#send(sessionId, "The MCP stream was restored. Please continue where you left off.", true).catch((e) => this.#rebootFailed(sessionId, e));
         }
         // After a manual reload_session with a prompt, inject it so the user
         // doesn't need to type anything to resume the flow.
@@ -1421,7 +1483,7 @@ export class AgentManager extends EventEmitter {
           const p = this.#reloadPrompt.get(sessionId)!;
           this.#reloadPrompt.delete(sessionId);
           console.log(`[mgr] injecting reload prompt session=${sessionId}`);
-          void this.sendMessage(sessionId, p).catch((e) => this.#rebootFailed(sessionId, e));
+          void this.#send(sessionId, p, true).catch((e) => this.#rebootFailed(sessionId, e));
         }
       }
     })().catch((e) => {
@@ -1543,7 +1605,11 @@ export class AgentManager extends EventEmitter {
         break;
       }
       case "result": {
-        if (live) live.pendingInputs = Math.max(0, live.pendingInputs - 1);
+        if (live) {
+          live.pendingInputs = Math.max(0, live.pendingInputs - 1);
+          live.inputSynthetic.shift();
+          live.inputSenders.shift();
+        }
         // A reload deferred by reloadAfterTurn applies once NO input is
         // outstanding: another queued input (e.g. a user message behind an
         // auto-evolve turn) still needs the CLI's stdin.
@@ -1644,7 +1710,7 @@ export class AgentManager extends EventEmitter {
           if (live && !wasAutoEvolve && !deferredReload && !voiceCallActive(sessionId) && this.#shouldAutoEvolve(live)) {
             live.inAutoEvolve = true;
             live.turnTools = [];
-            live.pushUser(AUTO_EVOLVE_PROMPT);
+            live.pushUser(AUTO_EVOLVE_PROMPT, true);
           } else if (live) {
             live.turnTools = [];
           }
@@ -1659,7 +1725,8 @@ export class AgentManager extends EventEmitter {
 
   #flushTurn(live: LiveSession) {
     if (!live.turn.user || live.turn.assistant.length === 0) return;
-    const user = live.turn.user;
+    // The per-turn <memory-context> block is for this turn only, never the transcript.
+    const user = stripTurnMemoryContext(live.turn.user);
     const assistant = live.turn.assistant.join("\n");
     live.turn = { user: "", assistant: [] };
     void this.#memory.syncTurn({ sessionId: live.id, user, assistant }).catch((e) => {

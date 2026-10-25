@@ -31,6 +31,7 @@ import { makeRegistry, type Registry } from "../../queue/registry";
 import { makePubSub, type PubSub } from "../../queue/pubsub";
 import { TurnQueues, type TurnJob, type TurnTarget } from "../../queue/turns";
 import { isFailureCode } from "./failure-codes";
+import type { TurnOrigin } from "../../knowledge/gated-dispatch";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -55,6 +56,9 @@ export interface DispatchMeta {
   /** Slack app (api_app_id) the turn belongs to. Signed into the job token so
    *  the /v1 tool plane posts as that app (D1.2). */
   apiAppId?: string;
+  /** What started the turn, signed into the job token as `origin`. Absent =
+   *  not interactive on the node (fail closed), so every path sets it. */
+  origin?: TurnOrigin;
   suppress?: boolean;
 }
 
@@ -345,6 +349,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
         session: session.id,
         team: meta.teamId,
         ...(meta.apiAppId ? { app: meta.apiAppId } : {}),
+        ...(meta.origin ? { origin: meta.origin } : {}),
         channel: meta.channelId,
         thread: meta.threadTs,
         initiator: meta.userId,
@@ -390,6 +395,8 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           messages: [
             { ts: meta.eventTs, user: meta.userId, text, ...(meta.suppress ? { suppress: true } : {}) },
           ],
+          // Who sent it, from where: merged messages add theirs (TurnQueues).
+          senders: [{ userId: meta.userId, teamId: meta.teamId || null, origin: meta.origin ?? null }],
           jobToken,
           enqueuedAt: Date.now(),
         },

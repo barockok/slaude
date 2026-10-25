@@ -4,9 +4,11 @@ import { agentSourceId, type BrainScope } from "../src/knowledge/scope";
 import { agentIdSync, resolveAgentId, resetAgentId } from "../src/knowledge/agent-identity";
 
 const scope: BrainScope = { clientId: "U1", sourceId: "shared", allowedSources: ["shared"] };
+// kb_memoize reads the write source's superseded pages first (list_pages,
+// a read); the write-recording stubs below answer it with [] and skip it.
 const deps = (over: Partial<BrainToolDeps> = {}): BrainToolDeps => ({
   scope: () => scope,
-  gate: () => ({ userId: "U1", lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "AGENT1" }),
+  gate: () => ({ userId: "U1", teamId: null, interactive: true, lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "AGENT1" }),
   managers: () => ["UMGR"],
   requestApproval: async () => ({ approved: true, by: "UMGR" }),
   call: async (name) => ({ echoed: name }),
@@ -63,7 +65,7 @@ describe("brainHandlers", () => {
     let approvals = 0;
     const d = deps({
       requestApproval: async () => { approvals++; return { approved: true, by: "UMGR" }; },
-      call: async (name, params) => { calls.push({ name, params }); return { ok: 1 }; },
+      call: async (name, params) => { if (name === "list_pages") return []; calls.push({ name, params }); return { ok: 1 }; },
     });
     const r = await brainHandlers.kb_memoize({ pages: [
       { slug: "a/1", content: "c1", summary: "s1" },
@@ -81,7 +83,7 @@ describe("brainHandlers", () => {
     const calls: string[] = [];
     const d = deps({
       requestApproval: async () => { approvals++; return { approved: true, by: "UMGR" }; },
-      call: async (name) => { calls.push(name); return {}; },
+      call: async (name) => { if (name === "list_pages") return []; calls.push(name); return {}; },
     });
     const r = await brainHandlers.kb_memoize({ pages: [] }, d);
     expect(r.isError).toBe(true);
@@ -101,7 +103,7 @@ describe("brainHandlers", () => {
     const calls: string[] = [];
     const d = deps({
       requestApproval: async () => ({ approved: false, by: "UMGR" }),
-      call: async (name) => { calls.push(name); return {}; },
+      call: async (name) => { if (name === "list_pages") return []; calls.push(name); return {}; },
     });
     const r = await brainHandlers.kb_memoize({ pages: [{ slug: "a/1", content: "c", summary: "s" }] }, d);
     expect(r.isError).toBe(true);
@@ -116,7 +118,7 @@ describe("brainHandlers", () => {
     const d = deps({
       scope: () => mine,
       requestApproval: async () => { approvals++; return { approved: true, by: "UMGR" }; },
-      call: async (_n, _p, s) => { wrote.push(s.sourceId); return { ok: 1 }; },
+      call: async (_n, _p, s) => { if (_n === "list_pages") return []; wrote.push(s.sourceId); return { ok: 1 }; },
     });
     const r = await brainHandlers.kb_memoize({ pages: [{ slug: "notes/x", content: "c", summary: "s" }] }, d);
     expect(r.isError).toBeUndefined();
@@ -133,7 +135,7 @@ describe("brainHandlers", () => {
     const d = deps({
       scope: () => mine,
       requestApproval: async () => { approvals++; return { approved: true, by: "UMGR" }; },
-      call: async (_n, _p, s) => { wrote.push(s.sourceId); return { ok: 1 }; },
+      call: async (_n, _p, s) => { if (_n === "list_pages") return []; wrote.push(s.sourceId); return { ok: 1 }; },
     });
     const r = await brainHandlers.kb_memoize({ pages: [{ slug: "team/y", content: "c", summary: "s" }], target: "shared" }, d);
     expect(r.isError).toBeUndefined();
@@ -150,7 +152,7 @@ describe("brainHandlers", () => {
     const d = deps({
       // scope reads the live id at call time — the gateway wiring does the same.
       scope: () => ({ clientId: agentIdSync(), sourceId: agentSourceId(agentIdSync()), allowedSources: [agentSourceId(agentIdSync())] }),
-      call: async (_n, _p, s) => { wrote.push(s.sourceId); return { ok: 1 }; },
+      call: async (_n, _p, s) => { if (_n === "list_pages") return []; wrote.push(s.sourceId); return { ok: 1 }; },
     });
     const pending = brainHandlers.kb_memoize({ pages: [{ slug: "notes/boot", content: "c", summary: "s" }] }, d);
     settle({ user_id: "U_REAL" }); // auth.test lands after the write call began

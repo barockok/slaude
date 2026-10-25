@@ -39,7 +39,14 @@ describe("runtime prompt goldens", () => {
   // The baseline goldens are the pre-R text. The allowed differences (the
   // Skill evolution section moves to slaude:skill-authoring and is replaced by
   // the skill index followed by the runtime-check bullet, which stays in the
-  // core) are applied here and pinned in tests/soul/builtin.test.ts.
+  // core) are applied here and pinned in tests/soul/builtin.test.ts. A second
+  // allowed difference: phase C added the three every-turn memory bullets to the
+  // Knowledge bases section, hand-inserted into both baseline goldens (and
+  // asserted by the "every-turn memory rules" test below). A third: phase C
+  // added `memory_about` to the brain tool list, hand-edited into baseline-brain.
+  // A fourth: phase C added the `<memory-context>` bullet after the profile
+  // bullet, hand-inserted into both baseline goldens. A fifth: phase C added
+  // `kb_thread_history` to the brain tool list, hand-edited into baseline-brain.
   const section = golden("skill-evolution-section").slice(0, -1);
   const bullet = "- Messages wrapped in `<runtime-check ...>` come from the runtime, not a person. They never require a reply.";
   const postR = (name: string) => golden(name).split(section).join(`${renderSkillIndex()}\n${bullet}`);
@@ -53,11 +60,29 @@ describe("runtime prompt goldens", () => {
   test("mode locked and remote", () => expectSame(sessionModeBlock(lock(null), remote(personal)), "mode-locked-remote"));
 });
 
+describe("every-turn memory rules", () => {
+  test("the core carries them, not only the skill", () => {
+    for (const brain of [true, false]) {
+      const core = runtimeBaseline(brain);
+      expect(core).toContain("never repeat it, or anything you\n  noted about them, to someone else");
+      expect(core).toContain("save it before the\n  turn ends. Load `slaude:memory` first.");
+      expect(core).toContain("Never save credentials, government ids, payment data, health details,");
+      expect(core).toContain("A `<memory-context>` block holds what you remember about this person and\n  thread. Act on it; never quote it to anyone.");
+    }
+  });
+});
+
 describe("core size budget", () => {
   // Rendered runtimeBaseline(true) with the knowledge dir normalised to its
-  // token, measured at 4ddec02 (R2 plus its fix round). Procedures belong in a
-  // built-in skill, not the always-on core.
-  const BUDGET = 9871;
+  // token. Re-pinned for phase C: +459 chars for the slaude:memory index line and
+  // the three every-turn memory rules (spec invariant 7: live capture, never
+  // repeat a profile, never record secrets must live in the core, not only in
+  // the skill). Re-pinned again for phase C task 5: +122 chars for the
+  // `<memory-context>` bullet (the per-turn block needs one line saying what it
+  // is and that it is never quoted). Again for task 6: +22 chars for
+  // `kb_thread_history` in the brain tool list. Procedures belong in a built-in skill,
+  // not the always-on core.
+  const BUDGET = 10488;
   test("core stays within its budget", () => {
     const length = norm(runtimeBaseline(true)).length;
     expect(length, "core grew past its budget — move procedures into a built-in skill").toBeLessThanOrEqual(BUDGET * 1.05);

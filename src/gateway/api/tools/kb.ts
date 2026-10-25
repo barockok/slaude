@@ -30,7 +30,7 @@ export async function executeKbTool(
   }
   const ctx = deps.slackCtx(claims);
   const surface = deps.surfaceFor(ctx);
-  const brainDeps = deps.brainDeps(ctx, surface);
+  const brainDeps = deps.brainDeps(ctx, surface, claims);
   if (!brainDeps) return null; // brain disabled → tools not mounted, like createKbMcp
   switch (tool) {
     case c.kb_think.name:
@@ -45,6 +45,10 @@ export async function executeKbTool(
       return brainHandlers.kb_graph(parseToolArgs(c.kb_graph, body), brainDeps);
     case c.kb_memoize.name:
       return brainHandlers.kb_memoize(parseToolArgs(c.kb_memoize, body), brainDeps);
+    case c.memory_about.name:
+      return brainHandlers.memory_about(parseToolArgs(c.memory_about, body), brainDeps);
+    case c.kb_thread_history.name:
+      return brainHandlers.kb_thread_history(parseToolArgs(c.kb_thread_history, body), brainDeps);
     case c.kb_delete_page.name:
       return brainHandlers.kb_delete_page(parseToolArgs(c.kb_delete_page, body), brainDeps);
     default:

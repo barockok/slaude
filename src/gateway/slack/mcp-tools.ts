@@ -6,6 +6,7 @@ import {
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { WebClient } from "@slack/web-api";
+import type { TurnOrigin, TurnSender } from "../../knowledge/gated-dispatch";
 import { createReadStream, statSync } from "node:fs";
 import { basename } from "node:path";
 import { mdToMrkdwn } from "./format";
@@ -60,6 +61,15 @@ export type SlackContext = {
   userId?: string;
   /** Slack team id of the current workspace. */
   teamId?: string;
+  /** What started the route's current job (a person's Slack message, the
+   *  panel, or cron). Drives GateInput.interactive; absent = not interactive.
+   *  A synthetic turn the runtime injects afterwards (auto-evolve, a
+   *  continuation prompt) keeps this value: see AgentManager.isSyntheticTurn. */
+  origin?: TurnOrigin;
+  /** Who sent the messages the running turn holds (mono: delivered since the
+   *  turn began; a node: the job's recorded senders). Null or absent =
+   *  unknown, which refuses a profile write. */
+  turnSenders?: () => Promise<readonly TurnSender[] | null> | readonly TurnSender[] | null;
   /** Optional approval gate — set by the adapter so request_approval works. */
   requestApproval?: (req: {
     summary: string;

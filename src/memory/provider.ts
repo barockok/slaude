@@ -28,3 +28,15 @@ export const NULL_PROVIDER: MemoryProvider = {
   },
   async syncTurn() {},
 };
+
+/**
+ * The user text without the per-turn `<memory-context>` block the gateway
+ * puts in the envelope (the speaker's profile, commitments, channel notes).
+ * The block is read for the turn only: synced into a conversation page it
+ * would be readable outside the speaker's turns and survive a profile
+ * correction. Page text inside the block is escaped, so it cannot close the
+ * block early and a non-greedy match is safe. The system prompt's episodic
+ * block of the same name never passes through here.
+ */
+export const stripTurnMemoryContext = (text: string): string =>
+  text.replace(/<memory-context>\n[\s\S]*?\n<\/memory-context>\n*/g, "");

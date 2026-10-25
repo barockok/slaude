@@ -1835,3 +1835,266 @@ describe("AgentManager: store failures outside any caller", () => {
     expect(mgr.isLive(row.id)).toBe(false);
   });
 });
+
+describe("isSyntheticTurn: a prompt the runtime itself sent", () => {
+  /** Answer every input with a result; record isSyntheticTurn as each input arrives. */
+  const recorder = (mgr: InstanceType<typeof AgentManager>, id: () => string, seen: Array<[string, boolean]>, substantive = false) =>
+    (s: FakeSession) => {
+      s.onUser = (um) => {
+        const text = String(um.message.content);
+        seen.push([text, mgr.isSyntheticTurn(id())]);
+        if (substantive && !text.includes("<auto-evolve>") && seen.length === 1) {
+          s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch"), txt("did the work")]));
+        }
+        s.emit(res());
+      };
+    };
+
+  it("false for a delivered turn, true during the auto-evolve turn, false again for the next human turn", async () => {
+    process.env.SLAUDE_AUTO_EVOLVE = "1";
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const seen: Array<[string, boolean]> = [];
+    plan(recorder(mgr, () => row.id, seen, true));
+
+    await mgr.sendMessage(row.id, "do a thing");
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "evolve done");
+    expect(seen.map(([t, s]) => [t.includes("<auto-evolve>") ? "evolve" : t, s])).toEqual([["do a thing", false], ["evolve", true]]);
+    expect(mgr.isSyntheticTurn(row.id)).toBe(false);
+
+    await mgr.sendMessage(row.id, "next question");
+    await until(() => events.filter((e) => e.type === "done").length === 3, 3000, "next done");
+    expect(seen[2]).toEqual(["next question", false]);
+    expect(mgr.isSyntheticTurn(row.id)).toBe(false);
+    await shutdown(mgr, row.id);
+  });
+
+  it("true for a reload_session continuation prompt; false for the human turn after it", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const seen: Array<[string, boolean]> = [];
+    plan(recorder(mgr, () => row.id, seen));
+    plan(recorder(mgr, () => row.id, seen));
+
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => events.filter((e) => e.type === "done").length === 1, 3000, "first done");
+    expect(mgr.reload(row.id, "carry on")).toBe(true);
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "continuation done");
+    expect(seen).toEqual([["hello", false], ["carry on", true]]);
+
+    await mgr.sendMessage(row.id, "thanks");
+    await until(() => events.filter((e) => e.type === "done").length === 3, 3000, "human done");
+    expect(seen[2]).toEqual(["thanks", false]);
+    expect(mgr.isSyntheticTurn(row.id)).toBe(false);
+    await shutdown(mgr, row.id);
+  });
+
+  it("no live session: false", () => {
+    expect(new AgentManager().isSyntheticTurn("S-none")).toBe(false);
+  });
+
+  it("a voice-injected turn (mono and node runners) counts as synthetic: its profile write is denied", async () => {
+    const { monoRunner, nodeRunner } = await import("../../src/voice/runners");
+    const { SYNTHETIC_PROFILE_DENIAL, KB_MEMOIZE_TOOL } = await import("../../src/agent/profile-write-guard");
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const decisions: Array<[string, string | undefined]> = [];
+    const fs = plan((s) => {
+      s.onUser = async (um) => {
+        const text = String(um.message.content);
+        let reason: string | undefined;
+        for (const h of s.options.hooks.PreToolUse[0].hooks) {
+          const out = await h(
+            { hook_event_name: "PreToolUse", tool_name: KB_MEMOIZE_TOOL, tool_input: { target: "profile", pages: [] } },
+            "tu",
+            { signal: new AbortController().signal },
+          );
+          // Only the profile guard's answer (the skill gate also asks for slaude:memory).
+          const r = out?.hookSpecificOutput?.permissionDecisionReason;
+          if (r === SYNTHETIC_PROFILE_DENIAL) reason = r;
+        }
+        decisions.push([text, reason]);
+        s.emit(res());
+      };
+    });
+    await mgr.sendMessage(row.id, "hello", { sender: { userId: "U0ALICE", teamId: "T", origin: "slack" } });
+    await until(() => events.filter((e) => e.type === "done").length === 1, 3000, "first done");
+    const ro = { suppress: false, voice: true, cancelled: () => false };
+    await monoRunner(mgr, { check: async () => {}, pollMs: 5 }).run(row.id, "voice delegate (mono)", ro);
+    await nodeRunner({ agent: mgr, lock: (_sid, fn) => fn(new AbortController().signal), refreshToken: async () => {} }).run(
+      row.id,
+      "voice delegate (node)",
+      ro,
+    );
+    expect(decisions).toEqual([
+      ["hello", undefined],
+      ["voice delegate (mono)", SYNTHETIC_PROFILE_DENIAL],
+      ["voice delegate (node)", SYNTHETIC_PROFILE_DENIAL],
+    ]);
+    expect(mgr.isSyntheticTurn(row.id)).toBe(false);
+    void fs;
+    await shutdown(mgr, row.id);
+  });
+});
+
+describe("turnSenders: who sent the inputs the CLI is processing (phase C, invariant 2)", () => {
+  const A = { userId: "U0ALICE", teamId: "T", origin: "slack" };
+  const B = { userId: "U0BOB", teamId: "T", origin: "slack" };
+  const profileWrite = { pages: [{ slug: "profile", content: "Call me X.", summary: "name", type: "profile" }], target: "profile" as const };
+
+  /** kb_memoize target:"profile" as mono runs it: the live ctx speaker is
+   *  `ctxUser` (whoever spoke last), the senders come from the manager. */
+  async function memoizeAs(mgr: InstanceType<typeof AgentManager>, id: string, ctxUser: string) {
+    const { brainHandlers } = await import("../../src/knowledge/mcp-tools");
+    const { resolveBrainScope } = await import("../../src/knowledge/scope");
+    const { fakeBrain } = await import("../memory/fake-brain");
+    const brain = fakeBrain();
+    const senders = mgr.turnSenders(id);
+    const gate = {
+      userId: ctxUser, teamId: "T", interactive: true, origin: "slack" as const, lockedUser: null,
+      channelTrust: "trusted" as const, isManager: false, agentId: "AGENT1",
+      ...(senders ? { turnSenders: senders } : {}),
+    };
+    const written: string[] = [];
+    const r = await brainHandlers.kb_memoize(profileWrite, {
+      scope: () => resolveBrainScope({ ...gate, kbSources: [] }),
+      gate: () => gate,
+      managers: () => [],
+      requestApproval: async () => ({ approved: false, by: "x" }),
+      call: async (name, params, scope) => {
+        if (name === "put_page") written.push(scope.sourceId);
+        return brain.call(name, params, scope);
+      },
+    });
+    return { text: r.content[0]!.text, written };
+  }
+
+  it("T1 Alice running, Bob queued as T2, T1 ends, Alice posts during T2: a profile write in T2 is refused", async () => {
+    const { profileSourceId } = await import("../../src/knowledge/scope");
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const fs = plan(); // never answers on its own: the test ends each turn
+    await mgr.sendMessage(row.id, "T1: call me Al", { sender: A });
+    await until(() => fs.users.length === 1, 3000, "T1 delivered");
+    expect(mgr.turnSenders(row.id)).toEqual([A]);
+
+    await mgr.sendMessage(row.id, "T2: call me B", { sender: B }); // queued behind T1
+    expect(mgr.turnSenders(row.id)).toEqual([A, B]); // the CLI may fold it into T1
+    expect((await memoizeAs(mgr, row.id, "U0BOB")).text).toBe("refused: a profile is written only on that person's own turn");
+
+    fs.emit(res()); // T1 ends; T2 (Bob's words) runs
+    await until(() => events.filter((e) => e.type === "done").length === 1, 3000, "T1 done");
+    expect(mgr.turnSenders(row.id)).toEqual([B]);
+
+    await mgr.sendMessage(row.id, "T3: hi", { sender: A }); // Alice posts during T2; the ctx is now Alice
+    expect(mgr.turnSenders(row.id)).toEqual([B, A]);
+    const during = await memoizeAs(mgr, row.id, "U0ALICE");
+    expect(during.text).toBe("refused: a profile is written only on that person's own turn");
+    expect(during.written).toEqual([]);
+
+    fs.emit(res()); // T2 ends
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "T2 done");
+    expect(mgr.turnSenders(row.id)).toEqual([A]);
+    fs.emit(res()); // T3 ends: nothing outstanding
+    await until(() => events.filter((e) => e.type === "done").length === 3, 3000, "T3 done");
+    expect(mgr.turnSenders(row.id)).toBeNull();
+    expect(profileSourceId("T", "U0ALICE")).not.toBe(profileSourceId("T", "U0BOB"));
+    await shutdown(mgr, row.id);
+  });
+
+  it("T2 with Bob as its sole sender writes Bob's profile, even while the ctx shows Alice", async () => {
+    const { profileSourceId } = await import("../../src/knowledge/scope");
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const fs = plan();
+    await mgr.sendMessage(row.id, "T1", { sender: A });
+    await until(() => fs.users.length === 1, 3000, "T1 delivered");
+    await mgr.sendMessage(row.id, "T2: call me B", { sender: B });
+    fs.emit(res());
+    await until(() => events.filter((e) => e.type === "done").length === 1, 3000, "T1 done");
+    expect(mgr.turnSenders(row.id)).toEqual([B]);
+    const r = await memoizeAs(mgr, row.id, "U0ALICE");
+    expect(r.text).not.toContain("refused");
+    expect(r.written).toEqual([profileSourceId("T", "U0BOB")]);
+    await shutdown(mgr, row.id);
+  });
+
+  it("fails closed: no live session, an input without a sender, a synthetic input", async () => {
+    process.env.SLAUDE_AUTO_EVOLVE = "1";
+    const mgr = new AgentManager();
+    expect(mgr.turnSenders("S-none")).toBeNull();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const seen: Array<unknown> = [];
+    const fs = plan((s) => {
+      s.onUser = (um) => {
+        const text = String(um.message.content);
+        seen.push([text.includes("<auto-evolve>") ? "evolve" : text, mgr.turnSenders(row.id)]);
+        if (!text.includes("<auto-evolve>")) s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch"), txt("did the work")]));
+        s.emit(res());
+      };
+    });
+    await mgr.sendMessage(row.id, "no sender");
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "evolve done");
+    expect(seen).toEqual([["no sender", null], ["evolve", null]]);
+    expect(fs.users.length).toBe(2);
+    await shutdown(mgr, row.id);
+  });
+});
+
+describe("profile writes on a synthetic turn (phase C, invariant 2)", () => {
+  it("the PreToolUse hook denies kb_memoize target:\"profile\" during the auto-evolve turn only", async () => {
+    // The fake SDK does not run hooks itself: the test calls the hooks wired in
+    // options exactly as the CLI would, around a tool call in each turn.
+    process.env.SLAUDE_AUTO_EVOLVE = "1";
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const runHooks = async (event: string, input: any) => {
+      const outs: any[] = [];
+      for (const m of fs.options.hooks[event] ?? []) {
+        for (const h of m.hooks) outs.push(await h({ hook_event_name: event, session_id: "cli", transcript_path: "/t", cwd: "/w", ...input }, "tu", { signal: new AbortController().signal }));
+      }
+      return outs.find((o) => o?.hookSpecificOutput?.permissionDecision === "deny") ?? {};
+    };
+    const runPre = (input: any) => runHooks("PreToolUse", input);
+    // kb_memoize is governed by slaude:memory (skill-gate): load it once in the
+    // human turn, as the model would, so only the profile guard can deny below.
+    const load = { tool_name: "Skill", tool_input: { skill: "slaude:memory" }, tool_use_id: "k1" };
+    const profile = { tool_name: "mcp__slaude_kb__kb_memoize", tool_input: { target: "profile", pages: [] }, tool_use_id: "p1" };
+    const mine = { tool_name: "mcp__slaude_kb__kb_memoize", tool_input: { target: "mine", pages: [] }, tool_use_id: "m1" };
+    const human: any[] = [];
+    const evolve: any[] = [];
+    const fs = plan((s) => {
+      s.onUser = (um) => {
+        const text = String(um.message.content);
+        void (async () => {
+          const into = text.includes("<auto-evolve>") ? evolve : human;
+          if (into === human) {
+            await runPre(load);
+            await runHooks("PostToolUse", { ...load, tool_response: { success: true, commandName: "slaude:memory" } });
+          }
+          into.push(await runPre(profile), await runPre(mine));
+          if (into === human) s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch"), txt("did the work")]));
+          s.emit(res());
+        })();
+      };
+    });
+
+    await mgr.sendMessage(row.id, "call me Al from now on");
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "evolve done");
+    expect(human).toEqual([{}, {}]);
+    expect(evolve[0].hookSpecificOutput).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: "A profile is written only on that person's own turn.",
+    });
+    expect(evolve[1]).toEqual({});
+    await shutdown(mgr, row.id);
+  });
+});

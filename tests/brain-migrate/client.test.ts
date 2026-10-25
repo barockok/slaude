@@ -84,6 +84,14 @@ describe("runImport", () => {
     const s = await runImport(base(d, { fetchImpl, map: { scratch: "shared" } }));
     expect(s.sources.shared!.written).toBe(1);
   });
+  test("a profile source is covered without a map and keeps its id", async () => {
+    const d = await bundle([page("profile-t0team-u0alice", "profile")]);
+    let sent: any = null;
+    const fetchImpl = (async (_u: unknown, init: RequestInit) => { sent = JSON.parse(String(init.body)); return ok({ "profile-t0team-u0alice": 1 }); }) as unknown as typeof fetch;
+    const s = await runImport(base(d, { fetchImpl }));
+    expect(s.sources["profile-t0team-u0alice"]!.written).toBe(1);
+    expect(JSON.stringify(sent)).toContain("profile-t0team-u0alice");
+  });
   test("a kb-* source is refused even when a map names it", async () => {
     const d = await bundle([page("kb-docs", "a")]);
     let called = false;

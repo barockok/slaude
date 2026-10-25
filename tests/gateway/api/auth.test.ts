@@ -74,6 +74,19 @@ describe("mintJobToken / verifyJobToken", () => {
     expect(verifyJobToken("not a jwt at all", { secret: SECRET })).toEqual({ ok: false, reason: "malformed" });
   });
 
+  test("the origin claim round-trips; absent stays absent; an unknown value is refused", () => {
+    for (const origin of ["slack", "panel", "cron"] as const) {
+      const r = verifyJobToken(mintJobToken({ ...baseClaims, origin }, { secret: SECRET }), { secret: SECRET });
+      expect(r.ok && r.claims.origin).toBe(origin);
+    }
+    const none = verifyJobToken(mintJobToken(baseClaims, { secret: SECRET }), { secret: SECRET });
+    expect(none.ok && "origin" in none.claims).toBe(false);
+    for (const origin of ["human", "", 1, null]) {
+      const token = mintJobToken({ ...baseClaims, origin: origin as any }, { secret: SECRET });
+      expect(verifyJobToken(token, { secret: SECRET })).toEqual({ ok: false, reason: "bad_claims" });
+    }
+  });
+
   test("missing claim fields are rejected", () => {
     const { initiator: _drop, ...partial } = baseClaims;
     const token = mintJobToken(partial as any, { secret: SECRET });

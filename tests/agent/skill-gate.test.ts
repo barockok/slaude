@@ -27,6 +27,21 @@ function booted(id = "s1", mounted = true) {
 }
 
 describe("SkillGate", () => {
+  it("blocks kb_memoize until slaude:memory has loaded", async () => {
+    const g = booted();
+    const MEMOIZE = "mcp__slaude_kb__kb_memoize";
+    const deny: Record<string, unknown> = {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: 'Load `slaude:memory` first (call the Skill tool with skill "slaude:memory"), then retry.',
+      },
+    };
+    expect(await g.pre("s1")(preInput(MEMOIZE, { pages: [] }), "tu1", opts)).toEqual(deny);
+    await g.post("s1")(loadSkill("slaude:memory"), "tu2", opts);
+    expect(await g.pre("s1")(preInput(MEMOIZE, { pages: [] }), "tu1", opts)).toEqual({});
+  });
+
   it("blocks a governed tool until its skill is loaded, then allows it", async () => {
     const g = booted();
     expect(await g.pre("s1")(preInput(WRITE, { slug: "x" }), "tu1", opts)).toEqual(DENY);

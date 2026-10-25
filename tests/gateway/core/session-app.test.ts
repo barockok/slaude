@@ -63,7 +63,7 @@ describe("session app identity", () => {
   it("a panel turn's dispatch carries the session's recorded app", () => {
     const row = { id: "S1", slack_team_id: "T", slack_channel_id: "C1", slack_thread_ts: "1.0", persona_id: "default", slack_app_id: "A0TWO" } as SessionRow;
     expect(panelDispatchMeta(row, "op", "2.0")).toEqual({
-      teamId: "T", channelId: "C1", threadTs: "1.0", eventTs: "2.0", userId: "op", personaId: undefined, apiAppId: "A0TWO",
+      teamId: "T", channelId: "C1", threadTs: "1.0", eventTs: "2.0", userId: "op", personaId: undefined, apiAppId: "A0TWO", origin: "panel",
     });
     const legacy = { ...row, slack_app_id: null } as SessionRow;
     expect("apiAppId" in panelDispatchMeta(legacy, "op", "2.0")).toBe(false);

@@ -126,6 +126,8 @@ function gateway(opts: { serveMemory?: boolean } = {}) {
             provider,
             gateFor: async (c) => ({
               userId: c.initiator || null,
+              teamId: null,
+              interactive: false,
               lockedUser: c.lock?.user ?? null,
               channelTrust: "trusted",
               isManager: false,
@@ -175,7 +177,8 @@ describe("node memory served by the gateway", () => {
     const s = await nodeSession(v1, ["finance"]);
     fb.seed(agentSourceId("U0FINANCE"), s.row.id, "<user>earlier question</user>");
     await s.turn("hello from the node");
-    expect(captured[0].systemPrompt.append).toContain("<memory-context>");
+    // The block itself (the core prompt only names the tag in backticks).
+    expect(captured[0].systemPrompt.append).toContain("<memory-context>\n");
     expect(captured[0].systemPrompt.append).toContain("earlier question");
     await until(() => (fb.pages.get(`${agentSourceId("U0FINANCE")}\u0000conversations/${s.row.id}`)?.length ?? 0) > 1, "sync");
     expect(fb.sourcesOf(s.row.id)).toEqual([agentSourceId("U0FINANCE")]);
@@ -187,13 +190,36 @@ describe("node memory served by the gateway", () => {
     s.mgr.reload(s.row.id);
   });
 
+  it("the per-turn <memory-context> block in the envelope is not synced into the conversation page", async () => {
+    const { fb, v1 } = gateway();
+    const s = await nodeSession(v1, ["finance"]);
+    fb.seed(agentSourceId("U0FINANCE"), s.row.id, "<user>earlier question</user>");
+    const envelope =
+      `<channel source="slack" channel_id="C1" thread_ts="1.1" user_id="U1">\nhi there\n</channel>\n\n` +
+      `<memory-context>\n<profile>\nCall me Al. Quiet hours until 08:00.\n</profile>\n</memory-context>\n\n` +
+      `Reply by calling the reply tool.`;
+    await s.turn(envelope);
+    // The episodic block of the same tag name in the system prompt is untouched.
+    expect(captured[0].systemPrompt.append).toContain("<memory-context>\n");
+    expect(captured[0].systemPrompt.append).toContain("earlier question");
+    const key = `${agentSourceId("U0FINANCE")}\u0000conversations/${s.row.id}`;
+    await until(() => (fb.pages.get(key)?.length ?? 0) > 1, "sync");
+    const detail = fb.pages.get(key)!.at(-1)!.detail!;
+    expect(detail).toContain("hi there");
+    expect(detail).toContain("Reply by calling the reply tool.");
+    expect(detail).not.toContain("Call me Al");
+    expect(detail).not.toContain("memory-context");
+    s.mgr.reload(s.row.id);
+  });
+
   it("an older gateway without the routes: logged once, the turns run without memory", async () => {
     const { v1 } = gateway({ serveMemory: false });
     const s = await nodeSession(v1, ["finance"]);
     await s.turn("one");
     await s.turn("two");
     await Bun.sleep(20);
-    expect(captured[0].systemPrompt.append).not.toContain("<memory-context>");
+    // No block (the core prompt still names the tag, in backticks).
+    expect(captured[0].systemPrompt.append).not.toContain("<memory-context>\n");
     expect(s.warnings).toHaveLength(1);
     expect(s.warnings[0]).toContain("older gateway");
     expect(s.events.some((e) => e.type === "error")).toBe(false);

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { agentSourceForPersona, isAgentLike, remapSource, validateMap } from "../../src/brain-migrate/remap";
+import { agentSourceForPersona, allowedTarget, isAgentLike, remapSource, validateMap } from "../../src/brain-migrate/remap";
+import { profileSourceId } from "../../src/knowledge/scope";
 
 const AGENT = agentSourceForPersona("UTESTUSER1"); // agent-utestuser1
 
@@ -15,6 +16,28 @@ describe("remapSource", () => {
   test("user, shared and public are unchanged", () => {
     for (const s of ["user-ualice", "shared", "public"]) {
       expect(remapSource(s, { agentSource: AGENT })).toEqual({ ok: true, target: s });
+    }
+  });
+  test("a profile source (either form) is a person's source: unchanged, and a map may only keep it as itself", () => {
+    for (const s of [profileSourceId("T0TEAM", "U0ALICE"), profileSourceId("T".repeat(20), "U".repeat(20))]) {
+      expect(remapSource(s, { agentSource: AGENT })).toEqual({ ok: true, target: s });
+      expect(allowedTarget(s, AGENT)).toBe(true);
+      expect(allowedTarget(s, AGENT, s)).toBe(true);
+      expect(remapSource(s, { agentSource: AGENT, map: { [s]: s } })).toEqual({ ok: true, target: s });
+    }
+  });
+  test("a profile is never a map target for another source: not the person's own words", () => {
+    const alice = profileSourceId("T0TEAM", "U0ALICE");
+    const bob = profileSourceId("T0TEAM", "U0BOB");
+    for (const from of ["scratch", "agent-u0old", "user-u0alice", "shared", bob]) {
+      expect(allowedTarget(alice, AGENT, from)).toBe(false);
+      expect(remapSource(from, { agentSource: AGENT, map: { [from]: alice } })).toMatchObject({ ok: false, code: "forbidden_target" });
+      expect(validateMap({ [from]: alice }, AGENT)).toMatch(/profile-/);
+    }
+    // Only ids profileSourceId can produce: a bare or malformed profile id has no mapping.
+    for (const s of ["profile-", "profile-a-b-c", "profile-UPPER", "profile-xyz", "profile--u1"]) {
+      expect(remapSource(s, { agentSource: AGENT })).toMatchObject({ ok: false, code: "no_mapping" });
+      expect(allowedTarget(s, AGENT)).toBe(false);
     }
   });
   test("kb-* is out of scope, anything else has no mapping", () => {
