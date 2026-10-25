@@ -133,33 +133,71 @@ describe("makeGateRunner", () => {
     expect(f.calls()).toBe(0);
   });
 
-  it("shadow never delays dispatch", async () => {
+  it("on: a hanging input builder resolves undefined once the deadline passes and logs input timeout", async () => {
+    const f = fakeAdapter({ kind: "resolve", r: CHIT_CHAT });
+    const r = makeGateRunner({ ...opts, timeoutMs: 30, mode: "on", adapter: f.a });
+    let releaseInput!: (g: GateInput) => void;
+    const input = () => new Promise<GateInput>((res) => (releaseInput = res));
+    expect(await r.gate("C1:8.0", input, "run")).toBeUndefined();
+    expect(lines).toEqual(["[gate] input timeout key=C1:8.0"]);
+    // Resolved before the input was released; a late input changes nothing and the memo was evicted.
+    releaseInput(engaged);
+    await new Promise((res) => setTimeout(res, 10));
+    expect(f.calls()).toBe(0);
+    expect(lines.length).toBe(1);
+    expect(await r.gate("C1:8.0", async () => engaged, "run")).toBe("record");
+  });
+
+  it("shadow returns the caller's actual action and never waits for the decision", async () => {
     const f = fakeAdapter({ kind: "deferred" });
     const r = makeGateRunner({ ...opts, timeoutMs: 1000, mode: "shadow", adapter: f.a });
     const before = counter("slaude_gate_shadow_disagree_total", { would: "record", actual: "run" });
-    const t0 = Date.now();
-    expect(await r.gate("C1:8.0", async () => engaged, "run")).toBe("run");
-    expect(Date.now() - t0).toBeLessThan(20);
+    // Resolves while the adapter is still pending (ordering, not wall clock).
+    expect(await r.gate("C1:9.0", async () => engaged, "run")).toBe("run");
     await until(() => f.calls() === 1);
     expect(lines).toEqual([]);
     f.release(CHIT_CHAT);
     await until(() => lines.length === 1);
-    expect(lines[0]).toContain("mode=shadow source=adapter adapter=fake action=record");
+    expect(lines[0]).toMatch(/^\[gate\] mode=shadow source=adapter adapter=fake action=record ms=\d+ key=C1:9\.0 .* actual=run$/);
     expect(counter("slaude_gate_shadow_disagree_total", { would: "record", actual: "run" })).toBe(before + 1);
     expect(counter("slaude_gate_decisions_total", { action: "record", source: "adapter", mode: "shadow" })).toBeGreaterThan(0);
+
+    const g = fakeAdapter({ kind: "deferred" });
+    const r2 = makeGateRunner({ ...opts, timeoutMs: 1000, mode: "shadow", adapter: g.a });
+    expect(await r2.gate("C1:9.1", async () => engaged, "record")).toBe("record");
+    expect(await r2.gate("C1:9.2", async () => mentioned, "record_doubt")).toBe("record_doubt");
   });
 
   it("shadow: an agreeing decision counts no disagreement, and a failing input escapes nothing", async () => {
     const f = fakeAdapter({ kind: "resolve", r: OPEN_REQUEST });
     const r = makeGateRunner({ ...opts, mode: "shadow", adapter: f.a });
     const before = counter("slaude_gate_shadow_disagree_total", { would: "run", actual: "run" });
-    expect(await r.gate("C1:9.0", async () => engaged, "run")).toBe("run");
+    expect(await r.gate("C1:10.0", async () => engaged, "run")).toBe("run");
     await until(() => lines.length === 1);
+    expect(lines[0]).toEndWith(" actual=run");
     expect(counter("slaude_gate_shadow_disagree_total", { would: "run", actual: "run" })).toBe(before);
 
-    expect(await r.gate("C1:9.1", async () => { throw new Error("boom"); }, "run")).toBe("run");
+    expect(await r.gate("C1:10.1", async () => { throw new Error("boom"); }, "run")).toBe("run");
     await until(() => lines.length === 2);
-    expect(lines[1]).toContain("[gate] mode=shadow input failed key=C1:9.1");
+    expect(lines[1]).toContain("[gate] mode=shadow input failed key=C1:10.1");
+  });
+
+  it("shadow: a throwing logger produces no unhandled rejection", async () => {
+    const seen: unknown[] = [];
+    const onRej = (e: unknown) => seen.push(e);
+    process.on("unhandledRejection", onRej);
+    try {
+      const f = fakeAdapter({ kind: "resolve", r: CHIT_CHAT });
+      const throwing = () => { throw new Error("logger down"); };
+      const r = makeGateRunner({ ...opts, mode: "shadow", adapter: f.a, log: throwing });
+      expect(await r.gate("C1:11.0", async () => engaged, "run")).toBe("run");
+      expect(await r.gate("C1:11.1", async () => { throw new Error("boom"); }, "run")).toBe("run");
+      await until(() => f.calls() === 1);
+      await new Promise((res) => setTimeout(res, 20));
+      expect(seen).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onRej);
+    }
   });
 });
 
@@ -202,7 +240,7 @@ describe("gateRunnerFromEnv", () => {
       const r = await gateRunnerFromEnv(deps);
       expect(r.mode).toBe("on");
       expect(r.contextMessages).toBe(5);
-      expect(await r.gate("C1:10.0", async () => mentioned, "run")).toBe("run");
+      expect(await r.gate("C1:12.0", async () => mentioned, "run")).toBe("run");
       const gateLine = info.mock.calls.map((c) => String(c[0])).find((l) => l.startsWith("[gate]"));
       expect(gateLine).toContain("source=rules adapter=-");
     } finally {

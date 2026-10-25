@@ -28,13 +28,28 @@ export interface GateRunner {
 
 const fmt = (a: Answer) => `${a.value ? "yes" : "no"}:${a.confidence.toFixed(2)}`;
 
-/** One line per decision. Never carries message text. */
-function logLine(key: string, r: GateResult): string {
+/** One line per decision; shadow adds what actually happened. Never carries message text. */
+function logLine(key: string, r: GateResult, actual: GateAction): string {
   const d = r.decision;
   return (
     `[gate] mode=${r.mode} source=${r.source} adapter=${r.adapter ?? "-"} action=${r.action} ms=${r.latencyMs} key=${key} ` +
-    `a=${fmt(d.addressedToAgent)} q=${fmt(d.isQuestionOrRequest)} h=${fmt(d.agentCanHelp)} d=${fmt(d.alreadyAnswered)}`
+    `a=${fmt(d.addressedToAgent)} q=${fmt(d.isQuestionOrRequest)} h=${fmt(d.agentCanHelp)} d=${fmt(d.alreadyAnswered)}` +
+    (r.mode === "shadow" ? ` actual=${actual}` : "")
   );
+}
+
+/** The input builder did not finish inside the decision deadline. */
+class InputTimeout extends Error {}
+
+/** input(), bounded by ms; a late settle is swallowed so it can never be an unhandled rejection. */
+function boundedInput(input: () => Promise<GateInput>, ms: number): Promise<GateInput> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const p = Promise.resolve().then(input);
+  p.catch(() => {});
+  const expiry = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new InputTimeout()), ms);
+  });
+  return Promise.race([p, expiry]).finally(() => clearTimeout(timer));
 }
 
 export function makeGateRunner(o: {
@@ -50,14 +65,16 @@ export function makeGateRunner(o: {
   const ttl = o.memoTtlMs ?? 60_000;
   const memo = new Map<string, Promise<GateResult>>();
 
-  async function compute(key: string, input: () => Promise<GateInput>): Promise<GateResult> {
+  /** The whole path (input + decide) is bounded by timeoutMs. */
+  async function compute(key: string, input: () => Promise<GateInput>, actual: GateAction): Promise<GateResult> {
     const t0 = Date.now();
-    const gi = await input();
+    const gi = await boundedInput(input, o.timeoutMs);
     let decision: GateDecision | null = null;
     if (o.adapter) {
       try {
-        // decide() applies the timeout, validates and counts the request.
-        decision = toGateDecision(await decide(o.adapter, { state: gi, questions: GATE_QUESTIONS }, o.timeoutMs));
+        // decide() applies the (remaining) timeout, validates and counts the request.
+        const left = Math.max(1, o.timeoutMs - (Date.now() - t0));
+        decision = toGateDecision(await decide(o.adapter, { state: gi, questions: GATE_QUESTIONS }, left));
       } catch {
         decision = null; // fall back to rules; an error is never read as "no"
       }
@@ -73,21 +90,21 @@ export function makeGateRunner(o: {
       latencyMs: Date.now() - t0,
     };
     m.gateDecisionsTotal.inc({ action: r.action, source: r.source, mode: r.mode });
-    log(logLine(key, r));
+    log(logLine(key, r, actual));
     return r;
   }
 
   /** The shared in-flight decision for key, and whether this call started it. */
-  function decision(key: string, input: () => Promise<GateInput>): { p: Promise<GateResult>; fresh: boolean } {
+  function decision(key: string, input: () => Promise<GateInput>, actual: GateAction): { p: Promise<GateResult>; fresh: boolean } {
     const hit = memo.get(key);
     if (hit) return { p: hit, fresh: false };
-    const p = compute(key, input);
+    const p = compute(key, input, actual);
     memo.set(key, p);
     const evict = () => {
       if (memo.get(key) === p) memo.delete(key);
     };
     setTimeout(evict, ttl).unref?.();
-    p.catch(evict); // a failed input build may be retried by a later delivery
+    p.catch(evict); // a failed or timed-out input build may be retried by a later delivery
     return { p, fresh: true };
   }
 
@@ -96,20 +113,27 @@ export function makeGateRunner(o: {
     contextMessages: o.contextMessages,
     async gate(key, input, actual) {
       if (o.mode === "off") return undefined;
-      const { p, fresh } = decision(key, input);
+      const { p, fresh } = decision(key, input, actual);
       if (o.mode === "shadow") {
         // Detached: dispatch never waits, and nothing can escape as an unhandled rejection.
         void p
           .then((r) => {
             if (fresh && r.action !== actual) m.gateShadowDisagreeTotal.inc({ would: r.action, actual });
           })
-          .catch(() => log(`[gate] mode=shadow input failed key=${key}`));
-        return "run";
+          .catch((e) => {
+            try {
+              log(e instanceof InputTimeout ? `[gate] input timeout key=${key}` : `[gate] mode=shadow input failed key=${key}`);
+            } catch {
+              // a throwing logger must not become an unhandled rejection
+            }
+          });
+        // Shadow acts exactly as off.
+        return actual;
       }
       try {
         return (await p).action;
-      } catch {
-        log(`[gate] mode=on input failed key=${key}; keeping today's path`);
+      } catch (e) {
+        log(e instanceof InputTimeout ? `[gate] input timeout key=${key}` : `[gate] mode=on input failed key=${key}; keeping today's path`);
         return undefined;
       }
     },
