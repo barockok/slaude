@@ -6,7 +6,7 @@ import { brainCall, brainEnabled } from "./brain";
 import { brainThink, sdkThinkClient } from "./brain-think";
 import { gather } from "./gather";
 import { gatedBrainCall, soleSlackSender, type ApprovalReq, type ApprovalRes, type GateInput, type TurnSender } from "./gated-dispatch";
-import { AGENT_SOURCE, SHARED_SOURCE, kbSourceId, speakerProfileSource, userSourceId, type BrainScope } from "./scope";
+import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, speakerProfileSource, userSourceId, type BrainScope } from "./scope";
 import { composePage, parseFrontmatter, type TypedPageInput } from "./memory-pages";
 import { SUPERSEDED_TAG, supersededSlugs } from "./memory-trail";
 import { agentIdReady } from "./agent-identity";
@@ -255,7 +255,7 @@ export const MEMORY_ABOUT_REFUSAL = "refused: memory_about only answers for the 
 
 /** One page memory_about shows (spec §8.3 "what do you know about me?"). */
 export interface MemoryEntry {
-  where: "profile" | "agent" | "user" | "shared";
+  where: "profile" | "agent" | "user" | "shared" | "public";
   slug: string;
   type: string;
   confidence: string;
@@ -263,15 +263,16 @@ export interface MemoryEntry {
   body: string;
 }
 
-const WHERE_ORDER: MemoryEntry["where"][] = ["profile", "user", "agent", "shared"];
+const WHERE_ORDER: MemoryEntry["where"][] = ["profile", "user", "agent", "shared", "public"];
 const WHERE_LABEL: Record<MemoryEntry["where"], string> = {
   profile: "their profile",
   user: "their /1on1 notes",
   agent: "the agent's notes",
   shared: "the team knowledge base",
+  public: "the public notes",
 };
 
-/** One block per entry, profile first, then /1on1 notes, agent notes, team KB. Empty list → "". */
+/** One block per entry, profile first, then /1on1 notes, agent notes, team KB, public notes. Empty list → "". */
 export function formatMemoryAbout(entries: MemoryEntry[]): string {
   const sorted = [...entries].sort((a, b) => WHERE_ORDER.indexOf(a.where) - WHERE_ORDER.indexOf(b.where));
   return sorted
@@ -309,57 +310,71 @@ function readPage(raw: unknown): { meta: Record<string, string>; body: string; s
   return { meta, body: r.compiled_truth, superseded };
 }
 
+/** Page types that hold memory about a person (memory_about lists these). */
+const ABOUT_TYPES = ["profile", "person-note", "correction", "team-fact"] as const;
+/** Max pages of one type listed per source. */
+const ABOUT_LIST_LIMIT = 500;
+
 /**
- * The candidate pages about `userId` in what the turn reads: the person's own
- * profile (only when it is the one in this scope), and `people/<userId>` in
- * the agent's slices, their own `user-` slice (in the scope only in their own
- * /1on1) and `shared`, plus the `shared/people/<userId>` team fact. Public and
- * KB sources are not memory about a person and are not read.
+ * The memory sources in what the turn reads, and the fixed slugs each holds
+ * for a person's pages written before `subject` existed: the person's own
+ * profile (only when it is the one in this scope; `profile`), and
+ * `people/<userId>` in the agent's slices, their own `user-` slice (in the
+ * scope only in their own /1on1), `shared` (plus the `shared/people/<userId>`
+ * team fact) and `public`. KB sources are operator material and not read.
  */
-function memoryCandidates(scope: BrainScope, sender: TurnSender): Array<{ where: MemoryEntry["where"]; source: string; slug: string }> {
-  const out: Array<{ where: MemoryEntry["where"]; source: string; slug: string }> = [];
-  const readable = [...new Set(scope.allowedSources)];
+function memorySources(scope: BrainScope, sender: TurnSender): Array<{ where: MemoryEntry["where"]; source: string; fixed: string[] }> {
+  const out: Array<{ where: MemoryEntry["where"]; source: string; fixed: string[] }> = [];
   const profile = speakerProfileSource(sender.teamId, sender.userId);
-  if (profile !== null && readable.includes(profile)) out.push({ where: "profile", source: profile, slug: "profile" });
   const note = `people/${sender.userId}`;
-  for (const source of readable) {
-    if (source === userSourceId(sender.userId)) out.push({ where: "user", source, slug: note });
-    else if (source === AGENT_SOURCE || source.startsWith("agent-")) out.push({ where: "agent", source, slug: note });
-    else if (source === SHARED_SOURCE) {
-      out.push({ where: "shared", source, slug: note }, { where: "shared", source, slug: `shared/${note}` });
-    }
+  for (const source of new Set(scope.allowedSources)) {
+    if (source === profile) out.push({ where: "profile", source, fixed: ["profile"] });
+    else if (source === userSourceId(sender.userId)) out.push({ where: "user", source, fixed: [note] });
+    else if (source === AGENT_SOURCE || source.startsWith("agent-")) out.push({ where: "agent", source, fixed: [note] });
+    else if (source === SHARED_SOURCE) out.push({ where: "shared", source, fixed: [note, `shared/${note}`] });
+    else if (source === PUBLIC_SOURCE) out.push({ where: "public", source, fixed: [note] });
   }
   return out;
 }
 
+const rowSlugs = (rows: unknown): string[] =>
+  Array.isArray(rows) ? rows.map((r) => (r as { slug?: unknown } | null)?.slug).filter((x): x is string => typeof x === "string") : [];
+
 /**
- * Read each candidate with get_page limited to its own source (one source of
- * the turn's read union, so no new read path widens the scope), dropping
- * pages tagged superseded in that same source.
+ * Every page about the sender in what the turn reads. Per memory source, one
+ * source at a time (each op limited to one source of the turn's read union,
+ * so no new read path widens the scope): list the pages of each ABOUT_TYPES
+ * type plus the fixed slugs, drop pages tagged superseded in that source, and
+ * keep a page whose `subject` is the sender. A page with no `subject` is kept
+ * only at a fixed slug or in the person's own profile source.
  */
 async function collectMemoryAbout(call: NonNullable<BrainToolDeps["call"]>, scope: BrainScope, sender: TurnSender): Promise<MemoryEntry[]> {
   const entries: MemoryEntry[] = [];
-  const supersededIn = new Map<string, Set<string>>();
-  for (const c of memoryCandidates(scope, sender)) {
-    const only: BrainScope = { ...scope, sourceId: c.source, allowedSources: [c.source] };
-    const pg = readPage(await getPageOrNull(call, c.slug, only));
-    if (!pg || pg.superseded) continue;
-    let tagged = supersededIn.get(c.source);
-    if (!tagged) {
-      tagged = await supersededSlugs(call, scope, [c.source]);
-      supersededIn.set(c.source, tagged);
+  for (const m of memorySources(scope, sender)) {
+    const only: BrainScope = { ...scope, sourceId: m.source, allowedSources: [m.source] };
+    const listed = new Set<string>();
+    for (const type of ABOUT_TYPES) {
+      for (const slug of rowSlugs(await call("list_pages", { type, limit: ABOUT_LIST_LIMIT }, only))) listed.add(slug);
     }
-    if (tagged.has(c.slug)) continue;
-    entries.push({
-      where: c.where,
-      slug: c.slug,
-      type: pg.meta.type ?? "untyped",
-      // A page with no confidence is the agent's own record unless the person
-      // wrote it into their profile: inferred, except in the profile.
-      confidence: pg.meta.confidence ?? (c.where === "profile" ? "told" : "inferred"),
-      as_of: pg.meta.as_of ?? "unknown",
-      body: pg.body,
-    });
+    const slugs = [...new Set([...m.fixed, ...listed])];
+    const tagged = await supersededSlugs(call, scope, [m.source]);
+    for (const slug of slugs) {
+      if (tagged.has(slug)) continue;
+      const pg = readPage(await getPageOrNull(call, slug, only));
+      if (!pg || pg.superseded) continue;
+      const subject = pg.meta.subject;
+      if (subject !== undefined ? subject !== sender.userId : !(m.fixed.includes(slug) || m.where === "profile")) continue;
+      entries.push({
+        where: m.where,
+        slug,
+        type: pg.meta.type ?? "untyped",
+        // A page with no confidence is the agent's own record unless it is in
+        // the person's profile: inferred, except in the profile.
+        confidence: pg.meta.confidence ?? (m.where === "profile" ? "told" : "inferred"),
+        as_of: pg.meta.as_of ?? "unknown",
+        body: pg.body,
+      });
+    }
   }
   return entries;
 }
@@ -486,7 +501,11 @@ export const brainHandlers = {
       const shape = pageShapeError(pg, target);
       if (shape) return err(shape);
       const source = pg.source ?? (speaker !== undefined ? `told by ${speaker}` : undefined);
-      const c = composePage({ ...pg, ...(source !== undefined ? { source } : {}) }, now);
+      // The call's subject goes into every typed page (a profile's is its
+      // speaker), so memory_about finds a person's pages under any slug.
+      const subject = pg.type !== undefined ? (p.subject ?? speaker) : undefined;
+      const { subject: _ignored, ...page } = pg;
+      const c = composePage({ ...page, ...(source !== undefined ? { source } : {}), ...(subject !== undefined ? { subject } : {}) }, now);
       if ("error" in c) return err(c.error);
       composed.push({ slug: pg.slug, content: c.content, ...(pg.supersedes !== undefined ? { supersedes: pg.supersedes } : {}) });
     }

@@ -3,7 +3,9 @@
  * frontmatter `kb_memoize` writes. Pure, no I/O.
  *
  * A typed page is `---`, then `type`, `as_of` and `confidence`, then
- * `source`, `supersedes` and the type's own fields, then `---` and the body.
+ * `source`, `subject`, `supersedes` and the type's own fields, then `---` and
+ * the body. `subject` is the Slack user id the page is about (memory_about
+ * finds a person's pages by it).
  * Values are one line each. Free text (source, supersedes, every field) is
  * always a JSON string, which is a valid YAML double-quoted scalar, so any
  * YAML parser (gbrain's included) reads back exactly the string written; a
@@ -31,12 +33,14 @@ export interface TypedPageInput {
   type?: string;
   confidence?: string;
   source?: string;
+  /** Slack user id the page is about. */
+  subject?: string;
   supersedes?: string;
   fields?: Record<string, string>;
 }
 
 /** Keys composePage writes itself; a type's fields may not reuse them. */
-const COMMON_KEYS = new Set(["type", "as_of", "confidence", "source", "supersedes", "superseded_by"]);
+const COMMON_KEYS = new Set(["type", "as_of", "confidence", "source", "subject", "supersedes", "superseded_by"]);
 
 /** Commitment keys, in the order they are written (global constraints). */
 const COMMITMENT_KEYS = ["promiser", "beneficiary", "thread", "due", "check", "on_no_change", "status"] as const;
@@ -62,8 +66,8 @@ const isoDate = (d: Date): string => d.toISOString().slice(0, 10);
  */
 export function composePage(p: TypedPageInput, now: Date): { content: string } | { error: string } {
   if (p.type === undefined) {
-    if (p.confidence !== undefined || p.source !== undefined || p.supersedes !== undefined || p.fields !== undefined) {
-      return { error: `refused: confidence, source, supersedes and fields need a type (one of ${PAGE_TYPES.join(", ")})` };
+    if (p.confidence !== undefined || p.source !== undefined || p.subject !== undefined || p.supersedes !== undefined || p.fields !== undefined) {
+      return { error: `refused: confidence, source, subject, supersedes and fields need a type (one of ${PAGE_TYPES.join(", ")})` };
     }
     return redactSecrets(p.content) === p.content ? { content: p.content } : { error: CREDENTIAL_REFUSAL };
   }
@@ -104,13 +108,14 @@ export function composePage(p: TypedPageInput, now: Date): { content: string } |
   if (fields.on_no_change !== undefined && !ON_NO_CHANGE.has(fields.on_no_change)) {
     return { error: "refused: on_no_change must be close-in-one-line or silent" };
   }
-  for (const [k, v] of [["source", p.source], ["supersedes", p.supersedes]] as const) {
+  for (const [k, v] of [["source", p.source], ["subject", p.subject], ["supersedes", p.supersedes]] as const) {
     if (v !== undefined && /[\r\n]/.test(v)) return { error: `refused: ${k} must be one line of text` };
   }
 
   const lines = ["---", `type: ${type}`, `as_of: ${isoDate(now)}`];
   if (confidence !== undefined) lines.push(`confidence: ${confidence}`);
   if (p.source !== undefined) lines.push(`source: ${JSON.stringify(p.source)}`);
+  if (p.subject !== undefined) lines.push(`subject: ${JSON.stringify(p.subject)}`);
   if (p.supersedes !== undefined) lines.push(`supersedes: ${JSON.stringify(p.supersedes)}`);
   for (const k of fieldOrder) lines.push(`${k}: ${fieldValue(k, fields[k]!)}`);
   lines.push("---");

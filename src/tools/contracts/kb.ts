@@ -83,7 +83,7 @@ export const kbContract = {
         subject: z
           .string()
           .optional()
-          .describe(`Slack user id the pages are about. With target "profile" it must be the current speaker.`),
+          .describe(`Slack user id the pages are about; written into each typed page as \`subject\`. Pass it for any page about a person. With target "profile" it must be the current speaker.`),
       },
     },
     memory_about: {

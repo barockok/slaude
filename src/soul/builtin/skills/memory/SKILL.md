@@ -9,6 +9,7 @@ version: "{{SLAUDE_VERSION}}"
 Each page carries a `type`, a `confidence` (`told` or `inferred`), a `source`,
 and optionally `supersedes`. `kb_memoize` fills the common frontmatter
 (`as_of` today, `source` defaults to `told by <speaker>` on a profile).
+Pass `subject` (the Slack user id) for any page about a person.
 
 ### Where each kind lives
 | `type` | `target` + slug | Holds |

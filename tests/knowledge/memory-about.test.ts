@@ -5,10 +5,10 @@
  * for the one Slack sender whose own turn this is. Against the fake brain,
  * which scopes reads to `allowedSources` the way gbrain does.
  */
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { brainHandlers, formatMemoryAbout, MEMORY_ABOUT_REFUSAL, type BrainToolDeps, type MemoryEntry } from "../../src/knowledge/mcp-tools";
-import type { GateInput } from "../../src/knowledge/gated-dispatch";
-import { agentSourceId, profileSourceId, resolveBrainScope, SHARED_SOURCE, userSourceId, type BrainScope } from "../../src/knowledge/scope";
+import { resetStandingGrants, type GateInput } from "../../src/knowledge/gated-dispatch";
+import { agentSourceId, profileSourceId, PUBLIC_SOURCE, resolveBrainScope, SHARED_SOURCE, userSourceId, type BrainScope } from "../../src/knowledge/scope";
 import { composePage } from "../../src/knowledge/memory-pages";
 import { SUPERSEDED_TAG } from "../../src/knowledge/memory-trail";
 import { fakeBrain } from "../memory/fake-brain";
@@ -21,8 +21,9 @@ const BOB = { userId: "U0BOB", teamId: TEAM, origin: "slack" as const };
 beforeAll(() => {
   process.env.SLAUDE_AGENT_ID ??= AGENT;
 });
+beforeEach(() => resetStandingGrants());
 
-const page = (body: string, over: { type: string; confidence?: string }, day: string) => {
+const page = (body: string, over: { type: string; confidence?: string; subject?: string }, day: string) => {
   const c = composePage({ slug: "x", content: body, ...over }, new Date(`${day}T12:00:00Z`));
   if ("error" in c) throw new Error(c.error);
   return c.content;
@@ -142,6 +143,60 @@ describe("memory_about for the person asking", () => {
     expect(out).not.toContain("Worried about the release date.");
     expect(out).toContain("Shared note on Alice.");
     expect(out).toContain("Call me Al.");
+  });
+
+  test("a corrected person-note under a new slug appears; the one it supersedes does not", async () => {
+    const b = fakeBrain();
+    await seed(b);
+    const s = setup(b);
+    const w = await brainHandlers.kb_memoize({
+      subject: "U0ALICE",
+      pages: [{ slug: "people/U0ALICE-2", content: "Prefers a call over a long thread.", summary: "s", type: "person-note", supersedes: "people/U0ALICE" }],
+    }, s.deps);
+    expect(w.isError).toBeUndefined();
+    const out = text(await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps));
+    expect(out).toContain("(slug people/U0ALICE-2)\nPrefers a call over a long thread.");
+    expect(out).not.toContain("Prefers a diff over a description.");
+  });
+
+  test("a correction-* page in the profile appears", async () => {
+    const b = fakeBrain();
+    await seed(b);
+    const s = setup(b);
+    const w = await brainHandlers.kb_memoize({
+      target: "profile",
+      pages: [{ slug: "correction-name", content: "Not Alicia: Alice.", summary: "s", type: "correction", confidence: "told" }],
+    }, s.deps);
+    expect(w.isError).toBeUndefined();
+    const out = text(await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps));
+    expect(out).toContain("[told] correction, from their profile, as of ");
+    expect(out).toContain("(slug correction-name)\nNot Alicia: Alice.");
+  });
+
+  test("a typed page about someone else is not shown, wherever it lives", async () => {
+    const b = fakeBrain();
+    await seed(b);
+    const s = setup(b);
+    await brainHandlers.kb_memoize({ subject: "U0BOB", pages: [{ slug: "people/bob-notes", content: "Bob reviews fast.", summary: "s", type: "person-note" }] }, s.deps);
+    // A fixed slug carrying another person's subject is not shown either.
+    await put(b, SHARED_SOURCE, "people/U0ALICE", page("Mislabelled.", { type: "person-note", subject: "U0BOB" }, "2026-10-24"));
+    const out = text(await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps));
+    expect(out).not.toContain("Bob reviews fast.");
+    expect(out).not.toContain("Mislabelled.");
+    expect(out).toContain("Prefers a diff over a description.");
+  });
+
+  test("a public channel reads the public source", async () => {
+    const b = fakeBrain();
+    await seed(b);
+    await put(b, PUBLIC_SOURCE, "notes/alice-ci", page("Asked about CI twice.", { type: "person-note", subject: "U0ALICE" }, "2026-10-24"));
+    await put(b, PUBLIC_SOURCE, "people/U0ALICE", page("Old public note.", { type: "person-note" }, "2026-10-23"));
+    const s = setup(b, { channelTrust: "public" });
+    const out = text(await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps));
+    expect(out).toContain("[inferred] person-note, from the public notes, as of 2026-10-24 (slug notes/alice-ci)\nAsked about CI twice.");
+    expect(out).toContain("(slug people/U0ALICE)\nOld public note.");
+    expect(out).toContain("Call me Al.");
+    expect(out).not.toContain("Prefers a diff"); // the agent slice is not in a public channel's scope
   });
 
   test("nothing held: says so", async () => {

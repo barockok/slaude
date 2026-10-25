@@ -43,6 +43,15 @@ describe("composePage", () => {
     ].join("\n"));
   });
 
+  test("subject: JSON-quoted after source; needs a type; not a field name", () => {
+    const c = content(composePage(page({ type: "person-note", source: "told by U0BOB", subject: "U0ALICE" }), NOW));
+    expect(c.split("\n").slice(3, 6)).toEqual(["confidence: inferred", 'source: "told by U0BOB"', 'subject: "U0ALICE"']);
+    expect(parseFrontmatter(c).meta.subject).toBe("U0ALICE");
+    expect(error(composePage(page({ subject: "U0ALICE" }), NOW))).toContain("need a type");
+    expect(error(composePage(page({ type: "person-note", fields: { subject: "U0BOB" } }), NOW))).toContain("common key");
+    expect(error(composePage(page({ type: "person-note", subject: "U0A\nx" }), NOW))).toContain("one line");
+  });
+
   test("profile defaults to told and refuses inferred", () => {
     expect(parseFrontmatter(content(composePage(page({ slug: "profile", type: "profile" }), NOW))).meta.confidence).toBe("told");
     expect(error(composePage(page({ slug: "profile", type: "profile", confidence: "inferred" }), NOW))).toContain("told");

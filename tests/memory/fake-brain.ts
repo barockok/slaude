@@ -1,12 +1,13 @@
 /**
  * An in-memory stand-in for the brain ops the memory provider and kb_memoize
- * use (get_page, put_page, add_tag, remove_tag, list_pages by tag, add_timeline_entry,
+ * use (get_page, put_page, add_tag, remove_tag, list_pages by tag and type, add_timeline_entry,
  * get_timeline), enforcing
  * sources the way the real engine scopes them: writes land in
  * `scope.sourceId`, reads see only `scope.allowedSources`. A page's content
  * is kept per source (`contents`); get_page returns the first readable copy.
  */
 import type { BrainScope } from "../../src/knowledge/scope";
+import { parseFrontmatter } from "../../src/knowledge/memory-pages";
 
 export function fakeBrain() {
   /** `source\0slug` → timeline rows. */
@@ -41,9 +42,13 @@ export function fakeBrain() {
       }
       case "list_pages": {
         const want = params.tag === undefined ? null : String(params.tag);
+        // A type filter matches the page's frontmatter `type`, as gbrain
+        // derives a page's type from it.
+        const wantType = params.type === undefined ? null : String(params.type);
         return [...pages.keys()]
           .map((k) => k.split("\u0000") as [string, string])
           .filter(([src, sl]) => scope.allowedSources.includes(src) && (want === null || (tags.get(key(src, sl))?.has(want) ?? false)))
+          .filter(([src, sl]) => wantType === null || parseFrontmatter(contents.get(key(src, sl)) ?? "").meta.type === wantType)
           .map(([, sl]) => ({ slug: sl }));
       }
       case "add_timeline_entry": {

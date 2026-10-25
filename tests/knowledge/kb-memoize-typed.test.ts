@@ -330,3 +330,26 @@ describe("kb_memoize page checks", () => {
     expect(s.writes).toEqual([]);
   });
 });
+
+describe("kb_memoize subject", () => {
+  test("the call's subject is written into every typed page; untyped pages are left as written", async () => {
+    const s = setup();
+    const r = await brainHandlers.kb_memoize({
+      subject: "U0BOB",
+      pages: [
+        { slug: "people/U0BOB-style", content: "Likes diffs.", summary: "s", type: "person-note" },
+        { slug: "notes/raw", content: "plain", summary: "s" },
+      ],
+    }, s.deps);
+    expect(r.isError).toBeUndefined();
+    const own = agentSourceId(AGENT);
+    expect(parseFrontmatter(s.brain.contentOf(own, "people/U0BOB-style")!).meta.subject).toBe("U0BOB");
+    expect(s.brain.contentOf(own, "notes/raw")).toBe("plain");
+  });
+
+  test("a profile page's subject is its speaker, also when the call names none", async () => {
+    const s = setup();
+    await brainHandlers.kb_memoize({ pages: [profilePage], target: "profile" }, s.deps);
+    expect(parseFrontmatter(s.brain.contentOf(profileSourceId(TEAM, "U0ALICE"), "profile")!).meta.subject).toBe("U0ALICE");
+  });
+});
