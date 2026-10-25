@@ -48,6 +48,10 @@ export const GATEWAY_ONLY_ENV_NAMES: readonly string[] = [
   // bundle and the voice loop gets it as SLAUDE_VOICE_LOOP_API_KEY; no agent
   // child (which runs Bash on speech-driven requests) may hold it.
   "SLAUDE_VOICE_API_KEY",
+  // The decision gate (phase B): its config names the adapter and its key
+  // reference; the key variable itself is the adapter's credential.
+  "SLAUDE_DECISION_CONFIG",
+  "TYPESAFE_API_KEY",
 ];
 
 /** Every variable starting with one of these is gateway-only. Case-sensitive. */

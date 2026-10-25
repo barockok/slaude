@@ -518,6 +518,11 @@ export const env = {
    */
   autoEvolve: () => opt("SLAUDE_AUTO_EVOLVE", "1") !== "0",
   /**
+   * Raw `SLAUDE_DECISION_CONFIG` JSON (decision gate, phase B); parsed and
+   * validated by `parseDecisionConfig`. Gateway-only. Empty when unset.
+   */
+  decisionConfigRaw: () => opt("SLAUDE_DECISION_CONFIG"),
+  /**
    * Minimum substantive tool calls in a turn before auto-evolve fires (a
    * mutating tool is also required). `SLAUDE_AUTO_EVOLVE_MIN_TOOLS`, default
    * 4; a non-integer or a value below 1 falls back to 4.

@@ -41,6 +41,11 @@ describe("the gateway-only variable list", () => {
     expect(isGatewayOnlyEnv("PERSONA_SUPPORT_XOXP")).toBe(true);
   });
 
+  test("the decision config and its key variable are gateway-only", () => {
+    expect(isGatewayOnlyEnv("SLAUDE_DECISION_CONFIG")).toBe(true);
+    expect(isGatewayOnlyEnv("TYPESAFE_API_KEY")).toBe(true);
+  });
+
   test("leaves out what a node legitimately holds", () => {
     for (const name of [
       "SLAUDE_NODE_TOKEN",
