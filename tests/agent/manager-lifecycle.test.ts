@@ -752,6 +752,18 @@ describe("AgentManager lifecycle", () => {
     await shutdown(mgr, row.id);
   });
 
+  it("/remote read aliases are read-only and ignored, like their built-ins", async () => {
+    const { fs, mgr, row } = await runEvolveTurn(["mcp__remote__read", "mcp__remote__grep", "mcp__remote__glob", "mcp__remote__read"]);
+    expect(fs.users.length).toBe(1);
+    await shutdown(mgr, row.id);
+  });
+
+  it("/remote write aliases count as mutating, like their built-ins", async () => {
+    const { fs, mgr, row } = await runEvolveTurn(["mcp__remote__bash", "mcp__remote__edit", "WebFetch", "WebSearch"]);
+    expect(fs.users.length).toBe(2);
+    await shutdown(mgr, row.id);
+  });
+
   it("SLAUDE_AUTO_EVOLVE_MIN_TOOLS overrides the bar", async () => {
     process.env.SLAUDE_AUTO_EVOLVE_MIN_TOOLS = "2";
     const { fs, mgr, row } = await runEvolveTurn(["Bash", "Write"]);

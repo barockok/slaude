@@ -1642,7 +1642,9 @@ export class AgentManager extends EventEmitter {
     )) return false;
     let substantive = 0;
     let mutating = false;
-    for (const t of tools) {
+    for (const raw of tools) {
+      // A /remote alias is its built-in run elsewhere: classify it as one.
+      const t = REMOTE_ALIAS_BUILTIN.get(raw) ?? raw;
       if (AUTO_EVOLVE_IGNORE.has(t)) continue;
       if (t.startsWith("mcp__slaude_surface__")) continue;   // interaction output ≠ substantive work
       if (t.startsWith("mcp__slaude_runtime__")) continue;   // housekeeping ≠ substantive work
@@ -1666,6 +1668,9 @@ const AUTO_EVOLVE_IGNORE = new Set([
   "LS",
   "TodoWrite",
 ]);
+
+/** `/remote` alias (`mcp__remote__read`) → the built-in it stands for (`Read`). */
+const REMOTE_ALIAS_BUILTIN = new Map(Object.entries(REMOTE_TOOL_ALIASES).map(([builtin, alias]) => [alias, builtin]));
 
 /** Built-in tools that mutate state; any external `mcp__` tool also counts. */
 const MUTATING_TOOLS = new Set(["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"]);
