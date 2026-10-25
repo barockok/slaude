@@ -438,6 +438,26 @@ describe("AgentManager lifecycle", () => {
     await shutdown(mgr, row.id);
   });
 
+  it("mounts the built-in slaude plugin next to the $SLAUDE_HOME plugin", async () => {
+    const { BUILTIN_PLUGIN_DIR } = await import("../../src/soul/builtin");
+    const { paths } = await import("../../src/config/home");
+    const want = { type: "local", path: BUILTIN_PLUGIN_DIR, skipMcpDiscovery: true };
+    // gateway/mono, then a node (an MCP resolver installed)
+    for (const node of [false, true]) {
+      const mgr = new AgentManager();
+      if (node) mgr.setMcpResolver(async () => ({}));
+      const row = await mgr.ensureSession(thread());
+      const fs = plan();
+      await mgr.sendMessage(row.id, "hello");
+      await until(() => fs.options !== null, 3000, "boot");
+      expect(fs.options.plugins.slice(0, 2)).toEqual([
+        { type: "local", path: paths.home, skipMcpDiscovery: true },
+        want,
+      ]);
+      await shutdown(mgr, row.id);
+    }
+  });
+
   // WS-C §4.2: a node's async resolver returns the bridged servers next to the
   // shims; they reach Options.mcpServers and the <mcp-servers> block.
   it("an async MCP resolver's bridged servers are mounted and listed in <mcp-servers>", async () => {

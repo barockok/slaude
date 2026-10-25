@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { paths } from "../config/home";
 import { brainEnabled } from "../knowledge/brain";
 import { renderRuntimeFile } from "./runtime/render";
+import { renderSkillIndex } from "./builtin";
 
 /**
  * Runtime baseline — non-negotiable rules every slaude process inherits.
@@ -196,8 +197,7 @@ function knowledgeText(brain: boolean): Record<"KB_FALLBACK" | "KB_READ" | "KB_T
 }
 
 export function runtimeBaseline(brain: boolean): string {
-  const t = knowledgeText(brain);
-  return renderRuntimeFile("core.md", t);
+  return renderRuntimeFile("core.md", { ...knowledgeText(brain), SKILL_INDEX: renderSkillIndex() });
 }
 
 /**

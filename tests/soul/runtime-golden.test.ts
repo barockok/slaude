@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { paths } from "../../src/config/home";
 import { sessionModeBlock } from "../../src/agent/session-mode";
 import { runtimeBaseline } from "../../src/soul/loader";
+import { renderSkillIndex } from "../../src/soul/builtin";
 import { renderRuntimeFile, RuntimeTemplateError } from "../../src/soul/runtime/render";
 
 const GOLDEN = join(import.meta.dir, "__golden__");
@@ -13,7 +14,10 @@ const golden = (name: string) => readFileSync(join(GOLDEN, `${name}.txt`), "utf8
 const norm = (s: string) => s.split(paths.knowledge).join("<KNOWLEDGE_ROOT>");
 
 function expectSame(actual: string, name: string) {
-  const want = golden(name);
+  expectSameText(actual, golden(name), name);
+}
+
+function expectSameText(actual: string, want: string, name: string) {
   if (actual !== want) {
     const a = actual.split("\n");
     const w = want.split("\n");
@@ -32,8 +36,13 @@ const prov = { name: "dev-box", kind: "sandbox", trust: "provisioned" as const }
 const remote = (env: typeof personal | typeof prov) => ({ userId: "U0TESTUSR", dir: "/work", env });
 
 describe("runtime prompt goldens", () => {
-  test("baseline with brain", () => expectSame(norm(runtimeBaseline(true)), "baseline-brain"));
-  test("baseline without brain", () => expectSame(norm(runtimeBaseline(false)), "baseline-nobrain"));
+  // The baseline goldens are the pre-R text; the one allowed difference (the
+  // Skill evolution section, now slaude:skill-authoring, replaced by the skill
+  // index) is applied here and pinned in tests/soul/builtin.test.ts.
+  const section = golden("skill-evolution-section").slice(0, -1);
+  const postR = (name: string) => golden(name).replace(section, renderSkillIndex());
+  test("baseline with brain", () => expectSameText(norm(runtimeBaseline(true)), postR("baseline-brain"), "baseline-brain"));
+  test("baseline without brain", () => expectSameText(norm(runtimeBaseline(false)), postR("baseline-nobrain"), "baseline-nobrain"));
   test("mode locked", () => expectSame(sessionModeBlock(lock(null)), "mode-locked"));
   test("mode open with scope", () => expectSame(sessionModeBlock(lock("only talk about the release")), "mode-open-scope"));
   test("mode open without scope", () => expectSame(sessionModeBlock(lock("  ")), "mode-open-noscope"));
@@ -51,6 +60,7 @@ describe("renderRuntimeFile", () => {
     expect(() => renderRuntimeFile("modules/remote.md", { WHERE: "x", EXTRA: "y" })).toThrow(/modules\/remote\.md.*EXTRA/);
   });
   test("leaves ${...} text alone", () => {
-    expect(renderRuntimeFile("core.md", { KB_FALLBACK: "a", KB_READ: "b", KB_TOOLS: "c" })).toContain("${SLAUDE_SKILL_ARGS}");
+    // core.md no longer holds any ${...} text; the built-in skill file does.
+    expect(renderRuntimeFile("../builtin/skills/skill-authoring/SKILL.md", { SLAUDE_VERSION: "1" })).toContain("${SLAUDE_SKILL_ARGS}");
   });
 });

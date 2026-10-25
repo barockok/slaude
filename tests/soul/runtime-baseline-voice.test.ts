@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { runtimeBaseline } from "../../src/soul/loader";
+import { listBuiltinSkills } from "../../src/soul/builtin";
 
 describe("runtime baseline — voice", () => {
   const b = runtimeBaseline(true);
@@ -13,8 +14,13 @@ describe("runtime baseline — voice", () => {
     expect(b).toContain("Never repeat what someone told you about how they want to be treated"));
 });
 
-describe("runtime baseline — skill evolution", () => {
-  const b = runtimeBaseline(true);
+// The Skill evolution section moved into the built-in skill slaude:skill-authoring.
+describe("slaude:skill-authoring — skill evolution", () => {
+  const b = listBuiltinSkills().find((s) => s.name === "skill-authoring")!.body;
+  it("is no longer in the runtime baseline", () => {
+    expect(runtimeBaseline(true)).not.toContain("## Skill evolution");
+    expect(runtimeBaseline(false)).not.toContain("## Skill evolution");
+  });
   it("uses the raised bar, not 'more than one tool call'", () => {
     expect(b).not.toContain("more than one tool call");
     expect(b).toMatch(/took several\s+steps/);

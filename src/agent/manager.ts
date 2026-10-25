@@ -28,6 +28,7 @@ import { paths } from "../config/home";
 import { env } from "../config/env";
 import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plugins";
 import { soulSystemBlock } from "../soul/loader";
+import { BUILTIN_PLUGIN_DIR } from "../soul/builtin";
 import { personaSoulText } from "../persona/soul-source";
 import { soulData, effectiveSoulForChannel } from "../soul/extract";
 import { SoulDataSchema } from "../soul/data";
@@ -1177,7 +1178,10 @@ export class AgentManager extends EventEmitter {
     // skipMcpDiscovery prevents the SDK from reading slaude's own mcp.json
     // (those servers are managed separately via Options.mcpServers above).
     const slaudeHomePlugin = { type: "local" as const, path: paths.home, skipMcpDiscovery: true };
-    const allPlugins = [slaudeHomePlugin, ...pluginPaths];
+    // The built-in `slaude` plugin (read-only, shipped in src/): its skills are
+    // `slaude:<name>`, named by the skill index in the core prompt.
+    const builtinPlugin = { type: "local" as const, path: BUILTIN_PLUGIN_DIR, skipMcpDiscovery: true };
+    const allPlugins = [slaudeHomePlugin, builtinPlugin, ...pluginPaths];
 
     // Opened after the soul resolves, so a boot that fails there holds no connection.
     const remoteHandle = await this.#remoteHandleFor(sessionId, remoteTarget);
