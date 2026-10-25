@@ -205,6 +205,17 @@ brain import accepted a `profile-*` source as a `map` target for any source
 `turn-senders:<jobId>` record was kept for 24 h (the node now deletes it when
 the job is acked, the TTL stays as a backstop).
 
+CI then found that **the per-turn block booted a brain on the message hot
+path.** It read through `brainCall`, which opens the local engine on first use
+(and would connect a remote backend), so a message that arrived before the
+brain was open, or after a `closeBrain()` had started, began a fresh boot that
+no one owned or closed. In the test suite, gateways that are never stopped
+piled up PGLite engines this way until WASM ran out of memory and the later
+real-brain tests failed at init. The block now reads only a brain that is
+already open (`brainReady()`: the local engine finished booting and no close
+has started, or the remote client connected) through `brainCallIfOpen`, which
+never boots or connects; otherwise there is no block and no warning.
+
 ## Verification
 
 `tests/memory/one-on-one-containment.test.ts` runs the mono gateway with the
