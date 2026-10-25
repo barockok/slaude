@@ -197,6 +197,7 @@ export const metrics = new Registry(parseLabels(process.env.SLAUDE_METRICS_LABEL
 // Pre-declared metric handles so callers don't have to remember names.
 export const m = {
   sessionsLive: metrics.gauge("slaude_sessions_live", "Number of live SDK sessions in this process."),
+  decisionRequestsTotal: metrics.counter("slaude_decision_requests_total", "Decision-adapter requests, labeled by adapter and outcome (ok|timeout|error)."),
   turnsTotal: metrics.counter("slaude_turns_total", "Completed turns, labeled by result."),
   toolCallsTotal: metrics.counter("slaude_tool_calls_total", "Tool invocations, labeled by tool name."),
   tokensTotal: metrics.counter("slaude_tokens_total", "Tokens consumed, labeled by kind, channel_id, and model."),

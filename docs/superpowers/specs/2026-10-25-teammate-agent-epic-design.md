@@ -27,7 +27,7 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 - [x] A6 Field note; full suite green; phase closed
 
 **Phase B tasks**
-- [ ] B1 Provider-neutral decision core; gate questions, policy, rules fallback (§7.3, §7.4)
+- [x] B1 Provider-neutral decision core; gate questions, policy, rules fallback (§7.3, §7.4)
 - [ ] B2 Jev adapter (§7.3)
 - [ ] B3 Gate input builder: thread excerpt, roles, KB score (§7.3)
 - [ ] B4 Runner: modes, timeout fallback, memo, metrics; config and gateway-only key (§7.5, §7.6)
