@@ -27,8 +27,8 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 - [x] A6 Field note; full suite green; phase closed
 
 **Phase B tasks**
-- [ ] B1 Decision types, policy table, rules backend (§7.3, §7.4)
-- [ ] B2 Jev backend over the outbound-fetch policy (§7.3)
+- [ ] B1 Provider-neutral decision core; gate questions, policy, rules fallback (§7.3, §7.4)
+- [ ] B2 Jev adapter (§7.3)
 - [ ] B3 Gate input builder: thread excerpt, roles, KB score (§7.3)
 - [ ] B4 Runner: modes, timeout fallback, memo, metrics; config and gateway-only key (§7.5, §7.6)
 - [ ] B5 Gateway wiring: mention and engaged paths, doubt reaction, bypasses; `off` equivalence (§7.2, §7.7)
@@ -63,6 +63,7 @@ Memory is the foundation: per-person style, open loops and "who knows what" are 
 | Gate unsure about a direct @mention | **Stay quiet**, with a doubt reaction (🤔) and a logged decision. |
 | Delivery shape | One epic document, delivered phase by phase in sequence until complete. |
 | Decision-gate question type and key name | Every gate question is a two-option **Choice** (`yes`/`no`), so each answer carries a confidence; the yes/no Noul type may not. The key variable is `TYPESAFE_API_KEY` (the SDK's own convention). |
+| Decision function is abstract | **Yes.** A provider-neutral decision core with named adapters; **Jev is one adapter**, and the gate is the first consumer (§7.3). |
 | Growing system prompt | Move the runtime baseline into **read-only files shipped with the release**: a small always-on core, runtime-injected state modules, and **built-in skills** in a `slaude:` namespace (phase R, §7a). |
 | How the model finds a built-in skill | **The core names it**, with a trigger ("before X, load `slaude:<name>`"); the model never guesses from descriptions. |
 | Enforcement for tool-bound built-in skills | **A PreToolUse hook blocks the governed tool until its skill has been loaded once in the session.** |
@@ -220,8 +221,20 @@ type GateDecision = {
 };
 ```
 - `kbHitScore` exists because the gate cannot see what the agent knows. It reuses `kb_search` scoring, scoped exactly as the turn would be, with no LLM call.
-- The first backend is **Jev** (TypeSafe AI) via its API (`POST https://api.typesafe.ai/v1/systemone`, `Authorization: Bearer`), schema declared once at boot. Each `GateDecision` field is asked as a two-option **Choice** question (`yes`/`no`); `value` is the winning option and `confidence` is the answer's own `confidence` field. Each question is evaluated independently, so its `instructions` must carry its full meaning. A 401/422 is not retried; 429/529 back off within the timeout; any error or invalid output falls back to `rules`, and is never read as "no".
-- A `rules` backend reproduces today's behaviour and is the fallback whenever the configured backend errors or times out (default 800 ms).
+
+**The decision function is abstract; Jev is one adapter** (owner decision, 2026-10-25). The `DecisionBackend` sketch above is superseded by two layers:
+
+1. **A provider-neutral decision core** (`src/decision/`). It knows nothing about Slack, the gate or any provider.
+   ```ts
+   interface DecisionQuestion { instructions: string; options: Record<string, string> } // option id → description
+   interface DecisionRequest  { state: unknown; questions: Record<string, DecisionQuestion> }
+   interface DecisionAnswer   { choice: string; confidence: number }                  // choice ∈ the question's options
+   interface DecisionAdapter  { name: string; decide(req: DecisionRequest, signal: AbortSignal): Promise<Record<string, DecisionAnswer>> }
+   ```
+   Adapters register by name, and `SLAUDE_DECISION_ADAPTER` selects one. The core applies the timeout and validates every answer against the declared options; anything else is rejected and never read as "no". Other consumers (e.g. phase E's "is this worth interrupting someone?") reuse the core with their own questions.
+2. **The gate as the first consumer.** It owns its four questions in neutral form (each a `yes`/`no` choice), maps the answers to `GateDecision`, applies the policy, and falls back to a **rules decision equal to today's behaviour** when no adapter is configured or the adapter errors or times out (default 800 ms).
+
+**Jev adapter** (TypeSafe AI). It sends `POST https://api.typesafe.ai/v1/systemone` with `Authorization: Bearer`, mapping each neutral question to a Jev **Choice** question (criteria = the options). The answer's `choice` and `confidence` map straight back. Each question is evaluated independently, so its `instructions` carry its full meaning. A 401/422 is not retried; a 429/529 gets one retry within the timeout.
 
 ### 7.4 Policy (decision → action)
 | Situation | Action |
@@ -235,29 +248,31 @@ type GateDecision = {
 - "Record only" uses the existing suppressed-turn path, so transcripts stay complete.
 
 ### 7.5 Configuration (process env, not SOUL)
-| Variable | Values | Default |
-|---|---|---|
-| `SLAUDE_DECISION_GATE` | `off` \| `shadow` \| `on` | `off` |
-| `SLAUDE_DECISION_BACKEND` | `jev` \| `rules` | `rules` |
-| `SLAUDE_DECISION_T_ACT` | 0–1 | `0.8` |
-| `SLAUDE_DECISION_TIMEOUT_MS` | int | `800` |
-| `SLAUDE_DECISION_CONTEXT_MESSAGES` | int | `8` |
-| `TYPESAFE_API_KEY` | secret | none |
-| `SLAUDE_DECISION_MODEL` | Jev model id | `jev-latest`; pin a version (e.g. `jev-1.13.0`) once validated |
+| Variable | Scope | Values | Default |
+|---|---|---|---|
+| `SLAUDE_DECISION_ADAPTER` | decision core | `jev` \| `none` | `none` |
+| `SLAUDE_DECISION_TIMEOUT_MS` | decision core | int | `800` |
+| `SLAUDE_DECISION_GATE` | gate | `off` \| `shadow` \| `on` | `off` |
+| `SLAUDE_DECISION_T_ACT` | gate | 0–1 | `0.8` |
+| `SLAUDE_DECISION_CONTEXT_MESSAGES` | gate | int | `8` |
+| `SLAUDE_JEV_URL` | Jev adapter | URL | `https://api.typesafe.ai/v1/systemone` |
+| `SLAUDE_JEV_MODEL` | Jev adapter | Jev model id | `jev-latest`; pin a version (e.g. `jev-1.13.0`) once validated |
+| `TYPESAFE_API_KEY` | Jev adapter | secret | none |
 
-- `off` means today's behaviour, byte for byte. `shadow` runs the backend, logs what it *would* do next to what happened, and acts as `off`.
+- `off` means today's behaviour, byte for byte. `shadow` runs the decision, logs what it *would* do next to what happened, and acts as `off`.
+- With no adapter (or an adapter whose config is missing), the gate uses the rules decision, which equals today's behaviour.
 - The API key is a gateway-side secret: same handling as provider keys, never in a node bundle, never in the agent child's env.
-- Outbound calls go through the existing outbound-fetch policy. Thread text leaving the deployment is a data-egress decision, so the operator opts in by setting the backend.
+- Outbound calls go through the existing outbound-fetch policy. Thread text leaving the deployment is a data-egress decision, so the operator opts in by selecting an adapter.
 
 ### 7.6 Observability
-- Every decision emits a structured log line: thread, message ts, per-question value and confidence, action, backend, latency, fallback flag.
-- Counter `slaude_gate_decisions_total{action,backend,mode}`.
+- Every decision emits a structured log line: thread, message ts, per-question value and confidence, action, source (`adapter` or `rules`), adapter name, latency.
+- Counters `slaude_decision_requests_total{adapter,outcome}` (core) and `slaude_gate_decisions_total{action,source,mode}` (gate).
 - In shadow mode, a disagreement counter versus actual behaviour gives the evaluation set for turning it on.
 
 ### 7.7 Verification
 - Unit tests of the policy table against fixed decisions.
 - A sim scenario per row of §7.4.
-- A backend timeout falls back to `rules`.
+- An adapter timeout or error falls back to the rules decision.
 - `off` matches the current engagement sim suite unchanged.
 
 ## 7a. Phase R: runtime prompt as built-in skills
@@ -496,7 +511,7 @@ Every proactive post also passes the restraint rules: silent on no news, per-per
 |---|---|---|
 | Writing style, pass, auto-evolve wording | code (baseline) | A |
 | `SLAUDE_AUTO_EVOLVE_MIN_TOOLS` | process env | A |
-| `SLAUDE_DECISION_*`, `TYPESAFE_API_KEY` | process env, gateway secret | B |
+| `SLAUDE_DECISION_*`, `SLAUDE_JEV_*`, `TYPESAFE_API_KEY` | process env, gateway secret | B |
 | Core prompt, state modules, built-in skills | read-only files shipped with the release | R |
 | `SLAUDE_BACKGROUND_BUDGET_USD`, `SLAUDE_PRICE_TABLE` | process env, per-persona override in bundle | D |
 | Agent timezone | persona config | D |
