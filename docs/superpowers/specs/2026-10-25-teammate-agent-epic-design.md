@@ -11,7 +11,7 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 
 | Phase | Plan | Status | Release |
 |---|---|---|---|
-| A. Natural voice | `docs/superpowers/plans/2026-10-25-phase-a-natural-voice.md` | planned | — |
+| A. Natural voice | `docs/superpowers/plans/2026-10-25-phase-a-natural-voice.md` | done (unreleased — ships as RC) | — |
 | B. Decision gate | — | not started | — |
 | C. Memory structure | — | not started | — |
 | D. Background learning and budget | — | not started | — |
@@ -23,7 +23,7 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 - [x] A3 Auto-evolve: no announcement, `<runtime-check>` wrapper, higher bar (§6.3)
 - [x] A4 A mention that ends in pass does not re-engage (§6.4)
 - [x] A5 Voice lint and live natural-voice scenario (§6.5)
-- [ ] A6 Field note; full suite green; phase closed
+- [x] A6 Field note; full suite green; phase closed
 
 ## 1. Goal
 
