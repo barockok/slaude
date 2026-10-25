@@ -16,25 +16,40 @@
 ## Global Constraints
 
 - **Public repo:** generic placeholders only in code, tests, fixtures and commit text (CLAUDE.md "Working Rules"). Run the leak-scan grep over `git diff --cached -U0` before every commit. No `Co-Authored-By` or "Generated with" trailers; never commit under an AI identity.
-- **Default is `off`:** with `SLAUDE_DECISION_GATE=off` (the default), engagement and dispatch behave exactly as today. This is spec §11.2 invariant 4, and Task 5's equivalence test proves it.
+- **Default is `off`:** with `gate.mode` `off` (the default, including when `SLAUDE_DECISION_CONFIG` is unset), engagement and dispatch behave exactly as today. This is spec §11.2 invariant 4, and Task 5's equivalence test proves it.
 - **The decision core knows nothing about Slack, the gate or any provider.** Nothing outside `src/decision/adapters/<name>.ts` may import an adapter module. Consumers obtain an adapter only through the registry.
-- **Process config only, never the SOUL:**
+- **Process config only, never the SOUL. It's one JSON variable, `SLAUDE_DECISION_CONFIG`:**
+  ```json
+  {
+    "timeoutMs": 800,
+    "gate": { "mode": "off", "tAct": 0.8, "contextMessages": 8 },
+    "adapter": {
+      "type": "jev",
+      "url": "https://api.typesafe.ai/v1/systemone",
+      "model": "jev-latest",
+      "apiKey": "env://TYPESAFE_API_KEY"
+    }
+  }
+  ```
 
-  | Variable | Scope | Values | Default |
-  |---|---|---|---|
-  | `SLAUDE_DECISION_ADAPTER` | decision core | `jev` \| `none` | `none` |
-  | `SLAUDE_DECISION_TIMEOUT_MS` | decision core | int > 0 | `800` |
-  | `SLAUDE_DECISION_GATE` | gate | `off` \| `shadow` \| `on` | `off` |
-  | `SLAUDE_DECISION_T_ACT` | gate | 0–1 | `0.8` |
-  | `SLAUDE_DECISION_CONTEXT_MESSAGES` | gate | int > 0 | `8` |
-  | `SLAUDE_JEV_URL` | Jev adapter | URL | `https://api.typesafe.ai/v1/systemone` |
-  | `SLAUDE_JEV_MODEL` | Jev adapter | Jev model id | `jev-latest` |
-  | `TYPESAFE_API_KEY` | Jev adapter | secret | none |
+  | Field | Values | Default |
+  |---|---|---|
+  | `timeoutMs` | int > 0 | `800` |
+  | `gate.mode` | `off` \| `shadow` \| `on` | `off` |
+  | `gate.tAct` | 0–1 | `0.8` |
+  | `gate.contextMessages` | int > 0 | `8` |
+  | `adapter` | an object whose `type` names a registered adapter, or absent / `null` | absent: no adapter |
+  | `adapter.*` (when `type` is `jev`) | `url` (default `https://api.typesafe.ai/v1/systemone`), `model` (default `jev-latest`), `apiKey` (**required**) | — |
 
-  With `SLAUDE_DECISION_ADAPTER=none`, or an adapter whose required config is missing (logged once at boot), there is no adapter, and the gate uses its rules fallback for every decision.
-- **`TYPESAFE_API_KEY` is gateway-only:** it goes in `GATEWAY_ONLY_ENV_NAMES`, so the agent child never inherits it and a node refuses it.
+  - **Unset or `{}`:** the gate is `off` and there is no adapter, exactly today's behaviour.
+  - **Fields:** every field is optional except an adapter's required ones. Unknown top-level keys are rejected.
+  - **Each adapter validates its own block** with its own schema. The core validates only `timeoutMs`, `gate` and `adapter.type`.
+  - **Invalid JSON or a failed validation:** log one line at boot naming the bad field, never its value. The gate is then `off` and there is no adapter; the process does not crash.
+  - **An adapter whose block is invalid, or whose secret won't resolve:** logged once. There is no adapter, so the gate uses its rules fallback.
+- **Secrets inside the config are references, never values.** `apiKey` must be an `env://NAME` or `vault://…` reference, resolved at boot through the existing secret resolver (`src/secrets/`: `parseRef`, `createSecretResolver`). A literal string is rejected as invalid, so a key never sits in the config variable, which deploy tooling tends to print.
+- **`SLAUDE_DECISION_CONFIG` and `TYPESAFE_API_KEY` are both gateway-only:** both go in `GATEWAY_ONLY_ENV_NAMES`, so the agent child never inherits them and a node refuses them. The config variable is listed too because its URL and references describe the operator's setup.
 - **Jev contract** (spec §7.3, inside the Jev adapter only):
-  - `POST <SLAUDE_JEV_URL>` with `Authorization: Bearer <key>` and `Content-Type: application/json`.
+  - `POST <adapter.url>` with `Authorization: Bearer <key>` and `Content-Type: application/json`.
   - Body: `{ model, state, questions }`. Each neutral question maps to `{ type: "choice", instructions, criteria: { <option>: <text>, … } }`.
   - Answers are keyed by question id: `{ type: "choice", choice, probabilities, confidence }`.
   - Error handling:
@@ -74,7 +89,7 @@
 | File | Responsibility |
 |---|---|
 | `src/decision/types.ts` (create) | `DecisionQuestion`, `DecisionRequest`, `DecisionAnswer`, `DecisionResult`, `DecisionAdapter`, `DecisionError`. |
-| `src/decision/registry.ts` (create) | `registerAdapter`, `adapterFromEnv`, `decide()` (validation, timeout, metrics). |
+| `src/decision/registry.ts` (create) | `registerAdapter`, `adapterFromConfig`, `decide()` (validation, timeout, metrics). |
 | `src/decision/adapters/jev.ts` (create) | The Jev adapter; registers itself as `"jev"`. |
 | `src/decision/adapters/index.ts` (create) | Imports every adapter module (one line each) so their registrations run. |
 | `src/gateway/gate/types.ts` (create) | `GateInput`, `GateDecision`, `GateAction`. |
@@ -82,6 +97,7 @@
 | `src/gateway/gate/policy.ts` (create) | `decideAction`, `rulesDecision`. |
 | `src/gateway/gate/context.ts` (create) | `buildGateInput`. |
 | `src/gateway/gate/runner.ts` (create) | `makeGateRunner`, `gateRunnerFromEnv`. |
+| `src/decision/config.ts` (create) | `parseDecisionConfig`: the `SLAUDE_DECISION_CONFIG` JSON. |
 | `src/config/env.ts`, `src/config/gateway-only-env.ts`, `src/metrics.ts`, `docs/site/_content/reference/configuration.md` (modify) | Config, secret and metrics wiring. |
 | `src/gateway/core/gateway.ts` (modify) | `GatewayOptions.gateRunner?`; call sites. |
 | `tests/decision/*.test.ts`, `tests/gateway/gate/*.test.ts`, `tests/gateway/core/decision-gate.test.ts` (create) | Tests. |
@@ -91,7 +107,7 @@
 ### Task 1: Decision core, gate questions, policy, rules fallback
 
 **Files:**
-- Create: `src/decision/types.ts`, `src/decision/registry.ts`, `src/decision/adapters/index.ts` (empty list for now), `src/gateway/gate/types.ts`, `src/gateway/gate/questions.ts`, `src/gateway/gate/policy.ts`
+- Create: `src/decision/types.ts`, `src/decision/registry.ts`, `src/decision/config.ts`, `src/decision/adapters/index.ts` (empty list for now), `src/gateway/gate/types.ts`, `src/gateway/gate/questions.ts`, `src/gateway/gate/policy.ts`
 - Test: `tests/decision/registry.test.ts`, `tests/gateway/gate/policy.test.ts`
 
 **Interfaces:**
@@ -104,9 +120,14 @@ export type DecisionResult = Record<string, DecisionAnswer>;                    
 export interface DecisionAdapter { readonly name: string; decide(req: DecisionRequest, signal: AbortSignal): Promise<DecisionResult> }
 export class DecisionError extends Error { constructor(readonly kind: "auth" | "invalid_request" | "rate_limited" | "overloaded" | "transport" | "timeout" | "bad_output", msg: string) }
 // registry.ts
-export function registerAdapter(name: string, factory: () => DecisionAdapter | null): void;  // factory returns null when its config is missing
-export function adapterFromEnv(): DecisionAdapter | null;  // SLAUDE_DECISION_ADAPTER; "none" or a null factory → null (logged once)
+export type AdapterFactory = (block: Record<string, unknown>, deps: { resolveSecret: (ref: string) => Promise<string> }) => Promise<DecisionAdapter>; // throws on an invalid block
+export function registerAdapter(type: string, factory: AdapterFactory): void;
+export async function adapterFromConfig(block: unknown, deps: { resolveSecret: (ref: string) => Promise<string> }): Promise<DecisionAdapter | null>;
+  // null for absent/null; an unknown type, a factory throw or a secret failure → null, logged once (field names only)
 export async function decide(adapter: DecisionAdapter, req: DecisionRequest, timeoutMs: number): Promise<DecisionResult>; // timeout, validation, metrics
+// config.ts (decision core)
+export interface DecisionConfig { timeoutMs: number; gate: { mode: "off" | "shadow" | "on"; tAct: number; contextMessages: number }; adapter: Record<string, unknown> | null }
+export function parseDecisionConfig(raw: string | undefined): { config: DecisionConfig; error?: string }; // error = field path only; on error the config is the all-default (gate off, adapter null)
 ```
 - Produces (gate):
 ```ts
@@ -146,7 +167,13 @@ it("decide returns the adapter's validated answers", ...);
 it("answers outside the declared options are rejected", async () => { /* adapter returns choice "maybe" → rejects DecisionError kind "bad_output" */ });
 it("a missing question or out-of-range confidence is rejected", ...);
 it("decide times out", async () => { /* hanging adapter, timeoutMs 30 → DecisionError kind "timeout" within ~100ms */ });
-it("adapterFromEnv: none → null; unknown name → null; registered → that adapter; null factory → null", ...);
+it("adapterFromConfig: absent → null; unknown type → null; registered → that adapter; factory throw → null", ...);
+it("parseDecisionConfig: unset or {} → gate off, no adapter, timeoutMs 800", ...);
+it("parseDecisionConfig: invalid JSON or out-of-range field → all-default config and an error naming the field, not its value", async () => {
+  const r = parseDecisionConfig('{"gate":{"tAct":2}}');
+  expect(r.config.gate.mode).toBe("off"); expect(r.error).toContain("gate.tAct"); expect(r.error).not.toContain("2");
+});
+it("parseDecisionConfig: unknown top-level key is rejected", ...);
 // tests/gateway/gate/policy.test.ts — yes = {value:true,confidence:1}, no = {value:false,confidence:1}
 it("mention addressed with confidence ≥ tAct runs", () =>
   expect(decideAction({ ...base, mentionsAgent: true }, { ...allNo, addressedToAgent: { value: true, confidence: 0.8 } }, 0.8)).toBe("run"));
@@ -192,7 +219,10 @@ it("GATE_QUESTIONS are yes/no and toGateDecision maps them", ...);
 ```ts
 export interface JevOpts { url: string; apiKey: string; model: string; outboundOpts?: OutboundPolicyOptions }
 export function makeJevAdapter(o: JevOpts): DecisionAdapter;   // name "jev"
-// module side effect: registerAdapter("jev", () => key ? makeJevAdapter({ url: env.jevUrl(), apiKey: key, model: env.jevModel() }) : null)
+// module side effect: registerAdapter("jev", factory). The factory validates the block
+// { type:"jev", url?: string (default "https://api.typesafe.ai/v1/systemone"), model?: string (default "jev-latest"), apiKey: string }
+// with a strict schema, requires apiKey to parse with parseRef (env:// or vault://; a literal is rejected), resolves it via deps.resolveSecret,
+// and returns makeJevAdapter(...).
 ```
 
 - [ ] **Step 1: Write the failing tests.** The fake records each request and replies with a canned body or status.
@@ -204,7 +234,8 @@ it("401 throws auth without retry", async () => { /* 1 request; kind "auth" */ }
 it("429 with retry-after inside the remaining time retries once", async () => { /* retry-after: 0 then 200 → resolves; 2 requests */ });
 it("529 with retry-after beyond the remaining time throws overloaded without retry", async () => { /* retry-after: 5, 800ms signal → kind "overloaded"; 1 request */ });
 it("a non-JSON or answer-less 200 throws bad_output", ...);
-it("registers as jev only when TYPESAFE_API_KEY is set", async () => { /* adapterFromEnv() with ADAPTER=jev and no key → null; with key → name "jev" */ });
+it("factory: env:// apiKey resolves; a literal apiKey or a missing apiKey is rejected", async () => { /* adapterFromConfig({type:"jev",apiKey:"env://K"}, {resolveSecret}) → name "jev"; {apiKey:"sk-live-x"} → null; {} → null */ });
+it("factory: url and model default when omitted; unknown block keys rejected", ...);
 ```
 
 - [ ] **Step 2: Run them and confirm they fail.** `bun test tests/decision/jev-adapter.test.ts`. Expected: FAIL.
@@ -265,29 +296,29 @@ it("kbHitScore is the clamped top rankScore, null without a brain or on error", 
 **Files:**
 - Create: `src/gateway/gate/runner.ts`
 - Modify:
-  - `src/config/env.ts`: add getters next to `autoEvolve`;
-  - `src/config/gateway-only-env.ts`: add `"TYPESAFE_API_KEY"`;
+  - `src/config/env.ts`: add `decisionConfigRaw()` returning `opt("SLAUDE_DECISION_CONFIG")`, next to `autoEvolve`;
+  - `src/config/gateway-only-env.ts`: add `"SLAUDE_DECISION_CONFIG"` and `"TYPESAFE_API_KEY"`;
   - `src/metrics.ts`: add `decisionRequestsTotal`, `gateDecisionsTotal` and `gateShadowDisagreeTotal` to `m`;
-  - `docs/site/_content/reference/configuration.md`: add one row per variable, grouped "Decision core / Gate / Jev adapter", and a commented block in the example env.
-- Test: `tests/gateway/gate/runner.test.ts`, plus a `tests/config` case asserting that `isGatewayOnlyEnv("TYPESAFE_API_KEY")` holds.
+  - `docs/site/_content/reference/configuration.md`: add one row for `SLAUDE_DECISION_CONFIG` with the field table and the JSON example, plus a commented example in the env block.
+- Test: `tests/gateway/gate/runner.test.ts`, plus a `tests/config` case asserting that `isGatewayOnlyEnv` holds for both names.
 
 **Interfaces:**
-- Consumes: Tasks 1–3; `adapterFromEnv`, `decide`.
+- Consumes: Tasks 1–3; `parseDecisionConfig`, `adapterFromConfig`, `decide`.
 - Produces:
 ```ts
 export type GateMode = "off" | "shadow" | "on";
 export interface GateResult { action: GateAction; mode: GateMode; source: "adapter" | "rules"; adapter: string | null; decision: GateDecision; latencyMs: number }
 export interface GateRunner {
   readonly mode: GateMode;
+  readonly contextMessages: number;
   /** off → undefined (caller keeps today's path). shadow → resolves "run" immediately; the decision runs detached and is logged. on → the decided action. */
   gate(key: string, input: () => Promise<GateInput>, actual: GateAction): Promise<GateAction | undefined>;
 }
-export function makeGateRunner(o: { mode: GateMode; adapter: DecisionAdapter | null; tAct: number; timeoutMs: number; log?: (line: string) => void; memoTtlMs?: number }): GateRunner;
-export function gateRunnerFromEnv(): GateRunner;   // imports src/decision/adapters/index.ts, then adapterFromEnv()
-// env.ts
-decisionAdapter(): string; decisionTimeoutMs(): number; decisionGate(): GateMode; decisionTAct(): number;
-decisionContextMessages(): number; jevUrl(): string; jevModel(): string;
+export function makeGateRunner(o: { mode: GateMode; adapter: DecisionAdapter | null; tAct: number; timeoutMs: number; contextMessages: number; log?: (line: string) => void; memoTtlMs?: number }): GateRunner;
+export async function gateRunnerFromEnv(deps: { resolveSecret: (ref: string) => Promise<string> }): Promise<GateRunner>;
+  // imports src/decision/adapters/index.ts; parseDecisionConfig(env.decisionConfigRaw()); logs its error once; adapterFromConfig(config.adapter, deps)
 ```
+- The gateway builds `resolveSecret` from the existing secret resolver (`createSecretResolver` in `src/secrets/index.ts`), the same way provider credentials are resolved. It awaits `gateRunnerFromEnv` once at boot. Until it resolves, the gate is treated as `off`.
 - With `adapter === null`, the decision is `rulesDecision(input)` with `source: "rules"`, and no core call happens.
 - Memo: the key is `${channel}:${eventTs}`, with a default TTL of `60_000` ms. It stores the in-flight promise.
 - Log line format: `[gate] mode=<m> source=<s> adapter=<a|-> action=<a> ms=<n> key=<k> a=<v>:<c> q=<v>:<c> h=<v>:<c> d=<v>:<c>`. Never log message text.
@@ -301,14 +332,15 @@ it("no adapter uses rules without a core call", ...);
 it("adapter error or timeout falls back to rules with source rules", ...);
 it("two deliveries of one event share one adapter call", async () => { /* same key twice concurrently → 1 call, same action */ });
 it("shadow never delays dispatch", async () => { /* hanging adapter; gate() resolves "run" in < 20ms; a later "record" answer counts a disagreement */ });
-it("bad env values fall back to defaults", () => { /* T_ACT="2" → 0.8; GATE="maybe" → "off"; TIMEOUT_MS="-1" → 800; ADAPTER="" → "none" */ });
+it("gateRunnerFromEnv: unset config → mode off; invalid JSON → mode off, one log line without the raw value", ...);
+it("gateRunnerFromEnv: valid config with an unresolvable secret → configured mode, rules source", ...);
 ```
 
 - [ ] **Step 2: Run them and confirm they fail.** `bun test tests/gateway/gate/runner.test.ts`. Expected: FAIL.
 - [ ] **Step 3: Implement.**
   - Count `gateDecisionsTotal{action,source,mode}` for every decision, shadow included.
   - In shadow mode, increment `gateShadowDisagreeTotal{would,actual}` when the action differs from `actual`.
-  - Env getters reject out-of-range values and fall back to the defaults.
+  - All config validation lives in `parseDecisionConfig` (Task 1) and in the adapter factories (Task 2). The runner only consumes the parsed config.
 - [ ] **Step 4: Run the tests and typecheck.** `bun test tests/decision/ tests/gateway/gate/ tests/config/ && bun run typecheck`. Expected: PASS.
 - [ ] **Step 5: Tick B4 and commit.** Message: `feat(gate): runner with modes, rules fallback, memo and metrics; config and secret wiring`.
 
@@ -318,7 +350,7 @@ it("bad env values fall back to defaults", () => { /* T_ACT="2" → 0.8; GATE="m
 
 **Files:**
 - Modify: `src/gateway/core/gateway.ts`:
-  - `GatewayOptions` (line ~233): add `gateRunner?: GateRunner`; the default is `gateRunnerFromEnv()`;
+  - `GatewayOptions` (line ~233): add `gateRunner?: GateRunner`; the default is the runner `gateRunnerFromEnv(...)` resolves to at boot, treated as `off` until it does;
   - the `app_mention` handler (~3065);
   - the `mentionsBot` branch (~3133);
   - the `mentionedPersona` branch (~3148);
@@ -331,7 +363,7 @@ it("bad env values fall back to defaults", () => { /* T_ACT="2" → 0.8; GATE="m
   - `kbSearch` from `gather()` over `resolveBrainScope({ ...(await brainGateFor(ctx)), kbSources: personaKbSourceIds(personaId) })` when `brainEnabled()`, else `null`;
   - `selfIds` from `getBotId` and `getSelfBots`.
 
-  Also `channelTrustFor`, `OneOnOne.find` and `env.decisionContextMessages()`.
+  Also `channelTrustFor`, `OneOnOne.find`, and the runner's `gate.contextMessages`. Expose `contextMessages` on `GateRunner` as a readonly field.
 
 Gate placement:
 - **Mention paths** (`app_mention`, `mentionsBot`, `mentionedPersona`):

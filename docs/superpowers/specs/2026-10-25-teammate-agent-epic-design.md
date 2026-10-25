@@ -231,7 +231,7 @@ type GateDecision = {
    interface DecisionAnswer   { choice: string; confidence: number }                  // choice ∈ the question's options
    interface DecisionAdapter  { name: string; decide(req: DecisionRequest, signal: AbortSignal): Promise<Record<string, DecisionAnswer>> }
    ```
-   Adapters register by name, and `SLAUDE_DECISION_ADAPTER` selects one. The core applies the timeout and validates every answer against the declared options; anything else is rejected and never read as "no". Other consumers (e.g. phase E's "is this worth interrupting someone?") reuse the core with their own questions.
+   Adapters register by name, and the `adapter.type` field of `SLAUDE_DECISION_CONFIG` selects one. The core applies the timeout and validates every answer against the declared options; anything else is rejected and never read as "no". Other consumers (e.g. phase E's "is this worth interrupting someone?") reuse the core with their own questions.
 2. **The gate as the first consumer.** It owns its four questions in neutral form (each a `yes`/`no` choice), maps the answers to `GateDecision`, applies the policy, and falls back to a **rules decision equal to today's behaviour** when no adapter is configured or the adapter errors or times out (default 800 ms).
 
 **Jev adapter** (TypeSafe AI). It sends `POST https://api.typesafe.ai/v1/systemone` with `Authorization: Bearer`, mapping each neutral question to a Jev **Choice** question (criteria = the options). The answer's `choice` and `confidence` map straight back. Each question is evaluated independently, so its `instructions` carry its full meaning. A 401/422 is not retried; a 429/529 gets one retry within the timeout.
@@ -248,17 +248,27 @@ type GateDecision = {
 - "Record only" uses the existing suppressed-turn path, so transcripts stay complete.
 
 ### 7.5 Configuration (process env, not SOUL)
-| Variable | Scope | Values | Default |
-|---|---|---|---|
-| `SLAUDE_DECISION_ADAPTER` | decision core | `jev` \| `none` | `none` |
-| `SLAUDE_DECISION_TIMEOUT_MS` | decision core | int | `800` |
-| `SLAUDE_DECISION_GATE` | gate | `off` \| `shadow` \| `on` | `off` |
-| `SLAUDE_DECISION_T_ACT` | gate | 0–1 | `0.8` |
-| `SLAUDE_DECISION_CONTEXT_MESSAGES` | gate | int | `8` |
-| `SLAUDE_JEV_URL` | Jev adapter | URL | `https://api.typesafe.ai/v1/systemone` |
-| `SLAUDE_JEV_MODEL` | Jev adapter | Jev model id | `jev-latest`; pin a version (e.g. `jev-1.13.0`) once validated |
-| `TYPESAFE_API_KEY` | Jev adapter | secret | none |
+One JSON variable, **`SLAUDE_DECISION_CONFIG`** (owner decision, 2026-10-25):
+```json
+{
+  "timeoutMs": 800,
+  "gate": { "mode": "off", "tAct": 0.8, "contextMessages": 8 },
+  "adapter": { "type": "jev", "url": "https://api.typesafe.ai/v1/systemone", "model": "jev-latest", "apiKey": "env://TYPESAFE_API_KEY" }
+}
+```
+| Field | Values | Default |
+|---|---|---|
+| `timeoutMs` | int > 0 | `800` |
+| `gate.mode` | `off` \| `shadow` \| `on` | `off` |
+| `gate.tAct` | 0–1 | `0.8` |
+| `gate.contextMessages` | int > 0 | `8` |
+| `adapter` | an object with `type` naming a registered adapter; each adapter validates the rest of its block | absent: no adapter |
+| `adapter` when `type` is `jev` | `url` (default above), `model` (default `jev-latest`; pin a version, e.g. `jev-1.13.0`, once validated), `apiKey` (required) | — |
 
+- **Unset or `{}`:** gate `off`, no adapter. Unknown top-level keys are rejected.
+- **Invalid JSON or a failed validation:** one boot log line naming the field (never its value); the gate is `off`. The process never crashes over this config.
+- **Secrets are references, never values:** `apiKey` must be an `env://` or `vault://` reference, resolved at boot by the existing secret resolver (`src/secrets/`). A literal is rejected, so the key never sits in a variable that deploy tooling prints.
+- **Gateway-only:** `SLAUDE_DECISION_CONFIG` and the referenced key variable (e.g. `TYPESAFE_API_KEY`) are both on the gateway-only list.
 - `off` means today's behaviour, byte for byte. `shadow` runs the decision, logs what it *would* do next to what happened, and acts as `off`.
 - With no adapter (or an adapter whose config is missing), the gate uses the rules decision, which equals today's behaviour.
 - The API key is a gateway-side secret: same handling as provider keys, never in a node bundle, never in the agent child's env.
@@ -511,7 +521,7 @@ Every proactive post also passes the restraint rules: silent on no news, per-per
 |---|---|---|
 | Writing style, pass, auto-evolve wording | code (baseline) | A |
 | `SLAUDE_AUTO_EVOLVE_MIN_TOOLS` | process env | A |
-| `SLAUDE_DECISION_*`, `SLAUDE_JEV_*`, `TYPESAFE_API_KEY` | process env, gateway secret | B |
+| `SLAUDE_DECISION_CONFIG` (JSON; secrets by `env://`/`vault://` reference) | process env, gateway-only | B |
 | Core prompt, state modules, built-in skills | read-only files shipped with the release | R |
 | `SLAUDE_BACKGROUND_BUDGET_USD`, `SLAUDE_PRICE_TABLE` | process env, per-persona override in bundle | D |
 | Agent timezone | persona config | D |
