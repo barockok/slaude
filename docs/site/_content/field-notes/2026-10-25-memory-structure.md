@@ -47,10 +47,11 @@ decided from what the turn actually holds, not from who spoke last:
   mono, `AgentManager.turnSenders` returns the senders of every outstanding
   input (the running one and any queued behind it, since the CLI may fold them
   into one turn), and null when any is synthetic or unknown.
-- **Synthetic turns.** The auto-evolve check, continuations and reload prompts
-  run under the person's job token. A PreToolUse hook in the worker
-  (`src/agent/profile-write-guard.ts`) denies `kb_memoize target:"profile"`
-  while one runs.
+- **Synthetic turns.** The auto-evolve check, continuations, reload prompts and
+  every turn a voice runner injects (a delegated request, the transcript flush,
+  the summary) run under the person's job token. A PreToolUse hook in the
+  worker (`src/agent/profile-write-guard.ts`) denies `kb_memoize
+  target:"profile"` while one runs.
 - **Cron** has no sender, so a cron turn reads no profile at all.
 
 The same one-sender check gates the profile in the KB read scope
@@ -69,7 +70,9 @@ value is refused on every page, typed or not.
 
 - **`target:"profile"`** writes the sole sender's `profile` (slug `profile`,
   types `profile` or `correction` only), auto-passed, no card, refused when
-  `subject` names anyone else.
+  any page's `subject` names anyone else.
+- **`subject`** is set per page, or once for the call for the pages without
+  one, so a batch with notes about two people files each under its person.
 - **Supersede by tag.** The new page carries `supersedes: <old slug>`; the old
   page gets the gbrain tag `superseded` (`add_tag`). Readers drop tagged pages.
   Nothing in the old page is rewritten. A page cannot supersede itself or a page
@@ -77,7 +80,8 @@ value is refused on every page, typed or not.
   rewriting a tagged slug removes the tag. If tagging fails after the new page
   landed, the error names both slugs so a retry finishes the trail.
 - **/1on1 containment.** Inside a lock, writes go only to the owner's `user-`
-  slice or their profile. `target:"shared"`, the agent's own slice and anyone
+  slice or their profile. On `/v1` the lock is the more private of the live lock
+  and the token's signed lock claim, as for the memory plane. `target:"shared"`, the agent's own slice and anyone
   else in the thread are refused with "memory stays with this person".
 
 ### `memory_about`
@@ -97,7 +101,9 @@ that message, never the live route: the speaker's profile, the agent's
 channel's `shared/channels/<id>` page. Each section has a limit, the whole block
 is capped at 8000 characters (oldest commitments drop first), page text that
 would close the block or fake a runtime tag is escaped, and an empty block is
-left out. Reads are bounded: four concurrent, a 1500 ms deadline checked before
+left out. The block is for that turn only: the manager strips it from the user
+text before the turn is synced to the conversation page (and the gateway's
+brain provider strips it again for an older node). Reads are bounded: four concurrent, a 1500 ms deadline checked before
 each further call, superseded slugs read once per source. A timeout or error
 leaves the block out with one warning that names no page text. The block is
 read alongside the sender's name and attachments, and dispatch keeps arrival
@@ -168,6 +174,37 @@ lives in the `slaude:memory` built-in skill, which governs `kb_memoize`.
   token's claims. Now claims, with tests for a foreign lock taken mid-turn and a
   cron created in a /1on1 running on another replica.
 
+The final whole-branch review found three side doors around the sender check:
+
+- **The profile reached `agent-<id>` through the transcript sync.** The
+  per-turn block sits in the user envelope, the manager synced the whole
+  envelope, and the brain provider stored its first 800 characters. In a
+  trusted channel the speaker's profile became a timeline entry on
+  `agent-<id>/conversations/<session>`: readable in other people's turns, open
+  to any later reader of conversation timelines, and still there after the
+  person corrected or deleted the entry. The block is now stripped before the
+  sync, on mono and on nodes (a node's job texts are the same envelopes), and
+  on the gateway again. The block's inner text is escaped, so a non-greedy
+  strip cannot be closed early; the system prompt's episodic block of the same
+  name never passes through the sync.
+- **Voice turns on a node passed the profile-write guard.** A delegated voice
+  turn arrives through `sendMessage` with no sender and no synthetic flag, and
+  on a node it runs under the call starter's job token, so the gateway saw one
+  Slack sender and auto-passed a profile write made from a meeting's words.
+  Mono refused the same turn (null sender), and the two modes disagreed.
+  `isSyntheticTurn` now also reads the voice runners' injected-turn flag.
+- **A call-level `subject` was stamped on every typed page**, and a page's own
+  `subject` was dropped, so `memory_about` could hand Bob a note about Alice
+  saved in the same batch. A page's own `subject` now wins.
+
+The same round also fixed three minors: `kb_memoize`'s /1on1 refusal on `/v1`
+read only the live lock, so a lock released mid-turn let the rest of the turn
+write the /1on1 out to `agent-<id>` (it now uses the signed lock claim too);
+brain import accepted a `profile-*` source as a `map` target for any source
+(a map may now keep a profile only as itself); and every turn's
+`turn-senders:<jobId>` record was kept for 24 h (the node now deletes it when
+the job is acked, the TTL stays as a backstop).
+
 ## Verification
 
 `tests/memory/one-on-one-containment.test.ts` runs the mono gateway with the
@@ -195,13 +232,48 @@ Two scope mutations (the lock owner's profile in place of the speaker's, the
 - Turn-context latency under load, and ordering across gateway replicas (the
   FIFO is per process; a hung dispatch tail delays later messages in its
   thread).
-- **Known limit:** the profile enters a shared thread's transcript. The block
-  and any tool result persist, so a later speaker's turn in that thread can see
-  them. The only mitigation is the core's never-repeat rule and the block's
-  "never quote it" line.
-- Minor, left alone: superseded-tag lookups see at most 500 tagged pages per
-  source; `memory_about` makes one `get_page` per typed page before filtering by
-  subject, prints confidence raw and has no output cap; a call-level `subject`
-  is stamped on every typed page of a mixed batch; pages written before
-  `subject` are found only at the fixed slugs; a literal
+- The scenario test stubs `turnSenders`, and the fake brain's `search` is a
+  substring stand-in: ranking and chunk shape are unchecked.
+- The cron dispatch test calls `cronDispatchMeta` directly, and the `/compact`
+  reuse branch is untested.
+- **Promoting the release candidate to stable is blocked** on one smoke test
+  against a real gbrain: `get_page`, `list_pages` with `{type}` and `{tag}`,
+  `add_tag`/`remove_tag`, `get_timeline` and the lowercase channel slug. If
+  `list_pages` ignored `tag`, every page would read as superseded; a wrong op
+  name would make every supersede return an error after writing.
+
+## Known limits
+
+- **The CLI's own transcript holds the block.** A profile enters a shared
+  thread's session transcript (the block and any tool result persist there),
+  so a later speaker's turn in that thread can see it. The brain copy is gone;
+  the only mitigation left for this one is the core's never-repeat rule and the
+  block's "never quote it" line.
+- **Coalesced turns carry several profiles.** The block is built per message,
+  so a job that merged Alice's and Bob's messages (or a mono CLI fold) holds
+  both their blocks. The KB tools refuse the profile in a merged turn; for the
+  blocks, only the never-quote rule guards it.
+- **A participant can write their own profile inside someone else's open
+  /1on1.** Spec §8.3's containment ("stays in that user's slice or their
+  profile") and its "from any thread" line conflict here; the ruling chose
+  "from any thread".
+- **A relabel move or a reissued token names a new job id**, so the sender
+  lookup finds no record and profile writes are refused for that turn (fails
+  closed).
+- **On mono, `kb_thread_history` reads the live ctx.** A lock owner posting
+  during a manager's turn in her lock flips the read to `user-<owner>`: the
+  same thread, her own.
+- **Voice calls on a node.** The gateway has no per-turn call signal, so the
+  call's turns read with the starter's job token. The starter's profile is in
+  their read scope while the job that started the call runs; once that job is
+  acked its sender record is deleted and the rest of the call reads no profile.
+  Profile writes are refused throughout (voice turns are synthetic). The
+  never-quote rule is the guard for what a meeting can hear.
+- **Superseded-tag lookups see at most 500 tagged pages per source.** Past
+  that (every closed commitment adds one), old `status: open` commitments
+  reappear in `<memory-context>`. Phase E must fix this before proactive
+  promise-checking relies on it.
+- Minor, left alone: `memory_about` makes one `get_page` per typed page before
+  filtering by subject, prints confidence raw and has no output cap; pages
+  written before `subject` are found only at the fixed slugs; a literal
   `</user>\n<assistant>` in user text still splits one history line.
