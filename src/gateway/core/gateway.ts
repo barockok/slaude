@@ -109,7 +109,7 @@ import { memory as processMemory } from "../../memory";
 import { makeScopedMemory } from "../../memory/scoped";
 import { scrubChildEnv, withoutKeys } from "../../agent/child-env";
 import { providerSelectingNames } from "../../agent/provider-env";
-import { memoryScopeFor } from "../../memory/scope";
+import { memoryScopeFor, withClaimLock } from "../../memory/scope";
 import { getPersonaRegistry, labelsInUse, livePersona, managedPersonaProvider, onPersonaRegistryInstalled } from "../../persona/registry";
 import { makeLabelMonitor } from "../../queue/label-status";
 import { isInteractiveOrigin, turnBrainScope, type GateInput } from "../../knowledge/gated-dispatch";
@@ -986,14 +986,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // Brain tool deps for a context + surface — shared by the per-session MCP
   // resolver and the REST tool plane so both run identical scoping and gating.
-  const brainDepsFor = (ctx: SlackContext, surface: Surface, sessionId: string | undefined = ctx.sessionId, claims?: JobClaims): BrainToolDeps | undefined =>
-    brainEnabled()
+  const brainDepsFor = (ctx: SlackContext, surface: Surface, sessionId: string | undefined = ctx.sessionId, claims?: JobClaims): BrainToolDeps | undefined => {
+    const claimGate = async (): Promise<GateInput> => {
+      const g = await brainGateFor(ctx);
+      return claims ? withClaimLock(g, claims.lock?.user) : g;
+    };
+    return brainEnabled()
       ? {
           // kb-* sources: the live persona's kbSources ∩ installed, per call
           // (WS-C §4.1.3), so a sync applies on the next turn.
           // The speaker's profile only on that one sender's own turn (turnBrainScope).
-          scope: async () => turnBrainScope(await brainGateFor(ctx), personaKbSourceIds(ctx.personaId)),
-          gate: () => brainGateFor(ctx),
+          // On /v1 the lock is the more private of the live lock and the signed
+          // claim (as the memory routes), so a lock released mid-turn cannot let
+          // the rest of the turn write the /1on1 out to agent-<id>.
+          scope: async () => turnBrainScope(await claimGate(), personaKbSourceIds(ctx.personaId)),
+          gate: () => claimGate(),
           // kb_thread_history: the memory read scope. On /v1 the job token is
           // authoritative, derived as the memory routes do; mono uses the live
           // identity, as its route above does.
@@ -1010,6 +1017,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           requestApproval: (r) => surface.requestApproval(r),
         }
       : undefined;
+  };
 
   // Per-turn memory context (phase C §8.4) for one inbound Slack message:
   // built for THAT message's sender, never from the live route ctx (which the

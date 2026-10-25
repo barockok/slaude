@@ -14,7 +14,7 @@ import { ensureHome } from "../../../src/config/home";
 import { setBackendForTest, resetBackend } from "../../../src/knowledge/backend";
 import { __resetPersonaRegistry, setPersonaRegistry } from "../../../src/persona/registry";
 import { agentSourceId, userSourceId, type BrainScope } from "../../../src/knowledge/scope";
-import { THREAD_HISTORY_REFUSAL } from "../../../src/knowledge/mcp-tools";
+import { LOCK_REFUSAL, THREAD_HISTORY_REFUSAL } from "../../../src/knowledge/mcp-tools";
 import * as OneOnOne from "../../../src/db/one-on-one";
 
 const NODE_TOKEN = "thread-history-node-token";
@@ -23,8 +23,10 @@ const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
 const PERSONA_SLACK_ID = "U0FIN";
 
 let reads: { slug: unknown; scope: BrainScope }[] = [];
+let writes: { name: string; slug: unknown; scope: BrainScope }[] = [];
 const backend = {
   call: async (name: string, p: Record<string, unknown>, scope: BrainScope) => {
+    if (name === "put_page") writes.push({ name, slug: p.slug, scope });
     if (name !== "get_timeline") return [];
     reads.push({ slug: p.slug, scope });
     return [{ id: 1, date: "2026-10-01", summary: "q", detail: "<user>hello</user>\n<assistant>hi</assistant>" }];
@@ -81,9 +83,24 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   reads = [];
+  writes = [];
   setPersonaRegistry(registry());
   await OneOnOne._wipeForTests();
 });
+
+async function memoize(c: Partial<JobClaims>, body: Record<string, unknown>) {
+  const token = mintJobToken({
+    tenant: "default", persona: "finance", session: "S-Hist", team: "T1", channel: "C0TEAM", thread: "700.0",
+    initiator: "U0ALICE", scope: "turn", origin: "slack", ...c,
+  });
+  const res = (await handle.fetchV1(new Request("http://gw/v1/tools/kb/kb_memoize", {
+    method: "POST",
+    headers: { authorization: `Bearer ${NODE_TOKEN}`, [JOB_HEADER]: token, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  })))!;
+  expect(res.status).toBe(200);
+  return ((await res.json()) as any).content[0].text as string;
+}
 
 async function history(c: Partial<JobClaims>) {
   const token = mintJobToken({
@@ -120,5 +137,26 @@ describe("kb_thread_history on /v1 reads by the job token", () => {
     expect(out).toContain("[2026-10-01] assistant: hi");
     expect(reads).toHaveLength(1);
     expect(reads[0]!.scope.sourceId).toBe(userSourceId("U0ALICE"));
+  });
+});
+
+describe("kb_memoize on /v1 refuses by the signed lock claim", () => {
+  const note = { pages: [{ slug: "notes/x", content: "what was said in the /1on1", summary: "s" }] };
+
+  test("dispatched in someone else's /1on1 that was released mid-turn: refused, nothing written to agent-<id>", async () => {
+    // No live lock (released mid-turn); the token still names Bob's /1on1.
+    const out = await memoize({ lock: { user: "U0BOB", openScope: null } }, note);
+    expect(out).toBe(LOCK_REFUSAL);
+    expect(writes).toHaveLength(0);
+  });
+
+  test("dispatched in the speaker's own /1on1 that was released mid-turn: still written to their own slice only", async () => {
+    await memoize({ lock: { user: "U0ALICE", openScope: null } }, note);
+    expect(writes.map((w) => w.scope.sourceId)).toEqual([userSourceId("U0ALICE")]);
+  });
+
+  test("no lock in the token or live: the agent's own slice, as before", async () => {
+    await memoize({}, note);
+    expect(writes.map((w) => w.scope.sourceId)).toEqual([agentSourceId(PERSONA_SLACK_ID)]);
   });
 });
