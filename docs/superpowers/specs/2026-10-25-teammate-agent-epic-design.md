@@ -18,7 +18,7 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 | E. Proactiveness | — | not started | — |
 
 **Phase A tasks**
-- [ ] A1 Writing-style section; KB-first governs action, not wording (§6.1)
+- [x] A1 Writing-style section; KB-first governs action, not wording (§6.1)
 - [ ] A2 `pass` surface tool; reply-or-pass rule; stop guard accepts pass (§6.2)
 - [ ] A3 Auto-evolve: no announcement, `<runtime-check>` wrapper, higher bar (§6.3)
 - [ ] A4 A mention that ends in pass does not re-engage (§6.4)
