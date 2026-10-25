@@ -17,6 +17,7 @@ import { setSoulData, soulData } from "../../../src/soul/extract";
 import * as Ignores from "../../../src/db/ignores";
 import * as SlackOauthFlows from "../../../src/db/slack-oauth-flows";
 import { __resetMasterKeyCache } from "../../../src/db/crypto";
+import { metrics } from "../../../src/metrics";
 
 /**
  * Phase B, task 5: the decision gate at the gateway's Slack ingress. Mentions
@@ -561,5 +562,67 @@ describe("decision gate: text slash commands bypass it", () => {
       else process.env.SLAUDE_MASTER_KEY = priorKey;
       __resetMasterKeyCache();
     }
+  });
+});
+
+describe("handleMessage early drops through the shared predicate", () => {
+  /** slaude_slack_drops_total for one reason, read from the rendered registry. */
+  const drops = (reason: string): number => {
+    const line = metrics.render().split("\n").find((l) => l.startsWith("slaude_slack_drops_total{") && l.includes(`reason="${reason}"`));
+    return line ? Number(line.split(" ").at(-1)) : 0;
+  };
+  /** Run fn with console.log captured; returns the [slack-rx] drop lines. */
+  const dropLines = async (fn: () => Promise<void>): Promise<string[]> => {
+    const orig = console.log;
+    const lines: string[] = [];
+    console.log = (...a: any[]) => { const l = a.map(String).join(" "); if (l.startsWith("[slack-rx] drop")) lines.push(l); };
+    try { await fn(); } finally { console.log = orig; }
+    return lines;
+  };
+  const appMention = (g: ReturnType<typeof makeGw>, args: any, extra: Record<string, unknown> = {}) =>
+    g.emit("app_mention", { ...args, event: { ...args.event, type: "app_mention", ...extra } });
+
+  // The expected lines are the literal strings handleMessage printed before the
+  // filters moved into preTurnDropReason. Off mode: handleMessage alone.
+  it("each filter logs today's line and increments today's reason", async () => {
+    setSoulData({ ...soulData(), blockedUsers: ["U0BLOCKED"] });
+    const g = makeGw(runner("off", null));
+    const cases: { reason: string; run: () => Promise<void>; line: (ts: string) => string; ts: string }[] = [];
+
+    const tBlocked = nextTs();
+    cases.push({ reason: "blocked_user", ts: tBlocked, line: () => `[slack-rx] drop ch=${CH} user=U0BLOCKED — blocked user`,
+      run: () => appMention(g, msg(g.t.client, "<@USLAUDEBOT> hi", tBlocked, { user: "U0BLOCKED" })) });
+
+    const tUnlisted = nextTs();
+    cases.push({ reason: "whitelist", ts: tUnlisted,
+      line: () => `[slack-rx] drop ch=C0SECRET user=U0RANDOM — non-whitelist/DM accepts manager/backup only`,
+      run: () => appMention(g, msg(g.t.client, "<@USLAUDEBOT> hi", tUnlisted, { channel: "C0SECRET", user: "U0RANDOM" })) });
+
+    const thread = nextTs();
+    await Ignores.create({ targetType: "thread", channelId: CH, threadTs: thread, createdBy: WORLD.manager });
+    const tIgnored = nextTs();
+    cases.push({ reason: "ignored", ts: tIgnored, line: () => `[slack-rx] drop ch=${CH} user=${WORLD.manager} thread=${thread} — ignored`,
+      run: () => appMention(g, msg(g.t.client, "<@USLAUDEBOT> hi", tIgnored, { thread })) });
+
+    const tEcho = nextTs();
+    cases.push({ reason: "self_bot", ts: tEcho, line: (ts) => `[slack-rx] drop ch=${CH} ts=${ts} — self bot echo`,
+      run: () => appMention(g, msg(g.t.client, "<@USLAUDEBOT> note", tEcho, { user: "USLAUDEBOT" }), { bot_id: "B_SLAUDE" }) });
+
+    for (const c of cases) {
+      const before = drops(c.reason);
+      const lines = await dropLines(c.run);
+      expect(lines).toEqual([c.line(c.ts)]);
+      expect(drops(c.reason) - before).toBe(1);
+    }
+
+    // Dedup still sits between the self-echo and ignore checks: a redelivered
+    // mention logs today's dedup line once.
+    const tDup = nextTs();
+    const dup = msg(g.t.client, "<@USLAUDEBOT> hi", tDup);
+    await appMention(g, dup);
+    const before = drops("dedup");
+    expect(await dropLines(() => appMention(g, dup))).toEqual([`[slack-rx] drop ch=${CH} ts=${tDup} — dedup (already seen)`]);
+    expect(drops("dedup") - before).toBe(1);
+    expect(g.sends.length).toBe(1);
   });
 });

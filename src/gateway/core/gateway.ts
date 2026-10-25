@@ -215,6 +215,10 @@ function channelModeAdmits(soul: ReturnType<typeof soulData>, channelId: string,
   return Boolean((managerId && userId === managerId) || (backupId && userId === backupId) || dmAllowed);
 }
 
+/** An early drop: the slackDropsTotal reason label and the line handleMessage
+ *  logs (null for a silent drop: no line, no metric). */
+type PreTurnDrop = { reason: string; log: string | null };
+
 /** Pages of thread history the decision gate reads at most. */
 const GATE_REPLY_PAGES = 5;
 /** conversations.replies page size for the gate (Slack's recommended maximum),
@@ -1860,84 +1864,37 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       `[slack-rx] type=${event.type} subtype=${event.subtype ?? "-"} ch=${channelId} ts=${eventTs} thread=${event.thread_ts ?? "-"} user=${userId} txt=${JSON.stringify(text.slice(0, 80))}`,
     );
 
+    // Early drops (missing ids, self echo, ignore gate, blocklist, channel
+    // mode) come from preTurnDropReason, shared with the decision gate. The
+    // dedup claim is handleMessage's own step, run between the self-echo and
+    // the ignore checks exactly where it has always been. The id check is
+    // repeated here only to narrow teamId/userId for the code below.
     if (!teamId || !userId) return;
-    // Drop only self-echoes; other bots' messages flow through so slaude can
-    // see CI alerts, summarizer bots, etc. in shared threads.
-    if (await isSelfBotEcho(args, event)) {
-      console.log(`[slack-rx] drop ch=${channelId} ts=${eventTs} — self bot echo`);
-      metric.slackDropsTotal.inc({ reason: "self_bot" });
-      return;
+    {
+      const drop = await preTurnDropReason(args, {
+        // Dedup — durable atomic claim in seen_events by (channel, ts), so a Slack
+        // redelivery is dropped even across a restart or by a sibling replica.
+        afterSelfEcho: async () => {
+          const dedupKey = `${channelId}:${eventTs}`;
+          if (!(await SeenEvents.tryInsert(dedupKey))) {
+            return { reason: "dedup", log: `[slack-rx] drop ch=${channelId} ts=${eventTs} — dedup (already seen)` };
+          }
+          // Rows only matter for Slack's retry window; prune stale ones as we go.
+          void SeenEvents.maybePurge();
+          return null;
+        },
+      });
+      if (drop) {
+        if (drop.log !== null) {
+          console.log(drop.log);
+          metric.slackDropsTotal.inc({ reason: drop.reason });
+        }
+        return;
+      }
     }
-    // Self-echo when posting as a real user (xoxp) — default identity or a named
-    // persona: own posts carry our user id and no bot_id. Drop them to avoid
-    // re-ingesting our own output.
-    const selfUserIds = await getSelfUserIds();
-    if (selfUserIds.has(userId)) {
-      console.log(`[slack-rx] drop ch=${channelId} ts=${eventTs} — self user echo`);
-      metric.slackDropsTotal.inc({ reason: "self_user" });
-      return;
-    }
-
-    // Dedup — durable atomic claim in seen_events by (channel, ts), so a Slack
-    // redelivery is dropped even across a restart or by a sibling replica.
-    const dedupKey = `${channelId}:${eventTs}`;
-    if (!(await SeenEvents.tryInsert(dedupKey))) {
-      console.log(`[slack-rx] drop ch=${channelId} ts=${eventTs} — dedup (already seen)`);
-      metric.slackDropsTotal.inc({ reason: "dedup" });
-      return;
-    }
-    // Rows only matter for Slack's retry window; prune stale ones as we go.
-    void SeenEvents.maybePurge();
 
     const isDM = channelType === "im";
     const threadTs: string = event.thread_ts || (isDM ? eventTs : eventTs);
-
-    // Ignore gate: temp/permanent ignores for users or threads. /unignore* must
-    // bypass it — otherwise a thread-ignore drops the very message meant to lift it
-    // (the /unignore-thread is in the ignored thread), and the thread is stuck
-    // ignored forever. The blocklist + channel-mode gates below still apply, so this
-    // doesn't grant a non-allowed user any new reach.
-    {
-      // botUserId isn't resolved yet here; strip any leading user-mention so a
-      // "<@bot> /unignore-thread" still parses.
-      const peek = parseSlashCommand(text.replace(/<@[^>]+>/g, "").trim());
-      const isUnignore = peek?.kind === "unignore";
-      if (!isUnignore && (await ignoreGate.shouldDrop(userId, channelId, threadTs))) {
-        console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — ignored`);
-        metric.slackDropsTotal.inc({ reason: "ignored" });
-        return;
-      }
-    }
-
-    // Hard blocklist: blocked user → drop before any further processing.
-    // Never reaches Claude (no token spend, no logs). Channel blocking is
-    // unnecessary — default posture already denies anywhere not allowed/trusted.
-    {
-      const soul = soulData();
-      if (soul.blockedUsers.includes(userId)) {
-        console.log(`[slack-rx] drop ch=${channelId} user=${userId} — blocked user`);
-        metric.slackDropsTotal.inc({ reason: "blocked_user" });
-        return;
-      }
-    }
-
-    // Channel-mode gate, driven entirely by SOUL.md:
-    //   - trusted channel → team zone, anyone can address slaude (most open)
-    //   - allowed channel  → public zone, anyone can address slaude (mind exposure)
-    //   - DM or unlisted   → manager-only (approvers can still click Approve /
-    //     Deny on request_approval blocks but cannot chat)
-    {
-      const soul = soulData();
-      if (!channelModeAdmits(soul, channelId, channelType, userId)) {
-        const isDM_ = channelType === "im";
-        console.log(
-          `[slack-rx] drop ch=${channelId} user=${userId} — non-whitelist/DM accepts manager/backup${isDM_ ? "/dm-allowlist" : ""} only` +
-            (soul.manager.userId ? "" : " (no manager set in SOUL.md)"),
-        );
-        metric.slackDropsTotal.inc({ reason: "whitelist" });
-        return;
-      }
-    }
 
     // 1on1 lock: while active, only the locked user + manager/backup are heard in
     // this thread. After channel-mode (overrides "anyone can chat" in trusted/allowed
@@ -3136,27 +3093,98 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   };
 
   /**
-   * Whether handleMessage would drop this event before any turn: the same
-   * early filters, in the same order (missing team or user, self echo, ignore
-   * gate, hard blocklist, channel mode; the /1on1 lock is checked by the
-   * caller), plus a mention with no text. The gate never sees such a message,
-   * so nothing the agent is configured never to read leaves the deployment,
-   * and nobody it ignores gets a 🤔. Read-only: no claim, no log, no metric.
+   * Why an event is dropped before any turn, or null if it is not. The early
+   * filters, in handleMessage's order: missing team or user, self bot echo,
+   * self user echo, ignore gate, hard blocklist, channel mode (the /1on1 lock
+   * is checked after, by each caller). `reason` is the slackDropsTotal label
+   * and `log` the line handleMessage prints; `log: null` is a silent drop
+   * (no line, no metric). Read-only: no claim, no insert, no log, no metric.
+   * `afterSelfEcho` is a caller step run after the self-echo checks and
+   * before the ignore gate (handleMessage's dedup claim); the gate passes none.
    */
-  const ingressDrops = async (args: any): Promise<boolean> => {
+  // Both handleMessage and the decision gate (ingressDrops) depend on this: a filter added here reaches both.
+  const preTurnDropReason = async (
+    args: any,
+    o: { afterSelfEcho?: () => Promise<PreTurnDrop | null> } = {},
+  ): Promise<PreTurnDrop | null> => {
     const e: any = args.event;
     const teamId: string | undefined = args.context?.teamId ?? e.team;
+    const channelId: string = e.channel;
     const userId: string | undefined = e.user;
-    if (!teamId || !userId) return true;
-    if (await isSelfBotEcho(args, e)) return true;
-    if ((await getSelfUserIds()).has(userId)) return true;
+    const eventTs: string = e.ts;
+    const channelType: string = e.channel_type ?? "";
+    if (!teamId || !userId) return { reason: "missing_identity", log: null };
+    // Drop only self-echoes; other bots' messages flow through so slaude can
+    // see CI alerts, summarizer bots, etc. in shared threads.
+    if (await isSelfBotEcho(args, e)) {
+      return { reason: "self_bot", log: `[slack-rx] drop ch=${channelId} ts=${eventTs} — self bot echo` };
+    }
+    // Self-echo when posting as a real user (xoxp) — default identity or a named
+    // persona: own posts carry our user id and no bot_id. Drop them to avoid
+    // re-ingesting our own output.
+    if ((await getSelfUserIds()).has(userId)) {
+      return { reason: "self_user", log: `[slack-rx] drop ch=${channelId} ts=${eventTs} — self user echo` };
+    }
+    if (o.afterSelfEcho) {
+      const drop = await o.afterSelfEcho();
+      if (drop) return drop;
+    }
+    // Ignore gate: temp/permanent ignores for users or threads. /unignore* must
+    // bypass it — otherwise a thread-ignore drops the very message meant to lift it
+    // (the /unignore-thread is in the ignored thread), and the thread is stuck
+    // ignored forever. The blocklist + channel-mode gates below still apply, so this
+    // doesn't grant a non-allowed user any new reach.
+    {
+      const text: string = (e.text || "").toString().trim();
+      const threadTs: string = e.thread_ts || eventTs;
+      // botUserId isn't resolved yet here; strip any leading user-mention so a
+      // "<@bot> /unignore-thread" still parses.
+      const peek = parseSlashCommand(text.replace(/<@[^>]+>/g, "").trim());
+      const isUnignore = peek?.kind === "unignore";
+      if (!isUnignore && (await ignoreGate.shouldDrop(userId, channelId, threadTs))) {
+        return { reason: "ignored", log: `[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — ignored` };
+      }
+    }
+    // Hard blocklist: blocked user → drop before any further processing.
+    // Never reaches Claude (no token spend, no logs). Channel blocking is
+    // unnecessary — default posture already denies anywhere not allowed/trusted.
+    {
+      const soul = soulData();
+      if (soul.blockedUsers.includes(userId)) {
+        return { reason: "blocked_user", log: `[slack-rx] drop ch=${channelId} user=${userId} — blocked user` };
+      }
+    }
+    // Channel-mode gate, driven entirely by SOUL.md:
+    //   - trusted channel → team zone, anyone can address slaude (most open)
+    //   - allowed channel  → public zone, anyone can address slaude (mind exposure)
+    //   - DM or unlisted   → manager-only (approvers can still click Approve /
+    //     Deny on request_approval blocks but cannot chat)
+    {
+      const soul = soulData();
+      if (!channelModeAdmits(soul, channelId, channelType, userId)) {
+        const isDM_ = channelType === "im";
+        return {
+          reason: "whitelist",
+          log:
+            `[slack-rx] drop ch=${channelId} user=${userId} — non-whitelist/DM accepts manager/backup${isDM_ ? "/dm-allowlist" : ""} only` +
+            (soul.manager.userId ? "" : " (no manager set in SOUL.md)"),
+        };
+      }
+    }
+    return null;
+  };
+
+  /**
+   * Whether the decision gate must skip this event: handleMessage would drop
+   * it before any turn (preTurnDropReason, without the dedup claim), or it is
+   * a mention with no text. The gate never sees such a message, so nothing
+   * the agent is configured never to read leaves the deployment, and nobody
+   * it ignores gets a 🤔. Read-only: no claim, no log, no metric.
+   */
+  const ingressDrops = async (args: any): Promise<boolean> => {
+    if (await preTurnDropReason(args)) return true;
+    const e: any = args.event;
     const text: string = (e.text || "").toString().trim();
-    const threadTs: string = e.thread_ts || e.ts;
-    const peek = parseSlashCommand(text.replace(/<@[^>]+>/g, "").trim());
-    if (peek?.kind !== "unignore" && (await ignoreGate.shouldDrop(userId, e.channel, threadTs))) return true;
-    const soul = soulData();
-    if (soul.blockedUsers.includes(userId)) return true;
-    if (!channelModeAdmits(soul, e.channel, e.channel_type ?? "", userId)) return true;
     const hasFiles = Array.isArray(e.files) && e.files.length > 0;
     return !text.replace(/<@[^>]+>/g, "").trim() && !hasFiles;
   };
