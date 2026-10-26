@@ -16,6 +16,8 @@ export interface BackgroundRun {
   finishedAt: number | null;
   outcome: RunOutcome | null;
   day: string;
+  /** The reported model with no price that ended this run as `error`, else null. */
+  unpricedModel: string | null;
 }
 
 interface Row {
@@ -33,6 +35,7 @@ interface Row {
   finished_at: number | string | null;
   outcome: RunOutcome | null;
   day: string;
+  unpriced_model?: string | null;
 }
 
 function toRun(r: Row): BackgroundRun {
@@ -53,6 +56,7 @@ function toRun(r: Row): BackgroundRun {
     finishedAt: r.finished_at === null ? null : Number(r.finished_at),
     outcome: r.outcome,
     day: r.day,
+    unpricedModel: r.unpriced_model ?? null,
   };
 }
 
@@ -123,15 +127,30 @@ export async function progress(id: string, r: { tokens: TokenCounts; costUsd: nu
 
 export async function finish(
   id: string,
-  r: { tokens: TokenCounts; costUsd: number; outcome: RunOutcome },
+  r: { tokens: TokenCounts; costUsd: number; outcome: RunOutcome; unpricedModel?: string },
 ): Promise<void> {
   await db.run(
     `UPDATE background_runs
         SET tokens_input = ?, tokens_output = ?, tokens_cache_read = ?, tokens_cache_write = ?,
-            cost_usd = ?, outcome = ?, finished_at = ?
+            cost_usd = ?, outcome = ?, finished_at = ?, unpriced_model = ?
       WHERE id = ?`,
-    [r.tokens.input, r.tokens.output, r.tokens.cache_read, r.tokens.cache_write, r.costUsd, r.outcome, Date.now(), id],
+    [r.tokens.input, r.tokens.output, r.tokens.cache_read, r.tokens.cache_write, r.costUsd, r.outcome, Date.now(), r.unpricedModel ?? null, id],
   );
+}
+
+/**
+ * The reported model with no price that ended one of the agent's runs on this
+ * persona-local day as `error`, or null. While one exists, no further
+ * background run of the agent starts that day (its spend cannot be priced).
+ */
+export async function unpricedOn(agentId: string, day: string): Promise<string | null> {
+  const row = await db.one<{ unpriced_model: string }>(
+    `SELECT unpriced_model FROM background_runs
+      WHERE agent_id = ? AND day = ? AND unpriced_model IS NOT NULL
+      ORDER BY started_at ASC LIMIT 1`,
+    [agentId, day],
+  );
+  return row?.unpriced_model ?? null;
 }
 
 /** One run by id, or null. */
@@ -148,14 +167,14 @@ export async function get(id: string): Promise<BackgroundRun | null> {
 export async function finishOpen(
   id: string,
   owner: { agentId: string; pass: string },
-  r: { tokens: TokenCounts; costUsd: number; outcome: RunOutcome },
+  r: { tokens: TokenCounts; costUsd: number; outcome: RunOutcome; unpricedModel?: string },
 ): Promise<boolean> {
   const res = await db.run(
     `UPDATE background_runs
         SET tokens_input = ?, tokens_output = ?, tokens_cache_read = ?, tokens_cache_write = ?,
-            cost_usd = ?, outcome = ?, finished_at = ?
+            cost_usd = ?, outcome = ?, finished_at = ?, unpriced_model = ?
       WHERE id = ? AND agent_id = ? AND pass = ? AND outcome IS NULL`,
-    [r.tokens.input, r.tokens.output, r.tokens.cache_read, r.tokens.cache_write, r.costUsd, r.outcome, Date.now(), id, owner.agentId, owner.pass],
+    [r.tokens.input, r.tokens.output, r.tokens.cache_read, r.tokens.cache_write, r.costUsd, r.outcome, Date.now(), r.unpricedModel ?? null, id, owner.agentId, owner.pass],
   );
   return res.changes > 0;
 }

@@ -24,7 +24,7 @@ import { env } from "../config/env";
 import { agentIdReady } from "../knowledge/agent-identity";
 import { m as metric } from "../metrics";
 import { getPersonaRegistry, livePersona, personaDefaultModel } from "../persona/registry";
-import { canStart, localDay, overAfterStart, type BudgetConfig } from "./budget";
+import { canStart, localDay, overAfterStart, unpricedBlock, type BudgetConfig } from "./budget";
 import { budgetConfigFor } from "./config";
 import {
   addTokens,
@@ -137,7 +137,7 @@ const settleMetrics = (agentId: string, outcome: RunOutcome, cost: number) => {
 export async function startSkillCheck(
   a: { personaId: string; model: string; scope: string; reportedModel?: string },
   deps: SkillCheckDeps = {},
-): Promise<{ ok: true; runId: string; agentId: string } | { ok: false; reason: "budget" }> {
+): Promise<{ ok: true; runId: string; agentId: string } | { ok: false; reason: "budget" | "model" }> {
   const agentId = await backgroundAgentId(a.personaId);
   const now = (deps.now ?? (() => new Date()))();
   const cfg = (deps.budget ?? budgetConfigFor)(a.personaId);
@@ -150,6 +150,13 @@ export async function startSkillCheck(
     return { ok: false as const, reason: "budget" as const };
   };
   await sweepStaleSkillChecks(now);
+  // An unpriced reported model earlier today: no further spend today.
+  const unpriced = await unpricedBlock(agentId, day, tag);
+  if (unpriced !== null) {
+    await Runs.finish(await Runs.start({ ...row, model: null }), { tokens: ZERO_TOKENS, costUsd: 0, outcome: "error", unpricedModel: unpriced });
+    settleMetrics(agentId, "error", 0);
+    return { ok: false, reason: "model" };
+  }
   const gate = await canStart(cfg, agentId, SKILL_CHECK, now);
   if (!gate.ok) {
     await Runs.finish(await Runs.start({ ...row, model: null }), { tokens: ZERO_TOKENS, costUsd: 0, outcome: "skipped-budget" });
@@ -227,7 +234,8 @@ export async function finishSkillCheck(
     outcome = "error";
     total = atRunModel !== null ? total + atRunModel : Math.max(total, run.costUsd);
   }
-  if (!(await Runs.finishOpen(a.runId, { agentId: a.agentId, pass: SKILL_CHECK }, { tokens, costUsd: total, outcome }))) {
+  const unpricedModel = unpriced.length > 0 ? unpriced[0] || "(none named)" : undefined;
+  if (!(await Runs.finishOpen(a.runId, { agentId: a.agentId, pass: SKILL_CHECK }, { tokens, costUsd: total, outcome, ...(unpricedModel ? { unpricedModel } : {}) }))) {
     return { ok: false, reason: "not-open" };
   }
   settleMetrics(a.agentId, outcome, total);

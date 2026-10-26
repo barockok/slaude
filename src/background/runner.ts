@@ -45,7 +45,7 @@ import type { BrainOpCall } from "../knowledge/memory-trail";
 import { personaKbSourceIds } from "../knowledge/persona-kb";
 import { m as metric } from "../metrics";
 import { personaDefaultModel } from "../persona/registry";
-import { canStart, localDay, overAfterStart, PASS_MAX_TURNS, type BudgetConfig, type PassName } from "./budget";
+import { canStart, localDay, overAfterStart, PASS_MAX_TURNS, unpricedBlock, type BudgetConfig, type PassName } from "./budget";
 import { budgetConfigFor } from "./config";
 import { createPassMcpServer, PASS_MCP_NAME, passProfileSource, passReadSources, type PassScope, type PassTool, type TranscriptTurn } from "./pass-tools";
 import {
@@ -235,8 +235,8 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
   let day = localDay(startedAt, "UTC");
   const row = () => ({ agentId: spec.agentId, pass: spec.pass, scope: scopeLabel(spec.scope), day, startedAt: startedAt.getTime() });
 
-  const settle = async (runId: string, outcome: Outcome, tokens: TokenCounts, cost: number) => {
-    await Runs.finish(runId, { tokens, costUsd: cost, outcome });
+  const settle = async (runId: string, outcome: Outcome, tokens: TokenCounts, cost: number, unpricedModel?: string) => {
+    await Runs.finish(runId, { tokens, costUsd: cost, outcome, ...(unpricedModel ? { unpricedModel } : {}) });
     metric.backgroundRunsTotal.inc({ ...labels, outcome });
     if (cost > 0) metric.backgroundCostUsdTotal.inc(labels, cost);
     return { outcome, costUsd: cost, runId, proposed };
@@ -252,6 +252,10 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
   try {
     cfg = (deps.budget ?? budgetConfigFor)(spec.personaId);
     day = localDay(startedAt, cfg.timeZone);
+    // An unpriced reported model earlier today: no further spend today (an
+    // error row carrying the model, so the digest counts it).
+    const unpriced = await unpricedBlock(spec.agentId, day, tag);
+    if (unpriced !== null) return settle(await Runs.start({ ...row(), model: null }), "error", ZERO, 0, unpriced);
     const gate = await canStart(cfg, spec.agentId, spec.pass, startedAt);
     if (!gate.ok) {
       console.log(`${tag}: skipped, not enough of today's budget left`);
@@ -321,6 +325,8 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
   let outcome: Outcome = "error";
   let shutdown = false;
   let unpricedStop = false;
+  /** The reported model with no price that ended this run, if one did. */
+  let unpricedModel: string | undefined;
   const onShutdown = () => {
     shutdown = true;
     abort.abort();
@@ -349,6 +355,7 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
           abort.abort();
           outcome = "error";
           unpricedStop = true;
+          unpricedModel = unpriced[0];
           break;
         }
         if (shutdown) break;
@@ -379,6 +386,7 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
             // priced part, if larger) and end the run as an error.
             console.error(`${tag}: model '${unpriced.join("', '")}' in the run's usage has no price: SLAUDE_PRICE_TABLE (or the built-in table) lacks it`);
             outcome = "error";
+            unpricedModel = unpriced[0] || "(none named)";
             if (Math.max(c, estimate) > cost) await record(t, Math.max(c, estimate));
           } else {
             await record(t, c);
@@ -392,6 +400,7 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
           else {
             console.error(`${tag}: the run's usage names no model and '${model || "(none configured)"}' has no price; the run keeps its figure so far`);
             outcome = "error";
+            unpricedModel = model || "(none named)";
             await record(t, Math.max(cost, estimate));
           }
         }
@@ -411,5 +420,5 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
     outcome = "error";
     console.log(`${tag}: stopped: shutting down`);
   }
-  return settle(openId, outcome, tokens, cost);
+  return settle(openId, outcome, tokens, cost, outcome === "error" ? unpricedModel : undefined);
 }

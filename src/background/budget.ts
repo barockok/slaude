@@ -88,3 +88,26 @@ export async function overAfterStart(cfg: BudgetConfig, agentId: string, pass: P
   }
   return remaining < -1e-9;
 }
+
+/** agent/day pairs already logged as refused for an unpriced model (one line each per process). */
+const unpricedLogged = new Set<string>();
+
+/**
+ * The reported model with no price that ended one of the agent's runs as
+ * `error` today, or null. While one exists, every further background start of
+ * the agent that day is refused: such a run is recorded at its estimate, its
+ * real cost is unknown, and the estimate never rises (an error run is never a
+ * last ok cost), so the budget would bound the number of runs, not the
+ * spend. Read from the ledger, so it holds across replicas; one loud log line
+ * per agent and day.
+ */
+export async function unpricedBlock(agentId: string, day: string, tag: string): Promise<string | null> {
+  const model = await Runs.unpricedOn(agentId, day);
+  if (model !== null && !unpricedLogged.has(`${agentId}/${day}`)) {
+    unpricedLogged.add(`${agentId}/${day}`);
+    console.error(
+      `${tag}: background spend is off for the rest of ${day}: model '${model}' the CLI reported has no price (add it to SLAUDE_PRICE_TABLE)`,
+    );
+  }
+  return model;
+}

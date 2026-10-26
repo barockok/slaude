@@ -6,7 +6,7 @@ date: 2026-10-26
 # Background learning: budgeted one-shot passes, scoped to one person at a time
 
 **Date:** 2026-10-26
-**Status:** Built on the epic branch, unreleased. It touches the agent loop and the DB schema (migrations 0019 to 0026), so it goes out as a release candidate first. Checked against a fake brain, a fake SDK `query` and a fake Slack. The pass lockdown was checked once against the real CLI and the repo's mock LLM. It has not been checked against a live model or the real gbrain engine.
+**Status:** Built on the epic branch, unreleased. It touches the agent loop and the DB schema (migrations 0019 to 0027), so it goes out as a release candidate first. Checked against a fake brain, a fake SDK `query` and a fake Slack. The pass lockdown was checked once against the real CLI and the repo's mock LLM. It has not been checked against a live model or the real gbrain engine.
 
 Phase C gave memory a shape. It is filled only while someone is talking, and
 only when the live turn decides to save something. Phase D adds work between
@@ -107,7 +107,12 @@ quote can only come from that person's own message.
   estimate and is priced by the models the CLI reports: each assistant
   message's `model`, then the result's `modelUsage`. A reported model with no
   price ends the run as `error` after that turn and keeps at least its
-  estimate. Nothing is priced at zero.
+  estimate. Nothing is priced at zero. Such a run's real cost is unknown and
+  its estimate never rises (an `error` run is never a last ok cost), so the
+  ledger records `unpriced_model` (migration 0027) and every further check or
+  pass of that agent is refused for the rest of its local day: an `error` row
+  at $0 carrying the model, and one loud log line per agent and day naming it
+  and `SLAUDE_PRICE_TABLE`. Read from the ledger, so it holds across replicas.
 - **The ledger.** `background_runs` holds one row per pass run, with its
   tokens, cost and outcome (`ok`, `skipped-budget`, `stopped-budget`,
   `error`). A run starts with its estimate as a provisional cost. Each
@@ -239,7 +244,7 @@ gate.
 - Timestamps are epoch-ms integers, the repo's convention. Migrations are
   numbered in task order: 0019 runs, 0020 persona `background`, 0021
   proposals, 0022 slots, 0023 thread activity, 0024 skill usage, 0025 the
-  digest's slot state, 0026 the card's app.
+  digest's slot state, 0026 the card's app, 0027 a run's unpriced reported model.
 
 ## What review found
 
@@ -372,7 +377,7 @@ real turn path and its real scoped memory sync. The brain is an in-memory fake,
 - **Real Slack.** Not checked: opening a DM by posting to a user id,
   `replace_original` on a message holding several cards, and the multi-app
   HTTP posts.
-- **Migrations 0019 to 0026 on Postgres.** They were not run on Postgres
+- **Migrations 0019 to 0027 on Postgres.** They were not run on Postgres
   locally (only on PGLite through the drift test); CI runs real Postgres 14,
   16 and 17.
 - **The real CLI abort** mid-stream or during a slow tool call. The harness
@@ -407,9 +412,11 @@ real turn path and its real scoped memory sync. The brain is an in-memory fake,
   the quiet-moment pass runs as the thread's own persona. Splitting the
   nightly per persona is left to phase E. Every group's proposals go to the
   default soul's manager.
-- **An unpriced reported model costs one turn.** Each check or pass whose CLI
-  reports a model the table lacks spends one turn, ends `error` and keeps at
-  least its estimate. Add the id to `SLAUDE_PRICE_TABLE`. A custom table
+- **An unpriced reported model costs one run a day.** The first check or pass
+  whose CLI reports a model the table lacks spends its turn, ends `error` and
+  keeps at least its estimate (its true cost is unrecorded); background spend
+  for that agent is then off until the next local day. Add the id to
+  `SLAUDE_PRICE_TABLE`. A custom table
   replaces the built-in one, and `{}` loads without complaint, so every run
   then ends this way.
 - **Simultaneous starts may both skip.** With insert-then-recheck, two starts

@@ -60,6 +60,7 @@ const run = (day: string, pass: string, costUsd: number, outcome: RunOutcome | n
   finishedAt: outcome ? Date.parse(`${day}T03:05:00Z`) : null,
   outcome,
   day,
+  unpricedModel: null,
 });
 
 const proposal = (over: Partial<Proposals.Proposal>): Proposals.Proposal => ({

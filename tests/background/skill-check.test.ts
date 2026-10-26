@@ -102,6 +102,42 @@ describe("skill-check ledger", () => {
   });
 });
 
+describe("an unpriced reported model stops the day's background spend", () => {
+  const unpricedUsage = { "claude-unknown-9": { input: 10, output: 0, cache_read: 0, cache_write: 0 } };
+  const unset = (now = T0) => startSkillCheck({ personaId: "default", model: "", scope: "agent" }, deps(1, now));
+  test("after one check ends error on an unpriced reported model, the next never starts that day; the next day it may", async () => {
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const first = await unset();
+      if (!first.ok) throw new Error("expected a start");
+      await finishSkillCheck({ runId: first.runId, agentId: "U0AGENT", usage: unpricedUsage, outcome: "ok" }, deps(1));
+      expect((await Runs.get(first.runId))!.unpricedModel).toBe("claude-unknown-9");
+      expect(await unset(new Date(T0.getTime() + 60_000))).toEqual({ ok: false, reason: "model" });
+      expect(await unset(new Date(T0.getTime() + 120_000))).toEqual({ ok: false, reason: "model" });
+      // The refusals are error rows at $0; one loud line for the day.
+      const rows = await Runs.listBetween("U0AGENT", DAY, DAY);
+      expect(rows.map((r) => [r.outcome, r.costUsd])).toEqual([["error", 0.02], ["error", 0], ["error", 0]]);
+      const lines = errSpy.mock.calls.map((c: unknown[]) => String(c[0])).filter((l: string) => l.includes("background spend is off"));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("'claude-unknown-9'");
+      expect(lines[0]).toContain("SLAUDE_PRICE_TABLE");
+      // The next local day starts again.
+      expect((await unset(new Date("2026-10-27T12:00:00Z"))).ok).toBe(true);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  test("a priced reported model is unaffected: consecutive checks keep starting", async () => {
+    for (let i = 0; i < 2; i++) {
+      const r = await unset(new Date(T0.getTime() + i * 60_000));
+      if (!r.ok) throw new Error("expected a start");
+      await finishSkillCheck({ runId: r.runId, agentId: "U0AGENT", usage: { [MODEL]: { input: 10, output: 0, cache_read: 0, cache_write: 0 } }, outcome: "ok" }, deps(1));
+    }
+    expect((await Runs.listBetween("U0AGENT", DAY, DAY)).map((r) => [r.outcome, r.unpricedModel])).toEqual([["ok", null], ["ok", null]]);
+  });
+});
+
 describe("boot warning", () => {
   test("one loud line naming each configured model with no price; none when all are priced or unset", () => {
     warnSpy.mockClear();

@@ -130,6 +130,24 @@ describe("runPass", () => {
     expect(errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join("\n")).toContain("'mystery-model-9'");
   });
 
+  test("after a pass ends error on an unpriced reported model, no further pass of the agent starts that day", async () => {
+    const agentId = `agent-unpriced${++seq}`;
+    const first = fakeQuery([assistant("m1", TURN, "mystery-model-9"), result(TURN)]);
+    const r1 = await runPass(spec({ agentId }), deps(first.query, 5, ""));
+    expect(r1.outcome).toBe("error");
+    expect((await rowOf(agentId, r1.runId)).unpricedModel).toBe("mystery-model-9");
+    const second = fakeQuery([assistant("m1", TURN, MODEL), result(TURN)]);
+    const r2 = await runPass(spec({ agentId, pass: "quiet-moment" }), deps(second.query, 5));
+    expect(second.state.calls).toHaveLength(0);
+    expect(await rowOf(agentId, r2.runId)).toMatchObject({ outcome: "error", costUsd: 0, unpricedModel: "mystery-model-9" });
+    // Another agent, and the next day, are not refused.
+    const other = fakeQuery([assistant("m1", TURN, MODEL), result(TURN)]);
+    expect((await runPass(spec(), deps(other.query, 5))).outcome).toBe("ok");
+    const tomorrow = fakeQuery([assistant("m1", TURN, MODEL), result(TURN)]);
+    const r3 = await runPass(spec({ agentId }), { ...deps(tomorrow.query, 5), now: () => new Date("2026-10-27T03:00:00Z") });
+    expect(r3.outcome).toBe("ok");
+  });
+
   test("near-simultaneous starts with room for one estimate never both run (insert first, then re-check)", async () => {
     const agentId = `agent-race${++seq}`;
     const a = fakeQuery([result()]);

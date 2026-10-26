@@ -163,7 +163,8 @@ CREATE TABLE IF NOT EXISTS background_runs (
   started_at         INTEGER NOT NULL,
   finished_at        INTEGER,
   outcome            TEXT,
-  day                TEXT NOT NULL
+  day                TEXT NOT NULL,
+  unpriced_model     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_background_runs_agent_day ON background_runs (agent_id, day);
 CREATE TABLE IF NOT EXISTS proposals (
@@ -347,6 +348,10 @@ export function bootstrapSqliteSchema(db: Database): void {
       if (/CREATE TABLE IF NOT EXISTS skill_usage\b/.test(stmt)) db.run(stmt.trim());
     }
   }
+
+  // Migration: a run records the reported model it could not price (pg 0027).
+  const runCols = db.query(`PRAGMA table_info(background_runs)`).all() as Array<{ name: string }>;
+  if (!runCols.some((c) => c.name === "unpriced_model")) db.run(`ALTER TABLE background_runs ADD COLUMN unpriced_model TEXT`);
 
   // Migration: proposals record the Slack app their card was posted as (pg 0026).
   const proposalCols = db.query(`PRAGMA table_info(proposals)`).all() as Array<{ name: string }>;
