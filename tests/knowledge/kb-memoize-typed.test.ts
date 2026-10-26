@@ -358,8 +358,22 @@ describe("kb_memoize subject", () => {
     }, s.deps);
     expect(r.isError).toBeUndefined();
     const own = agentSourceId(AGENT);
-    expect(parseFrontmatter(s.brain.contentOf(own, "people/U0BOB-style")!).meta.subject).toBe("U0BOB");
+    // Slugs are lowercased (gbrain stores the lowercased slug and chunks under the
+    // one given, so a mixed-case slug failed); the subject keeps its case.
+    expect([...s.brain.contents.keys()].filter((k) => k.includes("people/"))).toEqual([`${own}\u0000people/u0bob-style`]);
+    expect(parseFrontmatter(s.brain.contentOf(own, "people/u0bob-style")!).meta.subject).toBe("U0BOB");
     expect(s.brain.contentOf(own, "notes/raw")).toBe("plain");
+  });
+
+  test("a mixed-case supersedes is lowercased with the slug", async () => {
+    const s = setup();
+    await brainHandlers.kb_memoize({ subject: "U0BOB", pages: [{ slug: "people/u0bob-old", content: "Prefers prose.", summary: "s", type: "person-note" }] }, s.deps);
+    const r = await brainHandlers.kb_memoize({
+      subject: "U0BOB",
+      pages: [{ slug: "people/U0BOB", content: "Prefers tables.", summary: "s", type: "person-note", supersedes: "people/U0BOB-old" }],
+    }, s.deps);
+    expect(r.isError).toBeUndefined();
+    expect(parseFrontmatter(s.brain.contentOf(agentSourceId(AGENT), "people/u0bob")!).meta.supersedes).toBe("people/u0bob-old");
   });
 
   test("a profile page's subject is its speaker, also when the call names none", async () => {

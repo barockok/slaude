@@ -5,6 +5,8 @@
  * sources the way the real engine scopes them: writes land in
  * `scope.sourceId`, reads see only `scope.allowedSources`. A page's content
  * is kept per source (`contents`); get_page returns the first readable copy.
+ * Like gbrain, put_page stores a slug lowercased and every other op matches
+ * the slug exactly, so a mixed-case lookup misses.
  */
 import type { BrainScope } from "../../src/knowledge/scope";
 import { parseFrontmatter } from "../../src/knowledge/memory-pages";
@@ -25,10 +27,12 @@ export function fakeBrain() {
         const from = scope.allowedSources.find((s) => pages.has(key(s, slug)));
         return from === undefined ? null : { slug, content: contents.get(key(from, slug)) ?? "" };
       }
-      case "put_page":
-        if (!pages.has(key(scope.sourceId, slug))) pages.set(key(scope.sourceId, slug), []);
-        if (typeof params.content === "string") contents.set(key(scope.sourceId, slug), params.content);
-        return { slug };
+      case "put_page": {
+        const stored = slug.toLowerCase();
+        if (!pages.has(key(scope.sourceId, stored))) pages.set(key(scope.sourceId, stored), []);
+        if (typeof params.content === "string") contents.set(key(scope.sourceId, stored), params.content);
+        return { slug: stored };
+      }
       case "add_tag": {
         if (!pages.has(key(scope.sourceId, slug))) throw Object.assign(new Error(`page not found: ${slug}`), { code: "page_not_found" });
         const t = tags.get(key(scope.sourceId, slug)) ?? new Set<string>();

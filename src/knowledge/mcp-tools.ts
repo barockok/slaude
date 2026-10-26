@@ -335,7 +335,9 @@ const ABOUT_LIST_LIMIT = 500;
 function memorySources(scope: BrainScope, sender: TurnSender): Array<{ where: MemoryEntry["where"]; source: string; fixed: string[] }> {
   const out: Array<{ where: MemoryEntry["where"]; source: string; fixed: string[] }> = [];
   const profile = speakerProfileSource(sender.teamId, sender.userId);
-  const note = `people/${sender.userId}`;
+  // gbrain stores slugs lowercased and reads them exactly, so the note for an
+  // upper-case Slack id lives at its lowercased slug.
+  const note = `people/${sender.userId}`.toLowerCase();
   for (const source of new Set(scope.allowedSources)) {
     if (source === profile) out.push({ where: "profile", source, fixed: ["profile"] });
     else if (source === userSourceId(sender.userId)) out.push({ where: "user", source, fixed: [note] });
@@ -487,10 +489,15 @@ export const brainHandlers = {
     }, null, 2));
   },
   kb_memoize: async (p: KbMemoizeArgs, d: BrainToolDeps): Promise<ToolResult> => {
-    const pages = p.pages;
-    if (!Array.isArray(pages) || pages.length === 0) {
+    if (!Array.isArray(p.pages) || p.pages.length === 0) {
       return err("kb_memoize requires at least one page");
     }
+    // gbrain stores a page under its lowercased slug, then chunks it under the
+    // slug as given, so a mixed-case slug fails with "Page not found" after the
+    // page row is written. Slack ids are upper case and person-notes live at
+    // `people/<userId>`, so a live run hit this on its first person-note.
+    const lower = (s: string | undefined) => (typeof s === "string" ? s.toLowerCase() : s);
+    const pages = p.pages.map((pg) => ({ ...pg, slug: lower(pg.slug)!, supersedes: lower(pg.supersedes) }));
     if (pages.length > KB_MEMOIZE_MAX_PAGES) {
       return err(`kb_memoize accepts at most ${KB_MEMOIZE_MAX_PAGES} pages per call (got ${pages.length})`);
     }
