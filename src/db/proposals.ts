@@ -99,11 +99,11 @@ export async function listOpen(agentId: string, toKind: ProposalTo, toUser?: str
   return rows.map(toProposal);
 }
 
-/** Settle an open proposal. False when it was not open (already decided or expired). */
+/** Settle an open, unexpired proposal. False when it was not open or is past expires_at (even before expireDue swept it). */
 export async function decide(id: string, status: "approved" | "rejected", by: string, at: number): Promise<boolean> {
   const r = await db.run(
-    "UPDATE proposals SET status = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'open'",
-    [status, by, at, id],
+    "UPDATE proposals SET status = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'open' AND expires_at > ?",
+    [status, by, at, id, at],
   );
   return r.changes > 0;
 }

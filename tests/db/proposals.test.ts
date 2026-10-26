@@ -49,4 +49,11 @@ describe("proposals repo", () => {
     expect((await Proposals.get(decided))!.status).toBe("rejected");
     expect(await Proposals.decide(old, "approved", "U0MGR", T0)).toBe(false);
   });
+
+  test("decide refuses a row past expires_at that expireDue has not swept yet", async () => {
+    const id = await add();
+    expect(await Proposals.decide(id, "approved", "U0MGR", T0 + Proposals.PROPOSAL_TTL_MS)).toBe(false);
+    expect((await Proposals.get(id))!.status).toBe("open");
+    expect(await Proposals.decide(id, "approved", "U0MGR", T0 + Proposals.PROPOSAL_TTL_MS - 1)).toBe(true);
+  });
 });
