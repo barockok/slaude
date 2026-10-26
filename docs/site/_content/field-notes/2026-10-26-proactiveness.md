@@ -317,4 +317,8 @@ signal (`asked to stop`, `reacted :eyes:`).
   under the granted scopes, and delivers thread replies under a bot DM. The
   fake Slack sends what Slack documents; it is not Slack.
 - Failover between Kubernetes pods (separate OS processes on shared Postgres
-  and Redis were checked, above).
+  and Redis were checked, above). The repo's minikube e2e stack was tried in
+  the build environment. The cluster's own control-plane pods could not start
+  there, because that sandbox cannot run a container inside the minikube
+  container (`runc create failed: can't get final child's PID from pipe`). It
+  needs a host that allows nested containers, or a real cluster.
