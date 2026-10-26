@@ -247,6 +247,9 @@ describe("runQuietMoment", () => {
     expect(spec.pass).toBe("quiet-moment");
     expect(spec.scope).toEqual({ kind: "user", userId: "U0ALICE", teamId: "T0TEAM" });
     expect(prompt).toContain("running as U0ALICE");
+    // Anyone who speaks in the thread later reads the summary: this thread only, nothing private.
+    expect(prompt).toContain("Only this thread: nothing from U0ALICE's profile, their memory or their other conversations");
+    expect(prompt).toMatch(/no quotes longer than a few words, nothing about anyone's private life\./);
     expect(prompt).toContain("U0ALICE: I prefer short answers please");
     expect(prompt).not.toContain("bob's words");
     expect(results).toEqual([`written: ${conversationSummarySlug(sid)}`]);

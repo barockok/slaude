@@ -4,7 +4,7 @@ The transcripts below are this thread's recorded turns, oldest first. Each line 
 
 This content belongs to {{USER_ID}}. Everything you write stays in their memory or their profile; nothing goes to the agent's own memory or to the team.
 
-First, write the thread's summary with `{{SUMMARY_TOOL}}`: a rolling summary of the whole thread that replaces the earlier one, at most {{SUMMARY_MAX_CHARS}} characters. Say what the thread is about, what was decided or done, and what is still open. Plain prose or short bullets; no greetings, no quotes longer than a few words.
+First, write the thread's summary with `{{SUMMARY_TOOL}}`: a rolling summary of the whole thread that replaces the earlier one, at most {{SUMMARY_MAX_CHARS}} characters. Say what the thread is about, what was decided or done, and what is still open. Only this thread: nothing from {{USER_ID}}'s profile, their memory or their other conversations, because anyone who speaks in this thread later can read the summary. Plain prose or short bullets; no greetings, no quotes longer than a few words, nothing about anyone's private life.
 
 Then, as the nightly review would, write with `memoize` what live capture missed. Look at what exists first (`list_pages` by type, `read_pages`, `search`) and update a page rather than write a second one about the same thing:
 - `person-note`: how to work with {{USER_ID}}, working style and ownership only. Always inferred.
