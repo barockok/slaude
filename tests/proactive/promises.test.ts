@@ -113,6 +113,17 @@ describe("helpers", () => {
     expect(nextLocal(new Date("2026-10-26T15:00:00Z"), "Asia/Jakarta", 8 * 60)).toBe(Date.parse("2026-10-27T01:00:00Z"));
   });
 
+  test("nextLocal lands on the right local time across a DST change", () => {
+    const NY = "America/New_York";
+    // 2026-11-01 falls back: 22:00 EDT on Oct 31 → the next 08:00 is EST (13:00Z), a 25-hour day.
+    expect(nextLocal(new Date("2026-11-01T02:00:00Z"), NY, 8 * 60)).toBe(Date.parse("2026-11-01T13:00:00Z"));
+    // 2027-03-14 springs forward: 22:00 EST on Mar 13 → the next 08:00 is EDT (12:00Z), a 23-hour day.
+    expect(nextLocal(new Date("2027-03-14T03:00:00Z"), NY, 8 * 60)).toBe(Date.parse("2027-03-14T12:00:00Z"));
+    // 02:30 does not exist on the spring-forward day: the next real moment past the gap is used, never the past.
+    const gap = nextLocal(new Date("2027-03-14T05:00:00Z"), NY, 2 * 60 + 30);
+    expect(gap).toBeGreaterThan(Date.parse("2027-03-14T05:00:00Z"));
+  });
+
   test("the envelope speaks to the beneficiary only, in its own wrapper", () => {
     const r = { ...row(), status: "open" as const, checks: 0, lastCheckedAt: null };
     const e = checkEnvelope(r, false);

@@ -77,11 +77,26 @@ export function isLastCheck(row: CommitmentRow, now: number, pollMs: number): bo
   return row.dueKind === "time" ? row.checks >= 1 || now >= row.expiresAt : now + pollMs >= row.expiresAt;
 }
 
-/** The instant `minutes` local time next comes round after `now` (minute precision; DST shifts ignored). */
+/**
+ * The instant `minutes` local time next comes round after `now`, at minute
+ * precision. A day with a clock change is 23 or 25 hours long: the first guess
+ * (now plus the local-clock difference) is corrected by however far its local
+ * time is off, so a deferral ends at the right local time across DST.
+ */
 export function nextLocal(now: Date, timeZone: string, minutes: number): number {
   const cur = localParts(now, timeZone).minutes;
   const delta = (((minutes - cur) % 1440) + 1440) % 1440 || 1440;
-  return now.getTime() - (now.getTime() % 60_000) + delta * 60_000;
+  let at = now.getTime() - (now.getTime() % 60_000) + delta * 60_000;
+  for (let i = 0; i < 2; i++) {
+    const off = minutes - localParts(new Date(at), timeZone).minutes;
+    if (off === 0) break;
+    // The shortest way round the clock (a DST shift is an hour, never more than half a day).
+    const fix = ((((off + 720) % 1440) + 1440) % 1440) - 720;
+    const next = at + fix * 60_000;
+    if (next <= now.getTime()) break;
+    at = next;
+  }
+  return at;
 }
 
 /** The check prompt for a row. */

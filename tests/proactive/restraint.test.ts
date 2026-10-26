@@ -74,6 +74,27 @@ describe("rules", () => {
     expect(rule(checkProactive(req(), ctx({ config: quiet, timeZone: "Asia/Jakarta", now: new Date("2026-10-26T23:00:00Z") })))).toBe("quiet-hours");
   });
 
+  test("SOUL quiet hours on both sides of a DST change", () => {
+    const quiet = configFrom("## Proactive\n- Enabled: yes\n- Quiet hours: 21:00–08:00\n");
+    const NY = "America/New_York";
+    // 2026-11-01, after falling back: 07:30 EST (12:30Z) is quiet, 08:00 EST (13:00Z) is not.
+    expect(rule(checkProactive(req(), ctx({ config: quiet, timeZone: NY, now: new Date("2026-11-01T12:30:00Z") })))).toBe("quiet-hours");
+    expect(rule(checkProactive(req(), ctx({ config: quiet, timeZone: NY, now: new Date("2026-11-01T13:00:00Z") })))).toBe("ok");
+    // 2027-03-14, after springing forward: 07:30 EDT (11:30Z) is quiet, 08:00 EDT (12:00Z) is not.
+    expect(rule(checkProactive(req(), ctx({ config: quiet, timeZone: NY, now: new Date("2027-03-14T11:30:00Z") })))).toBe("quiet-hours");
+    expect(rule(checkProactive(req(), ctx({ config: quiet, timeZone: NY, now: new Date("2027-03-14T12:00:00Z") })))).toBe("ok");
+  });
+
+  test("the daily cap counts by local day across a DST change", () => {
+    const capped = configFrom("## Proactive\n- Enabled: yes\n- Max per person per day: 1\n- Cooldown: 0 hours\n");
+    const NY = "America/New_York";
+    // 23:30 EDT on Oct 31 (03:30Z Nov 1) and 23:30 EST on Nov 1 (04:30Z Nov 2) are different local days.
+    const history = [{ postedAt: Date.parse("2026-11-01T03:30:00Z"), textHash: "x" }];
+    expect(rule(checkProactive(req(), ctx({ config: capped, timeZone: NY, history, now: new Date("2026-11-02T04:30:00Z") })))).toBe("ok");
+    // 23:50 EDT the same evening (03:50Z Nov 1) is the same local day.
+    expect(rule(checkProactive(req(), ctx({ config: capped, timeZone: NY, history, now: new Date("2026-11-01T03:50:00Z") })))).toBe("daily-cap");
+  });
+
   test("the recipient's quiet hours, in their own timezone", () => {
     // Noon UTC is 21:00 in Tokyo.
     expect(rule(checkProactive(req(), ctx({ prefs: prefs({ quiet_hours: "20:00-07:00", timezone: "Asia/Tokyo" }) })))).toBe("quiet-hours");
