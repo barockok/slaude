@@ -321,13 +321,16 @@ replies and reactions were sent from their own Slack account.
   person's profile gained the topic in `mutes`, with `quote: stop` and
   `source: told by <them>`. An outcome page with the signal `asked to stop`
   landed in their slice. The reply never became a turn.
-- **`reaction_added` was not delivered.** A reaction on the same post
-  reached nothing. The gateway's catch-all event log, which saw the thread
-  reply, recorded no event. The bot had `reactions:read`, so the app's Event
-  Subscriptions most likely did not list `reaction_added`. The manifest that
-  `slaude manifest` emits lists it, but this app had been configured by hand.
-  This is an install step, not a code path. The reaction handler is still
-  checked only over the fake Slack's HTTP path (above).
+- **`reaction_added`.** At first a reaction reached nothing: the
+  gateway's catch-all event log saw the thread reply but no reaction event,
+  because the hand-made app's Event Subscriptions did not list
+  `reaction_added` (`slaude manifest` lists it). Once it was subscribed, a
+  reaction on a fresh post arrived over the socket, and the person's slice
+  got an outcome page with the signal `reacted :eyes:`.
+- **One outcome page per post.** A reaction and then a thread reply on the
+  same post leave only `replied`: both write `outcomes/proactive-<id>`, and
+  the later signal replaces the earlier one. That matches "signal-only
+  outcomes", but the record keeps only the latest signal per post.
 - **A turn that did not end at `pass`.** Asked to remind the person in the
   thread at a set time, the agent scheduled a one-off cron job, confirmed,
   and called `pass`. It then kept working in the same turn. Three minutes
@@ -355,8 +358,7 @@ unmodified.
 - The live run above was one run of each path, with synthetic data and a
   placeholder price. It does not test behaviour across many threads, people
   or days.
-- Real Slack delivering `reaction_added` (the test app was not subscribed to
-  it, above), and a thread reply under a bot's DM post (the real-Slack run
+- A thread reply under a bot's DM post on real Slack (the real-Slack run
   used a channel post). Real Slack HTTP mode was not run; Socket Mode was.
 - Failover between Kubernetes pods (separate OS processes on shared Postgres
   and Redis were checked, above). The repo's minikube e2e stack was tried in
