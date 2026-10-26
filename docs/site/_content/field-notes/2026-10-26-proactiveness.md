@@ -269,17 +269,36 @@ Observed, not changed:
   harness settings in the provided env file (`ENABLE_TOOL_SEARCH`) were also
   left out: they hid slaude's MCP tools behind a search step.
 
+## Feedback over the HTTP event path, and failover across processes
+
+- **`reaction_added` and a "stop" reply over Slack's HTTP event path**
+  (`e2e/fake-slack/proactive-feedback.test.ts`): the real gateway on the real
+  HTTP transport, the wire-level fake Slack, and a fake brain. A signed
+  `reaction_added` on a proactive post passes the transport's signature check,
+  reaches the gateway's handler and is recorded once as an outcome in the
+  recipient's slice. A redelivery records nothing new, and a badly signed
+  event gets 401. A signed "stop" reply in the post's thread mutes that topic
+  in the replier's profile, quoting them. The agent confirms in one line in
+  that thread, and the stop never becomes an agent turn.
+- **Failover across separate processes** on a real Postgres 16 and a real
+  Redis. Two scheduler processes contend for the `background` leader role. The
+  leader claims a due promise and is killed with SIGKILL inside the check's
+  dispatch. The survivor takes the lead and does not repeat the check while the
+  dead leader's claim is fresh. Past `STALE_CLAIM_MS` (the clock is shared
+  through a file so the run need not wait ten minutes) it checks the promise
+  exactly once. Postgres then shows one check and the next poll fifteen minutes
+  on. The run also applied migrations 0028 and 0029 on Postgres.
+
 ## Not verified
 
 - The live run above was one run of each path, with synthetic data and a
   placeholder price. It does not test behaviour across many threads, people
   or days.
-- Real Slack delivery of `reaction_added` (the manifest now subscribes to it;
-  the scope was already granted) and of thread replies under a bot DM.
-- Failover across real pods. It was checked in one process over real Redis
-  leader election (`tests/proactive/promise-failover-real.test.ts`): a leader
-  that dies inside a check's dispatch is not re-checked by its successor while
-  its claim is fresh, and is checked exactly once after `STALE_CLAIM_MS`.
+- Real Slack itself: that it delivers `reaction_added` for a bot's DM post
+  under the granted scopes, and delivers thread replies under a bot DM. The
+  fake Slack sends what Slack documents; it is not Slack.
+- Failover between Kubernetes pods (separate OS processes on shared Postgres
+  and Redis were checked, above).
 - DST edge cases in quiet hours: windows are computed at minute precision in
   local time, and a deferral's end ignores a DST shift.
 - The profile mute rewrite and outcome pages against the real engine (the
