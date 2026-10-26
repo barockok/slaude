@@ -52,7 +52,7 @@ kbSources:                      # optional: the knowledge bases it may read
   - kb-runbook
 runsOn: "engineering"           # optional: the node label this persona runs on
 background:                     # optional: background-learning settings
-  budgetUsd: 2.5                # daily USD budget, > 0 and at most 100
+  budgetUsd: 2.5                # daily USD budget, 0 to 100 (0: no background spend)
   timezone: "Europe/Berlin"     # IANA zone; the budget day runs midnight to midnight here
 ```
 
@@ -61,7 +61,7 @@ Absent means every installed knowledge base; `[]` means none. It filters
 retrieval and is not isolation. See [Knowledge scope](knowledge-scope.md).
 
 `background` sets the persona's daily budget for background learning passes
-and the skill check (`budgetUsd`, greater than 0, at most 100) and the
+and the skill check (`budgetUsd`, 0 to 100; 0 turns background spend off) and the
 timezone its budget day and schedule use (`timezone`, a valid IANA name). Either
 key may be omitted: an absent budget falls back to `SLAUDE_BACKGROUND_BUDGET_USD`
 (default 1), an absent timezone to `SLAUDE_BACKGROUND_TIMEZONE`, then `UTC`.

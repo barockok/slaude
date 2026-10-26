@@ -41,9 +41,12 @@ options are:
 - `dontAsk`, with only the pass's own `mcp__slaude_pass__*` tools pre-approved,
   and a PreToolUse hook that denies everything else;
 - `maxTurns` from the pass's cap; `persistSession: false`;
-- a scrubbed child env. When the persona declares its own provider set, every
+- a scrubbed child env on the persona's own provider set, the same one its
+  runtime bundle carries: the declared `provider`, else its encrypted
+  `provider_creds` rows (persona row over tenant row). With such a set, every
   provider-selecting variable of the process is removed first, so a key and a
-  base URL never come from two places (the WS-A rule).
+  base URL never come from two places (the WS-A rule). Only a persona with
+  neither runs on the process's own provider env.
 
 A run with the real CLI against the mock LLM showed the following. Only the
 five pass tools were offered, and a call to one ran. Bash, Write, Monitor and
@@ -95,8 +98,16 @@ quote can only come from that person's own message.
 - **Price table.** `SLAUDE_PRICE_TABLE` is inline JSON or a file path. The
   built-in table holds Anthropic list prices taken on 2026-10-25. cache_read
   is listed for four models and taken as 0.1× input elsewhere. cache_write is
-  1.25× input, the 5-minute TTL. A model with no price never starts and logs
-  one line. It is never priced at zero.
+  1.25× input, the 5-minute TTL. A dated snapshot id (`-YYYYMMDD`) is priced
+  as its alias, exactly. The reference lists no prices for retired or legacy
+  models, so those need a table entry. Boot logs one loud line for
+  `SLAUDE_MODEL` or a persona model the table lacks.
+- **An unset or unpriced configured model still runs.** `SLAUDE_MODEL` is
+  optional (the CLI picks its default), so a check or pass starts at its
+  estimate and is priced by the models the CLI reports: each assistant
+  message's `model`, then the result's `modelUsage`. A reported model with no
+  price ends the run as `error` after that turn and keeps at least its
+  estimate. Nothing is priced at zero.
 - **The ledger.** `background_runs` holds one row per pass run, with its
   tokens, cost and outcome (`ok`, `skipped-budget`, `stopped-budget`,
   `error`). A run starts with its estimate as a provisional cost. Each
@@ -111,14 +122,20 @@ quote can only come from that person's own message.
   overridden per persona by `background.budgetUsd`. The day runs in
   `background.timezone`, else `SLAUDE_BACKGROUND_TIMEZONE`, else UTC. A pass
   starts only if `remaining ≥ max(last ok cost, floor)`, checks after every
-  turn, and is aborted once over. It overshoots by at most one turn.
+  turn, and is aborted once over. It overshoots by at most one turn. The start
+  inserts the row with its estimate first and then re-reads the day's spend,
+  every other open row included; over ends it `skipped-budget`. So starts in
+  the same moment see each other's estimates and never overshoot together.
 - **The nightly goes first.** Until today's nightly has a finished row, the
   other passes start only if the nightly's estimate would still fit after
   them. A budget-skipped nightly keeps that reserve.
 - **The post-turn skill check** (the auto-evolve check from phase A) runs on
   the same ledger. Mono records it in process; a node records it through `/v1`
-  start and finish routes. Open rows older than two hours are swept to `error`
-  and keep their estimate, so a lost finish never counts as zero.
+  start and finish routes; a node's start may name the model the CLI reported
+  for the qualifying turn, a bounded model-id string used only to label the
+  run. Open skill-check rows older than one hour, and other passes' rows older
+  than two hours, are swept to `error` and keep their estimate, so a lost
+  finish never counts as zero.
 
 ### The scheduler
 
@@ -253,8 +270,8 @@ gate.
   turn, otherwise a delta, falling back to `usage` when the delta disagrees.
 - **Open rows counted $0.** A started check or pass charged nothing until it
   finished, so parallel starts could all pass the gate. Now every open row
-  carries its estimate until it is priced, and the sweep closes runs older than
-  two hours.
+  carries its estimate until it is priced, and the sweep closes skill-check
+  runs older than one hour and other runs older than two.
 - **A stuck check flag.** An errored check turn never cleared `inAutoEvolve`.
   The next user turn was then treated as a check, and on a node that job never
   ended. This bug was older than phase D.
@@ -271,6 +288,34 @@ gate.
 - **Skill restore.** Restore could bring back a skill whose frontmatter `name`
   was a built-in's (invariant 9). The three-per-run cap was also checked after
   an await, so two calls could both pass it; the slot is now held first.
+
+The final whole-branch review found:
+
+- **The default install did nothing.** With `SLAUDE_MODEL` unset (the
+  documented default) every skill check wrote an `error` row and every pass
+  refused to start, so auto-evolve, a phase-A feature, stopped after the
+  upgrade. The deploy docs' example ids (`claude-sonnet-4`, dated ids) were
+  unpriced too. Fixed as above: run on the reported model.
+- **A persona with no declared provider ran its passes on the gateway's own
+  env.** The gateway's key paid, and the gateway env's base URL received each
+  person's /1on1 transcripts, while the persona's bundle uses its
+  `provider_creds` rows. A gateway that holds no provider env failed every
+  pass. Passes now resolve the rows as the bundle does.
+- **A multi-persona group ran every pass under its first persona's provider
+  and KBs,** not only its model and budget: a second persona's people's
+  transcripts went to the first one's provider host. The quiet-moment pass now
+  runs as the thread's own persona, and a persona whose provider, model or
+  `kbSources` differ is not grouped (below).
+- **Check-then-insert.** The start rule read the spend, then inserted, so
+  checks finishing in the same minute each saw room for one and overshot
+  together. Now insert, then re-check.
+- **`..` slug segments** (`people/../conversations/<s>`, `x/../self/lessons`)
+  passed the guards, which match leading segments only. A slug with a `.` or
+  `..` segment or a backslash is now refused in pass writes and approved
+  proposals.
+- **A vacuous scenario check.** Bob's later `<memory-context>` block was empty,
+  so its absence assertions held for any content. The scenario now seeds a
+  channel note he may read and asserts the block holds it.
 
 ## Verification
 
@@ -333,31 +378,65 @@ real turn path and its real scoped memory sync. The brain is an in-memory fake,
 - **The real CLI abort** mid-stream or during a slow tool call. The harness
   aborted only between responses.
 - **Per-persona provider resolution** against real `vault://` or `env://`
-  values on a managed tenant.
+  values on a managed tenant. The rows path was checked on PGLite only.
+- **The CLI's `message.model` and `modelUsage` keys with no `--model`.** That
+  the CLI names its default model there, and that its dated ids price through
+  the alias, is read from the SDK types, not a live run.
 
 ## Known limits
 
 - **The nightly is one claim a day.** A crash or shutdown after the agent pass
   loses that day's person passes; they are logged, not retried.
-- **Upkeep after a skipped nightly.** The upkeep still runs after a
-  budget-skipped nightly, merging earlier days' candidates under its own budget
-  check. A day whose nightly ran no pass at all has no upkeep, so its
-  candidates wait a day.
+- **Upkeep after a skipped nightly.** Two cases. After a budget-skipped
+  nightly the upkeep still runs, merging earlier days' candidates under its own
+  budget check. On a day whose nightly ran no pass at all (no conversations)
+  there is no upkeep, and its candidates wait for the next day's.
 - **Nightly reads scale with users × sessions,** one timeline read per
   candidate thread per person slice (see the `updated_after` decision).
 - **`get_timeline` returns at most 100 entries** at day granularity, so a
   thread with more turns since the day began loses some (logged).
 - **The default persona's budget is shared.** Every tenant's default persona
   uses the process agent id, so they share one ledger and one budget.
-- **Multi-persona groups run under the first persona.** Personas on one agent
-  id share a ledger and an `agent-<id>` slice. The group runs every pass, and
-  the skill review of its root, under the first persona's model, provider,
-  budget and KBs. Every group's proposals go to the default soul's manager.
+- **Personas on one agent id.** A persona without its own Slack user id shares
+  the process agent id, its ledger and its `agent-<id>` slice. It joins that
+  group only when its declared provider, model and `kbSources` equal the
+  group's first persona's; otherwise it is logged once and gets no background
+  passes until it has its own `slackUserId`. A joined persona's nightly,
+  upkeep and skill review still run under the first persona's settings,
+  budget and timezone (they are equal in what routes data, not in budget);
+  the quiet-moment pass runs as the thread's own persona. Splitting the
+  nightly per persona is left to phase E. Every group's proposals go to the
+  default soul's manager.
+- **An unpriced reported model costs one turn.** Each check or pass whose CLI
+  reports a model the table lacks spends one turn, ends `error` and keeps at
+  least its estimate. Add the id to `SLAUDE_PRICE_TABLE`. A custom table
+  replaces the built-in one, and `{}` loads without complaint, so every run
+  then ends this way.
+- **Simultaneous starts may both skip.** With insert-then-recheck, two starts
+  with room for one can each see the other and both end `skipped-budget`. It
+  never overshoots; it may under-run that moment.
+- **A pass that crosses local midnight** charges its whole cost to the day it
+  started.
+- **The nightly reserve** stays all day on a day whose nightly had nothing to
+  review, and it is sized for one nightly pass (its estimate), not the agent
+  pass plus one pass per person.
+- **Upgrade the gateway before its nodes.** A node newer than its gateway gets
+  404 from the skill-check routes and fails closed: auto-evolve stays off on
+  that node until the gateway is upgraded.
+- **`write_skill` on a personas-repo skill that is not in `slaude.lock`**
+  stamps it agent-authored, so the skill review may retire it. A git sync
+  restores it.
+- **The person-proposal path's guard on summaries is the prompt.** A
+  /1on1 summary is served to anyone who later speaks in that locked thread
+  (`kb_thread_history` reads the lock owner's scope), while the pass can read
+  the person's whole slice and profile. The user prompt says to summarize this
+  thread only and nothing about anyone's private life; nothing in code checks
+  it.
 - **A single turn over 120 000 characters** makes the transcript cap return
   nothing, and the quiet-moment pass would then fail on a previous summary.
   Memory sync truncates each turn to 800 + 800 characters, so the sync path
   cannot reach this today.
-- **The other minors are left alone:**
+- **The other minors are left alone** (the full list from the task reviews):
   - A crash between approving a card and writing it leaves an approved row
     with nothing written.
   - Expired cards keep their buttons; a click answers that the card expired.
@@ -370,3 +449,20 @@ real turn path and its real scoped memory sync. The brain is an in-memory fake,
     the brain closes; it fails and is logged.
   - A pre-existing hazard: a manifest skill named `.retired` would make the
     installer delete the retired folder.
+  - The skill check's start estimate uses the gateway's view of the model
+    (the session row, else the persona default), not the node bundle's; a mono
+    session with no route records scope `agent` (a label only).
+  - A settle failure inside the pre-query try can open a second row, later
+    swept as `error` at $0.
+  - `holdsCredential` misses a credential split across `{name, value}` fields.
+  - `collectDay` does not check the shutdown signal between reads.
+  - The `/v1` thread-activity write is awaited without a timeout.
+  - The quiet-moment summary plus the first turn can exceed the 12 000
+    character cap by about 4 000.
+  - Restore's live-slug check races a rename; retire does not check that
+    `SKILL.md` exists; `allAgents` sums skill usage across tenants (one deploy,
+    one tenant).
+  - The digest stamps every open manager proposal with its app, including
+    rows past the eight it shows (the same app, so harmless).
+  - Every skill-check start also sweeps stale skill-check rows, which the
+    scheduler sweeps too.
