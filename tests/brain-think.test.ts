@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sdkThinkClient, brainThink } from "../src/knowledge/brain-think";
+import { sdkThinkClient, brainThink, scopedThinkEngine } from "../src/knowledge/brain-think";
 import { closeBrain, ensureSources, brainCall } from "../src/knowledge/brain";
 
 const brainDir = mkdtempSync(join(tmpdir(), "slaude-brainthink-"));
@@ -85,6 +85,30 @@ describe("sdkThinkClient slash-command guard", () => {
   });
 });
 
+describe("scopedThinkEngine", () => {
+  test("forces the caller's sources on page searches and drops out-of-scope take hits", async () => {
+    const seen: Array<Record<string, unknown> | undefined> = [];
+    const engine = {
+      async searchKeyword(_q: string, opts?: Record<string, unknown>) { seen.push(opts); return []; },
+      async searchVector(_e: unknown, opts?: Record<string, unknown>) { seen.push(opts); return []; },
+      async searchTakes() { return [{ page_id: 1 }, { page_id: 2 }]; },
+      async searchTakesVector() { return []; },
+      async executeRaw(_sql: string, params?: unknown[]) {
+        const [ids, sources] = params as [number[], string[]];
+        const pageSource: Record<number, string> = { 1: "shared", 2: "user-u9" };
+        return ids.filter((id) => sources.includes(pageSource[id]!)).map((id) => ({ id }));
+      },
+      other() { return "untouched"; },
+    };
+    const scoped = scopedThinkEngine(engine, ["shared"]);
+    await scoped.searchKeyword("q", { limit: 5, sourceId: "user-u9" });
+    await scoped.searchVector(new Float32Array(1));
+    expect(seen).toEqual([{ limit: 5, sourceIds: ["shared"] }, { sourceIds: ["shared"] }]);
+    expect(await scoped.searchTakes()).toEqual([{ page_id: 1 }]);
+    expect(scoped.other()).toBe("untouched");
+  });
+});
+
 describe("brainThink (integration, stubbed LLM)", () => {
   test("runs gbrain's gather+synthesize pipeline scoped, via injected client", async () => {
     await ensureSources();
@@ -108,5 +132,34 @@ describe("brainThink (integration, stubbed LLM)", () => {
     const answer = JSON.stringify(r);
     expect(answer).toContain("Thursdays");
     expect(sawPrompt).toContain("cadence"); // gather actually retrieved the page into the prompt
+  }, 60_000);
+
+  test("gather never reads outside the caller's sources (a /1on1 page stays out of a channel turn)", async () => {
+    // gbrain's runThink takes the scope but its page gather searched every
+    // source; a live run saw a /1on1 page reach a channel turn's synthesis prompt.
+    await ensureSources(["user-u9"]);
+    await brainCall("put_page", { slug: "plans/private-branching", content: "Private: the team moves to trunk-based development next quarter." }, {
+      clientId: "U9", sourceId: "user-u9", allowedSources: ["user-u9"],
+    });
+    await brainCall("put_page", { slug: "notes/branching", content: "Branching: we use short-lived feature branches and release branches." }, {
+      clientId: "agent", sourceId: "shared", allowedSources: ["shared"],
+    });
+    let sawPrompt = "";
+    const fakeClient = {
+      create: async (params: { messages: Array<{ content: unknown }> }) => {
+        sawPrompt += JSON.stringify(params.messages);
+        return {
+          id: "x", type: "message", role: "assistant", model: "stub",
+          content: [{ type: "text", text: "Feature branches. [Source: notes/branching]" }],
+          stop_reason: "end_turn", usage: { input_tokens: 0, output_tokens: 0 },
+        };
+      },
+    };
+    await brainThink("any planned changes to branching strategy or trunk-based development?", {
+      clientId: "agent", sourceId: "shared", allowedSources: ["shared"],
+    }, { client: fakeClient as never });
+    expect(sawPrompt).toContain("branching");
+    expect(sawPrompt).not.toContain("private-branching");
+    expect(sawPrompt).not.toMatch(/trunk-based development next quarter/);
   }, 60_000);
 });

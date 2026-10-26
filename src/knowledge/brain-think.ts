@@ -84,6 +84,52 @@ export function sdkThinkClient(runner: typeof sdkQuery = sdkQuery): ThinkClient 
   };
 }
 
+type TakeHitish = { page_id?: number | string };
+type ScopableEngine = {
+  executeRaw(sql: string, params?: unknown[]): Promise<Array<Record<string, unknown>>>;
+};
+
+/**
+ * The engine as runThink's gather sees it: every page search is forced to the
+ * caller's sources, and take hits are kept only when their page is in them.
+ *
+ * runThink accepts `allowedSources` but uses it only to resolve entities; its
+ * page gather calls hybridSearch with no source filter, so it searched every
+ * source in the brain. A live run saw a /1on1 page (in `user-<id>`) reach a
+ * channel turn's synthesis prompt, kept out of the answer only by the model.
+ * Takes are filtered by holder alone upstream, so they get the same check here.
+ */
+export function scopedThinkEngine<E extends object>(engine: E, allowedSources: readonly string[]): E {
+  const sourceIds = [...allowedSources];
+  const scopePages = (fn: (...a: unknown[]) => Promise<unknown>) =>
+    (q: unknown, opts?: Record<string, unknown>) => {
+      const { sourceId: _ignored, ...rest } = opts ?? {};
+      return fn(q, { ...rest, sourceIds });
+    };
+  const scopeTakes = (fn: (...a: unknown[]) => Promise<unknown>) =>
+    async (q: unknown, opts?: Record<string, unknown>) => {
+      const hits = (await fn(q, opts)) as TakeHitish[];
+      const ids = [...new Set(hits.map((h) => Number(h.page_id)).filter(Number.isFinite))];
+      if (ids.length === 0) return [];
+      const rows = await (engine as unknown as ScopableEngine).executeRaw(
+        "SELECT id FROM pages WHERE id = ANY($1::int[]) AND source_id = ANY($2::text[])",
+        [ids, sourceIds],
+      );
+      const keep = new Set(rows.map((r) => Number(r.id)));
+      return hits.filter((h) => keep.has(Number(h.page_id)));
+    };
+  return new Proxy(engine, {
+    get(target, prop, receiver) {
+      const v = Reflect.get(target, prop, receiver);
+      if (typeof v !== "function") return v;
+      const bound = v.bind(target) as (...a: unknown[]) => Promise<unknown>;
+      if (prop === "searchKeyword" || prop === "searchVector") return scopePages(bound);
+      if (prop === "searchTakes" || prop === "searchTakesVector") return scopeTakes(bound);
+      return bound;
+    },
+  });
+}
+
 /**
  * Scoped think: gbrain's gather (pages + takes + graph + trajectory) with the
  * caller's source scope, synthesized through the SDK client above.
@@ -94,7 +140,7 @@ export async function brainThink(
   scope: BrainScope,
   deps: { client?: ThinkClient } = {},
 ): Promise<unknown> {
-  const engine = await getBrain();
+  const engine = scopedThinkEngine(await getBrain(), scope.allowedSources);
   const thinkPath = join(import.meta.dir, "../../node_modules/gbrain/src/core/think/index.ts");
   const { runThink } = (await import(thinkPath)) as {
     runThink: (e: unknown, o: Record<string, unknown>) => Promise<unknown>;
