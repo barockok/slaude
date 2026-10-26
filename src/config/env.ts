@@ -523,6 +523,21 @@ export const env = {
    */
   decisionConfigRaw: () => opt("SLAUDE_DECISION_CONFIG"),
   /**
+   * Raw `SLAUDE_PRICE_TABLE` (phase D): inline JSON, or a file path when the
+   * value does not start with `{`. Parsed by `loadPriceTable`. Empty when unset.
+   */
+  priceTableRaw: () => opt("SLAUDE_PRICE_TABLE"),
+  /**
+   * Daily USD budget for background passes and the skill check
+   * (`SLAUDE_BACKGROUND_BUDGET_USD`, default 1). A non-numeric or negative
+   * value falls back to 1; 0 is allowed and disables background spend.
+   */
+  backgroundBudgetUsd: () => {
+    const raw = opt("SLAUDE_BACKGROUND_BUDGET_USD", "1").trim();
+    const n = raw === "" ? NaN : Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : 1;
+  },
+  /**
    * Minimum substantive tool calls in a turn before auto-evolve fires (a
    * mutating tool is also required). `SLAUDE_AUTO_EVOLVE_MIN_TOOLS`, default
    * 4; a non-integer or a value below 1 falls back to 4.
