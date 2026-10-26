@@ -492,8 +492,9 @@ export class NodeClient {
    * start|finish). The gateway takes persona, session and scope from the job
    * token and prices the usage itself. A 404 (a gateway that predates the
    * routes) and every other non-200 throw: the caller fails closed. `start` is
-   * never retried (a retried start could open a second run); both calls are
-   * bounded by BACKGROUND_TIMEOUT_MS.
+   * never retried (a retried start could open a second run); `finish` is, and
+   * a 409 on a retry counts as recorded. Each attempt is bounded by
+   * BACKGROUND_TIMEOUT_MS.
    */
   async skillCheckStart(jobToken: string): Promise<{ ok: boolean; runId?: string }> {
     const res = await this.request("/v1/background/skill-check/start", {
@@ -511,13 +512,34 @@ export class NodeClient {
     body: { runId: string; outcome: "ok" | "error"; usage: Record<string, { input: number; output: number; cache_read: number; cache_write: number }> },
     jobToken: string,
   ): Promise<void> {
-    const res = await this.request("/v1/background/skill-check/finish", {
-      method: "POST",
-      body,
-      jobToken,
-      signal: AbortSignal.timeout(BACKGROUND_TIMEOUT_MS),
-    });
-    await this.#json<unknown>(res);
+    // Retried here, not by request(): a retry whose earlier attempt did land
+    // (a timeout or 5xx after the gateway wrote the row) gets a 409, which
+    // then means "already recorded", not a failure.
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < this.#attempts; attempt++) {
+      if (attempt > 0) await sleep(this.#baseDelayMs * 2 ** (attempt - 1));
+      let res: Response;
+      try {
+        res = await this.request("/v1/background/skill-check/finish", {
+          method: "POST",
+          body,
+          jobToken,
+          retry: false,
+          signal: AbortSignal.timeout(BACKGROUND_TIMEOUT_MS),
+        });
+      } catch (e) {
+        lastErr = e;
+        continue;
+      }
+      if (res.status >= 500) {
+        lastErr = new NodeApiError(res.status, await res.text().catch(() => ""));
+        continue;
+      }
+      if (res.status === 409 && attempt > 0) return;
+      await this.#json<unknown>(res);
+      return;
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
   }
 
   /**

@@ -69,7 +69,14 @@ describe("node skill-check budget", () => {
     expect(seen).toEqual([{ url: "http://gw/v1/background/skill-check/finish", method: "POST", job: "job-t", body: { runId: "r1", outcome: "ok", usage } }]);
   });
 
-  test("a refused finish (409) throws", async () => {
+  test("a retried finish answered 409 (an earlier attempt landed) is recorded, not an error", async () => {
+    let n = 0;
+    const { seen, budget } = setup(() => (++n === 1 ? json(503, { error: "x" }) : json(409, { error: "no open run" })));
+    await budget.finish("S1", "r1", { outcome: "ok", usage: {} });
+    expect(seen).toHaveLength(2);
+  });
+
+  test("a refused finish (409) on the first attempt throws", async () => {
     const { budget } = setup(() => json(409, { error: "no open run" }));
     await expect(budget.finish("S1", "r1", { outcome: "ok", usage: {} })).rejects.toThrow();
   });
