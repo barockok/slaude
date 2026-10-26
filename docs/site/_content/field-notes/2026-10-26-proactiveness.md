@@ -209,8 +209,10 @@ moment between the busy check and the dispatch runs under the check's token
   usable `due` values, or honouring a refusal without rephrasing.
 - Real Slack delivery of `reaction_added` (the manifest now subscribes to it;
   the scope was already granted) and of thread replies under a bot DM.
-- HA failover mid-check, and two gateway replicas against real Postgres (the
-  claim is the same `background_slots` insert phase D uses).
+- Failover across real pods. It was checked in one process over real Redis
+  leader election (`tests/proactive/promise-failover-real.test.ts`): a leader
+  that dies inside a check's dispatch is not re-checked by its successor while
+  its claim is fresh, and is checked exactly once after `STALE_CLAIM_MS`.
 - DST edge cases in quiet hours: windows are computed at minute precision in
   local time, and a deferral's end ignores a DST shift.
 - A real gbrain engine for the profile mute rewrite and outcome pages (fake
