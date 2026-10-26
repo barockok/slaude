@@ -29,7 +29,7 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
 // `agentSdk.query` at call time, so the mock.module swap above applies even
 // when an earlier test file already imported AgentManager. Keeping the canonical
 // specifier means coverage is attributed to src/agent/manager.ts.
-const { AgentManager } = await import("../../src/agent/manager");
+const { AgentManager, SCHEDULER_TOOLS } = await import("../../src/agent/manager");
 const Sessions = await import("../../src/db/sessions");
 
 // ---------------------------------------------------------------------------
@@ -210,7 +210,7 @@ describe("remote wiring", () => {
     for (const b of ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]) {
       expect(fs.options.disallowedTools ?? []).not.toContain(b); // enabled + alias (spike §8)
     }
-    for (const t of ["NotebookEdit", "Monitor", "REPL", "Workflow", "EnterWorktree", "ExitWorktree", "Artifact"]) {
+    for (const t of ["NotebookEdit", "Monitor", "REPL", "Workflow", "EnterWorktree", "ExitWorktree", "Artifact", ...SCHEDULER_TOOLS]) {
       expect(fs.options.disallowedTools).toContain(t);
     }
     await shutdown(mgr, row.id);
@@ -286,7 +286,8 @@ describe("remote wiring", () => {
     const pre = fs.options.hooks.PreToolUse.flatMap((m: any) => m.hooks);
     expect(pre).toHaveLength(2);
     for (const h of pre) expect(await h({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {} }, "tu", { signal: new AbortController().signal })).toEqual({});
-    expect(fs.options.disallowedTools).toBeUndefined();
+    // only the CLI scheduling built-ins (slaude has its own cron); no remote deny list
+    expect(fs.options.disallowedTools).toEqual([...SCHEDULER_TOOLS]);
     await shutdown(mgr, row.id);
   });
 
