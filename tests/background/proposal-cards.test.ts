@@ -35,6 +35,7 @@ import { conversationSlug } from "../../src/memory/brain-provider";
 import { skillOps } from "../../src/skills/mcp-tools";
 import { discoverSkills } from "../../src/skills/loader";
 import { fakeBrain } from "./fake-brain";
+import { runDigest } from "../../src/background/digest";
 import { passHandlers } from "../../src/background/pass-tools";
 import { CONVERSATION_REFUSAL, LESSONS_PAGE_REFUSAL, LESSONS_REFUSAL, PROFILE_PAGE_REFUSAL } from "../../src/background/proposal-payload";
 import { CREDENTIAL_REFUSAL } from "../../src/knowledge/memory-pages";
@@ -436,6 +437,7 @@ describe("posting as the right Slack app", () => {
         if (ref.apiAppId === "A0TWO" && ref.teamId === "T0TEAM") return client("A0TWO") as never;
         throw new Error("no registered Slack app");
       },
+      apps: async () => [{ apiAppId: "A0ONE" }, { apiAppId: "A0TWO" }] as never,
     };
     return { t, posted };
   }
@@ -448,6 +450,39 @@ describe("posting as the right Slack app", () => {
     await expect(post({ channel: ALICE, app: { teamId: "T0TEAM" }, text: "x", blocks: [] })).rejects.toThrow(NO_APP_REFUSAL);
     await expect(post({ channel: ALICE, text: "x", blocks: [] })).rejects.toThrow(NO_APP_REFUSAL);
     expect(posted.length).toBe(1);
+  });
+
+  test("a single-app HTTP gateway lets the transport pick its one app for a post with no app id", async () => {
+    const posted: Array<{ ref: unknown; channel: string }> = [];
+    const t = {
+      client: {} as never,
+      clientFor: (ref: unknown) => ({ chat: { postMessage: async (m: { channel: string }) => void posted.push({ ref, channel: m.channel }) } }) as never,
+      apps: async () => [{ apiAppId: "A0ONE" }] as never,
+    };
+    await cardPoster(t)({ channel: ALICE, app: { teamId: "T0TEAM" }, text: "x", blocks: [] });
+    await cardPoster(t)({ channel: MANAGER, text: "x", blocks: [] });
+    expect(posted).toEqual([{ ref: { teamId: "T0TEAM" }, channel: ALICE }, { ref: {}, channel: MANAGER }]);
+  });
+
+  test("a forwarded promotion is stamped by the digest's own app, and the manager's click through it is accepted", async () => {
+    const { deps } = setup();
+    const t = fakeTransport();
+    registerProposalActions(t, deps);
+    // The person's card went out as their thread's app.
+    const id = await promote();
+    await postPersonProposals({ agentId: AGENT, userId: ALICE, app: { apiAppId: "A0ONE", teamId: "T0TEAM" }, ids: [id], post: async () => {} });
+    const [a] = await t.click(approveActionId(id), ALICE, undefined, { api_app_id: "A0ONE", team: { id: "T0TEAM" } });
+    expect(String(a!.text)).toContain("sent to the manager");
+    const [fwd] = await Proposals.listOpen(AGENT, "manager");
+    expect([fwd!.slackAppId, fwd!.slackTeamId]).toEqual([null, null]);
+    // The digest goes out as the persona's own app, a different one.
+    await runDigest(
+      { agentId: AGENT, personaId: "default", personaIds: ["default", "helper"], timeZone: "UTC", slot: "2026-W44", now: new Date(NOW) },
+      { call: fakeBrain().call, post: async () => {}, recipient: () => MANAGER, budget: () => ({ limitUsd: 1, timeZone: "UTC" }), skills: () => [], app: async () => ({ apiAppId: "A0TWO", teamId: "T0TEAM" }) },
+    );
+    expect((await Proposals.get(fwd!.id))!.slackAppId).toBe("A0TWO");
+    const [m] = await t.click(approveActionId(fwd!.id), MANAGER, undefined, { api_app_id: "A0TWO", team: { id: "T0TEAM" } });
+    expect(String(m!.text)).toContain("written to shared memory");
   });
 
   test("a single-app transport posts with its one client", async () => {

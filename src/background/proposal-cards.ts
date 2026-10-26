@@ -49,12 +49,20 @@ export const NO_APP_REFUSAL = "refused: on a multi-app gateway a card goes out o
 /**
  * The CardPost a gateway uses: the bot client of the app the message names
  * (buttons are interactivity-bound, like the gates). On a multi-app transport
- * a post must name both the app id and the team; a team id alone could match
- * another persona's app, and nothing falls back to the oldest one.
+ * with more than one registered app a post must name both the app id and the
+ * team; a team id alone could match another persona's app, and nothing falls
+ * back to the oldest one. With exactly one registered app, a post without an
+ * app id goes to the transport's own resolution.
  */
-export function cardPoster(t: Pick<Transport, "client" | "clientFor">): CardPost {
+export function cardPoster(t: Pick<Transport, "client" | "clientFor" | "apps">): CardPost {
   return async (msg) => {
-    if (t.clientFor && !(msg.app?.apiAppId && msg.app?.teamId)) throw new Error(NO_APP_REFUSAL);
+    if (t.clientFor && !(msg.app?.apiAppId && msg.app?.teamId)) {
+      // A session from before its app id was recorded: with exactly one
+      // registered app, the transport's own resolution picks it (and refuses
+      // a ref that does not match); with more than one, nothing is guessed.
+      const registered = t.apps ? (await t.apps()).length : Infinity;
+      if (registered !== 1) throw new Error(NO_APP_REFUSAL);
+    }
     await clientForApp(t, msg.app).chat.postMessage({ channel: msg.channel, text: msg.text, blocks: msg.blocks });
   };
 }
@@ -240,8 +248,8 @@ async function forwardToManager(p: Proposal, by: string, at: number): Promise<Cl
       scope: `user:${by}`,
       payload: { ...rest, target: "shared", promotedFrom: p.id },
       createdAt: at,
-      ...(p.slackAppId ? { slackAppId: p.slackAppId } : {}),
-      ...(p.slackTeamId ? { slackTeamId: p.slackTeamId } : {}),
+      // No app stamp: the person's card went out as their thread's app, which
+      // need not be the persona's own. The digest that shows this row stamps it.
     });
   } catch (e) {
     await Proposals.reopen(p.id, by, at).catch(() => {});
