@@ -178,7 +178,9 @@ CREATE TABLE IF NOT EXISTS proposals (
   expires_at  INTEGER NOT NULL,
   status      TEXT    NOT NULL DEFAULT 'open',
   decided_by  TEXT,
-  decided_at  INTEGER
+  decided_at  INTEGER,
+  slack_app_id  TEXT,
+  slack_team_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_proposals_agent_status ON proposals (agent_id, status);
 CREATE TABLE IF NOT EXISTS background_slots (
@@ -345,6 +347,11 @@ export function bootstrapSqliteSchema(db: Database): void {
       if (/CREATE TABLE IF NOT EXISTS skill_usage\b/.test(stmt)) db.run(stmt.trim());
     }
   }
+
+  // Migration: proposals record the Slack app their card was posted as (pg 0026).
+  const proposalCols = db.query(`PRAGMA table_info(proposals)`).all() as Array<{ name: string }>;
+  if (!proposalCols.some((c) => c.name === "slack_app_id")) db.run(`ALTER TABLE proposals ADD COLUMN slack_app_id TEXT`);
+  if (!proposalCols.some((c) => c.name === "slack_team_id")) db.run(`ALTER TABLE proposals ADD COLUMN slack_team_id TEXT`);
 
   // Migration: background slots carry state to the next period (pg 0025).
   const slotCols = db.query(`PRAGMA table_info(background_slots)`).all() as Array<{ name: string }>;

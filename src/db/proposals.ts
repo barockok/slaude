@@ -33,6 +33,9 @@ export interface Proposal {
   status: ProposalStatus;
   decidedBy: string | null;
   decidedAt: number | null;
+  /** The Slack app (and workspace) its card was posted as; null until posted. */
+  slackAppId: string | null;
+  slackTeamId: string | null;
 }
 
 interface Row {
@@ -48,6 +51,8 @@ interface Row {
   status: ProposalStatus;
   decided_by: string | null;
   decided_at: number | string | null;
+  slack_app_id?: string | null;
+  slack_team_id?: string | null;
 }
 
 /** sqlite stores payload as JSON text; Postgres as JSONB (which may come back as a JSON string scalar). */
@@ -70,6 +75,8 @@ function toProposal(r: Row): Proposal {
     status: r.status,
     decidedBy: r.decided_by,
     decidedAt: r.decided_at === null ? null : Number(r.decided_at),
+    slackAppId: r.slack_app_id ?? null,
+    slackTeamId: r.slack_team_id ?? null,
   };
 }
 
@@ -82,12 +89,15 @@ export async function insert(p: {
   scope: string;
   payload: Record<string, unknown>;
   createdAt: number;
+  /** The card's Slack app, when already known (a forwarded promotion keeps its own). */
+  slackAppId?: string | null;
+  slackTeamId?: string | null;
 }): Promise<string> {
   const id = randomUUID();
   await db.run(
-    `INSERT INTO proposals (id, agent_id, kind, to_kind, to_user, scope, payload, created_at, expires_at, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
-    [id, p.agentId, p.kind, p.toKind, p.toUser, p.scope, JSON.stringify(p.payload), p.createdAt, p.createdAt + PROPOSAL_TTL_MS],
+    `INSERT INTO proposals (id, agent_id, kind, to_kind, to_user, scope, payload, created_at, expires_at, status, slack_app_id, slack_team_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+    [id, p.agentId, p.kind, p.toKind, p.toUser, p.scope, JSON.stringify(p.payload), p.createdAt, p.createdAt + PROPOSAL_TTL_MS, p.slackAppId ?? null, p.slackTeamId ?? null],
   );
   return id;
 }
@@ -189,5 +199,18 @@ export async function releaseSkillRestore(id: string, by: string, at: number): P
     `UPDATE proposals SET status = 'approved', decided_by = ?, decided_at = created_at
       WHERE id = ? AND kind = ? AND status = 'rejected' AND decided_by = ? AND decided_at = ?`,
     [SKILL_REVIEW_ACTOR, id, SKILL_RETIRED_KIND, by, at],
+  );
+}
+
+/**
+ * Record the Slack app a card was posted as, on rows that have none yet: the
+ * first post binds the card, so a later click must come through that app.
+ */
+export async function stampApp(ids: readonly string[], app: { apiAppId?: string; teamId?: string }): Promise<void> {
+  if (ids.length === 0 || (!app.apiAppId && !app.teamId)) return;
+  const marks = ids.map(() => "?").join(", ");
+  await db.run(
+    `UPDATE proposals SET slack_app_id = ?, slack_team_id = ? WHERE id IN (${marks}) AND slack_app_id IS NULL AND slack_team_id IS NULL`,
+    [app.apiAppId ?? null, app.teamId ?? null, ...ids],
   );
 }

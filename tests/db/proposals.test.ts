@@ -16,7 +16,7 @@ describe("proposals repo", () => {
     expect(await Proposals.get(id)).toEqual({
       id, agentId: "a1", kind: "team-fact", toKind: "manager", toUser: null, scope: "agent",
       payload: { slug: "shared/x", n: 2, nested: { a: [1] } },
-      createdAt: T0, expiresAt: T0 + Proposals.PROPOSAL_TTL_MS, status: "open", decidedBy: null, decidedAt: null,
+      createdAt: T0, expiresAt: T0 + Proposals.PROPOSAL_TTL_MS, status: "open", decidedBy: null, decidedAt: null, slackAppId: null, slackTeamId: null,
     });
     expect(Proposals.PROPOSAL_TTL_MS).toBe(14 * 24 * 60 * 60 * 1000);
   });

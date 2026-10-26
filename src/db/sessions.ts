@@ -195,3 +195,17 @@ export async function updatedSince(personaIds: readonly string[], sinceMs: numbe
     [...personaIds, sinceMs, limit],
   );
 }
+
+/**
+ * The Slack app a persona's threads arrive through: its most recently
+ * touched session that recorded an app id, else its most recent one (team
+ * only). Only this persona's sessions are read.
+ */
+export async function latestAppOf(personaId: string): Promise<{ apiAppId: string | null; teamId: string | null } | null> {
+  const row = await db.one<{ slack_app_id: string | null; slack_team_id: string | null }>(
+    `SELECT slack_app_id, slack_team_id FROM sessions WHERE persona_id = ?
+      ORDER BY CASE WHEN slack_app_id IS NULL THEN 1 ELSE 0 END, updated_at DESC LIMIT 1`,
+    [personaId],
+  );
+  return row ? { apiAppId: row.slack_app_id ?? null, teamId: row.slack_team_id ?? null } : null;
+}
