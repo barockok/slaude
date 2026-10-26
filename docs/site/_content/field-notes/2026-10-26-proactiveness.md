@@ -299,6 +299,15 @@ however far its local time is off. Tests pin both transitions. They also pin
 SOUL quiet hours on both sides of a change, and the daily cap counted by local
 day across the fall-back night.
 
+## Feedback writes on the real engine
+
+Against a local gbrain with live embeddings, a "stop please" reply under a
+DM post about `deploys` added `deploys` to the person's profile `mutes`. Their
+other preferences and the profile body were kept, and the reply is the
+recorded quote. The DM's outcome page landed in their `user-<id>` slice, and a
+channel post's reaction outcome in the agent's slice. Each carries only its
+signal (`asked to stop`, `reacted :eyes:`).
+
 ## Not verified
 
 - The live run above was one run of each path, with synthetic data and a
@@ -309,5 +318,3 @@ day across the fall-back night.
   fake Slack sends what Slack documents; it is not Slack.
 - Failover between Kubernetes pods (separate OS processes on shared Postgres
   and Redis were checked, above).
-- The profile mute rewrite and outcome pages against the real engine (the
-  engine's op shapes were checked, not these two writes).
