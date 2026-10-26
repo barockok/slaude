@@ -6,7 +6,7 @@ date: 2026-10-26
 # Proactiveness: promises kept in their own thread, everything else behind code-enforced restraint
 
 **Date:** 2026-10-26
-**Status:** Built on the epic branch, unreleased. It touches the agent loop, the dispatch path and the DB schema (migrations 0028 and 0029), so it goes out as a release candidate first. Checked against a fake brain, a scripted model and a fake Slack, on the mono gateway and, for the node path, against a real Redis. The heartbeat pass was run with the real CLI against the repo's mock LLM (whose `multi-tool` scenario now takes base64url `args`): the CLI was offered exactly the six `mcp__slaude_pass__` tools (including `proactive_post`) and no built-ins; the first heartbeat's `proactive_post` went out to the manager's DM and was recorded in `proactive_posts`; the second, with the same text, was refused by the daily cap (`refused: daily-cap`) and posted nothing; both runs ended `ok` in the ledger. Not checked against a live model.
+**Status:** Built on the epic branch, unreleased. It touches the agent loop, the dispatch path and the DB schema (migrations 0028 and 0029), so it goes out as a release candidate first. Checked against a fake brain, a scripted model and a fake Slack, on the mono gateway and, for the node path, against a real Redis. A live-model run is described below. Before it, the heartbeat pass was run with the real CLI against the repo's mock LLM (whose `multi-tool` scenario now takes base64url `args`): the CLI was offered exactly the six `mcp__slaude_pass__` tools (including `proactive_post`) and no built-ins; the first heartbeat's `proactive_post` went out to the manager's DM and was recorded in `proactive_posts`; the second, with the same text, was refused by the daily cap (`refused: daily-cap`) and posted nothing; both runs ended `ok` in the ledger.
 
 Phase E is the last phase of the teammate-agent epic. It splits into two
 pieces with different rules:
@@ -203,10 +203,77 @@ moment between the busy check and the dispatch runs under the check's token
 - The heartbeat checklist guidance lives in the `slaude:memory` built-in
   skill, not the always-on core.
 
+## Live run
+
+Once the build environment could reach a live Anthropic-compatible provider,
+an embedding provider and the decision-model API, each was exercised once.
+Test data was synthetic, and the model's price was a placeholder (so the
+dollar figures below check the arithmetic, not real prices).
+
+- **Promise, end to end through the real agent loop** (mono gateway, real
+  `AgentManager` and CLI, fake Slack and brain). In a /1on1 Alice asked to be
+  told when a deploy is out. The live model replied in her thread and wrote
+  the commitment itself: in `user-<id>`, an event `due`, a `check`, and
+  `close-in-one-line`, indexed to run as her. Fifteen minutes later the check
+  turn went into her thread, carrying its run. The model searched memory and
+  Slack and replied in one line that the deploy was not out yet. The run
+  closed `ok`, charged by that turn's own usage.
+- **Heartbeat** (real CLI, live model). It read its checklist, found a
+  six-day-old investigation, and sent the manager one line with the
+  investigation as evidence. The second heartbeat's post was refused
+  (`daily-cap`), and the model accepted the refusal.
+- **Decision model:** the adapter's request shape returned HTTP 200 in about
+  0.5 s, with `answers.<id>.{choice, confidence, probabilities}`. That
+  envelope is now pinned in the adapter's tests. The adapter's own fetch
+  could not be run there: its outbound guard resolves hosts itself, and that
+  environment reaches the internet only through a proxy.
+- **Embeddings and the real engine:** `text-embedding-3-small` (1536
+  dimensions) with a local gbrain. Typed pages round-trip, `list_pages` by
+  type works, semantic search finds the commitment, and an agent-scope search
+  does not see a person's private slice.
+
+Found by the live run, and fixed:
+
+- **The same news, reworded, got past "unchanged".** On its second heartbeat
+  the model rewrote the same news under a slightly different topic. The text
+  check would have let it through the next day; only the daily cap stopped
+  it. A post resting on the same evidence, to the same recipient, within
+  seven days is now unchanged too.
+- **`pass` looped.** After `pass` returned "passed", this model kept calling
+  `pass` instead of ending its turn. `pass` now says the turn is over and to
+  end it with no further tool call. A run afterwards still showed a few
+  repeated passes, but every turn ended.
+- **A promise was scheduled twice.** The model also scheduled a cron
+  reminder next to the commitment. The memory skill now says a commitment is
+  checked for you, so no cron job is needed, and how to write `due`.
+- **The real engine's record shape.** gbrain keeps a page's `type` in its
+  own column and returns `as_of` as a timestamp, so `memory_about` would have
+  labelled every entry "untyped". The record reader now takes the column and
+  reads the date back. `get_page`'s `tags` came back empty even for a tagged
+  page, so superseded status must come from a tag listing (`supersededSlugs`).
+  The phase C readers already do this; phase E reads only pages that are
+  rewritten, never retired by tag.
+
+Observed, not changed:
+
+- **A check turn is expensive.** It resumes the whole thread session: about
+  237k input tokens for one check. At real prices the default $1 daily
+  budget covers only a few checks. The start rule uses the last ok cost as
+  its estimate, so it adapts, but operators should size
+  `SLAUDE_BACKGROUND_BUDGET_USD` or `SLAUDE_PROMISE_POLL_MINUTES` for
+  promise-heavy personas.
+- **Minor voice slips:** the check reply began "Checked —".
+- **Container environment, not the product.** In that container, a child
+  CLI inherits the host session's own Claude Code variables and
+  authenticates as that session; the runs unset them. The interactive
+  harness settings in the provided env file (`ENABLE_TOOL_SEARCH`) were also
+  left out: they hid slaude's MCP tools behind a search step.
+
 ## Not verified
 
-- A live model deciding what is "meaningfully new", writing commitments with
-  usable `due` values, or honouring a refusal without rephrasing.
+- The live run above was one run of each path, with synthetic data and a
+  placeholder price. It does not test behaviour across many threads, people
+  or days.
 - Real Slack delivery of `reaction_added` (the manifest now subscribes to it;
   the scope was already granted) and of thread replies under a bot DM.
 - Failover across real pods. It was checked in one process over real Redis
@@ -215,5 +282,5 @@ moment between the busy check and the dispatch runs under the check's token
   its claim is fresh, and is checked exactly once after `STALE_CLAIM_MS`.
 - DST edge cases in quiet hours: windows are computed at minute precision in
   local time, and a deferral's end ignores a DST shift.
-- A real gbrain engine for the profile mute rewrite and outcome pages (fake
-  brain only).
+- The profile mute rewrite and outcome pages against the real engine (the
+  engine's op shapes were checked, not these two writes).
