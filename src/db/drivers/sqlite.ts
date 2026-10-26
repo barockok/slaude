@@ -201,6 +201,29 @@ CREATE TABLE IF NOT EXISTS thread_activity (
   scope          TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_thread_activity_agent ON thread_activity (agent_id, last_turn_at);
+CREATE TABLE IF NOT EXISTS commitments (
+  agent_id         TEXT    NOT NULL,
+  source           TEXT    NOT NULL,
+  slug             TEXT    NOT NULL,
+  persona_id       TEXT    NOT NULL DEFAULT 'default',
+  team_id          TEXT,
+  channel_id       TEXT    NOT NULL,
+  thread_ts        TEXT    NOT NULL,
+  beneficiary      TEXT    NOT NULL,
+  run_as           TEXT,
+  due_text         TEXT    NOT NULL,
+  due_kind         TEXT    NOT NULL,
+  check_text       TEXT    NOT NULL DEFAULT '',
+  on_no_change     TEXT    NOT NULL DEFAULT 'silent',
+  next_check_at    INTEGER NOT NULL,
+  expires_at       INTEGER NOT NULL,
+  status           TEXT    NOT NULL DEFAULT 'open',
+  checks           INTEGER NOT NULL DEFAULT 0,
+  last_checked_at  INTEGER,
+  created_at       INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, source, slug)
+);
+CREATE INDEX IF NOT EXISTS idx_commitments_due ON commitments (agent_id, status, next_check_at);
 CREATE TABLE IF NOT EXISTS remote_keys (
   team_id     TEXT    NOT NULL,
   user_id     TEXT    NOT NULL,

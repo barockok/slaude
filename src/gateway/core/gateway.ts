@@ -14,6 +14,7 @@ import { ApprovalGate } from "../slack/approval-gate";
 import { IgnoreGate } from "../slack/ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slack/commands";
 import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extract";
+import { indexWritten, runAsOf } from "../../proactive/commitment-index";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
 import { quietForVoice, voiceTurns } from "../../voice/turn-flags";
@@ -1078,6 +1079,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             return [soul.manager.userId, soul.backupManager.userId].filter((u): u is string => !!u);
           },
           requestApproval: (r) => surface.requestApproval(r),
+          // A commitment written here is indexed for the promise scheduler (phase E).
+          onWritten: async (pages, scope) =>
+            indexWritten(pages, {
+              agentId: (await claimGate()).agentId,
+              personaId: ctx.personaId ?? "default",
+              teamId: ctx.teamId || null,
+              runAs: runAsOf(scope),
+              writtenAt: new Date(),
+            }),
         }
       : undefined;
   };

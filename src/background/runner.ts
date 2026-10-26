@@ -47,6 +47,7 @@ import { m as metric } from "../metrics";
 import { personaDefaultModel } from "../persona/registry";
 import { canStart, localDay, overAfterStart, PASS_MAX_TURNS, unpricedBlock, type BudgetConfig, type PassName } from "./budget";
 import { budgetConfigFor } from "./config";
+import { indexWritten } from "../proactive/commitment-index";
 import { createPassMcpServer, PASS_MCP_NAME, passProfileSource, passReadSources, type PassScope, type PassTool, type TranscriptTurn } from "./pass-tools";
 import {
   addTokens as add,
@@ -222,7 +223,24 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
   passReadSources(spec.scope, spec.agentId, kbSources);
   const proposed: string[] = [];
   const { server, toolIds } = createPassMcpServer(
-    { scope: spec.scope, agentId: spec.agentId, kbSources, transcripts: spec.transcripts ?? [], call: deps.brainCall, now: deps.now, onProposed: (id) => proposed.push(id) },
+    {
+      scope: spec.scope,
+      agentId: spec.agentId,
+      kbSources,
+      transcripts: spec.transcripts ?? [],
+      call: deps.brainCall,
+      now: deps.now,
+      onProposed: (id) => proposed.push(id),
+      // A commitment the pass writes is indexed for the promise scheduler (phase E).
+      onWritten: (pages) =>
+        indexWritten(pages, {
+          agentId: spec.agentId,
+          personaId: spec.personaId,
+          teamId: spec.scope.kind === "user" ? spec.scope.teamId || null : null,
+          runAs: spec.scope.kind === "user" ? spec.scope.userId : null,
+          writtenAt: deps.now(),
+        }),
+    },
     spec.extraTools,
   );
   const tag = `[background] agent=${spec.agentId} pass=${spec.pass}`;

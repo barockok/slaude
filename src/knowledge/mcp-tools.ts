@@ -90,6 +90,9 @@ export interface BrainToolDeps {
   call?: (name: string, params: Record<string, unknown>, scope: BrainScope) => Promise<unknown>;
   /** Injectable think (tests). Default: brainThink (SDK-routed synthesis). */
   think?: (question: string, scope: BrainScope) => Promise<unknown>;
+  /** Told the pages a kb_memoize call wrote, after the write succeeded (the
+   *  commitment index). Awaited, but a failure is logged, never returned. */
+  onWritten?: (pages: Array<{ slug: string; content: string; source: string }>, scope: BrainScope) => Promise<void> | void;
 }
 
 const asJson = (v: unknown): ToolResult => ok(typeof v === "string" ? v : JSON.stringify(v, null, 2));
@@ -585,7 +588,15 @@ export const brainHandlers = {
         },
         describe,
       });
-      return r.ok ? asJson({ written: composed.map((pg) => pg.slug), target, ...(retired.length > 0 ? { superseded: retired } : {}), results: r.result }) : err(r.reason);
+      if (!r.ok) return err(r.reason);
+      if (d.onWritten) {
+        try {
+          await d.onWritten(composed.map((pg) => ({ slug: pg.slug, content: pg.content, source: scope.sourceId })), scope);
+        } catch (e) {
+          console.error(`[brain] kb_memoize: post-write hook failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      return asJson({ written: composed.map((pg) => pg.slug), target, ...(retired.length > 0 ? { superseded: retired } : {}), results: r.result });
     } catch (e) {
       if (e instanceof TrailError) return err(e.message);
       return err(humanizeBrainError("put_page", e));
