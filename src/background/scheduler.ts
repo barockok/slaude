@@ -58,6 +58,12 @@ import { defaultRunnerDeps } from "./runner";
 import { backgroundAgentId, finishSkillCheck, startSkillCheck } from "./skill-check";
 import { runDueCommitments, type PromiseTransport } from "../proactive/promises";
 import { readPingPrefs } from "../proactive/prefs";
+import { runHeartbeat } from "../proactive/heartbeat";
+import { anyProactiveEnabled } from "../soul/proactive";
+import { env } from "../config/env";
+import { personaApp } from "./digest";
+import { soulData, cachedSoulData } from "../soul/extract";
+import { personaSoulText } from "../persona/soul-source";
 import { sweepStaleRuns } from "./stale-runs";
 
 export { isoWeekSlot, previousDay };
@@ -112,6 +118,9 @@ export interface SchedulerDeps {
   /** Check the group's due promises (phase E, src/proactive/promises.ts).
    *  Runs first every tick: due promises are top priority. Absent: none. */
   commitments?: (g: AgentGroup, now: Date) => Promise<unknown>;
+  /** Whether a persona's SOUL turns proactiveness on anywhere (the heartbeat
+   *  runs only then). Default: anyProactiveEnabled. */
+  proactiveOn?: (personaId: string) => boolean;
 }
 
 /** `after`: the pass runs only once that pass's ledger rows for the same day have all finished. */
@@ -144,6 +153,13 @@ export function dueSlots(now: Date, tz: string, last: LastSlots = {}): DueSlot[]
     if (last[e.pass] !== slot) out.push({ pass: e.pass, slot, ...(e.after ? { after: e.after } : {}) });
   }
   return out;
+}
+
+/** The heartbeat slot of `now`: persona-local `YYYY-MM-DDTHH:MM`, rounded down to the interval. */
+export function heartbeatSlot(now: Date, tz: string, everyMinutes: number): string {
+  const t = localParts(now, tz);
+  const m = Math.floor(t.minutes / everyMinutes) * everyMinutes;
+  return `${t.day}T${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 }
 
 const errText = (e: unknown): string => redactSecrets(e instanceof Error ? e.message : String(e));
@@ -234,6 +250,15 @@ export function createBackgroundScheduler(deps: SchedulerDeps): { tick(signal?: 
             continue;
           }
           if (await runSlot(g, pass, slot, now, signal, handler, () => claimSlot(g.agentId, pass, slot, now.getTime()))) seen[pass] = slot;
+        }
+        // The heartbeat (phase E): every SLAUDE_HEARTBEAT_MINUTES, only while
+        // the persona's SOUL enables proactiveness somewhere.
+        const heartbeat = deps.handlers.heartbeat;
+        if (heartbeat && !signal.aborted && (deps.proactiveOn ?? anyProactiveEnabled)(g.personaId)) {
+          const slot = heartbeatSlot(now, g.timeZone, env.heartbeatMinutes());
+          if (seen.heartbeat !== slot && (await runSlot(g, "heartbeat", slot, now, signal, heartbeat, () => claimSlot(g.agentId, "heartbeat", slot, now.getTime())))) {
+            seen.heartbeat = slot;
+          }
         }
         const quiet = deps.handlers["quiet-moment"];
         if (!quiet || signal.aborted) continue;
@@ -425,7 +450,21 @@ export function passHandlers(deps: NightlyDeps, slack?: SchedulerSlack): Partial
     "quiet-moment": (r) => runQuietMoment(r, deps),
     "skill-review": (r) => runSkillReview(r, deps),
     digest: (r) => runDigest(r, { call: deps.call, recipient: slack?.digestRecipient ?? (() => null), ...(slack ? { post: slack.post } : {}) }),
+    // The heartbeat needs Slack to speak: without it there is nothing to run.
+    ...(slack
+      ? { heartbeat: (r: SlotRun) => runHeartbeat(r, { runner: deps.runner, call: deps.call, post: slack.post, managerId: personaManager, app: personaApp }) }
+      : {}),
   };
+}
+
+/** A persona's manager: the default persona's effective soul, a named persona's own structured soul. */
+export function personaManager(personaId: string): string | null {
+  try {
+    if (!personaId || personaId === "default") return soulData().manager.userId ?? null;
+    return cachedSoulData(personaSoulText(personaId))?.manager.userId ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Production promise checks for a group: budgeted on the ledger, prefs from the beneficiary's profile. */

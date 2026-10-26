@@ -21,7 +21,8 @@ Pass `subject` (the Slack user id) for any page about a person.
 | `investigation` | `mine` + `investigations/<slug>` | symptom, hypotheses with status, evidence links, last touched |
 | `correction` (about your own work) | `mine` + `self/lessons` | a candidate lesson |
 | `outcome` | `mine` + `outcomes/<short-slug>` | an action you took and the signal afterwards |
-| `lessons` / `heartbeat` | `mine` + `self/lessons` / `self/heartbeat` | one page each, kept by later phases |
+| `lessons` | `mine` + `self/lessons` | one page, kept by the background lessons upkeep |
+| `heartbeat` | `mine` + `self/heartbeat` | one page: your own recurring checks (below) |
 | `team-fact` | `shared` + `shared/people/<userId>` or `shared/services/<name>` (a convention, not enforced) | ownership, who debugged what; raises an approval card |
 
 ### Commitments
@@ -32,6 +33,13 @@ Write one the moment you promise. Fields (`fields`): `promiser`,
 is kept or abandoned, write a new page under a new slug (for example
 `commitments/<slug>-done`) with `status` `done` or `dropped` and `supersedes`
 naming the open one. The new page can never reuse the old slug.
+
+### Heartbeat
+`self/heartbeat` is your own checklist of recurring checks, one line each:
+what to look at, and when the result is worth interrupting someone (and
+whom). When someone asks you to keep an eye on something, add a line; drop
+lines that stopped mattering. Rewrite the whole page each time. It runs only
+where the operator turned proactiveness on; you never need to mention it.
 
 ### Profile
 - `target:"profile"` takes only `profile` and `correction` pages, and a
